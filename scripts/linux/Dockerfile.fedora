@@ -1,0 +1,19 @@
+# Fedora (current stable, community-verified tier): builds binaries and runs the
+# headless functional smoke inside the container. No official package format —
+# produces a tarball (install docs in docs/install.md).
+FROM fedora:latest
+RUN dnf -y install \
+    curl git gcc gcc-c++ pkgconf-pkg-config \
+    webkit2gtk4.1-devel openssl-devel libappindicator-gtk3-devel librsvg2-devel \
+    libxdo-devel dbus-devel xdg-utils nodejs npm \
+ && dnf clean all
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+ENV PATH=/root/.cargo/bin:$PATH
+WORKDIR /src
+COPY . .
+RUN cargo build --release -p agentport-host -p agentport-cli
+RUN mkdir -p /out \
+ && cp target/release/agentport-cli target/release/agentport-host /out/ \
+ && tar -czf /out/agentport-fedora-$(uname -m).tar.gz -C /out agentport-cli agentport-host
+WORKDIR /out
+CMD ["ls", "-la", "/out"]

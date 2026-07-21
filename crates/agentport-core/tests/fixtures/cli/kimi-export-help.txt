@@ -1,0 +1,14 @@
+Usage: kimi export [options] [sessionId]
+
+Export a session as a ZIP archive.
+
+Arguments:
+  sessionId                Session id to export. Defaults to the most recent session.
+
+Options:
+  -o, --output <path>      Output ZIP path.
+  -y, --yes                Skip previous-session confirmation.
+  --no-include-global-log  Skip bundling the active global diagnostic log
+                           (~/.kimi-code/logs/kimi-code.log, not rotated .1 files). By default the
+                           global log is included.
+  -h, --help               Show help.

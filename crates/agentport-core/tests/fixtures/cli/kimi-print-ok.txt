@@ -1,0 +1,5 @@
+• The user asked me to reply with exactly: OK. That's a simple request. I should just reply "OK".
+
+• OK
+
+To resume this session: kimi -r session_950d1775-f55d-48ba-9921-ffcbe1bdaecf

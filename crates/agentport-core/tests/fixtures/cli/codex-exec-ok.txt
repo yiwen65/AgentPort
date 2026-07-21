@@ -1,0 +1,8 @@
+Reading additional input from stdin...
+2026-07-18T23:44:22.084537Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-18T23:44:27.076318Z ERROR codex_models_manager::manager: failed to refresh available models: timeout waiting for child process to exit
+2026-07-18T23:44:27.086988Z ERROR codex_models_manager::manager: failed to refresh available models: timeout waiting for child process to exit
+{"type":"thread.started","thread_id":"019f779d-efd0-76a2-a39e-eb95459089a0"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}
+{"type":"turn.completed","usage":{"input_tokens":20409,"cached_input_tokens":8960,"output_tokens":5,"reasoning_output_tokens":0}}

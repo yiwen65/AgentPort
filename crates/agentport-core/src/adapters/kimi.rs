@@ -1,0 +1,213 @@
+//! Kimi Code adapter. Verified on this machine against kimi 0.27.0
+//! (fixtures in tests/fixtures/cli/):
+//! - `-S, --session [id]` : resume a session by id (EXACT when id known).
+//! - `-c, --continue`     : continue previous session for cwd (precision = latest).
+//! - `-y, --yolo` / `--auto` : auto-approve flags — NEVER added by default; only when
+//!   the preset explicitly enables auto/bypass and preflight shows the risk.
+//! - Only the `kimi` command is supported (not legacy kimi-cli python layout).
+//! - Hooks: 0.27.0's --help shows NO per-invocation hook/config flag and no
+//!   documented env mechanism. The only hook mechanism is the global
+//!   ~/.kimi-code/config.toml, which we must NOT modify -> "no session-level
+//!   mechanism", HookStatus::Degraded, rely on PTY heuristics (PRD 11.d.5).
+//! - Session-id capture: verified real output of `kimi -p "..."` ends with
+//!   `To resume this session: kimi -r session_<uuid>` (fixture kimi-print-ok.txt).
+//!   extract_session_id matches that line in PTY output.
+
+use super::{AgentAdapter, LaunchContext, LaunchPlan, ResumeContext};
+use crate::error::{CoreError, Result};
+use crate::models::*;
+use std::path::Path;
+
+pub struct KimiAdapter;
+
+impl AgentAdapter for KimiAdapter {
+    fn agent_type(&self) -> AgentType {
+        AgentType::Kimi
+    }
+
+    fn parse_capabilities(
+        &self,
+        exe: &Path,
+        version_out: &str,
+        help_out: &str,
+    ) -> Result<AdapterInstall> {
+        let flags = super::extract_flags(help_out);
+        let has = |f: &str| flags.iter().any(|x| x == f);
+        Ok(AdapterInstall {
+            agent_type: AgentType::Kimi,
+            executable_path: exe.to_string_lossy().into_owned(),
+            version_text: super::normalize_version(version_out),
+            capability_hash: super::capability::capability_hash(version_out, help_out),
+            exact_resume: has("session"),
+            // No per-invocation hook mechanism on 0.27.0 -> degraded.
+            hook_status: HookStatus::Degraded,
+            probed_at: chrono::Utc::now(),
+            candidates: vec![],
+            flags,
+        })
+    }
+
+    fn build_launch(&self, ctx: &LaunchContext) -> Result<LaunchPlan> {
+        let install = &ctx.install;
+        let mut argv = vec![install.executable_path.clone()];
+        argv.extend(ctx.preset.args.clone());
+        argv.extend(super::permission_argv(
+            AgentType::Kimi,
+            ctx.preset.permission_mode,
+            install,
+        )?);
+        Ok(LaunchPlan {
+            argv,
+            env: vec![],
+            assigned_agent_session_id: None,
+            // PTY 捕获到 `session_<uuid>` 后可升级为 exact（见 extract_session_id）。
+            resume_precision: if install.exact_resume {
+                ResumePrecision::Latest
+            } else {
+                ResumePrecision::Unavailable
+            },
+            hook_status: install.hook_status,
+            helper_files: vec![],
+            notes: vec![
+                "kimi 0.27.0 无会话级 hook 注入机制（仅全局 ~/.kimi-code/config.toml，不做修改），状态降级为 PTY 启发式".into(),
+            ],
+        })
+    }
+
+    fn build_resume(&self, ctx: &ResumeContext) -> Result<LaunchPlan> {
+        let install = &ctx.install;
+        let mut argv = vec![install.executable_path.clone()];
+        let mut notes = Vec::new();
+        let resume_precision = match &ctx.agent_session_id {
+            Some(id) => {
+                if !install.exact_resume {
+                    return Err(CoreError::Blocked(
+                        "该版本 kimi 无 --session，无法精确恢复会话".into(),
+                    ));
+                }
+                argv.push("--session".into());
+                argv.push(id.clone());
+                ResumePrecision::Exact
+            }
+            None => {
+                if !super::has_flag(install, "continue") {
+                    return Err(CoreError::Blocked(
+                        "无原生会话 ID 且该版本 kimi 无 --continue，无法恢复".into(),
+                    ));
+                }
+                argv.push("--continue".into());
+                notes.push("无原生会话 ID，仅支持恢复最近会话".into());
+                ResumePrecision::Latest
+            }
+        };
+        argv.extend(ctx.preset.args.clone());
+        argv.extend(super::permission_argv(
+            AgentType::Kimi,
+            ctx.preset.permission_mode,
+            install,
+        )?);
+        Ok(LaunchPlan {
+            argv,
+            env: vec![],
+            assigned_agent_session_id: None,
+            resume_precision,
+            hook_status: install.hook_status,
+            helper_files: vec![],
+            notes,
+        })
+    }
+
+    fn extract_session_id(&self, stripped_text_tail: &str) -> Option<String> {
+        // Evidence (kimi-print-ok.txt): trailing line
+        // `To resume this session: kimi -r session_950d1775-f55d-48ba-9921-ffcbe1bdaecf`
+        let re = regex::Regex::new(
+            r"To resume this session:\s*kimi\s+(?:-\w+\s+)*(session_[0-9a-fA-F-]{36})",
+        )
+        .unwrap();
+        re.captures(stripped_text_tail).map(|c| c[1].to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::test_fixtures as fx;
+
+    fn real_install() -> AdapterInstall {
+        KimiAdapter
+            .parse_capabilities(
+                Path::new("/Users/w/.kimi-code/bin/kimi"),
+                &fx::read_fixture("kimi-version.txt"),
+                &fx::read_fixture("kimi-help.txt"),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn parse_real_fixtures() {
+        let i = real_install();
+        assert_eq!(i.version_text, "0.27.0");
+        for f in ["session", "continue", "yolo", "auto", "plan", "model"] {
+            assert!(i.flags.iter().any(|x| x == f), "missing flag {f}");
+        }
+        assert!(i.exact_resume);
+        // 无会话级 hook 机制 -> 降级
+        assert_eq!(i.hook_status, HookStatus::Degraded);
+    }
+
+    #[test]
+    fn parse_unknown_future_version_degrades() {
+        let help = fx::read_fixture("kimi-help.txt").replace("--session", "--sess");
+        let i = KimiAdapter
+            .parse_capabilities(Path::new("/x/kimi"), "9.9.9", &help)
+            .unwrap();
+        assert!(!i.exact_resume);
+    }
+
+    #[test]
+    fn extract_session_id_from_real_output() {
+        let out = fx::read_fixture("kimi-print-ok.txt");
+        let id = KimiAdapter.extract_session_id(&out);
+        assert_eq!(
+            id.as_deref(),
+            Some("session_950d1775-f55d-48ba-9921-ffcbe1bdaecf")
+        );
+        assert_eq!(KimiAdapter.extract_session_id("random text"), None);
+    }
+
+    #[test]
+    fn build_launch_plain_argv_with_notes() {
+        let mut ctx = fx::launch_ctx(AgentType::Kimi, &["auto"], PermissionMode::Auto);
+        ctx.install.hook_status = HookStatus::Degraded; // 与真实探测结果一致
+        let plan = KimiAdapter.build_launch(&ctx).unwrap();
+        assert_eq!(plan.argv[1..], ["--auto"]);
+        assert_eq!(plan.hook_status, HookStatus::Degraded);
+        assert!(plan.notes.iter().any(|n| n.contains("config.toml")));
+    }
+
+    #[test]
+    fn build_resume_exact_latest_blocked() {
+        let ctx = fx::resume_ctx(
+            AgentType::Kimi,
+            &["session", "continue"],
+            Some("session_abc"),
+        );
+        let plan = KimiAdapter.build_resume(&ctx).unwrap();
+        assert_eq!(plan.resume_precision, ResumePrecision::Exact);
+        assert_eq!(plan.argv[1..], ["--session", "session_abc"]);
+
+        let ctx = fx::resume_ctx(AgentType::Kimi, &["session", "continue"], None);
+        let plan = KimiAdapter.build_resume(&ctx).unwrap();
+        assert_eq!(plan.resume_precision, ResumePrecision::Latest);
+        assert_eq!(plan.argv[1..], ["--continue"]);
+        assert!(plan.notes.iter().any(|n| n.contains("最近会话")));
+
+        // blocked: 有 id 但 install 声明无 exact resume
+        let mut ctx = fx::resume_ctx(AgentType::Kimi, &["continue"], Some("session_abc"));
+        ctx.install.exact_resume = false;
+        assert!(matches!(
+            KimiAdapter.build_resume(&ctx),
+            Err(crate::error::CoreError::Blocked(_))
+        ));
+    }
+}

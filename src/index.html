@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AgentPort</title>
+    <script>
+      try {
+        const rawSavedMode = localStorage.getItem("agentport-theme-mode");
+        const rawSavedTheme = localStorage.getItem("agentport-effective-theme");
+        const savedMode = rawSavedMode === "high_contrast" ? "dark" : rawSavedMode;
+        const savedTheme = rawSavedTheme === "high_contrast" ? "dark" : rawSavedTheme;
+        const systemTheme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        const explicitMode = savedMode === "light" || savedMode === "dark" ? savedMode : null;
+        const prepaintTheme =
+          savedMode === "system"
+            ? systemTheme
+            : explicitMode ??
+              (savedTheme === "light" || savedTheme === "dark" ? savedTheme : systemTheme);
+        document.documentElement.dataset.prepaintTheme = prepaintTheme;
+        document.documentElement.dataset.theme = prepaintTheme;
+      } catch {
+        const prepaintTheme =
+          matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        document.documentElement.dataset.prepaintTheme = prepaintTheme;
+        document.documentElement.dataset.theme = prepaintTheme;
+      }
+    </script>
+    <style>
+      /* Match the last effective appearance before the React bundle boots. */
+      html,
+      body,
+      #root {
+        margin: 0;
+        background: #17181c;
+        color: #e4e6ea;
+      }
+      html[data-prepaint-theme="light"],
+      html[data-prepaint-theme="light"] body,
+      html[data-prepaint-theme="light"] #root {
+        background: #f5f5f5;
+        color: #111217;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

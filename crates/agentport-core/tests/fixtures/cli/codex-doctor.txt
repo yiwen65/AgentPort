@@ -1,0 +1,161 @@
+Codex Doctor v0.144.5 · macos-aarch64
+
+Notes
+   ↑ updates      0.144.6 available (current 0.144.5, dismissed 0.139.0)
+   ⚠ rollouts     317 active files · 1.96 GB on disk
+─────────────────────────────────────────────────────────────
+
+Environment
+  ✓ system       en-CN
+      os                       Mac OS 26.5.1 [64-bit]
+      OS language              en-CN
+      LANG                     en_US.UTF-8
+      VISUAL                   not set
+      EDITOR                   not set
+      PAGER                    less
+      LESS                     -R
+  ✓ runtime      brew
+      version                  0.144.5
+      install method           brew
+      commit                   unknown
+      executable               /opt/homebrew/bin/codex
+  ✓ install      consistent
+      context                  brew
+      managed by               npm: no · bun: no · pnpm: no · package root —
+      PATH entries (3)         ~/.local/bin/codex
+                               ~/.local/bin/codex
+                               /opt/homebrew/bin/codex
+  ✓ search       ripgrep 15.0.0 (rev 3a612f88b8) (system, `rg`)
+      search command           rg
+      search provider          system
+      search command readiness ripgrep 15.0.0 (rev 3a612f88b8)
+  ✓ git          git version 2.50.1 (Apple Git-155)
+      selected git             /usr/bin/git
+      version                  git version 2.50.1 (Apple Git-155)
+      exec path                /Applications/Xcode.app/…er/usr/libexec/git-core
+      repo detected            false
+      PATH entries (2)         /usr/bin/git
+                               /opt/homebrew/bin/git
+  ✓ terminal     Ghostty 1.3.1
+      terminal                 Ghostty
+      TERM_PROGRAM             ghostty
+      terminal version         1.3.1
+      stdin is terminal        false
+      stdout is terminal       false
+      stderr is terminal       false
+      terminal size            80x24
+      color output             disabled (NO_COLOR)
+      COLORTERM                truecolor
+      NO_COLOR                 1
+      TERMINFO                 /Applications/Ghostty.ap…ents/Resources/terminfo (dir)
+      effective locale         en_US.UTF-8
+  ✓ title        default · project AgentSessions
+      title source             default
+      title items              activity, project-name
+      activity item            true
+      project source           cwd
+      project value            AgentSessions
+  ✓ state        databases healthy
+      CODEX_HOME               ~/.codex (dir)
+      log dir                  ~/.codex/log (dir)
+      sqlite home              ~/.codex (dir)
+      state DB                 ~/.codex/state_5.sqlite (file) · integrity ok
+      log DB                   ~/.codex/logs_2.sqlite (file) · integrity ok
+      goals DB                 ~/.codex/goals_1.sqlite (file) · integrity ok
+      memories DB              ~/.codex/memories_1.sqlite (file) · integrity ok
+      active rollouts          317 files · 1.96 GB (avg 6.32 MB)
+      archived rollouts        2 files · 2.59 MB (avg 1.29 MB)
+  ✓ threads      rollout files and state DB thread inventory agree
+      default model provider   openai
+      rollout DB active files  317
+      rollout DB archived files 2
+      rollout DB scan errors   0
+      rollout DB malformed file names 0
+      rollout DB scan cap reached false
+      rollout DB rows          319
+      rollout DB active rows   317
+      rollout DB archived rows 2
+      rollout DB missing active rows 0
+      rollout DB missing archived rows 0
+      rollout DB stale rows    0
+      rollout DB archive mismatches 0
+      rollout DB duplicate rollout thread ids 0
+      rollout DB duplicate DB paths 0
+      rollout DB model providers openai=312, custom=7
+      rollout DB sources       vscode=143, cli=115, subagent:thread_spawn=45, subagent:other=8, unknown=5, exec=3
+
+Configuration
+  ✓ config       loaded
+      model                    gpt-5.6-luna · openai
+      cwd                      ~/Projects/AgentSessions
+      config.toml              ~/.codex/config.toml
+      config.toml parse        ok
+      MCP servers              4
+      feature flags            36 enabled · 1 overridden (full list with --all)
+      overrides                memories
+  ✓ auth         auth is configured
+      auth storage mode        File
+      auth file                ~/.codex/auth.json
+      stored auth mode         chatgpt
+      stored API key           false
+      stored ChatGPT tokens    true
+      stored agent identity    false
+  ✓ mcp          4 server (3 stdio, 1 streamable_http) · 2 disabled
+      configured servers       4
+      disabled servers         2
+      stdio servers            3
+      streamable_http servers  1
+  ✓ sandbox      restricted fs + restricted network · approval OnRequest
+      approval policy          OnRequest
+      filesystem sandbox       restricted
+      network sandbox          restricted
+      linux helper             none
+      execve wrapper helper    ~/.codex/tmp/arg0/codex-…Rx/codex-execve-wrapper
+
+Updates
+  ✓ updates      update configuration is locally consistent
+      startup update check     true
+      update action            brew upgrade --cask codex
+      version cache            ~/.codex/version.json
+      cached latest version    0.142.4
+      last checked at          2026-06-29 13:14 UTC
+      dismissed version        0.139.0
+      latest version           0.144.6
+      latest version status    newer version is available
+
+Connectivity
+  ✓ network      network-related environment looks readable
+      proxy env vars present   HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, NO_PROXY, http_proxy, https_proxy, all_proxy, no_proxy
+  ✓ websocket    connected (HTTP 101 Switching Protocols) · 15s timeout
+      model provider           openai
+      provider name            OpenAI
+      wire API                 responses
+      supports websockets      true
+      proxy env vars present   HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, NO_PROXY, http_proxy, https_proxy, all_proxy, no_proxy
+      connect timeout          15000 ms
+      auth mode                chatgpt
+      endpoint                 wss://chatgpt.com/backend-api/<redacted>
+      DNS                      1 IPv4, 1 IPv6, first IPv6
+      handshake result         HTTP 101 Switching Protocols
+      reasoning header         false
+      models etag present      true
+      server model present     false
+  ✓ reachability active provider endpoints are reachable over HTTP
+      reachability mode        ChatGPT auth
+      ChatGPT base URL         https://chatgpt.com/backend-api/ reachable (HTTP 403)
+
+Background Server
+  ○ app-server   not running (ephemeral mode)
+      daemon state dir         ~/.codex/app-server-daemon
+      settings                 ~/.codex/app-server-daemon/settings.json (missing)
+      pid file                 ~/.codex/app-server-daemon/app-server.pid (missing)
+      update-loop pid file     ~/.codex/app-server-daem…/app-server-updater.pid (missing)
+      control socket           ~/.codex/app-server-cont…app-server-control.sock
+      status                   not running
+      mode                     ephemeral
+
+─────────────────────────────────────────────────────────────
+17 ok · 1 idle · 2 notes · 0 warn · 0 fail ok
+
+--summary compact output           --all expand truncated lists
+--json redacted report

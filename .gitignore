@@ -1,0 +1,8 @@
+/target
+/src/node_modules
+/src/dist
+/src-tauri/binaries
+**/*.log
+.DS_Store
+/tmp-build
+/dist-release

@@ -1,0 +1,157 @@
+{
+  "manifestVersion": 1,
+  "appVersion": "0.1.0",
+  "generatedAt": "2026-07-19T11:59:09.835090+00:00",
+  "deliveryScope": "p0_p2",
+  "platforms": [
+    {
+      "os": "macos",
+      "versionOrSnapshot": "26.5.1",
+      "arch": "arm64 (universal: scripted, see knownLimitations)",
+      "tier": "official",
+      "artifact": "dist-release/macos/AgentPort_0.1.0_aarch64.dmg",
+      "sha256": "8a614a0a93c806dca55b7532f7115ad321a7549f169c1f27d46557e06bf92eaa",
+      "webviewVersion": "",
+      "tested": [
+        "build",
+        "launch-smoke",
+        "window-render",
+        "db-init"
+      ],
+      "notes": [
+        "signing/notarization: not performed in this environment (scripted in CI notes)"
+      ]
+    },
+    {
+      "os": "ubuntu",
+      "versionOrSnapshot": "24.04",
+      "arch": "x86_64",
+      "tier": "official",
+      "artifact": "dist-release/ubuntu2404/AgentPort_0.1.0_amd64.deb",
+      "sha256": "a8c1f408dac6d5b72eaaaed19986c7bff8defad7cffb5e10a11f1fc299a75ae2",
+      "tested": [
+        "docker-build",
+        "container-install",
+        "pty-e2e",
+        "xvfb-launch",
+        "uninstall"
+      ],
+      "notes": []
+    },
+    {
+      "os": "ubuntu",
+      "versionOrSnapshot": "22.04",
+      "arch": "x86_64",
+      "tier": "official",
+      "artifact": "dist-release/ubuntu2204/AgentPort_0.1.0_amd64.deb",
+      "sha256": "0d66c1a050ead601211b5b2e687a8b6ebbc17bab6dd6cbba4bf75b7a16631809",
+      "tested": [
+        "docker-build",
+        "container-install",
+        "pty-e2e",
+        "xvfb-launch",
+        "uninstall"
+      ],
+      "notes": []
+    },
+    {
+      "os": "fedora",
+      "versionOrSnapshot": "latest",
+      "arch": "x86_64",
+      "tier": "community",
+      "artifact": "dist-release/fedora/agentport-fedora-x86_64.tar.gz",
+      "sha256": "8161cb7b17e325cc4e69c1a62b97a17368cedd2c93fe779c990f004e855e0efb",
+      "tested": [
+        "docker-build"
+      ],
+      "notes": [
+        "community-verified tier; package format = tarball"
+      ]
+    },
+    {
+      "os": "arch",
+      "versionOrSnapshot": "latest",
+      "arch": "x86_64",
+      "tier": "community",
+      "artifact": "dist-release/arch/agentport-arch-x86_64.tar.gz",
+      "sha256": "a5012d6cc51fc3631a8c5e2065f4fb920bc37ffbc1ffedbd9676e729c1669d6e",
+      "tested": [
+        "docker-build"
+      ],
+      "notes": [
+        "community-verified tier; package format = tarball"
+      ]
+    },
+    {
+      "os": "appimage",
+      "versionOrSnapshot": "ubuntu-22.04-based",
+      "arch": "x86_64",
+      "tier": "blocked",
+      "artifact": null,
+      "sha256": null,
+      "tested": [],
+      "notes": [
+        "linuxdeploy download failed in this build window; reproducible via scripts/build-linux.sh appimage; per PRD not published without clean-VM launch verification"
+      ]
+    }
+  ],
+  "agentClis": [
+    {
+      "agent": "claude",
+      "executablePath": "/Users/w/.local/bin/claude",
+      "versionText": "2.1.215 (Claude Code)",
+      "capabilityHash": "sha256:7c6eaba7f5c933bd",
+      "exactResume": true,
+      "hookStatus": "supported",
+      "verifiedAt": "2026-07-19T11:57:40.591Z"
+    },
+    {
+      "agent": "codex",
+      "executablePath": "/Users/w/.local/bin/codex",
+      "versionText": "codex-cli 0.144.5",
+      "capabilityHash": "sha256:9bfd914d1a25a71a",
+      "exactResume": true,
+      "hookStatus": "degraded",
+      "verifiedAt": "2026-07-19T11:57:40.931Z"
+    },
+    {
+      "agent": "kimi",
+      "executablePath": "/Users/w/.kimi-code/bin/kimi",
+      "versionText": "0.27.0",
+      "capabilityHash": "sha256:35cb242155db9c2b",
+      "exactResume": true,
+      "hookStatus": "degraded",
+      "verifiedAt": "2026-07-19T11:57:41.702Z"
+    },
+    {
+      "agent": "shell",
+      "executablePath": "/bin/sh",
+      "versionText": "GNU bash, version 3.2.57(1)-release (arm64-apple-darwin25)",
+      "capabilityHash": "sha256:fef18104984383af",
+      "exactResume": false,
+      "hookStatus": "unavailable",
+      "verifiedAt": "2026-07-19T11:57:41.983Z"
+    }
+  ],
+  "tests": [
+    {
+      "suite": "cargo test --workspace",
+      "passedSuites": 4,
+      "failedSuites": 2,
+      "evidence": "local run, see docs/acceptance-report.md"
+    },
+    {
+      "suite": "e2e/wave1.sh (PTY/reconnect/cleanup/log-sha256)",
+      "result": "pass"
+    },
+    {
+      "suite": "e2e/wave2.sh (export/search/timeline/secret-leak-scan)",
+      "result": "pass"
+    }
+  ],
+  "knownLimitations": [
+    "macOS Universal (x86_64+arm64) build requires rustup toolchains; this machine used Homebrew rust (arm64 only).",
+    "signing/notarization and clean-VM interactive runs (IME/Orca/VoiceOver) are manual steps, listed in docs/acceptance-report.md.",
+    "FTS5 trigram search index stores text+postings (measured ~3.6x source size); PRD's 0.35 ratio would require a contentless index redesign."
+  ]
+}

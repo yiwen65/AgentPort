@@ -1,0 +1,36 @@
+# Reproducible Ubuntu 24.04 (x86_64) build of AgentPort: .deb + CLI/host binaries.
+# Build:  docker buildx build --platform linux/amd64 -f scripts/linux/Dockerfile.ubuntu2404 -t agentport-build-u2404 .
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates git build-essential pkg-config file \
+    libwebkit2gtk-4.1-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+    libxdo-dev libdbus-1-dev xdg-utils \
+    nodejs npm \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+ENV PATH=/root/.cargo/bin:$PATH
+
+WORKDIR /src
+# Cache-friendly: manifests first (best-effort; a full COPY still follows).
+COPY Cargo.toml Cargo.lock* ./
+COPY crates/agentport-core/Cargo.toml crates/agentport-core/Cargo.toml
+COPY crates/agentport-host/Cargo.toml crates/agentport-host/Cargo.toml
+COPY crates/agentport-cli/Cargo.toml crates/agentport-cli/Cargo.toml
+COPY src-tauri/Cargo.toml src-tauri/Cargo.toml
+COPY src-tauri/build.rs src-tauri/build.rs
+COPY src/package.json src/package-lock.json src/
+COPY . .
+
+RUN cargo build --release -p agentport-host -p agentport-cli
+RUN mkdir -p src-tauri/binaries \
+ && cp target/release/agentport-host "src-tauri/binaries/agentport-host-$(uname -m)-unknown-linux-gnu" \
+ && chmod +x "src-tauri/binaries/agentport-host-$(uname -m)-unknown-linux-gnu"
+RUN cd src && npm ci && npm run build
+RUN cd src-tauri && ../src/node_modules/.bin/tauri build --bundles deb
+RUN mkdir -p /out \
+ && cp target/release/bundle/deb/*.deb /out/ 2>/dev/null || true \
+ && cp target/release/agentport-cli target/release/agentport-host /out/
+WORKDIR /out
+CMD ["ls", "-la", "/out"]
