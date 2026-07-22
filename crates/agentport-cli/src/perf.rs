@@ -138,6 +138,7 @@ fn start_session(
         resume_precision: ResumePrecision::Unavailable,
         log_path: ctx.paths.log_path(&sid).to_string_lossy().into_owned(),
         adapter_type: AgentType::Shell,
+        transport: agentport_core::models::AgentTransport::Pty,
         command: argv.clone(),
         permission_mode: PermissionMode::Native,
         created_at: now,
@@ -501,6 +502,8 @@ pub fn timeline_perf(ctx: &PerfCtx) -> Result<()> {
     for i in 1..=100i64 {
         ctx.db.record_status_event(&StatusEvent {
             session_id: s.id.clone(),
+            run_id: LEGACY_RUN_ID.into(),
+            run_ordinal: LEGACY_RUN_ORDINAL,
             sequence: i,
             state: if i % 3 == 0 {
                 AgentState::NeedsInput

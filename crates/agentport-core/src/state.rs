@@ -6,7 +6,9 @@
 //! - Per-session monotonic sequence; duplicate/out-of-order observations are
 //!   deduped; rapid flip-flops are debounced.
 
-use crate::models::{AgentState, Confidence, StateSource, StatusEvent};
+use crate::models::{
+    legacy_run_id, AgentState, Confidence, StateSource, StatusEvent, LEGACY_RUN_ORDINAL,
+};
 use chrono::{Duration, Utc};
 use regex::Regex;
 
@@ -37,6 +39,8 @@ const DEBOUNCE_MS: i64 = 300;
 #[derive(Debug)]
 pub struct StateMachine {
     session_id: String,
+    run_id: String,
+    run_ordinal: i64,
     sequence: i64,
     last: Option<(AgentState, StateSource)>,
     last_emitted_at: Option<chrono::DateTime<Utc>>,
@@ -47,8 +51,21 @@ pub struct StateMachine {
 
 impl StateMachine {
     pub fn new(session_id: impl Into<String>) -> Self {
+        Self::for_run(session_id, legacy_run_id(), LEGACY_RUN_ORDINAL)
+    }
+
+    /// Construct the state machine for one concrete Host launch.  Sequence
+    /// numbers intentionally restart at one for each run; the run identity is
+    /// the durable namespace that keeps those histories distinct.
+    pub fn for_run(
+        session_id: impl Into<String>,
+        run_id: impl Into<String>,
+        run_ordinal: i64,
+    ) -> Self {
         StateMachine {
             session_id: session_id.into(),
+            run_id: run_id.into(),
+            run_ordinal,
             sequence: 0,
             last: None,
             last_emitted_at: None,
@@ -103,8 +120,11 @@ impl StateMachine {
                 return None;
             }
         }
-        // Debounce flip-flops (but never delay process exits — those are facts).
-        if source != StateSource::Process {
+        // Debounce only low-confidence PTY churn.  Hook and process facts are
+        // authoritative, and a PTY needs-input match is user-actionable, so
+        // neither may be swallowed merely because an activity frame arrived
+        // in the same output burst.
+        if source == StateSource::Pty && state != AgentState::NeedsInput {
             if let Some(t) = self.last_emitted_at {
                 if Utc::now() - t < Duration::milliseconds(DEBOUNCE_MS) && self.last.is_some() {
                     return None;
@@ -114,6 +134,8 @@ impl StateMachine {
         self.sequence += 1;
         let ev = StatusEvent {
             session_id: self.session_id.clone(),
+            run_id: self.run_id.clone(),
+            run_ordinal: self.run_ordinal,
             sequence: self.sequence,
             state,
             source,

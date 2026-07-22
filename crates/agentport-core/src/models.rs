@@ -11,16 +11,27 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level data model version (PRD ch.5 `version`). Bump when the schema
 /// changes in a way the migrator must handle; SQLite user_version tracks the same.
-pub const DATA_MODEL_VERSION: i64 = 1;
+pub const DATA_MODEL_VERSION: i64 = 8;
 pub const APP_ID: &str = "agentport.local";
 pub const DELIVERY_SCOPE: &str = "p0_p2";
 
+/// Run identity used when reading pre-run-scoped journals and database rows.
+/// It is deliberately scoped by `session_id` in SQLite, so every legacy
+/// session can retain this stable compatibility value.
+pub const LEGACY_RUN_ID: &str = "legacy";
+pub const LEGACY_RUN_ORDINAL: i64 = 0;
+
+pub fn legacy_run_id() -> String {
+    LEGACY_RUN_ID.to_owned()
+}
+
 /// New installations retain a bounded recent-output window per Session. An
 /// existing saved setting is never overwritten during upgrade.
-pub const DEFAULT_LOG_LIMIT_MIB: u64 = 100;
+pub const DEFAULT_LOG_LIMIT_MIB: u64 = 200;
 pub const MIN_LOG_LIMIT_MIB: u64 = 20;
 pub const MAX_LOG_LIMIT_MIB: u64 = 2048;
-pub const DEFAULT_RETENTION_DAYS: i64 = 30;
+/// A cleanup job stops being scheduled after this many failed attempts.
+pub const MAX_CLEANUP_JOB_ATTEMPTS: i64 = 8;
 
 // ---------------------------------------------------------------------------
 // Agents
@@ -32,15 +43,35 @@ pub enum AgentType {
     Claude,
     Codex,
     Kimi,
+    Qoder,
+    Pi,
     Shell,
 }
 
 impl AgentType {
+    /// Registry of every adapter compiled into this build. Keep discovery,
+    /// onboarding, and CLI probing on this single list so adding an adapter
+    /// does not require updating several independent fixed-size arrays.
+    pub const ALL: &'static [Self] = &[
+            Self::Claude,
+            Self::Codex,
+            Self::Kimi,
+            Self::Qoder,
+            Self::Pi,
+            Self::Shell,
+    ];
+
+    pub const fn all() -> &'static [Self] {
+        Self::ALL
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             AgentType::Claude => "claude",
             AgentType::Codex => "codex",
             AgentType::Kimi => "kimi",
+            AgentType::Qoder => "qoder",
+            AgentType::Pi => "pi",
             AgentType::Shell => "shell",
         }
     }
@@ -49,6 +80,8 @@ impl AgentType {
             AgentType::Claude => &["claude"],
             AgentType::Codex => &["codex"],
             AgentType::Kimi => &["kimi"],
+            AgentType::Qoder => &["qodercli"],
+            AgentType::Pi => &["pi"],
             AgentType::Shell => &["sh", "bash", "zsh"],
         }
     }
@@ -57,7 +90,29 @@ impl AgentType {
             AgentType::Claude => "Claude Code",
             AgentType::Codex => "Codex",
             AgentType::Kimi => "Kimi Code",
+            AgentType::Qoder => "Qoder",
+            AgentType::Pi => "Pi",
             AgentType::Shell => "Generic Shell",
+        }
+    }
+
+    pub fn approval_model(&self) -> ApprovalModel {
+        match self {
+            AgentType::Pi | AgentType::Shell => ApprovalModel::NoBuiltinPrompts,
+            AgentType::Claude | AgentType::Codex | AgentType::Kimi | AgentType::Qoder => {
+                ApprovalModel::NativePrompts
+            }
+        }
+    }
+
+    pub fn default_transport(&self) -> AgentTransport {
+        AgentTransport::Pty
+    }
+
+    pub fn default_permission_mode(&self) -> PermissionMode {
+        match self {
+            AgentType::Qoder => PermissionMode::Bypass,
+            _ => PermissionMode::Native,
         }
     }
 
@@ -65,10 +120,13 @@ impl AgentType {
     /// sentinel for compatibility, but never expose or enforce a permission
     /// mode for them.
     pub fn effective_permission_mode(&self, requested: PermissionMode) -> PermissionMode {
-        if matches!(self, AgentType::Shell) {
-            PermissionMode::Native
-        } else {
-            requested
+        match self {
+            // Qoder is an AgentPort-managed full-access integration. Its
+            // required capability gate lives in `permission_argv`; callers
+            // cannot silently turn it into a native-prompt Session.
+            AgentType::Qoder => PermissionMode::Bypass,
+            AgentType::Shell | AgentType::Pi => PermissionMode::Native,
+            _ => requested,
         }
     }
 }
@@ -80,6 +138,8 @@ impl std::str::FromStr for AgentType {
             "claude" => Ok(AgentType::Claude),
             "codex" => Ok(AgentType::Codex),
             "kimi" => Ok(AgentType::Kimi),
+            "qoder" => Ok(AgentType::Qoder),
+            "pi" => Ok(AgentType::Pi),
             "shell" => Ok(AgentType::Shell),
             other => Err(crate::error::CoreError::Validation(format!(
                 "unknown agent type: {other}"
@@ -107,6 +167,52 @@ pub enum HookStatus {
     Unavailable,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalModel {
+    NativePrompts,
+    NoBuiltinPrompts,
+}
+
+impl ApprovalModel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ApprovalModel::NativePrompts => "native_prompts",
+            ApprovalModel::NoBuiltinPrompts => "no_builtin_prompts",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTransport {
+    Pty,
+    JsonRpc,
+}
+
+impl AgentTransport {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AgentTransport::Pty => "pty",
+            AgentTransport::JsonRpc => "json_rpc",
+        }
+    }
+}
+
+impl std::str::FromStr for AgentTransport {
+    type Err = crate::error::CoreError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pty" => Ok(AgentTransport::Pty),
+            "json_rpc" => Ok(AgentTransport::JsonRpc),
+            other => Err(crate::error::CoreError::Validation(format!(
+                "unknown agent transport: {other}"
+            ))),
+        }
+    }
+}
+
 /// Capability snapshot for one agent type (PRD ch.5 `adaptersByType`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -121,6 +227,8 @@ pub struct AdapterInstall {
     /// Supports resuming by native session id exactly.
     pub exact_resume: bool,
     pub hook_status: HookStatus,
+    pub approval_model: ApprovalModel,
+    pub default_transport: AgentTransport,
     pub probed_at: DateTime<Utc>,
     /// All candidate paths found during probing (for conflict resolution).
     #[serde(default)]
@@ -285,6 +393,8 @@ pub struct Session {
     pub resume_precision: ResumePrecision,
     pub log_path: String,
     pub adapter_type: AgentType,
+    #[serde(default = "default_agent_transport")]
+    pub transport: AgentTransport,
     /// Final argv used to launch (diagnostic + preflight audit). Never contains secrets.
     #[serde(default)]
     pub command: Vec<String>,
@@ -292,6 +402,95 @@ pub struct Session {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub archived_at: Option<DateTime<Utc>>,
+}
+
+pub fn default_agent_transport() -> AgentTransport {
+    AgentTransport::Pty
+}
+
+/// Persistent work required after an archived Session's database rows are
+/// purged. It intentionally contains no filesystem location: workers derive
+/// any cleanup target from the Session ID outside SQLite.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupJob {
+    pub session_id: String,
+    pub attempts: i64,
+    pub last_error: Option<String>,
+    /// `None` means the bounded retry budget has been exhausted.
+    pub retry_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One concrete Host/Agent launch for a stable Session ID.
+///
+/// `run_ordinal` is monotonic within one Session. Ordinal zero is reserved for
+/// the `legacy` compatibility run so a newly-created v2 run always sorts after
+/// imported pre-v2 state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRun {
+    pub session_id: String,
+    pub run_id: String,
+    pub run_ordinal: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Position of a state transition within a Session's ordered launches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusCursor {
+    #[serde(default = "legacy_run_id")]
+    pub run_id: String,
+    #[serde(default)]
+    pub run_ordinal: i64,
+    #[serde(default)]
+    pub sequence: i64,
+}
+
+impl Default for StatusCursor {
+    fn default() -> Self {
+        Self {
+            run_id: legacy_run_id(),
+            run_ordinal: LEGACY_RUN_ORDINAL,
+            sequence: 0,
+        }
+    }
+}
+
+impl StatusCursor {
+    /// Ordering is session-scoped: runs are ordered first, then their local
+    /// sequence. Callers must not compare cursors from different Sessions.
+    pub fn is_after(&self, other: &Self) -> bool {
+        self.run_ordinal > other.run_ordinal
+            || (self.run_ordinal == other.run_ordinal && self.sequence > other.sequence)
+    }
+}
+
+/// Position of terminal output. Log generation prevents a rotated file offset
+/// from being interpreted as bytes from a later generation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogCursor {
+    #[serde(default = "legacy_run_id")]
+    pub run_id: String,
+    #[serde(default)]
+    pub run_ordinal: i64,
+    #[serde(default)]
+    pub generation: i64,
+    #[serde(default)]
+    pub offset: i64,
+}
+
+impl Default for LogCursor {
+    fn default() -> Self {
+        Self {
+            run_id: legacy_run_id(),
+            run_ordinal: LEGACY_RUN_ORDINAL,
+            generation: 0,
+            offset: 0,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -367,7 +566,14 @@ impl Confidence {
 #[serde(rename_all = "camelCase")]
 pub struct StatusEvent {
     pub session_id: String,
-    /// Monotonic per-session sequence.
+    /// Host launch identity. Older journals omit this and deserialize as the
+    /// reserved legacy run.
+    #[serde(default = "legacy_run_id")]
+    pub run_id: String,
+    /// Monotonic per-Session launch ordinal. Older journals deserialize as 0.
+    #[serde(default)]
+    pub run_ordinal: i64,
+    /// Monotonic within one run, not across Session restarts.
     pub sequence: i64,
     pub state: AgentState,
     pub source: StateSource,
@@ -376,7 +582,22 @@ pub struct StatusEvent {
     /// "process:exit:0". Never contains secret values or raw user output.
     #[serde(default)]
     pub evidence: Option<String>,
+    /// Exact retained-log position captured with this transition when the Host
+    /// could observe one.  Older journals legitimately omit it; consumers must
+    /// then treat the event as metadata-only rather than inventing a jump.
+    #[serde(default)]
+    pub log_cursor: Option<LogCursor>,
     pub occurred_at: DateTime<Utc>,
+}
+
+impl StatusEvent {
+    pub fn cursor(&self) -> StatusCursor {
+        StatusCursor {
+            run_id: self.run_id.clone(),
+            run_ordinal: self.run_ordinal,
+            sequence: self.sequence,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -477,13 +698,16 @@ pub enum ReducedMotion {
 pub struct Settings {
     pub log_limit_mib: u64,
     pub notifications_enabled: bool,
-    pub retention_days: i64,
     pub theme: Theme,
     pub terminal_font_family: String,
     pub terminal_font_size: u32,
     pub reduced_motion: ReducedMotion,
     pub screen_reader_mode: bool,
     pub search_index_enabled: bool,
+    /// Preferred order for quick-launch Agent icons. Unknown future adapters
+    /// are permitted and appended by the renderer when they are discovered.
+    #[serde(default)]
+    pub agent_order: Vec<String>,
     /// Hard constraint: always false (PRD ch.5).
     pub telemetry_enabled: bool,
 }
@@ -493,13 +717,20 @@ impl Default for Settings {
         Settings {
             log_limit_mib: DEFAULT_LOG_LIMIT_MIB,
             notifications_enabled: true,
-            retention_days: DEFAULT_RETENTION_DAYS,
             theme: Theme::System,
             terminal_font_family: "system-monospace".into(),
             terminal_font_size: 13,
             reduced_motion: ReducedMotion::System,
             screen_reader_mode: false,
             search_index_enabled: true,
+            agent_order: vec![
+                "shell".into(),
+                "codex".into(),
+                "claude".into(),
+                "kimi".into(),
+                "qoder".into(),
+                "pi".into(),
+            ],
             telemetry_enabled: false,
         }
     }
@@ -515,11 +746,6 @@ impl Settings {
                 self.log_limit_mib
             )));
         }
-        if !(1..=3650).contains(&self.retention_days) {
-            return Err(CoreError::Validation(
-                "retention_days out of range 1-3650".into(),
-            ));
-        }
         if !(10..=28).contains(&self.terminal_font_size) {
             return Err(CoreError::Validation(
                 "terminal_font_size out of range 10-28".into(),
@@ -530,6 +756,53 @@ impl Settings {
                 "telemetry_enabled must always be false".into(),
             ));
         }
+        if self.agent_order.iter().any(|agent| agent.trim().is_empty()) {
+            return Err(CoreError::Validation(
+                "agent_order cannot contain empty adapter names".into(),
+            ));
+        }
+        let unique: std::collections::HashSet<_> = self.agent_order.iter().collect();
+        if unique.len() != self.agent_order.len() {
+            return Err(CoreError::Validation(
+                "agent_order cannot contain duplicate adapters".into(),
+            ));
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_status_event_deserializes_to_reserved_run() {
+        let event: StatusEvent = serde_json::from_str(
+            r#"{
+                "sessionId":"ses_legacy",
+                "sequence":7,
+                "state":"working",
+                "source":"hook",
+                "confidence":"high",
+                "occurredAt":"2026-07-22T00:00:00.000Z"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(event.run_id, LEGACY_RUN_ID);
+        assert_eq!(event.run_ordinal, LEGACY_RUN_ORDINAL);
+        assert_eq!(
+            event.cursor(),
+            StatusCursor {
+                run_id: LEGACY_RUN_ID.into(),
+                run_ordinal: LEGACY_RUN_ORDINAL,
+                sequence: 7,
+            }
+        );
+    }
+
+    #[test]
+    fn pi_defaults_to_native_pty_transport() {
+        assert_eq!(AgentType::Pi.default_transport(), AgentTransport::Pty);
     }
 }

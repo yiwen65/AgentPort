@@ -30,6 +30,8 @@ impl AgentAdapter for ShellAdapter {
             capability_hash: super::capability::capability_hash(version_out, help_out),
             exact_resume: false,
             hook_status: HookStatus::Unavailable,
+            approval_model: AgentType::Shell.approval_model(),
+            default_transport: AgentType::Shell.default_transport(),
             probed_at: chrono::Utc::now(),
             candidates: vec![],
             flags: super::extract_flags(help_out),
@@ -84,6 +86,7 @@ impl AgentAdapter for ShellAdapter {
             assigned_agent_session_id: None,
             resume_precision: ResumePrecision::Unavailable,
             hook_status: HookStatus::Unavailable,
+            transport: ctx.transport,
             helper_files,
             notes: vec![],
         })
@@ -98,6 +101,7 @@ impl AgentAdapter for ShellAdapter {
             session_id: ctx.session_id.clone(),
             hook_events_path: ctx.hook_events_path.clone(),
             session_dir: ctx.session_dir.clone(),
+            transport: ctx.transport,
         })?;
         plan.resume_precision = ResumePrecision::Unavailable;
         plan.notes

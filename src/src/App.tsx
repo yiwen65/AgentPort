@@ -6,6 +6,7 @@ import {
   api,
   errorText,
   onProjectsChanged,
+  onRepositoryStateChanged,
   onSessionAgentId,
   onSessionExit,
   onSessionState,
@@ -21,12 +22,14 @@ import {
   switchSessionByIndex,
 } from "./actions";
 import {
+  applyProjectsSnapshot,
   findSession,
   flattenSessions,
   getState,
   openDialog,
   patchSession,
   setState,
+  update,
   useStore,
 } from "./store";
 import { pruneHandles, scrollToBottom } from "./terminals";
@@ -46,60 +49,109 @@ import SearchDialog from "./components/SearchDialog";
 import AddProjectDialog from "./components/AddProjectDialog";
 import ExportDialog from "./components/ExportDialog";
 import CommandPalette from "./components/CommandPalette";
+import BranchPickerDialog from "./components/BranchPickerDialog";
 import Onboarding from "./components/Onboarding";
 
 function useBoot() {
   useEffect(() => {
     let cancelled = false;
     const unlistens: Array<() => void> = [];
+    let booted = false;
+    const pendingEvents: Array<() => void> = [];
+    const applyWhenBooted = (fn: () => void) => {
+      if (cancelled) return;
+      if (booted) fn();
+      else pendingEvents.push(fn);
+    };
 
-    (async () => {
+    void (async () => {
       try {
+        // Finish registering listeners before boot takes its initial snapshot.
+        // Events received during boot are replayed in arrival order afterwards.
+        const listenerResults = await Promise.allSettled([
+          onProjectsChanged((projects) => {
+            applyWhenBooted(() => {
+              applyProjectsSnapshot(projects);
+              pruneHandles();
+              void refreshActiveWorktreeStatus();
+            });
+          }),
+          onRepositoryStateChanged((status) => {
+            applyWhenBooted(() => {
+              update((state) => ({
+                repositoryStatuses: { ...state.repositoryStatuses, [status.projectId]: status },
+              }));
+            });
+          }),
+          onSessionState((ev) => {
+            applyWhenBooted(() => {
+              // A state change visible in the focused terminal is already read.
+              // Inactive sessions retain only meaningful state changes as unread.
+              patchSession(ev.sessionId, { status: ev });
+              if (getState().activeSessionId === ev.sessionId) {
+                void api.markSessionSeen(ev.sessionId, ev).then(refreshProjectsSoon).catch(() => undefined);
+              } else {
+                refreshProjectsSoon();
+              }
+            });
+          }),
+          onSessionExit(({ sessionId, reason }) => {
+            applyWhenBooted(() => {
+              patchSession(sessionId, {
+                lifecycle: reason === "user_stop" ? "stopped" : "exited",
+              });
+              refreshProjectsSoon();
+            });
+          }),
+          onSessionAgentId(({ sessionId, agentSessionId }) => {
+            applyWhenBooted(() => {
+              patchSession(sessionId, { agentSessionId, resumePrecision: "exact" });
+            });
+          }),
+        ]);
+        const listeners = listenerResults.flatMap((result) =>
+          result.status === "fulfilled" ? [result.value] : [],
+        );
+        const listenerFailure = listenerResults.find(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (listenerFailure) {
+          for (const unlisten of listeners) unlisten();
+          throw listenerFailure.reason;
+        }
+        if (cancelled) {
+          for (const unlisten of listeners) unlisten();
+          return;
+        }
+        unlistens.push(...listeners);
+
         const info = await api.boot();
         if (cancelled) return;
+        applyProjectsSnapshot(info.projects);
         setState({
           ready: true,
           platform: info.platform,
           settings: info.settings,
           adapters: info.adapters,
-          projects: info.projects,
           timeline: info.timeline,
           secretBackend: info.secretBackend,
           indexState: info.indexState,
+          exportsDir: info.exportsDir,
           showOnboarding: info.adapters.length === 0,
         });
         applyThemeSettings();
-        const first = flattenSessions(info.projects)[0];
+        booted = true;
+        for (const applyEvent of pendingEvents.splice(0)) applyEvent();
+        const first = flattenSessions(getState().projects)[0];
         if (first) selectSession(first.id);
       } catch (e) {
-        if (!cancelled) setState({ ready: true, bootError: errorText(e) });
+        if (!cancelled) {
+          for (const unlisten of unlistens.splice(0)) unlisten();
+          booted = true;
+          pendingEvents.length = 0;
+          setState({ ready: true, bootError: errorText(e) });
+        }
       }
-
-      if (cancelled) return;
-      unlistens.push(
-        await onProjectsChanged((projects) => {
-          setState({ projects });
-          pruneHandles();
-          void refreshActiveWorktreeStatus();
-        }),
-        await onSessionState((ev) => {
-          // A state change visible in the focused terminal is already read.
-          // Inactive sessions retain only meaningful state changes as unread.
-          patchSession(ev.sessionId, { status: ev });
-          if (getState().activeSessionId === ev.sessionId) {
-            void api.markSessionSeen(ev.sessionId).then(refreshProjectsSoon).catch(() => undefined);
-          } else {
-            refreshProjectsSoon();
-          }
-        }),
-        await onSessionExit(({ sessionId }) => {
-          patchSession(sessionId, { lifecycle: "exited" });
-          refreshProjectsSoon();
-        }),
-        await onSessionAgentId(({ sessionId, agentSessionId }) => {
-          patchSession(sessionId, { agentSessionId, resumePrecision: "exact" });
-        }),
-      );
     })();
 
     // Follow OS theme / motion preference when settings say "system".
@@ -229,6 +281,8 @@ function DialogRouter() {
       );
     case "newWorktree":
       return <NewWorktreeDialog projectId={d.projectId} />;
+    case "branchPicker":
+      return <BranchPickerDialog projectId={d.projectId} />;
     case "settings":
       return <SettingsDialog />;
     case "diagnostics":

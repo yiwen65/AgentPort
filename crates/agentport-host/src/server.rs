@@ -7,23 +7,87 @@
 //! else gets a generic `Error` and the connection is closed (no detail about
 //! which part failed — the token's correctness is never leaked).
 
-use std::io::BufReader;
+use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
+use agentport_core::models::{AgentTransport, LogCursor};
 use agentport_core::protocol::{read_frame, write_frame, ClientFrame, HostFrame, PROTOCOL_VERSION};
 use chrono::Utc;
 use nix::sys::signal::Signal;
 use portable_pty::PtySize;
 use tracing::{info, warn};
 
-use crate::{err_frame, signal_group, status_frame, HostMsg, Shared};
+use crate::{current_log_cursor, err_frame, signal_group, status_frame, HostMsg, Shared};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const REPLAY_CHUNK: usize = 64 * 1024;
+const MAX_REPLAY_BYTES: u64 = 4 * 1024 * 1024;
+/// Bound authenticated GUI connections per Host so stale GUI processes cannot
+/// consume an unbounded number of socket and writer-thread resources.
+pub(crate) const MAX_AUTHENTICATED_CLIENTS: usize = 16;
+/// A PTY read produces at most 16 KiB per Output frame, so this caps the
+/// common output backlog at roughly 2 MiB per client without blocking PTY.
+const CLIENT_OUTBOUND_QUEUE_CAPACITY: usize = 128;
+/// A writer runs on its own thread, but a timeout prevents a non-reading peer
+/// from retaining that thread forever when its kernel socket buffer is full.
+const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const CLIENT_WRITER_POLL: Duration = Duration::from_millis(100);
+
+/// One entry in the Host broadcast table. The sender is bounded; an explicit
+/// eviction closes the socket so the reader and writer threads for that one
+/// client both wake and exit. Ordinary removal lets already-enqueued terminal
+/// replies drain in order before the channel closes.
+pub(crate) struct ClientSink {
+    pub(crate) tx: mpsc::SyncSender<HostFrame>,
+    pub(crate) subscribe_output: bool,
+    close_stream: UnixStream,
+    closed: Arc<AtomicBool>,
+}
+
+impl ClientSink {
+    pub(crate) fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        let _ = self.close_stream.shutdown(Shutdown::Both);
+    }
+}
+
+/// Tracks a connection after authentication through writer termination,
+/// including tail replay. This reservation makes the per-Host limit race-free
+/// without holding the clients table lock across socket I/O.
+struct ClientSlot {
+    shared: Arc<Shared>,
+}
+
+impl Drop for ClientSlot {
+    fn drop(&mut self) {
+        self.shared
+            .authenticated_client_count
+            .fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn reserve_client_slot(shared: Arc<Shared>) -> Option<ClientSlot> {
+    let mut count = shared.authenticated_client_count.load(Ordering::Acquire);
+    loop {
+        if count >= MAX_AUTHENTICATED_CLIENTS {
+            return None;
+        }
+        match shared.authenticated_client_count.compare_exchange_weak(
+            count,
+            count + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return Some(ClientSlot { shared }),
+            Err(actual) => count = actual,
+        }
+    }
+}
 
 pub(crate) fn spawn_accept_loop(
     listener: UnixListener,
@@ -48,6 +112,11 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
     if stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).is_err() {
         return;
     }
+    if let Err(e) = stream.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT)) {
+        // This is not available on every Unix socket implementation. The
+        // bounded queue still isolates the PTY producer in that case.
+        warn!(error = %e, "could not set client socket write timeout");
+    }
     let read_stream = match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,
@@ -60,7 +129,16 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
             session_id,
             token,
             replay_tail_bytes,
-        })) => (protocol, session_id, token, replay_tail_bytes),
+            resume_from,
+            subscribe_output,
+        })) => (
+            protocol,
+            session_id,
+            token,
+            replay_tail_bytes,
+            resume_from,
+            subscribe_output,
+        ),
         Ok(Some(_)) => {
             // Any other first frame is a protocol violation.
             reject(&stream);
@@ -68,7 +146,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
         }
         Ok(None) | Err(_) => return, // EOF / timeout / garbage: close silently
     };
-    let (protocol, session_id, token, replay_tail_bytes) = hello;
+    let (protocol, session_id, token, replay_tail_bytes, resume_from, subscribe_output) = hello;
     if protocol != PROTOCOL_VERSION
         || session_id != shared.cfg.session_id
         || token != shared.cfg.host_token
@@ -76,39 +154,83 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
         reject(&stream);
         return;
     }
-    let _ = stream.set_read_timeout(None);
-
-    let hello_ok = HostFrame::HelloOk {
-        protocol: PROTOCOL_VERSION,
-        session_id: shared.cfg.session_id.clone(),
-        host_pid: std::process::id(),
-        child_alive: shared.child_alive.load(Ordering::Relaxed),
-        log_bytes: shared.log_bytes.load(Ordering::Relaxed),
-        agent_session_id: shared.agent_session_id.lock().unwrap().clone(),
-    };
-    if write_frame(&mut &stream, &hello_ok).is_err() {
-        return;
-    }
-
-    // Tail replay happens BEFORE registration so replay frames can never
-    // interleave with the live broadcast stream.
-    if replay_tail_bytes > 0 && !replay_tail(&stream, &shared, replay_tail_bytes) {
-        return;
-    }
-
-    // Register into the broadcast table; a writer thread owns the TX side.
-    let id = shared.next_client_id.fetch_add(1, Ordering::Relaxed);
-    let (frame_tx, frame_rx) = mpsc::channel::<HostFrame>();
-    shared.clients.lock().unwrap().insert(id, frame_tx.clone());
-    match stream.try_clone() {
-        Ok(write_stream) => {
-            let shared = shared.clone();
-            std::thread::spawn(move || client_writer(write_stream, frame_rx, shared, id));
-        }
-        Err(_) => {
-            shared.clients.lock().unwrap().remove(&id);
+    let client_slot = match reserve_client_slot(shared.clone()) {
+        Some(slot) => slot,
+        None => {
+            reject(&stream);
             return;
         }
+    };
+    let _ = stream.set_read_timeout(None);
+
+    // Create the bounded writer queue before touching output state. Replay and
+    // every later live frame use this single queue/socket writer.
+    let id = shared.next_client_id.fetch_add(1, Ordering::Relaxed);
+    let write_stream = match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let close_stream = match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let (frame_tx, frame_rx) = mpsc::sync_channel::<HostFrame>(CLIENT_OUTBOUND_QUEUE_CAPACITY);
+    let closed = Arc::new(AtomicBool::new(false));
+
+    // The PTY producer holds this same lock across append + position update +
+    // broadcast. Capturing HWM, queuing replay through that point, and only
+    // then registering the client therefore leaves no replay/live gap.
+    {
+        let _output_guard = shared.output_serial.lock().unwrap();
+        let high_water = current_log_cursor(&shared);
+        let mut initial_frames = vec![HostFrame::HelloOk {
+            protocol: PROTOCOL_VERSION,
+            session_id: shared.cfg.session_id.clone(),
+            host_pid: std::process::id(),
+            child_alive: shared.child_alive.load(Ordering::Relaxed),
+            log_bytes: shared.log_bytes.load(Ordering::Relaxed),
+            agent_session_id: shared.agent_session_id.lock().unwrap().clone(),
+            run_id: shared.cfg.run_id.clone(),
+            run_ordinal: shared.cfg.run_ordinal,
+            current_status: shared.current_status.lock().unwrap().clone(),
+            log_cursor: high_water.clone(),
+        }];
+        if subscribe_output && (resume_from.is_some() || replay_tail_bytes > 0) {
+            initial_frames.extend(build_replay_frames(
+                &shared,
+                resume_from.as_ref(),
+                replay_tail_bytes,
+                &high_water,
+            ));
+        }
+        if initial_frames.len() > CLIENT_OUTBOUND_QUEUE_CAPACITY {
+            warn!(
+                client_id = id,
+                "rejecting replay that exceeds outbound queue"
+            );
+            reject(&stream);
+            return;
+        }
+        for frame in initial_frames {
+            if frame_tx.try_send(frame).is_err() {
+                return;
+            }
+        }
+        shared.clients.lock().unwrap().insert(
+            id,
+            ClientSink {
+                tx: frame_tx.clone(),
+                subscribe_output,
+                close_stream,
+                closed: closed.clone(),
+            },
+        );
+    }
+    {
+        let shared = shared.clone();
+        std::thread::spawn(move || {
+            client_writer(write_stream, frame_rx, shared, id, closed, client_slot)
+        });
     }
     info!(client_id = id, "client attached");
 
@@ -120,56 +242,153 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
         };
         // Every frame re-validates the session id (PRD ch.6 identity rule).
         if frame_session_id(&frame) != shared.cfg.session_id {
-            let _ = frame_tx.send(err_frame(None, "session id mismatch"));
+            let _ = queue_client_frame(
+                &shared,
+                id,
+                &frame_tx,
+                err_frame(None, "session id mismatch"),
+            );
             break;
         }
         match frame {
             ClientFrame::Input { data, .. } => {
-                let mut w = shared.pty_writer.lock().unwrap();
+                if shared.cfg.transport != AgentTransport::Pty {
+                    let _ = queue_client_frame(
+                        &shared,
+                        id,
+                        &frame_tx,
+                        err_frame(Some(&shared.cfg.session_id), "terminal input is unavailable for structured sessions"),
+                    );
+                    continue;
+                }
+                let mut w = shared.input_writer.lock().unwrap();
                 if w.write_all(&data).and_then(|_| w.flush()).is_err() {
                     break; // PTY gone — nothing more to do for this client
                 }
             }
+            ClientFrame::StructuredPrompt { text, .. } => {
+                if shared.cfg.transport != AgentTransport::JsonRpc {
+                    let _ = queue_client_frame(
+                        &shared,
+                        id,
+                        &frame_tx,
+                        err_frame(Some(&shared.cfg.session_id), "structured prompts require json_rpc transport"),
+                    );
+                    continue;
+                }
+                if text.trim().is_empty() {
+                    let _ = queue_client_frame(
+                        &shared,
+                        id,
+                        &frame_tx,
+                        err_frame(Some(&shared.cfg.session_id), "structured prompt must not be empty"),
+                    );
+                    continue;
+                }
+                if write_json_command(&shared, serde_json::json!({"type": "prompt", "message": text})).is_err() {
+                    break;
+                }
+            }
+            ClientFrame::AbortStructuredTurn { .. } => {
+                if shared.cfg.transport != AgentTransport::JsonRpc {
+                    let _ = queue_client_frame(
+                        &shared,
+                        id,
+                        &frame_tx,
+                        err_frame(Some(&shared.cfg.session_id), "structured abort requires json_rpc transport"),
+                    );
+                    continue;
+                }
+                if write_json_command(&shared, serde_json::json!({"type": "abort"})).is_err() {
+                    break;
+                }
+            }
             ClientFrame::Resize { cols, rows, .. } => {
-                let _ = shared.master.lock().unwrap().resize(PtySize {
-                    rows,
-                    cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                });
+                if let Some(master) = shared.master.lock().unwrap().as_mut() {
+                    let _ = master.resize(PtySize {
+                        rows,
+                        cols,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    });
+                }
             }
             ClientFrame::Interrupt { .. } => signal_group(&shared, Signal::SIGINT),
             ClientFrame::Stop { grace_ms, .. } => {
                 let _ = tx.send(HostMsg::Stop { grace_ms });
             }
             ClientFrame::Ping { .. } => {
-                let _ = frame_tx.send(HostFrame::Pong {
-                    session_id: shared.cfg.session_id.clone(),
-                    at: Utc::now(),
-                });
+                if !queue_client_frame(
+                    &shared,
+                    id,
+                    &frame_tx,
+                    HostFrame::Pong {
+                        session_id: shared.cfg.session_id.clone(),
+                        at: Utc::now(),
+                    },
+                ) {
+                    break;
+                }
             }
             ClientFrame::StatusRequest { .. } => {
                 let cur = shared.current_status.lock().unwrap().clone();
                 if let Some(ev) = cur {
-                    let _ = frame_tx.send(status_frame(&ev));
+                    if !queue_client_frame(&shared, id, &frame_tx, status_frame(&ev)) {
+                        break;
+                    }
                 }
             }
             ClientFrame::Detach { .. } => {
                 // Deterministic close: drop from the broadcast table first so no
                 // further heartbeats race in, then shut the socket down so the
                 // client sees EOF immediately (GUI detach path, PRD 3.3).
-                shared.clients.lock().unwrap().remove(&id);
+                remove_client(&shared, id);
                 let _ = stream.shutdown(std::net::Shutdown::Both);
                 break;
             }
             ClientFrame::Hello { .. } => {
-                let _ = frame_tx.send(err_frame(None, "duplicate hello"));
+                let _ =
+                    queue_client_frame(&shared, id, &frame_tx, err_frame(None, "duplicate hello"));
                 break;
             }
         }
     }
-    shared.clients.lock().unwrap().remove(&id);
+    remove_client(&shared, id);
     info!(client_id = id, "client detached");
+}
+
+/// Queue a client-specific reply without ever blocking the connection reader.
+/// If this client cannot keep up, evict only it and shut down its socket.
+fn queue_client_frame(
+    shared: &Shared,
+    id: u64,
+    tx: &mpsc::SyncSender<HostFrame>,
+    frame: HostFrame,
+) -> bool {
+    match tx.try_send(frame) {
+        Ok(()) => true,
+        Err(mpsc::TrySendError::Full(_)) => {
+            warn!(client_id = id, "dropping client: outbound queue full");
+            disconnect_client(shared, id);
+            false
+        }
+        Err(mpsc::TrySendError::Disconnected(_)) => {
+            disconnect_client(shared, id);
+            false
+        }
+    }
+}
+
+fn remove_client(shared: &Shared, id: u64) {
+    let client = shared.clients.lock().unwrap().remove(&id);
+    drop(client);
+}
+
+fn disconnect_client(shared: &Shared, id: u64) {
+    let client = shared.clients.lock().unwrap().remove(&id);
+    if let Some(client) = client {
+        client.close();
+    }
 }
 
 /// One generic rejection — never reveal which credential part failed.
@@ -181,6 +400,8 @@ fn frame_session_id(f: &ClientFrame) -> &str {
     match f {
         ClientFrame::Hello { session_id, .. }
         | ClientFrame::Input { session_id, .. }
+        | ClientFrame::StructuredPrompt { session_id, .. }
+        | ClientFrame::AbortStructuredTurn { session_id }
         | ClientFrame::Resize { session_id, .. }
         | ClientFrame::Interrupt { session_id }
         | ClientFrame::Stop { session_id, .. }
@@ -190,41 +411,153 @@ fn frame_session_id(f: &ClientFrame) -> &str {
     }
 }
 
-/// Replay the log tail as Output frames (generation offsets), then ReplayDone.
-fn replay_tail(stream: &UnixStream, shared: &Shared, tail_bytes: u64) -> bool {
-    let path = PathBuf::from(&shared.cfg.log_path);
-    let data = agentport_core::logs::tail_bytes(&path, tail_bytes).unwrap_or_default();
-    let file_len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    let start = file_len.saturating_sub(data.len() as u64);
-    let mut w = stream;
-    for (i, chunk) in data.chunks(REPLAY_CHUNK).enumerate() {
-        let frame = HostFrame::Output {
-            session_id: shared.cfg.session_id.clone(),
-            data: chunk.to_vec(),
-            offset: start + (i * REPLAY_CHUNK) as u64,
-        };
-        if write_frame(&mut w, &frame).is_err() {
-            return false;
-        }
-    }
-    write_frame(
-        &mut w,
-        &HostFrame::ReplayDone {
-            session_id: shared.cfg.session_id.clone(),
-            offset: start + data.len() as u64,
-        },
-    )
-    .is_ok()
+/// One JSON command per line is the only data written to a structured Pi
+/// child. `serde_json` keeps prompt content out of a shell and preserves UTF-8
+/// quoting exactly.
+pub(crate) fn write_json_command(shared: &Shared, command: serde_json::Value) -> std::io::Result<()> {
+    let mut writer = shared.input_writer.lock().unwrap();
+    serde_json::to_writer(&mut *writer, &command).map_err(std::io::Error::other)?;
+    writer.write_all(b"\n")?;
+    writer.flush()
 }
 
-/// Drains this client's broadcast channel onto the socket. Ends when the
-/// channel closes (client detached / host shutting down) or the write fails.
-fn client_writer(stream: UnixStream, rx: mpsc::Receiver<HostFrame>, shared: Arc<Shared>, id: u64) {
+/// Build replay frames while `Shared::output_serial` is held. Exact resume is
+/// allowed only within the retained current generation and the bounded writer
+/// queue. Any other cursor explicitly resets the consumer to a bounded tail.
+fn build_replay_frames(
+    shared: &Shared,
+    resume_from: Option<&LogCursor>,
+    tail_bytes: u64,
+    high_water: &LogCursor,
+) -> Vec<HostFrame> {
+    let current_offset = high_water.offset.max(0) as u64;
+    let bounded_tail = tail_bytes.min(MAX_REPLAY_BYTES);
+    let tail_start = current_offset.saturating_sub(bounded_tail);
+    let mut resync_reason = None::<String>;
+
+    let mut start = match resume_from {
+        None => tail_start,
+        Some(cursor)
+            if cursor.run_id != high_water.run_id
+                || cursor.run_ordinal != high_water.run_ordinal =>
+        {
+            resync_reason = Some("cursor belongs to a different run".into());
+            tail_start
+        }
+        Some(cursor) if cursor.generation != high_water.generation => {
+            resync_reason = Some("cursor generation is no longer retained".into());
+            tail_start
+        }
+        Some(cursor) if cursor.offset < 0 || cursor.offset > high_water.offset => {
+            resync_reason = Some("cursor offset is outside the retained log".into());
+            tail_start
+        }
+        Some(cursor) if (high_water.offset - cursor.offset) as u64 > MAX_REPLAY_BYTES => {
+            resync_reason = Some("requested replay exceeds the bounded writer queue".into());
+            tail_start
+        }
+        Some(cursor) => cursor.offset as u64,
+    };
+
+    let path = PathBuf::from(&shared.cfg.log_path);
+    let mut data = match read_log_range(&path, start, current_offset) {
+        Ok(data) => data,
+        Err(error) => {
+            if resume_from.is_some() && resync_reason.is_none() {
+                resync_reason = Some(format!("requested log range is unavailable: {error}"));
+                start = tail_start;
+                read_log_range(&path, start, current_offset).unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        }
+    };
+    // A failed tail read must never claim offsets for bytes that were not
+    // queued. Reset the tail to an empty snapshot at the captured high-water.
+    if data.len() as u64 != current_offset.saturating_sub(start) {
+        data.clear();
+        start = current_offset;
+        resync_reason.get_or_insert_with(|| "retained log changed during replay".into());
+    }
+
+    let mut frames = Vec::with_capacity(
+        2 + data.len().div_ceil(REPLAY_CHUNK) + usize::from(resync_reason.is_some()),
+    );
+    if let Some(reason) = resync_reason {
+        let mut earliest = high_water.clone();
+        earliest.offset = 0;
+        frames.push(HostFrame::ResyncRequired {
+            session_id: shared.cfg.session_id.clone(),
+            earliest,
+            reason,
+        });
+    }
+    for (index, chunk) in data.chunks(REPLAY_CHUNK).enumerate() {
+        let offset = start + (index * REPLAY_CHUNK) as u64;
+        let mut cursor = high_water.clone();
+        cursor.offset = offset as i64;
+        frames.push(HostFrame::Output {
+            session_id: shared.cfg.session_id.clone(),
+            data: chunk.to_vec(),
+            offset,
+            cursor,
+        });
+    }
+    frames.push(HostFrame::ReplayDone {
+        session_id: shared.cfg.session_id.clone(),
+        offset: current_offset,
+        cursor: high_water.clone(),
+    });
+    frames
+}
+
+fn read_log_range(path: &PathBuf, start: u64, end: u64) -> std::io::Result<Vec<u8>> {
+    if start > end {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "replay start exceeds high-water",
+        ));
+    }
+    let mut file = std::fs::File::open(path)?;
+    if file.metadata()?.len() < end {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "log is shorter than captured high-water",
+        ));
+    }
+    file.seek(SeekFrom::Start(start))?;
+    let mut data = Vec::with_capacity((end - start) as usize);
+    file.take(end - start).read_to_end(&mut data)?;
+    Ok(data)
+}
+
+/// Drains this client's broadcast channel onto the socket. A bounded receive
+/// timeout lets map eviction close a writer even while the reader still holds
+/// its local sender clone. Ordinary removal instead drains queued terminal
+/// replies before the channel disconnects.
+fn client_writer(
+    stream: UnixStream,
+    rx: mpsc::Receiver<HostFrame>,
+    shared: Arc<Shared>,
+    id: u64,
+    closed: Arc<AtomicBool>,
+    _slot: ClientSlot,
+) {
     let mut w = &stream;
-    while let Ok(frame) = rx.recv() {
-        if write_frame(&mut w, &frame).is_err() {
+    loop {
+        if closed.load(Ordering::Acquire) {
             break;
         }
+        match rx.recv_timeout(CLIENT_WRITER_POLL) {
+            Ok(frame) => {
+                if closed.load(Ordering::Acquire) || write_frame(&mut w, &frame).is_err() {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
     }
-    shared.clients.lock().unwrap().remove(&id);
+    disconnect_client(&shared, id);
+    let _ = stream.shutdown(Shutdown::Both);
 }

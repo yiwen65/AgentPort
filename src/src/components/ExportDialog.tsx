@@ -5,10 +5,11 @@
 import { useState } from "react";
 import Modal from "./Modal";
 import { api, copyText, errorText } from "../api";
-import { closeDialog, findSession, toast, useStore } from "../store";
+import { closeDialog, findSession, getState, toast, useStore } from "../store";
 
 function defaultDest(sessionId: string, kind: "md" | "log"): string {
-  return `/tmp/agentport-${sessionId}.${kind === "md" ? "md" : "log"}`;
+  const base = getState().exportsDir || "/tmp";
+  return `${base}/agentport-${sessionId}.${kind === "md" ? "md" : "log"}`;
 }
 
 export default function ExportDialog({

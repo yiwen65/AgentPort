@@ -1,5 +1,5 @@
-// Command palette (⌘⇧P / Ctrl+Shift+P): fuzzy filter over projects,
-// sessions and actions; pure keyboard navigation.
+// Command palette (⌘⇧P / Ctrl+Shift+P): fuzzy filter over actions; pure
+// keyboard navigation. Projects and individual sessions stay in the sidebar.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Modal from "./Modal";
@@ -10,15 +10,13 @@ import {
   openNewSessionDialog,
   renameSessionFlow,
   restartSessionFlow,
-  selectSession,
   stopSessionFlow,
 } from "../actions";
-import { agentDisplay } from "../format";
 import { closeDialog, findSession, openDialog, toast, useStore } from "../store";
 
 interface Item {
   id: string;
-  kind: "会话" | "项目" | "操作";
+  kind: "操作";
   title: string;
   sub?: string;
   action: () => void;
@@ -54,19 +52,13 @@ export default function CommandPalette() {
     const activeProject = s.projects.find((p) =>
       p.sessions.some((x) => x.id === activeId),
     );
-
-    // Sessions first (most frequent target), then actions, then projects.
-    for (const p of s.projects) {
-      for (const ses of p.sessions) {
-        out.push({
-          id: `ses:${ses.id}`,
-          kind: "会话",
-          title: ses.title,
-          sub: `${agentDisplay(ses.adapter)} · ${p.name}`,
-          action: () => selectSession(ses.id),
-        });
-      }
-    }
+    const gitProjects = s.projects.filter(
+      (project) => s.repositoryStatuses[project.id]?.isGitRepository === true,
+    );
+    const activeGitProject = activeProject &&
+      s.repositoryStatuses[activeProject.id]?.isGitRepository === true
+      ? activeProject
+      : undefined;
 
     const act = (id: string, title: string, action: () => void, sub?: string) =>
       out.push({ id: `act:${id}`, kind: "操作", title, action, sub });
@@ -77,6 +69,14 @@ export default function CommandPalette() {
         openDialog({
           kind: "newWorktree",
           projectId: activeProject?.id ?? s.projects.find((p) => p.gitRootPath)!.id,
+        }),
+      );
+    }
+    if (gitProjects.length) {
+      act("manage-branches", "管理本地分支…", () =>
+        openDialog({
+          kind: "branchPicker",
+          projectId: activeGitProject?.id ?? gitProjects[0].id,
         }),
       );
     }
@@ -109,20 +109,6 @@ export default function CommandPalette() {
       act("stop", "停止当前 Session…", () => void stopSessionFlow(activeSes.id));
     }
 
-    for (const p of s.projects) {
-      out.push({
-        id: `prj:${p.id}`,
-        kind: "项目",
-        title: p.name,
-        sub: p.rootPath,
-        action: () => {
-          const first = p.sessions[0];
-          if (first) selectSession(first.id);
-          else openNewSessionDialog(p.id);
-        },
-      });
-    }
-
     if (!q.trim()) return out;
     return out
       .map((item) => {
@@ -136,13 +122,15 @@ export default function CommandPalette() {
       .sort((a, b) => b.score - a.score)
       .slice(0, 40)
       .map((x) => x.item);
-  }, [q, s.projects, s.activeSessionId]);
+  }, [q, s.projects, s.activeSessionId, s.repositoryStatuses]);
 
   useEffect(() => setSelected(0), [q]);
 
   useEffect(() => {
     const el = listRef.current?.querySelectorAll(".palette-item")[selected];
-    el?.scrollIntoView({ block: "nearest" });
+    if (el && typeof el.scrollIntoView === "function") {
+      el.scrollIntoView({ block: "nearest" });
+    }
   }, [selected]);
 
   const run = (idx: number) => {
@@ -157,7 +145,7 @@ export default function CommandPalette() {
       <input
         className="palette-input"
         type="text"
-        placeholder="输入以过滤会话、项目与操作…"
+        placeholder="输入以过滤操作…"
         aria-label="命令面板过滤"
         value={q}
         onChange={(e) => setQ(e.target.value)}

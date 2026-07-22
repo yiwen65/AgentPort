@@ -1,10 +1,11 @@
 //! CLI discovery + capability probing (PRD 3.1).
 //!
 //! Sources of PATH, in order: process env PATH, login shell PATH
-//! (`$SHELL -l -c 'command -v <name>'` and `-i -l` fallback — GUI apps do not
-//! inherit interactive shell PATH), then well-known install dirs.
-//! Multiple candidates => Conflict state; the USER must pick one — never a
-//! silent random choice.
+//! (`$SHELL -l -c 'printf %s "$PATH"'` and `-i -l` fallback — GUI apps do not
+//! inherit interactive shell PATH), then well-known install dirs. Every
+//! candidate is retained, while probing automatically picks the first
+//! compatible executable by that deterministic priority; a user may still
+//! override it with an explicit path.
 //!
 //! Version probing is read-only (`--version`, then `--help` for capabilities),
 //! with a hard 2 s timeout: on timeout the probe process is killed and the CLI
@@ -30,7 +31,7 @@ pub struct ProbeOutcome {
     pub state: ProbeState,
     pub install: Option<AdapterInstall>,
     pub candidates: Vec<ProbeCandidate>,
-    /// Human-readable reason when unavailable.
+    /// Human-readable failure reason, or an automatic-selection note.
     pub reason: Option<String>,
 }
 
@@ -147,8 +148,14 @@ fn is_executable_file(p: &Path) -> bool {
     }
 }
 
-/// Pure core of candidate matching: keep existing executable files,
-/// canonicalize, dedupe (first occurrence wins). Order is preserved.
+/// Pure core of candidate matching: keep existing executable files, dedupe by
+/// canonical path (first occurrence wins). Order is preserved.
+///
+/// The STORED path is the original (non-canonicalized) one: package managers
+/// like Homebrew point a stable symlink (`/opt/homebrew/bin/codex`) at a
+/// versioned Cellar/Caskroom path that is deleted on upgrade. Persisting the
+/// symlink keeps cached installs valid across upgrades; canonicalizing only
+/// serves dedupe identity here.
 pub fn find_candidates_in(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
@@ -158,7 +165,7 @@ pub fn find_candidates_in(paths: &[PathBuf]) -> Vec<PathBuf> {
         }
         let canon = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
         if seen.insert(canon.clone()) {
-            out.push(canon);
+            out.push(p.clone());
         }
     }
     out
@@ -179,33 +186,47 @@ fn well_known_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// `command -v <name>` inside the user's login shell (3 s timeout).
-/// Tries `-l` first, then `-i -l` (some setups only set PATH in interactive rc).
-fn login_shell_which(name: &str) -> Option<PathBuf> {
+fn process_path_entries() -> Vec<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect()
+}
+
+/// PATH entries from the user's login shell. Try `-l` first, then `-i -l`
+/// because some users configure PATH only in interactive rc files.
+fn login_shell_path_entries() -> Vec<PathBuf> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     for flags in [&["-l"][..], &["-i", "-l"][..]] {
-        let script = format!("command -v {name}");
         let mut args: Vec<&str> = flags.to_vec();
-        args.extend(["-c", script.as_str()]);
-        if let Ok(out) = spawn_capture(Path::new(&shell), &args, LOGIN_SHELL_TIMEOUT, 4096) {
-            if let Some(line) = out.lines().map(str::trim).find(|l| l.starts_with('/')) {
-                return Some(PathBuf::from(line));
+        args.extend(["-c", "printf '%s' \"$PATH\""]);
+        if let Ok(out) = spawn_capture(Path::new(&shell), &args, LOGIN_SHELL_TIMEOUT, 16_384) {
+            let entries: Vec<PathBuf> = out
+                .trim()
+                .split(':')
+                .filter(|entry| !entry.is_empty())
+                .map(PathBuf::from)
+                .collect();
+            if !entries.is_empty() {
+                return entries;
             }
         }
     }
-    None
+    Vec::new()
 }
 
-/// Collect candidate executables for one agent type from all PATH sources.
-pub fn find_candidates(t: AgentType) -> Vec<ProbeCandidate> {
+/// Collect candidate executables from explicit process and login-shell PATH
+/// sources. Each source keeps its own priority label for diagnostics.
+fn find_candidates_from_paths(
+    t: AgentType,
+    process_paths: &[PathBuf],
+    login_paths: &[PathBuf],
+) -> Vec<ProbeCandidate> {
     // (path, source) in priority order; first occurrence of a canonical path wins.
     let mut raw: Vec<(PathBuf, &str)> = Vec::new();
     for name in t.command_names() {
-        for dir in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+        for dir in process_paths {
             raw.push((dir.join(name), "system_path"));
         }
-        if let Some(p) = login_shell_which(name) {
-            raw.push((p, "login_shell_path"));
+        for dir in login_paths {
+            raw.push((dir.join(name), "login_shell_path"));
         }
         for dir in well_known_dirs() {
             raw.push((dir.join(name), "well_known_dir"));
@@ -214,17 +235,18 @@ pub fn find_candidates(t: AgentType) -> Vec<ProbeCandidate> {
     let existing = find_candidates_in(&raw.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>());
     // Map back to the first source label for each canonical path.
     let mut out = Vec::new();
-    for canon in existing {
+    for stored in existing {
+        let stored_canon = std::fs::canonicalize(&stored).unwrap_or_else(|_| stored.clone());
         let source = raw
             .iter()
             .find(|(p, _)| {
                 is_executable_file(p)
-                    && std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == canon
+                    && std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == stored_canon
             })
             .map(|(_, s)| *s)
             .unwrap_or("system_path");
         out.push(ProbeCandidate {
-            path: canon.to_string_lossy().into_owned(),
+            path: stored.to_string_lossy().into_owned(),
             version_text: None,
             source: source.to_string(),
         });
@@ -232,110 +254,155 @@ pub fn find_candidates(t: AgentType) -> Vec<ProbeCandidate> {
     out
 }
 
-/// Full probe for one agent type: candidates -> user-confirmed path (or the
-/// sole candidate) -> readonly probe -> AdapterInstall via the adapter's parser.
-pub fn probe_agent(t: AgentType, confirmed_path: Option<&Path>) -> ProbeOutcome {
+/// Collect candidate executables for one agent type from all PATH sources.
+pub fn find_candidates(t: AgentType) -> Vec<ProbeCandidate> {
+    find_candidates_from_paths(t, &process_path_entries(), &login_shell_path_entries())
+}
+
+fn probe_install(
+    t: AgentType,
+    exe: &Path,
+    candidates: &[ProbeCandidate],
+) -> Result<AdapterInstall> {
     let adapter = super::adapter_for(t);
-    let candidates = find_candidates(t);
-    let mk = |state, install, reason| ProbeOutcome {
+    let probed = run_readonly_probe(exe);
+    // Shell fallback: /bin/sh may be dash (no --version/--help). A shell
+    // that merely exists and is executable is usable — mark it Available
+    // with an "unknown" version instead of Unavailable (PRD 3.1: 降级不阻塞).
+    if t == AgentType::Shell {
+        if let Err(e) = &probed {
+            let mut install = adapter.parse_capabilities(exe, "unknown (no --version)", "")?;
+            install.candidates = candidates.to_vec();
+            install.version_text = format!("unknown ({e})");
+            return Ok(install);
+        }
+    }
+    let (version, mut help) = probed?;
+    // Codex keeps resume flags in a subcommand; merge its help so
+    // parse_capabilities sees the full surface (still read-only).
+    if t == AgentType::Codex {
+        if let Ok(sub) = spawn_capture(exe, &["resume", "--help"], PROBE_TIMEOUT, MAX_PROBE_OUTPUT)
+        {
+            help.push_str("\n");
+            help.push_str(&sub);
+        }
+    }
+    let mut install = adapter.parse_capabilities(exe, &version, &help)?;
+    install.candidates = candidates.to_vec();
+    Ok(install)
+}
+
+fn probe_agent_with_candidates(
+    t: AgentType,
+    confirmed_path: Option<&Path>,
+    mut candidates: Vec<ProbeCandidate>,
+) -> ProbeOutcome {
+    let mk = |state, install, reason, candidates: Vec<ProbeCandidate>| ProbeOutcome {
         agent_type: t,
         state,
         install,
-        candidates: candidates.clone(),
+        candidates,
         reason,
     };
 
-    let exe: PathBuf = match confirmed_path {
-        Some(p) => p.to_path_buf(),
-        None => match candidates.len() {
-            0 => {
-                return mk(
-                    ProbeState::Unavailable,
-                    None,
-                    Some("未找到可执行文件".into()),
-                )
-            }
-            1 => PathBuf::from(&candidates[0].path),
-            _ => {
-                return mk(
-                    ProbeState::Conflict,
-                    None,
-                    Some("发现多个候选路径，需用户选择".into()),
-                )
-            }
-        },
-    };
-
-    let probed = (|| -> Result<AdapterInstall> {
-        let probed = run_readonly_probe(&exe);
-        // Shell fallback: /bin/sh may be dash (no --version/--help). A shell
-        // that merely exists and is executable is usable — mark it Available
-        // with an "unknown" version instead of Unavailable (PRD 3.1: 降级不阻塞).
-        if t == AgentType::Shell {
-            if let Err(e) = &probed {
-                let mut install = adapter.parse_capabilities(&exe, "unknown (no --version)", "")?;
+    if let Some(path) = confirmed_path {
+        let manual_path = path.to_string_lossy().into_owned();
+        let known = candidates.iter().any(|candidate| candidate.path == manual_path);
+        if !known {
+            candidates.insert(
+                0,
+                ProbeCandidate {
+                    path: manual_path,
+                    version_text: None,
+                    source: "manual".into(),
+                },
+            );
+        }
+        let selected = PathBuf::from(&path);
+        return match probe_install(t, &selected, &candidates) {
+            Ok(mut install) => {
+                if let Some(candidate) = candidates.iter_mut().find(|candidate| candidate.path == selected.to_string_lossy()) {
+                    candidate.version_text = Some(install.version_text.clone());
+                }
                 install.candidates = candidates.clone();
-                install.version_text = format!("unknown ({e})");
-                return Ok(install);
+                mk(ProbeState::Available, Some(install), None, candidates)
             }
-        }
-        let (version, mut help) = probed?;
-        // Codex keeps resume flags in a subcommand; merge its help so
-        // parse_capabilities sees the full surface (still read-only).
-        if t == AgentType::Codex {
-            if let Ok(sub) =
-                spawn_capture(&exe, &["resume", "--help"], PROBE_TIMEOUT, MAX_PROBE_OUTPUT)
-            {
-                help.push_str("\n");
-                help.push_str(&sub);
-            }
-        }
-        let mut install = adapter.parse_capabilities(&exe, &version, &help)?;
-        install.candidates = candidates.clone();
-        Ok(install)
-    })();
+            Err(error) => mk(
+                ProbeState::Unavailable,
+                None,
+                Some(format!("探测失败: {error}")),
+                candidates,
+            ),
+        };
+    }
 
-    match probed {
-        Ok(install) => mk(ProbeState::Available, Some(install), None),
-        Err(e) => mk(
+    if candidates.is_empty() {
+        return mk(
             ProbeState::Unavailable,
             None,
-            Some(format!("探测失败: {e}")),
-        ),
+            Some("未找到可执行文件".into()),
+            candidates,
+        );
     }
+
+    let total = candidates.len();
+    let mut errors = Vec::new();
+    for index in 0..total {
+        let exe = PathBuf::from(&candidates[index].path);
+        match probe_install(t, &exe, &candidates) {
+            Ok(mut install) => {
+                candidates[index].version_text = Some(install.version_text.clone());
+                install.candidates = candidates.clone();
+                let note = (total > 1).then(|| {
+                    format!(
+                        "已从 {total} 个候选中自动选择优先级最高且可用的路径；可在下方指定其他路径。"
+                    )
+                });
+                return mk(ProbeState::Available, Some(install), note, candidates);
+            }
+            Err(error) => errors.push(format!("{}: {error}", exe.display())),
+        }
+    }
+
+    mk(
+        ProbeState::Unavailable,
+        None,
+        Some(format!(
+            "发现 {total} 个候选，但均无法通过只读探测：{}",
+            errors.into_iter().next().unwrap_or_else(|| "未知错误".into())
+        )),
+        candidates,
+    )
+}
+
+/// Full probe for one agent type. Without an explicit path, every discovered
+/// candidate remains visible and is tried in deterministic priority order.
+pub fn probe_agent(t: AgentType, confirmed_path: Option<&Path>) -> ProbeOutcome {
+    probe_agent_with_candidates(t, confirmed_path, find_candidates(t))
 }
 
 pub fn probe_all() -> Vec<ProbeOutcome> {
-    [
-        AgentType::Claude,
-        AgentType::Codex,
-        AgentType::Kimi,
-        AgentType::Shell,
-    ]
-    .iter()
-    .map(|t| probe_agent(*t, None))
-    .collect()
+    let process_paths = process_path_entries();
+    let login_paths = login_shell_path_entries();
+    AgentType::all()
+        .iter()
+        .copied()
+        .map(|t| {
+            probe_agent_with_candidates(
+                t,
+                None,
+                find_candidates_from_paths(t, &process_paths, &login_paths),
+            )
+        })
+        .collect()
 }
 
 /// PATH entries from the user's login+interactive shell, merged with env PATH.
 pub fn effective_path_entries() -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> =
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-    for flags in [&["-l"][..], &["-i", "-l"][..]] {
-        let mut args: Vec<&str> = flags.to_vec();
-        args.extend(["-c", "printf '%s' \"$PATH\""]);
-        if let Ok(out_path) = spawn_capture(Path::new(&shell), &args, LOGIN_SHELL_TIMEOUT, 16384) {
-            let trimmed = out_path.trim();
-            if !trimmed.is_empty() {
-                for entry in trimmed.split(':').filter(|s| !s.is_empty()) {
-                    let p = PathBuf::from(entry);
-                    if !out.contains(&p) {
-                        out.push(p);
-                    }
-                }
-                break;
-            }
+    let mut out = process_path_entries();
+    for path in login_shell_path_entries() {
+        if !out.contains(&path) {
+            out.push(path);
         }
     }
     out
@@ -350,6 +417,8 @@ mod tests {
     const CLAUDE: &str = "/Users/w/.local/bin/claude";
     const CODEX: &str = "/Users/w/.local/bin/codex";
     const KIMI: &str = "/Users/w/.kimi-code/bin/kimi";
+    const QODER: &str = "/Users/w/.local/bin/qodercli";
+    const PI: &str = "/Users/w/.local/state/fnm_multishells/8620_1784730418362/bin/pi";
 
     fn write_exe(dir: &Path, name: &str, body: &str) -> PathBuf {
         let p = dir.join(name);
@@ -424,7 +493,59 @@ mod tests {
         assert_eq!(found.len(), 2);
         // 重复路径去重；不可执行/不存在被过滤
         let found = find_candidates_in(&[a.clone(), a.clone(), not_exe, missing]);
-        assert_eq!(found, vec![std::fs::canonicalize(&a).unwrap()]);
+        assert_eq!(found, vec![a]);
+    }
+
+    #[test]
+    fn find_candidates_in_keeps_stable_symlink_path() {
+        // Homebrew 场景：/opt/homebrew/bin/<name> 是指向版本化目录的符号链接，
+        // 升级后版本化路径失效而符号链接仍有效。去重按 canonical 进行，
+        // 但存库的必须是第一个出现的原始（符号链接）路径。
+        let tmp = tempfile::tempdir().unwrap();
+        let real = write_exe(tmp.path(), "real-bin", "#!/bin/sh\nexit 0\n");
+        let link = tmp.path().join("link-bin");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let found = find_candidates_in(&[link.clone(), real.clone()]);
+        assert_eq!(found, vec![link]);
+        // 反向顺序：真实路径先出现则保留真实路径，符号链接被去重。
+        let found = find_candidates_in(&[real.clone(), tmp.path().join("link-bin")]);
+        assert_eq!(found, vec![real]);
+    }
+
+    #[test]
+    fn automatic_probe_skips_bad_candidates_without_hiding_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bad = write_exe(tmp.path(), "bad-claude", "#!/bin/sh\nexit 1\n");
+        let usable = write_exe(
+            tmp.path(),
+            "usable-claude",
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Claude 9.9.9'; else echo '--session-id --resume --settings'; fi\n",
+        );
+        let outcome = probe_agent_with_candidates(
+            AgentType::Claude,
+            None,
+            vec![
+                ProbeCandidate {
+                    path: bad.to_string_lossy().into_owned(),
+                    version_text: None,
+                    source: "system_path".into(),
+                },
+                ProbeCandidate {
+                    path: usable.to_string_lossy().into_owned(),
+                    version_text: None,
+                    source: "login_shell_path".into(),
+                },
+            ],
+        );
+
+        assert_eq!(outcome.state, ProbeState::Available);
+        assert_eq!(
+            outcome.install.as_ref().unwrap().executable_path,
+            usable.to_string_lossy()
+        );
+        assert_eq!(outcome.candidates.len(), 2);
+        assert!(outcome.reason.unwrap().contains("2 个候选"));
     }
 
     #[test]
@@ -433,6 +554,8 @@ mod tests {
             (AgentType::Claude, CLAUDE),
             (AgentType::Codex, CODEX),
             (AgentType::Kimi, KIMI),
+            (AgentType::Qoder, QODER),
+            (AgentType::Pi, PI),
         ] {
             if !Path::new(path).exists() {
                 eprintln!("skip {path}: not installed");

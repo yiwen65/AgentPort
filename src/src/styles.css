@@ -117,6 +117,18 @@ body {
   color: var(--text);
   background: transparent;
   -webkit-font-smoothing: antialiased;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* UI chrome (menus, settings, tree labels) must not be text-selectable;
+   opt back in only for editable or copyable content. */
+input,
+textarea,
+[contenteditable="true"],
+.selectable {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 body.is-resizing-split,
@@ -526,7 +538,7 @@ button {
 .project-quick-actions {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
   position: absolute;
   right: 4px;
   z-index: 2;
@@ -546,6 +558,7 @@ button {
 
 .project-agent-action {
   width: 25px;
+  min-width: 25px;
   height: 25px;
   display: inline-flex;
   align-items: center;
@@ -555,6 +568,30 @@ button {
   border-radius: 8px;
   background: transparent;
   color: #c2c4cb;
+}
+
+/* Four 25px launch slots stay visible; additional adapters are reached by
+   dragging or scrolling the strip instead of being silently hidden. */
+.quick-agent-strip {
+  width: 106px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  cursor: grab;
+  touch-action: pan-y;
+}
+
+.quick-agent-strip::-webkit-scrollbar { display: none; }
+
+.quick-agent-strip.dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.quick-agent-strip-track {
+  display: flex;
+  width: max-content;
+  gap: 2px;
 }
 
 .project-agent-action:hover {
@@ -579,9 +616,22 @@ button {
   opacity: .92;
 }
 
-/* codex.svg is a currentColor silhouette that renders black as <img>;
-   lift it to light-on-dark. Brand-color marks (claude, kimi) stay as-is. */
-.quick-agent-mark.codex { filter: brightness(0) invert(1); }
+.quick-agent-mark svg {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.quick-agent-fallback {
+  display: inline-grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 700;
+}
 
 .quick-agent-mark.shell { filter: none; opacity: 1; }
 
@@ -591,6 +641,29 @@ button {
 }
 
 .project-agent-action:hover .quick-agent-mark { opacity: 1; }
+
+.adapter-order-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.adapter-order-icon {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+.adapter-order-icon svg {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.adapter-order-actions {
+  display: inline-flex;
+  gap: 4px;
+}
 
 .tree-row.session {
   padding-left: 10px;
@@ -607,22 +680,47 @@ button {
   padding-left: 28px;
 }
 
-.session-row-actions {
+/* Inline remove confirmation: replaces the row content instead of a modal. */
+.tree-row.session.remove-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+}
+
+.remove-confirm-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remove-confirm-actions {
   display: inline-flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.session-row-actions {
+  /* Occupies the session-age slot on hover instead of overlaying it:
+     hidden by default, revealed in place (margin-left:auto) on hover. */
+  display: none;
+  flex: none;
+  margin-left: auto;
   gap: 1px;
-  position: absolute;
-  right: 31px;
-  z-index: 2;
-  padding-left: 3px;
   border-radius: 6px;
-  background: color-mix(in srgb, var(--sidebar-glass) 84%, var(--bg-panel));
-  opacity: 0;
-  transition: opacity 0.12s ease;
 }
 
 .tree-row.session:hover .session-row-actions,
 .tree-row.session:focus-within .session-row-actions {
-  opacity: 1;
+  display: inline-flex;
+}
+
+/* The age yields its slot to the hover actions; restored on mouse-leave. */
+.tree-row.session:hover .session-age,
+.tree-row.session:focus-within .session-age {
+  display: none;
 }
 
 .session-action {
@@ -664,8 +762,104 @@ button {
 }
 
 .tree-row.worktree {
+  flex: 1;
+  min-width: 0;
   padding-left: 28px;
   color: var(--text-dim);
+}
+
+.worktree-collapse-chevron {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-dim);
+}
+
+.tree-row.worktree.highlighted {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+  background: var(--accent-soft);
+}
+
+/* A checkout is context, not a third tree level: it always sits directly
+   below a Git project heading and before the Worktrees drill-down. */
+.tree-row.current-branch-row {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.tree-row.current-branch-row:hover,
+.tree-row.current-branch-row:focus-visible {
+  color: var(--text);
+}
+
+/* Pinned "Worktrees" drill-down entry: always the first row of an expanded
+   project group. Not a session row — no rename, no context menu, no sorting. */
+.tree-row.worktrees-entry {
+  color: rgba(243, 245, 251, 0.82);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+:root[data-theme="light"] .tree-row.worktrees-entry {
+  color: rgba(17, 18, 23, 0.82);
+}
+
+.worktrees-entry-chevron {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+
+.tree-row.worktrees-entry:hover .worktrees-entry-chevron,
+.tree-row.worktrees-entry:focus-visible .worktrees-entry-chevron {
+  color: var(--text);
+  opacity: 1;
+}
+
+/* Worktree management drill-down view (replaces the project list). */
+.worktree-view {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tree-row.worktree-back {
+  color: rgba(243, 245, 251, 0.82);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+:root[data-theme="light"] .tree-row.worktree-back {
+  color: rgba(17, 18, 23, 0.82);
+}
+
+.worktree-back-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-dim);
+}
+
+.tree-row.worktree-new {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.tree-row.worktree-new:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.tree-row.worktree-new:disabled:hover {
+  background: transparent;
+}
+
+/* Worktree headers are top-level rows inside the drill-down view. */
+.worktree-view .tree-row.worktree {
+  padding-left: 10px;
 }
 
 .tree-label {
@@ -786,6 +980,15 @@ button {
 
 .btn.primary:hover {
   filter: brightness(1.1);
+}
+
+/* Light mode: the global `opacity: .5` disabled wash turns white-on-accent
+   into unreadable white-on-pale-blue. Use soft accent colors instead. */
+:root[data-theme="light"] .btn.primary:disabled {
+  opacity: 1;
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent-text);
 }
 
 .btn.danger {
@@ -1035,6 +1238,93 @@ button {
   background: var(--workspace-current);
 }
 
+.pi-rpc-workspace {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 18px;
+  background: var(--workspace-current);
+}
+
+.pi-rpc-header,
+.pi-rpc-composer,
+.pi-rpc-event {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  border-radius: 8px;
+}
+
+.pi-rpc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.pi-rpc-header > div {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.pi-rpc-header span,
+.pi-rpc-permission {
+  color: var(--text-muted);
+}
+
+.pi-rpc-timeline {
+  min-height: 0;
+  overflow: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pi-rpc-event {
+  padding: 9px 11px;
+}
+
+.pi-rpc-event > span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.pi-rpc-event pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 12px/1.5 var(--font-mono);
+  color: var(--text);
+}
+
+.pi-rpc-composer {
+  padding: 10px;
+}
+
+.pi-rpc-composer textarea {
+  width: 100%;
+  min-height: 68px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.pi-rpc-composer > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .term-stack {
   flex: 1;
   min-height: 0;
@@ -1219,7 +1509,7 @@ button {
 }
 
 .session-agent-mark.codex {
-  filter: brightness(0) saturate(100%) invert(50%) sepia(91%) saturate(2709%) hue-rotate(224deg) brightness(101%) contrast(102%);
+  color: var(--accent);
 }
 
 .session-state-card h3 {
@@ -1506,6 +1796,9 @@ button {
   border: 1px solid var(--border-strong);
   border-radius: 12px;
   box-shadow: var(--shadow);
+  /* Explicit theme text color: dialog content must stay readable in both
+     themes instead of depending on whatever ancestor context it renders in. */
+  color: var(--text);
   width: min(560px, 100%);
   max-height: 82vh;
   display: flex;
@@ -1529,6 +1822,7 @@ button {
   margin: 0;
   font-size: 15px;
   flex: 1;
+  color: var(--text);
 }
 
 .modal-body {
@@ -1912,6 +2206,7 @@ textarea:focus {
   padding: 5px 10px;
   cursor: pointer;
   background: var(--bg-elevated);
+  color: var(--text);
   user-select: none;
 }
 
@@ -1928,7 +2223,7 @@ textarea:focus {
 
 .check-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
   cursor: pointer;
   user-select: none;
@@ -1936,7 +2231,6 @@ textarea:focus {
 }
 
 .check-row input {
-  margin-top: 2px;
   accent-color: var(--accent);
 }
 
@@ -1999,6 +2293,166 @@ textarea:focus {
   margin-top: 6px;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
+}
+
+/* Local branch picker ------------------------------------------------ */
+.branch-picker-status {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+
+.branch-picker-status strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.branch-picker-eyebrow {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.branch-picker-summary {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: right;
+}
+
+.branch-picker-toolbar {
+  display: flex;
+  gap: 8px;
+}
+
+.branch-picker-toolbar input { min-width: 0; }
+
+.branch-picker-list {
+  overflow-y: auto;
+  min-height: 88px;
+  max-height: 250px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.branch-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 3px 5px;
+  border-bottom: 1px solid var(--border);
+}
+
+.branch-picker-row:last-child { border-bottom: 0; }
+.branch-picker-row.selected { background: var(--accent-soft); }
+
+.branch-picker-choice {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.branch-picker-choice:hover:not(:disabled) { background: var(--bg-hover); }
+.branch-picker-choice:disabled { cursor: not-allowed; opacity: .72; }
+.branch-picker-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-picker-meta { margin-left: auto; color: var(--text-faint); font-size: 10px; }
+.branch-picker-state { flex: none; color: var(--text-dim); font-size: 10px; }
+.branch-picker-path {
+  max-width: 42%;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.branch-picker-worktree { flex: none; }
+.branch-picker-empty { padding: 16px; color: var(--text-dim); font-size: 12px; text-align: center; }
+
+.branch-picker-create,
+.branch-picker-recovery {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.branch-picker-create-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, .55fr) auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.branch-picker-create-grid .check-row { font-size: 11px; }
+.branch-picker-progress { border-left: 3px solid var(--amber); }
+.branch-picker-success { border-left: 3px solid var(--green); }
+
+.branch-picker-live-sessions,
+.branch-picker-recovery-actions,
+.branch-picker-stash-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.branch-picker-stash {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  font-size: 11px;
+}
+
+.branch-picker-stash > div:first-child {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text-dim);
+}
+
+.branch-picker-stash strong { color: var(--text); }
+
+.branch-picker-recovery-actions code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--bg-hover);
+  color: var(--text);
+  font-size: 10px;
+}
+
+@media (max-width: 620px) {
+  .branch-picker-status,
+  .branch-picker-stash { flex-direction: column; }
+  .branch-picker-summary { align-items: flex-start; text-align: left; }
+  .branch-picker-create-grid { grid-template-columns: 1fr; }
 }
 
 .section-title:first-child {
@@ -2513,6 +2967,16 @@ textarea:focus {
 
 .inline-form input {
   flex: 1;
+}
+
+.agent-candidates {
+  margin-top: 6px;
+}
+
+.agent-candidates summary {
+  cursor: pointer;
+  color: var(--text-faint);
+  width: fit-content;
 }
 
 /* Boot screen */

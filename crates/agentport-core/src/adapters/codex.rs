@@ -48,6 +48,8 @@ impl AgentAdapter for CodexAdapter {
             exact_resume,
             // notify key unverifiable from CLI output on 0.144.5 -> degraded.
             hook_status: HookStatus::Degraded,
+            approval_model: AgentType::Codex.approval_model(),
+            default_transport: AgentType::Codex.default_transport(),
             probed_at: chrono::Utc::now(),
             candidates: vec![],
             flags,
@@ -70,6 +72,7 @@ impl AgentAdapter for CodexAdapter {
             assigned_agent_session_id: None,
             resume_precision: ResumePrecision::Latest,
             hook_status: install.hook_status,
+            transport: ctx.transport,
             helper_files: vec![],
             notes: vec![
                 "codex 0.144.5 的 help/doctor 未出现 notify 配置键，hook 注入不可验证，降级为 PTY 启发式".into(),
@@ -112,6 +115,7 @@ impl AgentAdapter for CodexAdapter {
             assigned_agent_session_id: None,
             resume_precision,
             hook_status: install.hook_status,
+            transport: ctx.transport,
             helper_files: vec![],
             notes,
         })

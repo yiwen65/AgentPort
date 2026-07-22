@@ -10,9 +10,22 @@ use crate::models::*;
 use crate::paths::{slugify, AppPaths};
 use chrono::Utc;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-
+pub mod branch;
+pub mod command;
+pub mod operation;
+pub mod repository;
 pub mod worktree;
+
+pub use branch::{
+    BranchInfo, BranchManager, BranchSnapshot, CheckoutState, CreateBranchOutcome, RepoStatus,
+    SwitchOutcome,
+};
+pub use command::{GitOutput, GitRunner};
+pub use operation::{
+    AutoStash, BranchOperation, BranchOperationKind, BranchOperationPhase, BranchOperationStep,
+    ReconcileReport, RestoreStrategy,
+};
+pub use repository::{RepositoryFileLock, RepositoryIdentity, RepositoryManager};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusEntry {
@@ -58,61 +71,10 @@ pub(crate) fn run_git_timeout(
     args: &[&str],
     timeout: std::time::Duration,
 ) -> Result<String> {
-    let dir;
-    let mut argv: Vec<&str> = Vec::with_capacity(args.len() + 2);
-    if let Some(d) = repo {
-        dir = d.to_string_lossy().into_owned();
-        argv.push("-C");
-        argv.push(&dir);
-    }
-    argv.extend_from_slice(args);
-    let mut child = Command::new("git")
-        .args(&argv)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
-    // Drain both pipes concurrently so a chatty git can never deadlock us.
-    let mut out_pipe = child.stdout.take().expect("piped");
-    let mut err_pipe = child.stderr.take().expect("piped");
-    let out_handle = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        let _ = std::io::Read::read_to_end(&mut out_pipe, &mut v);
-        v
-    });
-    let err_handle = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        let _ = std::io::Read::read_to_end(&mut err_pipe, &mut v);
-        v
-    });
-    let deadline = std::time::Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait()? {
-            Some(s) => break s,
-            None => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(CoreError::Timeout(format!(
-                        "git {} timed out after {}s",
-                        argv.join(" "),
-                        timeout.as_secs()
-                    )));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-        }
-    };
-    let stdout = String::from_utf8_lossy(&out_handle.join().unwrap_or_default()).into_owned();
-    if !status.success() {
-        let stderr = String::from_utf8_lossy(&err_handle.join().unwrap_or_default()).into_owned();
-        return Err(CoreError::Git(format!(
-            "git {} failed ({}): {}",
-            argv.join(" "),
-            status,
-            stderr.trim()
-        )));
-    }
-    Ok(stdout)
+    let output = command::GitRunner::new(timeout)
+        .run(repo, args)?
+        .require_success()?;
+    Ok(output.stdout_lossy())
 }
 
 /// Shorthand for `run_git(Some(dir), args)`.

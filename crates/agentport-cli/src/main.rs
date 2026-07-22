@@ -84,6 +84,7 @@ fn run() -> Result<()> {
         "session" => cmd_session(&ctx, rest),
         "worktree" => cmd_worktree(&ctx, rest),
         "export" => cmd_export(&ctx, rest),
+        "backup" => cmd_backup(&ctx, rest),
         "search" => cmd_search(&ctx, rest),
         "timeline" => cmd_timeline(&ctx, rest),
         "diag" => cmd_diag(&ctx, rest),
@@ -122,12 +123,16 @@ fn usage() {
   project list | rename <id> <name> | remove <id>
   preset list [--agent A]
   session new --project P --agent A [--title T] [--preset ID] [--worktree-id W]
-             [--permission native|auto|bypass] [--risk-ack] [--cols N --rows N]
+             [--permission native|auto|bypass] [--transport pty|json_rpc] [--risk-ack] [--cols N --rows N]
   session list [--all] | status <id> | stop <id> | interrupt <id>
   session input <id> [--data TEXT]       send input (escapes: \\n \\r \\t \\x1b; or stdin)
   session read <id> [--until SUBSTR] [--timeout SEC] [--tail-bytes N]
   session attach <id>                    interactive passthrough (Ctrl-] to detach)
   session rename <id> <title> | archive <id> | restart <id> [--risk-ack]
+  backup create --out <file.zip> [--verify]     full-data backup (excludes worktrees)
+  backup verify <file.zip>                     integrity + format check
+  backup restore <file.zip> --to <data-dir>    restore into a data root (previous
+                                               tree is kept as <dir>.pre-restore-*)
   worktree create --project P --task T [--base-ref R] [--branch B]
   worktree list --project P | health <id> | remove <id>
   reconcile                              re-check running sessions vs live hosts"
@@ -192,12 +197,7 @@ fn unescape(s: &str) -> Vec<u8> {
 fn cmd_probe(ctx: &Ctx, args: &[String]) -> Result<()> {
     let agents: Vec<AgentType> = match args.first().map(String::as_str) {
         Some(a) if !a.starts_with("--") => vec![a.parse()?],
-        _ => vec![
-            AgentType::Claude,
-            AgentType::Codex,
-            AgentType::Kimi,
-            AgentType::Shell,
-        ],
+        _ => AgentType::all().to_vec(),
     };
     let confirmed = flag(args, "path");
     let mut results = vec![];
@@ -216,6 +216,8 @@ fn cmd_probe(ctx: &Ctx, args: &[String]) -> Result<()> {
                 "capabilityHash": i.capability_hash,
                 "exactResume": i.exact_resume,
                 "hookStatus": format!("{:?}", i.hook_status).to_lowercase(),
+                "approvalModel": i.approval_model.as_str(),
+                "defaultTransport": i.default_transport.as_str(),
                 "flags": i.flags,
             })),
             "candidates": outcome.candidates.iter().map(|c| json!({
@@ -326,6 +328,24 @@ fn host_mgr<'a>(ctx: &'a Ctx) -> HostManager<'a> {
 
 fn install_for(ctx: &Ctx, t: AgentType) -> Result<AdapterInstall> {
     if let Some(i) = ctx.db.get_adapter(t)? {
+        // Cached path may be stale (e.g. Homebrew removed the versioned
+        // Caskroom dir after an upgrade). Re-probe instead of spawning a
+        // missing binary.
+        if !std::path::Path::new(&i.executable_path).exists() {
+            let outcome = capability::probe_agent(t, None);
+            return match outcome.install {
+                Some(fresh) => {
+                    ctx.db.upsert_adapter(&fresh)?;
+                    Ok(fresh)
+                }
+                None => Err(CoreError::Adapter(format!(
+                    "{} 的可执行文件已失效（{}），重新探测也未找到: {}",
+                    t.display_name(),
+                    i.executable_path,
+                    outcome.reason.unwrap_or_else(|| "not found".into())
+                ))),
+            };
+        }
         return Ok(i);
     }
     let outcome = capability::probe_agent(t, None);
@@ -355,10 +375,14 @@ fn preset_for(
             ctx.db.get_preset(&id).unwrap_or(Preset {
                 id,
                 agent_type: t,
-                name: format!("{} 安全默认", t.display_name()),
+                name: match t {
+                    AgentType::Qoder => "Qoder 全权限默认".into(),
+                    AgentType::Pi => "Pi 本地权限默认".into(),
+                    _ => format!("{} 安全默认", t.display_name()),
+                },
                 executable_path: String::new(),
                 args: vec![],
-                permission_mode: PermissionMode::Native,
+                permission_mode: t.default_permission_mode(),
                 env_names: vec![],
                 secret_ref_ids: vec![],
                 built_in: true,
@@ -383,12 +407,13 @@ fn preset_for(
 /// cwd and risk must be shown and explicitly acknowledged at the CLI.
 fn enforce_permission_preflight(
     ctx: &Ctx,
+    agent: AgentType,
     mode: PermissionMode,
     argv: &[String],
     cwd: &str,
     args: &[String],
 ) -> Result<()> {
-    if mode == PermissionMode::Native {
+    if mode == PermissionMode::Native || agent == AgentType::Qoder {
         return Ok(());
     }
     let risk = match mode {
@@ -420,12 +445,20 @@ fn launch_session(
     preset: &Preset,
     worktree_id: Option<String>,
     permission: PermissionMode,
+    transport: AgentTransport,
     cols: u16,
     rows: u16,
     cli_args: &[String],
 ) -> Result<Value> {
     let permission = agent.effective_permission_mode(permission);
+    if transport != AgentTransport::Pty {
+        return Err(CoreError::Validation(format!(
+            "{} new sessions only support native pty transport",
+            agent.display_name()
+        )));
+    }
     let install = install_for(ctx, agent)?;
+    adapters::validate_user_args(agent, &preset.args)?;
     let cwd = match &worktree_id {
         Some(w) => ctx.db.get_worktree(w)?.path,
         None => project.root_path.clone(),
@@ -444,6 +477,7 @@ fn launch_session(
             .to_string_lossy()
             .into_owned(),
         session_dir: session_dir.to_string_lossy().into_owned(),
+        transport,
     };
     let adapter = adapters::adapter_for(agent);
     let plan = adapter.build_launch(&ctx_launch)?;
@@ -451,7 +485,7 @@ fn launch_session(
     for (path, contents) in &plan.helper_files {
         agentport_core::host_manager::write_private_file(path, contents)?;
     }
-    enforce_permission_preflight(ctx, permission, &plan.argv, &cwd, cli_args)?;
+    enforce_permission_preflight(ctx, agent, permission, &plan.argv, &cwd, cli_args)?;
     let now = Utc::now();
     let session = Session {
         id: session_id.clone(),
@@ -481,6 +515,7 @@ fn launch_session(
             .to_string_lossy()
             .into_owned(),
         adapter_type: agent,
+        transport: plan.transport,
         command: plan.argv.clone(),
         permission_mode: permission,
         created_at: now,
@@ -547,7 +582,8 @@ fn cmd_session(ctx: &Ctx, args: &[String]) -> Result<()> {
             let preset_id = flag(args, "preset");
             let worktree_id = flag(args, "worktree-id");
             let permission = match flag(args, "permission").as_deref() {
-                None | Some("native") => PermissionMode::Native,
+                None => agent.default_permission_mode(),
+                Some("native") => PermissionMode::Native,
                 Some("auto") => PermissionMode::Auto,
                 Some("bypass") => PermissionMode::Bypass,
                 Some(other) => {
@@ -560,6 +596,10 @@ fn cmd_session(ctx: &Ctx, args: &[String]) -> Result<()> {
             let rows = flag(args, "rows")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(32);
+            let transport = match flag(args, "transport") {
+                Some(value) => value.parse()?,
+                None => agent.default_transport(),
+            };
             let install = install_for(ctx, agent)?;
             let preset = preset_for(ctx, agent, preset_id, &install)?;
             launch_session(
@@ -570,6 +610,7 @@ fn cmd_session(ctx: &Ctx, args: &[String]) -> Result<()> {
                 &preset,
                 worktree_id,
                 permission,
+                transport,
                 cols,
                 rows,
                 args,
@@ -666,7 +707,12 @@ fn cmd_session(ctx: &Ctx, args: &[String]) -> Result<()> {
             Ok(())
         }
         Some("archive") => {
-            ctx.db.archive_session(positional(args, 1)?)?;
+            // Match the GUI path: an archived Session must not retain a live
+            // Host. Stop is verified through the authenticated handshake; a
+            // failure aborts the archive instead of hiding a running Agent.
+            let id = positional(args, 1)?;
+            host_mgr(ctx).stop(id, 3000)?;
+            ctx.db.archive_session(id)?;
             ctx.out(json!({"ok": true}));
             Ok(())
         }
@@ -693,6 +739,7 @@ fn session_json(ctx: &Ctx, s: &Session) -> Value {
         "agentSessionId": s.agent_session_id,
         "resumePrecision": s.resume_precision.as_str(),
         "permissionMode": s.permission_mode.as_str(),
+        "transport": s.transport.as_str(),
         "logPath": s.log_path,
         "createdAt": s.created_at,
         "status": latest.map(|e| json!({
@@ -752,20 +799,26 @@ fn read_session(
             }
             HostFrame::State {
                 session_id,
+                run_id,
+                run_ordinal,
                 sequence,
                 state,
                 source,
                 confidence,
                 evidence,
+                log_cursor,
                 occurred_at,
             } => {
                 let _ = ctx.db.record_status_event(&StatusEvent {
                     session_id,
+                    run_id,
+                    run_ordinal,
                     sequence,
                     state,
                     source,
                     confidence,
                     evidence,
+                    log_cursor,
                     occurred_at,
                 });
             }
@@ -777,16 +830,41 @@ fn read_session(
                         .update_session_agent_id(id, &agent_session_id, ResumePrecision::Exact);
             }
             HostFrame::Exit {
+                run_id,
+                run_ordinal,
                 code,
                 signal,
                 group_cleaned,
+                reason,
                 ..
             } => {
                 exit_frame = Some(json!({
                     "code": code, "signal": signal, "groupCleaned": group_cleaned,
+                    "reason": reason.clone(),
                 }));
-                let lifecycle = Lifecycle::Exited;
-                let _ = ctx.db.update_session_lifecycle(id, lifecycle);
+                // A stale CLI attachment must not terminally transition a
+                // replacement Host. The HostManager records the current
+                // PID/run binding, so apply this frame only when it matches
+                // the handshake that created this attachment.
+                if info.host_pid > 0
+                    && (info.protocol < agentport_core::protocol::PROTOCOL_VERSION
+                        || (run_id == info.run_id && run_ordinal == info.run_ordinal))
+                {
+                    let expected_run = (info.protocol
+                        >= agentport_core::protocol::PROTOCOL_VERSION)
+                        .then_some((run_id.as_str(), run_ordinal));
+                    let lifecycle = if reason == "user_stop" {
+                        Lifecycle::Stopped
+                    } else {
+                        Lifecycle::Exited
+                    };
+                    let _ = ctx.db.update_session_lifecycle_if_host(
+                        id,
+                        info.host_pid as i64,
+                        expected_run,
+                        lifecycle,
+                    );
+                }
                 break;
             }
             _ => {}
@@ -853,6 +931,7 @@ fn cmd_session_restart(ctx: &Ctx, args: &[String]) -> Result<()> {
         Some(session.preset_id.clone()),
         &install,
     )?;
+    adapters::validate_user_args(session.adapter_type, &preset.args)?;
     let adapter = adapters::adapter_for(session.adapter_type);
     let rctx = ResumeContext {
         install,
@@ -870,15 +949,23 @@ fn cmd_session_restart(ctx: &Ctx, args: &[String]) -> Result<()> {
             .session_dir(&session.id)
             .to_string_lossy()
             .into_owned(),
+        transport: session.transport,
     };
-    let plan = adapter.build_resume(&rctx)?;
+    let plan = adapter.build_resume_checked(&rctx)?;
     for (path, contents) in &plan.helper_files {
         agentport_core::host_manager::write_private_file(path, contents)?;
     }
     let permission = session
         .adapter_type
         .effective_permission_mode(session.permission_mode);
-    enforce_permission_preflight(ctx, permission, &plan.argv, &session.cwd, args)?;
+    enforce_permission_preflight(
+        ctx,
+        session.adapter_type,
+        permission,
+        &plan.argv,
+        &session.cwd,
+        args,
+    )?;
     // New identity for the new host: same session id, fresh token.
     let new_token = ids::new_host_token();
     ctx.db.set_session_token(id, &new_token)?;
@@ -886,7 +973,9 @@ fn cmd_session_restart(ctx: &Ctx, args: &[String]) -> Result<()> {
     renewed.host_token = new_token;
     renewed.host_socket = Some(ctx.paths.socket_path(id).to_string_lossy().into_owned());
     renewed.lifecycle = Lifecycle::Creating;
-    ctx.db.update_session_lifecycle(id, Lifecycle::Creating)?;
+    // HostManager claims the new run and transitions it to Creating atomically
+    // with its run identity; an unconditional lifecycle write here could race
+    // a terminal observation from the preceding Host.
     let settings = ctx.db.load_settings()?;
     let mgr = host_mgr(ctx);
     let info = mgr.launch(LaunchSpec {
@@ -899,11 +988,25 @@ fn cmd_session_restart(ctx: &Ctx, args: &[String]) -> Result<()> {
         cols: 120,
         rows: 32,
     })?;
-    ctx.db.update_session_lifecycle(id, Lifecycle::Running)?;
+    // HostManager owns the run-bound transition to Running. Repeating an
+    // unconditional write here could let a delayed CLI command overwrite a
+    // newer Host run's lifecycle.
+    // A resume whose recorded conversation is gone falls back to a fresh
+    // conversation with a newly assigned native id (claude adapter). Persist
+    // it so the next restart resumes the conversation that actually exists.
+    if let Some(native) = &plan.assigned_agent_session_id {
+        if session.agent_session_id.as_deref() != Some(native.as_str()) {
+            ctx.db
+                .update_session_agent_id(id, native, plan.resume_precision)?;
+        }
+    }
     ctx.out(json!({
         "id": id,
         "resumePrecision": plan.resume_precision.as_str(),
-        "agentSessionId": session.agent_session_id,
+        "agentSessionId": plan
+            .assigned_agent_session_id
+            .clone()
+            .or(session.agent_session_id.clone()),
         "notes": plan.notes,
         "command": plan.argv,
         "attach": attach_json(&info),
@@ -965,20 +1068,26 @@ fn cmd_session_attach(ctx: &Ctx, args: &[String]) -> Result<()> {
             }
             Some(HostFrame::State {
                 session_id,
+                run_id,
+                run_ordinal,
                 sequence,
                 state,
                 source,
                 confidence,
                 evidence,
+                log_cursor,
                 occurred_at,
             }) => {
                 let _ = ctx.db.record_status_event(&StatusEvent {
                     session_id,
+                    run_id,
+                    run_ordinal,
                     sequence,
                     state,
                     source,
                     confidence,
                     evidence,
+                    log_cursor,
                     occurred_at,
                 });
             }
@@ -1133,6 +1242,59 @@ fn cmd_export(ctx: &Ctx, args: &[String]) -> Result<()> {
             Ok(())
         }
         _ => Err(CoreError::Validation("export log|md|zip".into())),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// backup / restore
+// ---------------------------------------------------------------------------
+
+fn cmd_backup(ctx: &Ctx, args: &[String]) -> Result<()> {
+    use agentport_core::backup;
+    match args.first().map(String::as_str) {
+        Some("create") => {
+            let out = flag(args, "out")
+                .ok_or_else(|| CoreError::Validation("--out <file.zip> required".into()))?;
+            let dest = std::path::Path::new(&out);
+            let report = backup::create(&ctx.paths, &ctx.db, dest)?;
+            let verified = if has_flag(args, "verify") {
+                backup::verify(dest).map(|_| true)?
+            } else {
+                false
+            };
+            ctx.out(json!({
+                "backup": dest,
+                "files": report.files,
+                "bytes": report.bytes,
+                "verified": verified,
+            }));
+            Ok(())
+        }
+        Some("verify") => {
+            let path = positional(args, 1)?;
+            let manifest = backup::verify(std::path::Path::new(path))?;
+            ctx.out(json!({
+                "ok": true,
+                "formatVersion": manifest.format_version,
+                "createdAt": manifest.created_at,
+                "dataModelVersion": manifest.data_model_version,
+                "files": manifest.files.len(),
+            }));
+            Ok(())
+        }
+        Some("restore") => {
+            let path = positional(args, 1)?;
+            let to = flag(args, "to")
+                .ok_or_else(|| CoreError::Validation("--to <data-dir> required".into()))?;
+            let target = std::path::Path::new(&to);
+            let previous = backup::restore(std::path::Path::new(path), target)?;
+            ctx.out(json!({
+                "restored": target,
+                "previousKeptAt": previous,
+            }));
+            Ok(())
+        }
+        _ => Err(CoreError::Validation("backup create|verify|restore".into())),
     }
 }
 
@@ -1358,11 +1520,6 @@ fn cmd_settings(ctx: &Ctx, args: &[String]) -> Result<()> {
                 s.log_limit_mib = v
                     .parse()
                     .map_err(|_| CoreError::Validation("bad log-limit-mib".into()))?;
-            }
-            if let Some(v) = flag(args, "retention-days") {
-                s.retention_days = v
-                    .parse()
-                    .map_err(|_| CoreError::Validation("bad retention-days".into()))?;
             }
             if let Some(v) = flag(args, "notifications") {
                 s.notifications_enabled = v == "true" || v == "on";

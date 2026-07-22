@@ -161,7 +161,6 @@ AgentPort 绝不会默认添加 `--yolo` 类的跳过审批参数。
 | 设置 | 默认值 | 范围/取值 |
 |---|---|---|
 | 每 Session 日志上限 | 200 MiB | 20–2048 MiB |
-| 已归档 Session 保留天数 | 30 天 | 1–3650 天 |
 | 通知 | 开启 | 仍受系统权限控制 |
 | 主题 | 跟随系统 | system / dark / light；点击后立即生效并保存 |
 | 终端字体 | 内置 JetBrains Mono | 配置值 system-monospace；可自定义 |

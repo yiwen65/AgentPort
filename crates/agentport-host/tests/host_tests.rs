@@ -3,7 +3,7 @@
 //! of fixed sleeps, and cleans up the host (and the agent process group) at
 //! the end via HostGuard.
 
-use std::io::BufReader;
+use std::io::{BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -11,6 +11,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agentport_core::logs::{sha256_bytes, sha256_file};
+use agentport_core::models::{AgentState, AgentTransport, LogCursor};
 use agentport_core::protocol::{
     read_frame, write_frame, ClientFrame, HostConfig, HostFrame, PROTOCOL_VERSION,
 };
@@ -48,12 +49,16 @@ fn make_ctx(command: Vec<String>, log_limit: u64, secret_env_names: Vec<String>)
     let cfg = HostConfig {
         protocol: PROTOCOL_VERSION,
         session_id: session_id.clone(),
+        run_id: uniq("run"),
+        run_ordinal: 1,
         host_token: TOKEN.to_string(),
         command,
         cwd: d.to_string_lossy().into_owned(),
         env: vec![],
         adapter_type: "shell".into(),
+        transport: AgentTransport::Pty,
         socket_path: d.join("h.sock").to_string_lossy().into_owned(),
+        session_dir: d.to_string_lossy().into_owned(),
         log_path: d.join("output.log").to_string_lossy().into_owned(),
         host_log_path: d.join("host.log").to_string_lossy().into_owned(),
         hook_events_path: d.join("events.jsonl").to_string_lossy().into_owned(),
@@ -77,6 +82,36 @@ fn make_ctx(command: Vec<String>, log_limit: u64, secret_env_names: Vec<String>)
         host_log: d.join("host.log"),
         _dir: dir,
     }
+}
+
+/// A tiny shell protocol shim exercises the real pipe path without using a
+/// configured Pi account. The production Host still sees stdin/stdout JSONL
+/// exactly as it would from `pi --mode rpc`.
+fn make_rpc_ctx(script: &str) -> TestCtx {
+    let ctx = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), script.into()],
+        2 * 1024 * 1024,
+        vec![],
+    );
+    let mut cfg: HostConfig = serde_json::from_str(&std::fs::read_to_string(&ctx.cfg_path).unwrap()).unwrap();
+    cfg.adapter_type = "pi".into();
+    cfg.transport = AgentTransport::JsonRpc;
+    cfg.agent_session_id_hint = Some("pi-native-test-id".into());
+    std::fs::write(&ctx.cfg_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+    ctx
+}
+
+fn make_pi_pty_ctx(script: &str) -> TestCtx {
+    let ctx = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), script.into()],
+        2 * 1024 * 1024,
+        vec![],
+    );
+    let mut cfg: HostConfig = serde_json::from_str(&std::fs::read_to_string(&ctx.cfg_path).unwrap()).unwrap();
+    cfg.adapter_type = "pi".into();
+    cfg.agent_session_id_hint = Some("pi-native-test-id".into());
+    std::fs::write(&ctx.cfg_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+    ctx
 }
 
 /// Kills the host (SIGTERM first so it can clean the agent group itself,
@@ -241,19 +276,31 @@ impl Conn {
         out
     }
 
-    fn expect_hello_ok(&mut self) -> (u32, bool) {
+    fn expect_hello_ok_info(&mut self) -> (u32, bool, LogCursor) {
         match self.read1(Duration::from_secs(5)) {
             Read1::Frame(HostFrame::HelloOk {
                 protocol,
                 host_pid,
                 child_alive,
+                run_id,
+                run_ordinal,
+                log_cursor,
                 ..
             }) => {
                 assert_eq!(protocol, PROTOCOL_VERSION);
-                (host_pid, child_alive)
+                assert!(!run_id.is_empty(), "v2 hello must identify its run");
+                assert!(run_ordinal >= 1, "test Hosts use a non-legacy run");
+                assert_eq!(log_cursor.run_id, run_id);
+                assert_eq!(log_cursor.run_ordinal, run_ordinal);
+                (host_pid, child_alive, log_cursor)
             }
             other => panic!("expected hello_ok, got {}", read1_desc(other)),
         }
+    }
+
+    fn expect_hello_ok(&mut self) -> (u32, bool) {
+        let (host_pid, child_alive, _) = self.expect_hello_ok_info();
+        (host_pid, child_alive)
     }
 }
 
@@ -266,6 +313,34 @@ fn read1_desc(r: Read1) -> String {
 }
 
 fn connect(ctx: &TestCtx, session_id: &str, token: &str, replay_tail_bytes: u64) -> Conn {
+    connect_with_output_subscription(ctx, session_id, token, replay_tail_bytes, true)
+}
+
+fn connect_with_output_subscription(
+    ctx: &TestCtx,
+    session_id: &str,
+    token: &str,
+    replay_tail_bytes: u64,
+    subscribe_output: bool,
+) -> Conn {
+    connect_with_resume(
+        ctx,
+        session_id,
+        token,
+        replay_tail_bytes,
+        None,
+        subscribe_output,
+    )
+}
+
+fn connect_with_resume(
+    ctx: &TestCtx,
+    session_id: &str,
+    token: &str,
+    replay_tail_bytes: u64,
+    resume_from: Option<LogCursor>,
+    subscribe_output: bool,
+) -> Conn {
     let s = UnixStream::connect(&ctx.socket).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     let w = s.try_clone().unwrap();
@@ -278,6 +353,8 @@ fn connect(ctx: &TestCtx, session_id: &str, token: &str, replay_tail_bytes: u64)
         session_id: session_id.to_string(),
         token: token.to_string(),
         replay_tail_bytes,
+        resume_from,
+        subscribe_output,
     });
     c
 }
@@ -296,7 +373,15 @@ fn output_bytes(frames: &[HostFrame]) -> Vec<u8> {
 fn offsets_are_contiguous(frames: &[HostFrame]) -> bool {
     let mut expected = None::<u64>;
     for f in frames {
-        if let HostFrame::Output { data, offset, .. } = f {
+        if let HostFrame::Output {
+            data,
+            offset,
+            cursor,
+            ..
+        } = f
+        {
+            assert_eq!(cursor.offset, *offset as i64);
+            assert!(!cursor.run_id.is_empty());
             match expected {
                 None => expected = Some(*offset + data.len() as u64),
                 Some(e) if e == *offset => expected = Some(e + data.len() as u64),
@@ -408,9 +493,352 @@ fn handshake_ok_and_rejections() {
     );
 }
 
+#[test]
+fn explicit_session_dir_owns_state_and_status_journal() {
+    let mut ctx = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), "sleep 60".into()],
+        1 << 20,
+        vec![],
+    );
+    let stable_session_dir = ctx.dir.join("stable-session");
+    let run_dir = ctx.dir.join("runs").join("run-1");
+    std::fs::create_dir_all(&stable_session_dir).unwrap();
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let mut cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&ctx.cfg_path).unwrap()).unwrap();
+    cfg["sessionDir"] = serde_json::json!(stable_session_dir);
+    cfg["logPath"] = serde_json::json!(run_dir.join("output.log"));
+    cfg["hostLogPath"] = serde_json::json!(run_dir.join("host.log"));
+    cfg["hookEventsPath"] = serde_json::json!(run_dir.join("events.jsonl"));
+    std::fs::write(&ctx.cfg_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+    ctx.dir = stable_session_dir.clone();
+
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    wait_for(
+        || {
+            stable_session_dir.join("host-state.json").exists()
+                && stable_session_dir.join("status-events.jsonl").exists()
+        },
+        Duration::from_secs(5),
+        "state artifacts in explicit Session root",
+    );
+    assert!(!run_dir.join("host-state.json").exists());
+    assert!(!run_dir.join("status-events.jsonl").exists());
+}
+
+// The Host keeps this limit deliberately small: every authenticated client
+// owns a writer thread and a bounded outbound queue.
+const EXPECTED_MAX_AUTHENTICATED_CLIENTS: usize = 16;
+
+#[test]
+fn authenticated_connection_limit_rejects_excess_client() {
+    let ctx = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), "sleep 60".into()],
+        1 << 20,
+        vec![],
+    );
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+
+    let mut clients = Vec::with_capacity(EXPECTED_MAX_AUTHENTICATED_CLIENTS);
+    for _ in 0..EXPECTED_MAX_AUTHENTICATED_CLIENTS {
+        let mut client = connect(&ctx, &ctx.session_id, TOKEN, 0);
+        client.expect_hello_ok();
+        clients.push(client);
+    }
+
+    let mut excess = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    assert!(matches!(
+        excess.read1(Duration::from_secs(3)),
+        Read1::Frame(HostFrame::Error { .. }) | Read1::Closed
+    ));
+
+    // Refusing one surplus connection must not affect already-connected ones.
+    clients[0].send(&ClientFrame::Ping {
+        session_id: ctx.session_id.clone(),
+    });
+    let replies = clients[0].collect_until(Duration::from_secs(3), |frames| {
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::Pong { .. }))
+    });
+    assert!(
+        replies
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::Pong { .. })),
+        "a healthy client must remain usable after the excess client is rejected"
+    );
+
+    // Detach closes the reader and writer for exactly one client, releasing
+    // its reserved authenticated-client slot for a later connection.
+    let mut detached = clients.pop().unwrap();
+    detached.send(&ClientFrame::Detach {
+        session_id: ctx.session_id.clone(),
+    });
+    wait_for(
+        || matches!(detached.read1(Duration::from_millis(100)), Read1::Closed),
+        Duration::from_secs(3),
+        "detached client close",
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let replacement = loop {
+        let mut candidate = connect(&ctx, &ctx.session_id, TOKEN, 0);
+        if matches!(
+            candidate.read1(Duration::from_millis(100)),
+            Read1::Frame(HostFrame::HelloOk { .. })
+        ) {
+            break candidate;
+        }
+        assert!(Instant::now() < deadline, "detached slot was not reclaimed");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    drop(replacement);
+}
+
+#[test]
+fn slow_client_is_evicted_without_stalling_healthy_client() {
+    let ctx = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), "sleep 60".into()],
+        1 << 20,
+        vec![],
+    );
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+
+    let mut slow = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    slow.expect_hello_ok();
+    let mut healthy = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    healthy.expect_hello_ok();
+
+    // Do not read `slow`. Flood its own Pong replies until its bounded
+    // outbound queue fills; a short client-side write timeout prevents this
+    // test from waiting indefinitely if the server regresses.
+    slow.writer
+        .set_write_timeout(Some(Duration::from_millis(250)))
+        .unwrap();
+    let ping = ClientFrame::Ping {
+        session_id: ctx.session_id.clone(),
+    };
+    for _ in 0..20_000 {
+        if write_frame(&mut slow.writer, &ping).is_err() {
+            break;
+        }
+    }
+    wait_for(
+        || {
+            std::fs::read_to_string(&ctx.host_log)
+                .map(|log| log.contains("outbound queue full"))
+                .unwrap_or(false)
+        },
+        Duration::from_secs(10),
+        "slow client outbound queue eviction",
+    );
+
+    // The Host and a separate client remain usable after isolating the slow
+    // consumer; no Agent stop or global socket failure is allowed.
+    healthy.send(&ping);
+    let replies = healthy.collect_until(Duration::from_secs(3), |frames| {
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::Pong { .. }))
+    });
+    assert!(
+        replies
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::Pong { .. })),
+        "a healthy client must remain usable after slow-client eviction"
+    );
+}
+
+#[test]
+fn broadcast_evicts_nonreading_output_client_without_stalling_monitor() {
+    let marker = uniq("broadcast-marker");
+    let ctx = make_ctx(
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            format!(
+                "read start; dd if=/dev/zero bs=16384 count=256 2>/dev/null; printf '\\n{marker}\\n'; sleep 60"
+            ),
+        ],
+        1 << 20,
+        vec![],
+    );
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+
+    // The slow terminal subscribes to output but never reads it. The monitor
+    // deliberately skips output so it remains a healthy control client while
+    // the PTY floods the broadcaster.
+    let mut slow = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    slow.expect_hello_ok();
+    let mut monitor = connect_with_output_subscription(&ctx, &ctx.session_id, TOKEN, 0, false);
+    monitor.expect_hello_ok();
+    monitor.send(&ClientFrame::Input {
+        session_id: ctx.session_id.clone(),
+        data: b"start\n".to_vec(),
+    });
+
+    wait_for(
+        || {
+            std::fs::read_to_string(&ctx.host_log)
+                .map(|log| log.contains("dropping client from broadcast"))
+                .unwrap_or(false)
+        },
+        Duration::from_secs(20),
+        "broadcast slow-client eviction",
+    );
+    wait_for(
+        || {
+            std::fs::read(&ctx.log)
+                .map(|bytes| {
+                    bytes
+                        .windows(marker.len())
+                        .any(|window| window == marker.as_bytes())
+                })
+                .unwrap_or(false)
+        },
+        Duration::from_secs(20),
+        "agent output marker",
+    );
+
+    monitor.send(&ClientFrame::Ping {
+        session_id: ctx.session_id.clone(),
+    });
+    let replies = monitor.collect_until(Duration::from_secs(3), |frames| {
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::Pong { .. }))
+    });
+    assert!(
+        replies
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::Pong { .. })),
+        "the status monitor must remain usable after broadcast eviction"
+    );
+
+    // A fresh terminal can still retrieve the final output tail after the
+    // slow subscriber is isolated.
+    let mut replay = connect(&ctx, &ctx.session_id, TOKEN, 128 * 1024);
+    replay.expect_hello_ok();
+    let frames = replay.collect_until(Duration::from_secs(8), |frames| {
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::ReplayDone { .. }))
+    });
+    assert!(
+        output_bytes(&frames)
+            .windows(marker.len())
+            .any(|window| window == marker.as_bytes()),
+        "healthy terminal replay must retain the agent output marker"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 2. Echo round-trip + log sha256 consistency
 // ---------------------------------------------------------------------------
+
+#[test]
+fn pi_rpc_pipe_accepts_prompt_abort_and_persists_structured_events() {
+    let ctx = make_rpc_ctx(
+        r#"while IFS= read -r line; do
+  case "$line" in
+    *get_state*) printf '{"type":"response","command":"get_state","success":true,"data":{"sessionId":"pi-native-test-id"}}\n' ;;
+    *'"prompt"'*) printf '{"type":"message_update","text":"prompt received"}\n' ;;
+    *abort*) printf '{"type":"response","command":"abort","success":true}\n' ;;
+  esac
+done"#,
+    );
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut conn = connect(&ctx, &ctx.session_id, TOKEN, 64 * 1024);
+    conn.expect_hello_ok();
+
+    let startup = conn.collect_until(Duration::from_secs(5), |frames| {
+        frames.iter().any(|frame| matches!(frame, HostFrame::ReplayDone { .. }))
+    });
+    assert!(String::from_utf8_lossy(&output_bytes(&startup)).contains("pi-native-test-id"));
+    assert!(
+        !startup.iter().any(|frame| matches!(
+            frame,
+            HostFrame::Structured { event, .. }
+                if event.get("command").and_then(|value| value.as_str()) == Some("get_state")
+        )),
+        "successful get_state is internal startup validation, not a timeline event"
+    );
+
+    conn.send(&ClientFrame::StructuredPrompt {
+        session_id: ctx.session_id.clone(),
+        text: "hello Pi".into(),
+    });
+    let prompted = conn.collect_until(Duration::from_secs(5), |frames| {
+        frames.iter().any(|frame| matches!(
+            frame,
+            HostFrame::Structured { event, .. }
+                if event.get("text").and_then(|value| value.as_str()) == Some("prompt received")
+        ))
+    });
+    assert!(prompted.iter().any(|frame| matches!(
+        frame,
+        HostFrame::Structured { event, .. }
+            if event.get("text").and_then(|value| value.as_str()) == Some("prompt received")
+    )));
+
+    conn.send(&ClientFrame::AbortStructuredTurn {
+        session_id: ctx.session_id.clone(),
+    });
+    let aborted = conn.collect_until(Duration::from_secs(5), |frames| {
+        frames.iter().any(|frame| matches!(
+            frame,
+            HostFrame::Structured { event, .. }
+                if event.get("command").and_then(|value| value.as_str()) == Some("abort")
+        ))
+    });
+    assert!(aborted.iter().any(|frame| matches!(
+        frame,
+        HostFrame::Structured { event, .. }
+            if event.get("command").and_then(|value| value.as_str()) == Some("abort")
+    )));
+    let log = std::fs::read_to_string(&ctx.log).unwrap();
+    assert!(log.contains("prompt received"));
+}
+
+#[test]
+fn pi_pty_hides_only_the_first_private_session_notice() {
+    let ctx = make_pi_pty_ctx(
+        r#"printf '\033[33mWarning: No project session found with id '"'"'pi-native-test-id'"'"'; creating a new session with that id.\033[39m\r\n'; printf 'Pi TUI ready\r\n'; sleep 60"#,
+    );
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut conn = connect(&ctx, &ctx.session_id, TOKEN, 64 * 1024);
+    conn.expect_hello_ok();
+    let frames = conn.collect_until(Duration::from_secs(5), |frames| {
+        String::from_utf8_lossy(&output_bytes(frames)).contains("Pi TUI ready")
+    });
+    let output_bytes = output_bytes(&frames);
+    let output = String::from_utf8_lossy(&output_bytes);
+    assert!(output.contains("Pi TUI ready"));
+    assert!(!output.contains("No project session found"));
+    assert!(!std::fs::read_to_string(&ctx.log)
+        .unwrap()
+        .contains("No project session found"));
+}
+
+#[test]
+fn pi_rpc_invalid_json_terminates_the_session() {
+    let ctx = make_rpc_ctx("printf 'not-json\\n'; sleep 60");
+    let mut guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut conn = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    conn.expect_hello_ok();
+    let frames = conn.collect_until(Duration::from_secs(10), |frames| {
+        frames.iter().any(|frame| matches!(frame, HostFrame::Exit { reason, .. } if reason == "fault"))
+    });
+    assert!(frames.iter().any(|frame| matches!(frame, HostFrame::Exit { reason, .. } if reason == "fault")));
+    assert_eq!(guard.wait_exit(Duration::from_secs(10)).and_then(|status| status.code()), Some(0));
+}
 
 #[test]
 fn echo_roundtrip_log_sha256() {
@@ -491,8 +919,14 @@ fn echo_roundtrip_log_sha256() {
         serde_json::from_str(&std::fs::read_to_string(ctx.dir.join("host-state.json")).unwrap())
             .unwrap();
     assert_eq!(state["pgid_verified"], serde_json::json!(true));
+    assert!(
+        state["run_id"].as_str().is_some_and(|id| !id.is_empty()),
+        "host-state must identify the concrete run: {state}"
+    );
+    assert_eq!(state["run_ordinal"], serde_json::json!(1));
     assert_eq!(state["exit_code"], serde_json::json!(0));
     assert_eq!(state["group_cleaned"], serde_json::json!(true));
+    assert_eq!(state["exit_reason"], serde_json::json!("natural"));
 
     // Status events were persisted (process:spawn at minimum).
     let events = std::fs::read_to_string(ctx.dir.join("status-events.jsonl")).unwrap();
@@ -558,10 +992,16 @@ fn input_isolation() {
         session_id: "ses_intruder".into(),
         data: b"echo pwned\n".to_vec(),
     });
-    assert!(matches!(
-        c.read1(Duration::from_secs(3)),
-        Read1::Frame(HostFrame::Error { .. })
-    ));
+    // Heartbeats are intentionally independent of request handling, so a
+    // 1-second tick may legally arrive before the client-specific Error.
+    // Consume frames until the identity rejection instead of making this
+    // isolation assertion race the realtime heartbeat cadence.
+    let rejection = c.collect_until(Duration::from_secs(3), |frames| {
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::Error { .. }))
+    });
+    assert!(matches!(rejection.last(), Some(HostFrame::Error { .. })));
     assert!(matches!(c.read1(Duration::from_secs(3)), Read1::Closed));
 
     // Host is unaffected: a fresh connection still handshakes.
@@ -640,6 +1080,70 @@ fn process_group_cleanup() {
         Err(nix::errno::Errno::ESRCH)
     );
     assert!(pids_in_group(agent_pid).is_empty());
+
+    let state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(ctx.dir.join("host-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["exit_reason"], serde_json::json!("user_stop"));
+}
+
+#[test]
+fn hook_poller_ignores_events_before_the_run_snapshot() {
+    let ctx = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), "sleep 60".into()],
+        1 << 20,
+        vec![],
+    );
+    let hook_path = ctx.dir.join("events.jsonl");
+    // This is a fact from the previous run. The new Host snapshots the file
+    // before spawning its child and must not report it as live state.
+    std::fs::write(&hook_path, b"{\"event\":\"Notification\"}\n").unwrap();
+
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut client = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    client.expect_hello_ok();
+
+    let old_frames = client.collect_until(Duration::from_millis(900), |_| false);
+    assert!(
+        !old_frames.iter().any(|frame| matches!(
+            frame,
+            HostFrame::State {
+                state: AgentState::NeedsInput,
+                ..
+            }
+        )),
+        "prior-run hook event was replayed into this run: {old_frames:?}"
+    );
+
+    let mut hook = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&hook_path)
+        .unwrap();
+    hook.write_all(b"{\"event\":\"Notification\"}\n").unwrap();
+    hook.flush().unwrap();
+
+    let new_frames = client.collect_until(Duration::from_secs(3), |frames| {
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::State {
+                    state: AgentState::NeedsInput,
+                    ..
+                }
+            )
+        })
+    });
+    assert!(
+        new_frames.iter().any(|frame| matches!(
+            frame,
+            HostFrame::State {
+                state: AgentState::NeedsInput,
+                ..
+            }
+        )),
+        "new hook event was not consumed: {new_frames:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -800,6 +1304,180 @@ fn reconnect_replay() {
     let _ = guard.wait_exit(Duration::from_secs(15));
 }
 
+#[test]
+fn reconnect_resume_serializes_replay_then_live_without_gaps() {
+    let script = "sleep 0.2; i=0; while [ $i -lt 600 ]; do printf 'SEQ:%04d\\n' \"$i\"; i=$((i+1)); sleep 0.002; done; sleep 60";
+    let ctx = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), script.into()],
+        1 << 20,
+        vec![],
+    );
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+
+    let mut first = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    first.expect_hello_ok();
+    let before_disconnect = first.collect_until(Duration::from_secs(10), |frames| {
+        output_bytes(frames)
+            .windows(b"SEQ:0050".len())
+            .any(|window| window == b"SEQ:0050")
+    });
+    let resume_from = before_disconnect
+        .iter()
+        .rev()
+        .find_map(|frame| match frame {
+            HostFrame::Output { data, cursor, .. } => {
+                let mut next = cursor.clone();
+                next.offset += data.len() as i64;
+                Some(next)
+            }
+            _ => None,
+        })
+        .expect("initial connection receives numbered output");
+    drop(first); // Simulate a GUI/socket loss, not a graceful Detach.
+
+    let mut resumed = connect_with_resume(
+        &ctx,
+        &ctx.session_id,
+        TOKEN,
+        64 * 1024,
+        Some(resume_from.clone()),
+        true,
+    );
+    resumed.expect_hello_ok();
+    let frames = resumed.collect_until(Duration::from_secs(20), |frames| {
+        output_bytes(frames)
+            .windows(b"SEQ:0599".len())
+            .any(|window| window == b"SEQ:0599")
+    });
+
+    assert!(
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::ReplayDone { .. })),
+        "resume must delimit replay before live output: {frames:?}"
+    );
+    let output_frames: Vec<_> = frames
+        .iter()
+        .filter_map(|frame| match frame {
+            HostFrame::Output {
+                data,
+                offset,
+                cursor,
+                ..
+            } => Some((data, *offset, cursor)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        output_frames.first().map(|(_, offset, _)| *offset),
+        Some(resume_from.offset as u64),
+        "resume must start at the exact requested cursor"
+    );
+    assert!(offsets_are_contiguous(&frames), "replay + live offsets gap");
+    assert!(output_frames
+        .iter()
+        .all(|(_, _, cursor)| cursor.run_id == resume_from.run_id
+            && cursor.run_ordinal == resume_from.run_ordinal
+            && cursor.generation == resume_from.generation));
+
+    let bytes = output_bytes(&frames);
+    let markers: Vec<u32> = bytes
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            std::str::from_utf8(line)
+                .ok()?
+                .strip_prefix("SEQ:")?
+                .parse()
+                .ok()
+        })
+        .collect();
+    assert!(
+        markers.len() > 100,
+        "expected sustained output after reconnect"
+    );
+    assert_eq!(markers.last(), Some(&599));
+    assert!(
+        markers.windows(2).all(|pair| pair[1] == pair[0] + 1),
+        "numbered replay/live stream has a missing or duplicate marker: {markers:?}"
+    );
+}
+
+#[test]
+fn invalid_resume_requires_resync_then_bounded_tail() {
+    let marker = uniq("resync-tail");
+    let ctx = make_ctx(
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            format!("printf '{marker}\\n'; sleep 60"),
+        ],
+        1 << 20,
+        vec![],
+    );
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    wait_for(
+        || {
+            std::fs::read(&ctx.log)
+                .map(|bytes| bytes.windows(marker.len()).any(|w| w == marker.as_bytes()))
+                .unwrap_or(false)
+        },
+        Duration::from_secs(5),
+        "resync tail marker",
+    );
+
+    let wrong = LogCursor {
+        run_id: "run-from-another-host".into(),
+        run_ordinal: 99,
+        generation: 7,
+        offset: 123,
+    };
+    let mut client = connect_with_resume(
+        &ctx,
+        &ctx.session_id,
+        TOKEN,
+        4096,
+        Some(wrong.clone()),
+        true,
+    );
+    let (_, _, current) = client.expect_hello_ok_info();
+    let frames = client.collect_until(Duration::from_secs(5), |frames| {
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::ReplayDone { .. }))
+    });
+    let earliest = match frames.first() {
+        Some(HostFrame::ResyncRequired {
+            earliest, reason, ..
+        }) => {
+            assert!(!reason.is_empty());
+            earliest
+        }
+        other => panic!("invalid cursor must lead with ResyncRequired, got {other:?}"),
+    };
+    assert_eq!(earliest.run_id, current.run_id);
+    assert_eq!(earliest.run_ordinal, current.run_ordinal);
+    assert_eq!(earliest.generation, current.generation);
+    assert_eq!(earliest.offset, 0);
+    assert!(
+        output_bytes(&frames)
+            .windows(marker.len())
+            .any(|window| window == marker.as_bytes()),
+        "resync must provide the requested bounded tail"
+    );
+    assert!(matches!(frames.last(), Some(HostFrame::ReplayDone { .. })));
+
+    let mut monitor = connect_with_resume(&ctx, &ctx.session_id, TOKEN, 4096, Some(wrong), false);
+    monitor.expect_hello_ok();
+    let monitor_frames = monitor.collect_until(Duration::from_secs(2), |_| false);
+    assert!(monitor_frames.iter().all(|frame| !matches!(
+        frame,
+        HostFrame::Output { .. } | HostFrame::ReplayDone { .. } | HostFrame::ResyncRequired { .. }
+    )));
+}
+
 // ---------------------------------------------------------------------------
 // 6. Client drop (GUI crash) does not affect the host
 // ---------------------------------------------------------------------------
@@ -825,11 +1503,19 @@ fn client_drop_resilience() {
     let (_, alive) = c2.expect_hello_ok();
     assert!(alive, "child must survive a client drop");
 
-    // Heartbeat keeps flowing every ~1s.
-    match c2.read1(Duration::from_secs(3)) {
-        Read1::Frame(HostFrame::Heartbeat { .. }) => {}
-        other => panic!("expected heartbeat, got {}", read1_desc(other)),
-    }
+    // The process-spawn state may race with this new connection, but the
+    // wall-clock heartbeat must still arrive even with that queued state.
+    let frames = c2.collect_until(Duration::from_secs(3), |frames| {
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::Heartbeat { .. }))
+    });
+    assert!(
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::Heartbeat { .. })),
+        "expected heartbeat, got {frames:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import type {
   StatusEventView,
   TimelineData,
   WorktreeStatus,
+  RepositoryStatus,
 } from "./types";
 
 export interface SessionRuntime {
@@ -92,6 +93,7 @@ export interface PromptState extends PromptOptions {
 export type DialogState =
   | { kind: "newSession"; projectId?: string; worktreeId?: string; agent?: string }
   | { kind: "newWorktree"; projectId: string }
+  | { kind: "branchPicker"; projectId: string }
   | { kind: "settings" }
   | { kind: "diagnostics" }
   | { kind: "timeline" }
@@ -113,6 +115,7 @@ export interface AppState {
   timeline: TimelineData;
   secretBackend: string;
   indexState: string;
+  exportsDir: string;
   activeSessionId: string | null;
   /** Sessions with a live terminal pane (kept mounted, display:none toggling). */
   attachedIds: string[];
@@ -127,6 +130,8 @@ export interface AppState {
   showOnboarding: boolean;
   expandedProjects: Record<string, boolean>;
   activeWorktreeStatus: WorktreeStatus | null;
+  /** Last backend-confirmed checkout state keyed by project. */
+  repositoryStatuses: Record<string, RepositoryStatus>;
   /** Dismissed "结果尚未提交" notices (sessionId -> status sequence). */
   noticeDismissed: Record<string, number>;
   announcement: string;
@@ -140,6 +145,12 @@ export interface AppState {
   pinnedSessionAt: Record<string, number>;
   /** Terminal search bar visibility for the active session. */
   termSearchOpen: boolean;
+  /** Project whose worktree management view replaces the sidebar list. */
+  sidebarWorktreeProjectId: string | null;
+  /** Worktree to emphasize after navigating here from branch management. */
+  highlightedWorktreeId: string | null;
+  /** Worktree ids whose session list is collapsed in the management view. */
+  collapsedWorktrees: Record<string, boolean>;
 }
 
 const initialState: AppState = {
@@ -152,6 +163,7 @@ const initialState: AppState = {
   timeline: { completed: 0, waiting: 0, failed: 0, entries: [] },
   secretBackend: "unknown",
   indexState: "unknown",
+  exportsDir: "",
   activeSessionId: null,
   attachedIds: [],
   runtime: {},
@@ -165,6 +177,7 @@ const initialState: AppState = {
   showOnboarding: false,
   expandedProjects: {},
   activeWorktreeStatus: null,
+  repositoryStatuses: {},
   noticeDismissed: {},
   announcement: "",
   themeEffective: "dark",
@@ -173,6 +186,9 @@ const initialState: AppState = {
   sidebarWidth: 296,
   pinnedSessionAt: {},
   termSearchOpen: false,
+  sidebarWorktreeProjectId: null,
+  highlightedWorktreeId: null,
+  collapsedWorktrees: {},
 };
 
 let state = initialState;
@@ -262,13 +278,52 @@ export function closeContextMenu() {
   if (state.contextMenu) setState({ contextMenu: null });
 }
 
+/** Drill the sidebar into one project's worktree session management view. */
+export function openWorktreeView(projectId: string, highlightWorktreeId: string | null = null) {
+  setState({ sidebarWorktreeProjectId: projectId, highlightedWorktreeId: highlightWorktreeId });
+}
+
+/** Leave the worktree management view and return to the main session list. */
+export function closeWorktreeView() {
+  if (state.sidebarWorktreeProjectId) {
+    setState({ sidebarWorktreeProjectId: null, highlightedWorktreeId: null });
+  }
+}
+
+/**
+ * A project snapshot may race an already delivered state event. A sequence is
+ * only monotonic inside one Host run, so compare the run ordinal first and
+ * never let a foreign/same-ordinal run overwrite a known status.
+ */
+function latestStatus(
+  current: StatusEventView | null,
+  incoming: StatusEventView | null | undefined,
+): StatusEventView | null | undefined {
+  if (incoming === undefined) return undefined;
+  if (current && incoming) {
+    if (incoming.runOrdinal < current.runOrdinal) return current;
+    if (incoming.runOrdinal === current.runOrdinal) {
+      if (incoming.runId !== current.runId || incoming.sequence < current.sequence) return current;
+    }
+  }
+  return incoming;
+}
+
 export function patchRuntime(sessionId: string, patch: Partial<SessionRuntime>) {
-  update((s) => ({
-    runtime: {
-      ...s.runtime,
-      [sessionId]: { ...emptyRuntime(), ...s.runtime[sessionId], ...patch },
-    },
-  }));
+  update((s) => {
+    const runtime = { ...emptyRuntime(), ...s.runtime[sessionId] };
+    const status = latestStatus(runtime.status, patch.status);
+    return {
+      runtime: {
+        ...s.runtime,
+        [sessionId]: {
+          ...runtime,
+          ...patch,
+          ...(status === undefined ? {} : { status }),
+        },
+      },
+    };
+  });
 }
 
 export function getRuntime(sessionId: string): SessionRuntime {
@@ -280,9 +335,91 @@ export function patchSession(sessionId: string, patch: Partial<SessionView>) {
   update((s) => ({
     projects: s.projects.map((p) => ({
       ...p,
-      sessions: p.sessions.map((ses) => (ses.id === sessionId ? { ...ses, ...patch } : ses)),
+      sessions: p.sessions.map((ses) => {
+        if (ses.id !== sessionId) return ses;
+        const status = latestStatus(ses.status, patch.status);
+        return {
+          ...ses,
+          ...patch,
+          ...(status === undefined ? {} : { status }),
+        };
+      }),
     })),
   }));
+}
+
+function sessionIds(projects: ProjectView[]): Set<string> {
+  return new Set(projects.flatMap((project) => project.sessions.map((session) => session.id)));
+}
+
+function retainSessionEntries<T>(entries: Record<string, T>, alive: Set<string>): Record<string, T> {
+  const removed = Object.keys(entries).filter((sessionId) => !alive.has(sessionId));
+  if (removed.length === 0) return entries;
+  const next = { ...entries };
+  for (const sessionId of removed) delete next[sessionId];
+  return next;
+}
+
+function retainAttachedIds(ids: string[], alive: Set<string>): string[] {
+  const next = ids.filter((sessionId) => alive.has(sessionId));
+  return next.length === ids.length ? ids : next;
+}
+
+function sessionScopedState(s: AppState, alive: Set<string>): Partial<AppState> {
+  const activeSessionId = s.activeSessionId && alive.has(s.activeSessionId) ? s.activeSessionId : null;
+  return {
+    runtime: retainSessionEntries(s.runtime, alive),
+    noticeDismissed: retainSessionEntries(s.noticeDismissed, alive),
+    pinnedSessionAt: retainSessionEntries(s.pinnedSessionAt, alive),
+    attachedIds: retainAttachedIds(s.attachedIds, alive),
+    activeSessionId,
+    activeWorktreeStatus: activeSessionId ? s.activeWorktreeStatus : null,
+    termSearchOpen: activeSessionId ? s.termSearchOpen : false,
+  };
+}
+
+/**
+ * Replace the backend project snapshot without allowing it to regress a
+ * session status already observed through an event stream. This is also the
+ * single store-side cleanup point for session-scoped UI caches.
+ */
+export function applyProjectsSnapshot(projects: ProjectView[]) {
+  update((s) => {
+    const worktreeIds = new Set(projects.flatMap((p) => p.worktrees.map((w) => w.id)));
+    const currentSessions = new Map<string, SessionView>();
+    for (const project of s.projects) {
+      for (const session of project.sessions) currentSessions.set(session.id, session);
+    }
+    const nextProjects = projects.map((project) => ({
+      ...project,
+      sessions: project.sessions.map((session) => {
+        const current = currentSessions.get(session.id);
+        if (!current) return session;
+        return { ...session, status: latestStatus(current.status, session.status) ?? null };
+      }),
+    }));
+    return {
+      projects: nextProjects,
+      sidebarWorktreeProjectId:
+        s.sidebarWorktreeProjectId &&
+        nextProjects.some((p) => p.id === s.sidebarWorktreeProjectId)
+          ? s.sidebarWorktreeProjectId
+          : null,
+      collapsedWorktrees: Object.fromEntries(
+        Object.entries(s.collapsedWorktrees).filter(([id]) => worktreeIds.has(id)),
+      ),
+      ...sessionScopedState(s, sessionIds(nextProjects)),
+    };
+  });
+}
+
+/** Remove local state that must not outlive a successfully removed Session. */
+export function clearSessionScopedState(sessionId: string) {
+  update((s) => {
+    const alive = sessionIds(s.projects);
+    alive.delete(sessionId);
+    return sessionScopedState(s, alive);
+  });
 }
 
 /** All sessions in sidebar display order — drives ⌘1…9 switching. */

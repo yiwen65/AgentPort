@@ -16,6 +16,10 @@ export function agentDisplay(adapter: string): string {
       return "Codex";
     case "kimi":
       return "Kimi Code";
+    case "qoder":
+      return "Qoder";
+    case "pi":
+      return "Pi";
     case "shell":
       return "Shell";
     default:

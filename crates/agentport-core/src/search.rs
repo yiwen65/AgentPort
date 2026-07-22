@@ -806,6 +806,7 @@ mod tests {
                     resume_precision: ResumePrecision::Unavailable,
                     log_path: log.to_string_lossy().into_owned(),
                     adapter_type: AgentType::Shell,
+                    transport: AgentTransport::Pty,
                     command: vec![],
                     permission_mode: PermissionMode::Native,
                     created_at: Utc::now(),

@@ -346,11 +346,25 @@ fn atomic_write_new(paths: &AppPaths, dest: &Path, data: &[u8]) -> Result<()> {
     std::fs::create_dir_all(&exports)?;
     let tmp = exports.join(format!(".export-{}", crate::ids::new_id("tmp")));
     let _guard = TempFileGuard::new(tmp.clone());
-    let mut f = std::fs::File::create(&tmp)?;
+    let mut f = private_create(&tmp)?;
     f.write_all(data)?;
     f.sync_all()?;
     drop(f);
     publish(&tmp, dest)
+}
+
+/// Create a fresh file with owner-only permissions. Exports contain terminal
+/// output and must never inherit the process umask's group/world readability,
+/// including at the final destination after rename.
+fn private_create(path: &Path) -> Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    Ok(opts.open(path)?)
 }
 
 /// Rename `staging` onto `dest` (never overwrites — see refuse_overwrite).
@@ -363,7 +377,10 @@ fn publish(staging: &Path, dest: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     match std::fs::rename(staging, dest) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            crate::paths::AppPaths::restrict_file(dest)?;
+            Ok(())
+        }
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
             let name = dest.file_name().ok_or_else(|| {
                 CoreError::Validation("export destination has no file name".into())
@@ -375,12 +392,19 @@ fn publish(staging: &Path, dest: &Path) -> Result<()> {
             ));
             let _guard = TempFileGuard::new(sibling.clone());
             std::fs::copy(staging, &sibling)?;
+            crate::paths::AppPaths::restrict_file(&sibling)?;
             std::fs::rename(&sibling, dest)?;
             let _ = std::fs::remove_file(staging);
             Ok(())
         }
         Err(e) => Err(CoreError::Io(e)),
     }
+}
+
+/// Same atomic publish contract as `publish`, exposed for the backup module
+/// (identical staging-temp + rename semantics; refuse overwrite).
+pub fn publish_backup(staging: &Path, dest: &Path) -> Result<()> {
+    publish(staging, dest)
 }
 
 /// Byte-oriented "last n lines": scan for `\n` from the tail, no UTF-8
@@ -495,7 +519,7 @@ fn write_staged(root: &Path, rel: &str, data: &[u8]) -> Result<()> {
 
 /// Pack the staged files (relative paths, forward slashes) into a fresh zip.
 fn zip_staged(staging: &Path, files: &[String], zip_path: &Path) -> Result<()> {
-    let f = std::fs::File::create(zip_path)?;
+    let f = private_create(zip_path)?;
     let mut zw = zip::ZipWriter::new(f);
     let opts = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
@@ -613,6 +637,7 @@ mod tests {
             resume_precision: ResumePrecision::Unavailable,
             log_path: log.to_string_lossy().into_owned(),
             adapter_type: AgentType::Kimi,
+            transport: AgentTransport::Pty,
             command: vec![],
             permission_mode: PermissionMode::Native,
             created_at: Utc::now(),
@@ -640,6 +665,8 @@ mod tests {
     fn add_event(db: &Db, session: &str, seq: i64, state: AgentState) {
         db.record_status_event(&StatusEvent {
             session_id: session.into(),
+            run_id: LEGACY_RUN_ID.into(),
+            run_ordinal: LEGACY_RUN_ORDINAL,
             sequence: seq,
             state,
             source: StateSource::Hook,

@@ -6,8 +6,9 @@
 //! and speaks the handshake-verified socket protocol. Reconnects validate
 //! session id + token every time; stale sockets are removed, never written to.
 
-use crate::db::Db;
+use crate::db::{Db, SessionHostBinding};
 use crate::error::{CoreError, Result};
+use crate::ids;
 use crate::models::*;
 use crate::paths::AppPaths;
 use crate::protocol::*;
@@ -118,6 +119,40 @@ fn read_log_tail(path: &Path, max_bytes: usize) -> String {
     String::from_utf8_lossy(&bytes[start..]).trim().to_string()
 }
 
+/// A Host writes this file atomically enough for reconciliation purposes when
+/// it completes its own stop/natural-exit flow.  It is a stronger terminal
+/// fact than a missing socket: the GUI may have been closed while the Host
+/// exited cleanly, so classifying that Session as Interrupted would be false.
+fn terminal_lifecycle_from_host_state(
+    paths: &AppPaths,
+    session_id: &str,
+    expected_host_pid: i64,
+    expected_run: Option<(&str, i64)>,
+) -> Option<Lifecycle> {
+    if expected_host_pid <= 0 {
+        return None;
+    }
+    let path = paths.session_dir(session_id).join("host-state.json");
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    if value.get("exited_at").is_none()
+        || value.get("session_id").and_then(|v| v.as_str()) != Some(session_id)
+        || value.get("host_pid").and_then(|v| v.as_i64()) != Some(expected_host_pid)
+    {
+        return None;
+    }
+    if let Some((run_id, run_ordinal)) = expected_run {
+        if value.get("run_id").and_then(|v| v.as_str()) != Some(run_id)
+            || value.get("run_ordinal").and_then(|v| v.as_i64()) != Some(run_ordinal)
+        {
+            return None;
+        }
+    }
+    match value.get("exit_reason").and_then(|v| v.as_str()) {
+        Some("user_stop") => Some(Lifecycle::Stopped),
+        _ => Some(Lifecycle::Exited),
+    }
+}
+
 /// True while `pid` exists (kill(pid, 0) succeeds or fails with EPERM).
 fn pid_alive(pid: i32) -> bool {
     match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
@@ -141,18 +176,6 @@ fn wait_pid_gone(pid: i32, timeout: Duration) -> bool {
     }
 }
 
-/// SIGTERM, wait 1s, then SIGKILL (PRD stop escalation).
-fn force_kill(pid: i32) {
-    use nix::sys::signal::{kill, Signal};
-    let p = nix::unistd::Pid::from_raw(pid);
-    let _ = kill(p, Some(Signal::SIGTERM));
-    if wait_pid_gone(pid, Duration::from_secs(1)) {
-        return;
-    }
-    let _ = kill(p, Some(Signal::SIGKILL));
-    let _ = wait_pid_gone(pid, Duration::from_secs(1));
-}
-
 #[derive(Debug)]
 pub struct LaunchSpec {
     pub session: Session,
@@ -171,10 +194,15 @@ pub struct LaunchSpec {
 #[derive(Debug, Clone)]
 pub struct AttachInfo {
     pub session_id: String,
+    pub protocol: u32,
     pub host_pid: u32,
     pub child_alive: bool,
     pub log_bytes: u64,
     pub agent_session_id: Option<String>,
+    pub run_id: String,
+    pub run_ordinal: i64,
+    pub current_status: Option<StatusEvent>,
+    pub log_cursor: LogCursor,
 }
 
 pub struct HostManager<'a> {
@@ -194,12 +222,25 @@ impl<'a> HostManager<'a> {
     pub fn launch(&self, spec: LaunchSpec) -> Result<AttachInfo> {
         let session = spec.session;
         let id = session.id.clone();
+        // A stable Session may be restarted many times. Reserve the run before
+        // writing host.json so every Host-side fact has a durable namespace
+        // even though its local state sequence starts at one.
+        let run = self.db.create_session_run(&id, &ids::new_uuid())?;
+        let run_log_path = self.paths.run_log_path(&id, &run.run_id);
+        let run_log_path_str = run_log_path.to_string_lossy().into_owned();
+        // Claim this generation before touching the socket or spawning. The
+        // claim is the ownership fence for failures that occur before a PID is
+        // available, and prevents an old reaper from terminally updating this
+        // Session during replacement startup.
+        self.db
+            .claim_session_run(&id, &run.run_id, run.run_ordinal, &run_log_path_str)?;
         let socket_path = self.paths.socket_path(&id);
         let socket_str = socket_path.to_string_lossy().into_owned();
         let config_path = self.paths.host_config_path(&id);
         let mut child: Option<Child> = None;
+        let mut bound_host_pid: Option<i64> = None;
 
-        let mut run = || -> Result<AttachInfo> {
+        let mut launch_run = || -> Result<AttachInfo> {
             // Remove any stale socket file from a previous, dead host so the
             // new host can bind (a live host would never be re-launched).
             let _ = std::fs::remove_file(&socket_path);
@@ -209,13 +250,17 @@ impl<'a> HostManager<'a> {
             let cfg = HostConfig {
                 protocol: PROTOCOL_VERSION,
                 session_id: id.clone(),
+                run_id: run.run_id.clone(),
+                run_ordinal: run.run_ordinal,
                 host_token: session.host_token.clone(),
                 command: spec.command.clone(),
                 cwd: session.cwd.clone(),
                 env: spec.env.clone(),
                 adapter_type: session.adapter_type.as_str().to_string(),
+                transport: session.transport,
                 socket_path: socket_str.clone(),
-                log_path: session.log_path.clone(),
+                session_dir: self.paths.session_dir(&id).to_string_lossy().into_owned(),
+                log_path: run_log_path_str.clone(),
                 host_log_path: self.paths.host_log_path(&id).to_string_lossy().into_owned(),
                 hook_events_path: self
                     .paths
@@ -262,9 +307,13 @@ impl<'a> HostManager<'a> {
             let child_pid = spawned.id();
             child = Some(spawned);
 
-            // Wait for the socket to appear; bail early if the host dies.
+            // A bound socket is not proof that the server has started
+            // accepting authenticated requests. Retry the full handshake
+            // until the deadline, which lets the Host pre-bind its listener
+            // before spawning the child without producing a false startup
+            // failure during the small server-readiness window.
             let deadline = Instant::now() + SPAWN_READY_TIMEOUT;
-            loop {
+            let info = loop {
                 if let Some(c) = child.as_mut() {
                     if let Some(status) = c.try_wait()? {
                         let tail = read_log_tail(&self.paths.host_log_path(&id), 4096);
@@ -273,30 +322,82 @@ impl<'a> HostManager<'a> {
                         )));
                     }
                 }
-                if socket_path.exists() {
-                    break;
+                match HostClient::connect(&socket_str, &id, &session.host_token, 0) {
+                    Ok((client, info)) => {
+                        drop(client);
+                        break info;
+                    }
+                    // A responding Host that fails the authenticated protocol
+                    // check cannot become valid by waiting; fail closed rather
+                    // than masking an identity/version problem as startup lag.
+                    Err(CoreError::Protocol(message)) => {
+                        return Err(CoreError::Protocol(message));
+                    }
+                    // Missing listener, an accepted-yet-not-served connection,
+                    // and a transient handshake timeout are all expected until
+                    // the pre-bound Host completes setup.
+                    Err(CoreError::Host(_)) => {}
+                    Err(error) => return Err(error),
                 }
                 if Instant::now() >= deadline {
+                    let tail = read_log_tail(&self.paths.host_log_path(&id), 4096);
                     return Err(CoreError::Host(format!(
-                        "host did not create its socket within {}s",
-                        SPAWN_READY_TIMEOUT.as_secs()
+                        "host did not complete a verified handshake within {}s: {tail}",
+                        SPAWN_READY_TIMEOUT.as_secs(),
                     )));
                 }
                 std::thread::sleep(Duration::from_millis(50));
-            }
+            };
 
-            let (_client, info) = HostClient::connect(&socket_str, &id, &session.host_token, 0)?;
-            drop(_client);
-            self.db
-                .update_session_host(&id, Some(child_pid as i64), Some(&socket_str))?;
-            self.db.update_session_lifecycle(&id, Lifecycle::Running)?;
+            if info.host_pid != child_pid {
+                return Err(CoreError::Protocol(format!(
+                    "host pid mismatch during launch: spawned={child_pid} handshake={}",
+                    info.host_pid
+                )));
+            }
+            if info.protocol >= PROTOCOL_VERSION
+                && (info.run_id != run.run_id || info.run_ordinal != run.run_ordinal)
+            {
+                return Err(CoreError::Protocol(format!(
+                    "host run mismatch during launch: expected {}/{} got {}/{}",
+                    run.run_id, run.run_ordinal, info.run_id, info.run_ordinal
+                )));
+            }
+            if !self.db.bind_session_host_for_run(
+                &id,
+                &run.run_id,
+                run.run_ordinal,
+                child_pid as i64,
+                &socket_str,
+            )? {
+                return Err(CoreError::Conflict(format!(
+                    "session {id} launch was superseded by a newer run"
+                )));
+            }
+            bound_host_pid = Some(child_pid as i64);
+            if !self.db.update_session_lifecycle_if_host(
+                &id,
+                child_pid as i64,
+                Some((&run.run_id, run.run_ordinal)),
+                Lifecycle::Running,
+            )? {
+                return Err(CoreError::Conflict(format!(
+                    "session {id} lifecycle changed while its host was starting"
+                )));
+            }
             Ok(info)
         };
 
-        match run() {
+        match launch_run() {
             Ok(info) => {
                 let child = child.take().expect("host spawned");
-                spawn_host_reaper(self.paths.clone(), id, child);
+                spawn_host_reaper(
+                    self.paths.clone(),
+                    id,
+                    child,
+                    run.run_id.clone(),
+                    run.run_ordinal,
+                );
                 Ok(info)
             }
             Err(e) => {
@@ -304,19 +405,50 @@ impl<'a> HostManager<'a> {
                     let _ = c.kill();
                     let _ = c.wait();
                 }
-                let _ = std::fs::remove_file(&socket_path);
-                let _ = std::fs::remove_file(&config_path);
-                let _ = self.db.update_session_lifecycle(&id, Lifecycle::Exited);
+                // Only the current run may report its own launch failure. If
+                // another restart has claimed the Session, leave its files and
+                // lifecycle alone; it owns the stable socket/config paths.
+                let still_current = match bound_host_pid {
+                    Some(host_pid) => self
+                        .db
+                        .update_session_lifecycle_if_host(
+                            &id,
+                            host_pid,
+                            Some((&run.run_id, run.run_ordinal)),
+                            Lifecycle::Exited,
+                        )
+                        .unwrap_or(false),
+                    None => self
+                        .db
+                        .update_session_lifecycle_if_run(
+                            &id,
+                            &run.run_id,
+                            run.run_ordinal,
+                            Lifecycle::Exited,
+                        )
+                        .unwrap_or(false),
+                };
+                if still_current {
+                    let _ = std::fs::remove_file(&socket_path);
+                    let _ = std::fs::remove_file(&config_path);
+                }
                 Err(e)
             }
         }
     }
 
-    /// Attach to an already-running host (GUI reopen path). Verifies
-    /// session id + token in the handshake; cleans up and reports stale
-    /// sockets instead of writing input to them (PRD 3.3 failure C).
-    pub fn attach(&self, session_id: &str) -> Result<(HostClient, AttachInfo)> {
+    /// Connect to a host and prove that the answered socket still belongs to
+    /// the PID/run currently recorded in SQLite. This does not mutate state;
+    /// callers choose the appropriate terminal classification for failures.
+    fn connect_bound_host(
+        &self,
+        session_id: &str,
+    ) -> Result<(HostClient, AttachInfo, SessionHostBinding)> {
         let session = self.db.get_session(session_id)?;
+        let binding = self.db.session_host_binding(session_id)?;
+        let expected_pid = binding.host_pid.ok_or_else(|| {
+            CoreError::Host("no host pid recorded for the active session run".into())
+        })?;
         let socket = match &session.host_socket {
             Some(s) if !s.is_empty() => s.clone(),
             _ => return Err(CoreError::Host("no host socket recorded".into())),
@@ -324,65 +456,132 @@ impl<'a> HostManager<'a> {
         if session.host_token.is_empty() {
             return Err(CoreError::Host("no host token recorded".into()));
         }
-        match HostClient::connect(&socket, session_id, &session.host_token, 0) {
-            Ok(ok) => Ok(ok),
-            Err(e @ CoreError::Protocol(_)) => Err(e),
+        let (client, info) = HostClient::connect(&socket, session_id, &session.host_token, 0)?;
+        if info.host_pid as i64 != expected_pid {
+            return Err(CoreError::Protocol(format!(
+                "host pid mismatch: database={expected_pid} handshake={}",
+                info.host_pid
+            )));
+        }
+        if info.protocol >= PROTOCOL_VERSION {
+            if let Some((run_id, run_ordinal)) = binding.run_identity() {
+                if info.run_id != run_id || info.run_ordinal != run_ordinal {
+                    return Err(CoreError::Protocol(format!(
+                        "host run mismatch: database={run_id}/{run_ordinal} handshake={}/{}",
+                        info.run_id, info.run_ordinal
+                    )));
+                }
+            }
+        }
+        Ok((client, info, binding))
+    }
+
+    /// Attach to an already-running host (GUI reopen path). Verifies
+    /// session id + token plus the persisted PID/run binding; an unreachable
+    /// socket can mark only that exact binding interrupted. We intentionally
+    /// do not unlink the stable socket path here, because a concurrently
+    /// claimed replacement Host may already have rebound it.
+    pub fn attach(&self, session_id: &str) -> Result<(HostClient, AttachInfo)> {
+        // Retain the observation made before the socket operation. Re-reading
+        // after an I/O failure could instead capture a replacement Host and
+        // incorrectly mark that newer run interrupted.
+        let observed_binding = self.db.session_host_binding(session_id).ok();
+        match self.connect_bound_host(session_id) {
+            Ok((client, info, _binding)) => Ok((client, info)),
             Err(CoreError::Host(_)) => {
-                // Dead host: never write to a stale socket — remove it and
-                // mark the session interrupted (PRD 3.3 failure C).
-                let _ = std::fs::remove_file(&socket);
-                let _ = self
-                    .db
-                    .update_session_lifecycle(session_id, Lifecycle::Interrupted);
-                Err(CoreError::Host("stale host cleaned".into()))
+                if let Some(binding) = observed_binding {
+                    if let Some(host_pid) = binding.host_pid {
+                        // A failed connect alone is not a terminal fact. Keep
+                        // the session live while its recorded Host PID still
+                        // exists; a monitor/reconciliation pass can retry.
+                        if !pid_alive(host_pid as i32) {
+                            let _ = self.db.update_session_lifecycle_if_host(
+                                session_id,
+                                host_pid,
+                                binding.run_identity(),
+                                Lifecycle::Interrupted,
+                            );
+                        }
+                    }
+                }
+                Err(CoreError::Host(
+                    "host is unreachable or no longer authoritative".into(),
+                ))
             }
             Err(e) => Err(e),
         }
     }
 
-    /// Graceful stop via socket `stop` frame; falls back to killing the host
-    /// process group when the socket is dead. Verifies no descendants remain.
+    /// Graceful stop via an authenticated socket `stop` frame.  A stale
+    /// database PID is never signalled: once the Host can no longer prove its
+    /// identity, the only safe lifecycle is `Interrupted`, not a claimed
+    /// `Stopped` result that may leave an Agent (or hit a reused PID) behind.
     pub fn stop(&self, session_id: &str, grace_ms: u64) -> Result<()> {
         let session = self.db.get_session(session_id)?;
         if matches!(session.lifecycle, Lifecycle::Stopped | Lifecycle::Exited) {
             return Ok(()); // idempotent
         }
-        let pid = session.host_pid.filter(|p| *p > 0).map(|p| p as i32);
-        match self.attach(session_id) {
-            Ok((mut client, info)) => {
-                // Stop frame sent; the host escalates SIGINT->SIGTERM->SIGKILL
-                // on the child pgrp itself, reports Exit and exits. We do not
-                // wait for the Exit frame here — the pid liveness check below
-                // is the authoritative confirmation.
-                let _ = client.request_stop(grace_ms);
-                let host_pid = if info.host_pid > 0 {
-                    Some(info.host_pid as i32)
-                } else {
-                    pid
-                };
-                match host_pid {
-                    Some(p) => {
-                        if !wait_pid_gone(p, Duration::from_millis(grace_ms + 3000)) {
-                            force_kill(p);
-                        }
-                    }
-                    // No pid to verify: the stop frame was delivered; give the
-                    // host a moment to exit on its own.
-                    None => std::thread::sleep(Duration::from_millis(100)),
+        let observed_binding = self.db.session_host_binding(session_id).ok();
+        match self.connect_bound_host(session_id) {
+            Ok((mut client, info, binding)) => {
+                // The Host owns process-group escalation and reports the
+                // durable terminal fact.  Treat a failed write or an
+                // unverified disappearance as a stop failure rather than
+                // applying an unsafe naked-PID fallback.
+                client.request_stop(grace_ms)?;
+                if info.host_pid == 0 {
+                    return Err(CoreError::Host(
+                        "stop sent but host pid was not available for verification".into(),
+                    ));
                 }
-                self.db
-                    .update_session_lifecycle(session_id, Lifecycle::Stopped)?;
+                if !wait_pid_gone(
+                    info.host_pid as i32,
+                    Duration::from_millis(grace_ms.saturating_add(3_000)),
+                ) {
+                    return Err(CoreError::Host(
+                        "host did not stop within the verified grace period".into(),
+                    ));
+                }
+                if !self.db.update_session_lifecycle_if_host(
+                    session_id,
+                    info.host_pid as i64,
+                    binding.run_identity(),
+                    Lifecycle::Stopped,
+                )? {
+                    // A concurrent observer (e.g. the GUI monitor consuming
+                    // the Host's Exit frame) may have already recorded the
+                    // terminal fact. An already-stopped/exited Session means
+                    // the stop goal is achieved, not a replacement conflict.
+                    let current = self.db.get_session(session_id)?;
+                    if matches!(current.lifecycle, Lifecycle::Stopped | Lifecycle::Exited) {
+                        return Ok(());
+                    }
+                    return Err(CoreError::Conflict(format!(
+                        "session {session_id} was replaced while stop completed"
+                    )));
+                }
                 Ok(())
             }
             Err(CoreError::Host(_)) => {
-                // Socket dead (attach already cleaned the stale file and marked
-                // the session interrupted): kill the recorded pid directly.
-                if let Some(p) = pid {
-                    force_kill(p);
+                // Do not signal a database PID that may have been reused by
+                // an unrelated process. The stale observation may only mark
+                // its own binding interrupted; a replacement is protected by
+                // the PID/run CAS.
+                if let Some(binding) = observed_binding {
+                    if let Some(host_pid) = binding.host_pid {
+                        if !pid_alive(host_pid as i32) {
+                            let _ = self.db.update_session_lifecycle_if_host(
+                                session_id,
+                                host_pid,
+                                binding.run_identity(),
+                                Lifecycle::Interrupted,
+                            );
+                        }
+                    }
                 }
-                self.db
-                    .update_session_lifecycle(session_id, Lifecycle::Stopped)?;
-                Ok(())
+                Err(CoreError::Host(
+                    "host is unreachable; stop cannot be verified safely".into(),
+                ))
             }
             // Protocol mismatch: the process behind the socket is NOT our
             // host. Do not kill the recorded pid (it may have been reused).
@@ -397,9 +596,63 @@ impl<'a> HostManager<'a> {
         client.interrupt()
     }
 
+    /// Apply an offline-host classification only if the binding observed
+    /// before the failed socket operation is still current. New sessions have
+    /// a run claim even before a PID exists; pre-v5 rows fall back to the
+    /// explicitly unbound compatibility CAS.
+    fn reconcile_unreachable_binding(
+        &self,
+        session_id: &str,
+        binding: &SessionHostBinding,
+    ) -> Result<()> {
+        match (binding.host_pid, binding.run_identity()) {
+            (Some(host_pid), run) => {
+                // A socket failure is not a terminal fact by itself: the
+                // Host may still be alive while its listener is restarting or
+                // temporarily saturated. Classify only a matching durable
+                // exit record or a verified-dead Host PID.
+                if let Some(next) =
+                    terminal_lifecycle_from_host_state(self.paths, session_id, host_pid, run)
+                {
+                    let _ = self
+                        .db
+                        .update_session_lifecycle_if_host(session_id, host_pid, run, next)?;
+                } else if !pid_alive(host_pid as i32) {
+                    let _ = self.db.update_session_lifecycle_if_host(
+                        session_id,
+                        host_pid,
+                        run,
+                        Lifecycle::Interrupted,
+                    )?;
+                } else {
+                    tracing::warn!(
+                        session = %session_id,
+                        host_pid,
+                        "host socket unavailable while recorded process remains alive; retaining lifecycle"
+                    );
+                }
+            }
+            (None, Some((run_id, run_ordinal))) => {
+                let _ = self.db.update_session_lifecycle_if_run(
+                    session_id,
+                    run_id,
+                    run_ordinal,
+                    Lifecycle::Interrupted,
+                )?;
+            }
+            (None, None) => {
+                let _ = self
+                    .db
+                    .update_session_lifecycle_if_unbound(session_id, Lifecycle::Interrupted)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Startup reconciliation (PRD 3.3): for every session marked running,
     /// verify the host (socket handshake). Dead hosts -> lifecycle=interrupted,
-    /// keep logs/metadata, remove stale socket files. Never auto-restart.
+    /// keep logs/metadata, and never unlink a stable socket path that a newer
+    /// Host may have rebound. Never auto-restart.
     pub fn reconcile_on_startup(&self) -> Result<Vec<Session>> {
         let candidates: Vec<Session> = self
             .db
@@ -410,34 +663,55 @@ impl<'a> HostManager<'a> {
 
         let mut out = Vec::with_capacity(candidates.len());
         for s in candidates {
-            let check = match &s.host_socket {
-                Some(sock) if !sock.is_empty() && !s.host_token.is_empty() => {
-                    HostClient::connect(sock, &s.id, &s.host_token, 0).map(|_| ())
-                }
-                _ => Err(CoreError::Host("no host socket/token recorded".into())),
+            // A GUI may restart while a just-spawned Host is still creating
+            // its socket.  Give `Creating` a bounded retry window before
+            // declaring it interrupted; this never signals or deletes a live
+            // process, it merely avoids a false negative during startup.
+            let retry_deadline = if matches!(s.lifecycle, Lifecycle::Creating) {
+                Instant::now() + Duration::from_secs(2)
+            } else {
+                Instant::now()
             };
-            match check {
-                Ok(()) => {}
-                Err(CoreError::Host(_)) => {
-                    if let Some(sock) = &s.host_socket {
-                        let _ = std::fs::remove_file(sock);
-                    }
-                    self.db
-                        .update_session_lifecycle(&s.id, Lifecycle::Interrupted)?;
+            let check = loop {
+                // Keep the exact pre-I/O authority observation with the
+                // result. It becomes the CAS predicate if the connection
+                // fails; a newer launch cannot be classified by this pass.
+                let binding = self.db.session_host_binding(&s.id)?;
+                let result = match self.connect_bound_host(&s.id) {
+                    Ok(_) => Ok(binding),
+                    Err(error) => Err((error, binding)),
+                };
+                if result.is_ok()
+                    || !matches!(s.lifecycle, Lifecycle::Creating)
+                    || Instant::now() >= retry_deadline
+                {
+                    break result;
                 }
-                Err(CoreError::Protocol(m)) => {
+                std::thread::sleep(Duration::from_millis(100));
+            };
+            // Import before deciding the lifecycle so an offline Host's own
+            // final status is available even when the socket has already been
+            // removed.
+            let (_imported, skipped) = self.import_status_events(&s.id);
+            if skipped > 0 {
+                tracing::warn!(session = %s.id, skipped, "reconcile: skipped unparseable status-event lines");
+            }
+            match check {
+                Ok(_) => {}
+                Err((CoreError::Host(_), binding)) => {
+                    // No unlink here: session socket paths are stable across
+                    // restarts, so unlinking after a failed old observation
+                    // can sever a newly bound Host.
+                    self.reconcile_unreachable_binding(&s.id, &binding)?;
+                }
+                Err((CoreError::Protocol(m), binding)) => {
                     // Something answers but fails the identity check — not our
                     // host. Mark interrupted but do NOT remove the socket file
                     // (it may belong to a live, unrelated process).
                     tracing::warn!(session = %s.id, error = %m, "reconcile: handshake identity mismatch");
-                    self.db
-                        .update_session_lifecycle(&s.id, Lifecycle::Interrupted)?;
+                    self.reconcile_unreachable_binding(&s.id, &binding)?;
                 }
-                Err(e) => return Err(e),
-            }
-            let (_imported, skipped) = self.import_status_events(&s.id);
-            if skipped > 0 {
-                tracing::warn!(session = %s.id, skipped, "reconcile: skipped unparseable status-event lines");
+                Err((e, _)) => return Err(e),
             }
             out.push(self.db.get_session(&s.id)?);
         }
@@ -492,16 +766,7 @@ impl<'a> HostManager<'a> {
 
     /// True when a host answers the handshake for this session.
     pub fn is_alive(&self, session_id: &str) -> bool {
-        let Ok(s) = self.db.get_session(session_id) else {
-            return false;
-        };
-        let Some(sock) = &s.host_socket else {
-            return false;
-        };
-        if sock.is_empty() || s.host_token.is_empty() {
-            return false;
-        }
-        HostClient::connect(sock, session_id, &s.host_token, 0).is_ok()
+        self.connect_bound_host(session_id).is_ok()
     }
 }
 
@@ -525,32 +790,38 @@ pub fn write_private_file(path: &str, contents: &str) -> Result<()> {
 
 /// Detached reaper for one launched host: waits for exit (reaping the pid so
 /// it never zombifies), then reconciles the session lifecycle from the host's
-/// own exit record. A clean stop/natural agent exit writes `host-state.json`
-/// with exit fields -> Exited; anything else (crash, SIGKILL) -> Interrupted
-/// when the session was believed running (PRD 3.3 失败路径 B).
-fn spawn_host_reaper(paths: AppPaths, session_id: String, mut child: Child) {
+/// own exit record. A clean host exit writes `host-state.json` with an
+/// explicit reason, which maps user stop to `Stopped` and every other clean
+/// terminal reason to `Exited`; anything else (crash, SIGKILL) is
+/// `Interrupted` when the session was believed running (PRD 3.3 失败路径 B).
+fn spawn_host_reaper(
+    paths: AppPaths,
+    session_id: String,
+    mut child: Child,
+    run_id: String,
+    run_ordinal: i64,
+) {
+    let host_pid = child.id() as i64;
     std::thread::spawn(move || {
         let _ = child.wait(); // reaps the pid — no zombies, ever
-        let state_path = paths.session_dir(&session_id).join("host-state.json");
-        let clean_exit = std::fs::read_to_string(&state_path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-            .map(|v| v.get("exit_code").is_some() || v.get("signal").is_some())
-            .unwrap_or(false);
+        let terminal_lifecycle = terminal_lifecycle_from_host_state(
+            &paths,
+            &session_id,
+            host_pid,
+            Some((&run_id, run_ordinal)),
+        );
         let Ok(db) = Db::open(&paths) else {
             return;
         };
-        let Ok(session) = db.get_session(&session_id) else {
-            return;
-        };
-        if matches!(session.lifecycle, Lifecycle::Creating | Lifecycle::Running) {
-            let next = if clean_exit {
-                Lifecycle::Exited
-            } else {
-                Lifecycle::Interrupted
-            };
-            let _ = db.update_session_lifecycle(&session_id, next);
-        }
+        let next = terminal_lifecycle.unwrap_or(Lifecycle::Interrupted);
+        // The reaper has no authority over a replacement Host/run. A false
+        // CAS is expected when restart won the race and needs no retry.
+        let _ = db.update_session_lifecycle_if_host(
+            &session_id,
+            host_pid,
+            Some((&run_id, run_ordinal)),
+            next,
+        );
     });
 }
 
@@ -560,6 +831,7 @@ pub struct HostClient {
     pub reader: BufReader<UnixStream>,
     pub writer: UnixStream,
     pub session_id: String,
+    pub protocol: u32,
     token: String,
 }
 
@@ -570,6 +842,62 @@ impl HostClient {
         session_id: &str,
         token: &str,
         replay_tail_bytes: u64,
+    ) -> Result<(Self, AttachInfo)> {
+        Self::connect_with_resume(
+            socket_path,
+            session_id,
+            token,
+            replay_tail_bytes,
+            None,
+            true,
+        )
+    }
+
+    /// Connect using a v2 output cursor. `subscribe_output=false` creates a
+    /// lightweight status-only connection for a Session monitor. During the
+    /// rolling-upgrade window, a protocol rejection gets exactly one v1 retry;
+    /// ordinary socket errors never trigger a fallback or stale-socket action.
+    pub fn connect_with_resume(
+        socket_path: &str,
+        session_id: &str,
+        token: &str,
+        replay_tail_bytes: u64,
+        resume_from: Option<LogCursor>,
+        subscribe_output: bool,
+    ) -> Result<(Self, AttachInfo)> {
+        match Self::connect_protocol(
+            socket_path,
+            session_id,
+            token,
+            replay_tail_bytes,
+            resume_from.clone(),
+            subscribe_output,
+            PROTOCOL_VERSION,
+        ) {
+            Ok(connected) => Ok(connected),
+            // An old v1 Host rejects v2 before it receives any application
+            // command. Retry only this authenticated handshake once.
+            Err(CoreError::Protocol(_)) => Self::connect_protocol(
+                socket_path,
+                session_id,
+                token,
+                replay_tail_bytes,
+                None,
+                subscribe_output,
+                LEGACY_PROTOCOL_VERSION,
+            ),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn connect_protocol(
+        socket_path: &str,
+        session_id: &str,
+        token: &str,
+        replay_tail_bytes: u64,
+        resume_from: Option<LogCursor>,
+        subscribe_output: bool,
+        requested_protocol: u32,
     ) -> Result<(Self, AttachInfo)> {
         let stream = UnixStream::connect(socket_path).map_err(|e| {
             use std::io::ErrorKind::*;
@@ -586,10 +914,12 @@ impl HostClient {
         write_frame(
             &mut writer,
             &ClientFrame::Hello {
-                protocol: PROTOCOL_VERSION,
+                protocol: requested_protocol,
                 session_id: session_id.to_string(),
                 token: token.to_string(),
                 replay_tail_bytes,
+                resume_from,
+                subscribe_output,
             },
         )
         .map_err(io_host("send hello"))?;
@@ -613,10 +943,14 @@ impl HostClient {
                 child_alive,
                 log_bytes,
                 agent_session_id,
+                run_id,
+                run_ordinal,
+                current_status,
+                log_cursor,
             } => {
-                if protocol != PROTOCOL_VERSION {
+                if protocol != requested_protocol {
                     return Err(CoreError::Protocol(format!(
-                        "protocol version mismatch: host={protocol} core={PROTOCOL_VERSION}"
+                        "protocol version mismatch: host={protocol} requested={requested_protocol}"
                     )));
                 }
                 if sid != session_id {
@@ -626,10 +960,15 @@ impl HostClient {
                 }
                 AttachInfo {
                     session_id: sid,
+                    protocol,
                     host_pid,
                     child_alive,
                     log_bytes,
                     agent_session_id,
+                    run_id,
+                    run_ordinal,
+                    current_status,
+                    log_cursor,
                 }
             }
             HostFrame::Error { message, .. } => return Err(CoreError::Protocol(message)),
@@ -652,6 +991,7 @@ impl HostClient {
             reader,
             writer,
             session_id: session_id.to_string(),
+            protocol: requested_protocol,
             token: token.to_string(),
         };
         Ok((client, info))
@@ -689,6 +1029,14 @@ impl HostClient {
     }
     pub fn ping(&mut self) -> Result<()> {
         self.write(&ClientFrame::Ping {
+            session_id: self.session_id.clone(),
+        })
+    }
+    /// Ask a legacy Host for its current status after a v1 handshake. v2
+    /// carries this snapshot in `HelloOk`, so callers use this only during the
+    /// rolling compatibility window.
+    pub fn request_status(&mut self) -> Result<()> {
+        self.write(&ClientFrame::StatusRequest {
             session_id: self.session_id.clone(),
         })
     }
@@ -843,6 +1191,10 @@ mod tests {
                 child_alive: true,
                 log_bytes: 4096,
                 agent_session_id: Some("agent-test-123".into()),
+                run_id: LEGACY_RUN_ID.into(),
+                run_ordinal: LEGACY_RUN_ORDINAL,
+                current_status: None,
+                log_cursor: LogCursor::default(),
             },
         )
         .is_err()
@@ -863,6 +1215,7 @@ mod tests {
                             session_id,
                             data,
                             offset: 0,
+                            cursor: LogCursor::default(),
                         },
                     )
                     .is_err()
@@ -888,9 +1241,12 @@ mod tests {
                         &mut writer,
                         &HostFrame::Exit {
                             session_id,
+                            run_id: LEGACY_RUN_ID.into(),
+                            run_ordinal: LEGACY_RUN_ORDINAL,
                             code: Some(0),
                             signal: None,
                             group_cleaned: true,
+                            reason: "natural".into(),
                         },
                     );
                     shutdown.store(true, Ordering::Relaxed);
@@ -938,6 +1294,7 @@ mod tests {
             resume_precision: ResumePrecision::Unavailable,
             log_path: format!("/tmp/{id}.log"),
             adapter_type: AgentType::Shell,
+            transport: AgentTransport::Pty,
             command: vec!["/bin/sh".into()],
             permission_mode: PermissionMode::Native,
             created_at: Utc::now(),
@@ -1013,10 +1370,10 @@ mod tests {
         assert!(matches!(e, CoreError::Protocol(_)), "got {e:?}");
     }
 
-    // -- 3. attach to stale socket cleans up -----------------------------------
+    // -- 3. attach to stale socket only transitions its own binding -----------
 
     #[test]
-    fn attach_stale_socket_marks_interrupted_and_removes_file() {
+    fn attach_stale_socket_marks_interrupted_without_unlinking_stable_path() {
         let (_dir, paths, db) = fixture();
         add_project(&db, "prj_t3");
         let sid = ids::new_id("ses");
@@ -1024,6 +1381,8 @@ mod tests {
         let mut s = session(&sid, "prj_t3", Lifecycle::Running);
         s.host_socket = Some(sock.to_string_lossy().into_owned());
         db.insert_session(&s).unwrap();
+        db.update_session_host(&sid, Some(999_999), Some(&sock.to_string_lossy()))
+            .unwrap();
         leave_stale_socket(&sock);
 
         let mgr = HostManager {
@@ -1032,7 +1391,10 @@ mod tests {
         };
         let e = mgr.attach(&sid).unwrap_err();
         assert!(matches!(e, CoreError::Host(_)), "got {e:?}");
-        assert!(!sock.exists(), "stale socket file must be removed");
+        assert!(
+            sock.exists(),
+            "stable path is retained for a possible replacement host"
+        );
         assert_eq!(
             db.get_session(&sid).unwrap().lifecycle,
             Lifecycle::Interrupted
@@ -1074,6 +1436,12 @@ mod tests {
         let live_sock = paths.socket_path(&live);
         s_live.host_socket = Some(live_sock.to_string_lossy().into_owned());
         db.insert_session(&s_live).unwrap();
+        db.update_session_host(
+            &live,
+            Some(std::process::id() as i64),
+            Some(&live_sock.to_string_lossy()),
+        )
+        .unwrap();
         let _mock = MockHost::start(&live_sock, &live, &s_live.host_token, MockMode::Normal);
 
         // dead session: stale socket file, nobody listening
@@ -1082,12 +1450,16 @@ mod tests {
         let dead_sock = paths.socket_path(&dead);
         s_dead.host_socket = Some(dead_sock.to_string_lossy().into_owned());
         db.insert_session(&s_dead).unwrap();
+        db.update_session_host(&dead, Some(999_999), Some(&dead_sock.to_string_lossy()))
+            .unwrap();
         leave_stale_socket(&dead_sock);
 
         // status-events.jsonl for the dead session: seq1 (already in db),
         // seq2 (new), one garbage line, one line for another session.
         let ev = |seq: i64| StatusEvent {
             session_id: dead.clone(),
+            run_id: LEGACY_RUN_ID.into(),
+            run_ordinal: LEGACY_RUN_ORDINAL,
             sequence: seq,
             state: AgentState::Working,
             source: StateSource::Hook,
@@ -1095,14 +1467,15 @@ mod tests {
             evidence: Some("hook:PreToolUse".into()),
             occurred_at: Utc::now(),
         };
-        db.record_status_event(&ev(1)).unwrap();
+        let event_one = ev(1);
+        db.record_status_event(&event_one).unwrap();
         let dead_dir = paths.session_dir(&dead);
         std::fs::create_dir_all(&dead_dir).unwrap();
         let mut foreign = ev(7);
         foreign.session_id = "ses_other".into();
         let jsonl = format!(
             "{}\n{}\nnot json at all\n{}\n",
-            serde_json::to_string(&ev(1)).unwrap(),
+            serde_json::to_string(&event_one).unwrap(),
             serde_json::to_string(&ev(2)).unwrap(),
             serde_json::to_string(&foreign).unwrap(),
         );
@@ -1115,7 +1488,10 @@ mod tests {
             db.get_session(&dead).unwrap().lifecycle,
             Lifecycle::Interrupted
         );
-        assert!(!dead_sock.exists(), "dead socket file must be removed");
+        assert!(
+            dead_sock.exists(),
+            "stable path is retained for a possible replacement host"
+        );
         assert_eq!(
             db.get_session(&live).unwrap().lifecycle,
             Lifecycle::Running,
@@ -1137,6 +1513,34 @@ mod tests {
             db.get_session(&dead).unwrap().lifecycle,
             Lifecycle::Interrupted
         );
+    }
+
+    #[test]
+    fn reconcile_does_not_terminally_classify_a_live_pid_on_socket_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(dir.path().join("agentport"));
+        let db = Db::open(&paths).unwrap();
+        add_project(&db, "prj_live_pid");
+        let id = ids::new_id("ses");
+        let socket = paths.socket_path(&id);
+        let mut session = session(&id, "prj_live_pid", Lifecycle::Running);
+        session.host_socket = Some(socket.to_string_lossy().into_owned());
+        db.insert_session(&session).unwrap();
+        // This test process is certainly alive, but no Host serves the socket.
+        // A transient transport failure must leave lifecycle authority intact.
+        db.update_session_host(
+            &id,
+            Some(std::process::id() as i64),
+            Some(&socket.to_string_lossy()),
+        )
+        .unwrap();
+
+        let mgr = HostManager {
+            paths: &paths,
+            db: &db,
+        };
+        mgr.reconcile_on_startup().unwrap();
+        assert_eq!(db.get_session(&id).unwrap().lifecycle, Lifecycle::Running);
     }
 
     // -- 6. launch failure: no binary -> exited, nothing left behind ------------
@@ -1177,6 +1581,139 @@ mod tests {
         assert!(
             !paths.host_config_path(&sid).exists(),
             "no host.json left behind"
+        );
+    }
+
+    #[test]
+    fn host_state_and_reaper_are_fenced_to_their_pid_and_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(dir.path().to_path_buf());
+        paths.ensure_layout().unwrap();
+        let db = Db::open(&paths).unwrap();
+        add_project(&db, "prj_reaper");
+        let sid = ids::new_id("ses");
+        db.insert_session(&session(&sid, "prj_reaper", Lifecycle::Creating))
+            .unwrap();
+
+        let first = db.create_session_run(&sid, "run_first").unwrap();
+        let first_log = paths.run_log_path(&sid, &first.run_id);
+        db.claim_session_run(
+            &sid,
+            &first.run_id,
+            first.run_ordinal,
+            &first_log.to_string_lossy(),
+        )
+        .unwrap();
+        let child = std::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 0.05"])
+            .spawn()
+            .unwrap();
+        let first_pid = child.id() as i64;
+        let socket = paths.socket_path(&sid);
+        db.bind_session_host_for_run(
+            &sid,
+            &first.run_id,
+            first.run_ordinal,
+            first_pid,
+            &socket.to_string_lossy(),
+        )
+        .unwrap();
+        db.update_session_lifecycle_if_host(
+            &sid,
+            first_pid,
+            Some((&first.run_id, first.run_ordinal)),
+            Lifecycle::Running,
+        )
+        .unwrap();
+
+        let state_path = paths.session_dir(&sid).join("host-state.json");
+        std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &state_path,
+            serde_json::to_vec(&serde_json::json!({
+                "session_id": &sid,
+                "host_pid": first_pid,
+                "run_id": &first.run_id,
+                "run_ordinal": first.run_ordinal,
+                "exited_at": Utc::now().to_rfc3339(),
+                "exit_reason": "natural"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            terminal_lifecycle_from_host_state(
+                &paths,
+                &sid,
+                first_pid,
+                Some((&first.run_id, first.run_ordinal)),
+            ),
+            Some(Lifecycle::Exited)
+        );
+        assert_eq!(
+            terminal_lifecycle_from_host_state(
+                &paths,
+                &sid,
+                first_pid + 1,
+                Some((&first.run_id, first.run_ordinal)),
+            ),
+            None
+        );
+
+        // A replacement claims ownership before the first process is reaped.
+        // The old reaper will later observe a valid terminal host-state file,
+        // but its PID/run CAS must not alter this newer run.
+        let second = db.create_session_run(&sid, "run_second").unwrap();
+        let second_log = paths.run_log_path(&sid, &second.run_id);
+        db.claim_session_run(
+            &sid,
+            &second.run_id,
+            second.run_ordinal,
+            &second_log.to_string_lossy(),
+        )
+        .unwrap();
+        db.bind_session_host_for_run(
+            &sid,
+            &second.run_id,
+            second.run_ordinal,
+            424_242,
+            &socket.to_string_lossy(),
+        )
+        .unwrap();
+        db.update_session_lifecycle_if_host(
+            &sid,
+            424_242,
+            Some((&second.run_id, second.run_ordinal)),
+            Lifecycle::Running,
+        )
+        .unwrap();
+        spawn_host_reaper(
+            paths.clone(),
+            sid.clone(),
+            child,
+            first.run_id.clone(),
+            first.run_ordinal,
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while pid_alive(first_pid as i32) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Give the detached reaper a scheduling turn after the child exits.
+        std::thread::sleep(Duration::from_millis(25));
+        assert!(!pid_alive(first_pid as i32), "old host must have exited");
+        assert_eq!(
+            db.get_session(&sid).unwrap().lifecycle,
+            Lifecycle::Running,
+            "old reaper must not overwrite the replacement run"
+        );
+        assert_eq!(
+            db.session_host_binding(&sid).unwrap(),
+            SessionHostBinding {
+                host_pid: Some(424_242),
+                run_id: Some(second.run_id),
+                run_ordinal: Some(second.run_ordinal),
+            }
         );
     }
 

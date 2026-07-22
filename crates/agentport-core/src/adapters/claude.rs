@@ -15,7 +15,7 @@
 use super::{AgentAdapter, LaunchContext, LaunchPlan, ResumeContext};
 use crate::error::{CoreError, Result};
 use crate::models::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct ClaudeAdapter;
 
@@ -100,6 +100,8 @@ impl AgentAdapter for ClaudeAdapter {
             capability_hash: super::capability::capability_hash(version_out, help_out),
             exact_resume,
             hook_status,
+            approval_model: AgentType::Claude.approval_model(),
+            default_transport: AgentType::Claude.default_transport(),
             probed_at: chrono::Utc::now(),
             candidates: vec![],
             flags,
@@ -152,6 +154,7 @@ impl AgentAdapter for ClaudeAdapter {
             assigned_agent_session_id: assigned,
             resume_precision,
             hook_status,
+            transport: ctx.transport,
             helper_files,
             notes,
         })
@@ -198,9 +201,73 @@ impl AgentAdapter for ClaudeAdapter {
             assigned_agent_session_id: None,
             resume_precision,
             hook_status: install.hook_status,
+            transport: ctx.transport,
             helper_files: vec![],
             notes,
         })
+    }
+
+    fn build_resume_checked(&self, ctx: &ResumeContext) -> Result<LaunchPlan> {
+        self.build_resume_with(ctx, &claude_config_dir())
+    }
+}
+
+/// Base of claude's config/transcript storage. CLAUDE_CONFIG_DIR relocates
+/// the whole ~/.claude tree; conversations live under <base>/projects.
+fn claude_config_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".claude")
+}
+
+/// Claude stores each conversation at projects/<slug(cwd)>/<id>.jsonl, where
+/// the slug replaces every non-alphanumeric character with '-'.
+fn transcript_path(config_dir: &Path, cwd: &str, native_id: &str) -> PathBuf {
+    let slug: String = cwd
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    config_dir
+        .join("projects")
+        .join(slug)
+        .join(format!("{native_id}.jsonl"))
+}
+
+/// Claude writes transcripts lazily on the first message, so an idle first
+/// run leaves nothing on disk: resume-by-id would exit 1 with
+/// "No conversation found with session ID".
+fn resume_transcript_exists(config_dir: &Path, cwd: &str, native_id: &str) -> bool {
+    transcript_path(config_dir, cwd, native_id).is_file()
+}
+
+impl ClaudeAdapter {
+    fn build_resume_with(&self, ctx: &ResumeContext, config_dir: &Path) -> Result<LaunchPlan> {
+        if let Some(id) = &ctx.agent_session_id {
+            if super::has_flag(&ctx.install, "resume")
+                && !resume_transcript_exists(config_dir, &ctx.cwd, id)
+            {
+                // The recorded conversation was never persisted (or is gone).
+                // Start a fresh conversation with a newly assigned native id
+                // instead of failing the whole restart.
+                let mut plan = self.build_launch(&LaunchContext {
+                    install: ctx.install.clone(),
+                    preset: ctx.preset.clone(),
+                    cwd: ctx.cwd.clone(),
+                    session_id: ctx.session_id.clone(),
+                    hook_events_path: ctx.hook_events_path.clone(),
+                    session_dir: ctx.session_dir.clone(),
+                    transport: ctx.transport,
+                })?;
+                plan.notes.push(
+                    "原会话没有可恢复的对话记录（首轮可能未产生消息），已按新会话启动".into(),
+                );
+                return Ok(plan);
+            }
+        }
+        self.build_resume(ctx)
     }
 }
 
@@ -371,5 +438,66 @@ mod tests {
             ClaudeAdapter.build_resume(&ctx),
             Err(crate::error::CoreError::Blocked(_))
         ));
+    }
+
+    #[test]
+    fn transcript_path_slugifies_cwd() {
+        let p = transcript_path(
+            Path::new("/cfg"),
+            "/Users/w/Library/Application Support/AgentPort/worktrees/skilldock/fixbug",
+            "abc-123",
+        );
+        assert_eq!(
+            p,
+            Path::new(
+                "/cfg/projects/-Users-w-Library-Application-Support-AgentPort-worktrees-skilldock-fixbug/abc-123.jsonl"
+            )
+        );
+    }
+
+    #[test]
+    fn checked_resume_falls_back_to_fresh_when_transcript_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = fx::resume_ctx(
+            AgentType::Claude,
+            &["resume", "continue", "session-id", "settings"],
+            Some("dead-id"),
+        );
+        let plan = ClaudeAdapter.build_resume_with(&ctx, dir.path()).unwrap();
+        // Fresh conversation: no --resume, newly assigned id, explanatory note.
+        assert!(!plan.argv.iter().any(|a| a == "--resume"));
+        let pos = plan
+            .argv
+            .iter()
+            .position(|a| a == "--session-id")
+            .expect("fresh plan assigns a native id");
+        assert_ne!(plan.argv[pos + 1], "dead-id");
+        assert_eq!(
+            plan.assigned_agent_session_id.as_deref(),
+            Some(plan.argv[pos + 1].as_str())
+        );
+        assert_eq!(plan.resume_precision, ResumePrecision::Exact);
+        assert!(plan.notes.iter().any(|n| n.contains("新会话启动")));
+    }
+
+    #[test]
+    fn checked_resume_keeps_exact_when_transcript_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = fx::resume_ctx(
+            AgentType::Claude,
+            &["resume", "continue", "session-id", "settings"],
+            Some("live-id"),
+        );
+        let transcript = transcript_path(dir.path(), &ctx.cwd, "live-id");
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        std::fs::write(&transcript, "{}\n").unwrap();
+        let plan = ClaudeAdapter.build_resume_with(&ctx, dir.path()).unwrap();
+        let pos = plan
+            .argv
+            .iter()
+            .position(|a| a == "--resume")
+            .expect("exact resume keeps --resume");
+        assert_eq!(plan.argv[pos + 1], "live-id");
+        assert_eq!(plan.resume_precision, ResumePrecision::Exact);
     }
 }

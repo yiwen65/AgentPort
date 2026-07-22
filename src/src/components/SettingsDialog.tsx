@@ -6,7 +6,10 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { api, errorText } from "../api";
 import { applyThemeSettings, refreshProjects } from "../actions";
-import { agentDisplay, secretBackendZh } from "../format";
+import { agentDisplay, formatBytes, formatTime, secretBackendZh } from "../format";
+import { orderAgentIds } from "../agentOrder";
+import { AgentIcon } from "./AgentIcons";
+import ShellIcon from "./ShellIcon";
 import { closeDialog, confirmDialog, setState, toast, useStore } from "../store";
 import type { AdapterInstall, ArchivedSessionView, Preset, SecretMeta, Settings } from "../types";
 
@@ -207,9 +210,38 @@ function SecretSection() {
   );
 }
 
-function AdapterSection() {
+function AdapterOrderIcon({ agent }: { agent: string }) {
+  if (agent === "shell") return <ShellIcon className="adapter-order-icon" size={18} />;
+  return <AgentIcon agent={agent} className="adapter-order-icon" size={18} />;
+}
+
+function AdapterSection({
+  agentOrder,
+  onAgentOrderChange,
+}: {
+  agentOrder: string[];
+  onAgentOrderChange: (next: string[]) => void;
+}) {
   const s = useStore();
   const [busy, setBusy] = useState(false);
+  const orderedAgentIds = orderAgentIds(
+    agentOrder,
+    s.adapters.map((adapter) => adapter.agentType),
+  );
+  const orderedAdapters = orderedAgentIds
+    .map((agent) => s.adapters.find((adapter) => adapter.agentType === agent))
+    .filter((adapter): adapter is AdapterInstall => adapter !== undefined);
+  const move = (agent: string, direction: -1 | 1) => {
+    const next = [...agentOrder];
+    for (const id of orderedAgentIds) {
+      if (!next.includes(id)) next.push(id);
+    }
+    const from = next.indexOf(agent);
+    const to = from + direction;
+    if (from < 0 || to < 0 || to >= next.length) return;
+    [next[from], next[to]] = [next[to], next[from]];
+    onAgentOrderChange(next);
+  };
   const reprobe = async () => {
     setBusy(true);
     try {
@@ -237,6 +269,9 @@ function AdapterSection() {
   return (
     <>
       <div className="section-title">Agent 适配器</div>
+      <p className="dim" style={{ margin: 0 }}>
+        自动检测全部已注册适配器；多条安装路径会按优先级验证并自动选用可用版本。调整顺序后，项目行的快速启动图标会按相同顺序显示。
+      </p>
       {s.adapters.length === 0 ? (
         <p className="dim" style={{ margin: 0 }}>
           尚未探测到任何 Agent CLI。
@@ -250,18 +285,46 @@ function AdapterSection() {
               <th>版本</th>
               <th>Hook</th>
               <th>精确恢复</th>
+              <th>排序</th>
             </tr>
           </thead>
           <tbody>
-            {s.adapters.map((a) => (
+            {orderedAdapters.map((a, index) => (
               <tr key={a.agentType}>
-                <td>{a.agentType}</td>
+                <td>
+                  <span className="adapter-order-name">
+                    <AdapterOrderIcon agent={a.agentType} />
+                    {agentDisplay(a.agentType)}
+                  </span>
+                </td>
                 <td className="mono dim" style={{ wordBreak: "break-all" }}>
                   {a.executablePath}
                 </td>
                 <td className="dim">{a.versionText}</td>
                 <td>{a.hookStatus}</td>
                 <td>{a.exactResume ? "支持" : "不支持"}</td>
+                <td>
+                  <span className="adapter-order-actions">
+                    <button
+                      type="button"
+                      className="btn small ghost"
+                      disabled={index === 0}
+                      onClick={() => move(a.agentType, -1)}
+                      aria-label={`上移 ${agentDisplay(a.agentType)}`}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      className="btn small ghost"
+                      disabled={index === orderedAdapters.length - 1}
+                      onClick={() => move(a.agentType, 1)}
+                      aria-label={`下移 ${agentDisplay(a.agentType)}`}
+                    >
+                      ↓
+                    </button>
+                  </span>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -278,7 +341,7 @@ function AdapterSection() {
             setState({ showOnboarding: true });
           }}
         >
-          打开首次启动引导
+          管理 / 新增 Agent
         </button>
       </div>
     </>
@@ -292,6 +355,178 @@ function formatArchivedAt(value: string): string {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
+}
+
+type BackupItem = { path: string; name: string; size: number; modifiedAt: string };
+
+/** 备份与恢复：创建经校验的全量备份、按需校验历史备份、恢复到新目录。
+ *  恢复永不触碰正在运行的数据目录——换目录重启是刻意保留的手动步骤。 */
+function BackupSection() {
+  const s = useStore();
+  const dataRoot = s.exportsDir.replace(/\/exports$/, "");
+  const backupsDir = `${dataRoot}/backups`;
+  const [items, setItems] = useState<BackupItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [verifyState, setVerifyState] = useState<Record<string, { ok: boolean; text: string }>>({});
+  const [restoring, setRestoring] = useState(false);
+  const [restored, setRestored] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const reload = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setItems(await api.backupList());
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    void reload();
+  }, []);
+
+  const create = async () => {
+    setCreating(true);
+    setError(null);
+    try {
+      const r = await api.backupCreate(null);
+      toast(`备份完成：${r.files} 个文件，已通过完整性校验`, "success");
+      await reload();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const verify = async (path: string) => {
+    setVerifyState((v) => ({ ...v, [path]: { ok: true, text: "校验中…" } }));
+    try {
+      const r = await api.backupVerify(path);
+      setVerifyState((v) => ({ ...v, [path]: { ok: true, text: `完整 · ${r.files} 个文件` } }));
+    } catch (e) {
+      setVerifyState((v) => ({ ...v, [path]: { ok: false, text: errorText(e) } }));
+    }
+  };
+
+  const restore = async () => {
+    setError(null);
+    const archive = await api.pickFile("AgentPort 备份");
+    if (!archive) return;
+    const ok = await confirmDialog({
+      title: "恢复备份到新目录？",
+      body: "恢复会写入一个全新的数据目录，不会修改当前正在使用的数据。完成后退出 AgentPort，用恢复目录替换原数据目录，再重新启动。",
+      confirmLabel: "选择恢复位置",
+    });
+    if (!ok) return;
+    const parent = await api.pickDirectory();
+    if (!parent) return;
+    setRestoring(true);
+    try {
+      const r = await api.backupRestore(archive, `${parent}/agentport-restored`);
+      setRestored(r.restored);
+      toast("恢复完成", "success");
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setRestoring(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="settings-section-heading">
+        <div className="section-title">备份与恢复</div>
+        <p className="form-hint">
+          备份包含数据库与全部 Session 日志；不含 Worktree、导出物与 Secret 值（恢复后需重新绑定系统安全存储中的凭据）。
+        </p>
+      </div>
+      <div className="settings-grid">
+        <label>创建备份</label>
+        <div className="control">
+          <button className="btn primary" disabled={creating} onClick={() => void create()}>
+            {creating ? "备份中…" : "立即备份"}
+          </button>
+          <button
+            className="btn small ghost"
+            onClick={() =>
+              void api.revealInFileManager(backupsDir).catch((e) => toast(errorText(e), "error"))
+            }
+          >
+            打开备份目录
+          </button>
+          <span className="form-hint">保存到应用数据目录 backups/，创建后自动校验</span>
+        </div>
+        <label>恢复备份</label>
+        <div className="control">
+          <button className="btn" disabled={restoring} onClick={() => void restore()}>
+            {restoring ? "恢复中…" : "从备份恢复到新目录…"}
+          </button>
+          <span className="form-hint">不修改当前数据；替换目录需先退出应用</span>
+        </div>
+      </div>
+      {error ? <div className="error-bar" role="alert">{error}</div> : null}
+      {restored ? (
+        <div className="info-box" role="status">
+          <div className="kv">
+            <span className="k">已恢复到</span>
+            <span className="v mono">{restored}</span>
+          </div>
+          <p className="form-hint">
+            启用恢复数据：1) 退出 AgentPort；2) 将当前数据目录{" "}
+            <span className="mono">{dataRoot}</span> 改名备份；3) 将恢复目录改名为该路径；4)
+            重新启动 AgentPort。恢复过程不会删除任何原数据。
+          </p>
+          <button
+            className="btn small"
+            onClick={() =>
+              void api.revealInFileManager(restored).catch((e) => toast(errorText(e), "error"))
+            }
+          >
+            在访达中显示
+          </button>
+        </div>
+      ) : null}
+      <div className="section-title">已有备份</div>
+      {loading ? <p className="dim">正在读取备份列表…</p> : null}
+      {!loading && items.length === 0 ? <p className="dim">暂无备份。建议升级应用前手动备份一次。</p> : null}
+      {!loading && items.length > 0 ? (
+        <table className="table" aria-label="已有备份列表">
+          <thead>
+            <tr>
+              <th>文件名</th>
+              <th>大小</th>
+              <th>修改时间</th>
+              <th>状态</th>
+              <th aria-label="操作" />
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item) => (
+              <tr key={item.path}>
+                <td className="mono dim" style={{ wordBreak: "break-all" }}>
+                  {item.name}
+                </td>
+                <td>{formatBytes(item.size)}</td>
+                <td className="dim">{item.modifiedAt ? formatTime(item.modifiedAt) : "—"}</td>
+                <td className={verifyState[item.path]?.ok === false ? "warn-text" : "dim"}>
+                  {verifyState[item.path]?.text ?? "未校验"}
+                </td>
+                <td>
+                  <button className="btn small" onClick={() => void verify(item.path)}>
+                    校验
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+    </>
+  );
 }
 
 function ArchiveSection() {
@@ -512,7 +747,14 @@ function ArchiveSection() {
   );
 }
 
-type SettingsSection = "appearance" | "notifications" | "search" | "adapters" | "secrets" | "archive";
+type SettingsSection =
+  | "appearance"
+  | "notifications"
+  | "search"
+  | "adapters"
+  | "secrets"
+  | "archive"
+  | "backup";
 
 const SETTINGS_SECTIONS: Array<{ id: SettingsSection; label: string }> = [
   { id: "appearance", label: "外观与可访问性" },
@@ -521,6 +763,7 @@ const SETTINGS_SECTIONS: Array<{ id: SettingsSection; label: string }> = [
   { id: "adapters", label: "Agent 适配器" },
   { id: "secrets", label: "Secret 管理" },
   { id: "archive", label: "归档会话" },
+  { id: "backup", label: "备份与恢复" },
 ];
 
 export default function SettingsDialog() {
@@ -630,7 +873,7 @@ export default function SettingsDialog() {
             type="text"
             list="font-suggestions"
             value={draft.terminalFontFamily === "system-monospace" ? "" : draft.terminalFontFamily}
-            placeholder="JetBrains Mono（内置，匹配 Unpeel）"
+            placeholder="JetBrains Mono"
             onChange={(e) =>
               patch({ terminalFontFamily: e.target.value.trim() || "system-monospace" })
             }
@@ -718,17 +961,6 @@ export default function SettingsDialog() {
           <span className="form-hint">达到上限后历史日志轮转，仅保留最近部分</span>
         </div>
 
-        <label htmlFor="set-retention">归档保留（1–3650 天）</label>
-        <div className="control">
-          <input
-            id="set-retention"
-            type="number"
-            min={1}
-            max={3650}
-            value={draft.retentionDays}
-            onChange={(e) => patch({ retentionDays: Number(e.target.value) })}
-          />
-        </div>
       </div>
     </>
   );
@@ -783,9 +1015,10 @@ export default function SettingsDialog() {
     appearance: appearanceSection,
     notifications: notificationsSection,
     search: searchSection,
-    adapters: <AdapterSection />,
+    adapters: <AdapterSection agentOrder={draft.agentOrder} onAgentOrderChange={(agentOrder) => patch({ agentOrder })} />,
     secrets: <SecretSection />,
     archive: <ArchiveSection />,
+    backup: <BackupSection />,
   }[section];
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -852,7 +1085,7 @@ export default function SettingsDialog() {
             {error ? <div className="error-bar" role="alert">{error}</div> : null}
             {content}
           </div>
-          {dirty && section !== "archive" ? (
+          {dirty && section !== "archive" && section !== "backup" ? (
             <footer className="settings-page-footer" data-tauri-drag-region="false">
               <button className="btn ghost" onClick={closeDialog}>
                 取消

@@ -1,6 +1,6 @@
 // Thin typed wrappers over the Tauri command surface (src-tauri/src/main.rs).
 // Rust snake_case arguments are passed in camelCase — Tauri 2 converts
-// automatically. All backend errors come back as plain strings.
+// automatically. Branch-management errors remain structured objects.
 
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -12,17 +12,26 @@ import type {
   ChannelMsg,
   CreateSessionResult,
   CreateWorktreeResult,
+  AutoStashRecord,
+  BranchOperationResult,
   HostInfo,
+  LogCursorView,
   LogTail,
   PermissionStr,
   Preset,
   ProbeOutcome,
   ProjectView,
+  LocalBranchesResponse,
+  RepositoryOperationProgress,
+  RepositoryStatus,
+  StructuredGitError,
   RestartResult,
   SearchResult,
   SecretMeta,
   Settings,
+  SupportedAgent,
   StatusEventView,
+  StatusCursorView,
   TimelineData,
   WorktreeStatus,
   WorktreeView,
@@ -33,7 +42,10 @@ import type {
 // ---------------------------------------------------------------------------
 
 export function strToB64(s: string): string {
-  const bytes = new TextEncoder().encode(s);
+  return bytesToB64(new TextEncoder().encode(s));
+}
+
+export function bytesToB64(bytes: Uint8Array): string {
   let bin = "";
   const CHUNK = 0x8000;
   for (let i = 0; i < bytes.length; i += CHUNK) {
@@ -53,11 +65,41 @@ export function b64ToBytes(b64: string): Uint8Array {
 export function errorText(e: unknown): string {
   if (typeof e === "string") return e;
   if (e instanceof Error) return e.message;
+  if (typeof e === "object" && e !== null && !Array.isArray(e)) {
+    const record = e as Record<string, unknown>;
+    // Keep structured Tauri rejections intact: branch management reads the
+    // JSON again to expose live-session recovery actions to the user.
+    try {
+      return JSON.stringify(record);
+    } catch {
+      const message = record.message;
+      return typeof message === "string" ? message : String(e);
+    }
+  }
   try {
     return JSON.stringify(e);
   } catch {
     return String(e);
   }
+}
+
+/**
+ * Tauri invoke rejects with the serialized error object itself. Keep this
+ * guard separate from errorText so callers never need to parse a flattened
+ * message string (and can preserve recovery/session metadata).
+ */
+export function isStructuredGitError(value: unknown): value is StructuredGitError {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.code === "string" &&
+    typeof record.message === "string" &&
+    typeof record.phase === "string" &&
+    typeof record.operationId === "string" &&
+    typeof record.recoverable === "boolean" &&
+    (record.currentStatus === null || (typeof record.currentStatus === "object" && record.currentStatus !== null)) &&
+    Array.isArray(record.recoveryActions) && record.recoveryActions.every((action) => typeof action === "string") &&
+    typeof record.diagnostics === "object" && record.diagnostics !== null &&
+    Array.isArray(record.liveSessionIds) && record.liveSessionIds.every((id) => typeof id === "string");
 }
 
 // ---------------------------------------------------------------------------
@@ -71,6 +113,7 @@ export type CreateSessionArgs = {
   presetId: string | null;
   worktreeId: string | null;
   permission: PermissionStr;
+  transport: "pty" | "json_rpc";
   riskAck: boolean;
   cols: number | null;
   rows: number | null;
@@ -92,6 +135,7 @@ export const api = {
   probeAgents: () => invoke<ProbeOutcome[]>("probe_agents"),
   probeAgent: (agent: string, path: string | null) =>
     invoke<ProbeOutcome>("probe_agent", { agent, path }),
+  listSupportedAgents: () => invoke<SupportedAgent[]>("list_supported_agents"),
   addProject: (path: string, name: string | null) =>
     invoke<AddProjectResult>("add_project", { path, name }),
   renameProject: (id: string, name: string) =>
@@ -100,14 +144,27 @@ export const api = {
   listPresets: (agent: string | null) => invoke<Preset[]>("list_presets", { agent }),
   createSession: (args: CreateSessionArgs) =>
     invoke<CreateSessionResult>("create_session", args),
-  attachSession: (sessionId: string, replayTailBytes: number, channel: Channel<ChannelMsg>) =>
-    invoke<AttachInfo>("attach_session", { sessionId, replayTailBytes, channel }),
-  detachSession: (sessionId: string) => invoke<void>("detach_session", { sessionId }),
-  markSessionSeen: (sessionId: string) => invoke<void>("mark_session_seen", { sessionId }),
-  markSessionOutputUnread: (sessionId: string, offset: number) =>
-    invoke<void>("mark_session_output_unread", { sessionId, offset }),
+  attachSession: (
+    sessionId: string,
+    replayTailBytes: number,
+    channel: Channel<ChannelMsg>,
+    resumeFrom: LogCursorView | null = null,
+  ) => invoke<AttachInfo>("attach_session", { sessionId, replayTailBytes, channel, resumeFrom }),
+  detachSession: (sessionId: string, attachmentId: number) =>
+    invoke<void>("detach_session", { sessionId, attachmentId }),
+  markSessionSeen: (sessionId: string, cursor: StatusCursorView | null = null) =>
+    invoke<void>("mark_session_seen", { sessionId, cursor }),
+  markSessionOutputUnread: (
+    sessionId: string,
+    offset: number,
+    cursor: LogCursorView | null = null,
+  ) => invoke<void>("mark_session_output_unread", { sessionId, offset, cursor }),
   sendInput: (sessionId: string, data: string) =>
     invoke<void>("send_input", { sessionId, data }),
+  sendStructuredPrompt: (sessionId: string, text: string) =>
+    invoke<void>("send_structured_prompt", { sessionId, text }),
+  abortStructuredTurn: (sessionId: string) =>
+    invoke<void>("abort_structured_turn", { sessionId }),
   autoRenameSessionFromFirstInput: (sessionId: string, input: string) =>
     invoke<boolean>("auto_rename_session_from_first_input", { sessionId, input }),
   resizePty: (sessionId: string, cols: number, rows: number) =>
@@ -133,7 +190,42 @@ export const api = {
   removeWorktree: (worktreeId: string) => invoke<void>("remove_worktree", { worktreeId }),
   worktreeStatusText: (worktreeId: string) =>
     invoke<WorktreeStatus>("worktree_status_text", { worktreeId }),
+  getRepositoryStatus: (projectId: string) =>
+    invoke<RepositoryStatus>("get_repository_status", { projectId }),
+  listLocalBranches: (projectId: string) =>
+    invoke<LocalBranchesResponse>("list_local_branches", { projectId }),
+  createLocalBranch: (
+    projectId: string,
+    name: string,
+    startPoint: string | null,
+  ) =>
+    invoke<BranchOperationResult>("create_local_branch", {
+      projectId,
+      name,
+      startPoint,
+    }),
+  switchLocalBranch: (projectId: string, branch: string) =>
+    invoke<BranchOperationResult>("switch_local_branch", { projectId, branch }),
+  listAutoStashes: (projectId: string | null) =>
+    invoke<AutoStashRecord[]>("list_auto_stashes", { projectId }),
+  restoreAutoStash: (operationId: string, strategy: "target" | "source") =>
+    invoke<BranchOperationResult>("restore_auto_stash", { operationId, strategy }),
+  cleanupAutoStash: (operationId: string) =>
+    invoke<BranchOperationResult>("cleanup_auto_stash", { operationId }),
   exportSession: (args: ExportArgs) => invoke<string>("export_session", args),
+  backupCreate: (dest: string | null) =>
+    invoke<{ path: string; files: number; bytes: number; verified: boolean }>("backup_create", {
+      dest,
+    }),
+  backupList: () =>
+    invoke<{ path: string; name: string; size: number; modifiedAt: string }[]>("backup_list"),
+  backupVerify: (path: string) =>
+    invoke<{ ok: boolean; createdAt: string; files: number; dataModelVersion: number }>(
+      "backup_verify",
+      { path },
+    ),
+  backupRestore: (path: string, target: string) =>
+    invoke<{ restored: string; previousKeptAt: string }>("backup_restore", { path, target }),
   search: (query: string, limit: number | null) =>
     invoke<SearchResult>("search", { query, limit }),
   /** Full persisted output for one Session, including text outside xterm's scrollback. */
@@ -160,6 +252,8 @@ export const api = {
   pickDirectory: () => invoke<string | null>("pick_directory"),
   pickSavePath: (defaultName: string) =>
     invoke<string | null>("pick_save_path", { defaultName }),
+  pickFile: (filterName: string | null) =>
+    invoke<string | null>("pick_file", { filterName }),
 };
 
 // ---------------------------------------------------------------------------
@@ -176,9 +270,19 @@ export function onSessionState(cb: (ev: StatusEventView) => void): Promise<Unlis
 }
 
 export function onSessionExit(
-  cb: (ev: { sessionId: string; code: number | null; signal: number | null }) => void,
+  cb: (ev: {
+    sessionId: string;
+    code: number | null;
+    signal: number | null;
+    reason?: string;
+  }) => void,
 ): Promise<UnlistenFn> {
-  return listen<{ sessionId: string; code: number | null; signal: number | null }>(
+  return listen<{
+    sessionId: string;
+    code: number | null;
+    signal: number | null;
+    reason?: string;
+  }>(
     "session-exit",
     (e) => cb(e.payload),
   );
@@ -190,6 +294,22 @@ export function onSessionAgentId(
   return listen<{ sessionId: string; agentSessionId: string }>("session-agent-id", (e) =>
     cb(e.payload),
   );
+}
+
+export function onRepositoryOperationProgress(
+  cb: (ev: RepositoryOperationProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<RepositoryOperationProgress>("repo-operation-progress", (e) => cb(e.payload));
+}
+
+export function onRepositoryStateChanged(
+  cb: (status: RepositoryStatus) => void,
+): Promise<UnlistenFn> {
+  return listen<RepositoryStatus>("repository-state-changed", (e) => cb(e.payload));
+}
+
+export function onAutoStashChanged(cb: (stash: AutoStashRecord) => void): Promise<UnlistenFn> {
+  return listen<AutoStashRecord>("auto-stash-changed", (e) => cb(e.payload));
 }
 
 // ---------------------------------------------------------------------------

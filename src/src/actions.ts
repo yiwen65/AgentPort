@@ -3,6 +3,8 @@
 
 import { api, errorText } from "./api";
 import {
+  applyProjectsSnapshot,
+  clearSessionScopedState,
   confirmDialog,
   findProjectOf,
   findSession,
@@ -45,10 +47,31 @@ export async function refreshProjects() {
   const active = getState().activeSessionId;
   try {
     const projects = await api.listProjects(active);
-    setState({ projects });
+    applyProjectsSnapshot(projects);
     pruneHandles();
   } catch {
     // The backend is the source of truth; keep the last good tree on error.
+  }
+}
+
+/** Read the checkout state after every branch operation; no optimistic switch. */
+export async function refreshRepositoryStatus(projectId: string) {
+  try {
+    const status = await api.getRepositoryStatus(projectId);
+    update((state) => ({
+      repositoryStatuses: { ...state.repositoryStatuses, [projectId]: status },
+    }));
+    return status;
+  } catch {
+    // A failed live probe must not leave branch entry points enabled from a
+    // persisted gitRootPath or an older repository snapshot. A later focus or
+    // manual refresh will repopulate the backend-confirmed status.
+    update((state) => {
+      const repositoryStatuses = { ...state.repositoryStatuses };
+      delete repositoryStatuses[projectId];
+      return { repositoryStatuses };
+    });
+    return null;
   }
 }
 
@@ -117,6 +140,15 @@ export function applyThemeSettings() {
 
 export function selectSession(id: string) {
   const s = getState();
+  // A newly created Session is persisted before the next project snapshot.
+  // Never select against the stale tree: TerminalArea cannot mount a pane for
+  // an ID it cannot resolve, which leaves the workspace blank on a fast switch.
+  if (!findSession(s.projects, id)) {
+    void refreshProjects().then(() => {
+      if (findSession(getState().projects, id)) selectSession(id);
+    });
+    return;
+  }
   // Treat mounted terminal panes as an LRU. Each keeps an xterm scrollback
   // and a live IPC channel, so retaining every Session ever visited can turn a
   // long workday into hundreds of MiB of renderer memory.
@@ -128,12 +160,24 @@ export function selectSession(id: string) {
     proj && s.expandedProjects[proj.id] === false
       ? { ...s.expandedProjects, [proj.id]: true }
       : s.expandedProjects;
-  setState({ activeSessionId: id, attachedIds, expandedProjects, termSearchOpen: false });
+  const ses = findSession(s.projects, id);
+  const collapsedWorktrees = { ...s.collapsedWorktrees };
+  if (ses?.worktreeId) delete collapsedWorktrees[ses.worktreeId];
+  setState({
+    activeSessionId: id,
+    attachedIds,
+    expandedProjects,
+    collapsedWorktrees,
+    activeWorktreeStatus: s.activeSessionId === id ? s.activeWorktreeStatus : null,
+    termSearchOpen: false,
+  });
   for (const evictedId of evictedIds) void releaseTerminal(evictedId);
   clearUnreadOutputTracking(id);
   // Confirm the view in persistent state; merely hiding the dot for the
   // active row would make it reappear as soon as the user switches away.
-  void api.markSessionSeen(id).then(refreshProjects).catch(() => undefined);
+  void api.markSessionSeen(id, findSession(s.projects, id)?.status ?? null)
+    .then(refreshProjects)
+    .catch(() => undefined);
   void refreshActiveWorktreeStatus();
 }
 
@@ -147,18 +191,40 @@ export function switchSessionByIndex(index: number) {
 // worktree status / "结果尚未提交" notice
 // ---------------------------------------------------------------------------
 
+let worktreeStatusRequest = 0;
+
 export async function refreshActiveWorktreeStatus() {
   const s = getState();
   const ses = findSession(s.projects, s.activeSessionId);
-  if (!ses?.worktreeId) {
-    if (s.activeWorktreeStatus) setState({ activeWorktreeStatus: null });
+  const request = ++worktreeStatusRequest;
+  const sessionId = s.activeSessionId;
+  const worktreeId = ses?.worktreeId;
+  if (!worktreeId) {
+    if (request === worktreeStatusRequest && getState().activeSessionId === sessionId) {
+      setState({ activeWorktreeStatus: null });
+    }
     return;
   }
   try {
-    const st = await api.worktreeStatusText(ses.worktreeId);
+    const st = await api.worktreeStatusText(worktreeId);
+    const current = getState();
+    if (
+      request !== worktreeStatusRequest ||
+      current.activeSessionId !== sessionId ||
+      findSession(current.projects, current.activeSessionId)?.worktreeId !== worktreeId
+    ) {
+      return;
+    }
     setState({ activeWorktreeStatus: st });
   } catch {
-    setState({ activeWorktreeStatus: null });
+    const current = getState();
+    if (
+      request === worktreeStatusRequest &&
+      current.activeSessionId === sessionId &&
+      findSession(current.projects, current.activeSessionId)?.worktreeId === worktreeId
+    ) {
+      setState({ activeWorktreeStatus: null });
+    }
   }
 }
 
@@ -238,39 +304,30 @@ export async function archiveSessionFlow(sessionId: string, requireConfirm = tru
   if (requireConfirm) {
     const ok = await confirmDialog({
       title: `归档 Session「${ses.title}」？`,
-      body: "归档后从项目树移除，日志与元数据按保留策略清理。",
+      body: "归档后从项目树移除并停止运行；日志与元数据保留，可在设置中恢复或手动永久删除。",
       confirmLabel: "归档",
     });
     if (!ok) return;
   }
   try {
     await api.archiveSession(sessionId);
+    const wasActive = getState().activeSessionId === sessionId;
     disposeHandle(sessionId);
-    const s = getState();
-    update((st) => ({
-      attachedIds: st.attachedIds.filter((x) => x !== sessionId),
-    }));
-    if (s.activeSessionId === sessionId) {
-      const next = flattenSessions(s.projects).find((x) => x.id !== sessionId);
-      setState({ activeSessionId: next?.id ?? null });
-    }
+    clearSessionScopedState(sessionId);
     await refreshProjects();
+    if (wasActive && getState().activeSessionId === null) {
+      const next = flattenSessions(getState().projects).find((session) => session.id !== sessionId);
+      if (next) selectSession(next.id);
+    }
   } catch (e) {
     toast(`归档失败：${errorText(e)}`, "error");
   }
 }
 
-/** UI-level removal uses the existing archive operation; the backend retains its current data-retention semantics. */
+/** UI-level removal uses the archive operation; archived Sessions are kept
+    until explicitly restored or permanently deleted in Settings. Confirmation
+    happens inline in the Session row (Sidebar), not as a modal. */
 export async function removeSessionFlow(sessionId: string) {
-  const ses = findSession(getState().projects, sessionId);
-  if (!ses) return;
-  const ok = await confirmDialog({
-    title: "移除 Session？",
-    body: `「${ses.title}」将从项目列表移除。`,
-    confirmLabel: "移除",
-    danger: true,
-  });
-  if (!ok) return;
   await archiveSessionFlow(sessionId, false);
 }
 
@@ -392,18 +449,20 @@ export function openNewSessionDialog(projectId?: string, worktreeId?: string, ag
 }
 
 /** Hover shortcuts explicitly start a session in fully-authorized mode. */
-export async function quickStartSession(projectId: string, agent: string) {
+export async function quickStartSession(projectId: string, agent: string, worktreeId?: string) {
   const shell = agent === "shell";
+  const pi = agent === "pi";
   try {
     const res = await api.createSession({
       projectId,
       agent,
       title: null,
       presetId: null,
-      worktreeId: null,
+      worktreeId: worktreeId ?? null,
       // Generic Shell has no permission protocol; native is a compatibility
       // sentinel only. Agent shortcuts retain their explicit bypass behavior.
-      permission: shell ? "native" : "bypass",
+      permission: shell || pi ? "native" : "bypass",
+      transport: "pty",
       riskAck: true,
       cols: null,
       rows: null,

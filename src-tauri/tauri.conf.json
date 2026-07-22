@@ -30,11 +30,12 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.png"],
+    "icon": ["icons/icon-runtime-8bit.png"],
     "externalBin": ["binaries/agentport-host"],
     "resources": [],
     "macOS": {
-      "minimumSystemVersion": "13.0"
+      "minimumSystemVersion": "13.0",
+      "infoPlist": "Info.plist"
     },
     "linux": {
       "deb": {

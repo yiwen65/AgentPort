@@ -4,12 +4,10 @@
 import { useEffect, useMemo, useState } from "react";
 import Modal from "./Modal";
 import { api, errorText, type CreateSessionArgs } from "../api";
-import { selectSession } from "../actions";
+import { refreshProjects, selectSession } from "../actions";
 import { agentDisplay, permissionZh } from "../format";
 import { closeDialog, toast, useStore } from "../store";
-import type { PermissionStr, Preset } from "../types";
-
-const AGENTS = ["claude", "codex", "kimi", "shell"] as const;
+import type { AgentTransportStr, PermissionStr, Preset } from "../types";
 
 export default function NewSessionDialog(props: {
   projectId?: string;
@@ -25,23 +23,28 @@ export default function NewSessionDialog(props: {
   const [title, setTitle] = useState("");
   const [extraArgsText, setExtraArgsText] = useState("");
   const [permission, setPermission] = useState<PermissionStr>("native");
+  const transport: AgentTransportStr = "pty";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const project = s.projects.find((p) => p.id === projectId);
   const adapterFor = (a: string) => s.adapters.find((x) => x.agentType === a);
+  const availableAgents = s.adapters;
   const selectedPreset = useMemo(
     () => presets.find((p) => p.id === presetId) ?? null,
     [presets, presetId],
   );
   const isShell = agent === "shell";
+  const isPi = agent === "pi";
+  const isQoder = agent === "qoder";
 
   useEffect(() => {
     let cancelled = false;
     setPresets([]);
     setPresetId("");
-    if (agent === "shell") setPermission("native");
+    if (agent === "shell" || agent === "pi") setPermission("native");
+    else if (agent === "qoder") setPermission("bypass");
     api
       .listPresets(agent)
       .then((list) => {
@@ -52,6 +55,12 @@ export default function NewSessionDialog(props: {
       cancelled = true;
     };
   }, [agent]);
+
+  useEffect(() => {
+    if (availableAgents.length > 0 && !adapterFor(agent)) {
+      setAgent(availableAgents[0].agentType);
+    }
+  }, [agent, availableAgents]);
 
   const presetHasSecrets = (selectedPreset?.secretRefIds.length ?? 0) > 0;
   // PRD 3.2 参数框：空格分隔为 argv 数组（不做 shell 拼接，后端按数组透传）。
@@ -68,7 +77,8 @@ export default function NewSessionDialog(props: {
       title: title.trim() || null,
       presetId: presetId || null,
       worktreeId: position === "main" ? null : position,
-      permission: isShell ? "native" : permission,
+      permission: isShell || isPi ? "native" : isQoder ? "bypass" : permission,
+      transport,
       riskAck: true,
       cols: null,
       rows: null,
@@ -84,6 +94,10 @@ export default function NewSessionDialog(props: {
     try {
       const res = await api.createSession(args);
       closeDialog();
+      // The backend has created the row, but the current project snapshot is
+      // stale until refreshed. Select only after React can resolve the Session
+      // and mount its xterm pane.
+      await refreshProjects();
       selectSession(res.id);
       for (const n of res.notes ?? []) toast(n, "info");
       toast(`Session 已启动（${agentDisplay(agent)}）`, "success");
@@ -136,8 +150,8 @@ export default function NewSessionDialog(props: {
               Agent
             </span>
             <div className="radio-row" role="radiogroup" aria-labelledby="ns-agent-label">
-              {AGENTS.map((a) => {
-                const inst = adapterFor(a);
+              {availableAgents.map((inst) => {
+                const a = inst.agentType;
                 return (
                   <button
                     key={a}
@@ -147,19 +161,20 @@ export default function NewSessionDialog(props: {
                     className={"radio-chip" + (agent === a ? " selected" : "")}
                     onClick={() => {
                       setAgent(a);
-                      if (a === "shell") setPermission("native");
+                      if (a === "shell" || a === "pi") setPermission("native");
+                      else if (a === "qoder") setPermission("bypass");
                     }}
                     data-tip={
-                      inst
-                        ? `${inst.executablePath}\n版本：${inst.versionText}`
-                        : "尚未检测到该 CLI；启动时会尝试探测"
+                      `${inst.executablePath}\n版本：${inst.versionText}`
                     }
                   >
                     {agentDisplay(a)}
-                    {!inst ? <span className="dim">（未检测）</span> : null}
                   </button>
                 );
               })}
+              {availableAgents.length === 0 ? (
+                <span className="form-hint">请先在设置中检测或手动新增 Agent。</span>
+              ) : null}
             </div>
           </div>
 
@@ -209,6 +224,22 @@ export default function NewSessionDialog(props: {
             />
           </div>
 
+          {isPi ? (
+            <div className="form-row">
+              <span className="form-hint">
+                Pi 将以原生 TUI 启动，完整保留 Pi 的终端交互、扩展与主题；不提供内建逐项审批，将以本地用户权限执行。
+              </span>
+            </div>
+          ) : null}
+
+          {isQoder ? (
+            <div className="form-row">
+              <span className="warn-text">
+                Qoder 以全权限模式启动（--dangerously-skip-permissions），不显示 AgentPort 风险确认。
+              </span>
+            </div>
+          ) : null}
+
           <div className="advanced-fields">
             <button
               type="button"
@@ -231,12 +262,12 @@ export default function NewSessionDialog(props: {
                       setPresetId(id);
                       const p = presets.find((x) => x.id === id);
                       if (p && p.permissionMode !== "native") {
-                        if (!isShell) setPermission(p.permissionMode);
+                        if (!isShell && !isPi && !isQoder) setPermission(p.permissionMode);
                         setAdvancedOpen(true);
                       }
                     }}
                   >
-                    <option value="">（默认）安全默认</option>
+                    <option value="">（默认）{isQoder ? "全权限默认" : isPi ? "本地权限默认" : "安全默认"}</option>
                     {presets.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.name}
@@ -267,6 +298,10 @@ export default function NewSessionDialog(props: {
 
                 {isShell ? (
                   <div className="form-hint">Generic Shell 不使用 Agent 权限模式，直接以终端会话启动。</div>
+                ) : isPi ? (
+                  <div className="form-hint">Pi 不提供 auto/bypass 切换；密钥仅从已配置的 Secret/环境变量注入。</div>
+                ) : isQoder ? (
+                  <div className="form-hint">Qoder 的权限、Session、worktree、remote 和 settings 参数由 AgentPort 管理，不能在此覆盖。</div>
                 ) : (
                   <div className="form-row">
                     <label htmlFor="ns-permission">权限</label>

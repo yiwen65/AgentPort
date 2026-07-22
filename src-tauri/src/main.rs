@@ -9,22 +9,28 @@ use agentport_core::db::Db;
 use agentport_core::diag::Diagnostics;
 use agentport_core::error::{CoreError, Result};
 use agentport_core::export::{AnsiMode, Exporter, LogRange, MdBlocks};
-use agentport_core::git::WorktreeManager;
-use agentport_core::host_manager::{write_private_file, HostClient, HostManager, LaunchSpec};
+use agentport_core::git::{GitRunner, RepositoryFileLock, RepositoryIdentity, WorktreeManager};
+use agentport_core::host_manager::{
+    write_private_file, AttachInfo, HostClient, HostManager, LaunchSpec,
+};
 use agentport_core::ids;
 use agentport_core::models::*;
 use agentport_core::notify::{Notification, Notifier};
 use agentport_core::paths::{normalize_abs, AppPaths};
 use agentport_core::protocol::HostFrame;
 use agentport_core::search::SearchIndex;
-use agentport_core::secrets::{load_preset_secrets, CredentialBroker};
+use agentport_core::secrets::{load_preset_secrets, CredentialBroker, SecretValue};
 use agentport_core::timeline::Timeline;
 use chrono::Utc;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+
+mod git_commands;
 
 // ---------------------------------------------------------------------------
 // App state
@@ -33,9 +39,147 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 struct AppState {
     paths: AppPaths,
     db: Db,
-    /// Live host input writers, per attached session.
-    writers: Mutex<HashMap<String, Arc<Mutex<std::os::unix::net::UnixStream>>>>,
+    /// Live renderer attachments, keyed by Session. An attachment ID is a
+    /// capability: only its owner may detach or remove its Host writer.
+    writers: AttachmentMap,
+    next_attachment_id: AtomicU64,
+    /// One status-only Host connection per live Session. Terminal renderers may
+    /// be LRU-evicted without stopping this durable status projection.
+    monitors: Arc<Mutex<HashMap<String, u64>>>,
+    next_monitor_id: AtomicU64,
+    /// A process-local guard for the durable cleanup worker. The worker owns
+    /// only an `AppPaths` clone, never a borrowed or stale `AppState`.
+    cleanup_scheduler_started: AtomicBool,
+    branch_reconcile_started: AtomicBool,
     notifier: Mutex<Notifier>,
+}
+
+type HostWriter = Arc<Mutex<std::os::unix::net::UnixStream>>;
+type AttachmentMap = Arc<Mutex<HashMap<String, RendererAttachment>>>;
+
+/// Immutable identity learned from the authenticated Host handshake. A socket
+/// is not enough: a Session can be restarted while an old renderer or monitor
+/// is still draining its previous Host connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HostIdentity {
+    host_pid: i64,
+    protocol: u32,
+    run_id: String,
+    run_ordinal: i64,
+}
+
+impl HostIdentity {
+    fn from_attach(info: &AttachInfo) -> Self {
+        Self {
+            host_pid: i64::from(info.host_pid),
+            protocol: info.protocol,
+            run_id: info.run_id.clone(),
+            run_ordinal: info.run_ordinal,
+        }
+    }
+
+    fn matches_run(&self, run_id: &str, run_ordinal: i64) -> bool {
+        self.run_id == run_id && self.run_ordinal == run_ordinal
+    }
+
+    fn allows_legacy_binding(&self) -> bool {
+        // A Host built before run identities existed may advertise protocol
+        // v1, or a transitional v2 while serde supplies `legacy/0` defaults.
+        // In either case PID is the strongest identity fact it can provide.
+        self.protocol == agentport_core::protocol::LEGACY_PROTOCOL_VERSION
+            || (self.run_id == LEGACY_RUN_ID && self.run_ordinal == LEGACY_RUN_ORDINAL)
+    }
+}
+
+struct RendererAttachment {
+    id: u64,
+    host: HostIdentity,
+    writer: HostWriter,
+}
+
+/// The latest DB Host PID and latest reserved run are the durable authority
+/// for a live Session. A stale connection may still emit historical facts, but
+/// it must never cause a terminal lifecycle transition for a newer launch.
+fn host_identity_is_current(db: &Db, session_id: &str, host: &HostIdentity) -> bool {
+    let Ok(binding) = db.session_host_binding(session_id) else {
+        return false;
+    };
+    if binding.host_pid != Some(host.host_pid) {
+        return false;
+    }
+    match binding.run_identity() {
+        Some((run_id, run_ordinal)) => {
+            host.matches_run(run_id, run_ordinal) || host.allows_legacy_binding()
+        }
+        None => host.allows_legacy_binding(),
+    }
+}
+
+fn replace_attachment(
+    attachments: &AttachmentMap,
+    session_id: String,
+    attachment: RendererAttachment,
+) -> Option<RendererAttachment> {
+    attachments.lock().unwrap().insert(session_id, attachment)
+}
+
+fn take_attachment_if_current(
+    attachments: &AttachmentMap,
+    session_id: &str,
+    attachment_id: u64,
+) -> Option<RendererAttachment> {
+    let mut live = attachments.lock().unwrap();
+    let is_current = live
+        .get(session_id)
+        .is_some_and(|attachment| attachment.id == attachment_id);
+    if is_current {
+        live.remove(session_id)
+    } else {
+        None
+    }
+}
+
+fn take_any_attachment(
+    attachments: &AttachmentMap,
+    session_id: &str,
+) -> Option<RendererAttachment> {
+    attachments.lock().unwrap().remove(session_id)
+}
+
+fn shutdown_attachment(attachment: &RendererAttachment) {
+    use std::net::Shutdown;
+    if let Ok(writer) = attachment.writer.lock() {
+        let _ = writer.shutdown(Shutdown::Both);
+    }
+}
+
+fn transition_terminal_lifecycle_for_host(
+    db: &Db,
+    session_id: &str,
+    host: &HostIdentity,
+    next: Lifecycle,
+) -> bool {
+    let Ok(binding) = db.session_host_binding(session_id) else {
+        return false;
+    };
+    if binding.host_pid != Some(host.host_pid) {
+        return false;
+    }
+    let expected_run = match binding.run_identity() {
+        Some((run_id, run_ordinal)) if host.matches_run(run_id, run_ordinal) => {
+            Some((run_id, run_ordinal))
+        }
+        Some(_) if host.allows_legacy_binding() => None,
+        None if host.allows_legacy_binding() => None,
+        _ => return false,
+    };
+    match db.update_session_lifecycle_if_host(session_id, host.host_pid, expected_run, next) {
+        Ok(updated) => updated,
+        Err(error) => {
+            tracing::warn!(session = %session_id, host_pid = host.host_pid, error = %error, "could not persist verified terminal lifecycle");
+            false
+        }
+    }
 }
 
 macro_rules! map_err {
@@ -59,6 +203,9 @@ struct BootInfo {
     secret_backend: String,
     index_state: String,
     webview: String,
+    /// Private per-user export directory; the frontend uses it as the default
+    /// destination so exports never land world-readable in /tmp.
+    exports_dir: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -74,6 +221,7 @@ struct SessionView {
     agent_session_id: Option<String>,
     resume_precision: String,
     permission_mode: String,
+    transport: String,
     log_path: String,
     unread: bool,
     status: Option<Value>,
@@ -120,6 +268,8 @@ struct WorktreeView {
 fn status_value(e: &StatusEvent) -> Value {
     json!({
         "sessionId": e.session_id,
+        "runId": e.run_id,
+        "runOrdinal": e.run_ordinal,
         "sequence": e.sequence,
         "state": e.state.as_str(),
         "source": e.source.as_str(),
@@ -154,6 +304,7 @@ fn session_view(db: &Db, s: &Session, active_session: Option<&str>) -> SessionVi
         agent_session_id: s.agent_session_id.clone(),
         resume_precision: s.resume_precision.as_str().into(),
         permission_mode: s.permission_mode.as_str().into(),
+        transport: s.transport.as_str().into(),
         log_path: s.log_path.clone(),
         unread,
         status: latest.as_ref().map(status_value),
@@ -201,13 +352,161 @@ fn collect_projects(db: &Db, active: Option<&str>) -> Vec<ProjectView> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Durable post-purge cleanup / retention
+// ---------------------------------------------------------------------------
+
+/// Bound one foreground or background pass so a large historical archive never
+/// monopolizes the GUI process or SQLite connection.
+const MAX_CLEANUP_JOBS_PER_PASS: usize = 32;
+const CLEANUP_POLL_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Cleanup jobs are durable database records. Their only filesystem input is a
+/// Session ID, which must be a single conservative path component before it is
+/// resolved below `AppPaths::sessions_dir`. This prevents a corrupted database
+/// row from turning a retry worker into an arbitrary-directory remover.
+fn valid_cleanup_session_id(session_id: &str) -> bool {
+    !session_id.is_empty()
+        && session_id.len() <= 128
+        && session_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn cleanup_session_paths(
+    paths: &AppPaths,
+    session_id: &str,
+) -> std::result::Result<(std::path::PathBuf, std::path::PathBuf), &'static str> {
+    if !valid_cleanup_session_id(session_id) {
+        return Err("invalid_session_id");
+    }
+    let sessions_dir = paths.sessions_dir();
+    let session_dir = paths.session_dir(session_id);
+    // The component validation above is the primary guard. Keep this structural
+    // check too so future `AppPaths` changes cannot silently broaden deletion.
+    if session_dir.parent() != Some(sessions_dir.as_path()) {
+        return Err("session_dir_outside_root");
+    }
+    Ok((session_dir, paths.socket_path(session_id)))
+}
+
+fn remove_cleanup_paths(
+    session_dir: &std::path::Path,
+    socket_path: &std::path::Path,
+) -> std::result::Result<(), &'static str> {
+    match std::fs::remove_file(socket_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("remove_socket_failed"),
+    }
+    match std::fs::remove_dir_all(session_dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("remove_session_directory_failed"),
+    }
+}
+
+/// Perform a bounded durable cleanup pass. Error values written to SQLite are
+/// fixed labels rather than OS error strings, so a job never persists an
+/// absolute filesystem path or other environment-specific detail.
+fn run_due_cleanup_jobs(paths: &AppPaths, db: &Db) -> usize {
+    let jobs = match db.list_due_cleanup_jobs(Utc::now()) {
+        Ok(jobs) => jobs,
+        Err(error) => {
+            tracing::error!(error = %error, "could not list due session cleanup jobs");
+            return 0;
+        }
+    };
+
+    let mut completed = 0;
+    for job in jobs.into_iter().take(MAX_CLEANUP_JOBS_PER_PASS) {
+        let session_id = job.session_id;
+        let outcome = match cleanup_session_paths(paths, &session_id) {
+            Err(reason) => Err(reason),
+            Ok((session_dir, socket_path)) => {
+                let index = SearchIndex { db, paths };
+                let session_ids = vec![session_id.clone()];
+                if index.remove_sessions(&session_ids).is_err() {
+                    Err("remove_search_index_failed")
+                } else {
+                    remove_cleanup_paths(&session_dir, &socket_path)
+                }
+            }
+        };
+
+        match outcome {
+            Ok(()) => match db.mark_cleanup_job_success(&session_id) {
+                Ok(()) => completed += 1,
+                Err(error) => {
+                    // The filesystem delete is intentionally idempotent. Leave
+                    // the job due so the next pass can acknowledge it safely.
+                    tracing::error!(session = %session_id, error = %error, "could not acknowledge session cleanup job");
+                }
+            },
+            Err(reason) => match db.record_cleanup_job_retry(&session_id, reason, Utc::now()) {
+                Ok(job) => tracing::warn!(
+                    session = %session_id,
+                    attempts = job.attempts,
+                    retry_scheduled = job.retry_at.is_some(),
+                    reason,
+                    "session cleanup deferred"
+                ),
+                Err(error) => tracing::error!(
+                    session = %session_id,
+                    error = %error,
+                    "could not record session cleanup retry"
+                ),
+            },
+        }
+    }
+    completed
+}
+
+/// Start exactly one process-local retry loop. It owns an `AppPaths` clone and
+/// opens its own database handle instead of retaining `AppState` after boot.
+fn ensure_cleanup_scheduler(state: &AppState) {
+    if state
+        .cleanup_scheduler_started
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    let paths = state.paths.clone();
+    let spawned = std::thread::Builder::new()
+        .name("agentport-session-cleanup".into())
+        .spawn(move || loop {
+            std::thread::sleep(CLEANUP_POLL_INTERVAL);
+            match Db::open(&paths) {
+                Ok(db) => {
+                    let _ = run_due_cleanup_jobs(&paths, &db);
+                }
+                Err(error) => {
+                    tracing::error!(error = %error, "session cleanup worker could not open db")
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        state
+            .cleanup_scheduler_started
+            .store(false, Ordering::Release);
+        tracing::error!(error = %error, "could not start session cleanup worker");
+    }
+}
+
 #[tauri::command]
-async fn boot(state: State<'_, AppState>) -> std::result::Result<BootInfo, String> {
+async fn boot(state: State<'_, AppState>, app: AppHandle) -> std::result::Result<BootInfo, String> {
     let mgr = HostManager {
         paths: &state.paths,
         db: &state.db,
     };
     let _ = mgr.reconcile_on_startup();
+    let _ = run_due_cleanup_jobs(&state.paths, &state.db);
+    ensure_cleanup_scheduler(&state);
+    ensure_live_session_monitors(&app, &state);
+    if !state.branch_reconcile_started.swap(true, Ordering::AcqRel) {
+        git_commands::spawn_startup_reconcile(app.clone(), state.paths.clone());
+    }
     let idx = SearchIndex {
         db: &state.db,
         paths: &state.paths,
@@ -237,6 +536,7 @@ async fn boot(state: State<'_, AppState>) -> std::result::Result<BootInfo, Strin
         secret_backend: format!("{:?}", CredentialBroker::backend_status()),
         index_state,
         webview: "system".into(),
+        exports_dir: state.paths.exports_dir().to_string_lossy().into_owned(),
     })
 }
 
@@ -280,19 +580,31 @@ async fn list_archived_sessions(
 #[tauri::command]
 async fn probe_agents(state: State<'_, AppState>) -> std::result::Result<Vec<Value>, String> {
     let mut out = vec![];
-    for t in [
-        AgentType::Claude,
-        AgentType::Codex,
-        AgentType::Kimi,
-        AgentType::Shell,
-    ] {
-        let o = capability::probe_agent(t, None);
+    for o in capability::probe_all() {
+        let t = o.agent_type;
         if let Some(i) = &o.install {
             let _ = state.db.upsert_adapter(i);
         }
         out.push(probe_outcome_json(t, &o));
     }
     Ok(out)
+}
+
+/// Adapter registry for renderer surfaces. New compiled adapters appear in
+/// onboarding without a second hard-coded frontend list.
+#[tauri::command]
+fn list_supported_agents() -> Vec<Value> {
+    AgentType::all()
+        .iter()
+        .copied()
+        .map(|agent| {
+            json!({
+                "agent": agent.as_str(),
+                "displayName": agent.display_name(),
+                "commandNames": agent.command_names(),
+            })
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -389,6 +701,24 @@ async fn list_presets(
 
 fn install_for(state: &AppState, t: AgentType) -> Result<AdapterInstall> {
     if let Some(i) = state.db.get_adapter(t)? {
+        // Cached path may be stale (e.g. Homebrew removed the versioned
+        // Caskroom dir after an upgrade). Re-probe instead of spawning a
+        // missing binary.
+        if !std::path::Path::new(&i.executable_path).exists() {
+            let o = capability::probe_agent(t, None);
+            return match o.install {
+                Some(fresh) => {
+                    state.db.upsert_adapter(&fresh)?;
+                    Ok(fresh)
+                }
+                None => Err(CoreError::Adapter(format!(
+                    "{} 的可执行文件已失效（{}），重新探测也未找到: {}",
+                    t.display_name(),
+                    i.executable_path,
+                    o.reason.unwrap_or_else(|| "not found".into())
+                ))),
+            };
+        }
         return Ok(i);
     }
     let o = capability::probe_agent(t, None);
@@ -419,10 +749,14 @@ fn preset_for(
             .unwrap_or(Preset {
                 id: format!("pre_{}_safe", t.as_str()),
                 agent_type: t,
-                name: format!("{} 安全默认", t.display_name()),
+                name: match t {
+                    AgentType::Qoder => "Qoder 全权限默认".into(),
+                    AgentType::Pi => "Pi 本地权限默认".into(),
+                    _ => format!("{} 安全默认", t.display_name()),
+                },
                 executable_path: String::new(),
                 args: vec![],
-                permission_mode: PermissionMode::Native,
+                permission_mode: t.default_permission_mode(),
                 env_names: vec![],
                 secret_ref_ids: vec![],
                 built_in: true,
@@ -441,6 +775,60 @@ fn preset_for(
     Ok(p)
 }
 
+/// Materialize the launch environment before creating any persistent Session
+/// state.  A credential-store failure must not leave a `Creating` row or
+/// helper file behind; create and restart intentionally share this exact
+/// path so their environment semantics cannot drift.
+fn materialize_launch_environment(
+    state: &AppState,
+    preset: &Preset,
+    plan_env: &[(String, String)],
+) -> Result<(Vec<(String, String)>, Vec<(String, SecretValue)>)> {
+    let mut env = plan_env.to_vec();
+    for name in &preset.env_names {
+        if let Ok(value) = std::env::var(name) {
+            env.push((name.clone(), value));
+        }
+    }
+
+    let refs: Vec<SecretRef> = preset
+        .secret_ref_ids
+        .iter()
+        .map(|id| state.db.get_secret_ref(id))
+        .collect::<Result<Vec<_>>>()?;
+    let secrets = if refs.is_empty() {
+        Vec::new()
+    } else {
+        let broker = CredentialBroker::detect()?;
+        load_preset_secrets(&broker, &refs)?
+    };
+    Ok((env, secrets))
+}
+
+/// Write session-private adapter helpers as an all-or-nothing pre-launch
+/// operation.  The paths originate from the adapter plan and are scoped to
+/// the new Session directory; on a partial failure, remove only helpers we
+/// wrote during this attempt.
+fn write_launch_helpers(helper_files: &[(String, String)]) -> Result<()> {
+    let mut written = Vec::with_capacity(helper_files.len());
+    for (path, contents) in helper_files {
+        if let Err(error) = write_private_file(path, contents) {
+            for written_path in written {
+                let _ = std::fs::remove_file(written_path);
+            }
+            return Err(error);
+        }
+        written.push(path.as_str());
+    }
+    Ok(())
+}
+
+fn remove_launch_helpers(helper_files: &[(String, String)]) {
+    for (path, _) in helper_files {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// Build the LaunchPlan for a (not yet created) session — used both by the
 /// preflight panel and by actual creation.
 fn build_launch_plan(
@@ -450,11 +838,19 @@ fn build_launch_plan(
     preset_id: Option<String>,
     worktree_id: Option<String>,
     permission: PermissionMode,
+    transport: AgentTransport,
     extra_args: Option<Vec<String>>,
 ) -> Result<(adapters::LaunchPlan, Preset, String, Option<String>)> {
+    if transport != AgentTransport::Pty {
+        return Err(CoreError::Validation(format!(
+            "{} 新建会话仅支持原生 PTY transport",
+            agent.display_name()
+        )));
+    }
     let project = state.db.get_project(project_id)?;
     let install = install_for(state, agent)?;
     let preset = preset_for(state, agent, preset_id, &install)?;
+    adapters::validate_user_args(agent, &preset.args)?;
     let cwd = match &worktree_id {
         Some(w) => state.db.get_worktree(w)?.path,
         None => project.root_path.clone(),
@@ -473,6 +869,7 @@ fn build_launch_plan(
             .to_string_lossy()
             .into_owned(),
         session_dir: session_dir.to_string_lossy().into_owned(),
+        transport,
     };
     let plan = adapters::adapter_for(agent).build_launch(&ctx)?;
     let mut plan = if permission != PermissionMode::Native {
@@ -493,6 +890,7 @@ fn build_launch_plan(
                 return Err(CoreError::Validation("empty extra arg".into()));
             }
         }
+        adapters::validate_user_args(agent, &extra)?;
         plan.argv.extend(extra);
     }
     Ok((plan, preset, cwd, Some(session_id)))
@@ -507,6 +905,25 @@ fn parse_permission(s: &str) -> Result<PermissionMode> {
     }
 }
 
+fn parse_transport(s: &str) -> Result<AgentTransport> {
+    s.parse()
+}
+
+/// Qoder's only supported AgentPort mode is its documented full-access flag.
+/// It is a fixed product decision rather than an opt-in per-session risk gate;
+/// existing Agents keep the historical acknowledgement rule.
+fn permission_requires_risk_ack(agent: AgentType, mode: PermissionMode) -> bool {
+    mode != PermissionMode::Native && agent != AgentType::Qoder
+}
+
+fn acquire_session_repository_lock(cwd: &str) -> Result<Option<RepositoryFileLock>> {
+    match RepositoryIdentity::discover(std::path::Path::new(cwd), &GitRunner::default()) {
+        Ok(identity) => RepositoryFileLock::acquire(&identity.common_dir).map(Some),
+        Err(CoreError::NotFound(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 #[tauri::command]
 async fn create_session(
     state: State<'_, AppState>,
@@ -517,6 +934,7 @@ async fn create_session(
     preset_id: Option<String>,
     worktree_id: Option<String>,
     permission: String,
+    transport: Option<String>,
     risk_ack: bool,
     cols: Option<u16>,
     rows: Option<u16>,
@@ -524,9 +942,13 @@ async fn create_session(
 ) -> std::result::Result<Value, String> {
     let t: AgentType = map_err!(agent.parse::<AgentType>())?;
     let mode = t.effective_permission_mode(map_err!(parse_permission(&permission))?);
-    if mode != PermissionMode::Native && !risk_ack {
+    if permission_requires_risk_ack(t, mode) && !risk_ack {
         return Err("NEEDS_RISK_ACK".into());
     }
+    let transport = match transport {
+        Some(value) => map_err!(parse_transport(&value))?,
+        None => t.default_transport(),
+    };
     let project = map_err!(state.db.get_project(&project_id))?;
     let (plan, preset, cwd, session_id) = map_err!(build_launch_plan(
         &state,
@@ -535,19 +957,63 @@ async fn create_session(
         preset_id,
         worktree_id.clone(),
         mode,
+        transport,
         extra_args
     ))?;
     let session_id = session_id.unwrap();
-    for (path, contents) in &plan.helper_files {
-        map_err!(write_private_file(path, contents))?;
-    }
+    // Reserve the checkout as soon as launch planning has resolved its cwd.
+    // Branch mutation takes the same common-dir lock and rechecks Creating /
+    // Running rows immediately before switch, so the user's create request
+    // cannot silently cross a concurrent branch transition while secrets or
+    // helper files are being prepared.
+    let lock_cwd = cwd.clone();
+    let repository_lock = match tauri::async_runtime::spawn_blocking(move || {
+        acquire_session_repository_lock(&lock_cwd)
+    })
+    .await
+    {
+        Ok(Ok(lock)) => lock,
+        Ok(Err(error)) => {
+            let _ = std::fs::remove_dir_all(state.paths.session_dir(&session_id));
+            return Err(error.to_string());
+        }
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(state.paths.session_dir(&session_id));
+            return Err(format!("repository lock worker failed: {error}"));
+        }
+    };
+    // Materialize every dependency that can fail before inserting a Session
+    // row or writing adapter helpers.  The launch plan creates a private
+    // directory for its paths, so clean that empty directory on a pre-launch
+    // failure as well.
+    let (env, secrets) = match materialize_launch_environment(&state, &preset, &plan.env) {
+        Ok(materialized) => materialized,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(state.paths.session_dir(&session_id));
+            return Err(error.to_string());
+        }
+    };
+    let settings = match state.db.load_settings() {
+        Ok(settings) => settings,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(state.paths.session_dir(&session_id));
+            return Err(error.to_string());
+        }
+    };
     let (title, auto_title_pending) = match title.map(|value| value.trim().to_string()) {
         Some(value) if !value.is_empty() => (value, false),
-        _ => (
-            map_err!(state.db.next_default_session_title(&project.id, t))?,
-            true,
-        ),
+        _ => match state.db.next_default_session_title(&project.id, t) {
+            Ok(title) => (title, true),
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(state.paths.session_dir(&session_id));
+                return Err(error.to_string());
+            }
+        },
     };
+    if let Err(error) = write_launch_helpers(&plan.helper_files) {
+        let _ = std::fs::remove_dir_all(state.paths.session_dir(&session_id));
+        return Err(error.to_string());
+    }
     let now = Utc::now();
     let session = Session {
         id: session_id.clone(),
@@ -578,42 +1044,39 @@ async fn create_session(
             .to_string_lossy()
             .into_owned(),
         adapter_type: t,
+        transport: plan.transport,
         command: plan.argv.clone(),
         permission_mode: mode,
         created_at: now,
         updated_at: now,
         archived_at: None,
     };
+    // Inserting Creating while still holding the checkout reservation makes
+    // the Session row and branch manager's final live-session check atomic.
+    if let Err(error) = state.db.insert_session(&session) {
+        remove_launch_helpers(&plan.helper_files);
+        let _ = std::fs::remove_dir_all(state.paths.session_dir(&session_id));
+        return Err(error.to_string());
+    }
+    drop(repository_lock);
     // Keep the marker separate from the Session schema. It is consumed only
     // after the first successfully submitted terminal input, so a custom
-    // title supplied at creation is never overwritten.
+    // title supplied at creation is never overwritten.  It is created only
+    // after the Session row exists, avoiding an orphan app_meta key.
     if auto_title_pending {
-        map_err!(state.db.mark_session_title_auto_generated(&session_id))?;
-    }
-    map_err!(state.db.insert_session(&session))?;
-    let mut env = plan.env.clone();
-    for name in &preset.env_names {
-        if let Ok(v) = std::env::var(name) {
-            env.push((name.clone(), v));
+        if let Err(error) = state.db.mark_session_title_auto_generated(&session_id) {
+            let _ = state
+                .db
+                .update_session_lifecycle(&session_id, Lifecycle::Exited);
+            remove_launch_helpers(&plan.helper_files);
+            return Err(error.to_string());
         }
     }
-    let mut secrets = vec![];
-    if !preset.secret_ref_ids.is_empty() {
-        let broker = map_err!(CredentialBroker::detect())?;
-        let refs: Vec<SecretRef> = preset
-            .secret_ref_ids
-            .iter()
-            .map(|id| state.db.get_secret_ref(id))
-            .collect::<Result<Vec<_>>>()
-            .map_err(|e| e.to_string())?;
-        secrets = map_err!(load_preset_secrets(&broker, &refs))?;
-    }
-    let settings = map_err!(state.db.load_settings())?;
     let mgr = HostManager {
         paths: &state.paths,
         db: &state.db,
     };
-    let info = map_err!(mgr.launch(LaunchSpec {
+    let info = match mgr.launch(LaunchSpec {
         session: session.clone(),
         command: plan.argv.clone(),
         env,
@@ -622,7 +1085,14 @@ async fn create_session(
         agent_session_id_hint: plan.assigned_agent_session_id.clone(),
         cols: cols.unwrap_or(120),
         rows: rows.unwrap_or(32),
-    }))?;
+    }) {
+        Ok(info) => info,
+        Err(error) => {
+            remove_launch_helpers(&plan.helper_files);
+            return Err(error.to_string());
+        }
+    };
+    ensure_session_monitor(&app, &state, &session);
     emit_sessions_changed(&app, &state, Some(&session_id));
     Ok(json!({
         "id": session_id,
@@ -642,35 +1112,289 @@ fn emit_sessions_changed(app: &AppHandle, state: &AppState, active: Option<&str>
     let _ = app.emit("projects-changed", projects);
 }
 
+fn live_session(lifecycle: Lifecycle) -> bool {
+    matches!(lifecycle, Lifecycle::Creating | Lifecycle::Running)
+}
+
+fn monitor_is_current(
+    monitors: &Arc<Mutex<HashMap<String, u64>>>,
+    session_id: &str,
+    id: u64,
+) -> bool {
+    monitors
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .is_some_and(|current| *current == id)
+}
+
+fn finish_session_monitor(monitors: &Arc<Mutex<HashMap<String, u64>>>, session_id: &str, id: u64) {
+    let mut live = monitors.lock().unwrap();
+    if live.get(session_id).is_some_and(|current| *current == id) {
+        live.remove(session_id);
+    }
+}
+
+fn project_monitor_status(app: &AppHandle, db: &Db, event: &StatusEvent) {
+    if let Err(error) = db.record_status_event(event) {
+        tracing::error!(session = %event.session_id, error = %error, "session monitor projection write failed");
+    }
+    let _ = app.emit("session-state", status_value(event));
+}
+
+/// Keep status truth alive independently of the renderer LRU. Each monitor
+/// requests no output bytes, owns one verified socket, and retries boundedly
+/// after an unexpected EOF. The Host journal remains the source of truth when
+/// the GUI itself is closed.
+fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) {
+    if !live_session(session.lifecycle) {
+        return;
+    }
+    let monitor_id = state.next_monitor_id.fetch_add(1, Ordering::Relaxed);
+    let monitors = state.monitors.clone();
+    {
+        let mut live = monitors.lock().unwrap();
+        if live.contains_key(&session.id) {
+            return;
+        }
+        live.insert(session.id.clone(), monitor_id);
+    }
+    let paths = state.paths.clone();
+    let app = app.clone();
+    let session_id = session.id.clone();
+    std::thread::spawn(move || {
+        let db = match Db::open(&paths) {
+            Ok(db) => db,
+            Err(error) => {
+                tracing::error!(session = %session_id, error = %error, "session monitor could not open db");
+                finish_session_monitor(&monitors, &session_id, monitor_id);
+                return;
+            }
+        };
+        const RETRIES: usize = 5;
+        let mut terminal = false;
+        for attempt in 0..=RETRIES {
+            if !monitor_is_current(&monitors, &session_id, monitor_id) {
+                return;
+            }
+            let session = match db.get_session(&session_id) {
+                Ok(session) if live_session(session.lifecycle) => session,
+                _ => {
+                    terminal = true;
+                    break;
+                }
+            };
+            let connection = match (&session.host_socket, session.host_token.is_empty()) {
+                (Some(socket), false) if !socket.is_empty() => HostClient::connect_with_resume(
+                    socket,
+                    &session_id,
+                    &session.host_token,
+                    0,
+                    None,
+                    false,
+                ),
+                _ => Err(CoreError::Host("no host socket/token recorded".into())),
+            };
+            let Ok((mut client, info)) = connection else {
+                if attempt < RETRIES {
+                    std::thread::sleep(Duration::from_millis(250 * (1_u64 << attempt)));
+                    continue;
+                }
+                break;
+            };
+            let host = HostIdentity::from_attach(&info);
+            if !host_identity_is_current(&db, &session_id, &host) {
+                // A restart may have reserved/published a new run while this
+                // monitor was connecting. Do not project the old connection;
+                // retry against the durable Session row instead.
+                tracing::debug!(session = %session_id, host_pid = host.host_pid, "monitor handshake belongs to a superseded Host");
+                if attempt < RETRIES {
+                    std::thread::sleep(Duration::from_millis(250 * (1_u64 << attempt)));
+                    continue;
+                }
+                break;
+            }
+            if let Some(event) = info.current_status.as_ref() {
+                if host.matches_run(&event.run_id, event.run_ordinal) {
+                    project_monitor_status(&app, &db, event);
+                } else {
+                    tracing::warn!(session = %session_id, host_pid = host.host_pid, "monitor hello snapshot has the wrong run identity");
+                    if attempt < RETRIES {
+                        std::thread::sleep(Duration::from_millis(250 * (1_u64 << attempt)));
+                        continue;
+                    }
+                    break;
+                }
+            } else if info.protocol == agentport_core::protocol::LEGACY_PROTOCOL_VERSION {
+                let _ = client.request_status();
+            }
+            loop {
+                let frame = match client.read_frame() {
+                    Ok(Some(frame)) => frame,
+                    Ok(None) | Err(_) => break,
+                };
+                match frame {
+                    HostFrame::State {
+                        session_id: frame_session_id,
+                        run_id,
+                        run_ordinal,
+                        sequence,
+                        state,
+                        source,
+                        confidence,
+                        evidence,
+                        log_cursor,
+                        occurred_at,
+                    } => {
+                        if frame_session_id != session_id
+                            || !host.matches_run(&run_id, run_ordinal)
+                            || !host_identity_is_current(&db, &session_id, &host)
+                        {
+                            tracing::warn!(session = %session_id, host_pid = host.host_pid, "monitor received state from a superseded Host");
+                            break;
+                        }
+                        project_monitor_status(
+                            &app,
+                            &db,
+                            &StatusEvent {
+                                session_id: frame_session_id,
+                                run_id,
+                                run_ordinal,
+                                sequence,
+                                state,
+                                source,
+                                confidence,
+                                evidence,
+                                log_cursor,
+                                occurred_at,
+                            },
+                        );
+                    }
+                    HostFrame::Exit {
+                        session_id: frame_session_id,
+                        run_id,
+                        run_ordinal,
+                        reason,
+                        ..
+                    } => {
+                        if frame_session_id != session_id || !host.matches_run(&run_id, run_ordinal)
+                        {
+                            tracing::warn!(session = %session_id, host_pid = host.host_pid, "monitor received Exit from a different run");
+                            break;
+                        }
+                        let lifecycle = if reason == "user_stop" {
+                            Lifecycle::Stopped
+                        } else {
+                            Lifecycle::Exited
+                        };
+                        if !transition_terminal_lifecycle_for_host(
+                            &db,
+                            &session_id,
+                            &host,
+                            lifecycle,
+                        ) {
+                            tracing::warn!(session = %session_id, host_pid = host.host_pid, "monitor Exit no longer matches current Host");
+                            break;
+                        }
+                        let _ = app.emit(
+                            "session-exit",
+                            json!({"sessionId": session_id, "reason": reason}),
+                        );
+                        terminal = true;
+                        break;
+                    }
+                    HostFrame::Error { message, .. } => {
+                        tracing::warn!(session = %session_id, %message, "session monitor host error");
+                    }
+                    _ => {}
+                }
+            }
+            if terminal {
+                break;
+            }
+            if attempt < RETRIES {
+                std::thread::sleep(Duration::from_millis(250 * (1_u64 << attempt)));
+            }
+        }
+        if !terminal && monitor_is_current(&monitors, &session_id, monitor_id) {
+            // A lost status-only socket is transport evidence only. The Host
+            // reaper/reconciliation owns `Interrupted`; guessing here would
+            // turn a transient GUI-side outage into a false terminal state.
+            tracing::warn!(session = %session_id, retries = RETRIES, "session monitor retry budget exhausted; lifecycle left unchanged");
+        }
+        finish_session_monitor(&monitors, &session_id, monitor_id);
+    });
+}
+
+fn ensure_live_session_monitors(app: &AppHandle, state: &AppState) {
+    if let Ok(sessions) = state.db.list_sessions(None, false) {
+        for session in sessions {
+            ensure_session_monitor(app, state, &session);
+        }
+    }
+}
+
 #[tauri::command]
 async fn attach_session(
     state: State<'_, AppState>,
     app: AppHandle,
     session_id: String,
     replay_tail_bytes: u64,
+    resume_from: Option<LogCursor>,
     channel: tauri::ipc::Channel<Value>,
 ) -> std::result::Result<Value, String> {
-    // Detach any existing attachment for this session first.
-    detach_session(state.clone(), session_id.clone()).await.ok();
     let session = map_err!(state.db.get_session(&session_id))?;
     let socket = session
         .host_socket
         .clone()
         .ok_or_else(|| "no socket recorded".to_string())?;
     let token = map_err!(state.db.get_session_token(&session_id))?;
-    let (client, info) = map_err!(HostClient::connect(
+    // Cap replay independently of frontend input so a malformed IPC request
+    // cannot make a Host read an unbounded log tail into memory.
+    const MAX_REPLAY_BYTES: u64 = 4 * 1024 * 1024;
+    let (mut client, info) = map_err!(HostClient::connect_with_resume(
         &socket,
         &session_id,
         &token,
-        replay_tail_bytes
+        replay_tail_bytes.min(MAX_REPLAY_BYTES),
+        resume_from,
+        true,
     ))?;
+    let host = HostIdentity::from_attach(&info);
+    if !host_identity_is_current(&state.db, &session_id, &host) {
+        return Err("Host changed while establishing terminal attachment; please reconnect".into());
+    }
+    if info.protocol == agentport_core::protocol::LEGACY_PROTOCOL_VERSION {
+        // v1 did not include a Hello snapshot; queue a status request before
+        // the reader is handed to the watch thread.
+        map_err!(client.request_status())?;
+    }
+    if let Some(status) = info.current_status.as_ref() {
+        if let Err(error) = state.db.record_status_event(status) {
+            tracing::error!(session = %session_id, error = %error, "attach status snapshot was not persisted");
+        }
+        let _ = app.emit("session-state", status_value(status));
+    }
     let HostClient { reader, writer, .. } = client;
-    state
-        .writers
-        .lock()
-        .unwrap()
-        .insert(session_id.clone(), Arc::new(Mutex::new(writer)));
+    let writer = Arc::new(Mutex::new(writer));
+    let attachment_id = state.next_attachment_id.fetch_add(1, Ordering::Relaxed);
+    let previous = replace_attachment(
+        &state.writers,
+        session_id.clone(),
+        RendererAttachment {
+            id: attachment_id,
+            host: host.clone(),
+            writer: writer.clone(),
+        },
+    );
+    // Replacement happens before shutdown. This makes the new attachment
+    // authoritative immediately, while the old reader can only remove its
+    // own ID when it observes the resulting EOF.
+    if let Some(previous) = previous {
+        shutdown_attachment(&previous);
+    }
     let paths = state.paths.clone();
+    let writers = state.writers.clone();
     let sid = session_id.clone();
     let app2 = app.clone();
     std::thread::spawn(move || {
@@ -679,16 +1403,36 @@ async fn attach_session(
             Ok(d) => d,
             Err(e) => {
                 let _ = channel.send(json!({"t": "error", "message": e.to_string()}));
+                if let Some(attachment) = take_attachment_if_current(&writers, &sid, attachment_id)
+                {
+                    shutdown_attachment(&attachment);
+                }
                 return;
             }
         };
-        watch_loop(app2, channel, reader, db, paths, sid);
+        watch_loop(
+            app2,
+            channel,
+            reader,
+            db,
+            sid,
+            writers,
+            attachment_id,
+            host,
+            writer,
+        );
     });
     Ok(json!({
+        "attachmentId": attachment_id,
         "hostPid": info.host_pid,
+        "protocol": info.protocol,
         "childAlive": info.child_alive,
         "logBytes": info.log_bytes,
         "agentSessionId": info.agent_session_id,
+        "runId": info.run_id,
+        "runOrdinal": info.run_ordinal,
+        "status": info.current_status.as_ref().map(status_value),
+        "logCursor": info.log_cursor,
     }))
 }
 
@@ -697,92 +1441,189 @@ fn watch_loop(
     channel: tauri::ipc::Channel<Value>,
     mut reader: std::io::BufReader<std::os::unix::net::UnixStream>,
     db: Db,
-    _paths: AppPaths,
     session_id: String,
+    writers: AttachmentMap,
+    attachment_id: u64,
+    host: HostIdentity,
+    writer: HostWriter,
 ) {
     loop {
         match agentport_core::protocol::read_frame::<HostFrame>(&mut reader) {
-            Ok(Some(frame)) => match frame {
-                HostFrame::Output { data, offset, .. } => {
-                    let _ = channel.send(json!({
+            Ok(Some(frame)) => {
+                match frame {
+                    HostFrame::Output {
+                        data,
+                        offset,
+                        cursor,
+                        ..
+                    } => {
+                        if !host.matches_run(&cursor.run_id, cursor.run_ordinal) {
+                            tracing::warn!(session = %session_id, attachment_id, "dropping output from a stale Host run");
+                            break;
+                        }
+                        let _ = channel.send(json!({
                             "t": "output",
                             "data": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data),
                             "offset": offset,
+                            "cursor": cursor,
                         }));
-                }
-                HostFrame::ReplayDone { offset, .. } => {
-                    let _ = channel.send(json!({"t": "replay_done", "offset": offset}));
-                }
-                HostFrame::State {
-                    session_id: sid,
-                    sequence,
-                    state,
-                    source,
-                    confidence,
-                    evidence,
-                    occurred_at,
-                } => {
-                    let ev = StatusEvent {
-                        session_id: sid.clone(),
+                    }
+                    HostFrame::Structured { event, .. } => {
+                        if !host_identity_is_current(&db, &session_id, &host) {
+                            tracing::warn!(session = %session_id, attachment_id, "dropping structured event from a stale Host attachment");
+                            break;
+                        }
+                        let _ = channel.send(json!({"t": "structured", "event": event}));
+                    }
+                    HostFrame::ReplayDone { offset, cursor, .. } => {
+                        if !host.matches_run(&cursor.run_id, cursor.run_ordinal) {
+                            tracing::warn!(session = %session_id, attachment_id, "dropping replay marker from a stale Host run");
+                            break;
+                        }
+                        let _ = channel
+                            .send(json!({"t": "replay_done", "offset": offset, "cursor": cursor}));
+                    }
+                    HostFrame::ResyncRequired {
+                        earliest, reason, ..
+                    } => {
+                        if !host.matches_run(&earliest.run_id, earliest.run_ordinal) {
+                            tracing::warn!(session = %session_id, attachment_id, "dropping resync marker from a stale Host run");
+                            break;
+                        }
+                        let _ = channel.send(json!({
+                            "t": "resync_required",
+                            "earliest": earliest,
+                            "reason": reason,
+                        }));
+                    }
+                    HostFrame::State {
+                        session_id: sid,
+                        run_id,
+                        run_ordinal,
                         sequence,
                         state,
                         source,
                         confidence,
                         evidence,
                         occurred_at,
-                    };
-                    let _ = db.record_status_event(&ev);
-                    let title = db
-                        .get_session(&sid)
-                        .map(|s| s.title)
-                        .unwrap_or_else(|_| sid.clone());
-                    let _ = app.emit("session-state", status_value(&ev));
-                    let notifier = Notifier::new(true);
-                    agentport_core::notify::notify_state_change(&notifier, &title, &ev);
-                    let _ = channel.send(json!({"t": "state", "event": status_value(&ev)}));
+                    } => {
+                        if !host.matches_run(&run_id, run_ordinal) {
+                            tracing::warn!(session = %session_id, attachment_id, "dropping state from a stale Host run");
+                            break;
+                        }
+                        let ev = StatusEvent {
+                            session_id: sid.clone(),
+                            run_id,
+                            run_ordinal,
+                            sequence,
+                            state,
+                            source,
+                            confidence,
+                            evidence,
+                            log_cursor,
+                            occurred_at,
+                        };
+                        if let Err(error) = db.record_status_event(&ev) {
+                            tracing::error!(session = %sid, error = %error, "state projection write failed");
+                            let _ = channel.send(json!({
+                                "t": "error",
+                                "message": format!("状态未持久化：{error}"),
+                                "persistenceDegraded": true,
+                            }));
+                        }
+                        let title = db
+                            .get_session(&sid)
+                            .map(|s| s.title)
+                            .unwrap_or_else(|_| sid.clone());
+                        let _ = app.emit("session-state", status_value(&ev));
+                        let notifier = Notifier::new(true);
+                        agentport_core::notify::notify_state_change(&notifier, &title, &ev);
+                        let _ = channel.send(json!({"t": "state", "event": status_value(&ev)}));
+                    }
+                    HostFrame::AgentSession {
+                        agent_session_id, ..
+                    } => {
+                        if !host_identity_is_current(&db, &session_id, &host) {
+                            tracing::warn!(session = %session_id, attachment_id, "dropping agent session id from a stale Host attachment");
+                            break;
+                        }
+                        let _ = db.update_session_agent_id(
+                            &session_id,
+                            &agent_session_id,
+                            ResumePrecision::Exact,
+                        );
+                        let _ = channel.send(json!({"t": "agent_session", "id": agent_session_id}));
+                        let _ = app.emit(
+                            "session-agent-id",
+                            json!({"sessionId": session_id, "agentSessionId": agent_session_id}),
+                        );
+                    }
+                    HostFrame::Heartbeat {
+                        log_bytes,
+                        log_cursor,
+                        ..
+                    } => {
+                        if !host.matches_run(&log_cursor.run_id, log_cursor.run_ordinal) {
+                            tracing::warn!(session = %session_id, attachment_id, "dropping heartbeat from a stale Host run");
+                            break;
+                        }
+                        let _ = channel.send(json!({"t": "heartbeat", "logBytes": log_bytes, "logCursor": log_cursor}));
+                    }
+                    HostFrame::Exit {
+                        run_id,
+                        run_ordinal,
+                        code,
+                        signal,
+                        group_cleaned,
+                        reason,
+                        ..
+                    } => {
+                        if !host.matches_run(&run_id, run_ordinal) {
+                            tracing::warn!(session = %session_id, attachment_id, "dropping Exit from a stale Host run");
+                            let _ = channel
+                                .send(json!({"t": "detached", "message": "Host 已被新的运行替换"}));
+                            break;
+                        }
+                        // A user stop may have won the terminal transition while
+                        // this watch thread was still draining the Exit frame.
+                        // Never overwrite that stronger, user-requested fact.
+                        let terminal_lifecycle = if reason == "user_stop" {
+                            Lifecycle::Stopped
+                        } else {
+                            Lifecycle::Exited
+                        };
+                        if !transition_terminal_lifecycle_for_host(
+                            &db,
+                            &session_id,
+                            &host,
+                            terminal_lifecycle,
+                        ) {
+                            tracing::warn!(session = %session_id, attachment_id, "dropping Exit from a superseded Host attachment");
+                            let _ = channel
+                                .send(json!({"t": "detached", "message": "Host 已被新的运行替换"}));
+                            break;
+                        }
+                        let _ = channel.send(json!({
+                            "t": "exit", "code": code, "signal": signal,
+                            "groupCleaned": group_cleaned,
+                            "reason": reason, "runId": run_id, "runOrdinal": run_ordinal,
+                        }));
+                        let _ = app.emit(
+                            "session-exit",
+                            json!({
+                                "sessionId": session_id, "code": code, "signal": signal,
+                                "reason": reason,
+                            }),
+                        );
+                        break;
+                    }
+                    HostFrame::Pong { .. } => {}
+                    HostFrame::HelloOk { .. } => {}
+                    HostFrame::Error { message, .. } => {
+                        let _ = channel.send(json!({"t": "error", "message": message}));
+                    }
                 }
-                HostFrame::AgentSession {
-                    agent_session_id, ..
-                } => {
-                    let _ = db.update_session_agent_id(
-                        &session_id,
-                        &agent_session_id,
-                        ResumePrecision::Exact,
-                    );
-                    let _ = channel.send(json!({"t": "agent_session", "id": agent_session_id}));
-                    let _ = app.emit(
-                        "session-agent-id",
-                        json!({"sessionId": session_id, "agentSessionId": agent_session_id}),
-                    );
-                }
-                HostFrame::Heartbeat { log_bytes, .. } => {
-                    let _ = channel.send(json!({"t": "heartbeat", "logBytes": log_bytes}));
-                }
-                HostFrame::Exit {
-                    code,
-                    signal,
-                    group_cleaned,
-                    ..
-                } => {
-                    let _ = db.update_session_lifecycle(&session_id, Lifecycle::Exited);
-                    let _ = channel.send(json!({
-                        "t": "exit", "code": code, "signal": signal,
-                        "groupCleaned": group_cleaned,
-                    }));
-                    let _ = app.emit(
-                        "session-exit",
-                        json!({
-                            "sessionId": session_id, "code": code, "signal": signal,
-                        }),
-                    );
-                    break;
-                }
-                HostFrame::Pong { .. } => {}
-                HostFrame::HelloOk { .. } => {}
-                HostFrame::Error { message, .. } => {
-                    let _ = channel.send(json!({"t": "error", "message": message}));
-                }
-            },
+            }
             Ok(None) => {
                 let _ = channel.send(json!({"t": "detached"}));
                 break;
@@ -793,24 +1634,33 @@ fn watch_loop(
             }
         }
     }
+    // EOF/error is a renderer transport fact, never evidence that the Host or
+    // Agent exited. Remove and close only this generation's writer; a newer
+    // attachment for the same Session remains untouched.
+    if let Some(attachment) = take_attachment_if_current(&writers, &session_id, attachment_id) {
+        // Keep `writer` owned until after the ID check so an ABA replacement
+        // cannot be closed by an old watcher.
+        debug_assert!(Arc::ptr_eq(&attachment.writer, &writer));
+        debug_assert_eq!(attachment.host, host);
+        shutdown_attachment(&attachment);
+    }
 }
 
 #[tauri::command]
 async fn detach_session(
     state: State<'_, AppState>,
     session_id: String,
+    attachment_id: Option<u64>,
 ) -> std::result::Result<(), String> {
-    // Mark last-seen so the recovery timeline knows what the GUI has seen.
-    if let Ok(Some(latest)) = state.db.latest_status(&session_id) {
-        let _ = state
-            .db
-            .set_last_seen_sequence(&session_id, latest.sequence);
-    }
-    if let Some(w) = state.writers.lock().unwrap().remove(&session_id) {
-        use std::net::Shutdown;
-        if let Ok(w) = w.lock() {
-            let _ = w.shutdown(Shutdown::Both);
-        }
+    // A detached renderer is not a lifecycle event and cannot safely infer
+    // that it owns a newer attachment. Older WebView code sends no ID; keep
+    // that request harmless instead of allowing an ABA removal.
+    let Some(attachment_id) = attachment_id else {
+        return Ok(());
+    };
+    if let Some(attachment) = take_attachment_if_current(&state.writers, &session_id, attachment_id)
+    {
+        shutdown_attachment(&attachment);
     }
     Ok(())
 }
@@ -821,8 +1671,16 @@ async fn detach_session(
 async fn mark_session_seen(
     state: State<'_, AppState>,
     session_id: String,
+    cursor: Option<StatusCursor>,
 ) -> std::result::Result<(), String> {
-    map_err!(state.db.mark_session_seen(&session_id))?;
+    match cursor {
+        // `mark_session_seen_at` advances the status acknowledgement without
+        // regressing it and clears only output that is not from a newer run.
+        // It is one SQLite transaction, so a delayed hidden-pane output cannot
+        // reintroduce a stale unread marker between two independent writes.
+        Some(cursor) => map_err!(state.db.mark_session_seen_at(&session_id, &cursor))?,
+        None => map_err!(state.db.mark_session_seen(&session_id))?,
+    }
     Ok(())
 }
 
@@ -834,8 +1692,12 @@ async fn mark_session_output_unread(
     state: State<'_, AppState>,
     session_id: String,
     offset: i64,
+    cursor: Option<LogCursor>,
 ) -> std::result::Result<(), String> {
-    map_err!(state.db.mark_output_unread(&session_id, offset))?;
+    match cursor {
+        Some(cursor) => map_err!(state.db.mark_output_unread_at(&session_id, &cursor))?,
+        None => map_err!(state.db.mark_output_unread(&session_id, offset))?,
+    }
     Ok(())
 }
 
@@ -850,8 +1712,22 @@ async fn send_input(
     let bytes = map_err!(base64::engine::general_purpose::STANDARD
         .decode(&data)
         .map_err(|e| CoreError::Validation(format!("bad base64: {e}"))))?;
-    let writers = state.writers.lock().unwrap();
-    let Some(w) = writers.get(&session_id) else {
+    const MAX_INPUT_FRAME_BYTES: usize = 256 * 1024;
+    if bytes.len() > MAX_INPUT_FRAME_BYTES {
+        return Err(format!(
+            "input frame exceeds {MAX_INPUT_FRAME_BYTES} byte limit; split large paste before sending"
+        ));
+    }
+    // Clone the per-session writer before locking it.  Holding the global map
+    // lock across a blocking Unix-socket flush head-of-line blocks resize,
+    // detach and input for every other Session.
+    let writer = {
+        let writers = state.writers.lock().unwrap();
+        writers
+            .get(&session_id)
+            .map(|attachment| attachment.writer.clone())
+    };
+    let Some(w) = writer else {
         return Err("session not attached".into());
     };
     let mut w = w.lock().unwrap();
@@ -861,6 +1737,56 @@ async fn send_input(
             session_id: session_id.clone(),
             data: bytes,
         }
+    ))
+}
+
+/// Pi RPC prompt entry point. Structured sessions deliberately do not route
+/// prompt text through xterm/base64 terminal input.
+#[tauri::command]
+async fn send_structured_prompt(
+    state: State<'_, AppState>,
+    session_id: String,
+    text: String,
+) -> std::result::Result<(), String> {
+    use agentport_core::protocol::{write_frame, ClientFrame};
+    const MAX_PROMPT_BYTES: usize = 256 * 1024;
+    if text.trim().is_empty() {
+        return Err("structured prompt must not be empty".into());
+    }
+    if text.len() > MAX_PROMPT_BYTES {
+        return Err(format!("structured prompt exceeds {MAX_PROMPT_BYTES} byte limit"));
+    }
+    let writer = {
+        let writers = state.writers.lock().unwrap();
+        writers.get(&session_id).map(|attachment| attachment.writer.clone())
+    };
+    let Some(writer) = writer else {
+        return Err("session not attached".into());
+    };
+    let mut writer = writer.lock().unwrap();
+    map_err!(write_frame(
+        &mut *writer,
+        &ClientFrame::StructuredPrompt { session_id, text }
+    ))
+}
+
+#[tauri::command]
+async fn abort_structured_turn(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> std::result::Result<(), String> {
+    use agentport_core::protocol::{write_frame, ClientFrame};
+    let writer = {
+        let writers = state.writers.lock().unwrap();
+        writers.get(&session_id).map(|attachment| attachment.writer.clone())
+    };
+    let Some(writer) = writer else {
+        return Err("session not attached".into());
+    };
+    let mut writer = writer.lock().unwrap();
+    map_err!(write_frame(
+        &mut *writer,
+        &ClientFrame::AbortStructuredTurn { session_id }
     ))
 }
 
@@ -888,8 +1814,13 @@ async fn resize_pty(
     rows: u16,
 ) -> std::result::Result<(), String> {
     use agentport_core::protocol::{write_frame, ClientFrame};
-    let writers = state.writers.lock().unwrap();
-    let Some(w) = writers.get(&session_id) else {
+    let writer = {
+        let writers = state.writers.lock().unwrap();
+        writers
+            .get(&session_id)
+            .map(|attachment| attachment.writer.clone())
+    };
+    let Some(w) = writer else {
         return Ok(()); // not attached (e.g. interrupted) — resize is best effort
     };
     let mut w = w.lock().unwrap();
@@ -937,6 +1868,20 @@ async fn restart_session(
     session_id: String,
     risk_ack: bool,
 ) -> std::result::Result<Value, String> {
+    let initial_session = map_err!(state.db.get_session(&session_id))?;
+    let lock_cwd = initial_session.cwd.clone();
+    let repository_lock = match tauri::async_runtime::spawn_blocking(move || {
+        acquire_session_repository_lock(&lock_cwd)
+    })
+    .await
+    {
+        Ok(Ok(lock)) => lock,
+        Ok(Err(error)) => return Err(error.to_string()),
+        Err(error) => return Err(format!("repository lock worker failed: {error}")),
+    };
+    // The Session may have changed while this restart waited behind a branch
+    // operation or another AgentPort process. Re-read under the common-dir
+    // reservation before deciding that it is safe to relaunch.
     let session = map_err!(state.db.get_session(&session_id))?;
     if matches!(session.lifecycle, Lifecycle::Running | Lifecycle::Creating) {
         return Err("session is running; stop it first".into());
@@ -944,7 +1889,7 @@ async fn restart_session(
     let permission_mode = session
         .adapter_type
         .effective_permission_mode(session.permission_mode);
-    if permission_mode != PermissionMode::Native && !risk_ack {
+    if permission_requires_risk_ack(session.adapter_type, permission_mode) && !risk_ack {
         return Err("NEEDS_RISK_ACK".into());
     }
     let install = map_err!(install_for(&state, session.adapter_type))?;
@@ -954,8 +1899,9 @@ async fn restart_session(
         Some(session.preset_id.clone()),
         &install
     ))?;
-    let plan = map_err!(adapters::adapter_for(session.adapter_type).build_resume(
-        &ResumeContext {
+    map_err!(adapters::validate_user_args(session.adapter_type, &preset.args))?;
+    let plan = map_err!(
+        adapters::adapter_for(session.adapter_type).build_resume_checked(&ResumeContext {
             install,
             preset: preset.clone(),
             cwd: session.cwd.clone(),
@@ -971,13 +1917,22 @@ async fn restart_session(
                 .session_dir(&session.id)
                 .to_string_lossy()
                 .into_owned(),
-        }
-    ))?;
-    for (path, contents) in &plan.helper_files {
-        map_err!(write_private_file(path, contents))?;
+            transport: session.transport,
+        })
+    )?;
+    // Restart must use exactly the same preset environment and secret
+    // materialization as create.  Do it before rotating the Host token or
+    // moving the persisted lifecycle back to Creating.
+    let (env, secrets) = map_err!(materialize_launch_environment(&state, &preset, &plan.env))?;
+    let settings = map_err!(state.db.load_settings())?;
+    if let Err(error) = write_launch_helpers(&plan.helper_files) {
+        return Err(error.to_string());
     }
     let new_token = ids::new_host_token();
-    map_err!(state.db.set_session_token(&session_id, &new_token))?;
+    if let Err(error) = state.db.set_session_token(&session_id, &new_token) {
+        remove_launch_helpers(&plan.helper_files);
+        return Err(error.to_string());
+    }
     let mut renewed = map_err!(state.db.get_session(&session_id))?;
     renewed.host_socket = Some(
         state
@@ -987,31 +1942,52 @@ async fn restart_session(
             .into_owned(),
     );
     renewed.lifecycle = Lifecycle::Creating;
-    map_err!(state
-        .db
-        .update_session_lifecycle(&session_id, Lifecycle::Creating))?;
-    let settings = map_err!(state.db.load_settings())?;
+    // HostManager claims the new run atomically before it publishes Creating.
+    // Writing the lifecycle without that run fence would let a delayed terminal
+    // observation from the previous Host race this restart.
     let mgr = HostManager {
         paths: &state.paths,
         db: &state.db,
     };
-    let info = map_err!(mgr.launch(LaunchSpec {
+    let info = match mgr.launch(LaunchSpec {
         session: renewed,
         command: plan.argv.clone(),
-        env: plan.env.clone(),
-        secrets: vec![],
+        env,
+        secrets,
         log_limit_bytes: settings.log_limit_mib * 1024 * 1024,
         agent_session_id_hint: plan.assigned_agent_session_id.clone(),
         cols: 120,
         rows: 32,
-    }))?;
-    map_err!(state
-        .db
-        .update_session_lifecycle(&session_id, Lifecycle::Running))?;
+    }) {
+        Ok(info) => info,
+        Err(error) => {
+            remove_launch_helpers(&plan.helper_files);
+            return Err(error.to_string());
+        }
+    };
+    drop(repository_lock);
+    let launched = map_err!(state.db.get_session(&session_id))?;
+    // A resume whose recorded conversation is gone falls back to a fresh
+    // conversation with a newly assigned native id (claude adapter). Persist
+    // it so the next restart resumes the conversation that actually exists.
+    if let Some(native) = &plan.assigned_agent_session_id {
+        if session.agent_session_id.as_deref() != Some(native.as_str()) {
+            map_err!(state
+                .db
+                .update_session_agent_id(&session_id, native, plan.resume_precision,))?;
+        }
+    }
+    ensure_session_monitor(&app, &state, &launched);
+    // `HostManager::launch` has already moved this exact host/run to Running
+    // through its lifecycle CAS. A second unguarded write here could revive a
+    // terminal state if the Host exited in the small window above.
     emit_sessions_changed(&app, &state, Some(&session_id));
     Ok(json!({
         "resumePrecision": plan.resume_precision.as_str(),
-        "agentSessionId": session.agent_session_id,
+        "agentSessionId": plan
+            .assigned_agent_session_id
+            .clone()
+            .or(session.agent_session_id.clone()),
         "notes": plan.notes,
         "hostPid": info.host_pid,
     }))
@@ -1042,11 +2018,8 @@ async fn archive_session(
 }
 
 fn detach_session_writer(state: &AppState, session_id: &str) {
-    if let Some(writer) = state.writers.lock().unwrap().remove(session_id) {
-        use std::net::Shutdown;
-        if let Ok(writer) = writer.lock() {
-            let _ = writer.shutdown(Shutdown::Both);
-        }
+    if let Some(attachment) = take_any_attachment(&state.writers, session_id) {
+        shutdown_attachment(&attachment);
     }
 }
 
@@ -1093,20 +2066,15 @@ fn stop_archived_sessions_for_purge(state: &AppState, session_ids: &[String]) ->
     Ok(())
 }
 
-/// Delete derived search data plus session-local logs after the authoritative
-/// database transaction has completed. These are best-effort cleanups: a
-/// successfully purged archive must not be reported as failed just because a
-/// stale socket or already-removed log directory no longer exists.
+/// Trigger the durable cleanup queue after the authoritative database
+/// transaction has committed. Filesystem work is acknowledged only after it
+/// succeeds, so a crash or a temporary permission failure is retried instead
+/// of silently leaking a session directory.
 fn cleanup_purged_sessions(state: &AppState, session_ids: &[String]) {
-    let index = SearchIndex {
-        db: &state.db,
-        paths: &state.paths,
-    };
-    let _ = index.remove_sessions(session_ids);
-    for session_id in session_ids {
-        let _ = std::fs::remove_file(state.paths.socket_path(session_id));
-        let _ = std::fs::remove_dir_all(state.paths.session_dir(session_id));
+    if session_ids.is_empty() {
+        return;
     }
+    let _ = run_due_cleanup_jobs(&state.paths, &state.db);
 }
 
 #[tauri::command]
@@ -1291,6 +2259,116 @@ async fn export_session(
         _ => return Err("unknown export kind".into()),
     };
     map_err!(p).map(|p| p.to_string_lossy().into_owned())
+}
+
+// ---------------------------------------------------------------------------
+// Full-data backup / restore (settings page)
+// ---------------------------------------------------------------------------
+
+/// Create a full-data backup. Default destination is the private backups dir
+/// with a UTC timestamp name; every backup is verified before reporting
+/// success so the user never sees a green check on a broken archive.
+#[tauri::command]
+async fn backup_create(
+    state: State<'_, AppState>,
+    dest: Option<String>,
+) -> std::result::Result<Value, String> {
+    let dest = match dest {
+        Some(d) if !d.trim().is_empty() => std::path::PathBuf::from(d),
+        _ => state.paths.backups_dir().join(format!(
+            "agentport-backup-{}.zip",
+            Utc::now().format("%Y%m%d-%H%M%S")
+        )),
+    };
+    let report = map_err!(agentport_core::backup::create(
+        &state.paths,
+        &state.db,
+        &dest
+    ))?;
+    map_err!(agentport_core::backup::verify(&dest))?;
+    Ok(json!({
+        "path": dest,
+        "files": report.files,
+        "bytes": report.bytes,
+        "verified": true,
+    }))
+}
+
+/// Lightweight listing of the private backups dir. Integrity is verified on
+/// demand (hashing every file on each list would be needlessly slow).
+#[tauri::command]
+async fn backup_list(state: State<'_, AppState>) -> std::result::Result<Value, String> {
+    let dir = state.paths.backups_dir();
+    let mut items = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("zip") {
+                continue;
+            }
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let modified: std::result::Result<chrono::DateTime<Utc>, _> =
+                meta.modified().map(|t| t.into());
+            items.push(json!({
+                "path": path,
+                "name": entry.file_name().to_string_lossy(),
+                "size": meta.len(),
+                "modifiedAt": modified.map(|t| t.to_rfc3339()).unwrap_or_default(),
+            }));
+        }
+    }
+    items.sort_by(|a, b| {
+        b["modifiedAt"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(a["modifiedAt"].as_str().unwrap_or(""))
+    });
+    Ok(Value::Array(items))
+}
+
+#[tauri::command]
+async fn backup_verify(path: String) -> std::result::Result<Value, String> {
+    let manifest = map_err!(agentport_core::backup::verify(std::path::Path::new(&path)))?;
+    Ok(json!({
+        "ok": true,
+        "formatVersion": manifest.format_version,
+        "createdAt": manifest.created_at,
+        "dataModelVersion": manifest.data_model_version,
+        "files": manifest.files.len(),
+    }))
+}
+
+/// Restore into a NEW directory chosen by the user. The running app's data is
+/// never touched: swapping the live data root requires the app to be quit
+/// first, which is a deliberate manual step.
+#[tauri::command]
+async fn backup_restore(
+    state: State<'_, AppState>,
+    path: String,
+    target: String,
+) -> std::result::Result<Value, String> {
+    if target.trim().is_empty() {
+        return Err("restore target directory required".into());
+    }
+    let live = state.paths.root().to_path_buf();
+    let target_path = std::path::PathBuf::from(&target);
+    if target_path == live || target_path.starts_with(&live) || live.starts_with(&target_path) {
+        return Err(
+            "restore target must be outside the live data directory; quit the app before swapping data roots"
+                .into(),
+        );
+    }
+    let previous = map_err!(agentport_core::backup::restore(
+        std::path::Path::new(&path),
+        &target_path
+    ))?;
+    Ok(json!({
+        "restored": target_path,
+        "previousKeptAt": previous,
+    }))
 }
 
 #[tauri::command]
@@ -1510,8 +2588,19 @@ async fn read_log_tail(
     }))
 }
 
+fn require_existing_path(path: &str) -> std::result::Result<(), String> {
+    if std::path::Path::new(path).exists() {
+        Ok(())
+    } else {
+        Err(format!(
+            "项目目录已不存在，无法在文件管理器中显示：{path}。可从 AgentPort 移除该项目记录。"
+        ))
+    }
+}
+
 #[tauri::command]
 async fn reveal_in_file_manager(path: String) -> std::result::Result<(), String> {
+    require_existing_path(&path)?;
     let status = if cfg!(target_os = "macos") {
         std::process::Command::new("open")
             .args(["-R", &path])
@@ -1587,22 +2676,70 @@ async fn pick_save_path(app: AppHandle, default_name: String) -> Option<String> 
     rx.recv().await.flatten()
 }
 
+#[tauri::command]
+async fn pick_file(app: AppHandle, filter_name: Option<String>) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, mut rx) = tauri::async_runtime::channel(1);
+    let mut dialog = app.dialog().file();
+    if let Some(name) = filter_name {
+        dialog = dialog.add_filter(name, &["zip"]);
+    }
+    dialog.pick_file(move |path| {
+        let _ = tx.try_send(path.map(|p| p.to_string()));
+    });
+    rx.recv().await.flatten()
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
+/// WKWebView honors macOS press-and-hold: holding a character key triggers the
+/// accent-menu behavior and the system suppresses repeated keydown events, so
+/// terminal input cannot auto-repeat. Disable it for this app's defaults
+/// domain before any WebKit process spawns. Tradeoff matches terminal-focused
+/// apps (VS Code, iTerm): the accent popup no longer appears in app text
+/// fields. Identifier must stay in sync with tauri.conf.json.
+#[cfg(target_os = "macos")]
+fn disable_press_and_hold() {
+    match std::process::Command::new("defaults")
+        .args([
+            "write",
+            "com.agentport.desktop",
+            "ApplePressAndHoldEnabled",
+            "-bool",
+            "false",
+        ])
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        // Runs before the tracing subscriber is initialized — log to stderr.
+        other => eprintln!("failed to disable ApplePressAndHoldEnabled: {other:?}"),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn disable_press_and_hold() {}
+
 fn main() {
+    disable_press_and_hold();
     let paths = AppPaths::default().expect("app paths");
     paths.ensure_layout().expect("layout");
     // App diagnostics log — hangs/failures must leave evidence.
     {
         let log_dir = paths.root().join("logs");
         let _ = std::fs::create_dir_all(&log_dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&log_dir, std::fs::Permissions::from_mode(0o700));
+        }
         if let Ok(file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(log_dir.join("app.log"))
         {
+            let _ = agentport_core::paths::AppPaths::restrict_file(&log_dir.join("app.log"));
             let _ = tracing_subscriber::fmt()
                 .with_ansi(false)
                 .with_writer(std::sync::Mutex::new(file))
@@ -1619,7 +2756,12 @@ fn main() {
     let state = AppState {
         paths,
         db,
-        writers: Mutex::new(HashMap::new()),
+        writers: Arc::new(Mutex::new(HashMap::new())),
+        next_attachment_id: AtomicU64::new(1),
+        monitors: Arc::new(Mutex::new(HashMap::new())),
+        next_monitor_id: AtomicU64::new(1),
+        cleanup_scheduler_started: AtomicBool::new(false),
+        branch_reconcile_started: AtomicBool::new(false),
         notifier: Mutex::new(Notifier::new(true)),
     };
 
@@ -1632,6 +2774,7 @@ fn main() {
             list_archived_sessions,
             probe_agents,
             probe_agent,
+            list_supported_agents,
             add_project,
             rename_project,
             remove_project,
@@ -1642,6 +2785,8 @@ fn main() {
             mark_session_seen,
             mark_session_output_unread,
             send_input,
+            send_structured_prompt,
+            abort_structured_turn,
             auto_rename_session_from_first_input,
             resize_pty,
             stop_session,
@@ -1657,7 +2802,18 @@ fn main() {
             list_worktrees,
             remove_worktree,
             worktree_status_text,
+            git_commands::get_repository_status,
+            git_commands::list_local_branches,
+            git_commands::create_local_branch,
+            git_commands::switch_local_branch,
+            git_commands::list_auto_stashes,
+            git_commands::restore_auto_stash,
+            git_commands::cleanup_auto_stash,
             export_session,
+            backup_create,
+            backup_list,
+            backup_verify,
+            backup_restore,
             search,
             search_session_log,
             rebuild_search_index,
@@ -1678,6 +2834,7 @@ fn main() {
             open_in_system_terminal,
             pick_directory,
             pick_save_path,
+            pick_file,
         ])
         .build(tauri::generate_context!())
         .expect("error while building AgentPort")
@@ -1699,9 +2856,259 @@ fn main() {
                     .lock()
                     .unwrap()
                     .drain()
-                    .map(|(_, w)| w)
+                    .map(|(_, attachment)| attachment)
                     .collect();
-                drop(writers);
+                for attachment in writers {
+                    shutdown_attachment(&attachment);
+                }
             }
         });
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    fn test_attachment(id: u64) -> RendererAttachment {
+        let (writer, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        RendererAttachment {
+            id,
+            host: HostIdentity {
+                host_pid: 42,
+                protocol: agentport_core::protocol::PROTOCOL_VERSION,
+                run_id: "run_test".into(),
+                run_ordinal: 1,
+            },
+            writer: Arc::new(Mutex::new(writer)),
+        }
+    }
+
+    #[test]
+    fn session_creation_uses_the_common_repository_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repository with spaces");
+        std::fs::create_dir_all(&repository).unwrap();
+        let initialized = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&repository)
+            .status()
+            .unwrap();
+        assert!(initialized.success());
+
+        let identity = RepositoryIdentity::discover(&repository, &GitRunner::default()).unwrap();
+        let held = RepositoryFileLock::acquire(&identity.common_dir).unwrap();
+        let cwd = repository.to_string_lossy().into_owned();
+        let (tx, rx) = mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            tx.send(acquire_session_repository_lock(&cwd).is_ok())
+                .unwrap();
+        });
+
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_millis(75)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(held);
+        assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap());
+        waiter.join().unwrap();
+    }
+
+    #[test]
+    fn session_creation_does_not_create_a_lock_for_non_git_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(
+            acquire_session_repository_lock(temp.path().to_str().unwrap())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn reveal_in_file_manager_rejects_a_missing_path_before_spawning_open() {
+        let missing = tempfile::tempdir().unwrap().path().join("missing-project");
+        let error = require_existing_path(missing.to_str().unwrap()).unwrap_err();
+        assert!(error.contains("项目目录已不存在"));
+    }
+
+    fn insert_attachment_test_session(paths: &AppPaths, db: &Db) -> String {
+        let project_id = ids::new_id("prj_attachment");
+        db.add_project(&Project {
+            id: project_id.clone(),
+            name: "attachment test".into(),
+            root_path: paths.root().to_string_lossy().into_owned(),
+            git_root_path: None,
+            created_at: Utc::now(),
+        })
+        .unwrap();
+        let session_id = ids::new_id("ses_attachment");
+        let now = Utc::now();
+        db.insert_session(&Session {
+            id: session_id.clone(),
+            project_id,
+            worktree_id: None,
+            preset_id: "pre_shell_safe".into(),
+            title: "attachment test".into(),
+            cwd: paths.root().to_string_lossy().into_owned(),
+            host_pid: None,
+            host_socket: None,
+            host_token: ids::new_host_token(),
+            lifecycle: Lifecycle::Running,
+            agent_session_id: None,
+            resume_precision: ResumePrecision::Unavailable,
+            log_path: paths.log_path(&session_id).to_string_lossy().into_owned(),
+            adapter_type: AgentType::Shell,
+            transport: AgentTransport::Pty,
+            command: vec!["/bin/sh".into()],
+            permission_mode: PermissionMode::Native,
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+        })
+        .unwrap();
+        session_id
+    }
+
+    #[test]
+    fn migrated_session_accepts_v2_host_with_legacy_run_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("agentport"));
+        let db = Db::open(&paths).unwrap();
+        let session_id = insert_attachment_test_session(&paths, &db);
+        db.update_session_host(&session_id, Some(4242), Some("/tmp/attachment.sock"))
+            .unwrap();
+
+        let host = HostIdentity {
+            host_pid: 4242,
+            protocol: agentport_core::protocol::PROTOCOL_VERSION,
+            run_id: agentport_core::models::LEGACY_RUN_ID.into(),
+            run_ordinal: agentport_core::models::LEGACY_RUN_ORDINAL,
+        };
+
+        assert!(host_identity_is_current(&db, &session_id, &host));
+    }
+
+    #[test]
+    fn legacy_host_can_attach_to_a_current_run_when_pid_matches() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("agentport"));
+        let db = Db::open(&paths).unwrap();
+        let session_id = insert_attachment_test_session(&paths, &db);
+        let run = db
+            .create_session_run(&session_id, &ids::new_uuid())
+            .unwrap();
+        let log_path = paths.run_log_path(&session_id, &run.run_id);
+        db.claim_session_run(
+            &session_id,
+            &run.run_id,
+            run.run_ordinal,
+            &log_path.to_string_lossy(),
+        )
+        .unwrap();
+        assert!(db
+            .bind_session_host_for_run(
+                &session_id,
+                &run.run_id,
+                run.run_ordinal,
+                4242,
+                "/tmp/attachment.sock",
+            )
+            .unwrap());
+
+        let host = HostIdentity {
+            host_pid: 4242,
+            protocol: agentport_core::protocol::LEGACY_PROTOCOL_VERSION,
+            run_id: agentport_core::models::LEGACY_RUN_ID.into(),
+            run_ordinal: agentport_core::models::LEGACY_RUN_ORDINAL,
+        };
+
+        assert!(host_identity_is_current(&db, &session_id, &host));
+    }
+
+    #[test]
+    fn cleanup_targets_only_a_single_session_component() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("agentport"));
+        paths.ensure_layout().unwrap();
+        let (session_dir, socket_path) = cleanup_session_paths(&paths, "ses_safe-1").unwrap();
+        assert_eq!(session_dir, paths.sessions_dir().join("ses_safe-1"));
+        let outside = temp.path().join("outside-kept");
+        std::fs::write(&outside, "keep").unwrap();
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(session_dir.join("output.log"), "remove").unwrap();
+        remove_cleanup_paths(&session_dir, &socket_path).unwrap();
+        assert!(!session_dir.exists());
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "keep");
+        for invalid in ["", "../outside", "/tmp/outside", "ses/child", "ses.safe"] {
+            assert!(cleanup_session_paths(&paths, invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn due_cleanup_job_removes_session_files_and_is_acknowledged() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("agentport"));
+        let db = Db::open(&paths).unwrap();
+        let project_id = ids::new_id("prj_cleanup");
+        db.add_project(&Project {
+            id: project_id.clone(),
+            name: "cleanup test".into(),
+            root_path: temp.path().to_string_lossy().into_owned(),
+            git_root_path: None,
+            created_at: Utc::now(),
+        })
+        .unwrap();
+        let session_id = ids::new_id("ses_cleanup");
+        let now = Utc::now();
+        db.insert_session(&Session {
+            id: session_id.clone(),
+            project_id,
+            worktree_id: None,
+            preset_id: "pre_shell_safe".into(),
+            title: "cleanup test".into(),
+            cwd: temp.path().to_string_lossy().into_owned(),
+            host_pid: None,
+            host_socket: None,
+            host_token: ids::new_host_token(),
+            lifecycle: Lifecycle::Stopped,
+            agent_session_id: None,
+            resume_precision: ResumePrecision::Unavailable,
+            log_path: paths.log_path(&session_id).to_string_lossy().into_owned(),
+            adapter_type: AgentType::Shell,
+            transport: AgentTransport::Pty,
+            command: vec!["/bin/sh".into()],
+            permission_mode: PermissionMode::Native,
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+        })
+        .unwrap();
+        let session_dir = paths.session_dir(&session_id);
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(session_dir.join("output.log"), "remove").unwrap();
+        db.archive_session(&session_id).unwrap();
+        db.purge_archived_session(&session_id).unwrap();
+
+        assert_eq!(run_due_cleanup_jobs(&paths, &db), 1);
+        assert!(!session_dir.exists());
+        assert!(db.list_due_cleanup_jobs(Utc::now()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn stale_attachment_id_cannot_remove_a_newer_writer() {
+        let attachments: AttachmentMap = Arc::new(Mutex::new(HashMap::new()));
+        replace_attachment(&attachments, "ses_1".into(), test_attachment(1));
+        let displaced = replace_attachment(&attachments, "ses_1".into(), test_attachment(2));
+        assert_eq!(displaced.unwrap().id, 1);
+
+        // The delayed detach from generation 1 is a no-op. Only the current
+        // server-issued capability can remove generation 2.
+        assert!(take_attachment_if_current(&attachments, "ses_1", 1).is_none());
+        assert_eq!(
+            take_attachment_if_current(&attachments, "ses_1", 2)
+                .expect("current attachment")
+                .id,
+            2
+        );
+    }
 }

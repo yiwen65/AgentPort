@@ -3,7 +3,8 @@
 // Field names match the serialized JSON exactly (camelCase where the
 // backend applies #[serde(rename_all = "camelCase")] or explicit json! keys).
 
-export type AgentTypeStr = "claude" | "codex" | "kimi" | "shell";
+export type AgentTypeStr = "claude" | "codex" | "kimi" | "qoder" | "pi" | "shell";
+export type AgentTransportStr = "pty" | "json_rpc";
 export type AgentStateStr = "working" | "needs_input" | "idle" | "exited" | "unknown";
 export type StateSourceStr = "hook" | "pty" | "process" | "adapter";
 export type ConfidenceStr = "low" | "medium" | "high";
@@ -14,9 +15,26 @@ export type WorktreeHealthStr = "clean" | "dirty" | "missing" | "locked";
 export type ThemeSetting = "system" | "dark" | "light";
 export type ReducedMotionSetting = "system" | "on" | "off";
 
+/** A status ordering key: run ordinal first, then its local sequence. */
+export interface StatusCursorView {
+  runId: string;
+  runOrdinal: number;
+  sequence: number;
+}
+
+/** A terminal byte position. Generation disambiguates rotated log offsets. */
+export interface LogCursorView {
+  runId: string;
+  runOrdinal: number;
+  generation: number;
+  offset: number;
+}
+
 /** One status transition with evidence (PRD 3.4 / 4.3). */
 export interface StatusEventView {
   sessionId: string;
+  runId: string;
+  runOrdinal: number;
   sequence: number;
   state: AgentStateStr;
   source: StateSourceStr;
@@ -36,6 +54,7 @@ export interface SessionView {
   agentSessionId: string | null;
   resumePrecision: ResumePrecisionStr;
   permissionMode: PermissionStr;
+  transport: AgentTransportStr;
   logPath: string;
   unread: boolean;
   status: StatusEventView | null;
@@ -74,13 +93,14 @@ export interface ProjectView {
 export interface Settings {
   logLimitMib: number;
   notificationsEnabled: boolean;
-  retentionDays: number;
   theme: ThemeSetting;
   terminalFontFamily: string;
   terminalFontSize: number;
   reducedMotion: ReducedMotionSetting;
   screenReaderMode: boolean;
   searchIndexEnabled: boolean;
+  /** Ordered quick-launch icons; new adapters append after saved entries. */
+  agentOrder: string[];
   /** Hard constraint: always false (PRD ch.5). */
   telemetryEnabled: boolean;
 }
@@ -99,6 +119,8 @@ export interface AdapterInstall {
   capabilityHash: string;
   exactResume: boolean;
   hookStatus: "supported" | "degraded" | "unavailable";
+  approvalModel: "native_prompts" | "no_builtin_prompts";
+  defaultTransport: AgentTransportStr;
   probedAt: string;
   candidates: ProbeCandidate[];
   flags: string[];
@@ -155,6 +177,7 @@ export interface BootInfo {
   secretBackend: string;
   indexState: string;
   webview: string;
+  exportsDir: string;
 }
 
 export interface ProbeOutcome {
@@ -164,6 +187,13 @@ export interface ProbeOutcome {
   reason: string | null;
   install: AdapterInstall | null;
   candidates: ProbeCandidate[];
+}
+
+/** One compiled-in Agent adapter advertised by the backend registry. */
+export interface SupportedAgent {
+  agent: AgentTypeStr;
+  displayName: string;
+  commandNames: string[];
 }
 
 export interface CreateSessionResult {
@@ -176,21 +206,38 @@ export interface CreateSessionResult {
 }
 
 export interface AttachInfo {
+  /** Server-issued capability for this renderer attachment. */
+  attachmentId: number;
   hostPid: number;
+  protocol: number;
   childAlive: boolean;
   logBytes: number;
   agentSessionId: string | null;
+  runId: string;
+  runOrdinal: number;
+  status: StatusEventView | null;
+  logCursor: LogCursorView;
 }
 
 /** Messages pushed by the backend over the attach Channel (watch_loop). */
 export type ChannelMsg =
-  | { t: "output"; data: string; offset: number }
-  | { t: "replay_done"; offset?: number }
+  | { t: "output"; data: string; offset: number; cursor: LogCursorView }
+  | { t: "structured"; event: Record<string, unknown> }
+  | { t: "replay_done"; offset?: number; cursor?: LogCursorView }
+  | { t: "resync_required"; earliest: LogCursorView; reason: string }
   | { t: "state"; event: StatusEventView }
   | { t: "agent_session"; id: string }
-  | { t: "heartbeat"; logBytes: number }
-  | { t: "exit"; code: number | null; signal: number | null; groupCleaned: boolean }
-  | { t: "error"; message: string }
+  | { t: "heartbeat"; logBytes: number; logCursor: LogCursorView }
+  | {
+      t: "exit";
+      code: number | null;
+      signal: number | null;
+      groupCleaned: boolean;
+      reason: string;
+      runId: string;
+      runOrdinal: number;
+    }
+  | { t: "error"; message: string; persistenceDegraded?: boolean }
   | { t: "detached"; message?: string };
 
 export interface WorktreeStatus {
@@ -256,6 +303,93 @@ export interface RestartResult {
   agentSessionId: string | null;
   notes: string[];
   hostPid: number;
+}
+
+/** Git checkout state used by local-branch management. */
+export interface RepositoryStatus {
+  projectId: string;
+  isGitRepository: boolean;
+  checkoutRoot: string | null;
+  repoKey: string | null;
+  head: {
+    kind: "branch" | "detached" | "unborn";
+    branch?: string | null;
+    oid?: string | null;
+    shortOid?: string | null;
+  };
+  changes: {
+    staged: number;
+    unstaged: number;
+    untracked: number;
+    unmerged: number;
+    dirtySubmodules: number;
+  };
+  ongoingOperation?: string | null;
+  liveSessionIds: string[];
+  pendingAutoStashes: number;
+  observedAt: string;
+  snapshotToken: string;
+}
+
+export interface LocalBranch {
+  name: string;
+  oid: string;
+  current: boolean;
+  checkedOutPath?: string | null;
+  agentPortWorktreeId?: string | null;
+}
+
+export interface AutoStashRecord {
+  id: string;
+  operationId: string;
+  projectId: string;
+  sourceKind: string;
+  sourceBranch?: string | null;
+  sourceOid?: string | null;
+  targetBranch: string;
+  stashOid?: string | null;
+  marker: string;
+  createdAt: string;
+  state: string;
+  lastError?: string | null;
+  restorable: boolean;
+}
+
+export interface BranchOperationResult {
+  operationId: string;
+  status: RepositoryStatus;
+  autoStash?: AutoStashRecord | null;
+}
+
+export interface LocalBranchesResponse {
+  status: RepositoryStatus;
+  branches: LocalBranch[];
+  autoStashes: AutoStashRecord[];
+}
+
+export interface RepositoryOperationProgress {
+  operationId: string;
+  command: string;
+  projectId: string | null;
+  branch: string | null;
+  phase: string;
+  message: string;
+  coreOperationId: string | null;
+  recoverable: boolean;
+  occurredAt: string;
+}
+
+/** Structured rejection returned by Tauri for guarded repository mutations. */
+export interface StructuredGitError {
+  code: string;
+  message: string;
+  phase: string;
+  operationId: string;
+  recoverable: boolean;
+  currentStatus: RepositoryStatus | null;
+  recoveryActions: string[];
+  diagnostics: Record<string, unknown>;
+  liveSessionIds: string[];
 }
 
 /** read_log_tail response: last bytes of a session's raw output log. */

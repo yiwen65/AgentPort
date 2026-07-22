@@ -21,6 +21,8 @@ pub mod capability;
 pub mod claude;
 pub mod codex;
 pub mod kimi;
+pub mod pi;
+pub mod qoder;
 pub mod shell;
 
 /// Everything needed to compose a launch command for a NEW session.
@@ -35,6 +37,7 @@ pub struct LaunchContext {
     pub hook_events_path: String,
     /// Data dir for per-session helper files (e.g. claude settings json).
     pub session_dir: String,
+    pub transport: AgentTransport,
 }
 
 /// Everything needed to compose a RESUME command.
@@ -47,6 +50,7 @@ pub struct ResumeContext {
     pub session_id: String,
     pub hook_events_path: String,
     pub session_dir: String,
+    pub transport: AgentTransport,
 }
 
 /// Result of composing a launch/resume command.
@@ -61,6 +65,7 @@ pub struct LaunchPlan {
     pub assigned_agent_session_id: Option<String>,
     pub resume_precision: ResumePrecision,
     pub hook_status: HookStatus,
+    pub transport: AgentTransport,
     /// Helper files that must exist before spawn (path, contents, mode 0600).
     pub helper_files: Vec<(String, String)>,
     /// Human-readable notes for the preflight panel (e.g. "resume: latest only").
@@ -82,6 +87,14 @@ pub trait AgentAdapter: Send + Sync {
     fn build_launch(&self, ctx: &LaunchContext) -> Result<LaunchPlan>;
     fn build_resume(&self, ctx: &ResumeContext) -> Result<LaunchPlan>;
 
+    /// Environment-aware resume planning. Adapters may verify on-disk state
+    /// before committing to resume-by-id (claude checks that the recorded
+    /// conversation transcript actually exists, since resume-by-id exits 1
+    /// with "No conversation found" otherwise). Default: plain build_resume.
+    fn build_resume_checked(&self, ctx: &ResumeContext) -> Result<LaunchPlan> {
+        self.build_resume(ctx)
+    }
+
     /// Extra PTY heuristic patterns (merged over the shared defaults).
     fn extra_pty_patterns(&self) -> (Vec<String>, Vec<String>) {
         (vec![], vec![]) // (needs_input, working)
@@ -99,6 +112,8 @@ pub fn adapter_for(t: AgentType) -> Box<dyn AgentAdapter> {
         AgentType::Claude => Box::new(claude::ClaudeAdapter),
         AgentType::Codex => Box::new(codex::CodexAdapter),
         AgentType::Kimi => Box::new(kimi::KimiAdapter),
+        AgentType::Qoder => Box::new(qoder::QoderAdapter),
+        AgentType::Pi => Box::new(pi::PiAdapter),
         AgentType::Shell => Box::new(shell::ShellAdapter),
     }
 }
@@ -126,6 +141,38 @@ pub(crate) fn has_flag(install: &AdapterInstall, flag: &str) -> bool {
     install.flags.iter().any(|f| f == flag)
 }
 
+/// Arguments that would bypass AgentPort's ownership of cwd, native-session
+/// identity, transport, permissions, or lifecycle are never accepted from a
+/// preset or the advanced argv field.
+pub fn validate_user_args(t: AgentType, args: &[String]) -> Result<()> {
+    let protected: &[&str] = match t {
+        AgentType::Qoder => &[
+            "--cwd", "--config-dir", "--worktree", "--continue", "--resume", "--session-id",
+            "--remote", "--remote-session", "--teleport", "--remote-control", "--print",
+            "--no-session-persistence", "--settings", "--permission-mode",
+            "--dangerously-skip-permissions",
+        ],
+        AgentType::Pi => &[
+            "--mode", "--print", "-p", "--continue", "--resume", "--session", "--session-id",
+            "--session-dir", "--no-session", "--fork", "--api-key", "--approve", "-a",
+            "--no-approve", "-na", "--extension", "-e", "--no-extensions", "-ne",
+            "--skill", "--no-skills", "-ns", "--prompt-template", "--no-prompt-templates",
+            "--theme", "--no-themes",
+        ],
+        _ => &[],
+    };
+    for arg in args {
+        let key = arg.split('=').next().unwrap_or(arg.as_str());
+        if protected.contains(&key) {
+            return Err(crate::error::CoreError::Validation(format!(
+                "{} 参数由 AgentPort 管理，不能在预设或高级参数中覆盖: {key}",
+                t.display_name()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Apply permission mode to an argv under construction.
 /// `native` adds NOTHING. `auto`/`bypass` add the CLI-specific flag when the
 /// probed capabilities prove it exists; otherwise return an error — never
@@ -140,7 +187,7 @@ pub fn permission_argv(
     if mode == Native {
         return Ok(vec![]);
     }
-    if t == Shell {
+    if t == Shell || t == Pi {
         // Shell has no approval concept; auto/bypass is meaningless there.
         return Err(crate::error::CoreError::Validation(
             "shell adapter only supports native permission mode".into(),
@@ -155,8 +202,10 @@ pub fn permission_argv(
         (Codex, Bypass) => &["--dangerously-bypass-approvals-and-sandbox"],
         (Kimi, Auto) => &["--auto"],
         (Kimi, Bypass) => &["--yolo"],
-        (Shell, _) => unreachable!(),
-        (Claude | Codex | Kimi, Native) => unreachable!(),
+        (Qoder, Auto) => &["--permission-mode", "auto"],
+        (Qoder, Bypass) => &["--dangerously-skip-permissions"],
+        (Pi | Shell, _) => unreachable!(),
+        (Claude | Codex | Kimi | Qoder, Native) => unreachable!(),
     };
     let flag = argv[0].trim_start_matches('-');
     if !install.flags.iter().any(|f| f == flag) {
@@ -195,6 +244,8 @@ pub(crate) mod test_fixtures {
             capability_hash: "sha256:0000000000000000".into(),
             exact_resume: true,
             hook_status: HookStatus::Supported,
+            approval_model: t.approval_model(),
+            default_transport: t.default_transport(),
             probed_at: chrono::Utc::now(),
             candidates: vec![],
             flags: flags.iter().map(|s| s.to_string()).collect(),
@@ -223,6 +274,7 @@ pub(crate) mod test_fixtures {
             session_id: "ses_test".into(),
             hook_events_path: "/tmp/work/.agentport/hook-events.jsonl".into(),
             session_dir: "/tmp/work/.agentport".into(),
+            transport: t.default_transport(),
         }
     }
 
@@ -239,6 +291,7 @@ pub(crate) mod test_fixtures {
             session_id: "ses_test".into(),
             hook_events_path: "/tmp/work/.agentport/hook-events.jsonl".into(),
             session_dir: "/tmp/work/.agentport".into(),
+            transport: t.default_transport(),
         }
     }
 }
@@ -266,6 +319,23 @@ mod tests {
                 Vec::<String>::new()
             );
         }
+    }
+
+    #[test]
+    fn managed_qoder_and_pi_args_cannot_be_overridden() {
+        assert!(validate_user_args(AgentType::Qoder, &["--worktree".into()]).is_err());
+        assert!(validate_user_args(AgentType::Qoder, &["--dangerously-skip-permissions".into()]).is_err());
+        assert!(validate_user_args(AgentType::Pi, &["--session-id".into(), "other".into()]).is_err());
+        assert!(validate_user_args(AgentType::Pi, &["--api-key".into(), "secret".into()]).is_err());
+        assert!(validate_user_args(AgentType::Pi, &["--model".into(), "custom".into()]).is_ok());
+    }
+
+    #[test]
+    fn qoder_effective_permission_is_always_full_access() {
+        assert_eq!(
+            AgentType::Qoder.effective_permission_mode(PermissionMode::Native),
+            PermissionMode::Bypass
+        );
     }
 
     #[test]

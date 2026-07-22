@@ -5,12 +5,19 @@
 //! the random per-launch host token; the host rejects and closes otherwise.
 //! All input frames carry the session id and are re-validated per message.
 
-use crate::models::{AgentState, Confidence, StateSource};
+use crate::models::{
+    default_agent_transport, legacy_run_id, AgentState, AgentTransport, Confidence, LogCursor,
+    StateSource, StatusEvent, LEGACY_RUN_ORDINAL,
+};
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Current Host protocol.  v2 adds run-scoped state/output cursors while
+/// retaining serde defaults so a new client can still consume v1 frames after
+/// its bounded legacy handshake fallback.
+pub const PROTOCOL_VERSION: u32 = 2;
+pub const LEGACY_PROTOCOL_VERSION: u32 = 1;
 
 fn b64e(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(data)
@@ -33,6 +40,15 @@ pub enum ClientFrame {
         token: String,
         /// If true, host replays recent log tail after hello_ok.
         replay_tail_bytes: u64,
+        /// Resume a v2 output stream at this exact position.  When the cursor
+        /// has rotated away, Host replies with `resync_required` instead of
+        /// silently mapping the offset into unrelated bytes.
+        #[serde(default)]
+        resume_from: Option<LogCursor>,
+        /// Status monitors subscribe without receiving terminal bytes.  The
+        /// default preserves v1 behavior for ordinary terminal clients.
+        #[serde(default = "default_subscribe_output")]
+        subscribe_output: bool,
     },
     /// Keystrokes / pasted bytes for the PTY. Session id re-checked.
     Input {
@@ -40,6 +56,15 @@ pub enum ClientFrame {
         #[serde(with = "serde_bytes_b64")]
         data: Vec<u8>,
     },
+    /// Submit one prompt through the agent's structured JSON-RPC transport.
+    /// This is intentionally distinct from terminal input: it cannot be sent
+    /// to a PTY Session by accident.
+    StructuredPrompt {
+        session_id: String,
+        text: String,
+    },
+    /// Abort the current structured turn without sending a terminal signal.
+    AbortStructuredTurn { session_id: String },
     Resize {
         session_id: String,
         cols: u16,
@@ -83,6 +108,16 @@ pub enum HostFrame {
         log_bytes: u64,
         #[serde(default)]
         agent_session_id: Option<String>,
+        #[serde(default = "legacy_run_id")]
+        run_id: String,
+        #[serde(default)]
+        run_ordinal: i64,
+        /// A reconnect must not wait for a future state transition to learn
+        /// the Host's present state.
+        #[serde(default)]
+        current_status: Option<StatusEvent>,
+        #[serde(default)]
+        log_cursor: LogCursor,
     },
     Output {
         session_id: String,
@@ -90,17 +125,49 @@ pub enum HostFrame {
         data: Vec<u8>,
         /// Byte offset in the log where this chunk starts.
         offset: u64,
+        /// v2 identity for `offset`; v1 frames deserialize as the legacy
+        /// run/generation-zero cursor.
+        #[serde(default)]
+        cursor: LogCursor,
+    },
+    /// A validated agent JSON-RPC event. The value is retained verbatim so
+    /// the UI can render newly introduced Pi event kinds without a Host
+    /// protocol upgrade.
+    Structured {
+        session_id: String,
+        event: serde_json::Value,
     },
     /// Marker after replaying buffered output; live stream follows.
-    ReplayDone { session_id: String, offset: u64 },
+    ReplayDone {
+        session_id: String,
+        offset: u64,
+        #[serde(default)]
+        cursor: LogCursor,
+    },
+    /// The requested output cursor is no longer retained (or does not belong
+    /// to this run). The client must reset its renderer and accept a bounded
+    /// tail snapshot instead of silently stitching a gap.
+    ResyncRequired {
+        session_id: String,
+        earliest: LogCursor,
+        reason: String,
+    },
     State {
         session_id: String,
+        #[serde(default = "legacy_run_id")]
+        run_id: String,
+        #[serde(default)]
+        run_ordinal: i64,
         sequence: i64,
         state: AgentState,
         source: StateSource,
         confidence: Confidence,
         #[serde(default)]
         evidence: Option<String>,
+        /// Captured with the status transition so a recovery entry can target
+        /// this event, not a generic per-Session unread marker.
+        #[serde(default)]
+        log_cursor: Option<LogCursor>,
         occurred_at: DateTime<Utc>,
     },
     AgentSession {
@@ -113,15 +180,24 @@ pub enum HostFrame {
         session_id: String,
         at: DateTime<Utc>,
         log_bytes: u64,
+        #[serde(default)]
+        log_cursor: LogCursor,
     },
     Exit {
         session_id: String,
+        #[serde(default = "legacy_run_id")]
+        run_id: String,
+        #[serde(default)]
+        run_ordinal: i64,
         /// None when killed by signal; `signal` then carries it.
         code: Option<i32>,
         #[serde(default)]
         signal: Option<i32>,
         /// True when the full process group was verified gone.
         group_cleaned: bool,
+        /// `natural` | `user_stop` | `host_signal` | `fault`.
+        #[serde(default = "default_exit_reason")]
+        reason: String,
     },
     Pong {
         session_id: String,
@@ -131,6 +207,14 @@ pub enum HostFrame {
         session_id: Option<String>,
         message: String,
     },
+}
+
+fn default_subscribe_output() -> bool {
+    true
+}
+
+fn default_exit_reason() -> String {
+    "natural".into()
 }
 
 mod serde_bytes_b64 {
@@ -186,6 +270,10 @@ pub fn read_frame<T: for<'de> Deserialize<'de>>(
 pub struct HostConfig {
     pub protocol: u32,
     pub session_id: String,
+    #[serde(default = "legacy_run_id")]
+    pub run_id: String,
+    #[serde(default)]
+    pub run_ordinal: i64,
     pub host_token: String,
     /// Final argv — always an array, never a shell string.
     pub command: Vec<String>,
@@ -194,7 +282,14 @@ pub struct HostConfig {
     #[serde(default)]
     pub env: Vec<(String, String)>,
     pub adapter_type: String,
+    /// PTY is the compatibility default for configs written by older builds.
+    #[serde(default = "default_agent_transport")]
+    pub transport: AgentTransport,
     pub socket_path: String,
+    /// Stable Session root for host-state and append-only status journal.
+    /// Older configs derive it from `log_path` for compatibility.
+    #[serde(default)]
+    pub session_dir: String,
     pub log_path: String,
     pub host_log_path: String,
     pub hook_events_path: String,
@@ -237,7 +332,11 @@ fn default_rows() -> u16 {
 impl HostConfig {
     pub fn validate(&self) -> Result<(), crate::error::CoreError> {
         use crate::error::CoreError;
-        if self.session_id.is_empty() || self.host_token.len() < 16 {
+        if self.session_id.is_empty()
+            || self.run_id.is_empty()
+            || self.run_ordinal < LEGACY_RUN_ORDINAL
+            || self.host_token.len() < 16
+        {
             return Err(CoreError::Validation("bad session id/token".into()));
         }
         if self.command.is_empty() || self.command[0].is_empty() {
@@ -253,6 +352,7 @@ impl HostConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::LEGACY_RUN_ID;
 
     #[test]
     fn frame_roundtrip() {
@@ -277,9 +377,12 @@ mod tests {
     fn host_frame_roundtrip() {
         let f = HostFrame::Exit {
             session_id: "ses_1".into(),
+            run_id: LEGACY_RUN_ID.into(),
+            run_ordinal: LEGACY_RUN_ORDINAL,
             code: None,
             signal: Some(9),
             group_cleaned: true,
+            reason: "natural".into(),
         };
         let mut buf = Vec::new();
         write_frame(&mut buf, &f).unwrap();

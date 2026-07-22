@@ -18,4 +18,7 @@ export default defineConfig({
     sourcemap: false,
     chunkSizeWarningLimit: 1200,
   },
+  // Vitest augments the Vite config at runtime. Spread the optional block so
+  // this file type-checks with Vite alone as well as with Vitest installed.
+  ...({ test: { environment: "jsdom", globals: true } } as Record<string, unknown>),
 });

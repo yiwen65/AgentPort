@@ -8,7 +8,8 @@ import { CanvasAddon } from "@xterm/addon-canvas";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Channel } from "@tauri-apps/api/core";
-import { api, b64ToBytes, errorText, strToB64 } from "./api";
+import { api, b64ToBytes, bytesToB64, errorText } from "./api";
+import { PiStartupNoticeFilter } from "./piStartupNotice";
 import {
   announce,
   getState,
@@ -19,7 +20,7 @@ import {
   type EffectiveTheme,
 } from "./store";
 import { formatBytes, stateZh } from "./format";
-import type { ChannelMsg } from "./types";
+import type { ChannelMsg, LogCursorView } from "./types";
 
 // Keep a substantial local history window for interactive find/navigation.
 // The persisted log remains the source of truth and can be much larger, but
@@ -35,14 +36,18 @@ export interface TermHandle {
   term: Terminal;
   fit: FitAddon;
   search: SearchAddon;
-  canvas: CanvasAddon | null;
   opened: boolean;
   attached: boolean;
   attaching: boolean;
   /** Bumped per attach — stale channels from previous attaches are ignored. */
   generation: number;
+  /** Backend-issued capability; only this renderer may detach it. */
+  attachmentId: number | null;
   /** Log tail already rendered (ended sessions' read-only history). */
   historyLoaded: boolean;
+  historyLoading: boolean;
+  /** Last contiguous byte rendered for the current Host output stream. */
+  logCursor: LogCursorView | null;
   container: HTMLDivElement | null;
   resizeObserver: ResizeObserver | null;
   lastCols: number;
@@ -53,6 +58,7 @@ export interface TermHandle {
   firstInputSubmitted: boolean;
   inputEscapeSequence: boolean;
   inputEscapeCsi: boolean;
+  piStartupNoticeFilter: PiStartupNoticeFilter | null;
 }
 
 /** A text hit from xterm's in-memory normal or alternate buffer. */
@@ -262,6 +268,7 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
   if (existing) return existing;
   const s = getState();
   const settings = s.settings;
+  const session = s.projects.flatMap((project) => project.sessions).find((item) => item.id === sessionId);
   const term = new Terminal({
     fontFamily: cssFontFamily(settings?.terminalFontFamily ?? "system-monospace"),
     fontSize: settings?.terminalFontSize ?? DEFAULT_TERMINAL_FONT_SIZE,
@@ -296,12 +303,14 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     term,
     fit,
     search,
-    canvas: null,
     opened: false,
     attached: false,
     attaching: false,
     generation: 0,
+    attachmentId: null,
     historyLoaded: false,
+    historyLoading: false,
+    logCursor: null,
     container: null,
     resizeObserver: null,
     lastCols: 0,
@@ -311,12 +320,16 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     firstInputSubmitted: false,
     inputEscapeSequence: false,
     inputEscapeCsi: false,
+    piStartupNoticeFilter:
+      session?.adapter === "pi" && session.transport === "pty" && session.agentSessionId
+        ? new PiStartupNoticeFilter(session.agentSessionId)
+        : null,
   };
   term.onData((data) => {
     // Input is only writable once attached — writers register at attach time.
     if (!handle.attached) return;
     const firstInput = captureFirstSubmittedInput(handle, data);
-    api.sendInput(sessionId, strToB64(data))
+    void sendTerminalInput(sessionId, data)
       .then(() => {
         if (!firstInput) return;
         void api.autoRenameSessionFromFirstInput(sessionId, firstInput).catch(() => {
@@ -335,6 +348,30 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
   return handle;
 }
 
+function writeTerminalOutput(handle: TermHandle, bytes: Uint8Array) {
+  const visible = handle.piStartupNoticeFilter?.feed(bytes) ?? bytes;
+  if (visible.length) handle.term.write(visible);
+}
+
+function finishTerminalStartupFilter(handle: TermHandle) {
+  const visible = handle.piStartupNoticeFilter?.finish();
+  if (visible?.length) handle.term.write(visible);
+}
+
+const MAX_INPUT_FRAME_BYTES = 256 * 1024;
+
+/** Preserve byte ordering while splitting a large paste into bounded IPC
+ * frames. The backend applies the same limit before forwarding to the Host. */
+async function sendTerminalInput(sessionId: string, data: string): Promise<void> {
+  const bytes = new TextEncoder().encode(data);
+  for (let start = 0; start < bytes.length; start += MAX_INPUT_FRAME_BYTES) {
+    await api.sendInput(
+      sessionId,
+      bytesToB64(bytes.subarray(start, start + MAX_INPUT_FRAME_BYTES)),
+    );
+  }
+}
+
 function updateScrolledUp(handle: TermHandle) {
   const buf = handle.term.buffer.active;
   const up = buf.viewportY < buf.baseY;
@@ -345,31 +382,104 @@ function updateScrolledUp(handle: TermHandle) {
 }
 
 /** Mount (once) into a pane container div; starts the attach if needed. */
+// WKWebView suppresses native key auto-repeat under macOS press-and-hold
+// semantics (observed even with ApplePressAndHoldEnabled=false), so holding a
+// key never repeats in the terminal. Synthesize repeat ourselves: when no
+// native repeat arrives (KeyboardEvent.repeat), feed term.input() — the same
+// path as real typing (onData → send_input → first-input title capture).
+const REPEAT_DELAY_MS = 500;
+const REPEAT_INTERVAL_MS = 40;
+
+function repeatableInput(e: KeyboardEvent): string | null {
+  if (e.repeat || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return null;
+  if (e.key.length === 1) return e.key; // printable; Shift/CapsLock already applied
+  if (e.key === "Backspace") return "\x7f"; // same sequence xterm emits
+  return null;
+}
+
+function installInputRepeat(term: Terminal, container: HTMLElement): () => void {
+  const textarea = term.textarea;
+  if (!textarea) return () => {};
+  let delayTimer: number | undefined;
+  let intervalTimer: number | undefined;
+  let activeCode: string | null = null;
+
+  const stop = () => {
+    if (delayTimer !== undefined) {
+      window.clearTimeout(delayTimer);
+      delayTimer = undefined;
+    }
+    if (intervalTimer !== undefined) {
+      window.clearInterval(intervalTimer);
+      intervalTimer = undefined;
+    }
+    activeCode = null;
+  };
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    // Native repeats (if the platform delivers them) stay authoritative.
+    if (e.repeat) {
+      stop();
+      return;
+    }
+    const data = repeatableInput(e);
+    stop();
+    if (data === null) return;
+    activeCode = e.code;
+    delayTimer = window.setTimeout(() => {
+      delayTimer = undefined;
+      intervalTimer = window.setInterval(() => term.input(data), REPEAT_INTERVAL_MS);
+    }, REPEAT_DELAY_MS);
+  };
+
+  const onKeyUp = (e: KeyboardEvent) => {
+    if (activeCode === null || e.code === activeCode) stop();
+  };
+
+  // Observe from an ancestor in the capture phase: xterm's own textarea
+  // handlers stop propagation, so listeners on the textarea itself never
+  // fire. These listeners only observe; they never prevent or stop events.
+  container.addEventListener("keydown", onKeyDown, true);
+  container.addEventListener("keyup", onKeyUp, true);
+  container.addEventListener("blur", stop, true);
+  return () => {
+    stop();
+    container.removeEventListener("keydown", onKeyDown, true);
+    container.removeEventListener("keyup", onKeyUp, true);
+    container.removeEventListener("blur", stop, true);
+  };
+}
+
+const inputRepeatDisposers = new Map<string, () => void>();
+
+function bindTerminalContainer(handle: TermHandle, container: HTMLDivElement) {
+  handle.container = container;
+  inputRepeatDisposers.get(handle.sessionId)?.();
+  inputRepeatDisposers.set(handle.sessionId, installInputRepeat(handle.term, container));
+  handle.resizeObserver?.disconnect();
+  handle.resizeObserver = new ResizeObserver(() => fitHandle(handle));
+  handle.resizeObserver.observe(container);
+}
+
 export function mountTerminal(sessionId: string, container: HTMLDivElement) {
   const handle = getOrCreateHandle(sessionId);
-  handle.container = container;
   if (!handle.opened) {
     handle.opened = true;
     handle.term.open(container);
+    bindTerminalContainer(handle, container);
     try {
-      // xterm's DOM renderer generates per-terminal stylesheets at runtime.
-      // WKWebView can reject those rules under CSP, leaving the terminal with
-      // its prepaint foreground (white) on the Light theme. The Canvas addon
-      // owns both glyph and background painting and avoids that failure mode,
-      // while remaining stable across macOS appearance changes (unlike WebGL).
-      handle.canvas = new CanvasAddon();
-      handle.term.loadAddon(handle.canvas);
+      // Full-screen agent TUIs rely on Canvas to preserve their ANSI palette
+      // and box glyphs in WKWebView. The DOM renderer is only a fallback when
+      // Canvas cannot initialize at all.
+      handle.term.loadAddon(new CanvasAddon());
       setState({ rendererMode: "canvas", rendererFallbackReason: null });
     } catch (error) {
-      handle.canvas = null;
       setState({
         rendererMode: "dom",
         rendererFallbackReason: `Canvas renderer unavailable: ${errorText(error)}`,
       });
     }
     syncHandleTheme(handle);
-    handle.resizeObserver = new ResizeObserver(() => fitHandle(handle));
-    handle.resizeObserver.observe(container);
     fitHandle(handle);
     // A self-hosted webfont can finish loading after xterm's first canvas
     // measurement. Force one same-family option change so xterm remeasures
@@ -381,6 +491,20 @@ export function mountTerminal(sessionId: string, container: HTMLDivElement) {
       handle.term.options.fontFamily = family;
       handle.term.clearTextureAtlas();
       fitHandle(handle, true, true);
+    });
+  } else if (handle.container !== container) {
+    // Structured Session views replace the terminal stack in the React tree.
+    // An existing xterm keeps its element in the detached former host unless
+    // we move it and rebind observers; the new host otherwise paints blank.
+    const terminalElement = handle.term.element;
+    if (terminalElement && terminalElement.parentElement !== container) {
+      container.appendChild(terminalElement);
+    }
+    bindTerminalContainer(handle, container);
+    requestAnimationFrame(() => {
+      if (handles.get(sessionId) === handle && handle.container === container) {
+        fitHandle(handle, true, true);
+      }
     });
   }
   // Ended sessions have no live host: render the log tail as a read-only
@@ -402,21 +526,33 @@ const HISTORY_TAIL_BYTES = 262144;
 /** Write the session log tail into the terminal once (read-only history). */
 export async function loadHistoryTail(sessionId: string): Promise<void> {
   const handle = getOrCreateHandle(sessionId);
-  if (handle.historyLoaded) return;
-  handle.historyLoaded = true;
+  if (handle.historyLoaded || handle.historyLoading) return;
+  handle.historyLoading = true;
+  const generation = handle.generation;
   try {
     const res = await api.readLogTail(sessionId, HISTORY_TAIL_BYTES);
+    if (handles.get(sessionId) !== handle || handle.generation !== generation) return;
     if (res.data) {
-      handle.term.write(b64ToBytes(res.data), () => updateScrolledUp(handle));
+      writeTerminalOutput(handle, b64ToBytes(res.data));
       if (res.offset > 0) {
         patchRuntime(sessionId, {
           historyNote: `仅显示最后 ${formatBytes(res.total - res.offset)}（日志共 ${formatBytes(res.total)}）`,
         });
       }
     }
+    finishTerminalStartupFilter(handle);
+    handle.historyLoaded = true;
     patchRuntime(sessionId, { replayDone: true });
   } catch (e) {
-    patchRuntime(sessionId, { replayDone: true, historyNote: `日志读取失败：${errorText(e)}` });
+    if (handles.get(sessionId) === handle && handle.generation === generation) {
+      // A transient tail-read failure is retryable; never mark history loaded
+      // before the bytes have actually reached this generation's xterm.
+      patchRuntime(sessionId, { replayDone: true, historyNote: `日志读取失败：${errorText(e)}` });
+    }
+  } finally {
+    if (handles.get(sessionId) === handle && handle.generation === generation) {
+      handle.historyLoading = false;
+    }
   }
 }
 
@@ -450,10 +586,12 @@ export function fitHandle(handle: TermHandle, forceRedraw = false, forceResize =
     // the PTY channel became writable; full-screen TUIs need this redraw.
     const prev = resizeTimers.get(handle.sessionId);
     if (prev !== undefined) window.clearTimeout(prev);
+    const resizeGeneration = handle.generation;
     resizeTimers.set(
       handle.sessionId,
       window.setTimeout(() => {
         resizeTimers.delete(handle.sessionId);
+        if (handles.get(handle.sessionId) !== handle || handle.generation !== resizeGeneration) return;
         api.resizePty(handle.sessionId, cols, rows).catch(() => undefined);
       }, 100),
     );
@@ -495,15 +633,32 @@ export async function attachHandle(sessionId: string): Promise<void> {
   if (handle.attached || handle.attaching) return;
   handle.attaching = true;
   const generation = ++handle.generation;
+  const resumeFrom = handle.logCursor;
   patchRuntime(sessionId, { attaching: true, error: null, detached: false });
   const channel = new Channel<ChannelMsg>();
   channel.onmessage = (msg) => {
-    if (generation !== handle.generation) return; // stale channel
+    if (handles.get(sessionId) !== handle || generation !== handle.generation) return;
     onChannelMsg(handle, msg);
   };
   try {
-    const info = await api.attachSession(sessionId, REPLAY_TAIL_BYTES, channel);
-    if (generation !== handle.generation) return;
+    const info = await api.attachSession(sessionId, REPLAY_TAIL_BYTES, channel, resumeFrom);
+    if (handles.get(sessionId) !== handle || generation !== handle.generation) {
+      // The backend may have completed after this renderer was evicted or
+      // reattached. Its capability can remove only that late attachment.
+      void api.detachSession(sessionId, info.attachmentId).catch(() => undefined);
+      return;
+    }
+    // A Host can exit between its handshake and the invoke reply. The channel
+    // event is authoritative for this attach generation and must not be
+    // overwritten by a late success response.
+    const runtime = getState().runtime[sessionId];
+    if (runtime?.exit || runtime?.detached || !info.childAlive) {
+      handle.attached = false;
+      void api.detachSession(sessionId, info.attachmentId).catch(() => undefined);
+      patchRuntime(sessionId, { attaching: false, attached: false, detached: !info.childAlive });
+      return;
+    }
+    handle.attachmentId = info.attachmentId;
     handle.attached = true;
     // Content now arrives via replay/live stream — never tail-load on top.
     handle.historyLoaded = true;
@@ -516,6 +671,10 @@ export async function attachHandle(sessionId: string): Promise<void> {
       error: null,
       exit: null,
     });
+    if (info.status) {
+      patchRuntime(sessionId, { status: info.status });
+      patchSession(sessionId, { status: info.status });
+    }
     if (info.agentSessionId) {
       patchSession(sessionId, { agentSessionId: info.agentSessionId });
     }
@@ -523,7 +682,7 @@ export async function attachHandle(sessionId: string): Promise<void> {
     // if the browser measured the same dimensions before attach completed.
     fitHandle(handle, true, true);
   } catch (e) {
-    if (generation !== handle.generation) return;
+    if (handles.get(sessionId) !== handle || generation !== handle.generation) return;
     patchRuntime(sessionId, {
       attaching: false,
       attached: false,
@@ -531,7 +690,82 @@ export async function attachHandle(sessionId: string): Promise<void> {
       error: errorText(e),
     });
   } finally {
-    if (generation === handle.generation) handle.attaching = false;
+    if (handles.get(sessionId) === handle && generation === handle.generation) {
+      handle.attaching = false;
+    }
+  }
+}
+
+function sameRun(a: LogCursorView, b: LogCursorView): boolean {
+  return a.runId === b.runId && a.runOrdinal === b.runOrdinal;
+}
+
+function isLaterRun(incoming: LogCursorView, current: LogCursorView): boolean {
+  return incoming.runOrdinal > current.runOrdinal ||
+    (incoming.runOrdinal === current.runOrdinal && incoming.runId !== current.runId);
+}
+
+/** Render only the missing contiguous suffix of a Host output frame. */
+function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "output" }>) {
+  const sessionId = handle.sessionId;
+  const incoming = msg.cursor;
+  const original = b64ToBytes(msg.data);
+  let bytes = original;
+  const current = handle.logCursor;
+
+  if (current) {
+    if (!sameRun(incoming, current)) {
+      if (!isLaterRun(incoming, current)) return;
+      // A legitimate external restart must not append its cursor space to the
+      // old terminal. The next frames belong to a distinct Host run.
+      handle.term.reset();
+      handle.logCursor = null;
+    } else if (incoming.generation < current.generation) {
+      return;
+    } else if (incoming.generation === current.generation) {
+      const end = incoming.offset + original.length;
+      if (end <= current.offset) return; // complete replay duplicate
+      if (incoming.offset > current.offset) {
+        // This should be impossible for v2's catch-up handshake. Recover
+        // explicitly instead of joining unrelated terminal bytes together.
+        const attachmentId = handle.attachmentId;
+        handle.generation += 1;
+        handle.attached = false;
+        handle.attaching = false;
+        handle.attachmentId = null;
+        handle.term.reset();
+        handle.logCursor = null;
+        patchRuntime(sessionId, {
+          attached: false,
+          detached: true,
+          error: "输出流出现间隙，正在重新同步",
+        });
+        if (attachmentId !== null) {
+          void api.detachSession(sessionId, attachmentId).catch(() => undefined);
+        }
+        void attachHandle(sessionId);
+        return;
+      }
+      if (incoming.offset < current.offset) {
+        bytes = original.slice(current.offset - incoming.offset);
+      }
+    } else {
+      handle.term.write("\r\n\x1b[2m── 输出日志已轮转 ──\x1b[0m\r\n");
+    }
+  }
+
+  if (bytes.length === 0) return;
+  writeTerminalOutput(handle, bytes);
+  handle.logCursor = {
+    ...incoming,
+    offset: incoming.offset + original.length,
+  };
+  updateScrolledUp(handle);
+  if (getState().activeSessionId !== sessionId && !unreadOutputPending.has(sessionId)) {
+    unreadOutputPending.add(sessionId);
+    void api.markSessionOutputUnread(sessionId, msg.offset, incoming).catch(() => {
+      unreadOutputPending.delete(sessionId);
+    });
   }
 }
 
@@ -539,19 +773,27 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
   const sessionId = handle.sessionId;
   switch (msg.t) {
     case "output": {
-      handle.term.write(b64ToBytes(msg.data));
-      updateScrolledUp(handle);
-      if (getState().activeSessionId !== sessionId && !unreadOutputPending.has(sessionId)) {
-        unreadOutputPending.add(sessionId);
-        void api.markSessionOutputUnread(sessionId, msg.offset).catch(() => {
-          unreadOutputPending.delete(sessionId);
-        });
-      }
+      applyOutputFrame(handle, msg);
       break;
     }
     case "replay_done": {
+      if (msg.cursor) handle.logCursor = msg.cursor;
+      finishTerminalStartupFilter(handle);
       patchRuntime(sessionId, { replayDone: true });
       updateScrolledUp(handle);
+      break;
+    }
+    case "resync_required": {
+      // The Host has explicitly told us that our cursor no longer maps to
+      // retained bytes. Clear before its following tail replay so unrelated
+      // generations can never be stitched together in xterm.
+      handle.term.reset();
+      handle.logCursor = null;
+      handle.historyLoaded = false;
+      patchRuntime(sessionId, {
+        replayDone: false,
+        historyNote: `输出已重新同步：${msg.reason}`,
+      });
       break;
     }
     case "state": {
@@ -575,11 +817,12 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
     }
     case "exit": {
       handle.attached = false;
+      handle.attachmentId = null;
       patchRuntime(sessionId, {
         attached: false,
         exit: { code: msg.code, signal: msg.signal, groupCleaned: msg.groupCleaned },
       });
-      patchSession(sessionId, { lifecycle: "exited" });
+      patchSession(sessionId, { lifecycle: msg.reason === "user_stop" ? "stopped" : "exited" });
       break;
     }
     case "error": {
@@ -589,6 +832,7 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
     }
     case "detached": {
       handle.attached = false;
+      handle.attachmentId = null;
       patchRuntime(sessionId, {
         attached: false,
         detached: true,
@@ -614,6 +858,9 @@ export function resetForRestart(sessionId: string) {
     // Clear the buffer: the re-attach replays the same log tail and would
     // otherwise duplicate it under the old content / loaded history.
     handle.term.reset();
+    handle.logCursor = null;
+    handle.historyLoaded = false;
+    handle.historyLoading = false;
   }
   patchRuntime(sessionId, {
     attached: false,
@@ -652,6 +899,15 @@ export function applyXtermTheme(theme: EffectiveTheme) {
 export function disposeHandle(sessionId: string) {
   const handle = handles.get(sessionId);
   if (!handle) return;
+  handle.generation += 1;
+  handle.attachmentId = null;
+  inputRepeatDisposers.get(sessionId)?.();
+  inputRepeatDisposers.delete(sessionId);
+  const resizeTimer = resizeTimers.get(sessionId);
+  if (resizeTimer !== undefined) {
+    window.clearTimeout(resizeTimer);
+    resizeTimers.delete(sessionId);
+  }
   handle.resizeObserver?.disconnect();
   try {
     handle.term.dispose();
@@ -671,16 +927,24 @@ export async function releaseTerminal(sessionId: string): Promise<void> {
   const handle = handles.get(sessionId);
   if (!handle) return;
   // Reject messages already queued on the old Channel before disposing xterm.
-  handle.generation += 1;
+  const releaseGeneration = ++handle.generation;
+  const attachmentId = handle.attachmentId;
+  handle.attachmentId = null;
   handle.attached = false;
   handle.attaching = false;
-  try {
-    await api.detachSession(sessionId);
-  } catch {
-    // The host may already have exited; local renderer cleanup is still safe.
+  if (attachmentId !== null) {
+    try {
+      await api.detachSession(sessionId, attachmentId);
+    } catch {
+      // The host may already have exited; local renderer cleanup is still safe.
+    }
   }
-  disposeHandle(sessionId);
-  patchRuntime(sessionId, { attached: false, attaching: false, detached: true });
+  // A rapid reselect can have attached the same handle while detach was in
+  // flight. Dispose only the object/generation this release actually owned.
+  if (handles.get(sessionId) === handle && handle.generation === releaseGeneration) {
+    disposeHandle(sessionId);
+    patchRuntime(sessionId, { attached: false, attaching: false, detached: true });
+  }
 }
 
 /** Drop terminals whose session vanished from the project tree. */

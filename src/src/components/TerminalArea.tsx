@@ -42,8 +42,9 @@ import {
 } from "../actions";
 import { precisionZh } from "../format";
 import type { SearchHit, SearchResult, SessionView } from "../types";
-import { agentIconSrc } from "../agentIcons";
+import { ClaudeIcon, CodexIcon, KimiIcon } from "./AgentIcons";
 import ShellIcon from "./ShellIcon";
+import PiStructuredTimeline from "./PiStructuredTimeline";
 
 // ---------------------------------------------------------------------------
 // persistent pane
@@ -512,9 +513,11 @@ function SessionAgentMark({ adapter }: { adapter: string }) {
   if (adapter === "shell") {
     return <ShellIcon className="session-agent-mark shell" size={36} />;
   }
-  const src = agentIconSrc(adapter, theme);
-  if (!src) return null;
-  return <img className={`session-agent-mark ${adapter}`} src={src} alt="" aria-hidden="true" />;
+  const cls = `session-agent-mark ${adapter}`;
+  if (adapter === "codex") return <CodexIcon className={cls} size={36} />;
+  if (adapter === "claude") return <ClaudeIcon className={cls} size={36} />;
+  if (adapter === "kimi") return <KimiIcon className={cls} size={36} mono={theme === "light"} />;
+  return null;
 }
 
 function SessionOverlay({ ses }: { ses: SessionView }) {
@@ -707,6 +710,9 @@ export default function TerminalArea() {
   return (
     <section className="workspace" aria-label="终端工作区">
       {ses ? (
+        ses.transport === "json_rpc" ? (
+          <PiStructuredTimeline ses={ses} />
+        ) : (
         <>
           <ReconnectBanner ses={ses} />
           <UncommittedBanner ses={ses} />
@@ -719,6 +725,7 @@ export default function TerminalArea() {
           </div>
           <TermStatusLine ses={ses} />
         </>
+        )
       ) : (
         <div className="workspace-empty">
           <div className="empty-state">

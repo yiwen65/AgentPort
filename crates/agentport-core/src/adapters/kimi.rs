@@ -41,6 +41,8 @@ impl AgentAdapter for KimiAdapter {
             exact_resume: has("session"),
             // No per-invocation hook mechanism on 0.27.0 -> degraded.
             hook_status: HookStatus::Degraded,
+            approval_model: AgentType::Kimi.approval_model(),
+            default_transport: AgentType::Kimi.default_transport(),
             probed_at: chrono::Utc::now(),
             candidates: vec![],
             flags,
@@ -67,6 +69,7 @@ impl AgentAdapter for KimiAdapter {
                 ResumePrecision::Unavailable
             },
             hook_status: install.hook_status,
+            transport: ctx.transport,
             helper_files: vec![],
             notes: vec![
                 "kimi 0.27.0 无会话级 hook 注入机制（仅全局 ~/.kimi-code/config.toml，不做修改），状态降级为 PTY 启发式".into(),
@@ -112,6 +115,7 @@ impl AgentAdapter for KimiAdapter {
             assigned_agent_session_id: None,
             resume_precision,
             hook_status: install.hook_status,
+            transport: ctx.transport,
             helper_files: vec![],
             notes,
         })

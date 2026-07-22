@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import Modal from "./Modal";
 import { api, copyText, errorText } from "../api";
 import { formatBytes } from "../format";
-import { closeDialog, toast, useStore } from "../store";
+import { closeDialog, getState, toast, useStore } from "../store";
 import type { HostInfo } from "../types";
 
 export default function DiagnosticsDialog() {
@@ -14,7 +14,9 @@ export default function DiagnosticsDialog() {
   const [caps, setCaps] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [zipSession, setZipSession] = useState(s.activeSessionId ?? "");
-  const [zipDest, setZipDest] = useState("/tmp/agentport-diagnostics.zip");
+  const [zipDest, setZipDest] = useState(
+    `${getState().exportsDir || "/tmp"}/agentport-diagnostics.zip`,
+  );
   const [zipResult, setZipResult] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -149,7 +151,7 @@ export default function DiagnosticsDialog() {
       </div>
       {caps !== null ? (
         <pre
-          className="mono"
+          className="mono selectable"
           style={{
             margin: 0,
             padding: 10,

@@ -48,7 +48,10 @@ echo "$OUT2" | grep -q "$M2" && ok "output continues after client exit/reconnect
 echo "$OUT2" | grep -q "$M1" && ok "replay includes pre-death bytes" || bad "replay gap"
 
 say "日志与客户端收到字节 SHA-256 一致"
-LOG="$AGENTPORT_DATA_DIR/sessions/$SES/output.log"
+# The authoritative log path lives in the Session record (run-scoped since v3):
+# never reconstruct it from a hardcoded layout, which silently goes stale.
+LOG=$("$CLI" session status "$SES" --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["session"]["logPath"])')
+[ -f "$LOG" ] && ok "log path resolves: $LOG" || { bad "log missing at $LOG"; exit 1; }
 python3 - "$LOG" "$OUT2" <<'PY' && ok "sha256(log tail) == sha256(received tail)" || bad "sha mismatch"
 import sys, json, hashlib
 log = open(sys.argv[1], 'rb').read()

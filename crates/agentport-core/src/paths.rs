@@ -47,6 +47,15 @@ impl AppPaths {
     pub fn log_path(&self, session_id: &str) -> PathBuf {
         self.session_dir(session_id).join("output.log")
     }
+    /// Output is scoped to a concrete Host launch. Keeping each run in its
+    /// own directory prevents a restarted Host from assigning a new run ID to
+    /// bytes that belonged to the previous launch.
+    pub fn run_dir(&self, session_id: &str, run_id: &str) -> PathBuf {
+        self.session_dir(session_id).join("runs").join(run_id)
+    }
+    pub fn run_log_path(&self, session_id: &str, run_id: &str) -> PathBuf {
+        self.run_dir(session_id, run_id).join("output.log")
+    }
     /// Host config passed to the host process (no secrets — PRD 3.7).
     pub fn host_config_path(&self, session_id: &str) -> PathBuf {
         self.session_dir(session_id).join("host.json")
@@ -74,6 +83,11 @@ impl AppPaths {
     pub fn exports_dir(&self) -> PathBuf {
         self.root.join("exports")
     }
+    /// Full-data backup archives created from the settings page / CLI default.
+    /// Excluded from backup payloads (backing up backups would recurse).
+    pub fn backups_dir(&self) -> PathBuf {
+        self.root.join("backups")
+    }
     pub fn diagnostics_dir(&self) -> PathBuf {
         self.root.join("diagnostics")
     }
@@ -88,16 +102,50 @@ impl AppPaths {
             self.socket_dir(),
             self.worktrees_root(),
             self.exports_dir(),
+            self.backups_dir(),
             self.diagnostics_dir(),
         ] {
             std::fs::create_dir_all(&d)?;
         }
-        // Socket dir must be private.
+        // Session metadata, terminal logs and exports may contain sensitive
+        // source content, and the DB holds live Host tokens. Keep every
+        // persistent directory owner-only, including on upgrades from older
+        // installs that predate this hardening.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(self.socket_dir(), std::fs::Permissions::from_mode(0o700))?;
+            for d in [
+                self.root.clone(),
+                self.sessions_dir(),
+                self.socket_dir(),
+                self.worktrees_root(),
+                self.exports_dir(),
+                self.backups_dir(),
+                self.diagnostics_dir(),
+            ] {
+                std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700))?;
+            }
         }
+        Ok(())
+    }
+
+    /// Restrict one already-existing file to owner-only access. Missing files
+    /// are skipped (e.g. the WAL sidecars before the first write).
+    #[cfg(unix)]
+    pub fn restrict_file(path: &std::path::Path) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        match std::fs::metadata(path) {
+            Ok(_) => {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(CoreError::Io(e)),
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub fn restrict_file(_path: &std::path::Path) -> Result<()> {
         Ok(())
     }
 }

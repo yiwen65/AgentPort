@@ -228,6 +228,7 @@ fn confidence_label(c: Confidence) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{LEGACY_RUN_ID, LEGACY_RUN_ORDINAL};
     use chrono::Utc;
 
     fn event(
@@ -238,6 +239,8 @@ mod tests {
     ) -> StatusEvent {
         StatusEvent {
             session_id: "ses_1".into(),
+            run_id: LEGACY_RUN_ID.into(),
+            run_ordinal: LEGACY_RUN_ORDINAL,
             sequence: 1,
             state,
             source,

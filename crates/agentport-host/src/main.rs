@@ -38,16 +38,17 @@
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use agentport_core::logs::LogWriter;
-use agentport_core::models::{AgentState, StatusEvent};
+use agentport_core::models::{AgentState, AgentTransport, LogCursor, StatusEvent};
 use agentport_core::protocol::{HostConfig, HostFrame};
 use agentport_core::redact::Redactor;
 use agentport_core::state::{Observation, PtyDetector, StateMachine};
@@ -72,8 +73,12 @@ const EXIT_SOCKET: i32 = 4;
 pub(crate) enum HostMsg {
     /// PTY / hook observations for the state machine.
     Obs(Observation),
-    /// PTY reader hit EOF/EIO and finished the log writer.
+    /// PTY reader reached a clean EOF and finished the log writer.
     PtyEof,
+    /// PTY reading failed before the control loop established that the child
+    /// had exited. Treating this as ordinary EOF can strand a still-running
+    /// agent after the Host exits, so it must enter the controlled stop flow.
+    PtyFault { message: String },
     /// A client asked to stop the session.
     Stop { grace_ms: u64 },
     /// The host process itself received SIGTERM/SIGINT/SIGHUP.
@@ -83,7 +88,7 @@ pub(crate) enum HostMsg {
 /// State shared with the socket server and worker threads.
 pub(crate) struct Shared {
     cfg: HostConfig,
-    /// `<session_dir>` = parent of `log_path` (host-state.json, events...).
+    /// Stable Session root for host-state.json and status-events.jsonl.
     session_dir: PathBuf,
     started_at: DateTime<Utc>,
     child_pid: i32,
@@ -92,32 +97,120 @@ pub(crate) struct Shared {
     child_alive: AtomicBool,
     /// Bytes in the output log (mirrors `LogWriter::total_appended`).
     log_bytes: AtomicU64,
+    /// Current generation and byte position within that generation. These are
+    /// updated only after a log append succeeds, so a cursor always names
+    /// bytes that are already durable on disk.
+    log_position: Mutex<(u64, u64)>,
+    /// Serializes PTY append/position/broadcast with reconnect high-water
+    /// capture and registration. This is the boundary that makes every output
+    /// chunk belong either to replay or to the subsequent live queue.
+    output_serial: Mutex<()>,
     last_output_at: Mutex<Instant>,
     /// Live-refreshed descendant snapshot so job-control escapees can be
     /// cleaned even after the leader dies and they reparent to init.
     known_descendants: Mutex<Vec<i32>>,
     agent_session_id: Mutex<Option<String>>,
     current_status: Mutex<Option<StatusEvent>>,
-    clients: Mutex<HashMap<u64, mpsc::Sender<HostFrame>>>,
+    /// Set after a failed status-journal write so connected consumers receive
+    /// one explicit degraded-persistence signal instead of silently trusting
+    /// an in-memory-only state transition. A subsequent successful write
+    /// clears the flag and permits a new signal for a later failure.
+    status_journal_faulted: AtomicBool,
+    clients: Mutex<HashMap<u64, server::ClientSink>>,
     next_client_id: AtomicU64,
-    pty_writer: Mutex<Box<dyn Write + Send>>,
-    master: Mutex<Box<dyn MasterPty + Send>>,
+    /// Connections that completed authentication, including a connection
+    /// currently replaying or a writer draining after its reader exits.
+    authenticated_client_count: AtomicUsize,
+    /// Per-Host cadence counter for periodic descendant refreshes. This must
+    /// not be global: otherwise activity in one session changes the cleanup
+    /// cadence of every other Host process.
+    tick_count: AtomicU64,
+    /// Terminal bytes for PTY Sessions or UTF-8 JSONL commands for structured
+    /// Pi Sessions. The socket server owns protocol-specific serialization.
+    input_writer: Mutex<Box<dyn Write + Send>>,
+    /// Only PTY Sessions support resize. Keeping this optional makes the pipe
+    /// path structurally incapable of allocating a PTY.
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
 }
 
-/// Broadcast a frame to all attached clients; dead clients are dropped.
+/// Keep the process handle in scope while the Host controls/reaps it through
+/// waitpid. Dropping either variant does not become a lifecycle operation.
+enum AgentChild {
+    Pty(Box<dyn portable_pty::Child + Send + Sync>),
+    Pipe(std::process::Child),
+}
+
+impl AgentChild {
+    /// Touch the contained child so it remains intentionally retained for the
+    /// lifetime of the Host; reaping itself is exclusively waitpid-based.
+    fn retain_until_host_exit(&self) {
+        match self {
+            AgentChild::Pty(child) => {
+                let _ = child.process_id();
+            }
+            AgentChild::Pipe(child) => {
+                let _ = child.id();
+            }
+        }
+    }
+}
+
+/// Broadcast a frame to all attached clients without letting one slow socket
+/// stall the Host. Full or disconnected client queues are evicted and their
+/// `ClientSink` shuts down only that client's socket.
 pub(crate) fn broadcast(shared: &Shared, frame: &HostFrame) {
+    let mut evicted = Vec::new();
     let mut clients = shared.clients.lock().unwrap();
-    clients.retain(|_, tx| tx.send(frame.clone()).is_ok());
+    let mut drop_ids = Vec::new();
+    let is_output = matches!(frame, HostFrame::Output { .. });
+    for (&id, client) in clients.iter() {
+        if is_output && !client.subscribe_output {
+            continue;
+        }
+        match client.tx.try_send(frame.clone()) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Full(_)) => {
+                drop_ids.push((id, "outbound queue full"));
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                drop_ids.push((id, "outbound queue disconnected"));
+            }
+        }
+    }
+    for (id, reason) in drop_ids {
+        if let Some(client) = clients.remove(&id) {
+            evicted.push((id, reason, client));
+        }
+    }
+    drop(clients);
+    for (id, reason, client) in evicted {
+        warn!(client_id = id, reason, "dropping client from broadcast");
+        client.close();
+        drop(client);
+    }
+}
+
+pub(crate) fn current_log_cursor(shared: &Shared) -> LogCursor {
+    let (generation, offset) = *shared.log_position.lock().unwrap();
+    LogCursor {
+        run_id: shared.cfg.run_id.clone(),
+        run_ordinal: shared.cfg.run_ordinal,
+        generation: generation.min(i64::MAX as u64) as i64,
+        offset: offset.min(i64::MAX as u64) as i64,
+    }
 }
 
 pub(crate) fn status_frame(ev: &StatusEvent) -> HostFrame {
     HostFrame::State {
         session_id: ev.session_id.clone(),
+        run_id: ev.run_id.clone(),
+        run_ordinal: ev.run_ordinal,
         sequence: ev.sequence,
         state: ev.state,
         source: ev.source,
         confidence: ev.confidence,
         evidence: ev.evidence.clone(),
+        log_cursor: ev.log_cursor.clone(),
         occurred_at: ev.occurred_at,
     }
 }
@@ -218,6 +311,17 @@ fn group_gone(shared: &Shared) -> bool {
     )
 }
 
+/// True while the agent leader still exists. This is deliberately separate
+/// from `child_alive`: the latter is the Host's lifecycle classification and
+/// is only flipped after reaping, whereas PTY EOF/error handling needs a
+/// process-table fact before it commits to a natural exit.
+fn leader_alive(pid: i32) -> bool {
+    matches!(
+        kill(Pid::from_raw(pid), None::<Signal>),
+        Ok(()) | Err(Errno::EPERM)
+    )
+}
+
 fn main() {
     std::process::exit(run());
 }
@@ -252,10 +356,14 @@ fn run() -> i32 {
     }
     info!(session_id = %cfg.session_id, adapter = %cfg.adapter_type, "agentport-host starting");
 
-    let session_dir = Path::new(&cfg.log_path)
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
+    let session_dir = if cfg.session_dir.trim().is_empty() {
+        Path::new(&cfg.log_path)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    } else {
+        PathBuf::from(&cfg.session_dir)
+    };
 
     // Output log. The host holds the Redactor and feeds pre-redacted bytes to
     // the LogWriter (see module docs), so the writer needs no redactor itself.
@@ -268,6 +376,8 @@ fn run() -> i32 {
         }
     };
     let initial_log_bytes = log_writer.total_appended();
+    let initial_log_generation = log_writer.generation();
+    let initial_log_offset = log_writer.current_len();
 
     // Secret values come ONLY from the host's own environment (PRD 3.7);
     // they are never logged — only the configured names are.
@@ -275,6 +385,13 @@ fn run() -> i32 {
         .secret_env_names
         .iter()
         .filter_map(|n| std::env::var(n).ok().map(String::into_bytes))
+        .collect();
+    // RPC events are parsed before they reach the structured UI, so redact
+    // string leaves independently of the streaming terminal redactor.
+    let structured_secret_text: Vec<String> = secrets
+        .iter()
+        .filter_map(|value| std::str::from_utf8(value).ok().map(str::to_owned))
+        .filter(|value| !value.is_empty())
         .collect();
     let redactor = if secrets.is_empty() {
         None
@@ -287,92 +404,181 @@ fn run() -> i32 {
         "redactor ready"
     );
 
-    // PTY + spawn.
-    let pty_system = native_pty_system();
-    let pair = match pty_system.openpty(PtySize {
-        rows: cfg.rows,
-        cols: cfg.cols,
-        pixel_width: 0,
-        pixel_height: 0,
-    }) {
-        Ok(p) => p,
-        Err(e) => {
-            error!("openpty failed: {e}");
-            return EXIT_PTY;
-        }
-    };
-    let portable_pty::PtyPair { slave, master } = pair;
-
-    let mut cmd = CommandBuilder::new(&cfg.command[0]);
-    for a in &cfg.command[1..] {
-        cmd.arg(a);
-    }
-    cmd.cwd(&cfg.cwd);
-    for (k, v) in &cfg.env {
-        cmd.env(k, v);
-    }
-    // Secrets are inherited through the environment, never the config file.
-    for name in &cfg.secret_env_names {
-        if let Ok(v) = std::env::var(name) {
-            cmd.env(name, v);
-        }
-    }
-    // The child runs inside AgentPort's xterm.js PTY, not the terminal that
-    // launched the desktop app. GUI/debug launchers may carry TERM=dumb or
-    // NO_COLOR=1, both of which make agent CLIs disable their TUI and colors.
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("COLORTERM", "truecolor");
-    cmd.env_remove("NO_COLOR");
-
-    let child = match slave.spawn_command(cmd) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("spawn {:?} failed: {e}", cfg.command[0]);
-            return EXIT_PTY;
-        }
-    };
-    // Close our copy of the slave so the reader sees EOF once the whole
-    // agent process group is gone.
-    drop(slave);
-    let child_pid = child.process_id().map(|p| p as i32).unwrap_or(-1);
-
-    let (pgid, pgid_verified) = verify_pgid(child_pid);
-    info!(child_pid, pgid, pgid_verified, "agent spawned");
-    if !pgid_verified {
-        warn!("pgid != pid; degrading to single-pid signaling (group cleanup disabled)");
-    }
-
-    let pty_reader = match master.try_clone_reader() {
-        Ok(r) => r,
-        Err(e) => {
-            error!("pty reader clone failed: {e}");
-            return EXIT_PTY;
-        }
-    };
-    let pty_writer = match master.take_writer() {
-        Ok(w) => w,
-        Err(e) => {
-            error!("pty writer failed: {e}");
-            return EXIT_PTY;
-        }
-    };
-
-    // Unix socket (stale file removed first, mode 0600).
+    // Unix socket (stale file removed first, mode 0600). Bind before spawn so
+    // bind/chmod failures cannot leave an unowned child process behind.
     let socket_path = PathBuf::from(&cfg.socket_path);
     if let Some(p) = socket_path.parent() {
-        let _ = std::fs::create_dir_all(p);
+        if let Err(e) = std::fs::create_dir_all(p) {
+            error!("create socket directory {} failed: {e}", p.display());
+            return EXIT_SOCKET;
+        }
     }
     let _ = std::fs::remove_file(&socket_path);
     let listener = match UnixListener::bind(&socket_path) {
         Ok(l) => l,
         Err(e) => {
-            error!("bind {} failed: {e}", cfg.socket_path);
+            error!("bind {} failed before spawn: {e}", cfg.socket_path);
             return EXIT_SOCKET;
         }
     };
     if let Err(e) = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)) {
-        error!("chmod {} failed: {e}", cfg.socket_path);
+        error!("chmod {} failed before spawn: {e}", cfg.socket_path);
+        let _ = std::fs::remove_file(&socket_path);
         return EXIT_SOCKET;
+    }
+
+    // Adapter hooks append to a Session-stable file. Snapshot its length
+    // before the new child can write so this run consumes only its own new
+    // events; a later truncation is still handled by the poller.
+    let hook_start_offset = hook_snapshot_offset(&cfg.hook_events_path);
+
+    // PTY remains the compatibility transport. Pi's structured RPC mode uses
+    // ordinary pipes exclusively so terminal control bytes and TUI prompts
+    // can never leak into its JSONL protocol.
+    let (input_writer, output_reader, master, child_pid, agent_child, pipe_stderr): (
+        Box<dyn Write + Send>,
+        Box<dyn Read + Send>,
+        Option<Box<dyn MasterPty + Send>>,
+        i32,
+        AgentChild,
+        Option<Box<dyn Read + Send>>,
+    ) = match cfg.transport {
+        AgentTransport::Pty => {
+            let pty_system = native_pty_system();
+            let pair = match pty_system.openpty(PtySize {
+                rows: cfg.rows,
+                cols: cfg.cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            }) {
+                Ok(pair) => pair,
+                Err(e) => {
+                    error!("openpty failed: {e}");
+                    let _ = std::fs::remove_file(&socket_path);
+                    return EXIT_PTY;
+                }
+            };
+            let portable_pty::PtyPair { slave, master } = pair;
+            let reader = match master.try_clone_reader() {
+                Ok(reader) => reader,
+                Err(e) => {
+                    error!("pty reader clone failed before spawn: {e}");
+                    let _ = std::fs::remove_file(&socket_path);
+                    return EXIT_PTY;
+                }
+            };
+            let writer = match master.take_writer() {
+                Ok(writer) => writer,
+                Err(e) => {
+                    error!("pty writer setup failed before spawn: {e}");
+                    let _ = std::fs::remove_file(&socket_path);
+                    return EXIT_PTY;
+                }
+            };
+            let mut command = CommandBuilder::new(&cfg.command[0]);
+            for arg in &cfg.command[1..] {
+                command.arg(arg);
+            }
+            command.cwd(&cfg.cwd);
+            for (key, value) in &cfg.env {
+                command.env(key, value);
+            }
+            for name in &cfg.secret_env_names {
+                if let Ok(value) = std::env::var(name) {
+                    command.env(name, value);
+                }
+            }
+            // The child runs inside AgentPort's xterm.js PTY, not the terminal
+            // that launched the desktop app.
+            command.env("TERM", "xterm-256color");
+            command.env("COLORTERM", "truecolor");
+            command.env_remove("NO_COLOR");
+            let mut child = match slave.spawn_command(command) {
+                Ok(child) => child,
+                Err(e) => {
+                    error!("spawn {:?} failed: {e}", cfg.command[0]);
+                    let _ = std::fs::remove_file(&socket_path);
+                    return EXIT_PTY;
+                }
+            };
+            drop(slave);
+            let Some(pid) = child.process_id().map(|pid| pid as i32) else {
+                error!("spawned PTY child did not provide a pid; terminating it defensively");
+                let _ = child.kill();
+                let _ = std::fs::remove_file(&socket_path);
+                return EXIT_PTY;
+            };
+            (
+                writer,
+                reader,
+                Some(master),
+                pid,
+                AgentChild::Pty(child),
+                None,
+            )
+        }
+        AgentTransport::JsonRpc => {
+            let mut command = std::process::Command::new(&cfg.command[0]);
+            command
+                .args(&cfg.command[1..])
+                .current_dir(&cfg.cwd)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            for (key, value) in &cfg.env {
+                command.env(key, value);
+            }
+            for name in &cfg.secret_env_names {
+                if let Ok(value) = std::env::var(name) {
+                    command.env(name, value);
+                }
+            }
+            // Process-group lifecycle is identical to PTY mode. `setsid` runs
+            // in the child immediately before exec, so stop/interrupt signal
+            // the entire Pi tool tree rather than just the shell wrapper.
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let mut child = match command.spawn() {
+                Ok(child) => child,
+                Err(e) => {
+                    error!("spawn RPC {:?} failed: {e}", cfg.command[0]);
+                    let _ = std::fs::remove_file(&socket_path);
+                    return EXIT_PTY;
+                }
+            };
+            let pid = child.id() as i32;
+            let Some(stdin) = child.stdin.take() else {
+                let _ = child.kill();
+                let _ = std::fs::remove_file(&socket_path);
+                return EXIT_PTY;
+            };
+            let Some(stdout) = child.stdout.take() else {
+                let _ = child.kill();
+                let _ = std::fs::remove_file(&socket_path);
+                return EXIT_PTY;
+            };
+            let stderr = child.stderr.take().map(|stream| Box::new(stream) as Box<dyn Read + Send>);
+            (
+                Box::new(stdin),
+                Box::new(stdout),
+                None,
+                pid,
+                AgentChild::Pipe(child),
+                stderr,
+            )
+        }
+    };
+
+    let (pgid, pgid_verified) = verify_pgid(child_pid);
+    info!(child_pid, pgid, pgid_verified, "agent spawned");
+    if !pgid_verified {
+        warn!("pgid != pid; degrading to single-pid signaling (group cleanup disabled)");
     }
 
     let (msg_tx, msg_rx) = mpsc::channel::<HostMsg>();
@@ -385,13 +591,18 @@ fn run() -> i32 {
         pgid_verified,
         child_alive: AtomicBool::new(true),
         log_bytes: AtomicU64::new(initial_log_bytes),
+        log_position: Mutex::new((initial_log_generation, initial_log_offset)),
+        output_serial: Mutex::new(()),
         last_output_at: Mutex::new(Instant::now()),
         known_descendants: Mutex::new(vec![]),
         agent_session_id: Mutex::new(None),
         current_status: Mutex::new(None),
+        status_journal_faulted: AtomicBool::new(false),
         clients: Mutex::new(HashMap::new()),
         next_client_id: AtomicU64::new(1),
-        pty_writer: Mutex::new(pty_writer),
+        authenticated_client_count: AtomicUsize::new(0),
+        tick_count: AtomicU64::new(0),
+        input_writer: Mutex::new(input_writer),
         master: Mutex::new(master),
     });
 
@@ -404,18 +615,41 @@ fn run() -> i32 {
     }
 
     server::spawn_accept_loop(listener, shared.clone(), msg_tx.clone());
-    spawn_pty_reader(
-        pty_reader,
-        log_writer,
-        redactor,
-        shared.clone(),
-        msg_tx.clone(),
-    );
-    spawn_hook_poller(shared.clone(), msg_tx.clone());
+    match cfg.transport {
+        AgentTransport::Pty => spawn_pty_reader(
+            output_reader,
+            log_writer,
+            redactor,
+            shared.clone(),
+            msg_tx.clone(),
+        ),
+        AgentTransport::JsonRpc => {
+            // Pi allocates its native ID during startup. Request state before
+            // accepting user prompts and persist the reported ID via the
+            // existing AgentSession HostFrame path.
+            if let Err(error) = server::write_json_command(&shared, serde_json::json!({"type": "get_state"})) {
+                let _ = msg_tx.send(HostMsg::PtyFault {
+                    message: format!("Pi RPC get_state write failed: {error}"),
+                });
+            }
+            spawn_rpc_reader(
+                output_reader,
+                log_writer,
+                structured_secret_text.clone(),
+                shared.clone(),
+                msg_tx.clone(),
+            );
+            if let Some(stderr) = pipe_stderr {
+                spawn_rpc_stderr_reader(stderr, structured_secret_text, shared.clone());
+            }
+        }
+    }
+    spawn_hook_poller(shared.clone(), msg_tx.clone(), hook_start_offset);
     spawn_signal_handler(msg_tx.clone());
 
     // Keep the handle alive; reaping is done exclusively via waitpid (Reaper).
-    let _child_handle = child;
+    let _child_handle = agent_child;
+    _child_handle.retain_until_host_exit();
 
     control_loop(&shared, msg_rx)
 }
@@ -546,21 +780,49 @@ fn wait_dead(shared: &Shared, reaper: &mut Reaper, budget: Duration) -> bool {
 
 /// The single state-machine owner: observations in, status events out.
 fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
-    let mut sm = StateMachine::new(&shared.cfg.session_id);
+    let mut sm = StateMachine::for_run(
+        &shared.cfg.session_id,
+        &shared.cfg.run_id,
+        shared.cfg.run_ordinal,
+    );
     let mut status_file = open_status_file(&shared.session_dir);
 
     if let Some(ev) = sm.observe(Observation::ProcessSpawned) {
-        emit_event(shared, &mut status_file, &ev);
+        emit_event(shared, &mut status_file, ev);
     }
 
+    // `recv_timeout(1s)` on every iteration starves ticks when observations
+    // are continuously queued: each immediate receive restarts the full
+    // timeout. Keep an absolute deadline instead, so heartbeat/silence checks
+    // remain wall-clock based under high-frequency PTY or hook activity.
+    let tick_interval = Duration::from_secs(1);
+    let mut next_tick = Instant::now() + tick_interval;
+
     loop {
-        match rx.recv_timeout(Duration::from_secs(1)) {
+        let now = Instant::now();
+        if now >= next_tick {
+            tick(shared, &mut sm, &mut status_file);
+            next_tick += tick_interval;
+            // Avoid a burst of catch-up heartbeats if a slow state operation
+            // took longer than a tick interval. Subsequent ticks resume from
+            // the current wall-clock time rather than being starved forever.
+            if next_tick <= Instant::now() {
+                next_tick = Instant::now() + tick_interval;
+            }
+            continue;
+        }
+
+        match rx.recv_timeout(next_tick.saturating_duration_since(now)) {
             Ok(HostMsg::Obs(obs)) => {
                 if let Some(ev) = sm.observe(obs) {
-                    emit_event(shared, &mut status_file, &ev);
+                    emit_event(shared, &mut status_file, ev);
                 }
             }
-            Ok(HostMsg::PtyEof) => return natural_exit(shared, &mut sm, &mut status_file),
+            Ok(HostMsg::PtyEof) => return natural_exit(shared, &mut sm, &mut status_file, &rx),
+            Ok(HostMsg::PtyFault { message }) => {
+                warn!(error = %message, "pty reader failed; entering controlled stop flow");
+                return stop_flow(shared, &mut sm, &mut status_file, None, &rx, "pty_fault");
+            }
             Ok(HostMsg::Stop { grace_ms }) => {
                 return stop_flow(
                     shared,
@@ -575,7 +837,9 @@ fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
                 info!(sig, "host received signal; cleaning up process group");
                 return stop_flow(shared, &mut sm, &mut status_file, None, &rx, "host_signal");
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => tick(shared, &mut sm, &mut status_file),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // The next loop iteration observes the due absolute deadline.
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 error!("control channel disconnected");
                 return stop_flow(shared, &mut sm, &mut status_file, None, &rx, "channel_lost");
@@ -593,14 +857,11 @@ fn tick(shared: &Shared, sm: &mut StateMachine, status_file: &mut Option<File>) 
             session_id: shared.cfg.session_id.clone(),
             at: Utc::now(),
             log_bytes: shared.log_bytes.load(Ordering::Relaxed),
+            log_cursor: current_log_cursor(shared),
         },
     );
-    {
-        use std::sync::atomic::AtomicU64;
-        static TICKS: AtomicU64 = AtomicU64::new(0);
-        if TICKS.fetch_add(1, Ordering::Relaxed) % 3 == 0 {
-            *shared.known_descendants.lock().unwrap() = descendants_of(shared.child_pid);
-        }
+    if shared.tick_count.fetch_add(1, Ordering::Relaxed) % 3 == 0 {
+        *shared.known_descendants.lock().unwrap() = descendants_of(shared.child_pid);
     }
     let elapsed = shared.last_output_at.lock().unwrap().elapsed();
     if elapsed > Duration::from_secs(3) {
@@ -617,22 +878,54 @@ fn tick(shared: &Shared, sm: &mut StateMachine, status_file: &mut Option<File>) 
             if let Some(ev) = sm.observe(Observation::PtySilence {
                 ms: elapsed.as_millis() as u64,
             }) {
-                emit_event(shared, status_file, &ev);
+                emit_event(shared, status_file, ev);
             }
         }
     }
 }
 
-/// Record + broadcast one status transition.
-fn emit_event(shared: &Shared, status_file: &mut Option<File>, ev: &StatusEvent) {
-    *shared.current_status.lock().unwrap() = Some(ev.clone());
-    broadcast(shared, &status_frame(ev));
-    if let Some(f) = status_file {
-        if let Ok(line) = serde_json::to_string(ev) {
-            let _ = f.write_all(line.as_bytes());
-            let _ = f.write_all(b"\n");
-            let _ = f.flush();
+/// Persist then broadcast one status transition. The journal is the durable
+/// recovery source; a client must never be told a state is authoritative
+/// before its replay record has been flushed to disk.
+fn emit_event(shared: &Shared, status_file: &mut Option<File>, mut ev: StatusEvent) {
+    if ev.log_cursor.is_none() {
+        ev.log_cursor = Some(current_log_cursor(shared));
+    }
+    let persistence_error = persist_status_event(status_file, ev).err();
+    if let Some(error) = persistence_error {
+        error!(error = %error, sequence = ev.sequence, "status journal persistence failed");
+        if !shared.status_journal_faulted.swap(true, Ordering::AcqRel) {
+            broadcast(
+                shared,
+                &err_frame(
+                    Some(&shared.cfg.session_id),
+                    "status journal persistence failed; state recovery is degraded",
+                ),
+            );
         }
+    } else {
+        shared
+            .status_journal_faulted
+            .store(false, Ordering::Release);
+    }
+    *shared.current_status.lock().unwrap() = Some(ev.clone());
+    broadcast(shared, &status_frame(&ev));
+}
+
+/// Append a single event and force it through the OS before announcing it to
+/// connected consumers. State transitions are low-frequency, so `sync_data`
+/// is an intentional durability tradeoff rather than a high-rate output-path
+/// cost.
+fn persist_status_event(status_file: &mut Option<File>, ev: &StatusEvent) -> Result<(), String> {
+    if let Some(f) = status_file {
+        let line = serde_json::to_string(ev).map_err(|e| e.to_string())?;
+        f.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(b"\n").map_err(|e| e.to_string())?;
+        f.flush().map_err(|e| e.to_string())?;
+        f.sync_data().map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        Err("status-events.jsonl is not open".to_string())
     }
 }
 
@@ -668,15 +961,23 @@ fn stop_flow(
     shared.child_alive.store(false, Ordering::Relaxed);
     let group_cleaned = shared.pgid_verified && group_gone(shared) && tree_gone(shared);
     if let Some(ev) = sm.observe(Observation::ProcessExited { code, signal }) {
-        emit_event(shared, status_file, &ev);
+        emit_event(shared, status_file, ev);
     }
+    let exit_reason = match reason {
+        "client_stop" => "user_stop",
+        "host_signal" => "host_signal",
+        _ => "fault",
+    };
     broadcast(
         shared,
         &HostFrame::Exit {
             session_id: shared.cfg.session_id.clone(),
+            run_id: shared.cfg.run_id.clone(),
+            run_ordinal: shared.cfg.run_ordinal,
             code,
             signal,
             group_cleaned,
+            reason: exit_reason.to_string(),
         },
     );
     info!(?code, ?signal, group_cleaned, "stop flow complete");
@@ -684,7 +985,7 @@ fn stop_flow(
     wait_pty_eof(rx, Duration::from_secs(2));
     // Give per-client writer threads a moment to flush the Exit frame.
     std::thread::sleep(Duration::from_millis(200));
-    shutdown(shared, code, signal, group_cleaned);
+    shutdown(shared, code, signal, group_cleaned, exit_reason);
     EXIT_OK
 }
 
@@ -695,9 +996,20 @@ fn natural_exit(
     shared: &Arc<Shared>,
     sm: &mut StateMachine,
     status_file: &mut Option<File>,
+    rx: &mpsc::Receiver<HostMsg>,
 ) -> i32 {
     let mut reaper = Reaper::new(shared.child_pid);
     let (code, signal) = reaper.reap_timeout(Duration::from_secs(3));
+    // EOF normally follows a child exit, but a PTY can close independently.
+    // Never let the Host report a natural completion while the process leader
+    // is still alive; that would detach a real agent from its cleanup owner.
+    if code.is_none() && signal.is_none() && leader_alive(shared.child_pid) {
+        warn!(
+            child_pid = shared.child_pid,
+            "pty EOF arrived before child exit; entering controlled stop flow"
+        );
+        return stop_flow(shared, sm, status_file, None, rx, "pty_eof_before_exit");
+    }
     shared.child_alive.store(false, Ordering::Relaxed);
     // Clean up any descendants that survived the leader (best effort, using
     // the last snapshot taken before reparenting plus the live tree).
@@ -715,15 +1027,18 @@ fn natural_exit(
     }
     let group_cleaned = shared.pgid_verified && group_gone(shared) && tree_gone(shared);
     if let Some(ev) = sm.observe(Observation::ProcessExited { code, signal }) {
-        emit_event(shared, status_file, &ev);
+        emit_event(shared, status_file, ev);
     }
     broadcast(
         shared,
         &HostFrame::Exit {
             session_id: shared.cfg.session_id.clone(),
+            run_id: shared.cfg.run_id.clone(),
+            run_ordinal: shared.cfg.run_ordinal,
             code,
             signal,
             group_cleaned,
+            reason: "natural".to_string(),
         },
     );
     info!(
@@ -733,7 +1048,7 @@ fn natural_exit(
         "child exited; draining clients for 2s"
     );
     std::thread::sleep(Duration::from_secs(2));
-    shutdown(shared, code, signal, group_cleaned);
+    shutdown(shared, code, signal, group_cleaned, "natural");
     EXIT_OK
 }
 
@@ -753,27 +1068,36 @@ fn wait_pty_eof(rx: &mpsc::Receiver<HostMsg>, timeout: Duration) {
     }
 }
 
-fn shutdown(shared: &Shared, code: Option<i32>, signal: Option<i32>, group_cleaned: bool) {
+fn shutdown(
+    shared: &Shared,
+    code: Option<i32>,
+    signal: Option<i32>,
+    group_cleaned: bool,
+    exit_reason: &str,
+) {
     let _ = std::fs::remove_file(&shared.cfg.socket_path);
-    write_host_state(shared, Some((code, signal, group_cleaned)));
+    write_host_state(shared, Some((code, signal, group_cleaned, exit_reason)));
     info!("host shutdown complete");
 }
 
 /// `<session_dir>/host-state.json` (0600): startup facts + exit facts.
-fn write_host_state(shared: &Shared, exit: Option<(Option<i32>, Option<i32>, bool)>) {
+fn write_host_state(shared: &Shared, exit: Option<(Option<i32>, Option<i32>, bool, &str)>) {
     let mut v = serde_json::json!({
         "pid": shared.child_pid,
         "host_pid": std::process::id(),
         "session_id": &shared.cfg.session_id,
+        "run_id": &shared.cfg.run_id,
+        "run_ordinal": shared.cfg.run_ordinal,
         "socket_path": &shared.cfg.socket_path,
         "started_at": shared.started_at.to_rfc3339(),
         "pgid": shared.pgid,
         "pgid_verified": shared.pgid_verified,
     });
-    if let Some((code, signal, cleaned)) = exit {
+    if let Some((code, signal, cleaned, reason)) = exit {
         v["exit_code"] = serde_json::json!(code);
         v["signal"] = serde_json::json!(signal);
         v["group_cleaned"] = serde_json::json!(cleaned);
+        v["exit_reason"] = serde_json::json!(reason);
         v["exited_at"] = serde_json::json!(Utc::now().to_rfc3339());
     }
     let path = shared.session_dir.join("host-state.json");
@@ -784,13 +1108,18 @@ fn write_host_state(shared: &Shared, exit: Option<(Option<i32>, Option<i32>, boo
         .mode(0o600)
         .open(&path)
     {
-        Ok(mut f) => {
-            let _ = f.write_all(
-                serde_json::to_string_pretty(&v)
-                    .unwrap_or_default()
-                    .as_bytes(),
-            );
-        }
+        Ok(mut f) => match serde_json::to_vec_pretty(&v) {
+            Ok(payload) => {
+                if let Err(e) = f
+                    .write_all(&payload)
+                    .and_then(|_| f.flush())
+                    .and_then(|_| f.sync_all())
+                {
+                    warn!("flush host-state.json failed: {e}");
+                }
+            }
+            Err(e) => warn!("serialize host-state.json failed: {e}"),
+        },
         Err(e) => warn!("write host-state.json failed: {e}"),
     }
 }
@@ -847,6 +1176,123 @@ fn set_agent_session_id(shared: &Shared, id: &str) {
 
 /// PTY reader thread: raw bytes -> redactor -> LogWriter -> broadcast Output
 /// with the on-disk offset; feeds the PTY detector; finishes the log on EOF.
+const MAX_PI_STARTUP_NOTICE_BYTES: usize = 1024;
+
+struct PiPtyStartupNoticeFilter {
+    native_session_id: String,
+    pending: Vec<u8>,
+    decided: bool,
+}
+
+impl PiPtyStartupNoticeFilter {
+    fn new(native_session_id: String) -> Self {
+        Self {
+            native_session_id,
+            pending: Vec::new(),
+            decided: false,
+        }
+    }
+
+    fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
+        if self.decided {
+            return chunk.to_vec();
+        }
+        self.pending.extend_from_slice(chunk);
+        let line_end = self.pending.iter().position(|byte| *byte == b'\n');
+        if line_end.is_none() && self.pending.len() <= MAX_PI_STARTUP_NOTICE_BYTES {
+            return Vec::new();
+        }
+        self.decided = true;
+        if let Some(line_end) = line_end {
+            let remainder = self.pending.split_off(line_end + 1);
+            let line = std::mem::take(&mut self.pending);
+            if is_pi_initial_session_notice_line(&line, &self.native_session_id) {
+                remainder
+            } else {
+                [line, remainder].concat()
+            }
+        } else {
+            std::mem::take(&mut self.pending)
+        }
+    }
+
+    fn finish(&mut self) -> Vec<u8> {
+        if self.decided {
+            return Vec::new();
+        }
+        self.decided = true;
+        let pending = std::mem::take(&mut self.pending);
+        if is_pi_initial_session_notice_line(&pending, &self.native_session_id) {
+            Vec::new()
+        } else {
+            pending
+        }
+    }
+}
+
+fn is_pi_initial_session_notice_line(line: &[u8], native_session_id: &str) -> bool {
+    let mut plain = Vec::with_capacity(line.len());
+    let mut index = 0;
+    while index < line.len() {
+        if line[index] != 0x1b {
+            plain.push(line[index]);
+            index += 1;
+            continue;
+        }
+        if line.get(index + 1) != Some(&b'[') {
+            return false;
+        }
+        let mut end = index + 2;
+        while end < line.len() && !(0x40..=0x7e).contains(&line[end]) {
+            end += 1;
+        }
+        if line.get(end) != Some(&b'm') {
+            return false;
+        }
+        index = end + 1;
+    }
+    while matches!(plain.last(), Some(b'\r' | b'\n')) {
+        plain.pop();
+    }
+    plain == format!(
+        "Warning: No project session found with id '{native_session_id}'; creating a new session with that id."
+    )
+    .as_bytes()
+}
+
+fn append_pty_output(writer: &mut LogWriter, data: Vec<u8>, shared: &Shared) {
+    let _output_guard = shared.output_serial.lock().unwrap();
+    match writer.append(&data) {
+        Ok(receipt) => {
+            shared
+                .log_bytes
+                .store(writer.total_appended(), Ordering::Relaxed);
+            *shared.log_position.lock().unwrap() = (
+                receipt.generation,
+                receipt.offset.saturating_add(receipt.len),
+            );
+            if receipt.rotated {
+                info!(generation = receipt.generation, "log rotated");
+            }
+            broadcast(
+                shared,
+                &HostFrame::Output {
+                    session_id: shared.cfg.session_id.clone(),
+                    data,
+                    offset: receipt.offset,
+                    cursor: LogCursor {
+                        run_id: shared.cfg.run_id.clone(),
+                        run_ordinal: shared.cfg.run_ordinal,
+                        generation: receipt.generation.min(i64::MAX as u64) as i64,
+                        offset: receipt.offset.min(i64::MAX as u64) as i64,
+                    },
+                },
+            );
+        }
+        Err(error) => error!("log append failed: {error}"),
+    }
+}
+
 fn spawn_pty_reader(
     mut reader: Box<dyn Read + Send>,
     mut writer: LogWriter,
@@ -857,7 +1303,12 @@ fn spawn_pty_reader(
     std::thread::spawn(move || {
         let mut detector = PtyDetector::new(&[], &[]);
         let mut redactor = redactor;
+        let mut pi_startup_notice_filter = (shared.cfg.adapter_type == "pi")
+            .then(|| shared.cfg.agent_session_id_hint.clone())
+            .flatten()
+            .map(PiPtyStartupNoticeFilter::new);
         let mut buf = [0u8; 16 * 1024];
+        let mut pty_fault = None;
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => {
@@ -867,40 +1318,41 @@ fn spawn_pty_reader(
                 Ok(n) => {
                     let chunk = &buf[..n];
                     *shared.last_output_at.lock().unwrap() = Instant::now();
-                    let data = match &mut redactor {
-                        Some(r) => r.feed(chunk),
+                    let chunk = match &mut pi_startup_notice_filter {
+                        Some(filter) => filter.feed(chunk),
                         None => chunk.to_vec(),
                     };
+                    let data = match &mut redactor {
+                        Some(r) => r.feed(&chunk),
+                        None => chunk.clone(),
+                    };
                     if !data.is_empty() {
-                        match writer.append(&data) {
-                            Ok(receipt) => {
-                                shared
-                                    .log_bytes
-                                    .store(writer.total_appended(), Ordering::Relaxed);
-                                if receipt.rotated {
-                                    info!(generation = receipt.generation, "log rotated");
-                                }
-                                broadcast(
-                                    &shared,
-                                    &HostFrame::Output {
-                                        session_id: shared.cfg.session_id.clone(),
-                                        data,
-                                        offset: receipt.offset,
-                                    },
-                                );
-                            }
-                            Err(e) => error!("log append failed: {e}"),
-                        }
+                        append_pty_output(&mut writer, data, &shared);
                     }
-                    for obs in detector.feed(chunk) {
+                    for obs in detector.feed(&chunk) {
                         let _ = tx.send(HostMsg::Obs(obs));
                     }
                 }
                 Err(e) => {
-                    // EIO = all slave fds closed (macOS/Linux); any read error
-                    // is terminal for this session.
-                    info!("pty read ended: {e}");
+                    // EIO often follows all slave fds closing, but it is not
+                    // proof that the child has exited. Preserve the distinct
+                    // failure fact for the control loop so it can verify and
+                    // clean up a still-live process group.
+                    warn!("pty read failed: {e}");
+                    pty_fault = Some(e.to_string());
                     break;
+                }
+            }
+        }
+        if let Some(filter) = &mut pi_startup_notice_filter {
+            let chunk = filter.finish();
+            if !chunk.is_empty() {
+                let data = match &mut redactor {
+                    Some(redactor) => redactor.feed(&chunk),
+                    None => chunk,
+                };
+                if !data.is_empty() {
+                    append_pty_output(&mut writer, data, &shared);
                 }
             }
         }
@@ -909,40 +1361,291 @@ fn spawn_pty_reader(
         if let Some(r) = &mut redactor {
             let tail = r.finish();
             if !tail.is_empty() {
-                match writer.append(&tail) {
-                    Ok(receipt) => {
-                        shared
-                            .log_bytes
-                            .store(writer.total_appended(), Ordering::Relaxed);
-                        broadcast(
-                            &shared,
-                            &HostFrame::Output {
-                                session_id: shared.cfg.session_id.clone(),
-                                data: tail,
-                                offset: receipt.offset,
-                            },
-                        );
-                    }
-                    Err(e) => error!("log append (tail) failed: {e}"),
-                }
+                append_pty_output(&mut writer, tail, &shared);
             }
             info!(redaction_hits = r.hits(), "redactor finished");
         }
         if let Err(e) = writer.finish() {
             error!("log finish failed: {e}");
         }
-        let _ = tx.send(HostMsg::PtyEof);
+        let terminal = match pty_fault {
+            Some(message) => HostMsg::PtyFault { message },
+            None => HostMsg::PtyEof,
+        };
+        let _ = tx.send(terminal);
+    });
+}
+
+const MAX_RPC_LINE_BYTES: usize = 1024 * 1024;
+
+/// Read one LF-delimited RPC frame without ever accumulating an unbounded
+/// line. Pi's protocol is JSONL, so an overlong frame is a protocol fault,
+/// not text output that can be split safely.
+fn read_rpc_line(
+    reader: &mut BufReader<Box<dyn Read + Send>>,
+    line: &mut Vec<u8>,
+) -> std::io::Result<Option<()>> {
+    line.clear();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return if line.is_empty() { Ok(None) } else { Ok(Some(())) };
+        }
+        let take = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|index| index + 1)
+            .unwrap_or(available.len());
+        // The trailing LF is framing, not payload. EOF has no LF, so this
+        // also rejects an oversized final partial line.
+        let payload_take = if available[..take].last() == Some(&b'\n') {
+            take.saturating_sub(1)
+        } else {
+            take
+        };
+        if line.len().saturating_add(payload_take) > MAX_RPC_LINE_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Pi RPC line exceeds {MAX_RPC_LINE_BYTES} bytes"),
+            ));
+        }
+        line.extend_from_slice(&available[..take]);
+        let complete = available[..take].last() == Some(&b'\n');
+        reader.consume(take);
+        if complete {
+            line.pop();
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            return Ok(Some(()));
+        }
+    }
+}
+
+fn redact_rpc_value(value: &mut serde_json::Value, secrets: &[String]) {
+    match value {
+        serde_json::Value::String(text) => {
+            for secret in secrets {
+                if text.contains(secret) {
+                    *text = text.replace(secret, "***");
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_rpc_value(value, secrets);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values_mut() {
+                redact_rpc_value(value, secrets);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn append_rpc_log(writer: &mut LogWriter, data: &[u8], shared: &Shared) -> Result<(), String> {
+    let _output_guard = shared.output_serial.lock().unwrap();
+    let receipt = writer.append(data).map_err(|error| error.to_string())?;
+    shared
+        .log_bytes
+        .store(writer.total_appended(), Ordering::Relaxed);
+    *shared.log_position.lock().unwrap() = (
+        receipt.generation,
+        receipt.offset.saturating_add(receipt.len),
+    );
+    broadcast(
+        shared,
+        &HostFrame::Output {
+            session_id: shared.cfg.session_id.clone(),
+            data: data.to_vec(),
+            offset: receipt.offset,
+            cursor: LogCursor {
+                run_id: shared.cfg.run_id.clone(),
+                run_ordinal: shared.cfg.run_ordinal,
+                generation: receipt.generation.min(i64::MAX as u64) as i64,
+                offset: receipt.offset.min(i64::MAX as u64) as i64,
+            },
+        },
+    );
+    Ok(())
+}
+
+/// Pipe-mode reader: stdout must contain only valid Pi JSONL events or
+/// responses. A malformed line terminates the Session through the existing
+/// controlled-stop flow; the generic diagnostic is durable in host.log while
+/// the untrusted raw line is never copied into an error frame.
+fn spawn_rpc_reader(
+    reader: Box<dyn Read + Send>,
+    mut writer: LogWriter,
+    secrets: Vec<String>,
+    shared: Arc<Shared>,
+    tx: mpsc::Sender<HostMsg>,
+) {
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(reader);
+        let mut line = Vec::with_capacity(8 * 1024);
+        let mut fault = None;
+        loop {
+            match read_rpc_line(&mut reader, &mut line) {
+                Ok(None) => break,
+                Ok(Some(())) if line.is_empty() => continue,
+                Ok(Some(())) => {
+                    let mut event: serde_json::Value = match serde_json::from_slice(&line) {
+                        Ok(event) => event,
+                        Err(error) => {
+                            fault = Some(format!("Pi RPC emitted invalid JSON: {error}"));
+                            break;
+                        }
+                    };
+                    if !event.is_object() {
+                        fault = Some("Pi RPC emitted a non-object JSON frame".into());
+                        break;
+                    }
+                    // `get_state` is the proof that the native Pi ID agrees
+                    // with AgentPort's assigned/resumed identity.
+                    let is_successful_get_state = event.get("type").and_then(serde_json::Value::as_str) == Some("response")
+                        && event.get("command").and_then(serde_json::Value::as_str) == Some("get_state")
+                        && event.get("success").and_then(serde_json::Value::as_bool) == Some(true);
+                    if is_successful_get_state {
+                        let native = event
+                            .pointer("/data/sessionId")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned);
+                        match native {
+                            Some(native) if !native.is_empty() => {
+                                if shared
+                                    .cfg
+                                    .agent_session_id_hint
+                                    .as_deref()
+                                    .is_some_and(|expected| expected != native)
+                                {
+                                    fault = Some("Pi RPC reported a session ID different from the persisted Session identity".into());
+                                    break;
+                                }
+                                set_agent_session_id(&shared, &native);
+                            }
+                            _ => {
+                                fault = Some("Pi RPC get_state response omitted sessionId".into());
+                                break;
+                            }
+                        }
+                    }
+                    redact_rpc_value(&mut event, &secrets);
+                    let mut logged = match serde_json::to_vec(&event) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            fault = Some(format!("Pi RPC event could not be serialized: {error}"));
+                            break;
+                        }
+                    };
+                    logged.push(b'\n');
+                    if let Err(error) = append_rpc_log(&mut writer, &logged, &shared) {
+                        fault = Some(format!("Pi RPC log append failed: {error}"));
+                        break;
+                    }
+                    *shared.last_output_at.lock().unwrap() = Instant::now();
+                    // Successful startup state is an internal identity check.
+                    // Keep it durable for recovery diagnostics, but do not
+                    // render its full payload as if it were a user event.
+                    if !is_successful_get_state {
+                        broadcast(
+                            &shared,
+                            &HostFrame::Structured {
+                                session_id: shared.cfg.session_id.clone(),
+                                event,
+                            },
+                        );
+                    }
+                    let _ = tx.send(HostMsg::Obs(Observation::PtyActivity));
+                }
+                Err(error) => {
+                    fault = Some(format!("Pi RPC stream read failed: {error}"));
+                    break;
+                }
+            }
+        }
+        if let Err(error) = writer.finish() {
+            error!("Pi RPC log finish failed: {error}");
+        }
+        let terminal = match fault {
+            Some(message) => HostMsg::PtyFault { message },
+            None => HostMsg::PtyEof,
+        };
+        let _ = tx.send(terminal);
+    });
+}
+
+fn is_pi_initial_session_creation_notice(diagnostic: &str) -> bool {
+    diagnostic.starts_with("Warning: No project session found with id '")
+        && diagnostic.ends_with("'; creating a new session with that id.")
+}
+
+/// Pi reserves stderr for diagnostics. Keep it out of the structured event
+/// schema and redact known secret strings before it reaches the private Host
+/// log; JSON stdout remains the sole protocol channel.
+fn spawn_rpc_stderr_reader(
+    mut reader: Box<dyn Read + Send>,
+    secrets: Vec<String>,
+    shared: Arc<Shared>,
+) {
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 8 * 1024];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => return,
+                Ok(size) => {
+                    let mut diagnostic = String::from_utf8_lossy(&buffer[..size])
+                        .replace('\n', " ")
+                        .replace('\r', " ");
+                    for secret in &secrets {
+                        diagnostic = diagnostic.replace(secret, "***");
+                    }
+                    // Stderr may carry provider diagnostics. The per-session
+                    // host log is 0600 and the UI receives only this redacted
+                    // structured diagnostic.
+                    warn!(session_id = %shared.cfg.session_id, diagnostic = %diagnostic, "Pi RPC stderr");
+                    // Pi emits this exact warning when AgentPort intentionally
+                    // starts a fresh private session. It is useful in host.log
+                    // but is not actionable for a user in the conversation.
+                    if !is_pi_initial_session_creation_notice(&diagnostic) {
+                        broadcast(
+                            &shared,
+                            &HostFrame::Structured {
+                                session_id: shared.cfg.session_id.clone(),
+                                event: serde_json::json!({
+                                    "type": "diagnostic",
+                                    "stream": "stderr",
+                                    "message": diagnostic,
+                                }),
+                            },
+                        );
+                    }
+                }
+                Err(error) => {
+                    warn!(session_id = %shared.cfg.session_id, "Pi RPC stderr read failed: {error}");
+                    return;
+                }
+            }
+        }
     });
 }
 
 /// Hook-event poller: every 250ms consume new JSON lines from
 /// `hook_events_path` ("event"/"hook_event_name"/"type" -> Hook observation;
 /// "session_id"/"sessionId" -> native session id capture).
-fn spawn_hook_poller(shared: Arc<Shared>, tx: mpsc::Sender<HostMsg>) {
+fn hook_snapshot_offset(path: &str) -> u64 {
+    std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+}
+
+fn spawn_hook_poller(shared: Arc<Shared>, tx: mpsc::Sender<HostMsg>, initial_offset: u64) {
     let path = PathBuf::from(&shared.cfg.hook_events_path);
     let hint_wins = shared.cfg.agent_session_id_hint.is_some();
     std::thread::spawn(move || {
-        let mut offset: u64 = 0;
+        // The snapshot was captured before child spawn. Starting here avoids
+        // feeding prior-run hook events into a new run's state machine.
+        let mut offset = initial_offset;
         loop {
             std::thread::sleep(Duration::from_millis(250));
             let meta = match std::fs::metadata(&path) {
@@ -1012,5 +1715,31 @@ fn spawn_signal_handler(tx: mpsc::Sender<HostMsg>) {
             });
         }
         Err(e) => error!("failed to register signal handlers: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod pi_pty_startup_notice_tests {
+    use super::*;
+
+    #[test]
+    fn filters_the_exact_notice_across_pty_frames() {
+        let id = "pi-native-test-id";
+        let notice = format!(
+            "\x1b[33mWarning: No project session found with id '{id}'; creating a new session with that id.\x1b[39m\r\n"
+        );
+        let mut filter = PiPtyStartupNoticeFilter::new(id.into());
+        assert!(filter.feed(&notice.as_bytes()[..31]).is_empty());
+        let mut second = notice.as_bytes()[31..].to_vec();
+        second.extend_from_slice(b"Pi TUI ready\r\n");
+        assert_eq!(filter.feed(&second), b"Pi TUI ready\r\n");
+        assert!(filter.finish().is_empty());
+    }
+
+    #[test]
+    fn keeps_a_different_startup_diagnostic() {
+        let mut filter = PiPtyStartupNoticeFilter::new("pi-native-test-id".into());
+        let diagnostic = b"Warning: provider authentication failed\r\n";
+        assert_eq!(filter.feed(diagnostic), diagnostic);
     }
 }

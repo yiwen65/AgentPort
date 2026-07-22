@@ -46,29 +46,38 @@ impl<'a> Timeline<'a> {
         if sessions.is_empty() {
             return Ok(RecoveryTimeline::default());
         }
-        // (session_id, last_seen_sequence) pairs + unread offsets per session.
-        let mut pairs: Vec<(String, i64)> = Vec::with_capacity(sessions.len());
-        let mut unread_offsets: HashMap<&str, i64> = HashMap::with_capacity(sessions.len());
+        // Both recovery cursors are run-scoped. A sequence is only meaningful
+        // within one Host launch, so never reduce either of these to a bare
+        // offset before querying or interpreting it.
+        let mut cursors: Vec<(String, StatusCursor)> = Vec::with_capacity(sessions.len());
+        let mut latest_cursors: HashMap<&str, StatusCursor> =
+            HashMap::with_capacity(sessions.len());
+        let mut unread_cursors: HashMap<&str, Option<LogCursor>> =
+            HashMap::with_capacity(sessions.len());
         for s in &sessions {
-            let rs = match self.db.get_recovery_summary(&s.id) {
-                Ok(rs) => rs,
+            let last_seen = match self.db.get_last_seen_status_cursor(&s.id) {
+                Ok(cursor) => cursor,
                 // insert_session/record_status_event always create the row; a
                 // missing one means "never seen anything", not a hard failure.
-                Err(CoreError::NotFound(_)) => RecoverySummary {
-                    session_id: s.id.clone(),
-                    last_seen_sequence: 0,
-                    latest_sequence: 0,
-                    unread_output_offset: 0,
-                    summary_state: SummaryState::None,
-                    acknowledged_at: None,
-                },
+                Err(CoreError::NotFound(_)) => StatusCursor::default(),
                 Err(e) => return Err(e),
             };
-            pairs.push((s.id.clone(), rs.last_seen_sequence));
-            unread_offsets.insert(s.id.as_str(), rs.unread_output_offset);
+            let latest = match self.db.get_recovery_status_cursor(&s.id) {
+                Ok(cursor) => cursor,
+                Err(CoreError::NotFound(_)) => StatusCursor::default(),
+                Err(e) => return Err(e),
+            };
+            let unread = match self.db.get_unread_log_cursor(&s.id) {
+                Ok(cursor) => cursor,
+                Err(CoreError::NotFound(_)) => None,
+                Err(e) => return Err(e),
+            };
+            cursors.push((s.id.clone(), last_seen));
+            latest_cursors.insert(s.id.as_str(), latest);
+            unread_cursors.insert(s.id.as_str(), unread);
         }
 
-        let events = self.db.events_since(&pairs)?;
+        let events = self.db.events_since_cursors(&cursors)?;
         let sessions_by_id: HashMap<&str, &Session> =
             sessions.iter().map(|s| (s.id.as_str(), s)).collect();
         let mut project_names: HashMap<String, String> = HashMap::new();
@@ -88,21 +97,13 @@ impl<'a> Timeline<'a> {
             let (log_offset, rotated_away) = match offsets.get(session.id.as_str()) {
                 Some(v) => *v,
                 None => {
-                    // First unread byte vs. the log's current length: beyond the
-                    // end, the log rotated since and there is nothing to jump to.
-                    let offset = unread_offsets
-                        .get(session.id.as_str())
-                        .copied()
-                        .unwrap_or(0)
-                        .max(0) as u64;
-                    let len = std::fs::metadata(&session.log_path)
-                        .map(|m| m.len())
-                        .unwrap_or(0);
-                    let v = if offset >= len {
-                        (None, true)
-                    } else {
-                        (Some(offset), false)
-                    };
+                    let v = unread_offset_for_current_log(
+                        unread_cursors
+                            .get(session.id.as_str())
+                            .and_then(|cursor| cursor.as_ref()),
+                        latest_cursors.get(session.id.as_str()),
+                        &session.log_path,
+                    );
                     offsets.insert(session.id.as_str(), v);
                     v
                 }
@@ -128,7 +129,7 @@ impl<'a> Timeline<'a> {
                 rotated_away,
             });
             match last_events.get(e.session_id.as_str()) {
-                Some(prev) if prev.sequence >= e.sequence => {}
+                Some(prev) if !is_later_in_session(e, prev) => {}
                 _ => {
                     last_events.insert(e.session_id.as_str(), e);
                 }
@@ -180,6 +181,40 @@ impl<'a> Timeline<'a> {
     }
 }
 
+/// Return a recovery jump only when the unread cursor names the same current
+/// run as the session's authoritative status cursor. `Session::log_path` is a
+/// mutable current-log pointer, not an immutable `(run_id, generation)` path;
+/// a cursor from an earlier run therefore must never be applied to it.
+fn unread_offset_for_current_log(
+    unread: Option<&LogCursor>,
+    current: Option<&StatusCursor>,
+    log_path: &str,
+) -> (Option<u64>, bool) {
+    let Some(unread) = unread else {
+        return (None, false);
+    };
+    let Some(current) = current else {
+        return (None, true);
+    };
+    if unread.run_id != current.run_id || unread.run_ordinal != current.run_ordinal {
+        return (None, true);
+    }
+    let offset = unread.offset.max(0) as u64;
+    let len = std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0);
+    if offset >= len {
+        (None, true)
+    } else {
+        (Some(offset), false)
+    }
+}
+
+/// Events are sequenced independently by each Host launch. A restart can
+/// legitimately produce sequence 1 after an earlier run reached sequence 99.
+fn is_later_in_session(candidate: &StatusEvent, previous: &StatusEvent) -> bool {
+    candidate.run_ordinal > previous.run_ordinal
+        || (candidate.run_ordinal == previous.run_ordinal && candidate.sequence > previous.sequence)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +246,7 @@ mod tests {
             resume_precision: ResumePrecision::Unavailable,
             log_path: log.into(),
             adapter_type: adapter,
+            transport: AgentTransport::Pty,
             command: vec![],
             permission_mode: PermissionMode::Native,
             created_at: Utc::now(),
@@ -229,6 +265,30 @@ mod tests {
     ) -> StatusEvent {
         StatusEvent {
             session_id: session_id.into(),
+            run_id: LEGACY_RUN_ID.into(),
+            run_ordinal: LEGACY_RUN_ORDINAL,
+            sequence: seq,
+            state,
+            source,
+            confidence: Confidence::High,
+            evidence: Some(evidence.into()),
+            occurred_at: at,
+        }
+    }
+
+    fn event_for_run(
+        session_id: &str,
+        run: &SessionRun,
+        seq: i64,
+        state: AgentState,
+        source: StateSource,
+        evidence: &str,
+        at: DateTime<Utc>,
+    ) -> StatusEvent {
+        StatusEvent {
+            session_id: session_id.into(),
+            run_id: run.run_id.clone(),
+            run_ordinal: run.run_ordinal,
             sequence: seq,
             state,
             source,
@@ -421,6 +481,135 @@ mod tests {
             assert_eq!(rs.last_seen_sequence, rs.latest_sequence);
             assert!(rs.acknowledged_at.is_some());
         }
+    }
+
+    #[test]
+    fn build_uses_run_cursor_and_newest_run_for_headline() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_memory().unwrap();
+        db.add_project(&project("prj_runs", "Runs")).unwrap();
+        db.insert_session(&session(
+            "ses_runs",
+            "prj_runs",
+            "跨运行恢复",
+            AgentType::Shell,
+            &write_log(dir.path(), "ses_runs", 512),
+        ))
+        .unwrap();
+        let first = db.create_session_run("ses_runs", "run_first").unwrap();
+        let second = db.create_session_run("ses_runs", "run_second").unwrap();
+        let t0 = Utc::now();
+        // Sequence values restart for each run. The lower sequence in the
+        // second run is nevertheless the authoritative newer headline.
+        db.record_status_event(&event_for_run(
+            "ses_runs",
+            &first,
+            99,
+            AgentState::Exited,
+            StateSource::Process,
+            "process:signal:9",
+            t0,
+        ))
+        .unwrap();
+        db.record_status_event(&event_for_run(
+            "ses_runs",
+            &second,
+            1,
+            AgentState::NeedsInput,
+            StateSource::Hook,
+            "hook:Notification",
+            t0 + Duration::seconds(1),
+        ))
+        .unwrap();
+
+        let initial = Timeline { db: &db }.build().unwrap();
+        assert_eq!(initial.entries.len(), 2);
+        assert_eq!(
+            (initial.completed, initial.waiting, initial.failed),
+            (0, 1, 0)
+        );
+        assert!(initial
+            .entries
+            .iter()
+            .all(|entry| entry.log_offset.is_none()));
+        assert!(initial.entries.iter().all(|entry| !entry.rotated_away));
+
+        // Seeing the first run must not replay it merely because the next run
+        // begins again at sequence one.
+        db.set_last_seen_status_cursor(
+            "ses_runs",
+            &StatusCursor {
+                run_id: first.run_id.clone(),
+                run_ordinal: first.run_ordinal,
+                sequence: 99,
+            },
+        )
+        .unwrap();
+        let resumed = Timeline { db: &db }.build().unwrap();
+        assert_eq!(resumed.entries.len(), 1);
+        assert_eq!(resumed.entries[0].state, AgentState::NeedsInput);
+        assert_eq!(
+            (resumed.completed, resumed.waiting, resumed.failed),
+            (0, 1, 0)
+        );
+    }
+
+    #[test]
+    fn stale_unread_cursor_is_not_applied_to_current_run_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_memory().unwrap();
+        db.add_project(&project("prj_stale", "Stale")).unwrap();
+        db.insert_session(&session(
+            "ses_stale",
+            "prj_stale",
+            "旧输出",
+            AgentType::Shell,
+            &write_log(dir.path(), "ses_stale", 512),
+        ))
+        .unwrap();
+        let first = db.create_session_run("ses_stale", "run_first").unwrap();
+        let second = db.create_session_run("ses_stale", "run_second").unwrap();
+        let t0 = Utc::now();
+        db.record_status_event(&event_for_run(
+            "ses_stale",
+            &first,
+            1,
+            AgentState::Working,
+            StateSource::Pty,
+            "pty:activity",
+            t0,
+        ))
+        .unwrap();
+        db.mark_output_unread_at(
+            "ses_stale",
+            &LogCursor {
+                run_id: first.run_id.clone(),
+                run_ordinal: first.run_ordinal,
+                generation: 0,
+                offset: 10,
+            },
+        )
+        .unwrap();
+        db.record_status_event(&event_for_run(
+            "ses_stale",
+            &second,
+            1,
+            AgentState::NeedsInput,
+            StateSource::Hook,
+            "hook:Notification",
+            t0 + Duration::seconds(1),
+        ))
+        .unwrap();
+
+        let timeline = Timeline { db: &db }.build().unwrap();
+        assert_eq!(timeline.entries.len(), 2);
+        // Session::log_path is a mutable current-run pointer. Without an
+        // immutable old-run path, the run-one cursor cannot safely target it.
+        assert!(timeline
+            .entries
+            .iter()
+            .all(|entry| entry.log_offset.is_none()));
+        assert!(timeline.entries.iter().all(|entry| entry.rotated_away));
     }
 
     #[test]
