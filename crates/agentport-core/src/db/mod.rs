@@ -1773,6 +1773,114 @@ impl Db {
         Ok(n > 0)
     }
 
+    /// Records a verified Host interruption as a durable recovery fact while
+    /// moving the matching live Session to `Interrupted`.  This is deliberately
+    /// one transaction: a second reconciliation pass, or a replacement Host,
+    /// cannot create a duplicate pseudo-exit event for the same run.
+    ///
+    /// `evidence` describes how the Host death was proved (for example a
+    /// reaper observed its child exit, or the recorded PID no longer exists).
+    /// It must never be used for a mere socket/transport failure.
+    pub fn mark_host_interrupted_and_record(
+        &self,
+        id: &str,
+        expected_host_pid: i64,
+        expected_run_id: &str,
+        expected_run_ordinal: i64,
+        evidence: &str,
+    ) -> Result<bool> {
+        validate_run_identity(expected_run_id, expected_run_ordinal)?;
+        if expected_host_pid <= 0 {
+            return Err(CoreError::Validation(
+                "expected host pid must be positive".into(),
+            ));
+        }
+        if !evidence.starts_with("host:interrupted:") {
+            return Err(CoreError::Validation(
+                "interruption evidence must identify a verified host interruption".into(),
+            ));
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now = Utc::now();
+        let changed = tx.execute(
+            "UPDATE sessions SET lifecycle='interrupted', updated_at=?5
+             WHERE id=?1 AND host_pid=?2
+               AND host_run_id=?3 AND host_run_ordinal=?4
+               AND lifecycle IN ('creating','running')",
+            params![
+                id,
+                expected_host_pid,
+                expected_run_id,
+                expected_run_ordinal,
+                dt_str(&now),
+            ],
+        )?;
+        if changed == 0 {
+            tx.commit()?;
+            return Ok(false);
+        }
+        ensure_session_run_tx(
+            &tx,
+            id,
+            expected_run_id,
+            expected_run_ordinal,
+            &now,
+        )?;
+        let sequence: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(sequence),0)+1 FROM status_events
+             WHERE session_id=?1 AND run_id=?2",
+            params![id, expected_run_id],
+            |r| r.get(0),
+        )?;
+        let occurred_at = dt_str(&now);
+        tx.execute(
+            "INSERT INTO status_events(
+                session_id,run_id,run_ordinal,sequence,state,source,confidence,evidence,
+                log_generation,log_offset,occurred_at
+             ) VALUES(?1,?2,?3,?4,'exited','process','high',?5,NULL,NULL,?6)",
+            params![
+                id,
+                expected_run_id,
+                expected_run_ordinal,
+                sequence,
+                evidence,
+                occurred_at,
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO latest_status(
+                session_id,run_id,run_ordinal,sequence,state,source,confidence,occurred_at
+             ) VALUES(?1,?2,?3,?4,'exited','process','high',?5)
+             ON CONFLICT(session_id) DO UPDATE SET
+                run_id=excluded.run_id,run_ordinal=excluded.run_ordinal,
+                sequence=excluded.sequence,state=excluded.state,source=excluded.source,
+                confidence=excluded.confidence,occurred_at=excluded.occurred_at
+             WHERE excluded.run_ordinal > latest_status.run_ordinal
+                OR (excluded.run_ordinal=latest_status.run_ordinal
+                    AND excluded.sequence >= latest_status.sequence)",
+            params![id, expected_run_id, expected_run_ordinal, sequence, occurred_at],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO recovery_summary(
+                session_id,last_seen_sequence,latest_sequence,unread_output_offset,summary_state,acknowledged_at
+             ) VALUES(?1,0,0,-1,'none',NULL)",
+            params![id],
+        )?;
+        tx.execute(
+            "UPDATE recovery_summary
+             SET latest_run_id=?2,latest_run_ordinal=?3,latest_sequence=?4,
+                 summary_state='failed',acknowledged_at=NULL
+             WHERE session_id=?1 AND (
+                ?3 > latest_run_ordinal OR
+                (?3=latest_run_ordinal AND ?4>=latest_sequence)
+             )",
+            params![id, expected_run_id, expected_run_ordinal, sequence],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// CAS used before a Host PID exists. It shares the same terminal-state
     /// guard as `update_session_lifecycle_if_host`, but is keyed by the run
     /// claim made before spawning the Host.
