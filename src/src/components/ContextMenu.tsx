@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { closeContextMenu, useStore } from "../store";
 
 export default function ContextMenuHost() {
-  const menu = useStore().contextMenu;
+  const menu = useStore((state) => state.contextMenu);
   const ref = useRef<HTMLDivElement | null>(null);
   const [selected, setSelected] = useState(0);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);

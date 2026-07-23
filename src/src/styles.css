@@ -25,6 +25,9 @@
   --border: #34343a;
   --border-strong: #47474f;
   --text: #f3f5fb;
+  /* Terminal body text for the xterm DOM-renderer fallback; mirrors
+     `XTERM_THEMES.dark.foreground` in terminals.ts. */
+  --term-text: #d4d4dc;
   --text-dim: rgba(243, 245, 251, 0.66);
   --text-faint: rgba(243, 245, 251, 0.44);
   --accent: #6b8cff;
@@ -52,6 +55,24 @@
   --unread: #60a5fa;
   --sidebar-glass: #27272b;
   --terminal-scroll-thumb: rgba(243, 245, 251, 0.28);
+  /* Sidebar hierarchy (dark): L1 repo name > session label > L2 branch /
+     context row > L3 hint/age. Icons inherit their row's tier color so
+     icon tone tracks text instead of sitting at one flat gray.
+     State colors: hover = --sidebar-row-hover (neutral), selected =
+     --sidebar-row-active (accent-soft chip), running session = --accent
+     (spinner dot) with its label lifted to --sidebar-text-strong. */
+  --sidebar-text-strong: rgba(243, 245, 251, 0.95);
+  --sidebar-text: rgba(243, 245, 251, 0.78);
+  --sidebar-text-dim: rgba(243, 245, 251, 0.56);
+  --sidebar-text-faint: rgba(243, 245, 251, 0.45);
+  --sidebar-icon: rgba(243, 245, 251, 0.52);
+  --sidebar-action: rgba(243, 245, 251, 0.6);
+  --sidebar-row-hover: rgba(243, 245, 251, 0.08);
+  --sidebar-row-active: var(--accent-soft);
+  --sidebar-action-hover-bg: rgba(243, 245, 251, 0.12);
+  --sidebar-edit-bg: rgba(0, 0, 0, 0.24);
+  --sidebar-edit-border: var(--accent-text);
+  --sidebar-handle: rgba(188, 199, 226, 0.45);
 }
 
 :root[data-theme="light"] {
@@ -61,10 +82,15 @@
   --bg-elevated: #ffffff;
   --bg-hover: #e7e7e7;
   --bg-active: #ffffff;
-  --bg-term: #ffffff;
+  /* Off-white terminal surface: kills the pure-white glare behind long
+     transcripts; mirrors `XTERM_THEMES.light.background` in terminals.ts. */
+  --bg-term: #f9f9fb;
   --border: rgba(17, 18, 23, 0.1);
   --border-strong: rgba(17, 18, 23, 0.16);
   --text: #111217;
+  /* Terminal body text for the xterm DOM-renderer fallback; mirrors
+     `XTERM_THEMES.light.foreground` in terminals.ts. */
+  --term-text: #3f3f46;
   --text-dim: rgba(17, 18, 23, 0.6);
   --text-faint: rgba(17, 18, 23, 0.52);
   --accent: #007aff;
@@ -78,7 +104,7 @@
   --red-soft: rgba(189, 36, 49, 0.11);
   --shadow: 0 12px 30px rgba(0, 0, 0, 0.12);
   --focus-ring: #007aff;
-  --workspace-live: #ffffff;
+  --workspace-live: #f9f9fb;
   --workspace-idle: #f5f5f5;
   --settings-surface: #f4f4f4;
   --settings-sidebar: #efefef;
@@ -92,6 +118,20 @@
   --unread: #34c759;
   --sidebar-glass: #efefef;
   --terminal-scroll-thumb: rgba(17, 18, 23, 0.075);
+  /* Sidebar hierarchy (light): same stepping logic as dark — L1 > session
+     > L2 > L3, icons inherit the row tier, states reuse the accent family. */
+  --sidebar-text-strong: rgba(17, 18, 23, 0.94);
+  --sidebar-text: rgba(17, 18, 23, 0.74);
+  --sidebar-text-dim: rgba(17, 18, 23, 0.6);
+  --sidebar-text-faint: rgba(17, 18, 23, 0.52);
+  --sidebar-icon: rgba(17, 18, 23, 0.5);
+  --sidebar-action: rgba(17, 18, 23, 0.58);
+  --sidebar-row-hover: rgba(17, 18, 23, 0.06);
+  --sidebar-row-active: var(--accent-soft);
+  --sidebar-action-hover-bg: rgba(17, 18, 23, 0.1);
+  --sidebar-edit-bg: rgba(255, 255, 255, 0.92);
+  --sidebar-edit-border: var(--accent-text);
+  --sidebar-handle: rgba(17, 18, 23, 0.24);
 }
 
 /* ------------------------------------------------------------------ */
@@ -255,19 +295,6 @@ button {
   color: var(--text);
 }
 
-.topbar-timeline-badge {
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
-  border-radius: 8px;
-  background: var(--amber);
-  color: #16110a;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 14px;
-  text-align: center;
-}
-
 .window-title {
   position: absolute;
   /* Center over the terminal pane, not over the entire window. */
@@ -283,17 +310,21 @@ button {
   pointer-events: none;
 }
 
-.window-title-separator,
+.window-title-branch-icon,
 .window-title-branch {
   color: rgba(243, 245, 251, 0.45);
   font-weight: 500;
+}
+
+.window-title-branch-icon {
+  display: inline-flex;
 }
 
 :root[data-theme="light"] .window-title {
   color: rgba(17, 18, 23, 0.82);
 }
 
-:root[data-theme="light"] .window-title-separator,
+:root[data-theme="light"] .window-title-branch-icon,
 :root[data-theme="light"] .window-title-branch {
   color: rgba(17, 18, 23, 0.45);
 }
@@ -443,16 +474,7 @@ button {
 .split-handle:focus-visible::before {
   width: 2px;
   left: 5px;
-  background: rgba(188, 199, 226, 0.45);
-}
-
-:root[data-theme="light"] .split-handle::before {
-  background: transparent;
-}
-
-:root[data-theme="light"] .split-handle:hover::before,
-:root[data-theme="light"] .split-handle:focus-visible::before {
-  background: rgba(17, 18, 23, 0.24);
+  background: var(--sidebar-handle);
 }
 
 .sidebar-scroll {
@@ -496,25 +518,16 @@ button {
 }
 
 .tree-row:hover {
-  background: rgba(243, 245, 251, 0.1);
-}
-
-:root[data-theme="light"] .tree-row:hover {
-  background: rgba(17, 18, 23, 0.1);
+  background: var(--sidebar-row-hover);
 }
 
 .tree-row.active {
-  background: rgba(20, 20, 24, 0.58);
-  box-shadow: none;
-}
-
-:root[data-theme="light"] .tree-row.active {
-  background: #ffffff;
+  background: var(--sidebar-row-active);
   box-shadow: none;
 }
 
 .tree-row.active .tree-label {
-  color: var(--text);
+  color: var(--sidebar-text-strong);
   font-weight: 500;
 }
 
@@ -526,11 +539,14 @@ button {
   padding-right: 7px;
   font-size: 13px;
   font-weight: 500;
-  color: rgba(243, 245, 251, 0.82);
+  color: var(--sidebar-text-strong);
 }
 
-:root[data-theme="light"] .tree-row.project {
-  color: rgba(17, 18, 23, 0.82);
+/* Row icons inherit the row's tier color, so icon tone tracks the text
+   hierarchy (repo > branch) instead of one flat gray for everything. */
+.tree-row.project .tree-icon,
+.tree-row.current-branch-row .tree-icon {
+  color: inherit;
 }
 
 .tree-action {
@@ -538,14 +554,9 @@ button {
   min-width: 28px;
   height: 28px;
   padding: 0;
-  color: #b8bac2;
+  color: var(--sidebar-action);
   font-size: 16px;
   border-radius: 8px;
-}
-
-:root[data-theme="light"] .tree-action,
-:root[data-theme="light"] .tree-icon {
-  color: rgba(17, 18, 23, 0.58);
 }
 
 .project-quick-actions {
@@ -580,7 +591,7 @@ button {
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: #c2c4cb;
+  color: var(--sidebar-action);
 }
 
 /* Four 25px launch slots stay visible; additional adapters are reached by
@@ -608,17 +619,8 @@ button {
 }
 
 .project-agent-action:hover {
-  background: rgba(255,255,255,.09);
-  color: var(--text);
-}
-
-:root[data-theme="light"] .project-agent-action {
-  color: rgba(17, 18, 23, 0.62);
-}
-
-:root[data-theme="light"] .project-agent-action:hover {
-  background: rgba(17, 18, 23, 0.1);
-  color: #111217;
+  background: var(--sidebar-action-hover-bg);
+  color: var(--sidebar-text-strong);
 }
 
 .quick-agent-mark {
@@ -680,13 +682,16 @@ button {
 
 .tree-row.session {
   padding-left: 10px;
-  color: rgba(243, 245, 251, 0.66);
+  color: var(--sidebar-text);
   font-size: 13px;
   font-weight: 400;
 }
 
-:root[data-theme="light"] .tree-row.session {
-  color: rgba(17, 18, 23, 0.62);
+/* Live sessions lift their label to the strong tier; the accent spinner /
+   pulse dot (--accent in both themes) carries the explicit running color. */
+.tree-row.session:has(.dot.working) .tree-label,
+.tree-row.session:has(.dot.creating) .tree-label {
+  color: var(--sidebar-text-strong);
 }
 
 .tree-row.session.nested {
@@ -749,43 +754,33 @@ button {
 
 .session-action:hover,
 .session-action.pinned {
-  color: var(--text);
-  background: rgba(255,255,255,.08);
+  color: var(--sidebar-text-strong);
+  background: var(--sidebar-action-hover-bg);
 }
 
 .session-age {
   flex: none;
   margin-left: auto;
   min-width: 24px;
-  color: rgba(243, 245, 251, 0.44);
+  color: var(--sidebar-text-faint);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.01em;
   text-align: right;
 }
 
-:root[data-theme="light"] .session-age {
-  color: rgba(17, 18, 23, 0.64);
-}
-
-:root[data-theme="light"] .session-action:hover,
-:root[data-theme="light"] .session-action.pinned {
-  background: rgba(17, 18, 23, 0.1);
-  color: #111217;
-}
-
 .tree-row.worktree {
   flex: 1;
   min-width: 0;
   padding-left: 28px;
-  color: var(--text-dim);
+  color: var(--sidebar-text-dim);
 }
 
 .worktree-collapse-chevron {
   flex: none;
   display: inline-flex;
   align-items: center;
-  color: var(--text-dim);
+  color: var(--sidebar-icon);
 }
 
 .tree-row.worktree.highlighted {
@@ -797,38 +792,34 @@ button {
 /* A checkout is context, not a third tree level: it always sits directly
    below a Git project heading and before the Worktrees drill-down. */
 .tree-row.current-branch-row {
-  color: var(--text-dim);
+  color: var(--sidebar-text-dim);
   font-size: 12px;
 }
 
 .tree-row.current-branch-row:hover,
 .tree-row.current-branch-row:focus-visible {
-  color: var(--text);
+  color: var(--sidebar-text);
 }
 
 /* Pinned "Worktrees" drill-down entry: always the first row of an expanded
    project group. Not a session row — no rename, no context menu, no sorting. */
 .tree-row.worktrees-entry {
-  color: rgba(243, 245, 251, 0.82);
+  color: var(--sidebar-text);
   font-size: 13px;
   font-weight: 500;
-}
-
-:root[data-theme="light"] .tree-row.worktrees-entry {
-  color: rgba(17, 18, 23, 0.82);
 }
 
 .worktrees-entry-chevron {
   flex: none;
   display: inline-flex;
   align-items: center;
-  color: var(--text-dim);
+  color: var(--sidebar-icon);
   opacity: 0.7;
 }
 
 .tree-row.worktrees-entry:hover .worktrees-entry-chevron,
 .tree-row.worktrees-entry:focus-visible .worktrees-entry-chevron {
-  color: var(--text);
+  color: var(--sidebar-text-strong);
   opacity: 1;
 }
 
@@ -840,24 +831,20 @@ button {
 }
 
 .tree-row.worktree-back {
-  color: rgba(243, 245, 251, 0.82);
+  color: var(--sidebar-text);
   font-size: 13px;
   font-weight: 500;
-}
-
-:root[data-theme="light"] .tree-row.worktree-back {
-  color: rgba(17, 18, 23, 0.82);
 }
 
 .worktree-back-icon {
   flex: none;
   display: inline-flex;
   align-items: center;
-  color: var(--text-dim);
+  color: var(--sidebar-icon);
 }
 
 .tree-row.worktree-new {
-  color: var(--text-dim);
+  color: var(--sidebar-text-dim);
   font-size: 13px;
 }
 
@@ -888,16 +875,11 @@ button {
   min-width: 0;
   height: 26px;
   padding: 0 7px;
-  border: 1px solid rgba(190, 204, 255, 0.66);
+  border: 1px solid var(--sidebar-edit-border);
   border-radius: 6px;
   outline: none;
-  background: rgba(0, 0, 0, 0.24);
+  background: var(--sidebar-edit-bg);
   color: var(--text);
-}
-
-:root[data-theme="light"] .session-title-input {
-  border-color: rgba(0, 122, 255, 0.62);
-  background: rgba(255, 255, 255, 0.92);
 }
 
 .tree-tag {
@@ -914,11 +896,7 @@ button {
 
 .tree-icon {
   flex: none;
-  color: rgba(243, 245, 251, 0.62);
-}
-
-:root[data-theme="light"] .tree-icon {
-  color: rgba(17, 18, 23, 0.58);
+  color: var(--sidebar-icon);
 }
 
 .health-badge {
@@ -959,7 +937,7 @@ button {
   align-items: center;
   gap: 6px;
   padding: 4px 8px 4px 28px;
-  color: var(--text-dim);
+  color: var(--sidebar-text-faint);
   font-size: 12px;
 }
 
@@ -1026,23 +1004,13 @@ button {
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: rgba(243, 245, 251, 0.62);
+  color: var(--sidebar-action);
 }
 
 .sidebar-footer-action:hover {
-  background: rgba(0, 0, 0, 0.15);
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12);
-  color: var(--text);
-}
-
-:root[data-theme="light"] .sidebar-footer-action {
-  color: rgba(17, 18, 23, 0.58);
-}
-
-:root[data-theme="light"] .sidebar-footer-action:hover {
-  background: rgba(17, 18, 23, 0.1);
+  background: var(--sidebar-action-hover-bg);
   box-shadow: none;
-  color: #111217;
+  color: var(--sidebar-text-strong);
 }
 
 .sidebar-footer-spacer {
@@ -1050,7 +1018,7 @@ button {
 }
 
 .collapse-projects {
-  color: var(--text-faint);
+  color: var(--sidebar-text-faint);
 }
 
 .settings-glyph {
@@ -1363,11 +1331,23 @@ button {
   pointer-events: none;
 }
 
-/* An interrupted terminal remains readable history.  Do not filter the whole
-   xterm root: that also darkens its canvas background and visibly splits the
-   right workspace into two colours.  Fade only the rendered character layer. */
-.term-pane.ended .xterm .xterm-rows {
-  opacity: 0.72;
+/* Finished output stays recognizable as history, but visually recedes behind
+   the recovery action. Filter xterm itself so both canvas and DOM renderers
+   receive the same treatment; the host keeps the workspace surface opaque. */
+.term-pane.ended .xterm {
+  opacity: 0.34;
+  filter: blur(2.4px) saturate(0.55);
+  transform: scale(1.008);
+  transform-origin: center;
+}
+
+.term-pane.ended .term-host {
+  overflow: hidden;
+}
+
+.term-pane.ended .terminal-scrollbar {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .term-host {
@@ -1384,7 +1364,7 @@ button {
   /* Safe DOM-renderer fallback. Canvas normally owns these colors, but if
      WebKit refuses xterm's generated stylesheet the inherited prepaint color
      must still follow the active theme. */
-  color: var(--text);
+  color: var(--term-text);
   background: var(--bg-term);
 }
 
@@ -1455,15 +1435,15 @@ button {
   width: 8px;
 }
 
-/* Overlays: the backdrop never blocks terminal scrolling; only the card
-   itself is interactive. */
+/* The lifecycle card owns the recovery action while the backdrop lets ended
+   output remain visible as historical context. */
 .term-overlay {
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: transparent;
+  background: rgba(16, 17, 21, 0.2);
   z-index: 5;
   pointer-events: none;
 }
@@ -1503,33 +1483,62 @@ button {
 }
 
 .session-state-card {
-  width: min(560px, calc(100% - 48px));
+  width: min(380px, calc(100% - 48px));
   max-width: none;
-  padding: 0;
-  gap: 7px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
+  padding: 28px 30px 26px;
+  gap: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+  box-shadow:
+    0 24px 64px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  backdrop-filter: blur(18px) saturate(1.08);
+  -webkit-backdrop-filter: blur(18px) saturate(1.08);
 }
 
 .session-agent-mark {
-  display: block;
-  width: 36px;
-  height: 36px;
-  margin-bottom: 4px;
-  object-fit: contain;
+  display: grid;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 6px;
+  place-items: center;
+  border: 1px solid rgba(107, 140, 255, 0.2);
+  border-radius: 15px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.2);
 }
 
-.session-agent-mark.codex {
-  color: var(--accent);
+.session-agent-glyph {
+  display: block;
+  width: 32px;
+  height: 32px;
+}
+
+.session-agent-glyph svg {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.session-agent-mark.pi {
+  border-color: rgba(113, 211, 193, 0.22);
+  background: rgba(113, 211, 193, 0.11);
+  color: #8bd7c9;
+}
+
+.session-agent-mark.qoder {
+  border-color: rgba(42, 219, 92, 0.2);
+  background: rgba(42, 219, 92, 0.09);
+  color: rgba(243, 245, 251, 0.86);
 }
 
 .session-state-card h3 {
   max-width: min(560px, 100%);
   overflow: hidden;
-  color: rgba(243, 245, 251, 0.92);
-  font-size: 14px;
+  color: rgba(243, 245, 251, 0.68);
+  font-size: 13px;
   font-weight: 600;
   line-height: 1.35;
   text-overflow: ellipsis;
@@ -1537,9 +1546,10 @@ button {
 }
 
 .session-state-card .session-state-label {
-  color: rgba(243, 245, 251, 0.5);
-  font-size: 12px;
-  line-height: 1.35;
+  color: rgba(243, 245, 251, 0.96);
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.4;
 }
 
 .session-state-card .session-state-detail,
@@ -1551,32 +1561,46 @@ button {
 }
 
 .session-state-card .overlay-actions {
-  margin-top: 2px;
+  width: 100%;
+  margin-top: 10px;
 }
 
 .session-state-card .btn.primary {
-  min-height: 26px;
-  padding: 3px 11px;
-  border-color: rgba(255, 255, 255, 0.09);
-  border-radius: 6px;
-  background: rgba(19, 19, 23, 0.5);
-  color: rgba(243, 245, 251, 0.82);
-  font-size: 12px;
-  font-weight: 500;
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 16px;
+  border-color: var(--accent);
+  border-radius: 9px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 650;
+  box-shadow: 0 9px 24px rgba(70, 103, 218, 0.28);
 }
 
 .session-state-card .btn.primary:hover {
-  border-color: rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.1);
-  filter: none;
+  border-color: var(--accent);
+  background: var(--accent);
+  filter: brightness(1.1);
+}
+
+:root[data-theme="light"] .term-overlay {
+  background: rgba(245, 245, 245, 0.28);
+}
+
+:root[data-theme="light"] .session-state-card {
+  border-color: rgba(17, 18, 23, 0.1);
+  box-shadow:
+    0 22px 58px rgba(31, 35, 48, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
 :root[data-theme="light"] .session-state-card h3 {
-  color: rgba(17, 18, 23, 0.92);
+  color: rgba(17, 18, 23, 0.64);
 }
 
 :root[data-theme="light"] .session-state-card .session-state-label {
-  color: rgba(17, 18, 23, 0.5);
+  color: rgba(17, 18, 23, 0.94);
 }
 
 :root[data-theme="light"] .session-state-card .session-state-detail,
@@ -1585,15 +1609,23 @@ button {
 }
 
 :root[data-theme="light"] .session-state-card .btn.primary {
-  border-color: rgba(17, 18, 23, 0.08);
-  background: #ffffff;
-  color: rgba(17, 18, 23, 0.82);
-  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.09);
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+  box-shadow: 0 9px 22px rgba(0, 122, 255, 0.2);
 }
 
 :root[data-theme="light"] .session-state-card .btn.primary:hover {
-  border-color: rgba(17, 18, 23, 0.14);
-  background: #f0f0f0;
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+:root[data-theme="light"] .session-agent-mark.pi {
+  color: #147f70;
+}
+
+:root[data-theme="light"] .session-agent-mark.qoder {
+  color: rgba(17, 18, 23, 0.84);
 }
 
 /* Skeleton while attaching/replaying */
@@ -2306,6 +2338,169 @@ textarea:focus {
   margin-top: 6px;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
+}
+
+/* New Worktree local-branch combobox -------------------------------- */
+.worktree-branch-picker {
+  position: relative;
+}
+
+.worktree-branch-input-row {
+  display: flex;
+  align-items: stretch;
+  gap: 5px;
+}
+
+.worktree-branch-input-row input {
+  min-width: 0;
+}
+
+.worktree-branch-icon-btn {
+  width: 31px;
+  min-width: 31px;
+  padding: 0;
+  font-size: 14px;
+}
+
+.worktree-branch-popover {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 5px);
+  right: 0;
+  left: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+}
+
+.worktree-branch-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.worktree-branch-popover [role="listbox"] {
+  overflow-y: auto;
+  max-height: 220px;
+}
+
+.worktree-branch-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 10px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.worktree-branch-option:last-child {
+  border-bottom: 0;
+}
+
+.worktree-branch-option.active {
+  background: var(--accent-soft);
+}
+
+.worktree-branch-option.disabled {
+  cursor: not-allowed;
+  opacity: .68;
+}
+
+.worktree-branch-option-main {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+}
+
+.worktree-branch-option-main strong {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worktree-branch-option-main code {
+  flex: none;
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.worktree-branch-state {
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.worktree-branch-path {
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 9px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worktree-branch-empty {
+  padding: 14px 10px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.error-bar.compact {
+  padding: 5px 8px;
+  font-size: 10px;
+}
+
+.worktree-branch-mode {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.worktree-branch-mode strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worktree-branch-mode code {
+  flex: none;
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.worktree-existing-base {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-elevated);
 }
 
 /* Local branch picker ------------------------------------------------ */

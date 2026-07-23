@@ -118,6 +118,8 @@ export interface AppState {
   indexState: string;
   exportsDir: string;
   activeSessionId: string | null;
+  /** UI-only archive intents; authoritative membership remains in projects. */
+  archivingSessionIds: string[];
   /** Sessions with a live terminal pane (kept mounted, display:none toggling). */
   attachedIds: string[];
   runtime: Record<string, SessionRuntime>;
@@ -167,6 +169,7 @@ const initialState: AppState = {
   indexState: "unknown",
   exportsDir: "",
   activeSessionId: null,
+  archivingSessionIds: [],
   attachedIds: [],
   runtime: {},
   rendererMode: "canvas",
@@ -264,7 +267,10 @@ export function subscribe(l: () => void): () => void {
   return () => listeners.delete(l);
 }
 
-export function useStore(): AppState {
+export function useStore(): AppState;
+export function useStore<T>(selector: (snapshot: AppState) => T): T;
+export function useStore<T>(selector?: (snapshot: AppState) => T): AppState | T {
+  if (selector) return useSyncExternalStore(subscribe, () => selector(state));
   return useSyncExternalStore(subscribe, getState);
 }
 
@@ -448,8 +454,10 @@ export function applyProjectsSnapshot(projects: ProjectView[]) {
         return { ...session, status: latestStatus(current.status, session.status) ?? null };
       }),
     }));
+    const aliveSessionIds = sessionIds(nextProjects);
     return {
       projects: nextProjects,
+      archivingSessionIds: s.archivingSessionIds.filter((id) => aliveSessionIds.has(id)),
       sidebarWorktreeProjectId:
         s.sidebarWorktreeProjectId &&
         nextProjects.some((p) => p.id === s.sidebarWorktreeProjectId)
@@ -458,7 +466,23 @@ export function applyProjectsSnapshot(projects: ProjectView[]) {
       collapsedWorktrees: Object.fromEntries(
         Object.entries(s.collapsedWorktrees).filter(([id]) => worktreeIds.has(id)),
       ),
-      ...sessionScopedState(s, sessionIds(nextProjects)),
+      ...sessionScopedState(s, aliveSessionIds),
+    };
+  });
+}
+
+/** Hide an archive intent immediately without rewriting backend-owned projects. */
+export function setSessionArchiving(sessionId: string, archiving: boolean) {
+  update((s) => {
+    if (archiving) {
+      return {
+        archivingSessionIds: s.archivingSessionIds.includes(sessionId)
+          ? s.archivingSessionIds
+          : [...s.archivingSessionIds, sessionId],
+      };
+    }
+    return {
+      archivingSessionIds: s.archivingSessionIds.filter((id) => id !== sessionId),
     };
   });
 }

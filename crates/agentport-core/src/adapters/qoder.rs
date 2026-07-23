@@ -105,7 +105,7 @@ impl AgentAdapter for QoderAdapter {
             executable_path: exe.to_string_lossy().into_owned(),
             version_text: super::normalize_version(version_out),
             capability_hash: super::capability::capability_hash(version_out, help_out),
-            exact_resume: has("session-id") && has("resume"),
+            exact_resume: has("session-id"),
             hook_status: if has("settings") {
                 HookStatus::Supported
             } else {
@@ -155,12 +155,16 @@ impl AgentAdapter for QoderAdapter {
         let mut notes = vec![];
         let (resume_precision, helper_files, hook_status) = match &ctx.agent_session_id {
             Some(id) => {
-                if !super::has_flag(install, "resume") {
+                if !super::has_flag(install, "session-id") {
                     return Err(CoreError::Blocked(
-                        "该版本 qodercli 无 --resume，无法精确恢复会话".into(),
+                        "该版本 qodercli 无 --session-id，无法精确恢复会话".into(),
                     ));
                 }
-                argv.extend(["--resume".into(), id.clone()]);
+                // Qoder's --resume opens the chat-session picker. Supplying
+                // the native ID directly reopens an existing transcript and,
+                // when the initial turn was interrupted before persistence,
+                // returns to the interactive input instead of the picker.
+                argv.extend(["--session-id".into(), id.clone()]);
                 let launch_ctx = LaunchContext {
                     install: ctx.install.clone(),
                     preset: ctx.preset.clone(),
@@ -251,10 +255,10 @@ mod tests {
     }
 
     #[test]
-    fn qoder_resume_preserves_native_id_as_host_hint() {
+    fn qoder_resume_reopens_native_id_without_session_picker() {
         let mut ctx = fx::resume_ctx(
             AgentType::Qoder,
-            &["resume", "settings", "dangerously-skip-permissions"],
+            &["session-id", "settings", "dangerously-skip-permissions"],
             Some("qoder-native-id"),
         );
         ctx.preset.permission_mode = PermissionMode::Bypass;
@@ -262,7 +266,8 @@ mod tests {
         assert!(plan
             .argv
             .windows(2)
-            .any(|pair| pair == ["--resume", "qoder-native-id"]));
+            .any(|pair| pair == ["--session-id", "qoder-native-id"]));
+        assert!(!plan.argv.iter().any(|value| value == "--resume"));
         assert_eq!(
             plan.assigned_agent_session_id.as_deref(),
             Some("qoder-native-id")

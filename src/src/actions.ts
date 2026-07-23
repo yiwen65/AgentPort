@@ -19,6 +19,7 @@ import {
   openDialog,
   patchSession,
   promptDialog,
+  setSessionArchiving,
   setState,
   toast,
   update,
@@ -219,7 +220,9 @@ export function selectSession(id: string, recoveryTarget: LogCursorView | null =
 }
 
 export function switchSessionByIndex(index: number) {
-  const list = flattenSessions(getState().projects);
+  const s = getState();
+  const archiving = new Set(s.archivingSessionIds);
+  const list = flattenSessions(s.projects).filter((session) => !archiving.has(session.id));
   const target = list[index];
   if (target) selectSession(target.id);
 }
@@ -335,37 +338,38 @@ export async function interruptSessionFlow(sessionId: string) {
   }
 }
 
-export async function archiveSessionFlow(sessionId: string, requireConfirm = true) {
-  const ses = findSession(getState().projects, sessionId);
+export async function archiveSessionFlow(sessionId: string) {
+  const initial = getState();
+  const ses = findSession(initial.projects, sessionId);
   if (!ses) return;
-  if (requireConfirm) {
-    const ok = await confirmDialog({
-      title: `归档 Session「${ses.title}」？`,
-      body: "归档后从项目树移除并停止运行；日志与元数据保留，可在设置中恢复或手动永久删除。",
-      confirmLabel: "归档",
-    });
-    if (!ok) return;
-  }
+  if (initial.archivingSessionIds.includes(sessionId)) return;
+  const wasActive = initial.activeSessionId === sessionId;
+  setSessionArchiving(sessionId, true);
   try {
     await api.archiveSession(sessionId);
-    const wasActive = getState().activeSessionId === sessionId;
     disposeHandle(sessionId);
     clearSessionScopedState(sessionId);
-    await refreshProjects();
     if (wasActive && getState().activeSessionId === null) {
-      const next = flattenSessions(getState().projects).find((session) => session.id !== sessionId);
+      const current = getState();
+      const archiving = new Set(current.archivingSessionIds);
+      const next = flattenSessions(current.projects).find(
+        (session) => session.id !== sessionId && !archiving.has(session.id),
+      );
       if (next) selectSession(next.id);
     }
+    // The command already emitted `projects-changed`; this read is only a
+    // reconciliation fallback and must not hold the interaction open.
+    void refreshProjects();
   } catch (e) {
+    setSessionArchiving(sessionId, false);
     toast(`归档失败：${errorText(e)}`, "error");
   }
 }
 
 /** UI-level removal uses the archive operation; archived Sessions are kept
-    until explicitly restored or permanently deleted in Settings. Confirmation
-    happens inline in the Session row (Sidebar), not as a modal. */
+    until explicitly restored or permanently deleted in Settings. */
 export async function removeSessionFlow(sessionId: string) {
-  await archiveSessionFlow(sessionId, false);
+  await archiveSessionFlow(sessionId);
 }
 
 export async function renameSessionFlow(sessionId: string) {

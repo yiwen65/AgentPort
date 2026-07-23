@@ -5,7 +5,7 @@ import Modal from "./Modal";
 import { resolveConfirm, resolvePrompt, useStore } from "../store";
 
 export function ConfirmDialogHost() {
-  const confirm = useStore().confirm;
+  const confirm = useStore((state) => state.confirm);
   if (!confirm) return null;
   return (
     <Modal
@@ -32,7 +32,7 @@ export function ConfirmDialogHost() {
 }
 
 export function PromptDialogHost() {
-  const prompt = useStore().prompt;
+  const prompt = useStore((state) => state.prompt);
   const [value, setValue] = useState<string | null>(null);
   useEffect(() => setValue(null), [prompt]);
   if (!prompt) return null;

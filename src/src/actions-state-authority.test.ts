@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { createElement } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { apiMock } = vi.hoisted(() => ({
   apiMock: {
@@ -28,13 +30,13 @@ vi.mock("./terminals", () => ({
 }));
 
 import { archiveSessionFlow, refreshProjects, refreshRepositoryStatus } from "./actions";
+import Sidebar from "./components/Sidebar";
 import {
   applyProjectsSnapshot,
   applyRepositoryStatusSnapshot,
   getState,
   invalidateProjectsSnapshotRequests,
   patchSession,
-  resolveConfirm,
   setState,
 } from "./store";
 import type { ProjectView, RepositoryStatus, SessionView, StatusEventView } from "./types";
@@ -110,11 +112,14 @@ describe("frontend state authority", () => {
     setState({
       projects: projects(session()),
       activeSessionId: null,
+      archivingSessionIds: [],
       attachedIds: [],
       repositoryStatuses: {},
       runtime: {},
     });
   });
+
+  afterEach(cleanup);
 
   it("ignores a project response invalidated by a newer session event", async () => {
     const stale = deferred<ProjectView[]>();
@@ -167,14 +172,47 @@ describe("frontend state authority", () => {
     });
   });
 
-  it("requires confirmation before archiving a running Session", async () => {
-    const pending = archiveSessionFlow("ses_1");
+  it("archives a running Session without opening a second confirmation dialog", async () => {
+    apiMock.archiveSession.mockResolvedValueOnce(undefined);
+    apiMock.listProjects.mockResolvedValueOnce(projects());
 
-    expect(getState().confirm?.body).toContain("停止运行");
-    expect(apiMock.archiveSession).not.toHaveBeenCalled();
-    resolveConfirm(false);
-    await pending;
+    await archiveSessionFlow("ses_1");
 
-    expect(apiMock.archiveSession).not.toHaveBeenCalled();
+    expect(getState().confirm).toBeNull();
+    expect(apiMock.archiveSession).toHaveBeenCalledWith("ses_1");
+  });
+
+  it("hides a Session immediately while the backend archive is still pending", async () => {
+    const archive = deferred<void>();
+    apiMock.archiveSession.mockReturnValueOnce(archive.promise);
+    apiMock.listProjects.mockResolvedValueOnce(projects());
+    await act(async () => {
+      render(createElement(Sidebar, { collapsed: false, width: 296 }));
+    });
+
+    let pending!: Promise<void>;
+    act(() => {
+      pending = archiveSessionFlow("ses_1");
+    });
+
+    expect(screen.queryByRole("button", { name: "Session，Shell" })).toBeNull();
+    await act(async () => {
+      archive.resolve();
+      await pending;
+    });
+    await waitFor(() => expect(getState().archivingSessionIds).toEqual([]));
+  });
+
+  it("restores the Session row when the backend archive fails", async () => {
+    apiMock.archiveSession.mockRejectedValueOnce(new Error("stop failed"));
+    await act(async () => {
+      render(createElement(Sidebar, { collapsed: false, width: 296 }));
+    });
+
+    await act(async () => {
+      await archiveSessionFlow("ses_1");
+    });
+
+    expect(screen.getByRole("button", { name: "Session，Shell" })).toBeTruthy();
   });
 });

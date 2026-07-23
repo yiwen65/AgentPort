@@ -40,14 +40,33 @@ function IconChevron() {
   );
 }
 
+function IconBranch() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="4" cy="4" r="1.6" stroke="currentColor" strokeWidth="1.3" />
+      <circle cx="4" cy="12" r="1.6" stroke="currentColor" strokeWidth="1.3" />
+      <circle cx="12" cy="4" r="1.6" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M4 5.6v4.8M12 5.6A6.4 6.4 0 0 1 5.6 12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export default function TopBar() {
-  const s = useStore();
-  const session = findSession(s.projects, s.activeSessionId);
-  const project = session ? s.projects.find((item) => item.id === session.projectId) : null;
-  const worktree = session?.worktreeId
-    ? project?.worktrees.find((item) => item.id === session.worktreeId)
-    : null;
-  const pending = s.timeline.entries.length;
+  const projectName = useStore((state) => {
+    const session = findSession(state.projects, state.activeSessionId);
+    return session
+      ? state.projects.find((project) => project.id === session.projectId)?.name
+      : undefined;
+  });
+  const projectBranch = useStore((state) => {
+    const session = findSession(state.projects, state.activeSessionId);
+    const repositoryStatus = session ? state.repositoryStatuses[session.projectId] : null;
+    return repositoryStatus?.isGitRepository && repositoryStatus.head.kind === "branch"
+      ? repositoryStatus.head.branch
+      : null;
+  });
+  const pending = useStore((state) => state.timeline.entries.length);
+  const sidebarCollapsed = useStore((state) => state.sidebarCollapsed);
   const sidebarShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘B" : "Ctrl+B";
 
   // WebKit does not consistently forward `data-tauri-drag-region` through
@@ -80,34 +99,24 @@ export default function TopBar() {
       <div className="topbar-leading" data-tauri-drag-region="false">
         <button
           className="window-control sidebar-toggle"
-          onClick={() => setState({ sidebarCollapsed: !s.sidebarCollapsed })}
-          aria-label={s.sidebarCollapsed ? "显示侧栏" : "隐藏侧栏"}
-          aria-pressed={s.sidebarCollapsed}
-          data-tip={`${s.sidebarCollapsed ? "显示" : "隐藏"}项目与会话侧栏（${sidebarShortcut}）`}
+          onClick={() => setState({ sidebarCollapsed: !sidebarCollapsed })}
+          aria-label={sidebarCollapsed ? "显示侧栏" : "隐藏侧栏"}
+          aria-pressed={sidebarCollapsed}
+          data-tip={`${sidebarCollapsed ? "显示" : "隐藏"}项目与会话侧栏（${sidebarShortcut}）`}
           data-tauri-drag-region="false"
         >
-          <IconSidebarToggle collapsed={s.sidebarCollapsed} />
+          <IconSidebarToggle collapsed={sidebarCollapsed} />
         </button>
       </div>
       <div className="window-title">
-        <span>{project?.name ?? "AgentPort"}</span>
-        {worktree ? (
+        <span>{projectName ?? "AgentPort"}</span>
+        {projectBranch ? (
           <>
-            <span className="window-title-separator" aria-hidden="true">/</span>
-            <span className="window-title-branch">{worktree.branch}</span>
+            <span className="window-title-branch-icon"><IconBranch /></span>
+            <span className="window-title-branch">{projectBranch}</span>
           </>
         ) : null}
       </div>
-      <button
-        className="window-control"
-        onClick={() => openDialog({ kind: "timeline" })}
-        aria-label={pending > 0 ? `恢复时间线，有 ${pending} 项待处理` : "恢复时间线，没有待处理项"}
-        data-tip="仅显示 GUI 关闭期间尚未确认的事件"
-        data-tauri-drag-region="false"
-      >
-        <span aria-hidden="true">恢复</span>
-        {pending > 0 ? <span className="topbar-timeline-badge" aria-hidden="true">{pending}</span> : null}
-      </button>
       <button
         className="window-control terminal-menu"
         onClick={(e) => openSurfaceMenu(e.currentTarget)}

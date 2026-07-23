@@ -77,7 +77,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("./api", () => ({
   api: rendererMocks.apiMock,
-  b64ToBytes: vi.fn(() => new Uint8Array([65])),
+  b64ToBytes: vi.fn((value: string) =>
+    Uint8Array.from(atob(value), (char) => char.charCodeAt(0))),
   bytesToB64: vi.fn(),
   errorText: (error: unknown) => String(error),
 }));
@@ -171,5 +172,43 @@ describe("terminal renderer", () => {
         { runId: "run_1", runOrdinal: 1, generation: 0, offset: 11 },
       );
     });
+  });
+
+  it("hides Pi's first-session warning when live output starts after replay", async () => {
+    const nativeSessionId = "1fd5ff67-01f0-4a8e-8c27-389e5969fd8e";
+    setState({
+      projects: getState().projects.map((project) => ({
+        ...project,
+        sessions: project.sessions.map((session) => ({
+          ...session,
+          adapter: "pi",
+          agentSessionId: nativeSessionId,
+        })),
+      })),
+    });
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+    const channel = rendererMocks.channels[0];
+    channel.onmessage?.({
+      t: "replay_done",
+      offset: 0,
+      cursor: null,
+      partialContext: false,
+    });
+    const warning = new TextEncoder().encode(
+      `\x1b[33mWarning: No project session found with id '${nativeSessionId}'; creating a new session with that id.\x1b[39m\r\n`,
+    );
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(String.fromCharCode(...warning)),
+      offset: 0,
+      cursor: { runId: "run_pi", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const rendered = terminal.write.mock.calls
+      .map(([value]) => value instanceof Uint8Array ? new TextDecoder().decode(value) : String(value))
+      .join("");
+    expect(rendered).not.toContain("No project session found");
   });
 });

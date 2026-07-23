@@ -55,7 +55,11 @@ impl AgentAdapter for PiAdapter {
             executable_path: exe.to_string_lossy().into_owned(),
             version_text: super::normalize_version(version_out),
             capability_hash: super::capability::capability_hash(version_out, help_out),
-            exact_resume: has("session-id") && has("session") && has("session-dir"),
+            // Pi's --session-id opens an existing exact-ID session and creates
+            // it when the first turn was interrupted before Pi persisted a
+            // transcript. Requiring --session would make that empty-session
+            // recovery fail with "No session found matching …".
+            exact_resume: has("session-id") && has("session-dir"),
             hook_status: HookStatus::Unavailable,
             approval_model: AgentType::Pi.approval_model(),
             default_transport: AgentType::Pi.default_transport(),
@@ -112,7 +116,7 @@ impl AgentAdapter for PiAdapter {
             .as_ref()
             .ok_or_else(|| CoreError::Blocked("Pi 原生会话 ID 缺失，无法精确恢复".into()))?;
         let install = &ctx.install;
-        for flag in ["session", "session-dir", "approve"] {
+        for flag in ["session-id", "session-dir", "approve"] {
             if !super::has_flag(install, flag) {
                 return Err(CoreError::Blocked(format!(
                     "该版本 pi 无 --{flag}，无法精确恢复会话"
@@ -148,8 +152,11 @@ impl AgentAdapter for PiAdapter {
         if ctx.transport == AgentTransport::JsonRpc {
             argv.extend(["--mode".into(), "rpc".into()]);
         }
+        // Unlike --session, Pi's --session-id is idempotent: it reopens an
+        // existing private transcript or recreates the same empty session
+        // after a Ctrl-C before Pi's first assistant response flushed it.
         argv.extend([
-            "--session".into(),
+            "--session-id".into(),
             native_id.clone(),
             "--session-dir".into(),
             dir,
@@ -224,17 +231,18 @@ mod tests {
     }
 
     #[test]
-    fn pi_tui_resume_preserves_native_id() {
+    fn pi_tui_resume_reuses_native_id_before_the_first_turn_is_persisted() {
         let ctx = fx::resume_ctx(
             AgentType::Pi,
-            &["session", "session-dir", "approve"],
+            &["session-id", "session-dir", "approve"],
             Some("pi-native-id"),
         );
-        let plan = PiAdapter.build_resume(&ctx).unwrap();
+        let plan = PiAdapter.build_resume_checked(&ctx).unwrap();
         assert!(plan
             .argv
             .windows(2)
-            .any(|pair| pair == ["--session", "pi-native-id"]));
+            .any(|pair| pair == ["--session-id", "pi-native-id"]));
+        assert!(!plan.argv.iter().any(|value| value == "--session"));
         assert!(!plan.argv.iter().any(|value| value == "--mode"));
         assert_eq!(
             plan.assigned_agent_session_id.as_deref(),

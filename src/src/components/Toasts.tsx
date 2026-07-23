@@ -1,7 +1,7 @@
 import { useStore } from "../store";
 
 export default function Toasts() {
-  const toasts = useStore().toasts;
+  const toasts = useStore((state) => state.toasts);
   if (toasts.length === 0) return null;
   return (
     <div className="toasts" role="status" aria-live="polite">

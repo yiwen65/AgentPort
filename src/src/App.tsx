@@ -1,7 +1,7 @@
 // App root: boot sequence, backend event wiring, global keyboard shortcuts
 // (PRD 7.1), layout, dialog routing.
 
-import { useEffect, useRef, type CSSProperties } from "react";
+import { lazy, Suspense, useEffect, useRef, type CSSProperties } from "react";
 import {
   api,
   errorText,
@@ -36,22 +36,23 @@ import {
 import { pruneHandles, scrollToBottom } from "./terminals";
 import TopBar from "./components/TopBar";
 import Sidebar from "./components/Sidebar";
-import TerminalArea from "./components/TerminalArea";
 import TooltipHost from "./components/Tooltip";
 import Toasts from "./components/Toasts";
 import ContextMenuHost from "./components/ContextMenu";
 import { ConfirmDialogHost, PromptDialogHost } from "./components/Dialogs";
-import NewSessionDialog from "./components/NewSessionDialog";
-import NewWorktreeDialog from "./components/NewWorktreeDialog";
-import SettingsDialog from "./components/SettingsDialog";
-import DiagnosticsDialog from "./components/DiagnosticsDialog";
-import TimelineDialog from "./components/TimelineDialog";
-import SearchDialog from "./components/SearchDialog";
-import AddProjectDialog from "./components/AddProjectDialog";
-import ExportDialog from "./components/ExportDialog";
-import CommandPalette from "./components/CommandPalette";
-import BranchPickerDialog from "./components/BranchPickerDialog";
-import Onboarding from "./components/Onboarding";
+
+const TerminalArea = lazy(() => import("./components/TerminalArea"));
+const NewSessionDialog = lazy(() => import("./components/NewSessionDialog"));
+const NewWorktreeDialog = lazy(() => import("./components/NewWorktreeDialog"));
+const SettingsDialog = lazy(() => import("./components/SettingsDialog"));
+const DiagnosticsDialog = lazy(() => import("./components/DiagnosticsDialog"));
+const TimelineDialog = lazy(() => import("./components/TimelineDialog"));
+const SearchDialog = lazy(() => import("./components/SearchDialog"));
+const AddProjectDialog = lazy(() => import("./components/AddProjectDialog"));
+const ExportDialog = lazy(() => import("./components/ExportDialog"));
+const CommandPalette = lazy(() => import("./components/CommandPalette"));
+const BranchPickerDialog = lazy(() => import("./components/BranchPickerDialog"));
+const Onboarding = lazy(() => import("./components/Onboarding"));
 
 function useBoot() {
   useEffect(() => {
@@ -268,8 +269,7 @@ function useHotkeys() {
 }
 
 function DialogRouter() {
-  const s = useStore();
-  const d = s.dialog;
+  const d = useStore((state) => state.dialog);
   if (!d) return null;
   switch (d.kind) {
     case "newSession":
@@ -382,20 +382,25 @@ function SplitHandle({ collapsed, width }: { collapsed: boolean; width: number }
 }
 
 export default function App() {
-  const s = useStore();
+  const ready = useStore((state) => state.ready);
+  const bootError = useStore((state) => state.bootError);
+  const workspaceState = useStore((state) => {
+    const activeSession = findSession(state.projects, state.activeSessionId);
+    if (!activeSession) return "empty";
+    return activeSession.lifecycle === "exited" ||
+      activeSession.lifecycle === "stopped" ||
+      activeSession.lifecycle === "interrupted"
+      ? "ended"
+      : "live";
+  });
+  const sidebarCollapsed = useStore((state) => state.sidebarCollapsed);
+  const sidebarWidth = useStore((state) => state.sidebarWidth);
+  const showOnboarding = useStore((state) => state.showOnboarding);
+  const announcement = useStore((state) => state.announcement);
   useBoot();
   useHotkeys();
 
-  const activeSession = findSession(s.projects, s.activeSessionId);
-  const workspaceState = !activeSession
-    ? "empty"
-    : activeSession.lifecycle === "exited" ||
-        activeSession.lifecycle === "stopped" ||
-        activeSession.lifecycle === "interrupted"
-      ? "ended"
-      : "live";
-
-  if (!s.ready) {
+  if (!ready) {
     return (
       <div className="boot-screen" role="status">
         <span className="spin" aria-hidden="true" style={{ width: 20, height: 20 }} />
@@ -404,11 +409,11 @@ export default function App() {
     );
   }
 
-  if (s.bootError) {
+  if (bootError) {
     return (
       <div className="boot-screen" role="alert">
         <div className="error-bar" style={{ maxWidth: 480 }}>
-          启动失败：{s.bootError}
+          启动失败：{bootError}
         </div>
         <button className="btn" onClick={() => window.location.reload()}>
           重试
@@ -423,25 +428,33 @@ export default function App() {
       data-workspace-state={workspaceState}
       style={
         {
-          "--sidebar-width": s.sidebarCollapsed ? "0px" : `${s.sidebarWidth}px`,
+          "--sidebar-width": sidebarCollapsed ? "0px" : `${sidebarWidth}px`,
         } as CSSProperties
       }
     >
       <TopBar />
       <div className="main">
-        <Sidebar collapsed={s.sidebarCollapsed} width={s.sidebarWidth} />
-        <SplitHandle collapsed={s.sidebarCollapsed} width={s.sidebarWidth} />
-        <TerminalArea />
+        <Sidebar collapsed={sidebarCollapsed} width={sidebarWidth} />
+        <SplitHandle collapsed={sidebarCollapsed} width={sidebarWidth} />
+        <Suspense fallback={<section className="workspace" aria-label="终端工作区" aria-busy="true" />}>
+          <TerminalArea />
+        </Suspense>
       </div>
-      <DialogRouter />
+      <Suspense fallback={null}>
+        <DialogRouter />
+      </Suspense>
       <ConfirmDialogHost />
       <PromptDialogHost />
       <ContextMenuHost />
       <TooltipHost />
       <Toasts />
-      {s.showOnboarding ? <Onboarding /> : null}
+      {showOnboarding ? (
+        <Suspense fallback={null}>
+          <Onboarding />
+        </Suspense>
+      ) : null}
       <div className="sr-only" aria-live="polite">
-        {s.announcement}
+        {announcement}
       </div>
     </div>
   );

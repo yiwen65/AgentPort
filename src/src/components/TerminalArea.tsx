@@ -42,7 +42,7 @@ import {
 } from "../actions";
 import { precisionZh } from "../format";
 import type { SearchHit, SearchResult, SessionView } from "../types";
-import { ClaudeIcon, CodexIcon, KimiIcon } from "./AgentIcons";
+import { AgentIcon } from "./AgentIcons";
 import ShellIcon from "./ShellIcon";
 import PiStructuredTimeline from "./PiStructuredTimeline";
 
@@ -229,7 +229,8 @@ function TerminalScrollbar({ sessionId }: { sessionId: string }) {
 
 function TerminalPane({ sessionId, active }: { sessionId: string; active: boolean }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const ses = findSession(useStore().projects, sessionId);
+  const ses = useStore((state) => findSession(state.projects, sessionId));
+  useStore((state) => state.runtime[sessionId]);
   const scrolledUp = getRuntime(sessionId).scrolledUp;
 
   useEffect(() => {
@@ -509,19 +510,25 @@ function SkeletonOverlay() {
 }
 
 function SessionAgentMark({ adapter }: { adapter: string }) {
-  const theme = useStore().themeEffective;
-  if (adapter === "shell") {
-    return <ShellIcon className="session-agent-mark shell" size={36} />;
-  }
-  const cls = `session-agent-mark ${adapter}`;
-  if (adapter === "codex") return <CodexIcon className={cls} size={36} />;
-  if (adapter === "claude") return <ClaudeIcon className={cls} size={36} />;
-  if (adapter === "kimi") return <KimiIcon className={cls} size={36} mono={theme === "light"} />;
-  return null;
+  const theme = useStore((state) => state.themeEffective);
+  return (
+    <span className={`session-agent-mark ${adapter}`}>
+      {adapter === "shell" ? (
+        <ShellIcon className="session-agent-glyph shell" size={32} />
+      ) : (
+        <AgentIcon
+          agent={adapter}
+          className="session-agent-glyph"
+          size={32}
+          mono={theme === "light"}
+        />
+      )}
+    </span>
+  );
 }
 
 function SessionOverlay({ ses }: { ses: SessionView }) {
-  const rt = useStore().runtime[ses.id];
+  const rt = useStore((state) => state.runtime[ses.id]);
   const r = getRuntime(ses.id);
   void rt; // subscribe
 
@@ -607,7 +614,7 @@ function SessionOverlay({ ses }: { ses: SessionView }) {
 
 function ReconnectBanner({ ses }: { ses: SessionView }) {
   const r = getRuntime(ses.id);
-  useStore().runtime[ses.id]; // subscribe
+  useStore((state) => state.runtime[ses.id]);
   const show =
     r.detached &&
     !r.exit &&
@@ -629,9 +636,10 @@ function ReconnectBanner({ ses }: { ses: SessionView }) {
 }
 
 function UncommittedBanner({ ses }: { ses: SessionView }) {
-  const s = useStore();
+  useStore((state) => state.runtime[ses.id]);
+  const ws = useStore((state) => state.activeWorktreeStatus);
+  const dismissedSequence = useStore((state) => state.noticeDismissed[ses.id]);
   const r = getRuntime(ses.id);
-  const ws = s.activeWorktreeStatus;
   const stateNow = r.status?.state ?? ses.status?.state;
   const doneLike =
     ses.lifecycle === "exited" ||
@@ -640,7 +648,7 @@ function UncommittedBanner({ ses }: { ses: SessionView }) {
     stateNow === "exited";
   const seq = r.status?.sequence ?? ses.status?.sequence ?? 0;
   const show = Boolean(
-    ses.worktreeId && doneLike && ws?.health === "dirty" && s.noticeDismissed[ses.id] !== seq,
+    ses.worktreeId && doneLike && ws?.health === "dirty" && dismissedSequence !== seq,
   );
 
   // Refresh health when the session settles into a finished-looking state.
@@ -682,7 +690,7 @@ function UncommittedBanner({ ses }: { ses: SessionView }) {
 // ---------------------------------------------------------------------------
 
 function TermStatusLine({ ses }: { ses: SessionView }) {
-  useStore().runtime[ses.id]; // subscribe
+  useStore((state) => state.runtime[ses.id]);
   const r = getRuntime(ses.id);
   if (!r.scrolledUp) return null;
   return (
@@ -703,9 +711,16 @@ function TermStatusLine({ ses }: { ses: SessionView }) {
 // ---------------------------------------------------------------------------
 
 export default function TerminalArea() {
-  const s = useStore();
-  const ses = findSession(s.projects, s.activeSessionId);
-  const hasAnySession = s.projects.some((p) => p.sessions.length > 0);
+  const ses = useStore((state) => findSession(state.projects, state.activeSessionId));
+  const hasAnySession = useStore((state) =>
+    state.projects.some((project) => project.sessions.length > 0),
+  );
+  const hasProjects = useStore((state) => state.projects.length > 0);
+  const termSearchOpen = useStore((state) => state.termSearchOpen);
+  const attachedIds = useStore((state) => state.attachedIds);
+  const attachedPtyIds = attachedIds.filter(
+    (id) => findSession(getState().projects, id)?.transport === "pty",
+  );
 
   return (
     <section className="workspace" aria-label="终端工作区">
@@ -716,13 +731,11 @@ export default function TerminalArea() {
         <>
           <ReconnectBanner ses={ses} />
           <UncommittedBanner ses={ses} />
-          {s.termSearchOpen ? <TermSearchBar sessionId={ses.id} /> : null}
+          {termSearchOpen ? <TermSearchBar sessionId={ses.id} /> : null}
           <div className="term-stack">
-            {s.attachedIds
-              .filter((id) => findSession(s.projects, id)?.transport === "pty")
-              .map((id) => (
+            {attachedPtyIds.map((id) => (
                 <TerminalPane key={id} sessionId={id} active={id === ses.id} />
-              ))}
+            ))}
             <SessionOverlay ses={ses} />
           </div>
           <TermStatusLine ses={ses} />
@@ -736,7 +749,7 @@ export default function TerminalArea() {
             </div>
             {hasAnySession ? (
               <div>在左侧选择一个 Session 继续工作。</div>
-            ) : s.projects.length > 0 ? (
+            ) : hasProjects ? (
               <>
                 <div>项目还没有运行中的任务。</div>
                 <button className="btn primary" onClick={() => openNewSessionDialog()}>

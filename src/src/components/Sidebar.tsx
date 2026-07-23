@@ -122,7 +122,7 @@ function IconChevron({ dir }: { dir: "left" | "right" | "down" }) {
 }
 
 function QuickAgentIcon({ agent }: { agent: string }) {
-  const theme = useStore().themeEffective;
+  const theme = useStore((state) => state.themeEffective);
   if (agent === "shell") {
     return <ShellIcon className="quick-agent-mark shell" size={17} />;
   }
@@ -145,14 +145,15 @@ function QuickAgentStrip({
   worktreeId?: string;
   scopeLabel: string;
 }) {
-  const store = useStore();
+  const agentOrder = useStore((state) => state.settings?.agentOrder);
+  const adapters = useStore((state) => state.adapters);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ pointerId: number; x: number; scrollLeft: number; moved: boolean } | null>(null);
   const suppressClickRef = useRef(false);
   const [dragging, setDragging] = useState(false);
   const agents = orderAgentIds(
-    store.settings?.agentOrder,
-    store.adapters.map((adapter) => adapter.agentType),
+    agentOrder,
+    adapters.map((adapter) => adapter.agentType),
   );
 
   if (agents.length === 0) return null;
@@ -345,9 +346,8 @@ function worktreeMenu(
 }
 
 function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
-  const store = useStore();
-  const active = store.activeSessionId === ses.id;
-  const pinned = store.pinnedSessionAt[ses.id] !== undefined;
+  const active = useStore((state) => state.activeSessionId === ses.id);
+  const pinned = useStore((state) => state.pinnedSessionAt[ses.id] !== undefined);
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(ses.title);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
@@ -469,7 +469,7 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
 }
 
 function WorktreeNode({ p, w, sessions, highlighted }: { p: ProjectView; w: WorktreeView; sessions: SessionView[]; highlighted: boolean }) {
-  const collapsed = useStore().collapsedWorktrees[w.id] === true;
+  const collapsed = useStore((state) => state.collapsedWorktrees[w.id] === true);
   return (
     <div role="treeitem" aria-expanded={!collapsed}>
       <div className="tree-project-header">
@@ -528,7 +528,7 @@ function WorktreeNode({ p, w, sessions, highlighted }: { p: ProjectView; w: Work
 
 /** Sidebar session ordering: pinned first (latest pin wins), then newest. */
 function useSessionOrder() {
-  const pinnedSessionAt = useStore().pinnedSessionAt;
+  const pinnedSessionAt = useStore((state) => state.pinnedSessionAt);
   return (sessions: SessionView[]) =>
     [...sessions].sort((a, b) => {
       const pinnedOrder = (pinnedSessionAt[b.id] ?? 0) - (pinnedSessionAt[a.id] ?? 0);
@@ -559,11 +559,15 @@ function WorktreesEntryRow({ p }: { p: ProjectView }) {
 }
 
 function ProjectNode({ p }: { p: ProjectView }) {
-  const store = useStore();
-  const expanded = store.expandedProjects[p.id] !== false;
+  const expanded = useStore((state) => state.expandedProjects[p.id] !== false);
   const order = useSessionOrder();
-  const mainSessions = order(p.sessions.filter((s) => !s.worktreeId));
-  const repositoryStatus = store.repositoryStatuses[p.id];
+  const archiving = useStore((state) => state.archivingSessionIds);
+  const archivingSessionIds = new Set(archiving);
+  const visibleSessions = p.sessions.filter(
+    (session) => !archivingSessionIds.has(session.id),
+  );
+  const mainSessions = order(visibleSessions.filter((session) => !session.worktreeId));
+  const repositoryStatus = useStore((state) => state.repositoryStatuses[p.id]);
   // Branch management is intentionally gated by a live backend probe. The
   // persisted gitRootPath can become stale when a directory is moved or its
   // .git metadata is removed while AgentPort is closed.
@@ -643,7 +647,7 @@ function ProjectNode({ p }: { p: ProjectView }) {
           {mainSessions.map((ses) => (
             <SessionRow key={ses.id} ses={ses} />
           ))}
-          {p.sessions.length === 0 && p.worktrees.length === 0 ? (
+          {visibleSessions.length === 0 && p.worktrees.length === 0 ? (
             <div className="tree-empty">
               <span>还没有运行中的任务</span>
             </div>
@@ -660,9 +664,11 @@ function ProjectNode({ p }: { p: ProjectView }) {
  * worktree so branch context and the guarded delete flow remain intact.
  */
 function WorktreeSessionsView({ p }: { p: ProjectView }) {
-  const store = useStore();
   const order = useSessionOrder();
   const canCreate = Boolean(p.gitRootPath);
+  const archiving = useStore((state) => state.archivingSessionIds);
+  const highlightedWorktreeId = useStore((state) => state.highlightedWorktreeId);
+  const archivingSessionIds = new Set(archiving);
   return (
     <div className="worktree-view">
       <button
@@ -694,8 +700,12 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
             key={w.id}
             p={p}
             w={w}
-            highlighted={store.highlightedWorktreeId === w.id}
-            sessions={order(p.sessions.filter((session) => session.worktreeId === w.id))}
+            highlighted={highlightedWorktreeId === w.id}
+            sessions={order(p.sessions.filter(
+              (session) =>
+                session.worktreeId === w.id &&
+                !archivingSessionIds.has(session.id),
+            ))}
           />
         ))
       )}
@@ -704,17 +714,19 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
 }
 
 export default function Sidebar({ collapsed, width }: { collapsed: boolean; width: number }) {
-  const s = useStore();
-  const projects = s.projects;
+  const projects = useStore((state) => state.projects);
+  const expandedProjects = useStore((state) => state.expandedProjects);
+  const collapsedWorktrees = useStore((state) => state.collapsedWorktrees);
+  const sidebarWorktreeProjectId = useStore((state) => state.sidebarWorktreeProjectId);
   const allProjectsCollapsed =
-    projects.length > 0 && projects.every((project) => s.expandedProjects[project.id] === false);
+    projects.length > 0 && projects.every((project) => expandedProjects[project.id] === false);
   const allWorktreesCollapsed = projects.every((p) =>
-    p.worktrees.every((w) => s.collapsedWorktrees[w.id] === true),
+    p.worktrees.every((w) => collapsedWorktrees[w.id] === true),
   );
   // Master toggle covers both project groups and worktree session groups.
   const allCollapsed = allProjectsCollapsed && allWorktreesCollapsed;
-  const worktreeProject = s.sidebarWorktreeProjectId
-    ? projects.find((p) => p.id === s.sidebarWorktreeProjectId) ?? null
+  const worktreeProject = sidebarWorktreeProjectId
+    ? projects.find((p) => p.id === sidebarWorktreeProjectId) ?? null
     : null;
   return (
     <aside

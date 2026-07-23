@@ -149,11 +149,16 @@ export function cssFontFamily(setting: string): string {
   return `'${setting.replace(/'/g, "")}', ${FALLBACK_FONT}`;
 }
 
+// Terminal reading palette. Body text deliberately sits below pure
+// white/black so long CJK/Latin transcripts stay soft, while the ANSI bright
+// slots keep a clear emphasis step above body. Keep `background` and the
+// `.xterm` DOM-renderer fallback color in sync with styles.css `--bg-term`
+// and `--term-text`.
 const XTERM_THEMES: Record<EffectiveTheme, ITheme> = {
   dark: {
     background: "#222228",
-    foreground: "#fafafa",
-    cursor: "#fafafa",
+    foreground: "#d4d4dc",
+    cursor: "#d4d4dc",
     cursorAccent: "#222228",
     selectionBackground: "#3a3a40",
     black: "#1c1c22",
@@ -171,14 +176,16 @@ const XTERM_THEMES: Record<EffectiveTheme, ITheme> = {
     brightBlue: "#60a5fa",
     brightMagenta: "#c084fc",
     brightCyan: "#22d3ee",
-    brightWhite: "#fafafa",
+    brightWhite: "#e8e8ee",
   },
   light: {
-    // Match Unpeel's native light Ghostty palette on an opaque canvas.
-    background: "#ffffff",
-    foreground: "#09090b",
-    cursor: "#09090b",
-    cursorAccent: "#ffffff",
+    // Off-white surface takes the glare out of long reading sessions; keep
+    // it identical to styles.css `--bg-term`/`--workspace-live` so the pane
+    // edges never show a mismatched seam.
+    background: "#f9f9fb",
+    foreground: "#3f3f46",
+    cursor: "#3f3f46",
+    cursorAccent: "#f9f9fb",
     selectionBackground: "#d4d4d8",
     black: "#09090b",
     red: "#dc2626",
@@ -198,7 +205,7 @@ const XTERM_THEMES: Record<EffectiveTheme, ITheme> = {
     brightBlue: "#3b82f6",
     brightMagenta: "#a855f7",
     brightCyan: "#06b6d4",
-    brightWhite: "#18181b",
+    brightWhite: "#26262c",
   },
 };
 
@@ -283,13 +290,21 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     fontSize: settings?.terminalFontSize ?? DEFAULT_TERMINAL_FONT_SIZE,
     fontWeight: "400",
     fontWeightBold: "600",
-    lineHeight: 1.1,
+    // Match JetBrains Mono's natural ~1.3em metrics: CJK fallback glyphs
+    // (PingFang SC) keep their full height instead of being squeezed into a
+    // 1.1 row, which is what made Chinese paragraphs read cramped and heavy.
+    // Box-drawing borders stay continuous because the glyphs are drawn for
+    // this leading.
+    lineHeight: 1.3,
     letterSpacing: 0,
     // Agent TUIs often emit hard-coded dark-theme truecolor escapes (for
     // example RGB 255/255/255). When the app switches to Light, xterm must
     // adapt those cells instead of drawing white-on-white. Selection already
     // did this implicitly, which is why selecting text appeared to fix it.
-    minimumContrastRatio: 7,
+    // 4.5 (WCAG AA for body text) still repairs those cells, but leaves dim
+    // secondary output visibly below body brightness so the body/hint
+    // hierarchy survives. The previous 7 flattened that hierarchy.
+    minimumContrastRatio: 4.5,
     drawBoldTextInBrightColors: false,
     rescaleOverlappingGlyphs: false,
     cursorBlink: true,
@@ -872,7 +887,9 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
         queueRenderedLogObservation(handle, msg.cursor);
       }
       handle.allowRecoveryGap = msg.partialContext === true;
-      finishTerminalStartupFilter(handle);
+      // This marks only the replay/live boundary. A newly launched Pi can
+      // print its first-session notice just after an empty replay completes,
+      // so keep the first-line filter active until output actually arrives.
       patchRuntime(sessionId, { replayDone: true });
       updateScrolledUp(handle);
       break;
@@ -910,6 +927,7 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       break;
     }
     case "exit": {
+      finishTerminalStartupFilter(handle);
       handle.attached = false;
       handle.attachmentId = null;
       patchRuntime(sessionId, {
