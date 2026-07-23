@@ -11,8 +11,11 @@ cd "$ROOT"
 UNIVERSAL=0
 [ "${1:-}" = "--universal" ] && UNIVERSAL=1
 
-echo "== cargo test (core gate) =="
-cargo test -p agentport-core -p agentport-host --quiet
+echo "== cargo test (workspace all-targets gate) =="
+cargo test --workspace --all-targets --quiet
+
+echo "== frontend test gate =="
+(cd src && npm test)
 
 echo "== release build =="
 cargo build --release -p agentport-host -p agentport-cli

@@ -10,6 +10,9 @@ FAIL=0
 say() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 ok()  { printf '  \033[32mOK\033[0m %s\n' "$*"; }
 bad() { printf '  \033[31mFAIL\033[0m %s\n' "$*"; FAIL=1; }
+session_log_path() {
+  "$CLI" session status "$1" --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["session"]["logPath"])'
+}
 
 GITREPO=$(mktemp -d /tmp/agentport-e2e-repo.XXXXXX)
 cd "$GITREPO" && git init -q -b main && git config user.email t@t && git config user.name t
@@ -48,7 +51,8 @@ M="w2-export-$RANDOM"
 "$CLI" session read "$SES1" --until "done-$M" --timeout 10 --json >/dev/null
 "$CLI" export log --session "$SES1" --out "$AGENTPORT_DATA_DIR/e.log" --json >/dev/null
 grep -q "$M" "$AGENTPORT_DATA_DIR/e.log" && ok "export log 含输出" || bad "export log missing"
-python3 - "$AGENTPORT_DATA_DIR/sessions/$SES1/output.log" "$AGENTPORT_DATA_DIR/e.log" <<'PY' && ok "export log 与源 sha256 一致" || bad "export sha mismatch"
+LOG1=$(session_log_path "$SES1")
+python3 - "$LOG1" "$AGENTPORT_DATA_DIR/e.log" <<'PY' && ok "export log 与源 sha256 一致" || bad "export sha mismatch"
 import sys, hashlib
 a = open(sys.argv[1],'rb').read(); b = open(sys.argv[2],'rb').read()
 assert hashlib.sha256(a).hexdigest() == hashlib.sha256(b).hexdigest(), "sha mismatch"
@@ -79,7 +83,7 @@ SES2=$("$CLI" session new --project "$PROJ" --agent shell --preset pre_shell_saf
 "$CLI" session input "$SES2" --data 'X=sec; echo "val=$AP_E2E_SECRET"; echo ${X}-done\n' >/dev/null
 OUT=$("$CLI" session read "$SES2" --until "sec-done" --timeout 10 --json)
 echo "$OUT" | grep -q "$SECRET_VAL" && bad "前端输出含 secret 原值" || ok "输出已脱敏（客户端只见 [redacted]）"
-LOG2="$AGENTPORT_DATA_DIR/sessions/$SES2/output.log"
+LOG2=$(session_log_path "$SES2")
 grep -q "$SECRET_VAL" "$LOG2" && bad "日志含 secret" || ok "日志无明文 secret"
 grep -q "\[redacted\]" "$LOG2" && ok "日志含固定掩码" || bad "掩码缺失"
 grep -a "$SECRET_VAL" "$AGENTPORT_DATA_DIR/agentport.db" >/dev/null 2>&1 && bad "SQLite 含 secret" || ok "SQLite 无 secret"

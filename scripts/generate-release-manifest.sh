@@ -11,33 +11,60 @@ APP_VERSION=$(grep -A2 '\[workspace.package\]' Cargo.toml | grep '^version' | he
 CLI=./target/debug/agentport-cli
 [ -x ./target/release/agentport-cli ] && CLI=./target/release/agentport-cli
 export AGENTPORT_DATA_DIR="${AGENTPORT_DATA_DIR:-$(mktemp -d /tmp/agentport-manifest.XXXXXX)}"
+GATE_LOG_DIR=$(mktemp -d /tmp/agentport-release-gates.XXXXXX)
+trap 'rm -r -- "$GATE_LOG_DIR"' EXIT
+GATE_FAILURE=0
 
 # Probe the real CLIs on this machine for the manifest. When multiple
 # candidates exist, pick the login-shell-resolved path (same rule as play3).
 [ -x "$CLI" ] && {
-  for A in claude codex kimi; do
+  for A in claude codex kimi pi; do
     P=$(command -v "$A" 2>/dev/null || true)
     [ -n "$P" ] && "$CLI" probe "$A" --path "$P" --json >/dev/null 2>&1 || true
   done
+  P=$(command -v qodercli 2>/dev/null || true)
+  [ -n "$P" ] && "$CLI" probe qoder --path "$P" --json >/dev/null 2>&1 || true
   "$CLI" probe shell --path "$(command -v sh)" --json >/dev/null 2>&1 || true
 } || true
 ADAPTERS=$("$CLI" diag capabilities 2>/dev/null || echo "[]")
 
-# Test evidence (rerun the gates; results recorded, not assumed).
-UNIT=$(cargo test --workspace 2>&1 | grep -c "test result: ok" || true)
-UNIT_FAIL=$(cargo test --workspace 2>&1 | grep -c "FAILED" || true)
+# Test evidence: every gate executes exactly once, its full output is retained
+# for counting, and pipefail preserves the command's actual exit status.
+CARGO_RESULT="fail"
+if cargo test --workspace --all-targets 2>&1 | tee "$GATE_LOG_DIR/cargo-test.log"; then
+  CARGO_RESULT="pass"
+else
+  GATE_FAILURE=1
+fi
+UNIT=$(grep -c "test result: ok" "$GATE_LOG_DIR/cargo-test.log" || true)
+UNIT_FAIL=$(grep -c "test result: FAILED" "$GATE_LOG_DIR/cargo-test.log" || true)
+
+FRONTEND_TEST_RESULT="fail"
+if (cd src && npm test) 2>&1 | tee "$GATE_LOG_DIR/npm-test.log"; then
+  FRONTEND_TEST_RESULT="pass"
+else
+  GATE_FAILURE=1
+fi
+
+FRONTEND_BUILD_RESULT="fail"
+if (cd src && npm run build) 2>&1 | tee "$GATE_LOG_DIR/npm-build.log"; then
+  FRONTEND_BUILD_RESULT="pass"
+else
+  GATE_FAILURE=1
+fi
+
 E2E_W1="unverified"; E2E_W2="unverified"
 [ "${SKIP_E2E:-0}" = 0 ] && {
-  bash e2e/wave1.sh >/dev/null 2>&1 && E2E_W1="pass" || E2E_W1="fail"
-  bash e2e/wave2.sh >/dev/null 2>&1 && E2E_W2="pass" || E2E_W2="fail"
+  bash e2e/wave1.sh >/dev/null 2>&1 && E2E_W1="pass" || { E2E_W1="fail"; GATE_FAILURE=1; }
+  bash e2e/wave2.sh >/dev/null 2>&1 && E2E_W2="pass" || { E2E_W2="fail"; GATE_FAILURE=1; }
 }
 
 WEBKITGTK_MAC=$(mdls -name kMDItemVersion /System/Library/Frameworks/WebKit.framework 2>/dev/null | awk -F'"' '{print $2}' || echo unknown)
 
-python3 - "$APP_VERSION" "$ADAPTERS" "$UNIT" "$UNIT_FAIL" "$E2E_W1" "$E2E_W2" "$WEBKITGTK_MAC" <<'PY'
+python3 - "$APP_VERSION" "$ADAPTERS" "$UNIT" "$UNIT_FAIL" "$CARGO_RESULT" "$FRONTEND_TEST_RESULT" "$FRONTEND_BUILD_RESULT" "$E2E_W1" "$E2E_W2" "$WEBKITGTK_MAC" <<'PY'
 import json, sys, subprocess, os, glob, datetime
 
-app_version, adapters_json, unit_ok, unit_fail, e2e_w1, e2e_w2, webkit_mac = sys.argv[1:8]
+app_version, adapters_json, unit_ok, unit_fail, cargo_result, frontend_test, frontend_build, e2e_w1, e2e_w2, webkit_mac = sys.argv[1:11]
 try:
     adapters = json.loads(adapters_json)
 except Exception:
@@ -119,7 +146,9 @@ manifest = {
     } for a in adapters
   ],
   "tests": [
-    {"suite": "cargo test --workspace", "passedSuites": int(unit_ok), "failedSuites": int(unit_fail), "evidence": "local run, see docs/acceptance-report.md"},
+    {"suite": "cargo test --workspace --all-targets", "result": cargo_result, "passedSuites": int(unit_ok), "failedSuites": int(unit_fail), "evidence": "local run, see docs/acceptance-report.md"},
+    {"suite": "npm test", "result": frontend_test, "evidence": "local run"},
+    {"suite": "npm run build", "result": frontend_build, "evidence": "local run"},
     {"suite": "e2e/wave1.sh (PTY/reconnect/cleanup/log-sha256)", "result": e2e_w1},
     {"suite": "e2e/wave2.sh (export/search/timeline/secret-leak-scan)", "result": e2e_w2},
   ],
@@ -133,3 +162,8 @@ out = json.dumps(manifest, indent=2, ensure_ascii=False)
 open("release-manifest.json","w").write(out + "\n")
 print("release-manifest.json written")
 PY
+
+if [ "$GATE_FAILURE" -ne 0 ]; then
+  echo "ERROR: one or more release gates failed; manifest records the failure." >&2
+  exit 1
+fi

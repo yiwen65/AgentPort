@@ -57,7 +57,8 @@ done
 say "输出连续性（tick 序号无缺口）"
 for S in $S1 $S2 $S3; do
   sleep 1
-  python3 - "$AGENTPORT_DATA_DIR/sessions/$S/output.log" <<'PY' && ok "$S tick 连续" || bad "$S tick 有缺口"
+  LOG=$("$CLI" session status "$S" --json | jqv "['session']['logPath']")
+  python3 - "$LOG" <<'PY' && ok "$S tick 连续" || bad "$S tick 有缺口"
 import sys, re
 text = open(sys.argv[1], 'rb').read().decode('utf-8', 'replace')
 nums = [int(m.group(1)) for m in re.finditer(r'tick-[A-Za-z0-9_-]+-(\d+)', text)]
@@ -66,9 +67,11 @@ assert nums == list(range(nums[0], nums[0]+len(nums))), f"gap in {nums[:5]}...{n
 PY
 done
 
-say "离开期间摘要（timeline 非空）"
+say "恢复时间线（attention-first：退出事件可见）"
+"$CLI" session stop "$S1" >/dev/null
+sleep 0.3
 "$CLI" reconcile >/dev/null
-"$CLI" timeline --json | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["entries"]' && ok "timeline 有事件" || bad "timeline empty"
+"$CLI" timeline --json | python3 -c 'import sys,json;d=json.load(sys.stdin);sid=sys.argv[1];assert any(e["sessionId"] == sid and e["state"] == "exited" for e in d["entries"])' "$S1" && ok "timeline 含退出 attention 事件" || bad "timeline missing exited event"
 
 for S in $S1 $S2 $S3; do "$CLI" session stop "$S" >/dev/null 2>&1; done
 [ "$FAIL" = 0 ] && { echo "PLAY2: PASS"; exit 0; } || { echo "PLAY2: FAIL"; exit 1; }

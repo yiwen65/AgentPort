@@ -42,7 +42,7 @@ xattr -cr /Applications/AgentPort.app
 sudo apt install ./AgentPort_<版本>_amd64.deb
 ```
 
-`apt` 会自动拉取运行依赖（WebKitGTK 等系统库）。安装完成后桌面环境中可直接启动 `agentport`。随发布产物同时提供独立的 headless 二进制 `agentport-cli`（放入 PATH 即可使用）。
+`apt` 会自动拉取运行依赖（WebKitGTK、GTK 与 Git）。安装完成后桌面环境中可直接启动 `agentport`。包还推荐安装 `libnotify-bin`、`xdg-utils` 与 `xterm`，以提供系统通知、在文件管理器中显示目录和默认终端入口；使用 `--no-install-recommends` 的最小化系统应手动安装这些包或在设置中指定已有终端的可执行文件。随发布产物同时提供独立的 headless 二进制 `agentport-cli`（放入 PATH 即可使用）。
 
 ## Fedora / Arch（社区验证）
 

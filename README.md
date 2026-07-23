@@ -1,7 +1,7 @@
 # AgentPort
 
 面向 macOS 13+ 与 Ubuntu 22.04/24.04 的本地 AI CLI 工作台：用一个界面统一管理
-Claude Code、Codex、Kimi Code（以及 Generic Shell 降级入口）的持久 Session、
+Claude Code、Codex、Kimi Code、Qoder CLI、Pi（以及 Generic Shell 降级入口）的持久 Session、
 PTY、状态、日志、Git Worktree 与恢复流程。本地优先、单用户、无账号、无云端、
 无遥测。
 
@@ -9,16 +9,17 @@ PTY、状态、日志、Git Worktree 与恢复流程。本地优先、单用户�
 GUI（Tauri 2 + React + xterm.js，可重连客户端，不拥有进程）
   └─ agentport-core（SQLite、Adapter 探测、Worktree、脱敏、Credential Broker）
        └─ agentport-host（每 Session 一个独立进程：PTY、进程组、Socket、心跳、日志）
-            └─ claude / codex / kimi / sh
+            └─ claude / codex / kimi / qodercli / pi / sh
 ```
 
 ## 快速开始（开发）
 
 ```bash
 # 依赖：Rust ≥1.80、Node ≥18、系统 git；macOS 或 Ubuntu（见 docs/install.md）
-cargo test --workspace                 # 全部单元/集成测试
+cargo test --workspace --all-targets   # 全部 Rust 单元/集成测试
+(cd src && npm test && npm run build)  # 前端测试与生产构建
 cargo build -p agentport-cli -p agentport-host
-./target/debug/agentport-cli probe     # 探测本机 claude/codex/kimi/shell
+./target/debug/agentport-cli probe     # 探测本机全部受支持 Agent CLI
 ./target/debug/agentport-cli --help    # 无头客户端（功能与 GUI 等价）
 cd src && npm install && npm run dev   # 前端开发服务器（:1420）
 ../src/node_modules/.bin/tauri dev --prefix src-tauri  # 或：cd src-tauri && ../src/node_modules/.bin/tauri dev
@@ -28,7 +29,8 @@ cd src && npm install && npm run dev   # 前端开发服务器（:1420）
 
 | 任务 | 命令 |
 |---|---|
-| 全部测试 | `cargo test --workspace` |
+| Rust 全部测试 | `cargo test --workspace --all-targets` |
+| 前端测试与构建 | `cd src && npm test && npm run build` |
 | 波次 1 E2E（PTY/重连/清理/日志 SHA-256） | `bash e2e/wave1.sh` |
 | 波次 2 E2E（导出/搜索/时间线/Secret 泄漏扫描） | `bash e2e/wave2.sh` |
 | 验收剧本 2（GUI 强杀恢复/输出连续） | `bash e2e/play2.sh` |
@@ -73,4 +75,4 @@ agentport-cli timeline                            # 离开期间恢复时间线
 ## 文档
 
 - 用户指南 `docs/user-guide.md` · 安装 `docs/install.md` · 故障排查 `docs/troubleshooting.md` · 安全说明 `docs/security.md`
-- 验收报告 `docs/acceptance-report.md` · 已知限制 `docs/known-limitations.md` · 发布清单 `release-manifest.json`
+- 验收报告 `docs/acceptance-report.md` · 已知限制 `docs/known-limitations.md` · 发布清单 `release-manifest.json`（2026-07-19 历史快照；发布前须重新运行生成脚本）

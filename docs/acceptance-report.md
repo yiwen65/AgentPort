@@ -1,4 +1,6 @@
-# AgentPort 验收报告（0.1.0）
+# AgentPort 验收报告（0.1.0，2026-07-19 历史快照）
+
+> 本文及仓库中的 `release-manifest.json` 记录 2026-07-19 当次验收，不代表当前工作树的发布证据，也未覆盖后来加入的 Qoder/Pi 与新增测试。发布候选必须重新运行 `cargo test --workspace --all-targets`、`cd src && npm test && npm run build` 及相应 E2E，再生成新的发布清单；不得沿用下列历史通过数。
 
 测试基线（实测环境）：macOS 26.5.1，Apple Silicon（arm64），本机 Homebrew Rust 1.95.0；
 Linux 验证在 OrbStack Docker（linux/amd64，Rosetta 模拟）中执行。
