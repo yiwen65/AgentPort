@@ -3,6 +3,7 @@ node_modules/
 src/dist/
 dist-release/
 src-tauri/binaries/
+src/src/assets/agent-icons/*.dmg
 .git/
 .gitignore
 **/*.log

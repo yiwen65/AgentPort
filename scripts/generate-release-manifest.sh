@@ -100,7 +100,7 @@ manifest = {
       "sha256": sha256(mac_dmg),
       "webviewVersion": webkit_mac,
       "tested": ["build","launch-smoke","window-render","db-init"] if mac_dmg else ["unverified"],
-      "notes": ["signing/notarization: not performed in this environment (scripted in CI notes)"]
+      "notes": ["local ad-hoc bundle signature applied; Developer ID signing/notarization not performed"]
     },
     {
       "os": "ubuntu", "versionOrSnapshot": "22.04", "arch": "x86_64",
@@ -153,7 +153,7 @@ manifest = {
   ],
   "knownLimitations": [
     "macOS Universal (x86_64+arm64) build requires rustup toolchains; this machine used Homebrew rust (arm64 only).",
-    "signing/notarization and clean-VM interactive runs (IME/Orca/VoiceOver) are manual steps, listed in docs/acceptance-report.md.",
+    "Developer ID signing/notarization and clean-VM interactive runs (IME/Orca/VoiceOver) are manual steps, listed in docs/acceptance-report.md.",
     "FTS5 trigram search index stores text+postings (measured ~3.6x source size); PRD's 0.35 ratio would require a contentless index redesign.",
   ],
 }

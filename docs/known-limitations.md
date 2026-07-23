@@ -5,7 +5,7 @@
 ## 平台与构建
 
 1. **macOS Universal（x86_64+arm64）未在本机产出**。本机是 Homebrew Rust（无 rustup target std），只构建了 `aarch64`。Universal 构建流程已脚本化（`scripts/build-macos.sh --universal`，需 rustup 双 target），未在本机验证。
-2. **签名与公证未执行**（本机无开发者证书）。产出的 `.app/.dmg` 需在"系统设置 → 隐私与安全性"放行或 `xattr -cr`。CI 签名/公证步骤在 `docs/install.md` 说明，标记未验证。
+2. **Developer ID 签名与公证未执行**（本机无开发者证书）。构建脚本会应用完整的 ad-hoc Bundle 签名，以保证 App、资源和 Sidecar 通过严格完整性校验；但它不提供开发者身份信任。产出的 `.app/.dmg` 仍可能需要在“系统设置 → 隐私与安全性”放行或执行 `xattr -cr`。CI 签名/公证步骤在 `docs/install.md` 说明，标记未验证。
 3. **Fedora/Arch 为社区验证层级**：Docker 构建 + 容器内冒烟；未做干净 VM 人工回归（IME/通知/卸载）。**AppImage 本次未发布**：构建窗口内 GitHub 的 linuxdeploy 下载持续失败（SSL 截断），无法完成打包；构建脚本 `scripts/build-linux.sh appimage` 可复现，网络恢复后重跑即可。按 PRD，未通过干净 VM 启动验证前不发布该 Artifact。
 4. **Linux 桌面差异**（WebKitGTK/Wayland 合成器、IME、剪贴板）按 PRD 11.d 属于已知未知项；正式承诺仍限定 Ubuntu LTS。
 

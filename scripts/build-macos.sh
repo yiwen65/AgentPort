@@ -44,6 +44,44 @@ else
   (cd src-tauri && ../src/node_modules/.bin/tauri build --ci)
 fi
 
+APP_BUNDLE=target/release/bundle/macos/AgentPort.app
+DMG_DIR=target/release/bundle/dmg
+
+# Without a Developer ID identity, rustc leaves only linker-level ad-hoc
+# signatures on the Mach-O files. Seal the complete bundle so Info.plist,
+# resources, and the sidecar pass strict verification. Preserve a valid
+# Developer ID signature when CI supplies one.
+if ! codesign --verify --deep --strict "$APP_BUNDLE" 2>/dev/null; then
+  echo "== applying complete local ad-hoc App signature =="
+  codesign --force --deep --sign - "$APP_BUNDLE"
+  codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+
+  # Tauri created the DMG before the complete App signature existed, so
+  # regenerate it from the now-sealed bundle. --skip-jenkins is the generated
+  # create-dmg script's noninteractive/CI mode and avoids Finder mount races.
+  DMG_PATH="$(find "$DMG_DIR" -maxdepth 1 -type f -name 'AgentPort_*.dmg' -print -quit)"
+  [ -n "$DMG_PATH" ] || { echo "ERROR: Tauri DMG not found" >&2; exit 2; }
+  DMG_STAGE="$(mktemp -d /tmp/agentport-signed-dmg.XXXXXX)"
+  cleanup_dmg_stage() { rm -r -- "$DMG_STAGE"; }
+  trap cleanup_dmg_stage EXIT
+  cp -R "$APP_BUNDLE" "$DMG_STAGE/AgentPort.app"
+  rm -f -- "$DMG_PATH"
+  "$DMG_DIR/bundle_dmg.sh" \
+    --volname AgentPort \
+    --volicon "$DMG_DIR/icon.icns" \
+    --window-size 660 400 \
+    --icon-size 128 \
+    --icon AgentPort.app 180 170 \
+    --hide-extension AgentPort.app \
+    --app-drop-link 480 170 \
+    --skip-jenkins \
+    "$DMG_PATH" \
+    "$DMG_STAGE"
+  cleanup_dmg_stage
+  trap - EXIT
+fi
+codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+
 OUT=dist-release/macos
 mkdir -p "$OUT"
 rm -rf "$OUT/AgentPort.app"

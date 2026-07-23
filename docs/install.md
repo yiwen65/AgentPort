@@ -23,7 +23,7 @@ Windows、移动端、SSH 主机、容器和远程主机不在支持范围内。
 
 ### Gatekeeper 说明
 
-以下步骤**仅适用于未签名/未公证的构建**（例如本地自行构建的产物）：
+以下步骤**仅适用于未使用 Developer ID 签名或未公证的构建**（例如本地自行构建的产物）。本地构建脚本会应用 ad-hoc Bundle 签名来校验 App、资源和 Sidecar 的完整性，但它不提供开发者身份信任，也不等同于 Apple 公证：
 
 - 首次打开被拦截时，到"系统设置 → 隐私与安全性"中，对 AgentPort 点击"仍要打开"；
 - 或者用命令去除隔离属性：
@@ -32,7 +32,7 @@ Windows、移动端、SSH 主机、容器和远程主机不在支持范围内。
 xattr -cr /Applications/AgentPort.app
 ```
 
-经过签名与公证的构建无需上述操作；本仓库当前构建未签名（见 release-manifest.json）。
+经过 Developer ID 签名与公证的构建无需上述操作；本仓库当前构建仅有 ad-hoc 完整性签名，未执行 Developer ID 签名与公证（见 release-manifest.json）。
 
 ## Ubuntu 22.04 / 24.04（正式支持）
 
