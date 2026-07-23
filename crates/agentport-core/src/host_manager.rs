@@ -162,6 +162,13 @@ fn pid_alive(pid: i32) -> bool {
     }
 }
 
+fn stop_is_complete(lifecycle: Lifecycle) -> bool {
+    matches!(
+        lifecycle,
+        Lifecycle::Interrupted | Lifecycle::Exited | Lifecycle::Stopped
+    )
+}
+
 /// Poll until `pid` is gone or `timeout` elapses. Returns true when gone.
 fn wait_pid_gone(pid: i32, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
@@ -518,7 +525,7 @@ impl<'a> HostManager<'a> {
     /// `Stopped` result that may leave an Agent (or hit a reused PID) behind.
     pub fn stop(&self, session_id: &str, grace_ms: u64) -> Result<()> {
         let session = self.db.get_session(session_id)?;
-        if matches!(session.lifecycle, Lifecycle::Stopped | Lifecycle::Exited) {
+        if stop_is_complete(session.lifecycle) {
             return Ok(()); // idempotent
         }
         let observed_binding = self.db.session_host_binding(session_id).ok();
@@ -550,10 +557,10 @@ impl<'a> HostManager<'a> {
                 )? {
                     // A concurrent observer (e.g. the GUI monitor consuming
                     // the Host's Exit frame) may have already recorded the
-                    // terminal fact. An already-stopped/exited Session means
+                    // terminal fact. An already-terminal Session means
                     // the stop goal is achieved, not a replacement conflict.
                     let current = self.db.get_session(session_id)?;
-                    if matches!(current.lifecycle, Lifecycle::Stopped | Lifecycle::Exited) {
+                    if stop_is_complete(current.lifecycle) {
                         return Ok(());
                     }
                     return Err(CoreError::Conflict(format!(
@@ -563,19 +570,15 @@ impl<'a> HostManager<'a> {
                 Ok(())
             }
             Err(CoreError::Host(_)) => {
-                // Do not signal a database PID that may have been reused by
-                // an unrelated process. The stale observation may only mark
-                // its own binding interrupted; a replacement is protected by
-                // the PID/run CAS.
+                // Reconcile only the exact PID binding observed before the
+                // failed connection. A verified-dead Host makes the stop goal
+                // complete; a live PID or an unbound launch that may still be
+                // starting keeps returning an error below.
                 if let Some(binding) = observed_binding {
-                    if let Some(host_pid) = binding.host_pid {
-                        if !pid_alive(host_pid as i32) {
-                            let _ = self.db.update_session_lifecycle_if_host(
-                                session_id,
-                                host_pid,
-                                binding.run_identity(),
-                                Lifecycle::Interrupted,
-                            );
+                    if binding.host_pid.is_some() {
+                        self.reconcile_unreachable_binding(session_id, &binding)?;
+                        if stop_is_complete(self.db.get_session(session_id)?.lifecycle) {
+                            return Ok(());
                         }
                     }
                 }
@@ -1686,19 +1689,102 @@ mod tests {
     // -- 4. stop is idempotent --------------------------------------------------
 
     #[test]
-    fn stop_idempotent_for_non_running_sessions() {
+    fn stop_idempotent_for_terminal_sessions() {
         let (_dir, paths, db) = fixture();
         add_project(&db, "prj_t4");
         let mgr = HostManager {
             paths: &paths,
             db: &db,
         };
-        for lc in [Lifecycle::Stopped, Lifecycle::Exited] {
+        for lc in [
+            Lifecycle::Interrupted,
+            Lifecycle::Stopped,
+            Lifecycle::Exited,
+        ] {
             let sid = ids::new_id("ses");
             db.insert_session(&session(&sid, "prj_t4", lc)).unwrap();
             mgr.stop(&sid, 500).unwrap();
             assert_eq!(db.get_session(&sid).unwrap().lifecycle, lc);
         }
+    }
+
+    #[test]
+    fn stop_succeeds_for_archived_session_with_verified_dead_host() {
+        let (_dir, paths, db) = fixture();
+        add_project(&db, "prj_archived_dead");
+        let sid = ids::new_id("ses");
+        let socket = paths.socket_path(&sid);
+        let mut archived = session(&sid, "prj_archived_dead", Lifecycle::Running);
+        archived.host_socket = Some(socket.to_string_lossy().into_owned());
+        db.insert_session(&archived).unwrap();
+        db.update_session_host(&sid, Some(999_999), Some(&socket.to_string_lossy()))
+            .unwrap();
+        db.archive_session(&sid).unwrap();
+        leave_stale_socket(&socket);
+
+        let mgr = HostManager {
+            paths: &paths,
+            db: &db,
+        };
+        mgr.stop(&sid, 500).unwrap();
+
+        assert_eq!(
+            db.get_session(&sid).unwrap().lifecycle,
+            Lifecycle::Interrupted
+        );
+    }
+
+    #[test]
+    fn stop_keeps_running_session_when_socket_fails_but_host_pid_is_alive() {
+        let (_dir, paths, db) = fixture();
+        add_project(&db, "prj_live_unreachable");
+        let sid = ids::new_id("ses");
+        let socket = paths.socket_path(&sid);
+        let mut running = session(&sid, "prj_live_unreachable", Lifecycle::Running);
+        running.host_socket = Some(socket.to_string_lossy().into_owned());
+        db.insert_session(&running).unwrap();
+        db.update_session_host(
+            &sid,
+            Some(std::process::id() as i64),
+            Some(&socket.to_string_lossy()),
+        )
+        .unwrap();
+
+        let mgr = HostManager {
+            paths: &paths,
+            db: &db,
+        };
+        let error = mgr.stop(&sid, 500).unwrap_err();
+
+        assert!(matches!(error, CoreError::Host(_)), "got {error:?}");
+        assert_eq!(db.get_session(&sid).unwrap().lifecycle, Lifecycle::Running);
+    }
+
+    #[test]
+    fn stop_does_not_complete_an_unbound_run_that_may_still_be_launching() {
+        let (_dir, paths, db) = fixture();
+        add_project(&db, "prj_launching_unbound");
+        let sid = ids::new_id("ses");
+        db.insert_session(&session(&sid, "prj_launching_unbound", Lifecycle::Creating))
+            .unwrap();
+        let run = db.create_session_run(&sid, &ids::new_uuid()).unwrap();
+        let log_path = paths.run_log_path(&sid, &run.run_id);
+        db.claim_session_run(
+            &sid,
+            &run.run_id,
+            run.run_ordinal,
+            &log_path.to_string_lossy(),
+        )
+        .unwrap();
+
+        let mgr = HostManager {
+            paths: &paths,
+            db: &db,
+        };
+        let error = mgr.stop(&sid, 500).unwrap_err();
+
+        assert!(matches!(error, CoreError::Host(_)), "got {error:?}");
+        assert_eq!(db.get_session(&sid).unwrap().lifecycle, Lifecycle::Creating);
     }
 
     // -- 5. reconcile_on_startup ------------------------------------------------
