@@ -606,9 +606,9 @@ pub fn search_perf(ctx: &PerfCtx) -> Result<()> {
             target: "index >= 20 MiB/s; query P95 <= 200ms; disk ratio <= 0.35 (see notes)".into(),
             unit: "mixed",
             samples: vec![rate, p95, ratio],
-            pass: rate >= 20.0 && p95 <= 200.0,
+            pass: rate >= 20.0 && p95 <= 200.0 && ratio <= 0.35,
             notes: format!(
-                "index {rate:.1} MiB/s over 100 MiB; query p95 {p95:.1}ms; index/source ratio {ratio:.2} (trigram stores text+postings; PRD 0.35 needs contentless index — documented limitation)"
+                "index {rate:.1} MiB/s over 100 MiB; query p95 {p95:.1}ms; index/source ratio {ratio:.2} (contentless detail-free trigram postings + compressed redacted chunks)"
             ),
         },
     );

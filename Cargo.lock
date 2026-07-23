@@ -50,6 +50,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "dirs 5.0.1",
+ "flate2",
  "keyring",
  "libc",
  "nix 0.29.0",

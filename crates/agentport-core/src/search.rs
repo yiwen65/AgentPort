@@ -3,6 +3,9 @@
 //! - Source of truth is the log files + SQLite metadata; the index is a derived
 //!   FTS5 table that can be dropped and rebuilt at any time without touching
 //!   sources.
+//! - FTS postings are contentless/detail-free. Redacted display chunks live in
+//!   a compressed companion table so snippets never require storing a second
+//!   plaintext copy of the terminal log.
 //! - Only ANSI-stripped text is indexed. Secret values and env var values are
 //!   never indexed — index input passes through the redactor first.
 //! - Queries trigger at >= 2 chars (metadata LIKE) and >= 3 chars (FTS trigram
@@ -16,16 +19,19 @@ use crate::error::{CoreError, Result};
 use crate::paths::AppPaths;
 use crate::redact::redact_bytes;
 use chrono::Utc;
+use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::HashSet;
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-pub const INDEX_FORMAT_VERSION: i64 = 1;
+pub const INDEX_FORMAT_VERSION: i64 = 3;
 pub const MIN_QUERY_CHARS: usize = 2;
 pub const MIN_FTS_CHARS: usize = 3;
-/// Chunk size of stripped text indexed per row.
-pub const INDEX_CHUNK_BYTES: usize = 1024;
+/// Chunk size of stripped text indexed per row. Larger rows amortize SQLite
+/// and FTS5 per-row work while keeping search-result offsets reasonably local.
+pub const INDEX_CHUNK_BYTES: usize = 16 * 1024;
 
 /// Snippets keep at most this many chars (PRD 3.6: 匹配行原文截 120 字符).
 const SNIPPET_MAX_CHARS: usize = 120;
@@ -46,13 +52,23 @@ const STATE_REBUILD_NEEDED: &str = "rebuild_needed";
 /// table. Trigram tokenizer requires SQLite >= 3.34; rusqlite's bundled SQLite
 /// is 3.46, so `tokenize='trigram'` is always available.
 const FTS_DDL: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
-    session_id UNINDEXED,
-    chunk_seq UNINDEXED,
-    log_offset UNINDEXED,
     text,
-    tokenize='trigram'
+    content='',
+    tokenize='trigram',
+    detail='none',
+    columnsize=0
 )";
 const META_DDL: &str = "
+CREATE TABLE IF NOT EXISTS search_index_chunks(
+    rowid INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    chunk_seq INTEGER NOT NULL,
+    log_offset INTEGER NOT NULL,
+    compressed_text BLOB NOT NULL,
+    UNIQUE(session_id, chunk_seq)
+);
+CREATE INDEX IF NOT EXISTS idx_search_chunks_session
+    ON search_index_chunks(session_id, chunk_seq);
 CREATE TABLE IF NOT EXISTS search_index_meta(
     session_id TEXT PRIMARY KEY,
     high_water INTEGER NOT NULL DEFAULT 0,
@@ -166,10 +182,7 @@ impl<'a> SearchIndex<'a> {
         let conn = self.db.conn().lock().unwrap();
         let tx = conn.unchecked_transaction()?;
         for session_id in session_ids {
-            tx.execute(
-                "DELETE FROM search_index WHERE session_id=?1",
-                params![session_id],
-            )?;
+            delete_session_index(&tx, session_id)?;
             tx.execute(
                 "DELETE FROM search_index_meta WHERE session_id=?1",
                 params![session_id],
@@ -179,10 +192,10 @@ impl<'a> SearchIndex<'a> {
         Ok(())
     }
 
-    /// Index one session's log: strip ANSI, redact, chunk, upsert rows with
-    /// (session_id, chunk_seq, log_offset, text). Tracks a per-session
-    /// high-water mark so repeated calls are incremental. Returns the number
-    /// of new raw log bytes consumed this call.
+    /// Index one session's log: strip ANSI, redact and chunk it; store compact
+    /// FTS postings plus compressed display text and offsets. Tracks a
+    /// per-session high-water mark so repeated calls are incremental. Returns
+    /// the number of new raw log bytes consumed this call.
     pub fn index_session_log(
         &self,
         session_id: &str,
@@ -207,15 +220,14 @@ impl<'a> SearchIndex<'a> {
             // Log rotated (current generation shorter than what we already
             // indexed): every indexed row points into a dropped generation, so
             // delete them all and start over from offset 0.
-            conn.execute(
-                "DELETE FROM search_index WHERE session_id=?1",
-                params![session_id],
-            )?;
-            conn.execute(
+            let tx = conn.unchecked_transaction()?;
+            delete_session_index(&tx, session_id)?;
+            tx.execute(
                 "INSERT INTO search_index_meta(session_id,high_water,indexed_at) VALUES(?1,0,?2)
                  ON CONFLICT(session_id) DO UPDATE SET high_water=0, indexed_at=excluded.indexed_at",
                 params![session_id, Utc::now().to_rfc3339()],
             )?;
+            tx.commit()?;
             high_water = 0;
         }
         if file_len == high_water {
@@ -228,7 +240,8 @@ impl<'a> SearchIndex<'a> {
         let consumed = raw.len() as u64;
 
         let mut next_seq: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(chunk_seq), -1) + 1 FROM search_index WHERE session_id=?1",
+            "SELECT COALESCE(MAX(chunk_seq), -1) + 1
+             FROM search_index_chunks WHERE session_id=?1",
             params![session_id],
             |r| r.get(0),
         )?;
@@ -237,26 +250,27 @@ impl<'a> SearchIndex<'a> {
         // index (PRD 3.7: secrets must never be indexed; redact_bytes is the
         // one-shot redactor applied to each chunk). log_offset is the chunk's
         // start byte in the raw log so hits map back to logs::read_range.
-        let mut rows: Vec<(i64, i64, String)> = Vec::new();
-        for (i, chunk) in raw.chunks(INDEX_CHUNK_BYTES).enumerate() {
-            let log_offset = high_water + (i * INDEX_CHUNK_BYTES) as u64;
-            let stripped = strip_ansi_escapes::strip(chunk);
-            let (redacted, _hits) = redact_bytes(&stripped, secrets);
-            let text = String::from_utf8_lossy(&redacted);
-            if !mostly_printable(&text) {
-                continue;
-            }
-            rows.push((next_seq, log_offset as i64, text.into_owned()));
-            next_seq += 1;
-        }
-
         let tx = conn.unchecked_transaction()?;
         {
-            let mut st = tx.prepare(
-                "INSERT INTO search_index(session_id,chunk_seq,log_offset,text) VALUES(?1,?2,?3,?4)",
+            let mut chunk_st = tx.prepare(
+                "INSERT INTO search_index_chunks(
+                    session_id,chunk_seq,log_offset,compressed_text
+                 ) VALUES(?1,?2,?3,?4)",
             )?;
-            for (seq, off, text) in &rows {
-                st.execute(params![session_id, seq, off, text])?;
+            let mut index_st = tx.prepare("INSERT INTO search_index(rowid,text) VALUES(?1,?2)")?;
+            for (i, chunk) in raw.chunks(INDEX_CHUNK_BYTES).enumerate() {
+                let log_offset = high_water + (i * INDEX_CHUNK_BYTES) as u64;
+                let stripped = strip_ansi_escapes::strip(chunk);
+                let (redacted, _hits) = redact_bytes(&stripped, secrets);
+                let text = String::from_utf8_lossy(&redacted);
+                if !mostly_printable(&text) {
+                    continue;
+                }
+                let compressed = compress_index_text(text.as_bytes())?;
+                chunk_st.execute(params![session_id, next_seq, log_offset as i64, compressed])?;
+                let rowid = tx.last_insert_rowid();
+                index_st.execute(params![rowid, text.as_ref()])?;
+                next_seq += 1;
             }
         }
         tx.execute(
@@ -286,6 +300,7 @@ impl<'a> SearchIndex<'a> {
             set_state(&conn, "state", STATE_REBUILD_NEEDED)?;
             // Drop + recreate clears stale rows AND broken shadow tables.
             conn.execute_batch("DROP TABLE IF EXISTS search_index")?;
+            conn.execute_batch("DELETE FROM search_index_chunks")?;
             conn.execute_batch("DELETE FROM search_index_meta")?;
             conn.execute_batch(FTS_DDL)?;
         }
@@ -355,7 +370,8 @@ impl<'a> SearchIndex<'a> {
         {
             let mut st = conn.prepare(
                 "SELECT id,project_id,title,cwd FROM sessions
-                 WHERE title LIKE ?1 ESCAPE '\\' OR cwd LIKE ?1 ESCAPE '\\'
+                 WHERE archived_at IS NULL
+                   AND (title LIKE ?1 ESCAPE '\\' OR cwd LIKE ?1 ESCAPE '\\')
                  ORDER BY updated_at DESC LIMIT ?2",
             )?;
             let rows = st.query_map(params![like, lim], |r| {
@@ -409,7 +425,25 @@ impl<'a> SearchIndex<'a> {
         // ---- terminal text: FTS5 trigram (>= MIN_FTS_CHARS, index healthy) ----
         if index_ok && q.chars().count() >= MIN_FTS_CHARS && limit > 0 {
             match query_terminal(&conn, q, limit, &mut result.hits) {
-                Ok(rotated) => partial |= rotated,
+                Ok(rotated) => {
+                    partial |= rotated;
+                    // A terminal hit carries the same Session title plus the
+                    // useful matching snippet, so keep it instead of a
+                    // duplicate metadata-only result for that Session.
+                    let terminal_sessions = result
+                        .hits
+                        .iter()
+                        .filter(|hit| hit.kind == HitKind::Terminal)
+                        .filter_map(|hit| hit.session_id.clone())
+                        .collect::<HashSet<_>>();
+                    result.hits.retain(|hit| {
+                        hit.kind != HitKind::Session
+                            || hit
+                                .session_id
+                                .as_ref()
+                                .is_none_or(|id| !terminal_sessions.contains(id))
+                    });
+                }
                 Err(_) => {
                     // The index broke after open() (shadow table dropped,
                     // disk error, ...): pause indexed queries (PRD 3.6 failure
@@ -558,14 +592,60 @@ fn set_state(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn delete_session_index(conn: &Connection, session_id: &str) -> Result<()> {
+    let indexed_chunks = {
+        let mut st = conn.prepare(
+            "SELECT rowid,compressed_text
+             FROM search_index_chunks WHERE session_id=?1 ORDER BY chunk_seq",
+        )?;
+        let rows = st.query_map(params![session_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    let mut delete_st = conn.prepare(
+        "INSERT INTO search_index(search_index,rowid,text)
+         VALUES('delete',?1,?2)",
+    )?;
+    for (rowid, compressed) in indexed_chunks {
+        let text = decompress_index_text(&compressed)?;
+        delete_st.execute(params![rowid, text])?;
+    }
+    conn.execute(
+        "DELETE FROM search_index_chunks WHERE session_id=?1",
+        params![session_id],
+    )?;
+    Ok(())
+}
+
+fn compress_index_text(text: &[u8]) -> Result<Vec<u8>> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(text)?;
+    Ok(encoder.finish()?)
+}
+
+fn decompress_index_text(compressed: &[u8]) -> Result<String> {
+    let mut decoder = ZlibDecoder::new(compressed);
+    let mut text = String::new();
+    decoder.read_to_string(&mut text)?;
+    Ok(text)
+}
+
 /// Cheap corruption probe — see open().
 fn probe_index(conn: &Connection) -> bool {
-    conn.query_row("SELECT count(*) FROM search_index", [], |r| {
-        r.get::<_, i64>(0)
-    })
+    conn.query_row(
+        "SELECT count(*) FROM search_index WHERE search_index MATCH ?1",
+        params![fts_quote("zxq")],
+        |r| r.get::<_, i64>(0),
+    )
     .is_ok()
         && conn
             .query_row("SELECT count(*) FROM search_index_meta", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .is_ok()
+        && conn
+            .query_row("SELECT count(*) FROM search_index_chunks", [], |r| {
                 r.get::<_, i64>(0)
             })
             .is_ok()
@@ -579,33 +659,57 @@ fn query_terminal(
     limit: usize,
     hits: &mut Vec<SearchHit>,
 ) -> Result<bool> {
-    // JOIN with sessions both enriches hits (title/project/log path) and
-    // silently skips orphan rows whose session no longer exists. The meta
-    // join detects logs that rotated since they were indexed.
-    let mut st = conn.prepare(
-        "SELECT search_index.session_id, search_index.log_offset, search_index.text,
-                s.title, s.project_id, s.log_path, COALESCE(m.high_water, 0)
+    // detail=none keeps one posting per (trigram,row) instead of recording
+    // every token position. Reconstruct the substring query as an AND of
+    // three-character tokens, then reject the rare out-of-order false positive
+    // against the stored chunk text below.
+    let match_query = fts_trigram_query(q);
+    // Fetch only ids from the potentially large FTS candidate set. The
+    // compressed display chunk is loaded once per still-unmatched Session, so
+    // common three-character searches do not inflate memory.
+    let mut candidate_st = conn.prepare(
+        "SELECT search_index.rowid,chunks.session_id
          FROM search_index
-         JOIN sessions s ON s.id = search_index.session_id
-         LEFT JOIN search_index_meta m ON m.session_id = search_index.session_id
-         WHERE search_index MATCH ?1
-         ORDER BY bm25(search_index)
-         LIMIT ?2",
+         JOIN search_index_chunks chunks ON chunks.rowid=search_index.rowid
+         JOIN sessions s ON s.id=chunks.session_id
+         WHERE search_index MATCH ?1 AND s.archived_at IS NULL
+         ORDER BY search_index.rowid",
     )?;
-    let rows = st.query_map(params![fts_quote(q), limit as i64], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, i64>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, String>(3)?,
-            r.get::<_, String>(4)?,
-            r.get::<_, String>(5)?,
-            r.get::<_, i64>(6)?,
-        ))
+    let candidates = candidate_st.query_map(params![match_query], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
     })?;
+    let mut hit_st = conn.prepare(
+        "SELECT chunks.log_offset,chunks.compressed_text,
+                s.title,s.project_id,s.log_path,COALESCE(m.high_water,0)
+         FROM search_index_chunks chunks
+         JOIN sessions s ON s.id=chunks.session_id
+         LEFT JOIN search_index_meta m ON m.session_id=chunks.session_id
+         WHERE chunks.rowid=?1 AND s.archived_at IS NULL",
+    )?;
     let mut any_rotated = false;
-    for row in rows {
-        let (session_id, log_offset, text, title, project_id, log_path, high_water) = row?;
+    let needle = q.to_lowercase();
+    let mut matched_sessions = HashSet::new();
+    for candidate in candidates {
+        let (rowid, session_id) = candidate?;
+        if matched_sessions.contains(&session_id) {
+            continue;
+        }
+        let (log_offset, compressed, title, project_id, log_path, high_water) =
+            hit_st.query_row(params![rowid], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            })?;
+        let text = decompress_index_text(&compressed)?;
+        if !text.to_lowercase().contains(&needle) {
+            continue;
+        }
+        matched_sessions.insert(session_id.clone());
         // Rotated when the file is gone, when the hit offset fell out of the
         // current generation (offset >= file length), or when the file was
         // truncated since indexing (high_water > file length — this also
@@ -631,8 +735,37 @@ fn query_terminal(
             },
             rotated_away: rotated,
         });
+        if matched_sessions.len() >= limit {
+            break;
+        }
     }
     Ok(any_rotated)
+}
+
+/// Build a detail=none-compatible FTS5 query. Every MATCH phrase is exactly
+/// one trigram; combining them with AND narrows candidates without relying on
+/// token-position data that the compact index intentionally omits.
+fn fts_trigram_query(q: &str) -> String {
+    const MAX_TERMS: usize = 32;
+    let chars = q.chars().collect::<Vec<_>>();
+    debug_assert!(chars.len() >= MIN_FTS_CHARS);
+    let window_count = chars.len().saturating_sub(2);
+    let positions = if window_count <= MAX_TERMS {
+        (0..window_count).collect::<Vec<_>>()
+    } else {
+        (0..MAX_TERMS)
+            .map(|i| i * (window_count - 1) / (MAX_TERMS - 1))
+            .collect::<Vec<_>>()
+    };
+    let mut seen = HashSet::new();
+    positions
+        .into_iter()
+        .filter_map(|start| {
+            let term = chars[start..start + 3].iter().collect::<String>();
+            seen.insert(term.clone()).then(|| fts_quote(&term))
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ")
 }
 
 /// Wrap the whole query in double quotes so FTS5 syntax chars (AND/OR/NEAR/*,
@@ -849,7 +982,12 @@ mod tests {
         assert_eq!(idx.index_state().unwrap(), IndexState::Ok);
         {
             let conn = f.db.conn().lock().unwrap();
-            for t in ["search_index", "search_index_meta", "search_index_state"] {
+            for t in [
+                "search_index",
+                "search_index_chunks",
+                "search_index_meta",
+                "search_index_state",
+            ] {
                 let n: i64 = conn
                     .query_row(
                         "SELECT count(*) FROM sqlite_master WHERE name=?1",
@@ -891,7 +1029,7 @@ mod tests {
         let idx = f.index();
         idx.open().unwrap();
 
-        let part1 = "hello terminal world\n".repeat(100); // 2100 bytes -> 3 chunks
+        let part1 = "hello terminal world\n".repeat(100);
         std::fs::write(&log, &part1).unwrap();
         let n = idx
             .index_session_log("ses_1", Path::new(&log), &[])
@@ -904,7 +1042,7 @@ mod tests {
             0
         );
 
-        let part2 = "second batch of bytes!\n".repeat(50); // 1150 bytes -> 2 chunks
+        let part2 = "second batch of bytes!\n".repeat(50);
         let mut file = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
         file.write_all(part2.as_bytes()).unwrap();
         drop(file);
@@ -924,7 +1062,7 @@ mod tests {
         assert_eq!(hw as u64, (part1.len() + part2.len()) as u64);
         let rows: i64 = conn
             .query_row(
-                "SELECT count(*) FROM search_index WHERE session_id='ses_1'",
+                "SELECT count(*) FROM search_index_chunks WHERE session_id='ses_1'",
                 [],
                 |r| r.get(0),
             )
@@ -935,7 +1073,8 @@ mod tests {
         // chunk_seq unique per session (no duplicate rows on re-index)
         let distinct: i64 = conn
             .query_row(
-                "SELECT count(DISTINCT chunk_seq) FROM search_index WHERE session_id='ses_1'",
+                "SELECT count(DISTINCT chunk_seq)
+                 FROM search_index_chunks WHERE session_id='ses_1'",
                 [],
                 |r| r.get(0),
             )
@@ -944,7 +1083,7 @@ mod tests {
         // offsets strictly increasing and chunk-aligned to the byte stream
         let min_off: i64 = conn
             .query_row(
-                "SELECT min(log_offset) FROM search_index WHERE session_id='ses_1'",
+                "SELECT min(log_offset) FROM search_index_chunks WHERE session_id='ses_1'",
                 [],
                 |r| r.get(0),
             )
@@ -961,14 +1100,15 @@ mod tests {
         let idx = f.index();
         idx.open().unwrap();
 
-        // exactly 2048 bytes = 2 whole chunks, so the binary tail never
-        // shares a chunk with clean text
-        let text = "clean line 1234\n".repeat(128);
+        // Exactly one printable chunk followed by one binary chunk, so the
+        // binary tail never shares a row with clean text.
+        let text = "clean line 1234\n".repeat(INDEX_CHUNK_BYTES / 16);
         let mut content = text.clone().into_bytes();
-        let mut binary = Vec::new();
-        while binary.len() < 2048 {
+        let mut binary = Vec::with_capacity(INDEX_CHUNK_BYTES);
+        while binary.len() < INDEX_CHUNK_BYTES {
             binary.extend_from_slice(&[0x00, 0x01, 0x02, 0x80, 0xFF, 0x90]);
         }
+        binary.truncate(INDEX_CHUNK_BYTES);
         content.extend_from_slice(&binary);
         std::fs::write(&log, &content).unwrap();
 
@@ -983,7 +1123,7 @@ mod tests {
         let conn = f.db.conn().lock().unwrap();
         let rows: i64 = conn
             .query_row(
-                "SELECT count(*) FROM search_index WHERE session_id='ses_1'",
+                "SELECT count(*) FROM search_index_chunks WHERE session_id='ses_1'",
                 [],
                 |r| r.get(0),
             )
@@ -1018,13 +1158,18 @@ mod tests {
 
         // raw index rows must not contain the secret
         let conn = f.db.conn().lock().unwrap();
-        let text: String = conn
+        let compressed: Vec<u8> = conn
             .query_row(
-                "SELECT text FROM search_index WHERE session_id='ses_1'",
+                "SELECT compressed_text
+                 FROM search_index_chunks WHERE session_id='ses_1'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
+        assert!(!compressed
+            .windows("supersecret123".len())
+            .any(|window| window == b"supersecret123"));
+        let text = decompress_index_text(&compressed).unwrap();
         assert!(!text.contains("supersecret123"));
         assert!(text.contains("[redacted]"));
         drop(conn);
@@ -1087,8 +1232,15 @@ mod tests {
         // mixed query: metadata kinds first, terminal last; per-kind limit
         let r = idx.query("pay", 10).unwrap();
         assert!(r.hits.iter().any(|h| h.kind == HitKind::Project));
-        assert!(r.hits.iter().any(|h| h.kind == HitKind::Session));
         assert!(r.hits.iter().any(|h| h.kind == HitKind::Terminal));
+        assert_eq!(
+            r.hits
+                .iter()
+                .filter(|h| h.session_id.as_deref() == Some("ses_1"))
+                .count(),
+            1,
+            "one Session must not appear once as metadata and again as terminal output"
+        );
         let first_terminal = r
             .hits
             .iter()
@@ -1101,6 +1253,116 @@ mod tests {
         for kind in [HitKind::Project, HitKind::Session, HitKind::Terminal] {
             assert!(r.hits.iter().filter(|h| h.kind == kind).count() <= 1);
         }
+    }
+
+    #[test]
+    fn query_returns_one_terminal_hit_per_session() {
+        let f = fixture();
+        f.add_project("prj_1", "demo");
+        let first_log = f.add_session("ses_first", "prj_1", "dedupe-marker first");
+        let second_log = f.add_session("ses_second", "prj_1", "dedupe-marker second");
+        let chunk = format!(
+            "dedupe-marker {}\n",
+            "x".repeat(INDEX_CHUNK_BYTES - "dedupe-marker \n".len())
+        );
+        std::fs::write(&first_log, chunk.repeat(8)).unwrap();
+        std::fs::write(&second_log, chunk.repeat(4)).unwrap();
+        let idx = f.index();
+        idx.open().unwrap();
+        idx.index_session_log("ses_first", Path::new(&first_log), &[])
+            .unwrap();
+        idx.index_session_log("ses_second", Path::new(&second_log), &[])
+            .unwrap();
+
+        let results = idx.query("dedupe-marker", 20).unwrap();
+        for session_id in ["ses_first", "ses_second"] {
+            assert_eq!(
+                results
+                    .hits
+                    .iter()
+                    .filter(|hit| hit.session_id.as_deref() == Some(session_id))
+                    .count(),
+                1,
+                "{session_id} must appear only once"
+            );
+        }
+    }
+
+    #[test]
+    fn query_checks_past_many_out_of_order_trigram_candidates() {
+        let f = fixture();
+        f.add_project("prj_1", "demo");
+        let log = f.add_session("ses_1", "prj_1", "candidate ordering");
+        let false_candidate = format!("abc{}bcd", "x".repeat(INDEX_CHUNK_BYTES - "abcbcd".len()));
+        let exact_prefix = "prefix abcd suffix";
+        let exact_candidate = format!(
+            "{exact_prefix}{}",
+            "y".repeat(INDEX_CHUNK_BYTES - exact_prefix.len())
+        );
+        std::fs::write(
+            &log,
+            format!("{}{exact_candidate}", false_candidate.repeat(12)),
+        )
+        .unwrap();
+
+        let idx = f.index();
+        idx.open().unwrap();
+        idx.index_session_log("ses_1", Path::new(&log), &[])
+            .unwrap();
+
+        let result = idx.query("abcd", 10).unwrap();
+        let hits = terminal_hits(&result);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].snippet.contains("abcd"));
+        assert_eq!(hits[0].log_offset, Some((12 * INDEX_CHUNK_BYTES) as u64));
+    }
+
+    #[test]
+    fn query_excludes_archived_and_deleted_sessions() {
+        let f = fixture();
+        f.add_project("prj_1", "demo");
+        let active_log = f.add_session("ses_active", "prj_1", "active-title");
+        let archived_log = f.add_session("ses_archived", "prj_1", "archived-title");
+        let deleted_log = f.add_session("ses_deleted", "prj_1", "deleted-title");
+        std::fs::write(&active_log, "shared-search-marker\n").unwrap();
+        std::fs::write(&archived_log, "shared-search-marker\n").unwrap();
+        std::fs::write(&deleted_log, "deleted-search-marker\n").unwrap();
+        let idx = f.index();
+        idx.open().unwrap();
+        for (session_id, log) in [
+            ("ses_active", &active_log),
+            ("ses_archived", &archived_log),
+            ("ses_deleted", &deleted_log),
+        ] {
+            idx.index_session_log(session_id, Path::new(log), &[])
+                .unwrap();
+        }
+
+        f.db.archive_session("ses_archived").unwrap();
+        f.db.archive_session("ses_deleted").unwrap();
+        f.db.purge_archived_session("ses_deleted").unwrap();
+
+        let terminal = idx.query("shared-search-marker", 10).unwrap();
+        assert!(terminal
+            .hits
+            .iter()
+            .any(|hit| hit.session_id.as_deref() == Some("ses_active")));
+        assert!(terminal
+            .hits
+            .iter()
+            .all(|hit| hit.session_id.as_deref() != Some("ses_archived")));
+
+        let archived = idx.query("archived-title", 10).unwrap();
+        assert!(archived
+            .hits
+            .iter()
+            .all(|hit| hit.session_id.as_deref() != Some("ses_archived")));
+
+        let deleted = idx.query("deleted-search-marker", 10).unwrap();
+        assert!(deleted
+            .hits
+            .iter()
+            .all(|hit| hit.session_id.as_deref() != Some("ses_deleted")));
     }
 
     // 5. 轮转：旧 offset 命中 rotated_away=true 且 partial=true；再索引恢复
@@ -1367,16 +1629,14 @@ mod tests {
             db_bytes / mib,
             ratio
         );
-        // Measured on this machine (debug): 20.0 MiB indexed in 2.4s
-        // (8.4 MiB/s), db 71.7 MiB => index/raw ratio 3.58, avg query 1.6 ms.
-        // Trigram FTS5 with stored text and 1 KiB chunks is inherently
-        // multiple-x the source text (postings ~ every 3-char window + stored
-        // chunk text), so PRD ch.10's <=35% disk target is NOT reachable with
-        // this mandated layout — the release perf harness should recheck and,
-        // if the 35% target stands, the fix is a contentless/external-content
-        // index or Tantivy (PRD 8 allows the swap). This assert is only a
-        // coarse sanity bound against blowups.
-        assert!(ratio < 4.5, "index size exploded: ratio {ratio:.2}");
+        // Contentless/detail-free FTS postings plus fast-compressed redacted
+        // chunks keep this representative ANSI/CJK sample within the PRD
+        // ch.10 <=35% disk budget. The release perf harness separately guards
+        // the >=20 MiB/s indexing target.
+        assert!(
+            ratio <= 0.35,
+            "index size exceeded budget: ratio {ratio:.2}"
+        );
 
         // fixed-keyword query latency, 100 iterations
         let r = idx.query("PERF_NEEDLE_Q7Z", 20).unwrap(); // warmup
