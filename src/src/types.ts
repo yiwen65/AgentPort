@@ -15,6 +15,7 @@ export type WorktreeHealthStr = "clean" | "dirty" | "missing" | "locked";
 export type WorktreeBranchMode = "auto" | "new" | "existing";
 export type ThemeSetting = "system" | "dark" | "light";
 export type ReducedMotionSetting = "system" | "on" | "off";
+export type UiLanguage = "zh-CN" | "en-US";
 
 /** A status ordering key: run ordinal first, then its local sequence. */
 export interface StatusCursorView {
@@ -95,6 +96,7 @@ export interface ProjectView {
 export interface Settings {
   logLimitMib: number;
   notificationsEnabled: boolean;
+  uiLanguage: UiLanguage;
   theme: ThemeSetting;
   terminalFontFamily: string;
   terminalFontSize: number;
@@ -191,6 +193,7 @@ export interface BootInfo {
   projects: ProjectView[];
   timeline: TimelineData;
   timelineError: string | null;
+  timelineMessage?: RuntimeMessageEnvelope | null;
   secretBackend: string;
   indexState: string;
   webview: string;
@@ -202,6 +205,8 @@ export interface ProbeOutcome {
   displayName: string;
   state: "available" | "conflict" | "unavailable";
   reason: string | null;
+  /** Localizable application message from newer backends; `reason` remains for compatibility. */
+  reasonMessage?: RuntimeMessageEnvelope | null;
   install: AdapterInstall | null;
   candidates: ProbeCandidate[];
 }
@@ -219,7 +224,22 @@ export interface CreateSessionResult {
   resumePrecision: ResumePrecisionStr;
   agentSessionId: string | null;
   notes: string[];
+  /** Stable localizable notices. Fall back to `notes` when connected to an older backend. */
+  notices?: RuntimeMessageEnvelope[];
   command: string[];
+}
+
+export type RuntimeMessageParams = Record<string, string | number | boolean | null>;
+
+export interface RuntimeMessageEnvelope {
+  /** Stable application-owned message identifier. Older Hosts may omit it. */
+  code?: string;
+  /** Named values safe to interpolate into localized UI copy. */
+  params?: RuntimeMessageParams;
+  /** Original backend detail retained for diagnostics, never used as a key. */
+  technicalDetail?: string;
+  /** Legacy display text kept for compatibility with already-running Hosts. */
+  message?: string;
 }
 
 export interface AttachInfo {
@@ -254,8 +274,8 @@ export type ChannelMsg =
       runId: string;
       runOrdinal: number;
     }
-  | { t: "error"; message: string; persistenceDegraded?: boolean }
-  | { t: "detached"; message?: string };
+  | ({ t: "error"; message: string; persistenceDegraded?: boolean } & RuntimeMessageEnvelope)
+  | ({ t: "detached" } & RuntimeMessageEnvelope);
 
 export interface WorktreeStatus {
   health: WorktreeHealthStr;
@@ -319,6 +339,7 @@ export interface RestartResult {
   resumePrecision: ResumePrecisionStr;
   agentSessionId: string | null;
   notes: string[];
+  notices?: RuntimeMessageEnvelope[];
   hostPid: number;
 }
 
@@ -405,6 +426,8 @@ export interface StructuredGitError {
   recoverable: boolean;
   currentStatus: RepositoryStatus | null;
   recoveryActions: string[];
+  /** Stable action IDs from current backends; absent on older versions. */
+  recoveryActionCodes?: string[];
   diagnostics: Record<string, unknown>;
   liveSessionIds: string[];
 }

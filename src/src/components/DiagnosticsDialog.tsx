@@ -2,13 +2,16 @@
 // summary, redacted diagnostics ZIP export, notification test.
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import Modal from "./Modal";
-import { api, copyText, errorText } from "../api";
+import { api, errorText } from "../api";
+import { copyTextWithToast } from "../actions";
 import { formatBytes } from "../format";
 import { closeDialog, getState, toast, useStore } from "../store";
 import type { HostInfo } from "../types";
 
 export default function DiagnosticsDialog() {
+  const { t } = useTranslation(["runtime", "common"]);
   const s = useStore();
   const [hosts, setHosts] = useState<HostInfo[]>([]);
   const [caps, setCaps] = useState<string | null>(null);
@@ -21,13 +24,29 @@ export default function DiagnosticsDialog() {
   const [busy, setBusy] = useState(false);
 
   const sessions = s.projects.flatMap((p) => p.sessions);
+  const lifecycleLabel = (lifecycle: string) => {
+    switch (lifecycle) {
+      case "creating":
+        return t("runtime:diagnostics.lifecycleValue.creating");
+      case "running":
+        return t("runtime:diagnostics.lifecycleValue.running");
+      case "interrupted":
+        return t("runtime:diagnostics.lifecycleValue.interrupted");
+      case "exited":
+        return t("runtime:diagnostics.lifecycleValue.exited");
+      case "stopped":
+        return t("runtime:diagnostics.lifecycleValue.stopped");
+      default:
+        return lifecycle;
+    }
+  };
 
   const reload = async () => {
     setError(null);
     try {
       setHosts(await api.diagHosts());
     } catch (e) {
-      setError(errorText(e));
+      setError(t("runtime:diagnostics.hostListFailed", { detail: errorText(e) }));
     }
   };
 
@@ -38,10 +57,9 @@ export default function DiagnosticsDialog() {
   const copySummary = async () => {
     try {
       const text = await api.diagSummary();
-      const ok = await copyText(text);
-      toast(ok ? "诊断摘要已复制" : "复制失败", ok ? "success" : "error");
+      await copyTextWithToast(text, t("runtime:diagnostics.summaryCopied"));
     } catch (e) {
-      toast(errorText(e), "error");
+      toast(t("runtime:diagnostics.copySummaryFailed", { detail: errorText(e) }), "error");
     }
   };
 
@@ -54,14 +72,14 @@ export default function DiagnosticsDialog() {
         setCaps(raw);
       }
     } catch (e) {
-      toast(errorText(e), "error");
+      toast(t("runtime:diagnostics.capabilitiesFailed", { detail: errorText(e) }), "error");
     }
   };
 
   const exportZip = async () => {
     const sid = zipSession || sessions[0]?.id;
     if (!sid) {
-      toast("没有可导出的 Session", "error");
+      toast(t("runtime:diagnostics.noSessionToExport"), "error");
       return;
     }
     setBusy(true);
@@ -75,37 +93,37 @@ export default function DiagnosticsDialog() {
         stripAnsi: false,
       });
       setZipResult(p);
-      toast("诊断包已导出（已脱敏）", "success");
+      toast(t("runtime:diagnostics.exported"), "success");
     } catch (e) {
-      toast(`导出失败：${errorText(e)}`, "error");
+      toast(t("runtime:diagnostics.exportFailed", { detail: errorText(e) }), "error");
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <Modal title="诊断中心" onClose={closeDialog} wide>
+    <Modal title={t("runtime:diagnostics.title")} onClose={closeDialog} wide>
       {error ? <div className="error-bar" role="alert">{error}</div> : null}
 
       <div className="section-title">
-        Host 列表
+        {t("runtime:diagnostics.hosts")}
         <button className="btn small ghost" style={{ float: "right" }} onClick={() => void reload()}>
-          刷新
+          {t("common:actions.refresh")}
         </button>
       </div>
       {hosts.length === 0 ? (
         <p className="dim" style={{ margin: 0 }}>
-          暂无 Session Host 记录。
+          {t("runtime:diagnostics.noHosts")}
         </p>
       ) : (
-        <table className="table" aria-label="Host 列表">
+        <table className="table" aria-label={t("runtime:diagnostics.hosts")}>
           <thead>
             <tr>
               <th>Session</th>
               <th>PID</th>
-              <th>在线</th>
-              <th>生命周期</th>
-              <th>日志</th>
+              <th>{t("runtime:diagnostics.online")}</th>
+              <th>{t("runtime:diagnostics.lifecycle")}</th>
+              <th>{t("runtime:diagnostics.log")}</th>
               <th>Socket</th>
             </tr>
           </thead>
@@ -116,9 +134,9 @@ export default function DiagnosticsDialog() {
                 <td className="mono">{h.hostPid ?? "—"}</td>
                 <td>
                   <span className={`status-light ${h.alive ? "on" : "off"}`} aria-hidden="true" />{" "}
-                  {h.alive ? "在线" : "离线"}
+                  {h.alive ? t("runtime:diagnostics.online") : t("runtime:diagnostics.offline")}
                 </td>
-                <td>{h.lifecycle}</td>
+                <td>{lifecycleLabel(h.lifecycle)}</td>
                 <td>{formatBytes(h.logBytes)}</td>
                 <td className="mono dim" style={{ wordBreak: "break-all", maxWidth: 200 }}>
                   {h.socketPath ?? "—"}
@@ -129,24 +147,30 @@ export default function DiagnosticsDialog() {
         </table>
       )}
 
-      <div className="section-title">操作</div>
+      <div className="section-title">{t("runtime:diagnostics.actions")}</div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button className="btn" onClick={() => void copySummary()}>
-          复制诊断摘要
+          {t("runtime:diagnostics.copySummary")}
         </button>
         <button className="btn" onClick={() => void showCaps()}>
-          查看 CLI 能力
+          {t("runtime:diagnostics.showCapabilities")}
         </button>
         <button
           className="btn"
+          disabled={!s.settings?.notificationsEnabled}
+          data-tip={s.settings?.notificationsEnabled
+            ? undefined
+            : t("runtime:diagnostics.notificationDisabled")}
           onClick={() =>
             void api
               .notifyTest()
-              .then(() => toast("测试通知已发送", "success"))
-              .catch((e) => toast(`通知失败：${errorText(e)}`, "error"))
+              .then(() => toast(t("runtime:diagnostics.testSent"), "success"))
+              .catch((e) =>
+                toast(t("runtime:diagnostics.notificationFailed", { detail: errorText(e) }), "error"),
+              )
           }
         >
-          通知测试
+          {t("runtime:diagnostics.testNotification")}
         </button>
       </div>
       {caps !== null ? (
@@ -161,22 +185,22 @@ export default function DiagnosticsDialog() {
             maxHeight: 260,
             fontSize: 11,
           }}
-          aria-label="CLI 能力详情"
+          aria-label={t("runtime:diagnostics.capabilitiesAria")}
         >
           {caps}
         </pre>
       ) : null}
 
-      <div className="section-title">导出诊断 ZIP（默认脱敏，不含环境变量值与凭据）</div>
+      <div className="section-title">{t("runtime:diagnostics.exportTitle")}</div>
       <div className="form-row">
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <select
-            aria-label="选择 Session"
+            aria-label={t("runtime:diagnostics.chooseSession")}
             style={{ flex: "1 1 180px" }}
             value={zipSession || sessions[0]?.id || ""}
             onChange={(e) => setZipSession(e.target.value)}
           >
-            {sessions.length === 0 ? <option value="">（无 Session）</option> : null}
+            {sessions.length === 0 ? <option value="">{t("runtime:diagnostics.noSession")}</option> : null}
             {sessions.map((x) => (
               <option key={x.id} value={x.id}>
                 {x.title}
@@ -187,7 +211,7 @@ export default function DiagnosticsDialog() {
             type="text"
             className="mono"
             style={{ flex: "2 1 260px" }}
-            aria-label="ZIP 保存路径"
+            aria-label={t("runtime:diagnostics.savePath")}
             value={zipDest}
             onChange={(e) => setZipDest(e.target.value)}
           />
@@ -200,18 +224,21 @@ export default function DiagnosticsDialog() {
                 .then((p) => {
                   if (p) setZipDest(p);
                 })
-                .catch((e) => toast(errorText(e), "error"))
+                .catch((e) => toast(
+                  t("runtime:diagnostics.chooseDestinationFailed", { detail: errorText(e) }),
+                  "error",
+                ))
             }
           >
-            浏览…
+            {t("common:actions.browse")}
           </button>
           <button className="btn" disabled={busy || sessions.length === 0} onClick={() => void exportZip()}>
-            {busy ? "导出中…" : "导出 ZIP"}
+            {busy ? t("common:actions.exporting") : t("runtime:diagnostics.exportZip")}
           </button>
         </div>
         {zipResult ? (
           <span className="form-hint">
-            已导出：<span className="mono">{zipResult}</span>
+            {t("runtime:diagnostics.exportedPath")} <span className="mono">{zipResult}</span>
           </span>
         ) : null}
       </div>

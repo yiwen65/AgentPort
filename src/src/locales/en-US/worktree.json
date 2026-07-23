@@ -1,0 +1,8 @@
+{
+  "health": {
+    "clean": "Clean",
+    "dirty": "Uncommitted changes",
+    "missing": "Directory missing",
+    "locked": "Locked"
+  }
+}

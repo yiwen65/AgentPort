@@ -314,10 +314,10 @@ fn event_log_target(
     log_path: &str,
 ) -> (Option<LogCursor>, bool, Option<String>) {
     let Some(target) = target else {
-        return (None, false, Some("此事件没有记录可验证的输出位置".into()));
+        return (None, false, Some("no_verified_output_position".into()));
     };
     let Some(latest) = latest else {
-        return (None, true, Some("无法确认当前保留的输出代际".into()));
+        return (None, true, Some("output_generation_unverified".into()));
     };
     if target.run_id != latest.run_id
         || target.run_ordinal != latest.run_ordinal
@@ -325,15 +325,15 @@ fn event_log_target(
         || target.offset < 0
         || target.offset > latest.offset
     {
-        return (None, true, Some("输出已轮转或属于其他运行".into()));
+        return (None, true, Some("output_rotated".into()));
     }
     let offset = target.offset as u64;
     let Ok(metadata) = std::fs::metadata(log_path) else {
-        return (None, true, Some("输出已轮转或不再完整保留".into()));
+        return (None, true, Some("output_rotated".into()));
     };
     let len = metadata.len();
     if latest.offset < 0 || len < latest.offset as u64 || offset > len {
-        (None, true, Some("输出已轮转或不再完整保留".into()))
+        (None, true, Some("output_rotated".into()))
     } else {
         (Some(target.clone()), false, None)
     }
@@ -1035,7 +1035,7 @@ mod tests {
         assert_eq!(entry.log_cursor, None);
         assert_eq!(
             entry.location_unavailable_reason.as_deref(),
-            Some("输出已轮转或属于其他运行")
+            Some("output_rotated")
         );
     }
 
@@ -1078,7 +1078,7 @@ mod tests {
         assert!(timeline.entries[0].rotated_away);
         assert_eq!(
             timeline.entries[0].location_unavailable_reason.as_deref(),
-            Some("输出已轮转或属于其他运行")
+            Some("output_rotated")
         );
     }
 

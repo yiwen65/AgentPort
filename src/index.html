@@ -6,6 +6,8 @@
     <title>AgentPort</title>
     <script>
       try {
+        const savedLanguage = localStorage.getItem("agentport-ui-language");
+        document.documentElement.lang = savedLanguage === "en-US" ? "en-US" : "zh-CN";
         const rawSavedMode = localStorage.getItem("agentport-theme-mode");
         const rawSavedTheme = localStorage.getItem("agentport-effective-theme");
         const savedMode = rawSavedMode === "high_contrast" ? "dark" : rawSavedMode;

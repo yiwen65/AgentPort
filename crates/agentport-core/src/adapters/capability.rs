@@ -33,6 +33,10 @@ pub struct ProbeOutcome {
     pub candidates: Vec<ProbeCandidate>,
     /// Human-readable failure reason, or an automatic-selection note.
     pub reason: Option<String>,
+    /// Stable renderer-facing message code. `reason` remains for older GUIs.
+    pub reason_code: Option<&'static str>,
+    /// Raw probe detail kept out of the localized display message.
+    pub reason_detail: Option<String>,
 }
 
 /// Spawn `exe args...` with stdout/stderr piped, poll every 50 ms, kill the
@@ -297,13 +301,18 @@ fn probe_agent_with_candidates(
     confirmed_path: Option<&Path>,
     mut candidates: Vec<ProbeCandidate>,
 ) -> ProbeOutcome {
-    let mk = |state, install, reason, candidates: Vec<ProbeCandidate>| ProbeOutcome {
-        agent_type: t,
-        state,
-        install,
-        candidates,
-        reason,
-    };
+    let mk =
+        |state, install, reason, reason_code, reason_detail, candidates: Vec<ProbeCandidate>| {
+            ProbeOutcome {
+                agent_type: t,
+                state,
+                install,
+                candidates,
+                reason,
+                reason_code,
+                reason_detail,
+            }
+        };
 
     if let Some(path) = confirmed_path {
         let manual_path = path.to_string_lossy().into_owned();
@@ -330,14 +339,26 @@ fn probe_agent_with_candidates(
                     candidate.version_text = Some(install.version_text.clone());
                 }
                 install.candidates = candidates.clone();
-                mk(ProbeState::Available, Some(install), None, candidates)
+                mk(
+                    ProbeState::Available,
+                    Some(install),
+                    None,
+                    None,
+                    None,
+                    candidates,
+                )
             }
-            Err(error) => mk(
-                ProbeState::Unavailable,
-                None,
-                Some(format!("探测失败: {error}")),
-                candidates,
-            ),
+            Err(error) => {
+                let detail = error.to_string();
+                mk(
+                    ProbeState::Unavailable,
+                    None,
+                    Some(format!("探测失败: {detail}")),
+                    Some("probe_failed"),
+                    Some(detail),
+                    candidates,
+                )
+            }
         };
     }
 
@@ -346,6 +367,8 @@ fn probe_agent_with_candidates(
             ProbeState::Unavailable,
             None,
             Some("未找到可执行文件".into()),
+            Some("probe_executable_not_found"),
+            None,
             candidates,
         );
     }
@@ -363,22 +386,31 @@ fn probe_agent_with_candidates(
                         "已从 {total} 个候选中自动选择优先级最高且可用的路径；可在下方指定其他路径。"
                     )
                 });
-                return mk(ProbeState::Available, Some(install), note, candidates);
+                return mk(
+                    ProbeState::Available,
+                    Some(install),
+                    note,
+                    (total > 1).then_some("probe_auto_selected"),
+                    None,
+                    candidates,
+                );
             }
             Err(error) => errors.push(format!("{}: {error}", exe.display())),
         }
     }
 
+    let detail = errors
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "未知错误".into());
     mk(
         ProbeState::Unavailable,
         None,
         Some(format!(
-            "发现 {total} 个候选，但均无法通过只读探测：{}",
-            errors
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| "未知错误".into())
+            "发现 {total} 个候选，但均无法通过只读探测：{detail}"
         )),
+        Some("probe_candidates_failed"),
+        Some(detail),
         candidates,
     )
 }

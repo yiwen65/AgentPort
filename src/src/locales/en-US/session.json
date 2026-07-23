@@ -1,0 +1,38 @@
+{
+  "state": {
+    "working": "Working",
+    "needsInput": "Needs input",
+    "idle": "Idle",
+    "exited": "Exited",
+    "unknown": "Status unknown"
+  },
+  "source": {
+    "hook": "Hook",
+    "pty": "PTY",
+    "process": "Process",
+    "adapter": "Adapter"
+  },
+  "confidence": {
+    "high": "High confidence",
+    "medium": "Medium confidence",
+    "low": "Low confidence"
+  },
+  "precision": {
+    "exact": "Exact resume (native Session ID)",
+    "latest": "Resume most recent Session",
+    "unavailable": "Context cannot be resumed automatically"
+  },
+  "permission": {
+    "native": "Native approvals",
+    "auto": "Auto approve",
+    "bypass": "Bypass permission checks"
+  },
+  "builtInPreset": {
+    "pre_claude_safe": "Claude safe defaults",
+    "pre_codex_safe": "Codex safe defaults",
+    "pre_kimi_safe": "Kimi safe defaults",
+    "pre_qoder_safe": "Qoder full-access defaults",
+    "pre_pi_safe": "Pi local-permissions defaults",
+    "pre_shell_safe": "Shell safe defaults"
+  }
+}

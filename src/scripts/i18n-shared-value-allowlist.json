@@ -1,0 +1,17 @@
+[
+  "common:language.enUS",
+  "shell:ui.sidebar.worktreeScope",
+  "shell:ui.terminalSearch.matchPosition_one",
+  "shell:ui.terminalSearch.matchPosition_other",
+  "session:source.hook",
+  "session:source.pty",
+  "settings:ui.appearance.font.options.jetbrainsMonoVariable",
+  "settings:ui.appearance.font.options.sfMono",
+  "settings:ui.appearance.font.options.menlo",
+  "settings:ui.appearance.font.options.consolas",
+  "settings:ui.appearance.font.options.cascadiaMono",
+  "settings:ui.appearance.font.options.dejavuSansMono",
+  "settings:ui.adapters.columns.agent",
+  "settings:ui.adapters.columns.hook",
+  "runtime:search.kind.session"
+]

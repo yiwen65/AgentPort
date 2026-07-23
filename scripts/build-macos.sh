@@ -39,16 +39,26 @@ if [ "$UNIVERSAL" = 1 ]; then
     target/aarch64-apple-darwin/release/agentport-host \
     target/x86_64-apple-darwin/release/agentport-host \
     -output src-tauri/binaries/agentport-host-universal-apple-darwin
-  (cd src-tauri && ../src/node_modules/.bin/tauri build --target universal-apple-darwin)
+  (cd src-tauri && ../src/node_modules/.bin/tauri build --ci --target universal-apple-darwin)
 else
-  (cd src-tauri && ../src/node_modules/.bin/tauri build)
+  (cd src-tauri && ../src/node_modules/.bin/tauri build --ci)
 fi
 
 OUT=dist-release/macos
 mkdir -p "$OUT"
 rm -rf "$OUT/AgentPort.app"
+rm -f "$OUT"/*.dmg "$OUT/sha256.txt"
 cp -R target/release/bundle/macos/AgentPort.app "$OUT/" 2>/dev/null || true
 cp target/release/bundle/dmg/*.dmg "$OUT/" 2>/dev/null || true
-( cd "$OUT" && shasum -a 256 ./* 2>/dev/null | tee sha256.txt )
+(
+  cd "$OUT"
+  for artifact in ./*; do
+    [ -f "$artifact" ] || continue
+    [ "$artifact" = "./sha256.txt" ] && continue
+    shasum -a 256 "$artifact"
+  done > sha256.txt
+  test -s sha256.txt
+  cat sha256.txt
+)
 echo "== macOS artifacts in $OUT =="
 ls -la "$OUT"

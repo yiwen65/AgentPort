@@ -5,7 +5,6 @@
 use crate::db::Db;
 use crate::error::Result;
 use crate::host_manager::HostManager;
-use crate::models::*;
 use crate::paths::AppPaths;
 use serde::{Deserialize, Serialize};
 
@@ -101,7 +100,7 @@ impl<'a> Diagnostics<'a> {
                 a.agent_type.as_str(),
                 one_line(&a.version_text),
                 a.exact_resume,
-                hook_status_str(&a.hook_status),
+                a.hook_status.as_str(),
                 a.probed_at.to_rfc3339(),
                 a.executable_path // absolute paths are allowed; env values never
             ));
@@ -178,14 +177,6 @@ fn os_version() -> String {
     "unknown".into()
 }
 
-fn hook_status_str(h: &HookStatus) -> &'static str {
-    match h {
-        HookStatus::Supported => "supported",
-        HookStatus::Degraded => "degraded",
-        HookStatus::Unavailable => "unavailable",
-    }
-}
-
 /// Single-line rendering for user-controlled strings in the summary.
 fn one_line(s: &str) -> String {
     s.replace(['\r', '\n'], " ")
@@ -210,6 +201,10 @@ fn human_bytes(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{
+        AdapterInstall, AgentType, HookStatus, Lifecycle, PermissionMode, Project, ResumePrecision,
+        SecretBackend, SecretRef, Session,
+    };
     use chrono::Utc;
     use std::path::Path;
 

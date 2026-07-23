@@ -2,9 +2,11 @@
 // navigation, Esc closes, click-away closes.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { closeContextMenu, useStore } from "../store";
 
 export default function ContextMenuHost() {
+  const { t } = useTranslation("common");
   const menu = useStore((state) => state.contextMenu);
   const ref = useRef<HTMLDivElement | null>(null);
   const [selected, setSelected] = useState(0);
@@ -66,7 +68,7 @@ export default function ContextMenuHost() {
       <div
         className="ctx-menu"
         role="menu"
-        aria-label="上下文菜单"
+        aria-label={t("menu.context")}
         tabIndex={-1}
         onKeyDown={onKeyDown}
         style={{

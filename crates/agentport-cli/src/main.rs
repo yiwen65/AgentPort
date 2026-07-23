@@ -553,6 +553,11 @@ fn launch_session(
         cols,
         rows,
     })?;
+    let notes = plan
+        .notices
+        .iter()
+        .map(|notice| notice.legacy_message.as_str())
+        .collect::<Vec<_>>();
     ctx.out(json!({
         "id": session_id,
         "hostPid": info.host_pid,
@@ -560,7 +565,7 @@ fn launch_session(
         "resumePrecision": session.resume_precision.as_str(),
         "agentSessionId": session.agent_session_id,
         "hookStatus": format!("{:?}", plan.hook_status).to_lowercase(),
-        "notes": plan.notes,
+        "notes": notes,
         "command": plan.argv,
     }));
     Ok(json!({ "id": session_id }))
@@ -1000,6 +1005,11 @@ fn cmd_session_restart(ctx: &Ctx, args: &[String]) -> Result<()> {
                 .update_session_agent_id(id, native, plan.resume_precision)?;
         }
     }
+    let notes = plan
+        .notices
+        .iter()
+        .map(|notice| notice.legacy_message.as_str())
+        .collect::<Vec<_>>();
     ctx.out(json!({
         "id": id,
         "resumePrecision": plan.resume_precision.as_str(),
@@ -1007,7 +1017,7 @@ fn cmd_session_restart(ctx: &Ctx, args: &[String]) -> Result<()> {
             .assigned_agent_session_id
             .clone()
             .or(session.agent_session_id.clone()),
-        "notes": plan.notes,
+        "notes": notes,
         "command": plan.argv,
         "attach": attach_json(&info),
     }));
@@ -1178,7 +1188,7 @@ fn worktree_json(w: &Worktree) -> Value {
 
 use agentport_core::diag::Diagnostics;
 use agentport_core::export::{AnsiMode, Exporter, LogRange, MdBlocks};
-use agentport_core::notify::{Notification, Notifier};
+use agentport_core::notify::{test_notification, Notifier};
 use agentport_core::search::SearchIndex;
 use agentport_core::secrets::SecretValue;
 use agentport_core::timeline::Timeline;
@@ -1400,12 +1410,15 @@ fn cmd_diag(ctx: &Ctx, args: &[String]) -> Result<()> {
             Ok(())
         }
         Some("notify-test") => {
-            let notifier = Notifier::new(true);
-            notifier.send(Notification {
-                session_id: "diag".into(),
-                title: "AgentPort 测试通知".into(),
-                body: "通知通道工作正常。".into(),
-            })?;
+            let settings = ctx.db.load_settings()?;
+            if !settings.notifications_enabled {
+                return Err(CoreError::Blocked(
+                    "system notifications are disabled in Settings".into(),
+                ));
+            }
+            let mut notifier = Notifier::new(settings.notifications_enabled);
+            notifier.configure(settings.notifications_enabled, settings.ui_language);
+            notifier.send(test_notification(settings.ui_language))?;
             ctx.out(json!({"sent": true}));
             Ok(())
         }

@@ -31,6 +31,7 @@ pub struct CommandError {
     recoverable: bool,
     current_status: Option<RepositoryStatus>,
     recovery_actions: Vec<String>,
+    recovery_action_codes: Vec<String>,
     diagnostics: Value,
     live_session_ids: Vec<String>,
 }
@@ -999,6 +1000,7 @@ impl CommandError {
         let live_session_ids = db
             .and_then(|db| live_session_ids(db, project_id).ok())
             .unwrap_or_default();
+        let recovery_action_codes = recovery_action_codes(code, command, recoverable);
         Self {
             code: code.into(),
             message: message.clone(),
@@ -1006,7 +1008,8 @@ impl CommandError {
             operation_id,
             recoverable,
             current_status,
-            recovery_actions: recovery_actions(code, command, recoverable),
+            recovery_actions: recovery_actions(&recovery_action_codes),
+            recovery_action_codes,
             diagnostics: json!({
                 "command": command,
                 "message": message,
@@ -1032,6 +1035,7 @@ impl CommandError {
             recovery_actions: vec![
                 "Retry the operation after checking the app diagnostics log.".into(),
             ],
+            recovery_action_codes: vec!["retry_after_checking_diagnostics".into()],
             diagnostics: json!({
                 "command": command,
                 "message": message,
@@ -1144,6 +1148,7 @@ fn core_error_code(error: &CoreError) -> &'static str {
         CoreError::Redaction(_) => "redaction",
         CoreError::Export(_) => "export",
         CoreError::Protocol(_) => "protocol",
+        CoreError::RuntimeMessage { .. } => "protocol",
         CoreError::Timeout(_) => "timeout",
         CoreError::Blocked(_) => "blocked",
         CoreError::Internal(_) => "internal",
@@ -1162,38 +1167,65 @@ fn is_recoverable(error: &CoreError) -> bool {
     )
 }
 
-fn recovery_actions(code: &str, command: &'static str, recoverable: bool) -> Vec<String> {
+fn recovery_action_codes(code: &str, command: &'static str, recoverable: bool) -> Vec<String> {
     if !recoverable {
-        return vec![
-            "Check AgentPort diagnostics and retry after the underlying issue is fixed.".into(),
-        ];
+        return vec!["check_diagnostics_and_retry".into()];
     }
     match (code, command) {
-        ("blocked", "create_worktree") => vec![
-            "Refresh local branches and choose one that is not checked out in any Worktree."
-                .into(),
-        ],
-        ("conflict" | "not_found", "create_worktree") => vec![
-            "Refresh local branches and reselect the branch before creating the Worktree."
-                .into(),
-        ],
-        ("blocked", _) => vec![
-            "Resolve active sessions, dirty submodules, merge/rebase state, or index conflicts, then retry."
-                .into(),
-        ],
+        ("blocked", "create_worktree") => vec!["refresh_and_choose_available_branch".into()],
+        ("conflict" | "not_found", "create_worktree") => {
+            vec!["refresh_and_reselect_branch".into()]
+        }
+        ("blocked", _) => vec!["resolve_repository_blockers".into()],
         ("conflict", "restore_auto_stash") => vec![
-            "Use list_auto_stashes to inspect the retained operation.".into(),
-            "Choose source or target restore only when the checkout is safe.".into(),
+            "inspect_retained_auto_stash".into(),
+            "restore_when_checkout_safe".into(),
         ],
-        ("conflict", _) => vec![
-            "Refresh repository status and choose a non-conflicting branch/action.".into(),
-        ],
+        ("conflict", _) => vec!["choose_nonconflicting_action".into()],
         ("git", _) | ("timeout", _) => vec![
-            "Refresh repository status before retrying.".into(),
-            "Inspect the app diagnostics log if Git remains unavailable.".into(),
+            "refresh_repository_before_retry".into(),
+            "inspect_diagnostics_if_git_unavailable".into(),
         ],
-        _ => vec!["Refresh repository status and retry.".into()],
+        _ => vec!["refresh_repository_and_retry".into()],
     }
+}
+
+fn recovery_actions(codes: &[String]) -> Vec<String> {
+    codes
+        .iter()
+        .map(|code| match code.as_str() {
+            "check_diagnostics_and_retry" => {
+                "Check AgentPort diagnostics and retry after the underlying issue is fixed."
+            }
+            "refresh_and_choose_available_branch" => {
+                "Refresh local branches and choose one that is not checked out in any Worktree."
+            }
+            "refresh_and_reselect_branch" => {
+                "Refresh local branches and reselect the branch before creating the Worktree."
+            }
+            "resolve_repository_blockers" => {
+                "Resolve active sessions, dirty submodules, merge/rebase state, or index conflicts, then retry."
+            }
+            "inspect_retained_auto_stash" => {
+                "Use list_auto_stashes to inspect the retained operation."
+            }
+            "restore_when_checkout_safe" => {
+                "Choose source or target restore only when the checkout is safe."
+            }
+            "choose_nonconflicting_action" => {
+                "Refresh repository status and choose a non-conflicting branch/action."
+            }
+            "refresh_repository_before_retry" => "Refresh repository status before retrying.",
+            "inspect_diagnostics_if_git_unavailable" => {
+                "Inspect the app diagnostics log if Git remains unavailable."
+            }
+            "retry_after_checking_diagnostics" => {
+                "Retry the operation after checking the app diagnostics log."
+            }
+            _ => "Refresh repository status and retry.",
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 fn emit_repository_state(app: &AppHandle, status: &RepositoryStatus) {
@@ -1362,6 +1394,7 @@ mod tests {
             recoverable: true,
             current_status: Some(observed),
             recovery_actions: vec!["keep stash".into()],
+            recovery_action_codes: vec!["inspect_retained_auto_stash".into()],
             diagnostics: json!({"message": "restore conflict"}),
             live_session_ids: vec!["ses_observed".into()],
         }

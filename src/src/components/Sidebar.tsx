@@ -4,8 +4,9 @@
 import StatusDot from "./StatusDot";
 import ShellIcon from "./ShellIcon";
 import { AgentIcon } from "./AgentIcons";
-import { api, copyText, errorText } from "../api";
+import { api, errorText } from "../api";
 import {
+  copyTextWithToast,
   interruptSessionFlow,
   openNewSessionDialog,
   removeProjectFlow,
@@ -21,7 +22,7 @@ import {
   stopSessionFlow,
   refreshRepositoryStatus,
 } from "../actions";
-import { agentDisplay, healthZh, relativeAge } from "../format";
+import { agentDisplay, healthLabel, relativeAge } from "../format";
 import { orderAgentIds } from "../agentOrder";
 import {
   closeWorktreeView,
@@ -35,6 +36,10 @@ import {
 } from "../store";
 import type { ProjectView, SessionView, WorktreeView } from "../types";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
+
+type SidebarT = TFunction<["session", "shell", "common"]>;
 
 function IconFolder({ open = false }: { open?: boolean }) {
   return (
@@ -130,10 +135,10 @@ function QuickAgentIcon({ agent }: { agent: string }) {
   return icon ?? <span className="quick-agent-fallback" aria-hidden="true">{agent.slice(0, 1).toUpperCase()}</span>;
 }
 
-function quickAgentMode(agent: string) {
-  if (agent === "shell") return "终端";
-  if (agent === "pi") return "本地用户权限";
-  return "完全权限";
+function quickAgentMode(agent: string, t: SidebarT) {
+  if (agent === "shell") return t("shell:ui.sidebar.quickLaunch.terminal");
+  if (agent === "pi") return t("shell:ui.sidebar.quickLaunch.localUserPermissions");
+  return t("shell:ui.sidebar.quickLaunch.bypassPermissionChecks");
 }
 
 function QuickAgentStrip({
@@ -145,6 +150,7 @@ function QuickAgentStrip({
   worktreeId?: string;
   scopeLabel: string;
 }) {
+  const { t } = useTranslation(["session", "shell", "common"]);
   const agentOrder = useStore((state) => state.settings?.agentOrder);
   const adapters = useStore((state) => state.adapters);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -162,7 +168,7 @@ function QuickAgentStrip({
     <div
       ref={scrollerRef}
       className={`quick-agent-strip${dragging ? " dragging" : ""}`}
-      aria-label={`在${scopeLabel}快速启动 Agent；拖动查看全部`}
+      aria-label={t("shell:ui.sidebar.quickLaunch.listLabel", { scope: scopeLabel })}
       onWheel={(event) => {
         const scroller = scrollerRef.current;
         if (!scroller || scroller.scrollWidth <= scroller.clientWidth) return;
@@ -221,8 +227,15 @@ function QuickAgentStrip({
           <button
             key={agent}
             className="project-agent-action"
-            aria-label={`在${scopeLabel}启动 ${agentDisplay(agent)}（${quickAgentMode(agent)}）`}
-            data-tip={`启动 ${agentDisplay(agent)}（${quickAgentMode(agent)}）`}
+            aria-label={t("shell:ui.sidebar.quickLaunch.launchLabel", {
+              scope: scopeLabel,
+              agent: agentDisplay(agent),
+              mode: quickAgentMode(agent, t),
+            })}
+            data-tip={t("shell:ui.sidebar.quickLaunch.launchTip", {
+              agent: agentDisplay(agent),
+              mode: quickAgentMode(agent, t),
+            })}
             onClick={() => void quickStartSession(projectId, agent, worktreeId)}
           >
             <QuickAgentIcon agent={agent} />
@@ -245,100 +258,104 @@ function IconCollapseProjects({ collapsed }: { collapsed: boolean }) {
   );
 }
 
-function sessionMenu(ses: SessionView, onRemove: () => void): MenuItem[] {
+function sessionMenu(ses: SessionView, onRemove: () => void, t: SidebarT): MenuItem[] {
   return [
     {
-      label: "复制 Session ID",
-      action: () => void copyText(ses.id).then((ok) => toast(ok ? "已复制 Session ID" : "复制失败", ok ? "success" : "error")),
+      label: t("session:ui.menu.copyId"),
+      action: () => void copyTextWithToast(ses.id, t("session:ui.toast.idCopied")),
     },
     { label: "", separator: true },
-    { label: "导出 Markdown…", action: () => openDialog({ kind: "export", sessionId: ses.id, exportKind: "md" }) },
-    { label: "导出原始日志…", action: () => openDialog({ kind: "export", sessionId: ses.id, exportKind: "log" }) },
+    { label: t("session:ui.menu.exportMarkdown"), action: () => openDialog({ kind: "export", sessionId: ses.id, exportKind: "md" }) },
+    { label: t("session:ui.menu.exportRawLog"), action: () => openDialog({ kind: "export", sessionId: ses.id, exportKind: "log" }) },
     { label: "", separator: true },
-    { label: "重启并恢复…", action: () => void restartSessionFlow(ses.id) },
+    { label: t("session:ui.menu.restartAndResume"), action: () => void restartSessionFlow(ses.id) },
     {
-      label: "中断（Ctrl-C）",
+      label: t("session:ui.menu.interrupt"),
       disabled: ses.lifecycle !== "running",
       action: () => void interruptSessionFlow(ses.id),
     },
-    { label: "停止 Session…", danger: true, action: () => void stopSessionFlow(ses.id) },
+    { label: t("session:ui.menu.stop"), danger: true, action: () => void stopSessionFlow(ses.id) },
     { label: "", separator: true },
-    { label: "移除 Session…", danger: true, action: onRemove },
+    { label: t("session:ui.menu.remove"), danger: true, action: onRemove },
   ];
 }
 
 function projectMenu(
   p: ProjectView,
   isGitRepository: boolean,
+  t: SidebarT,
   opts?: { includeNewSession?: boolean },
 ): MenuItem[] {
   return [
     ...(opts?.includeNewSession === false
       ? []
-      : [{ label: "新建 Session…", action: () => openNewSessionDialog(p.id) } as MenuItem]),
+      : [{ label: t("session:ui.actions.newEllipsis"), action: () => openNewSessionDialog(p.id) } as MenuItem]),
     {
-      label: "新建 Worktree…",
+      label: t("shell:ui.sidebar.projectMenu.newWorktree"),
       disabled: !p.gitRootPath,
-      tip: p.gitRootPath ? undefined : "该目录不是 Git 仓库",
+      tip: p.gitRootPath ? undefined : t("shell:ui.sidebar.notGitRepository"),
       action: () => openDialog({ kind: "newWorktree", projectId: p.id }),
     },
     {
-      label: "管理本地分支…",
+      label: t("shell:ui.sidebar.projectMenu.manageBranches"),
       disabled: !isGitRepository,
-      tip: isGitRepository ? undefined : "该目录不是 Git 仓库",
+      tip: isGitRepository ? undefined : t("shell:ui.sidebar.notGitRepository"),
       action: () => openDialog({ kind: "branchPicker", projectId: p.id }),
     },
     { label: "", separator: true },
     {
-      label: "在系统文件管理器中显示",
+      label: t("shell:ui.sidebar.projectMenu.revealInFileManager"),
       action: () =>
         void api
           .revealInFileManager(p.rootPath)
-          .catch((e) => toast(`打开失败：${errorText(e)}`, "error")),
+          .catch((e) => toast(t("shell:ui.sidebar.openFailed", { detail: errorText(e) }), "error")),
     },
     { label: "", separator: true },
-    { label: "重命名项目…", action: () => void renameProjectFlow(p.id) },
-    { label: "从 AgentPort 移除（不删除目录）", danger: true, action: () => void removeProjectFlow(p.id) },
+    { label: t("shell:ui.sidebar.projectMenu.rename"), action: () => void renameProjectFlow(p.id) },
+    { label: t("shell:ui.sidebar.projectMenu.remove"), danger: true, action: () => void removeProjectFlow(p.id) },
   ];
 }
 
 function worktreeMenu(
   p: ProjectView,
   w: WorktreeView,
+  t: SidebarT,
   opts?: { includeNewSession?: boolean },
 ): MenuItem[] {
   return [
     ...(opts?.includeNewSession === false
       ? []
-      : [{ label: "新建 Session…", action: () => openNewSessionDialog(p.id, w.id) } as MenuItem]),
+      : [{ label: t("session:ui.actions.newEllipsis"), action: () => openNewSessionDialog(p.id, w.id) } as MenuItem]),
     {
-      label: "复制路径",
-      action: () => void copyText(w.path).then((ok) => toast(ok ? "已复制路径" : "复制失败", ok ? "success" : "error")),
+      label: t("shell:ui.sidebar.worktreeMenu.copyPath"),
+      action: () => void copyTextWithToast(w.path, t("shell:ui.sidebar.toast.pathCopied")),
     },
     {
-      label: "在系统终端中打开",
+      label: t("shell:ui.sidebar.worktreeMenu.openInSystemTerminal"),
       action: () =>
         void api
           .openInSystemTerminal(w.path)
-          .catch((e) => toast(`打开失败：${errorText(e)}`, "error")),
+          .catch((e) => toast(t("shell:ui.sidebar.openFailed", { detail: errorText(e) }), "error")),
     },
     {
-      label: "复制 git status",
+      label: t("shell:ui.sidebar.worktreeMenu.copyGitStatus"),
       action: () =>
         void api
           .worktreeStatusText(w.id)
-          .then((st) => copyText(st.raw || "(clean)"))
-          .then((ok) => toast(ok ? "已复制 git status" : "复制失败", ok ? "success" : "error"))
-          .catch((e) => toast(errorText(e), "error")),
+          .then((st) => copyTextWithToast(st.raw || "(clean)", t("shell:ui.sidebar.toast.gitStatusCopied")))
+          .catch((e) => toast(
+            t("shell:ui.sidebar.gitStatusFailed", { detail: errorText(e) }),
+            "error",
+          )),
     },
     { label: "", separator: true },
     {
-      label: "删除 Worktree…",
+      label: t("shell:ui.sidebar.worktreeMenu.delete"),
       danger: true,
       disabled: w.health !== "clean",
       tip:
         w.health !== "clean"
-          ? "该 Worktree 有未提交或未跟踪文件，已阻止删除。\n请先提交或清理后重试。"
+          ? t("shell:ui.sidebar.worktreeMenu.deleteBlocked")
           : undefined,
       action: () => void removeWorktreeFlow(w.id),
     },
@@ -346,6 +363,7 @@ function worktreeMenu(
 }
 
 function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
+  const { t } = useTranslation(["session", "shell", "common"]);
   const active = useStore((state) => state.activeSessionId === ses.id);
   const pinned = useStore((state) => state.pinnedSessionAt[ses.id] !== undefined);
   const [editing, setEditing] = useState(false);
@@ -374,20 +392,20 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
           }
         }}
       >
-        <span className="remove-confirm-label">从列表移除？</span>
+        <span className="remove-confirm-label">{t("session:ui.sidebar.removeConfirm")}</span>
         <span className="remove-confirm-actions">
           <button
             className="btn small ghost"
             autoFocus
             onClick={(event) => { event.stopPropagation(); setConfirmingRemove(false); }}
           >
-            取消
+            {t("common:actions.cancel")}
           </button>
           <button
             className="btn small danger"
             onClick={(event) => { event.stopPropagation(); void removeSessionFlow(ses.id); }}
           >
-            移除
+            {t("common:actions.remove")}
           </button>
         </span>
       </div>
@@ -400,7 +418,7 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
       onDoubleClick={() => setEditing(true)}
       onContextMenu={(e) => {
         e.preventDefault();
-        openContextMenu(e.clientX, e.clientY, sessionMenu(ses, () => setConfirmingRemove(true)));
+        openContextMenu(e.clientX, e.clientY, sessionMenu(ses, () => setConfirmingRemove(true), t));
       }}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -411,7 +429,10 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
       role="button"
       tabIndex={0}
       aria-current={active ? "true" : undefined}
-      aria-label={`${ses.title}，${agentDisplay(ses.adapter)}`}
+      aria-label={t("session:ui.sidebar.rowLabel", {
+        title: ses.title,
+        agent: agentDisplay(ses.adapter),
+      })}
     >
       <StatusDot session={ses} />
       {editing ? (
@@ -420,7 +441,7 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
           value={draftTitle}
           autoFocus
           ref={titleInputRef}
-          aria-label="Session 标题"
+          aria-label={t("session:ui.sidebar.titleLabel")}
           onClick={(event) => event.stopPropagation()}
           onChange={(event) => setDraftTitle(event.target.value)}
           onBlur={saveTitle}
@@ -436,12 +457,12 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
           }}
         />
       ) : <span className="tree-label">{ses.title}</span>}
-      <span className="session-row-actions" aria-label="Session 操作">
+      <span className="session-row-actions" aria-label={t("session:ui.sidebar.actionsLabel")}>
         <span
           className={"session-action" + (pinned ? " pinned" : "")}
           role="button"
           tabIndex={0}
-          aria-label={pinned ? "取消置顶" : "置顶"}
+          aria-label={pinned ? t("session:ui.sidebar.unpin") : t("session:ui.sidebar.pin")}
           onClick={(event) => {
             event.stopPropagation();
             update((state) => {
@@ -456,19 +477,26 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
           className="session-action"
           role="button"
           tabIndex={0}
-          aria-label="归档"
+          aria-label={t("session:ui.sidebar.archive")}
           onClick={(event) => { event.stopPropagation(); void archiveSessionFlow(ses.id); }}
         ><IconArchive /></span>
       </span>
-      <span className="session-age" aria-label={`创建于 ${ses.createdAt}`}>
+      <span className="session-age" aria-label={t("session:ui.sidebar.createdAt", { date: ses.createdAt })}>
         {relativeAge(ses.createdAt)}
       </span>
-      {ses.unread && !active ? <span className="unread-dot" aria-label="有未读更新" data-tip="有未读更新" /> : null}
+      {ses.unread && !active ? (
+        <span
+          className="unread-dot"
+          aria-label={t("session:ui.sidebar.unread")}
+          data-tip={t("session:ui.sidebar.unread")}
+        />
+      ) : null}
     </div>
   );
 }
 
 function WorktreeNode({ p, w, sessions, highlighted }: { p: ProjectView; w: WorktreeView; sessions: SessionView[]; highlighted: boolean }) {
+  const { t } = useTranslation(["session", "shell", "common"]);
   const collapsed = useStore((state) => state.collapsedWorktrees[w.id] === true);
   return (
     <div role="treeitem" aria-expanded={!collapsed}>
@@ -482,10 +510,16 @@ function WorktreeNode({ p, w, sessions, highlighted }: { p: ProjectView; w: Work
           }
           onContextMenu={(e) => {
             e.preventDefault();
-            openContextMenu(e.clientX, e.clientY, worktreeMenu(p, w));
+            openContextMenu(e.clientX, e.clientY, worktreeMenu(p, w, t));
           }}
           aria-expanded={!collapsed}
-          aria-label={`Worktree ${w.branch}，${sessions.length} 个会话，${collapsed ? "展开" : "折叠"}`}
+          aria-label={t("shell:ui.sidebar.worktreeSummary", {
+            branch: w.branch,
+            count: sessions.length,
+            action: collapsed
+              ? t("shell:ui.sidebar.expand")
+              : t("shell:ui.sidebar.collapse"),
+          })}
         >
           <span className="worktree-collapse-chevron" aria-hidden="true">
             <IconChevron dir={collapsed ? "right" : "down"} />
@@ -493,21 +527,28 @@ function WorktreeNode({ p, w, sessions, highlighted }: { p: ProjectView; w: Work
           <span className="tree-label mono" style={{ fontSize: 12 }}>
             ⎇ {w.branch}
           </span>
-          <span className={`health-badge ${w.health}`}>{healthZh(w.health)}</span>
+          <span className={`health-badge ${w.health}`}>{healthLabel(w.health)}</span>
         </button>
-        <div className="project-quick-actions" aria-label={`在 Worktree ${w.branch} 中快速启动 Agent`}>
-          <QuickAgentStrip projectId={p.id} worktreeId={w.id} scopeLabel={`Worktree ${w.branch}`} />
+        <div
+          className="project-quick-actions"
+          aria-label={t("shell:ui.sidebar.worktreeQuickActions", { branch: w.branch })}
+        >
+          <QuickAgentStrip
+            projectId={p.id}
+            worktreeId={w.id}
+            scopeLabel={t("shell:ui.sidebar.worktreeScope", { branch: w.branch })}
+          />
           <button
             className="icon-btn tree-action"
-            aria-label={`Worktree ${w.branch} 的更多操作`}
-            data-tip="更多操作…"
+            aria-label={t("shell:ui.sidebar.worktreeMoreActions", { branch: w.branch })}
+            data-tip={t("shell:ui.sidebar.moreActions")}
             onClick={(e) => {
               const rect = e.currentTarget.getBoundingClientRect();
               // 与右键菜单同源，只去掉「新建 Session…」（与新建 Session 弹窗重复）。
               openContextMenu(
                 rect.left,
                 rect.bottom + 4,
-                worktreeMenu(p, w, { includeNewSession: false }),
+                worktreeMenu(p, w, t, { includeNewSession: false }),
               );
             }}
           >
@@ -542,11 +583,12 @@ function useSessionOrder() {
  * It is not a session: no sorting, no inline rename, no context menu.
  */
 function WorktreesEntryRow({ p }: { p: ProjectView }) {
+  const { t } = useTranslation("shell");
   return (
     <button
       className="tree-row worktrees-entry"
       onClick={() => openWorktreeView(p.id)}
-      aria-label="Worktrees，进入管理视图"
+      aria-label={t("ui.sidebar.worktreesEntryLabel")}
       aria-haspopup="true"
     >
       <IconWorktree />
@@ -559,6 +601,7 @@ function WorktreesEntryRow({ p }: { p: ProjectView }) {
 }
 
 function ProjectNode({ p }: { p: ProjectView }) {
+  const { t } = useTranslation(["session", "shell", "common"]);
   const expanded = useStore((state) => state.expandedProjects[p.id] !== false);
   const order = useSessionOrder();
   const archiving = useStore((state) => state.archivingSessionIds);
@@ -572,6 +615,17 @@ function ProjectNode({ p }: { p: ProjectView }) {
   // persisted gitRootPath can become stale when a directory is moved or its
   // .git metadata is removed while AgentPort is closed.
   const isGitRepository = repositoryStatus?.isGitRepository === true;
+  const checkoutHead = !repositoryStatus
+    ? t("shell:ui.sidebar.readingBranch")
+    : repositoryStatus.head.kind === "detached"
+      ? t("shell:ui.sidebar.detachedAt", {
+        oid: repositoryStatus.head.shortOid
+          ?? repositoryStatus.head.oid?.slice(0, 12)
+          ?? t("common:status.unknown"),
+      })
+      : repositoryStatus.head.kind === "unborn"
+        ? t("shell:ui.sidebar.unbornRepository")
+        : repositoryStatus.head.branch ?? t("shell:ui.sidebar.readingBranch");
   useEffect(() => {
     const refresh = () => void refreshRepositoryStatus(p.id);
     refresh();
@@ -595,25 +649,31 @@ function ProjectNode({ p }: { p: ProjectView }) {
           }
           onContextMenu={(e) => {
             e.preventDefault();
-            openContextMenu(e.clientX, e.clientY, projectMenu(p, isGitRepository));
+            openContextMenu(e.clientX, e.clientY, projectMenu(p, isGitRepository, t));
           }}
         >
           <IconFolder open={expanded} />
           <span className="tree-label">{p.name}</span>
         </button>
-        <div className="project-quick-actions" aria-label={`在项目 ${p.name} 中快速启动 Agent`}>
-          <QuickAgentStrip projectId={p.id} scopeLabel={`项目 ${p.name}`} />
+        <div
+          className="project-quick-actions"
+          aria-label={t("shell:ui.sidebar.projectQuickActions", { project: p.name })}
+        >
+          <QuickAgentStrip
+            projectId={p.id}
+            scopeLabel={t("shell:ui.sidebar.projectScope", { project: p.name })}
+          />
           <button
             className="icon-btn tree-action"
-            aria-label={`项目 ${p.name} 的更多操作`}
-            data-tip="更多操作…"
+            aria-label={t("shell:ui.sidebar.projectMoreActions", { project: p.name })}
+            data-tip={t("shell:ui.sidebar.moreActions")}
             onClick={(e) => {
               const rect = e.currentTarget.getBoundingClientRect();
               // 与右键菜单同源，只去掉「新建 Session…」（与新建 Session 弹窗重复）。
               openContextMenu(
                 rect.left,
                 rect.bottom + 4,
-                projectMenu(p, isGitRepository, { includeNewSession: false }),
+                projectMenu(p, isGitRepository, t, { includeNewSession: false }),
               );
             }}
           >
@@ -628,15 +688,13 @@ function ProjectNode({ p }: { p: ProjectView }) {
               className="tree-row current-branch-row"
               onClick={() => openDialog({ kind: "branchPicker", projectId: p.id })}
               aria-current="page"
-              aria-label={`当前 checkout：${repositoryStatus?.head.kind === "detached" ? `Detached @ ${repositoryStatus.head.shortOid ?? repositoryStatus.head.oid?.slice(0, 12) ?? "unknown"}` : repositoryStatus?.head.branch ?? "正在读取"}。管理本地分支`}
+              aria-label={t("shell:ui.sidebar.currentCheckout", {
+                head: checkoutHead,
+              })}
             >
               <IconBranch />
               <span className="tree-label mono">
-                {repositoryStatus?.head.kind === "detached"
-                  ? `Detached @ ${repositoryStatus.head.shortOid ?? repositoryStatus.head.oid?.slice(0, 12) ?? "unknown"}`
-                  : repositoryStatus?.head.kind === "unborn"
-                    ? "未初始化仓库"
-                    : repositoryStatus?.head.branch ?? "读取分支中…"}
+                {checkoutHead}
               </span>
             </button>
           ) : null}
@@ -649,7 +707,7 @@ function ProjectNode({ p }: { p: ProjectView }) {
           ))}
           {visibleSessions.length === 0 && p.worktrees.length === 0 ? (
             <div className="tree-empty">
-              <span>还没有运行中的任务</span>
+              <span>{t("shell:ui.sidebar.noRunningTasks")}</span>
             </div>
           ) : null}
         </div>
@@ -664,6 +722,7 @@ function ProjectNode({ p }: { p: ProjectView }) {
  * worktree so branch context and the guarded delete flow remain intact.
  */
 function WorktreeSessionsView({ p }: { p: ProjectView }) {
+  const { t } = useTranslation(["session", "shell", "common"]);
   const order = useSessionOrder();
   const canCreate = Boolean(p.gitRootPath);
   const archiving = useStore((state) => state.archivingSessionIds);
@@ -674,8 +733,8 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
       <button
         className="tree-row worktree-back"
         onClick={closeWorktreeView}
-        aria-label="返回主会话列表"
-        data-tip="返回主会话列表"
+        aria-label={t("shell:ui.sidebar.worktreeView.back")}
+        data-tip={t("shell:ui.sidebar.worktreeView.back")}
       >
         <span className="worktree-back-icon">
           <IconChevron dir="left" />
@@ -688,11 +747,15 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
         onClick={() => openDialog({ kind: "newWorktree", projectId: p.id })}
       >
         <IconPlus />
-        <span className="tree-label">新建 Worktree…</span>
+        <span className="tree-label">{t("shell:ui.sidebar.projectMenu.newWorktree")}</span>
       </button>
       {p.worktrees.length === 0 ? (
         <div className="tree-empty">
-          <span>{canCreate ? "还没有 Worktree" : "该目录不是 Git 仓库，无法使用 Worktree"}</span>
+          <span>
+            {canCreate
+              ? t("shell:ui.sidebar.worktreeView.empty")
+              : t("shell:ui.sidebar.worktreeView.unavailable")}
+          </span>
         </div>
       ) : (
         p.worktrees.map((w) => (
@@ -714,6 +777,7 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
 }
 
 export default function Sidebar({ collapsed, width }: { collapsed: boolean; width: number }) {
+  const { t } = useTranslation(["session", "shell", "common"]);
   const projects = useStore((state) => state.projects);
   const expandedProjects = useStore((state) => state.expandedProjects);
   const collapsedWorktrees = useStore((state) => state.collapsedWorktrees);
@@ -731,23 +795,25 @@ export default function Sidebar({ collapsed, width }: { collapsed: boolean; widt
   return (
     <aside
       className={`sidebar${collapsed ? " collapsed" : ""}`}
-      aria-label="项目与会话"
+      aria-label={t("shell:ui.sidebar.label")}
       aria-hidden={collapsed}
       style={{ "--sidebar-width": `${width}px` } as CSSProperties}
     >
       <div
         className="sidebar-scroll"
         role="tree"
-        aria-label={worktreeProject ? `${worktreeProject.name} 的 Worktree 会话` : "项目树"}
+        aria-label={worktreeProject
+          ? t("shell:ui.sidebar.worktreeTreeLabel", { project: worktreeProject.name })
+          : t("shell:ui.sidebar.projectTreeLabel")}
       >
         {projects.length === 0 ? (
           <div className="empty-state">
             <div className="empty-icon" aria-hidden="true">
               ⌘
             </div>
-            <div>添加一个代码目录，开始第一个持久 Session。</div>
+            <div>{t("shell:ui.empty.addDirectoryPrompt")}</div>
             <button className="btn primary" onClick={() => void addProjectFromPickerFlow()}>
-              添加项目
+              {t("shell:ui.actions.addProject")}
             </button>
           </div>
         ) : worktreeProject ? (
@@ -760,14 +826,14 @@ export default function Sidebar({ collapsed, width }: { collapsed: boolean; widt
         <button
           className="sidebar-footer-action"
           onClick={() => openDialog({ kind: "settings" })}
-          aria-label="设置"
+          aria-label={t("shell:ui.actions.settings")}
         >
           <IconSettings />
         </button>
         <button
           className="sidebar-footer-action"
           onClick={() => void addProjectFromPickerFlow()}
-          aria-label="添加项目"
+          aria-label={t("shell:ui.actions.addProject")}
         >
           <IconPlus />
         </button>
@@ -788,7 +854,9 @@ export default function Sidebar({ collapsed, width }: { collapsed: boolean; widt
             })
           }
           disabled={projects.length === 0}
-          aria-label={allCollapsed ? "展开所有项目与 Worktree" : "折叠所有项目与 Session"}
+          aria-label={allCollapsed
+            ? t("shell:ui.sidebar.expandAll")
+            : t("shell:ui.sidebar.collapseAll")}
         >
           <IconCollapseProjects collapsed={allCollapsed} />
         </button>

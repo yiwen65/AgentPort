@@ -1,0 +1,38 @@
+{
+  "state": {
+    "working": "工作中",
+    "needsInput": "等待输入",
+    "idle": "空闲",
+    "exited": "已退出",
+    "unknown": "状态未知"
+  },
+  "source": {
+    "hook": "Hook",
+    "pty": "PTY",
+    "process": "进程",
+    "adapter": "适配器"
+  },
+  "confidence": {
+    "high": "高置信度",
+    "medium": "中置信度",
+    "low": "低置信度"
+  },
+  "precision": {
+    "exact": "精确恢复（原生 Session ID）",
+    "latest": "恢复最近的 Session",
+    "unavailable": "无法自动恢复上下文"
+  },
+  "permission": {
+    "native": "原生审批",
+    "auto": "自动批准",
+    "bypass": "绕过权限"
+  },
+  "builtInPreset": {
+    "pre_claude_safe": "Claude 安全默认",
+    "pre_codex_safe": "Codex 安全默认",
+    "pre_kimi_safe": "Kimi 安全默认",
+    "pre_qoder_safe": "Qoder 全权限默认",
+    "pre_pi_safe": "Pi 本地权限默认",
+    "pre_shell_safe": "Shell 安全默认"
+  }
+}

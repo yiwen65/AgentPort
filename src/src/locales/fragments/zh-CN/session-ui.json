@@ -1,0 +1,76 @@
+{
+  "ui": {
+    "actions": {
+      "new": "新建 Session",
+      "newEllipsis": "新建 Session…",
+      "restart": "重启",
+      "reconnect": "重新连接",
+      "openDiagnostics": "诊断中心",
+      "copyGitStatus": "复制 git status",
+      "gotIt": "知道了"
+    },
+    "menu": {
+      "copyId": "复制 Session ID",
+      "exportMarkdown": "导出 Markdown…",
+      "exportRawLog": "导出原始日志…",
+      "restartAndResume": "重启并恢复…",
+      "interrupt": "中断（Ctrl-C）",
+      "stop": "停止 Session…",
+      "remove": "移除 Session…"
+    },
+    "toast": {
+      "idCopied": "已复制 Session ID",
+      "gitStatusCopied": "已复制 git status"
+    },
+    "sidebar": {
+      "removeConfirm": "从列表移除？",
+      "rowLabel": "{{title}}，{{agent}}",
+      "titleLabel": "Session 标题",
+      "actionsLabel": "Session 操作",
+      "unpin": "取消置顶",
+      "pin": "置顶",
+      "archive": "归档",
+      "createdAt": "创建于 {{date}}",
+      "unread": "有未读更新"
+    },
+    "status": {
+      "connectingHost": "创建中：正在连接 Session Host",
+      "interruptedResumable": "已中断，可恢复\n恢复精度：{{precision}}",
+      "exitedWithCode": "已退出（退出码 {{code}}）",
+      "exited": "已退出",
+      "stopped": "已停止",
+      "unknownNoEvent": "状态未知：尚未收到状态事件",
+      "sourceConfidence": "来源：{{source}} · {{confidence}}",
+      "time": "时间：{{time}}",
+      "evidence": "证据：{{evidence}}",
+      "heuristic": "启发式判断，状态可能不精确",
+      "ariaLabel": "状态：{{status}}"
+    },
+    "lifecycle": {
+      "connectingHost": "正在连接 Session Host…",
+      "interrupted": "Session 已中断",
+      "latestContextWarning": "可能缺少本次完整上下文。",
+      "unavailableResumeWarning": "无可恢复标识；重启将创建新 Session。",
+      "stopped": "Session 已停止",
+      "exitedWithCode": "Session 已退出（退出码 {{code}}）",
+      "exited": "Session 已退出",
+      "terminatedBySignal": "被信号 {{signal}} 终止。",
+      "groupCleanupUnconfirmed": "进程组清理未完全确认，请检查诊断中心。",
+      "readOnlyHistory": "上方终端为只读历史输出。{{note}}"
+    },
+    "disconnected": {
+      "checking": "连接已断开，正在确认 Agent 是否仍在运行。",
+      "errorDetail": "（{{detail}}）"
+    },
+    "uncommitted": {
+      "summary": "任务看起来已完成，但 Worktree 的结果尚未提交（{{modified}} · {{staged}} · {{untracked}}）。",
+      "modified_one": "修改 {{count}}",
+      "modified_other": "修改 {{count}}",
+      "staged_one": "暂存 {{count}}",
+      "staged_other": "暂存 {{count}}",
+      "untracked_one": "未跟踪 {{count}}",
+      "untracked_other": "未跟踪 {{count}}",
+      "dismissLabel": "忽略此提醒"
+    }
+  }
+}

@@ -3,13 +3,20 @@
 
 import { Channel } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { api, b64ToBytes, errorText } from "../api";
-import type { ChannelMsg, SessionView } from "../types";
+import { i18n } from "../i18n";
+import { runtimeMessageEnvelope, runtimeMessageText } from "../runtimeMessages";
+import type { ChannelMsg, RuntimeMessageEnvelope, SessionView } from "../types";
 
 const REPLAY_TAIL_BYTES = 4 * 1024 * 1024;
 const MAX_EVENTS = 800;
 
 type TimelineEvent = Record<string, unknown>;
+type PiFailure =
+  | { kind: "runtime"; message: RuntimeMessageEnvelope }
+  | { kind: "detached" }
+  | { kind: "attach" | "send" | "abort"; detail: string };
 
 const INITIAL_SESSION_CREATION_PREFIX = "Warning: No project session found with id '";
 const INITIAL_SESSION_CREATION_SUFFIX = "'; creating a new session with that id.";
@@ -28,10 +35,12 @@ function textOf(value: unknown): string | null {
 
 function eventLabel(event: TimelineEvent): string {
   const type = typeof event.type === "string" ? event.type : "event";
-  if (type.includes("tool")) return `工具 · ${type}`;
-  if (type.includes("message") || type.includes("text")) return "文本";
-  if (type.includes("queue") || type.includes("pending")) return "队列";
-  if (type === "response") return `RPC 响应 · ${String(event.command ?? "unknown")}`;
+  if (type.includes("tool")) return i18n.t("runtime:pi.toolEvent", { type });
+  if (type.includes("message") || type.includes("text")) return i18n.t("runtime:pi.textEvent");
+  if (type.includes("queue") || type.includes("pending")) return i18n.t("runtime:pi.queueEvent");
+  if (type === "response") {
+    return i18n.t("runtime:pi.rpcResponse", { command: String(event.command ?? "unknown") });
+  }
   return type;
 }
 
@@ -87,12 +96,14 @@ export function parseReplay(
 }
 
 export default function PiStructuredTimeline({ ses }: { ses: SessionView }) {
+  const { t } = useTranslation("runtime");
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<PiFailure | null>(null);
   const [attached, setAttached] = useState(false);
   const [ended, setEnded] = useState(false);
+  const [attachAttempt, setAttachAttempt] = useState(0);
   const replaying = useRef(true);
   const replayBuffer = useRef("");
   const replayDecoder = useRef(new TextDecoder());
@@ -109,7 +120,7 @@ export default function PiStructuredTimeline({ ses }: { ses: SessionView }) {
     replayBuffer.current = "";
     replayDecoder.current = new TextDecoder();
     setEvents([]);
-    setError(null);
+    setFailure(null);
     setAttached(false);
     setEnded(false);
     const append = (incoming: TimelineEvent[]) => {
@@ -143,7 +154,7 @@ export default function PiStructuredTimeline({ ses }: { ses: SessionView }) {
       } else if (message.t === "structured") {
         append([message.event]);
       } else if (message.t === "error") {
-        setError(message.message);
+        setFailure({ kind: "runtime", message });
       } else if (message.t === "exit") {
         attachmentEnded = true;
         setAttached(false);
@@ -151,7 +162,11 @@ export default function PiStructuredTimeline({ ses }: { ses: SessionView }) {
         setBusy(false);
       } else if (message.t === "detached") {
         attachmentEnded = true;
+        attachmentId = null;
         setAttached(false);
+        setFailure(message.code || message.message || message.technicalDetail
+          ? { kind: "runtime", message }
+          : { kind: "detached" });
       }
     };
     void api
@@ -170,57 +185,94 @@ export default function PiStructuredTimeline({ ses }: { ses: SessionView }) {
           return;
         }
         setAttached(true);
+        setFailure(null);
       })
-      .catch((cause) => !cancelled && setError(errorText(cause)));
+      .catch((cause) => {
+        if (cancelled) return;
+        const message = runtimeMessageEnvelope(cause);
+        setFailure(message
+          ? { kind: "runtime", message }
+          : { kind: "attach", detail: errorText(cause) });
+      });
     return () => {
       cancelled = true;
       if (attachmentId !== null) void api.detachSession(ses.id, attachmentId).catch(() => undefined);
     };
-  }, [ses.id]);
+  }, [attachAttempt, ses.id]);
 
   const send = async () => {
     const text = prompt.trim();
     if (!text) return;
     setBusy(true);
-    setError(null);
+    setFailure(null);
     try {
       await api.sendStructuredPrompt(ses.id, text);
       setPrompt("");
     } catch (cause) {
-      setError(errorText(cause));
+      const message = runtimeMessageEnvelope(cause);
+      setFailure(message
+        ? { kind: "runtime", message }
+        : { kind: "send", detail: errorText(cause) });
     } finally {
       setBusy(false);
     }
   };
 
   const abort = async () => {
-    setError(null);
+    setFailure(null);
     try {
       await api.abortStructuredTurn(ses.id);
       setBusy(false);
     } catch (cause) {
-      setError(errorText(cause));
+      const message = runtimeMessageEnvelope(cause);
+      setFailure(message
+        ? { kind: "runtime", message }
+        : { kind: "abort", detail: errorText(cause) });
     }
   };
 
   const live = !ended && (ses.lifecycle === "running" || ses.lifecycle === "creating");
+  const error = failure?.kind === "runtime"
+    ? runtimeMessageText(failure.message)
+    : failure?.kind === "attach"
+      ? t("pi.attachFailed", { detail: failure.detail })
+      : failure?.kind === "send"
+        ? t("pi.sendFailed", { detail: failure.detail })
+        : failure?.kind === "abort"
+          ? t("pi.abortFailed", { detail: failure.detail })
+          : failure?.kind === "detached"
+            ? t("pi.detached")
+          : null;
   return (
-    <div className="pi-rpc-workspace" aria-label="Pi 结构化会话">
+    <div className="pi-rpc-workspace" aria-label={t("pi.workspaceAria")}>
       <header className="pi-rpc-header">
         <div>
-          <strong>Pi · 结构化 RPC</strong>
-          <span>{attached ? "已连接" : live ? "连接中" : "会话已结束"}</span>
+          <strong>{t("pi.header")}</strong>
+          <span>
+            {attached
+              ? t("pi.connected")
+              : live && failure
+                ? t("pi.disconnected")
+                : live
+                  ? t("pi.connecting")
+                  : t("pi.ended")}
+          </span>
         </div>
-        <span className="pi-rpc-permission">无逐项权限确认，本地用户权限执行</span>
+        <span className="pi-rpc-permission">{t("pi.permission")}</span>
       </header>
       {error ? <div className="error-bar" role="alert">{error}</div> : null}
+      {live && !attached && failure ? (
+        <button className="btn small" type="button" onClick={() => setAttachAttempt((value) => value + 1)}>
+          {t("pi.reconnect")}
+        </button>
+      ) : null}
       <ol className="pi-rpc-timeline" aria-live="polite">
         {events.length ? events.map((event, index) => (
           <li key={`${index}-${String(event.type ?? "event")}`} className="pi-rpc-event">
             <span>{eventLabel(event)}</span>
             <pre>{eventDetail(event)}</pre>
           </li>
-        )) : <li className="dim">Pi 已就绪，发送消息开始对话。</li>}
+        )) : <li className="dim">{t("pi.ready")}</li>}
       </ol>
       <form
         className="pi-rpc-composer"
@@ -231,16 +283,16 @@ export default function PiStructuredTimeline({ ses }: { ses: SessionView }) {
       >
         <textarea
           value={prompt}
-          placeholder="发送给 Pi…"
+          placeholder={t("pi.placeholder")}
           disabled={!live || !attached}
           onChange={(event) => setPrompt(event.target.value)}
         />
         <div>
           <button className="btn ghost" type="button" disabled={!live || !attached} onClick={() => void abort()}>
-            中止当前轮次
+            {t("pi.abort")}
           </button>
           <button className="btn primary" type="submit" disabled={!prompt.trim() || !live || !attached || busy}>
-            {busy ? "发送中…" : "发送"}
+            {busy ? t("pi.sending") : t("pi.send")}
           </button>
         </div>
       </form>

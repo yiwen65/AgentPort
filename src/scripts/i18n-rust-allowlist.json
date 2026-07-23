@@ -1,0 +1,84 @@
+{
+  "crates/agentport-core/src/db/mod.rs": [
+    "Claude 安全默认",
+    "Codex 安全默认",
+    "Kimi 安全默认",
+    "Qoder 全权限默认",
+    "Pi 本地权限默认",
+    "Shell 安全默认"
+  ],
+  "crates/agentport-core/src/notify.rs": [
+    "等待输入",
+    "已完成",
+    "异常退出",
+    "AgentPort 测试通知",
+    "通知通道工作正常。",
+    "进程",
+    "适配器",
+    "高置信度",
+    "中置信度",
+    "低置信度"
+  ],
+  "crates/agentport-core/src/adapters/capability.rs": [
+    "探测失败: {detail}",
+    "未找到可执行文件",
+    "已从 {total} 个候选中自动选择优先级最高且可用的路径；可在下方指定其他路径。",
+    "发现 {total} 个候选，但均无法通过只读探测：{detail}",
+    "未知错误"
+  ],
+  "crates/agentport-core/src/adapters/claude.rs": [
+    "该版本无 --settings，hook 降级为 PTY 启发式",
+    "该版本无 --session-id，无法指定原生 Session ID，仅支持恢复最近的 Session",
+    "无原生 Session ID，仅支持恢复最近的 Session",
+    "原 Session 没有可恢复的对话记录（首轮可能未产生消息），已按新 Session 启动"
+  ],
+  "crates/agentport-core/src/adapters/codex.rs": [
+    "codex 0.144.5 的 help/doctor 未出现 notify 配置键，hook 注入不可验证，降级为 PTY 启发式",
+    "TUI 模式未证实输出原生 Session ID，仅支持恢复最近的 Session（resume --last）",
+    "无原生 Session ID，仅支持恢复最近的 Session"
+  ],
+  "crates/agentport-core/src/adapters/kimi.rs": [
+    "kimi 0.27.0 无 Session 级 Hook 注入机制（仅全局 ~/.kimi-code/config.toml，不做修改），状态降级为 PTY 启发式",
+    "无原生 Session ID，仅支持恢复最近的 Session"
+  ],
+  "crates/agentport-core/src/adapters/qoder.rs": [
+    "该版本无 --settings，Qoder Hook 降级为 PTY 启发式",
+    "无原生 Session ID，仅支持恢复最近的 Session"
+  ],
+  "crates/agentport-core/src/adapters/pi.rs": [
+    "Pi 不提供逐项权限确认，将以本地用户权限执行"
+  ],
+  "crates/agentport-core/src/adapters/shell.rs": [
+    "Shell 没有可恢复的 Session，已重新打开新的 Shell"
+  ],
+  "crates/agentport-cli/src/main.rs": [
+    "{} 的可执行文件已失效（{}），重新探测也未找到: {}",
+    "Qoder 全权限默认",
+    "Pi 本地权限默认",
+    "{} 安全默认",
+    "自动批准：文件写入与部分操作无需逐次确认",
+    "绕过权限：全部检查被跳过（危险）",
+    "== 启动预检（风险确认） ==",
+    "权限模式: {} — ⚠ {risk}",
+    "工作目录: {cwd}",
+    "完整命令: {}",
+    "{} 模式需要显式风险确认：请加 --risk-ack",
+    "用户已通过 --risk-ack 确认风险。"
+  ],
+  "src-tauri/src/main.rs": [
+    "恢复时间线读取失败：{error}",
+    "Qoder 全权限默认",
+    "Pi 本地权限默认",
+    "{} 安全默认",
+    "无法打开 Session 数据库：{detail}",
+    "状态未持久化：{error}",
+    "原生 Session ID 未持久化：{error}",
+    "Host 已被新的运行替换",
+    "无法确认当前保留的输出代际；输出可能已轮转",
+    "输出已轮转或不属于当前保留日志，无法安全定位",
+    "输出日志已不存在或已轮转",
+    "输出已轮转或不再完整保留，无法安全定位",
+    "读取期间输出日志发生变化，无法安全定位；请重试",
+    "项目目录已不存在，无法在文件管理器中显示：{path}。可从 AgentPort 移除该项目记录。"
+  ]
+}

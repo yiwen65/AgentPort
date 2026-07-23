@@ -17,7 +17,9 @@ use agentport_core::host_manager::{
 };
 use agentport_core::ids;
 use agentport_core::models::*;
-use agentport_core::notify::{Notification, Notifier};
+use agentport_core::notify::{
+    notification_for_state_change, test_notification, Notification, Notifier,
+};
 use agentport_core::paths::{normalize_abs, AppPaths};
 use agentport_core::protocol::{normalize_host_frame, HostFrame};
 use agentport_core::search::SearchIndex;
@@ -26,13 +28,15 @@ use agentport_core::timeline::{RecoveryAckSnapshot, Timeline};
 use chrono::Utc;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 mod git_commands;
+mod notifications;
 
 // ---------------------------------------------------------------------------
 // App state
@@ -54,10 +58,77 @@ struct AppState {
     cleanup_scheduler_started: AtomicBool,
     branch_reconcile_started: AtomicBool,
     notifier: Mutex<Notifier>,
+    /// Bounded, non-blocking handoff to one delivery worker. Native
+    /// authorization can wait for the OS and must never stall Host readers.
+    notification_tx: SyncSender<Notification>,
+    /// Status notifications may arrive through both the durable monitor and
+    /// an attached renderer. Deduplicate by the immutable run/sequence key.
+    notified_statuses: Mutex<HashSet<String>>,
 }
 
 type HostWriter = Arc<Mutex<std::os::unix::net::UnixStream>>;
 type AttachmentMap = Arc<Mutex<HashMap<String, RendererAttachment>>>;
+
+const NOTIFICATION_QUEUE_CAPACITY: usize = 64;
+
+fn start_notification_worker() -> SyncSender<Notification> {
+    let (tx, rx) = mpsc::sync_channel::<Notification>(NOTIFICATION_QUEUE_CAPACITY);
+    let spawned = std::thread::Builder::new()
+        .name("agentport-notifications".into())
+        .spawn(move || {
+            while let Ok(notification) = rx.recv() {
+                if let Err(error) = notifications::send(&notification) {
+                    tracing::warn!(error = %error, "system notification failed");
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(error = %error, "could not start system notification worker");
+    }
+    tx
+}
+
+fn notify_status_once(app: &AppHandle, db: &Db, event: &StatusEvent) {
+    if !matches!(event.state, AgentState::NeedsInput | AgentState::Exited) {
+        return;
+    }
+    let state = app.state::<AppState>();
+    let key = format!(
+        "{}:{}:{}:{}",
+        event.session_id, event.run_id, event.run_ordinal, event.sequence
+    );
+    {
+        let mut notified = state.notified_statuses.lock().unwrap();
+        if notified.len() >= 4096 {
+            notified.clear();
+        }
+        if !notified.insert(key) {
+            return;
+        }
+    }
+    let title = db
+        .get_session(&event.session_id)
+        .map(|session| session.title)
+        .unwrap_or_else(|_| event.session_id.clone());
+    let (enabled, language) = {
+        let notifier = state.notifier.lock().unwrap();
+        (notifier.enabled(), notifier.language())
+    };
+    if !enabled {
+        return;
+    }
+    if let Some(notification) = notification_for_state_change(language, &title, event) {
+        match state.notification_tx.try_send(notification) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                tracing::warn!("system notification queue is full; dropping duplicate UI signal")
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                tracing::warn!("system notification worker is unavailable")
+            }
+        }
+    }
+}
 
 /// Immutable identity learned from the authenticated Host handshake. A socket
 /// is not enough: a Session can be restarted while an old renderer or monitor
@@ -103,15 +174,6 @@ struct RendererAttachment {
     rendered_log_cursor: Option<LogCursor>,
 }
 
-fn log_cursor_is_not_older(candidate: &LogCursor, current: &LogCursor) -> bool {
-    candidate.run_ordinal > current.run_ordinal
-        || (candidate.run_ordinal == current.run_ordinal
-            && candidate.run_id == current.run_id
-            && (candidate.generation > current.generation
-                || (candidate.generation == current.generation
-                    && candidate.offset >= current.offset)))
-}
-
 fn cursor_matches_attachment(host: &HostIdentity, cursor: &LogCursor) -> bool {
     host.matches_run(&cursor.run_id, cursor.run_ordinal)
         || (host.protocol == agentport_core::protocol::LEGACY_PROTOCOL_VERSION
@@ -139,7 +201,7 @@ fn record_renderer_log_cursor(
     if attachment
         .rendered_log_cursor
         .as_ref()
-        .is_none_or(|current| log_cursor_is_not_older(cursor, current))
+        .is_none_or(|current| cursor.is_not_older_than(current))
     {
         attachment.rendered_log_cursor = Some(cursor.clone());
     }
@@ -237,6 +299,35 @@ macro_rules! map_err {
     };
 }
 
+fn runtime_command_error(
+    code: &str,
+    params: Value,
+    technical_detail: impl Into<String>,
+    legacy_message: impl Into<String>,
+) -> Value {
+    json!({
+        "code": code,
+        "params": params,
+        "technicalDetail": technical_detail.into(),
+        "message": legacy_message.into(),
+    })
+}
+
+fn runtime_command_error_from_core(error: CoreError, fallback_code: &str) -> Value {
+    match error {
+        CoreError::RuntimeMessage {
+            code,
+            params,
+            technical_detail,
+            message,
+        } => runtime_command_error(&code, params, technical_detail, message),
+        error => {
+            let detail = error.to_string();
+            runtime_command_error(fallback_code, json!({}), detail.clone(), detail)
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Boot / state queries
 // ---------------------------------------------------------------------------
@@ -250,6 +341,7 @@ struct BootInfo {
     projects: Vec<ProjectView>,
     timeline: Value,
     timeline_error: Option<String>,
+    timeline_message: Option<Value>,
     secret_backend: String,
     index_state: String,
     webview: String,
@@ -599,11 +691,17 @@ async fn boot(state: State<'_, AppState>, app: AppHandle) -> std::result::Result
         paths: &state.paths,
         db: &state.db,
     };
-    let (timeline, timeline_error) = match timeline {
-        Ok(timeline) => (timeline, None),
+    let (timeline, timeline_error, timeline_message) = match timeline {
+        Ok(timeline) => (timeline, None, None),
         Err(error) => (
             json!({"completed": 0, "waiting": 0, "failed": 0, "entries": [], "ackSnapshots": []}),
             Some(format!("恢复时间线读取失败：{error}")),
+            Some(json!({
+                "code": "timeline_load_failed",
+                "params": {},
+                "technicalDetail": error.to_string(),
+                "message": format!("恢复时间线读取失败：{error}"),
+            })),
         ),
     };
     Ok(BootInfo {
@@ -613,6 +711,7 @@ async fn boot(state: State<'_, AppState>, app: AppHandle) -> std::result::Result
         projects: collect_projects(&state.db, None),
         timeline,
         timeline_error,
+        timeline_message,
         secret_backend: format!("{:?}", CredentialBroker::backend_status()),
         index_state,
         webview: "system".into(),
@@ -705,14 +804,43 @@ async fn probe_agent(
 }
 
 fn probe_outcome_json(t: AgentType, o: &capability::ProbeOutcome) -> Value {
+    let reason_message = o.reason_code.map(|code| {
+        let params = match code {
+            "probe_auto_selected" | "probe_candidates_failed" => {
+                json!({"count": o.candidates.len()})
+            }
+            _ => json!({}),
+        };
+        json!({
+            "code": code,
+            "params": params,
+            "technicalDetail": o.reason_detail,
+            "message": o.reason,
+        })
+    });
     json!({
         "agent": t.as_str(),
         "displayName": t.display_name(),
         "state": format!("{:?}", o.state).to_lowercase(),
         "reason": o.reason,
+        "reasonMessage": reason_message,
         "install": o.install,
         "candidates": o.candidates,
     })
+}
+
+fn launch_notice_values(agent: AgentType, notices: &[adapters::LaunchNotice]) -> Vec<Value> {
+    notices
+        .iter()
+        .map(|notice| {
+            json!({
+                "code": notice.code,
+                "params": {"agent": agent.display_name()},
+                "technicalDetail": notice.legacy_message,
+                "message": notice.legacy_message,
+            })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -792,7 +920,7 @@ fn install_for(state: &AppState, t: AgentType) -> Result<AdapterInstall> {
                     Ok(fresh)
                 }
                 None => Err(CoreError::Adapter(format!(
-                    "{} 的可执行文件已失效（{}），重新探测也未找到: {}",
+                    "{} executable is no longer valid ({}), and re-probing found no replacement: {}",
                     t.display_name(),
                     i.executable_path,
                     o.reason.unwrap_or_else(|| "not found".into())
@@ -926,7 +1054,7 @@ fn build_launch_plan(
 ) -> Result<(adapters::LaunchPlan, Preset, String, Option<String>)> {
     if transport != AgentTransport::Pty {
         return Err(CoreError::Validation(format!(
-            "{} 新建会话仅支持原生 PTY transport",
+            "{} Session creation supports only the native PTY transport",
             agent.display_name()
         )));
     }
@@ -936,13 +1064,13 @@ fn build_launch_plan(
     adapters::validate_user_args(agent, &preset.args)?;
     let cwd = match &worktree_id {
         Some(w) => state.db.get_worktree(w)?.path,
-        None => project.root_path.clone(),
+        None => project.root_path,
     };
     let session_id = ids::new_id("ses");
     let session_dir = state.paths.session_dir(&session_id);
     std::fs::create_dir_all(&session_dir)?;
     let ctx = LaunchContext {
-        install: install.clone(),
+        install,
         preset: preset.clone(),
         cwd: cwd.clone(),
         session_id: session_id.clone(),
@@ -1178,6 +1306,12 @@ async fn create_session(
     };
     ensure_session_monitor(&app, &state, &session);
     emit_sessions_changed(&app, &state, Some(&session_id));
+    let notices = launch_notice_values(t, &plan.notices);
+    let notes = plan
+        .notices
+        .iter()
+        .map(|notice| notice.legacy_message.as_str())
+        .collect::<Vec<_>>();
     Ok(json!({
         "id": session_id,
         "attach": {
@@ -1186,7 +1320,8 @@ async fn create_session(
         },
         "resumePrecision": session.resume_precision.as_str(),
         "agentSessionId": session.agent_session_id,
-        "notes": plan.notes,
+        "notes": notes,
+        "notices": notices,
         "command": plan.argv,
     }))
 }
@@ -1266,6 +1401,7 @@ fn project_monitor_status(app: &AppHandle, db: &Db, event: &StatusEvent) {
         tracing::error!(session = %event.session_id, error = %error, "session monitor projection write failed");
     }
     let _ = app.emit("session-state", status_value(event));
+    notify_status_once(app, db, event);
 }
 
 /// Keep status truth alive independently of the renderer LRU. Each monitor
@@ -1483,17 +1619,28 @@ async fn attach_session(
     resume_from: Option<LogCursor>,
     recovery_target: Option<LogCursor>,
     channel: tauri::ipc::Channel<Value>,
-) -> std::result::Result<Value, String> {
-    let session = map_err!(state.db.get_session(&session_id))?;
-    let socket = session
+) -> std::result::Result<Value, Value> {
+    let socket = state
+        .db
+        .get_session(&session_id)
+        .map_err(|error| runtime_command_error_from_core(error, "host_connection_failed"))?
         .host_socket
-        .clone()
-        .ok_or_else(|| "no socket recorded".to_string())?;
-    let token = map_err!(state.db.get_session_token(&session_id))?;
+        .ok_or_else(|| {
+            runtime_command_error(
+                "host_connection_failed",
+                json!({}),
+                "no socket recorded",
+                "no socket recorded",
+            )
+        })?;
+    let token = state
+        .db
+        .get_session_token(&session_id)
+        .map_err(|error| runtime_command_error_from_core(error, "host_connection_failed"))?;
     // Cap replay independently of frontend input so a malformed IPC request
     // cannot make a Host read an unbounded log tail into memory.
     const MAX_REPLAY_BYTES: u64 = 4 * 1024 * 1024;
-    let (mut client, info) = map_err!(HostClient::connect_with_recovery_target(
+    let (mut client, info) = HostClient::connect_with_recovery_target(
         &socket,
         &session_id,
         &token,
@@ -1501,10 +1648,16 @@ async fn attach_session(
         resume_from,
         recovery_target,
         true,
-    ))?;
+    )
+    .map_err(|error| runtime_command_error_from_core(error, "host_connection_failed"))?;
     let host = HostIdentity::from_attach(&info);
     if !host_identity_is_current(&state.db, &session_id, &host) {
-        return Err("Host changed while establishing terminal attachment; please reconnect".into());
+        return Err(runtime_command_error(
+            "host_changed_during_attach",
+            json!({}),
+            "Host changed while establishing terminal attachment; please reconnect",
+            "Host changed while establishing terminal attachment; please reconnect",
+        ));
     }
     if let Err(error) = state
         .db
@@ -1515,7 +1668,9 @@ async fn attach_session(
     if info.protocol == agentport_core::protocol::LEGACY_PROTOCOL_VERSION {
         // v1 did not include a Hello snapshot; queue a status request before
         // the reader is handed to the watch thread.
-        map_err!(client.request_status())?;
+        client
+            .request_status()
+            .map_err(|error| runtime_command_error_from_core(error, "host_connection_failed"))?;
     }
     if let Some(status) = info.current_status.as_ref() {
         if let Err(error) = state.db.record_status_event(status) {
@@ -1554,7 +1709,14 @@ async fn attach_session(
         let db = match Db::open(&paths) {
             Ok(d) => d,
             Err(e) => {
-                let _ = channel.send(json!({"t": "error", "message": e.to_string()}));
+                let detail = e.to_string();
+                let _ = channel.send(json!({
+                    "t": "error",
+                    "code": "watch_database_open_failed",
+                    "params": {},
+                    "technicalDetail": detail,
+                    "message": format!("无法打开 Session 数据库：{detail}"),
+                }));
                 if let Some(attachment) = take_attachment_if_current(&writers, &sid, attachment_id)
                 {
                     shutdown_attachment(&attachment);
@@ -1686,17 +1848,15 @@ fn watch_loop(
                             tracing::error!(session = %sid, error = %error, "state projection write failed");
                             let _ = channel.send(json!({
                                 "t": "error",
+                                "code": "status_persistence_failed",
+                                "params": {},
+                                "technicalDetail": error.to_string(),
                                 "message": format!("状态未持久化：{error}"),
                                 "persistenceDegraded": true,
                             }));
                         }
-                        let title = db
-                            .get_session(&sid)
-                            .map(|s| s.title)
-                            .unwrap_or_else(|_| sid.clone());
                         let _ = app.emit("session-state", status_value(&ev));
-                        let notifier = Notifier::new(true);
-                        agentport_core::notify::notify_state_change(&notifier, &title, &ev);
+                        notify_status_once(&app, &db, &ev);
                         let _ = channel.send(json!({"t": "state", "event": status_value(&ev)}));
                     }
                     HostFrame::AgentSession {
@@ -1723,6 +1883,9 @@ fn watch_loop(
                                 tracing::error!(session = %session_id, error = %error, "agent session id persistence failed");
                                 let _ = channel.send(json!({
                                     "t": "error",
+                                    "code": "agent_session_persistence_failed",
+                                    "params": {},
+                                    "technicalDetail": error.to_string(),
                                     "message": format!("原生 Session ID 未持久化：{error}"),
                                     "persistenceDegraded": true,
                                 }));
@@ -1754,8 +1917,12 @@ fn watch_loop(
                     } => {
                         if !host.matches_run(&run_id, run_ordinal) {
                             tracing::warn!(session = %session_id, attachment_id, "dropping Exit from a stale Host run");
-                            let _ = channel
-                                .send(json!({"t": "detached", "message": "Host 已被新的运行替换"}));
+                            let _ = channel.send(json!({
+                                "t": "detached",
+                                "code": "host_replaced",
+                                "params": {},
+                                "message": "Host 已被新的运行替换",
+                            }));
                             break;
                         }
                         // A user stop may have won the terminal transition while
@@ -1773,8 +1940,12 @@ fn watch_loop(
                             terminal_lifecycle,
                         ) {
                             tracing::warn!(session = %session_id, attachment_id, "dropping Exit from a superseded Host attachment");
-                            let _ = channel
-                                .send(json!({"t": "detached", "message": "Host 已被新的运行替换"}));
+                            let _ = channel.send(json!({
+                                "t": "detached",
+                                "code": "host_replaced",
+                                "params": {},
+                                "message": "Host 已被新的运行替换",
+                            }));
                             break;
                         }
                         let _ = channel.send(json!({
@@ -1793,8 +1964,26 @@ fn watch_loop(
                     }
                     HostFrame::Pong { .. } => {}
                     HostFrame::HelloOk { .. } => {}
-                    HostFrame::Error { message, .. } => {
-                        let _ = channel.send(json!({"t": "error", "message": message}));
+                    HostFrame::Error {
+                        message,
+                        code,
+                        params,
+                        technical_detail,
+                        ..
+                    } => {
+                        let mut payload = json!({"t": "error", "message": message});
+                        if let Some(object) = payload.as_object_mut() {
+                            if let Some(code) = code {
+                                object.insert("code".into(), json!(code));
+                            }
+                            if let Some(params) = params {
+                                object.insert("params".into(), params);
+                            }
+                            if let Some(detail) = technical_detail {
+                                object.insert("technicalDetail".into(), json!(detail));
+                            }
+                        }
+                        let _ = channel.send(payload);
                     }
                 }
             }
@@ -2189,13 +2378,20 @@ async fn restart_session(
     // through its lifecycle CAS. A second unguarded write here could revive a
     // terminal state if the Host exited in the small window above.
     emit_sessions_changed(&app, &state, Some(&session_id));
+    let notices = launch_notice_values(session.adapter_type, &plan.notices);
+    let notes = plan
+        .notices
+        .iter()
+        .map(|notice| notice.legacy_message.as_str())
+        .collect::<Vec<_>>();
     Ok(json!({
         "resumePrecision": plan.resume_precision.as_str(),
         "agentSessionId": plan
             .assigned_agent_session_id
-            .clone()
-            .or(session.agent_session_id.clone()),
-        "notes": plan.notes,
+            .as_deref()
+            .or(session.agent_session_id.as_deref()),
+        "notes": notes,
+        "notices": notices,
         "hostPid": info.host_pid,
     }))
 }
@@ -2317,14 +2513,14 @@ async fn delete_all_archived_sessions(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> std::result::Result<(), String> {
-    let archived: Vec<Session> = map_err!(state.db.list_sessions(None, true))?
+    let archived_ids: Vec<String> = map_err!(state.db.list_sessions(None, true))?
         .into_iter()
         .filter(|session| session.archived_at.is_some())
+        .map(|session| session.id)
         .collect();
     // Stop first, then purge as a batch. A stop error leaves every archive
     // intact instead of only partially deleting the user's archive history.
     // Legacy archives are stopped in bounded parallel batches.
-    let archived_ids: Vec<String> = archived.into_iter().map(|session| session.id).collect();
     map_err!(stop_archived_sessions_for_purge(&state, &archived_ids))?;
     let purged = map_err!(state.db.purge_all_archived_sessions())?;
     cleanup_purged_sessions(&state, &purged);
@@ -2790,7 +2986,13 @@ async fn save_settings(
     state: State<'_, AppState>,
     settings: Settings,
 ) -> std::result::Result<(), String> {
-    map_err!(state.db.save_settings(&settings))
+    map_err!(state.db.save_settings(&settings))?;
+    state
+        .notifier
+        .lock()
+        .unwrap()
+        .configure(settings.notifications_enabled, settings.ui_language);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2877,12 +3079,14 @@ async fn secret_delete(state: State<'_, AppState>, id: String) -> std::result::R
 
 #[tauri::command]
 async fn notify_test(state: State<'_, AppState>) -> std::result::Result<(), String> {
-    let notifier = state.notifier.lock().unwrap();
-    map_err!(notifier.send(Notification {
-        session_id: "diag".into(),
-        title: "AgentPort 测试通知".into(),
-        body: "通知通道工作正常。".into(),
-    }))
+    let (enabled, language) = {
+        let notifier = state.notifier.lock().unwrap();
+        (notifier.enabled(), notifier.language())
+    };
+    if !enabled {
+        return Err("notifications_disabled".into());
+    }
+    map_err!(notifications::send(&test_notification(language)))
 }
 
 /// Read the last N bytes of a session's output log — used to render the
@@ -2914,34 +3118,91 @@ async fn read_recovery_log_context(
     state: State<'_, AppState>,
     session_id: String,
     cursor: LogCursor,
-) -> std::result::Result<Value, String> {
+) -> std::result::Result<Value, Value> {
     use base64::Engine as _;
     const BEFORE: u64 = 128 * 1024;
     const AFTER: u64 = 256 * 1024;
-    let session = map_err!(state.db.get_session(&session_id))?;
-    let latest = map_err!(state.db.get_latest_log_cursor(&session_id))?
-        .ok_or_else(|| "无法确认当前保留的输出代际；输出可能已轮转".to_string())?;
+    let session = state.db.get_session(&session_id).map_err(|error| {
+        runtime_command_error(
+            "recovery_context_failed",
+            json!({}),
+            error.to_string(),
+            error.to_string(),
+        )
+    })?;
+    let latest = state
+        .db
+        .get_latest_log_cursor(&session_id)
+        .map_err(|error| {
+            runtime_command_error(
+                "recovery_context_failed",
+                json!({}),
+                error.to_string(),
+                error.to_string(),
+            )
+        })?
+        .ok_or_else(|| {
+            let message = "无法确认当前保留的输出代际；输出可能已轮转";
+            runtime_command_error(
+                "recovery_generation_unavailable",
+                json!({}),
+                message,
+                message,
+            )
+        })?;
     if cursor.run_id != latest.run_id
         || cursor.run_ordinal != latest.run_ordinal
         || cursor.generation != latest.generation
         || cursor.offset < 0
         || cursor.offset > latest.offset
     {
-        return Err("输出已轮转或不属于当前保留日志，无法安全定位".into());
+        let message = "输出已轮转或不属于当前保留日志，无法安全定位";
+        return Err(runtime_command_error(
+            "recovery_output_rotated",
+            json!({}),
+            message,
+            message,
+        ));
     }
     let path = std::path::PathBuf::from(&session.log_path);
     let len = std::fs::metadata(&path)
-        .map_err(|_| "输出日志已不存在或已轮转".to_string())?
+        .map_err(|error| {
+            runtime_command_error(
+                "recovery_log_missing",
+                json!({}),
+                error.to_string(),
+                "输出日志已不存在或已轮转",
+            )
+        })?
         .len();
     if latest.offset < 0 || len < latest.offset as u64 {
-        return Err("输出已轮转或不再完整保留，无法安全定位".into());
+        let message = "输出已轮转或不再完整保留，无法安全定位";
+        return Err(runtime_command_error(
+            "recovery_log_incomplete",
+            json!({}),
+            message,
+            message,
+        ));
     }
     let target = cursor.offset as u64;
     let start = target.saturating_sub(BEFORE);
     let end = (target.saturating_add(AFTER)).min(latest.offset as u64);
-    let data = map_err!(agentport_core::logs::read_range(&path, start, end - start))?;
+    let data = agentport_core::logs::read_range(&path, start, end - start).map_err(|error| {
+        runtime_command_error(
+            "recovery_context_failed",
+            json!({}),
+            error.to_string(),
+            error.to_string(),
+        )
+    })?;
     if data.len() as u64 != end - start {
-        return Err("读取期间输出日志发生变化，无法安全定位；请重试".into());
+        let message = "读取期间输出日志发生变化，无法安全定位；请重试";
+        return Err(runtime_command_error(
+            "recovery_log_changed",
+            json!({}),
+            message,
+            message,
+        ));
     }
     Ok(json!({
         "data": base64::engine::general_purpose::STANDARD.encode(&data),
@@ -2962,8 +3223,15 @@ fn require_existing_path(path: &str) -> std::result::Result<(), String> {
 }
 
 #[tauri::command]
-async fn reveal_in_file_manager(path: String) -> std::result::Result<(), String> {
-    require_existing_path(&path)?;
+async fn reveal_in_file_manager(path: String) -> std::result::Result<(), Value> {
+    if let Err(message) = require_existing_path(&path) {
+        return Err(runtime_command_error(
+            "project_path_missing",
+            json!({"path": path}),
+            message.clone(),
+            message,
+        ));
+    }
     let status = if cfg!(target_os = "macos") {
         std::process::Command::new("open")
             .args(["-R", &path])
@@ -2977,8 +3245,18 @@ async fn reveal_in_file_manager(path: String) -> std::result::Result<(), String>
     };
     match status {
         Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(format!("file manager exited with {s}")),
-        Err(e) => Err(e.to_string()),
+        Ok(s) => Err(runtime_command_error(
+            "file_manager_failed",
+            json!({}),
+            s.to_string(),
+            format!("file manager exited with {s}"),
+        )),
+        Err(e) => Err(runtime_command_error(
+            "file_manager_failed",
+            json!({}),
+            e.to_string(),
+            e.to_string(),
+        )),
     }
 }
 
@@ -3144,6 +3422,12 @@ fn main() {
     tracing::info!("AgentPort {} starting", env!("CARGO_PKG_VERSION"));
     let db = Db::open(&paths).expect("open db");
     db.seed_builtin_presets().expect("seed presets");
+    let initial_settings = db.load_settings().unwrap_or_default();
+    let mut notifier = Notifier::new(initial_settings.notifications_enabled);
+    notifier.configure(
+        initial_settings.notifications_enabled,
+        initial_settings.ui_language,
+    );
     let state = AppState {
         paths,
         db,
@@ -3153,11 +3437,17 @@ fn main() {
         next_monitor_id: AtomicU64::new(1),
         cleanup_scheduler_started: AtomicBool::new(false),
         branch_reconcile_started: AtomicBool::new(false),
-        notifier: Mutex::new(Notifier::new(true)),
+        notifier: Mutex::new(notifier),
+        notification_tx: start_notification_worker(),
+        notified_statuses: Mutex::new(HashSet::new()),
     };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            notifications::install(app.handle());
+            Ok(())
+        })
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             boot,
@@ -3255,6 +3545,41 @@ fn main() {
 mod cleanup_tests {
     use super::*;
     use std::sync::mpsc;
+
+    #[test]
+    fn adapter_notices_use_stable_codes_and_keep_legacy_detail() {
+        let launch_notices = vec![adapters::LaunchNotice::new(
+            "pi_local_permissions",
+            "Pi 不提供逐项权限确认，将以本地用户权限执行",
+        )];
+        let notices = launch_notice_values(AgentType::Pi, &launch_notices);
+
+        assert_eq!(notices[0]["code"], "pi_local_permissions");
+        assert_eq!(notices[0]["params"]["agent"], "Pi");
+        assert_eq!(
+            notices[0]["technicalDetail"],
+            launch_notices[0].legacy_message
+        );
+        assert_eq!(notices[0]["message"], launch_notices[0].legacy_message);
+    }
+
+    #[test]
+    fn probe_outcome_exposes_a_stable_message_alongside_legacy_reason() {
+        let outcome = capability::ProbeOutcome {
+            agent_type: AgentType::Codex,
+            state: ProbeState::Unavailable,
+            install: None,
+            candidates: Vec::new(),
+            reason: Some("未找到可执行文件".into()),
+            reason_code: Some("probe_executable_not_found"),
+            reason_detail: None,
+        };
+
+        let value = probe_outcome_json(AgentType::Codex, &outcome);
+        assert_eq!(value["reasonMessage"]["code"], "probe_executable_not_found");
+        assert_eq!(value["reasonMessage"]["message"], "未找到可执行文件");
+        assert_eq!(value["reason"], "未找到可执行文件");
+    }
 
     #[test]
     fn worktree_branch_mode_distinguishes_auto_new_and_selected_existing() {

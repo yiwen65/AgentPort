@@ -385,14 +385,6 @@ fn hook_status(s: &str) -> Result<HookStatus> {
         other => return Err(CoreError::Internal(format!("bad hook_status {other}"))),
     })
 }
-fn hook_status_str(h: &HookStatus) -> &'static str {
-    match h {
-        HookStatus::Supported => "supported",
-        HookStatus::Degraded => "degraded",
-        HookStatus::Unavailable => "unavailable",
-    }
-}
-
 fn permission_mode(s: &str) -> Result<PermissionMode> {
     Ok(match s {
         "native" => PermissionMode::Native,
@@ -721,13 +713,14 @@ fn validate_run_identity(run_id: &str, run_ordinal: i64) -> Result<()> {
     Ok(())
 }
 
-fn log_cursor_is_not_older(candidate: &LogCursor, current: &LogCursor) -> bool {
-    candidate.run_ordinal > current.run_ordinal
-        || (candidate.run_ordinal == current.run_ordinal
-            && candidate.run_id == current.run_id
-            && (candidate.generation > current.generation
-                || (candidate.generation == current.generation
-                    && candidate.offset >= current.offset)))
+fn ensure_recovery_summary_row(conn: &Connection, session_id: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO recovery_summary(
+            session_id,last_seen_sequence,latest_sequence,unread_output_offset,summary_state,acknowledged_at
+         ) VALUES(?1,0,0,-1,'none',NULL)",
+        params![session_id],
+    )?;
+    Ok(())
 }
 
 fn update_latest_log_cursor_tx(
@@ -742,12 +735,7 @@ fn update_latest_log_cursor_tx(
             "log generation and offset must not be negative".into(),
         ));
     }
-    tx.execute(
-        "INSERT OR IGNORE INTO recovery_summary(
-            session_id,last_seen_sequence,latest_sequence,unread_output_offset,summary_state,acknowledged_at
-         ) VALUES(?1,0,0,-1,'none',NULL)",
-        params![session_id],
-    )?;
+    ensure_recovery_summary_row(tx, session_id)?;
     tx.execute(
         "UPDATE recovery_summary
          SET latest_log_run_id=?2, latest_log_run_ordinal=?3,
@@ -1227,7 +1215,7 @@ impl Db {
                 a.version_text,
                 a.capability_hash,
                 a.exact_resume,
-                hook_status_str(&a.hook_status),
+                a.hook_status.as_str(),
                 caps,
                 dt_str(&a.probed_at)
             ],
@@ -1517,11 +1505,7 @@ impl Db {
                 s.archived_at.map(|t| dt_str(&t)),
             ],
         )?;
-        tx.execute(
-            "INSERT OR IGNORE INTO recovery_summary(session_id,last_seen_sequence,latest_sequence,unread_output_offset,summary_state,acknowledged_at)
-             VALUES(?1,0,0,-1,'none',NULL)",
-            params![s.id],
-        )?;
+        ensure_recovery_summary_row(&tx, &s.id)?;
         tx.execute(
             "INSERT OR IGNORE INTO session_runs(session_id,run_id,run_ordinal,created_at)
              VALUES(?1,?2,?3,?4)",
@@ -1908,12 +1892,7 @@ impl Db {
                 occurred_at
             ],
         )?;
-        tx.execute(
-            "INSERT OR IGNORE INTO recovery_summary(
-                session_id,last_seen_sequence,latest_sequence,unread_output_offset,summary_state,acknowledged_at
-             ) VALUES(?1,0,0,-1,'none',NULL)",
-            params![id],
-        )?;
+        ensure_recovery_summary_row(&tx, id)?;
         tx.execute(
             "UPDATE recovery_summary
              SET latest_run_id=?2,latest_run_ordinal=?3,latest_sequence=?4,
@@ -2453,11 +2432,7 @@ impl Db {
             if let Some(cursor) = e.log_cursor.as_ref() {
                 update_latest_log_cursor_tx(&tx, &e.session_id, cursor, &e.occurred_at)?;
             }
-            tx.execute(
-                "INSERT OR IGNORE INTO recovery_summary(session_id,last_seen_sequence,latest_sequence,unread_output_offset,summary_state,acknowledged_at)
-                 VALUES(?1,0,0,-1,'none',NULL)",
-                params![e.session_id],
-            )?;
+            ensure_recovery_summary_row(&tx, &e.session_id)?;
             let summary = summary_state_for(e);
             tx.execute(
                 "UPDATE recovery_summary
@@ -2807,12 +2782,7 @@ impl Db {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = Utc::now();
         ensure_session_run_tx(&tx, session_id, &cursor.run_id, cursor.run_ordinal, &now)?;
-        tx.execute(
-            "INSERT OR IGNORE INTO recovery_summary(
-                session_id,last_seen_sequence,latest_sequence,unread_output_offset,summary_state,acknowledged_at
-             ) VALUES(?1,0,0,-1,'none',NULL)",
-            params![session_id],
-        )?;
+        ensure_recovery_summary_row(&tx, session_id)?;
         tx.execute(
             "UPDATE recovery_summary
              SET last_seen_run_id=?2, last_seen_run_ordinal=?3, last_seen_sequence=?4
@@ -2855,12 +2825,7 @@ impl Db {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = Utc::now();
         ensure_session_run_tx(&tx, session_id, &cursor.run_id, cursor.run_ordinal, &now)?;
-        tx.execute(
-            "INSERT OR IGNORE INTO recovery_summary(
-                session_id,last_seen_sequence,latest_sequence,unread_output_offset,summary_state,acknowledged_at
-             ) VALUES(?1,0,0,-1,'none',NULL)",
-            params![session_id],
-        )?;
+        ensure_recovery_summary_row(&tx, session_id)?;
         tx.execute(
             "UPDATE recovery_summary
              SET unread_run_id=?2, unread_run_ordinal=?3, unread_log_generation=?4,
@@ -2913,12 +2878,7 @@ impl Db {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = Utc::now();
         ensure_session_run_tx(&tx, session_id, &cursor.run_id, cursor.run_ordinal, &now)?;
-        tx.execute(
-            "INSERT OR IGNORE INTO recovery_summary(
-                session_id,last_seen_sequence,latest_sequence,unread_output_offset,summary_state,acknowledged_at
-             ) VALUES(?1,0,0,-1,'none',NULL)",
-            params![session_id],
-        )?;
+        ensure_recovery_summary_row(&tx, session_id)?;
         let current = tx.query_row(
             "SELECT last_seen_run_id,last_seen_run_ordinal,last_seen_sequence,
                     unread_run_id,unread_run_ordinal,unread_log_generation,unread_output_offset
@@ -3023,12 +2983,7 @@ impl Db {
         if let Some(cursor) = log_cursor {
             ensure_session_run_tx(&tx, session_id, &cursor.run_id, cursor.run_ordinal, &now)?;
         }
-        tx.execute(
-            "INSERT OR IGNORE INTO recovery_summary(
-                session_id,last_seen_sequence,latest_sequence,unread_output_offset,summary_state,acknowledged_at
-             ) VALUES(?1,0,0,-1,'none',NULL)",
-            params![session_id],
-        )?;
+        ensure_recovery_summary_row(&tx, session_id)?;
         let current = tx.query_row(
             "SELECT last_seen_run_id,last_seen_run_ordinal,last_seen_sequence,
                     unread_run_id,unread_run_ordinal,unread_log_generation,unread_output_offset,
@@ -3077,11 +3032,11 @@ impl Db {
         // that high-water rather than retaining the old first-unread byte
         // (which would replay already-seen output) or clearing fresh output.
         let snapshot_covers_unread = log_cursor.is_some_and(|snapshot| {
-            current.1.offset >= 0 && log_cursor_is_not_older(snapshot, &current.1)
+            current.1.offset >= 0 && snapshot.is_not_older_than(&current.1)
         });
         let latest_advanced_after_snapshot = match (log_cursor, current.2.as_ref()) {
             (Some(snapshot), Some(latest)) => {
-                log_cursor_is_not_older(latest, snapshot) && latest != snapshot
+                latest.is_not_older_than(snapshot) && latest != snapshot
             }
             _ => false,
         };
@@ -3122,11 +3077,7 @@ impl Db {
     pub fn mark_session_seen(&self, session_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let now = dt_str(&Utc::now());
-        conn.execute(
-            "INSERT OR IGNORE INTO recovery_summary(session_id,last_seen_sequence,latest_sequence,unread_output_offset,summary_state,acknowledged_at)
-             VALUES(?1,0,0,-1,'none',NULL)",
-            params![session_id],
-        )?;
+        ensure_recovery_summary_row(&conn, session_id)?;
         conn.execute(
             "UPDATE recovery_summary
              SET last_seen_run_id=latest_run_id, last_seen_run_ordinal=latest_run_ordinal,
@@ -3153,12 +3104,7 @@ impl Db {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = Utc::now();
         ensure_session_run_tx(&tx, session_id, &cursor.run_id, cursor.run_ordinal, &now)?;
-        tx.execute(
-            "INSERT OR IGNORE INTO recovery_summary(
-                session_id,last_seen_sequence,latest_sequence,unread_output_offset,summary_state,acknowledged_at
-             ) VALUES(?1,0,0,-1,'none',NULL)",
-            params![session_id],
-        )?;
+        ensure_recovery_summary_row(&tx, session_id)?;
         tx.execute(
             "UPDATE recovery_summary
              SET unread_run_id=?2, unread_run_ordinal=?3, unread_log_generation=?4,
@@ -3280,6 +3226,10 @@ impl Db {
                 .get("notifications_enabled")
                 .map(|v| v == "true")
                 .unwrap_or(d.notifications_enabled),
+            ui_language: map
+                .get("ui_language")
+                .and_then(|value| UiLanguage::from_code(value))
+                .unwrap_or(d.ui_language),
             theme: match map.get("theme").map(String::as_str) {
                 Some("dark") => Theme::Dark,
                 Some("light") => Theme::Light,
@@ -3336,12 +3286,13 @@ impl Db {
             ReducedMotion::On => "on",
             ReducedMotion::Off => "off",
         };
-        let pairs: [(String, String); 10] = [
+        let pairs: [(String, String); 11] = [
             ("log_limit_mib".into(), s.log_limit_mib.to_string()),
             (
                 "notifications_enabled".into(),
                 s.notifications_enabled.to_string(),
             ),
+            ("ui_language".into(), s.ui_language.as_str().into()),
             ("theme".into(), theme.into()),
             (
                 "terminal_font_family".into(),
@@ -4720,14 +4671,17 @@ mod tests {
         let d = db.load_settings().unwrap();
         assert_eq!(d.log_limit_mib, DEFAULT_LOG_LIMIT_MIB);
         assert_eq!(d.terminal_font_size, 13);
+        assert_eq!(d.ui_language, UiLanguage::ZhCn);
         assert!(!d.telemetry_enabled);
         let mut s = d.clone();
+        s.ui_language = UiLanguage::EnUs;
         s.theme = Theme::Dark;
         s.terminal_font_size = 18;
         s.terminal_command = "kitty".into();
         s.agent_order = vec!["pi".into(), "qoder".into(), "codex".into()];
         db.save_settings(&s).unwrap();
         let back = db.load_settings().unwrap();
+        assert_eq!(back.ui_language, UiLanguage::EnUs);
         assert_eq!(back.theme, Theme::Dark);
         assert_eq!(back.terminal_font_size, 18);
         assert_eq!(back.terminal_command, "kitty");
@@ -4752,6 +4706,20 @@ mod tests {
             )
             .unwrap();
         assert_eq!(db.load_settings().unwrap().theme, Theme::Dark);
+    }
+
+    #[test]
+    fn invalid_ui_language_falls_back_to_simplified_chinese() {
+        let db = db();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO settings(key,value) VALUES('ui_language','unsupported')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(db.load_settings().unwrap().ui_language, UiLanguage::ZhCn);
     }
 
     #[test]

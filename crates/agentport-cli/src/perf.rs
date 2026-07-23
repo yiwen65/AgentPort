@@ -152,7 +152,7 @@ fn start_session(
     };
     let settings = ctx.db.load_settings()?;
     let _info = mgr.launch(LaunchSpec {
-        session: session.clone(),
+        session,
         command: argv,
         env: vec![],
         secrets: vec![],

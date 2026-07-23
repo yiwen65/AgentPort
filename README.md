@@ -38,8 +38,8 @@ cd src && npm install && npm run dev   # 前端开发服务器（:1420）
 | 验收剧本 4（Worktree 安全） | `bash e2e/play4.sh` |
 | 性能指标（PRD ch.10） | `./target/debug/agentport-cli perf all`（结果存 `<data>/perf-results.jsonl`） |
 | macOS 打包 | `bash scripts/build-macos.sh`（Universal 见脚本头部说明） |
-| Ubuntu 24.04 `.deb` | `bash scripts/build-linux.sh ubuntu2404`（Docker） |
-| Ubuntu 22.04 `.deb` | `bash scripts/build-linux.sh ubuntu2204`（Docker） |
+| Ubuntu 22.04 / 24.04 `.deb`（发布基线） | `bash scripts/build-linux.sh ubuntu2204`（Docker） |
+| Ubuntu 24.04 原生 `.deb`（兼容性诊断） | `bash scripts/build-linux.sh ubuntu2404`（Docker） |
 | Fedora/Arch 社区构建 | `bash scripts/build-linux.sh fedora` / `arch` |
 | AppImage（Beta） | `bash scripts/build-linux.sh appimage` |
 | 发布清单 | `bash scripts/generate-release-manifest.sh` |
@@ -75,4 +75,4 @@ agentport-cli timeline                            # 离开期间恢复时间线
 ## 文档
 
 - 用户指南 `docs/user-guide.md` · 安装 `docs/install.md` · 故障排查 `docs/troubleshooting.md` · 安全说明 `docs/security.md`
-- 验收报告 `docs/acceptance-report.md` · 已知限制 `docs/known-limitations.md` · 发布清单 `release-manifest.json`（2026-07-19 历史快照；发布前须重新运行生成脚本）
+- 验收报告 `docs/acceptance-report.md` · 已知限制 `docs/known-limitations.md` · 发布清单 `release-manifest.json`（发布前须重新运行生成脚本）

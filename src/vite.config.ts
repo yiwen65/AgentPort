@@ -20,5 +20,11 @@ export default defineConfig({
   },
   // Vitest augments the Vite config at runtime. Spread the optional block so
   // this file type-checks with Vite alone as well as with Vitest installed.
-  ...({ test: { environment: "jsdom", globals: true } } as Record<string, unknown>),
+  ...({
+    test: {
+      environment: "jsdom",
+      globals: true,
+      setupFiles: ["./src/test-setup.ts"],
+    },
+  } as Record<string, unknown>),
 });

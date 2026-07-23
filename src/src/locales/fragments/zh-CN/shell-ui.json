@@ -1,0 +1,115 @@
+{
+  "ui": {
+    "actions": {
+      "addProject": "添加项目",
+      "settings": "设置"
+    },
+    "topBar": {
+      "commandPalette": "命令面板",
+      "recoveryTimeline": "恢复时间线",
+      "recoveryTimelineCount_one": "恢复时间线（{{count}}）",
+      "recoveryTimelineCount_other": "恢复时间线（{{count}}）",
+      "settingsEllipsis": "设置…",
+      "showSidebar": "显示侧栏",
+      "hideSidebar": "隐藏侧栏",
+      "showSidebarTip": "显示项目与 Session 侧栏（{{shortcut}}）",
+      "hideSidebarTip": "隐藏项目与 Session 侧栏（{{shortcut}}）",
+      "workspaceMenu": "工作区菜单"
+    },
+    "sidebar": {
+      "label": "项目与 Session",
+      "projectTreeLabel": "项目树",
+      "worktreeTreeLabel": "{{project}} 的 Worktree Session",
+      "notGitRepository": "该目录不是 Git 仓库",
+      "openFailed": "打开失败：{{detail}}",
+      "gitStatusFailed": "无法读取 git status：{{detail}}",
+      "expand": "展开",
+      "collapse": "折叠",
+      "worktreeSummary_one": "Worktree {{branch}}，{{count}} 个 Session，{{action}}",
+      "worktreeSummary_other": "Worktree {{branch}}，{{count}} 个 Session，{{action}}",
+      "worktreeQuickActions": "在 Worktree {{branch}} 中快速启动 Agent",
+      "worktreeScope": "Worktree {{branch}}",
+      "worktreeMoreActions": "Worktree {{branch}} 的更多操作",
+      "projectQuickActions": "在项目 {{project}} 中快速启动 Agent",
+      "projectScope": "项目 {{project}}",
+      "projectMoreActions": "项目 {{project}} 的更多操作",
+      "moreActions": "更多操作…",
+      "worktreesEntryLabel": "Worktrees，进入管理视图",
+      "currentCheckout": "当前 checkout：{{head}}。管理本地分支",
+      "unbornRepository": "未初始化仓库",
+      "readingBranch": "读取分支中…",
+      "detachedAt": "游离 HEAD @ {{oid}}",
+      "noRunningTasks": "还没有运行中的任务",
+      "expandAll": "展开所有项目与 Worktree",
+      "collapseAll": "折叠所有项目与 Session",
+      "quickLaunch": {
+        "terminal": "终端",
+        "localUserPermissions": "本地用户权限",
+        "bypassPermissionChecks": "绕过权限检查",
+        "listLabel": "在{{scope}}快速启动 Agent；拖动查看全部",
+        "launchLabel": "在{{scope}}启动 {{agent}}（{{mode}}）",
+        "launchTip": "启动 {{agent}}（{{mode}}）"
+      },
+      "projectMenu": {
+        "newWorktree": "新建 Worktree…",
+        "manageBranches": "管理本地分支…",
+        "revealInFileManager": "在系统文件管理器中显示",
+        "rename": "重命名项目…",
+        "remove": "从 AgentPort 移除（不删除目录）"
+      },
+      "worktreeMenu": {
+        "copyPath": "复制路径",
+        "openInSystemTerminal": "在系统终端中打开",
+        "copyGitStatus": "复制 git status",
+        "delete": "删除 Worktree…",
+        "deleteBlocked": "该 Worktree 有未提交或未跟踪文件，已阻止删除。\n请先提交或清理后重试。"
+      },
+      "toast": {
+        "pathCopied": "已复制路径",
+        "gitStatusCopied": "已复制 git status"
+      },
+      "worktreeView": {
+        "back": "返回主 Session 列表",
+        "empty": "还没有 Worktree",
+        "unavailable": "该目录不是 Git 仓库，无法使用 Worktree"
+      }
+    },
+    "terminal": {
+      "scrollbarLabel": "Session 历史滚动位置",
+      "backToLatest": "↓ 回到最新",
+      "backToLatestTip": "快捷键：⌘↓（Linux：Ctrl+Shift+↓）"
+    },
+    "terminalSearch": {
+      "regionLabel": "终端历史搜索",
+      "placeholder": "搜索完整终端历史（不会发送给 Agent）",
+      "inputLabel": "搜索终端历史",
+      "currentBuffer": "当前缓冲",
+      "currentScreen": "当前屏幕",
+      "matchPosition_one": "{{scope}} {{current}}/{{count}}",
+      "matchPosition_other": "{{scope}} {{current}}/{{count}}",
+      "noCurrentBufferResults": "当前缓冲：无结果",
+      "previousMatch": "上一个匹配",
+      "nextMatch": "下一个匹配",
+      "close": "关闭搜索",
+      "fullHistory": "完整历史",
+      "bufferMatch": "{{scope}}：{{snippet}}",
+      "noResultsInCurrentBuffer": "当前缓冲中无结果",
+      "searchingPersistedLog": "正在搜索持久化日志…",
+      "fullHistoryUnavailable": "完整历史不可用",
+      "loadedHits_one": "（已载入 {{count}} 条）",
+      "loadedHits_other": "（已载入 {{count}} 条）",
+      "logMatchPosition_one": "{{current}}/{{count}}{{loaded}}：{{snippet}}",
+      "logMatchPosition_other": "{{current}}/{{count}}{{loaded}}：{{snippet}}",
+      "noResults": "无结果",
+      "searchFailed": "无法搜索完整终端历史：{{detail}}"
+    },
+    "workspace": {
+      "label": "终端工作区"
+    },
+    "empty": {
+      "selectSession": "在左侧选择一个 Session 继续工作。",
+      "noRunningTasks": "项目还没有运行中的任务。",
+      "addDirectoryPrompt": "添加一个代码目录，开始第一个持久 Session。"
+    }
+  }
+}

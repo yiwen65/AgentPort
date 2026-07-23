@@ -218,6 +218,15 @@ pub enum HostFrame {
     Error {
         session_id: Option<String>,
         message: String,
+        /// Stable application-owned error identifier. Absent on legacy Hosts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+        /// Named localization parameters. Absent on legacy Hosts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        params: Option<serde_json::Value>,
+        /// Original detail retained for diagnostics, never used as a key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        technical_detail: Option<String>,
     },
 }
 
@@ -442,6 +451,35 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn host_error_envelope_remains_compatible_with_legacy_messages() {
+        let legacy: HostFrame = serde_json::from_str(
+            r#"{"type":"error","session_id":"ses_1","message":"legacy Host message"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            legacy,
+            HostFrame::Error {
+                code: None,
+                params: None,
+                technical_detail: None,
+                ..
+            }
+        ));
+
+        let current = HostFrame::Error {
+            session_id: Some("ses_1".into()),
+            message: "legacy-compatible message".into(),
+            code: Some("host_error".into()),
+            params: Some(serde_json::json!({"attempt": 2})),
+            technical_detail: Some("socket closed".into()),
+        };
+        let encoded = serde_json::to_value(current).unwrap();
+        assert_eq!(encoded["code"], "host_error");
+        assert_eq!(encoded["technical_detail"], "socket closed");
+        assert_eq!(encoded["message"], "legacy-compatible message");
     }
 
     #[test]

@@ -1,7 +1,8 @@
 // High-level user flows: confirm dialogs + backend calls + store updates.
 // Components stay declarative; side effects live here.
 
-import { api, errorText } from "./api";
+import { api, copyText, errorText } from "./api";
+import { localizedNotices } from "./runtimeMessages";
 import {
   applyProjectsSnapshot,
   applyRepositoryStatusSnapshot,
@@ -38,12 +39,18 @@ import {
   resetForRestart,
 } from "./terminals";
 import { agentDisplay } from "./format";
+import { i18n } from "./i18n";
 import type { LogCursorView } from "./types";
 
 export function isMac(): boolean {
   const os = getState().platform?.os;
   if (os) return os === "macos";
   return navigator.platform.toLowerCase().includes("mac");
+}
+
+export async function copyTextWithToast(text: string, successText: string) {
+  const copied = await copyText(text);
+  toast(copied ? successText : i18n.t("common:feedback.copyFailed"), copied ? "success" : "error");
 }
 
 // ---------------------------------------------------------------------------
@@ -98,10 +105,15 @@ export async function addProjectFromPickerFlow() {
     if (!path) return;
     const res = await api.addProject(path, null);
     await refreshProjects();
-    toast(res.focusedExisting ? "该项目已在列表中，已为你聚焦" : `已添加项目「${res.name ?? path}」`, res.focusedExisting ? "info" : "success");
+    toast(
+      res.focusedExisting
+        ? i18n.t("shell:project.alreadyAdded")
+        : i18n.t("shell:project.added", { name: res.name ?? path }),
+      res.focusedExisting ? "info" : "success",
+    );
     if (res.id) setState({ expandedProjects: {} });
   } catch (e) {
-    toast(`添加项目失败：${errorText(e)}`, "error");
+    toast(i18n.t("shell:project.addFailed", { detail: errorText(e) }), "error");
   }
 }
 
@@ -117,11 +129,17 @@ export async function refreshTimeline() {
   const request = ++timelineRefreshRequest;
   try {
     const timeline = await api.getTimeline();
-    if (request === timelineRefreshRequest) setState({ timeline, timelineError: null });
+    if (request === timelineRefreshRequest) {
+      setState({ timeline, timelineError: null, timelineMessage: null });
+    }
     return true;
   } catch (error) {
     if (request === timelineRefreshRequest) {
-      setState({ timelineError: `恢复时间线读取失败：${errorText(error)}` });
+      const detail = errorText(error);
+      setState({
+        timelineError: null,
+        timelineMessage: { code: "timeline_load_failed", technicalDetail: detail },
+      });
     }
     return false;
   }
@@ -208,7 +226,7 @@ export function selectSession(id: string, recoveryTarget: LogCursorView | null =
   clearUnreadOutputTracking(id);
   if (recoveryTarget && ses?.transport === "pty") {
     void jumpToRecoveryOutput(id, recoveryTarget).catch((error) => {
-      toast(`无法定位恢复输出：${errorText(error)}`, "error");
+      toast(i18n.t("session:flow.locateRecoveryFailed", { detail: errorText(error) }), "error");
     });
   }
   // Confirm the view in persistent state; merely hiding the dot for the
@@ -280,17 +298,17 @@ export async function stopSessionFlow(sessionId: string) {
   const ses = findSession(getState().projects, sessionId);
   if (!ses) return;
   const ok = await confirmDialog({
-    title: `停止 Session「${ses.title}」？`,
-    body: "将终止完整进程组并保留可恢复记录；Agent 未保存的上下文可能丢失。",
-    confirmLabel: "停止 Session",
+    title: i18n.t("session:flow.stopTitle", { title: ses.title }),
+    body: i18n.t("session:flow.stopBody"),
+    confirmLabel: i18n.t("session:flow.stopAction"),
     danger: true,
   });
   if (!ok) return;
   try {
     await api.stopSession(sessionId);
-    toast("已停止 Session（进程组已清理）", "success");
+    toast(i18n.t("session:flow.stopped"), "success");
   } catch (e) {
-    toast(`停止失败：${errorText(e)}`, "error");
+    toast(i18n.t("session:flow.stopFailed", { detail: errorText(e) }), "error");
   }
 }
 
@@ -299,16 +317,16 @@ export async function restartSessionFlow(sessionId: string) {
   if (!ses) return;
   if (ses.lifecycle === "running" || ses.lifecycle === "creating") {
     const ok = await confirmDialog({
-      title: `重启并恢复「${ses.title}」？`,
-      body: "Session 正在运行。重启将先停止当前进程组，再按恢复信息重新启动。",
-      confirmLabel: "停止并重启",
+      title: i18n.t("session:flow.restartTitle", { title: ses.title }),
+      body: i18n.t("session:flow.restartBody"),
+      confirmLabel: i18n.t("session:flow.stopAndRestart"),
       danger: true,
     });
     if (!ok) return;
     try {
       await api.stopSession(sessionId);
     } catch (e) {
-      toast(`停止失败：${errorText(e)}`, "error");
+      toast(i18n.t("session:flow.stopFailed", { detail: errorText(e) }), "error");
       return;
     }
   }
@@ -320,13 +338,13 @@ export async function restartSessionFlow(sessionId: string) {
     await refreshProjects();
     void attachHandle(sessionId);
     if (res.resumePrecision === "latest") {
-      toast("将从最近会话恢复，可能不包含本次完整上下文", "info");
+      toast(i18n.t("session:flow.latestResumeNotice"), "info");
     } else if (res.resumePrecision === "unavailable") {
-      toast("该 Agent 不支持恢复上下文，已启动全新会话", "info");
+      toast(i18n.t("session:flow.freshStartNotice"), "info");
     }
-    for (const n of res.notes ?? []) toast(n, "info");
+    for (const notice of localizedNotices(res)) toast(notice, "info");
   } catch (e) {
-    toast(`重启失败：${errorText(e)}`, "error");
+    toast(i18n.t("session:flow.restartFailed", { detail: errorText(e) }), "error");
   }
 }
 
@@ -334,7 +352,7 @@ export async function interruptSessionFlow(sessionId: string) {
   try {
     await api.interruptSession(sessionId);
   } catch (e) {
-    toast(`中断失败：${errorText(e)}`, "error");
+    toast(i18n.t("session:flow.interruptFailed", { detail: errorText(e) }), "error");
   }
 }
 
@@ -362,7 +380,7 @@ export async function archiveSessionFlow(sessionId: string) {
     void refreshProjects();
   } catch (e) {
     setSessionArchiving(sessionId, false);
-    toast(`归档失败：${errorText(e)}`, "error");
+    toast(i18n.t("session:flow.archiveFailed", { detail: errorText(e) }), "error");
   }
 }
 
@@ -376,16 +394,16 @@ export async function renameSessionFlow(sessionId: string) {
   const ses = findSession(getState().projects, sessionId);
   if (!ses) return;
   const title = await promptDialog({
-    title: "重命名 Session",
-    label: "新标题",
+    title: i18n.t("session:flow.renameTitle"),
+    label: i18n.t("session:flow.newTitle"),
     initial: ses.title,
-    okLabel: "重命名",
+    okLabel: i18n.t("common:actions.rename"),
   });
   if (!title || !title.trim() || title.trim() === ses.title) return;
   try {
     await api.renameSession(sessionId, title.trim());
   } catch (e) {
-    toast(`重命名失败：${errorText(e)}`, "error");
+    toast(i18n.t("session:flow.renameFailed", { detail: errorText(e) }), "error");
   }
 }
 
@@ -397,7 +415,7 @@ export async function renameSessionInlineFlow(sessionId: string, title: string) 
     await api.renameSession(sessionId, nextTitle);
     await refreshProjects();
   } catch (e) {
-    toast(`重命名失败：${errorText(e)}`, "error");
+    toast(i18n.t("session:flow.renameFailed", { detail: errorText(e) }), "error");
   }
 }
 
@@ -409,17 +427,17 @@ export async function renameProjectFlow(projectId: string) {
   const proj = getState().projects.find((p) => p.id === projectId);
   if (!proj) return;
   const name = await promptDialog({
-    title: "重命名项目",
-    label: "新名称",
+    title: i18n.t("shell:project.renameTitle"),
+    label: i18n.t("shell:project.newName"),
     initial: proj.name,
-    okLabel: "重命名",
+    okLabel: i18n.t("common:actions.rename"),
   });
   if (!name || !name.trim() || name.trim() === proj.name) return;
   try {
     await api.renameProject(projectId, name.trim());
     await refreshProjects();
   } catch (e) {
-    toast(`重命名失败：${errorText(e)}`, "error");
+    toast(i18n.t("shell:project.renameFailed", { detail: errorText(e) }), "error");
   }
 }
 
@@ -427,9 +445,9 @@ export async function removeProjectFlow(projectId: string) {
   const proj = getState().projects.find((p) => p.id === projectId);
   if (!proj) return;
   const ok = await confirmDialog({
-    title: `从 AgentPort 移除「${proj.name}」？`,
-    body: "仅移除应用内记录与其 Session，不会删除磁盘上的项目目录。",
-    confirmLabel: "移除",
+    title: i18n.t("shell:project.removeTitle", { name: proj.name }),
+    body: i18n.t("shell:project.removeBody"),
+    confirmLabel: i18n.t("common:actions.remove"),
     danger: true,
   });
   if (!ok) return;
@@ -440,7 +458,7 @@ export async function removeProjectFlow(projectId: string) {
     }
     await refreshProjects();
   } catch (e) {
-    toast(`移除失败：${errorText(e)}`, "error");
+    toast(i18n.t("shell:project.removeFailed", { detail: errorText(e) }), "error");
   }
 }
 
@@ -450,21 +468,21 @@ export async function removeWorktreeFlow(worktreeId: string) {
     const w = p.worktrees.find((x) => x.id === worktreeId);
     if (!w) continue;
     if (w.health !== "clean") {
-      toast("该 Worktree 有未提交或未跟踪文件，已阻止删除。", "error");
+      toast(i18n.t("worktree:flow.dirtyDeleteBlocked"), "error");
       return;
     }
     const ok = await confirmDialog({
-      title: `删除 Worktree「${w.branch}」？`,
-      body: `将删除目录 ${w.path} 并清理 Git Worktree 记录。`,
-      confirmLabel: "删除 Worktree",
+      title: i18n.t("worktree:flow.deleteTitle", { branch: w.branch }),
+      body: i18n.t("worktree:flow.deleteBody", { path: w.path }),
+      confirmLabel: i18n.t("worktree:flow.deleteAction"),
       danger: true,
     });
     if (!ok) return;
     try {
       await api.removeWorktree(worktreeId);
-      toast("Worktree 已删除", "success");
+      toast(i18n.t("worktree:flow.deleted"), "success");
     } catch (e) {
-      toast(`删除失败：${errorText(e)}`, "error");
+      toast(i18n.t("worktree:flow.deleteFailed", { detail: errorText(e) }), "error");
     }
     return;
   }
@@ -482,7 +500,7 @@ export function openNewSessionDialog(projectId?: string, worktreeId?: string, ag
       findProjectOf(s.projects, s.activeSessionId)?.id ?? s.projects[0]?.id;
   }
   if (!pid) {
-    toast("请先添加一个项目", "info");
+    toast(i18n.t("session:flow.addProjectFirst"), "info");
     openDialog({ kind: "addProject" });
     return;
   }
@@ -511,9 +529,17 @@ export async function quickStartSession(projectId: string, agent: string, worktr
     });
     await refreshProjects();
     selectSession(res.id);
-    toast(`Session 已启动（${agentDisplay(agent)} · ${shell ? "终端" : "完全权限"}）`, "success");
+    toast(
+      i18n.t("session:flow.quickStarted", {
+        agent: agentDisplay(agent),
+        access: shell
+          ? i18n.t("session:flow.terminalAccess")
+          : i18n.t("session:flow.fullAccess"),
+      }),
+      "success",
+    );
   } catch (e) {
-    toast(`启动失败：${errorText(e)}`, "error");
+    toast(i18n.t("session:flow.startFailed", { detail: errorText(e) }), "error");
   }
 }
 
@@ -530,10 +556,11 @@ export async function ackTimelineFlow() {
     setState({
       timeline: { completed: 0, waiting: 0, failed: 0, entries: [], ackSnapshots: [] },
       timelineError: null,
+      timelineMessage: null,
     });
     await refreshProjects();
   } catch (e) {
-    toast(`操作失败：${errorText(e)}`, "error");
+    toast(i18n.t("session:flow.operationFailed", { detail: errorText(e) }), "error");
   }
 }
 

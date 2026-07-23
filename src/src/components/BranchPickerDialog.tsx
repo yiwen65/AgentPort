@@ -3,9 +3,11 @@
 // checkout switch until the command result / repository event confirms it.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { TFunction } from "i18next";
+import { Trans, useTranslation } from "react-i18next";
 import {
   api,
-  copyText,
+  asRecord,
   errorText,
   isStructuredGitError,
   onAutoStashChanged,
@@ -21,7 +23,12 @@ import {
   toast,
   useStore,
 } from "../store";
-import { selectSession } from "../actions";
+import { copyTextWithToast, selectSession } from "../actions";
+import {
+  branchOperationPhaseLabel,
+  recoveryActionLabel,
+  repositoryProgressMessage,
+} from "../format";
 import type {
   AutoStashRecord,
   LocalBranch,
@@ -37,12 +44,6 @@ interface BranchFailure {
   recoveryActions: string[];
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 function stringIds(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
@@ -52,7 +53,9 @@ function operationFailure(error: unknown): BranchFailure {
     return {
       message: error.message || (typeof error.diagnostics.message === "string" ? error.diagnostics.message : error.code),
       liveSessionIds: stringIds(error.liveSessionIds),
-      recoveryActions: stringIds(error.recoveryActions),
+      recoveryActions: stringIds(error.recoveryActionCodes).length
+        ? stringIds(error.recoveryActionCodes)
+        : stringIds(error.recoveryActions),
     };
   }
   // Some adapters wrap the structured payload in an `error` field. Inspect
@@ -63,28 +66,38 @@ function operationFailure(error: unknown): BranchFailure {
     return {
       message: wrapped.message || (typeof wrapped.diagnostics.message === "string" ? wrapped.diagnostics.message : wrapped.code),
       liveSessionIds: stringIds(wrapped.liveSessionIds),
-      recoveryActions: stringIds(wrapped.recoveryActions),
+      recoveryActions: stringIds(wrapped.recoveryActionCodes).length
+        ? stringIds(wrapped.recoveryActionCodes)
+        : stringIds(wrapped.recoveryActions),
     };
   }
   return { message: errorText(error), liveSessionIds: [], recoveryActions: [] };
 }
 
-function headLabel(status: RepositoryStatus | null): string {
-  if (!status) return "正在读取 checkout…";
-  if (status.head?.kind === "branch") return status.head.branch || "未命名分支";
-  if (status.head?.kind === "detached") return `Detached @ ${status.head.shortOid || status.head.oid?.slice(0, 12) || "unknown"}`;
-  return "未初始化仓库";
+function headLabel(status: RepositoryStatus | null, t: TFunction<["worktree", "common"]>): string {
+  if (!status) return t("worktree:ui.branchPicker.head.loadingCheckout");
+  if (status.head?.kind === "branch") {
+    return status.head.branch || t("worktree:ui.branchPicker.head.unnamedBranch");
+  }
+  if (status.head?.kind === "detached") {
+    return t("worktree:ui.branchPicker.head.detachedAt", {
+      oid: status.head.shortOid || status.head.oid?.slice(0, 12) || t("common:status.unknown"),
+    });
+  }
+  return t("worktree:ui.branchPicker.head.uninitializedRepository");
 }
 
-function changesLabel(status: RepositoryStatus | null): string[] {
+function changesLabel(status: RepositoryStatus | null, t: TFunction<["worktree", "common"]>): string[] {
   if (!status) return [];
   const changes = status.changes ?? { staged: 0, unstaged: 0, untracked: 0, unmerged: 0, dirtySubmodules: 0 };
   return [
-    changes.staged ? `暂存 ${changes.staged}` : "",
-    changes.unstaged ? `修改 ${changes.unstaged}` : "",
-    changes.untracked ? `未跟踪 ${changes.untracked}` : "",
-    changes.unmerged ? `冲突 ${changes.unmerged}` : "",
-    changes.dirtySubmodules ? `子模块 ${changes.dirtySubmodules}` : "",
+    changes.staged ? t("worktree:ui.branchPicker.changes.staged", { count: changes.staged }) : "",
+    changes.unstaged ? t("worktree:ui.branchPicker.changes.unstaged", { count: changes.unstaged }) : "",
+    changes.untracked ? t("worktree:ui.branchPicker.changes.untracked", { count: changes.untracked }) : "",
+    changes.unmerged ? t("worktree:ui.branchPicker.changes.unmerged", { count: changes.unmerged }) : "",
+    changes.dirtySubmodules
+      ? t("worktree:ui.branchPicker.changes.dirtySubmodules", { count: changes.dirtySubmodules })
+      : "",
   ].filter(Boolean);
 }
 
@@ -115,11 +128,12 @@ function BranchRow({
   deleteButtonRef: (element: HTMLButtonElement | null) => void;
   confirmDeleteRef: (element: HTMLButtonElement | null) => void;
 }) {
+  const { t } = useTranslation(["worktree", "common"]);
   const occupied = Boolean(branch.checkedOutPath);
   const effectiveDeleteBlockedReason = branch.current
-    ? "该分支已成为当前 checkout"
+    ? t("worktree:ui.branchPicker.row.currentDeleteBlocked")
     : occupied
-      ? `该分支已被 Worktree 占用：${branch.checkedOutPath}`
+      ? t("worktree:ui.branchPicker.row.occupiedDeleteBlocked", { path: branch.checkedOutPath })
       : deleteBlockedReason;
   if (confirmingDelete) {
     return (
@@ -128,21 +142,34 @@ function BranchRow({
         role="listitem"
       >
         <div className="branch-picker-delete-warning" role="alert" aria-live="assertive">
-          <strong>删除 <span className="mono">{branch.name}</span>？</strong>
-          <span>仅删除已合并的本地分支，不影响远端。此操作不可撤销。</span>
-          {effectiveDeleteBlockedReason ? <span>暂不能删除：{effectiveDeleteBlockedReason}</span> : null}
+          <strong>
+            <Trans
+              t={t}
+              i18nKey="worktree:ui.branchPicker.delete.question"
+              values={{ branch: branch.name }}
+              components={{ branch: <span className="mono" /> }}
+            />
+          </strong>
+          <span>{t("worktree:ui.branchPicker.delete.mergedOnlyWarning")}</span>
+          {effectiveDeleteBlockedReason ? (
+            <span>{t("worktree:ui.branchPicker.delete.blocked", { reason: effectiveDeleteBlockedReason })}</span>
+          ) : null}
         </div>
-        <div className="branch-picker-delete-confirm-actions" role="group" aria-label={`确认删除分支 ${branch.name}`}>
+        <div
+          className="branch-picker-delete-confirm-actions"
+          role="group"
+          aria-label={t("worktree:ui.branchPicker.delete.confirmGroupAria", { branch: branch.name })}
+        >
           <button
             ref={confirmDeleteRef}
             className="btn small danger"
             disabled={disabled || Boolean(effectiveDeleteBlockedReason)}
             onClick={() => onConfirmDelete(branch)}
           >
-            确认删除
+            {t("worktree:ui.branchPicker.delete.confirm")}
           </button>
           <button className="btn small ghost" onClick={() => onCancelDelete(branch)}>
-            取消
+            {t("common:actions.cancel")}
           </button>
         </div>
       </div>
@@ -157,23 +184,41 @@ function BranchRow({
         className="branch-picker-choice"
         disabled={disabled || branch.current || occupied}
         onClick={() => onChoose(branch)}
-        title={occupied ? `已在 ${branch.checkedOutPath} checkout` : undefined}
+        title={occupied
+          ? t("worktree:ui.branchPicker.row.checkedOutAt", { path: branch.checkedOutPath })
+          : undefined}
         aria-current={branch.current ? "page" : undefined}
-        aria-label={`${branch.name}${branch.current ? "，当前 checkout" : ""}${occupied ? `，已被 Worktree 占用：${branch.checkedOutPath}` : ""}`}
+        aria-label={branch.current && occupied
+          ? t("worktree:ui.branchPicker.row.ariaCurrentAndOccupied", {
+              branch: branch.name,
+              path: branch.checkedOutPath,
+            })
+          : branch.current
+            ? t("worktree:ui.branchPicker.row.ariaCurrent", { branch: branch.name })
+            : occupied
+              ? t("worktree:ui.branchPicker.row.ariaOccupied", {
+                  branch: branch.name,
+                  path: branch.checkedOutPath,
+                })
+              : branch.name}
       >
         <span className="branch-picker-name mono">{branch.name}</span>
         <span className="branch-picker-meta mono">{branch.oid.slice(0, 12)}</span>
-        {branch.current ? <span className="branch-picker-state">当前 checkout</span> : null}
-        {occupied ? <span className="branch-picker-state">已被 Worktree 占用</span> : null}
+        {branch.current ? (
+          <span className="branch-picker-state">{t("worktree:ui.branchPicker.row.currentCheckout")}</span>
+        ) : null}
+        {occupied ? (
+          <span className="branch-picker-state">{t("worktree:ui.branchPicker.row.occupiedByWorktree")}</span>
+        ) : null}
         {occupied ? <span className="branch-picker-path mono">{branch.checkedOutPath}</span> : null}
       </button>
       {branch.agentPortWorktreeId ? (
         <button
           className="btn small ghost branch-picker-worktree"
           onClick={() => onOpenWorktree(branch.agentPortWorktreeId!)}
-          aria-label={`打开 ${branch.name} 的 AgentPort Worktree`}
+          aria-label={t("worktree:ui.branchPicker.row.openWorktreeAria", { branch: branch.name })}
         >
-          查看 Worktree
+          {t("worktree:ui.branchPicker.row.viewWorktree")}
         </button>
       ) : null}
       {!branch.current && !occupied ? (
@@ -181,11 +226,11 @@ function BranchRow({
           ref={deleteButtonRef}
           className="btn small ghost branch-picker-delete"
           disabled={disabled || Boolean(deleteBlockedReason)}
-          title={deleteBlockedReason || `删除本地分支 ${branch.name}`}
-          aria-label={`删除分支 ${branch.name}`}
+          title={deleteBlockedReason || t("worktree:ui.branchPicker.row.deleteLocalBranch", { branch: branch.name })}
+          aria-label={t("worktree:ui.branchPicker.row.deleteBranchAria", { branch: branch.name })}
           onClick={() => onRequestDelete(branch)}
         >
-          删除
+          {t("common:actions.delete")}
         </button>
       ) : null}
     </div>
@@ -193,6 +238,7 @@ function BranchRow({
 }
 
 export default function BranchPickerDialog({ projectId }: { projectId: string }) {
+  const { t } = useTranslation(["worktree", "common"]);
   const store = useStore();
   const project = store.projects.find((item) => item.id === projectId);
   const [data, setData] = useState<LocalBranchesResponse | null>(null);
@@ -360,7 +406,7 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
       projectId,
       branch: pending.branch ?? null,
       phase: "started",
-      message: pending.message ?? "正在重新检查仓库并执行安全操作",
+      message: pending.message ?? t("worktree:ui.branchPicker.operation.checkingRepository"),
       coreOperationId: null,
       recoverable: false,
       occurredAt: new Date().toISOString(),
@@ -373,7 +419,9 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
       const refreshed = await refresh();
       setSuccess({ message, refreshed });
       toast(
-        refreshed ? message : `${message}，但仓库状态刷新失败`,
+        refreshed
+          ? message
+          : t("worktree:ui.branchPicker.operation.completedButRefreshFailed", { message }),
         refreshed ? "success" : "error",
       );
       return true;
@@ -389,7 +437,7 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
 
   const switchTo = (branch: LocalBranch) => {
     if (localBusyRef.current || eventBusyRef.current || branch.current || branch.checkedOutPath) return;
-    void complete(`已切换到 ${branch.name}`, async () => {
+    void complete(t("worktree:ui.branchPicker.operation.switched", { branch: branch.name }), async () => {
       const result = await api.switchLocalBranch(projectId, branch.name);
       setData((previous) => (previous ? { ...previous, status: result.status } : previous));
     });
@@ -417,7 +465,7 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
   const deleteBranch = (branch: LocalBranch) => {
     void (async () => {
       const deleted = await complete(
-        `已删除本地分支 ${branch.name}`,
+        t("worktree:ui.branchPicker.operation.deletedLocalBranch", { branch: branch.name }),
         async () => {
           const result = await api.deleteLocalBranch(projectId, branch.name);
           setData((previous) => (previous ? { ...previous, status: result.status } : previous));
@@ -425,7 +473,7 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
         {
           command: "delete_local_branch",
           branch: branch.name,
-          message: `正在重新检查并删除本地分支 ${branch.name}`,
+          message: t("worktree:ui.branchPicker.operation.deletingLocalBranch", { branch: branch.name }),
         },
       );
       if (deleted) {
@@ -441,41 +489,54 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
   const create = () => {
     const name = newName.trim();
     if (!name) return;
-    void complete(switchAfterCreate ? `已创建并切换到 ${name}` : `已创建 ${name}`, async () => {
-      let result = await api.createLocalBranch(projectId, name, startBranch.trim() || null);
-      if (switchAfterCreate) {
-        try {
-          result = await api.switchLocalBranch(projectId, name);
-        } catch (error) {
-          const failure = operationFailure(error);
-          throw {
-            ...(isStructuredGitError(error) ? error : {}),
-            code: isStructuredGitError(error) ? error.code : "switch_after_create_failed",
-            message: `分支 ${name} 已创建，但未能切换。${failure.message}`,
-            phase: isStructuredGitError(error) ? error.phase : "switch",
-            operationId: isStructuredGitError(error) ? error.operationId : "ui-create-switch",
-            recoverable: true,
-            currentStatus: isStructuredGitError(error) ? error.currentStatus : null,
-            recoveryActions: failure.recoveryActions,
-            diagnostics: isStructuredGitError(error) ? error.diagnostics : {},
-            liveSessionIds: failure.liveSessionIds,
-          };
+    void complete(
+      switchAfterCreate
+        ? t("worktree:ui.branchPicker.operation.createdAndSwitched", { branch: name })
+        : t("worktree:ui.branchPicker.operation.created", { branch: name }),
+      async () => {
+        let result = await api.createLocalBranch(projectId, name, startBranch.trim() || null);
+        if (switchAfterCreate) {
+          try {
+            result = await api.switchLocalBranch(projectId, name);
+          } catch (error) {
+            const failure = operationFailure(error);
+            throw {
+              ...(isStructuredGitError(error) ? error : {}),
+              code: isStructuredGitError(error) ? error.code : "switch_after_create_failed",
+              message: t("worktree:ui.branchPicker.operation.createdButSwitchFailed", {
+                branch: name,
+                detail: failure.message,
+              }),
+              phase: isStructuredGitError(error) ? error.phase : "switch",
+              operationId: isStructuredGitError(error) ? error.operationId : "ui-create-switch",
+              recoverable: true,
+              currentStatus: isStructuredGitError(error) ? error.currentStatus : null,
+              recoveryActions: failure.recoveryActions,
+              diagnostics: isStructuredGitError(error) ? error.diagnostics : {},
+              liveSessionIds: failure.liveSessionIds,
+            };
+          }
         }
-      }
-      setData((previous) => (previous ? { ...previous, status: result.status } : previous));
-      if (result.autoStash) setRecovery((items) => [result.autoStash!, ...items]);
-      setNewName("");
-    });
+        setData((previous) => (previous ? { ...previous, status: result.status } : previous));
+        if (result.autoStash) setRecovery((items) => [result.autoStash!, ...items]);
+        setNewName("");
+      },
+    );
   };
 
   const restore = (stash: AutoStashRecord, strategy: "target" | "source") => {
-    void complete(strategy === "target" ? "已尝试恢复到当前 checkout" : "已返回原 checkout", async () => {
-      await api.restoreAutoStash(stash.operationId, strategy);
-    });
+    void complete(
+      strategy === "target"
+        ? t("worktree:ui.branchPicker.operation.restoreAttemptedOnCurrentCheckout")
+        : t("worktree:ui.branchPicker.operation.returnedToSourceCheckout"),
+      async () => {
+        await api.restoreAutoStash(stash.operationId, strategy);
+      },
+    );
   };
 
   const cleanup = (stash: AutoStashRecord) => {
-    void complete("恢复记录已清理", async () => {
+    void complete(t("worktree:ui.branchPicker.operation.recoveryRecordCleaned"), async () => {
       await api.cleanupAutoStash(stash.operationId);
     });
   };
@@ -506,14 +567,21 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
   };
 
   const status = data?.status ?? store.repositoryStatuses[projectId] ?? null;
-  const changeLines = changesLabel(status);
+  const changeLines = changesLabel(status, t);
   const controlsBusy = busy || eventBusy;
   const canCreate = Boolean(newName.trim()) && !controlsBusy && status?.isGitRepository === true;
   let deleteBlockedReason: string | null = null;
-  if (controlsBusy) deleteBlockedReason = "仓库操作进行中，暂时不能删除分支";
-  else if (!status || !status.isGitRepository) deleteBlockedReason = "仓库状态不可用";
-  else if (status.ongoingOperation) deleteBlockedReason = `Git ${status.ongoingOperation} 操作进行中`;
-  else if (status.changes.unmerged) deleteBlockedReason = "存在未解决冲突，不能删除分支";
+  if (controlsBusy) {
+    deleteBlockedReason = t("worktree:ui.branchPicker.deleteBlocked.repositoryOperation");
+  } else if (!status || !status.isGitRepository) {
+    deleteBlockedReason = t("worktree:ui.branchPicker.deleteBlocked.repositoryUnavailable");
+  } else if (status.ongoingOperation) {
+    deleteBlockedReason = t("worktree:ui.branchPicker.deleteBlocked.gitOperation", {
+      operation: status.ongoingOperation,
+    });
+  } else if (status.changes.unmerged) {
+    deleteBlockedReason = t("worktree:ui.branchPicker.deleteBlocked.unresolvedConflicts");
+  }
 
   useEffect(() => {
     if (!confirmingDelete) return;
@@ -526,7 +594,13 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
   }, [confirmingDelete, data?.branches, status?.head?.branch, status?.head?.kind]);
 
   return (
-    <Modal title={`管理本地分支 · ${project?.name ?? "项目"}`} onClose={closeDialog} wide>
+    <Modal
+      title={t("worktree:ui.branchPicker.title", {
+        project: project?.name ?? t("worktree:ui.branchPicker.projectFallback"),
+      })}
+      onClose={closeDialog}
+      wide
+    >
       <div
         className="branch-picker-content"
         onKeyDown={(event) => {
@@ -538,49 +612,85 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
       >
       <div className="branch-picker-status" aria-live="polite">
         <div>
-          <span className="branch-picker-eyebrow">当前 checkout</span>
-          <strong className="mono">{headLabel(status)}</strong>
+          <span className="branch-picker-eyebrow">{t("worktree:ui.branchPicker.currentCheckout")}</span>
+          <strong className="mono">{headLabel(status, t)}</strong>
         </div>
         <div className="branch-picker-summary">
-          {changeLines.length ? <span>工作区：{changeLines.join(" · ")}</span> : <span>工作区干净</span>}
-          {status?.ongoingOperation ? <span>Git 操作中：{status.ongoingOperation}</span> : null}
-          {status?.liveSessionIds.length ? <span>同 checkout 运行中 Session：{status.liveSessionIds.length}</span> : null}
-          {status?.pendingAutoStashes ? <span>待恢复记录：{status.pendingAutoStashes}</span> : null}
+          {changeLines.length ? (
+            <span>{t("worktree:ui.branchPicker.workspace.changes", { changes: changeLines.join(" · ") })}</span>
+          ) : (
+            <span>{t("worktree:ui.branchPicker.workspace.clean")}</span>
+          )}
+          {status?.ongoingOperation ? (
+            <span>{t("worktree:ui.branchPicker.workspace.gitOperation", { operation: status.ongoingOperation })}</span>
+          ) : null}
+          {status?.liveSessionIds.length ? (
+            <span>
+              {t("worktree:ui.branchPicker.workspace.liveSessions", {
+                count: status.liveSessionIds.length,
+              })}
+            </span>
+          ) : null}
+          {status?.pendingAutoStashes ? (
+            <span>
+              {t("worktree:ui.branchPicker.workspace.pendingRecoveryRecords", {
+                count: status.pendingAutoStashes,
+              })}
+            </span>
+          ) : null}
         </div>
       </div>
 
       {status && !status.isGitRepository ? (
-        <div className="error-bar" role="alert">该项目不是 Git 仓库，无法管理本地分支。</div>
+        <div className="error-bar" role="alert">{t("worktree:ui.branchPicker.notGitRepository")}</div>
       ) : null}
-      {progress ? <div className="info-box branch-picker-progress" role="status">{controlsBusy ? "进行中" : "最近操作"}：{progress.message}（{progress.phase}）</div> : null}
+      {progress ? (
+        <div className="info-box branch-picker-progress" role="status">
+          {t("worktree:ui.branchPicker.progress.detail", {
+            label: controlsBusy
+              ? t("worktree:ui.branchPicker.progress.inProgress")
+              : t("worktree:ui.branchPicker.progress.recentOperation"),
+            message: repositoryProgressMessage(progress),
+            phase: branchOperationPhaseLabel(progress.phase),
+          })}
+        </div>
+      ) : null}
       {success ? (
         <div className="info-box branch-picker-success" role="status">
-          完成：{success.message}。
-          {success.refreshed ? "已重新读取仓库状态。" : "仓库状态刷新失败；操作入口已禁用，请重试刷新。"}
+          {t("worktree:ui.branchPicker.success.completed", { message: success.message })}{" "}
+          {success.refreshed
+            ? t("worktree:ui.branchPicker.success.repositoryRefreshed")
+            : t("worktree:ui.branchPicker.success.repositoryRefreshFailed")}
         </div>
       ) : null}
       {refreshError ? (
         <div className="error-bar" role="alert">
-          <strong>仓库状态读取失败。</strong> {refreshError}
+          <strong>{t("worktree:ui.branchPicker.error.repositoryReadFailed")}</strong> {refreshError}
         </div>
       ) : null}
       {failure ? (
         <div className="error-bar" role="alert">
-          <strong>分支操作未完成。</strong> {failure.message}
+          <strong>{t("worktree:ui.branchPicker.error.branchOperationFailed")}</strong> {failure.message}
           {failure.liveSessionIds.length ? (
             <div className="branch-picker-live-sessions">
-              <span>这些 Session 正在使用该 checkout：</span>
+              <span>
+                {t("worktree:ui.branchPicker.error.liveSessionsUsingCheckout", {
+                  count: failure.liveSessionIds.length,
+                })}
+              </span>
               {failure.liveSessionIds.map((id) => (
                 <button key={id} className="btn small ghost" onClick={() => openLiveSession(id)}>
-                  打开 Session {id.slice(0, 8)}
+                  {t("worktree:ui.branchPicker.error.openSession", { id: id.slice(0, 8) })}
                 </button>
               ))}
             </div>
           ) : null}
           {failure.recoveryActions.length ? (
             <div className="branch-picker-recovery-actions">
-              <span>可用恢复动作：</span>
-              {failure.recoveryActions.map((action) => <code key={action}>{action}</code>)}
+              <span>{t("worktree:ui.branchPicker.error.recoveryActions")}</span>
+              {failure.recoveryActions.map((action) => (
+                <span key={action}>{recoveryActionLabel(action)}</span>
+              ))}
             </div>
           ) : null}
         </div>
@@ -596,8 +706,8 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
             setQuery(event.target.value);
           }}
           onKeyDown={onSearchKeyDown}
-          placeholder="搜索本地分支（↑ ↓ 选择，Enter 切换）"
-          aria-label="搜索本地分支"
+          placeholder={t("worktree:ui.branchPicker.search.placeholder")}
+          aria-label={t("worktree:ui.branchPicker.search.aria")}
           aria-controls="local-branch-list"
         />
         <button
@@ -608,13 +718,20 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
           }}
           disabled={controlsBusy}
         >
-          刷新
+          {t("common:actions.refresh")}
         </button>
       </div>
       <span className="sr-only" aria-live="polite">
-        {branches[selectedIndex] ? `已选择 ${branches[selectedIndex].name}` : "没有匹配的本地分支"}
+        {branches[selectedIndex]
+          ? t("worktree:ui.branchPicker.search.selected", { branch: branches[selectedIndex].name })
+          : t("worktree:ui.branchPicker.search.noMatch")}
       </span>
-      <div id="local-branch-list" className="branch-picker-list" role="list" aria-label="本地分支">
+      <div
+        id="local-branch-list"
+        className="branch-picker-list"
+        role="list"
+        aria-label={t("worktree:ui.branchPicker.localBranchesAria")}
+      >
         {branches.length ? branches.map((branch, index) => {
           const effectiveBranch = status?.head?.kind === "branch" && status.head.branch === branch.name
             ? { ...branch, current: true }
@@ -639,53 +756,68 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
               confirmDeleteRef={(element) => { confirmDeleteRef.current = element; }}
             />
           );
-        }) : <div className="branch-picker-empty">没有匹配的本地分支。</div>}
+        }) : (
+          <div className="branch-picker-empty">{t("worktree:ui.branchPicker.search.noMatchSentence")}</div>
+        )}
       </div>
 
       <section className="branch-picker-create" aria-labelledby="branch-create-title">
-        <div className="section-title" id="branch-create-title">创建本地分支</div>
+        <div className="section-title" id="branch-create-title">
+          {t("worktree:ui.branchPicker.create.title")}
+        </div>
         <div className="branch-picker-create-grid">
-          <input disabled={controlsBusy} value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="feature/my-change" aria-label="新分支名称" />
-          <select disabled={controlsBusy} value={startBranch} onChange={(event) => setStartBranch(event.target.value)} aria-label="新分支起点">
-            <option value="">当前 HEAD</option>
+          <input disabled={controlsBusy} value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="feature/my-change" aria-label={t("worktree:ui.branchPicker.create.branchNameAria")} />
+          <select disabled={controlsBusy} value={startBranch} onChange={(event) => setStartBranch(event.target.value)} aria-label={t("worktree:ui.branchPicker.create.startPointAria")}>
+            <option value="">{t("worktree:ui.branchPicker.create.currentHead")}</option>
             {(data?.branches ?? []).map((branch) => <option key={branch.name} value={branch.name}>{branch.name}</option>)}
           </select>
-          <label className="check-row"><input disabled={controlsBusy} type="checkbox" checked={switchAfterCreate} onChange={(event) => setSwitchAfterCreate(event.target.checked)} />创建后切换到新分支</label>
-          <button className="btn primary" disabled={!canCreate} onClick={create}>{controlsBusy ? "处理中…" : "创建分支"}</button>
+          <label className="check-row"><input disabled={controlsBusy} type="checkbox" checked={switchAfterCreate} onChange={(event) => setSwitchAfterCreate(event.target.checked)} />{t("worktree:ui.branchPicker.create.switchAfterCreate")}</label>
+          <button className="btn primary" disabled={!canCreate} onClick={create}>
+            {controlsBusy
+              ? t("worktree:ui.branchPicker.create.processing")
+              : t("worktree:ui.branchPicker.create.createBranch")}
+          </button>
         </div>
       </section>
 
       {recovery.length ? (
         <section className="branch-picker-recovery" aria-labelledby="branch-recovery-title">
-          <div className="section-title" id="branch-recovery-title">可恢复的自动暂存</div>
-          <p className="form-hint">操作中断或冲突后，记录会保留在此处，直到恢复或明确清理。</p>
+          <div className="section-title" id="branch-recovery-title">
+            {t("worktree:ui.branchPicker.recovery.title")}
+          </div>
+          <p className="form-hint">{t("worktree:ui.branchPicker.recovery.description")}</p>
           {recovery.map((stash) => (
             <div className="branch-picker-stash" key={stash.id}>
-              <div><strong>{stash.targetBranch}</strong><span className="mono">{stash.stashOid || stash.id}</span><span>{stash.state}</span>{stash.lastError ? <span>错误：{stash.lastError}</span> : null}</div>
+              <div><strong>{stash.targetBranch}</strong><span className="mono">{stash.stashOid || stash.id}</span><span>{branchOperationPhaseLabel(stash.state)}</span>{stash.lastError ? <span>{t("worktree:ui.branchPicker.recovery.error", { detail: stash.lastError })}</span> : null}</div>
               {stash.restorable === false ? (
                 <p className="form-hint" role="status">
-                  此备份缺少操作快照，AgentPort 不会自动 apply 或清理；请确认 checkout 后手动使用持久化 OID 恢复。
+                  {t("worktree:ui.branchPicker.recovery.missingSnapshot")}
                 </p>
               ) : null}
               <div className="branch-picker-stash-actions">
-                <button className="btn small ghost" disabled={controlsBusy || stash.restorable === false || stash.state === "restored_verified"} onClick={() => restore(stash, "target")}>恢复到目标分支</button>
-                <button className="btn small ghost" disabled={controlsBusy || stash.restorable === false || stash.state === "restored_verified"} onClick={() => restore(stash, "source")}>返回源分支并恢复</button>
+                <button className="btn small ghost" disabled={controlsBusy || stash.restorable === false || stash.state === "restored_verified"} onClick={() => restore(stash, "target")}>{t("worktree:ui.branchPicker.recovery.restoreToTarget")}</button>
+                <button className="btn small ghost" disabled={controlsBusy || stash.restorable === false || stash.state === "restored_verified"} onClick={() => restore(stash, "source")}>{t("worktree:ui.branchPicker.recovery.returnToSourceAndRestore")}</button>
                 {stash.restorable === false && stash.stashOid ? (
                   <button
                     className="btn small ghost"
                     disabled={controlsBusy}
-                    onClick={() => void copyText(`git stash apply --index ${stash.stashOid}`).then((ok) => toast(ok ? "已复制手动恢复命令" : "复制失败", ok ? "success" : "error"))}
+                    onClick={() => void copyTextWithToast(
+                      `git stash apply --index ${stash.stashOid}`,
+                      t("worktree:ui.branchPicker.recovery.manualCommandCopied"),
+                    )}
                   >
-                    复制手动恢复命令
+                    {t("worktree:ui.branchPicker.recovery.copyManualCommand")}
                   </button>
                 ) : null}
                 <button
                   className="btn small danger"
                   disabled={controlsBusy || stash.restorable === false || stash.state !== "restored_verified"}
-                  title={stash.state === "restored_verified" ? "删除已验证恢复记录" : "仅恢复已验证后可清理"}
+                  title={stash.state === "restored_verified"
+                    ? t("worktree:ui.branchPicker.recovery.deleteVerifiedRecord")
+                    : t("worktree:ui.branchPicker.recovery.cleanupRequiresVerification")}
                   onClick={() => cleanup(stash)}
                 >
-                  清理记录
+                  {t("worktree:ui.branchPicker.recovery.cleanupRecord")}
                 </button>
               </div>
             </div>

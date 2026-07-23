@@ -1,0 +1,211 @@
+{
+  "ui": {
+    "branchPicker": {
+      "title": "管理本地分支 · {{project}}",
+      "projectFallback": "项目",
+      "currentCheckout": "当前 checkout",
+      "localBranchesAria": "本地分支",
+      "notGitRepository": "该项目不是 Git 仓库，无法管理本地分支。",
+      "head": {
+        "loadingCheckout": "正在读取 checkout…",
+        "unnamedBranch": "未命名分支",
+        "detachedAt": "游离 HEAD @ {{oid}}",
+        "uninitializedRepository": "未初始化仓库"
+      },
+      "changes": {
+        "staged_one": "暂存 {{count}}",
+        "staged_other": "暂存 {{count}}",
+        "unstaged_one": "修改 {{count}}",
+        "unstaged_other": "修改 {{count}}",
+        "untracked_one": "未跟踪 {{count}}",
+        "untracked_other": "未跟踪 {{count}}",
+        "unmerged_one": "冲突 {{count}}",
+        "unmerged_other": "冲突 {{count}}",
+        "dirtySubmodules_one": "子模块 {{count}}",
+        "dirtySubmodules_other": "子模块 {{count}}"
+      },
+      "workspace": {
+        "changes": "工作区：{{changes}}",
+        "clean": "工作区干净",
+        "gitOperation": "Git 操作中：{{operation}}",
+        "liveSessions_one": "同 checkout 运行中 Session：{{count}}",
+        "liveSessions_other": "同 checkout 运行中 Session：{{count}}",
+        "pendingRecoveryRecords_one": "待恢复记录：{{count}}",
+        "pendingRecoveryRecords_other": "待恢复记录：{{count}}"
+      },
+      "row": {
+        "currentDeleteBlocked": "该分支已成为当前 checkout",
+        "occupiedDeleteBlocked": "该分支已被 Worktree 占用：{{path}}",
+        "checkedOutAt": "已在 {{path}} checkout",
+        "ariaCurrent": "{{branch}}，当前 checkout",
+        "ariaOccupied": "{{branch}}，已被 Worktree 占用：{{path}}",
+        "ariaCurrentAndOccupied": "{{branch}}，当前 checkout，已被 Worktree 占用：{{path}}",
+        "currentCheckout": "当前 checkout",
+        "occupiedByWorktree": "已被 Worktree 占用",
+        "openWorktreeAria": "打开 {{branch}} 的 AgentPort Worktree",
+        "viewWorktree": "查看 Worktree",
+        "deleteLocalBranch": "删除本地分支 {{branch}}",
+        "deleteBranchAria": "删除分支 {{branch}}"
+      },
+      "delete": {
+        "question": "删除 <branch>{{branch}}</branch>？",
+        "mergedOnlyWarning": "仅删除已合并的本地分支，不影响远端。此操作不可撤销。",
+        "blocked": "暂不能删除：{{reason}}",
+        "confirmGroupAria": "确认删除分支 {{branch}}",
+        "confirm": "确认删除"
+      },
+      "deleteBlocked": {
+        "repositoryOperation": "仓库操作进行中，暂时不能删除分支",
+        "repositoryUnavailable": "仓库状态不可用",
+        "gitOperation": "Git {{operation}} 操作进行中",
+        "unresolvedConflicts": "存在未解决冲突，不能删除分支"
+      },
+      "operation": {
+        "checkingRepository": "正在重新检查仓库并执行安全操作",
+        "completedButRefreshFailed": "{{message}}，但仓库状态刷新失败",
+        "switched": "已切换到 {{branch}}",
+        "deletedLocalBranch": "已删除本地分支 {{branch}}",
+        "deletingLocalBranch": "正在重新检查并删除本地分支 {{branch}}",
+        "createdAndSwitched": "已创建并切换到 {{branch}}",
+        "created": "已创建 {{branch}}",
+        "createdButSwitchFailed": "分支 {{branch}} 已创建，但未能切换。{{detail}}",
+        "restoreAttemptedOnCurrentCheckout": "已尝试恢复到当前 checkout",
+        "returnedToSourceCheckout": "已返回原 checkout",
+        "recoveryRecordCleaned": "恢复记录已清理"
+      },
+      "progress": {
+        "inProgress": "进行中",
+        "recentOperation": "最近操作",
+        "detail": "{{label}}：{{message}}（{{phase}}）",
+        "phase": {
+          "started": "已开始",
+          "prepared": "已准备",
+          "stashed": "已暂存",
+          "switched": "已切换",
+          "applying": "正在恢复",
+          "restoredVerified": "恢复已验证",
+          "cleaning": "清理中",
+          "completed": "已完成",
+          "recoveryRequired": "需要恢复",
+          "failed": "失败",
+          "unknown": "未知状态（{{phase}}）"
+        },
+        "message": {
+          "createStarted": "正在创建本地分支",
+          "createCompleted": "本地分支已创建",
+          "deleteStarted": "正在删除已合并的本地分支",
+          "deleteCompleted": "本地分支已删除",
+          "switchStarted": "正在切换本地分支",
+          "switchPendingRestore": "未提交修改已自动暂存，需要恢复",
+          "switchCompleted": "本地分支已切换",
+          "restoreStarted": "正在恢复 AgentPort 自动暂存",
+          "restoreFinished": "自动暂存恢复命令已完成",
+          "cleanupStarted": "正在清理 AgentPort 自动暂存",
+          "cleanupCompleted": "自动暂存清理已完成",
+          "failed": "操作失败：{{detail}}",
+          "unknown": "仓库操作状态未知（{{command}} / {{phase}}）"
+        }
+      },
+      "success": {
+        "completed": "完成：{{message}}。",
+        "repositoryRefreshed": "已重新读取仓库状态。",
+        "repositoryRefreshFailed": "仓库状态刷新失败；操作入口已禁用，请重试刷新。"
+      },
+      "error": {
+        "repositoryReadFailed": "仓库状态读取失败。",
+        "branchOperationFailed": "分支操作未完成。",
+        "liveSessionsUsingCheckout_one": "此 Session 正在使用该 checkout：",
+        "liveSessionsUsingCheckout_other": "这些 Session 正在使用该 checkout：",
+        "openSession": "打开 Session {{id}}",
+        "recoveryActions": "可用恢复动作：",
+        "recoveryAction": {
+          "checkDiagnosticsAndRetry": "修复底层问题后查看 AgentPort 诊断信息并重试。",
+          "refreshAndChooseAvailableBranch": "刷新本地分支，并选择未被任何 Worktree checkout 的分支。",
+          "refreshAndReselectBranch": "刷新本地分支，重新选择后再创建 Worktree。",
+          "resolveRepositoryBlockers": "处理正在运行的 Session、脏 submodule、merge/rebase 状态或索引冲突后重试。",
+          "inspectRetainedAutoStash": "使用自动暂存列表检查保留的操作。",
+          "restoreWhenCheckoutSafe": "仅在 checkout 安全时选择从源分支或目标分支恢复。",
+          "chooseNonconflictingAction": "刷新仓库状态，并选择无冲突的分支或操作。",
+          "refreshRepositoryBeforeRetry": "重试前刷新仓库状态。",
+          "inspectDiagnosticsIfGitUnavailable": "如果 Git 仍不可用，请查看应用诊断日志。",
+          "refreshRepositoryAndRetry": "刷新仓库状态后重试。",
+          "retryAfterCheckingDiagnostics": "查看应用诊断日志后重试。"
+        }
+      },
+      "search": {
+        "placeholder": "搜索本地分支（↑ ↓ 选择，Enter 切换）",
+        "aria": "搜索本地分支",
+        "selected": "已选择 {{branch}}",
+        "noMatch": "没有匹配的本地分支",
+        "noMatchSentence": "没有匹配的本地分支。"
+      },
+      "create": {
+        "title": "创建本地分支",
+        "branchNameAria": "新分支名称",
+        "startPointAria": "新分支起点",
+        "currentHead": "当前 HEAD",
+        "switchAfterCreate": "创建后切换到新分支",
+        "processing": "处理中…",
+        "createBranch": "创建分支"
+      },
+      "recovery": {
+        "title": "可恢复的自动暂存",
+        "description": "操作中断或冲突后，记录会保留在此处，直到恢复或明确清理。",
+        "error": "错误：{{detail}}",
+        "missingSnapshot": "此备份缺少操作快照，AgentPort 不会自动 apply 或清理；请确认 checkout 后手动使用持久化 OID 恢复。",
+        "restoreToTarget": "恢复到目标分支",
+        "returnToSourceAndRestore": "返回源分支并恢复",
+        "manualCommandCopied": "已复制手动恢复命令",
+        "copyManualCommand": "复制手动恢复命令",
+        "deleteVerifiedRecord": "删除已验证恢复记录",
+        "cleanupRequiresVerification": "仅恢复已验证后可清理",
+        "cleanupRecord": "清理记录"
+      }
+    },
+    "newWorktree": {
+      "title": "新 Worktree · {{project}}",
+      "creating": "创建中…",
+      "createWorktree": "创建 Worktree",
+      "taskName": "任务名",
+      "createdToast": "已创建 Worktree：{{branch}}",
+      "loadBranchesFailed": "无法读取本地分支：{{detail}}",
+      "createFailed": "无法创建 Worktree：{{detail}}",
+      "directoryHint": "Worktree 目录创建在应用数据目录下，不污染主仓库；删除前会检查未提交修改。",
+      "staleSelection": {
+        "deleted": "所选 branch {{branch}} 已被删除，请重新选择。",
+        "moved": "所选 branch {{branch}} 已移动，请重新选择最新提交。",
+        "occupied": "所选 branch {{branch}} 已在 {{path}} 使用，请重新选择。",
+        "anotherCheckout": "其他 checkout"
+      },
+      "branch": {
+        "label": "分支名（可选，留空自动生成；也可选择已有本地 branch）",
+        "autoPlaceholder": "agent/<任务名>",
+        "localBranchAria": "本地 branch",
+        "refreshAria": "刷新本地 branch",
+        "collapseOptionsAria": "收起本地 branch 候选",
+        "expandOptionsAria": "展开本地 branch 候选",
+        "localBranches": "本地 branch",
+        "refreshing": "正在刷新…",
+        "candidateCount_one": "{{count}} 个候选",
+        "candidateCount_other": "{{count}} 个候选",
+        "loadingLocalBranches": "正在读取本地 branch…",
+        "optionsAria": "本地 branch 候选",
+        "currentCheckout": "当前 checkout",
+        "occupiedByWorktree": "已被 Worktree 占用",
+        "noMatchCreateNew": "没有匹配的本地 branch；继续输入将创建新 branch。",
+        "noneAvailable": "当前没有可列出的本地 branch。",
+        "useExisting": "使用已有 branch",
+        "createNew": "创建新 branch：",
+        "autoGenerate": "自动生成 branch："
+      },
+      "base": {
+        "label": "基线",
+        "existingBranchHint": "使用所选 branch 当前提交 <oid>{{oid}}</oid>，不会创建新 branch。",
+        "currentHead": "当前 HEAD",
+        "specificRef": "指定 Base Ref",
+        "refPlaceholder": "main / 分支 / commit",
+        "refAria": "Base Ref"
+      }
+    }
+  }
+}

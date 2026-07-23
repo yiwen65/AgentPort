@@ -1,0 +1,10 @@
+{
+  "flow": {
+    "dirtyDeleteBlocked": "该 Worktree 有未提交或未跟踪文件，已阻止删除。",
+    "deleteTitle": "删除 Worktree“{{branch}}”？",
+    "deleteBody": "将删除目录 {{path}} 并清理 Git Worktree 记录。",
+    "deleteAction": "删除 Worktree",
+    "deleted": "Worktree 已删除",
+    "deleteFailed": "删除失败：{{detail}}"
+  }
+}

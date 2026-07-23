@@ -37,6 +37,19 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+const attachInfo: AttachInfo = {
+  attachmentId: 7,
+  hostPid: 123,
+  protocol: 1,
+  childAlive: true,
+  logBytes: 0,
+  agentSessionId: null,
+  runId: "run_1",
+  runOrdinal: 1,
+  status: null,
+  logCursor: { runId: "run_1", runOrdinal: 1, generation: 0, offset: 0 },
+};
+
 const session: SessionView = {
   id: "ses_pi",
   projectId: "prj_1",
@@ -79,23 +92,30 @@ describe("Pi structured attachment authority", () => {
         runId: "run_1",
         runOrdinal: 1,
       });
-      attach.resolve({
-        attachmentId: 7,
-        hostPid: 123,
-        protocol: 1,
-        childAlive: true,
-        logBytes: 0,
-        agentSessionId: null,
-        runId: "run_1",
-        runOrdinal: 1,
-        status: null,
-        logCursor: { runId: "run_1", runOrdinal: 1, generation: 0, offset: 0 },
-      });
+      attach.resolve(attachInfo);
       await attach.promise;
     });
 
-    expect(screen.getByText("会话已结束")).toBeTruthy();
+    expect(screen.getByText("Session 已结束")).toBeTruthy();
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(true);
     expect(apiMock.detachSession).toHaveBeenCalledWith("ses_pi", 7);
+  });
+
+  it("shows a localized Host replacement and offers reconnect", async () => {
+    apiMock.attachSession.mockResolvedValueOnce(attachInfo);
+    render(<PiStructuredTimeline ses={session} />);
+    await screen.findByText("已连接");
+
+    await act(async () => {
+      channels[0].onmessage?.({
+        t: "detached",
+        code: "host_replaced",
+        params: {},
+        message: "Host 已被新的运行替换",
+      });
+    });
+
+    expect(screen.getByRole("alert").textContent).toBe("Host 已被新的运行替换");
+    expect(screen.getByRole("button", { name: "重新连接" })).toBeTruthy();
   });
 });

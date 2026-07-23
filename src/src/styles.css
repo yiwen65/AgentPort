@@ -1315,7 +1315,7 @@ button {
 .term-pane {
   position: absolute;
   inset: 0;
-  padding: 14px 14px 0;
+  padding: 6px 14px 0;
   display: flex;
   flex-direction: column;
   /* The workspace owns the material; panes remain transparent so terminal
@@ -1392,7 +1392,7 @@ button {
 
 .terminal-scrollbar {
   position: absolute;
-  top: 14px;
+  top: 6px;
   right: 3px;
   bottom: 0;
   width: 14px;
@@ -1834,6 +1834,11 @@ button {
   /* Settings is a full-page surface at 700. Confirm/prompt dialogs must
      remain above it for destructive archive actions and inline renames. */
   z-index: 1100;
+}
+
+.modal-backdrop.workspace-centered {
+  align-items: center;
+  padding: 64px 16px 16px calc(var(--sidebar-width, 296px) + 16px);
 }
 
 .modal {

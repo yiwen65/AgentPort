@@ -207,7 +207,7 @@ describe("New Worktree local branch picker", () => {
     await user.keyboard("{ArrowDown}{Enter}");
     await user.click(screen.getByRole("button", { name: "创建 Worktree" }));
 
-    expect(await screen.findByText("local branch moved after selection")).toBeTruthy();
+    expect(await screen.findByText("无法创建 Worktree：local branch moved after selection")).toBeTruthy();
     expect(await screen.findByText(/已移动，请重新选择最新提交/)).toBeTruthy();
     expect(taskInput.value).toBe("keep this task");
     expect(apiMock.listLocalBranches).toHaveBeenCalledTimes(2);
@@ -224,7 +224,7 @@ describe("New Worktree local branch picker", () => {
     await user.click(branchInput);
     await user.click(screen.getByRole("button", { name: "刷新本地 branch" }));
 
-    expect(await screen.findByText("refresh failed")).toBeTruthy();
+    expect(await screen.findByText("无法读取本地分支：refresh failed")).toBeTruthy();
     expect(document.activeElement).toBe(branchInput);
     expect(branchInput.getAttribute("aria-expanded")).toBe("true");
     await user.keyboard("{Escape}");

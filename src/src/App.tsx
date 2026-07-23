@@ -2,6 +2,7 @@
 // (PRD 7.1), layout, dialog routing.
 
 import { lazy, Suspense, useEffect, useRef, type CSSProperties } from "react";
+import { useTranslation } from "react-i18next";
 import {
   api,
   errorText,
@@ -33,13 +34,14 @@ import {
   setState,
   useStore,
 } from "./store";
-import { pruneHandles, scrollToBottom } from "./terminals";
+import { applyTerminalLanguage, pruneHandles, scrollToBottom } from "./terminals";
 import TopBar from "./components/TopBar";
 import Sidebar from "./components/Sidebar";
 import TooltipHost from "./components/Tooltip";
 import Toasts from "./components/Toasts";
 import ContextMenuHost from "./components/ContextMenu";
 import { ConfirmDialogHost, PromptDialogHost } from "./components/Dialogs";
+import { applyUiLanguage } from "./i18n";
 
 const TerminalArea = lazy(() => import("./components/TerminalArea"));
 const NewSessionDialog = lazy(() => import("./components/NewSessionDialog"));
@@ -128,6 +130,9 @@ function useBoot() {
 
         const info = await api.boot();
         if (cancelled) return;
+        await applyUiLanguage(info.settings.uiLanguage);
+        applyTerminalLanguage();
+        if (cancelled) return;
         applyProjectsSnapshot(info.projects);
         setState({
           ready: true,
@@ -135,7 +140,8 @@ function useBoot() {
           settings: info.settings,
           adapters: info.adapters,
           timeline: info.timeline,
-          timelineError: info.timelineError,
+          timelineError: info.timelineMessage ? null : info.timelineError,
+          timelineMessage: info.timelineMessage ?? null,
           secretBackend: info.secretBackend,
           indexState: info.indexState,
           exportsDir: info.exportsDir,
@@ -312,6 +318,7 @@ function clampSidebarWidth(width: number) {
 }
 
 function SplitHandle({ collapsed, width }: { collapsed: boolean; width: number }) {
+  const { t } = useTranslation("shell");
   const dragStart = useRef<{ x: number; width: number } | null>(null);
 
   useEffect(() => {
@@ -347,7 +354,7 @@ function SplitHandle({ collapsed, width }: { collapsed: boolean; width: number }
     <div
       className="split-handle"
       role="separator"
-      aria-label="调整项目栏宽度"
+      aria-label={t("sidebar.resize")}
       aria-orientation="vertical"
       aria-valuemin={MIN_SIDEBAR_WIDTH}
       aria-valuemax={MAX_SIDEBAR_WIDTH}
@@ -376,12 +383,13 @@ function SplitHandle({ collapsed, width }: { collapsed: boolean; width: number }
           setState({ sidebarWidth: MAX_SIDEBAR_WIDTH });
         }
       }}
-      data-tip="拖动调整项目栏宽度；双击恢复默认"
+      data-tip={t("sidebar.resizeHint")}
     />
   );
 }
 
 export default function App() {
+  const { t } = useTranslation(["shell", "common"]);
   const ready = useStore((state) => state.ready);
   const bootError = useStore((state) => state.bootError);
   const workspaceState = useStore((state) => {
@@ -404,7 +412,7 @@ export default function App() {
     return (
       <div className="boot-screen" role="status">
         <span className="spin" aria-hidden="true" style={{ width: 20, height: 20 }} />
-        <div>正在启动 AgentPort…</div>
+        <div>{t("shell:boot.starting")}</div>
       </div>
     );
   }
@@ -413,10 +421,10 @@ export default function App() {
     return (
       <div className="boot-screen" role="alert">
         <div className="error-bar" style={{ maxWidth: 480 }}>
-          启动失败：{bootError}
+          {t("shell:boot.failed", { detail: bootError })}
         </div>
         <button className="btn" onClick={() => window.location.reload()}>
-          重试
+          {t("common:actions.retry")}
         </button>
       </div>
     );
@@ -436,7 +444,7 @@ export default function App() {
       <div className="main">
         <Sidebar collapsed={sidebarCollapsed} width={sidebarWidth} />
         <SplitHandle collapsed={sidebarCollapsed} width={sidebarWidth} />
-        <Suspense fallback={<section className="workspace" aria-label="终端工作区" aria-busy="true" />}>
+        <Suspense fallback={<section className="workspace" aria-label={t("shell:app.workspaceLabel")} aria-busy="true" />}>
           <TerminalArea />
         </Suspense>
       </div>

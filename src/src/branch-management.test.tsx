@@ -153,13 +153,13 @@ describe("local branch management", () => {
       operationId: "op",
       command: "switch_local_branch",
       branch: "feature/ui",
-      phase: "switch",
-      message: "检查工作区",
+      phase: "started",
+      message: "switching local branch",
       coreOperationId: null,
       recoverable: false,
       occurredAt: "2026-07-22T00:00:00.000Z",
     }));
-    expect(await screen.findByText(/检查工作区/)).toBeTruthy();
+    expect(await screen.findByText(/正在切换本地分支（已开始）/)).toBeTruthy();
   });
 
   it("updates a repository event without recursively refreshing the branch list", async () => {

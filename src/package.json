@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "i18n:check": "node scripts/i18n-check.mjs",
     "preview": "vite preview",
     "test": "vitest run"
   },
@@ -16,15 +17,17 @@
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-search": "^0.16.0",
     "@xterm/xterm": "^5.5.0",
+    "i18next": "^26.3.6",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-i18next": "^17.0.11"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
     "@testing-library/react": "^16.1.0",
     "@testing-library/user-event": "^14.5.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
     "jsdom": "^25.0.1",
     "typescript": "~5.6.3",

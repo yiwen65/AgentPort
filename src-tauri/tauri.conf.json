@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.agentport.desktop",
   "build": {
-    "beforeDevCommand": "bash ../src-tauri/scripts/build-sidecar.sh debug && npm run dev",
+    "beforeDevCommand": "bash src-tauri/scripts/build-sidecar.sh debug && npm --prefix src run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bash ../src-tauri/scripts/build-sidecar.sh release && npm run build",
+    "beforeBuildCommand": "bash src-tauri/scripts/build-sidecar.sh release && npm --prefix src run build",
     "frontendDist": "../src/dist"
   },
   "app": {
@@ -30,7 +30,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon-runtime-8bit.png"],
+    "icon": ["icons/icon-runtime-8bit.png", "icons/icon.icns"],
     "externalBin": ["binaries/agentport-host"],
     "resources": [],
     "macOS": {

@@ -1,0 +1,64 @@
+{
+  "actions": {
+    "add": "添加",
+    "back": "返回",
+    "browse": "浏览…",
+    "cancel": "取消",
+    "close": "关闭",
+    "copy": "复制",
+    "delete": "删除",
+    "done": "完成",
+    "edit": "编辑",
+    "open": "打开",
+    "ok": "确定",
+    "confirm": "确认",
+    "export": "导出",
+    "exporting": "导出中…",
+    "refresh": "刷新",
+    "rename": "重命名",
+    "remove": "移除",
+    "restore": "恢复",
+    "retry": "重试",
+    "save": "保存",
+    "saving": "保存中…",
+    "search": "搜索"
+  },
+  "dialog": {
+    "close": "关闭对话框"
+  },
+  "menu": {
+    "context": "上下文菜单"
+  },
+  "feedback": {
+    "copyFailed": "复制失败"
+  },
+  "status": {
+    "available": "可用",
+    "unavailable": "不可用",
+    "loading": "正在加载…",
+    "unknown": "未知"
+  },
+  "hookStatus": {
+    "supported": "已支持",
+    "degraded": "已降级",
+    "unavailable": "不可用"
+  },
+  "probeSource": {
+    "systemPath": "系统 PATH",
+    "loginShellPath": "登录 Shell PATH",
+    "wellKnownDirectory": "常用安装目录",
+    "manual": "手动指定"
+  },
+  "indexState": {
+    "ready": "就绪",
+    "rebuildNeeded": "需要重建",
+    "unknown": "未知"
+  },
+  "language": {
+    "zhCN": "简体中文",
+    "enUS": "English"
+  },
+  "time": {
+    "localZone": "本地时区"
+  }
+}

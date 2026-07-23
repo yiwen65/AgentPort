@@ -1,0 +1,14 @@
+{
+  "boot": {
+    "starting": "正在启动 AgentPort…",
+    "failed": "启动失败：{{detail}}"
+  },
+  "sidebar": {
+    "resize": "调整项目栏宽度",
+    "resizeHint": "拖动调整项目栏宽度；双击恢复默认"
+  },
+  "terminal": {
+    "promptLabel": "终端输入",
+    "tooMuchOutput": "输出过多，部分内容未供屏幕阅读器朗读"
+  }
+}

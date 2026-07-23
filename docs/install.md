@@ -36,6 +36,8 @@ xattr -cr /Applications/AgentPort.app
 
 ## Ubuntu 22.04 / 24.04（正式支持）
 
+正式发布的 Linux `.deb` 以 Ubuntu 22.04 x86_64 为编译基线，并同时在 Ubuntu 22.04 与 24.04 验证。Ubuntu 24.04 原生构建依赖更新的 glibc，不应用作 Ubuntu 22.04 的通用安装包。
+
 下载 `.deb` 后安装：
 
 ```bash

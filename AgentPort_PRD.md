@@ -767,6 +767,7 @@ macOS / Ubuntu 启动
   "settings": { // 必填；单用户全局设置
     "logLimitMiB": 200, // 必填；每 Session 日志上限，默认值: 200，范围 20-2048
     "notificationsEnabled": true, // 必填；默认值: true，仍受系统权限控制
+    "uiLanguage": "zh-CN", // 必填；zh-CN 或 en-US，默认值及非法值回退均为 zh-CN
     "theme": "system", // 必填；system、dark 或 light，默认值: system
     "terminalFontFamily": "system-monospace", // 必填；默认映射到内置 JetBrains Mono
     "terminalFontSize": 13, // 必填；默认值: 13，范围 10-28 px

@@ -2,20 +2,15 @@
 // hits grouped by kind; terminal hits jump into the session.
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import Modal from "./Modal";
 import { api, errorText } from "../api";
 import { selectSession } from "../actions";
 import { closeDialog, useStore } from "../store";
 import type { SearchHit, SearchResult } from "../types";
 
-const KIND_LABEL: Record<SearchHit["kind"], string> = {
-  project: "项目",
-  session: "会话",
-  branch: "分支",
-  terminal: "终端",
-};
-
 export default function SearchDialog() {
+  const { t } = useTranslation("runtime");
   const s = useStore();
   const [q, setQ] = useState("");
   const [result, setResult] = useState<SearchResult | null>(null);
@@ -39,7 +34,7 @@ export default function SearchDialog() {
           setResult(r);
           setError(null);
         })
-        .catch((e) => setError(errorText(e)))
+        .catch((e) => setError(t("search.failed", { detail: errorText(e) })))
         .finally(() => setSearching(false));
     }, 350);
     return () => {
@@ -55,35 +50,35 @@ export default function SearchDialog() {
   };
 
   return (
-    <Modal title="全局搜索" onClose={closeDialog} wide>
+    <Modal title={t("search.title")} onClose={closeDialog} wide>
       <input
         type="text"
-        placeholder="搜索项目、Session、分支或终端文本（至少 2 个字符）"
-        aria-label="全局搜索"
+        placeholder={t("search.placeholder")}
+        aria-label={t("search.aria")}
         value={q}
         onChange={(e) => setQ(e.target.value)}
       />
       {!s.settings?.searchIndexEnabled ? (
-        <div className="form-hint">搜索索引已在设置中关闭，结果可能不完整。</div>
+        <div className="form-hint">{t("search.indexDisabled")}</div>
       ) : null}
       {searching ? (
         <div className="dim">
-          <span className="spin" aria-hidden="true" /> 搜索中…
+          <span className="spin" aria-hidden="true" /> {t("search.searching")}
         </div>
       ) : null}
       {error ? <div className="error-bar" role="alert">{error}</div> : null}
       {result?.partial ? (
-        <div className="warn-text">结果可能不完整（部分日志已轮转或索引待重建）。</div>
+        <div className="warn-text">{t("search.partial")}</div>
       ) : null}
       {result && result.hits.length === 0 && !searching ? (
         <div className="empty-state">
-          <div>没有匹配的项目、Session、分支或终端文本。</div>
+          <div>{t("search.empty")}</div>
           <button className="btn ghost" onClick={() => setQ("")}>
-            清除筛选
+            {t("search.clear")}
           </button>
         </div>
       ) : null}
-      <div role="list" aria-label="搜索结果">
+      <div role="list" aria-label={t("search.resultsAria")}>
         {result?.hits.map((h, i) => {
           const clickable = Boolean(h.sessionId);
           return (
@@ -94,14 +89,14 @@ export default function SearchDialog() {
               disabled={!clickable}
               onClick={() => openHit(h)}
             >
-              <span className="kind">{KIND_LABEL[h.kind]}</span>
+              <span className="kind">{t(`search.kind.${h.kind}`)}</span>
               <span className="title">
                 {h.title}
                 {h.snippet ? <div className="search-snippet">{h.snippet}</div> : null}
               </span>
               {h.rotatedAway ? (
-                <span className="sub" data-tip="对应输出已轮转，仅保留事件元数据">
-                  已轮转
+                <span className="sub" data-tip={t("search.rotatedHint")}>
+                  {t("search.rotated")}
                 </span>
               ) : null}
             </button>

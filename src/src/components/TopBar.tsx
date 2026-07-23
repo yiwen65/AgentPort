@@ -11,6 +11,7 @@ import {
 } from "../store";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { MouseEvent as ReactMouseEvent } from "react";
+import { useTranslation } from "react-i18next";
 
 function IconSidebarToggle({ collapsed }: { collapsed: boolean }) {
   return (
@@ -52,6 +53,7 @@ function IconBranch() {
 }
 
 export default function TopBar() {
+  const { t } = useTranslation(["shell", "common"]);
   const projectName = useStore((state) => {
     const session = findSession(state.projects, state.activeSessionId);
     return session
@@ -82,14 +84,16 @@ export default function TopBar() {
   const openSurfaceMenu = (anchor: HTMLElement) => {
     const rect = anchor.getBoundingClientRect();
     const items: MenuItem[] = [
-      { label: "命令面板", action: () => openDialog({ kind: "palette" }) },
-      { label: "搜索…", action: () => openDialog({ kind: "search" }) },
+      { label: t("shell:ui.topBar.commandPalette"), action: () => openDialog({ kind: "palette" }) },
+      { label: `${t("common:actions.search")}…`, action: () => openDialog({ kind: "search" }) },
       {
-        label: pending > 0 ? `恢复时间线（${pending}）` : "恢复时间线",
+        label: pending > 0
+          ? t("shell:ui.topBar.recoveryTimelineCount", { count: pending })
+          : t("shell:ui.topBar.recoveryTimeline"),
         action: () => openDialog({ kind: "timeline" }),
       },
       { label: "", separator: true },
-      { label: "设置…", action: () => openDialog({ kind: "settings" }) },
+      { label: t("shell:ui.topBar.settingsEllipsis"), action: () => openDialog({ kind: "settings" }) },
     ];
     openContextMenu(rect.right - 180, rect.bottom + 6, items);
   };
@@ -100,9 +104,13 @@ export default function TopBar() {
         <button
           className="window-control sidebar-toggle"
           onClick={() => setState({ sidebarCollapsed: !sidebarCollapsed })}
-          aria-label={sidebarCollapsed ? "显示侧栏" : "隐藏侧栏"}
+          aria-label={sidebarCollapsed
+            ? t("shell:ui.topBar.showSidebar")
+            : t("shell:ui.topBar.hideSidebar")}
           aria-pressed={sidebarCollapsed}
-          data-tip={`${sidebarCollapsed ? "显示" : "隐藏"}项目与会话侧栏（${sidebarShortcut}）`}
+          data-tip={sidebarCollapsed
+            ? t("shell:ui.topBar.showSidebarTip", { shortcut: sidebarShortcut })
+            : t("shell:ui.topBar.hideSidebarTip", { shortcut: sidebarShortcut })}
           data-tauri-drag-region="false"
         >
           <IconSidebarToggle collapsed={sidebarCollapsed} />
@@ -120,7 +128,7 @@ export default function TopBar() {
       <button
         className="window-control terminal-menu"
         onClick={(e) => openSurfaceMenu(e.currentTarget)}
-        aria-label="工作区菜单"
+        aria-label={t("shell:ui.topBar.workspaceMenu")}
         aria-haspopup="menu"
         data-tauri-drag-region="false"
       >

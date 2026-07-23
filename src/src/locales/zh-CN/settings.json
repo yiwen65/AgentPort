@@ -1,0 +1,10 @@
+{
+  "title": "设置",
+  "appearance": {
+    "title": "外观与无障碍",
+    "description": "主题、语言、终端字体、动效与辅助功能",
+    "language": "界面语言",
+    "languageHint": "切换后立即生效，并自动保存。"
+  },
+  "languageSaveFailed": "语言设置保存失败：{{detail}}"
+}

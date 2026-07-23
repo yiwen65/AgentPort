@@ -5,7 +5,7 @@
 //! facts. Auto-approve flags do not exist here — permission mode is always
 //! treated as native.
 
-use super::{AgentAdapter, LaunchContext, LaunchPlan, ResumeContext};
+use super::{AgentAdapter, LaunchContext, LaunchNotice, LaunchPlan, ResumeContext};
 use crate::error::Result;
 use crate::models::*;
 use std::path::Path;
@@ -88,24 +88,18 @@ impl AgentAdapter for ShellAdapter {
             hook_status: HookStatus::Unavailable,
             transport: ctx.transport,
             helper_files,
-            notes: vec![],
+            notices: vec![],
         })
     }
 
     fn build_resume(&self, ctx: &ResumeContext) -> Result<LaunchPlan> {
         // Shell 无会话概念：诚实降级为重新打开一个新 shell，绝不假装恢复。
-        let mut plan = self.build_launch(&LaunchContext {
-            install: ctx.install.clone(),
-            preset: ctx.preset.clone(),
-            cwd: ctx.cwd.clone(),
-            session_id: ctx.session_id.clone(),
-            hook_events_path: ctx.hook_events_path.clone(),
-            session_dir: ctx.session_dir.clone(),
-            transport: ctx.transport,
-        })?;
+        let mut plan = self.build_launch(&ctx.to_launch_context())?;
         plan.resume_precision = ResumePrecision::Unavailable;
-        plan.notes
-            .push("Shell 无会话概念，无法恢复，已重新打开新 shell".into());
+        plan.notices.push(LaunchNotice::new(
+            "shell_resume_unavailable",
+            "Shell 没有可恢复的 Session，已重新打开新的 Shell",
+        ));
         Ok(plan)
     }
 }
@@ -225,7 +219,10 @@ mod tests {
         let ctx = fx::resume_ctx(AgentType::Shell, &[], Some("anything"));
         let plan = ShellAdapter.build_resume(&ctx).unwrap();
         assert_eq!(plan.resume_precision, ResumePrecision::Unavailable);
-        assert!(plan.notes.iter().any(|n| n.contains("无法恢复")));
+        assert!(plan
+            .notices
+            .iter()
+            .any(|notice| notice.code == "shell_resume_unavailable"));
     }
 
     #[test]

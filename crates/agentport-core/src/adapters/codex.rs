@@ -17,7 +17,7 @@
 //!   `--full-auto` does NOT exist on this version. Only flags proven present in
 //!   parsed --help output are ever used.
 
-use super::{AgentAdapter, LaunchContext, LaunchPlan, ResumeContext};
+use super::{AgentAdapter, LaunchContext, LaunchNotice, LaunchPlan, ResumeContext};
 use crate::error::{CoreError, Result};
 use crate::models::*;
 use std::path::Path;
@@ -74,9 +74,15 @@ impl AgentAdapter for CodexAdapter {
             hook_status: install.hook_status,
             transport: ctx.transport,
             helper_files: vec![],
-            notes: vec![
-                "codex 0.144.5 的 help/doctor 未出现 notify 配置键，hook 注入不可验证，降级为 PTY 启发式".into(),
-                "TUI 模式未证实输出会话 ID，仅支持恢复最近会话（resume --last）".into(),
+            notices: vec![
+                LaunchNotice::new(
+                    "codex_hook_unverified",
+                    "codex 0.144.5 的 help/doctor 未出现 notify 配置键，hook 注入不可验证，降级为 PTY 启发式",
+                ),
+                LaunchNotice::new(
+                    "codex_session_id_unverified",
+                    "TUI 模式未证实输出原生 Session ID，仅支持恢复最近的 Session（resume --last）",
+                ),
             ],
         })
     }
@@ -84,12 +90,12 @@ impl AgentAdapter for CodexAdapter {
     fn build_resume(&self, ctx: &ResumeContext) -> Result<LaunchPlan> {
         let install = &ctx.install;
         let mut argv = vec![install.executable_path.clone()];
-        let mut notes = Vec::new();
+        let mut notices = Vec::new();
         let resume_precision = match &ctx.agent_session_id {
             Some(id) => {
                 if !install.exact_resume {
                     return Err(CoreError::Blocked(
-                        "该版本 codex 的 resume 子命令不接受 SESSION_ID，无法精确恢复".into(),
+                        "this version of codex resume does not accept SESSION_ID and cannot resume exactly".into(),
                     ));
                 }
                 argv.push("resume".into());
@@ -99,7 +105,10 @@ impl AgentAdapter for CodexAdapter {
             None => {
                 argv.push("resume".into());
                 argv.push("--last".into());
-                notes.push("无原生会话 ID，仅支持恢复最近会话".into());
+                notices.push(LaunchNotice::new(
+                    "resume_latest_only",
+                    "无原生 Session ID，仅支持恢复最近的 Session",
+                ));
                 ResumePrecision::Latest
             }
         };
@@ -117,7 +126,7 @@ impl AgentAdapter for CodexAdapter {
             hook_status: install.hook_status,
             transport: ctx.transport,
             helper_files: vec![],
-            notes,
+            notices,
         })
     }
 
@@ -222,6 +231,9 @@ mod tests {
         let plan = CodexAdapter.build_resume(&ctx).unwrap();
         assert_eq!(plan.resume_precision, ResumePrecision::Latest);
         assert_eq!(plan.argv[1..], ["resume", "--last"]);
-        assert!(plan.notes.iter().any(|n| n.contains("最近会话")));
+        assert!(plan
+            .notices
+            .iter()
+            .any(|notice| notice.code == "resume_latest_only"));
     }
 }

@@ -1,0 +1,8 @@
+{
+  "health": {
+    "clean": "干净",
+    "dirty": "有未提交修改",
+    "missing": "目录缺失",
+    "locked": "已锁定"
+  }
+}

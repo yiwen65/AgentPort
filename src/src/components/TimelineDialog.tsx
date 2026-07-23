@@ -2,34 +2,47 @@
 // click jumps to the session, "全部已读" acknowledges.
 
 import Modal from "./Modal";
+import { useTranslation } from "react-i18next";
 import { ackTimelineFlow, refreshTimeline, selectSession } from "../actions";
-import { agentDisplay, confidenceZh, formatTimelineTime, sourceZh, stateZh } from "../format";
+import { agentDisplay, confidenceLabel, formatTimelineTime, sourceLabel, stateLabel } from "../format";
 import { closeDialog, findSession, openDialog, toast, useStore } from "../store";
+import { runtimeMessageText } from "../runtimeMessages";
 import type { TimelineEntry } from "../types";
 
 function EntryRow({ entry }: { entry: TimelineEntry }) {
+  const { t } = useTranslation("session");
   const s = useStore();
   const exists = Boolean(findSession(s.projects, entry.sessionId));
   const canLocate = Boolean(entry.logCursor) && !entry.rotatedAway;
   const outputOnly = entry.evidence === "recovery:output-during-gui-closed";
   const hostInterrupted = entry.evidence?.startsWith("host:interrupted:") ?? false;
-  const unavailable = entry.locationUnavailableReason
-    ?? (entry.rotatedAway ? "输出已轮转" : "此事件没有可验证的输出位置");
+  const legacyReason = entry.locationUnavailableReason;
+  const unavailable = legacyReason === "no_verified_output_position"
+    ? t("timeline.noVerifiedPosition")
+    : legacyReason === "output_generation_unverified"
+      ? t("timeline.generationUnverified")
+    : legacyReason === "output_rotated"
+      ? t("timeline.outputRotated")
+      : legacyReason ?? (entry.rotatedAway ? t("timeline.outputRotated") : t("timeline.noVerifiedPosition"));
   return (
     <button
       className="timeline-row"
       aria-disabled={!exists}
       data-tip={canLocate
-        ? `日志 ${entry.logCursor?.runId} / 代际 ${entry.logCursor?.generation} / 偏移 ${entry.logCursor?.offset}`
+        ? t("timeline.logLocation", {
+            runId: entry.logCursor?.runId ?? "",
+            generation: entry.logCursor?.generation ?? 0,
+            offset: entry.logCursor?.offset ?? 0,
+          })
         : unavailable}
       onClick={() => {
         if (!exists) {
-          toast("该 Session 已不存在，无法打开对应输出", "error");
+          toast(t("timeline.sessionMissing"), "error");
           return;
         }
         closeDialog();
         selectSession(entry.sessionId, canLocate ? entry.logCursor : null);
-        if (!canLocate) toast(`已打开 Session；${unavailable}`, "info");
+        if (!canLocate) toast(t("timeline.openedWithoutLocation", { reason: unavailable }), "info");
       }}
     >
       <span className="timeline-time">{formatTimelineTime(entry.occurredAt)}</span>
@@ -39,79 +52,87 @@ function EntryRow({ entry }: { entry: TimelineEntry }) {
         </div>
         <div className="timeline-sub">
           {entry.projectName}
-          {canLocate ? " · 可定位输出" : ` · ${unavailable}`}
+          {` · ${canLocate ? t("timeline.locatable") : unavailable}`}
         </div>
       </span>
       <span className="dim" style={{ flex: "none", fontSize: 12 }}>
-        {outputOnly ? "关闭期间新增输出" : hostInterrupted ? "Host 异常中断" : stateZh(entry.state)}
+        {outputOnly
+          ? t("timeline.newOutputWhileClosed")
+          : hostInterrupted
+            ? t("timeline.hostInterrupted")
+            : stateLabel(entry.state)}
       </span>
       <span className="dim" style={{ flex: "none", fontSize: 11 }}>
-        {sourceZh(entry.source)} · {confidenceZh(entry.confidence)}
+        {sourceLabel(entry.source)} · {confidenceLabel(entry.confidence)}
       </span>
     </button>
   );
 }
 
 export default function TimelineDialog() {
+  const { t } = useTranslation(["session", "common"]);
   const s = useStore();
-  const t = s.timeline;
+  const timeline = s.timeline;
+  const timelineError = s.timelineMessage
+    ? runtimeMessageText(s.timelineMessage)
+    : s.timelineError;
 
   return (
     <Modal
-      title="恢复时间线"
+      title={t("session:timeline.title")}
       onClose={closeDialog}
       wide
       footer={
         <>
           <span className="dim" style={{ marginRight: "auto", alignSelf: "center", fontSize: 12 }}>
-            离开期间发生的完成 / 等待 / 异常事件
+            {t("session:timeline.description")}
           </span>
           <button
             className="btn"
-            disabled={t.entries.length === 0}
+            disabled={timeline.entries.length === 0}
             onClick={() => void ackTimelineFlow()}
           >
-            全部已读
+            {t("session:timeline.markAllRead")}
           </button>
           <button className="btn ghost" onClick={closeDialog}>
-            关闭
+            {t("common:actions.close")}
           </button>
         </>
       }
     >
       <div className="timeline-summary">
         <div className="summary-card ok">
-          <div className="num">{t.completed}</div>
-          <div className="dim">已完成</div>
+          <div className="num">{timeline.completed}</div>
+          <div className="dim">{t("session:timeline.completed")}</div>
         </div>
         <div className="summary-card wait">
-          <div className="num">{t.waiting}</div>
-          <div className="dim">等待输入</div>
+          <div className="num">{timeline.waiting}</div>
+          <div className="dim">{t("session:timeline.needsInput")}</div>
         </div>
         <div className="summary-card fail">
-          <div className="num">{t.failed}</div>
-          <div className="dim">异常 / 退出</div>
+          <div className="num">{timeline.failed}</div>
+          <div className="dim">{t("session:timeline.failed")}</div>
         </div>
       </div>
-      {s.timelineError ? (
+      {timelineError ? (
         <div className="empty-state" role="alert">
-          <div>{s.timelineError}</div>
+          <div>{timelineError}</div>
           <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 10 }}>
-            <button className="btn" onClick={() => void refreshTimeline()}>重试</button>
-            <button className="btn ghost" onClick={() => openDialog({ kind: "diagnostics" })}>打开诊断</button>
+            <button className="btn" onClick={() => void refreshTimeline()}>{t("common:actions.retry")}</button>
+            <button className="btn ghost" onClick={() => openDialog({ kind: "diagnostics" })}>{t("session:timeline.openDiagnostics")}</button>
           </div>
         </div>
       ) : null}
-      {s.timelineError ? null : t.entries.length === 0 ? (
+      {timelineError ? null : timeline.entries.length === 0 ? (
         <div className="empty-state">
-          <div>离开期间没有新的完成、等待或异常事件。</div>
+          <div>{t("session:timeline.empty")}</div>
           <button className="btn ghost" onClick={closeDialog}>
-            查看全部 Session
+            {t("session:timeline.viewAllSessions")}
           </button>
         </div>
       ) : (
-        <div role="list" aria-label="时间线事件">
-          {t.entries.map((e, i) => (
+        <div role="list" aria-label={t("session:timeline.eventsAria")}>
+          {timeline.entries.map((e, i) => (
             <EntryRow key={`${e.sessionId}-${i}`} entry={e} />
           ))}
         </div>

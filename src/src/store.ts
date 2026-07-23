@@ -11,6 +11,7 @@ import type {
   Settings,
   StatusEventView,
   TimelineData,
+  RuntimeMessageEnvelope,
   WorktreeStatus,
   RepositoryStatus,
 } from "./types";
@@ -24,10 +25,14 @@ export interface SessionRuntime {
   logBytes: number;
   exit: { code: number | null; signal: number | null; groupCleaned: boolean } | null;
   error: string | null;
+  /** Stable source for re-localizing an application-owned runtime error. */
+  errorMessage: RuntimeMessageEnvelope | null;
   hostPid: number | null;
   scrolledUp: boolean;
   /** Set when the read-only history terminal shows a truncated log tail. */
   historyNote: string | null;
+  /** Stable source for re-localizing a history note after a language switch. */
+  historyMessage: RuntimeMessageEnvelope | null;
 }
 
 export function emptyRuntime(): SessionRuntime {
@@ -40,9 +45,11 @@ export function emptyRuntime(): SessionRuntime {
     logBytes: 0,
     exit: null,
     error: null,
+    errorMessage: null,
     hostPid: null,
     scrolledUp: false,
     historyNote: null,
+    historyMessage: null,
   };
 }
 
@@ -114,6 +121,7 @@ export interface AppState {
   projects: ProjectView[];
   timeline: TimelineData;
   timelineError: string | null;
+  timelineMessage: RuntimeMessageEnvelope | null;
   secretBackend: string;
   indexState: string;
   exportsDir: string;
@@ -165,6 +173,7 @@ const initialState: AppState = {
   projects: [],
   timeline: { completed: 0, waiting: 0, failed: 0, entries: [], ackSnapshots: [] },
   timelineError: null,
+  timelineMessage: null,
   secretBackend: "unknown",
   indexState: "unknown",
   exportsDir: "",
@@ -354,13 +363,13 @@ function latestStatus(
   incoming: StatusEventView | null | undefined,
 ): StatusEventView | null | undefined {
   if (incoming === undefined) return undefined;
-  if (current && incoming === null) return current;
-  if (current && incoming) {
-    if (incoming.runOrdinal < current.runOrdinal) return current;
-    if (incoming.runOrdinal === current.runOrdinal) {
-      if (incoming.runId !== current.runId || incoming.sequence < current.sequence) return current;
-    }
-  }
+  if (!current) return incoming;
+  if (!incoming) return current;
+  if (incoming.runOrdinal < current.runOrdinal) return current;
+  if (
+    incoming.runOrdinal === current.runOrdinal &&
+    (incoming.runId !== current.runId || incoming.sequence < current.sequence)
+  ) return current;
   return incoming;
 }
 

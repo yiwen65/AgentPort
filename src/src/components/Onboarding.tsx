@@ -2,7 +2,10 @@
 // registered CLI. The renderer deliberately has no fixed Agent list.
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { api, errorText } from "../api";
+import { hookStatusLabel, probeSourceLabel } from "../format";
+import { runtimeMessageText } from "../runtimeMessages";
 import { getState, setState, toast } from "../store";
 import type { ProbeOutcome, SupportedAgent } from "../types";
 
@@ -25,7 +28,12 @@ function mergeAdapters(outcomes: ProbeOutcome[]) {
   }
 }
 
+function probeReason(outcome: ProbeOutcome): string | null {
+  return outcome.reasonMessage ? runtimeMessageText(outcome.reasonMessage) : outcome.reason;
+}
+
 export default function Onboarding() {
+  const { t } = useTranslation(["shell", "common"]);
   const [agents, setAgents] = useState<SupportedAgent[]>([]);
   const [rows, setRows] = useState<Record<string, RowState>>({});
   const [manualPath, setManualPath] = useState<Record<string, string>>({});
@@ -64,7 +72,7 @@ export default function Onboarding() {
       mergeAdapters(outcomes);
     } catch (error) {
       setRows({});
-      toast(`探测失败：${errorText(error)}`, "error");
+      toast(t("shell:onboarding.probeFailed", { detail: errorText(error) }), "error");
     } finally {
       setProbingAll(false);
     }
@@ -86,7 +94,7 @@ export default function Onboarding() {
             agent,
             displayName: registered.displayName,
             state: "unavailable",
-            reason: errorText(error),
+            reason: t("shell:onboarding.probeFailed", { detail: errorText(error) }),
             install: null,
             candidates: [],
           },
@@ -102,8 +110,10 @@ export default function Onboarding() {
         <input
           type="text"
           className="mono"
-          placeholder={`指定 ${registered.commandNames.join(" / ")} 的绝对路径`}
-          aria-label={`手动指定 ${registered.displayName} 路径`}
+          placeholder={t("shell:onboarding.manualPathPlaceholder", {
+            commands: registered.commandNames.join(" / "),
+          })}
+          aria-label={t("shell:onboarding.manualPathAria", { agent: registered.displayName })}
           value={manualPath[agent] ?? ""}
           onChange={(event) =>
             setManualPath((current) => ({ ...current, [agent]: event.target.value }))
@@ -112,24 +122,27 @@ export default function Onboarding() {
         <button
           className="btn small"
           type="button"
-          data-tip="选择安装目录后补全可执行文件名"
+          data-tip={t("shell:onboarding.chooseInstallDirectory")}
           onClick={() =>
             void api
               .pickDirectory()
               .then((path) => {
                 if (path) setManualPath((current) => ({ ...current, [agent]: path }));
               })
-              .catch((error) => toast(errorText(error), "error"))
+              .catch((error) => toast(
+                t("shell:onboarding.chooseDirectoryFailed", { detail: errorText(error) }),
+                "error",
+              ))
           }
         >
-          浏览…
+          {t("common:actions.browse")}
         </button>
         <button
           className="btn small"
           disabled={!(manualPath[agent] ?? "").trim()}
           onClick={() => void probeOne(registered, (manualPath[agent] ?? "").trim())}
         >
-          使用该路径
+          {t("shell:onboarding.usePath")}
         </button>
       </span>
     );
@@ -142,15 +155,17 @@ export default function Onboarding() {
 
   return (
     <div className="onboarding">
-      <div className="onboarding-card" role="dialog" aria-modal="true" aria-label="设置 AgentPort">
-        <h1>设置 AgentPort</h1>
+      <div className="onboarding-card" role="dialog" aria-modal="true" aria-label={t("shell:onboarding.title")}>
+        <h1>{t("shell:onboarding.title")}</h1>
         <p className="dim" style={{ margin: 0, lineHeight: 1.7 }}>
-          自动检测本机已注册的 Agent。探测只读（执行 <span className="mono">--version</span> /{" "}
-          <span className="mono">--help</span>）；多路径会按优先级自动验证并选择可用版本，也可手动指定。
+          {t("shell:onboarding.introBeforeCommands")} <span className="mono">--version</span> /{" "}
+          <span className="mono">--help</span>{t("shell:onboarding.introAfterCommands")}
         </p>
 
         {registryError ? (
-          <div className="error-bar" role="alert">无法加载 Agent 注册表：{registryError}</div>
+          <div className="error-bar" role="alert">
+            {t("shell:onboarding.registryFailed", { detail: registryError })}
+          </div>
         ) : null}
 
         {agents.map((registered) => {
@@ -160,11 +175,11 @@ export default function Onboarding() {
               <span className="name">{registered.displayName}</span>
               {row.phase === "idle" ? (
                 <>
-                  <span className="probe-mark pending">— 未检测</span>
+                  <span className="probe-mark pending">{t("shell:onboarding.notChecked")}</span>
                   <span className="detail dim">
-                    尚未执行探测
+                    {t("shell:onboarding.notProbed")}
                     <details className="agent-candidates">
-                      <summary>手动指定路径</summary>
+                      <summary>{t("shell:onboarding.manualPath")}</summary>
                       {manualControls(registered)}
                     </details>
                   </span>
@@ -172,32 +187,38 @@ export default function Onboarding() {
               ) : row.phase === "probing" ? (
                 <>
                   <span className="spin" aria-hidden="true" />
-                  <span className="detail dim">检测中…</span>
+                  <span className="detail dim">{t("shell:onboarding.probing")}</span>
                 </>
               ) : row.outcome.state === "available" && row.outcome.install ? (
                 <>
-                  <span className="probe-mark ok">✓ 可用</span>
+                  <span className="probe-mark ok">{t("shell:onboarding.available")}</span>
                   <span className="detail">
                     <span className="mono">{row.outcome.install.executablePath}</span>
                     <br />
                     <span className="dim">
-                      {row.outcome.install.versionText} · Hook {row.outcome.install.hookStatus} ·{" "}
-                      {row.outcome.install.exactResume ? "支持精确恢复" : "不支持精确恢复"}
+                      {row.outcome.install.versionText} · Hook {hookStatusLabel(row.outcome.install.hookStatus)} ·{" "}
+                      {row.outcome.install.exactResume
+                        ? t("shell:onboarding.exactResumeSupported")
+                        : t("shell:onboarding.exactResumeUnsupported")}
                     </span>
-                    {row.outcome.reason ? <><br /><span className="dim">{row.outcome.reason}</span></> : null}
+                    {probeReason(row.outcome) ? <><br /><span className="dim">{probeReason(row.outcome)}</span></> : null}
                     <details className="agent-candidates">
-                      <summary>候选路径与手动覆盖（{row.outcome.candidates.length}）</summary>
+                      <summary>
+                        {t("shell:onboarding.candidatePaths", {
+                          count: row.outcome.candidates.length,
+                        })}
+                      </summary>
                       {row.outcome.candidates.map((candidate) => (
                         <div key={candidate.path} style={{ marginTop: 4 }}>
                           <button
                             className="btn small"
                             onClick={() => void probeOne(registered, candidate.path)}
                           >
-                            使用此路径
+                            {t("shell:onboarding.usePath")}
                           </button>{" "}
                           <span className="mono">{candidate.path}</span>{" "}
                           <span className="dim">
-                            {candidate.versionText ?? "尚未验证"} · {candidate.source}
+                            {candidate.versionText ?? t("shell:onboarding.notVerified")} · {probeSourceLabel(candidate.source)}
                           </span>
                         </div>
                       ))}
@@ -207,13 +228,13 @@ export default function Onboarding() {
                 </>
               ) : row.outcome.state === "conflict" ? (
                 <>
-                  <span className="probe-mark warn">! 需要指定路径</span>
+                  <span className="probe-mark warn">{t("shell:onboarding.pathRequired")}</span>
                   <span className="detail">
-                    请选择一个候选路径：
+                    {t("shell:onboarding.chooseCandidate")}
                     {row.outcome.candidates.map((candidate) => (
                       <div key={candidate.path} style={{ marginTop: 4 }}>
                         <button className="btn small" onClick={() => void probeOne(registered, candidate.path)}>
-                          使用此路径
+                          {t("shell:onboarding.usePath")}
                         </button>{" "}
                         <span className="mono">{candidate.path}</span>
                       </div>
@@ -223,11 +244,11 @@ export default function Onboarding() {
                 </>
               ) : (
                 <>
-                  <span className="probe-mark bad">✕ 不可用</span>
+                  <span className="probe-mark bad">{t("shell:onboarding.unavailable")}</span>
                   <span className="detail">
-                    {row.outcome.reason ?? "未找到可执行文件"}
+                    {probeReason(row.outcome) ?? t("shell:onboarding.executableNotFound")}
                     <details className="agent-candidates" open>
-                      <summary>指定其他路径</summary>
+                      <summary>{t("shell:onboarding.otherPath")}</summary>
                       {manualControls(registered)}
                     </details>
                   </span>
@@ -235,7 +256,7 @@ export default function Onboarding() {
               )}
               {row.phase === "done" ? (
                 <button className="btn small ghost" onClick={() => void probeOne(registered, null)}>
-                  重新检测
+                  {t("shell:onboarding.probeAgain")}
                 </button>
               ) : null}
             </div>
@@ -244,18 +265,18 @@ export default function Onboarding() {
 
         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
           <button className="btn" disabled={probingAll || agents.length === 0} onClick={() => void probeAll()}>
-            {probingAll ? "检测中…" : "检测全部 Agent"}
+            {probingAll ? t("shell:onboarding.probing") : t("shell:onboarding.probeAll")}
           </button>
           <button
             className="btn primary"
             onClick={close}
-            data-tip={anyAvailable ? undefined : "尚未探测到可用 Agent；可稍后在设置中重新检测"}
+            data-tip={anyAvailable ? undefined : t("shell:onboarding.noAvailableAgent")}
           >
-            {anyAvailable ? "继续" : "跳过，稍后设置"}
+            {anyAvailable ? t("shell:onboarding.continue") : t("shell:onboarding.skip")}
           </button>
         </div>
         <p className="form-hint" style={{ margin: 0 }}>
-          已注册的新 Agent 会自动出现在此处；新增未知 CLI 仍需要相应适配器，避免以不受管参数启动。
+          {t("shell:onboarding.adapterNote")}
         </p>
       </div>
     </div>

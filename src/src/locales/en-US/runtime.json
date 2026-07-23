@@ -1,0 +1,62 @@
+{
+  "errors": {
+    "unknown": "An unknown error occurred",
+    "unknownCode": "An unknown runtime error occurred ({{code}})",
+    "watchDatabaseOpenFailed": "Could not open the Session database: {{detail}}",
+    "statusPersistenceFailed": "Could not save the Session status: {{detail}}",
+    "agentSessionPersistenceFailed": "Could not save the native Session ID: {{detail}}",
+    "hostReplaced": "The Host was replaced by a newer run",
+    "host": {
+      "connectionFailed": "Could not connect to the Host: {{detail}}",
+      "changedDuringAttach": "The Host changed while the Session was connecting. Reconnect to continue.",
+      "statusJournalFailed": "The Host could not save its status journal, so state recovery is degraded.",
+      "sessionIdMismatch": "The Host rejected a request with a mismatched Session ID.",
+      "terminalInputUnavailable": "Terminal input is unavailable for structured Sessions.",
+      "structuredPromptTransportRequired": "Structured prompts require the json_rpc transport.",
+      "structuredPromptEmpty": "The structured prompt cannot be empty.",
+      "structuredAbortTransportRequired": "Aborting a structured turn requires the json_rpc transport.",
+      "duplicateHello": "The Host received a duplicate handshake request.",
+      "handshakeRejected": "The Host handshake was rejected.",
+      "generic": "Host error: {{detail}}"
+    },
+    "recovery": {
+      "contextFailed": "Could not read the recovery output: {{detail}}",
+      "generationUnavailable": "The retained output generation could not be verified; the output may have rotated.",
+      "outputRotated": "The output has rotated or does not belong to the retained log, so it cannot be located safely.",
+      "logMissing": "The output log no longer exists or has rotated.",
+      "logIncomplete": "The output has rotated or is no longer fully retained, so it cannot be located safely.",
+      "logChanged": "The output log changed while it was being read. Try again."
+    },
+    "projectPathMissing": "The project directory no longer exists and cannot be shown in the file manager: {{path}}. You can remove the project record from AgentPort.",
+    "fileManagerFailed": "Could not open the system file manager: {{detail}}"
+  },
+  "notifications": {
+    "needsInput": "Needs input",
+    "completed": "Completed",
+    "failed": "Exited with an error",
+    "testTitle": "AgentPort test notification",
+    "testBody": "Notifications are working."
+  },
+  "messages": {
+    "probe": {
+      "executableNotFound": "Executable not found",
+      "failed": "CLI probe failed: {{detail}}",
+      "autoSelected_one": "Selected the highest-priority usable path from {{count}} candidate. You can choose another path below.",
+      "autoSelected_other": "Selected the highest-priority usable path from {{count}} candidates. You can choose another path below.",
+      "candidatesFailed_one": "Found {{count}} candidate, but it did not pass the read-only probe: {{detail}}",
+      "candidatesFailed_other": "Found {{count}} candidates, but none passed the read-only probe: {{detail}}"
+    },
+    "adapter": {
+      "hookSettingsUnavailable": "This version of {{agent}} does not support per-Session Hook injection. State detection is using PTY heuristics.",
+      "kimiHookUnavailable": "This version of Kimi supports only global Hook configuration. AgentPort leaves global configuration unchanged and uses PTY heuristics for state detection.",
+      "codexHookUnverified": "This version of Codex does not expose a verifiable notify setting. State detection is using PTY heuristics.",
+      "codexSessionIdUnverified": "The Codex TUI does not expose a verifiable native Session ID. Only the most recent Session can be resumed (resume --last).",
+      "nativeSessionIdUnavailable": "This version of {{agent}} cannot assign a native Session ID. Only the most recent Session can be resumed.",
+      "resumeLatestOnly": "There is no native Session ID. Only the most recent Session can be resumed.",
+      "piLocalPermissions": "Pi does not provide per-action approvals and will run with the local user's permissions.",
+      "claudeConversationMissing": "The original Session has no conversation to resume (the first turn may not have produced a message), so a new Session was started.",
+      "shellResumeUnavailable": "Shell has no resumable Session, so a new Shell was opened.",
+      "generic": "Agent notice: {{detail}}"
+    }
+  }
+}

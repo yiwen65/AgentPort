@@ -22,7 +22,9 @@ use nix::sys::signal::Signal;
 use portable_pty::PtySize;
 use tracing::{info, warn};
 
-use crate::{current_log_cursor, err_frame, signal_group, status_frame, HostMsg, Shared};
+use crate::{
+    current_log_cursor, err_frame, signal_group, status_frame, HostErrorCode, HostMsg, Shared,
+};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const REPLAY_CHUNK: usize = 64 * 1024;
@@ -259,7 +261,11 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                 &shared,
                 id,
                 &frame_tx,
-                err_frame(None, "session id mismatch"),
+                err_frame(
+                    None,
+                    HostErrorCode::SessionIdMismatch,
+                    "session id mismatch",
+                ),
             );
             break;
         }
@@ -272,6 +278,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                         &frame_tx,
                         err_frame(
                             Some(&shared.cfg.session_id),
+                            HostErrorCode::TerminalInputUnavailable,
                             "terminal input is unavailable for structured sessions",
                         ),
                     );
@@ -290,6 +297,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                         &frame_tx,
                         err_frame(
                             Some(&shared.cfg.session_id),
+                            HostErrorCode::StructuredPromptTransportRequired,
                             "structured prompts require json_rpc transport",
                         ),
                     );
@@ -302,6 +310,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                         &frame_tx,
                         err_frame(
                             Some(&shared.cfg.session_id),
+                            HostErrorCode::StructuredPromptEmpty,
                             "structured prompt must not be empty",
                         ),
                     );
@@ -324,6 +333,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                         &frame_tx,
                         err_frame(
                             Some(&shared.cfg.session_id),
+                            HostErrorCode::StructuredAbortTransportRequired,
                             "structured abort requires json_rpc transport",
                         ),
                     );
@@ -377,8 +387,12 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                 break;
             }
             ClientFrame::Hello { .. } => {
-                let _ =
-                    queue_client_frame(&shared, id, &frame_tx, err_frame(None, "duplicate hello"));
+                let _ = queue_client_frame(
+                    &shared,
+                    id,
+                    &frame_tx,
+                    err_frame(None, HostErrorCode::DuplicateHello, "duplicate hello"),
+                );
                 break;
             }
         }
@@ -423,7 +437,10 @@ fn disconnect_client(shared: &Shared, id: u64) {
 
 /// One generic rejection — never reveal which credential part failed.
 fn reject(stream: &UnixStream) {
-    let _ = write_frame(&mut &*stream, &err_frame(None, "handshake rejected"));
+    let _ = write_frame(
+        &mut &*stream,
+        &err_frame(None, HostErrorCode::HandshakeRejected, "handshake rejected"),
+    );
 }
 
 fn frame_session_id(f: &ClientFrame) -> &str {

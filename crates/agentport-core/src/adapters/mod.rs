@@ -53,6 +53,36 @@ pub struct ResumeContext {
     pub transport: AgentTransport,
 }
 
+impl ResumeContext {
+    fn to_launch_context(&self) -> LaunchContext {
+        LaunchContext {
+            install: self.install.clone(),
+            preset: self.preset.clone(),
+            cwd: self.cwd.clone(),
+            session_id: self.session_id.clone(),
+            hook_events_path: self.hook_events_path.clone(),
+            session_dir: self.session_dir.clone(),
+            transport: self.transport,
+        }
+    }
+}
+
+/// Stable application notice with a compatibility message for older clients.
+#[derive(Debug, Clone)]
+pub struct LaunchNotice {
+    pub code: &'static str,
+    pub legacy_message: String,
+}
+
+impl LaunchNotice {
+    pub fn new(code: &'static str, legacy_message: impl Into<String>) -> Self {
+        Self {
+            code,
+            legacy_message: legacy_message.into(),
+        }
+    }
+}
+
 /// Result of composing a launch/resume command.
 #[derive(Debug, Clone)]
 pub struct LaunchPlan {
@@ -68,8 +98,9 @@ pub struct LaunchPlan {
     pub transport: AgentTransport,
     /// Helper files that must exist before spawn (path, contents, mode 0600).
     pub helper_files: Vec<(String, String)>,
-    /// Human-readable notes for the preflight panel (e.g. "resume: latest only").
-    pub notes: Vec<String>,
+    /// The GUI localizes `code`; `legacy_message` keeps older clients and
+    /// diagnostics compatible without parallel vectors that can drift.
+    pub notices: Vec<LaunchNotice>,
 }
 
 pub trait AgentAdapter: Send + Sync {
@@ -197,7 +228,7 @@ pub fn validate_user_args(t: AgentType, args: &[String]) -> Result<()> {
         let key = arg.split('=').next().unwrap_or(arg.as_str());
         if protected.contains(&key) {
             return Err(crate::error::CoreError::Validation(format!(
-                "{} 参数由 AgentPort 管理，不能在预设或高级参数中覆盖: {key}",
+                "{} argument is managed by AgentPort and cannot be overridden in a preset or advanced arguments: {key}",
                 t.display_name()
             )));
         }

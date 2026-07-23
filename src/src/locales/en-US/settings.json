@@ -1,0 +1,10 @@
+{
+  "title": "Settings",
+  "appearance": {
+    "title": "Appearance & Accessibility",
+    "description": "Theme, language, terminal typography, motion, and assistive features",
+    "language": "Display language",
+    "languageHint": "Changes take effect immediately and are saved automatically."
+  },
+  "languageSaveFailed": "Could not save the language setting: {{detail}}"
+}

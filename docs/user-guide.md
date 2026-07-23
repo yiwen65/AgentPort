@@ -118,7 +118,7 @@ AgentPort 绝不会默认添加 `--yolo` 类的跳过审批参数。
 
 ## 通知
 
-- macOS：系统通知（通过 `osascript`）；Linux： freedesktop 通知（`notify-send`）。
+- macOS：GUI 由 AgentPort 自己的 Bundle ID 通过系统原生通知通道发送；headless CLI 诊断命令使用 `osascript` 后备。Linux 通过 freedesktop 通知（`notify-send`）发送。
 - 系统通知是"尽力投递"；**应用内未读状态才是可靠通道**。通知权限被拒绝时，应用内未读徽标照常工作，设置页会显示在系统设置中开启通知的指引。
 
 ## 恢复时间线
@@ -162,6 +162,7 @@ AgentPort 绝不会默认添加 `--yolo` 类的跳过审批参数。
 |---|---|---|
 | 每 Session 日志上限 | 200 MiB | 20–2048 MiB |
 | 通知 | 开启 | 仍受系统权限控制 |
+| 界面语言 | 简体中文 | zh-CN / en-US；切换后立即生效并独立自动保存 |
 | 主题 | 跟随系统 | system / dark / light；点击后立即生效并保存 |
 | 终端字体 | 内置 JetBrains Mono | 配置值 system-monospace；可自定义 |
 | 终端字号 | 13 px | 10–28 px |

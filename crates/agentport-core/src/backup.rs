@@ -187,9 +187,8 @@ fn private_create(path: &Path) -> Result<std::fs::File> {
 /// Directories/files inside the data root that never enter a backup.
 fn is_excluded_from_backup(paths: &AppPaths, abs: &Path) -> bool {
     let root = paths.root();
-    let rel = match abs.strip_prefix(root) {
-        Ok(r) => r,
-        Err(_) => return true,
+    let Ok(rel) = abs.strip_prefix(root) else {
+        return true;
     };
     let first = rel.components().next().map(|c| c.as_os_str());
     matches!(
@@ -217,7 +216,8 @@ fn collect_session_files(paths: &AppPaths, out: &mut Vec<PathBuf>) -> Result<()>
             if ft.is_symlink() {
                 // Never follow links out of the data root during backup.
                 continue;
-            } else if ft.is_dir() {
+            }
+            if ft.is_dir() {
                 stack.push(path);
             } else if ft.is_file() {
                 out.push(path);
@@ -503,8 +503,7 @@ pub fn restore(archive: &Path, target_root: &Path) -> Result<PathBuf> {
     }
 
     // Swap: keep the previous tree as a manual rollback point.
-    let mut previous: Option<PathBuf> = None;
-    if target_root.exists() {
+    let previous = if target_root.exists() {
         let ts = Utc::now().format("%Y%m%d-%H%M%S");
         let aside = parent.join(format!(
             "{}.pre-restore-{ts}",
@@ -520,8 +519,10 @@ pub fn restore(archive: &Path, target_root: &Path) -> Result<PathBuf> {
             )));
         }
         std::fs::rename(target_root, &aside)?;
-        previous = Some(aside);
-    }
+        Some(aside)
+    } else {
+        None
+    };
     if let Err(e) = std::fs::rename(&staging, target_root) {
         // Best-effort rollback of the swap so we never strand the user with no
         // data directory at all.

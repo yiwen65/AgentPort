@@ -1,0 +1,115 @@
+{
+  "ui": {
+    "actions": {
+      "addProject": "Add project",
+      "settings": "Settings"
+    },
+    "topBar": {
+      "commandPalette": "Command Palette",
+      "recoveryTimeline": "Recovery Timeline",
+      "recoveryTimelineCount_one": "Recovery Timeline ({{count}})",
+      "recoveryTimelineCount_other": "Recovery Timeline ({{count}})",
+      "settingsEllipsis": "Settings…",
+      "showSidebar": "Show sidebar",
+      "hideSidebar": "Hide sidebar",
+      "showSidebarTip": "Show the projects and Sessions sidebar ({{shortcut}})",
+      "hideSidebarTip": "Hide the projects and Sessions sidebar ({{shortcut}})",
+      "workspaceMenu": "Workspace menu"
+    },
+    "sidebar": {
+      "label": "Projects and Sessions",
+      "projectTreeLabel": "Project tree",
+      "worktreeTreeLabel": "{{project}} Worktree Sessions",
+      "notGitRepository": "This directory is not a Git repository",
+      "openFailed": "Could not open: {{detail}}",
+      "gitStatusFailed": "Could not read git status: {{detail}}",
+      "expand": "expand",
+      "collapse": "collapse",
+      "worktreeSummary_one": "Worktree {{branch}}, {{count}} Session, {{action}}",
+      "worktreeSummary_other": "Worktree {{branch}}, {{count}} Sessions, {{action}}",
+      "worktreeQuickActions": "Quick-launch an Agent in Worktree {{branch}}",
+      "worktreeScope": "Worktree {{branch}}",
+      "worktreeMoreActions": "More actions for Worktree {{branch}}",
+      "projectQuickActions": "Quick-launch an Agent in project {{project}}",
+      "projectScope": "project {{project}}",
+      "projectMoreActions": "More actions for project {{project}}",
+      "moreActions": "More actions…",
+      "worktreesEntryLabel": "Worktrees, open management view",
+      "currentCheckout": "Current checkout: {{head}}. Manage local branches",
+      "unbornRepository": "Uninitialized repository",
+      "readingBranch": "Reading branch…",
+      "detachedAt": "Detached @ {{oid}}",
+      "noRunningTasks": "No running tasks yet",
+      "expandAll": "Expand all projects and Worktrees",
+      "collapseAll": "Collapse all projects and Sessions",
+      "quickLaunch": {
+        "terminal": "Terminal",
+        "localUserPermissions": "Local user permissions",
+        "bypassPermissionChecks": "Bypass permission checks",
+        "listLabel": "Quick-launch an Agent in {{scope}}; drag to see all",
+        "launchLabel": "Launch {{agent}} in {{scope}} ({{mode}})",
+        "launchTip": "Launch {{agent}} ({{mode}})"
+      },
+      "projectMenu": {
+        "newWorktree": "New Worktree…",
+        "manageBranches": "Manage local branches…",
+        "revealInFileManager": "Show in system file manager",
+        "rename": "Rename project…",
+        "remove": "Remove from AgentPort (keep directory)"
+      },
+      "worktreeMenu": {
+        "copyPath": "Copy path",
+        "openInSystemTerminal": "Open in system terminal",
+        "copyGitStatus": "Copy git status",
+        "delete": "Delete Worktree…",
+        "deleteBlocked": "This Worktree has uncommitted or untracked files and cannot be deleted.\nCommit or clean them, then try again."
+      },
+      "toast": {
+        "pathCopied": "Path copied",
+        "gitStatusCopied": "git status copied"
+      },
+      "worktreeView": {
+        "back": "Back to the main Session list",
+        "empty": "No Worktrees yet",
+        "unavailable": "This directory is not a Git repository, so Worktrees are unavailable"
+      }
+    },
+    "terminal": {
+      "scrollbarLabel": "Session history scroll position",
+      "backToLatest": "↓ Back to latest",
+      "backToLatestTip": "Shortcut: ⌘↓ (Linux: Ctrl+Shift+↓)"
+    },
+    "terminalSearch": {
+      "regionLabel": "Terminal history search",
+      "placeholder": "Search full terminal history (never sent to the Agent)",
+      "inputLabel": "Search terminal history",
+      "currentBuffer": "Current buffer",
+      "currentScreen": "Current screen",
+      "matchPosition_one": "{{scope}} {{current}}/{{count}}",
+      "matchPosition_other": "{{scope}} {{current}}/{{count}}",
+      "noCurrentBufferResults": "Current buffer: no results",
+      "previousMatch": "Previous match",
+      "nextMatch": "Next match",
+      "close": "Close search",
+      "fullHistory": "Full history",
+      "bufferMatch": "{{scope}}: {{snippet}}",
+      "noResultsInCurrentBuffer": "No results in the current buffer",
+      "searchingPersistedLog": "Searching persisted log…",
+      "fullHistoryUnavailable": "Full history unavailable",
+      "loadedHits_one": " ({{count}} result loaded)",
+      "loadedHits_other": " ({{count}} results loaded)",
+      "logMatchPosition_one": "{{current}}/{{count}}{{loaded}}: {{snippet}}",
+      "logMatchPosition_other": "{{current}}/{{count}}{{loaded}}: {{snippet}}",
+      "noResults": "No results",
+      "searchFailed": "Could not search full terminal history: {{detail}}"
+    },
+    "workspace": {
+      "label": "Terminal workspace"
+    },
+    "empty": {
+      "selectSession": "Select a Session in the sidebar to continue working.",
+      "noRunningTasks": "This project has no running tasks yet.",
+      "addDirectoryPrompt": "Add a code directory to start your first persistent Session."
+    }
+  }
+}

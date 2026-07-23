@@ -2,12 +2,14 @@
 // api.pickDirectory (tauri-plugin-dialog); manual path input also works.
 
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import Modal from "./Modal";
 import { api, errorText } from "../api";
 import { refreshProjects } from "../actions";
 import { closeDialog, setState, toast } from "../store";
 
 export default function AddProjectDialog() {
+  const { t } = useTranslation(["shell", "common"]);
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -21,14 +23,14 @@ export default function AddProjectDialog() {
       const res = await api.addProject(path.trim(), name.trim() || null);
       await refreshProjects();
       if (res.focusedExisting) {
-        toast("该项目已在列表中，已为你聚焦", "info");
+        toast(t("shell:project.alreadyAdded"), "info");
       } else {
-        toast(`已添加项目「${res.name ?? path}」`, "success");
+        toast(t("shell:project.added", { name: res.name ?? path }), "success");
       }
       if (res.id) setState({ expandedProjects: {} });
       closeDialog();
     } catch (e) {
-      setError(errorText(e));
+      setError(t("shell:project.addFailed", { detail: errorText(e) }));
     } finally {
       setBusy(false);
     }
@@ -36,22 +38,22 @@ export default function AddProjectDialog() {
 
   return (
     <Modal
-      title="添加项目"
+      title={t("shell:project.title")}
       onClose={closeDialog}
       footer={
         <>
           <button className="btn ghost" onClick={closeDialog}>
-            取消
+            {t("common:actions.cancel")}
           </button>
           <button className="btn primary" disabled={busy || !path.trim()} onClick={() => void submit()}>
-            {busy ? "检查中…" : "添加"}
+            {busy ? t("shell:project.checking") : t("common:actions.add")}
           </button>
         </>
       }
     >
       {error ? <div className="error-bar" role="alert">{error}</div> : null}
       <div className="form-row">
-        <label htmlFor="ap-path">项目目录（绝对路径）</label>
+        <label htmlFor="ap-path">{t("shell:project.directory")}</label>
         <div className="inline-form">
           <input
             id="ap-path"
@@ -76,18 +78,20 @@ export default function AddProjectDialog() {
                 .then((p) => {
                   if (p) setPath(p);
                 })
-                .catch((e) => setError(errorText(e)))
+                .catch((e) => setError(
+                  t("shell:project.chooseDirectoryFailed", { detail: errorText(e) }),
+                ))
             }
           >
-            选择目录…
+            {t("shell:project.chooseDirectory")}
           </button>
         </div>
         <span className="form-hint">
-          目录不存在或不可读时不会保存；同一路径重复添加会聚焦已有项目。
+          {t("shell:project.directoryHint")}
         </span>
       </div>
       <div className="form-row">
-        <label htmlFor="ap-name">显示名（可选，默认取目录名）</label>
+        <label htmlFor="ap-name">{t("shell:project.displayName")}</label>
         <input
           id="ap-name"
           type="text"

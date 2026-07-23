@@ -39,6 +39,7 @@ import type {
   WorktreeBranchMode,
   WorktreeView,
 } from "./types";
+import { runtimeMessageEnvelope, runtimeMessageText } from "./runtimeMessages";
 
 // ---------------------------------------------------------------------------
 // base64 helpers (send_input / channel output are base64 payloads)
@@ -64,12 +65,25 @@ export function b64ToBytes(b64: string): Uint8Array {
   return bytes;
 }
 
+/** Narrow unknown structured payloads without repeating unsafe casts. */
+export function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
 /** Normalize any invoke rejection into a displayable string. */
 export function errorText(e: unknown): string {
   if (typeof e === "string") return e;
   if (e instanceof Error) return e.message;
-  if (typeof e === "object" && e !== null && !Array.isArray(e)) {
-    const record = e as Record<string, unknown>;
+  const envelope = runtimeMessageEnvelope(e);
+  if (envelope) return runtimeMessageText(envelope);
+  const record = asRecord(e);
+  if (record) {
     // Keep structured Tauri rejections intact: branch management reads the
     // JSON again to expose live-session recovery actions to the user.
     try {
@@ -92,17 +106,18 @@ export function errorText(e: unknown): string {
  * message string (and can preserve recovery/session metadata).
  */
 export function isStructuredGitError(value: unknown): value is StructuredGitError {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
+  const record = asRecord(value);
+  if (!record) return false;
   return typeof record.code === "string" &&
     typeof record.message === "string" &&
     typeof record.phase === "string" &&
     typeof record.operationId === "string" &&
     typeof record.recoverable === "boolean" &&
     (record.currentStatus === null || (typeof record.currentStatus === "object" && record.currentStatus !== null)) &&
-    Array.isArray(record.recoveryActions) && record.recoveryActions.every((action) => typeof action === "string") &&
+    isStringArray(record.recoveryActions) &&
+    (record.recoveryActionCodes === undefined || isStringArray(record.recoveryActionCodes)) &&
     typeof record.diagnostics === "object" && record.diagnostics !== null &&
-    Array.isArray(record.liveSessionIds) && record.liveSessionIds.every((id) => typeof id === "string");
+    isStringArray(record.liveSessionIds);
 }
 
 // ---------------------------------------------------------------------------

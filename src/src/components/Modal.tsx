@@ -1,6 +1,7 @@
 // Base modal: Esc to close, focus trap, focus restore, aria-modal.
 
 import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -11,7 +12,9 @@ export default function Modal(props: {
   children: ReactNode;
   footer?: ReactNode;
   wide?: boolean;
+  workspaceCentered?: boolean;
 }) {
+  const { t } = useTranslation("common");
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -53,7 +56,7 @@ export default function Modal(props: {
 
   return (
     <div
-      className="modal-backdrop"
+      className={`modal-backdrop${props.workspaceCentered ? " workspace-centered" : ""}`}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) props.onClose();
       }}
@@ -69,7 +72,7 @@ export default function Modal(props: {
       >
         <div className="modal-head">
           <h2>{props.title}</h2>
-          <button className="icon-btn" onClick={props.onClose} aria-label="关闭对话框">
+          <button className="icon-btn" onClick={props.onClose} aria-label={t("dialog.close")}>
             ✕
           </button>
         </div>

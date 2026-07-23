@@ -1,0 +1,64 @@
+{
+  "actions": {
+    "add": "Add",
+    "back": "Back",
+    "browse": "Browse…",
+    "cancel": "Cancel",
+    "close": "Close",
+    "copy": "Copy",
+    "delete": "Delete",
+    "done": "Done",
+    "edit": "Edit",
+    "open": "Open",
+    "ok": "OK",
+    "confirm": "Confirm",
+    "export": "Export",
+    "exporting": "Exporting…",
+    "refresh": "Refresh",
+    "rename": "Rename",
+    "remove": "Remove",
+    "restore": "Restore",
+    "retry": "Retry",
+    "save": "Save",
+    "saving": "Saving…",
+    "search": "Search"
+  },
+  "dialog": {
+    "close": "Close dialog"
+  },
+  "menu": {
+    "context": "Context menu"
+  },
+  "feedback": {
+    "copyFailed": "Could not copy"
+  },
+  "status": {
+    "available": "Available",
+    "unavailable": "Unavailable",
+    "loading": "Loading…",
+    "unknown": "Unknown"
+  },
+  "hookStatus": {
+    "supported": "Supported",
+    "degraded": "Degraded",
+    "unavailable": "Unavailable"
+  },
+  "probeSource": {
+    "systemPath": "System PATH",
+    "loginShellPath": "Login shell PATH",
+    "wellKnownDirectory": "Common install directory",
+    "manual": "Manually selected"
+  },
+  "indexState": {
+    "ready": "Ready",
+    "rebuildNeeded": "Rebuild required",
+    "unknown": "Unknown"
+  },
+  "language": {
+    "zhCN": "简体中文",
+    "enUS": "English"
+  },
+  "time": {
+    "localZone": "local time"
+  }
+}

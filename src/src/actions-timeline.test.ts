@@ -37,7 +37,7 @@ const timeline = (id: string) => ({
 describe("refreshTimeline", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    setState({ timeline: timeline("initial") as never, timelineError: null });
+    setState({ timeline: timeline("initial") as never, timelineError: null, timelineMessage: null });
   });
 
   it("does not let an older response overwrite a newer refresh", async () => {
@@ -58,7 +58,7 @@ describe("refreshTimeline", () => {
     const ok = await refreshTimeline();
     expect(ok).toBe(false);
     expect(getState().timeline.entries[0]?.sessionId).toBe("initial");
-    expect(getState().timelineError).toContain("IPC offline");
+    expect(getState().timelineMessage?.technicalDetail).toContain("IPC offline");
   });
 
   it("acks exactly the boot-rendered snapshot instead of refreshing live facts", async () => {

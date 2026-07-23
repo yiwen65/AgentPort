@@ -215,9 +215,9 @@ fn wait_for(mut pred: impl FnMut() -> bool, timeout: Duration, what: &str) {
 
 fn wait_socket(ctx: &TestCtx) {
     wait_for(
-        || ctx.socket.exists(),
+        || UnixStream::connect(&ctx.socket).is_ok(),
         Duration::from_secs(10),
-        "socket file",
+        "connectable socket",
     );
 }
 
@@ -1353,11 +1353,12 @@ fn reconnect_replay() {
 
 #[test]
 fn recovery_target_replays_bounded_context_outside_default_tail_window() {
+    let ready = "AGENTPORT_REPLAY_READY";
     let ctx = make_ctx(
         vec![
             "/bin/sh".into(),
             "-c".into(),
-            "yes x | head -c 1048576; sleep 60".into(),
+            format!("yes x | head -c 1048576; printf '{ready}'; sleep 60"),
         ],
         2 * 1024 * 1024,
         vec![],
@@ -1366,12 +1367,16 @@ fn recovery_target_replays_bounded_context_outside_default_tail_window() {
     wait_socket(&ctx);
     wait_for(
         || {
-            std::fs::metadata(&ctx.log)
-                .map(|meta| meta.len() >= 1024 * 1024)
+            std::fs::read(&ctx.log)
+                .map(|bytes| {
+                    bytes
+                        .windows(ready.len())
+                        .any(|window| window == ready.as_bytes())
+                })
                 .unwrap_or(false)
         },
         Duration::from_secs(10),
-        "large retained recovery log",
+        "completed large retained recovery log",
     );
 
     let mut initial = connect(&ctx, &ctx.session_id, TOKEN, 0);
@@ -1627,14 +1632,19 @@ fn client_drop_resilience() {
 fn log_rotation() {
     let limit: u64 = 64 * 1024;
     let pad = "x".repeat(1000);
-    let script =
-        format!("i=0; while [ $i -lt 200 ]; do echo \"line-$i-{pad}\"; i=$((i+1)); done; sleep 30");
+    let script = format!(
+        "read _; i=0; while [ $i -lt 200 ]; do echo \"line-$i-{pad}\"; i=$((i+1)); done; sleep 30"
+    );
     let ctx = make_ctx(vec!["/bin/sh".into(), "-c".into(), script], limit, vec![]);
     let mut guard = spawn_host(&ctx, &[]);
     wait_socket(&ctx);
 
     let mut c = connect(&ctx, &ctx.session_id, TOKEN, 0);
     c.expect_hello_ok();
+    c.send(&ClientFrame::Input {
+        session_id: ctx.session_id.clone(),
+        data: b"start\n".to_vec(),
+    });
     // ~200 KiB total output vs a 64 KiB limit: rotation must happen.
     let frames = c.collect_until(Duration::from_secs(20), |fs| {
         output_bytes(fs).len() as u64 > limit + 32 * 1024

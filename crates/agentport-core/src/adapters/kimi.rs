@@ -13,7 +13,7 @@
 //!   `To resume this session: kimi -r session_<uuid>` (fixture kimi-print-ok.txt).
 //!   extract_session_id matches that line in PTY output.
 
-use super::{AgentAdapter, LaunchContext, LaunchPlan, ResumeContext};
+use super::{AgentAdapter, LaunchContext, LaunchNotice, LaunchPlan, ResumeContext};
 use crate::error::{CoreError, Result};
 use crate::models::*;
 use std::path::Path;
@@ -71,8 +71,11 @@ impl AgentAdapter for KimiAdapter {
             hook_status: install.hook_status,
             transport: ctx.transport,
             helper_files: vec![],
-            notes: vec![
-                "kimi 0.27.0 无会话级 hook 注入机制（仅全局 ~/.kimi-code/config.toml，不做修改），状态降级为 PTY 启发式".into(),
+            notices: vec![
+                LaunchNotice::new(
+                    "kimi_hook_unavailable",
+                    "kimi 0.27.0 无 Session 级 Hook 注入机制（仅全局 ~/.kimi-code/config.toml，不做修改），状态降级为 PTY 启发式",
+                ),
             ],
         })
     }
@@ -80,12 +83,12 @@ impl AgentAdapter for KimiAdapter {
     fn build_resume(&self, ctx: &ResumeContext) -> Result<LaunchPlan> {
         let install = &ctx.install;
         let mut argv = vec![install.executable_path.clone()];
-        let mut notes = Vec::new();
+        let mut notices = Vec::new();
         let resume_precision = match &ctx.agent_session_id {
             Some(id) => {
                 if !install.exact_resume {
                     return Err(CoreError::Blocked(
-                        "该版本 kimi 无 --session，无法精确恢复会话".into(),
+                        "this version of kimi has no --session flag and cannot resume a Session exactly".into(),
                     ));
                 }
                 argv.push("--session".into());
@@ -95,11 +98,14 @@ impl AgentAdapter for KimiAdapter {
             None => {
                 if !super::has_flag(install, "continue") {
                     return Err(CoreError::Blocked(
-                        "无原生会话 ID 且该版本 kimi 无 --continue，无法恢复".into(),
+                        "no native Session ID is available and this version of kimi has no --continue flag".into(),
                     ));
                 }
                 argv.push("--continue".into());
-                notes.push("无原生会话 ID，仅支持恢复最近会话".into());
+                notices.push(LaunchNotice::new(
+                    "resume_latest_only",
+                    "无原生 Session ID，仅支持恢复最近的 Session",
+                ));
                 ResumePrecision::Latest
             }
         };
@@ -117,7 +123,7 @@ impl AgentAdapter for KimiAdapter {
             hook_status: install.hook_status,
             transport: ctx.transport,
             helper_files: vec![],
-            notes,
+            notices,
         })
     }
 
@@ -186,7 +192,10 @@ mod tests {
         let plan = KimiAdapter.build_launch(&ctx).unwrap();
         assert_eq!(plan.argv[1..], ["--auto"]);
         assert_eq!(plan.hook_status, HookStatus::Degraded);
-        assert!(plan.notes.iter().any(|n| n.contains("config.toml")));
+        assert!(plan
+            .notices
+            .iter()
+            .any(|notice| notice.legacy_message.contains("config.toml")));
     }
 
     #[test]
@@ -204,7 +213,10 @@ mod tests {
         let plan = KimiAdapter.build_resume(&ctx).unwrap();
         assert_eq!(plan.resume_precision, ResumePrecision::Latest);
         assert_eq!(plan.argv[1..], ["--continue"]);
-        assert!(plan.notes.iter().any(|n| n.contains("最近会话")));
+        assert!(plan
+            .notices
+            .iter()
+            .any(|notice| notice.code == "resume_latest_only"));
 
         // blocked: 有 id 但 install 声明无 exact resume
         let mut ctx = fx::resume_ctx(AgentType::Kimi, &["continue"], Some("session_abc"));

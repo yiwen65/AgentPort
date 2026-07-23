@@ -79,7 +79,6 @@ def sha256(path):
     return subprocess.run(["shasum","-a","256",path],capture_output=True,text=True).stdout.split()[0]
 
 mac_dmg = artifact("dist-release/macos/*.dmg")
-u24 = artifact("dist-release/ubuntu2404/*.deb")
 u22 = artifact("dist-release/ubuntu2204/*.deb")
 fed = artifact("dist-release/fedora/*.tar.gz")
 arc = artifact("dist-release/arch/*.tar.gz")
@@ -104,16 +103,16 @@ manifest = {
       "notes": ["signing/notarization: not performed in this environment (scripted in CI notes)"]
     },
     {
-      "os": "ubuntu", "versionOrSnapshot": "24.04", "arch": "x86_64",
-      "tier": "official", "artifact": u24, "sha256": sha256(u24),
-      "tested": ["docker-build","container-install","pty-e2e","xvfb-launch","uninstall"] if u24 else ["unverified"],
-      "notes": []
-    },
-    {
       "os": "ubuntu", "versionOrSnapshot": "22.04", "arch": "x86_64",
       "tier": "official", "artifact": u22, "sha256": sha256(u22),
       "tested": ["docker-build","container-install","pty-e2e","xvfb-launch","uninstall"] if u22 else ["unverified"],
-      "notes": []
+      "notes": ["release baseline: built on Ubuntu 22.04"]
+    },
+    {
+      "os": "ubuntu", "versionOrSnapshot": "24.04", "arch": "x86_64",
+      "tier": "official", "artifact": u22, "sha256": sha256(u22),
+      "tested": ["docker-build","container-install","pty-e2e","xvfb-launch","uninstall"] if u22 else ["unverified"],
+      "notes": ["uses the Ubuntu 22.04 baseline artifact to preserve glibc compatibility"]
     },
     {
       "os": "fedora", "versionOrSnapshot": "latest", "arch": "x86_64",

@@ -1,4 +1,4 @@
-// Display helpers: Chinese labels per PRD vocabulary + formatting utils.
+// Locale-aware display labels and formatting utilities.
 
 import type {
   AgentStateStr,
@@ -6,7 +6,11 @@ import type {
   ResumePrecisionStr,
   StateSourceStr,
   WorktreeHealthStr,
+  Preset,
+  AdapterInstall,
+  RepositoryOperationProgress,
 } from "./types";
+import { currentUiLanguage, i18n } from "./i18n";
 
 export function agentDisplay(adapter: string): string {
   switch (adapter) {
@@ -27,78 +31,227 @@ export function agentDisplay(adapter: string): string {
   }
 }
 
-export function stateZh(state: AgentStateStr): string {
+export function presetDisplayName(preset: Pick<Preset, "id" | "name" | "builtIn">): string {
+  if (!preset.builtIn) return preset.name;
+  switch (preset.id) {
+    case "pre_claude_safe":
+      return i18n.t("session:builtInPreset.pre_claude_safe");
+    case "pre_codex_safe":
+      return i18n.t("session:builtInPreset.pre_codex_safe");
+    case "pre_kimi_safe":
+      return i18n.t("session:builtInPreset.pre_kimi_safe");
+    case "pre_qoder_safe":
+      return i18n.t("session:builtInPreset.pre_qoder_safe");
+    case "pre_pi_safe":
+      return i18n.t("session:builtInPreset.pre_pi_safe");
+    case "pre_shell_safe":
+      return i18n.t("session:builtInPreset.pre_shell_safe");
+    default:
+      return preset.name;
+  }
+}
+
+export function stateLabel(state: AgentStateStr): string {
   switch (state) {
     case "working":
-      return "工作中";
+      return i18n.t("session:state.working");
     case "needs_input":
-      return "等待输入";
+      return i18n.t("session:state.needsInput");
     case "idle":
-      return "空闲";
+      return i18n.t("session:state.idle");
     case "exited":
-      return "已退出";
+      return i18n.t("session:state.exited");
     case "unknown":
-      return "状态未知";
+      return i18n.t("session:state.unknown");
   }
 }
 
-export function sourceZh(source: StateSourceStr): string {
+export function sourceLabel(source: StateSourceStr): string {
   switch (source) {
     case "hook":
-      return "Hook";
+      return i18n.t("session:source.hook");
     case "pty":
-      return "PTY";
+      return i18n.t("session:source.pty");
     case "process":
-      return "进程";
+      return i18n.t("session:source.process");
     case "adapter":
-      return "适配器";
+      return i18n.t("session:source.adapter");
   }
 }
 
-export function confidenceZh(c: ConfidenceStr): string {
+export function confidenceLabel(c: ConfidenceStr): string {
   switch (c) {
     case "high":
-      return "高置信度";
+      return i18n.t("session:confidence.high");
     case "medium":
-      return "中置信度";
+      return i18n.t("session:confidence.medium");
     case "low":
-      return "低置信度";
+      return i18n.t("session:confidence.low");
   }
 }
 
-export function precisionZh(p: ResumePrecisionStr): string {
+export function precisionLabel(p: ResumePrecisionStr): string {
   switch (p) {
     case "exact":
-      return "精确恢复（原生 Session ID）";
+      return i18n.t("session:precision.exact");
     case "latest":
-      return "最近会话恢复";
+      return i18n.t("session:precision.latest");
     case "unavailable":
-      return "无法自动恢复上下文";
+      return i18n.t("session:precision.unavailable");
   }
 }
 
-export function healthZh(h: WorktreeHealthStr): string {
+export function healthLabel(h: WorktreeHealthStr): string {
   switch (h) {
     case "clean":
-      return "clean";
+      return i18n.t("worktree:health.clean");
     case "dirty":
-      return "dirty";
+      return i18n.t("worktree:health.dirty");
     case "missing":
-      return "missing";
+      return i18n.t("worktree:health.missing");
     case "locked":
-      return "locked";
+      return i18n.t("worktree:health.locked");
   }
 }
 
-export function permissionZh(p: "native" | "auto" | "bypass"): string {
+export function permissionLabel(p: "native" | "auto" | "bypass"): string {
   switch (p) {
     case "native":
-      return "原生审批";
+      return i18n.t("session:permission.native");
     case "auto":
-      return "自动批准";
+      return i18n.t("session:permission.auto");
     case "bypass":
-      return "绕过权限";
+      return i18n.t("session:permission.bypass");
   }
+}
+
+export function hookStatusLabel(status: AdapterInstall["hookStatus"]): string {
+  switch (status) {
+    case "supported":
+      return i18n.t("common:hookStatus.supported");
+    case "degraded":
+      return i18n.t("common:hookStatus.degraded");
+    case "unavailable":
+      return i18n.t("common:hookStatus.unavailable");
+  }
+}
+
+export function probeSourceLabel(source: string): string {
+  switch (source) {
+    case "system_path":
+      return i18n.t("common:probeSource.systemPath");
+    case "login_shell_path":
+      return i18n.t("common:probeSource.loginShellPath");
+    case "well_known_dir":
+      return i18n.t("common:probeSource.wellKnownDirectory");
+    case "manual":
+      return i18n.t("common:probeSource.manual");
+    default:
+      return source;
+  }
+}
+
+export function indexStateLabel(state: string): string {
+  switch (state) {
+    case "ok":
+      return i18n.t("common:indexState.ready");
+    case "rebuildneeded":
+    case "rebuild_needed":
+      return i18n.t("common:indexState.rebuildNeeded");
+    default:
+      return i18n.t("common:indexState.unknown");
+  }
+}
+
+export function branchOperationPhaseLabel(phase: string): string {
+  switch (phase) {
+    case "started":
+      return i18n.t("worktree:ui.branchPicker.progress.phase.started");
+    case "prepared":
+      return i18n.t("worktree:ui.branchPicker.progress.phase.prepared");
+    case "stashed":
+      return i18n.t("worktree:ui.branchPicker.progress.phase.stashed");
+    case "switched":
+      return i18n.t("worktree:ui.branchPicker.progress.phase.switched");
+    case "applying":
+      return i18n.t("worktree:ui.branchPicker.progress.phase.applying");
+    case "restored_verified":
+      return i18n.t("worktree:ui.branchPicker.progress.phase.restoredVerified");
+    case "cleaning":
+      return i18n.t("worktree:ui.branchPicker.progress.phase.cleaning");
+    case "completed":
+      return i18n.t("worktree:ui.branchPicker.progress.phase.completed");
+    case "pending_restore":
+    case "recovery_required":
+      return i18n.t("worktree:ui.branchPicker.progress.phase.recoveryRequired");
+    case "failed":
+      return i18n.t("worktree:ui.branchPicker.progress.phase.failed");
+    default:
+      return i18n.t("worktree:ui.branchPicker.progress.phase.unknown", { phase });
+  }
+}
+
+export function repositoryProgressMessage(
+  progress: Pick<RepositoryOperationProgress, "command" | "phase" | "message">,
+): string {
+  if (progress.phase === "failed") {
+    return i18n.t("worktree:ui.branchPicker.progress.message.failed", {
+      detail: progress.message,
+    });
+  }
+  switch (`${progress.command}:${progress.phase}`) {
+    case "create_local_branch:started":
+      return i18n.t("worktree:ui.branchPicker.progress.message.createStarted");
+    case "create_local_branch:completed":
+      return i18n.t("worktree:ui.branchPicker.progress.message.createCompleted");
+    case "delete_local_branch:started":
+      return i18n.t("worktree:ui.branchPicker.progress.message.deleteStarted");
+    case "delete_local_branch:completed":
+      return i18n.t("worktree:ui.branchPicker.progress.message.deleteCompleted");
+    case "switch_local_branch:started":
+      return i18n.t("worktree:ui.branchPicker.progress.message.switchStarted");
+    case "switch_local_branch:pending_restore":
+      return i18n.t("worktree:ui.branchPicker.progress.message.switchPendingRestore");
+    case "switch_local_branch:completed":
+      return i18n.t("worktree:ui.branchPicker.progress.message.switchCompleted");
+    case "restore_auto_stash:started":
+      return i18n.t("worktree:ui.branchPicker.progress.message.restoreStarted");
+    case "cleanup_auto_stash:started":
+      return i18n.t("worktree:ui.branchPicker.progress.message.cleanupStarted");
+    case "cleanup_auto_stash:completed":
+      return i18n.t("worktree:ui.branchPicker.progress.message.cleanupCompleted");
+    default:
+      if (progress.command === "restore_auto_stash") {
+        return i18n.t("worktree:ui.branchPicker.progress.message.restoreFinished");
+      }
+      return i18n.t("worktree:ui.branchPicker.progress.message.unknown", {
+        command: progress.command,
+        phase: progress.phase,
+      });
+  }
+}
+
+/** Localize stable recovery action IDs while continuing to display the
+ * human-readable strings returned by older Tauri backends. */
+export function recoveryActionLabel(action: string): string {
+  const known = {
+    check_diagnostics_and_retry: "worktree:ui.branchPicker.error.recoveryAction.checkDiagnosticsAndRetry",
+    refresh_and_choose_available_branch: "worktree:ui.branchPicker.error.recoveryAction.refreshAndChooseAvailableBranch",
+    refresh_and_reselect_branch: "worktree:ui.branchPicker.error.recoveryAction.refreshAndReselectBranch",
+    resolve_repository_blockers: "worktree:ui.branchPicker.error.recoveryAction.resolveRepositoryBlockers",
+    inspect_retained_auto_stash: "worktree:ui.branchPicker.error.recoveryAction.inspectRetainedAutoStash",
+    restore_when_checkout_safe: "worktree:ui.branchPicker.error.recoveryAction.restoreWhenCheckoutSafe",
+    choose_nonconflicting_action: "worktree:ui.branchPicker.error.recoveryAction.chooseNonconflictingAction",
+    refresh_repository_before_retry: "worktree:ui.branchPicker.error.recoveryAction.refreshRepositoryBeforeRetry",
+    inspect_diagnostics_if_git_unavailable: "worktree:ui.branchPicker.error.recoveryAction.inspectDiagnosticsIfGitUnavailable",
+    refresh_repository_and_retry: "worktree:ui.branchPicker.error.recoveryAction.refreshRepositoryAndRetry",
+    retry_after_checking_diagnostics: "worktree:ui.branchPicker.error.recoveryAction.retryAfterCheckingDiagnostics",
+  } as const;
+  const stableAction = action as keyof typeof known;
+  const key = known[stableAction];
+  return key
+    ? i18n.t(key)
+    : action;
 }
 
 export function secretBackendZh(backend: string): string {
@@ -109,18 +262,25 @@ export function secretBackendZh(backend: string): string {
 }
 
 export function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
-  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+  const format = (value: number, digits: number) =>
+    new Intl.NumberFormat(currentUiLanguage(), {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    }).format(value);
+  if (n < 1024) return `${format(n, 0)} B`;
+  if (n < 1024 * 1024) return `${format(n / 1024, 1)} KiB`;
+  if (n < 1024 * 1024 * 1024) return `${format(n / (1024 * 1024), 1)} MiB`;
+  return `${format(n / (1024 * 1024 * 1024), 2)} GiB`;
 }
 
 export function formatTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
+  return new Intl.DateTimeFormat(currentUiLanguage(), {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(d);
 }
 
 /** Recovery events that cross midnight need local calendar and timezone
@@ -128,23 +288,37 @@ export function formatTime(iso: string): string {
 export function formatTimelineTime(iso: string, now = new Date()): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  if (d.toDateString() === now.toDateString()) return `${hh}:${mm}`;
-  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "本地时区";
-  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}（${zone}）`;
+  const language = currentUiLanguage();
+  const time = new Intl.DateTimeFormat(language, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(d);
+  if (d.toDateString() === now.toDateString()) return time;
+  const dateTime = new Intl.DateTimeFormat(language, {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(d);
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || i18n.t("common:time.localZone");
+  return language === "zh-CN" ? `${dateTime}（${zone}）` : `${dateTime} (${zone})`;
 }
 
 export function formatDateTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  const today = new Date();
-  const sameDay = d.toDateString() === today.toDateString();
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  const ss = String(d.getSeconds()).padStart(2, "0");
-  if (sameDay) return `${hh}:${mm}:${ss}`;
-  return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return new Intl.DateTimeFormat(currentUiLanguage(), {
+    month: sameDay ? undefined : "numeric",
+    day: sameDay ? undefined : "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).format(d);
 }
 
 /** Compact relative age for the project sidebar. */
@@ -152,12 +326,16 @@ export function relativeAge(iso: string, now = Date.now()): string {
   const timestamp = Date.parse(iso);
   if (Number.isNaN(timestamp)) return "";
   const minutes = Math.max(0, Math.floor((now - timestamp) / 60_000));
-  if (minutes < 60) return `${Math.max(1, minutes)}m`;
+  const relative = new Intl.RelativeTimeFormat(currentUiLanguage(), {
+    numeric: "always",
+    style: "narrow",
+  });
+  if (minutes < 60) return relative.format(-Math.max(1, minutes), "minute");
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
+  if (hours < 24) return relative.format(-hours, "hour");
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d`;
-  return `${Math.floor(days / 30)}mo`;
+  if (days < 30) return relative.format(-days, "day");
+  return relative.format(-Math.floor(days / 30), "month");
 }
 
 /** Turn a task name into a branch-safe slug: "Fix Login!" -> "fix-login". */

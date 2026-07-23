@@ -32,6 +32,13 @@ pub enum CoreError {
     Export(String),
     #[error("protocol: {0}")]
     Protocol(String),
+    #[error("{message}")]
+    RuntimeMessage {
+        code: String,
+        params: serde_json::Value,
+        technical_detail: String,
+        message: String,
+    },
     #[error("timeout: {0}")]
     Timeout(String),
     #[error("blocked: {0}")]

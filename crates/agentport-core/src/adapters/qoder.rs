@@ -3,7 +3,7 @@
 //! AgentPort owns the working directory, native session id, permission mode,
 //! and temporary hook settings.  It never writes Qoder's user/project config.
 
-use super::{AgentAdapter, LaunchContext, LaunchPlan, ResumeContext};
+use super::{AgentAdapter, LaunchContext, LaunchNotice, LaunchPlan, ResumeContext};
 use crate::error::{CoreError, Result};
 use crate::models::*;
 use std::path::Path;
@@ -68,23 +68,23 @@ fn hook_files(ctx: &LaunchContext) -> (Vec<(String, String)>, Option<String>) {
     )
 }
 
-impl QoderAdapter {
-    fn hook_plan(
-        &self,
-        install: &AdapterInstall,
-        ctx: &LaunchContext,
-        argv: &mut Vec<String>,
-        notes: &mut Vec<String>,
-    ) -> (HookStatus, Vec<(String, String)>) {
-        if !super::has_flag(install, "settings") {
-            notes.push("该版本无 --settings，Qoder Hook 降级为 PTY 启发式".into());
-            return (HookStatus::Degraded, vec![]);
-        }
-        let (files, settings) = hook_files(ctx);
-        argv.push("--settings".into());
-        argv.push(settings.expect("settings path is always present"));
-        (HookStatus::Supported, files)
+fn hook_plan(
+    install: &AdapterInstall,
+    ctx: &LaunchContext,
+    argv: &mut Vec<String>,
+    notices: &mut Vec<LaunchNotice>,
+) -> (HookStatus, Vec<(String, String)>) {
+    if !super::has_flag(install, "settings") {
+        notices.push(LaunchNotice::new(
+            "hook_settings_unavailable",
+            "该版本无 --settings，Qoder Hook 降级为 PTY 启发式",
+        ));
+        return (HookStatus::Degraded, vec![]);
     }
+    let (files, settings) = hook_files(ctx);
+    argv.push("--settings".into());
+    argv.push(settings.expect("settings path is always present"));
+    (HookStatus::Supported, files)
 }
 
 impl AgentAdapter for QoderAdapter {
@@ -123,12 +123,12 @@ impl AgentAdapter for QoderAdapter {
         let install = &ctx.install;
         if !super::has_flag(install, "session-id") {
             return Err(CoreError::Blocked(
-                "该版本 qodercli 无 --session-id，无法满足精确恢复约束".into(),
+                "this version of qodercli has no --session-id flag and cannot satisfy exact-resume requirements".into(),
             ));
         }
         let mut argv = vec![install.executable_path.clone()];
-        let mut notes = vec![];
-        let (hook_status, helper_files) = self.hook_plan(install, ctx, &mut argv, &mut notes);
+        let mut notices = vec![];
+        let (hook_status, helper_files) = hook_plan(install, ctx, &mut argv, &mut notices);
         let native_id = crate::ids::new_uuid();
         argv.extend(["--session-id".into(), native_id.clone()]);
         argv.extend(ctx.preset.args.clone());
@@ -145,19 +145,19 @@ impl AgentAdapter for QoderAdapter {
             hook_status,
             transport: AgentTransport::Pty,
             helper_files,
-            notes,
+            notices,
         })
     }
 
     fn build_resume(&self, ctx: &ResumeContext) -> Result<LaunchPlan> {
         let install = &ctx.install;
         let mut argv = vec![install.executable_path.clone()];
-        let mut notes = vec![];
+        let mut notices = vec![];
         let (resume_precision, helper_files, hook_status) = match &ctx.agent_session_id {
             Some(id) => {
                 if !super::has_flag(install, "session-id") {
                     return Err(CoreError::Blocked(
-                        "该版本 qodercli 无 --session-id，无法精确恢复会话".into(),
+                        "this version of qodercli has no --session-id flag and cannot resume a Session exactly".into(),
                     ));
                 }
                 // Qoder's --resume opens the chat-session picker. Supplying
@@ -166,25 +166,23 @@ impl AgentAdapter for QoderAdapter {
                 // returns to the interactive input instead of the picker.
                 argv.extend(["--session-id".into(), id.clone()]);
                 let launch_ctx = LaunchContext {
-                    install: ctx.install.clone(),
-                    preset: ctx.preset.clone(),
-                    cwd: ctx.cwd.clone(),
-                    session_id: ctx.session_id.clone(),
-                    hook_events_path: ctx.hook_events_path.clone(),
-                    session_dir: ctx.session_dir.clone(),
                     transport: AgentTransport::Pty,
+                    ..ctx.to_launch_context()
                 };
-                let (status, files) = self.hook_plan(install, &launch_ctx, &mut argv, &mut notes);
+                let (status, files) = hook_plan(install, &launch_ctx, &mut argv, &mut notices);
                 (ResumePrecision::Exact, files, status)
             }
             None => {
                 if !super::has_flag(install, "continue") {
                     return Err(CoreError::Blocked(
-                        "无原生会话 ID 且该版本 qodercli 无 --continue，无法恢复".into(),
+                        "no native Session ID is available and this version of qodercli has no --continue flag".into(),
                     ));
                 }
                 argv.push("--continue".into());
-                notes.push("无原生会话 ID，仅支持恢复最近会话".into());
+                notices.push(LaunchNotice::new(
+                    "resume_latest_only",
+                    "无原生 Session ID，仅支持恢复最近的 Session",
+                ));
                 (ResumePrecision::Latest, vec![], HookStatus::Degraded)
             }
         };
@@ -204,7 +202,7 @@ impl AgentAdapter for QoderAdapter {
             hook_status,
             transport: AgentTransport::Pty,
             helper_files,
-            notes,
+            notices,
         })
     }
 }

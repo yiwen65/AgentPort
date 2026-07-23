@@ -2,11 +2,13 @@
 // not add a second risk-confirmation step.
 
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import Modal from "./Modal";
 import { api, errorText, type CreateSessionArgs } from "../api";
 import { refreshProjects, selectSession } from "../actions";
-import { agentDisplay, permissionZh } from "../format";
+import { agentDisplay, permissionLabel, presetDisplayName } from "../format";
 import { closeDialog, toast, useStore } from "../store";
+import { localizedNotices } from "../runtimeMessages";
 import type { AgentTransportStr, PermissionStr, Preset } from "../types";
 
 export default function NewSessionDialog(props: {
@@ -14,6 +16,7 @@ export default function NewSessionDialog(props: {
   worktreeId?: string;
   agent?: string;
 }) {
+  const { t } = useTranslation(["session", "common"]);
   const s = useStore();
   const [projectId, setProjectId] = useState(props.projectId ?? s.projects[0]?.id ?? "");
   const [agent, setAgent] = useState<string>(props.agent ?? "claude");
@@ -21,7 +24,6 @@ export default function NewSessionDialog(props: {
   const [presetId, setPresetId] = useState<string>("");
   const [position, setPosition] = useState<string>(props.worktreeId ?? "main");
   const [title, setTitle] = useState("");
-  const [extraArgsText, setExtraArgsText] = useState("");
   const [permission, setPermission] = useState<PermissionStr>("native");
   const transport: AgentTransportStr = "pty";
   const [busy, setBusy] = useState(false);
@@ -50,7 +52,9 @@ export default function NewSessionDialog(props: {
       .then((list) => {
         if (!cancelled) setPresets(list);
       })
-      .catch((e) => !cancelled && setError(errorText(e)));
+      .catch((e) => !cancelled && setError(
+        t("session:new.presetLoadFailed", { detail: errorText(e) }),
+      ));
     return () => {
       cancelled = true;
     };
@@ -63,12 +67,6 @@ export default function NewSessionDialog(props: {
   }, [agent, availableAgents]);
 
   const presetHasSecrets = (selectedPreset?.secretRefIds.length ?? 0) > 0;
-  // PRD 3.2 参数框：空格分隔为 argv 数组（不做 shell 拼接，后端按数组透传）。
-  const extraArgs = useMemo(() => {
-    const list = extraArgsText.split(/\s+/).filter((x) => x.length > 0);
-    return list.length > 0 ? list : null;
-  }, [extraArgsText]);
-
   const buildArgs = (): CreateSessionArgs | null => {
     if (!projectId) return null;
     return {
@@ -82,7 +80,7 @@ export default function NewSessionDialog(props: {
       riskAck: true,
       cols: null,
       rows: null,
-      extraArgs,
+      extraArgs: null,
     };
   };
 
@@ -99,10 +97,10 @@ export default function NewSessionDialog(props: {
       // and mount its xterm pane.
       await refreshProjects();
       selectSession(res.id);
-      for (const n of res.notes ?? []) toast(n, "info");
-      toast(`Session 已启动（${agentDisplay(agent)}）`, "success");
+      for (const notice of localizedNotices(res)) toast(notice, "info");
+      toast(t("session:new.started", { agent: agentDisplay(agent) }), "success");
     } catch (e) {
-      setError(errorText(e));
+      setError(t("session:new.createFailed", { detail: errorText(e) }));
     } finally {
       setBusy(false);
     }
@@ -111,24 +109,25 @@ export default function NewSessionDialog(props: {
   const footer = (
     <>
       <button className="btn ghost" onClick={closeDialog}>
-        取消
+        {t("common:actions.cancel")}
       </button>
       <button className="btn primary" disabled={busy || !projectId} onClick={() => void doCreate()}>
-        {busy ? "启动中…" : "启动"}
+        {busy ? t("session:new.starting") : t("session:new.start")}
       </button>
     </>
   );
 
   return (
     <Modal
-      title="新建 Session"
+      title={t("session:new.title")}
       onClose={closeDialog}
       footer={footer}
+      workspaceCentered
     >
       {error ? <div className="error-bar" role="alert">{error}</div> : null}
       <>
           <div className="form-row">
-            <label htmlFor="ns-project">项目</label>
+            <label htmlFor="ns-project">{t("session:new.project")}</label>
             <select
               id="ns-project"
               value={projectId}
@@ -139,7 +138,7 @@ export default function NewSessionDialog(props: {
             >
               {s.projects.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.name}（{p.rootPath}）
+                  {t("session:new.projectOption", { name: p.name, path: p.rootPath })}
                 </option>
               ))}
             </select>
@@ -165,7 +164,10 @@ export default function NewSessionDialog(props: {
                       else if (a === "qoder") setPermission("bypass");
                     }}
                     data-tip={
-                      `${inst.executablePath}\n版本：${inst.versionText}`
+                      t("session:new.versionTooltip", {
+                        path: inst.executablePath,
+                        version: inst.versionText,
+                      })
                     }
                   >
                     {agentDisplay(a)}
@@ -173,14 +175,14 @@ export default function NewSessionDialog(props: {
                 );
               })}
               {availableAgents.length === 0 ? (
-                <span className="form-hint">请先在设置中检测或手动新增 Agent。</span>
+                <span className="form-hint">{t("session:new.detectAgentFirst")}</span>
               ) : null}
             </div>
           </div>
 
           <div className="form-row">
             <span className="form-label" id="ns-pos-label">
-              位置
+              {t("session:new.position")}
             </span>
             <div className="radio-row" role="radiogroup" aria-labelledby="ns-pos-label">
               <button
@@ -190,7 +192,7 @@ export default function NewSessionDialog(props: {
                 className={"radio-chip" + (position === "main" ? " selected" : "")}
                 onClick={() => setPosition("main")}
               >
-                主目录
+                {t("session:new.mainDirectory")}
               </button>
               {(project?.worktrees ?? []).map((w) => (
                 <button
@@ -206,20 +208,20 @@ export default function NewSessionDialog(props: {
               ))}
               {project?.gitRootPath ? (
                 <span className="form-hint" style={{ alignSelf: "center" }}>
-                  需要新分支？先经右键菜单「新建 Worktree…」创建
+                  {t("session:new.worktreeHint")}
                 </span>
               ) : null}
             </div>
           </div>
 
           <div className="form-row">
-            <label htmlFor="ns-title">标题（可选）</label>
+            <label htmlFor="ns-title">{t("session:new.titleLabel")}</label>
             <input
               id="ns-title"
               type="text"
               value={title}
               maxLength={120}
-              placeholder={`留空自动命名，如 ${agent}-1`}
+              placeholder={t("session:new.titlePlaceholder", { example: `${agent}-1` })}
               onChange={(e) => setTitle(e.target.value)}
             />
           </div>
@@ -227,7 +229,7 @@ export default function NewSessionDialog(props: {
           {isPi ? (
             <div className="form-row">
               <span className="form-hint">
-                Pi 将以原生 TUI 启动，完整保留 Pi 的终端交互、扩展与主题；不提供内建逐项审批，将以本地用户权限执行。
+                {t("session:new.piNotice")}
               </span>
             </div>
           ) : null}
@@ -235,7 +237,7 @@ export default function NewSessionDialog(props: {
           {isQoder ? (
             <div className="form-row">
               <span className="warn-text">
-                Qoder 以全权限模式启动（--dangerously-skip-permissions），不显示 AgentPort 风险确认。
+                {t("session:new.qoderNotice")}
               </span>
             </div>
           ) : null}
@@ -247,13 +249,15 @@ export default function NewSessionDialog(props: {
               aria-expanded={advancedOpen}
               onClick={() => setAdvancedOpen((open) => !open)}
             >
-              <span>高级设置</span>
-              <span className="dim">{advancedOpen ? "收起" : "展开"}</span>
+              <span>{t("session:new.advanced")}</span>
+              <span className="dim">
+                {advancedOpen ? t("session:new.collapse") : t("session:new.expand")}
+              </span>
             </button>
             {advancedOpen ? (
               <div className="advanced-fields-body">
                 <div className="form-row">
-                  <label htmlFor="ns-preset">预设</label>
+                  <label htmlFor="ns-preset">{t("session:new.preset")}</label>
                   <select
                     id="ns-preset"
                     value={presetId}
@@ -267,44 +271,43 @@ export default function NewSessionDialog(props: {
                       }
                     }}
                   >
-                    <option value="">（默认）{isQoder ? "全权限默认" : isPi ? "本地权限默认" : "安全默认"}</option>
+                    <option value="">
+                      {isQoder
+                        ? t("session:new.defaultFullAccess")
+                        : isPi
+                          ? t("session:new.defaultLocalPermissions")
+                          : t("session:new.defaultSafe")}
+                    </option>
                     {presets.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.name}
-                        {p.permissionMode !== "native" ? `（⚠ ${permissionZh(p.permissionMode)}）` : ""}
-                        {p.secretRefIds.length > 0 ? `（含 ${p.secretRefIds.length} 个 Secret）` : ""}
+                        {presetDisplayName(p)}
+                        {p.permissionMode !== "native"
+                          ? t("session:new.permissionSuffix", {
+                              permission: permissionLabel(p.permissionMode),
+                            })
+                          : ""}
+                        {p.secretRefIds.length > 0
+                          ? t("session:new.secretSuffix", { count: p.secretRefIds.length })
+                          : ""}
                       </option>
                     ))}
                   </select>
                   {selectedPreset && selectedPreset.args.length > 0 ? (
-                    <span className="form-hint mono">参数：{selectedPreset.args.join(" ")}</span>
+                    <span className="form-hint mono">
+                      {t("session:new.arguments", { arguments: selectedPreset.args.join(" ") })}
+                    </span>
                   ) : null}
                 </div>
 
-                <div className="form-row">
-                  <label htmlFor="ns-args">参数（可选，空格分隔）</label>
-                  <input
-                    id="ns-args"
-                    type="text"
-                    className="mono"
-                    value={extraArgsText}
-                    placeholder="--model sonnet"
-                    onChange={(e) => setExtraArgsText(e.target.value)}
-                  />
-                  <span className="form-hint">
-                    以参数数组追加到启动命令末尾，不经过 shell 拼接。
-                  </span>
-                </div>
-
                 {isShell ? (
-                  <div className="form-hint">Generic Shell 不使用 Agent 权限模式，直接以终端会话启动。</div>
+                  <div className="form-hint">{t("session:new.shellPermissionNote")}</div>
                 ) : isPi ? (
-                  <div className="form-hint">Pi 不提供 auto/bypass 切换；密钥仅从已配置的 Secret/环境变量注入。</div>
+                  <div className="form-hint">{t("session:new.piPermissionNote")}</div>
                 ) : isQoder ? (
-                  <div className="form-hint">Qoder 的权限、Session、worktree、remote 和 settings 参数由 AgentPort 管理，不能在此覆盖。</div>
+                  <div className="form-hint">{t("session:new.qoderParameterNote")}</div>
                 ) : (
                   <div className="form-row">
-                    <label htmlFor="ns-permission">权限</label>
+                    <label htmlFor="ns-permission">{t("session:new.permission")}</label>
                     <select
                       id="ns-permission"
                       value={permission}
@@ -314,22 +317,24 @@ export default function NewSessionDialog(props: {
                         if (value !== "native") setAdvancedOpen(true);
                       }}
                     >
-                      <option value="native">原生审批（默认，推荐）</option>
-                      <option value="auto">自动批准 ⚠</option>
-                      <option value="bypass">绕过全部权限检查 ⚠⚠</option>
+                      <option value="native">{t("session:new.nativePermission")}</option>
+                      <option value="auto">{t("session:new.autoPermission")}</option>
+                      <option value="bypass">{t("session:new.bypassPermission")}</option>
                     </select>
                     {permission !== "native" ? (
                       <span className="warn-text">
                         {permission === "auto"
-                          ? "自动批准：文件写入与 Shell 命令无需逐次确认。"
-                          : "绕过全部权限检查（危险）。"}
+                          ? t("session:new.autoWarning")
+                          : t("session:new.bypassWarning")}
                       </span>
                     ) : (
-                      <span className="form-hint">沿用各 CLI 原生确认，不添加任何跳过参数。</span>
+                      <span className="form-hint">{t("session:new.nativeHint")}</span>
                     )}
                     {presetHasSecrets ? (
                       <span className="form-hint">
-                        所选预设包含 {selectedPreset?.secretRefIds.length} 个 Secret。
+                        {t("session:new.selectedSecrets", {
+                          count: selectedPreset?.secretRefIds.length ?? 0,
+                        })}
                       </span>
                     ) : null}
                   </div>

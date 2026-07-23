@@ -1,0 +1,14 @@
+{
+  "boot": {
+    "starting": "Starting AgentPort…",
+    "failed": "AgentPort failed to start: {{detail}}"
+  },
+  "sidebar": {
+    "resize": "Resize project sidebar",
+    "resizeHint": "Drag to resize the project sidebar; double-click to reset"
+  },
+  "terminal": {
+    "promptLabel": "Terminal input",
+    "tooMuchOutput": "Some output was omitted from screen reader announcements"
+  }
+}

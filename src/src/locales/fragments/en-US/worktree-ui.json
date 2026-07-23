@@ -1,0 +1,211 @@
+{
+  "ui": {
+    "branchPicker": {
+      "title": "Manage local branches · {{project}}",
+      "projectFallback": "Project",
+      "currentCheckout": "Current checkout",
+      "localBranchesAria": "Local branches",
+      "notGitRepository": "This project is not a Git repository, so its local branches cannot be managed.",
+      "head": {
+        "loadingCheckout": "Reading checkout…",
+        "unnamedBranch": "Unnamed local branch",
+        "detachedAt": "Detached HEAD @ {{oid}}",
+        "uninitializedRepository": "Uninitialized repository"
+      },
+      "changes": {
+        "staged_one": "{{count}} staged change",
+        "staged_other": "{{count}} staged changes",
+        "unstaged_one": "{{count}} modified file",
+        "unstaged_other": "{{count}} modified files",
+        "untracked_one": "{{count}} untracked file",
+        "untracked_other": "{{count}} untracked files",
+        "unmerged_one": "{{count}} conflict",
+        "unmerged_other": "{{count}} conflicts",
+        "dirtySubmodules_one": "{{count}} modified submodule",
+        "dirtySubmodules_other": "{{count}} modified submodules"
+      },
+      "workspace": {
+        "changes": "Working tree: {{changes}}",
+        "clean": "Working tree clean",
+        "gitOperation": "Git operation: {{operation}}",
+        "liveSessions_one": "{{count}} Session running in this checkout",
+        "liveSessions_other": "{{count}} Sessions running in this checkout",
+        "pendingRecoveryRecords_one": "{{count}} pending Restore record",
+        "pendingRecoveryRecords_other": "{{count}} pending Restore records"
+      },
+      "row": {
+        "currentDeleteBlocked": "This local branch is the current checkout",
+        "occupiedDeleteBlocked": "This local branch is in use by a Worktree at {{path}}",
+        "checkedOutAt": "Checked out at {{path}}",
+        "ariaCurrent": "{{branch}}, current checkout",
+        "ariaOccupied": "{{branch}}, used by a Worktree at {{path}}",
+        "ariaCurrentAndOccupied": "{{branch}}, current checkout, used by a Worktree at {{path}}",
+        "currentCheckout": "Current checkout",
+        "occupiedByWorktree": "Used by a Worktree",
+        "openWorktreeAria": "Open the AgentPort Worktree for {{branch}}",
+        "viewWorktree": "View Worktree",
+        "deleteLocalBranch": "Delete local branch {{branch}}",
+        "deleteBranchAria": "Delete branch {{branch}}"
+      },
+      "delete": {
+        "question": "Delete <branch>{{branch}}</branch>?",
+        "mergedOnlyWarning": "Only merged local branches can be deleted. The remote is not affected. This cannot be undone.",
+        "blocked": "Cannot delete yet: {{reason}}",
+        "confirmGroupAria": "Confirm deletion of branch {{branch}}",
+        "confirm": "Delete branch"
+      },
+      "deleteBlocked": {
+        "repositoryOperation": "A repository operation is in progress; the local branch cannot be deleted yet",
+        "repositoryUnavailable": "Repository status is unavailable",
+        "gitOperation": "Git {{operation}} is in progress",
+        "unresolvedConflicts": "The local branch cannot be deleted while conflicts remain unresolved"
+      },
+      "operation": {
+        "checkingRepository": "Rechecking the repository before the safe operation",
+        "completedButRefreshFailed": "{{message}}, but the repository status refresh failed",
+        "switched": "Switched to {{branch}}",
+        "deletedLocalBranch": "Deleted local branch {{branch}}",
+        "deletingLocalBranch": "Rechecking and deleting local branch {{branch}}",
+        "createdAndSwitched": "Created and switched to {{branch}}",
+        "created": "Created {{branch}}",
+        "createdButSwitchFailed": "Local branch {{branch}} was created, but checkout failed. {{detail}}",
+        "restoreAttemptedOnCurrentCheckout": "Restore attempted in the current checkout",
+        "returnedToSourceCheckout": "Returned to the original checkout",
+        "recoveryRecordCleaned": "Restore record cleaned up"
+      },
+      "progress": {
+        "inProgress": "In progress",
+        "recentOperation": "Most recent operation",
+        "detail": "{{label}}: {{message}} ({{phase}})",
+        "phase": {
+          "started": "Started",
+          "prepared": "Prepared",
+          "stashed": "Stashed",
+          "switched": "Switched",
+          "applying": "Restoring",
+          "restoredVerified": "Restore verified",
+          "cleaning": "Cleaning up",
+          "completed": "Completed",
+          "recoveryRequired": "Restore required",
+          "failed": "Failed",
+          "unknown": "Unknown state ({{phase}})"
+        },
+        "message": {
+          "createStarted": "Creating local branch",
+          "createCompleted": "Local branch created",
+          "deleteStarted": "Deleting merged local branch",
+          "deleteCompleted": "Local branch deleted",
+          "switchStarted": "Switching local branch",
+          "switchPendingRestore": "Uncommitted changes were stashed automatically and must be restored",
+          "switchCompleted": "Local branch switched",
+          "restoreStarted": "Restoring the AgentPort auto-stash",
+          "restoreFinished": "Auto-stash restore command finished",
+          "cleanupStarted": "Cleaning up the AgentPort auto-stash",
+          "cleanupCompleted": "Auto-stash cleanup finished",
+          "failed": "Operation failed: {{detail}}",
+          "unknown": "Unknown repository operation state ({{command}} / {{phase}})"
+        }
+      },
+      "success": {
+        "completed": "Completed: {{message}}.",
+        "repositoryRefreshed": "Repository status was reloaded.",
+        "repositoryRefreshFailed": "The repository status refresh failed. Operation controls are disabled; try refreshing again."
+      },
+      "error": {
+        "repositoryReadFailed": "Could not read repository status.",
+        "branchOperationFailed": "The branch operation did not complete.",
+        "liveSessionsUsingCheckout_one": "This Session is using this checkout:",
+        "liveSessionsUsingCheckout_other": "These Sessions are using this checkout:",
+        "openSession": "Open Session {{id}}",
+        "recoveryActions": "Available recovery actions:",
+        "recoveryAction": {
+          "checkDiagnosticsAndRetry": "Fix the underlying issue, check AgentPort diagnostics, and retry.",
+          "refreshAndChooseAvailableBranch": "Refresh local branches and choose one that is not checked out in any Worktree.",
+          "refreshAndReselectBranch": "Refresh local branches and reselect the branch before creating the Worktree.",
+          "resolveRepositoryBlockers": "Resolve active Sessions, dirty submodules, merge or rebase state, or index conflicts, then retry.",
+          "inspectRetainedAutoStash": "Use the auto-stash list to inspect the retained operation.",
+          "restoreWhenCheckoutSafe": "Choose source or target Restore only when the checkout is safe.",
+          "chooseNonconflictingAction": "Refresh repository status and choose a non-conflicting branch or action.",
+          "refreshRepositoryBeforeRetry": "Refresh repository status before retrying.",
+          "inspectDiagnosticsIfGitUnavailable": "Check the app diagnostics log if Git remains unavailable.",
+          "refreshRepositoryAndRetry": "Refresh repository status and retry.",
+          "retryAfterCheckingDiagnostics": "Check the app diagnostics log, then retry."
+        }
+      },
+      "search": {
+        "placeholder": "Search local branches (↑ ↓ to select, Enter to checkout)",
+        "aria": "Search local branches",
+        "selected": "Selected {{branch}}",
+        "noMatch": "No matching local branch",
+        "noMatchSentence": "No matching local branch."
+      },
+      "create": {
+        "title": "Create local branch",
+        "branchNameAria": "New local branch name",
+        "startPointAria": "New local branch start point",
+        "currentHead": "Current HEAD",
+        "switchAfterCreate": "Checkout the new local branch after creating it",
+        "processing": "Processing…",
+        "createBranch": "Create local branch"
+      },
+      "recovery": {
+        "title": "Restorable auto-stashes",
+        "description": "After an interruption or conflict, each record remains here until you Restore it or explicitly clean it up.",
+        "error": "Error: {{detail}}",
+        "missingSnapshot": "This backup is missing its operation snapshot. AgentPort will not apply or clean it up automatically; confirm the checkout, then Restore it manually with the persistent OID.",
+        "restoreToTarget": "Restore to target local branch",
+        "returnToSourceAndRestore": "Return to source local branch and Restore",
+        "manualCommandCopied": "Manual Restore command copied",
+        "copyManualCommand": "Copy manual Restore command",
+        "deleteVerifiedRecord": "Delete verified Restore record",
+        "cleanupRequiresVerification": "Cleanup is available only after Restore is verified",
+        "cleanupRecord": "Clean up record"
+      }
+    },
+    "newWorktree": {
+      "title": "New Worktree · {{project}}",
+      "creating": "Creating…",
+      "createWorktree": "Create Worktree",
+      "taskName": "Task name",
+      "createdToast": "Worktree created: {{branch}}",
+      "loadBranchesFailed": "Could not load local branches: {{detail}}",
+      "createFailed": "Could not create the Worktree: {{detail}}",
+      "directoryHint": "The Worktree is created under the app data directory, leaving the main repository untouched. Uncommitted changes are checked before deletion.",
+      "staleSelection": {
+        "deleted": "The selected local branch {{branch}} was deleted. Choose another local branch.",
+        "moved": "The selected local branch {{branch}} moved. Select its latest commit.",
+        "occupied": "The selected local branch {{branch}} is already checked out at {{path}}. Choose another local branch.",
+        "anotherCheckout": "another checkout"
+      },
+      "branch": {
+        "label": "Local branch name (optional; leave blank to generate one, or select an existing local branch)",
+        "autoPlaceholder": "agent/<task-name>",
+        "localBranchAria": "Local branch",
+        "refreshAria": "Refresh local branches",
+        "collapseOptionsAria": "Collapse local branch options",
+        "expandOptionsAria": "Expand local branch options",
+        "localBranches": "Local branches",
+        "refreshing": "Refreshing…",
+        "candidateCount_one": "{{count}} candidate",
+        "candidateCount_other": "{{count}} candidates",
+        "loadingLocalBranches": "Reading local branches…",
+        "optionsAria": "Local branch options",
+        "currentCheckout": "Current checkout",
+        "occupiedByWorktree": "Used by a Worktree",
+        "noMatchCreateNew": "No matching local branch. Keep typing to create a new local branch.",
+        "noneAvailable": "No local branches are available.",
+        "useExisting": "Use existing local branch",
+        "createNew": "Create new local branch: ",
+        "autoGenerate": "Auto-generate local branch: "
+      },
+      "base": {
+        "label": "Base",
+        "existingBranchHint": "Use the selected local branch at commit <oid>{{oid}}</oid>. No new local branch will be created.",
+        "currentHead": "Current HEAD",
+        "specificRef": "Specific base ref",
+        "refPlaceholder": "main / branch / commit",
+        "refAria": "Base ref"
+      }
+    }
+  }
+}

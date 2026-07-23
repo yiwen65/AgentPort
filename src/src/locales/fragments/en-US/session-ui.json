@@ -1,0 +1,76 @@
+{
+  "ui": {
+    "actions": {
+      "new": "New Session",
+      "newEllipsis": "New Session…",
+      "restart": "Restart",
+      "reconnect": "Reconnect",
+      "openDiagnostics": "Diagnostics",
+      "copyGitStatus": "Copy git status",
+      "gotIt": "Got it"
+    },
+    "menu": {
+      "copyId": "Copy Session ID",
+      "exportMarkdown": "Export Markdown…",
+      "exportRawLog": "Export raw log…",
+      "restartAndResume": "Restart and resume…",
+      "interrupt": "Interrupt (Ctrl-C)",
+      "stop": "Stop Session…",
+      "remove": "Remove Session…"
+    },
+    "toast": {
+      "idCopied": "Session ID copied",
+      "gitStatusCopied": "git status copied"
+    },
+    "sidebar": {
+      "removeConfirm": "Remove from the list?",
+      "rowLabel": "{{title}}, {{agent}}",
+      "titleLabel": "Session title",
+      "actionsLabel": "Session actions",
+      "unpin": "Unpin",
+      "pin": "Pin",
+      "archive": "Archive",
+      "createdAt": "Created at {{date}}",
+      "unread": "Unread updates"
+    },
+    "status": {
+      "connectingHost": "Creating: connecting to Session Host",
+      "interruptedResumable": "Interrupted; ready to resume\nResume precision: {{precision}}",
+      "exitedWithCode": "Exited (code {{code}})",
+      "exited": "Exited",
+      "stopped": "Stopped",
+      "unknownNoEvent": "Status unknown: no status event received",
+      "sourceConfidence": "Source: {{source}} · {{confidence}}",
+      "time": "Time: {{time}}",
+      "evidence": "Evidence: {{evidence}}",
+      "heuristic": "Heuristic status; it may not be exact",
+      "ariaLabel": "Status: {{status}}"
+    },
+    "lifecycle": {
+      "connectingHost": "Connecting to Session Host…",
+      "interrupted": "Session interrupted",
+      "latestContextWarning": "Some context from this run may be missing.",
+      "unavailableResumeWarning": "No resumable identifier is available; restarting will create a new Session.",
+      "stopped": "Session stopped",
+      "exitedWithCode": "Session exited (code {{code}})",
+      "exited": "Session exited",
+      "terminatedBySignal": "Terminated by signal {{signal}}.",
+      "groupCleanupUnconfirmed": "Process-group cleanup could not be fully confirmed. Check Diagnostics.",
+      "readOnlyHistory": "The terminal above shows read-only history. {{note}}"
+    },
+    "disconnected": {
+      "checking": "Disconnected. Checking whether the Agent is still running.",
+      "errorDetail": "({{detail}})"
+    },
+    "uncommitted": {
+      "summary": "The task appears complete, but the Worktree results have not been committed ({{modified}} · {{staged}} · {{untracked}}).",
+      "modified_one": "{{count}} modified file",
+      "modified_other": "{{count}} modified files",
+      "staged_one": "{{count}} staged file",
+      "staged_other": "{{count}} staged files",
+      "untracked_one": "{{count}} untracked file",
+      "untracked_other": "{{count}} untracked files",
+      "dismissLabel": "Dismiss this reminder"
+    }
+  }
+}

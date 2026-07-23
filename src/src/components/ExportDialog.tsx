@@ -3,9 +3,12 @@
 // the backend registers no save-file dialog plugin.
 
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import Modal from "./Modal";
-import { api, copyText, errorText } from "../api";
+import { api, errorText } from "../api";
+import { copyTextWithToast } from "../actions";
 import { closeDialog, findSession, getState, toast, useStore } from "../store";
+import { currentUiLanguage } from "../i18n";
 
 function defaultDest(sessionId: string, kind: "md" | "log"): string {
   const base = getState().exportsDir || "/tmp";
@@ -19,6 +22,7 @@ export default function ExportDialog({
   sessionId: string;
   exportKind: "md" | "log";
 }) {
+  const { t } = useTranslation(["runtime", "common"]);
   const s = useStore();
   const ses = findSession(s.projects, sessionId);
   const [last, setLast] = useState<string>("all");
@@ -41,9 +45,9 @@ export default function ExportDialog({
         stripAnsi,
       });
       setDonePath(p);
-      toast("导出完成", "success");
+      toast(t("runtime:export.complete"), "success");
     } catch (e) {
-      setError(errorText(e));
+      setError(t("runtime:export.failed", { detail: errorText(e) }));
     } finally {
       setBusy(false);
     }
@@ -51,32 +55,30 @@ export default function ExportDialog({
 
   return (
     <Modal
-      title={exportKind === "md" ? `导出 Markdown · ${ses?.title ?? ""}` : `导出原始日志 · ${ses?.title ?? ""}`}
+      title={exportKind === "md"
+        ? t("runtime:export.markdownTitle", { title: ses?.title ?? "" })
+        : t("runtime:export.logTitle", { title: ses?.title ?? "" })}
       onClose={closeDialog}
       footer={
         donePath ? (
           <>
             <button
               className="btn"
-              onClick={() =>
-                void copyText(donePath).then((ok) =>
-                  toast(ok ? "已复制路径" : "复制失败", ok ? "success" : "error"),
-                )
-              }
+              onClick={() => void copyTextWithToast(donePath, t("runtime:export.pathCopied"))}
             >
-              复制路径
+              {t("runtime:export.copyPath")}
             </button>
             <button className="btn primary" onClick={closeDialog}>
-              完成
+              {t("common:actions.done")}
             </button>
           </>
         ) : (
           <>
             <button className="btn ghost" onClick={closeDialog}>
-              取消
+              {t("common:actions.cancel")}
             </button>
             <button className="btn primary" disabled={busy || !dest.trim()} onClick={() => void submit()}>
-              {busy ? "导出中…" : "导出"}
+              {busy ? t("common:actions.exporting") : t("common:actions.export")}
             </button>
           </>
         )
@@ -86,24 +88,29 @@ export default function ExportDialog({
       {donePath ? (
         <div className="info-box" role="status">
           <div className="kv">
-            <span className="k">已导出到</span>
+            <span className="k">{t("runtime:export.exportedTo")}</span>
             <span className="v mono">{donePath}</span>
           </div>
         </div>
       ) : (
         <>
           <div className="form-row">
-            <label htmlFor="ex-range">范围</label>
+            <label htmlFor="ex-range">{t("runtime:export.range")}</label>
             <select id="ex-range" value={last} onChange={(e) => setLast(e.target.value)}>
-              <option value="all">全部</option>
+              <option value="all">{t("runtime:export.all")}</option>
               {exportKind === "md" ? (
                 <>
-                  <option value="20">最近 20 个输出块</option>
-                  <option value="50">最近 50 个输出块</option>
-                  <option value="100">最近 100 个输出块</option>
+                  <option value="20">{t("runtime:export.recentBlocks", { count: 20 })}</option>
+                  <option value="50">{t("runtime:export.recentBlocks", { count: 50 })}</option>
+                  <option value="100">{t("runtime:export.recentBlocks", { count: 100 })}</option>
                 </>
               ) : (
-                <option value="10000">最近 10,000 行</option>
+                <option value="10000">
+                  {t("runtime:export.recentLines", {
+                    count: 10_000,
+                    formattedCount: new Intl.NumberFormat(currentUiLanguage()).format(10_000),
+                  })}
+                </option>
               )}
             </select>
           </div>
@@ -114,13 +121,13 @@ export default function ExportDialog({
                 checked={stripAnsi}
                 onChange={(e) => setStripAnsi(e.target.checked)}
               />
-              <span>去除 ANSI 控制序列</span>
+              <span>{t("runtime:export.stripAnsi")}</span>
             </label>
           ) : (
-            <p className="form-hint">Markdown 导出包含 Session、Agent、项目、分支和时间头。</p>
+            <p className="form-hint">{t("runtime:export.markdownHint")}</p>
           )}
           <div className="form-row">
-            <label htmlFor="ex-dest">保存到（绝对路径）</label>
+            <label htmlFor="ex-dest">{t("runtime:export.destination")}</label>
             <div className="inline-form">
               <input
                 id="ex-dest"
@@ -138,13 +145,15 @@ export default function ExportDialog({
                     .then((p) => {
                       if (p) setDest(p);
                     })
-                    .catch((e) => setError(errorText(e)))
+                    .catch((e) => setError(
+                      t("runtime:export.chooseDestinationFailed", { detail: errorText(e) }),
+                    ))
                 }
               >
-                浏览…
+                {t("common:actions.browse")}
               </button>
             </div>
-            <span className="form-hint">导出前自动脱敏：已知 Secret 值会被固定掩码替换。</span>
+            <span className="form-hint">{t("runtime:export.redactionHint")}</span>
           </div>
         </>
       )}

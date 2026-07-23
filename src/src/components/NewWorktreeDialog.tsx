@@ -2,6 +2,8 @@
 // or select one exact local branch snapshot for an existing-branch Worktree.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import type { TFunction } from "i18next";
+import { Trans, useTranslation } from "react-i18next";
 import Modal from "./Modal";
 import { api, errorText, isStructuredGitError } from "../api";
 import { refreshProjects } from "../actions";
@@ -23,22 +25,29 @@ function branchOccupationPath(branch: LocalBranch, data: LocalBranchesResponse |
 }
 
 function staleSelectionMessage(
+  t: TFunction<["worktree", "common"]>,
   selected: LocalBranch,
   refreshed: LocalBranchesResponse,
 ): string | null {
   const branch = refreshed.branches.find((candidate) => candidate.name === selected.name);
-  if (!branch) return `所选 branch ${selected.name} 已被删除，请重新选择。`;
+  if (!branch) {
+    return t("worktree:ui.newWorktree.staleSelection.deleted", { branch: selected.name });
+  }
   if (branch.oid !== selected.oid) {
-    return `所选 branch ${selected.name} 已移动，请重新选择最新提交。`;
+    return t("worktree:ui.newWorktree.staleSelection.moved", { branch: selected.name });
   }
   const occupiedPath = branchOccupationPath(branch, refreshed);
   if (branch.current || occupiedPath) {
-    return `所选 branch ${selected.name} 已在 ${occupiedPath ?? "其他 checkout"} 使用，请重新选择。`;
+    return t("worktree:ui.newWorktree.staleSelection.occupied", {
+      branch: selected.name,
+      path: occupiedPath ?? t("worktree:ui.newWorktree.staleSelection.anotherCheckout"),
+    });
   }
   return null;
 }
 
 export default function NewWorktreeDialog({ projectId }: { projectId: string }) {
+  const { t } = useTranslation(["worktree", "common"]);
   const store = useStore();
   const project = store.projects.find((candidate) => candidate.id === projectId);
   const [task, setTask] = useState("");
@@ -73,7 +82,7 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
       setBranchData(response);
       const selected = selectedExistingRef.current;
       if (selected) {
-        const issue = staleSelectionMessage(selected, response);
+        const issue = staleSelectionMessage(t, selected, response);
         setSelectionIssue(issue);
         if (!issue) {
           setSelectedExisting(
@@ -84,13 +93,15 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
       return response;
     } catch (refreshError) {
       if (sequence === refreshSequenceRef.current) {
-        setBranchesError(displayError(refreshError));
+        setBranchesError(t("worktree:ui.newWorktree.loadBranchesFailed", {
+          detail: displayError(refreshError),
+        }));
       }
       return null;
     } finally {
       if (sequence === refreshSequenceRef.current) setBranchesLoading(false);
     }
-  }, [projectId]);
+  }, [projectId, t]);
 
   useEffect(() => {
     void refreshBranches();
@@ -193,9 +204,11 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
       );
       await refreshProjects();
       closeDialog();
-      toast(`已创建 Worktree：${res.branch}`, "success");
+      toast(t("worktree:ui.newWorktree.createdToast", { branch: res.branch }), "success");
     } catch (createError) {
-      setError(displayError(createError));
+      setError(t("worktree:ui.newWorktree.createFailed", {
+        detail: displayError(createError),
+      }));
       if (branchMode === "existing") await refreshBranches();
     } finally {
       setBusy(false);
@@ -208,20 +221,22 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
 
   return (
     <Modal
-      title={`新 Worktree · ${project?.name ?? ""}`}
+      title={t("worktree:ui.newWorktree.title", { project: project?.name ?? "" })}
       onClose={closeDialog}
       footer={
         <>
-          <button className="btn ghost" onClick={closeDialog}>取消</button>
+          <button className="btn ghost" onClick={closeDialog}>{t("common:actions.cancel")}</button>
           <button className="btn primary" disabled={!canSubmit} onClick={() => void submit()}>
-            {busy ? "创建中…" : "创建 Worktree"}
+            {busy
+              ? t("worktree:ui.newWorktree.creating")
+              : t("worktree:ui.newWorktree.createWorktree")}
           </button>
         </>
       }
     >
       {error ? <div className="error-bar" role="alert">{error}</div> : null}
       <div className="form-row">
-        <label htmlFor="wt-task">任务名</label>
+        <label htmlFor="wt-task">{t("worktree:ui.newWorktree.taskName")}</label>
         <input
           id="wt-task"
           type="text"
@@ -231,7 +246,7 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
         />
       </div>
       <div className="form-row">
-        <label htmlFor="wt-branch">分支名（可选，留空自动生成；也可选择已有本地 branch）</label>
+        <label htmlFor="wt-branch">{t("worktree:ui.newWorktree.branch.label")}</label>
         <div className="worktree-branch-picker" ref={branchPickerRef}>
           <div className="worktree-branch-input-row">
             <input
@@ -241,8 +256,12 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
               role={showBranchCandidates ? "combobox" : undefined}
               className="mono"
               value={branch}
-              placeholder={slug ? `agent/${slug}` : "agent/<任务名>"}
-              aria-label={showBranchCandidates ? "本地 branch" : undefined}
+              placeholder={slug
+                ? `agent/${slug}`
+                : t("worktree:ui.newWorktree.branch.autoPlaceholder")}
+              aria-label={showBranchCandidates
+                ? t("worktree:ui.newWorktree.branch.localBranchAria")
+                : undefined}
               aria-autocomplete={showBranchCandidates ? "list" : undefined}
               aria-expanded={showBranchCandidates ? branchListOpen : undefined}
               aria-controls={showBranchCandidates ? "wt-local-branch-list" : undefined}
@@ -266,7 +285,7 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
                 <button
                   type="button"
                   className="btn ghost worktree-branch-icon-btn"
-                  aria-label="刷新本地 branch"
+                  aria-label={t("worktree:ui.newWorktree.branch.refreshAria")}
                   disabled={branchesLoading}
                   onClick={() => {
                     void refreshBranches().finally(() => {
@@ -280,7 +299,9 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
                 <button
                   type="button"
                   className="btn ghost worktree-branch-icon-btn"
-                  aria-label={branchListOpen ? "收起本地 branch 候选" : "展开本地 branch 候选"}
+                  aria-label={branchListOpen
+                    ? t("worktree:ui.newWorktree.branch.collapseOptionsAria")
+                    : t("worktree:ui.newWorktree.branch.expandOptionsAria")}
                   onClick={() => {
                     setBranchListOpen((open) => !open);
                     branchInputRef.current?.focus();
@@ -295,19 +316,25 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
           {showBranchCandidates && branchListOpen ? (
             <div className="worktree-branch-popover">
               <div className="worktree-branch-popover-head">
-                <span>本地 branch</span>
+                <span>{t("worktree:ui.newWorktree.branch.localBranches")}</span>
                 <span aria-live="polite">
-                  {branchesLoading ? "正在刷新…" : `${filteredBranches.length} 个候选`}
+                  {branchesLoading
+                    ? t("worktree:ui.newWorktree.branch.refreshing")
+                    : t("worktree:ui.newWorktree.branch.candidateCount", {
+                        count: filteredBranches.length,
+                      })}
                 </span>
               </div>
               {branchesError ? <div className="error-bar compact" role="alert">{branchesError}</div> : null}
               {branchesLoading && !branchData ? (
-                <div className="worktree-branch-empty" role="status">正在读取本地 branch…</div>
+                <div className="worktree-branch-empty" role="status">
+                  {t("worktree:ui.newWorktree.branch.loadingLocalBranches")}
+                </div>
               ) : filteredBranches.length ? (
                 <div
                   id="wt-local-branch-list"
                   role="listbox"
-                  aria-label="本地 branch 候选"
+                  aria-label={t("worktree:ui.newWorktree.branch.optionsAria")}
                   aria-busy={branchesLoading}
                 >
                   {filteredBranches.map((candidate, index) => {
@@ -333,9 +360,15 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
                           <strong className="mono">{candidate.name}</strong>
                           <code>{candidate.oid.slice(0, 12)}</code>
                         </span>
-                        {candidate.current ? <span className="worktree-branch-state">当前 checkout</span> : null}
+                        {candidate.current ? (
+                          <span className="worktree-branch-state">
+                            {t("worktree:ui.newWorktree.branch.currentCheckout")}
+                          </span>
+                        ) : null}
                         {!candidate.current && candidate.checkedOutPath ? (
-                          <span className="worktree-branch-state">已被 Worktree 占用</span>
+                          <span className="worktree-branch-state">
+                            {t("worktree:ui.newWorktree.branch.occupiedByWorktree")}
+                          </span>
                         ) : null}
                         {occupationPath ? <span className="worktree-branch-path mono">{occupationPath}</span> : null}
                       </div>
@@ -345,8 +378,8 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
               ) : (
                 <div className="worktree-branch-empty" role="status">
                   {branch.trim()
-                    ? "没有匹配的本地 branch；继续输入将创建新 branch。"
-                    : "当前没有可列出的本地 branch。"}
+                    ? t("worktree:ui.newWorktree.branch.noMatchCreateNew")
+                    : t("worktree:ui.newWorktree.branch.noneAvailable")}
                 </div>
               )}
             </div>
@@ -362,13 +395,15 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
           </div>
         ) : selectedExisting ? (
           <div id="wt-branch-mode-hint" className="worktree-branch-mode existing">
-            <span>使用已有 branch</span>
+            <span>{t("worktree:ui.newWorktree.branch.useExisting")}</span>
             <strong className="mono">{selectedExisting.name}</strong>
             <code>{selectedExisting.oid.slice(0, 12)}</code>
           </div>
         ) : (
           <span id="wt-branch-mode-hint" className="form-hint">
-            {branch.trim() ? "创建新 branch：" : "自动生成 branch："}
+            {branch.trim()
+              ? t("worktree:ui.newWorktree.branch.createNew")
+              : t("worktree:ui.newWorktree.branch.autoGenerate")}
             <span className="mono">{previewBranch}</span>
           </span>
         )}
@@ -376,14 +411,21 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
 
       {selectedExisting ? (
         <div className="form-row worktree-existing-base">
-          <span className="form-label">基线</span>
+          <span className="form-label">{t("worktree:ui.newWorktree.base.label")}</span>
           <span className="form-hint">
-            使用所选 branch 当前提交 <span className="mono">{selectedExisting.oid.slice(0, 12)}</span>，不会创建新 branch。
+            <Trans
+              t={t}
+              i18nKey="worktree:ui.newWorktree.base.existingBranchHint"
+              values={{ oid: selectedExisting.oid.slice(0, 12) }}
+              components={{ oid: <span className="mono" /> }}
+            />
           </span>
         </div>
       ) : (
         <div className="form-row">
-          <span className="form-label" id="wt-base-label">基线</span>
+          <span className="form-label" id="wt-base-label">
+            {t("worktree:ui.newWorktree.base.label")}
+          </span>
           <div className="radio-row" role="radiogroup" aria-labelledby="wt-base-label">
             <button
               type="button"
@@ -392,7 +434,7 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
               className={"radio-chip" + (baseMode === "head" ? " selected" : "")}
               onClick={() => setBaseMode("head")}
             >
-              当前 HEAD
+              {t("worktree:ui.newWorktree.base.currentHead")}
             </button>
             <button
               type="button"
@@ -401,7 +443,7 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
               className={"radio-chip" + (baseMode === "ref" ? " selected" : "")}
               onClick={() => setBaseMode("ref")}
             >
-              指定 Base Ref
+              {t("worktree:ui.newWorktree.base.specificRef")}
             </button>
           </div>
           {baseMode === "ref" ? (
@@ -409,15 +451,15 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
               type="text"
               className="mono"
               value={baseRef}
-              placeholder="main / 分支 / commit"
-              aria-label="Base Ref"
+              placeholder={t("worktree:ui.newWorktree.base.refPlaceholder")}
+              aria-label={t("worktree:ui.newWorktree.base.refAria")}
               onChange={(event) => setBaseRef(event.target.value)}
             />
           ) : null}
         </div>
       )}
       <p className="form-hint">
-        Worktree 目录创建在应用数据目录下，不污染主仓库；删除前会检查未提交修改。
+        {t("worktree:ui.newWorktree.directoryHint")}
       </p>
     </Modal>
   );

@@ -12,14 +12,13 @@ import {
   type KeyboardEvent,
   type PointerEvent,
 } from "react";
-import { api, copyText, errorText } from "../api";
+import { api, errorText } from "../api";
 import {
   findSession,
   getRuntime,
   getState,
   openDialog,
   setState,
-  toast,
   useStore,
 } from "../store";
 import {
@@ -35,16 +34,19 @@ import {
   type TerminalBufferMatch,
 } from "../terminals";
 import {
+  copyTextWithToast,
   dismissUncommittedNotice,
   openNewSessionDialog,
   refreshActiveWorktreeStatus,
   restartSessionFlow,
 } from "../actions";
-import { precisionZh } from "../format";
+import { precisionLabel } from "../format";
 import type { SearchHit, SearchResult, SessionView } from "../types";
 import { AgentIcon } from "./AgentIcons";
 import ShellIcon from "./ShellIcon";
 import PiStructuredTimeline from "./PiStructuredTimeline";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 
 // ---------------------------------------------------------------------------
 // persistent pane
@@ -71,6 +73,7 @@ function readTerminalScrollPosition(sessionId: string): TerminalScrollPosition {
  * it remains fast even when a Session has a very large log.
  */
 function TerminalScrollbar({ sessionId }: { sessionId: string }) {
+  const { t } = useTranslation("shell");
   const trackRef = useRef<HTMLDivElement>(null);
   const thumbRef = useRef<HTMLDivElement>(null);
   const dragOffsetRef = useRef(TERMINAL_SCROLL_THUMB_PX / 2);
@@ -208,7 +211,7 @@ function TerminalScrollbar({ sessionId }: { sessionId: string }) {
       className={"terminal-scrollbar" + (dragging ? " dragging" : "")}
       style={style}
       role="scrollbar"
-      aria-label="Session 历史滚动位置"
+      aria-label={t("ui.terminal.scrollbarLabel")}
       aria-orientation="vertical"
       aria-valuemin={0}
       aria-valuemax={position.max}
@@ -298,7 +301,14 @@ const SEARCH_DECORATIONS = {
   activeMatchColorOverviewRuler: "#ffd840",
 };
 
+function bufferScopeLabel(hit: TerminalBufferMatch, t: TFunction<"shell">): string {
+  return hit.buffer === "normal"
+    ? t("ui.terminalSearch.currentBuffer")
+    : t("ui.terminalSearch.currentScreen");
+}
+
 function TermSearchBar({ sessionId }: { sessionId: string }) {
+  const { t } = useTranslation("shell");
   const inputRef = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState("");
   const [bufferHits, setBufferHits] = useState<TerminalBufferMatch[]>([]);
@@ -370,7 +380,7 @@ function TermSearchBar({ sessionId }: { sessionId: string }) {
         .catch((e) => {
           if (request !== logRequest.current) return;
           setLogResult(null);
-          setLogError(errorText(e));
+          setLogError(t("ui.terminalSearch.searchFailed", { detail: errorText(e) }));
         })
         .finally(() => {
           if (request === logRequest.current) setLogSearching(false);
@@ -425,13 +435,13 @@ function TermSearchBar({ sessionId }: { sessionId: string }) {
   };
 
   return (
-    <div className="term-search" role="search" aria-label="终端历史搜索">
+    <div className="term-search" role="search" aria-label={t("ui.terminalSearch.regionLabel")}>
       <div className="term-search-main">
         <input
           ref={inputRef}
           type="text"
-          placeholder="搜索完整终端历史（不会发送给 Agent）"
-          aria-label="搜索终端历史"
+          placeholder={t("ui.terminalSearch.placeholder")}
+          aria-label={t("ui.terminalSearch.inputLabel")}
           value={q}
           onChange={(e) => {
             setQ(e.target.value);
@@ -450,39 +460,63 @@ function TermSearchBar({ sessionId }: { sessionId: string }) {
         />
         <span className="count" aria-live="polite">
           {selectedBufferHit
-            ? `${selectedBufferHit.buffer === "normal" ? "当前缓冲" : "当前屏幕"} ${bufferIndex + 1}/${bufferHits.length}`
+            ? t("ui.terminalSearch.matchPosition", {
+                scope: bufferScopeLabel(selectedBufferHit, t),
+                current: bufferIndex + 1,
+                count: bufferHits.length,
+              })
             : q.trim()
-              ? "当前缓冲：无结果"
+              ? t("ui.terminalSearch.noCurrentBufferResults")
               : ""}
         </span>
-        <button className="btn small ghost" onClick={() => navigate("prev")} aria-label="上一个匹配">
+        <button
+          className="btn small ghost"
+          onClick={() => navigate("prev")}
+          aria-label={t("ui.terminalSearch.previousMatch")}
+        >
           ↑
         </button>
-        <button className="btn small ghost" onClick={() => navigate("next")} aria-label="下一个匹配">
+        <button
+          className="btn small ghost"
+          onClick={() => navigate("next")}
+          aria-label={t("ui.terminalSearch.nextMatch")}
+        >
           ↓
         </button>
-        <button className="btn small ghost" onClick={close} aria-label="关闭搜索">
+        <button
+          className="btn small ghost"
+          onClick={close}
+          aria-label={t("ui.terminalSearch.close")}
+        >
           ✕
         </button>
       </div>
       {q.trim() ? (
         <div className="term-search-history" aria-live="polite">
-          <span className="term-search-history-label">完整历史</span>
+          <span className="term-search-history-label">{t("ui.terminalSearch.fullHistory")}</span>
           <span className="term-search-buffer-status">
             {selectedBufferHit
-              ? `${selectedBufferHit.buffer === "normal" ? "当前缓冲" : "当前屏幕"}：${selectedBufferHit.snippet}`
-              : "当前缓冲中无结果"}
+              ? t("ui.terminalSearch.bufferMatch", {
+                  scope: bufferScopeLabel(selectedBufferHit, t),
+                  snippet: selectedBufferHit.snippet,
+                })
+              : t("ui.terminalSearch.noResultsInCurrentBuffer")}
           </span>
           <span className="term-search-log-status">
             {logSearching
-              ? "正在搜索持久化日志…"
+              ? t("ui.terminalSearch.searchingPersistedLog")
               : logError
-                ? "完整历史不可用"
+                ? t("ui.terminalSearch.fullHistoryUnavailable")
                 : selectedLogHit
-                  ? `${logIndex + 1}/${totalLogHits}${
-                      totalLogHits > logHits.length ? `（已载入 ${logHits.length} 条）` : ""
-                    }：${selectedLogHit.snippet}`
-                  : "无结果"}
+                  ? t("ui.terminalSearch.logMatchPosition", {
+                      current: logIndex + 1,
+                      count: totalLogHits,
+                      loaded: totalLogHits > logHits.length
+                        ? t("ui.terminalSearch.loadedHits", { count: logHits.length })
+                        : "",
+                      snippet: selectedLogHit.snippet,
+                    })
+                  : t("ui.terminalSearch.noResults")}
           </span>
         </div>
       ) : null}
@@ -495,10 +529,11 @@ function TermSearchBar({ sessionId }: { sessionId: string }) {
 // ---------------------------------------------------------------------------
 
 function SkeletonOverlay() {
+  const { t } = useTranslation("session");
   return (
     <div className="term-overlay">
       <div className="overlay-card" style={{ alignItems: "stretch", textAlign: "left" }}>
-        <h3>正在连接 Session Host…</h3>
+        <h3>{t("ui.lifecycle.connectingHost")}</h3>
         <div className="skeleton" aria-hidden="true">
           <div className="skeleton-line" style={{ width: "88%" }} />
           <div className="skeleton-line" style={{ width: "64%" }} />
@@ -528,6 +563,7 @@ function SessionAgentMark({ adapter }: { adapter: string }) {
 }
 
 function SessionOverlay({ ses }: { ses: SessionView }) {
+  const { t } = useTranslation("session");
   const rt = useStore((state) => state.runtime[ses.id]);
   const r = getRuntime(ses.id);
   void rt; // subscribe
@@ -539,25 +575,25 @@ function SessionOverlay({ ses }: { ses: SessionView }) {
         <div className="overlay-card session-state-card" role="alert">
           <SessionAgentMark adapter={ses.adapter} />
           <h3>{ses.title}</h3>
-          <p className="session-state-label">Session 已中断</p>
-          <span className="sr-only">{precisionZh(p)}</span>
+          <p className="session-state-label">{t("ui.lifecycle.interrupted")}</p>
+          <span className="sr-only">{precisionLabel(p)}</span>
           {p === "latest" ? (
             <p className="session-state-detail warn-text">
-              可能缺少本次完整上下文。
+              {t("ui.lifecycle.latestContextWarning")}
             </p>
           ) : null}
           {p === "unavailable" ? (
             <p className="session-state-detail warn-text">
-              无可恢复标识；重启将创建新会话。
+              {t("ui.lifecycle.unavailableResumeWarning")}
             </p>
           ) : null}
           <div className="overlay-actions">
             <button
               className="btn primary"
-              data-tip={precisionZh(p)}
+              data-tip={precisionLabel(p)}
               onClick={() => void restartSessionFlow(ses.id)}
             >
-              重启
+              {t("ui.actions.restart")}
             </button>
           </div>
         </div>
@@ -576,27 +612,29 @@ function SessionOverlay({ ses }: { ses: SessionView }) {
           <h3>{ses.title}</h3>
           <p className="session-state-label">
             {stopped
-              ? "Session 已停止"
+              ? t("ui.lifecycle.stopped")
               : code !== null && code !== undefined
-                ? `Session 已退出（退出码 ${code}）`
-                : "Session 已退出"}
+                ? t("ui.lifecycle.exitedWithCode", { code })
+                : t("ui.lifecycle.exited")}
           </p>
           {(signal !== null && signal !== undefined) || r.exit?.groupCleaned === false ? (
             <p className="session-state-detail">
-              {signal !== null && signal !== undefined ? `被信号 ${signal} 终止。` : ""}
+              {signal !== null && signal !== undefined
+                ? t("ui.lifecycle.terminatedBySignal", { signal })
+                : ""}
               {r.exit?.groupCleaned === false ? (
-                <span className="warn-text">进程组清理未完全确认，请检查诊断中心。</span>
+                <span className="warn-text">{t("ui.lifecycle.groupCleanupUnconfirmed")}</span>
               ) : null}
             </p>
           ) : null}
           {r.historyNote ? (
             <p className="session-state-history">
-              上方终端为只读历史输出。{r.historyNote}
+              {t("ui.lifecycle.readOnlyHistory", { note: r.historyNote })}
             </p>
           ) : null}
           <div className="overlay-actions">
             <button className="btn primary" onClick={() => void restartSessionFlow(ses.id)}>
-              重启
+              {t("ui.actions.restart")}
             </button>
           </div>
         </div>
@@ -613,6 +651,7 @@ function SessionOverlay({ ses }: { ses: SessionView }) {
 // ---------------------------------------------------------------------------
 
 function ReconnectBanner({ ses }: { ses: SessionView }) {
+  const { t } = useTranslation("session");
   const r = getRuntime(ses.id);
   useStore((state) => state.runtime[ses.id]);
   const show =
@@ -622,20 +661,21 @@ function ReconnectBanner({ ses }: { ses: SessionView }) {
   if (!show) return null;
   return (
     <div className="banner warn" role="alert">
-      <span>连接已中断，正在确认 Agent 是否仍在运行。</span>
-      {r.error ? <span className="dim">（{r.error}）</span> : null}
+      <span>{t("ui.disconnected.checking")}</span>
+      {r.error ? <span className="dim">{t("ui.disconnected.errorDetail", { detail: r.error })}</span> : null}
       <span className="spacer" />
       <button className="btn small" onClick={() => void attachHandle(ses.id)}>
-        重新连接
+        {t("ui.actions.reconnect")}
       </button>
       <button className="btn small ghost" onClick={() => openDialog({ kind: "diagnostics" })}>
-        诊断中心
+        {t("ui.actions.openDiagnostics")}
       </button>
     </div>
   );
 }
 
 function UncommittedBanner({ ses }: { ses: SessionView }) {
+  const { t } = useTranslation("session");
   useStore((state) => state.runtime[ses.id]);
   const ws = useStore((state) => state.activeWorktreeStatus);
   const dismissedSequence = useStore((state) => state.noticeDismissed[ses.id]);
@@ -660,26 +700,27 @@ function UncommittedBanner({ ses }: { ses: SessionView }) {
   return (
     <div className="banner info" role="status">
       <span>
-        任务看起来已完成，但 Worktree 的结果尚未提交（修改 {ws.modified} · 暂存 {ws.staged} ·
-        未跟踪 {ws.untracked}）。
+        {t("ui.uncommitted.summary", {
+          modified: t("ui.uncommitted.modified", { count: ws.modified }),
+          staged: t("ui.uncommitted.staged", { count: ws.staged }),
+          untracked: t("ui.uncommitted.untracked", { count: ws.untracked }),
+        })}
       </span>
       <span className="spacer" />
       <button
         className="btn small"
         onClick={() =>
-          void copyText(ws.raw).then((ok) =>
-            toast(ok ? "已复制 git status" : "复制失败", ok ? "success" : "error"),
-          )
+          void copyTextWithToast(ws.raw, t("ui.toast.gitStatusCopied"))
         }
       >
-        复制 git status
+        {t("ui.actions.copyGitStatus")}
       </button>
       <button
         className="btn small ghost"
         onClick={() => dismissUncommittedNotice(ses.id, seq)}
-        aria-label="忽略此提醒"
+        aria-label={t("ui.uncommitted.dismissLabel")}
       >
-        知道了
+        {t("ui.actions.gotIt")}
       </button>
     </div>
   );
@@ -690,6 +731,7 @@ function UncommittedBanner({ ses }: { ses: SessionView }) {
 // ---------------------------------------------------------------------------
 
 function TermStatusLine({ ses }: { ses: SessionView }) {
+  const { t } = useTranslation("shell");
   useStore((state) => state.runtime[ses.id]);
   const r = getRuntime(ses.id);
   if (!r.scrolledUp) return null;
@@ -698,9 +740,9 @@ function TermStatusLine({ ses }: { ses: SessionView }) {
       <button
         className="back-to-latest"
         onClick={() => scrollToBottom(ses.id)}
-        data-tip="快捷键：⌘↓（Linux：Ctrl+Shift+↓）"
+        data-tip={t("ui.terminal.backToLatestTip")}
       >
-        ↓ 回到最新
+        {t("ui.terminal.backToLatest")}
       </button>
     </div>
   );
@@ -711,6 +753,7 @@ function TermStatusLine({ ses }: { ses: SessionView }) {
 // ---------------------------------------------------------------------------
 
 export default function TerminalArea() {
+  const { t } = useTranslation(["session", "shell", "common"]);
   const ses = useStore((state) => findSession(state.projects, state.activeSessionId));
   const hasAnySession = useStore((state) =>
     state.projects.some((project) => project.sessions.length > 0),
@@ -723,7 +766,7 @@ export default function TerminalArea() {
   );
 
   return (
-    <section className="workspace" aria-label="终端工作区">
+    <section className="workspace" aria-label={t("shell:ui.workspace.label")}>
       {ses ? (
         ses.transport === "json_rpc" ? (
           <PiStructuredTimeline ses={ses} />
@@ -748,19 +791,19 @@ export default function TerminalArea() {
               ❯
             </div>
             {hasAnySession ? (
-              <div>在左侧选择一个 Session 继续工作。</div>
+              <div>{t("shell:ui.empty.selectSession")}</div>
             ) : hasProjects ? (
               <>
-                <div>项目还没有运行中的任务。</div>
+                <div>{t("shell:ui.empty.noRunningTasks")}</div>
                 <button className="btn primary" onClick={() => openNewSessionDialog()}>
-                  新建 Session
+                  {t("session:ui.actions.new")}
                 </button>
               </>
             ) : (
               <>
-                <div>添加一个代码目录，开始第一个持久 Session。</div>
+                <div>{t("shell:ui.empty.addDirectoryPrompt")}</div>
                 <button className="btn primary" onClick={() => openDialog({ kind: "addProject" })}>
-                  添加项目
+                  {t("shell:ui.actions.addProject")}
                 </button>
               </>
             )}

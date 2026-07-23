@@ -71,6 +71,7 @@ const runningSession = {
 const settings = {
   logLimitMib: 200,
   notificationsEnabled: true,
+  uiLanguage: "zh-CN" as const,
   theme: "system" as const,
   terminalFontFamily: "system-monospace",
   terminalFontSize: 13,

@@ -167,6 +167,16 @@ pub enum HookStatus {
     Unavailable,
 }
 
+impl HookStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HookStatus::Supported => "supported",
+            HookStatus::Degraded => "degraded",
+            HookStatus::Unavailable => "unavailable",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalModel {
@@ -493,6 +503,18 @@ impl Default for LogCursor {
     }
 }
 
+impl LogCursor {
+    /// Ordering is session-scoped. A newer run always wins; positions inside
+    /// one run are ordered by log generation and then byte offset.
+    pub fn is_not_older_than(&self, other: &Self) -> bool {
+        self.run_ordinal > other.run_ordinal
+            || (self.run_ordinal == other.run_ordinal
+                && self.run_id == other.run_id
+                && (self.generation > other.generation
+                    || (self.generation == other.generation && self.offset >= other.offset)))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Status evidence
 // ---------------------------------------------------------------------------
@@ -693,11 +715,39 @@ pub enum ReducedMotion {
     Off,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum UiLanguage {
+    #[default]
+    #[serde(rename = "zh-CN")]
+    ZhCn,
+    #[serde(rename = "en-US")]
+    EnUs,
+}
+
+impl UiLanguage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UiLanguage::ZhCn => "zh-CN",
+            UiLanguage::EnUs => "en-US",
+        }
+    }
+
+    pub fn from_code(value: &str) -> Option<Self> {
+        match value {
+            "zh-CN" => Some(UiLanguage::ZhCn),
+            "en-US" => Some(UiLanguage::EnUs),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub log_limit_mib: u64,
     pub notifications_enabled: bool,
+    #[serde(default)]
+    pub ui_language: UiLanguage,
     pub theme: Theme,
     pub terminal_font_family: String,
     pub terminal_font_size: u32,
@@ -721,6 +771,7 @@ impl Default for Settings {
         Settings {
             log_limit_mib: DEFAULT_LOG_LIMIT_MIB,
             notifications_enabled: true,
+            ui_language: UiLanguage::default(),
             theme: Theme::System,
             terminal_font_family: "system-monospace".into(),
             terminal_font_size: 13,

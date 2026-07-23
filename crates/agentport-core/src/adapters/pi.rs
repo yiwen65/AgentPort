@@ -3,7 +3,7 @@
 //! Pi has no tool-by-tool approval protocol.  AgentPort starts it with project
 //! trust pre-approved as requested and owns its native Session ID and storage.
 
-use super::{AgentAdapter, LaunchContext, LaunchPlan, ResumeContext};
+use super::{AgentAdapter, LaunchContext, LaunchNotice, LaunchPlan, ResumeContext};
 use crate::error::{CoreError, Result};
 use crate::models::*;
 use std::path::Path;
@@ -74,7 +74,7 @@ impl AgentAdapter for PiAdapter {
         for flag in ["session-id", "session-dir", "approve"] {
             if !super::has_flag(install, flag) {
                 return Err(CoreError::Blocked(format!(
-                    "该版本 pi 无 --{flag}，无法满足 AgentPort 受管会话约束"
+                    "this version of pi has no --{flag} flag and cannot satisfy AgentPort's managed Session requirements"
                 )));
             }
         }
@@ -88,7 +88,7 @@ impl AgentAdapter for PiAdapter {
             ] {
                 if !super::has_flag(install, flag) {
                     return Err(CoreError::Blocked(format!(
-                        "该版本 pi 无 --{flag}，无法启动结构化 RPC 会话"
+                        "this version of pi has no --{flag} flag and cannot start a structured RPC Session"
                     )));
                 }
             }
@@ -106,20 +106,24 @@ impl AgentAdapter for PiAdapter {
             hook_status: HookStatus::Unavailable,
             transport: ctx.transport,
             helper_files: vec![],
-            notes: vec!["Pi 无逐项权限确认，将以本地用户权限执行".into()],
+            notices: vec![LaunchNotice::new(
+                "pi_local_permissions",
+                "Pi 不提供逐项权限确认，将以本地用户权限执行",
+            )],
         })
     }
 
     fn build_resume(&self, ctx: &ResumeContext) -> Result<LaunchPlan> {
-        let native_id = ctx
-            .agent_session_id
-            .as_ref()
-            .ok_or_else(|| CoreError::Blocked("Pi 原生会话 ID 缺失，无法精确恢复".into()))?;
+        let native_id = ctx.agent_session_id.as_ref().ok_or_else(|| {
+            CoreError::Blocked(
+                "Pi native Session ID is missing; exact resume is unavailable".into(),
+            )
+        })?;
         let install = &ctx.install;
         for flag in ["session-id", "session-dir", "approve"] {
             if !super::has_flag(install, flag) {
                 return Err(CoreError::Blocked(format!(
-                    "该版本 pi 无 --{flag}，无法精确恢复会话"
+                    "this version of pi has no --{flag} flag and cannot resume a Session exactly"
                 )));
             }
         }
@@ -133,20 +137,12 @@ impl AgentAdapter for PiAdapter {
             ] {
                 if !super::has_flag(install, flag) {
                     return Err(CoreError::Blocked(format!(
-                        "该版本 pi 无 --{flag}，无法恢复结构化 RPC 会话"
+                        "this version of pi has no --{flag} flag and cannot resume a structured RPC Session"
                     )));
                 }
             }
         }
-        let launch_ctx = LaunchContext {
-            install: ctx.install.clone(),
-            preset: ctx.preset.clone(),
-            cwd: ctx.cwd.clone(),
-            session_id: ctx.session_id.clone(),
-            hook_events_path: ctx.hook_events_path.clone(),
-            session_dir: ctx.session_dir.clone(),
-            transport: ctx.transport,
-        };
+        let launch_ctx = ctx.to_launch_context();
         let dir = session_dir(&launch_ctx);
         let mut argv = vec![install.executable_path.clone()];
         if ctx.transport == AgentTransport::JsonRpc {
@@ -181,7 +177,10 @@ impl AgentAdapter for PiAdapter {
             hook_status: HookStatus::Unavailable,
             transport: ctx.transport,
             helper_files: vec![],
-            notes: vec!["Pi 无逐项权限确认，将以本地用户权限执行".into()],
+            notices: vec![LaunchNotice::new(
+                "pi_local_permissions",
+                "Pi 不提供逐项权限确认，将以本地用户权限执行",
+            )],
         })
     }
 }

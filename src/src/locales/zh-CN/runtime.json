@@ -1,0 +1,62 @@
+{
+  "errors": {
+    "unknown": "发生未知错误",
+    "unknownCode": "发生未知运行时错误（{{code}}）",
+    "watchDatabaseOpenFailed": "无法打开 Session 数据库：{{detail}}",
+    "statusPersistenceFailed": "Session 状态无法保存：{{detail}}",
+    "agentSessionPersistenceFailed": "原生 Session ID 无法保存：{{detail}}",
+    "hostReplaced": "Host 已被新的运行替换",
+    "host": {
+      "connectionFailed": "无法连接 Host：{{detail}}",
+      "changedDuringAttach": "连接 Session 时 Host 已发生变化，请重新连接。",
+      "statusJournalFailed": "Host 无法保存状态日志，状态恢复能力已降级。",
+      "sessionIdMismatch": "Host 拒绝了 Session ID 不匹配的请求。",
+      "terminalInputUnavailable": "结构化 Session 不支持终端输入。",
+      "structuredPromptTransportRequired": "结构化提示需要 json_rpc transport。",
+      "structuredPromptEmpty": "结构化提示不能为空。",
+      "structuredAbortTransportRequired": "中止结构化轮次需要 json_rpc transport。",
+      "duplicateHello": "Host 收到了重复的握手请求。",
+      "handshakeRejected": "Host 握手被拒绝。",
+      "generic": "Host 错误：{{detail}}"
+    },
+    "recovery": {
+      "contextFailed": "无法读取恢复输出：{{detail}}",
+      "generationUnavailable": "无法确认当前保留的输出代际；输出可能已轮转。",
+      "outputRotated": "输出已轮转或不属于当前保留日志，无法安全定位。",
+      "logMissing": "输出日志已不存在或已轮转。",
+      "logIncomplete": "输出已轮转或不再完整保留，无法安全定位。",
+      "logChanged": "读取期间输出日志发生变化，无法安全定位；请重试。"
+    },
+    "projectPathMissing": "项目目录已不存在，无法在文件管理器中显示：{{path}}。可从 AgentPort 移除该项目记录。",
+    "fileManagerFailed": "无法打开系统文件管理器：{{detail}}"
+  },
+  "notifications": {
+    "needsInput": "等待输入",
+    "completed": "已完成",
+    "failed": "异常退出",
+    "testTitle": "AgentPort 测试通知",
+    "testBody": "通知通道工作正常。"
+  },
+  "messages": {
+    "probe": {
+      "executableNotFound": "未找到可执行文件",
+      "failed": "CLI 探测失败：{{detail}}",
+      "autoSelected_one": "已从 {{count}} 个候选中自动选择优先级最高且可用的路径；可在下方指定其他路径。",
+      "autoSelected_other": "已从 {{count}} 个候选中自动选择优先级最高且可用的路径；可在下方指定其他路径。",
+      "candidatesFailed_one": "找到 {{count}} 个候选，但未通过只读探测：{{detail}}",
+      "candidatesFailed_other": "找到 {{count}} 个候选，但均未通过只读探测：{{detail}}"
+    },
+    "adapter": {
+      "hookSettingsUnavailable": "此版本的 {{agent}} 不支持按 Session 注入 Hook，状态检测已降级为 PTY 启发式。",
+      "kimiHookUnavailable": "此版本的 Kimi 仅支持全局 Hook 配置；AgentPort 不会修改全局配置，状态检测已降级为 PTY 启发式。",
+      "codexHookUnverified": "此版本的 Codex 未公开可验证的 notify 配置，状态检测已降级为 PTY 启发式。",
+      "codexSessionIdUnverified": "Codex TUI 未提供可验证的原生 Session ID，仅支持恢复最近的 Session（resume --last）。",
+      "nativeSessionIdUnavailable": "此版本的 {{agent}} 无法指定原生 Session ID，仅支持恢复最近的 Session。",
+      "resumeLatestOnly": "没有原生 Session ID，仅支持恢复最近的 Session。",
+      "piLocalPermissions": "Pi 不提供逐项权限确认，将以本地用户权限执行。",
+      "claudeConversationMissing": "原 Session 没有可恢复的对话记录（首轮可能尚未产生消息），已按新 Session 启动。",
+      "shellResumeUnavailable": "Shell 没有可恢复的 Session，已重新打开新的 Shell。",
+      "generic": "Agent 提示：{{detail}}"
+    }
+  }
+}

@@ -4,10 +4,22 @@
 // backend (never plaintext fallback).
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { api, errorText } from "../api";
 import { applyThemeSettings, refreshProjects } from "../actions";
-import { agentDisplay, formatBytes, formatTime, secretBackendZh } from "../format";
+import {
+  agentDisplay,
+  formatBytes,
+  formatTime,
+  hookStatusLabel,
+  indexStateLabel,
+  presetDisplayName,
+  secretBackendZh,
+} from "../format";
+import { applyUiLanguage, currentUiLanguage } from "../i18n";
 import { orderAgentIds } from "../agentOrder";
+import { applyTerminalLanguage } from "../terminals";
+import { runtimeMessageText } from "../runtimeMessages";
 import { AgentIcon } from "./AgentIcons";
 import ShellIcon from "./ShellIcon";
 import { closeDialog, confirmDialog, setState, toast, useStore } from "../store";
@@ -16,28 +28,42 @@ import type { AdapterInstall, ArchivedSessionView, Preset, SecretMeta, Settings 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-const FONT_SUGGESTIONS = [
-  "JetBrains Mono Variable",
-  "SF Mono",
-  "Menlo",
-  "Consolas",
-  "Cascadia Mono",
-  "DejaVu Sans Mono",
-];
+const FONT_OPTIONS = [
+  { value: "system-monospace", labelKey: "settings:ui.appearance.font.options.systemDefault" },
+  {
+    value: "JetBrains Mono Variable",
+    labelKey: "settings:ui.appearance.font.options.jetbrainsMonoVariable",
+  },
+  { value: "SF Mono", labelKey: "settings:ui.appearance.font.options.sfMono" },
+  { value: "Menlo", labelKey: "settings:ui.appearance.font.options.menlo" },
+  { value: "Consolas", labelKey: "settings:ui.appearance.font.options.consolas" },
+  { value: "Cascadia Mono", labelKey: "settings:ui.appearance.font.options.cascadiaMono" },
+  { value: "DejaVu Sans Mono", labelKey: "settings:ui.appearance.font.options.dejavuSansMono" },
+  { value: "Sarasa Mono SC", labelKey: "settings:ui.appearance.font.options.sarasaMonoSc" },
+  {
+    value: "Noto Sans Mono CJK SC",
+    labelKey: "settings:ui.appearance.font.options.notoSansMonoCjkSc",
+  },
+  {
+    value: "LXGW WenKai Mono",
+    labelKey: "settings:ui.appearance.font.options.lxgwWenKaiMono",
+  },
+] as const;
 
-function backendStatusText(status: string): { ok: boolean; locked: boolean; text: string } {
+function backendStatus(status: string): { ok: boolean; locked: boolean; backend: string } {
   if (status.startsWith("Available")) {
     const m = status.match(/\((\w+)\)/);
-    return { ok: true, locked: false, text: `可用（${secretBackendZh(m?.[1] ?? "")}）` };
+    return { ok: true, locked: false, backend: secretBackendZh(m?.[1] ?? "") };
   }
   if (status.startsWith("Locked")) {
     const m = status.match(/\((\w+)\)/);
-    return { ok: false, locked: true, text: `已锁定（${secretBackendZh(m?.[1] ?? "")}）` };
+    return { ok: false, locked: true, backend: secretBackendZh(m?.[1] ?? "") };
   }
-  return { ok: false, locked: false, text: "不可用" };
+  return { ok: false, locked: false, backend: "" };
 }
 
 function SecretSection() {
+  const { t } = useTranslation(["settings", "common"]);
   const s = useStore();
   const [status, setStatus] = useState(s.secretBackend);
   const [secrets, setSecrets] = useState<SecretMeta[]>([]);
@@ -60,7 +86,7 @@ function SecretSection() {
       setPresets(pre);
       setState({ secretBackend: st });
     } catch (e) {
-      setError(errorText(e));
+      setError(t("settings:ui.secrets.loadFailed", { detail: errorText(e) }));
     }
   };
 
@@ -69,7 +95,12 @@ function SecretSection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const st = backendStatusText(status);
+  const st = backendStatus(status);
+  const statusText = st.ok
+    ? t("settings:ui.secrets.backendAvailable", { backend: st.backend })
+    : st.locked
+      ? t("settings:ui.secrets.backendLocked", { backend: st.backend })
+      : t("common:status.unavailable");
 
   const add = async () => {
     if (!envName.trim() || !presetId || !value) return;
@@ -79,10 +110,10 @@ function SecretSection() {
       await api.secretAdd(presetId, envName.trim(), value);
       setEnvName("");
       setValue("");
-      toast("已保存到系统安全存储", "success");
+      toast(t("settings:ui.secrets.saved"), "success");
       await reload();
     } catch (e) {
-      setError(errorText(e));
+      setError(t("settings:ui.secrets.saveFailed", { detail: errorText(e) }));
     } finally {
       setBusy(false);
     }
@@ -91,73 +122,73 @@ function SecretSection() {
   const remove = async (id: string) => {
     const meta = secrets.find((x) => x.id === id);
     const ok = await confirmDialog({
-      title: `删除 Secret「${meta?.envName ?? id}」？`,
-      body: "将从系统安全存储与预设引用中移除，不影响已运行的 Session。",
-      confirmLabel: "删除",
+      title: t("settings:ui.secrets.deleteTitle", { name: meta?.envName ?? id }),
+      body: t("settings:ui.secrets.deleteBody"),
+      confirmLabel: t("common:actions.delete"),
       danger: true,
     });
     if (!ok) return;
     try {
       await api.secretDelete(id);
       await reload();
-      toast("已删除", "success");
+      toast(t("settings:ui.secrets.deleted"), "success");
     } catch (e) {
-      toast(errorText(e), "error");
+      toast(t("settings:ui.secrets.deleteFailed", { detail: errorText(e) }), "error");
     }
   };
 
   return (
     <>
-      <div className="section-title">Secret 管理</div>
+      <div className="section-title">{t("settings:ui.sections.secrets")}</div>
       <div className="settings-grid">
-        <label>存储后端</label>
+        <label>{t("settings:ui.secrets.backendLabel")}</label>
         <div className="control">
-          <span className={st.ok ? "" : "warn-text"}>{st.text}</span>
+          <span className={st.ok ? "" : "warn-text"}>{statusText}</span>
           <button className="btn small ghost" onClick={() => void reload()}>
-            刷新
+            {t("common:actions.refresh")}
           </button>
         </div>
       </div>
       {!st.ok ? (
         <p className="warn-text" style={{ margin: 0 }}>
-          系统安全存储不可用，AgentPort 不会改用明文保存。
+          {t("settings:ui.secrets.unavailableWarning")}{" "}
           {st.locked
-            ? "请在系统中解锁 Keychain / Secret Service 后重试。"
-            : "可解锁系统存储、改用 Shell 环境变量注入，或移除相关引用。"}
+            ? t("settings:ui.secrets.lockedHint")
+            : t("settings:ui.secrets.unavailableHint")}
         </p>
       ) : null}
       {error ? <div className="error-bar">{error}</div> : null}
       <div className="form-row">
-        <span className="form-label">添加敏感环境变量</span>
+        <span className="form-label">{t("settings:ui.secrets.addLabel")}</span>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <input
             type="text"
             style={{ flex: "1 1 140px" }}
-            placeholder="环境变量名，如 KIMI_API_KEY"
-            aria-label="环境变量名"
+            placeholder={t("settings:ui.secrets.envPlaceholder")}
+            aria-label={t("settings:ui.secrets.envAriaLabel")}
             value={envName}
             disabled={!st.ok}
             onChange={(e) => setEnvName(e.target.value)}
           />
           <select
             style={{ flex: "1 1 140px" }}
-            aria-label="所属预设"
+            aria-label={t("settings:ui.secrets.presetAriaLabel")}
             value={presetId}
             disabled={!st.ok}
             onChange={(e) => setPresetId(e.target.value)}
           >
-            <option value="">选择预设…</option>
+            <option value="">{t("settings:ui.secrets.selectPreset")}</option>
             {presets.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name}
+                {presetDisplayName(p)}
               </option>
             ))}
           </select>
           <input
             type="password"
             style={{ flex: "1 1 160px" }}
-            placeholder="值（只写入系统安全存储）"
-            aria-label="Secret 值"
+            placeholder={t("settings:ui.secrets.valuePlaceholder")}
+            aria-label={t("settings:ui.secrets.valueAriaLabel")}
             value={value}
             disabled={!st.ok}
             onChange={(e) => setValue(e.target.value)}
@@ -167,26 +198,26 @@ function SecretSection() {
             disabled={!st.ok || busy || !envName.trim() || !presetId || !value}
             onClick={() => void add()}
           >
-            {busy ? "保存中…" : "保存到系统安全存储"}
+            {busy ? t("common:actions.saving") : t("settings:ui.secrets.save")}
           </button>
         </div>
         <span className="form-hint">
-          原值只进入 macOS Keychain / Linux Secret Service；AgentPort 仅保存引用元数据。
+          {t("settings:ui.secrets.valueHint")}
         </span>
       </div>
       {secrets.length === 0 ? (
         <p className="dim" style={{ margin: 0 }}>
-          尚未保存敏感环境变量；也可以继续使用 Shell 环境。
+          {t("settings:ui.secrets.empty")}
         </p>
       ) : (
-        <table className="table" aria-label="已保存的 Secret 列表">
+        <table className="table" aria-label={t("settings:ui.secrets.tableAriaLabel")}>
           <thead>
             <tr>
-              <th>环境变量</th>
-              <th>后端</th>
-              <th>账户键</th>
-              <th>更新时间</th>
-              <th aria-label="操作" />
+              <th>{t("settings:ui.secrets.columns.environmentVariable")}</th>
+              <th>{t("settings:ui.secrets.columns.backend")}</th>
+              <th>{t("settings:ui.secrets.columns.accountKey")}</th>
+              <th>{t("settings:ui.secrets.columns.updatedAt")}</th>
+              <th aria-label={t("settings:ui.columns.actions")} />
             </tr>
           </thead>
           <tbody>
@@ -198,7 +229,7 @@ function SecretSection() {
                 <td className="dim">{m.updatedAt ? m.updatedAt.slice(0, 10) : "—"}</td>
                 <td>
                   <button className="btn small danger" onClick={() => void remove(m.id)}>
-                    删除
+                    {t("common:actions.delete")}
                   </button>
                 </td>
               </tr>
@@ -222,6 +253,7 @@ function AdapterSection({
   agentOrder: string[];
   onAgentOrderChange: (next: string[]) => void;
 }) {
+  const { t } = useTranslation(["settings", "common"]);
   const s = useStore();
   const [busy, setBusy] = useState(false);
   const orderedAgentIds = orderAgentIds(
@@ -253,14 +285,23 @@ function AdapterSection({
       const bad = outcomes.filter((o) => o.state !== "available");
       if (bad.length > 0) {
         toast(
-          `${bad.map((b) => `${b.displayName}：${b.reason ?? b.state}`).join("；")}`,
+          bad
+            .map((item) =>
+              t("settings:ui.adapters.probeFailure", {
+                agent: item.displayName,
+                reason: item.reasonMessage
+                  ? runtimeMessageText(item.reasonMessage)
+                  : item.reason ?? item.state,
+              }),
+            )
+            .join(t("settings:ui.adapters.failureSeparator")),
           "error",
         );
       } else {
-        toast("全部 Agent 探测通过", "success");
+        toast(t("settings:ui.adapters.probePassed"), "success");
       }
     } catch (e) {
-      toast(errorText(e), "error");
+      toast(t("settings:ui.adapters.reprobeFailed", { detail: errorText(e) }), "error");
     } finally {
       setBusy(false);
     }
@@ -268,24 +309,24 @@ function AdapterSection({
 
   return (
     <>
-      <div className="section-title">Agent 适配器</div>
+      <div className="section-title">{t("settings:ui.sections.adapters")}</div>
       <p className="dim" style={{ margin: 0 }}>
-        自动检测全部已注册适配器；多条安装路径会按优先级验证并自动选用可用版本。调整顺序后，项目行的快速启动图标会按相同顺序显示。
+        {t("settings:ui.adapters.description")}
       </p>
       {s.adapters.length === 0 ? (
         <p className="dim" style={{ margin: 0 }}>
-          尚未探测到任何 Agent CLI。
+          {t("settings:ui.adapters.empty")}
         </p>
       ) : (
-        <table className="table" aria-label="Agent 适配器列表">
+        <table className="table" aria-label={t("settings:ui.adapters.tableAriaLabel")}>
           <thead>
             <tr>
-              <th>Agent</th>
-              <th>路径</th>
-              <th>版本</th>
-              <th>Hook</th>
-              <th>精确恢复</th>
-              <th>排序</th>
+              <th>{t("settings:ui.adapters.columns.agent")}</th>
+              <th>{t("settings:ui.adapters.columns.path")}</th>
+              <th>{t("settings:ui.adapters.columns.version")}</th>
+              <th>{t("settings:ui.adapters.columns.hook")}</th>
+              <th>{t("settings:ui.adapters.columns.exactResume")}</th>
+              <th>{t("settings:ui.adapters.columns.order")}</th>
             </tr>
           </thead>
           <tbody>
@@ -301,8 +342,12 @@ function AdapterSection({
                   {a.executablePath}
                 </td>
                 <td className="dim">{a.versionText}</td>
-                <td>{a.hookStatus}</td>
-                <td>{a.exactResume ? "支持" : "不支持"}</td>
+                <td>{hookStatusLabel(a.hookStatus)}</td>
+                <td>
+                  {a.exactResume
+                    ? t("settings:ui.adapters.supported")
+                    : t("settings:ui.adapters.unsupported")}
+                </td>
                 <td>
                   <span className="adapter-order-actions">
                     <button
@@ -310,7 +355,9 @@ function AdapterSection({
                       className="btn small ghost"
                       disabled={index === 0}
                       onClick={() => move(a.agentType, -1)}
-                      aria-label={`上移 ${agentDisplay(a.agentType)}`}
+                      aria-label={t("settings:ui.adapters.moveUp", {
+                        agent: agentDisplay(a.agentType),
+                      })}
                     >
                       ↑
                     </button>
@@ -319,7 +366,9 @@ function AdapterSection({
                       className="btn small ghost"
                       disabled={index === orderedAdapters.length - 1}
                       onClick={() => move(a.agentType, 1)}
-                      aria-label={`下移 ${agentDisplay(a.agentType)}`}
+                      aria-label={t("settings:ui.adapters.moveDown", {
+                        agent: agentDisplay(a.agentType),
+                      })}
                     >
                       ↓
                     </button>
@@ -332,7 +381,7 @@ function AdapterSection({
       )}
       <div className="control" style={{ display: "flex", gap: 8 }}>
         <button className="btn small" disabled={busy} onClick={() => void reprobe()}>
-          {busy ? "探测中…" : "重新检测全部"}
+          {busy ? t("settings:ui.adapters.probing") : t("settings:ui.adapters.reprobeAll")}
         </button>
         <button
           className="btn small ghost"
@@ -341,7 +390,7 @@ function AdapterSection({
             setState({ showOnboarding: true });
           }}
         >
-          管理 / 新增 Agent
+          {t("settings:ui.adapters.manage")}
         </button>
       </div>
     </>
@@ -351,7 +400,7 @@ function AdapterSection({
 function formatArchivedAt(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return value;
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(currentUiLanguage(), {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
@@ -359,9 +408,10 @@ function formatArchivedAt(value: string): string {
 
 type BackupItem = { path: string; name: string; size: number; modifiedAt: string };
 
-/** 备份与恢复：创建经校验的全量备份、按需校验历史备份、恢复到新目录。
- *  恢复永不触碰正在运行的数据目录——换目录重启是刻意保留的手动步骤。 */
+/** Backup and restore: create verified full backups, verify existing backups on
+ * demand, and restore into a new directory without touching live data. */
 function BackupSection() {
+  const { t } = useTranslation(["settings", "common"]);
   const s = useStore();
   const dataRoot = s.exportsDir.replace(/\/exports$/, "");
   const backupsDir = `${dataRoot}/backups`;
@@ -379,7 +429,7 @@ function BackupSection() {
     try {
       setItems(await api.backupList());
     } catch (e) {
-      setError(errorText(e));
+      setError(t("settings:ui.backup.listFailed", { detail: errorText(e) }));
     } finally {
       setLoading(false);
     }
@@ -393,33 +443,48 @@ function BackupSection() {
     setError(null);
     try {
       const r = await api.backupCreate(null);
-      toast(`备份完成：${r.files} 个文件，已通过完整性校验`, "success");
+      toast(t("settings:ui.backup.createComplete", { count: r.files }), "success");
       await reload();
     } catch (e) {
-      setError(errorText(e));
+      setError(t("settings:ui.backup.createFailed", { detail: errorText(e) }));
     } finally {
       setCreating(false);
     }
   };
 
   const verify = async (path: string) => {
-    setVerifyState((v) => ({ ...v, [path]: { ok: true, text: "校验中…" } }));
+    setVerifyState((v) => ({
+      ...v,
+      [path]: { ok: true, text: t("settings:ui.backup.verifying") },
+    }));
     try {
       const r = await api.backupVerify(path);
-      setVerifyState((v) => ({ ...v, [path]: { ok: true, text: `完整 · ${r.files} 个文件` } }));
+      setVerifyState((v) => ({
+        ...v,
+        [path]: {
+          ok: true,
+          text: t("settings:ui.backup.verificationComplete", { count: r.files }),
+        },
+      }));
     } catch (e) {
-      setVerifyState((v) => ({ ...v, [path]: { ok: false, text: errorText(e) } }));
+      setVerifyState((v) => ({
+        ...v,
+        [path]: {
+          ok: false,
+          text: t("settings:ui.backup.verifyFailed", { detail: errorText(e) }),
+        },
+      }));
     }
   };
 
   const restore = async () => {
     setError(null);
-    const archive = await api.pickFile("AgentPort 备份");
+    const archive = await api.pickFile(t("settings:ui.backup.filePickerTitle"));
     if (!archive) return;
     const ok = await confirmDialog({
-      title: "恢复备份到新目录？",
-      body: "恢复会写入一个全新的数据目录，不会修改当前正在使用的数据。完成后退出 AgentPort，用恢复目录替换原数据目录，再重新启动。",
-      confirmLabel: "选择恢复位置",
+      title: t("settings:ui.backup.restoreTitle"),
+      body: t("settings:ui.backup.restoreBody"),
+      confirmLabel: t("settings:ui.backup.chooseRestoreLocation"),
     });
     if (!ok) return;
     const parent = await api.pickDirectory();
@@ -428,9 +493,9 @@ function BackupSection() {
     try {
       const r = await api.backupRestore(archive, `${parent}/agentport-restored`);
       setRestored(r.restored);
-      toast("恢复完成", "success");
+      toast(t("settings:ui.backup.restoreComplete"), "success");
     } catch (e) {
-      setError(errorText(e));
+      setError(t("settings:ui.backup.restoreFailed", { detail: errorText(e) }));
     } finally {
       setRestoring(false);
     }
@@ -439,69 +504,73 @@ function BackupSection() {
   return (
     <>
       <div className="settings-section-heading">
-        <div className="section-title">备份与恢复</div>
+        <div className="section-title">{t("settings:ui.sections.backup")}</div>
         <p className="form-hint">
-          备份包含数据库与全部 Session 日志；不含 Worktree、导出物与 Secret 值（恢复后需重新绑定系统安全存储中的凭据）。
+          {t("settings:ui.backup.description")}
         </p>
       </div>
       <div className="settings-grid">
-        <label>创建备份</label>
+        <label>{t("settings:ui.backup.createLabel")}</label>
         <div className="control">
           <button className="btn primary" disabled={creating} onClick={() => void create()}>
-            {creating ? "备份中…" : "立即备份"}
+            {creating ? t("settings:ui.backup.creating") : t("settings:ui.backup.createNow")}
           </button>
           <button
             className="btn small ghost"
             onClick={() =>
-              void api.revealInFileManager(backupsDir).catch((e) => toast(errorText(e), "error"))
+              void api.revealInFileManager(backupsDir).catch((e) =>
+                toast(t("settings:ui.backup.openDirectoryFailed", { detail: errorText(e) }), "error"))
             }
           >
-            打开备份目录
+            {t("settings:ui.backup.openDirectory")}
           </button>
-          <span className="form-hint">保存到应用数据目录 backups/，创建后自动校验</span>
+          <span className="form-hint">{t("settings:ui.backup.createHint")}</span>
         </div>
-        <label>恢复备份</label>
+        <label>{t("settings:ui.backup.restoreLabel")}</label>
         <div className="control">
           <button className="btn" disabled={restoring} onClick={() => void restore()}>
-            {restoring ? "恢复中…" : "从备份恢复到新目录…"}
+            {restoring ? t("settings:ui.backup.restoring") : t("settings:ui.backup.restoreToNew")}
           </button>
-          <span className="form-hint">不修改当前数据；替换目录需先退出应用</span>
+          <span className="form-hint">{t("settings:ui.backup.restoreHint")}</span>
         </div>
       </div>
       {error ? <div className="error-bar" role="alert">{error}</div> : null}
       {restored ? (
         <div className="info-box" role="status">
           <div className="kv">
-            <span className="k">已恢复到</span>
+            <span className="k">{t("settings:ui.backup.restoredTo")}</span>
             <span className="v mono">{restored}</span>
           </div>
           <p className="form-hint">
-            启用恢复数据：1) 退出 AgentPort；2) 将当前数据目录{" "}
-            <span className="mono">{dataRoot}</span> 改名备份；3) 将恢复目录改名为该路径；4)
-            重新启动 AgentPort。恢复过程不会删除任何原数据。
+            {t("settings:ui.backup.instructionsBeforePath")}{" "}
+            <span className="mono">{dataRoot}</span>{" "}
+            {t("settings:ui.backup.instructionsAfterPath")}
           </p>
           <button
             className="btn small"
             onClick={() =>
-              void api.revealInFileManager(restored).catch((e) => toast(errorText(e), "error"))
+              void api.revealInFileManager(restored).catch((e) =>
+                toast(t("settings:ui.backup.revealRestoredFailed", { detail: errorText(e) }), "error"))
             }
           >
-            在访达中显示
+            {t("settings:ui.backup.revealRestored")}
           </button>
         </div>
       ) : null}
-      <div className="section-title">已有备份</div>
-      {loading ? <p className="dim">正在读取备份列表…</p> : null}
-      {!loading && items.length === 0 ? <p className="dim">暂无备份。建议升级应用前手动备份一次。</p> : null}
+      <div className="section-title">{t("settings:ui.backup.existingTitle")}</div>
+      {loading ? <p className="dim">{t("settings:ui.backup.loading")}</p> : null}
+      {!loading && items.length === 0 ? (
+        <p className="dim">{t("settings:ui.backup.empty")}</p>
+      ) : null}
       {!loading && items.length > 0 ? (
-        <table className="table" aria-label="已有备份列表">
+        <table className="table" aria-label={t("settings:ui.backup.tableAriaLabel")}>
           <thead>
             <tr>
-              <th>文件名</th>
-              <th>大小</th>
-              <th>修改时间</th>
-              <th>状态</th>
-              <th aria-label="操作" />
+              <th>{t("settings:ui.backup.columns.fileName")}</th>
+              <th>{t("settings:ui.backup.columns.size")}</th>
+              <th>{t("settings:ui.backup.columns.modifiedAt")}</th>
+              <th>{t("settings:ui.backup.columns.status")}</th>
+              <th aria-label={t("settings:ui.columns.actions")} />
             </tr>
           </thead>
           <tbody>
@@ -513,11 +582,11 @@ function BackupSection() {
                 <td>{formatBytes(item.size)}</td>
                 <td className="dim">{item.modifiedAt ? formatTime(item.modifiedAt) : "—"}</td>
                 <td className={verifyState[item.path]?.ok === false ? "warn-text" : "dim"}>
-                  {verifyState[item.path]?.text ?? "未校验"}
+                  {verifyState[item.path]?.text ?? t("settings:ui.backup.notVerified")}
                 </td>
                 <td>
                   <button className="btn small" onClick={() => void verify(item.path)}>
-                    校验
+                    {t("settings:ui.backup.verify")}
                   </button>
                 </td>
               </tr>
@@ -530,6 +599,7 @@ function BackupSection() {
 }
 
 function ArchiveSection() {
+  const { t } = useTranslation(["settings", "common"]);
   const [sessions, setSessions] = useState<ArchivedSessionView[]>([]);
   const [query, setQuery] = useState("");
   const [agent, setAgent] = useState("all");
@@ -545,7 +615,7 @@ function ArchiveSection() {
     try {
       setSessions(await api.listArchivedSessions());
     } catch (e) {
-      setError(errorText(e));
+      setError(t("settings:ui.archive.loadFailed", { detail: errorText(e) }));
     } finally {
       setLoading(false);
     }
@@ -593,11 +663,11 @@ function ArchiveSection() {
     try {
       await api.unarchiveSession(session.id);
       setSessions((current) => current.filter((item) => item.id !== session.id));
-      toast(`已恢复「${session.title}」`, "success");
+      toast(t("settings:ui.archive.restored", { title: session.title }), "success");
       void reload();
       void refreshProjects();
     } catch (e) {
-      setError(errorText(e));
+      setError(t("settings:ui.archive.restoreFailed", { detail: errorText(e) }));
     } finally {
       setBusyId(null);
     }
@@ -605,9 +675,9 @@ function ArchiveSection() {
 
   const remove = async (session: ArchivedSessionView) => {
     const confirmed = await confirmDialog({
-      title: `永久删除「${session.title}」？`,
-      body: "会停止残留进程，并永久删除该会话的归档记录、终端日志和搜索索引；此操作不可恢复。",
-      confirmLabel: "永久删除",
+      title: t("settings:ui.archive.deleteTitle", { title: session.title }),
+      body: t("settings:ui.archive.deleteBody"),
+      confirmLabel: t("settings:ui.archive.permanentlyDelete"),
       danger: true,
     });
     if (!confirmed) return;
@@ -616,11 +686,11 @@ function ArchiveSection() {
     try {
       await api.deleteArchivedSession(session.id);
       setSessions((current) => current.filter((item) => item.id !== session.id));
-      toast("归档会话已永久删除", "success");
+      toast(t("settings:ui.archive.deleted"), "success");
       void reload();
       void refreshProjects();
     } catch (e) {
-      setError(errorText(e));
+      setError(t("settings:ui.archive.deleteFailed", { detail: errorText(e) }));
     } finally {
       setBusyId(null);
     }
@@ -629,9 +699,9 @@ function ArchiveSection() {
   const removeAll = async () => {
     if (sessions.length === 0) return;
     const confirmed = await confirmDialog({
-      title: `永久删除全部 ${sessions.length} 个归档会话？`,
-      body: "会停止残留进程，并永久删除全部归档记录、终端日志和搜索索引；此操作不可恢复。",
-      confirmLabel: "全部永久删除",
+      title: t("settings:ui.archive.deleteAllTitle", { count: sessions.length }),
+      body: t("settings:ui.archive.deleteAllBody"),
+      confirmLabel: t("settings:ui.archive.permanentlyDeleteAll"),
       danger: true,
     });
     if (!confirmed) return;
@@ -640,13 +710,13 @@ function ArchiveSection() {
     try {
       await api.deleteAllArchivedSessions();
       setSessions([]);
-      toast("全部归档会话已永久删除", "success");
+      toast(t("settings:ui.archive.deletedAll"), "success");
       // Tree/list refresh is reconciliation only. It must never keep the
       // destructive-action spinner alive after the backend has succeeded.
       void reload();
       void refreshProjects();
     } catch (e) {
-      setError(errorText(e));
+      setError(t("settings:ui.archive.deleteAllFailed", { detail: errorText(e) }));
     } finally {
       setClearingAll(false);
     }
@@ -656,36 +726,44 @@ function ArchiveSection() {
     <section className="archive-settings" aria-labelledby="archive-heading">
       <div className="archive-heading-row">
         <div>
-          <h3 id="archive-heading">归档会话</h3>
-          <p>已归档的会话不会出现在项目树中；可恢复或永久删除。</p>
+          <h3 id="archive-heading">{t("settings:ui.sections.archive")}</h3>
+          <p>{t("settings:ui.archive.description")}</p>
         </div>
         <button
           className="btn small danger"
           disabled={sessions.length === 0 || clearingAll || busyId !== null}
           onClick={() => void removeAll()}
         >
-          {clearingAll ? "删除中…" : "删除全部"}
+          {clearingAll ? t("settings:ui.archive.deleting") : t("settings:ui.archive.deleteAll")}
         </button>
       </div>
 
-      <div className="archive-filters" aria-label="归档会话筛选">
+      <div className="archive-filters" aria-label={t("settings:ui.archive.filtersAriaLabel")}>
         <input
           className="archive-search"
           type="search"
           value={query}
-          placeholder="搜索归档会话"
-          aria-label="搜索归档会话"
+          placeholder={t("settings:ui.archive.searchPlaceholder")}
+          aria-label={t("settings:ui.archive.searchAriaLabel")}
           onChange={(event) => setQuery(event.target.value)}
         />
-        <select aria-label="按 Agent 筛选" value={agent} onChange={(event) => setAgent(event.target.value)}>
-          <option value="all">全部 Agent</option>
+        <select
+          aria-label={t("settings:ui.archive.agentFilterAriaLabel")}
+          value={agent}
+          onChange={(event) => setAgent(event.target.value)}
+        >
+          <option value="all">{t("settings:ui.archive.allAgents")}</option>
           <option value="claude">Claude Code</option>
           <option value="codex">Codex</option>
           <option value="kimi">Kimi Code</option>
           <option value="shell">Shell</option>
         </select>
-        <select aria-label="按项目筛选" value={project} onChange={(event) => setProject(event.target.value)}>
-          <option value="all">全部项目</option>
+        <select
+          aria-label={t("settings:ui.archive.projectFilterAriaLabel")}
+          value={project}
+          onChange={(event) => setProject(event.target.value)}
+        >
+          <option value="all">{t("settings:ui.archive.allProjects")}</option>
           {projects.map((item) => (
             <option key={item.id} value={item.id}>
               {item.name}
@@ -695,19 +773,19 @@ function ArchiveSection() {
       </div>
 
       {error ? <div className="error-bar" role="alert">{error}</div> : null}
-      {loading ? <div className="archive-empty dim">正在读取归档会话…</div> : null}
+      {loading ? <div className="archive-empty dim">{t("settings:ui.archive.loading")}</div> : null}
       {!loading && !error && sessions.length === 0 ? (
-        <div className="archive-empty">暂无归档会话</div>
+        <div className="archive-empty">{t("settings:ui.archive.empty")}</div>
       ) : null}
       {!loading && !error && sessions.length > 0 && groups.length === 0 ? (
-        <div className="archive-empty">没有符合当前筛选条件的归档会话</div>
+        <div className="archive-empty">{t("settings:ui.archive.noResults")}</div>
       ) : null}
       {!loading && !error
         ? groups.map(([projectId, group]) => (
             <div className="archive-project" key={projectId}>
               <div className="archive-project-head">
                 <span className="archive-project-name">▱ {group.name}</span>
-                <span>{group.sessions.length} 个会话</span>
+                <span>{t("settings:ui.archive.sessionCount", { count: group.sessions.length })}</span>
               </div>
               <div className="archive-session-list">
                 {group.sessions.map((session) => {
@@ -717,7 +795,10 @@ function ArchiveSection() {
                       <div className="archive-session-copy">
                         <div className="archive-session-title">{session.title}</div>
                         <div className="archive-session-meta">
-                          {agentDisplay(session.adapter)} · 归档于 {formatArchivedAt(session.archivedAt)}
+                          {t("settings:ui.archive.archivedAt", {
+                            agent: agentDisplay(session.adapter),
+                            date: formatArchivedAt(session.archivedAt),
+                          })}
                         </div>
                       </div>
                       <div className="archive-session-actions">
@@ -726,14 +807,14 @@ function ArchiveSection() {
                           disabled={busy || clearingAll}
                           onClick={() => void remove(session)}
                         >
-                          删除
+                          {t("common:actions.delete")}
                         </button>
                         <button
                           className="btn small"
                           disabled={busy || clearingAll}
                           onClick={() => void restore(session)}
                         >
-                          {busy ? "处理中…" : "恢复"}
+                          {busy ? t("settings:ui.archive.processing") : t("common:actions.restore")}
                         </button>
                       </div>
                     </article>
@@ -756,24 +837,30 @@ type SettingsSection =
   | "archive"
   | "backup";
 
-const SETTINGS_SECTIONS: Array<{ id: SettingsSection; label: string }> = [
-  { id: "appearance", label: "外观与可访问性" },
-  { id: "notifications", label: "通知与日志" },
-  { id: "search", label: "搜索与渲染" },
-  { id: "adapters", label: "Agent 适配器" },
-  { id: "secrets", label: "Secret 管理" },
-  { id: "archive", label: "归档会话" },
-  { id: "backup", label: "备份与恢复" },
-];
+const SETTINGS_SECTIONS = [
+  { id: "appearance", labelKey: "settings:ui.sections.appearance" },
+  { id: "notifications", labelKey: "settings:ui.sections.notifications" },
+  { id: "search", labelKey: "settings:ui.sections.search" },
+  { id: "adapters", labelKey: "settings:ui.sections.adapters" },
+  { id: "secrets", labelKey: "settings:ui.sections.secrets" },
+  { id: "archive", labelKey: "settings:ui.sections.archive" },
+  { id: "backup", labelKey: "settings:ui.sections.backup" },
+] as const satisfies ReadonlyArray<{ id: SettingsSection; labelKey: string }>;
 
 export default function SettingsDialog() {
+  const { t } = useTranslation(["settings", "common"]);
   const s = useStore();
   const pageRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState<Settings | null>(s.settings ? { ...s.settings } : null);
   const [busy, setBusy] = useState(false);
   const [themeBusy, setThemeBusy] = useState(false);
+  const [languageBusy, setLanguageBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [section, setSection] = useState<SettingsSection>("appearance");
+  const closeBlocked = busy || themeBusy || languageBusy;
+  const requestClose = () => {
+    if (!closeBlocked) closeDialog();
+  };
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -786,6 +873,32 @@ export default function SettingsDialog() {
   if (!draft) return null;
   const patch = (p: Partial<Settings>) => setDraft((d) => (d ? { ...d, ...p } : d));
   const dirty = s.settings !== null && JSON.stringify(draft) !== JSON.stringify(s.settings);
+
+  const switchLanguage = async (uiLanguage: Settings["uiLanguage"]) => {
+    if (languageBusy || themeBusy || !s.settings || s.settings.uiLanguage === uiLanguage) return;
+    const previousSettings = s.settings;
+    const previousLanguage = currentUiLanguage();
+    const nextSettings = { ...previousSettings, uiLanguage, telemetryEnabled: false };
+    setLanguageBusy(true);
+    setError(null);
+    setDraft((current) => (current ? { ...current, uiLanguage } : current));
+    setState({ settings: nextSettings });
+    try {
+      await applyUiLanguage(uiLanguage);
+      applyTerminalLanguage();
+      await api.saveSettings(nextSettings);
+    } catch (e) {
+      setState({ settings: previousSettings });
+      setDraft((current) =>
+        current ? { ...current, uiLanguage: previousSettings.uiLanguage } : current,
+      );
+      await applyUiLanguage(previousLanguage);
+      applyTerminalLanguage();
+      setError(t("settings:ui.appearance.languageSaveFailed", { detail: errorText(e) }));
+    } finally {
+      setLanguageBusy(false);
+    }
+  };
 
   const switchTheme = async (theme: Settings["theme"]) => {
     if (themeBusy || !s.settings || s.settings.theme === theme) return;
@@ -807,7 +920,7 @@ export default function SettingsDialog() {
         current ? { ...current, theme: previousSettings.theme } : current,
       );
       applyThemeSettings();
-      setError(`主题切换失败：${errorText(e)}`);
+      setError(t("settings:ui.appearance.theme.switchFailed", { detail: errorText(e) }));
     } finally {
       setThemeBusy(false);
     }
@@ -821,10 +934,10 @@ export default function SettingsDialog() {
       setState({ settings: { ...draft, telemetryEnabled: false } });
       applyThemeSettings();
       await refreshProjects();
-      toast("设置已保存", "success");
+      toast(t("settings:ui.saved"), "success");
       closeDialog();
     } catch (e) {
-      setError(errorText(e));
+      setError(t("settings:ui.saveFailed", { detail: errorText(e) }));
     } finally {
       setBusy(false);
     }
@@ -833,20 +946,36 @@ export default function SettingsDialog() {
   const appearanceSection = (
     <>
       <div className="settings-section-heading">
-        <div className="section-title">外观与可访问性</div>
-        <p className="form-hint">控制窗口、终端和状态反馈的视觉表现。</p>
+        <div className="section-title">{t("settings:ui.sections.appearance")}</div>
+        <p className="form-hint">{t("settings:ui.appearance.description")}</p>
       </div>
       <div className="settings-grid">
-        <label id="set-theme-label">主题</label>
+        <label htmlFor="set-language">{t("settings:ui.appearance.language")}</label>
+        <div className="control">
+          <select
+            id="set-language"
+            value={draft.uiLanguage}
+            disabled={busy || languageBusy || themeBusy}
+            onChange={(event) =>
+              void switchLanguage(event.target.value as Settings["uiLanguage"])
+            }
+          >
+            <option value="zh-CN">{t("common:language.zhCN")}</option>
+            <option value="en-US">{t("common:language.enUS")}</option>
+          </select>
+          <span className="form-hint">{t("settings:ui.appearance.languageHint")}</span>
+        </div>
+
+        <label id="set-theme-label">{t("settings:ui.appearance.theme.label")}</label>
         <div className="control theme-control">
           <div className="theme-segmented" role="radiogroup" aria-labelledby="set-theme-label">
             {(
               [
-                ["system", "系统"],
-                ["light", "浅色"],
-                ["dark", "深色"],
+                ["system", "settings:ui.appearance.theme.system"],
+                ["light", "settings:ui.appearance.theme.light"],
+                ["dark", "settings:ui.appearance.theme.dark"],
               ] as const
-            ).map(([value, label]) => (
+            ).map(([value, labelKey]) => (
               <label className="theme-segment" key={value}>
                 <input
                   className="sr-only"
@@ -854,38 +983,47 @@ export default function SettingsDialog() {
                   name="theme"
                   value={value}
                   checked={draft.theme === value}
-                  disabled={busy || themeBusy}
+                  disabled={busy || themeBusy || languageBusy}
                   onChange={() => void switchTheme(value)}
                 />
-                <span>{label}</span>
+                <span>{t(labelKey)}</span>
               </label>
             ))}
           </div>
           <span className="sr-only" aria-live="polite">
-            当前生效：{s.themeEffective === "dark" ? "深色" : "浅色"}
+            {t("settings:ui.appearance.theme.effective", {
+              theme: t(
+                s.themeEffective === "dark"
+                  ? "settings:ui.appearance.theme.dark"
+                  : "settings:ui.appearance.theme.light",
+              ),
+            })}
           </span>
         </div>
 
-        <label htmlFor="set-font">终端字体族</label>
+        <label htmlFor="set-font">{t("settings:ui.appearance.font.label")}</label>
         <div className="control">
-          <input
+          <select
             id="set-font"
-            type="text"
-            list="font-suggestions"
-            value={draft.terminalFontFamily === "system-monospace" ? "" : draft.terminalFontFamily}
-            placeholder="JetBrains Mono"
-            onChange={(e) =>
-              patch({ terminalFontFamily: e.target.value.trim() || "system-monospace" })
-            }
-          />
-          <datalist id="font-suggestions">
-            {FONT_SUGGESTIONS.map((f) => (
-              <option key={f} value={f} />
+            value={draft.terminalFontFamily}
+            onChange={(e) => patch({ terminalFontFamily: e.target.value })}
+          >
+            {!FONT_OPTIONS.some((font) => font.value === draft.terminalFontFamily) ? (
+              <option value={draft.terminalFontFamily}>
+                {t("settings:ui.appearance.font.custom", {
+                  font: draft.terminalFontFamily,
+                })}
+              </option>
+            ) : null}
+            {FONT_OPTIONS.map((font) => (
+              <option key={font.value} value={font.value}>
+                {t(font.labelKey)}
+              </option>
             ))}
-          </datalist>
+          </select>
         </div>
 
-        <label htmlFor="set-fontsize">终端字号（10–28）</label>
+        <label htmlFor="set-fontsize">{t("settings:ui.appearance.fontSize")}</label>
         <div className="control">
           <input
             id="set-fontsize"
@@ -898,21 +1036,21 @@ export default function SettingsDialog() {
           <span className="form-hint">px</span>
         </div>
 
-        <label htmlFor="set-motion">减少动效</label>
+        <label htmlFor="set-motion">{t("settings:ui.appearance.motion.label")}</label>
         <div className="control">
           <select
             id="set-motion"
             value={draft.reducedMotion}
             onChange={(e) => patch({ reducedMotion: e.target.value as Settings["reducedMotion"] })}
           >
-            <option value="system">跟随系统</option>
-            <option value="on">开启</option>
-            <option value="off">关闭</option>
+            <option value="system">{t("settings:ui.appearance.motion.system")}</option>
+            <option value="on">{t("settings:ui.appearance.motion.on")}</option>
+            <option value="off">{t("settings:ui.appearance.motion.off")}</option>
           </select>
-          <span className="form-hint">开启后移除位移动画，仅保留透明度变化</span>
+          <span className="form-hint">{t("settings:ui.appearance.motion.hint")}</span>
         </div>
 
-        <label htmlFor="set-sr">屏幕阅读器模式</label>
+        <label htmlFor="set-sr">{t("settings:ui.appearance.screenReader.label")}</label>
         <div className="control">
           <label className="check-row">
             <input
@@ -921,7 +1059,7 @@ export default function SettingsDialog() {
               checked={draft.screenReaderMode}
               onChange={(e) => patch({ screenReaderMode: e.target.checked })}
             />
-            <span>启用终端无障碍树与状态变化朗读</span>
+            <span>{t("settings:ui.appearance.screenReader.hint")}</span>
           </label>
         </div>
       </div>
@@ -931,11 +1069,11 @@ export default function SettingsDialog() {
   const notificationsSection = (
     <>
       <div className="settings-section-heading">
-        <div className="section-title">通知与日志</div>
-        <p className="form-hint">控制状态变化提醒和日志保留范围。</p>
+        <div className="section-title">{t("settings:ui.sections.notifications")}</div>
+        <p className="form-hint">{t("settings:ui.notifications.description")}</p>
       </div>
       <div className="settings-grid">
-        <label htmlFor="set-notify">系统通知</label>
+        <label htmlFor="set-notify">{t("settings:ui.notifications.systemLabel")}</label>
         <div className="control">
           <label className="check-row">
             <input
@@ -944,11 +1082,16 @@ export default function SettingsDialog() {
               checked={draft.notificationsEnabled}
               onChange={(e) => patch({ notificationsEnabled: e.target.checked })}
             />
-            <span>状态变化时发送系统通知（应用内未读始终生效）</span>
+            <span>{t("settings:ui.notifications.systemHint")}</span>
           </label>
+          <span className="form-hint">
+            {s.platform?.os === "macos"
+              ? t("settings:ui.notifications.permissionHintMacos")
+              : t("settings:ui.notifications.permissionHintLinux")}
+          </span>
         </div>
 
-        <label htmlFor="set-loglimit">日志上限（20–2048 MiB）</label>
+        <label htmlFor="set-loglimit">{t("settings:ui.notifications.logLimitLabel")}</label>
         <div className="control">
           <input
             id="set-loglimit"
@@ -958,22 +1101,24 @@ export default function SettingsDialog() {
             value={draft.logLimitMib}
             onChange={(e) => patch({ logLimitMib: Number(e.target.value) })}
           />
-          <span className="form-hint">达到上限后历史日志轮转，仅保留最近部分</span>
+          <span className="form-hint">{t("settings:ui.notifications.logLimitHint")}</span>
         </div>
 
         {s.platform?.os === "linux" ? (
           <>
-            <label htmlFor="set-terminal-command">系统终端命令（可选）</label>
+            <label htmlFor="set-terminal-command">
+              {t("settings:ui.notifications.terminalCommandLabel")}
+            </label>
             <div className="control">
               <input
                 id="set-terminal-command"
                 type="text"
                 value={draft.terminalCommand}
-                placeholder="自动检测（x-terminal-emulator、GNOME Terminal、Konsole）"
+                placeholder={t("settings:ui.notifications.terminalCommandPlaceholder")}
                 onChange={(e) => patch({ terminalCommand: e.target.value })}
               />
               <span className="form-hint">
-                填写终端可执行文件名或绝对路径；不解析参数，以目标项目目录作为工作目录启动。
+                {t("settings:ui.notifications.terminalCommandHint")}
               </span>
             </div>
           </>
@@ -986,11 +1131,11 @@ export default function SettingsDialog() {
   const searchSection = (
     <>
       <div className="settings-section-heading">
-        <div className="section-title">搜索与渲染</div>
-        <p className="form-hint">控制终端索引和终端渲染器。</p>
+        <div className="section-title">{t("settings:ui.sections.search")}</div>
+        <p className="form-hint">{t("settings:ui.search.description")}</p>
       </div>
       <div className="settings-grid">
-        <label htmlFor="set-index">搜索索引</label>
+        <label htmlFor="set-index">{t("settings:ui.search.indexLabel")}</label>
         <div className="control">
           <label className="check-row">
             <input
@@ -999,30 +1144,39 @@ export default function SettingsDialog() {
               checked={draft.searchIndexEnabled}
               onChange={(e) => patch({ searchIndexEnabled: e.target.checked })}
             />
-            <span>索引终端文本（源日志不被修改，索引可随时重建）</span>
+            <span>{t("settings:ui.search.indexHint")}</span>
           </label>
         </div>
-        <label>索引状态</label>
+        <label>{t("settings:ui.search.indexStatus")}</label>
         <div className="control">
-          <span className="mono">{s.indexState}</span>
+          <span>{indexStateLabel(s.indexState)}</span>
           <button
             className="btn small"
             onClick={() => {
-              toast("已开始后台重建搜索索引", "info");
+              toast(t("settings:ui.search.rebuildStarted"), "info");
               api
                 .rebuildSearchIndex()
-                .then(() => toast("搜索索引重建完成", "success"))
-                .catch((e) => toast(`重建失败：${errorText(e)}`, "error"));
+                .then(() => toast(t("settings:ui.search.rebuildComplete"), "success"))
+                .catch((e) =>
+                  toast(
+                    t("settings:ui.search.rebuildFailed", { detail: errorText(e) }),
+                    "error",
+                  ),
+                );
             }}
           >
-            手动重建
+            {t("settings:ui.search.rebuild")}
           </button>
         </div>
-        <label>渲染模式</label>
+        <label>{t("settings:ui.search.rendererLabel")}</label>
         <div className="control">
-          <span>稳定终端渲染器</span>
+          <span>{t("settings:ui.search.stableRenderer")}</span>
           {s.rendererFallbackReason ? (
-            <span className="form-hint">{s.rendererFallbackReason}</span>
+            <span className="form-hint">
+              {t("settings:ui.search.canvasRendererUnavailable", {
+                detail: s.rendererFallbackReason,
+              })}
+            </span>
           ) : null}
         </div>
       </div>
@@ -1043,7 +1197,7 @@ export default function SettingsDialog() {
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
-      closeDialog();
+      requestClose();
       return;
     }
     if (event.key !== "Tab") return;
@@ -1077,15 +1231,17 @@ export default function SettingsDialog() {
     >
       <header className="settings-page-header" data-tauri-drag-region="deep">
         <h1 id="settings-page-title" className="settings-page-breadcrumb">
-          <span>设置</span>
+          <span>{t("settings:ui.title")}</span>
           <span className="settings-page-breadcrumb-separator" aria-hidden="true">/</span>
-          <span>{SETTINGS_SECTIONS.find((item) => item.id === section)?.label}</span>
+          <span>
+            {t(SETTINGS_SECTIONS.find((item) => item.id === section)?.labelKey ?? "settings:ui.title")}
+          </span>
         </h1>
       </header>
       <div className="settings-shell">
-        <nav className="settings-nav" aria-label="设置分类">
-          <button className="settings-back" onClick={closeDialog}>
-            返回
+        <nav className="settings-nav" aria-label={t("settings:ui.navigationAriaLabel")}>
+          <button className="settings-back" disabled={closeBlocked} onClick={requestClose}>
+            {t("common:actions.back")}
           </button>
           {SETTINGS_SECTIONS.map((item) => (
             <button
@@ -1094,26 +1250,26 @@ export default function SettingsDialog() {
               aria-current={section === item.id ? "page" : undefined}
               onClick={() => setSection(item.id)}
             >
-              {item.label}
+              {t(item.labelKey)}
             </button>
           ))}
         </nav>
-        <section className="settings-page-panel" aria-label="设置内容">
+        <section className="settings-page-panel" aria-label={t("settings:ui.contentAriaLabel")}>
           <div className="settings-content">
             {error ? <div className="error-bar" role="alert">{error}</div> : null}
             {content}
           </div>
           {dirty && section !== "archive" && section !== "backup" ? (
             <footer className="settings-page-footer" data-tauri-drag-region="false">
-              <button className="btn ghost" onClick={closeDialog}>
-                取消
+              <button className="btn ghost" disabled={closeBlocked} onClick={requestClose}>
+                {t("common:actions.cancel")}
               </button>
               <button
                 className="btn primary"
-                disabled={busy || themeBusy}
+                disabled={busy || themeBusy || languageBusy}
                 onClick={() => void save()}
               >
-                {busy ? "保存中…" : "保存更改"}
+                {busy ? t("common:actions.saving") : t("settings:ui.saveChanges")}
               </button>
             </footer>
           ) : null}

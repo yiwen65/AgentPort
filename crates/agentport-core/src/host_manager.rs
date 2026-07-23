@@ -1043,7 +1043,23 @@ impl HostClient {
                     log_cursor,
                 }
             }
-            HostFrame::Error { message, .. } => return Err(CoreError::Protocol(message)),
+            HostFrame::Error {
+                message,
+                code,
+                params,
+                technical_detail,
+                ..
+            } => {
+                return Err(match code {
+                    Some(code) => CoreError::RuntimeMessage {
+                        code,
+                        params: params.unwrap_or_else(|| serde_json::json!({})),
+                        technical_detail: technical_detail.unwrap_or_else(|| message.clone()),
+                        message,
+                    },
+                    None => CoreError::Protocol(message),
+                })
+            }
             other => {
                 return Err(CoreError::Protocol(format!(
                     "unexpected first frame from host: {other:?}"
@@ -1252,6 +1268,9 @@ mod tests {
                     &HostFrame::Error {
                         session_id: None,
                         message: "bad session id or token".into(),
+                        code: None,
+                        params: None,
+                        technical_detail: None,
                     },
                 );
                 return;
@@ -1264,6 +1283,9 @@ mod tests {
                     &HostFrame::Error {
                         session_id: Some(sid),
                         message: "unsupported protocol".into(),
+                        code: None,
+                        params: None,
+                        technical_detail: None,
                     },
                 );
                 return;

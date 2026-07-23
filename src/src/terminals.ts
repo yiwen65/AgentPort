@@ -19,8 +19,10 @@ import {
   toast,
   type EffectiveTheme,
 } from "./store";
-import { formatBytes, stateZh } from "./format";
-import type { ChannelMsg, LogCursorView } from "./types";
+import { stateLabel } from "./format";
+import { i18n } from "./i18n";
+import { runtimeMessageEnvelope, runtimeMessageText } from "./runtimeMessages";
+import type { ChannelMsg, LogCursorView, RuntimeMessageEnvelope } from "./types";
 
 // Keep a substantial local history window for interactive find/navigation.
 // The persisted log remains the source of truth and can be much larger, but
@@ -82,6 +84,11 @@ export interface TerminalBufferMatch {
 
 const handles = new Map<string, TermHandle>();
 const unreadOutputPending = new Set<string>();
+
+function resetRenderObservation(handle: TermHandle) {
+  handle.pendingRenderedLogCursor = null;
+  handle.renderObservationQueued = false;
+}
 
 /**
  * Captures the first non-empty command line without interfering with PTY I/O.
@@ -285,6 +292,10 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
   const s = getState();
   const settings = s.settings;
   const session = s.projects.flatMap((project) => project.sessions).find((item) => item.id === sessionId);
+  if (Terminal.strings) {
+    Terminal.strings.promptLabel = i18n.t("shell:terminal.promptLabel");
+    Terminal.strings.tooMuchOutput = i18n.t("shell:terminal.tooMuchOutput");
+  }
   const term = new Terminal({
     fontFamily: cssFontFamily(settings?.terminalFontFamily ?? "system-monospace"),
     fontSize: settings?.terminalFontSize ?? DEFAULT_TERMINAL_FONT_SIZE,
@@ -368,7 +379,7 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
       })
       .catch((e) => {
         if (firstInput) handle.firstInputSubmitted = false;
-        patchRuntime(sessionId, { error: errorText(e) });
+        patchRuntime(sessionId, { error: errorText(e), errorMessage: null });
       });
   });
   term.onScroll(() => updateScrolledUp(handle));
@@ -419,20 +430,28 @@ const REPEAT_DELAY_MS = 500;
 const REPEAT_INTERVAL_MS = 40;
 
 function repeatableInput(e: KeyboardEvent): string | null {
-  if (e.repeat || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return null;
+  if (e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return null;
   if (e.key.length === 1) return e.key; // printable; Shift/CapsLock already applied
   if (e.key === "Backspace") return "\x7f"; // same sequence xterm emits
   return null;
 }
 
-function installInputRepeat(term: Terminal, container: HTMLElement): () => void {
-  const textarea = term.textarea;
-  if (!textarea) return () => {};
+const IME_KEYDOWN_WINDOW_MS = 1000;
+
+function installInputCompatibility(term: Terminal, container: HTMLElement): () => void {
+  if (!term.textarea) return () => {};
   let delayTimer: number | undefined;
   let intervalTimer: number | undefined;
   let activeCode: string | null = null;
+  let forwardedGeneration = 0;
+  let disposed = false;
+  let pendingKeyDown: { generation: number; timeStamp: number } | null = null;
+  const fallbackTimers = new Set<number>();
+  const forwarded = term.onData(() => {
+    forwardedGeneration += 1;
+  });
 
-  const stop = () => {
+  const stopRepeat = () => {
     if (delayTimer !== undefined) {
       window.clearTimeout(delayTimer);
       delayTimer = undefined;
@@ -444,16 +463,45 @@ function installInputRepeat(term: Terminal, container: HTMLElement): () => void 
     activeCode = null;
   };
 
-  const onKeyDown = (e: KeyboardEvent) => {
-    // Native repeats (if the platform delivers them) stay authoritative.
-    if (e.repeat) {
-      stop();
+  const deferFallback = (data: string, generation: number) => {
+    // First let the current DOM event finish. xterm may handle it synchronously
+    // or queue its own 0ms textarea-diff task for IME keyCode 229. Register our
+    // task afterwards and only fill the gap if neither path emitted onData.
+    queueMicrotask(() => {
+      if (disposed || forwardedGeneration !== generation) return;
+      const timer = window.setTimeout(() => {
+        fallbackTimers.delete(timer);
+        if (!disposed && forwardedGeneration === generation) term.input(data);
+      }, 0);
+      fallbackTimers.add(timer);
+    });
+  };
+
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (
+      event.target === term.textarea &&
+      event.key === "Tab" && event.shiftKey &&
+      !event.altKey && !event.ctrlKey && !event.metaKey
+    ) {
+      // Keep reverse-tab inside the terminal. Do not stop propagation: xterm
+      // must still translate it to ESC [ Z for the active Agent.
+      event.preventDefault();
+    }
+    const generationAtKeyDown = forwardedGeneration;
+    pendingKeyDown = { generation: generationAtKeyDown, timeStamp: event.timeStamp };
+    const data = repeatableInput(event);
+    if (event.repeat) {
+      stopRepeat();
+      if (data !== null) {
+        // Let xterm keep its key/onData/textarea and accessibility behavior;
+        // only synthesize the repeat if that complete path produces no data.
+        deferFallback(data, generationAtKeyDown);
+      }
       return;
     }
-    const data = repeatableInput(e);
-    stop();
+    stopRepeat();
     if (data === null) return;
-    activeCode = e.code;
+    activeCode = event.code;
     delayTimer = window.setTimeout(() => {
       delayTimer = undefined;
       intervalTimer = window.setInterval(() => term.input(data), REPEAT_INTERVAL_MS);
@@ -461,29 +509,55 @@ function installInputRepeat(term: Terminal, container: HTMLElement): () => void 
   };
 
   const onKeyUp = (e: KeyboardEvent) => {
-    if (activeCode === null || e.code === activeCode) stop();
+    if (activeCode === null || e.code === activeCode) stopRepeat();
+  };
+
+  const onInput = (event: Event) => {
+    if (!(event instanceof InputEvent)) return;
+    if (!event.data || event.inputType !== "insertText" || event.isComposing) return;
+    const data = event.data;
+    const generationAtInput = forwardedGeneration;
+    const keyDown = pendingKeyDown;
+    pendingKeyDown = null;
+    const followsKeyDown = keyDown !== null &&
+      event.timeStamp >= keyDown.timeStamp &&
+      event.timeStamp - keyDown.timeStamp <= IME_KEYDOWN_WINDOW_MS;
+    if (followsKeyDown && generationAtInput !== keyDown.generation) return;
+    // Some third-party macOS IMEs commit English text only through a composed
+    // input event. xterm ignores it after seeing keydown even when that
+    // keydown produced no onData, so fill only the verified missing input.
+    deferFallback(data, generationAtInput);
   };
 
   // Observe from an ancestor in the capture phase: xterm's own textarea
   // handlers stop propagation, so listeners on the textarea itself never
-  // fire. These listeners only observe; they never prevent or stop events.
+  // fire. Shift+Tab only cancels WebView focus traversal; no event is stopped.
   container.addEventListener("keydown", onKeyDown, true);
   container.addEventListener("keyup", onKeyUp, true);
-  container.addEventListener("blur", stop, true);
+  container.addEventListener("blur", stopRepeat, true);
+  container.addEventListener("input", onInput, true);
   return () => {
-    stop();
+    disposed = true;
+    stopRepeat();
+    for (const timer of fallbackTimers) window.clearTimeout(timer);
+    fallbackTimers.clear();
+    forwarded.dispose();
     container.removeEventListener("keydown", onKeyDown, true);
     container.removeEventListener("keyup", onKeyUp, true);
-    container.removeEventListener("blur", stop, true);
+    container.removeEventListener("blur", stopRepeat, true);
+    container.removeEventListener("input", onInput, true);
   };
 }
 
-const inputRepeatDisposers = new Map<string, () => void>();
+const inputCompatibilityDisposers = new Map<string, () => void>();
 
 function bindTerminalContainer(handle: TermHandle, container: HTMLDivElement) {
   handle.container = container;
-  inputRepeatDisposers.get(handle.sessionId)?.();
-  inputRepeatDisposers.set(handle.sessionId, installInputRepeat(handle.term, container));
+  inputCompatibilityDisposers.get(handle.sessionId)?.();
+  inputCompatibilityDisposers.set(
+    handle.sessionId,
+    installInputCompatibility(handle.term, container),
+  );
   handle.resizeObserver?.disconnect();
   handle.resizeObserver = new ResizeObserver(() => fitHandle(handle));
   handle.resizeObserver.observe(container);
@@ -504,7 +578,7 @@ export function mountTerminal(sessionId: string, container: HTMLDivElement) {
     } catch (error) {
       setState({
         rendererMode: "dom",
-        rendererFallbackReason: `Canvas renderer unavailable: ${errorText(error)}`,
+        rendererFallbackReason: errorText(error),
       });
     }
     syncHandleTheme(handle);
@@ -557,14 +631,20 @@ export async function loadHistoryTail(sessionId: string): Promise<void> {
   if (handle.historyLoaded || handle.historyLoading) return;
   handle.historyLoading = true;
   const generation = handle.generation;
+  patchRuntime(sessionId, { historyNote: null, historyMessage: null });
   try {
     const res = await api.readLogTail(sessionId, HISTORY_TAIL_BYTES);
     if (handles.get(sessionId) !== handle || handle.generation !== generation) return;
     if (res.data) {
       writeTerminalOutput(handle, b64ToBytes(res.data));
       if (res.offset > 0) {
+        const historyMessage: RuntimeMessageEnvelope = {
+          code: "terminal_history_tail",
+          params: { shown: res.total - res.offset, total: res.total },
+        };
         patchRuntime(sessionId, {
-          historyNote: `仅显示最后 ${formatBytes(res.total - res.offset)}（日志共 ${formatBytes(res.total)}）`,
+          historyNote: runtimeMessageText(historyMessage),
+          historyMessage,
         });
       }
     }
@@ -575,7 +655,15 @@ export async function loadHistoryTail(sessionId: string): Promise<void> {
     if (handles.get(sessionId) === handle && handle.generation === generation) {
       // A transient tail-read failure is retryable; never mark history loaded
       // before the bytes have actually reached this generation's xterm.
-      patchRuntime(sessionId, { replayDone: true, historyNote: `日志读取失败：${errorText(e)}` });
+      const historyMessage: RuntimeMessageEnvelope = {
+        code: "terminal_log_read_failed",
+        technicalDetail: errorText(e),
+      };
+      patchRuntime(sessionId, {
+        replayDone: true,
+        historyNote: runtimeMessageText(historyMessage),
+        historyMessage,
+      });
     }
   } finally {
     if (handles.get(sessionId) === handle && handle.generation === generation) {
@@ -660,15 +748,19 @@ export function clearUnreadOutputTracking(sessionId: string) {
 export async function attachHandle(
   sessionId: string,
   recoveryTarget: LogCursorView | null = null,
+  preserveErrorDuringAttach = false,
 ): Promise<void> {
   const handle = getOrCreateHandle(sessionId);
   if (handle.attached || handle.attaching) return;
   handle.attaching = true;
   const generation = ++handle.generation;
-  handle.pendingRenderedLogCursor = null;
-  handle.renderObservationQueued = false;
+  resetRenderObservation(handle);
   const resumeFrom = recoveryTarget ? null : handle.logCursor;
-  patchRuntime(sessionId, { attaching: true, error: null, detached: false });
+  patchRuntime(sessionId, {
+    attaching: true,
+    detached: false,
+    ...(preserveErrorDuringAttach ? {} : { error: null, errorMessage: null }),
+  });
   const channel = new Channel<ChannelMsg>();
   channel.onmessage = (msg) => {
     if (handles.get(sessionId) !== handle || generation !== handle.generation) return;
@@ -710,6 +802,7 @@ export async function attachHandle(
       hostPid: info.hostPid,
       logBytes: info.logBytes,
       error: null,
+      errorMessage: null,
       exit: null,
     });
     if (info.status) {
@@ -724,11 +817,13 @@ export async function attachHandle(
     fitHandle(handle, true, true);
   } catch (e) {
     if (handles.get(sessionId) !== handle || generation !== handle.generation) return;
+    const errorMessage = runtimeMessageEnvelope(e);
     patchRuntime(sessionId, {
       attaching: false,
       attached: false,
       detached: true,
-      error: errorText(e),
+      error: errorMessage ? runtimeMessageText(errorMessage) : errorText(e),
+      errorMessage,
     });
   } finally {
     if (handles.get(sessionId) === handle && generation === handle.generation) {
@@ -809,7 +904,7 @@ function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "out
       const end = incoming.offset + original.length;
       if (end <= current.offset) return; // complete replay duplicate
       if (incoming.offset > current.offset && handle.allowRecoveryGap) {
-        handle.term.write("\r\n\x1b[2m── 已从恢复事件附近跳回最新输出 ──\x1b[0m\r\n");
+        handle.term.write(`\r\n\x1b[2m── ${i18n.t("session:terminal.returnedToLatest")} ──\x1b[0m\r\n`);
         handle.logCursor = { ...incoming, offset: incoming.offset };
         handle.allowRecoveryGap = false;
       } else if (incoming.offset > current.offset) {
@@ -817,29 +912,30 @@ function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "out
         // explicitly instead of joining unrelated terminal bytes together.
         const attachmentId = handle.attachmentId;
         handle.generation += 1;
-        handle.pendingRenderedLogCursor = null;
-        handle.renderObservationQueued = false;
+        resetRenderObservation(handle);
         handle.attached = false;
         handle.attaching = false;
         handle.attachmentId = null;
         handle.term.reset();
         handle.logCursor = null;
+        const errorMessage: RuntimeMessageEnvelope = { code: "terminal_output_gap" };
         patchRuntime(sessionId, {
           attached: false,
           detached: true,
-          error: "输出流出现间隙，正在重新同步",
+          error: runtimeMessageText(errorMessage),
+          errorMessage,
         });
         if (attachmentId !== null) {
           void api.detachSession(sessionId, attachmentId).catch(() => undefined);
         }
-        void attachHandle(sessionId);
+        void attachHandle(sessionId, null, true);
         return;
       }
       if (incoming.offset < current.offset) {
         bytes = original.slice(current.offset - incoming.offset);
       }
     } else {
-      handle.term.write("\r\n\x1b[2m── 输出日志已轮转 ──\x1b[0m\r\n");
+      handle.term.write(`\r\n\x1b[2m── ${i18n.t("session:terminal.outputRotated")} ──\x1b[0m\r\n`);
     }
   }
 
@@ -854,7 +950,7 @@ function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "out
   ) {
     const markerAt = Math.max(0, Math.min(bytes.length, target.offset - incoming.offset));
     if (markerAt > 0) writeTerminalOutput(handle, bytes.slice(0, markerAt));
-    handle.term.write("\r\n\x1b[2m── 恢复事件定位处 ──\x1b[0m\r\n");
+    handle.term.write(`\r\n\x1b[2m── ${i18n.t("session:terminal.recoveryLocation")} ──\x1b[0m\r\n`);
     if (markerAt < bytes.length) writeTerminalOutput(handle, bytes.slice(markerAt));
     handle.recoveryTarget = null;
   } else {
@@ -901,9 +997,14 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       handle.term.reset();
       handle.logCursor = null;
       handle.historyLoaded = false;
+      const historyMessage: RuntimeMessageEnvelope = {
+        code: "terminal_resynced",
+        params: { reason: msg.reason },
+      };
       patchRuntime(sessionId, {
         replayDone: false,
-        historyNote: `输出已重新同步：${msg.reason}`,
+        historyNote: runtimeMessageText(historyMessage),
+        historyMessage,
       });
       break;
     }
@@ -914,7 +1015,10 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
         const ses = getState()
           .projects.flatMap((p) => p.sessions)
           .find((x) => x.id === sessionId);
-        announce(`会话 ${ses?.title ?? sessionId} 状态变为${stateZh(msg.event.state)}`);
+        announce(i18n.t("session:terminal.stateAnnouncement", {
+          title: ses?.title ?? sessionId,
+          state: stateLabel(msg.event.state),
+        }));
       }
       break;
     }
@@ -938,17 +1042,22 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       break;
     }
     case "error": {
-      patchRuntime(sessionId, { error: msg.message });
-      toast(`会话错误：${msg.message}`, "error");
+      const detail = runtimeMessageText(msg);
+      patchRuntime(sessionId, { error: detail, errorMessage: msg });
+      toast(i18n.t("session:terminal.sessionError", { detail }), "error");
       break;
     }
     case "detached": {
+      const detail = msg.code || msg.message || msg.technicalDetail
+        ? runtimeMessageText(msg)
+        : null;
       handle.attached = false;
       handle.attachmentId = null;
       patchRuntime(sessionId, {
         attached: false,
         detached: true,
-        error: msg.message ?? null,
+        error: detail,
+        errorMessage: detail ? msg : null,
       });
       break;
     }
@@ -967,8 +1076,7 @@ export function resetForRestart(sessionId: string) {
     handle.attached = false;
     handle.attaching = false;
     handle.generation += 1; // drop messages from the pre-restart channel
-    handle.pendingRenderedLogCursor = null;
-    handle.renderObservationQueued = false;
+    resetRenderObservation(handle);
     // Clear the buffer: the re-attach replays the same log tail and would
     // otherwise duplicate it under the old content / loaded history.
     handle.term.reset();
@@ -983,10 +1091,12 @@ export function resetForRestart(sessionId: string) {
     detached: false,
     exit: null,
     error: null,
+    errorMessage: null,
     replayDone: false,
     historyNote: null,
+    historyMessage: null,
   });
-  writeMarker(sessionId, "重启并恢复");
+  writeMarker(sessionId, i18n.t("session:terminal.restartMarker"));
 }
 
 /**
@@ -1001,12 +1111,11 @@ export async function jumpToRecoveryOutput(
   const session = getState().projects
     .flatMap((project) => project.sessions)
     .find((item) => item.id === sessionId);
-  if (!session) throw new Error("该 Session 已不存在");
+  if (!session) throw new Error(i18n.t("session:terminal.sessionMissing"));
   const handle = getOrCreateHandle(sessionId);
   const previousAttachment = handle.attachmentId;
   handle.generation += 1;
-  handle.pendingRenderedLogCursor = null;
-  handle.renderObservationQueued = false;
+  resetRenderObservation(handle);
   handle.attachmentId = null;
   handle.attached = false;
   handle.attaching = false;
@@ -1028,21 +1137,31 @@ export async function jumpToRecoveryOutput(
       const bytes = b64ToBytes(context.data);
       const markerAt = Math.max(0, Math.min(bytes.length, cursor.offset - context.offset));
       if (markerAt > 0) writeTerminalOutput(handle, bytes.slice(0, markerAt));
-      handle.term.write("\r\n\x1b[2m── 恢复事件定位处 ──\x1b[0m\r\n");
+      handle.term.write(`\r\n\x1b[2m── ${i18n.t("session:terminal.recoveryLocation")} ──\x1b[0m\r\n`);
       if (markerAt < bytes.length) writeTerminalOutput(handle, bytes.slice(markerAt));
       handle.recoveryTarget = null;
       finishTerminalStartupFilter(handle);
       handle.historyLoaded = true;
       handle.logCursor = { ...cursor, offset: context.offset + bytes.length };
+      const historyMessage: RuntimeMessageEnvelope = {
+        code: "terminal_located_recovery",
+        params: { total: context.total },
+      };
       patchRuntime(sessionId, {
         replayDone: true,
-        historyNote: `已定位到恢复事件附近输出（${formatBytes(context.total)} 已验证日志）`,
+        historyNote: runtimeMessageText(historyMessage),
+        historyMessage,
       });
     } catch (error) {
       if (handles.get(sessionId) === handle && handle.generation === generation) {
+        const historyMessage = runtimeMessageEnvelope(error) ?? {
+          code: "terminal_locate_recovery_failed",
+          technicalDetail: errorText(error),
+        };
         patchRuntime(sessionId, {
           replayDone: true,
-          historyNote: `无法定位恢复输出：${errorText(error)}`,
+          historyNote: runtimeMessageText(historyMessage),
+          historyMessage,
         });
       }
       throw error;
@@ -1065,6 +1184,35 @@ export function applyTerminalSettings() {
   }
 }
 
+/** Apply localizable xterm strings to existing and future terminal instances. */
+export function applyTerminalLanguage() {
+  const strings = {
+    promptLabel: i18n.t("shell:terminal.promptLabel"),
+    tooMuchOutput: i18n.t("shell:terminal.tooMuchOutput"),
+  };
+  if (Terminal.strings) {
+    Terminal.strings.promptLabel = strings.promptLabel;
+    Terminal.strings.tooMuchOutput = strings.tooMuchOutput;
+  }
+  for (const handle of handles.values()) {
+    handle.term.textarea?.setAttribute("aria-label", strings.promptLabel);
+  }
+  const runtime = getState().runtime;
+  const localizedRuntime = Object.fromEntries(
+    Object.entries(runtime).map(([sessionId, value]) => [
+      sessionId,
+      {
+        ...value,
+        historyNote: value.historyMessage
+          ? runtimeMessageText(value.historyMessage)
+          : value.historyNote,
+        error: value.errorMessage ? runtimeMessageText(value.errorMessage) : value.error,
+      },
+    ]),
+  );
+  setState({ runtime: localizedRuntime });
+}
+
 export function applyXtermTheme(theme: EffectiveTheme) {
   for (const h of handles.values()) {
     syncHandleTheme(h, theme);
@@ -1079,11 +1227,10 @@ export function disposeHandle(sessionId: string) {
   const handle = handles.get(sessionId);
   if (!handle) return;
   handle.generation += 1;
-  handle.pendingRenderedLogCursor = null;
-  handle.renderObservationQueued = false;
+  resetRenderObservation(handle);
   handle.attachmentId = null;
-  inputRepeatDisposers.get(sessionId)?.();
-  inputRepeatDisposers.delete(sessionId);
+  inputCompatibilityDisposers.get(sessionId)?.();
+  inputCompatibilityDisposers.delete(sessionId);
   const resizeTimer = resizeTimers.get(sessionId);
   if (resizeTimer !== undefined) {
     window.clearTimeout(resizeTimer);
@@ -1109,8 +1256,7 @@ export async function releaseTerminal(sessionId: string): Promise<void> {
   if (!handle) return;
   // Reject messages already queued on the old Channel before disposing xterm.
   const releaseGeneration = ++handle.generation;
-  handle.pendingRenderedLogCursor = null;
-  handle.renderObservationQueued = false;
+  resetRenderObservation(handle);
   const attachmentId = handle.attachmentId;
   handle.attachmentId = null;
   handle.attached = false;

@@ -215,10 +215,40 @@ pub(crate) fn status_frame(ev: &StatusEvent) -> HostFrame {
     }
 }
 
-pub(crate) fn err_frame(session_id: Option<&str>, message: &str) -> HostFrame {
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum HostErrorCode {
+    StatusJournalFailed,
+    SessionIdMismatch,
+    TerminalInputUnavailable,
+    StructuredPromptTransportRequired,
+    StructuredPromptEmpty,
+    StructuredAbortTransportRequired,
+    DuplicateHello,
+    HandshakeRejected,
+}
+
+impl HostErrorCode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::StatusJournalFailed => "host_status_journal_failed",
+            Self::SessionIdMismatch => "host_session_id_mismatch",
+            Self::TerminalInputUnavailable => "host_terminal_input_unavailable",
+            Self::StructuredPromptTransportRequired => "host_structured_prompt_transport_required",
+            Self::StructuredPromptEmpty => "host_structured_prompt_empty",
+            Self::StructuredAbortTransportRequired => "host_structured_abort_transport_required",
+            Self::DuplicateHello => "host_duplicate_hello",
+            Self::HandshakeRejected => "host_handshake_rejected",
+        }
+    }
+}
+
+pub(crate) fn err_frame(session_id: Option<&str>, code: HostErrorCode, message: &str) -> HostFrame {
     HostFrame::Error {
         session_id: session_id.map(str::to_string),
         message: message.to_string(),
+        code: Some(code.as_str().into()),
+        params: Some(serde_json::json!({})),
+        technical_detail: Some(message.to_string()),
     }
 }
 
@@ -910,6 +940,7 @@ fn emit_event(shared: &Shared, status_file: &mut Option<File>, mut ev: StatusEve
                 shared,
                 &err_frame(
                     Some(&shared.cfg.session_id),
+                    HostErrorCode::StatusJournalFailed,
                     "status journal persistence failed; state recovery is degraded",
                 ),
             );

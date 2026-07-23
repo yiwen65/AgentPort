@@ -1,10 +1,12 @@
 // Store-driven confirm & prompt dialogs (used by all destructive flows).
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import Modal from "./Modal";
 import { resolveConfirm, resolvePrompt, useStore } from "../store";
 
 export function ConfirmDialogHost() {
+  const { t } = useTranslation("common");
   const confirm = useStore((state) => state.confirm);
   if (!confirm) return null;
   return (
@@ -14,14 +16,14 @@ export function ConfirmDialogHost() {
       footer={
         <>
           <button className="btn ghost" onClick={() => resolveConfirm(false)}>
-            取消
+            {t("actions.cancel")}
           </button>
           <button
             className={confirm.danger ? "btn danger" : "btn primary"}
             onClick={() => resolveConfirm(true)}
             autoFocus
           >
-            {confirm.confirmLabel ?? "确认"}
+            {confirm.confirmLabel ?? t("actions.confirm")}
           </button>
         </>
       }
@@ -32,6 +34,7 @@ export function ConfirmDialogHost() {
 }
 
 export function PromptDialogHost() {
+  const { t } = useTranslation("common");
   const prompt = useStore((state) => state.prompt);
   const [value, setValue] = useState<string | null>(null);
   useEffect(() => setValue(null), [prompt]);
@@ -45,10 +48,10 @@ export function PromptDialogHost() {
       footer={
         <>
           <button className="btn ghost" onClick={() => resolvePrompt(null)}>
-            取消
+            {t("actions.cancel")}
           </button>
           <button className="btn primary" onClick={submit} disabled={!v.trim()}>
-            {prompt.okLabel ?? "确定"}
+            {prompt.okLabel ?? t("actions.ok")}
           </button>
         </>
       }

@@ -1,0 +1,10 @@
+{
+  "flow": {
+    "dirtyDeleteBlocked": "This Worktree has uncommitted or untracked files and cannot be deleted.",
+    "deleteTitle": "Delete Worktree “{{branch}}”?",
+    "deleteBody": "This deletes {{path}} and removes its Git Worktree record.",
+    "deleteAction": "Delete Worktree",
+    "deleted": "Worktree deleted",
+    "deleteFailed": "Could not delete the Worktree: {{detail}}"
+  }
+}
