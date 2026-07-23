@@ -1,7 +1,7 @@
 {
   "state": {
     "working": "Working",
-    "needsInput": "Needs input",
+    "needsInput": "Waiting for approval",
     "idle": "Idle",
     "exited": "Exited",
     "unknown": "Status unknown"

@@ -11,7 +11,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agentport_core::logs::{sha256_bytes, sha256_file};
-use agentport_core::models::{AgentState, AgentTransport, LogCursor};
+use agentport_core::models::{AgentState, AgentTransport, LogCursor, StateSource};
 use agentport_core::protocol::{
     read_frame, write_frame, ClientFrame, HostConfig, HostFrame, PROTOCOL_VERSION,
 };
@@ -112,6 +112,25 @@ fn make_pi_pty_ctx(script: &str) -> TestCtx {
         serde_json::from_str(&std::fs::read_to_string(&ctx.cfg_path).unwrap()).unwrap();
     cfg.adapter_type = "pi".into();
     cfg.agent_session_id_hint = Some("pi-native-test-id".into());
+    std::fs::write(&ctx.cfg_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+    ctx
+}
+
+fn make_kimi_pty_ctx(script: &str) -> TestCtx {
+    let ctx = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), script.into()],
+        2 * 1024 * 1024,
+        vec![],
+    );
+    let kimi_home = ctx.dir.join("kimi-home");
+    std::fs::create_dir_all(kimi_home.join("sessions")).unwrap();
+    let mut cfg: HostConfig =
+        serde_json::from_str(&std::fs::read_to_string(&ctx.cfg_path).unwrap()).unwrap();
+    cfg.adapter_type = "kimi".into();
+    cfg.env.push((
+        "KIMI_CODE_HOME".into(),
+        kimi_home.to_string_lossy().into_owned(),
+    ));
     std::fs::write(&ctx.cfg_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
     ctx
 }
@@ -776,7 +795,7 @@ fn pi_rpc_pipe_accepts_prompt_abort_and_persists_structured_events() {
         r#"while IFS= read -r line; do
   case "$line" in
     *get_state*) printf '{"type":"response","command":"get_state","success":true,"data":{"sessionId":"pi-native-test-id"}}\n' ;;
-    *'"prompt"'*) printf '{"type":"message_update","text":"prompt received"}\n' ;;
+    *'"prompt"'*) printf '{"type":"message_update","text":"prompt received"}\n{"type":"agent_settled"}\n' ;;
     *abort*) printf '{"type":"response","command":"abort","success":true}\n' ;;
   esac
 done"#,
@@ -805,19 +824,36 @@ done"#,
         session_id: ctx.session_id.clone(),
         text: "hello Pi".into(),
     });
-    let prompted =
-        conn.collect_until(Duration::from_secs(5), |frames| {
-            frames.iter().any(|frame| matches!(
-            frame,
-            HostFrame::Structured { event, .. }
-                if event.get("text").and_then(|value| value.as_str()) == Some("prompt received")
-        ))
-        });
+    let prompted = conn.collect_until(Duration::from_secs(5), |frames| {
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::State {
+                    state: AgentState::Idle,
+                    source: StateSource::Adapter,
+                    evidence: Some(evidence),
+                    ..
+                } if evidence == "adapter:pi:TurnEnd"
+            )
+        })
+    });
     assert!(prompted.iter().any(|frame| matches!(
         frame,
         HostFrame::Structured { event, .. }
             if event.get("text").and_then(|value| value.as_str()) == Some("prompt received")
     )));
+    assert!(
+        prompted.iter().any(|frame| matches!(
+            frame,
+            HostFrame::State {
+                state: AgentState::Idle,
+                source: StateSource::Adapter,
+                evidence: Some(evidence),
+                ..
+            } if evidence == "adapter:pi:TurnEnd"
+        )),
+        "Pi agent_settled was not projected as a semantic turn end: {prompted:?}"
+    );
 
     conn.send(&ClientFrame::AbortStructuredTurn {
         session_id: ctx.session_id.clone(),
@@ -859,6 +895,134 @@ fn pi_pty_hides_only_the_first_private_session_notice() {
     assert!(!std::fs::read_to_string(&ctx.log)
         .unwrap()
         .contains("No project session found"));
+}
+
+#[test]
+fn pi_pty_session_jsonl_emits_only_new_semantic_turn_ends() {
+    let ctx = make_pi_pty_ctx("printf 'Pi TUI ready\\r\\n'; sleep 60");
+    let session_dir = ctx.dir.join("pi");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    let session_file = session_dir.join("pi-session.jsonl");
+    std::fs::write(
+        &session_file,
+        b"{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\"}}\n",
+    )
+    .unwrap();
+
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut conn = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    conn.expect_hello_ok();
+    let old = conn.collect_until(Duration::from_millis(700), |_| false);
+    assert!(
+        !old.iter().any(|frame| matches!(
+            frame,
+            HostFrame::State {
+                source: StateSource::Adapter,
+                ..
+            }
+        )),
+        "pre-spawn Pi history was replayed as a fresh turn: {old:?}"
+    );
+
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&session_file)
+        .unwrap();
+    file.write_all(
+        b"{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\"}}\n",
+    )
+    .unwrap();
+    file.flush().unwrap();
+    let fresh = conn.collect_until(Duration::from_secs(3), |frames| {
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::State {
+                    state: AgentState::Idle,
+                    source: StateSource::Adapter,
+                    evidence: Some(evidence),
+                    ..
+                } if evidence == "adapter:pi:TurnEnd"
+            )
+        })
+    });
+    assert!(fresh.iter().any(|frame| matches!(
+        frame,
+        HostFrame::State {
+            state: AgentState::Idle,
+            source: StateSource::Adapter,
+            evidence: Some(evidence),
+            ..
+        } if evidence == "adapter:pi:TurnEnd"
+    )));
+}
+
+#[test]
+fn kimi_wire_end_turn_emits_semantic_completion_after_native_id_capture() {
+    const KIMI_ID: &str = "session_b7034202-9ba5-405c-8cca-e9788753dade";
+    let ctx = make_kimi_pty_ctx(&format!(
+        "while [ ! -f emit-kimi-header ]; do sleep 0.01; done; printf 'Session:   {KIMI_ID}\\r\\nKimi TUI ready\\r\\n'; sleep 60"
+    ));
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut conn = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    conn.expect_hello_ok();
+    std::fs::write(ctx.dir.join("emit-kimi-header"), b"").unwrap();
+    let captured = conn.collect_until(Duration::from_secs(3), |frames| {
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::AgentSession { agent_session_id, .. } if agent_session_id == KIMI_ID
+            )
+        })
+    });
+    assert!(captured.iter().any(|frame| matches!(
+        frame,
+        HostFrame::AgentSession { agent_session_id, .. } if agent_session_id == KIMI_ID
+    )));
+
+    let kimi_home = ctx.dir.join("kimi-home");
+    let native_dir = kimi_home.join("sessions/wd-test").join(KIMI_ID);
+    let wire_dir = native_dir.join("agents/main");
+    std::fs::create_dir_all(&wire_dir).unwrap();
+    let index = serde_json::json!({
+        "sessionId": KIMI_ID,
+        "sessionDir": native_dir,
+        "workDir": ctx.dir,
+    });
+    std::fs::write(kimi_home.join("session_index.jsonl"), format!("{index}\n")).unwrap();
+    std::fs::write(
+        wire_dir.join("wire.jsonl"),
+        b"{\"type\":\"context.append_loop_event\",\"event\":{\"type\":\"step.end\",\"finishReason\":\"end_turn\"}}\n",
+    )
+    .unwrap();
+
+    let completed = conn.collect_until(Duration::from_secs(3), |frames| {
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::State {
+                    state: AgentState::Idle,
+                    source: StateSource::Adapter,
+                    evidence: Some(evidence),
+                    ..
+                } if evidence == "adapter:kimi:TurnEnd"
+            )
+        })
+    });
+    assert!(
+        completed.iter().any(|frame| matches!(
+            frame,
+            HostFrame::State {
+                state: AgentState::Idle,
+                source: StateSource::Adapter,
+                evidence: Some(evidence),
+                ..
+            } if evidence == "adapter:kimi:TurnEnd"
+        )),
+        "Kimi wire end_turn was not projected: {completed:?}"
+    );
 }
 
 #[test]
@@ -983,15 +1147,22 @@ fn echo_roundtrip_log_sha256() {
 
 #[test]
 fn terminal_capabilities_are_normalized_for_agent_tui_and_colors() {
-    let marker = "TERM=xterm-256color;COLORTERM=truecolor;NO_COLOR=<>";
+    let marker = "TERM=xterm-256color;COLORTERM=truecolor;FORCE_HYPERLINK=1;NO_COLOR=<>";
     let ctx = make_ctx(vec!["/bin/sh".into()], 1 << 20, vec![]);
-    let _guard = spawn_host(&ctx, &[("TERM", "dumb"), ("NO_COLOR", "1")]);
+    let _guard = spawn_host(
+        &ctx,
+        &[
+            ("TERM", "dumb"),
+            ("FORCE_HYPERLINK", "0"),
+            ("NO_COLOR", "1"),
+        ],
+    );
     wait_socket(&ctx);
     let mut c = connect(&ctx, &ctx.session_id, TOKEN, 0);
     c.expect_hello_ok();
     c.send(&ClientFrame::Input {
         session_id: ctx.session_id.clone(),
-        data: b"printf 'TERM=%s;COLORTERM=%s;NO_COLOR=<%s>\\n' \"$TERM\" \"$COLORTERM\" \"${NO_COLOR-}\"\n".to_vec(),
+        data: b"printf 'TERM=%s;COLORTERM=%s;FORCE_HYPERLINK=%s;NO_COLOR=<%s>\\n' \"$TERM\" \"$COLORTERM\" \"$FORCE_HYPERLINK\" \"${NO_COLOR-}\"\n".to_vec(),
     });
     let frames = c.collect_until(Duration::from_secs(10), |fs| {
         output_bytes(fs)
@@ -1144,7 +1315,7 @@ fn hook_poller_ignores_events_before_the_run_snapshot() {
     let hook_path = ctx.dir.join("events.jsonl");
     // This is a fact from the previous run. The new Host snapshots the file
     // before spawning its child and must not report it as live state.
-    std::fs::write(&hook_path, b"{\"event\":\"Notification\"}\n").unwrap();
+    std::fs::write(&hook_path, b"{\"event\":\"PermissionRequest\"}\n").unwrap();
 
     let _guard = spawn_host(&ctx, &[]);
     wait_socket(&ctx);
@@ -1167,7 +1338,8 @@ fn hook_poller_ignores_events_before_the_run_snapshot() {
         .append(true)
         .open(&hook_path)
         .unwrap();
-    hook.write_all(b"{\"event\":\"Notification\"}\n").unwrap();
+    hook.write_all(b"{\"event\":\"PermissionRequest\"}\n")
+        .unwrap();
     hook.flush().unwrap();
 
     let new_frames = client.collect_until(Duration::from_secs(3), |frames| {

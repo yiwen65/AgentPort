@@ -18,7 +18,7 @@ use agentport_core::host_manager::{
 use agentport_core::ids;
 use agentport_core::models::*;
 use agentport_core::notify::{
-    notification_for_state_change, test_notification, Notification, Notifier,
+    notification_for_state_change, test_notification, Notification, NotificationDeduper, Notifier,
 };
 use agentport_core::paths::{normalize_abs, AppPaths};
 use agentport_core::protocol::{normalize_host_frame, HostFrame};
@@ -28,7 +28,7 @@ use agentport_core::timeline::{RecoveryAckSnapshot, Timeline};
 use chrono::Utc;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
@@ -62,8 +62,8 @@ struct AppState {
     /// authorization can wait for the OS and must never stall Host readers.
     notification_tx: SyncSender<Notification>,
     /// Status notifications may arrive through both the durable monitor and
-    /// an attached renderer. Deduplicate by the immutable run/sequence key.
-    notified_statuses: Mutex<HashSet<String>>,
+    /// an attached renderer, or as near-simultaneous Hook/PTY observations.
+    notification_deduper: Mutex<NotificationDeduper>,
 }
 
 type HostWriter = Arc<Mutex<std::os::unix::net::UnixStream>>;
@@ -89,22 +89,14 @@ fn start_notification_worker() -> SyncSender<Notification> {
 }
 
 fn notify_status_once(app: &AppHandle, db: &Db, event: &StatusEvent) {
-    if !matches!(event.state, AgentState::NeedsInput | AgentState::Exited) {
-        return;
-    }
     let state = app.state::<AppState>();
-    let key = format!(
-        "{}:{}:{}:{}",
-        event.session_id, event.run_id, event.run_ordinal, event.sequence
-    );
+    if !state
+        .notification_deduper
+        .lock()
+        .unwrap()
+        .should_notify(event)
     {
-        let mut notified = state.notified_statuses.lock().unwrap();
-        if notified.len() >= 4096 {
-            notified.clear();
-        }
-        if !notified.insert(key) {
-            return;
-        }
+        return;
     }
     let title = db
         .get_session(&event.session_id)
@@ -429,6 +421,7 @@ fn replay_done_value(offset: u64, cursor: &LogCursor, partial_context: bool) -> 
     })
 }
 
+#[cfg(test)]
 fn has_unread_output(db: &Db, session_id: &str) -> bool {
     let Ok(Some(boundary)) = db.get_unread_log_cursor(session_id) else {
         return false;
@@ -443,20 +436,20 @@ fn has_unread_output(db: &Db, session_id: &str) -> bool {
                 || (latest.generation == boundary.generation && latest.offset > boundary.offset)))
 }
 
-fn session_view(db: &Db, s: &Session, active_session: Option<&str>) -> SessionView {
+fn session_view(db: &Db, s: &Session, _active_session: Option<&str>) -> SessionView {
     let latest = db.latest_status(&s.id).ok().flatten();
-    let unread = if Some(s.id.as_str()) == active_session {
-        false
-    } else {
-        db.get_recovery_summary(&s.id)
-            .map(|r| {
-                has_unread_output(db, &s.id)
-                    || db
-                        .has_unread_attention(&s.id, r.last_seen_sequence)
-                        .unwrap_or(false)
-            })
-            .unwrap_or(false)
-    };
+    let unread = db
+        .get_recovery_summary(&s.id)
+        .map(|r| {
+            // The sidebar badge is for actionable unread messages only.
+            // Renderer output is still tracked for recovery, but ordinary
+            // PTY bytes (including redraws and progress chatter) are not
+            // a user message and must not light up the badge. Being the active
+            // Session is not an acknowledgement; an explicit selection is.
+            db.has_unread_attention(&s.id, r.last_seen_sequence)
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
     SessionView {
         id: s.id.clone(),
         project_id: s.project_id.clone(),
@@ -681,7 +674,7 @@ async fn boot(state: State<'_, AppState>, app: AppHandle) -> std::result::Result
         .map(|s| format!("{s:?}").to_lowercase())
         .unwrap_or_else(|_| "unknown".into());
     let tl = Timeline { db: &state.db };
-    let timeline = tl.build().map(|t| {
+    let timeline = tl.build_and_acknowledge_hidden_only().map(|t| {
         json!({
             "completed": t.completed, "waiting": t.waiting, "failed": t.failed,
             "entries": t.entries, "ackSnapshots": t.ack_snapshots,
@@ -1000,6 +993,7 @@ fn materialize_launch_environment(
             env.push((name.clone(), value));
         }
     }
+    capability::merge_effective_path_env(&mut env)?;
 
     let refs: Vec<SecretRef> = preset
         .secret_ref_ids
@@ -1396,12 +1390,17 @@ fn capture_gui_exit_recovery_boundaries(state: &AppState) {
     }
 }
 
-fn project_monitor_status(app: &AppHandle, db: &Db, event: &StatusEvent) {
+fn project_monitor_status(app: &AppHandle, db: &Db, event: &StatusEvent, notify: bool) {
+    if !event.changes_session_state() {
+        return;
+    }
     if let Err(error) = db.record_status_event(event) {
         tracing::error!(session = %event.session_id, error = %error, "session monitor projection write failed");
     }
     let _ = app.emit("session-state", status_value(event));
-    notify_status_once(app, db, event);
+    if notify {
+        notify_status_once(app, db, event);
+    }
 }
 
 /// Keep status truth alive independently of the renderer LRU. Each monitor
@@ -1481,7 +1480,9 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
             }
             if let Some(event) = info.current_status.as_ref() {
                 if host.matches_run(&event.run_id, event.run_ordinal) {
-                    project_monitor_status(&app, &db, event);
+                    // A Hello snapshot restores current UI state after a GUI
+                    // restart or monitor reconnect; it is not a new transition.
+                    project_monitor_status(&app, &db, event, false);
                 } else {
                     tracing::warn!(session = %session_id, host_pid = host.host_pid, "monitor hello snapshot has the wrong run identity");
                     if attempt < RETRIES {
@@ -1533,6 +1534,7 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
                                 log_cursor,
                                 occurred_at,
                             },
+                            true,
                         );
                     }
                     HostFrame::Heartbeat { log_cursor, .. } => {
@@ -1673,10 +1675,7 @@ async fn attach_session(
             .map_err(|error| runtime_command_error_from_core(error, "host_connection_failed"))?;
     }
     if let Some(status) = info.current_status.as_ref() {
-        if let Err(error) = state.db.record_status_event(status) {
-            tracing::error!(session = %session_id, error = %error, "attach status snapshot was not persisted");
-        }
-        let _ = app.emit("session-state", status_value(status));
+        project_monitor_status(&app, &state.db, status, false);
     }
     let HostClient { reader, writer, .. } = client;
     let writer = Arc::new(Mutex::new(writer));
@@ -1844,6 +1843,9 @@ fn watch_loop(
                             log_cursor,
                             occurred_at,
                         };
+                        if !ev.changes_session_state() {
+                            continue;
+                        }
                         if let Err(error) = db.record_status_event(&ev) {
                             tracing::error!(session = %sid, error = %error, "state projection write failed");
                             let _ = channel.send(json!({
@@ -2960,7 +2962,7 @@ async fn rebuild_search_index(state: State<'_, AppState>) -> std::result::Result
 #[tauri::command]
 async fn get_timeline(state: State<'_, AppState>) -> std::result::Result<Value, String> {
     let tl = Timeline { db: &state.db };
-    let t = map_err!(tl.build())?;
+    let t = map_err!(tl.build_and_acknowledge_hidden_only())?;
     Ok(json!({
         "completed": t.completed, "waiting": t.waiting, "failed": t.failed,
         "entries": t.entries, "ackSnapshots": t.ack_snapshots,
@@ -3087,6 +3089,11 @@ async fn notify_test(state: State<'_, AppState>) -> std::result::Result<(), Stri
         return Err("notifications_disabled".into());
     }
     map_err!(notifications::send(&test_notification(language)))
+}
+
+#[tauri::command]
+fn take_pending_notification_session() -> Option<String> {
+    notifications::take_pending_session()
 }
 
 /// Read the last N bytes of a session's output log — used to render the
@@ -3260,6 +3267,48 @@ async fn reveal_in_file_manager(path: String) -> std::result::Result<(), Value> 
     }
 }
 
+fn validate_external_url(url: &str) -> std::result::Result<(), String> {
+    let parsed = tauri::Url::parse(url).map_err(|error| format!("invalid URL: {error}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err("only absolute http:// and https:// URLs can be opened".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_external_url(url: String) -> std::result::Result<(), Value> {
+    validate_external_url(&url).map_err(|message| {
+        runtime_command_error("external_url_rejected", json!({}), message.clone(), message)
+    })?;
+    let status = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(&url).status()
+    } else if cfg!(target_os = "linux") {
+        std::process::Command::new("xdg-open").arg(&url).status()
+    } else {
+        return Err(runtime_command_error(
+            "external_url_unsupported",
+            json!({}),
+            "external URL opening is unsupported on this platform",
+            "external URL opening is unsupported on this platform",
+        ));
+    };
+    match status {
+        Ok(result) if result.success() => Ok(()),
+        Ok(result) => Err(runtime_command_error(
+            "external_url_open_failed",
+            json!({}),
+            result.to_string(),
+            format!("URL opener exited with {result}"),
+        )),
+        Err(error) => Err(runtime_command_error(
+            "external_url_open_failed",
+            json!({}),
+            error.to_string(),
+            error.to_string(),
+        )),
+    }
+}
+
 #[tauri::command]
 async fn open_in_system_terminal(
     state: State<'_, AppState>,
@@ -3391,6 +3440,9 @@ fn disable_press_and_hold() {
 fn disable_press_and_hold() {}
 
 fn main() {
+    // macOS may deliver a notification response before Tauri's setup callback.
+    // Install the delegate first so the clicked Session survives cold launch.
+    notifications::install_early();
     disable_press_and_hold();
     let paths = AppPaths::discover().expect("app paths");
     paths.ensure_layout().expect("layout");
@@ -3439,7 +3491,7 @@ fn main() {
         branch_reconcile_started: AtomicBool::new(false),
         notifier: Mutex::new(notifier),
         notification_tx: start_notification_worker(),
-        notified_statuses: Mutex::new(HashSet::new()),
+        notification_deduper: Mutex::new(NotificationDeduper::default()),
     };
 
     tauri::Builder::default()
@@ -3512,10 +3564,12 @@ fn main() {
             secret_list,
             secret_delete,
             notify_test,
+            take_pending_notification_session,
             read_log_tail,
             read_recovery_log_context,
             reveal_in_file_manager,
             open_in_system_terminal,
+            open_external_url,
             pick_directory,
             pick_save_path,
             pick_file,
@@ -3544,6 +3598,7 @@ fn main() {
 #[cfg(test)]
 mod cleanup_tests {
     use super::*;
+    use std::path::PathBuf;
     use std::sync::mpsc;
 
     #[test]
@@ -3579,6 +3634,48 @@ mod cleanup_tests {
         assert_eq!(value["reasonMessage"]["code"], "probe_executable_not_found");
         assert_eq!(value["reasonMessage"]["message"], "未找到可执行文件");
         assert_eq!(value["reason"], "未找到可执行文件");
+    }
+
+    #[test]
+    fn legacy_notification_status_is_informational_but_permission_request_is_visible() {
+        let event = |evidence: &str| StatusEvent {
+            session_id: "ses_claude".into(),
+            run_id: "run_claude".into(),
+            run_ordinal: 1,
+            sequence: 1,
+            state: AgentState::NeedsInput,
+            source: StateSource::Hook,
+            confidence: Confidence::High,
+            evidence: Some(evidence.into()),
+            log_cursor: None,
+            occurred_at: Utc::now(),
+        };
+
+        assert!(!event("hook:Notification").changes_session_state());
+        assert!(event("hook:PermissionRequest").changes_session_state());
+    }
+
+    #[test]
+    fn launch_path_keeps_adapter_priority_and_adds_effective_entries() {
+        let mut env = vec![
+            ("PATH".into(), "/adapter/bin:/usr/bin:/adapter/bin".into()),
+            ("AGENTPORT_TEST".into(), "kept".into()),
+        ];
+
+        capability::merge_path_env(
+            &mut env,
+            &[PathBuf::from("/login/bin"), PathBuf::from("/usr/bin")],
+        )
+        .unwrap();
+
+        assert_eq!(env.iter().filter(|(name, _)| name == "PATH").count(), 1);
+        assert_eq!(
+            env.iter().find(|(name, _)| name == "PATH").unwrap().1,
+            "/adapter/bin:/usr/bin:/login/bin"
+        );
+        assert!(env
+            .iter()
+            .any(|(name, value)| name == "AGENTPORT_TEST" && value == "kept"));
     }
 
     #[test]
@@ -3667,6 +3764,15 @@ mod cleanup_tests {
         let missing = tempfile::tempdir().unwrap().path().join("missing-project");
         let error = require_existing_path(missing.to_str().unwrap()).unwrap_err();
         assert!(error.contains("项目目录已不存在"));
+    }
+
+    #[test]
+    fn external_url_validation_allows_only_absolute_http_urls() {
+        assert!(validate_external_url("https://example.com/docs?q=agentport").is_ok());
+        assert!(validate_external_url("http://127.0.0.1:3000/path").is_ok());
+        assert!(validate_external_url("javascript:alert(1)").is_err());
+        assert!(validate_external_url("file:///etc/passwd").is_err());
+        assert!(validate_external_url("/missing-host").is_err());
     }
 
     fn insert_attachment_test_session(paths: &AppPaths, db: &Db) -> String {
@@ -3969,6 +4075,82 @@ mod cleanup_tests {
             Some(renderer)
         );
         assert!(!has_unread_output(&db, &session_id));
+    }
+
+    #[test]
+    fn sidebar_unread_badge_ignores_terminal_output_without_attention() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("agentport"));
+        let db = Db::open(&paths).unwrap();
+        let session_id = insert_attachment_test_session(&paths, &db);
+        let session = db.get_session(&session_id).unwrap();
+
+        // Output is retained as a recovery cursor, but it is not itself an
+        // unread user message and must not light up the sidebar badge.
+        db.mark_output_unread(&session_id, 42).unwrap();
+        let view = session_view(&db, &session, None);
+        assert!(!view.unread);
+    }
+
+    #[test]
+    fn sidebar_unread_badge_tracks_semantic_completion_and_approval() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("agentport"));
+        let db = Db::open(&paths).unwrap();
+        let session_id = insert_attachment_test_session(&paths, &db);
+        let session = db.get_session(&session_id).unwrap();
+        let event = |sequence, state, source, evidence: &str| StatusEvent {
+            session_id: session_id.clone(),
+            run_id: agentport_core::models::LEGACY_RUN_ID.into(),
+            run_ordinal: agentport_core::models::LEGACY_RUN_ORDINAL,
+            sequence,
+            state,
+            source,
+            confidence: Confidence::High,
+            evidence: Some(evidence.into()),
+            log_cursor: None,
+            occurred_at: Utc::now(),
+        };
+
+        db.record_status_event(&event(
+            1,
+            AgentState::Idle,
+            StateSource::Adapter,
+            "adapter:kimi:TurnEnd",
+        ))
+        .unwrap();
+        assert!(session_view(&db, &session, None).unread);
+        assert!(session_view(&db, &session, Some(&session_id)).unread);
+
+        db.mark_session_seen(&session_id).unwrap();
+        db.record_status_event(&event(
+            2,
+            AgentState::Idle,
+            StateSource::Adapter,
+            "adapter:pi:TurnEnd",
+        ))
+        .unwrap();
+        assert!(session_view(&db, &session, None).unread);
+
+        db.mark_session_seen(&session_id).unwrap();
+        db.record_status_event(&event(
+            3,
+            AgentState::NeedsInput,
+            StateSource::Hook,
+            "hook:PermissionRequest",
+        ))
+        .unwrap();
+        assert!(session_view(&db, &session, None).unread);
+
+        db.mark_session_seen(&session_id).unwrap();
+        db.record_status_event(&event(
+            4,
+            AgentState::NeedsInput,
+            StateSource::Pty,
+            "pty:pattern:permission",
+        ))
+        .unwrap();
+        assert!(session_view(&db, &session, None).unread);
     }
 
     #[test]

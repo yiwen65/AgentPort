@@ -478,18 +478,16 @@ fn worktree_health(s: &str) -> Result<WorktreeHealth> {
 }
 
 /// Deterministic mapping of a status event to the recovery summary state:
-/// - needs_input -> waiting
-/// - idle from a turn-end hook -> completed
+/// - precise approval semantics -> waiting
+/// - precise hook/adapter turn-end semantics -> completed
 /// - exited code 0 -> completed; exited nonzero/signal/unknown -> failed
 /// - anything else -> output
 fn summary_state_for(e: &StatusEvent) -> SummaryState {
     let ev = e.evidence.as_deref().unwrap_or("");
-    match e.state {
-        AgentState::NeedsInput => SummaryState::Waiting,
-        AgentState::Idle if ev.contains("hook:Stop") || ev.contains("TurnEnd") => {
-            SummaryState::Completed
-        }
-        AgentState::Exited => {
+    match (e.attention_kind(), e.state) {
+        (Some(AttentionKind::ApprovalRequested), _) => SummaryState::Waiting,
+        (Some(AttentionKind::TurnCompleted), _) => SummaryState::Completed,
+        (None, AgentState::Exited) => {
             if ev == "process:exit:0" {
                 SummaryState::Completed
             } else {
@@ -2506,8 +2504,12 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         match conn.query_row(
             "SELECT session_id,run_id,run_ordinal,sequence,state,source,confidence,
-                    NULL as evidence,NULL as log_generation,NULL as log_offset,occurred_at
-             FROM latest_status WHERE session_id=?1",
+                    evidence,log_generation,log_offset,occurred_at
+             FROM status_events
+             WHERE session_id=?1
+               AND NOT (source='hook' AND evidence='hook:Notification')
+             ORDER BY run_ordinal DESC, sequence DESC
+             LIMIT 1",
             params![session_id],
             row_status_event,
         ) {
@@ -3165,8 +3167,17 @@ impl Db {
                     run_ordinal>?2 OR
                     (run_ordinal=?2 AND run_id=?3 AND sequence>?4)
                 ) AND (
-                    state='needs_input' OR state='exited' OR
-                    (state='idle' AND (evidence LIKE '%hook:Stop%' OR evidence LIKE '%TurnEnd%'))
+                    (state='needs_input' AND (
+                        (source='hook' AND evidence='hook:PermissionRequest') OR
+                        (source='pty' AND evidence LIKE 'pty:pattern:%')
+                    )) OR
+                    (state='idle' AND (
+                        (source='hook' AND
+                            (evidence='hook:Stop' OR evidence='hook:TurnEnd')) OR
+                        (source='adapter' AND
+                            (evidence='adapter:kimi:TurnEnd' OR
+                             evidence='adapter:pi:TurnEnd'))
+                    ))
                 )
              )",
             params![
@@ -4044,7 +4055,7 @@ mod tests {
         let first_event = ev(1, AgentState::Working, "hook:PreToolUse");
         db.record_status_event(&first_event).unwrap();
         db.record_status_event(&first_event).unwrap(); // exact retry ignored
-        db.record_status_event(&ev(2, AgentState::NeedsInput, "hook:Notification"))
+        db.record_status_event(&ev(2, AgentState::NeedsInput, "hook:PermissionRequest"))
             .unwrap();
         let latest = db.latest_status("ses_1").unwrap().unwrap();
         assert_eq!(latest.sequence, 2);
@@ -4077,6 +4088,122 @@ mod tests {
         let rs = db.get_recovery_summary("ses_1").unwrap();
         assert_eq!(rs.last_seen_sequence, 4);
         assert!(rs.acknowledged_at.is_some());
+    }
+
+    #[test]
+    fn informational_notification_is_not_latest_or_unread_attention() {
+        let db = db();
+        db.add_project(&project("prj_1")).unwrap();
+        db.insert_session(&session("ses_1", "prj_1")).unwrap();
+        let event = |sequence: i64, state: AgentState, evidence: &str| StatusEvent {
+            session_id: "ses_1".into(),
+            run_id: LEGACY_RUN_ID.into(),
+            run_ordinal: LEGACY_RUN_ORDINAL,
+            sequence,
+            state,
+            source: StateSource::Hook,
+            confidence: Confidence::High,
+            evidence: Some(evidence.into()),
+            log_cursor: None,
+            occurred_at: Utc::now(),
+        };
+
+        db.record_status_event(&event(1, AgentState::Idle, "hook:Stop"))
+            .unwrap();
+        db.record_status_event(&event(2, AgentState::NeedsInput, "hook:Notification"))
+            .unwrap();
+
+        let latest = db.latest_status("ses_1").unwrap().unwrap();
+        assert_eq!(latest.sequence, 1);
+        assert_eq!(latest.state, AgentState::Idle);
+        assert!(!db.has_unread_attention("ses_1", 1).unwrap());
+        assert_eq!(
+            db.get_recovery_summary("ses_1").unwrap().summary_state,
+            SummaryState::Output
+        );
+    }
+
+    #[test]
+    fn unread_attention_sql_matches_the_shared_semantic_classifier() {
+        let db = db();
+        db.add_project(&project("prj_attention")).unwrap();
+        let cases = [
+            (
+                AgentState::NeedsInput,
+                StateSource::Hook,
+                "hook:PermissionRequest",
+                true,
+            ),
+            (
+                AgentState::NeedsInput,
+                StateSource::Pty,
+                "pty:pattern:permission",
+                true,
+            ),
+            (AgentState::Idle, StateSource::Hook, "hook:Stop", true),
+            (AgentState::Idle, StateSource::Hook, "hook:TurnEnd", true),
+            (
+                AgentState::Idle,
+                StateSource::Adapter,
+                "adapter:kimi:TurnEnd",
+                true,
+            ),
+            (
+                AgentState::Idle,
+                StateSource::Adapter,
+                "adapter:pi:TurnEnd",
+                true,
+            ),
+            (
+                AgentState::NeedsInput,
+                StateSource::Hook,
+                "hook:Notification",
+                false,
+            ),
+            (
+                AgentState::NeedsInput,
+                StateSource::Hook,
+                "hook:AskUserQuestion",
+                false,
+            ),
+            (
+                AgentState::Idle,
+                StateSource::Pty,
+                "pty:silence:3000ms",
+                false,
+            ),
+            (
+                AgentState::Exited,
+                StateSource::Process,
+                "process:exit:0",
+                false,
+            ),
+        ];
+
+        for (index, (state, source, evidence, expected)) in cases.into_iter().enumerate() {
+            let session_id = format!("ses_attention_{index}");
+            db.insert_session(&session(&session_id, "prj_attention"))
+                .unwrap();
+            let event = StatusEvent {
+                session_id: session_id.clone(),
+                run_id: LEGACY_RUN_ID.into(),
+                run_ordinal: LEGACY_RUN_ORDINAL,
+                sequence: 1,
+                state,
+                source,
+                confidence: Confidence::High,
+                evidence: Some(evidence.into()),
+                log_cursor: None,
+                occurred_at: Utc::now(),
+            };
+            assert_eq!(event.attention_kind().is_some(), expected, "{evidence}");
+            db.record_status_event(&event).unwrap();
+            assert_eq!(
+                db.has_unread_attention(&session_id, 0).unwrap(),
+                expected,
+                "{evidence}"
+            );
+        }
     }
 
     #[test]
@@ -4317,7 +4444,7 @@ mod tests {
             &second,
             1,
             AgentState::NeedsInput,
-            "hook:Notification",
+            "hook:PermissionRequest",
         ))
         .unwrap(); // same sequence is valid in another run
         db.record_status_event(&event(&first, 2, AgentState::Exited, "process:signal:9"))
@@ -4468,7 +4595,7 @@ mod tests {
             occurred_at: Utc::now(),
         };
 
-        db.record_status_event(&event(2, AgentState::NeedsInput, "hook:Notification"))
+        db.record_status_event(&event(2, AgentState::NeedsInput, "hook:PermissionRequest"))
             .unwrap();
         db.record_status_event(&event(1, AgentState::Exited, "process:signal:9"))
             .unwrap();
@@ -4610,7 +4737,7 @@ mod tests {
         assert_eq!(seen.last_seen_sequence, 2);
         assert_eq!(seen.unread_output_offset, -1);
 
-        db.record_status_event(&event(3, AgentState::NeedsInput, "hook:Notification"))
+        db.record_status_event(&event(3, AgentState::NeedsInput, "pty:pattern:permission"))
             .unwrap();
         assert!(db
             .has_unread_attention("ses_1", seen.last_seen_sequence)

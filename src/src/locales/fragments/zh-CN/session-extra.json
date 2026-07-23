@@ -83,7 +83,7 @@
     "description": "离开期间发生的完成 / 等待 / 异常事件",
     "markAllRead": "全部已读",
     "completed": "已完成",
-    "needsInput": "等待输入",
+    "needsInput": "等待批准",
     "failed": "异常 / 退出",
     "openDiagnostics": "打开诊断",
     "empty": "离开期间没有新的完成、等待或异常事件。",

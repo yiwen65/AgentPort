@@ -5,15 +5,107 @@
 //! instructions (failure C).
 
 use crate::error::{CoreError, Result};
-use crate::models::{AgentState, Confidence, StateSource, StatusEvent, UiLanguage};
+use crate::models::{AgentState, AttentionKind, StateSource, StatusEvent, UiLanguage};
+use std::collections::{HashMap, HashSet};
 use std::process::Command;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+const MAX_TRACKED_NOTIFICATION_EVENTS: usize = 4096;
+const APPROVAL_CROSS_SOURCE_DEDUP_WINDOW: Duration = Duration::from_secs(2);
+const PTY_APPROVAL_REPEAT_WINDOW: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone)]
 pub struct Notification {
     pub session_id: String,
     pub title: String,
     pub body: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ApprovalDedupState {
+    seen_at: Instant,
+    notified_at: Instant,
+    notified_source: StateSource,
+}
+
+#[derive(Default)]
+pub struct NotificationDeduper {
+    exact_events: HashSet<String>,
+    approvals: HashMap<String, ApprovalDedupState>,
+}
+
+impl NotificationDeduper {
+    pub fn should_notify(&mut self, event: &StatusEvent) -> bool {
+        self.should_notify_at(event, Instant::now())
+    }
+
+    fn should_notify_at(&mut self, event: &StatusEvent, now: Instant) -> bool {
+        let Some(kind) = event.attention_kind() else {
+            return false;
+        };
+        if self.exact_events.len() >= MAX_TRACKED_NOTIFICATION_EVENTS {
+            self.exact_events.clear();
+        }
+        let exact_key = format!(
+            "{}:{}:{}:{}",
+            event.session_id, event.run_id, event.run_ordinal, event.sequence
+        );
+        if !self.exact_events.insert(exact_key) {
+            return false;
+        }
+
+        let run_key = format!(
+            "{}:{}:{}",
+            event.session_id, event.run_id, event.run_ordinal
+        );
+        match kind {
+            AttentionKind::ApprovalRequested => {
+                if self.approvals.len() >= MAX_TRACKED_NOTIFICATION_EVENTS {
+                    self.approvals.retain(|_, approval| {
+                        now.saturating_duration_since(approval.seen_at) < PTY_APPROVAL_REPEAT_WINDOW
+                    });
+                    if self.approvals.len() >= MAX_TRACKED_NOTIFICATION_EVENTS {
+                        self.approvals.clear();
+                    }
+                }
+                let previous = self.approvals.get(&run_key).copied();
+                let duplicate = previous.is_some_and(|approval| match event.source {
+                    // Interactive prompts redraw periodically. Refreshing seen_at
+                    // on every redraw keeps the whole prompt episode quiet.
+                    StateSource::Pty => {
+                        now.saturating_duration_since(approval.seen_at) < PTY_APPROVAL_REPEAT_WINDOW
+                    }
+                    // A precise hook commonly follows the first PTY match. Only
+                    // coalesce it with a notification actually emitted from PTY;
+                    // a later hook is a distinct permission request.
+                    StateSource::Hook => {
+                        approval.notified_source == StateSource::Pty
+                            && now.saturating_duration_since(approval.notified_at)
+                                < APPROVAL_CROSS_SOURCE_DEDUP_WINDOW
+                    }
+                    _ => false,
+                });
+                if duplicate {
+                    if let Some(approval) = self.approvals.get_mut(&run_key) {
+                        approval.seen_at = now;
+                    }
+                    false
+                } else {
+                    self.approvals.insert(
+                        run_key,
+                        ApprovalDedupState {
+                            seen_at: now,
+                            notified_at: now,
+                            notified_source: event.source,
+                        },
+                    );
+                    true
+                }
+            }
+            AttentionKind::TurnCompleted => true,
+        }
+    }
 }
 
 /// Localized payload shared by the GUI and headless diagnostic command.
@@ -211,32 +303,26 @@ fn on_path(exe: &str) -> bool {
     })
 }
 
-/// Map a status event to its localized notification payload. Delivery remains
-/// the caller's responsibility so the GUI can use its app-owned native backend.
+/// Map a status event to a user-facing notification. The Session title is the
+/// notification title and the body is a short localized status preview;
+/// evidence source and confidence stay in the diagnostics/timeline surfaces.
 pub fn notification_for_state_change(
     language: UiLanguage,
     session_title: &str,
     event: &StatusEvent,
 ) -> Option<Notification> {
-    let ev = event.evidence.as_deref().unwrap_or("");
-    let title = match (language, event.state) {
-        (UiLanguage::ZhCn, AgentState::NeedsInput) => "等待输入",
-        (UiLanguage::ZhCn, AgentState::Exited) if ev == "process:exit:0" => "已完成",
-        (UiLanguage::ZhCn, AgentState::Exited) => "异常退出",
-        (UiLanguage::EnUs, AgentState::NeedsInput) => "Needs input",
-        (UiLanguage::EnUs, AgentState::Exited) if ev == "process:exit:0" => "Completed",
-        (UiLanguage::EnUs, AgentState::Exited) => "Exited with an error",
+    event.attention_kind()?;
+    let body = match (language, event.state) {
+        (UiLanguage::ZhCn, AgentState::NeedsInput) => "等待批准",
+        (UiLanguage::ZhCn, AgentState::Idle) => "已完成",
+        (UiLanguage::EnUs, AgentState::NeedsInput) => "Waiting for approval",
+        (UiLanguage::EnUs, AgentState::Idle) => "Completed",
         _ => return None,
     };
-    let body = format!(
-        "{session_title} · {} · {}",
-        source_label(language, event.source),
-        confidence_label(language, event.confidence)
-    );
     Some(Notification {
         session_id: event.session_id.clone(),
-        title: title.into(),
-        body,
+        title: session_title.into(),
+        body: body.into(),
     })
 }
 
@@ -259,33 +345,12 @@ pub fn notify_state_change(notifier: &Notifier, session_title: &str, event: &Sta
     }
 }
 
-fn source_label(language: UiLanguage, source: StateSource) -> &'static str {
-    match (language, source) {
-        (_, StateSource::Hook) => "Hook",
-        (_, StateSource::Pty) => "PTY",
-        (UiLanguage::ZhCn, StateSource::Process) => "进程",
-        (UiLanguage::ZhCn, StateSource::Adapter) => "适配器",
-        (UiLanguage::EnUs, StateSource::Process) => "Process",
-        (UiLanguage::EnUs, StateSource::Adapter) => "Adapter",
-    }
-}
-
-fn confidence_label(language: UiLanguage, confidence: Confidence) -> &'static str {
-    match (language, confidence) {
-        (UiLanguage::ZhCn, Confidence::High) => "高置信度",
-        (UiLanguage::ZhCn, Confidence::Medium) => "中置信度",
-        (UiLanguage::ZhCn, Confidence::Low) => "低置信度",
-        (UiLanguage::EnUs, Confidence::High) => "High confidence",
-        (UiLanguage::EnUs, Confidence::Medium) => "Medium confidence",
-        (UiLanguage::EnUs, Confidence::Low) => "Low confidence",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{LEGACY_RUN_ID, LEGACY_RUN_ORDINAL};
+    use crate::models::{Confidence, LEGACY_RUN_ID, LEGACY_RUN_ORDINAL};
     use chrono::Utc;
+    use std::time::{Duration, Instant};
 
     fn event(
         state: AgentState,
@@ -317,10 +382,20 @@ mod tests {
                 AgentState::NeedsInput,
                 StateSource::Hook,
                 Confidence::High,
-                "hook:Notification"
+                "hook:PermissionRequest"
             )
         ));
         assert!(notify_state_change(
+            &n,
+            "构建前端",
+            &event(
+                AgentState::Idle,
+                StateSource::Hook,
+                Confidence::High,
+                "hook:Stop"
+            )
+        ));
+        assert!(!notify_state_change(
             &n,
             "构建前端",
             &event(
@@ -330,7 +405,7 @@ mod tests {
                 "process:exit:0"
             )
         ));
-        assert!(notify_state_change(
+        assert!(!notify_state_change(
             &n,
             "跑测试",
             &event(
@@ -338,17 +413,6 @@ mod tests {
                 StateSource::Process,
                 Confidence::High,
                 "process:exit:1"
-            )
-        ));
-        // Signal exit is also an abnormal exit.
-        assert!(notify_state_change(
-            &n,
-            "跑测试",
-            &event(
-                AgentState::Exited,
-                StateSource::Process,
-                Confidence::High,
-                "process:signal:9"
             )
         ));
         // Anything else never notifies.
@@ -384,16 +448,216 @@ mod tests {
         ));
 
         let sent = n.sent();
-        assert_eq!(sent.len(), 4);
-        assert_eq!(sent[0].title, "等待输入");
-        assert!(sent[0].body.contains("更新部署文档"));
-        assert!(sent[0].body.contains("Hook · 高置信度"));
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0].title, "更新部署文档");
+        assert_eq!(sent[0].body, "等待批准");
         assert_eq!(sent[0].session_id, "ses_1");
-        assert_eq!(sent[1].title, "已完成");
-        assert!(sent[1].body.contains("构建前端"));
-        assert!(sent[1].body.contains("进程 · 高置信度"));
-        assert_eq!(sent[2].title, "异常退出");
-        assert_eq!(sent[3].title, "异常退出");
+        assert_eq!(sent[1].title, "构建前端");
+        assert_eq!(sent[1].body, "已完成");
+    }
+
+    #[test]
+    fn session_end_and_process_exit_are_not_user_notifications() {
+        assert!(notification_for_state_change(
+            UiLanguage::ZhCn,
+            "完成任务",
+            &event(
+                AgentState::Exited,
+                StateSource::Hook,
+                Confidence::High,
+                "hook:SessionEnd"
+            )
+        )
+        .is_none());
+        assert!(notification_for_state_change(
+            UiLanguage::ZhCn,
+            "完成任务",
+            &event(
+                AgentState::Exited,
+                StateSource::Process,
+                Confidence::High,
+                "process:exit:0"
+            )
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn process_exit_events_never_notify() {
+        for evidence in ["process:exit:0", "process:exit:1", "process:signal:9"] {
+            let process_exit = event(
+                AgentState::Exited,
+                StateSource::Process,
+                Confidence::High,
+                evidence,
+            );
+            assert!(
+                notification_for_state_change(UiLanguage::ZhCn, "完成任务", &process_exit)
+                    .is_none()
+            );
+
+            let mut deduper = NotificationDeduper::default();
+            assert!(!deduper.should_notify(&process_exit));
+        }
+    }
+
+    #[test]
+    fn only_approval_requests_notify_from_needs_input_events() {
+        for (source, evidence) in [
+            (StateSource::Hook, "hook:PermissionRequest"),
+            (StateSource::Pty, "pty:pattern:approve?"),
+        ] {
+            assert!(notification_for_state_change(
+                UiLanguage::ZhCn,
+                "等待批准",
+                &event(AgentState::NeedsInput, source, Confidence::High, evidence),
+            )
+            .is_some());
+        }
+
+        for (source, evidence) in [
+            (StateSource::Hook, "hook:Notification"),
+            (StateSource::Hook, "hook:AskUserQuestion"),
+            (StateSource::Process, "process:waiting"),
+        ] {
+            assert!(notification_for_state_change(
+                UiLanguage::ZhCn,
+                "普通输入",
+                &event(AgentState::NeedsInput, source, Confidence::High, evidence),
+            )
+            .is_none());
+        }
+    }
+
+    #[test]
+    fn hook_stop_reports_single_turn_completion() {
+        let notification = notification_for_state_change(
+            UiLanguage::ZhCn,
+            "数到 10 通知我",
+            &event(
+                AgentState::Idle,
+                StateSource::Hook,
+                Confidence::High,
+                "hook:Stop",
+            ),
+        )
+        .expect("a completed turn should notify even while the agent process stays alive");
+
+        assert_eq!(notification.title, "数到 10 通知我");
+        assert_eq!(notification.body, "已完成");
+    }
+
+    #[test]
+    fn semantic_adapter_turn_end_reports_single_turn_completion() {
+        for evidence in ["adapter:kimi:TurnEnd", "adapter:pi:TurnEnd"] {
+            let notification = notification_for_state_change(
+                UiLanguage::ZhCn,
+                "语义完成",
+                &event(
+                    AgentState::Idle,
+                    StateSource::Adapter,
+                    Confidence::High,
+                    evidence,
+                ),
+            )
+            .expect("a semantic adapter turn end should notify");
+            assert_eq!(notification.body, "已完成");
+        }
+    }
+
+    #[test]
+    fn notification_deduper_keeps_turns_and_ignores_process_exits() {
+        let mut deduper = NotificationDeduper::default();
+        let first_turn = event(
+            AgentState::Idle,
+            StateSource::Hook,
+            Confidence::High,
+            "hook:Stop",
+        );
+        let mut second_turn = first_turn.clone();
+        second_turn.sequence = 2;
+        let mut process_exit = event(
+            AgentState::Exited,
+            StateSource::Process,
+            Confidence::High,
+            "process:exit:0",
+        );
+        process_exit.sequence = 3;
+
+        assert!(deduper.should_notify(&first_turn));
+        assert!(deduper.should_notify(&second_turn));
+        assert!(!deduper.should_notify(&process_exit));
+        assert!(!deduper.should_notify(&first_turn));
+
+        let mut failed_exit = process_exit.clone();
+        failed_exit.sequence = 4;
+        failed_exit.evidence = Some("process:exit:1".into());
+        assert!(!deduper.should_notify(&failed_exit));
+
+        process_exit.run_id = "run_without_hooks".into();
+        assert!(!deduper.should_notify(&process_exit));
+    }
+
+    #[test]
+    fn notification_deduper_coalesces_cross_source_approval_bursts() {
+        let mut deduper = NotificationDeduper::default();
+        let started = Instant::now();
+        let pty = event(
+            AgentState::NeedsInput,
+            StateSource::Pty,
+            Confidence::Medium,
+            "pty:pattern:approve?",
+        );
+        let mut hook = event(
+            AgentState::NeedsInput,
+            StateSource::Hook,
+            Confidence::High,
+            "hook:PermissionRequest",
+        );
+        hook.sequence = 2;
+
+        assert!(deduper.should_notify_at(&pty, started));
+        assert!(!deduper.should_notify_at(&hook, started + Duration::from_millis(100)));
+
+        let mut next_run = hook.clone();
+        next_run.run_id = "run_next".into();
+        assert!(deduper.should_notify_at(&next_run, started + Duration::from_millis(100)));
+
+        hook.sequence = 3;
+        assert!(deduper.should_notify_at(&hook, started + Duration::from_secs(3)));
+        assert!(!deduper.should_notify_at(&hook, started + Duration::from_secs(6)));
+    }
+
+    #[test]
+    fn notification_deduper_suppresses_periodic_pty_prompt_redraws() {
+        let mut deduper = NotificationDeduper::default();
+        let started = Instant::now();
+        let mut pty = event(
+            AgentState::NeedsInput,
+            StateSource::Pty,
+            Confidence::Medium,
+            "pty:pattern:Do you want to proceed",
+        );
+
+        assert!(deduper.should_notify_at(&pty, started));
+        let mut hook = event(
+            AgentState::NeedsInput,
+            StateSource::Hook,
+            Confidence::High,
+            "hook:PermissionRequest",
+        );
+        hook.sequence = 2;
+        assert!(!deduper.should_notify_at(&hook, started + Duration::from_millis(100)));
+
+        for (sequence, seconds) in [(3, 10), (4, 20), (5, 30)] {
+            pty.sequence = sequence;
+            assert!(!deduper.should_notify_at(&pty, started + Duration::from_secs(seconds)));
+        }
+
+        // A later authoritative hook represents a new approval even though the
+        // PTY text is identical to the prompt that was just being redrawn.
+        hook.sequence = 6;
+        assert!(deduper.should_notify_at(&hook, started + Duration::from_secs(31)));
     }
 
     #[test]
@@ -428,14 +692,14 @@ mod tests {
             "Build frontend",
             &event(
                 AgentState::NeedsInput,
-                StateSource::Process,
-                Confidence::Medium,
-                "process:waiting"
+                StateSource::Hook,
+                Confidence::High,
+                "hook:PermissionRequest"
             )
         ));
         let sent = n.sent();
-        assert_eq!(sent[0].title, "Needs input");
-        assert_eq!(sent[0].body, "Build frontend · Process · Medium confidence");
+        assert_eq!(sent[0].title, "Build frontend");
+        assert_eq!(sent[0].body, "Waiting for approval");
     }
 
     #[test]

@@ -14,6 +14,7 @@
 use crate::error::{CoreError, Result};
 use crate::models::*;
 use sha2::{Digest, Sha256};
+use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -24,6 +25,7 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 pub const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_PROBE_OUTPUT: usize = 256 * 1024; // 256 KiB
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const MAX_VERSIONED_RUNTIME_DIRS: usize = 8;
 
 #[derive(Debug, Clone)]
 pub struct ProbeOutcome {
@@ -43,11 +45,26 @@ pub struct ProbeOutcome {
 /// child on `timeout` and return CoreError::Timeout. Combined output is
 /// truncated to `max_bytes`.
 fn spawn_capture(exe: &Path, args: &[&str], timeout: Duration, max_bytes: usize) -> Result<String> {
-    let mut child: Child = Command::new(exe)
+    spawn_capture_with_path(exe, args, timeout, max_bytes, None)
+}
+
+fn spawn_capture_with_path(
+    exe: &Path,
+    args: &[&str],
+    timeout: Duration,
+    max_bytes: usize,
+    path_env: Option<&OsStr>,
+) -> Result<String> {
+    let mut command = Command::new(exe);
+    command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(path) = path_env {
+        command.env("PATH", path);
+    }
+    let mut child: Child = command
         .spawn()
         .map_err(|e| CoreError::Adapter(format!("spawn {}: {e}", exe.display())))?;
 
@@ -119,8 +136,25 @@ fn spawn_capture(exe: &Path, args: &[&str], timeout: Duration, max_bytes: usize)
 /// Run `exe --version` and `exe --help` with PROBE_TIMEOUT; kill on timeout.
 /// Returns (version_text, help_text). Output truncated to 256 KiB each.
 pub fn run_readonly_probe(exe: &Path) -> Result<(String, String)> {
-    let version_raw = spawn_capture(exe, &["--version"], PROBE_TIMEOUT, MAX_PROBE_OUTPUT)?;
-    let help = spawn_capture(exe, &["--help"], PROBE_TIMEOUT, MAX_PROBE_OUTPUT)?;
+    let path_env = effective_path_env();
+    run_readonly_probe_with_path(exe, &path_env)
+}
+
+fn run_readonly_probe_with_path(exe: &Path, path_env: &OsStr) -> Result<(String, String)> {
+    let version_raw = spawn_capture_with_path(
+        exe,
+        &["--version"],
+        PROBE_TIMEOUT,
+        MAX_PROBE_OUTPUT,
+        Some(path_env),
+    )?;
+    let help = spawn_capture_with_path(
+        exe,
+        &["--help"],
+        PROBE_TIMEOUT,
+        MAX_PROBE_OUTPUT,
+        Some(path_env),
+    )?;
     // Version text = first line of `--version`; if empty, first line of `--help`.
     fn first_line(s: &str) -> &str {
         s.lines()
@@ -175,17 +209,72 @@ pub fn find_candidates_in(paths: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
-/// Well-known install dirs GUIs often miss (PRD 3.1).
-fn well_known_dirs() -> Vec<PathBuf> {
-    let home = dirs::home_dir();
-    let mut dirs = vec![
-        PathBuf::from("/usr/local/bin"),
-        PathBuf::from("/opt/homebrew/bin"),
-    ];
-    if let Some(h) = &home {
-        dirs.push(h.join(".local/bin"));
-        dirs.push(h.join(".kimi-code/bin"));
-        dirs.push(h.join(".claude/bin"));
+fn versioned_runtime_dirs(root: &Path, suffix: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut dirs = entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path().join(suffix);
+            path.is_dir().then(|| {
+                let version = entry
+                    .file_name()
+                    .to_string_lossy()
+                    .split(|character: char| !character.is_ascii_digit())
+                    .filter_map(|part| part.parse::<u64>().ok())
+                    .collect::<Vec<_>>();
+                (version, path)
+            })
+        })
+        .collect::<Vec<_>>();
+    dirs.sort_by(|(a_version, a_path), (b_version, b_path)| {
+        b_version.cmp(a_version).then_with(|| b_path.cmp(a_path))
+    });
+    dirs.into_iter()
+        .take(MAX_VERSIONED_RUNTIME_DIRS)
+        .map(|(_, path)| path)
+        .collect()
+}
+
+/// Fallback install directories that desktop apps commonly miss. Stable
+/// version-manager aliases precede versioned installations; the latter are
+/// sorted newest-version-first and still have to pass the read-only probe.
+fn discovery_dirs() -> Vec<(PathBuf, &'static str)> {
+    let mut dirs = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        for relative in [
+            ".volta/bin",
+            ".asdf/shims",
+            ".local/share/mise/shims",
+            ".local/share/fnm/aliases/default/bin",
+            ".local/share/pnpm",
+            ".bun/bin",
+            ".npm-global/bin",
+        ] {
+            dirs.push((home.join(relative), "version_manager"));
+        }
+        for path in versioned_runtime_dirs(
+            &home.join(".local/share/fnm/node-versions"),
+            Path::new("installation/bin"),
+        ) {
+            dirs.push((path, "version_manager"));
+        }
+        for path in versioned_runtime_dirs(&home.join(".nvm/versions/node"), Path::new("bin")) {
+            dirs.push((path, "version_manager"));
+        }
+        for relative in [".local/bin", ".cargo/bin", ".kimi-code/bin", ".claude/bin"] {
+            dirs.push((home.join(relative), "well_known_dir"));
+        }
+    }
+    for path in [
+        "/usr/local/bin",
+        "/opt/homebrew/bin",
+        "/home/linuxbrew/.linuxbrew/bin",
+        "/opt/local/bin",
+        "/snap/bin",
+    ] {
+        dirs.push((PathBuf::from(path), "well_known_dir"));
     }
     dirs
 }
@@ -194,20 +283,30 @@ fn process_path_entries() -> Vec<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect()
 }
 
-/// PATH entries from the user's login shell. Try `-l` first, then `-i -l`
-/// because some users configure PATH only in interactive rc files.
+/// PATH entries from the user's interactive-login shell. Version managers such
+/// as nvm/fnm are commonly initialized only by interactive rc files, so prefer
+/// `-i -l`; fall back to `-l` for shells that reject interactive mode.
 fn login_shell_path_entries() -> Vec<PathBuf> {
+    const PATH_MARKER: &str = "__AGENTPORT_PATH__=";
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-    for flags in [&["-l"][..], &["-i", "-l"][..]] {
+    for flags in [&["-i", "-l"][..], &["-l"][..]] {
         let mut args: Vec<&str> = flags.to_vec();
-        args.extend(["-c", "printf '%s' \"$PATH\""]);
+        args.extend(["-c", "printf '\\n__AGENTPORT_PATH__=%s\\n' \"$PATH\""]);
         if let Ok(out) = spawn_capture(Path::new(&shell), &args, LOGIN_SHELL_TIMEOUT, 16_384) {
-            let entries: Vec<PathBuf> = out
-                .trim()
+            let Some(path_value) = out.lines().find_map(|line| line.strip_prefix(PATH_MARKER))
+            else {
+                continue;
+            };
+            let mut entries = Vec::new();
+            for entry in path_value
                 .split(':')
                 .filter(|entry| !entry.is_empty())
                 .map(PathBuf::from)
-                .collect();
+            {
+                if !entries.contains(&entry) {
+                    entries.push(entry);
+                }
+            }
             if !entries.is_empty() {
                 return entries;
             }
@@ -222,18 +321,19 @@ fn find_candidates_from_paths(
     t: AgentType,
     process_paths: &[PathBuf],
     login_paths: &[PathBuf],
+    discovery_paths: &[(PathBuf, &'static str)],
 ) -> Vec<ProbeCandidate> {
     // (path, source) in priority order; first occurrence of a canonical path wins.
     let mut raw: Vec<(PathBuf, &str)> = Vec::new();
     for name in t.command_names() {
-        for dir in process_paths {
-            raw.push((dir.join(name), "system_path"));
-        }
         for dir in login_paths {
             raw.push((dir.join(name), "login_shell_path"));
         }
-        for dir in well_known_dirs() {
-            raw.push((dir.join(name), "well_known_dir"));
+        for dir in process_paths {
+            raw.push((dir.join(name), "system_path"));
+        }
+        for (dir, source) in discovery_paths {
+            raw.push((dir.join(name), *source));
         }
     }
     let existing = find_candidates_in(&raw.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>());
@@ -260,16 +360,22 @@ fn find_candidates_from_paths(
 
 /// Collect candidate executables for one agent type from all PATH sources.
 pub fn find_candidates(t: AgentType) -> Vec<ProbeCandidate> {
-    find_candidates_from_paths(t, &process_path_entries(), &login_shell_path_entries())
+    find_candidates_from_paths(
+        t,
+        &process_path_entries(),
+        &login_shell_path_entries(),
+        &discovery_dirs(),
+    )
 }
 
 fn probe_install(
     t: AgentType,
     exe: &Path,
     candidates: &[ProbeCandidate],
+    path_env: &OsStr,
 ) -> Result<AdapterInstall> {
     let adapter = super::adapter_for(t);
-    let probed = run_readonly_probe(exe);
+    let probed = run_readonly_probe_with_path(exe, path_env);
     // Shell fallback: /bin/sh may be dash (no --version/--help). A shell
     // that merely exists and is executable is usable — mark it Available
     // with an "unknown" version instead of Unavailable (PRD 3.1: 降级不阻塞).
@@ -285,8 +391,13 @@ fn probe_install(
     // Codex keeps resume flags in a subcommand; merge its help so
     // parse_capabilities sees the full surface (still read-only).
     if t == AgentType::Codex {
-        if let Ok(sub) = spawn_capture(exe, &["resume", "--help"], PROBE_TIMEOUT, MAX_PROBE_OUTPUT)
-        {
+        if let Ok(sub) = spawn_capture_with_path(
+            exe,
+            &["resume", "--help"],
+            PROBE_TIMEOUT,
+            MAX_PROBE_OUTPUT,
+            Some(path_env),
+        ) {
             help.push('\n');
             help.push_str(&sub);
         }
@@ -300,6 +411,7 @@ fn probe_agent_with_candidates(
     t: AgentType,
     confirmed_path: Option<&Path>,
     mut candidates: Vec<ProbeCandidate>,
+    path_env: &OsStr,
 ) -> ProbeOutcome {
     let mk =
         |state, install, reason, reason_code, reason_detail, candidates: Vec<ProbeCandidate>| {
@@ -330,7 +442,7 @@ fn probe_agent_with_candidates(
             );
         }
         let selected = PathBuf::from(&path);
-        return match probe_install(t, &selected, &candidates) {
+        return match probe_install(t, &selected, &candidates, path_env) {
             Ok(mut install) => {
                 if let Some(candidate) = candidates
                     .iter_mut()
@@ -377,7 +489,7 @@ fn probe_agent_with_candidates(
     let mut errors = Vec::new();
     for index in 0..total {
         let exe = PathBuf::from(&candidates[index].path);
-        match probe_install(t, &exe, &candidates) {
+        match probe_install(t, &exe, &candidates, path_env) {
             Ok(mut install) => {
                 candidates[index].version_text = Some(install.version_text.clone());
                 install.candidates = candidates.clone();
@@ -418,12 +530,23 @@ fn probe_agent_with_candidates(
 /// Full probe for one agent type. Without an explicit path, every discovered
 /// candidate remains visible and is tried in deterministic priority order.
 pub fn probe_agent(t: AgentType, confirmed_path: Option<&Path>) -> ProbeOutcome {
-    probe_agent_with_candidates(t, confirmed_path, find_candidates(t))
+    let process_paths = process_path_entries();
+    let login_paths = login_shell_path_entries();
+    let discovery_paths = discovery_dirs();
+    let path_env = effective_path_env_from(&process_paths, &login_paths, &discovery_paths);
+    probe_agent_with_candidates(
+        t,
+        confirmed_path,
+        find_candidates_from_paths(t, &process_paths, &login_paths, &discovery_paths),
+        &path_env,
+    )
 }
 
 pub fn probe_all() -> Vec<ProbeOutcome> {
     let process_paths = process_path_entries();
     let login_paths = login_shell_path_entries();
+    let discovery_paths = discovery_dirs();
+    let path_env = effective_path_env_from(&process_paths, &login_paths, &discovery_paths);
     AgentType::all()
         .iter()
         .copied()
@@ -431,21 +554,86 @@ pub fn probe_all() -> Vec<ProbeOutcome> {
             probe_agent_with_candidates(
                 t,
                 None,
-                find_candidates_from_paths(t, &process_paths, &login_paths),
+                find_candidates_from_paths(t, &process_paths, &login_paths, &discovery_paths),
+                &path_env,
             )
         })
         .collect()
 }
 
-/// PATH entries from the user's login+interactive shell, merged with env PATH.
-pub fn effective_path_entries() -> Vec<PathBuf> {
-    let mut out = process_path_entries();
-    for path in login_shell_path_entries() {
-        if !out.contains(&path) {
-            out.push(path);
+fn effective_path_entries_from(
+    process_paths: &[PathBuf],
+    login_paths: &[PathBuf],
+    discovery_paths: &[(PathBuf, &'static str)],
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for paths in [login_paths, process_paths] {
+        for path in paths {
+            if !out.contains(path) {
+                out.push(path.clone());
+            }
+        }
+    }
+    for (path, _) in discovery_paths {
+        if !out.contains(path) {
+            out.push(path.clone());
         }
     }
     out
+}
+
+fn effective_path_env_from(
+    process_paths: &[PathBuf],
+    login_paths: &[PathBuf],
+    discovery_paths: &[(PathBuf, &'static str)],
+) -> OsString {
+    std::env::join_paths(effective_path_entries_from(
+        process_paths,
+        login_paths,
+        discovery_paths,
+    ))
+    .unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// PATH used for Agent discovery, read-only probes, and Session launches.
+pub fn effective_path_entries() -> Vec<PathBuf> {
+    effective_path_entries_from(
+        &process_path_entries(),
+        &login_shell_path_entries(),
+        &discovery_dirs(),
+    )
+}
+
+pub fn effective_path_env() -> OsString {
+    std::env::join_paths(effective_path_entries())
+        .unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
+}
+
+pub fn merge_path_env(env: &mut Vec<(String, String)>, effective_paths: &[PathBuf]) -> Result<()> {
+    let mut merged = Vec::new();
+    for (_, value) in env.iter().filter(|(name, _)| name == "PATH") {
+        for path in std::env::split_paths(value) {
+            if !merged.contains(&path) {
+                merged.push(path);
+            }
+        }
+    }
+    for path in effective_paths {
+        if !merged.contains(path) {
+            merged.push(path.clone());
+        }
+    }
+    let value = std::env::join_paths(merged)
+        .map_err(|error| CoreError::Validation(format!("cannot build Agent PATH: {error}")))?
+        .to_string_lossy()
+        .into_owned();
+    env.retain(|(name, _)| name != "PATH");
+    env.push(("PATH".into(), value));
+    Ok(())
+}
+
+pub fn merge_effective_path_env(env: &mut Vec<(String, String)>) -> Result<()> {
+    merge_path_env(env, &effective_path_entries())
 }
 
 #[cfg(test)]
@@ -556,6 +744,7 @@ mod tests {
     #[test]
     fn automatic_probe_skips_bad_candidates_without_hiding_them() {
         let tmp = tempfile::tempdir().unwrap();
+        let path_env = effective_path_env();
         let bad = write_exe(tmp.path(), "bad-claude", "#!/bin/sh\nexit 1\n");
         let usable = write_exe(
             tmp.path(),
@@ -577,6 +766,7 @@ mod tests {
                     source: "login_shell_path".into(),
                 },
             ],
+            &path_env,
         );
 
         assert_eq!(outcome.state, ProbeState::Available);

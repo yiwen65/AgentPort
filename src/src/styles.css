@@ -21,13 +21,16 @@
   --bg-elevated: #2f2f34;
   --bg-hover: #35363a;
   --bg-active: #1f1f23;
-  --bg-term: #222228;
+  /* One Dark Pro terminal surface (matches the VSCode extension's
+     `terminal.background`); mirrors `XTERM_THEMES.dark.background`
+     in terminals.ts. */
+  --bg-term: #282c34;
   --border: #34343a;
   --border-strong: #47474f;
   --text: #f3f5fb;
   /* Terminal body text for the xterm DOM-renderer fallback; mirrors
-     `XTERM_THEMES.dark.foreground` in terminals.ts. */
-  --term-text: #d4d4dc;
+     `XTERM_THEMES.dark.foreground` (One Dark Pro) in terminals.ts. */
+  --term-text: #abb2bf;
   --text-dim: rgba(243, 245, 251, 0.66);
   --text-faint: rgba(243, 245, 251, 0.44);
   --accent: #6b8cff;
@@ -41,8 +44,10 @@
   --red-soft: rgba(244, 112, 103, 0.15);
   --shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
   --focus-ring: #6cb6ff;
-  --workspace-live: #222228;
-  --workspace-idle: #222228;
+  /* Terminal workspace stays on the One Dark Pro surface whether the pane
+     is live or idle, so pane edges never show a mismatched seam. */
+  --workspace-live: #282c34;
+  --workspace-idle: #282c34;
   --settings-surface: #26252a;
   --settings-sidebar: #2c2d31;
   --settings-row: rgba(255, 255, 255, 0.065);

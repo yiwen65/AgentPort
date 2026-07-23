@@ -1,7 +1,7 @@
 {
   "state": {
     "working": "工作中",
-    "needsInput": "等待输入",
+    "needsInput": "等待批准",
     "idle": "空闲",
     "exited": "已退出",
     "unknown": "状态未知"

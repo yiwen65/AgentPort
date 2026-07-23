@@ -21,6 +21,8 @@ use std::time::{Duration, Instant};
 
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(10);
+const UNREACHABLE_STOP_RECONCILE_TIMEOUT: Duration = Duration::from_millis(500);
+const UNREACHABLE_STOP_RECONCILE_POLL: Duration = Duration::from_millis(25);
 
 /// HostConfig defaults (mirror protocol.rs serde defaults, which are private).
 const DEFAULT_SIGINT_GRACE_MS: u64 = 1_500;
@@ -572,15 +574,19 @@ impl<'a> HostManager<'a> {
             Err(CoreError::Host(_)) => {
                 // Reconcile only the exact PID binding observed before the
                 // failed connection. A verified-dead Host makes the stop goal
-                // complete; a live PID or an unbound launch that may still be
-                // starting keeps returning an error below.
+                // complete. During orderly shutdown an older Host may unlink
+                // its socket just before persisting its terminal state, so wait
+                // briefly for that authoritative fact instead of surfacing a
+                // transient archive failure.
                 if let Some(binding) = observed_binding {
-                    if binding.host_pid.is_some() {
-                        self.reconcile_unreachable_binding(session_id, &binding)?;
-                        if stop_is_complete(self.db.get_session(session_id)?.lifecycle) {
-                            return Ok(());
-                        }
+                    if binding.host_pid.is_some()
+                        && self.wait_for_unreachable_stop_completion(session_id, &binding)?
+                    {
+                        return Ok(());
                     }
+                }
+                if stop_is_complete(self.db.get_session(session_id)?.lifecycle) {
+                    return Ok(());
                 }
                 Err(CoreError::Host(
                     "host is unreachable; stop cannot be verified safely".into(),
@@ -663,6 +669,40 @@ impl<'a> HostManager<'a> {
             }
         }
         Ok(())
+    }
+
+    fn wait_for_unreachable_stop_completion(
+        &self,
+        session_id: &str,
+        binding: &SessionHostBinding,
+    ) -> Result<bool> {
+        self.reconcile_unreachable_binding(session_id, binding)?;
+        if stop_is_complete(self.db.get_session(session_id)?.lifecycle) {
+            return Ok(true);
+        }
+
+        let Some(host_pid) = binding.host_pid else {
+            return Ok(false);
+        };
+        let deadline = Instant::now() + UNREACHABLE_STOP_RECONCILE_TIMEOUT;
+        loop {
+            if terminal_lifecycle_from_host_state(
+                self.paths,
+                session_id,
+                host_pid,
+                binding.run_identity(),
+            )
+            .is_some()
+                || !pid_alive(host_pid as i32)
+            {
+                self.reconcile_unreachable_binding(session_id, binding)?;
+                return Ok(stop_is_complete(self.db.get_session(session_id)?.lifecycle));
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            std::thread::sleep(UNREACHABLE_STOP_RECONCILE_POLL);
+        }
     }
 
     /// Startup reconciliation (PRD 3.3): for every session marked running,
@@ -1758,6 +1798,73 @@ mod tests {
 
         assert!(matches!(error, CoreError::Host(_)), "got {error:?}");
         assert_eq!(db.get_session(&sid).unwrap().lifecycle, Lifecycle::Running);
+    }
+
+    #[test]
+    fn stop_waits_for_terminal_state_during_host_shutdown_race() {
+        let (_dir, paths, db) = fixture();
+        add_project(&db, "prj_shutdown_race");
+        let sid = ids::new_id("ses");
+        let socket = paths.socket_path(&sid);
+        let mut running = session(&sid, "prj_shutdown_race", Lifecycle::Running);
+        running.host_socket = Some(socket.to_string_lossy().into_owned());
+        db.insert_session(&running).unwrap();
+        let run = db.create_session_run(&sid, &ids::new_uuid()).unwrap();
+        let log_path = paths.run_log_path(&sid, &run.run_id);
+        db.claim_session_run(
+            &sid,
+            &run.run_id,
+            run.run_ordinal,
+            &log_path.to_string_lossy(),
+        )
+        .unwrap();
+        let host_pid = std::process::id() as i64;
+        db.bind_session_host_for_run(
+            &sid,
+            &run.run_id,
+            run.run_ordinal,
+            host_pid,
+            &socket.to_string_lossy(),
+        )
+        .unwrap();
+        db.update_session_lifecycle_if_host(
+            &sid,
+            host_pid,
+            Some((&run.run_id, run.run_ordinal)),
+            Lifecycle::Running,
+        )
+        .unwrap();
+
+        let state_path = paths.session_dir(&sid).join("host-state.json");
+        std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+        let writer_sid = sid.clone();
+        let writer_run_id = run.run_id.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            std::fs::write(
+                state_path,
+                serde_json::to_vec(&serde_json::json!({
+                    "session_id": writer_sid,
+                    "host_pid": host_pid,
+                    "run_id": writer_run_id,
+                    "run_ordinal": run.run_ordinal,
+                    "exited_at": Utc::now().to_rfc3339(),
+                    "exit_reason": "natural"
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        });
+
+        let manager = HostManager {
+            paths: &paths,
+            db: &db,
+        };
+        let result = manager.stop(&sid, 500);
+        writer.join().unwrap();
+
+        result.unwrap();
+        assert_eq!(db.get_session(&sid).unwrap().lifecycle, Lifecycle::Exited);
     }
 
     #[test]

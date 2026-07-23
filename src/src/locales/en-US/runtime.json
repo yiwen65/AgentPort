@@ -31,7 +31,7 @@
     "fileManagerFailed": "Could not open the system file manager: {{detail}}"
   },
   "notifications": {
-    "needsInput": "Needs input",
+    "needsInput": "Waiting for approval",
     "completed": "Completed",
     "failed": "Exited with an error",
     "testTitle": "AgentPort test notification",

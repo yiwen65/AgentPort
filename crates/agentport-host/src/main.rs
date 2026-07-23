@@ -47,8 +47,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use agentport_core::adapters::adapter_for;
 use agentport_core::logs::LogWriter;
-use agentport_core::models::{AgentState, AgentTransport, LogCursor, StatusEvent};
+use agentport_core::models::{AgentState, AgentTransport, AgentType, LogCursor, StatusEvent};
 use agentport_core::protocol::{HostConfig, HostFrame};
 use agentport_core::redact::Redactor;
 use agentport_core::state::{Observation, PtyDetector, StateMachine};
@@ -60,6 +61,7 @@ use nix::unistd::Pid;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use tracing::{error, info, warn};
 
+mod semantic_events;
 mod server;
 
 /// Exit codes (contract): 0 clean stop / child exit; 2 config invalid;
@@ -71,7 +73,7 @@ const EXIT_SOCKET: i32 = 4;
 
 /// Messages from worker threads to the single control loop.
 pub(crate) enum HostMsg {
-    /// PTY / hook observations for the state machine.
+    /// PTY, hook, or structured adapter observations for the state machine.
     Obs(Observation),
     /// PTY reader reached a clean EOF and finished the log writer.
     PtyEof,
@@ -461,6 +463,7 @@ fn run() -> i32 {
     // before the new child can write so this run consumes only its own new
     // events; a later truncation is still handled by the poller.
     let hook_start_offset = hook_snapshot_offset(&cfg.hook_events_path);
+    let semantic_snapshot = semantic_events::Snapshot::capture(&cfg);
 
     // PTY remains the compatibility transport. Pi's structured RPC mode uses
     // ordinary pipes exclusively so terminal control bytes and TUI prompts
@@ -523,6 +526,10 @@ fn run() -> i32 {
             // that launched the desktop app.
             command.env("TERM", "xterm-256color");
             command.env("COLORTERM", "truecolor");
+            // AgentPort's xterm handles OSC 8 links. Advertise that capability
+            // so Ink-based CLIs render `[label](url)` as a hidden hyperlink
+            // instead of falling back to the visible `label (url)` form.
+            command.env("FORCE_HYPERLINK", "1");
             command.env_remove("NO_COLOR");
             let mut child = match slave.spawn_command(command) {
                 Ok(child) => child,
@@ -647,6 +654,8 @@ fn run() -> i32 {
         info!("agent session id from launch hint");
         set_agent_session_id(&shared, &hint);
     }
+
+    semantic_events::spawn(semantic_snapshot, shared.clone(), msg_tx.clone());
 
     server::spawn_accept_loop(listener, shared.clone(), msg_tx.clone());
     match cfg.transport {
@@ -1117,8 +1126,11 @@ fn shutdown(
     group_cleaned: bool,
     exit_reason: &str,
 ) {
-    let _ = std::fs::remove_file(&shared.cfg.socket_path);
+    // Publish the durable terminal fact before making the Host unreachable.
+    // Otherwise an archive request can observe a live Host PID, a missing
+    // socket, and no safe evidence that the Agent already exited.
     write_host_state(shared, Some((code, signal, group_cleaned, exit_reason)));
+    let _ = std::fs::remove_file(&shared.cfg.socket_path);
     info!("host shutdown complete");
 }
 
@@ -1344,6 +1356,7 @@ fn spawn_pty_reader(
 ) {
     std::thread::spawn(move || {
         let mut detector = PtyDetector::new(&[], &[]);
+        let adapter = (shared.cfg.adapter_type == "kimi").then(|| adapter_for(AgentType::Kimi));
         let mut redactor = redactor;
         let mut pi_startup_notice_filter = (shared.cfg.adapter_type == "pi")
             .then(|| shared.cfg.agent_session_id_hint.clone())
@@ -1373,6 +1386,11 @@ fn spawn_pty_reader(
                     }
                     for obs in detector.feed(&chunk) {
                         let _ = tx.send(HostMsg::Obs(obs));
+                    }
+                    if let Some(adapter) = &adapter {
+                        if let Some(id) = adapter.extract_session_id(&detector.stripped_tail()) {
+                            set_agent_session_id(&shared, &id);
+                        }
                     }
                 }
                 Err(e) => {
@@ -1595,6 +1613,8 @@ fn spawn_rpc_reader(
                         break;
                     }
                     *shared.last_output_at.lock().unwrap() = Instant::now();
+                    let is_agent_settled = event.get("type").and_then(serde_json::Value::as_str)
+                        == Some("agent_settled");
                     // Successful startup state is an internal identity check.
                     // Keep it durable for recovery diagnostics, but do not
                     // render its full payload as if it were a user event.
@@ -1608,6 +1628,11 @@ fn spawn_rpc_reader(
                         );
                     }
                     let _ = tx.send(HostMsg::Obs(Observation::PtyActivity));
+                    if is_agent_settled {
+                        let _ = tx.send(HostMsg::Obs(Observation::AdapterTurnEnd {
+                            adapter: "pi".into(),
+                        }));
+                    }
                 }
                 Err(error) => {
                     fault = Some(format!("Pi RPC stream read failed: {error}"));

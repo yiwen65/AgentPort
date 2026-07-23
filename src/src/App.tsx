@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import {
   api,
   errorText,
+  onNotificationActivated,
   onProjectsChanged,
   onRepositoryStateChanged,
   onSessionAgentId,
@@ -61,6 +62,7 @@ function useBoot() {
     let cancelled = false;
     const unlistens: Array<() => void> = [];
     let booted = false;
+    let notificationActivationPending = false;
     const pendingEvents: Array<() => void> = [];
     const applyWhenBooted = (fn: () => void) => {
       if (cancelled) return;
@@ -88,14 +90,11 @@ function useBoot() {
           }),
           onSessionState((ev) => {
             applyWhenBooted(() => {
-              // A state change visible in the focused terminal is already read.
-              // Inactive sessions retain only meaningful state changes as unread.
+              // Receiving an event is not proof that the user saw it. The
+              // backend decides whether it is actionable, and selecting the
+              // Session is the explicit acknowledgement boundary.
               patchSession(ev.sessionId, { status: ev });
-              if (getState().activeSessionId === ev.sessionId) {
-                void api.markSessionSeen(ev.sessionId, ev).then(refreshProjectsSoon).catch(() => undefined);
-              } else {
-                refreshProjectsSoon();
-              }
+              refreshProjectsSoon();
             });
           }),
           onSessionExit(({ sessionId, reason }) => {
@@ -109,6 +108,13 @@ function useBoot() {
           onSessionAgentId(({ sessionId, agentSessionId }) => {
             applyWhenBooted(() => {
               patchSession(sessionId, { agentSessionId, resumePrecision: "exact" });
+            });
+          }),
+          onNotificationActivated((sessionId) => {
+            notificationActivationPending = true;
+            applyWhenBooted(() => {
+              selectSession(sessionId);
+              notificationActivationPending = false;
             });
           }),
         ]);
@@ -129,6 +135,9 @@ function useBoot() {
         unlistens.push(...listeners);
 
         const info = await api.boot();
+        const notificationSessionId = await api
+          .takePendingNotificationSession()
+          .catch(() => null);
         if (cancelled) return;
         await applyUiLanguage(info.settings.uiLanguage);
         applyTerminalLanguage();
@@ -151,7 +160,23 @@ function useBoot() {
         booted = true;
         for (const applyEvent of pendingEvents.splice(0)) applyEvent();
         const first = flattenSessions(getState().projects)[0];
-        if (first) selectSession(first.id);
+        const notificationSession = findSession(getState().projects, notificationSessionId);
+        if (notificationSession) selectSession(notificationSession.id);
+        else if (!notificationActivationPending && !getState().activeSessionId && first) {
+          selectSession(first.id);
+        }
+        if (info.adapters.length > 0) {
+          void api
+            .probeAgents()
+            .then((outcomes) => {
+              if (cancelled) return;
+              const installs = outcomes.flatMap((outcome) =>
+                outcome.install ? [outcome.install] : [],
+              );
+              if (installs.length > 0) setState({ adapters: installs });
+            })
+            .catch(() => undefined);
+        }
       } catch (e) {
         if (!cancelled) {
           for (const unlisten of unlistens.splice(0)) unlisten();

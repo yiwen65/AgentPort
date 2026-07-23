@@ -31,7 +31,7 @@
     "fileManagerFailed": "无法打开系统文件管理器：{{detail}}"
   },
   "notifications": {
-    "needsInput": "等待输入",
+    "needsInput": "等待批准",
     "completed": "已完成",
     "failed": "异常退出",
     "testTitle": "AgentPort 测试通知",

@@ -12,6 +12,5 @@
   "settings:ui.appearance.font.options.cascadiaMono",
   "settings:ui.appearance.font.options.dejavuSansMono",
   "settings:ui.adapters.columns.agent",
-  "settings:ui.adapters.columns.hook",
   "runtime:search.kind.session"
 ]

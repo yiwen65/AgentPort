@@ -285,12 +285,14 @@ export const api = {
   secretList: () => invoke<SecretMeta[]>("secret_list"),
   secretDelete: (id: string) => invoke<void>("secret_delete", { id }),
   notifyTest: () => invoke<void>("notify_test"),
+  takePendingNotificationSession: () => invoke<string | null>("take_pending_notification_session"),
   readLogTail: (sessionId: string, bytes: number) =>
     invoke<LogTail>("read_log_tail", { sessionId, bytes }),
   readRecoveryLogContext: (sessionId: string, cursor: LogCursorView) =>
     invoke<RecoveryLogContext>("read_recovery_log_context", { sessionId, cursor }),
   revealInFileManager: (path: string) => invoke<void>("reveal_in_file_manager", { path }),
   openInSystemTerminal: (path: string) => invoke<void>("open_in_system_terminal", { path }),
+  openExternalUrl: (url: string) => invoke<void>("open_external_url", { url }),
   pickDirectory: () => invoke<string | null>("pick_directory"),
   pickSavePath: (defaultName: string) =>
     invoke<string | null>("pick_save_path", { defaultName }),
@@ -336,6 +338,10 @@ export function onSessionAgentId(
   return listen<{ sessionId: string; agentSessionId: string }>("session-agent-id", (e) =>
     cb(e.payload),
   );
+}
+
+export function onNotificationActivated(cb: (sessionId: string) => void): Promise<UnlistenFn> {
+  return listen<string>("notification-activated", (event) => cb(event.payload));
 }
 
 export function onRepositoryOperationProgress(

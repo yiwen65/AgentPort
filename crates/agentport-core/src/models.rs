@@ -253,7 +253,7 @@ pub struct AdapterInstall {
 pub struct ProbeCandidate {
     pub path: String,
     pub version_text: Option<String>,
-    pub source: String, // "system_path" | "login_shell_path" | "well_known_dir" | "manual"
+    pub source: String, // system_path | login_shell_path | version_manager | well_known_dir | manual
 }
 
 // ---------------------------------------------------------------------------
@@ -620,6 +620,44 @@ impl StatusEvent {
             sequence: self.sequence,
         }
     }
+
+    /// Generic Claude notifications (idle/push) are observable hook facts,
+    /// but they are not agent state transitions. This also protects a newer
+    /// GUI from legacy Hosts that still project them as `needs_input`.
+    pub fn changes_session_state(&self) -> bool {
+        !(self.source == StateSource::Hook && self.evidence.as_deref() == Some("hook:Notification"))
+    }
+
+    /// User-actionable semantic events shared by system notifications, unread
+    /// badges and recovery surfaces. Keep this exact: generic hook
+    /// notifications and process lifecycle facts are not user messages.
+    pub fn attention_kind(&self) -> Option<AttentionKind> {
+        let evidence = self.evidence.as_deref().unwrap_or("");
+        match self.state {
+            AgentState::NeedsInput
+                if (self.source == StateSource::Hook && evidence == "hook:PermissionRequest")
+                    || (self.source == StateSource::Pty
+                        && evidence.starts_with("pty:pattern:")) =>
+            {
+                Some(AttentionKind::ApprovalRequested)
+            }
+            AgentState::Idle
+                if (self.source == StateSource::Hook
+                    && matches!(evidence, "hook:Stop" | "hook:TurnEnd"))
+                    || (self.source == StateSource::Adapter
+                        && matches!(evidence, "adapter:kimi:TurnEnd" | "adapter:pi:TurnEnd")) =>
+            {
+                Some(AttentionKind::TurnCompleted)
+            }
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttentionKind {
+    ApprovalRequested,
+    TurnCompleted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

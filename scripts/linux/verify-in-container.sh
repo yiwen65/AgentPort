@@ -18,7 +18,9 @@ CLI=/artifacts/agentport-cli
 chmod +x /artifacts/agentport-cli /artifacts/agentport-host 2>/dev/null || true
 
 echo "== headless functional E2E (agentport-cli on real Linux) =="
-$CLI probe shell --path /bin/bash --json | grep -q '"state": "available"' && echo "probe: OK"
+PROBE_JSON=$($CLI probe shell --path /bin/bash --json)
+grep -q '"state": "available"' <<<"$PROBE_JSON"
+echo "probe: OK"
 PROJ=$($CLI project add /tmp --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])' 2>/dev/null || $CLI project add /tmp --json | grep -o '"id": "[^"]*"' | head -1 | cut -d'"' -f4)
 SES=$($CLI session new --project "$PROJ" --agent shell --title verify --json | grep -o '"id": "[^"]*"' | head -1 | cut -d'"' -f4)
 $CLI session input "$SES" --data "echo linux-verify\\n" >/dev/null

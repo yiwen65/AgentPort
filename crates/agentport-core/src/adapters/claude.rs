@@ -5,8 +5,8 @@
 //! - `-c, --continue`       : resume most recent in cwd (precision = latest).
 //! - `--permission-mode <mode>` : native UI modes only; NEVER default to bypass.
 //! - `--dangerously-skip-permissions` : bypass flag, ONLY on explicit user opt-in (preset=bypass).
-//! - Hooks: settings.json `hooks` (e.g. PreToolUse, UserPromptSubmit, Notification, Stop,
-//!   SessionStart/SessionEnd). Integration must be PER-INVOCATION and reversible —
+//! - Hooks: settings.json `hooks` (e.g. PreToolUse, PermissionRequest, Notification,
+//!   Stop, SessionStart/SessionEnd). Integration must be PER-INVOCATION and reversible —
 //!   verify `--settings <file>` exists in this version before use; if absent, hooks
 //!   degrade (HookStatus::Degraded) and we never touch ~/.claude/settings.json.
 //! - Hook commands append one JSON line to ctx.hook_events_path. The command line
@@ -22,6 +22,7 @@ pub struct ClaudeAdapter;
 /// Hook events registered in the per-session settings file.
 const HOOK_EVENTS: &[&str] = &[
     "PreToolUse",
+    "PermissionRequest",
     "UserPromptSubmit",
     "Notification",
     "Stop",
@@ -340,6 +341,7 @@ mod tests {
         let hooks = v["hooks"].as_object().unwrap();
         for ev in [
             "PreToolUse",
+            "PermissionRequest",
             "UserPromptSubmit",
             "Notification",
             "Stop",
@@ -411,7 +413,7 @@ mod tests {
             "/tmp/work/.agentport/claude-settings.json"
         );
         let v: serde_json::Value = serde_json::from_str(&plan.helper_files[0].1).unwrap();
-        assert_eq!(v["hooks"].as_object().unwrap().len(), 6);
+        assert_eq!(v["hooks"].as_object().unwrap().len(), 7);
     }
 
     #[test]

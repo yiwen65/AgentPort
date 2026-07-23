@@ -114,7 +114,7 @@ export interface Settings {
 export interface ProbeCandidate {
   path: string;
   versionText: string | null;
-  /** "system_path" | "login_shell_path" | "well_known_dir" | "manual" */
+  /** system_path | login_shell_path | version_manager | well_known_dir | manual */
   source: string;
 }
 

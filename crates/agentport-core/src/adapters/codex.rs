@@ -1,12 +1,12 @@
-//! Codex adapter. Verified on this machine against codex-cli 0.144.5
+//! Codex adapter. Verified on this machine against codex-cli 0.144.5 and 0.145.0
 //! (fixtures in tests/fixtures/cli/):
 //! - `codex resume [SESSION_ID]` : exact resume by UUID (or name).
 //! - `codex resume --last`       : latest session for this cwd (precision = latest).
 //! - `-c key=value`              : per-invocation config override (confirmed in --help).
-//!   The `notify` config key is NOT mentioned anywhere in 0.144.5's
-//!   --help/doctor/debug output, so we do NOT inject `-c notify=...`: hook
-//!   injection is unverifiable on this version -> HookStatus::Degraded, PTY
-//!   heuristics carry status (never edits ~/.codex/config.toml either way).
+//!   Builds exposing `--dangerously-bypass-hook-trust` have Codex's documented
+//!   current notification surface. AgentPort configures the external notifier
+//!   for every turn and filters it to completion/approval events, scoped to this
+//!   invocation; it never changes ~/.codex/config.toml or bypasses hook trust.
 //! - Session-id capture: `codex exec --json` emits
 //!   `{"type":"thread.started","thread_id":"<uuid>"}` (verified 2026-07-18,
 //!   fixture codex-exec-ok.txt). Whether the interactive TUI prints the id is
@@ -24,6 +24,56 @@ use std::path::Path;
 
 pub struct CodexAdapter;
 
+fn notifier_relay_script() -> String {
+    r#"#!/bin/sh
+# Codex appends one compact JSON event as the final argument. AgentPort maps
+# only the two user-notifiable types and never persists the original payload.
+case "$3" in
+  *'"type":"agent-turn-complete"'*) event='Stop' ;;
+  *'"type":"approval-requested"'*) event='PermissionRequest' ;;
+  *) exit 0 ;;
+esac
+printf '{"event":"%s","agentport_session_id":"%s"}\n' "$event" "$1" >> "$2"
+"#
+    .into()
+}
+
+fn hook_plan(
+    install: &AdapterInstall,
+    ctx: &LaunchContext,
+    argv: &mut Vec<String>,
+    notices: &mut Vec<LaunchNotice>,
+) -> (HookStatus, Vec<(String, String)>) {
+    if install.hook_status != HookStatus::Supported {
+        notices.push(LaunchNotice::new(
+            "codex_hook_unverified",
+            "该版本未暴露可验证的会话级 Hook 能力，状态降级为 PTY 启发式",
+        ));
+        return (HookStatus::Degraded, vec![]);
+    }
+
+    let relay = format!("{}/codex-notify-relay.sh", ctx.session_dir);
+    // JSON string arrays are valid TOML arrays. Passing every override as one
+    // argv item avoids shell interpolation and changes only this Codex process.
+    let notify_argv = serde_json::to_string(&vec![
+        "sh",
+        relay.as_str(),
+        ctx.session_id.as_str(),
+        ctx.hook_events_path.as_str(),
+    ])
+    .unwrap_or_else(|_| "[]".into());
+    argv.extend(["-c".into(), format!("notify={notify_argv}")]);
+    argv.extend([
+        "-c".into(),
+        "tui.notifications=[\"agent-turn-complete\",\"approval-requested\"]".into(),
+    ]);
+    argv.extend(["-c".into(), "tui.notification_condition=\"always\"".into()]);
+    (
+        HookStatus::Supported,
+        vec![(relay, notifier_relay_script())],
+    )
+}
+
 impl AgentAdapter for CodexAdapter {
     fn agent_type(&self) -> AgentType {
         AgentType::Codex
@@ -37,6 +87,7 @@ impl AgentAdapter for CodexAdapter {
     ) -> Result<AdapterInstall> {
         // help_out = `codex --help` + `codex resume --help` (merged by the prober).
         let flags = super::extract_flags(help_out);
+        let has = |flag: &str| flags.iter().any(|value| value == flag);
         // Exact resume iff the resume subcommand accepts a SESSION_ID argument.
         let exact_resume = help_out.contains("[SESSION_ID]")
             || (help_out.contains("resume") && help_out.contains("SESSION_ID"));
@@ -46,8 +97,13 @@ impl AgentAdapter for CodexAdapter {
             version_text: super::normalize_version(version_out),
             capability_hash: super::capability::capability_hash(version_out, help_out),
             exact_resume,
-            // notify key unverifiable from CLI output on 0.144.5 -> degraded.
-            hook_status: HookStatus::Degraded,
+            // This flag is an explicit runtime signal that the current Codex
+            // generation exposes the documented notification/filter surface.
+            hook_status: if has("config") && has("dangerously-bypass-hook-trust") {
+                HookStatus::Supported
+            } else {
+                HookStatus::Degraded
+            },
             approval_model: AgentType::Codex.approval_model(),
             default_transport: AgentType::Codex.default_transport(),
             probed_at: chrono::Utc::now(),
@@ -59,6 +115,8 @@ impl AgentAdapter for CodexAdapter {
     fn build_launch(&self, ctx: &LaunchContext) -> Result<LaunchPlan> {
         let install = &ctx.install;
         let mut argv = vec![install.executable_path.clone()];
+        let mut notices = Vec::new();
+        let (hook_status, helper_files) = hook_plan(install, ctx, &mut argv, &mut notices);
         argv.extend(ctx.preset.args.clone());
         argv.extend(super::permission_argv(
             AgentType::Codex,
@@ -71,19 +129,16 @@ impl AgentAdapter for CodexAdapter {
             // TUI session id unverified -> cannot assign; capture best-effort.
             assigned_agent_session_id: None,
             resume_precision: ResumePrecision::Latest,
-            hook_status: install.hook_status,
+            hook_status,
             transport: ctx.transport,
-            helper_files: vec![],
-            notices: vec![
-                LaunchNotice::new(
-                    "codex_hook_unverified",
-                    "codex 0.144.5 的 help/doctor 未出现 notify 配置键，hook 注入不可验证，降级为 PTY 启发式",
-                ),
-                LaunchNotice::new(
+            helper_files,
+            notices: {
+                notices.push(LaunchNotice::new(
                     "codex_session_id_unverified",
                     "TUI 模式未证实输出原生 Session ID，仅支持恢复最近的 Session（resume --last）",
-                ),
-            ],
+                ));
+                notices
+            },
         })
     }
 
@@ -91,6 +146,8 @@ impl AgentAdapter for CodexAdapter {
         let install = &ctx.install;
         let mut argv = vec![install.executable_path.clone()];
         let mut notices = Vec::new();
+        let launch_ctx = ctx.to_launch_context();
+        let (hook_status, helper_files) = hook_plan(install, &launch_ctx, &mut argv, &mut notices);
         let resume_precision = match &ctx.agent_session_id {
             Some(id) => {
                 if !install.exact_resume {
@@ -123,9 +180,9 @@ impl AgentAdapter for CodexAdapter {
             env: vec![],
             assigned_agent_session_id: None,
             resume_precision,
-            hook_status: install.hook_status,
+            hook_status,
             transport: ctx.transport,
-            helper_files: vec![],
+            helper_files,
             notices,
         })
     }
@@ -180,8 +237,7 @@ mod tests {
         // 0.144.5 无 --full-auto
         assert!(!i.flags.iter().any(|x| x == "full-auto"));
         assert!(i.exact_resume);
-        // notify 无法从 help 确认 -> hook 降级
-        assert_eq!(i.hook_status, HookStatus::Degraded);
+        assert_eq!(i.hook_status, HookStatus::Supported);
     }
 
     #[test]
@@ -189,11 +245,25 @@ mod tests {
         // 去掉 resume 子命令的 SESSION_ID 参数
         let help = merged_help()
             .replace("[SESSION_ID]", "")
-            .replace("SESSION_ID", "SID");
+            .replace("SESSION_ID", "SID")
+            .replace("--dangerously-bypass-hook-trust", "--hook-trust-unknown");
         let i = CodexAdapter
             .parse_capabilities(Path::new("/x/codex"), "codex-cli 99.0", &help)
             .unwrap();
         assert!(!i.exact_resume);
+        assert_eq!(i.hook_status, HookStatus::Degraded);
+    }
+
+    #[test]
+    fn parse_current_hook_capability_is_supported() {
+        let help = format!(
+            "{}\n      --dangerously-bypass-hook-trust\n          Run enabled hooks without persisted trust",
+            merged_help()
+        );
+        let i = CodexAdapter
+            .parse_capabilities(Path::new("/x/codex"), "codex-cli 0.145.0", &help)
+            .unwrap();
+        assert_eq!(i.hook_status, HookStatus::Supported);
     }
 
     #[test]
@@ -221,16 +291,115 @@ mod tests {
     }
 
     #[test]
+    fn build_launch_injects_always_on_filtered_notifier_when_supported() {
+        let mut ctx = fx::launch_ctx(
+            AgentType::Codex,
+            &["config", "dangerously-bypass-hook-trust"],
+            PermissionMode::Native,
+        );
+        ctx.install.hook_status = HookStatus::Supported;
+
+        let plan = CodexAdapter.build_launch(&ctx).unwrap();
+
+        assert_eq!(plan.hook_status, HookStatus::Supported);
+        assert_eq!(plan.helper_files.len(), 1);
+        assert_eq!(
+            plan.helper_files[0].0,
+            "/tmp/work/.agentport/codex-notify-relay.sh"
+        );
+        assert!(plan.helper_files[0].1.contains("agentport_session_id"));
+        assert!(!plan
+            .argv
+            .iter()
+            .any(|arg| arg == "--dangerously-bypass-hook-trust"));
+        let configs = plan
+            .argv
+            .windows(2)
+            .filter_map(|pair| (pair[0] == "-c").then_some(pair[1].as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(configs.len(), 3);
+        assert!(configs.iter().any(|config| config.starts_with("notify=")));
+        assert!(configs
+            .iter()
+            .any(|config| config == &"tui.notification_condition=\"always\""));
+        assert!(configs.iter().any(|config| config
+            == &"tui.notifications=[\"agent-turn-complete\",\"approval-requested\"]"));
+        assert!(configs.iter().all(|config| !config.starts_with("hooks.")));
+        assert!(!plan
+            .notices
+            .iter()
+            .any(|notice| notice.code == "codex_hook_unverified"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notifier_relay_maps_only_supported_codex_event_types() {
+        let temp = tempfile::tempdir().unwrap();
+        let relay = temp.path().join("relay.sh");
+        let events = temp.path().join("events.jsonl");
+        std::fs::write(&relay, notifier_relay_script()).unwrap();
+
+        for payload in [
+            r#"{"type":"agent-turn-complete","secret":"discard-me"}"#,
+            r#"{"type":"approval-requested","secret":"discard-me"}"#,
+            r#"{"type":"unrelated","secret":"discard-me"}"#,
+        ] {
+            let status = std::process::Command::new("sh")
+                .arg(&relay)
+                .arg("ses_abc")
+                .arg(&events)
+                .arg(payload)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+
+        let line = std::fs::read_to_string(events).unwrap();
+        let events = line
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            events,
+            vec![
+                serde_json::json!({
+                "event": "Stop",
+                "agentport_session_id": "ses_abc"
+                }),
+                serde_json::json!({
+                    "event": "PermissionRequest",
+                    "agentport_session_id": "ses_abc"
+                }),
+            ]
+        );
+        assert!(!line.contains("discard-me"));
+    }
+
+    #[test]
     fn build_resume_exact_latest() {
-        let ctx = fx::resume_ctx(AgentType::Codex, &[], Some("uuid-9"));
+        let mut ctx = fx::resume_ctx(AgentType::Codex, &[], Some("uuid-9"));
+        ctx.install.hook_status = HookStatus::Supported;
         let plan = CodexAdapter.build_resume(&ctx).unwrap();
         assert_eq!(plan.resume_precision, ResumePrecision::Exact);
-        assert_eq!(plan.argv[1..], ["resume", "uuid-9"]);
+        let resume_index = plan.argv.iter().position(|arg| arg == "resume").unwrap();
+        assert_eq!(&plan.argv[resume_index..], ["resume", "uuid-9"]);
+        assert!(!plan
+            .argv
+            .iter()
+            .any(|arg| arg == "--dangerously-bypass-hook-trust"));
+        assert!(plan
+            .argv
+            .iter()
+            .any(|arg| arg == "tui.notification_condition=\"always\""));
+        assert_eq!(plan.helper_files.len(), 1);
 
-        let ctx = fx::resume_ctx(AgentType::Codex, &[], None);
+        let mut ctx = fx::resume_ctx(AgentType::Codex, &[], None);
+        ctx.install.hook_status = HookStatus::Supported;
         let plan = CodexAdapter.build_resume(&ctx).unwrap();
         assert_eq!(plan.resume_precision, ResumePrecision::Latest);
-        assert_eq!(plan.argv[1..], ["resume", "--last"]);
+        let resume_index = plan.argv.iter().position(|arg| arg == "resume").unwrap();
+        assert_eq!(&plan.argv[resume_index..], ["resume", "--last"]);
+        assert_eq!(plan.helper_files.len(), 1);
         assert!(plan
             .notices
             .iter()

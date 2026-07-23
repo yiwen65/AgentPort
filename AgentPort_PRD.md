@@ -338,7 +338,7 @@ CLI/Host 事件 -> Adapter 归一化 -> 状态机去抖 -> 写入状态历史 ->
 | Idle | Turn 完成或输出静默且进程仍在 | 空心圆；启发式时显示中置信度 | 新 Turn、退出或失联 |
 | Exited | 进程退出 | 灰色圆 + 退出码 | 重启 |
 | Unknown | Adapter 无法解释当前状态 | 问号 + 原因 | 获取有效事件或重新探测 |
-| Unread | 非当前 Session 收到新输出或状态变化 | 数字/点徽标 | 用户查看该 Session |
+| Unread | Session 出现单轮完成或请求批准且尚未确认 | 点徽标 | 用户选择或再次点击该 Session |
 
 #### d) 依赖关系
 

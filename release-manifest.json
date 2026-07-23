@@ -1,7 +1,7 @@
 {
   "manifestVersion": 1,
   "appVersion": "0.1.0",
-  "generatedAt": "2026-07-23T09:46:58.827013+00:00",
+  "generatedAt": "2026-07-23T11:25:25.596024+00:00",
   "deliveryScope": "p0_p2",
   "platforms": [
     {
@@ -10,7 +10,7 @@
       "arch": "arm64 (universal: scripted, see knownLimitations)",
       "tier": "official",
       "artifact": "dist-release/macos/AgentPort_0.1.0_aarch64.dmg",
-      "sha256": "859e1316dd96db3713180d9607ebe68107236ebf52b5087592068620aa35db13",
+      "sha256": "ebf6c8760b9d4cf24aa14b4a8898e402d3cda11bbe0037132c48ba6eeed02cf7",
       "webviewVersion": "",
       "tested": [
         "build",
@@ -28,7 +28,7 @@
       "arch": "x86_64",
       "tier": "official",
       "artifact": "dist-release/ubuntu2204/AgentPort_0.1.0_amd64.deb",
-      "sha256": "eb4562963c4614a8f7e34b8aac080393c12564b327a30b238c7eac114d435db5",
+      "sha256": "c899a10827b772747becd88d8069a8cd611dc1b5c843bd5f32caaf25d198765e",
       "tested": [
         "docker-build",
         "container-install",
@@ -46,7 +46,7 @@
       "arch": "x86_64",
       "tier": "official",
       "artifact": "dist-release/ubuntu2204/AgentPort_0.1.0_amd64.deb",
-      "sha256": "eb4562963c4614a8f7e34b8aac080393c12564b327a30b238c7eac114d435db5",
+      "sha256": "c899a10827b772747becd88d8069a8cd611dc1b5c843bd5f32caaf25d198765e",
       "tested": [
         "docker-build",
         "container-install",
@@ -107,7 +107,7 @@
       "capabilityHash": "sha256:2f9237802b8ebdbc",
       "exactResume": true,
       "hookStatus": "supported",
-      "verifiedAt": "2026-07-23T09:45:57.695Z"
+      "verifiedAt": "2026-07-23T11:24:23.569Z"
     },
     {
       "agent": "codex",
@@ -116,7 +116,7 @@
       "capabilityHash": "sha256:337afd7a6c53ba17",
       "exactResume": true,
       "hookStatus": "degraded",
-      "verifiedAt": "2026-07-23T09:45:57.920Z"
+      "verifiedAt": "2026-07-23T11:24:23.898Z"
     },
     {
       "agent": "kimi",
@@ -125,7 +125,7 @@
       "capabilityHash": "sha256:f26cbe267ea6bf21",
       "exactResume": true,
       "hookStatus": "degraded",
-      "verifiedAt": "2026-07-23T09:45:58.879Z"
+      "verifiedAt": "2026-07-23T11:24:24.776Z"
     },
     {
       "agent": "pi",
@@ -134,7 +134,7 @@
       "capabilityHash": "sha256:260a2820393f8b2c",
       "exactResume": true,
       "hookStatus": "unavailable",
-      "verifiedAt": "2026-07-23T09:45:59.821Z"
+      "verifiedAt": "2026-07-23T11:24:25.808Z"
     },
     {
       "agent": "qoder",
@@ -143,7 +143,7 @@
       "capabilityHash": "sha256:06cebb29455d4a62",
       "exactResume": true,
       "hookStatus": "supported",
-      "verifiedAt": "2026-07-23T09:46:01.201Z"
+      "verifiedAt": "2026-07-23T11:24:27.167Z"
     },
     {
       "agent": "shell",
@@ -152,7 +152,7 @@
       "capabilityHash": "sha256:fef18104984383af",
       "exactResume": false,
       "hookStatus": "unavailable",
-      "verifiedAt": "2026-07-23T09:46:01.371Z"
+      "verifiedAt": "2026-07-23T11:24:27.343Z"
     }
   ],
   "tests": [

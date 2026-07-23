@@ -6,8 +6,16 @@ use tauri::AppHandle;
 pub fn install(_app: &AppHandle) {}
 
 #[cfg(not(target_os = "macos"))]
+pub fn install_early() {}
+
+#[cfg(not(target_os = "macos"))]
 pub fn send(notification: &Notification) -> Result<()> {
     agentport_core::notify::deliver_notification(notification)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn take_pending_session() -> Option<String> {
+    None
 }
 
 #[cfg(target_os = "macos")]
@@ -27,9 +35,13 @@ mod macos {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{mpsc, Mutex, OnceLock};
     use std::time::Duration;
-    use tauri::Manager;
+    use tauri::{Emitter, Manager};
 
-    const AGENTPORT_BUNDLE_ID: &str = "com.agentport.desktop";
+    const RELEASE_BUNDLE_ID: &str = "com.agentport.desktop";
+    const AGENTPORT_BUNDLE_ID: &str = match option_env!("AGENTPORT_BUNDLE_ID") {
+        Some(identifier) => identifier,
+        None => RELEASE_BUNDLE_ID,
+    };
     const AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(30);
     const DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -37,6 +49,28 @@ mod macos {
     static AUTHORIZED: AtomicBool = AtomicBool::new(false);
     static AUTHORIZATION_LOCK: Mutex<()> = Mutex::new(());
     static NEXT_NOTIFICATION_ID: AtomicU64 = AtomicU64::new(1);
+    static PENDING_NOTIFICATION_SESSION: Mutex<Option<String>> = Mutex::new(None);
+
+    fn notification_identifier(session_id: &str, sequence: u64) -> String {
+        format!("agentport.{session_id}.{sequence}")
+    }
+
+    fn notification_session_id(identifier: &str) -> Option<String> {
+        let encoded = identifier.strip_prefix("agentport.")?;
+        let (session_id, sequence) = encoded.rsplit_once('.')?;
+        if session_id.is_empty() || sequence.parse::<u64>().is_err() {
+            return None;
+        }
+        Some(session_id.to_owned())
+    }
+
+    fn record_notification_target(identifier: &str) -> Option<String> {
+        let session_id = notification_session_id(identifier)?;
+        PENDING_NOTIFICATION_SESSION.lock().ok().map(|mut pending| {
+            *pending = Some(session_id.clone());
+            session_id
+        })
+    }
 
     define_class!(
         #[unsafe(super(NSObject))]
@@ -62,13 +96,22 @@ mod macos {
             fn did_receive_response(
                 &self,
                 _center: &UNUserNotificationCenter,
-                _response: &UNNotificationResponse,
+                response: &UNNotificationResponse,
                 completion_handler: &block2::DynBlock<dyn Fn()>,
             ) {
+                let identifier = response.notification().request().identifier().to_string();
+                let session_target = record_notification_target(&identifier);
                 if let Some(app) = APP_HANDLE.get() {
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.show();
                         let _ = window.set_focus();
+                    }
+                    if let Some(session_id) = session_target {
+                        // Keep the clicked target attached to this event. The
+                        // process-local pending slot is only a cold-start
+                        // fallback for clicks that happen before WebView
+                        // listeners are registered.
+                        let _ = app.emit("notification-activated", session_id);
                     }
                 }
                 completion_handler.call(());
@@ -83,16 +126,20 @@ mod macos {
         }
     }
 
-    pub fn install(app: &AppHandle) {
-        static DELEGATE: OnceLock<Retained<NotificationDelegate>> = OnceLock::new();
+    static DELEGATE: OnceLock<Retained<NotificationDelegate>> = OnceLock::new();
 
-        let _ = APP_HANDLE.set(app.clone());
+    pub fn install_early() {
         DELEGATE.get_or_init(|| {
             let delegate = NotificationDelegate::new();
             let center = UNUserNotificationCenter::currentNotificationCenter();
             center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
             delegate
         });
+    }
+
+    pub fn install(app: &AppHandle) {
+        let _ = APP_HANDLE.set(app.clone());
+        install_early();
     }
 
     pub fn send(notification: &Notification) -> Result<()> {
@@ -107,10 +154,8 @@ mod macos {
         content.setSound(Some(&UNNotificationSound::defaultSound()));
 
         let sequence = NEXT_NOTIFICATION_ID.fetch_add(1, Ordering::Relaxed);
-        let identifier = NSString::from_str(&format!(
-            "agentport.{}.{}",
-            notification.session_id, sequence
-        ));
+        let identifier =
+            NSString::from_str(&notification_identifier(&notification.session_id, sequence));
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
             &identifier,
             &content,
@@ -196,16 +241,48 @@ mod macos {
             .map(|error| unsafe { error.as_ref() }.localizedDescription().to_string())
     }
 
+    pub fn take_pending_session() -> Option<String> {
+        PENDING_NOTIFICATION_SESSION
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.take())
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
 
         #[test]
+        fn notification_identifier_recovers_the_clicked_session() {
+            assert_eq!(
+                notification_session_id("agentport.ses_target.42").as_deref(),
+                Some("ses_target")
+            );
+            assert_eq!(notification_session_id("unrelated.ses_target.42"), None);
+        }
+
+        #[test]
+        fn notification_target_survives_a_response_before_app_handle_installation() {
+            let _ = take_pending_session();
+            assert_eq!(
+                record_notification_target("agentport.ses_cold_start.7").as_deref(),
+                Some("ses_cold_start")
+            );
+            assert_eq!(take_pending_session().as_deref(), Some("ses_cold_start"));
+        }
+
+        #[test]
         fn notifications_are_bound_to_agentport_bundle() {
-            assert_eq!(AGENTPORT_BUNDLE_ID, "com.agentport.desktop");
+            assert!(AGENTPORT_BUNDLE_ID.starts_with("com.agentport.desktop"));
+        }
+
+        #[test]
+        #[cfg(debug_assertions)]
+        fn debug_notifications_do_not_share_the_release_bundle_identity() {
+            assert_ne!(AGENTPORT_BUNDLE_ID, RELEASE_BUNDLE_ID);
         }
     }
 }
 
 #[cfg(target_os = "macos")]
-pub use macos::{install, send};
+pub use macos::{install, install_early, send, take_pending_session};

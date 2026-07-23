@@ -530,6 +530,7 @@ fn launch_session(
             env.push((name.clone(), v));
         }
     }
+    capability::merge_effective_path_env(&mut env)?;
     // Secrets: broker -> spawn env only. Unavailable backend aborts launch.
     let mut secrets = vec![];
     if !preset.secret_ref_ids.is_empty() {
@@ -983,10 +984,12 @@ fn cmd_session_restart(ctx: &Ctx, args: &[String]) -> Result<()> {
     // a terminal observation from the preceding Host.
     let settings = ctx.db.load_settings()?;
     let mgr = host_mgr(ctx);
+    let mut env = plan.env.clone();
+    capability::merge_effective_path_env(&mut env)?;
     let info = mgr.launch(LaunchSpec {
         session: renewed.clone(),
         command: plan.argv.clone(),
-        env: plan.env.clone(),
+        env,
         secrets: vec![],
         log_limit_bytes: settings.log_limit_mib * 1024 * 1024,
         agent_session_id_hint: plan.assigned_agent_session_id.clone(),

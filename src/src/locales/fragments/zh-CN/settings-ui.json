@@ -86,27 +86,22 @@
       "canvasRendererUnavailable": "Canvas 渲染器不可用，已回退到 DOM：{{detail}}"
     },
     "adapters": {
-      "description": "自动检测全部已注册适配器；多条安装路径会按优先级验证并自动选用可用版本。调整顺序后，项目行的快速启动图标会按相同顺序显示。",
-      "empty": "尚未探测到任何 Agent CLI。",
+      "description": "AgentPort 会自动扫描交互式 Shell、版本管理器和常见安装目录，并选用通过验证的最佳路径。下方仅显示当前可用结果。",
+      "empty": "尚未发现可用 Agent；打开高级选项可查看失败原因或手动指定路径。",
       "tableAriaLabel": "Agent 适配器列表",
       "columns": {
         "agent": "Agent",
-        "path": "路径",
-        "version": "版本",
-        "hook": "Hook",
-        "exactResume": "精确恢复",
+        "selection": "自动选择结果",
         "order": "排序"
       },
-      "supported": "支持",
-      "unsupported": "不支持",
       "moveUp": "上移 {{agent}}",
       "moveDown": "下移 {{agent}}",
       "probing": "探测中…",
-      "reprobeAll": "重新检测全部",
-      "manage": "管理 / 新增 Agent",
-      "probePassed": "全部 Agent 探测通过",
-      "probeFailure": "{{agent}}：{{reason}}",
-      "failureSeparator": "；",
+      "reprobeAll": "重新自动检测",
+      "manage": "高级选项",
+      "probePassed_one": "已自动选择 {{count}} 个可用 Agent",
+      "probePassed_other": "已自动选择 {{count}} 个可用 Agent",
+      "probeNone": "没有找到可用 Agent；请打开高级选项查看详情。",
       "reprobeFailed": "无法重新检测 Agent：{{detail}}"
     },
     "secrets": {

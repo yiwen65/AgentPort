@@ -22,6 +22,11 @@ pub enum Observation {
     },
     /// Official CLI hook event, e.g. "Stop", "Notification", "PreToolUse".
     Hook(String),
+    /// A structured adapter protocol proved that the current turn settled.
+    /// Unlike PTY silence, this is a semantic lifecycle fact.
+    AdapterTurnEnd {
+        adapter: String,
+    },
     /// Meaningful output bytes arrived on the PTY.
     PtyActivity,
     /// No output for the given duration after activity.
@@ -82,11 +87,14 @@ impl StateMachine {
     }
 
     /// Map an observation to a candidate (state, source, confidence, evidence).
-    fn classify(&self, obs: &Observation) -> (AgentState, StateSource, Confidence, Option<String>) {
+    fn classify(
+        &self,
+        obs: &Observation,
+    ) -> Option<(AgentState, StateSource, Confidence, Option<String>)> {
         use AgentState::*;
         use Confidence::*;
         use StateSource::*;
-        match obs {
+        let classified = match obs {
             Observation::ProcessSpawned => (Working, Process, High, Some("process:spawn".into())),
             Observation::ProcessExited { code, signal } => {
                 let ev = match (code, signal) {
@@ -96,7 +104,13 @@ impl StateMachine {
                 };
                 (Exited, Process, High, Some(ev))
             }
-            Observation::Hook(name) => classify_hook(name),
+            Observation::Hook(name) => return classify_hook(name),
+            Observation::AdapterTurnEnd { adapter } => (
+                Idle,
+                Adapter,
+                High,
+                Some(format!("adapter:{adapter}:TurnEnd")),
+            ),
             Observation::PtyActivity => (Working, Pty, Medium, Some("pty:activity".into())),
             Observation::PtySilence { ms } => {
                 (Idle, Pty, Medium, Some(format!("pty:silence:{ms}ms")))
@@ -108,12 +122,13 @@ impl StateMachine {
             Observation::PtyWorkingPattern(p) => {
                 (Working, Pty, Medium, Some(format!("pty:pattern:{p}")))
             }
-        }
+        };
+        Some(classified)
     }
 
     /// Feed an observation; returns Some(StatusEvent) when a transition should be recorded.
     pub fn observe(&mut self, obs: Observation) -> Option<StatusEvent> {
-        let (state, source, confidence, evidence) = self.classify(&obs);
+        let (state, source, confidence, evidence) = self.classify(&obs)?;
         // Dedupe identical state+source.
         if let Some((last_state, last_source)) = &self.last {
             if *last_state == state && *last_source == source {
@@ -152,21 +167,26 @@ impl StateMachine {
 
 /// Classify official hook events. Unknown hook names map to Unknown/low — we
 /// never guess (PRD 11.d: unknown versions degrade safely).
-fn classify_hook(name: &str) -> (AgentState, StateSource, Confidence, Option<String>) {
+fn classify_hook(name: &str) -> Option<(AgentState, StateSource, Confidence, Option<String>)> {
     use AgentState::*;
     use Confidence::*;
     use StateSource::*;
     let ev = Some(format!("hook:{name}"));
-    match name {
+    let classified = match name {
         // Claude Code + Kimi hook names (verified per adapter fixtures).
         "PreToolUse" | "UserPromptSubmit" | "SessionStart" | "BeforeTool" => {
             (Working, Hook, High, ev)
         }
-        "Notification" | "PermissionRequest" | "AskUserQuestion" => (NeedsInput, Hook, High, ev),
+        // Claude's generic Notification hook includes idle_prompt and
+        // push_notification. It is informational; PermissionRequest is the
+        // authoritative approval signal.
+        "Notification" => return None,
+        "PermissionRequest" | "AskUserQuestion" => (NeedsInput, Hook, High, ev),
         "Stop" | "SubagentStop" | "TurnEnd" | "AfterTool" => (Idle, Hook, High, ev),
         "SessionEnd" => (Exited, Hook, High, ev),
         _ => (Unknown, Hook, Low, ev),
-    }
+    };
+    Some(classified)
 }
 
 /// Rolling PTY output detector: strips ANSI, keeps a bounded tail, matches
@@ -238,6 +258,12 @@ impl PtyDetector {
         }
         out
     }
+
+    /// Current ANSI-stripped output tail for adapter metadata extraction.
+    /// The tail is bounded by `max_tail`, so callers never scan the full log.
+    pub fn stripped_tail(&self) -> String {
+        String::from_utf8_lossy(&self.tail).into_owned()
+    }
 }
 
 #[cfg(test)]
@@ -263,7 +289,7 @@ mod tests {
     fn hook_needs_input_high_pty_never_high() {
         let mut sm = StateMachine::new("ses_t");
         let e = sm
-            .observe(Observation::Hook("Notification".into()))
+            .observe(Observation::Hook("PermissionRequest".into()))
             .unwrap();
         assert_eq!(
             (e.state, e.confidence),
@@ -280,6 +306,18 @@ mod tests {
             (e2.state, e2.confidence),
             (AgentState::NeedsInput, Confidence::Medium)
         );
+    }
+
+    #[test]
+    fn informational_notification_hook_does_not_override_idle_state() {
+        let mut sm = StateMachine::new("ses_t");
+        let idle = sm.observe(Observation::Hook("Stop".into())).unwrap();
+        assert_eq!(idle.state, AgentState::Idle);
+
+        assert!(sm
+            .observe(Observation::Hook("Notification".into()))
+            .is_none());
+        assert_eq!(sm.sequence(), 1);
     }
 
     #[test]
@@ -315,5 +353,19 @@ mod tests {
             (e.state, e.confidence),
             (AgentState::Unknown, Confidence::Low)
         );
+    }
+
+    #[test]
+    fn adapter_turn_end_is_a_high_confidence_idle_fact() {
+        let mut sm = StateMachine::new("ses_t");
+        let event = sm
+            .observe(Observation::AdapterTurnEnd {
+                adapter: "kimi".into(),
+            })
+            .unwrap();
+        assert_eq!(event.state, AgentState::Idle);
+        assert_eq!(event.source, StateSource::Adapter);
+        assert_eq!(event.confidence, Confidence::High);
+        assert_eq!(event.evidence.as_deref(), Some("adapter:kimi:TurnEnd"));
     }
 }

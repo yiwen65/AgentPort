@@ -186,4 +186,15 @@ describe("project row plus button menu", () => {
 
     expect(archiveSessionFlowMock).toHaveBeenCalledWith("ses_running");
   });
+
+  it("keeps the unread dot visible for the active Session until it is acknowledged", () => {
+    setState({
+      activeSessionId: runningSession.id,
+      projects: [{ ...project, sessions: [{ ...runningSession, unread: true }] }],
+    });
+
+    render(<Sidebar collapsed={false} width={296} />);
+
+    expect(screen.getByLabelText("有未读更新")).toBeTruthy();
+  });
 });

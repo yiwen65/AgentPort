@@ -67,6 +67,13 @@ struct TimelineSnapshot {
     log_cursor: Option<LogCursor>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimelineBucket {
+    Completed,
+    Waiting,
+    Failed,
+}
+
 pub struct Timeline<'a> {
     pub db: &'a Db,
 }
@@ -114,9 +121,6 @@ impl<'a> Timeline<'a> {
         let sessions_by_id: HashMap<&str, &Session> =
             sessions.iter().map(|s| (s.id.as_str(), s)).collect();
         let mut project_names: HashMap<String, String> = HashMap::new();
-        // Last new event per session drives the completed/waiting/failed counts.
-        let mut last_events: HashMap<&str, &StatusEvent> = HashMap::new();
-
         let mut timeline = RecoveryTimeline {
             entries: Vec::with_capacity(events.len()),
             ..RecoveryTimeline::default()
@@ -125,18 +129,21 @@ impl<'a> Timeline<'a> {
             let Some(session) = sessions_by_id.get(e.session_id.as_str()).copied() else {
                 continue;
             };
-            // Headline cards still use the latest durable state, including a
-            // normal Working transition that resolves an earlier attention
-            // item. The list itself defaults to attention events only.
-            match last_events.get(e.session_id.as_str()) {
-                Some(prev) if !is_later_in_session(e, prev) => {}
-                _ => {
-                    last_events.insert(e.session_id.as_str(), e);
-                }
+            // ACK advances through the exact high-water rendered by this
+            // build, including ordinary transitions intentionally omitted from
+            // the list. A later event remains unread because its cursor is not
+            // part of this snapshot.
+            let snapshot = timeline.snapshots.entry(session.id.clone()).or_default();
+            if snapshot
+                .status_cursor
+                .as_ref()
+                .is_none_or(|previous| e.cursor().is_after(previous))
+            {
+                snapshot.status_cursor = Some(e.cursor());
             }
-            if !is_attention_event(e) {
+            let Some(bucket) = timeline_bucket(e) else {
                 continue;
-            }
+            };
             let (log_cursor, rotated_away, location_unavailable_reason) = event_log_target(
                 e.log_cursor.as_ref(),
                 latest_logs
@@ -169,13 +176,10 @@ impl<'a> Timeline<'a> {
                 rotated_away,
                 location_unavailable_reason,
             });
-            let snapshot = timeline.snapshots.entry(session.id.clone()).or_default();
-            if snapshot
-                .status_cursor
-                .as_ref()
-                .is_none_or(|previous| e.cursor().is_after(previous))
-            {
-                snapshot.status_cursor = Some(e.cursor());
+            match bucket {
+                TimelineBucket::Completed => timeline.completed += 1,
+                TimelineBucket::Waiting => timeline.waiting += 1,
+                TimelineBucket::Failed => timeline.failed += 1,
             }
         }
 
@@ -236,26 +240,6 @@ impl<'a> Timeline<'a> {
                 .log_cursor = Some(latest.clone());
         }
 
-        // Headline counts: one bucket per session, from its last new event.
-        // Mirrors `summary_state_for` in db (private there); anything else —
-        // plain working/output — is not counted.
-        for e in last_events.values() {
-            let ev = e.evidence.as_deref().unwrap_or("");
-            match e.state {
-                AgentState::NeedsInput => timeline.waiting += 1,
-                AgentState::Idle if ev.contains("hook:Stop") || ev.contains("TurnEnd") => {
-                    timeline.completed += 1
-                }
-                AgentState::Exited => {
-                    if ev == "process:exit:0" {
-                        timeline.completed += 1;
-                    } else {
-                        timeline.failed += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
         // Newest first. A timestamp is user-facing wall-clock context, not an
         // ordering key by itself: same-millisecond events use run/sequence.
         timeline.entries.sort_by(|a, b| {
@@ -279,6 +263,18 @@ impl<'a> Timeline<'a> {
         timeline
             .ack_snapshots
             .sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        Ok(timeline)
+    }
+
+    /// Build the user-visible recovery snapshot and consume status chatter only
+    /// when it produced no visible recovery item. This prevents permanently
+    /// replaying ignored PTY/legacy notification rows without acknowledging a
+    /// completion, approval, exit or unread-output item on the user's behalf.
+    pub fn build_and_acknowledge_hidden_only(&self) -> Result<RecoveryTimeline> {
+        let timeline = self.build()?;
+        if timeline.entries.is_empty() && !timeline.ack_snapshots.is_empty() {
+            self.acknowledge_snapshot(&timeline.ack_snapshots)?;
+        }
         Ok(timeline)
     }
 
@@ -372,24 +368,18 @@ fn entry_offset(entry: &TimelineEntry) -> i64 {
         .unwrap_or(-1)
 }
 
-/// Events are sequenced independently by each Host launch. A restart can
-/// legitimately produce sequence 1 after an earlier run reached sequence 99.
-fn is_later_in_session(candidate: &StatusEvent, previous: &StatusEvent) -> bool {
-    candidate.run_ordinal > previous.run_ordinal
-        || (candidate.run_ordinal == previous.run_ordinal && candidate.sequence > previous.sequence)
-}
-
 /// The default recovery list is intentionally attention-first: normal
 /// activity and ordinary idle transitions are noisy while a GUI was closed.
-/// Completion-idle, needs-input, exits/failures and unknown facts remain.
-fn is_attention_event(event: &StatusEvent) -> bool {
-    match event.state {
-        AgentState::Working => false,
-        AgentState::Idle => event
-            .evidence
-            .as_deref()
-            .is_some_and(|evidence| evidence.contains("hook:Stop") || evidence.contains("TurnEnd")),
-        _ => true,
+/// Only precise completion/approval semantics and process exits remain.
+fn timeline_bucket(event: &StatusEvent) -> Option<TimelineBucket> {
+    match (event.attention_kind(), event.state) {
+        (Some(AttentionKind::ApprovalRequested), _) => Some(TimelineBucket::Waiting),
+        (Some(AttentionKind::TurnCompleted), _) => Some(TimelineBucket::Completed),
+        (None, AgentState::Exited) if event.evidence.as_deref() == Some("process:exit:0") => {
+            Some(TimelineBucket::Completed)
+        }
+        (None, AgentState::Exited) => Some(TimelineBucket::Failed),
+        _ => None,
     }
 }
 
@@ -564,7 +554,7 @@ mod tests {
             1,
             AgentState::NeedsInput,
             StateSource::Hook,
-            "hook:Notification",
+            "hook:PermissionRequest",
             t0 + Duration::seconds(5),
         ))
         .unwrap();
@@ -657,10 +647,126 @@ mod tests {
             .iter()
             .map(|entry| entry.status_cursor.as_ref().unwrap().sequence)
             .collect();
-        assert_eq!(sequences, vec![4, 3]);
+        assert_eq!(sequences, vec![3]);
         assert_eq!(
             (timeline.completed, timeline.waiting, timeline.failed),
-            (0, 1, 0)
+            (1, 0, 0)
+        );
+    }
+
+    #[test]
+    fn informational_hook_notification_is_not_a_recovery_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_memory().unwrap();
+        db.add_project(&project("prj_info", "Info")).unwrap();
+        db.insert_session(&session(
+            "ses_info",
+            "prj_info",
+            "普通通知",
+            AgentType::Claude,
+            &write_log(dir.path(), "ses_info", 32),
+        ))
+        .unwrap();
+        db.record_status_event(&event(
+            "ses_info",
+            1,
+            AgentState::NeedsInput,
+            StateSource::Hook,
+            "hook:Notification",
+            Utc::now(),
+        ))
+        .unwrap();
+
+        let timeline = Timeline { db: &db }.build().unwrap();
+        assert!(timeline.entries.is_empty());
+        assert_eq!(
+            (timeline.completed, timeline.waiting, timeline.failed),
+            (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn visible_completion_remains_in_the_completed_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_memory().unwrap();
+        db.add_project(&project("prj_count", "Count")).unwrap();
+        db.insert_session(&session(
+            "ses_count",
+            "prj_count",
+            "完成后出现终端活动",
+            AgentType::Claude,
+            &write_log(dir.path(), "ses_count", 32),
+        ))
+        .unwrap();
+        let at = Utc::now();
+        db.record_status_event(&event(
+            "ses_count",
+            1,
+            AgentState::Idle,
+            StateSource::Hook,
+            "hook:Stop",
+            at,
+        ))
+        .unwrap();
+        db.record_status_event(&event(
+            "ses_count",
+            2,
+            AgentState::Working,
+            StateSource::Pty,
+            "pty:activity",
+            at + Duration::milliseconds(1),
+        ))
+        .unwrap();
+
+        let timeline = Timeline { db: &db }.build().unwrap();
+        assert_eq!(timeline.entries.len(), 1);
+        assert_eq!(timeline.entries[0].evidence.as_deref(), Some("hook:Stop"));
+        assert_eq!(
+            timeline.ack_snapshots[0]
+                .status_cursor
+                .as_ref()
+                .unwrap()
+                .sequence,
+            2
+        );
+        assert_eq!(
+            (timeline.completed, timeline.waiting, timeline.failed),
+            (1, 0, 0)
+        );
+    }
+
+    #[test]
+    fn hidden_only_status_chatter_is_acknowledged_without_a_visible_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_memory().unwrap();
+        db.add_project(&project("prj_hidden", "Hidden")).unwrap();
+        db.insert_session(&session(
+            "ses_hidden",
+            "prj_hidden",
+            "只有终端噪声",
+            AgentType::Shell,
+            &write_log(dir.path(), "ses_hidden", 32),
+        ))
+        .unwrap();
+        db.record_status_event(&event(
+            "ses_hidden",
+            1,
+            AgentState::Working,
+            StateSource::Pty,
+            "pty:activity",
+            Utc::now(),
+        ))
+        .unwrap();
+
+        let timeline = Timeline { db: &db }
+            .build_and_acknowledge_hidden_only()
+            .unwrap();
+        assert!(timeline.entries.is_empty());
+        assert_eq!(
+            db.get_recovery_summary("ses_hidden")
+                .unwrap()
+                .last_seen_sequence,
+            1
         );
     }
 
@@ -690,7 +796,7 @@ mod tests {
             1,
             AgentState::NeedsInput,
             StateSource::Hook,
-            "hook:Notification",
+            "hook:PermissionRequest",
             Utc::now(),
         );
         status_event.log_cursor = Some(cursor.clone());
@@ -722,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn build_uses_run_cursor_and_newest_run_for_headline() {
+    fn build_uses_run_cursor_across_restarts() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open_memory().unwrap();
         db.add_project(&project("prj_runs", "Runs")).unwrap();
@@ -738,7 +844,7 @@ mod tests {
         let second = db.create_session_run("ses_runs", "run_second").unwrap();
         let t0 = Utc::now();
         // Sequence values restart for each run. The lower sequence in the
-        // second run is nevertheless the authoritative newer headline.
+        // second run is nevertheless a newer recovery event.
         db.record_status_event(&event_for_run(
             "ses_runs",
             &first,
@@ -755,7 +861,7 @@ mod tests {
             1,
             AgentState::NeedsInput,
             StateSource::Hook,
-            "hook:Notification",
+            "hook:PermissionRequest",
             t0 + Duration::seconds(1),
         ))
         .unwrap();
@@ -764,7 +870,7 @@ mod tests {
         assert_eq!(initial.entries.len(), 2);
         assert_eq!(
             (initial.completed, initial.waiting, initial.failed),
-            (0, 1, 0)
+            (0, 1, 1)
         );
         assert!(initial
             .entries
@@ -834,7 +940,7 @@ mod tests {
             1,
             AgentState::NeedsInput,
             StateSource::Hook,
-            "hook:Notification",
+            "hook:PermissionRequest",
             t0 + Duration::seconds(1),
         ))
         .unwrap();
@@ -867,7 +973,7 @@ mod tests {
             1,
             AgentState::NeedsInput,
             StateSource::Hook,
-            "hook:Notification",
+            "hook:PermissionRequest",
             Utc::now(),
         );
         db.record_status_event(&first).unwrap();
@@ -878,7 +984,7 @@ mod tests {
             2,
             AgentState::NeedsInput,
             StateSource::Hook,
-            "hook:Notification",
+            "hook:PermissionRequest",
             Utc::now(),
         ))
         .unwrap();
@@ -1010,7 +1116,7 @@ mod tests {
             1,
             AgentState::NeedsInput,
             StateSource::Hook,
-            "hook:Notification",
+            "hook:PermissionRequest",
             Utc::now(),
         );
         event.log_cursor = Some(LogCursor {
@@ -1101,7 +1207,7 @@ mod tests {
             1,
             AgentState::NeedsInput,
             StateSource::Hook,
-            "hook:Notification",
+            "hook:PermissionRequest",
             at,
         ))
         .unwrap();
@@ -1110,7 +1216,7 @@ mod tests {
             2,
             AgentState::NeedsInput,
             StateSource::Hook,
-            "hook:Notification",
+            "hook:PermissionRequest",
             at,
         ))
         .unwrap();

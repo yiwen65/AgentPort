@@ -142,6 +142,8 @@ export function probeSourceLabel(source: string): string {
       return i18n.t("common:probeSource.systemPath");
     case "login_shell_path":
       return i18n.t("common:probeSource.loginShellPath");
+    case "version_manager":
+      return i18n.t("common:probeSource.versionManager");
     case "well_known_dir":
       return i18n.t("common:probeSource.wellKnownDirectory");
     case "manual":
@@ -326,16 +328,10 @@ export function relativeAge(iso: string, now = Date.now()): string {
   const timestamp = Date.parse(iso);
   if (Number.isNaN(timestamp)) return "";
   const minutes = Math.max(0, Math.floor((now - timestamp) / 60_000));
-  const relative = new Intl.RelativeTimeFormat(currentUiLanguage(), {
-    numeric: "always",
-    style: "narrow",
-  });
-  if (minutes < 60) return relative.format(-Math.max(1, minutes), "minute");
+  if (minutes < 60) return `${Math.max(1, minutes)}m`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return relative.format(-hours, "hour");
-  const days = Math.floor(hours / 24);
-  if (days < 30) return relative.format(-days, "day");
-  return relative.format(-Math.floor(days / 30), "month");
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 /** Turn a task name into a branch-safe slug: "Fix Login!" -> "fix-login". */

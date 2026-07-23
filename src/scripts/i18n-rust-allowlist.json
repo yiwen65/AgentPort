@@ -8,16 +8,10 @@
     "Shell 安全默认"
   ],
   "crates/agentport-core/src/notify.rs": [
-    "等待输入",
+    "等待批准",
     "已完成",
-    "异常退出",
     "AgentPort 测试通知",
-    "通知通道工作正常。",
-    "进程",
-    "适配器",
-    "高置信度",
-    "中置信度",
-    "低置信度"
+    "通知通道工作正常。"
   ],
   "crates/agentport-core/src/adapters/capability.rs": [
     "探测失败: {detail}",

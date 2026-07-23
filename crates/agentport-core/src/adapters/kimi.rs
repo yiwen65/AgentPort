@@ -1,17 +1,17 @@
-//! Kimi Code adapter. Verified on this machine against kimi 0.27.0
+//! Kimi Code adapter. Verified on this machine against kimi 0.29.0
 //! (fixtures in tests/fixtures/cli/):
 //! - `-S, --session [id]` : resume a session by id (EXACT when id known).
 //! - `-c, --continue`     : continue previous session for cwd (precision = latest).
 //! - `-y, --yolo` / `--auto` : auto-approve flags — NEVER added by default; only when
 //!   the preset explicitly enables auto/bypass and preflight shows the risk.
 //! - Only the `kimi` command is supported (not legacy kimi-cli python layout).
-//! - Hooks: 0.27.0's --help shows NO per-invocation hook/config flag and no
+//! - Hooks: 0.29.0's --help shows NO per-invocation hook/config flag and no
 //!   documented env mechanism. The only hook mechanism is the global
 //!   ~/.kimi-code/config.toml, which we must NOT modify -> "no session-level
-//!   mechanism", HookStatus::Degraded, rely on PTY heuristics (PRD 11.d.5).
-//! - Session-id capture: verified real output of `kimi -p "..."` ends with
-//!   `To resume this session: kimi -r session_<uuid>` (fixture kimi-print-ok.txt).
-//!   extract_session_id matches that line in PTY output.
+//!   mechanism", HookStatus::Degraded. Turn completion follows Kimi's official
+//!   main-agent wire JSONL; approval prompts still rely on PTY heuristics.
+//! - Session-id capture: prompt mode prints a resume command, while the
+//!   interactive TUI header renders `Session: session_<uuid>`.
 
 use super::{AgentAdapter, LaunchContext, LaunchNotice, LaunchPlan, ResumeContext};
 use crate::error::{CoreError, Result};
@@ -74,7 +74,7 @@ impl AgentAdapter for KimiAdapter {
             notices: vec![
                 LaunchNotice::new(
                     "kimi_hook_unavailable",
-                    "kimi 0.27.0 无 Session 级 Hook 注入机制（仅全局 ~/.kimi-code/config.toml，不做修改），状态降级为 PTY 启发式",
+                    "Kimi 无 Session 级 Hook 注入机制（仅全局 ~/.kimi-code/config.toml，不做修改）；单轮完成使用官方 wire 事件，批准请求降级为 PTY 启发式",
                 ),
             ],
         })
@@ -128,13 +128,18 @@ impl AgentAdapter for KimiAdapter {
     }
 
     fn extract_session_id(&self, stripped_text_tail: &str) -> Option<String> {
-        // Evidence (kimi-print-ok.txt): trailing line
-        // `To resume this session: kimi -r session_950d1775-f55d-48ba-9921-ffcbe1bdaecf`
-        let re = regex::Regex::new(
-            r"To resume this session:\s*kimi\s+(?:-\w+\s+)*(session_[0-9a-fA-F-]{36})",
-        )
-        .unwrap();
-        re.captures(stripped_text_tail).map(|c| c[1].to_string())
+        static SESSION_ID_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        // Prompt mode prints `To resume this session: ...`; the interactive
+        // TUI renders `Session: session_<uuid>` in its startup header.
+        let re = SESSION_ID_RE.get_or_init(|| {
+            regex::Regex::new(
+                r"(?m)(?:To resume this session:\s*kimi\s+(?:-\w+\s+)*|Session:\s*)(session_[0-9a-fA-F-]{36})",
+            )
+            .expect("Kimi Session ID regex is a valid constant")
+        });
+        re.captures_iter(stripped_text_tail)
+            .last()
+            .map(|captures| captures[1].to_string())
     }
 }
 
@@ -183,6 +188,15 @@ mod tests {
             Some("session_950d1775-f55d-48ba-9921-ffcbe1bdaecf")
         );
         assert_eq!(KimiAdapter.extract_session_id("random text"), None);
+    }
+
+    #[test]
+    fn extract_session_id_from_interactive_tui_header() {
+        let out = "Directory: /tmp/work\r\nSession:   session_b7034202-9ba5-405c-8cca-e9788753dade\r\nModel: K3";
+        assert_eq!(
+            KimiAdapter.extract_session_id(out).as_deref(),
+            Some("session_b7034202-9ba5-405c-8cca-e9788753dade")
+        );
     }
 
     #[test]

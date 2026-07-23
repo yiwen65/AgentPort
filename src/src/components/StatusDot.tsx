@@ -1,7 +1,7 @@
-// Status dot with evidence tooltip (PRD 3.4 states + 4.3 hover detail:
-// source · confidence · time · evidence).
+// Status dot with a user-facing state/time tooltip. Technical evidence stays
+// in diagnostics and timeline surfaces rather than the normal session UI.
 
-import { formatDateTime, confidenceLabel, sourceLabel, stateLabel, precisionLabel } from "../format";
+import { formatDateTime, precisionLabel, stateLabel } from "../format";
 import { i18n } from "../i18n";
 import { getRuntime } from "../store";
 import type { SessionView } from "../types";
@@ -42,14 +42,8 @@ function translatedDotTipFor(ses: SessionView, t: TFunction<"session">): string 
   if (!ev) return t("ui.status.unknownNoEvent");
   const lines = [
     stateLabel(ev.state),
-    t("ui.status.sourceConfidence", {
-      source: sourceLabel(ev.source),
-      confidence: confidenceLabel(ev.confidence),
-    }),
     t("ui.status.time", { time: formatDateTime(ev.occurredAt) }),
   ];
-  if (ev.evidence) lines.push(t("ui.status.evidence", { evidence: ev.evidence }));
-  if (ev.confidence !== "high") lines.push(t("ui.status.heuristic"));
   return lines.join("\n");
 }
 

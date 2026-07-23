@@ -46,6 +46,7 @@
   "probeSource": {
     "systemPath": "系统 PATH",
     "loginShellPath": "登录 Shell PATH",
+    "versionManager": "版本管理器",
     "wellKnownDirectory": "常用安装目录",
     "manual": "手动指定"
   },

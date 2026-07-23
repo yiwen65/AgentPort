@@ -484,7 +484,7 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
       <span className="session-age" aria-label={t("session:ui.sidebar.createdAt", { date: ses.createdAt })}>
         {relativeAge(ses.createdAt)}
       </span>
-      {ses.unread && !active ? (
+      {ses.unread ? (
         <span
           className="unread-dot"
           aria-label={t("session:ui.sidebar.unread")}

@@ -18,6 +18,8 @@ const rendererMocks = vi.hoisted(() => {
     detachSession: vi.fn().mockResolvedValue(undefined),
     markSessionLogRendered: vi.fn().mockResolvedValue(undefined),
     markSessionOutputUnread: vi.fn().mockResolvedValue(undefined),
+    autoRenameSessionFromFirstInput: vi.fn().mockResolvedValue(true),
+    openExternalUrl: vi.fn().mockResolvedValue(undefined),
     readRecoveryLogContext: vi.fn(),
     resizePty: vi.fn().mockResolvedValue(undefined),
     sendInput: vi.fn().mockResolvedValue(undefined),
@@ -67,6 +69,9 @@ const rendererMocks = vi.hoisted(() => {
     }
   }
   class FakeCanvasAddon {}
+  class FakeWebLinksAddon {
+    constructor(readonly handler: (event: MouseEvent, url: string) => void) {}
+  }
   class FakeFitAddon {
     fit = vi.fn();
   }
@@ -80,6 +85,7 @@ const rendererMocks = vi.hoisted(() => {
     terminals,
     FakeTerminal,
     FakeCanvasAddon,
+    FakeWebLinksAddon,
     FakeFitAddon,
     FakeSearchAddon,
   };
@@ -89,6 +95,7 @@ vi.mock("@xterm/xterm", () => ({ Terminal: rendererMocks.FakeTerminal }));
 vi.mock("@xterm/addon-canvas", () => ({ CanvasAddon: rendererMocks.FakeCanvasAddon }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: rendererMocks.FakeFitAddon }));
 vi.mock("@xterm/addon-search", () => ({ SearchAddon: rendererMocks.FakeSearchAddon }));
+vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: rendererMocks.FakeWebLinksAddon }));
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {
     onmessage?: (message: unknown) => void;
@@ -169,6 +176,35 @@ describe("terminal renderer", () => {
       expect.any(rendererMocks.FakeCanvasAddon),
     );
     expect(getState().rendererMode).toBe("canvas");
+  });
+
+  it("opens plain and OSC 8 web links through the native URL command", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const webLinksAddon = terminal.loadAddon.mock.calls
+      .map(([addon]) => addon)
+      .find((addon) => addon instanceof rendererMocks.FakeWebLinksAddon) as InstanceType<
+        typeof rendererMocks.FakeWebLinksAddon
+      >;
+
+    webLinksAddon.handler(new MouseEvent("click"), "https://example.com/plain");
+    const linkHandler = terminal.options.linkHandler as {
+      activate: (event: MouseEvent, url: string) => void;
+      allowNonHttpProtocols: boolean;
+    };
+    linkHandler.activate(new MouseEvent("click"), "https://example.com/osc8");
+
+    await vi.waitFor(() => {
+      expect(rendererMocks.apiMock.openExternalUrl).toHaveBeenNthCalledWith(
+        1,
+        "https://example.com/plain",
+      );
+      expect(rendererMocks.apiMock.openExternalUrl).toHaveBeenNthCalledWith(
+        2,
+        "https://example.com/osc8",
+      );
+    });
+    expect(linkHandler.allowNonHttpProtocols).toBe(false);
   });
 
   it("uses DOM font measurement while retaining Canvas rendering on Linux", () => {
@@ -405,6 +441,21 @@ describe("terminal renderer", () => {
         "encoded-input",
       );
     });
+  });
+
+  it("does not use terminal-generated OSC color replies for the automatic title", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(getState().runtime["renderer-test"]?.attached).toBe(true));
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+
+    // xterm sends OSC 10 replies back through onData when a CLI asks for the
+    // terminal foreground color. The reply may be split across IPC chunks.
+    terminal.emitData("\x1b]10;rgb:d4d4/d4d4/");
+    terminal.emitData("d4d4\x07");
+    terminal.emitData("请修复自动命名\r");
+
+    await vi.waitFor(() => expect(rendererMocks.apiMock.autoRenameSessionFromFirstInput)
+      .toHaveBeenCalledWith("renderer-test", "请修复自动命名"));
   });
 
   it("lets xterm handle native repeats in screen-reader mode without duplicating them", async () => {

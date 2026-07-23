@@ -61,16 +61,32 @@ describe("UI language runtime", () => {
     }
   });
 
-  it("uses English plural rules and locale-aware date and relative-time formatting", async () => {
+  it("uses English plural rules and locale-aware date formatting", async () => {
     await applyUiLanguage("en-US", { persistHint: false });
     expect(i18n.t("runtime:export.recentBlocks", { count: 1 })).toBe("Most recent 1 output block");
     expect(i18n.t("runtime:export.recentBlocks", { count: 2 })).toBe("Most recent 2 output blocks");
     const englishDate = formatTimelineTime("2026-07-20T08:30:00Z", new Date("2026-07-23T08:30:00Z"));
-    const englishAge = relativeAge("2026-07-23T07:30:00Z", Date.parse("2026-07-23T08:30:00Z"));
 
     await applyUiLanguage("zh-CN", { persistHint: false });
     expect(formatTimelineTime("2026-07-20T08:30:00Z", new Date("2026-07-23T08:30:00Z"))).not.toBe(englishDate);
-    expect(relativeAge("2026-07-23T07:30:00Z", Date.parse("2026-07-23T08:30:00Z"))).not.toBe(englishAge);
+  });
+
+  it("keeps sidebar session ages compact and language-independent", async () => {
+    const now = Date.parse("2026-07-23T08:30:00Z");
+    const ages = [
+      ["2026-07-23T08:29:45Z", "1m"],
+      ["2026-07-23T07:31:00Z", "59m"],
+      ["2026-07-23T07:30:00Z", "1h"],
+      ["2026-07-22T08:30:00Z", "1d"],
+      ["2026-06-23T08:30:00Z", "30d"],
+    ] as const;
+
+    for (const language of ["zh-CN", "en-US"] as const) {
+      await applyUiLanguage(language, { persistHint: false });
+      for (const [timestamp, expected] of ages) {
+        expect(relativeAge(timestamp, now)).toBe(expected);
+      }
+    }
   });
 
   it("localizes stable built-in preset IDs without changing custom names", async () => {

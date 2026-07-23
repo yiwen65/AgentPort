@@ -7,21 +7,19 @@
 调试窗口运行的是 `target/debug/bundle/macos/AgentPort.app`，其前端资源在 Rust 编译期嵌入二进制。正确生效路径：
 
 ```bash
-cd src && npm run build
-cd .. && cargo build -p agentport --features tauri/custom-protocol
-cp target/debug/agentport "target/debug/bundle/macos/AgentPort.app/Contents/MacOS/agentport"
-cp target/debug/agentport-host "target/debug/bundle/macos/AgentPort.app/Contents/MacOS/agentport-host"
-# 手动替换 .app 内二进制会使原有签名失效；必须重新签名，否则 macOS 会杀掉 sidecar。
-codesign --force --deep --sign - "target/debug/bundle/macos/AgentPort.app"
-codesign --verify --deep --strict "target/debug/bundle/macos/AgentPort.app"
+# 构建前端、Host 与带 custom-protocol 的 GUI，安装进调试 .app，
+# 为当前 checkout 写入唯一 Debug Bundle ID，并重新签名。
+bash scripts/rebuild-debug-app.sh
 # 关闭旧 debug 窗口后，以独立实例打开。不能只用 `open`：若 release App
-# 同时运行且 Bundle ID 相同，macOS 可能把焦点路由到 release 窗口。
+# 同时运行，仍需确保打开的是工作区内的调试包。
 open -n "target/debug/bundle/macos/AgentPort.app"
 ```
 
 注意事项：
 
 - **不要**用裸 `cargo build -p agentport` 的产物替换 .app 二进制——没有 `tauri/custom-protocol` feature 时按 `devUrl`（localhost:1420）加载前端，没有 dev server 就是白屏。
+- 调试构建使用由 checkout 绝对路径派生的唯一 Bundle ID；不得改回发布版的 `com.agentport.desktop`，否则 macOS 可能把系统通知点击路由到另一个 AgentPort 实例。
+- 调试包显示名包含 checkout 名（例如 `AgentPort Debug - AgentSessions`），用于在通知来源、系统设置和多实例窗口中区分目标。
 - 手动替换 `.app/Contents/MacOS` 下的主程序或 `agentport-host` 后，必须对整个 `.app` 执行上面的 ad-hoc `codesign`；否则 macOS 会以 `SIGKILL` 终止 Host，表现为 `host exited during startup`。
 - Session 由独立的 `agentport-host` 进程承载，重启 GUI 窗口不会中断进行中的 session，可以放心重启。
 - 重启后截图确认窗口正常渲染（非空白）再交付。

@@ -1,7 +1,7 @@
 // First-run onboarding: load the backend adapter registry, then probe every
 // registered CLI. The renderer deliberately has no fixed Agent list.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api, errorText } from "../api";
 import { hookStatusLabel, probeSourceLabel } from "../format";
@@ -16,16 +16,13 @@ type RowState =
 
 function mergeAdapters(outcomes: ProbeOutcome[]) {
   const installs = outcomes.flatMap((outcome) => (outcome.install ? [outcome.install] : []));
-  if (installs.length > 0) {
-    setState({
-      adapters: [
-        ...getState().adapters.filter(
-          (adapter) => !installs.some((install) => install.agentType === adapter.agentType),
-        ),
-        ...installs,
-      ],
-    });
-  }
+  const probedAgents = new Set(outcomes.map((outcome) => outcome.agent));
+  setState({
+    adapters: [
+      ...getState().adapters.filter((adapter) => !probedAgents.has(adapter.agentType)),
+      ...installs,
+    ],
+  });
 }
 
 function probeReason(outcome: ProbeOutcome): string | null {
@@ -39,6 +36,7 @@ export default function Onboarding() {
   const [manualPath, setManualPath] = useState<Record<string, string>>({});
   const [probingAll, setProbingAll] = useState(false);
   const [registryError, setRegistryError] = useState<string | null>(null);
+  const automaticProbeStarted = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,7 +53,7 @@ export default function Onboarding() {
     };
   }, []);
 
-  const probeAll = async () => {
+  const probeAll = useCallback(async () => {
     setProbingAll(true);
     setRows((current) => {
       const next = { ...current };
@@ -76,7 +74,13 @@ export default function Onboarding() {
     } finally {
       setProbingAll(false);
     }
-  };
+  }, [agents, t]);
+
+  useEffect(() => {
+    if (agents.length === 0 || automaticProbeStarted.current) return;
+    automaticProbeStarted.current = true;
+    void probeAll();
+  }, [agents.length, probeAll]);
 
   const probeOne = async (registered: SupportedAgent, path: string | null) => {
     const agent = registered.agent;
@@ -122,15 +126,15 @@ export default function Onboarding() {
         <button
           className="btn small"
           type="button"
-          data-tip={t("shell:onboarding.chooseInstallDirectory")}
+          data-tip={t("shell:onboarding.chooseExecutable")}
           onClick={() =>
             void api
-              .pickDirectory()
+              .pickFile(null)
               .then((path) => {
                 if (path) setManualPath((current) => ({ ...current, [agent]: path }));
               })
               .catch((error) => toast(
-                t("shell:onboarding.chooseDirectoryFailed", { detail: errorText(error) }),
+                t("shell:onboarding.chooseFileFailed", { detail: errorText(error) }),
                 "error",
               ))
           }
@@ -158,8 +162,7 @@ export default function Onboarding() {
       <div className="onboarding-card" role="dialog" aria-modal="true" aria-label={t("shell:onboarding.title")}>
         <h1>{t("shell:onboarding.title")}</h1>
         <p className="dim" style={{ margin: 0, lineHeight: 1.7 }}>
-          {t("shell:onboarding.introBeforeCommands")} <span className="mono">--version</span> /{" "}
-          <span className="mono">--help</span>{t("shell:onboarding.introAfterCommands")}
+          {t("shell:onboarding.intro")}
         </p>
 
         {registryError ? (
@@ -177,11 +180,7 @@ export default function Onboarding() {
                 <>
                   <span className="probe-mark pending">{t("shell:onboarding.notChecked")}</span>
                   <span className="detail dim">
-                    {t("shell:onboarding.notProbed")}
-                    <details className="agent-candidates">
-                      <summary>{t("shell:onboarding.manualPath")}</summary>
-                      {manualControls(registered)}
-                    </details>
+                    {t("shell:onboarding.preparing")}
                   </span>
                 </>
               ) : row.phase === "probing" ? (
@@ -204,7 +203,7 @@ export default function Onboarding() {
                     {probeReason(row.outcome) ? <><br /><span className="dim">{probeReason(row.outcome)}</span></> : null}
                     <details className="agent-candidates">
                       <summary>
-                        {t("shell:onboarding.candidatePaths", {
+                        {t("shell:onboarding.advancedOptions", {
                           count: row.outcome.candidates.length,
                         })}
                       </summary>
@@ -248,7 +247,11 @@ export default function Onboarding() {
                   <span className="detail">
                     {probeReason(row.outcome) ?? t("shell:onboarding.executableNotFound")}
                     <details className="agent-candidates" open>
-                      <summary>{t("shell:onboarding.otherPath")}</summary>
+                      <summary>
+                        {t("shell:onboarding.advancedOptions", {
+                          count: row.outcome.candidates.length,
+                        })}
+                      </summary>
                       {manualControls(registered)}
                     </details>
                   </span>

@@ -83,7 +83,7 @@
     "description": "Completed, waiting, and failed events while you were away",
     "markAllRead": "Mark all as read",
     "completed": "Completed",
-    "needsInput": "Needs input",
+    "needsInput": "Waiting for approval",
     "failed": "Failed / exited",
     "openDiagnostics": "Open Diagnostics",
     "empty": "No new completed, waiting, or failed events while you were away.",

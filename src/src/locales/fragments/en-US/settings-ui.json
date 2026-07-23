@@ -86,27 +86,22 @@
       "canvasRendererUnavailable": "The Canvas renderer is unavailable; using DOM instead: {{detail}}"
     },
     "adapters": {
-      "description": "Automatically detects every registered adapter. When multiple installation paths are found, AgentPort validates them in priority order and selects a working version. Quick-launch icons in project rows follow the same order.",
-      "empty": "No Agent CLI has been detected.",
+      "description": "AgentPort scans your interactive shell, version managers, and common install directories, then selects the best path that passes validation. Only current working results appear below.",
+      "empty": "No working Agent was found. Open advanced options to inspect failures or choose a path manually.",
       "tableAriaLabel": "Agent adapter list",
       "columns": {
         "agent": "Agent",
-        "path": "Path",
-        "version": "Version",
-        "hook": "Hook",
-        "exactResume": "Exact resume",
+        "selection": "Automatic selection",
         "order": "Order"
       },
-      "supported": "Supported",
-      "unsupported": "Not supported",
       "moveUp": "Move {{agent}} up",
       "moveDown": "Move {{agent}} down",
       "probing": "Checking…",
-      "reprobeAll": "Check all again",
-      "manage": "Manage / Add Agent",
-      "probePassed": "All Agents passed detection",
-      "probeFailure": "{{agent}}: {{reason}}",
-      "failureSeparator": "; ",
+      "reprobeAll": "Run automatic detection again",
+      "manage": "Advanced options",
+      "probePassed_one": "Automatically selected {{count}} working Agent",
+      "probePassed_other": "Automatically selected {{count}} working Agents",
+      "probeNone": "No working Agent was found. Open advanced options for details.",
       "reprobeFailed": "Could not check Agents again: {{detail}}"
     },
     "secrets": {

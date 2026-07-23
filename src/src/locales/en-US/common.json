@@ -46,6 +46,7 @@
   "probeSource": {
     "systemPath": "System PATH",
     "loginShellPath": "Login shell PATH",
+    "versionManager": "Version manager",
     "wellKnownDirectory": "Common install directory",
     "manual": "Manually selected"
   },

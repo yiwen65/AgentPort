@@ -11,7 +11,6 @@ import {
   agentDisplay,
   formatBytes,
   formatTime,
-  hookStatusLabel,
   indexStateLabel,
   presetDisplayName,
   secretBackendZh,
@@ -19,7 +18,6 @@ import {
 import { applyUiLanguage, currentUiLanguage } from "../i18n";
 import { orderAgentIds } from "../agentOrder";
 import { applyTerminalLanguage } from "../terminals";
-import { runtimeMessageText } from "../runtimeMessages";
 import { AgentIcon } from "./AgentIcons";
 import ShellIcon from "./ShellIcon";
 import { closeDialog, confirmDialog, setState, toast, useStore } from "../store";
@@ -282,23 +280,10 @@ function AdapterSection({
         .map((o) => o.install)
         .filter((x): x is AdapterInstall => x !== null);
       setState({ adapters: installs });
-      const bad = outcomes.filter((o) => o.state !== "available");
-      if (bad.length > 0) {
-        toast(
-          bad
-            .map((item) =>
-              t("settings:ui.adapters.probeFailure", {
-                agent: item.displayName,
-                reason: item.reasonMessage
-                  ? runtimeMessageText(item.reasonMessage)
-                  : item.reason ?? item.state,
-              }),
-            )
-            .join(t("settings:ui.adapters.failureSeparator")),
-          "error",
-        );
+      if (installs.length > 0) {
+        toast(t("settings:ui.adapters.probePassed", { count: installs.length }), "success");
       } else {
-        toast(t("settings:ui.adapters.probePassed"), "success");
+        toast(t("settings:ui.adapters.probeNone"), "error");
       }
     } catch (e) {
       toast(t("settings:ui.adapters.reprobeFailed", { detail: errorText(e) }), "error");
@@ -322,10 +307,7 @@ function AdapterSection({
           <thead>
             <tr>
               <th>{t("settings:ui.adapters.columns.agent")}</th>
-              <th>{t("settings:ui.adapters.columns.path")}</th>
-              <th>{t("settings:ui.adapters.columns.version")}</th>
-              <th>{t("settings:ui.adapters.columns.hook")}</th>
-              <th>{t("settings:ui.adapters.columns.exactResume")}</th>
+              <th>{t("settings:ui.adapters.columns.selection")}</th>
               <th>{t("settings:ui.adapters.columns.order")}</th>
             </tr>
           </thead>
@@ -338,15 +320,9 @@ function AdapterSection({
                     {agentDisplay(a.agentType)}
                   </span>
                 </td>
-                <td className="mono dim" style={{ wordBreak: "break-all" }}>
-                  {a.executablePath}
-                </td>
-                <td className="dim">{a.versionText}</td>
-                <td>{hookStatusLabel(a.hookStatus)}</td>
-                <td>
-                  {a.exactResume
-                    ? t("settings:ui.adapters.supported")
-                    : t("settings:ui.adapters.unsupported")}
+                <td style={{ wordBreak: "break-all" }}>
+                  <div>{a.versionText}</div>
+                  <div className="mono dim">{a.executablePath}</div>
                 </td>
                 <td>
                   <span className="adapter-order-actions">
