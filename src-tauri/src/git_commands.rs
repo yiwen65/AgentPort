@@ -1,3 +1,8 @@
+// Command errors intentionally carry a complete, serializable recovery
+// snapshot across the Tauri boundary; boxing would complicate command error
+// conversion without reducing the payload sent to the renderer.
+#![allow(clippy::result_large_err)]
+
 use agentport_core::db::Db;
 use agentport_core::error::CoreError;
 use agentport_core::git::{
@@ -226,6 +231,79 @@ pub async fn create_local_branch(
                 "create_local_branch",
                 &error,
                 Some(error_branch),
+                operation_id,
+                None,
+            );
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn delete_local_branch(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    project_id: String,
+    branch: String,
+) -> CommandResult<BranchOperationResult> {
+    let operation_id = wrapper_operation_id("delete_branch");
+    emit_progress(
+        &app,
+        RepositoryOperationProgress {
+            operation_id: operation_id.clone(),
+            command: "delete_local_branch",
+            project_id: Some(project_id.clone()),
+            branch: Some(branch.clone()),
+            phase: "started".into(),
+            message: "deleting merged local branch".into(),
+            core_operation_id: None,
+            recoverable: false,
+            occurred_at: now_string(),
+        },
+    );
+    let event_branch = branch.clone();
+    let result = run_blocking(
+        state.paths.clone(),
+        Some(project_id.clone()),
+        operation_id.clone(),
+        "delete_local_branch",
+        "delete",
+        move |db, manager| {
+            let deleted = manager.delete(&project_id, &branch)?;
+            let response = repository_response(db, manager, &project_id)?;
+            Ok(BranchOperationResult {
+                operation_id: deleted.operation_id,
+                status: response.status,
+                auto_stash: None,
+            })
+        },
+    )
+    .await;
+    match result {
+        Ok(result) => {
+            emit_repository_state(&app, &result.status);
+            emit_progress(
+                &app,
+                RepositoryOperationProgress {
+                    operation_id,
+                    command: "delete_local_branch",
+                    project_id: Some(result.status.project_id.clone()),
+                    branch: Some(event_branch),
+                    phase: "completed".into(),
+                    message: "local branch deleted".into(),
+                    core_operation_id: Some(result.operation_id.clone()),
+                    recoverable: false,
+                    occurred_at: now_string(),
+                },
+            );
+            Ok(result)
+        }
+        Err(error) => {
+            emit_error_progress(
+                &app,
+                "delete_local_branch",
+                &error,
+                Some(event_branch),
                 operation_id,
                 None,
             );

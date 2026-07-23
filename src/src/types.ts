@@ -40,6 +40,7 @@ export interface StatusEventView {
   source: StateSourceStr;
   confidence: ConfidenceStr;
   evidence: string | null;
+  logCursor: LogCursorView | null;
   occurredAt: string;
 }
 
@@ -96,6 +97,8 @@ export interface Settings {
   theme: ThemeSetting;
   terminalFontFamily: string;
   terminalFontSize: number;
+  /** Optional Linux terminal emulator executable; no arguments are parsed. */
+  terminalCommand: string;
   reducedMotion: ReducedMotionSetting;
   screenReaderMode: boolean;
   searchIndexEnabled: boolean;
@@ -155,9 +158,13 @@ export interface TimelineEntry {
   state: AgentStateStr;
   source: StateSourceStr;
   confidence: ConfidenceStr;
+  evidence: string | null;
   occurredAt: string;
+  statusCursor: StatusCursorView | null;
+  logCursor: LogCursorView | null;
   logOffset: number | null;
   rotatedAway: boolean;
+  locationUnavailableReason: string | null;
 }
 
 export interface TimelineData {
@@ -165,6 +172,14 @@ export interface TimelineData {
   waiting: number;
   failed: number;
   entries: TimelineEntry[];
+  ackSnapshots: TimelineAckSnapshot[];
+}
+
+/** Exact recovery facts rendered in one GUI snapshot and safe to acknowledge. */
+export interface TimelineAckSnapshot {
+  sessionId: string;
+  statusCursor: StatusCursorView | null;
+  logCursor: LogCursorView | null;
 }
 
 /** Normalized boot payload (see note in api.ts about snake_case keys). */
@@ -174,6 +189,7 @@ export interface BootInfo {
   adapters: AdapterInstall[];
   projects: ProjectView[];
   timeline: TimelineData;
+  timelineError: string | null;
   secretBackend: string;
   indexState: string;
   webview: string;
@@ -223,7 +239,7 @@ export interface AttachInfo {
 export type ChannelMsg =
   | { t: "output"; data: string; offset: number; cursor: LogCursorView }
   | { t: "structured"; event: Record<string, unknown> }
-  | { t: "replay_done"; offset?: number; cursor?: LogCursorView }
+  | { t: "replay_done"; offset?: number; cursor?: LogCursorView; partialContext?: boolean }
   | { t: "resync_required"; earliest: LogCursorView; reason: string }
   | { t: "state"; event: StatusEventView }
   | { t: "agent_session"; id: string }
@@ -400,4 +416,9 @@ export interface LogTail {
   offset: number;
   /** total log size in bytes */
   total: number;
+}
+
+/** Bounded, generation-validated bytes surrounding a recovery cursor. */
+export interface RecoveryLogContext extends LogTail {
+  cursor: LogCursorView;
 }

@@ -113,6 +113,7 @@ export interface AppState {
   adapters: AdapterInstall[];
   projects: ProjectView[];
   timeline: TimelineData;
+  timelineError: string | null;
   secretBackend: string;
   indexState: string;
   exportsDir: string;
@@ -160,7 +161,8 @@ const initialState: AppState = {
   settings: null,
   adapters: [],
   projects: [],
-  timeline: { completed: 0, waiting: 0, failed: 0, entries: [] },
+  timeline: { completed: 0, waiting: 0, failed: 0, entries: [], ackSnapshots: [] },
+  timelineError: null,
   secretBackend: "unknown",
   indexState: "unknown",
   exportsDir: "",
@@ -193,6 +195,8 @@ const initialState: AppState = {
 
 let state = initialState;
 const listeners = new Set<() => void>();
+let projectsSnapshotRequest = 0;
+const repositoryStatusRequests = new Map<string, number>();
 
 function emit() {
   for (const l of listeners) l();
@@ -209,6 +213,50 @@ export function setState(partial: Partial<AppState>) {
 
 export function update(fn: (s: AppState) => Partial<AppState>) {
   setState(fn(state));
+}
+
+/** Issue/order full project-tree reads. Realtime patches invalidate pending reads. */
+export function beginProjectsSnapshotRequest(): number {
+  projectsSnapshotRequest += 1;
+  return projectsSnapshotRequest;
+}
+
+export function invalidateProjectsSnapshotRequests() {
+  projectsSnapshotRequest += 1;
+}
+
+export function isCurrentProjectsSnapshotRequest(request: number): boolean {
+  return request === projectsSnapshotRequest;
+}
+
+/** Repository probes are independent per project and may race backend events. */
+export function beginRepositoryStatusRequest(projectId: string): number {
+  const request = (repositoryStatusRequests.get(projectId) ?? 0) + 1;
+  repositoryStatusRequests.set(projectId, request);
+  return request;
+}
+
+export function isCurrentRepositoryStatusRequest(projectId: string, request: number): boolean {
+  return repositoryStatusRequests.get(projectId) === request;
+}
+
+export function applyRepositoryStatusSnapshot(status: RepositoryStatus) {
+  repositoryStatusRequests.set(
+    status.projectId,
+    (repositoryStatusRequests.get(status.projectId) ?? 0) + 1,
+  );
+  update((current) => ({
+    repositoryStatuses: { ...current.repositoryStatuses, [status.projectId]: status },
+  }));
+}
+
+export function markRepositoryStatusUnavailable(projectId: string) {
+  repositoryStatusRequests.set(projectId, (repositoryStatusRequests.get(projectId) ?? 0) + 1);
+  update((current) => {
+    const repositoryStatuses = { ...current.repositoryStatuses };
+    delete repositoryStatuses[projectId];
+    return { repositoryStatuses };
+  });
 }
 
 export function subscribe(l: () => void): () => void {
@@ -300,6 +348,7 @@ function latestStatus(
   incoming: StatusEventView | null | undefined,
 ): StatusEventView | null | undefined {
   if (incoming === undefined) return undefined;
+  if (current && incoming === null) return current;
   if (current && incoming) {
     if (incoming.runOrdinal < current.runOrdinal) return current;
     if (incoming.runOrdinal === current.runOrdinal) {
@@ -332,6 +381,7 @@ export function getRuntime(sessionId: string): SessionRuntime {
 
 /** Patch one session inside the project tree (keeps unread/ordering intact). */
 export function patchSession(sessionId: string, patch: Partial<SessionView>) {
+  invalidateProjectsSnapshotRequests();
   update((s) => ({
     projects: s.projects.map((p) => ({
       ...p,

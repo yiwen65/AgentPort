@@ -130,6 +130,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
             token,
             replay_tail_bytes,
             resume_from,
+            replay_target,
             subscribe_output,
         })) => (
             protocol,
@@ -137,6 +138,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
             token,
             replay_tail_bytes,
             resume_from,
+            replay_target,
             subscribe_output,
         ),
         Ok(Some(_)) => {
@@ -146,7 +148,15 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
         }
         Ok(None) | Err(_) => return, // EOF / timeout / garbage: close silently
     };
-    let (protocol, session_id, token, replay_tail_bytes, resume_from, subscribe_output) = hello;
+    let (
+        protocol,
+        session_id,
+        token,
+        replay_tail_bytes,
+        resume_from,
+        replay_target,
+        subscribe_output,
+    ) = hello;
     if protocol != PROTOCOL_VERSION
         || session_id != shared.cfg.session_id
         || token != shared.cfg.host_token
@@ -195,10 +205,13 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
             current_status: shared.current_status.lock().unwrap().clone(),
             log_cursor: high_water.clone(),
         }];
-        if subscribe_output && (resume_from.is_some() || replay_tail_bytes > 0) {
+        if subscribe_output
+            && (resume_from.is_some() || replay_target.is_some() || replay_tail_bytes > 0)
+        {
             initial_frames.extend(build_replay_frames(
                 &shared,
                 resume_from.as_ref(),
+                replay_target.as_ref(),
                 replay_tail_bytes,
                 &high_water,
             ));
@@ -257,7 +270,10 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                         &shared,
                         id,
                         &frame_tx,
-                        err_frame(Some(&shared.cfg.session_id), "terminal input is unavailable for structured sessions"),
+                        err_frame(
+                            Some(&shared.cfg.session_id),
+                            "terminal input is unavailable for structured sessions",
+                        ),
                     );
                     continue;
                 }
@@ -272,7 +288,10 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                         &shared,
                         id,
                         &frame_tx,
-                        err_frame(Some(&shared.cfg.session_id), "structured prompts require json_rpc transport"),
+                        err_frame(
+                            Some(&shared.cfg.session_id),
+                            "structured prompts require json_rpc transport",
+                        ),
                     );
                     continue;
                 }
@@ -281,11 +300,19 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                         &shared,
                         id,
                         &frame_tx,
-                        err_frame(Some(&shared.cfg.session_id), "structured prompt must not be empty"),
+                        err_frame(
+                            Some(&shared.cfg.session_id),
+                            "structured prompt must not be empty",
+                        ),
                     );
                     continue;
                 }
-                if write_json_command(&shared, serde_json::json!({"type": "prompt", "message": text})).is_err() {
+                if write_json_command(
+                    &shared,
+                    serde_json::json!({"type": "prompt", "message": text}),
+                )
+                .is_err()
+                {
                     break;
                 }
             }
@@ -295,7 +322,10 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                         &shared,
                         id,
                         &frame_tx,
-                        err_frame(Some(&shared.cfg.session_id), "structured abort requires json_rpc transport"),
+                        err_frame(
+                            Some(&shared.cfg.session_id),
+                            "structured abort requires json_rpc transport",
+                        ),
                     );
                     continue;
                 }
@@ -414,7 +444,10 @@ fn frame_session_id(f: &ClientFrame) -> &str {
 /// One JSON command per line is the only data written to a structured Pi
 /// child. `serde_json` keeps prompt content out of a shell and preserves UTF-8
 /// quoting exactly.
-pub(crate) fn write_json_command(shared: &Shared, command: serde_json::Value) -> std::io::Result<()> {
+pub(crate) fn write_json_command(
+    shared: &Shared,
+    command: serde_json::Value,
+) -> std::io::Result<()> {
     let mut writer = shared.input_writer.lock().unwrap();
     serde_json::to_writer(&mut *writer, &command).map_err(std::io::Error::other)?;
     writer.write_all(b"\n")?;
@@ -427,6 +460,7 @@ pub(crate) fn write_json_command(shared: &Shared, command: serde_json::Value) ->
 fn build_replay_frames(
     shared: &Shared,
     resume_from: Option<&LogCursor>,
+    replay_target: Option<&LogCursor>,
     tail_bytes: u64,
     high_water: &LogCursor,
 ) -> Vec<HostFrame> {
@@ -435,7 +469,8 @@ fn build_replay_frames(
     let tail_start = current_offset.saturating_sub(bounded_tail);
     let mut resync_reason = None::<String>;
 
-    let mut start = match resume_from {
+    let mut end = current_offset;
+    let mut start = match replay_target.or(resume_from) {
         None => tail_start,
         Some(cursor)
             if cursor.run_id != high_water.run_id
@@ -452,21 +487,35 @@ fn build_replay_frames(
             resync_reason = Some("cursor offset is outside the retained log".into());
             tail_start
         }
-        Some(cursor) if (high_water.offset - cursor.offset) as u64 > MAX_REPLAY_BYTES => {
+        Some(cursor)
+            if replay_target.is_none()
+                && (high_water.offset - cursor.offset) as u64 > MAX_REPLAY_BYTES =>
+        {
             resync_reason = Some("requested replay exceeds the bounded writer queue".into());
             tail_start
+        }
+        Some(cursor) if replay_target.is_some() => {
+            // A timeline target is an explicit request for nearby context,
+            // not an unbounded resume to today's high-water. Keep both sides
+            // bounded so a very old but retained event remains usable.
+            const BEFORE: u64 = 128 * 1024;
+            const AFTER: u64 = 256 * 1024;
+            let target = cursor.offset as u64;
+            end = current_offset.min(target.saturating_add(AFTER));
+            target.saturating_sub(BEFORE)
         }
         Some(cursor) => cursor.offset as u64,
     };
 
     let path = PathBuf::from(&shared.cfg.log_path);
-    let mut data = match read_log_range(&path, start, current_offset) {
+    let mut data = match read_log_range(&path, start, end) {
         Ok(data) => data,
         Err(error) => {
-            if resume_from.is_some() && resync_reason.is_none() {
+            if (resume_from.is_some() || replay_target.is_some()) && resync_reason.is_none() {
                 resync_reason = Some(format!("requested log range is unavailable: {error}"));
                 start = tail_start;
-                read_log_range(&path, start, current_offset).unwrap_or_default()
+                end = current_offset;
+                read_log_range(&path, start, end).unwrap_or_default()
             } else {
                 Vec::new()
             }
@@ -474,15 +523,16 @@ fn build_replay_frames(
     };
     // A failed tail read must never claim offsets for bytes that were not
     // queued. Reset the tail to an empty snapshot at the captured high-water.
-    if data.len() as u64 != current_offset.saturating_sub(start) {
+    if data.len() as u64 != end.saturating_sub(start) {
         data.clear();
-        start = current_offset;
+        start = end;
         resync_reason.get_or_insert_with(|| "retained log changed during replay".into());
     }
 
     let mut frames = Vec::with_capacity(
         2 + data.len().div_ceil(REPLAY_CHUNK) + usize::from(resync_reason.is_some()),
     );
+    let partial_context = replay_target.is_some() && resync_reason.is_none();
     if let Some(reason) = resync_reason {
         let mut earliest = high_water.clone();
         earliest.offset = 0;
@@ -505,8 +555,12 @@ fn build_replay_frames(
     }
     frames.push(HostFrame::ReplayDone {
         session_id: shared.cfg.session_id.clone(),
-        offset: current_offset,
-        cursor: high_water.clone(),
+        offset: end,
+        cursor: LogCursor {
+            offset: end as i64,
+            ..high_water.clone()
+        },
+        partial_context,
     });
     frames
 }

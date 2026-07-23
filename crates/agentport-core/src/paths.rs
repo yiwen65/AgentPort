@@ -13,7 +13,7 @@ pub struct AppPaths {
 impl AppPaths {
     /// Default: platform app-data dir (macOS `~/Library/Application Support/AgentPort`,
     /// Linux `~/.local/share/agentport`). Honors `AGENTPORT_DATA_DIR` for tests/CI.
-    pub fn default() -> Result<Self> {
+    pub fn discover() -> Result<Self> {
         if let Ok(p) = std::env::var("AGENTPORT_DATA_DIR") {
             return Ok(Self::new(PathBuf::from(p)));
         }

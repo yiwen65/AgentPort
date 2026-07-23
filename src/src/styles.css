@@ -255,6 +255,19 @@ button {
   color: var(--text);
 }
 
+.topbar-timeline-badge {
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--amber);
+  color: #16110a;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+
 .window-title {
   position: absolute;
   /* Center over the terminal pane, not over the entire window. */
@@ -2296,6 +2309,8 @@ textarea:focus {
 }
 
 /* Local branch picker ------------------------------------------------ */
+.branch-picker-content { display: contents; }
+
 .branch-picker-status {
   display: flex;
   align-items: flex-start;
@@ -2387,6 +2402,53 @@ textarea:focus {
   white-space: nowrap;
 }
 .branch-picker-worktree { flex: none; }
+.branch-picker-delete {
+  flex: none;
+  color: var(--red);
+  opacity: 0;
+}
+
+.branch-picker-row:hover .branch-picker-delete,
+.branch-picker-row:focus-within .branch-picker-delete,
+.branch-picker-row.selected .branch-picker-delete { opacity: 1; }
+
+.branch-picker-delete:hover:not(:disabled) {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.branch-picker-delete-confirm {
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 46px;
+  padding: 5px 8px;
+  background: var(--red-soft);
+}
+
+.branch-picker-delete-warning {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.branch-picker-delete-warning strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-picker-delete-confirm-actions {
+  display: flex;
+  flex: none;
+  gap: 5px;
+}
+
 .branch-picker-empty { padding: 16px; color: var(--text-dim); font-size: 12px; text-align: center; }
 
 .branch-picker-create,
@@ -2451,8 +2513,13 @@ textarea:focus {
 @media (max-width: 620px) {
   .branch-picker-status,
   .branch-picker-stash { flex-direction: column; }
+  .branch-picker-delete-confirm { align-items: flex-start; flex-direction: column; }
   .branch-picker-summary { align-items: flex-start; text-align: left; }
   .branch-picker-create-grid { grid-template-columns: 1fr; }
+}
+
+@media (hover: none) {
+  .branch-picker-delete { opacity: 1; }
 }
 
 .section-title:first-child {
@@ -2678,10 +2745,13 @@ textarea:focus {
 
 .timeline-time {
   flex: none;
-  width: 44px;
+  width: auto;
+  max-width: 180px;
   color: var(--text-faint);
   font-family: var(--font-mono);
   font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .timeline-main {

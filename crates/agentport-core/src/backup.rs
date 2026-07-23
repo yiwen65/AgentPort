@@ -24,6 +24,17 @@ use std::path::{Path, PathBuf};
 
 pub const BACKUP_FORMAT_VERSION: u32 = 1;
 
+// Backups are user-selected external input during verify/restore. Keep every
+// resource dimension bounded before decompression starts. One retained Host
+// log is capped at 2 GiB by Settings, so 4 GiB leaves room for the database
+// and future per-file growth without accepting an unbounded archive.
+const MAX_BACKUP_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_BACKUP_PAYLOAD_ENTRIES: usize = 50_000;
+const MAX_BACKUP_FILE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_BACKUP_TOTAL_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+const MAX_BACKUP_COMPRESSION_RATIO: u64 = 200;
+const COPY_BUFFER_BYTES: usize = 64 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupManifest {
@@ -52,6 +63,114 @@ fn sha256_reader(mut r: impl Read) -> Result<(String, u64)> {
     let mut h = Sha256::new();
     let n = std::io::copy(&mut r, &mut h)?;
     Ok((format!("{:x}", h.finalize()), n))
+}
+
+fn copy_and_hash_bounded(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+    max_bytes: u64,
+    label: &str,
+) -> Result<(String, u64)> {
+    let mut hash = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; COPY_BUFFER_BYTES];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        total = total
+            .checked_add(read as u64)
+            .ok_or_else(|| CoreError::Validation(format!("backup entry too large: {label}")))?;
+        if total > max_bytes {
+            return Err(CoreError::Validation(format!(
+                "backup entry exceeds {max_bytes} bytes: {label}"
+            )));
+        }
+        hash.update(&buffer[..read]);
+        writer.write_all(&buffer[..read])?;
+    }
+    Ok((format!("{:x}", hash.finalize()), total))
+}
+
+fn validate_payload_entry_count(count: usize) -> Result<()> {
+    if count > MAX_BACKUP_PAYLOAD_ENTRIES {
+        return Err(CoreError::Validation(format!(
+            "backup has {count} payload entries; maximum is {MAX_BACKUP_PAYLOAD_ENTRIES}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_manifest_limits(manifest: &BackupManifest) -> Result<()> {
+    validate_payload_entry_count(manifest.files.len())?;
+    let mut total = 0_u64;
+    for entry in &manifest.files {
+        if entry.size > MAX_BACKUP_FILE_BYTES {
+            return Err(CoreError::Validation(format!(
+                "backup entry {} declares {} bytes; per-file maximum is {}",
+                entry.path, entry.size, MAX_BACKUP_FILE_BYTES
+            )));
+        }
+        total = total
+            .checked_add(entry.size)
+            .ok_or_else(|| CoreError::Validation("backup declared size overflows u64".into()))?;
+        if total > MAX_BACKUP_TOTAL_BYTES {
+            return Err(CoreError::Validation(format!(
+                "backup declares {total} bytes; total maximum is {MAX_BACKUP_TOTAL_BYTES}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_compression_ratio(uncompressed: u64, compressed: u64, label: &str) -> Result<()> {
+    if uncompressed > 0
+        && (compressed == 0
+            || uncompressed > compressed.saturating_mul(MAX_BACKUP_COMPRESSION_RATIO))
+    {
+        return Err(CoreError::Validation(format!(
+            "backup entry compression ratio exceeds {MAX_BACKUP_COMPRESSION_RATIO}:1: {label}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_zip_entry(
+    entry: &zip::read::ZipFile<'_>,
+    declared_size: u64,
+    label: &str,
+) -> Result<()> {
+    if entry.is_dir() {
+        return Err(CoreError::Validation(format!(
+            "backup payload is a directory: {label}"
+        )));
+    }
+    if entry.size() != declared_size {
+        return Err(CoreError::Validation(format!(
+            "backup entry size differs from manifest for {label}: manifest {declared_size}, zip {}",
+            entry.size()
+        )));
+    }
+    validate_compression_ratio(entry.size(), entry.compressed_size(), label)
+}
+
+fn validate_archive_shape<R: Read + std::io::Seek>(
+    zip: &zip::ZipArchive<R>,
+    manifest: &BackupManifest,
+) -> Result<()> {
+    validate_payload_entry_count(zip.len().saturating_sub(1))?;
+    let expected = manifest.files.len().checked_add(1).ok_or_else(|| {
+        CoreError::Validation("backup archive entry count overflows usize".into())
+    })?;
+    if zip.len() != expected {
+        return Err(CoreError::Validation(format!(
+            "backup archive has {} entries; manifest describes {} payload entries",
+            zip.len(),
+            manifest.files.len()
+        )));
+    }
+    Ok(())
 }
 
 fn private_create(path: &Path) -> Result<std::fs::File> {
@@ -157,7 +276,13 @@ pub fn create(paths: &AppPaths, db: &Db, dest: &Path) -> Result<BackupReport> {
         data_model_version: DATA_MODEL_VERSION,
         files: files.clone(),
     };
+    validate_manifest_limits(&manifest)?;
     let manifest_json = serde_json::to_vec_pretty(&manifest)?;
+    if manifest_json.len() as u64 > MAX_BACKUP_MANIFEST_BYTES {
+        return Err(CoreError::Validation(format!(
+            "backup manifest exceeds {MAX_BACKUP_MANIFEST_BYTES} bytes"
+        )));
+    }
 
     // 3. Pack staged zip, then publish atomically.
     let tmp_zip = exports.join(format!(".backup-{}.zip", crate::ids::new_id("bak")));
@@ -177,18 +302,18 @@ pub fn create(paths: &AppPaths, db: &Db, dest: &Path) -> Result<BackupReport> {
             } else {
                 paths.root().join(&entry.path)
             };
-            let data = std::fs::read(&src)?;
+            zw.start_file(entry.path.clone(), opts)
+                .map_err(|e| CoreError::Export(format!("backup zip entry {}: {e}", entry.path)))?;
+            let mut source = std::fs::File::open(&src)?;
+            let (sha, size) =
+                copy_and_hash_bounded(&mut source, &mut zw, MAX_BACKUP_FILE_BYTES, &entry.path)?;
             // Guard against a file changing between digest and pack.
-            let (sha, size) = sha256_reader(data.as_slice())?;
             if sha != entry.sha256 || size != entry.size {
                 return Err(CoreError::Conflict(format!(
                     "file changed during backup: {}",
                     entry.path
                 )));
             }
-            zw.start_file(entry.path.clone(), opts)
-                .map_err(|e| CoreError::Export(format!("backup zip entry {}: {e}", entry.path)))?;
-            zw.write_all(&data)?;
         }
         let f = zw
             .finish()
@@ -218,12 +343,29 @@ pub fn verify(archive: &Path) -> Result<BackupManifest> {
     let f = std::fs::File::open(archive)?;
     let mut zip = zip::ZipArchive::new(f)
         .map_err(|e| CoreError::Validation(format!("not a backup zip: {e}")))?;
+    validate_payload_entry_count(zip.len().saturating_sub(1))?;
     let manifest: BackupManifest = {
         let mut entry = zip
             .by_name("manifest.json")
             .map_err(|_| CoreError::Validation("backup manifest missing".into()))?;
-        let mut buf = Vec::new();
-        entry.read_to_end(&mut buf)?;
+        if entry.size() > MAX_BACKUP_MANIFEST_BYTES {
+            return Err(CoreError::Validation(format!(
+                "backup manifest exceeds {MAX_BACKUP_MANIFEST_BYTES} bytes"
+            )));
+        }
+        validate_compression_ratio(entry.size(), entry.compressed_size(), "manifest.json")?;
+        let capacity = usize::try_from(entry.size())
+            .map_err(|_| CoreError::Validation("backup manifest is too large".into()))?;
+        let mut buf = Vec::with_capacity(capacity);
+        entry
+            .by_ref()
+            .take(MAX_BACKUP_MANIFEST_BYTES + 1)
+            .read_to_end(&mut buf)?;
+        if buf.len() as u64 > MAX_BACKUP_MANIFEST_BYTES {
+            return Err(CoreError::Validation(format!(
+                "backup manifest exceeds {MAX_BACKUP_MANIFEST_BYTES} bytes"
+            )));
+        }
         serde_json::from_slice(&buf)?
     };
     if manifest.format_version != BACKUP_FORMAT_VERSION {
@@ -243,6 +385,8 @@ pub fn verify(archive: &Path) -> Result<BackupManifest> {
             "backup has no database snapshot".into(),
         ));
     }
+    validate_manifest_limits(&manifest)?;
+    validate_archive_shape(&zip, &manifest)?;
     let mut seen = std::collections::HashSet::new();
     for entry in &manifest.files {
         if !seen.insert(entry.path.clone()) {
@@ -266,9 +410,9 @@ pub fn verify(archive: &Path) -> Result<BackupManifest> {
         let mut zf = zip
             .by_name(&entry.path)
             .map_err(|_| CoreError::Validation(format!("missing payload {}", entry.path)))?;
-        let mut buf = Vec::with_capacity(entry.size as usize);
-        zf.read_to_end(&mut buf)?;
-        let (sha, size) = sha256_reader(buf.as_slice())?;
+        validate_zip_entry(&zf, entry.size, &entry.path)?;
+        let mut sink = std::io::sink();
+        let (sha, size) = copy_and_hash_bounded(&mut zf, &mut sink, entry.size, &entry.path)?;
         if sha != entry.sha256 || size != entry.size {
             return Err(CoreError::Validation(format!(
                 "integrity check failed for {}",
@@ -312,17 +456,26 @@ pub fn restore(archive: &Path, target_root: &Path) -> Result<PathBuf> {
         let f = std::fs::File::open(archive)?;
         let mut zip = zip::ZipArchive::new(f)
             .map_err(|e| CoreError::Validation(format!("not a backup zip: {e}")))?;
+        validate_archive_shape(&zip, &manifest)?;
         for entry in &manifest.files {
             let mut zf = zip
                 .by_name(&entry.path)
                 .map_err(|_| CoreError::Validation(format!("missing payload {}", entry.path)))?;
+            validate_zip_entry(&zf, entry.size, &entry.path)?;
             let out = staging.join(&entry.path);
             if let Some(p) = out.parent() {
                 std::fs::create_dir_all(p)?;
             }
-            let mut buf = Vec::with_capacity(entry.size as usize);
-            zf.read_to_end(&mut buf)?;
-            std::fs::write(&out, &buf)?;
+            let mut destination = private_create(&out)?;
+            let (sha, size) =
+                copy_and_hash_bounded(&mut zf, &mut destination, entry.size, &entry.path)?;
+            if sha != entry.sha256 || size != entry.size {
+                return Err(CoreError::Validation(format!(
+                    "integrity check failed while restoring {}",
+                    entry.path
+                )));
+            }
+            destination.flush()?;
             crate::paths::AppPaths::restrict_file(&out)?;
         }
     }
@@ -447,6 +600,45 @@ mod tests {
         Fx { dir, paths, db }
     }
 
+    fn manifest(files: Vec<BackupFileEntry>) -> BackupManifest {
+        BackupManifest {
+            format_version: BACKUP_FORMAT_VERSION,
+            created_at: Utc::now(),
+            app_version: "test".into(),
+            data_model_version: DATA_MODEL_VERSION,
+            files,
+        }
+    }
+
+    fn entry(path: &str, data: &[u8]) -> BackupFileEntry {
+        let (sha256, size) = sha256_reader(data).unwrap();
+        BackupFileEntry {
+            path: path.into(),
+            size,
+            sha256,
+        }
+    }
+
+    fn write_custom_backup(
+        archive: &Path,
+        manifest: &BackupManifest,
+        payloads: &[(String, Vec<u8>)],
+    ) {
+        let file = std::fs::File::create(archive).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(0o600);
+        zip.start_file("manifest.json", options).unwrap();
+        zip.write_all(&serde_json::to_vec(manifest).unwrap())
+            .unwrap();
+        for (path, data) in payloads {
+            zip.start_file(path, options).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
     #[test]
     fn backup_verify_restore_roundtrip() {
         let fx = fx();
@@ -506,6 +698,62 @@ mod tests {
         raw[n / 2] ^= 0xFF;
         std::fs::write(&archive, raw).unwrap();
         assert!(verify(&archive).is_err());
+    }
+
+    #[test]
+    fn forged_manifest_size_is_rejected_before_payload_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("forged-size.zip");
+        let data = b"not a huge database".to_vec();
+        let mut declared = entry("agentport.db", &data);
+        declared.size = MAX_BACKUP_FILE_BYTES + 1;
+        write_custom_backup(
+            &archive,
+            &manifest(vec![declared]),
+            &[("agentport.db".into(), data)],
+        );
+
+        assert!(matches!(verify(&archive), Err(CoreError::Validation(_))));
+    }
+
+    #[test]
+    fn highly_compressed_payload_is_rejected_as_zip_bomb() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("zip-bomb.zip");
+        let data = vec![0_u8; 1024 * 1024];
+        write_custom_backup(
+            &archive,
+            &manifest(vec![entry("agentport.db", &data)]),
+            &[("agentport.db".into(), data)],
+        );
+
+        let error = verify(&archive).unwrap_err();
+        assert!(matches!(error, CoreError::Validation(_)));
+        assert!(error.to_string().contains("compression ratio"), "{error}");
+    }
+
+    #[test]
+    fn manifest_count_and_total_size_are_bounded() {
+        assert!(matches!(
+            validate_payload_entry_count(MAX_BACKUP_PAYLOAD_ENTRIES + 1),
+            Err(CoreError::Validation(_))
+        ));
+
+        let oversized = BackupFileEntry {
+            path: "payload".into(),
+            size: MAX_BACKUP_FILE_BYTES,
+            sha256: "0".repeat(64),
+        };
+        let files = (0..(MAX_BACKUP_TOTAL_BYTES / MAX_BACKUP_FILE_BYTES + 1))
+            .map(|index| BackupFileEntry {
+                path: format!("payload-{index}"),
+                ..oversized.clone()
+            })
+            .collect();
+        assert!(matches!(
+            validate_manifest_limits(&manifest(files)),
+            Err(CoreError::Validation(_))
+        ));
     }
 
     #[test]

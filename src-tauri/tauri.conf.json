@@ -39,7 +39,8 @@
     },
     "linux": {
       "deb": {
-        "depends": []
+        "depends": ["git"],
+        "recommends": ["libnotify-bin", "xdg-utils", "xterm"]
       }
     }
   }

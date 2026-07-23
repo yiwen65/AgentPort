@@ -123,6 +123,18 @@ export function formatTime(iso: string): string {
   return `${hh}:${mm}`;
 }
 
+/** Recovery events that cross midnight need local calendar and timezone
+ * context; otherwise a remote Host's UTC source time is too easy to misread. */
+export function formatTimelineTime(iso: string, now = new Date()): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  if (d.toDateString() === now.toDateString()) return `${hh}:${mm}`;
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "本地时区";
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}（${zone}）`;
+}
+
 export function formatDateTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;

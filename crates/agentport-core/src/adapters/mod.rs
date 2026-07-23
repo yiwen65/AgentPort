@@ -147,17 +147,49 @@ pub(crate) fn has_flag(install: &AdapterInstall, flag: &str) -> bool {
 pub fn validate_user_args(t: AgentType, args: &[String]) -> Result<()> {
     let protected: &[&str] = match t {
         AgentType::Qoder => &[
-            "--cwd", "--config-dir", "--worktree", "--continue", "--resume", "--session-id",
-            "--remote", "--remote-session", "--teleport", "--remote-control", "--print",
-            "--no-session-persistence", "--settings", "--permission-mode",
+            "--cwd",
+            "--config-dir",
+            "--worktree",
+            "--continue",
+            "--resume",
+            "--session-id",
+            "--remote",
+            "--remote-session",
+            "--teleport",
+            "--remote-control",
+            "--print",
+            "--no-session-persistence",
+            "--settings",
+            "--permission-mode",
             "--dangerously-skip-permissions",
         ],
         AgentType::Pi => &[
-            "--mode", "--print", "-p", "--continue", "--resume", "--session", "--session-id",
-            "--session-dir", "--no-session", "--fork", "--api-key", "--approve", "-a",
-            "--no-approve", "-na", "--extension", "-e", "--no-extensions", "-ne",
-            "--skill", "--no-skills", "-ns", "--prompt-template", "--no-prompt-templates",
-            "--theme", "--no-themes",
+            "--mode",
+            "--print",
+            "-p",
+            "--continue",
+            "--resume",
+            "--session",
+            "--session-id",
+            "--session-dir",
+            "--no-session",
+            "--fork",
+            "--api-key",
+            "--approve",
+            "-a",
+            "--no-approve",
+            "-na",
+            "--extension",
+            "-e",
+            "--no-extensions",
+            "-ne",
+            "--skill",
+            "--no-skills",
+            "-ns",
+            "--prompt-template",
+            "--no-prompt-templates",
+            "--theme",
+            "--no-themes",
         ],
         _ => &[],
     };
@@ -324,8 +356,13 @@ mod tests {
     #[test]
     fn managed_qoder_and_pi_args_cannot_be_overridden() {
         assert!(validate_user_args(AgentType::Qoder, &["--worktree".into()]).is_err());
-        assert!(validate_user_args(AgentType::Qoder, &["--dangerously-skip-permissions".into()]).is_err());
-        assert!(validate_user_args(AgentType::Pi, &["--session-id".into(), "other".into()]).is_err());
+        assert!(
+            validate_user_args(AgentType::Qoder, &["--dangerously-skip-permissions".into()])
+                .is_err()
+        );
+        assert!(
+            validate_user_args(AgentType::Pi, &["--session-id".into(), "other".into()]).is_err()
+        );
         assert!(validate_user_args(AgentType::Pi, &["--api-key".into(), "secret".into()]).is_err());
         assert!(validate_user_args(AgentType::Pi, &["--model".into(), "custom".into()]).is_ok());
     }

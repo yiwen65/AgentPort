@@ -141,6 +141,7 @@ impl StateMachine {
             source,
             confidence,
             evidence,
+            log_cursor: None,
             occurred_at: Utc::now(),
         };
         self.last = Some((state, source));

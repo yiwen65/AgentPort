@@ -457,7 +457,7 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
           role="button"
           tabIndex={0}
           aria-label="归档"
-          onClick={(event) => { event.stopPropagation(); void archiveSessionFlow(ses.id, false); }}
+          onClick={(event) => { event.stopPropagation(); void archiveSessionFlow(ses.id); }}
         ><IconArchive /></span>
       </span>
       <span className="session-age" aria-label={`创建于 ${ses.createdAt}`}>

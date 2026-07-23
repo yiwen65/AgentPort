@@ -1124,12 +1124,11 @@ impl Db {
 
     pub fn remove_project(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let project_exists: i64 = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?1)",
-                params![id],
-                |r| r.get(0),
-            )?;
+        let project_exists: i64 = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?1)",
+            params![id],
+            |r| r.get(0),
+        )?;
         if project_exists == 0 {
             return Err(CoreError::NotFound(format!("project {id}")));
         }
@@ -1803,6 +1802,35 @@ impl Db {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = Utc::now();
+        let terminal_event_already_recorded: i64 = tx.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM status_events
+                WHERE session_id=?1 AND run_id=?2 AND run_ordinal=?3
+                  AND state='exited'
+             )",
+            params![id, expected_run_id, expected_run_ordinal],
+            |r| r.get(0),
+        )?;
+        if terminal_event_already_recorded != 0 {
+            // A journaled terminal fact wins over a later Host-disappearance
+            // inference. Do not manufacture an interruption or leave the
+            // Session lifecycle contradicting that already-durable fact.
+            let changed = tx.execute(
+                "UPDATE sessions SET lifecycle='exited', updated_at=?5
+                 WHERE id=?1 AND host_pid=?2
+                   AND host_run_id=?3 AND host_run_ordinal=?4
+                   AND lifecycle IN ('creating','running')",
+                params![
+                    id,
+                    expected_host_pid,
+                    expected_run_id,
+                    expected_run_ordinal,
+                    dt_str(&now),
+                ],
+            )?;
+            tx.commit()?;
+            return Ok(changed > 0);
+        }
         let changed = tx.execute(
             "UPDATE sessions SET lifecycle='interrupted', updated_at=?5
              WHERE id=?1 AND host_pid=?2
@@ -1820,13 +1848,24 @@ impl Db {
             tx.commit()?;
             return Ok(false);
         }
-        ensure_session_run_tx(
-            &tx,
-            id,
-            expected_run_id,
-            expected_run_ordinal,
-            &now,
-        )?;
+        ensure_session_run_tx(&tx, id, expected_run_id, expected_run_ordinal, &now)?;
+        let event_log_cursor = match tx.query_row(
+            "SELECT latest_log_generation,latest_log_offset
+             FROM recovery_summary
+             WHERE session_id=?1 AND latest_log_run_id=?2
+               AND latest_log_run_ordinal=?3 AND latest_log_offset>=0",
+            params![id, expected_run_id, expected_run_ordinal],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        ) {
+            Ok((generation, offset)) if generation >= 0 && offset >= 0 => Some(LogCursor {
+                run_id: expected_run_id.to_string(),
+                run_ordinal: expected_run_ordinal,
+                generation,
+                offset,
+            }),
+            Ok(_) | Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(error) => return Err(CoreError::Sqlite(error)),
+        };
         let sequence: i64 = tx.query_row(
             "SELECT COALESCE(MAX(sequence),0)+1 FROM status_events
              WHERE session_id=?1 AND run_id=?2",
@@ -1838,13 +1877,15 @@ impl Db {
             "INSERT INTO status_events(
                 session_id,run_id,run_ordinal,sequence,state,source,confidence,evidence,
                 log_generation,log_offset,occurred_at
-             ) VALUES(?1,?2,?3,?4,'exited','process','high',?5,NULL,NULL,?6)",
+             ) VALUES(?1,?2,?3,?4,'exited','process','high',?5,?6,?7,?8)",
             params![
                 id,
                 expected_run_id,
                 expected_run_ordinal,
                 sequence,
                 evidence,
+                event_log_cursor.as_ref().map(|cursor| cursor.generation),
+                event_log_cursor.as_ref().map(|cursor| cursor.offset),
                 occurred_at,
             ],
         )?;
@@ -1859,7 +1900,13 @@ impl Db {
              WHERE excluded.run_ordinal > latest_status.run_ordinal
                 OR (excluded.run_ordinal=latest_status.run_ordinal
                     AND excluded.sequence >= latest_status.sequence)",
-            params![id, expected_run_id, expected_run_ordinal, sequence, occurred_at],
+            params![
+                id,
+                expected_run_id,
+                expected_run_ordinal,
+                sequence,
+                occurred_at
+            ],
         )?;
         tx.execute(
             "INSERT OR IGNORE INTO recovery_summary(
@@ -2339,11 +2386,20 @@ impl Db {
              FROM session_runs WHERE session_id=?1 ORDER BY run_ordinal",
         )?;
         let rows = st.query_map(params![session_id], row_session_run)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     // -- status events --------------------------------------------------------
     pub fn record_status_event(&self, e: &StatusEvent) -> Result<()> {
+        if let Some(cursor) = e.log_cursor.as_ref() {
+            validate_run_identity(&cursor.run_id, cursor.run_ordinal)?;
+            if cursor.run_id != e.run_id || cursor.run_ordinal != e.run_ordinal {
+                return Err(CoreError::Validation(format!(
+                    "status event run {}/{} does not match log cursor run {}/{}",
+                    e.run_id, e.run_ordinal, cursor.run_id, cursor.run_ordinal
+                )));
+            }
+        }
         let mut conn = self.conn.lock().unwrap();
         // Acquire the write reservation before `ensure_session_run_tx` reads.
         // A deferred transaction can otherwise fail its read-to-write upgrade
@@ -2495,7 +2551,7 @@ impl Db {
              ORDER BY run_ordinal DESC, sequence DESC LIMIT ?2",
         )?;
         let rows = st.query_map(params![session_id, limit], row_status_event)?;
-        let mut out: Vec<_> = rows.filter_map(|r| r.ok()).collect();
+        let mut out = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         out.reverse(); // chronological
         Ok(out)
     }
@@ -2536,7 +2592,7 @@ impl Db {
         }
         let refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
         let rows = st.query_map(refs.as_slice(), row_status_event)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Compatibility wrapper for callers that only have the pre-v3 sequence.
@@ -2669,6 +2725,49 @@ impl Db {
                         generation: r.get(2)?,
                         offset,
                     })),
+                    _ => Ok(None),
+                }
+            },
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoreError::NotFound(format!("recovery summary {session_id}"))
+            }
+            other => CoreError::Sqlite(other),
+        })
+    }
+
+    /// Same cursor together with the time a verified Host (or durable status
+    /// event) last reported it.  This is an observation timestamp, not a
+    /// claim that terminal bytes were produced at that instant.
+    pub fn get_latest_log_cursor_observed(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(LogCursor, DateTime<Utc>)>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT latest_log_run_id,latest_log_run_ordinal,latest_log_generation,
+                    latest_log_offset,latest_log_observed_at
+             FROM recovery_summary WHERE session_id=?1",
+            params![session_id],
+            |r| {
+                let offset: Option<i64> = r.get(3)?;
+                let observed_at: Option<String> = r.get(4)?;
+                match (offset, observed_at) {
+                    (Some(offset), Some(observed_at)) if offset >= 0 => {
+                        let observed_at = DateTime::parse_from_rfc3339(&observed_at)
+                            .map(|d| d.with_timezone(&Utc))
+                            .unwrap_or_else(|_| Utc::now());
+                        Ok(Some((
+                            LogCursor {
+                                run_id: r.get(0)?,
+                                run_ordinal: r.get(1)?,
+                                generation: r.get(2)?,
+                                offset,
+                            },
+                            observed_at,
+                        )))
+                    }
                     _ => Ok(None),
                 }
             },
@@ -2967,24 +3066,35 @@ impl Db {
                 if candidate.run_ordinal > current.0.run_ordinal
                     || (candidate.run_ordinal == current.0.run_ordinal
                         && candidate.run_id == current.0.run_id
-                        && candidate.sequence >= current.0.sequence) => candidate.clone(),
+                        && candidate.sequence >= current.0.sequence) =>
+            {
+                candidate.clone()
+            }
             _ => current.0.clone(),
         };
-        let clears_unread = match (log_cursor, current.2.as_ref()) {
-            (_, _) if current.1.offset < 0 => true,
+        // The snapshot log cursor is the high-water actually rendered. If a
+        // later output arrived while the ACK was in flight, advance unread to
+        // that high-water rather than retaining the old first-unread byte
+        // (which would replay already-seen output) or clearing fresh output.
+        let snapshot_covers_unread = log_cursor.is_some_and(|snapshot| {
+            current.1.offset >= 0 && log_cursor_is_not_older(snapshot, &current.1)
+        });
+        let latest_advanced_after_snapshot = match (log_cursor, current.2.as_ref()) {
             (Some(snapshot), Some(latest)) => {
-                log_cursor_is_not_older(snapshot, &current.1)
-                    && (!log_cursor_is_not_older(latest, snapshot) || latest == snapshot)
+                log_cursor_is_not_older(latest, snapshot) && latest != snapshot
             }
             _ => false,
         };
-        let next_unread = if clears_unread {
-            log_cursor
-                .cloned()
-                .map(|cursor| LogCursor { offset: -1, ..cursor })
-                .unwrap_or(current.1.clone())
-        } else {
-            current.1.clone()
+        let next_unread = match log_cursor {
+            Some(_snapshot) if current.1.offset < 0 => current.1.clone(),
+            Some(snapshot) if snapshot_covers_unread && latest_advanced_after_snapshot => {
+                snapshot.clone()
+            }
+            Some(snapshot) if snapshot_covers_unread => LogCursor {
+                offset: -1,
+                ..snapshot.clone()
+            },
+            _ => current.1.clone(),
         };
         tx.execute(
             "UPDATE recovery_summary
@@ -3186,6 +3296,10 @@ impl Db {
                 .get("terminal_font_size")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.terminal_font_size),
+            terminal_command: map
+                .get("terminal_command")
+                .cloned()
+                .unwrap_or(d.terminal_command),
             reduced_motion: match map.get("reduced_motion").map(String::as_str) {
                 Some("on") => ReducedMotion::On,
                 Some("off") => ReducedMotion::Off,
@@ -3222,7 +3336,7 @@ impl Db {
             ReducedMotion::On => "on",
             ReducedMotion::Off => "off",
         };
-        let pairs: [(String, String); 9] = [
+        let pairs: [(String, String); 10] = [
             ("log_limit_mib".into(), s.log_limit_mib.to_string()),
             (
                 "notifications_enabled".into(),
@@ -3237,6 +3351,7 @@ impl Db {
                 "terminal_font_size".into(),
                 s.terminal_font_size.to_string(),
             ),
+            ("terminal_command".into(), s.terminal_command.clone()),
             ("reduced_motion".into(), rm.into()),
             (
                 "screen_reader_mode".into(),
@@ -3246,10 +3361,7 @@ impl Db {
                 "search_index_enabled".into(),
                 s.search_index_enabled.to_string(),
             ),
-            (
-                "agent_order".into(),
-                serde_json::to_string(&s.agent_order)?,
-            ),
+            ("agent_order".into(), serde_json::to_string(&s.agent_order)?),
         ];
         let tx = conn.unchecked_transaction()?;
         for (k, v) in pairs {
@@ -3384,6 +3496,11 @@ mod tests {
     }
 
     #[test]
+    fn data_model_version_matches_migration_count() {
+        assert_eq!(DATA_MODEL_VERSION, schema::MIGRATIONS.len() as i64);
+    }
+
+    #[test]
     fn migrations_are_idempotent_and_versioned() {
         let dir = tempfile::tempdir().unwrap();
         let paths = AppPaths::new(dir.path().to_path_buf());
@@ -3402,8 +3519,8 @@ mod tests {
         let p = db.get_project("prj_a").unwrap();
         assert_eq!(p.name, "demo");
         assert_eq!(
-            db.meta_get("data_model_version").unwrap().as_deref(),
-            Some("8")
+            db.meta_get("data_model_version").unwrap(),
+            Some(DATA_MODEL_VERSION.to_string())
         );
     }
 
@@ -3503,7 +3620,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, schema::MIGRATIONS.len() as i64);
     }
 
     #[test]
@@ -3640,9 +3757,9 @@ mod tests {
         db.seed_builtin_presets().unwrap(); // idempotent
         let presets = db.list_presets(None).unwrap();
         assert_eq!(presets.len(), 6);
-        assert!(presets
-            .iter()
-            .all(|p| p.agent_type == AgentType::Qoder || p.permission_mode == PermissionMode::Native));
+        assert!(presets.iter().all(
+            |p| p.agent_type == AgentType::Qoder || p.permission_mode == PermissionMode::Native
+        ));
         assert_eq!(
             presets
                 .iter()
@@ -3970,6 +4087,7 @@ mod tests {
             source: StateSource::Hook,
             confidence: Confidence::High,
             evidence: Some(evidence.into()),
+            log_cursor: None,
             occurred_at: Utc::now(),
         };
         let first_event = ev(1, AgentState::Working, "hook:PreToolUse");
@@ -4025,6 +4143,7 @@ mod tests {
             source: StateSource::Hook,
             confidence: Confidence::High,
             evidence: Some("hook:PreToolUse".into()),
+            log_cursor: None,
             occurred_at: Utc::now(),
         };
         db.record_status_event(&event).unwrap();
@@ -4041,6 +4160,131 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].state, event.state);
         assert_eq!(history[0].evidence, event.evidence);
+    }
+
+    #[test]
+    fn status_event_rejects_log_cursor_from_a_different_run() {
+        let db = db();
+        db.add_project(&project("prj_cursor_run")).unwrap();
+        db.insert_session(&session("ses_cursor_run", "prj_cursor_run"))
+            .unwrap();
+        let first = db
+            .create_session_run("ses_cursor_run", "run_first")
+            .unwrap();
+        let second = db
+            .create_session_run("ses_cursor_run", "run_second")
+            .unwrap();
+        let mut event = StatusEvent {
+            session_id: "ses_cursor_run".into(),
+            run_id: first.run_id.clone(),
+            run_ordinal: first.run_ordinal,
+            sequence: 1,
+            state: AgentState::Working,
+            source: StateSource::Hook,
+            confidence: Confidence::High,
+            evidence: Some("hook:PreToolUse".into()),
+            log_cursor: Some(LogCursor {
+                run_id: second.run_id.clone(),
+                run_ordinal: second.run_ordinal,
+                generation: 0,
+                offset: 10,
+            }),
+            occurred_at: Utc::now(),
+        };
+
+        assert!(matches!(
+            db.record_status_event(&event),
+            Err(CoreError::Validation(_))
+        ));
+        assert!(db.status_history("ses_cursor_run", 10).unwrap().is_empty());
+
+        let expected_cursor = LogCursor {
+            run_id: first.run_id.clone(),
+            run_ordinal: first.run_ordinal,
+            generation: 0,
+            offset: 10,
+        };
+        event.log_cursor = Some(expected_cursor.clone());
+        db.record_status_event(&event).unwrap();
+        db.record_status_event(&event).unwrap();
+
+        let mut conflicting_retry = event.clone();
+        conflicting_retry.log_cursor = Some(LogCursor {
+            run_id: second.run_id,
+            run_ordinal: second.run_ordinal,
+            generation: expected_cursor.generation,
+            offset: expected_cursor.offset,
+        });
+        assert!(matches!(
+            db.record_status_event(&conflicting_retry),
+            Err(CoreError::Validation(_))
+        ));
+        assert_eq!(
+            db.get_latest_log_cursor("ses_cursor_run").unwrap(),
+            Some(expected_cursor)
+        );
+        assert_eq!(db.status_history("ses_cursor_run", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn run_and_status_queries_propagate_row_decode_errors() {
+        let db = db();
+        db.add_project(&project("prj_bad_row")).unwrap();
+        db.insert_session(&session("ses_bad_row", "prj_bad_row"))
+            .unwrap();
+        let run = db.create_session_run("ses_bad_row", "run_bad_row").unwrap();
+        db.conn()
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE session_runs SET created_at=?3
+                 WHERE session_id=?1 AND run_id=?2",
+                params!["ses_bad_row", &run.run_id, vec![0_u8]],
+            )
+            .unwrap();
+        assert!(matches!(
+            db.list_session_runs("ses_bad_row"),
+            Err(CoreError::Sqlite(_))
+        ));
+
+        db.record_status_event(&StatusEvent {
+            session_id: "ses_bad_row".into(),
+            run_id: run.run_id.clone(),
+            run_ordinal: run.run_ordinal,
+            sequence: 1,
+            state: AgentState::Working,
+            source: StateSource::Hook,
+            confidence: Confidence::High,
+            evidence: Some("hook:PreToolUse".into()),
+            log_cursor: None,
+            occurred_at: Utc::now(),
+        })
+        .unwrap();
+        db.conn()
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE status_events SET occurred_at=?4
+                 WHERE session_id=?1 AND run_id=?2 AND sequence=?3",
+                params!["ses_bad_row", &run.run_id, 1_i64, vec![0_u8]],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            db.status_history("ses_bad_row", 10),
+            Err(CoreError::Sqlite(_))
+        ));
+        assert!(matches!(
+            db.events_since_cursors(&[(
+                "ses_bad_row".into(),
+                StatusCursor {
+                    run_id: run.run_id,
+                    run_ordinal: run.run_ordinal,
+                    sequence: 0,
+                },
+            )]),
+            Err(CoreError::Sqlite(_))
+        ));
     }
 
     #[test]
@@ -4072,6 +4316,7 @@ mod tests {
                 source: StateSource::Hook,
                 confidence: Confidence::High,
                 evidence: Some("hook:PreToolUse".into()),
+                log_cursor: None,
                 occurred_at: Utc::now(),
             })
         });
@@ -4110,6 +4355,7 @@ mod tests {
                 source: StateSource::Hook,
                 confidence: Confidence::High,
                 evidence: Some(evidence.into()),
+                log_cursor: None,
                 occurred_at: Utc::now(),
             };
 
@@ -4267,6 +4513,7 @@ mod tests {
             source: StateSource::Hook,
             confidence: Confidence::High,
             evidence: Some(evidence.into()),
+            log_cursor: None,
             occurred_at: Utc::now(),
         };
 
@@ -4389,6 +4636,7 @@ mod tests {
             source: StateSource::Pty,
             confidence: Confidence::Medium,
             evidence: Some(evidence.into()),
+            log_cursor: None,
             occurred_at: Utc::now(),
         };
         db.record_status_event(&event(1, AgentState::Working, "pty:activity"))
@@ -4476,11 +4724,13 @@ mod tests {
         let mut s = d.clone();
         s.theme = Theme::Dark;
         s.terminal_font_size = 18;
+        s.terminal_command = "kitty".into();
         s.agent_order = vec!["pi".into(), "qoder".into(), "codex".into()];
         db.save_settings(&s).unwrap();
         let back = db.load_settings().unwrap();
         assert_eq!(back.theme, Theme::Dark);
         assert_eq!(back.terminal_font_size, 18);
+        assert_eq!(back.terminal_command, "kitty");
         assert_eq!(back.agent_order, ["pi", "qoder", "codex"]);
         let mut bad = d;
         bad.telemetry_enabled = true;

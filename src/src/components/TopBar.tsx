@@ -99,6 +99,16 @@ export default function TopBar() {
         ) : null}
       </div>
       <button
+        className="window-control"
+        onClick={() => openDialog({ kind: "timeline" })}
+        aria-label={pending > 0 ? `恢复时间线，有 ${pending} 项待处理` : "恢复时间线，没有待处理项"}
+        data-tip="仅显示 GUI 关闭期间尚未确认的事件"
+        data-tauri-drag-region="false"
+      >
+        <span aria-hidden="true">恢复</span>
+        {pending > 0 ? <span className="topbar-timeline-badge" aria-hidden="true">{pending}</span> : null}
+      </button>
+      <button
         className="window-control terminal-menu"
         onClick={(e) => openSurfaceMenu(e.currentTarget)}
         aria-label="工作区菜单"

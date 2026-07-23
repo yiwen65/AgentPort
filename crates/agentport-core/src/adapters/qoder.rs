@@ -226,13 +226,22 @@ mod tests {
     fn qoder_launch_owns_session_and_hooks() {
         let mut ctx = fx::launch_ctx(
             AgentType::Qoder,
-            &["session-id", "resume", "continue", "settings", "dangerously-skip-permissions"],
+            &[
+                "session-id",
+                "resume",
+                "continue",
+                "settings",
+                "dangerously-skip-permissions",
+            ],
             PermissionMode::Bypass,
         );
         ctx.transport = AgentTransport::Pty;
         let plan = QoderAdapter.build_launch(&ctx).unwrap();
         assert!(plan.argv.iter().any(|value| value == "--session-id"));
-        assert!(plan.argv.iter().any(|value| value == "--dangerously-skip-permissions"));
+        assert!(plan
+            .argv
+            .iter()
+            .any(|value| value == "--dangerously-skip-permissions"));
         assert_eq!(plan.hook_status, HookStatus::Supported);
         assert_eq!(plan.helper_files.len(), 2);
         assert!(plan
@@ -250,8 +259,14 @@ mod tests {
         );
         ctx.preset.permission_mode = PermissionMode::Bypass;
         let plan = QoderAdapter.build_resume(&ctx).unwrap();
-        assert!(plan.argv.windows(2).any(|pair| pair == ["--resume", "qoder-native-id"]));
-        assert_eq!(plan.assigned_agent_session_id.as_deref(), Some("qoder-native-id"));
+        assert!(plan
+            .argv
+            .windows(2)
+            .any(|pair| pair == ["--resume", "qoder-native-id"]));
+        assert_eq!(
+            plan.assigned_agent_session_id.as_deref(),
+            Some("qoder-native-id")
+        );
     }
 
     #[test]
@@ -262,7 +277,10 @@ mod tests {
             .parse_capabilities(Path::new("/fake/qodercli"), &version, &help)
             .unwrap();
         assert_eq!(install.version_text, "1.1.2");
-        assert!(install.flags.iter().any(|flag| flag == "dangerously-skip-permissions"));
+        assert!(install
+            .flags
+            .iter()
+            .any(|flag| flag == "dangerously-skip-permissions"));
         assert!(install.flags.iter().any(|flag| flag == "settings"));
     }
 }

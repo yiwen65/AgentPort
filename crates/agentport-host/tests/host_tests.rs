@@ -93,7 +93,8 @@ fn make_rpc_ctx(script: &str) -> TestCtx {
         2 * 1024 * 1024,
         vec![],
     );
-    let mut cfg: HostConfig = serde_json::from_str(&std::fs::read_to_string(&ctx.cfg_path).unwrap()).unwrap();
+    let mut cfg: HostConfig =
+        serde_json::from_str(&std::fs::read_to_string(&ctx.cfg_path).unwrap()).unwrap();
     cfg.adapter_type = "pi".into();
     cfg.transport = AgentTransport::JsonRpc;
     cfg.agent_session_id_hint = Some("pi-native-test-id".into());
@@ -107,7 +108,8 @@ fn make_pi_pty_ctx(script: &str) -> TestCtx {
         2 * 1024 * 1024,
         vec![],
     );
-    let mut cfg: HostConfig = serde_json::from_str(&std::fs::read_to_string(&ctx.cfg_path).unwrap()).unwrap();
+    let mut cfg: HostConfig =
+        serde_json::from_str(&std::fs::read_to_string(&ctx.cfg_path).unwrap()).unwrap();
     cfg.adapter_type = "pi".into();
     cfg.agent_session_id_hint = Some("pi-native-test-id".into());
     std::fs::write(&ctx.cfg_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
@@ -223,6 +225,7 @@ fn wait_socket(ctx: &TestCtx) {
 // Connection helpers
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::large_enum_variant)]
 enum Read1 {
     Frame(HostFrame),
     Closed,
@@ -354,7 +357,34 @@ fn connect_with_resume(
         token: token.to_string(),
         replay_tail_bytes,
         resume_from,
+        replay_target: None,
         subscribe_output,
+    });
+    c
+}
+
+fn connect_with_recovery_target(
+    ctx: &TestCtx,
+    session_id: &str,
+    token: &str,
+    replay_tail_bytes: u64,
+    replay_target: LogCursor,
+) -> Conn {
+    let s = UnixStream::connect(&ctx.socket).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let w = s.try_clone().unwrap();
+    let mut c = Conn {
+        reader: BufReader::new(s),
+        writer: w,
+    };
+    c.send(&ClientFrame::Hello {
+        protocol: PROTOCOL_VERSION,
+        session_id: session_id.to_string(),
+        token: token.to_string(),
+        replay_tail_bytes,
+        resume_from: None,
+        replay_target: Some(replay_target),
+        subscribe_output: true,
     });
     c
 }
@@ -757,7 +787,9 @@ done"#,
     conn.expect_hello_ok();
 
     let startup = conn.collect_until(Duration::from_secs(5), |frames| {
-        frames.iter().any(|frame| matches!(frame, HostFrame::ReplayDone { .. }))
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::ReplayDone { .. }))
     });
     assert!(String::from_utf8_lossy(&output_bytes(&startup)).contains("pi-native-test-id"));
     assert!(
@@ -773,13 +805,14 @@ done"#,
         session_id: ctx.session_id.clone(),
         text: "hello Pi".into(),
     });
-    let prompted = conn.collect_until(Duration::from_secs(5), |frames| {
-        frames.iter().any(|frame| matches!(
+    let prompted =
+        conn.collect_until(Duration::from_secs(5), |frames| {
+            frames.iter().any(|frame| matches!(
             frame,
             HostFrame::Structured { event, .. }
                 if event.get("text").and_then(|value| value.as_str()) == Some("prompt received")
         ))
-    });
+        });
     assert!(prompted.iter().any(|frame| matches!(
         frame,
         HostFrame::Structured { event, .. }
@@ -790,11 +823,13 @@ done"#,
         session_id: ctx.session_id.clone(),
     });
     let aborted = conn.collect_until(Duration::from_secs(5), |frames| {
-        frames.iter().any(|frame| matches!(
-            frame,
-            HostFrame::Structured { event, .. }
-                if event.get("command").and_then(|value| value.as_str()) == Some("abort")
-        ))
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::Structured { event, .. }
+                    if event.get("command").and_then(|value| value.as_str()) == Some("abort")
+            )
+        })
     });
     assert!(aborted.iter().any(|frame| matches!(
         frame,
@@ -828,16 +863,28 @@ fn pi_pty_hides_only_the_first_private_session_notice() {
 
 #[test]
 fn pi_rpc_invalid_json_terminates_the_session() {
-    let ctx = make_rpc_ctx("printf 'not-json\\n'; sleep 60");
+    let ctx = make_rpc_ctx(
+        "while [ ! -f emit-invalid-json ]; do sleep 0.01; done; printf 'not-json\\n'; sleep 60",
+    );
     let mut guard = spawn_host(&ctx, &[]);
     wait_socket(&ctx);
     let mut conn = connect(&ctx, &ctx.session_id, TOKEN, 0);
     conn.expect_hello_ok();
+    std::fs::write(ctx.dir.join("emit-invalid-json"), b"").unwrap();
     let frames = conn.collect_until(Duration::from_secs(10), |frames| {
-        frames.iter().any(|frame| matches!(frame, HostFrame::Exit { reason, .. } if reason == "fault"))
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::Exit { reason, .. } if reason == "fault"))
     });
-    assert!(frames.iter().any(|frame| matches!(frame, HostFrame::Exit { reason, .. } if reason == "fault")));
-    assert_eq!(guard.wait_exit(Duration::from_secs(10)).and_then(|status| status.code()), Some(0));
+    assert!(frames
+        .iter()
+        .any(|frame| matches!(frame, HostFrame::Exit { reason, .. } if reason == "fault")));
+    assert_eq!(
+        guard
+            .wait_exit(Duration::from_secs(10))
+            .and_then(|status| status.code()),
+        Some(0)
+    );
 }
 
 #[test]
@@ -1302,6 +1349,60 @@ fn reconnect_replay() {
         data: b"exit\n".to_vec(),
     });
     let _ = guard.wait_exit(Duration::from_secs(15));
+}
+
+#[test]
+fn recovery_target_replays_bounded_context_outside_default_tail_window() {
+    let ctx = make_ctx(
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "yes x | head -c 1048576; sleep 60".into(),
+        ],
+        2 * 1024 * 1024,
+        vec![],
+    );
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    wait_for(
+        || {
+            std::fs::metadata(&ctx.log)
+                .map(|meta| meta.len() >= 1024 * 1024)
+                .unwrap_or(false)
+        },
+        Duration::from_secs(10),
+        "large retained recovery log",
+    );
+
+    let mut initial = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    let (_, _, current) = initial.expect_hello_ok_info();
+    let target = LogCursor {
+        offset: 32,
+        ..current
+    };
+    let mut client = connect_with_recovery_target(&ctx, &ctx.session_id, TOKEN, 1024, target);
+    client.expect_hello_ok();
+    let frames = client.collect_until(Duration::from_secs(10), |frames| {
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::ReplayDone { .. }))
+    });
+    let bytes = output_bytes(&frames);
+    assert!(
+        bytes.len() > 64 * 1024,
+        "must not fall back to the 1KiB tail"
+    );
+    assert!(
+        bytes.len() <= 256 * 1024 + 32,
+        "recovery context stays bounded"
+    );
+    assert!(matches!(
+        frames.last(),
+        Some(HostFrame::ReplayDone {
+            partial_context: true,
+            ..
+        })
+    ));
 }
 
 #[test]

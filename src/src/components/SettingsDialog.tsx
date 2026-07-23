@@ -961,6 +961,24 @@ export default function SettingsDialog() {
           <span className="form-hint">达到上限后历史日志轮转，仅保留最近部分</span>
         </div>
 
+        {s.platform?.os === "linux" ? (
+          <>
+            <label htmlFor="set-terminal-command">系统终端命令（可选）</label>
+            <div className="control">
+              <input
+                id="set-terminal-command"
+                type="text"
+                value={draft.terminalCommand}
+                placeholder="自动检测（x-terminal-emulator、GNOME Terminal、Konsole）"
+                onChange={(e) => patch({ terminalCommand: e.target.value })}
+              />
+              <span className="form-hint">
+                填写终端可执行文件名或绝对路径；不解析参数，以目标项目目录作为工作目录启动。
+              </span>
+            </div>
+          </>
+        ) : null}
+
       </div>
     </>
   );

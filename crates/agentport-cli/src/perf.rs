@@ -161,7 +161,7 @@ fn start_session(
         cols: 120,
         rows: 32,
     })?;
-    Ok(ctx.db.get_session(&sid)?)
+    ctx.db.get_session(&sid)
 }
 
 fn stop_session(ctx: &PerfCtx, id: &str) -> Result<()> {
@@ -513,6 +513,7 @@ pub fn timeline_perf(ctx: &PerfCtx) -> Result<()> {
             source: StateSource::Hook,
             confidence: Confidence::High,
             evidence: Some("hook:Perf".into()),
+            log_cursor: None,
             occurred_at: chrono::Utc::now(),
         })?;
     }
@@ -563,7 +564,7 @@ pub fn search_perf(ctx: &PerfCtx) -> Result<()> {
         let mut written = 0u64;
         let mut line = 0u64;
         while written < target {
-            let s = if line % 8191 == 0 {
+            let s = if line.checked_rem(8191) == Some(0) {
                 format!("{filler}{needle}\n")
             } else {
                 filler.to_string()
@@ -666,7 +667,7 @@ pub fn diag_zip_perf(ctx: &PerfCtx) -> Result<()> {
     for i in 0..3 {
         let dest = ctx.paths.exports_dir().join(format!("perf-{i}.zip"));
         let t = Instant::now();
-        let _ = exporter.export_diagnostics_zip(&[s.id.clone()], &dest, &[])?;
+        let _ = exporter.export_diagnostics_zip(std::slice::from_ref(&s.id), &dest, &[])?;
         samples.push(t.elapsed().as_secs_f64());
         let _ = std::fs::remove_file(&dest);
     }
@@ -761,10 +762,10 @@ pub fn log_rotation_perf(ctx: &PerfCtx) -> Result<()> {
     let mut done = false;
     while start.elapsed() < Duration::from_secs(300) && !done {
         match c.read_frame() {
-            Ok(Some(HostFrame::Output { data, .. })) => {
-                if data.windows(7).any(|w| w == b"ROTDONE") {
-                    done = true;
-                }
+            Ok(Some(HostFrame::Output { data, .. }))
+                if data.windows(7).any(|w| w == b"ROTDONE") =>
+            {
+                done = true;
             }
             Ok(Some(HostFrame::Exit { .. })) => break,
             Ok(None) => break,
@@ -866,7 +867,10 @@ pub fn state_notify(ctx: &PerfCtx) -> Result<()> {
         let mut got = false;
         loop {
             match c.read_frame() {
-                Ok(Some(HostFrame::State { state, .. })) if state == AgentState::Working => {
+                Ok(Some(HostFrame::State {
+                    state: AgentState::Working,
+                    ..
+                })) => {
                     got = true;
                     break;
                 }

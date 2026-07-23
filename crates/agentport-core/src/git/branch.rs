@@ -71,6 +71,14 @@ pub struct CreateBranchOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DeleteBranchOutcome {
+    pub operation_id: String,
+    pub branch_name: String,
+    pub deleted_oid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BranchSnapshot {
     pub repository_root: String,
     pub repo_key: String,
@@ -142,6 +150,13 @@ struct ParsedStashMarker {
     target: String,
     target_oid: Option<String>,
     created_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug)]
+enum ExactRefObservation {
+    Present(String),
+    Absent,
+    Unknown(String),
 }
 
 pub struct BranchManager<'a> {
@@ -323,6 +338,343 @@ impl<'a> BranchManager<'a> {
                 Err(error)
             }
         }
+    }
+
+    /// Delete one exact, fully merged local branch ref.
+    ///
+    /// The ancestry check is performed against immutable OIDs and deletion is
+    /// an expected-OID `update-ref` compare-and-swap. This gives `branch -d`
+    /// semantics without the ref-read/ref-delete race in that porcelain
+    /// command; this method never performs an unconditional/forced ref write.
+    pub fn delete(&self, project_id: &str, name: &str) -> Result<DeleteBranchOutcome> {
+        let identity = self.identity(project_id)?;
+        let lock = repository_lock(&identity.repo_key);
+        let _guard = lock.lock().unwrap();
+        let identity = self.identity(project_id)?;
+        let _file_guard = RepositoryFileLock::acquire(&identity.common_dir)?;
+        let identity = self.identity(project_id)?;
+        self.validate_branch_name(&identity, name)?;
+
+        let status = self.status(&identity)?;
+        self.ensure_delete_allowed(&status)?;
+        if matches!(&status.checkout, CheckoutState::Branch(current) if current == name) {
+            return Err(CoreError::Blocked(format!(
+                "cannot delete the currently checked out branch {name}"
+            )));
+        }
+
+        let branches = self.list_branches(&identity)?;
+        let target = branches
+            .iter()
+            .find(|branch| branch.name == name)
+            .cloned()
+            .ok_or_else(|| CoreError::NotFound(format!("local branch {name}")))?;
+        if target.current {
+            return Err(CoreError::Blocked(format!(
+                "cannot delete the currently checked out branch {name}"
+            )));
+        }
+        if let Some(path) = &target.occupied_worktree {
+            return Err(CoreError::Blocked(format!(
+                "cannot delete branch {name}; it is checked out in worktree {path}"
+            )));
+        }
+        self.ensure_branch_not_referenced(&identity, name, None)?;
+
+        let source_commit = self
+            .run_success(&identity, ["rev-parse", "HEAD"])?
+            .stdout_lossy()
+            .trim()
+            .to_owned();
+        let source_branch = match &status.checkout {
+            CheckoutState::Branch(branch) => Some(branch.clone()),
+            CheckoutState::Detached(_) => None,
+            CheckoutState::Unborn(_) => unreachable!("blocked by ensure_delete_allowed"),
+        };
+        // Deleting a ref never writes the index or worktree. Preserve the
+        // machine-readable status/worktree/session snapshot for drift checks,
+        // but do not hash dirty and ignored trees (node_modules and build
+        // outputs can be enormous and are outside this operation's write set).
+        let snapshot = self.capture_snapshot(&identity, &status, false)?;
+        let operation_id = format!("op_{}", uuid::Uuid::new_v4().simple());
+        let now = Utc::now();
+        let journal = OperationJournal::new(self.db);
+        journal.insert(&BranchOperation {
+            id: operation_id.clone(),
+            kind: BranchOperationKind::Delete,
+            project_id: project_id.to_owned(),
+            repo_key: identity.repo_key.clone(),
+            checkout_root: identity.root.to_string_lossy().into_owned(),
+            source_branch,
+            source_commit: source_commit.clone(),
+            target_branch: name.to_owned(),
+            target_oid: target.oid.clone(),
+            phase: BranchOperationPhase::Prepared,
+            stash_oid: None,
+            stash_selector: None,
+            stash_marker: None,
+            snapshot_json: Some(serde_json::to_string(&snapshot)?),
+            error_json: None,
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+        })?;
+
+        // External Git clients do not honor AgentPort's advisory lock. Re-read
+        // the exact ref and mutation blockers after the durable journal write.
+        let refreshed_identity = match self.identity(project_id) {
+            Ok(identity) => identity,
+            Err(error) => {
+                journal.update(
+                    &operation_id,
+                    BranchOperationPhase::Failed,
+                    None,
+                    Some(&error.to_string()),
+                    Some("repository identity refresh failed before delete CAS"),
+                )?;
+                return Err(error);
+            }
+        };
+        if refreshed_identity != identity {
+            journal.update(
+                &operation_id,
+                BranchOperationPhase::Failed,
+                None,
+                Some("repository identity changed before local branch deletion"),
+                Some("delete repository identity drift detected"),
+            )?;
+            return Err(CoreError::Conflict(
+                "repository identity changed before local branch deletion".into(),
+            ));
+        }
+        if let Err(error) =
+            self.ensure_branch_not_referenced(&refreshed_identity, name, Some(&operation_id))
+        {
+            journal.update(
+                &operation_id,
+                BranchOperationPhase::Failed,
+                None,
+                Some(&error.to_string()),
+                Some("delete blocked by another unfinished branch operation"),
+            )?;
+            return Err(error);
+        }
+
+        let refreshed_status = match self.status(&refreshed_identity) {
+            Ok(status) => status,
+            Err(error) => {
+                journal.update(
+                    &operation_id,
+                    BranchOperationPhase::Failed,
+                    None,
+                    Some(&error.to_string()),
+                    Some("repository status refresh failed before delete CAS"),
+                )?;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.ensure_delete_allowed(&refreshed_status) {
+            journal.update(
+                &operation_id,
+                BranchOperationPhase::Failed,
+                None,
+                Some(&error.to_string()),
+                Some("repository state blocked delete before CAS"),
+            )?;
+            return Err(error);
+        }
+        if matches!(&refreshed_status.checkout, CheckoutState::Branch(current) if current == name) {
+            journal.update(
+                &operation_id,
+                BranchOperationPhase::Failed,
+                None,
+                Some("target branch became the current checkout before deletion"),
+                Some("delete blocked after current checkout changed"),
+            )?;
+            return Err(CoreError::Blocked(format!(
+                "cannot delete the currently checked out branch {name}"
+            )));
+        }
+
+        let refreshed_target = match self.local_branch(&refreshed_identity, name) {
+            Ok(target) => target,
+            Err(error) => {
+                journal.update(
+                    &operation_id,
+                    BranchOperationPhase::Failed,
+                    None,
+                    Some(&error.to_string()),
+                    Some("exact local branch refresh failed before delete CAS"),
+                )?;
+                return Err(error);
+            }
+        };
+        if refreshed_target.is_none() {
+            self.finish_missing_delete_ref(
+                &refreshed_identity,
+                &journal,
+                &operation_id,
+                name,
+                &target.oid,
+                &snapshot,
+            )?;
+            return Ok(DeleteBranchOutcome {
+                operation_id,
+                branch_name: name.to_owned(),
+                deleted_oid: target.oid,
+            });
+        }
+        let refreshed_target = refreshed_target.expect("checked above");
+        if refreshed_target.oid != target.oid {
+            let error = CoreError::Conflict(format!(
+                "local branch {name} moved before deletion; expected {}, observed {}",
+                target.oid, refreshed_target.oid
+            ));
+            journal.update(
+                &operation_id,
+                BranchOperationPhase::Failed,
+                None,
+                Some(&error.to_string()),
+                Some("expected local branch OID changed before CAS deletion"),
+            )?;
+            return Err(error);
+        }
+        if refreshed_target.current || refreshed_target.occupied_worktree.is_some() {
+            let error = CoreError::Blocked(format!(
+                "cannot delete branch {name}; it became checked out in a worktree"
+            ));
+            journal.update(
+                &operation_id,
+                BranchOperationPhase::Failed,
+                None,
+                Some(&error.to_string()),
+                Some("delete blocked after worktree occupancy changed"),
+            )?;
+            return Err(error);
+        }
+
+        let merge_target_oid = match self.delete_merge_target_oid(&refreshed_identity, name) {
+            Ok(oid) => oid,
+            Err(CoreError::NotFound(_))
+                if matches!(
+                    self.observe_exact_ref(&refreshed_identity, name),
+                    ExactRefObservation::Absent
+                ) =>
+            {
+                self.finish_missing_delete_ref(
+                    &refreshed_identity,
+                    &journal,
+                    &operation_id,
+                    name,
+                    &target.oid,
+                    &snapshot,
+                )?;
+                return Ok(DeleteBranchOutcome {
+                    operation_id,
+                    branch_name: name.to_owned(),
+                    deleted_oid: target.oid,
+                });
+            }
+            Err(error) => {
+                journal.update(
+                    &operation_id,
+                    BranchOperationPhase::Failed,
+                    None,
+                    Some(&error.to_string()),
+                    Some("could not resolve immutable delete merge target"),
+                )?;
+                return Err(error);
+            }
+        };
+        if let Err(error) =
+            self.ensure_merged_for_delete(&refreshed_identity, name, &target.oid, &merge_target_oid)
+        {
+            journal.update(
+                &operation_id,
+                BranchOperationPhase::Failed,
+                None,
+                Some(&error.to_string()),
+                Some("merged-only ancestry check rejected local branch deletion"),
+            )?;
+            return Err(error);
+        }
+
+        let full_ref = format!("refs/heads/{name}");
+        let result = self.runner.run(
+            Some(&refreshed_identity.root),
+            [
+                OsString::from("update-ref"),
+                OsString::from("-d"),
+                OsString::from(&full_ref),
+                OsString::from(&target.oid),
+            ],
+        );
+
+        // A timeout/error is not proof that update-ref made no change. The
+        // exact ref is authoritative. Once absent, unrelated HEAD/status/live
+        // Session drift is observation only and must not turn success into a
+        // false failure.
+        let remaining_oid = match self.local_branch(&refreshed_identity, name) {
+            Ok(Some(branch)) => Some(branch.oid),
+            Ok(None) => None,
+            Err(primary_error) => match self.observe_exact_ref(&refreshed_identity, name) {
+                ExactRefObservation::Present(oid) => Some(oid),
+                ExactRefObservation::Absent => None,
+                ExactRefObservation::Unknown(fallback_error) => {
+                    let error = CoreError::Git(format!(
+                        "delete CAS outcome could not be determined: primary observation failed: {primary_error}; exact fallback failed: {fallback_error}"
+                    ));
+                    journal.update(
+                        &operation_id,
+                        BranchOperationPhase::RecoveryRequired,
+                        None,
+                        Some(&error.to_string()),
+                        Some("post-CAS exact local ref state is unknown"),
+                    )?;
+                    return Err(error);
+                }
+            },
+        };
+        if remaining_oid.is_none() {
+            self.finish_missing_delete_ref(
+                &refreshed_identity,
+                &journal,
+                &operation_id,
+                name,
+                &target.oid,
+                &snapshot,
+            )?;
+            return Ok(DeleteBranchOutcome {
+                operation_id,
+                branch_name: name.to_owned(),
+                deleted_oid: target.oid,
+            });
+        }
+
+        let remaining_oid = remaining_oid.expect("checked above");
+        let error = if remaining_oid != target.oid {
+            CoreError::Conflict(format!(
+                "local branch {name} moved during deletion; expected {}, observed {}; CAS retained the moved ref",
+                target.oid, remaining_oid
+            ))
+        } else {
+            match result {
+                Ok(output) => output.require_success().err().unwrap_or_else(|| {
+                    CoreError::Internal(format!(
+                        "local branch {name} remained after the expected-OID CAS reported success"
+                    ))
+                }),
+                Err(error) => error,
+            }
+        };
+        journal.update(
+            &operation_id,
+            BranchOperationPhase::Failed,
+            None,
+            Some(&error.to_string()),
+            Some("expected-OID CAS retained the local branch ref"),
+        )?;
+        Err(error)
     }
 
     pub fn switch(&self, project_id: &str, target: &str) -> Result<SwitchOutcome> {
@@ -911,6 +1263,63 @@ impl<'a> BranchManager<'a> {
         let journal = OperationJournal::new(self.db);
         let incomplete = journal.incomplete(Some(project_id))?;
         for operation in &incomplete {
+            if operation.kind == BranchOperationKind::Delete
+                && matches!(
+                    operation.phase,
+                    BranchOperationPhase::Prepared | BranchOperationPhase::RecoveryRequired
+                )
+            {
+                self.validate_branch_name(&identity, &operation.target_branch)?;
+                let target = self.local_branch(&identity, &operation.target_branch)?;
+                if target.is_none() {
+                    match self.restore_missing_ref_if_occupied(
+                        &identity,
+                        &operation.target_branch,
+                        &operation.target_oid,
+                    ) {
+                        Ok(Some(path)) => {
+                            journal.update(
+                                &operation.id,
+                                BranchOperationPhase::Failed,
+                                None,
+                                Some("a worktree checked out the branch during deletion"),
+                                Some(&format!(
+                                    "startup reconciliation restored the deleted ref because worktree {path} still checks it out"
+                                )),
+                            )?;
+                        }
+                        Ok(None) => {
+                            journal.update(
+                                &operation.id,
+                                BranchOperationPhase::Completed,
+                                None,
+                                None,
+                                Some(
+                                    "startup reconciliation verified completed local branch deletion",
+                                ),
+                            )?;
+                        }
+                        Err(error) => {
+                            journal.update(
+                                &operation.id,
+                                BranchOperationPhase::RecoveryRequired,
+                                None,
+                                Some(&error.to_string()),
+                                Some("startup reconciliation could not restore a ref required by an occupied worktree"),
+                            )?;
+                        }
+                    }
+                } else {
+                    journal.update(
+                        &operation.id,
+                        BranchOperationPhase::Failed,
+                        None,
+                        None,
+                        Some("startup reconciliation verified the local branch ref was retained"),
+                    )?;
+                }
+                continue;
+            }
             if operation.kind == BranchOperationKind::Create
                 && matches!(
                     operation.phase,
@@ -1053,16 +1462,16 @@ impl<'a> BranchManager<'a> {
                         }
                     }
                 }
-                BranchOperationPhase::Stashed | BranchOperationPhase::Switched => {
-                    if self.exact_stash(&identity, operation).is_err() {
-                        journal.update(
-                            &operation.id,
-                            BranchOperationPhase::RecoveryRequired,
-                            None,
-                            Some("persisted automatic stash is missing or no longer unique"),
-                            Some("startup reconciliation requires manual inspection"),
-                        )?;
-                    }
+                BranchOperationPhase::Stashed | BranchOperationPhase::Switched
+                    if self.exact_stash(&identity, operation).is_err() =>
+                {
+                    journal.update(
+                        &operation.id,
+                        BranchOperationPhase::RecoveryRequired,
+                        None,
+                        Some("persisted automatic stash is missing or no longer unique"),
+                        Some("startup reconciliation requires manual inspection"),
+                    )?;
                 }
                 BranchOperationPhase::Applying => {
                     let snapshot = operation
@@ -1383,6 +1792,326 @@ impl<'a> BranchManager<'a> {
     ) -> Result<()> {
         self.ensure_operation_conflicts_and_sessions(identity, status)?;
         self.ensure_checkout_state_allowed(status)
+    }
+
+    fn ensure_delete_allowed(&self, status: &RepoStatus) -> Result<()> {
+        if let Some(state) = &status.operation_state {
+            return Err(CoreError::Blocked(format!(
+                "branch deletion is blocked while Git operation is active: {state}"
+            )));
+        }
+        if status.unmerged {
+            return Err(CoreError::Blocked(
+                "branch deletion is blocked by unresolved index conflicts".into(),
+            ));
+        }
+        if matches!(status.checkout, CheckoutState::Unborn(_)) {
+            return Err(CoreError::Blocked(
+                "branch deletion is blocked in an unborn repository".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_branch_not_referenced(
+        &self,
+        identity: &RepositoryIdentity,
+        branch: &str,
+        excluded_operation_id: Option<&str>,
+    ) -> Result<()> {
+        let referenced_by = OperationJournal::new(self.db)
+            .incomplete(None)?
+            .into_iter()
+            .find(|operation| {
+                operation.repo_key == identity.repo_key
+                    && excluded_operation_id != Some(operation.id.as_str())
+                    && (operation.source_branch.as_deref() == Some(branch)
+                        || operation.target_branch == branch)
+            });
+        if let Some(operation) = referenced_by {
+            return Err(CoreError::Blocked(format!(
+                "cannot delete branch {branch}; unfinished {} operation {} still references it",
+                operation.kind.as_str(),
+                operation.id
+            )));
+        }
+        Ok(())
+    }
+
+    fn local_branch(
+        &self,
+        identity: &RepositoryIdentity,
+        name: &str,
+    ) -> Result<Option<BranchInfo>> {
+        Ok(self
+            .list_branches(identity)?
+            .into_iter()
+            .find(|branch| branch.name == name))
+    }
+
+    /// Exact fallback used only when the normal local-branch enumeration
+    /// failed around a mutating CAS. Exit status, not localized stderr,
+    /// determines presence or absence.
+    fn observe_exact_ref(
+        &self,
+        identity: &RepositoryIdentity,
+        branch: &str,
+    ) -> ExactRefObservation {
+        let full_ref = format!("refs/heads/{branch}");
+        let exists = self.runner.run(
+            Some(&identity.root),
+            [
+                OsString::from("show-ref"),
+                OsString::from("--exists"),
+                OsString::from(&full_ref),
+            ],
+        );
+        if let Ok(output) = &exists {
+            if !output.timed_out && output.exit_code() == Some(2) {
+                return ExactRefObservation::Absent;
+            }
+        }
+        let show_ref = self.runner.run(
+            Some(&identity.root),
+            [
+                OsString::from("show-ref"),
+                OsString::from("--verify"),
+                OsString::from("--hash"),
+                OsString::from(&full_ref),
+            ],
+        );
+        match &show_ref {
+            Ok(output) if output.success() => {
+                let oid = output.stdout_lossy().trim().to_owned();
+                if !oid.is_empty() {
+                    return ExactRefObservation::Present(oid);
+                }
+            }
+            _ => {}
+        }
+
+        let revision = format!("{full_ref}^{{commit}}");
+        let rev_parse = self.runner.run(
+            Some(&identity.root),
+            [
+                OsString::from("rev-parse"),
+                OsString::from("--verify"),
+                OsString::from(revision),
+            ],
+        );
+        if let Ok(output) = &rev_parse {
+            if output.success() {
+                let oid = output.stdout_lossy().trim().to_owned();
+                if !oid.is_empty() {
+                    return ExactRefObservation::Present(oid);
+                }
+            }
+        }
+        ExactRefObservation::Unknown(format!(
+            "show-ref-exists={}; show-ref-verify={}; rev-parse={}",
+            command_observation(&exists),
+            command_observation(&show_ref),
+            command_observation(&rev_parse)
+        ))
+    }
+
+    fn branch_upstream_ref(
+        &self,
+        identity: &RepositoryIdentity,
+        name: &str,
+    ) -> Result<Option<String>> {
+        let output = self.run_success(
+            identity,
+            [
+                "for-each-ref",
+                "--format=%(refname)%00%(upstream)%00",
+                "refs/heads",
+            ],
+        )?;
+        let expected_ref = format!("refs/heads/{name}");
+        for record in output.stdout.split(|byte| *byte == b'\n') {
+            let mut fields = record.split(|byte| *byte == 0);
+            let Some(refname) = fields.next() else {
+                continue;
+            };
+            if refname != expected_ref.as_bytes() {
+                continue;
+            }
+            let upstream = fields.next().unwrap_or_default();
+            return if upstream.is_empty() {
+                Ok(None)
+            } else {
+                bytes_to_string(upstream).map(Some)
+            };
+        }
+        Err(CoreError::NotFound(format!("local branch {name}")))
+    }
+
+    fn delete_merge_target_oid(
+        &self,
+        identity: &RepositoryIdentity,
+        branch: &str,
+    ) -> Result<String> {
+        let revision = match self.branch_upstream_ref(identity, branch)? {
+            Some(upstream) => format!("{upstream}^{{commit}}"),
+            None => "HEAD^{commit}".to_owned(),
+        };
+        Ok(self
+            .run_success_os(
+                identity,
+                vec![
+                    OsString::from("rev-parse"),
+                    OsString::from("--verify"),
+                    OsString::from(revision),
+                ],
+            )?
+            .stdout_lossy()
+            .trim()
+            .to_owned())
+    }
+
+    fn ensure_merged_for_delete(
+        &self,
+        identity: &RepositoryIdentity,
+        branch: &str,
+        branch_oid: &str,
+        merge_target_oid: &str,
+    ) -> Result<()> {
+        let output = self.runner.run(
+            Some(&identity.root),
+            [
+                OsString::from("merge-base"),
+                OsString::from("--is-ancestor"),
+                OsString::from(branch_oid),
+                OsString::from(merge_target_oid),
+            ],
+        )?;
+        if output.success() {
+            return Ok(());
+        }
+        if !output.timed_out && output.exit_code() == Some(1) {
+            return Err(CoreError::Blocked(format!(
+                "cannot delete branch {branch}; commit {branch_oid} is not merged into {merge_target_oid}"
+            )));
+        }
+        output.require_success().map(|_| ())
+    }
+
+    /// If an external client checked out the branch between AgentPort's
+    /// preflight and CAS deletion, recreate the exact ref only while it is
+    /// still absent. The empty old value is update-ref's expected-absent CAS.
+    fn restore_missing_ref_if_occupied(
+        &self,
+        identity: &RepositoryIdentity,
+        branch: &str,
+        target_oid: &str,
+    ) -> Result<Option<String>> {
+        let occupied_path = identity
+            .worktrees(&self.runner)?
+            .into_iter()
+            .find(|worktree| worktree.branch.as_deref() == Some(branch))
+            .map(|worktree| worktree.path.to_string_lossy().into_owned());
+        let Some(path) = occupied_path else {
+            return Ok(None);
+        };
+
+        let full_ref = format!("refs/heads/{branch}");
+        let restore_result = self.runner.run(
+            Some(&identity.root),
+            [
+                OsString::from("update-ref"),
+                OsString::from(&full_ref),
+                OsString::from(target_oid),
+                OsString::from(""),
+            ],
+        );
+        let restored = self
+            .local_branch(identity, branch)?
+            .is_some_and(|candidate| candidate.oid == target_oid);
+        if restored {
+            return Ok(Some(path));
+        }
+        let detail = match restore_result {
+            Ok(output) => output
+                .require_success()
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "expected-absent ref restore did not create the ref".into()),
+            Err(error) => error.to_string(),
+        };
+        Err(CoreError::Conflict(format!(
+            "branch {branch} is checked out in worktree {path}, but its deleted ref could not be restored with expected-absent CAS: {detail}"
+        )))
+    }
+
+    fn finish_missing_delete_ref(
+        &self,
+        identity: &RepositoryIdentity,
+        journal: &OperationJournal<'_>,
+        operation_id: &str,
+        branch: &str,
+        target_oid: &str,
+        snapshot: &WorktreeSnapshot,
+    ) -> Result<()> {
+        match self.restore_missing_ref_if_occupied(identity, branch, target_oid) {
+            Ok(Some(path)) => {
+                let error = CoreError::Conflict(format!(
+                    "branch {branch} became checked out in worktree {path} during deletion; its exact ref was restored"
+                ));
+                journal.update(
+                    operation_id,
+                    BranchOperationPhase::Failed,
+                    None,
+                    Some(&error.to_string()),
+                    Some("post-delete worktree check restored the exact target ref"),
+                )?;
+                return Err(error);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                journal.update(
+                    operation_id,
+                    BranchOperationPhase::RecoveryRequired,
+                    None,
+                    Some(&error.to_string()),
+                    Some("post-delete worktree check requires manual ref recovery"),
+                )?;
+                return Err(error);
+            }
+        }
+
+        let observed_status = self.status(identity);
+        let observed_head = self
+            .run_success(identity, ["rev-parse", "HEAD"])
+            .map(|output| output.stdout_lossy().trim().to_owned());
+        let snapshot_match = self.prepared_snapshot_matches(identity, snapshot);
+        let drift_observed = !matches!(snapshot_match, Ok(true));
+        journal.update(
+            operation_id,
+            BranchOperationPhase::Completed,
+            None,
+            None,
+            Some(if drift_observed {
+                "exact local ref is absent; unrelated HEAD/status/session drift was observed after deletion"
+            } else {
+                "exact local ref is absent; post-delete HEAD/status/worktrees were observed"
+            }),
+        )?;
+        if let (Ok(status), Ok(head)) = (&observed_status, &observed_head) {
+            let _ = self.record_observation(
+                journal,
+                operation_id,
+                BranchOperationPhase::Completed,
+                status,
+                head,
+                if drift_observed {
+                    "post-delete observation recorded unrelated repository drift"
+                } else {
+                    "post-delete HEAD/status observation recorded"
+                },
+            );
+        }
+        Ok(())
     }
 
     fn ensure_operation_conflicts_and_sessions(
@@ -2170,7 +2899,7 @@ impl<'a> BranchManager<'a> {
         if stashes.len() != 1
             || stashes[0].oid != stash.oid
             || stashes[0].selector != "stash@{0}"
-            || self.stash_tip(&identity)? != Some(stash.oid.clone())
+            || self.stash_tip(identity)? != Some(stash.oid.clone())
         {
             journal.update(
                 &operation.id,
@@ -2476,6 +3205,17 @@ fn git_output_error(output: &GitOutput) -> String {
     }
 }
 
+fn command_observation(result: &Result<GitOutput>) -> String {
+    match result {
+        Ok(output) => format!(
+            "exit={:?},timed_out={}",
+            output.exit_code(),
+            output.timed_out
+        ),
+        Err(error) => error.to_string(),
+    }
+}
+
 fn parse_stash_marker(marker: &str) -> Option<ParsedStashMarker> {
     let rest = marker.strip_prefix("agentport:v1:op=")?;
     let (operation_id, rest) = rest.split_once(":repo=")?;
@@ -2650,7 +3390,7 @@ fn parse_stashes(raw: &[u8]) -> Result<Vec<StashRecord>> {
         .collect()
 }
 
-fn nul_records<'a>(raw: &'a [u8], width: usize) -> Result<Vec<Vec<&'a [u8]>>> {
+fn nul_records(raw: &[u8], width: usize) -> Result<Vec<Vec<&[u8]>>> {
     let mut fields = raw.split(|byte| *byte == 0).collect::<Vec<_>>();
     if matches!(fields.last(), Some(field) if field.is_empty()) {
         fields.pop();
@@ -3258,6 +3998,41 @@ mod tests {
     }
 
     #[test]
+    fn live_session_in_current_checkout_does_not_block_deleting_an_unoccupied_branch() {
+        let fixture = fixture();
+        make_branch(&fixture.root, "merged-unused");
+        fixture
+            .db
+            .insert_session(&Session {
+                id: "ses_live_delete".into(),
+                project_id: fixture.project_id.clone(),
+                worktree_id: None,
+                preset_id: "preset".into(),
+                title: "live delete".into(),
+                cwd: fixture.root.to_string_lossy().into_owned(),
+                host_pid: None,
+                host_socket: None,
+                host_token: "token".into(),
+                lifecycle: Lifecycle::Running,
+                agent_session_id: None,
+                resume_precision: ResumePrecision::Unavailable,
+                log_path: fixture.root.join("log").to_string_lossy().into_owned(),
+                adapter_type: AgentType::Shell,
+                transport: AgentTransport::Pty,
+                command: vec![],
+                permission_mode: PermissionMode::Native,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                archived_at: None,
+            })
+            .unwrap();
+
+        manager(&fixture)
+            .delete(&fixture.project_id, "merged-unused")
+            .unwrap();
+    }
+
+    #[test]
     fn external_project_root_drift_is_structured_conflict() {
         let fixture = fixture();
         let conn = fixture.db.conn().lock().unwrap();
@@ -3845,7 +4620,7 @@ mod tests {
     }
 
     #[test]
-    fn branch_transaction_command_trace_contains_no_destructive_or_network_git() {
+    fn branch_transaction_command_trace_contains_no_force_or_network_git() {
         let fixture = fixture();
         make_branch(&fixture.root, "target");
         std::fs::write(fixture.root.join("tracked.txt"), "dirty\n").unwrap();
@@ -3862,8 +4637,24 @@ mod tests {
         manager
             .create(&fixture.project_id, "created-local", Some("main"))
             .unwrap();
+        manager
+            .delete(&fixture.project_id, "created-local")
+            .unwrap();
 
-        for argv in recorded.lock().unwrap().iter() {
+        let recorded = recorded.lock().unwrap();
+        assert!(recorded.iter().any(|argv| {
+            argv.iter()
+                .map(|arg| arg.to_string_lossy())
+                .collect::<Vec<_>>()
+                .windows(4)
+                .any(|window| {
+                    window[0] == "update-ref"
+                        && window[1] == "-d"
+                        && window[2] == "refs/heads/created-local"
+                        && !window[3].is_empty()
+                })
+        }));
+        for argv in recorded.iter() {
             let args = if argv.first().is_some_and(|arg| arg == "-C") {
                 &argv[2..]
             } else {
@@ -3888,11 +4679,151 @@ mod tests {
                 args.iter().all(|arg| {
                     !matches!(
                         arg.to_string_lossy().as_ref(),
-                        "--force" | "-f" | "--ignore-other-worktrees"
+                        "--force" | "-f" | "-D" | "--ignore-other-worktrees"
                     )
                 }),
                 "forbidden force flag trace: {argv:?}"
             );
         }
+    }
+
+    #[test]
+    fn expected_oid_cas_rejects_branch_moved_immediately_before_delete() {
+        let fixture = fixture();
+        make_branch(&fixture.root, "cas-target");
+        git(&fixture.root, &["switch", "-c", "external-move"]);
+        commit(
+            &fixture.root,
+            "external.txt",
+            "external commit\n",
+            "external ref move",
+        );
+        let moved_oid = git(&fixture.root, &["rev-parse", "HEAD"]).trim().to_owned();
+        git(&fixture.root, &["switch", "main"]);
+
+        let manager = BranchManager {
+            db: &fixture.db,
+            runner: GitRunner::moving_ref_before_update("refs/heads/cas-target", &moved_oid),
+        };
+        let error = manager
+            .delete(&fixture.project_id, "cas-target")
+            .unwrap_err();
+        assert!(matches!(error, CoreError::Conflict(_)), "{error}");
+        assert_eq!(
+            git(&fixture.root, &["rev-parse", "refs/heads/cas-target"]).trim(),
+            moved_oid
+        );
+    }
+
+    fn latest_delete_operation(fixture: &Fixture) -> BranchOperation {
+        let id = fixture
+            .db
+            .conn()
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM branch_operations WHERE kind='delete' ORDER BY created_at DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        manager(fixture).operation(&id).unwrap()
+    }
+
+    #[test]
+    fn pre_cas_merge_check_failure_terminalizes_delete_as_failed() {
+        let fixture = fixture();
+        make_branch(&fixture.root, "fail-before-cas");
+        let manager = BranchManager {
+            db: &fixture.db,
+            runner: GitRunner::failing_once("merge-base"),
+        };
+
+        let error = manager
+            .delete(&fixture.project_id, "fail-before-cas")
+            .unwrap_err();
+
+        assert!(matches!(error, CoreError::Git(_)), "{error}");
+        assert_eq!(
+            latest_delete_operation(&fixture).phase,
+            BranchOperationPhase::Failed
+        );
+        assert!(manager
+            .list(&fixture.project_id)
+            .unwrap()
+            .branches
+            .iter()
+            .any(|branch| branch.name == "fail-before-cas"));
+    }
+
+    #[test]
+    fn post_cas_branch_enumeration_failure_uses_exact_fallback_and_completes() {
+        let fixture = fixture();
+        make_branch(&fixture.root, "post-cas-fallback");
+        let manager = BranchManager {
+            db: &fixture.db,
+            // list_branches before journal, refreshed local_branch, upstream
+            // lookup, then the post-CAS local_branch observation.
+            runner: GitRunner::failing_nth("for-each-ref", 4),
+        };
+
+        manager
+            .delete(&fixture.project_id, "post-cas-fallback")
+            .unwrap();
+
+        assert_eq!(
+            latest_delete_operation(&fixture).phase,
+            BranchOperationPhase::Completed
+        );
+        assert!(matches!(
+            manager.observe_exact_ref(
+                &manager.identity(&fixture.project_id).unwrap(),
+                "post-cas-fallback"
+            ),
+            ExactRefObservation::Absent
+        ));
+    }
+
+    #[test]
+    fn post_cas_worktree_observation_failure_never_leaves_prepared() {
+        let fixture = fixture();
+        make_branch(&fixture.root, "post-cas-worktree-failure");
+        let manager = BranchManager {
+            db: &fixture.db,
+            // capture_snapshot observes worktrees once; the post-CAS
+            // recoverability check is the second invocation.
+            runner: GitRunner::failing_nth("worktree", 2),
+        };
+
+        let error = manager
+            .delete(&fixture.project_id, "post-cas-worktree-failure")
+            .unwrap_err();
+
+        assert!(matches!(error, CoreError::Git(_)), "{error}");
+        assert_eq!(
+            latest_delete_operation(&fixture).phase,
+            BranchOperationPhase::RecoveryRequired
+        );
+    }
+
+    #[test]
+    fn post_cas_status_observation_failure_is_nonfatal_after_ref_is_absent() {
+        let fixture = fixture();
+        make_branch(&fixture.root, "post-cas-status-failure");
+        let manager = BranchManager {
+            db: &fixture.db,
+            // Initial pre-journal status, pre-CAS status, then the optional
+            // post-CAS observation in finish_missing_delete_ref.
+            runner: GitRunner::failing_nth("status", 3),
+        };
+
+        manager
+            .delete(&fixture.project_id, "post-cas-status-failure")
+            .unwrap();
+
+        assert_eq!(
+            latest_delete_operation(&fixture).phase,
+            BranchOperationPhase::Completed
+        );
     }
 }

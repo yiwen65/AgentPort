@@ -48,6 +48,11 @@ export interface TermHandle {
   historyLoading: boolean;
   /** Last contiguous byte rendered for the current Host output stream. */
   logCursor: LogCursorView | null;
+  /** A recovery click loaded a bounded historical window, so the next live
+   * frame may legitimately begin at the Host's newer high-water offset. */
+  allowRecoveryGap: boolean;
+  /** Marker inserted once the bounded replay crosses the selected event. */
+  recoveryTarget: LogCursorView | null;
   container: HTMLDivElement | null;
   resizeObserver: ResizeObserver | null;
   lastCols: number;
@@ -311,6 +316,8 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     historyLoaded: false,
     historyLoading: false,
     logCursor: null,
+    allowRecoveryGap: false,
+    recoveryTarget: null,
     container: null,
     resizeObserver: null,
     lastCols: 0,
@@ -628,12 +635,15 @@ export function clearUnreadOutputTracking(sessionId: string) {
 }
 
 /** Attach (or re-attach) the backend channel and replay the log tail. */
-export async function attachHandle(sessionId: string): Promise<void> {
+export async function attachHandle(
+  sessionId: string,
+  recoveryTarget: LogCursorView | null = null,
+): Promise<void> {
   const handle = getOrCreateHandle(sessionId);
   if (handle.attached || handle.attaching) return;
   handle.attaching = true;
   const generation = ++handle.generation;
-  const resumeFrom = handle.logCursor;
+  const resumeFrom = recoveryTarget ? null : handle.logCursor;
   patchRuntime(sessionId, { attaching: true, error: null, detached: false });
   const channel = new Channel<ChannelMsg>();
   channel.onmessage = (msg) => {
@@ -641,7 +651,13 @@ export async function attachHandle(sessionId: string): Promise<void> {
     onChannelMsg(handle, msg);
   };
   try {
-    const info = await api.attachSession(sessionId, REPLAY_TAIL_BYTES, channel, resumeFrom);
+    const info = await api.attachSession(
+      sessionId,
+      REPLAY_TAIL_BYTES,
+      channel,
+      resumeFrom,
+      recoveryTarget,
+    );
     if (handles.get(sessionId) !== handle || generation !== handle.generation) {
       // The backend may have completed after this renderer was evicted or
       // reattached. Its capability can remove only that late attachment.
@@ -725,7 +741,11 @@ function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "out
     } else if (incoming.generation === current.generation) {
       const end = incoming.offset + original.length;
       if (end <= current.offset) return; // complete replay duplicate
-      if (incoming.offset > current.offset) {
+      if (incoming.offset > current.offset && handle.allowRecoveryGap) {
+        handle.term.write("\r\n\x1b[2m── 已从恢复事件附近跳回最新输出 ──\x1b[0m\r\n");
+        handle.logCursor = { ...incoming, offset: incoming.offset };
+        handle.allowRecoveryGap = false;
+      } else if (incoming.offset > current.offset) {
         // This should be impossible for v2's catch-up handshake. Recover
         // explicitly instead of joining unrelated terminal bytes together.
         const attachmentId = handle.attachmentId;
@@ -755,7 +775,22 @@ function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "out
   }
 
   if (bytes.length === 0) return;
-  writeTerminalOutput(handle, bytes);
+  const target = handle.recoveryTarget;
+  if (
+    target
+    && sameRun(target, incoming)
+    && target.generation === incoming.generation
+    && target.offset >= incoming.offset
+    && target.offset <= incoming.offset + original.length
+  ) {
+    const markerAt = Math.max(0, Math.min(bytes.length, target.offset - incoming.offset));
+    if (markerAt > 0) writeTerminalOutput(handle, bytes.slice(0, markerAt));
+    handle.term.write("\r\n\x1b[2m── 恢复事件定位处 ──\x1b[0m\r\n");
+    if (markerAt < bytes.length) writeTerminalOutput(handle, bytes.slice(markerAt));
+    handle.recoveryTarget = null;
+  } else {
+    writeTerminalOutput(handle, bytes);
+  }
   handle.logCursor = {
     ...incoming,
     offset: incoming.offset + original.length,
@@ -778,6 +813,7 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
     }
     case "replay_done": {
       if (msg.cursor) handle.logCursor = msg.cursor;
+      handle.allowRecoveryGap = msg.partialContext === true;
       finishTerminalStartupFilter(handle);
       patchRuntime(sessionId, { replayDone: true });
       updateScrolledUp(handle);
@@ -859,6 +895,8 @@ export function resetForRestart(sessionId: string) {
     // otherwise duplicate it under the old content / loaded history.
     handle.term.reset();
     handle.logCursor = null;
+    handle.allowRecoveryGap = false;
+    handle.recoveryTarget = null;
     handle.historyLoaded = false;
     handle.historyLoading = false;
   }
@@ -871,6 +909,67 @@ export function resetForRestart(sessionId: string) {
     historyNote: null,
   });
   writeMarker(sessionId, "重启并恢复");
+}
+
+/**
+ * Open the precise output context selected from a recovery timeline entry.
+ * Live Hosts validate and replay a bounded target window; ended Sessions use
+ * the same DB generation fence through a read-only backend command.
+ */
+export async function jumpToRecoveryOutput(
+  sessionId: string,
+  cursor: LogCursorView,
+): Promise<void> {
+  const session = getState().projects
+    .flatMap((project) => project.sessions)
+    .find((item) => item.id === sessionId);
+  if (!session) throw new Error("该 Session 已不存在");
+  const handle = getOrCreateHandle(sessionId);
+  const previousAttachment = handle.attachmentId;
+  handle.generation += 1;
+  handle.attachmentId = null;
+  handle.attached = false;
+  handle.attaching = false;
+  handle.term.reset();
+  handle.logCursor = null;
+  handle.allowRecoveryGap = false;
+  handle.recoveryTarget = cursor;
+  handle.historyLoaded = false;
+  handle.historyLoading = false;
+  if (previousAttachment !== null) {
+    void api.detachSession(sessionId, previousAttachment).catch(() => undefined);
+  }
+  const ended = session.lifecycle === "exited" || session.lifecycle === "stopped" || session.lifecycle === "interrupted";
+  if (ended) {
+    const generation = handle.generation;
+    try {
+      const context = await api.readRecoveryLogContext(sessionId, cursor);
+      if (handles.get(sessionId) !== handle || handle.generation !== generation) return;
+      const bytes = b64ToBytes(context.data);
+      const markerAt = Math.max(0, Math.min(bytes.length, cursor.offset - context.offset));
+      if (markerAt > 0) writeTerminalOutput(handle, bytes.slice(0, markerAt));
+      handle.term.write("\r\n\x1b[2m── 恢复事件定位处 ──\x1b[0m\r\n");
+      if (markerAt < bytes.length) writeTerminalOutput(handle, bytes.slice(markerAt));
+      handle.recoveryTarget = null;
+      finishTerminalStartupFilter(handle);
+      handle.historyLoaded = true;
+      handle.logCursor = { ...cursor, offset: context.offset + bytes.length };
+      patchRuntime(sessionId, {
+        replayDone: true,
+        historyNote: `已定位到恢复事件附近输出（${formatBytes(context.total)} 已验证日志）`,
+      });
+    } catch (error) {
+      if (handles.get(sessionId) === handle && handle.generation === generation) {
+        patchRuntime(sessionId, {
+          replayDone: true,
+          historyNote: `无法定位恢复输出：${errorText(error)}`,
+        });
+      }
+      throw error;
+    }
+  } else {
+    await attachHandle(sessionId, cursor);
+  }
 }
 
 /** Apply font/a11y settings to all live terminals. */

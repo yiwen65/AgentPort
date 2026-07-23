@@ -283,7 +283,7 @@ fn probe_install(
     if t == AgentType::Codex {
         if let Ok(sub) = spawn_capture(exe, &["resume", "--help"], PROBE_TIMEOUT, MAX_PROBE_OUTPUT)
         {
-            help.push_str("\n");
+            help.push('\n');
             help.push_str(&sub);
         }
     }
@@ -307,7 +307,9 @@ fn probe_agent_with_candidates(
 
     if let Some(path) = confirmed_path {
         let manual_path = path.to_string_lossy().into_owned();
-        let known = candidates.iter().any(|candidate| candidate.path == manual_path);
+        let known = candidates
+            .iter()
+            .any(|candidate| candidate.path == manual_path);
         if !known {
             candidates.insert(
                 0,
@@ -321,7 +323,10 @@ fn probe_agent_with_candidates(
         let selected = PathBuf::from(&path);
         return match probe_install(t, &selected, &candidates) {
             Ok(mut install) => {
-                if let Some(candidate) = candidates.iter_mut().find(|candidate| candidate.path == selected.to_string_lossy()) {
+                if let Some(candidate) = candidates
+                    .iter_mut()
+                    .find(|candidate| candidate.path == selected.to_string_lossy())
+                {
                     candidate.version_text = Some(install.version_text.clone());
                 }
                 install.candidates = candidates.clone();
@@ -369,7 +374,10 @@ fn probe_agent_with_candidates(
         None,
         Some(format!(
             "发现 {total} 个候选，但均无法通过只读探测：{}",
-            errors.into_iter().next().unwrap_or_else(|| "未知错误".into())
+            errors
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| "未知错误".into())
         )),
         candidates,
     )
@@ -549,6 +557,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires user-installed agent CLIs"]
     fn probe_real_clis_available() {
         for (t, path) in [
             (AgentType::Claude, CLAUDE),

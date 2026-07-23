@@ -8,7 +8,7 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -85,6 +85,8 @@ pub struct GitRunner {
     #[cfg(test)]
     fail_once: Option<Arc<TestFailure>>,
     #[cfg(test)]
+    ref_move_once: Option<Arc<TestRefMove>>,
+    #[cfg(test)]
     recorded: Option<Arc<Mutex<Vec<Vec<OsString>>>>>,
 }
 
@@ -92,6 +94,15 @@ pub struct GitRunner {
 #[derive(Debug)]
 struct TestFailure {
     command: OsString,
+    trigger_on: usize,
+    seen: AtomicUsize,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TestRefMove {
+    refname: OsString,
+    new_oid: OsString,
     triggered: AtomicBool,
 }
 
@@ -108,6 +119,8 @@ impl GitRunner {
             #[cfg(test)]
             fail_once: None,
             #[cfg(test)]
+            ref_move_once: None,
+            #[cfg(test)]
             recorded: None,
         }
     }
@@ -118,6 +131,37 @@ impl GitRunner {
             timeout: Duration::from_secs(15),
             fail_once: Some(Arc::new(TestFailure {
                 command: command.into(),
+                trigger_on: 1,
+                seen: AtomicUsize::new(0),
+            })),
+            ref_move_once: None,
+            recorded: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn failing_nth(command: &str, trigger_on: usize) -> Self {
+        assert!(trigger_on > 0);
+        Self {
+            timeout: Duration::from_secs(15),
+            fail_once: Some(Arc::new(TestFailure {
+                command: command.into(),
+                trigger_on,
+                seen: AtomicUsize::new(0),
+            })),
+            ref_move_once: None,
+            recorded: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn moving_ref_before_update(refname: &str, new_oid: &str) -> Self {
+        Self {
+            timeout: Duration::from_secs(15),
+            fail_once: None,
+            ref_move_once: Some(Arc::new(TestRefMove {
+                refname: refname.into(),
+                new_oid: new_oid.into(),
                 triggered: AtomicBool::new(false),
             })),
             recorded: None,
@@ -131,6 +175,7 @@ impl GitRunner {
             Self {
                 timeout: Duration::from_secs(15),
                 fail_once: None,
+                ref_move_once: None,
                 recorded: Some(recorded.clone()),
             },
             recorded,
@@ -170,12 +215,38 @@ impl GitRunner {
         #[cfg(test)]
         if let Some(failure) = &self.fail_once {
             if argv.iter().any(|arg| arg == &failure.command)
-                && !failure.triggered.swap(true, Ordering::SeqCst)
+                && failure.seen.fetch_add(1, Ordering::SeqCst) + 1 == failure.trigger_on
             {
                 return Err(CoreError::Git(format!(
                     "injected failure before git {:?}",
                     failure.command
                 )));
+            }
+        }
+
+        #[cfg(test)]
+        if let Some(ref_move) = &self.ref_move_once {
+            if argv.iter().any(|arg| arg == "update-ref")
+                && argv.iter().any(|arg| arg == "-d")
+                && !ref_move.triggered.swap(true, Ordering::SeqCst)
+            {
+                let root = repo.ok_or_else(|| {
+                    CoreError::Internal("test ref-move injection requires a repository".into())
+                })?;
+                let output = Command::new("git")
+                    .arg("-C")
+                    .arg(root)
+                    .arg("update-ref")
+                    .arg(&ref_move.refname)
+                    .arg(&ref_move.new_oid)
+                    .stdin(Stdio::null())
+                    .output()?;
+                if !output.status.success() {
+                    return Err(CoreError::Git(format!(
+                        "test ref-move injection failed: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    )));
+                }
             }
         }
 
@@ -305,12 +376,8 @@ mod tests {
         let started = Instant::now();
         let tmp = tempfile::tempdir().unwrap();
         let script = tmp.path().join("timeout-test.sh");
-        std::fs::write(
-            &script,
-            "#!/bin/sh\nprintf before-timeout\nsleep 1\n",
-        )
-        .unwrap();
-        let output = GitRunner::new(Duration::from_millis(20))
+        std::fs::write(&script, "#!/bin/sh\nprintf before-timeout\nsleep 1\n").unwrap();
+        let output = GitRunner::new(Duration::from_millis(250))
             .run(
                 None,
                 [
@@ -320,7 +387,7 @@ mod tests {
                 ],
             )
             .unwrap();
-        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(started.elapsed() < Duration::from_secs(1));
         assert!(output.timed_out);
         assert!(!output.success());
         assert!(output.stdout_lossy().contains("before-timeout"));

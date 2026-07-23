@@ -40,8 +40,8 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::os::unix::process::CommandExt;
 use std::os::unix::net::UnixListener;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -435,6 +435,7 @@ fn run() -> i32 {
     // PTY remains the compatibility transport. Pi's structured RPC mode uses
     // ordinary pipes exclusively so terminal control bytes and TUI prompts
     // can never leak into its JSONL protocol.
+    #[allow(clippy::type_complexity)]
     let (input_writer, output_reader, master, child_pid, agent_child, pipe_stderr): (
         Box<dyn Write + Send>,
         Box<dyn Read + Send>,
@@ -563,7 +564,10 @@ fn run() -> i32 {
                 let _ = std::fs::remove_file(&socket_path);
                 return EXIT_PTY;
             };
-            let stderr = child.stderr.take().map(|stream| Box::new(stream) as Box<dyn Read + Send>);
+            let stderr = child
+                .stderr
+                .take()
+                .map(|stream| Box::new(stream) as Box<dyn Read + Send>);
             (
                 Box::new(stdin),
                 Box::new(stdout),
@@ -627,7 +631,9 @@ fn run() -> i32 {
             // Pi allocates its native ID during startup. Request state before
             // accepting user prompts and persist the reported ID via the
             // existing AgentSession HostFrame path.
-            if let Err(error) = server::write_json_command(&shared, serde_json::json!({"type": "get_state"})) {
+            if let Err(error) =
+                server::write_json_command(&shared, serde_json::json!({"type": "get_state"}))
+            {
                 let _ = msg_tx.send(HostMsg::PtyFault {
                     message: format!("Pi RPC get_state write failed: {error}"),
                 });
@@ -860,7 +866,12 @@ fn tick(shared: &Shared, sm: &mut StateMachine, status_file: &mut Option<File>) 
             log_cursor: current_log_cursor(shared),
         },
     );
-    if shared.tick_count.fetch_add(1, Ordering::Relaxed) % 3 == 0 {
+    if shared
+        .tick_count
+        .fetch_add(1, Ordering::Relaxed)
+        .checked_rem(3)
+        == Some(0)
+    {
         *shared.known_descendants.lock().unwrap() = descendants_of(shared.child_pid);
     }
     let elapsed = shared.last_output_at.lock().unwrap().elapsed();
@@ -891,7 +902,7 @@ fn emit_event(shared: &Shared, status_file: &mut Option<File>, mut ev: StatusEve
     if ev.log_cursor.is_none() {
         ev.log_cursor = Some(current_log_cursor(shared));
     }
-    let persistence_error = persist_status_event(status_file, ev).err();
+    let persistence_error = persist_status_event(status_file, &ev).err();
     if let Some(error) = persistence_error {
         error!(error = %error, sequence = ev.sequence, "status journal persistence failed");
         if !shared.status_journal_faulted.swap(true, Ordering::AcqRel) {
@@ -1389,7 +1400,11 @@ fn read_rpc_line(
     loop {
         let available = reader.fill_buf()?;
         if available.is_empty() {
-            return if line.is_empty() { Ok(None) } else { Ok(Some(())) };
+            return if line.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(()))
+            };
         }
         let take = available
             .iter()
@@ -1505,9 +1520,12 @@ fn spawn_rpc_reader(
                     }
                     // `get_state` is the proof that the native Pi ID agrees
                     // with AgentPort's assigned/resumed identity.
-                    let is_successful_get_state = event.get("type").and_then(serde_json::Value::as_str) == Some("response")
-                        && event.get("command").and_then(serde_json::Value::as_str) == Some("get_state")
-                        && event.get("success").and_then(serde_json::Value::as_bool) == Some(true);
+                    let is_successful_get_state =
+                        event.get("type").and_then(serde_json::Value::as_str) == Some("response")
+                            && event.get("command").and_then(serde_json::Value::as_str)
+                                == Some("get_state")
+                            && event.get("success").and_then(serde_json::Value::as_bool)
+                                == Some(true);
                     if is_successful_get_state {
                         let native = event
                             .pointer("/data/sessionId")
@@ -1596,9 +1614,8 @@ fn spawn_rpc_stderr_reader(
             match reader.read(&mut buffer) {
                 Ok(0) => return,
                 Ok(size) => {
-                    let mut diagnostic = String::from_utf8_lossy(&buffer[..size])
-                        .replace('\n', " ")
-                        .replace('\r', " ");
+                    let mut diagnostic =
+                        String::from_utf8_lossy(&buffer[..size]).replace(['\n', '\r'], " ");
                     for secret in &secrets {
                         diagnostic = diagnostic.replace(secret, "***");
                     }

@@ -23,13 +23,14 @@ import {
 } from "./actions";
 import {
   applyProjectsSnapshot,
+  applyRepositoryStatusSnapshot,
   findSession,
   flattenSessions,
   getState,
+  invalidateProjectsSnapshotRequests,
   openDialog,
   patchSession,
   setState,
-  update,
   useStore,
 } from "./store";
 import { pruneHandles, scrollToBottom } from "./terminals";
@@ -71,6 +72,7 @@ function useBoot() {
         const listenerResults = await Promise.allSettled([
           onProjectsChanged((projects) => {
             applyWhenBooted(() => {
+              invalidateProjectsSnapshotRequests();
               applyProjectsSnapshot(projects);
               pruneHandles();
               void refreshActiveWorktreeStatus();
@@ -78,9 +80,7 @@ function useBoot() {
           }),
           onRepositoryStateChanged((status) => {
             applyWhenBooted(() => {
-              update((state) => ({
-                repositoryStatuses: { ...state.repositoryStatuses, [status.projectId]: status },
-              }));
+              applyRepositoryStatusSnapshot(status);
             });
           }),
           onSessionState((ev) => {
@@ -134,6 +134,7 @@ function useBoot() {
           settings: info.settings,
           adapters: info.adapters,
           timeline: info.timeline,
+          timelineError: info.timelineError,
           secretBackend: info.secretBackend,
           indexState: info.indexState,
           exportsDir: info.exportsDir,

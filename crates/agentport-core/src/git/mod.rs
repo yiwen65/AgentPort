@@ -17,8 +17,8 @@ pub mod repository;
 pub mod worktree;
 
 pub use branch::{
-    BranchInfo, BranchManager, BranchSnapshot, CheckoutState, CreateBranchOutcome, RepoStatus,
-    SwitchOutcome,
+    BranchInfo, BranchManager, BranchSnapshot, CheckoutState, CreateBranchOutcome,
+    DeleteBranchOutcome, RepoStatus, SwitchOutcome,
 };
 pub use command::{GitOutput, GitRunner};
 pub use operation::{
@@ -646,7 +646,7 @@ mod tests {
             .worktree_list()
             .unwrap()
             .iter()
-            .any(|i| i.path == PathBuf::from(&wt.path)));
+            .any(|i| i.path == Path::new(&wt.path)));
     }
 
     #[test]

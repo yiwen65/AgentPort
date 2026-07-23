@@ -45,6 +45,12 @@ pub enum ClientFrame {
         /// silently mapping the offset into unrelated bytes.
         #[serde(default)]
         resume_from: Option<LogCursor>,
+        /// A recovery timeline click requests a bounded context centered on
+        /// this exact cursor. Unlike `resume_from`, it may be far behind the
+        /// normal tail replay window; Host validates run + generation before
+        /// returning any bytes.
+        #[serde(default)]
+        replay_target: Option<LogCursor>,
         /// Status monitors subscribe without receiving terminal bytes.  The
         /// default preserves v1 behavior for ordinary terminal clients.
         #[serde(default = "default_subscribe_output")]
@@ -64,7 +70,9 @@ pub enum ClientFrame {
         text: String,
     },
     /// Abort the current structured turn without sending a terminal signal.
-    AbortStructuredTurn { session_id: String },
+    AbortStructuredTurn {
+        session_id: String,
+    },
     Resize {
         session_id: String,
         cols: u16,
@@ -143,6 +151,10 @@ pub enum HostFrame {
         offset: u64,
         #[serde(default)]
         cursor: LogCursor,
+        /// True when a recovery click deliberately loaded only a bounded
+        /// context window around an old target instead of a contiguous resume.
+        #[serde(default)]
+        partial_context: bool,
     },
     /// The requested output cursor is no longer retained (or does not belong
     /// to this run). The client must reset its renderer and accept a bounded
@@ -207,6 +219,41 @@ pub enum HostFrame {
         session_id: Option<String>,
         message: String,
     },
+}
+
+/// Translate the offset-only output state used by protocol v1 into the
+/// run-aware cursor shape consumed by current clients. Negotiated v1 frames
+/// are authoritative only for their legacy byte offsets, so any cursor fields
+/// supplied by serde defaults (or a transitional sender) are replaced.
+pub fn normalize_host_frame(protocol: u32, mut frame: HostFrame) -> HostFrame {
+    if protocol != LEGACY_PROTOCOL_VERSION {
+        return frame;
+    }
+
+    fn legacy_cursor(offset: u64) -> LogCursor {
+        LogCursor {
+            offset: i64::try_from(offset).unwrap_or(i64::MAX),
+            ..LogCursor::default()
+        }
+    }
+
+    match &mut frame {
+        HostFrame::HelloOk {
+            log_bytes,
+            log_cursor,
+            ..
+        }
+        | HostFrame::Heartbeat {
+            log_bytes,
+            log_cursor,
+            ..
+        } => *log_cursor = legacy_cursor(*log_bytes),
+        HostFrame::Output { offset, cursor, .. } | HostFrame::ReplayDone { offset, cursor, .. } => {
+            *cursor = legacy_cursor(*offset);
+        }
+        _ => {}
+    }
+    frame
 }
 
 fn default_subscribe_output() -> bool {
@@ -395,5 +442,42 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn v1_offset_fields_normalize_to_legacy_cursors() {
+        let frames = [
+            (
+                r#"{"type":"hello_ok","protocol":1,"session_id":"ses_1","host_pid":7,"child_alive":true,"log_bytes":12}"#,
+                12,
+            ),
+            (
+                r#"{"type":"output","session_id":"ses_1","data":"YWJjZA==","offset":4}"#,
+                4,
+            ),
+            (
+                r#"{"type":"replay_done","session_id":"ses_1","offset":8}"#,
+                8,
+            ),
+            (
+                r#"{"type":"heartbeat","session_id":"ses_1","at":"2026-07-23T00:00:00Z","log_bytes":16}"#,
+                16,
+            ),
+        ];
+
+        for (json, expected_offset) in frames {
+            let frame: HostFrame = serde_json::from_str(json).unwrap();
+            let cursor = match normalize_host_frame(LEGACY_PROTOCOL_VERSION, frame) {
+                HostFrame::HelloOk { log_cursor, .. } | HostFrame::Heartbeat { log_cursor, .. } => {
+                    log_cursor
+                }
+                HostFrame::Output { cursor, .. } | HostFrame::ReplayDone { cursor, .. } => cursor,
+                other => panic!("unexpected frame: {other:?}"),
+            };
+            assert_eq!(cursor.run_id, LEGACY_RUN_ID);
+            assert_eq!(cursor.run_ordinal, LEGACY_RUN_ORDINAL);
+            assert_eq!(cursor.generation, 0);
+            assert_eq!(cursor.offset, expected_offset);
+        }
     }
 }

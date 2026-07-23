@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level data model version (PRD ch.5 `version`). Bump when the schema
 /// changes in a way the migrator must handle; SQLite user_version tracks the same.
-pub const DATA_MODEL_VERSION: i64 = 8;
+pub const DATA_MODEL_VERSION: i64 = 9;
 pub const APP_ID: &str = "agentport.local";
 pub const DELIVERY_SCOPE: &str = "p0_p2";
 
@@ -53,12 +53,12 @@ impl AgentType {
     /// onboarding, and CLI probing on this single list so adding an adapter
     /// does not require updating several independent fixed-size arrays.
     pub const ALL: &'static [Self] = &[
-            Self::Claude,
-            Self::Codex,
-            Self::Kimi,
-            Self::Qoder,
-            Self::Pi,
-            Self::Shell,
+        Self::Claude,
+        Self::Codex,
+        Self::Kimi,
+        Self::Qoder,
+        Self::Pi,
+        Self::Shell,
     ];
 
     pub const fn all() -> &'static [Self] {
@@ -701,6 +701,10 @@ pub struct Settings {
     pub theme: Theme,
     pub terminal_font_family: String,
     pub terminal_font_size: u32,
+    /// Optional terminal emulator executable for Linux. Arguments are
+    /// deliberately not accepted so this setting never becomes a shell command.
+    #[serde(default)]
+    pub terminal_command: String,
     pub reduced_motion: ReducedMotion,
     pub screen_reader_mode: bool,
     pub search_index_enabled: bool,
@@ -720,6 +724,7 @@ impl Default for Settings {
             theme: Theme::System,
             terminal_font_family: "system-monospace".into(),
             terminal_font_size: 13,
+            terminal_command: String::new(),
             reduced_motion: ReducedMotion::System,
             screen_reader_mode: false,
             search_index_enabled: true,
@@ -749,6 +754,16 @@ impl Settings {
         if !(10..=28).contains(&self.terminal_font_size) {
             return Err(CoreError::Validation(
                 "terminal_font_size out of range 10-28".into(),
+            ));
+        }
+        if self.terminal_command.len() > 1024
+            || self
+                .terminal_command
+                .chars()
+                .any(|c| matches!(c, '\0' | '\r' | '\n'))
+        {
+            return Err(CoreError::Validation(
+                "terminal_command must be a single executable path up to 1024 bytes".into(),
             ));
         }
         if self.telemetry_enabled {

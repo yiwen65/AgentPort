@@ -4,12 +4,18 @@
 import { api, errorText } from "./api";
 import {
   applyProjectsSnapshot,
+  applyRepositoryStatusSnapshot,
+  beginProjectsSnapshotRequest,
+  beginRepositoryStatusRequest,
   clearSessionScopedState,
   confirmDialog,
   findProjectOf,
   findSession,
   flattenSessions,
   getState,
+  isCurrentProjectsSnapshotRequest,
+  isCurrentRepositoryStatusRequest,
+  markRepositoryStatusUnavailable,
   openDialog,
   patchSession,
   promptDialog,
@@ -24,12 +30,14 @@ import {
   attachHandle,
   clearUnreadOutputTracking,
   disposeHandle,
+  jumpToRecoveryOutput,
   MAX_PERSISTENT_TERMINALS,
   pruneHandles,
   releaseTerminal,
   resetForRestart,
 } from "./terminals";
 import { agentDisplay } from "./format";
+import type { LogCursorView } from "./types";
 
 export function isMac(): boolean {
   const os = getState().platform?.os;
@@ -42,35 +50,41 @@ export function isMac(): boolean {
 // ---------------------------------------------------------------------------
 
 let refreshTimer: number | null = null;
+let timelineRefreshRequest = 0;
 
 export async function refreshProjects() {
+  const request = beginProjectsSnapshotRequest();
   const active = getState().activeSessionId;
   try {
     const projects = await api.listProjects(active);
+    if (!isCurrentProjectsSnapshotRequest(request)) return false;
     applyProjectsSnapshot(projects);
     pruneHandles();
+    return true;
   } catch {
     // The backend is the source of truth; keep the last good tree on error.
+    return false;
   }
 }
 
 /** Read the checkout state after every branch operation; no optimistic switch. */
 export async function refreshRepositoryStatus(projectId: string) {
+  const request = beginRepositoryStatusRequest(projectId);
   try {
     const status = await api.getRepositoryStatus(projectId);
-    update((state) => ({
-      repositoryStatuses: { ...state.repositoryStatuses, [projectId]: status },
-    }));
+    if (!isCurrentRepositoryStatusRequest(projectId, request)) {
+      return getState().repositoryStatuses[projectId] ?? null;
+    }
+    applyRepositoryStatusSnapshot(status);
     return status;
   } catch {
+    if (!isCurrentRepositoryStatusRequest(projectId, request)) {
+      return getState().repositoryStatuses[projectId] ?? null;
+    }
     // A failed live probe must not leave branch entry points enabled from a
     // persisted gitRootPath or an older repository snapshot. A later focus or
     // manual refresh will repopulate the backend-confirmed status.
-    update((state) => {
-      const repositoryStatuses = { ...state.repositoryStatuses };
-      delete repositoryStatuses[projectId];
-      return { repositoryStatuses };
-    });
+    markRepositoryStatusUnavailable(projectId);
     return null;
   }
 }
@@ -98,11 +112,16 @@ export function refreshProjectsSoon() {
 }
 
 export async function refreshTimeline() {
+  const request = ++timelineRefreshRequest;
   try {
     const timeline = await api.getTimeline();
-    setState({ timeline });
-  } catch {
-    // ignore — badge keeps stale count
+    if (request === timelineRefreshRequest) setState({ timeline, timelineError: null });
+    return true;
+  } catch (error) {
+    if (request === timelineRefreshRequest) {
+      setState({ timelineError: `恢复时间线读取失败：${errorText(error)}` });
+    }
+    return false;
   }
 }
 
@@ -138,29 +157,35 @@ export function applyThemeSettings() {
 // session selection
 // ---------------------------------------------------------------------------
 
-export function selectSession(id: string) {
+export function selectSession(id: string, recoveryTarget: LogCursorView | null = null) {
   const s = getState();
   // A newly created Session is persisted before the next project snapshot.
   // Never select against the stale tree: TerminalArea cannot mount a pane for
   // an ID it cannot resolve, which leaves the workspace blank on a fast switch.
   if (!findSession(s.projects, id)) {
     void refreshProjects().then(() => {
-      if (findSession(getState().projects, id)) selectSession(id);
+      if (findSession(getState().projects, id)) selectSession(id, recoveryTarget);
     });
     return;
   }
-  // Treat mounted terminal panes as an LRU. Each keeps an xterm scrollback
-  // and a live IPC channel, so retaining every Session ever visited can turn a
-  // long workday into hundreds of MiB of renderer memory.
-  const orderedIds = [...s.attachedIds.filter((sessionId) => sessionId !== id), id];
-  const evictedIds = orderedIds.slice(0, Math.max(0, orderedIds.length - MAX_PERSISTENT_TERMINALS));
+  const ses = findSession(s.projects, id);
+  // Treat mounted PTY panes as an LRU. Each keeps xterm scrollback and a live
+  // IPC channel. Structured JSON-RPC Sessions own a separate attachment and
+  // must never acquire a hidden xterm channel. Retaining every PTY Session can
+  // turn a long workday into hundreds of MiB of renderer memory.
+  const existingPtyIds = s.attachedIds.filter((sessionId) => {
+    const attachedSession = findSession(s.projects, sessionId);
+    return sessionId !== id && attachedSession?.transport === "pty";
+  });
+  const orderedIds = ses?.transport === "pty" ? [...existingPtyIds, id] : existingPtyIds;
   const attachedIds = orderedIds.slice(-MAX_PERSISTENT_TERMINALS);
+  const retainedIds = new Set(attachedIds);
+  const evictedIds = s.attachedIds.filter((sessionId) => !retainedIds.has(sessionId));
   const proj = findProjectOf(s.projects, id);
   const expandedProjects =
     proj && s.expandedProjects[proj.id] === false
       ? { ...s.expandedProjects, [proj.id]: true }
       : s.expandedProjects;
-  const ses = findSession(s.projects, id);
   const collapsedWorktrees = { ...s.collapsedWorktrees };
   if (ses?.worktreeId) delete collapsedWorktrees[ses.worktreeId];
   setState({
@@ -173,6 +198,11 @@ export function selectSession(id: string) {
   });
   for (const evictedId of evictedIds) void releaseTerminal(evictedId);
   clearUnreadOutputTracking(id);
+  if (recoveryTarget) {
+    void jumpToRecoveryOutput(id, recoveryTarget).catch((error) => {
+      toast(`无法定位恢复输出：${errorText(error)}`, "error");
+    });
+  }
   // Confirm the view in persistent state; merely hiding the dot for the
   // active row would make it reappear as soon as the user switches away.
   void api.markSessionSeen(id, findSession(s.projects, id)?.status ?? null)
@@ -477,9 +507,19 @@ export async function quickStartSession(projectId: string, agent: string, worktr
 }
 
 export async function ackTimelineFlow() {
+  const snapshot = getState().timeline.ackSnapshots;
   try {
-    await api.ackTimeline();
-    await refreshTimeline();
+    await api.ackTimeline(snapshot);
+    // A read started before this acknowledgement belongs to the old recovery
+    // window and must not repopulate the just-cleared badge/list.
+    timelineRefreshRequest += 1;
+    // This recovery window is frozen at boot. Do not re-query a live DB here:
+    // events arriving while the GUI is open belong to normal realtime UI, not
+    // the just-acknowledged "while you were away" snapshot.
+    setState({
+      timeline: { completed: 0, waiting: 0, failed: 0, entries: [], ackSnapshots: [] },
+      timelineError: null,
+    });
     await refreshProjects();
   } catch (e) {
     toast(`操作失败：${errorText(e)}`, "error");

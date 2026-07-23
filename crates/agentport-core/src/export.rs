@@ -672,6 +672,7 @@ mod tests {
             source: StateSource::Hook,
             confidence: Confidence::High,
             evidence: Some("hook:Stop".into()),
+            log_cursor: None,
             occurred_at: Utc::now(),
         })
         .unwrap();

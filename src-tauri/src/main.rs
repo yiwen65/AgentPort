@@ -17,10 +17,10 @@ use agentport_core::ids;
 use agentport_core::models::*;
 use agentport_core::notify::{Notification, Notifier};
 use agentport_core::paths::{normalize_abs, AppPaths};
-use agentport_core::protocol::HostFrame;
+use agentport_core::protocol::{normalize_host_frame, HostFrame};
 use agentport_core::search::SearchIndex;
 use agentport_core::secrets::{load_preset_secrets, CredentialBroker, SecretValue};
-use agentport_core::timeline::Timeline;
+use agentport_core::timeline::{RecoveryAckSnapshot, Timeline};
 use chrono::Utc;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -200,6 +200,7 @@ struct BootInfo {
     adapters: Vec<AdapterInstall>,
     projects: Vec<ProjectView>,
     timeline: Value,
+    timeline_error: Option<String>,
     secret_backend: String,
     index_state: String,
     webview: String,
@@ -275,7 +276,15 @@ fn status_value(e: &StatusEvent) -> Value {
         "source": e.source.as_str(),
         "confidence": e.confidence.as_str(),
         "evidence": e.evidence,
+        "logCursor": e.log_cursor,
         "occurredAt": e.occurred_at,
+    })
+}
+
+fn replay_done_value(offset: u64, cursor: &LogCursor, partial_context: bool) -> Value {
+    json!({
+        "t": "replay_done", "offset": offset, "cursor": cursor,
+        "partialContext": partial_context,
     })
 }
 
@@ -520,19 +529,27 @@ async fn boot(state: State<'_, AppState>, app: AppHandle) -> std::result::Result
     let timeline = tl.build().map(|t| {
         json!({
             "completed": t.completed, "waiting": t.waiting, "failed": t.failed,
-            "entries": t.entries,
+            "entries": t.entries, "ackSnapshots": t.ack_snapshots,
         })
     });
     let diag = Diagnostics {
         paths: &state.paths,
         db: &state.db,
     };
+    let (timeline, timeline_error) = match timeline {
+        Ok(timeline) => (timeline, None),
+        Err(error) => (
+            json!({"completed": 0, "waiting": 0, "failed": 0, "entries": [], "ackSnapshots": []}),
+            Some(format!("恢复时间线读取失败：{error}")),
+        ),
+    };
     Ok(BootInfo {
         platform: json!(diag.platform_info()),
         settings: map_err!(state.db.load_settings())?,
         adapters: map_err!(state.db.list_adapters())?,
         projects: collect_projects(&state.db, None),
-        timeline: timeline.unwrap_or_else(|_| json!({"entries": []})),
+        timeline,
+        timeline_error,
         secret_backend: format!("{:?}", CredentialBroker::backend_status()),
         index_state,
         webview: "system".into(),
@@ -779,11 +796,13 @@ fn preset_for(
 /// state.  A credential-store failure must not leave a `Creating` row or
 /// helper file behind; create and restart intentionally share this exact
 /// path so their environment semantics cannot drift.
+type MaterializedLaunchEnvironment = (Vec<(String, String)>, Vec<(String, SecretValue)>);
+
 fn materialize_launch_environment(
     state: &AppState,
     preset: &Preset,
     plan_env: &[(String, String)],
-) -> Result<(Vec<(String, String)>, Vec<(String, SecretValue)>)> {
+) -> Result<MaterializedLaunchEnvironment> {
     let mut env = plan_env.to_vec();
     for name in &preset.env_names {
         if let Ok(value) = std::env::var(name) {
@@ -831,6 +850,7 @@ fn remove_launch_helpers(helper_files: &[(String, String)]) {
 
 /// Build the LaunchPlan for a (not yet created) session — used both by the
 /// preflight panel and by actual creation.
+#[allow(clippy::too_many_arguments)]
 fn build_launch_plan(
     state: &AppState,
     project_id: &str,
@@ -925,6 +945,7 @@ fn acquire_session_repository_lock(cwd: &str) -> Result<Option<RepositoryFileLoc
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn create_session(
     state: State<'_, AppState>,
     app: AppHandle,
@@ -1135,6 +1156,61 @@ fn finish_session_monitor(monitors: &Arc<Mutex<HashMap<String, u64>>>, session_i
     }
 }
 
+/// Capture the two recovery boundaries that the GUI actually knows while it
+/// is still attached.  Status and log positions intentionally travel through
+/// separate run-aware cursors: applying an old run's bare sequence to a new
+/// Host would otherwise hide the first events from that replacement.
+fn capture_gui_exit_recovery_boundaries(state: &AppState) {
+    let Ok(sessions) = state.db.list_sessions(None, false) else {
+        return;
+    };
+    for session in sessions {
+        if let Ok(Some(latest)) = state.db.latest_status(&session.id) {
+            let _ = state
+                .db
+                .set_last_seen_status_cursor(&session.id, &latest.cursor());
+        }
+        if !live_session(session.lifecycle) {
+            continue;
+        }
+        let Some(socket) = session
+            .host_socket
+            .as_deref()
+            .filter(|socket| !socket.is_empty())
+        else {
+            continue;
+        };
+        let Ok((_, info)) = HostClient::connect_with_resume(
+            socket,
+            &session.id,
+            &session.host_token,
+            0,
+            None,
+            false,
+        ) else {
+            // A shutdown-time socket failure is only transport evidence. The
+            // Host reaper/reconcile path owns interrupted classification.
+            continue;
+        };
+        let host = HostIdentity::from_attach(&info);
+        if !host_identity_is_current(&state.db, &session.id, &host) {
+            continue;
+        }
+        if state
+            .db
+            .set_latest_log_cursor(&session.id, &info.log_cursor)
+            .is_ok()
+        {
+            // This is the first byte *after* the visible GUI snapshot. A
+            // later Host heartbeat advances latest_log_cursor, not this
+            // boundary, so pure GUI-closed output retains its first offset.
+            let _ = state
+                .db
+                .set_unread_log_cursor(&session.id, &info.log_cursor);
+        }
+    }
+}
+
 fn project_monitor_status(app: &AppHandle, db: &Db, event: &StatusEvent) {
     if let Err(error) = db.record_status_event(event) {
         tracing::error!(session = %event.session_id, error = %error, "session monitor projection write failed");
@@ -1214,6 +1290,9 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
                 }
                 break;
             }
+            if let Err(error) = db.set_latest_log_cursor(&session_id, &info.log_cursor) {
+                tracing::warn!(session = %session_id, error = %error, "monitor could not persist Host log cursor");
+            }
             if let Some(event) = info.current_status.as_ref() {
                 if host.matches_run(&event.run_id, event.run_ordinal) {
                     project_monitor_status(&app, &db, event);
@@ -1269,6 +1348,17 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
                                 occurred_at,
                             },
                         );
+                    }
+                    HostFrame::Heartbeat { log_cursor, .. } => {
+                        if !host.matches_run(&log_cursor.run_id, log_cursor.run_ordinal)
+                            || !host_identity_is_current(&db, &session_id, &host)
+                        {
+                            tracing::warn!(session = %session_id, host_pid = host.host_pid, "monitor received heartbeat from a superseded Host");
+                            break;
+                        }
+                        if let Err(error) = db.set_latest_log_cursor(&session_id, &log_cursor) {
+                            tracing::warn!(session = %session_id, error = %error, "monitor could not persist heartbeat cursor");
+                        }
                     }
                     HostFrame::Exit {
                         session_id: frame_session_id,
@@ -1341,6 +1431,7 @@ async fn attach_session(
     session_id: String,
     replay_tail_bytes: u64,
     resume_from: Option<LogCursor>,
+    recovery_target: Option<LogCursor>,
     channel: tauri::ipc::Channel<Value>,
 ) -> std::result::Result<Value, String> {
     let session = map_err!(state.db.get_session(&session_id))?;
@@ -1352,17 +1443,24 @@ async fn attach_session(
     // Cap replay independently of frontend input so a malformed IPC request
     // cannot make a Host read an unbounded log tail into memory.
     const MAX_REPLAY_BYTES: u64 = 4 * 1024 * 1024;
-    let (mut client, info) = map_err!(HostClient::connect_with_resume(
+    let (mut client, info) = map_err!(HostClient::connect_with_recovery_target(
         &socket,
         &session_id,
         &token,
         replay_tail_bytes.min(MAX_REPLAY_BYTES),
         resume_from,
+        recovery_target,
         true,
     ))?;
     let host = HostIdentity::from_attach(&info);
     if !host_identity_is_current(&state.db, &session_id, &host) {
         return Err("Host changed while establishing terminal attachment; please reconnect".into());
+    }
+    if let Err(error) = state
+        .db
+        .set_latest_log_cursor(&session_id, &info.log_cursor)
+    {
+        tracing::warn!(session = %session_id, error = %error, "attach could not persist Host log cursor");
     }
     if info.protocol == agentport_core::protocol::LEGACY_PROTOCOL_VERSION {
         // v1 did not include a Hello snapshot; queue a status request before
@@ -1436,6 +1534,7 @@ async fn attach_session(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn watch_loop(
     app: AppHandle,
     channel: tauri::ipc::Channel<Value>,
@@ -1450,6 +1549,7 @@ fn watch_loop(
     loop {
         match agentport_core::protocol::read_frame::<HostFrame>(&mut reader) {
             Ok(Some(frame)) => {
+                let frame = normalize_host_frame(host.protocol, frame);
                 match frame {
                     HostFrame::Output {
                         data,
@@ -1475,13 +1575,17 @@ fn watch_loop(
                         }
                         let _ = channel.send(json!({"t": "structured", "event": event}));
                     }
-                    HostFrame::ReplayDone { offset, cursor, .. } => {
+                    HostFrame::ReplayDone {
+                        offset,
+                        cursor,
+                        partial_context,
+                        ..
+                    } => {
                         if !host.matches_run(&cursor.run_id, cursor.run_ordinal) {
                             tracing::warn!(session = %session_id, attachment_id, "dropping replay marker from a stale Host run");
                             break;
                         }
-                        let _ = channel
-                            .send(json!({"t": "replay_done", "offset": offset, "cursor": cursor}));
+                        let _ = channel.send(replay_done_value(offset, &cursor, partial_context));
                     }
                     HostFrame::ResyncRequired {
                         earliest, reason, ..
@@ -1505,6 +1609,7 @@ fn watch_loop(
                         source,
                         confidence,
                         evidence,
+                        log_cursor,
                         occurred_at,
                     } => {
                         if !host.matches_run(&run_id, run_ordinal) {
@@ -1547,16 +1652,28 @@ fn watch_loop(
                             tracing::warn!(session = %session_id, attachment_id, "dropping agent session id from a stale Host attachment");
                             break;
                         }
-                        let _ = db.update_session_agent_id(
+                        match db.update_session_agent_id(
                             &session_id,
                             &agent_session_id,
                             ResumePrecision::Exact,
-                        );
-                        let _ = channel.send(json!({"t": "agent_session", "id": agent_session_id}));
-                        let _ = app.emit(
-                            "session-agent-id",
-                            json!({"sessionId": session_id, "agentSessionId": agent_session_id}),
-                        );
+                        ) {
+                            Ok(()) => {
+                                let _ = channel
+                                    .send(json!({"t": "agent_session", "id": agent_session_id}));
+                                let _ = app.emit(
+                                    "session-agent-id",
+                                    json!({"sessionId": session_id, "agentSessionId": agent_session_id}),
+                                );
+                            }
+                            Err(error) => {
+                                tracing::error!(session = %session_id, error = %error, "agent session id persistence failed");
+                                let _ = channel.send(json!({
+                                    "t": "error",
+                                    "message": format!("原生 Session ID 未持久化：{error}"),
+                                    "persistenceDegraded": true,
+                                }));
+                            }
+                        }
                     }
                     HostFrame::Heartbeat {
                         log_bytes,
@@ -1566,6 +1683,9 @@ fn watch_loop(
                         if !host.matches_run(&log_cursor.run_id, log_cursor.run_ordinal) {
                             tracing::warn!(session = %session_id, attachment_id, "dropping heartbeat from a stale Host run");
                             break;
+                        }
+                        if let Err(error) = db.set_latest_log_cursor(&session_id, &log_cursor) {
+                            tracing::warn!(session = %session_id, attachment_id, error = %error, "could not persist heartbeat cursor");
                         }
                         let _ = channel.send(json!({"t": "heartbeat", "logBytes": log_bytes, "logCursor": log_cursor}));
                     }
@@ -1754,11 +1874,15 @@ async fn send_structured_prompt(
         return Err("structured prompt must not be empty".into());
     }
     if text.len() > MAX_PROMPT_BYTES {
-        return Err(format!("structured prompt exceeds {MAX_PROMPT_BYTES} byte limit"));
+        return Err(format!(
+            "structured prompt exceeds {MAX_PROMPT_BYTES} byte limit"
+        ));
     }
     let writer = {
         let writers = state.writers.lock().unwrap();
-        writers.get(&session_id).map(|attachment| attachment.writer.clone())
+        writers
+            .get(&session_id)
+            .map(|attachment| attachment.writer.clone())
     };
     let Some(writer) = writer else {
         return Err("session not attached".into());
@@ -1778,7 +1902,9 @@ async fn abort_structured_turn(
     use agentport_core::protocol::{write_frame, ClientFrame};
     let writer = {
         let writers = state.writers.lock().unwrap();
-        writers.get(&session_id).map(|attachment| attachment.writer.clone())
+        writers
+            .get(&session_id)
+            .map(|attachment| attachment.writer.clone())
     };
     let Some(writer) = writer else {
         return Err("session not attached".into());
@@ -1899,7 +2025,10 @@ async fn restart_session(
         Some(session.preset_id.clone()),
         &install
     ))?;
-    map_err!(adapters::validate_user_args(session.adapter_type, &preset.args))?;
+    map_err!(adapters::validate_user_args(
+        session.adapter_type,
+        &preset.args
+    ))?;
     let plan = map_err!(
         adapters::adapter_for(session.adapter_type).build_resume_checked(&ResumeContext {
             install,
@@ -2452,14 +2581,17 @@ async fn get_timeline(state: State<'_, AppState>) -> std::result::Result<Value, 
     let t = map_err!(tl.build())?;
     Ok(json!({
         "completed": t.completed, "waiting": t.waiting, "failed": t.failed,
-        "entries": t.entries,
+        "entries": t.entries, "ackSnapshots": t.ack_snapshots,
     }))
 }
 
 #[tauri::command]
-async fn ack_timeline(state: State<'_, AppState>) -> std::result::Result<(), String> {
+async fn ack_timeline(
+    state: State<'_, AppState>,
+    snapshots: Vec<RecoveryAckSnapshot>,
+) -> std::result::Result<(), String> {
     let tl = Timeline { db: &state.db };
-    map_err!(tl.acknowledge_all())
+    map_err!(tl.acknowledge_snapshot(&snapshots))
 }
 
 #[tauri::command]
@@ -2588,6 +2720,51 @@ async fn read_log_tail(
     }))
 }
 
+/// Read bounded context around an event-level recovery cursor for a terminal
+/// that no longer has a live Host. The database's latest verified cursor is
+/// the generation fence; `Session::log_path` alone is intentionally not one.
+#[tauri::command]
+async fn read_recovery_log_context(
+    state: State<'_, AppState>,
+    session_id: String,
+    cursor: LogCursor,
+) -> std::result::Result<Value, String> {
+    use base64::Engine as _;
+    const BEFORE: u64 = 128 * 1024;
+    const AFTER: u64 = 256 * 1024;
+    let session = map_err!(state.db.get_session(&session_id))?;
+    let latest = map_err!(state.db.get_latest_log_cursor(&session_id))?
+        .ok_or_else(|| "无法确认当前保留的输出代际；输出可能已轮转".to_string())?;
+    if cursor.run_id != latest.run_id
+        || cursor.run_ordinal != latest.run_ordinal
+        || cursor.generation != latest.generation
+        || cursor.offset < 0
+        || cursor.offset > latest.offset
+    {
+        return Err("输出已轮转或不属于当前保留日志，无法安全定位".into());
+    }
+    let path = std::path::PathBuf::from(&session.log_path);
+    let len = std::fs::metadata(&path)
+        .map_err(|_| "输出日志已不存在或已轮转".to_string())?
+        .len();
+    if latest.offset < 0 || len < latest.offset as u64 {
+        return Err("输出已轮转或不再完整保留，无法安全定位".into());
+    }
+    let target = cursor.offset as u64;
+    let start = target.saturating_sub(BEFORE);
+    let end = (target.saturating_add(AFTER)).min(latest.offset as u64);
+    let data = map_err!(agentport_core::logs::read_range(&path, start, end - start))?;
+    if data.len() as u64 != end - start {
+        return Err("读取期间输出日志发生变化，无法安全定位；请重试".into());
+    }
+    Ok(json!({
+        "data": base64::engine::general_purpose::STANDARD.encode(&data),
+        "offset": start,
+        "total": latest.offset,
+        "cursor": cursor,
+    }))
+}
+
 fn require_existing_path(path: &str) -> std::result::Result<(), String> {
     if std::path::Path::new(path).exists() {
         Ok(())
@@ -2620,7 +2797,11 @@ async fn reveal_in_file_manager(path: String) -> std::result::Result<(), String>
 }
 
 #[tauri::command]
-async fn open_in_system_terminal(path: String) -> std::result::Result<(), String> {
+async fn open_in_system_terminal(
+    state: State<'_, AppState>,
+    path: String,
+) -> std::result::Result<(), String> {
+    require_existing_path(&path)?;
     if cfg!(target_os = "macos") {
         return match std::process::Command::new("open")
             .args(["-a", "Terminal", &path])
@@ -2631,22 +2812,40 @@ async fn open_in_system_terminal(path: String) -> std::result::Result<(), String
             Err(e) => Err(e.to_string()),
         };
     }
-    for (term, args) in [
-        ("x-terminal-emulator", vec!["--working-directory"]),
-        ("gnome-terminal", vec!["--working-directory"]),
-        ("konsole", vec!["--workdir"]),
+
+    let configured = map_err!(state.db.load_settings())?.terminal_command;
+    if let Some(command) = (!configured.trim().is_empty()).then_some(configured.trim()) {
+        return launch_terminal(command, &[], &path);
+    }
+
+    let mut failures = Vec::new();
+    for (term, working_directory_arg) in [
+        ("x-terminal-emulator", "--working-directory"),
+        ("gnome-terminal", "--working-directory"),
+        ("konsole", "--workdir"),
     ] {
-        let mut argv = args.clone();
-        argv.push(&path);
-        if std::process::Command::new(term)
-            .args(&argv)
-            .status()
-            .is_ok()
-        {
-            return Ok(());
+        match launch_terminal(term, &[working_directory_arg, &path], &path) {
+            Ok(()) => return Ok(()),
+            Err(error) => failures.push(error),
         }
     }
-    Err("no terminal emulator found".into())
+    Err(format!(
+        "no terminal emulator launched successfully: {}",
+        failures.join("; ")
+    ))
+}
+
+fn launch_terminal(command: &str, args: &[&str], cwd: &str) -> std::result::Result<(), String> {
+    let status = std::process::Command::new(command)
+        .args(args)
+        .current_dir(cwd)
+        .status()
+        .map_err(|error| format!("{command}: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{command} exited with {status}"))
+    }
 }
 
 /// Native directory picker. MUST NOT use blocking_pick_folder: a blocking
@@ -2723,7 +2922,7 @@ fn disable_press_and_hold() {}
 
 fn main() {
     disable_press_and_hold();
-    let paths = AppPaths::default().expect("app paths");
+    let paths = AppPaths::discover().expect("app paths");
     paths.ensure_layout().expect("layout");
     // App diagnostics log — hangs/failures must leave evidence.
     {
@@ -2805,6 +3004,7 @@ fn main() {
             git_commands::get_repository_status,
             git_commands::list_local_branches,
             git_commands::create_local_branch,
+            git_commands::delete_local_branch,
             git_commands::switch_local_branch,
             git_commands::list_auto_stashes,
             git_commands::restore_auto_stash,
@@ -2830,6 +3030,7 @@ fn main() {
             secret_delete,
             notify_test,
             read_log_tail,
+            read_recovery_log_context,
             reveal_in_file_manager,
             open_in_system_terminal,
             pick_directory,
@@ -2840,16 +3041,8 @@ fn main() {
         .expect("error while building AgentPort")
         .run(|app, event| {
             if let RunEvent::ExitRequested { .. } = event {
-                // Mark all latest sequences as seen so the next launch's
-                // recovery timeline only shows genuinely new events.
                 let state = app.state::<AppState>();
-                if let Ok(sessions) = state.db.list_sessions(None, false) {
-                    for s in sessions {
-                        if let Ok(Some(latest)) = state.db.latest_status(&s.id) {
-                            let _ = state.db.set_last_seen_sequence(&s.id, latest.sequence);
-                        }
-                    }
-                }
+                capture_gui_exit_recovery_boundaries(&state);
                 // Detach all clients; hosts keep running (PRD core invariant).
                 let writers: Vec<_> = state
                     .writers
@@ -3110,5 +3303,28 @@ mod cleanup_tests {
                 .id,
             2
         );
+    }
+
+    #[test]
+    fn replay_done_channel_preserves_partial_recovery_context_flag() {
+        let cursor = LogCursor {
+            run_id: "run_1".into(),
+            run_ordinal: 1,
+            generation: 2,
+            offset: 123,
+        };
+        let value = replay_done_value(123, &cursor, true);
+        assert_eq!(value["t"], "replay_done");
+        assert_eq!(value["partialContext"], true);
+        assert_eq!(value["cursor"]["generation"], 2);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn terminal_launcher_rejects_nonzero_exit_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let error = launch_terminal("/usr/bin/false", &[], &temp.path().to_string_lossy())
+            .expect_err("a terminal command that exits nonzero must not report success");
+        assert!(error.contains("exited with"), "{error}");
     }
 }

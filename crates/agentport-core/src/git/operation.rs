@@ -1,7 +1,7 @@
 use crate::db::Db;
 use crate::error::{CoreError, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
@@ -70,13 +70,15 @@ pub enum RestoreStrategy {
 pub enum BranchOperationKind {
     Create,
     Switch,
+    Delete,
 }
 
 impl BranchOperationKind {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Create => "create",
             Self::Switch => "switch",
+            Self::Delete => "delete",
         }
     }
 
@@ -84,6 +86,7 @@ impl BranchOperationKind {
         match value {
             "create" => Ok(Self::Create),
             "switch" => Ok(Self::Switch),
+            "delete" => Ok(Self::Delete),
             other => Err(CoreError::Internal(format!(
                 "unknown branch operation kind: {other}"
             ))),
@@ -157,8 +160,9 @@ impl<'a> OperationJournal<'a> {
     }
 
     pub fn insert(&self, operation: &BranchOperation) -> Result<()> {
-        let conn = self.db.conn().lock().unwrap();
-        conn.execute(
+        let mut conn = self.db.conn().lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
             "INSERT INTO branch_operations(
                 id,kind,project_id,repo_key,checkout_root,source_branch,source_commit,target_branch,
                 target_oid,phase,stash_oid,stash_selector,stash_marker,snapshot_json,error_json,
@@ -189,7 +193,6 @@ impl<'a> OperationJournal<'a> {
                 operation.completed_at.as_ref().map(timestamp),
             ],
         )?;
-        drop(conn);
         let head_json = serde_json::json!({
             "branch": operation.source_branch,
             "oid": operation.source_commit,
@@ -198,13 +201,16 @@ impl<'a> OperationJournal<'a> {
             .snapshot_json
             .as_ref()
             .map(|snapshot| format!("sha256:{:x}", sha2::Sha256::digest(snapshot.as_bytes())));
-        self.append_step(
+        Self::append_step_tx(
+            &tx,
             operation.id.as_str(),
             operation.phase,
             Some(&head_json),
             status_token.as_deref(),
             Some("operation created"),
-        )
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn update(
@@ -218,9 +224,10 @@ impl<'a> OperationJournal<'a> {
         let now = Utc::now();
         let error_json = error.map(|message| serde_json::json!({"message": message}).to_string());
         let completed_at = phase.is_terminal().then(|| timestamp(&now));
-        let conn = self.db.conn().lock().unwrap();
+        let mut conn = self.db.conn().lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let changed = if let Some((oid, selector, marker)) = stash {
-            conn.execute(
+            tx.execute(
                 "UPDATE branch_operations
                  SET phase=?2,stash_oid=?3,stash_selector=?4,stash_marker=?5,error_json=?6,
                      updated_at=?7,completed_at=?8
@@ -237,7 +244,7 @@ impl<'a> OperationJournal<'a> {
                 ],
             )?
         } else {
-            conn.execute(
+            tx.execute(
                 "UPDATE branch_operations
                  SET phase=?2,error_json=?3,updated_at=?4,completed_at=?5 WHERE id=?1",
                 params![
@@ -252,8 +259,9 @@ impl<'a> OperationJournal<'a> {
         if changed == 0 {
             return Err(CoreError::NotFound(format!("branch operation {id}")));
         }
-        drop(conn);
-        self.append_step(id, phase, None, None, detail)
+        Self::append_step_tx(&tx, id, phase, None, None, detail)?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn get(&self, id: &str) -> Result<BranchOperation> {
@@ -295,7 +303,7 @@ impl<'a> OperationJournal<'a> {
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             rows
         };
-        operations.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        operations.sort_by_key(|operation| operation.created_at);
         Ok(operations)
     }
 
@@ -354,8 +362,22 @@ impl<'a> OperationJournal<'a> {
         status_token: Option<&str>,
         detail: Option<&str>,
     ) -> Result<()> {
-        let conn = self.db.conn().lock().unwrap();
-        conn.execute(
+        let mut conn = self.db.conn().lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        Self::append_step_tx(&tx, id, phase, head_json, status_token, detail)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn append_step_tx(
+        tx: &Transaction<'_>,
+        id: &str,
+        phase: BranchOperationPhase,
+        head_json: Option<&serde_json::Value>,
+        status_token: Option<&str>,
+        detail: Option<&str>,
+    ) -> Result<()> {
+        tx.execute(
             "INSERT INTO branch_operation_steps(
                 operation_id,sequence,phase,head_json,status_token,detail,occurred_at
              )
@@ -452,4 +474,94 @@ fn parse_timestamp(value: &str) -> Result<DateTime<Utc>> {
 
 fn to_sql_error(error: CoreError) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::Project;
+
+    fn fixture() -> (Db, BranchOperation) {
+        let db = Db::open_memory().unwrap();
+        db.add_project(&Project {
+            id: "prj_journal".into(),
+            name: "journal".into(),
+            root_path: "/tmp/journal".into(),
+            git_root_path: Some("/tmp/journal".into()),
+            created_at: Utc::now(),
+        })
+        .unwrap();
+        let now = Utc::now();
+        let operation = BranchOperation {
+            id: "op_atomic".into(),
+            kind: BranchOperationKind::Switch,
+            project_id: "prj_journal".into(),
+            repo_key: "repo-key".into(),
+            checkout_root: "/tmp/journal".into(),
+            source_branch: Some("main".into()),
+            source_commit: "1111111111111111111111111111111111111111".into(),
+            target_branch: "feature".into(),
+            target_oid: "2222222222222222222222222222222222222222".into(),
+            phase: BranchOperationPhase::Prepared,
+            stash_oid: None,
+            stash_selector: None,
+            stash_marker: None,
+            snapshot_json: Some("{}".into()),
+            error_json: None,
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+        };
+        (db, operation)
+    }
+
+    fn reject_step_inserts(db: &Db) {
+        db.conn()
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TEMP TRIGGER reject_branch_operation_step
+                 BEFORE INSERT ON branch_operation_steps
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected step failure');
+                 END;",
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn insert_rolls_back_operation_when_initial_step_fails() {
+        let (db, operation) = fixture();
+        reject_step_inserts(&db);
+        let journal = OperationJournal::new(&db);
+
+        assert!(journal.insert(&operation).is_err());
+        assert!(matches!(
+            journal.get(&operation.id),
+            Err(CoreError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn update_rolls_back_phase_when_step_fails() {
+        let (db, operation) = fixture();
+        let journal = OperationJournal::new(&db);
+        journal.insert(&operation).unwrap();
+        reject_step_inserts(&db);
+
+        assert!(journal
+            .update(
+                &operation.id,
+                BranchOperationPhase::Switched,
+                None,
+                None,
+                Some("switched"),
+            )
+            .is_err());
+        assert_eq!(
+            journal.get(&operation.id).unwrap().phase,
+            BranchOperationPhase::Prepared
+        );
+        assert_eq!(journal.steps(&operation.id).unwrap().len(), 1);
+    }
 }

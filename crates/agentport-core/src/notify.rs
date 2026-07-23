@@ -246,6 +246,7 @@ mod tests {
             source,
             confidence,
             evidence: Some(ev.into()),
+            log_cursor: None,
             occurred_at: Utc::now(),
         }
     }

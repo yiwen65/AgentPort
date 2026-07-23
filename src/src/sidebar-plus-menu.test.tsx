@@ -4,7 +4,8 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { refreshRepositoryStatusMock, quickStartSessionMock } = vi.hoisted(() => ({
+const { archiveSessionFlowMock, refreshRepositoryStatusMock, quickStartSessionMock } = vi.hoisted(() => ({
+  archiveSessionFlowMock: vi.fn(),
   refreshRepositoryStatusMock: vi.fn(),
   quickStartSessionMock: vi.fn(),
 }));
@@ -19,7 +20,7 @@ vi.mock("./actions", () => ({
   renameSessionInlineFlow: vi.fn(),
   restartSessionFlow: vi.fn(),
   quickStartSession: quickStartSessionMock,
-  archiveSessionFlow: vi.fn(),
+  archiveSessionFlow: archiveSessionFlowMock,
   addProjectFromPickerFlow: vi.fn(),
   removeSessionFlow: vi.fn(),
   selectSession: vi.fn(),
@@ -49,12 +50,31 @@ const project = {
   worktrees: [],
 };
 
+const runningSession = {
+  id: "ses_running",
+  projectId: "p1",
+  worktreeId: null,
+  title: "Running Session",
+  adapter: "shell",
+  cwd: "/tmp/demo",
+  lifecycle: "running" as const,
+  agentSessionId: null,
+  resumePrecision: "unavailable" as const,
+  permissionMode: "native" as const,
+  transport: "pty" as const,
+  logPath: "/tmp/demo/session.log",
+  unread: false,
+  status: null,
+  createdAt: "2026-07-23T00:00:00.000Z",
+};
+
 const settings = {
   logLimitMib: 200,
   notificationsEnabled: true,
   theme: "system" as const,
   terminalFontFamily: "system-monospace",
   terminalFontSize: 13,
+  terminalCommand: "",
   reducedMotion: "system" as const,
   screenReaderMode: false,
   searchIndexEnabled: true,
@@ -155,5 +175,14 @@ describe("project row plus button menu", () => {
 
     expect(quickStartSessionMock).toHaveBeenCalledWith("p1", "shell", undefined);
     expect(strip).toBeTruthy();
+  });
+
+  it("routes a running Session hover archive through the confirmed flow", () => {
+    setState({ projects: [{ ...project, sessions: [runningSession] }] });
+    render(<Sidebar collapsed={false} width={296} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "归档" }));
+
+    expect(archiveSessionFlowMock).toHaveBeenCalledWith("ses_running");
   });
 });

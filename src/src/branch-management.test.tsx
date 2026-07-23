@@ -18,6 +18,7 @@ const { listeners, listenerRegistration, listenerUnlistens, apiMock } = vi.hoist
     listLocalBranches: vi.fn(),
     switchLocalBranch: vi.fn(),
     createLocalBranch: vi.fn(),
+    deleteLocalBranch: vi.fn(),
     listAutoStashes: vi.fn(),
     restoreAutoStash: vi.fn(),
     cleanupAutoStash: vi.fn(),
@@ -70,6 +71,31 @@ const branches = [
   { name: "feature/occupied", oid: "c".repeat(40), current: false, checkedOutPath: "/repo-worktree", agentPortWorktreeId: "w1" },
 ];
 
+const safeDeleteStatus = {
+  ...status,
+  changes: { ...status.changes, unmerged: 0, dirtySubmodules: 0 },
+};
+
+function useSafeDeleteResponse() {
+  apiMock.listLocalBranches.mockReset().mockResolvedValue({
+    status: safeDeleteStatus,
+    branches,
+    autoStashes: [
+      { id: "stash-pending", operationId: "op1", projectId: "p1", sourceKind: "branch", targetBranch: "feature/ui", marker: "m", createdAt: "2026-01-01", state: "pending" },
+    ],
+  });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function projectState() {
   return {
     projects: [{ id: "p1", name: "Demo", rootPath: "/repo", gitRootPath: "/repo", sessions: [], worktrees: [] }],
@@ -94,6 +120,7 @@ describe("local branch management", () => {
     ] });
     apiMock.switchLocalBranch.mockResolvedValue({ operationId: "op", status });
     apiMock.createLocalBranch.mockResolvedValue({ operationId: "op", status });
+    apiMock.deleteLocalBranch.mockResolvedValue({ operationId: "op-delete", status });
   });
 
   it("focuses search, filters with keyboard, and does not allow occupied worktrees", async () => {
@@ -147,7 +174,51 @@ describe("local branch management", () => {
     }));
 
     expect(await screen.findByText("feature/ui", { selector: ".branch-picker-status strong" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "删除分支 feature/ui" })).toBeNull();
     expect(apiMock.listLocalBranches).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let an older refresh overwrite a newer repository event", async () => {
+    const user = userEvent.setup();
+    const staleRefresh = deferred<ReturnType<typeof apiMock.listLocalBranches>>();
+    apiMock.listLocalBranches
+      .mockResolvedValueOnce({ status, branches, autoStashes: [] })
+      .mockReturnValueOnce(staleRefresh.promise as never);
+    render(<BranchPickerDialog projectId="p1" />);
+    await screen.findAllByText("feature/ui");
+
+    await user.click(screen.getByRole("button", { name: "刷新" }));
+    act(() => listeners.repository[0]?.({
+      ...status,
+      head: { ...status.head, branch: "feature/ui" },
+      snapshotToken: "event-newer-than-refresh",
+    }));
+    await act(async () => {
+      staleRefresh.resolve({ status, branches, autoStashes: [] } as never);
+      await staleRefresh.promise;
+    });
+
+    expect(screen.getByText("feature/ui", { selector: ".branch-picker-status strong" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "删除分支 feature/ui" })).toBeNull();
+  });
+
+  it("cancels an inline delete confirmation when backend state makes the branch current", async () => {
+    const user = userEvent.setup();
+    useSafeDeleteResponse();
+    render(<BranchPickerDialog projectId="p1" />);
+    const search = await screen.findByRole("textbox", { name: "搜索本地分支" });
+    await user.click(screen.getByRole("button", { name: "删除分支 feature/ui" }));
+    expect(screen.getByRole("button", { name: "确认删除" })).toBeTruthy();
+
+    act(() => listeners.repository[0]?.({
+      ...safeDeleteStatus,
+      head: { ...safeDeleteStatus.head, branch: "feature/ui" },
+      snapshotToken: "became-current",
+    }));
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: "确认删除" })).toBeNull());
+    expect(screen.queryByRole("button", { name: "删除分支 feature/ui" })).toBeNull();
+    expect(document.activeElement).toBe(search);
   });
 
   it("disables every repository mutation while a backend operation is in progress", async () => {
@@ -215,6 +286,126 @@ describe("local branch management", () => {
     expect(screen.getByRole("list", { name: "本地分支" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "main，当前 checkout" }).getAttribute("aria-current")).toBe("page");
     expect(screen.getAllByRole("listitem")).toHaveLength(3);
+  });
+
+  it("confirms deletion inline, keeps current and occupied branches protected, and restores focus on cancel", async () => {
+    const user = userEvent.setup();
+    useSafeDeleteResponse();
+    render(<BranchPickerDialog projectId="p1" />);
+    const deleteButton = await screen.findByRole("button", { name: "删除分支 feature/ui" });
+
+    expect(screen.queryByRole("button", { name: "删除分支 main" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "删除分支 feature/occupied" })).toBeNull();
+    // Pending recovery is resolved precisely by the backend instead of
+    // globally disabling deletion of unrelated branches in the picker.
+    expect((deleteButton as HTMLButtonElement).disabled).toBe(false);
+
+    await user.click(deleteButton);
+    const warning = screen.getByRole("alert");
+    expect(warning.textContent).toContain("删除 feature/ui？");
+    expect(warning.textContent).toContain("仅删除已合并的本地分支，不影响远端");
+    const confirm = screen.getByRole("button", { name: "确认删除" });
+    expect(document.activeElement).toBe(confirm);
+    expect(screen.getByRole("group", { name: "确认删除分支 feature/ui" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "取消" }));
+    const restoredDeleteButton = screen.getByRole("button", { name: "删除分支 feature/ui" });
+    expect(document.activeElement).toBe(restoredDeleteButton);
+    expect(apiMock.deleteLocalBranch).not.toHaveBeenCalled();
+  });
+
+  it("cancels inline confirmation with Escape without closing the dialog", async () => {
+    const user = userEvent.setup();
+    useSafeDeleteResponse();
+    render(<BranchPickerDialog projectId="p1" />);
+    await user.click(await screen.findByRole("button", { name: "删除分支 feature/ui" }));
+    await user.keyboard("{Escape}");
+
+    const deleteButton = screen.getByRole("button", { name: "删除分支 feature/ui" });
+    expect(document.activeElement).toBe(deleteButton);
+    expect(screen.getByRole("dialog", { name: "管理本地分支 · Demo" })).toBeTruthy();
+  });
+
+  it("cancels inline confirmation when search, refresh, or keyboard selection changes", async () => {
+    const user = userEvent.setup();
+    useSafeDeleteResponse();
+    render(<BranchPickerDialog projectId="p1" />);
+    const search = await screen.findByRole("textbox", { name: "搜索本地分支" });
+
+    await user.click(screen.getByRole("button", { name: "删除分支 feature/ui" }));
+    await user.click(search);
+    await user.type(search, "u");
+    expect(screen.queryByRole("button", { name: "确认删除" })).toBeNull();
+
+    await user.clear(search);
+    await user.click(screen.getByRole("button", { name: "删除分支 feature/ui" }));
+    await user.click(screen.getByRole("button", { name: "刷新" }));
+    expect(screen.queryByRole("button", { name: "确认删除" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "删除分支 feature/ui" }));
+    search.focus();
+    await user.keyboard("{ArrowDown}");
+    expect(screen.queryByRole("button", { name: "确认删除" })).toBeNull();
+  });
+
+  it("deletes through the typed backend API, refreshes the list, and focuses search", async () => {
+    const user = userEvent.setup();
+    apiMock.listLocalBranches
+      .mockReset()
+      .mockResolvedValueOnce({ status: safeDeleteStatus, branches, autoStashes: [] })
+      .mockResolvedValue({ status: { ...safeDeleteStatus, snapshotToken: "after-delete" }, branches: [branches[0], branches[2]], autoStashes: [] });
+    render(<BranchPickerDialog projectId="p1" />);
+
+    await user.click(await screen.findByRole("button", { name: "删除分支 feature/ui" }));
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => expect(apiMock.deleteLocalBranch).toHaveBeenCalledWith("p1", "feature/ui"));
+    await waitFor(() => expect(screen.queryByText("feature/ui")).toBeNull());
+    expect(await screen.findByText(/完成：已删除本地分支 feature\/ui/)).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "搜索本地分支" }));
+  });
+
+  it("reports a successful delete separately when the authoritative refresh fails", async () => {
+    const user = userEvent.setup();
+    apiMock.listLocalBranches
+      .mockReset()
+      .mockResolvedValueOnce({ status: safeDeleteStatus, branches, autoStashes: [] })
+      .mockRejectedValueOnce(new Error("repository probe offline"));
+    render(<BranchPickerDialog projectId="p1" />);
+
+    await user.click(await screen.findByRole("button", { name: "删除分支 feature/ui" }));
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+
+    expect(await screen.findByText(/完成：已删除本地分支 feature\/ui/)).toBeTruthy();
+    expect(screen.getByText(/仓库状态刷新失败；操作入口已禁用/)).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("repository probe offline");
+    expect(screen.queryByText("已重新读取仓库状态")).toBeNull();
+    expect((screen.getByRole("button", { name: "创建分支" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("keeps inline confirmation and exposes structured backend deletion errors", async () => {
+    const user = userEvent.setup();
+    useSafeDeleteResponse();
+    apiMock.deleteLocalBranch.mockRejectedValueOnce({
+      code: "branch_not_merged",
+      message: "分支尚未合并，未执行删除",
+      phase: "delete",
+      operationId: "delete-1",
+      recoverable: true,
+      currentStatus: status,
+      recoveryActions: ["merge_or_choose_another_branch"],
+      diagnostics: { branch: "feature/ui" },
+      liveSessionIds: [],
+    });
+    render(<BranchPickerDialog projectId="p1" />);
+
+    await user.click(await screen.findByRole("button", { name: "删除分支 feature/ui" }));
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+
+    expect(await screen.findByText("分支尚未合并，未执行删除", { exact: false })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "确认删除" })).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "确认删除" }));
+    expect(screen.getByText("merge_or_choose_another_branch")).toBeTruthy();
   });
 
   it("unregisters listeners even when registration resolves after unmount", async () => {

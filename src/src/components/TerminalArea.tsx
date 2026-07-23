@@ -718,9 +718,11 @@ export default function TerminalArea() {
           <UncommittedBanner ses={ses} />
           {s.termSearchOpen ? <TermSearchBar sessionId={ses.id} /> : null}
           <div className="term-stack">
-            {s.attachedIds.map((id) => (
-              <TerminalPane key={id} sessionId={id} active={id === ses.id} />
-            ))}
+            {s.attachedIds
+              .filter((id) => findSession(s.projects, id)?.transport === "pty")
+              .map((id) => (
+                <TerminalPane key={id} sessionId={id} active={id === ses.id} />
+              ))}
             <SessionOverlay ses={ses} />
           </div>
           <TermStatusLine ses={ses} />

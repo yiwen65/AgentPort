@@ -43,7 +43,7 @@ struct Ctx {
 
 impl Ctx {
     fn open(json: bool) -> Result<Ctx> {
-        let paths = AppPaths::default()?;
+        let paths = AppPaths::discover()?;
         paths.ensure_layout()?;
         let db = Db::open(&paths)?;
         db.seed_builtin_presets()?;
@@ -92,8 +92,8 @@ fn run() -> Result<()> {
         "settings" => cmd_settings(&ctx, rest),
         "perf" => {
             let pctx = perf::PerfCtx {
-                paths: AppPaths::default()?,
-                db: Db::open(&AppPaths::default()?)?,
+                paths: AppPaths::discover()?,
+                db: Db::open(&AppPaths::discover()?)?,
             };
             let scenario = args.get(1).map(String::as_str).unwrap_or("all");
             perf::run(&pctx, scenario)

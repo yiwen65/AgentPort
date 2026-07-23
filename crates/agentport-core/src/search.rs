@@ -1303,7 +1303,7 @@ mod tests {
         let mut buf: Vec<u8> = Vec::with_capacity(21 * 1024 * 1024);
         let mut i = 0u64;
         while buf.len() < 20 * 1024 * 1024 {
-            let line = if i % 997 == 0 {
+            let line = if i.checked_rem(997) == Some(0) {
                 format!("\x1b[1;31mERROR\x1b[0m PERF_NEEDLE_Q7Z 固定关键词 第{i}行\n")
             } else {
                 match i % 4 {

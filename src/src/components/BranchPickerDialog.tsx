@@ -12,7 +12,15 @@ import {
   onRepositoryOperationProgress,
   onRepositoryStateChanged,
 } from "../api";
-import { openWorktreeView, update, closeDialog, toast, useStore } from "../store";
+import {
+  applyRepositoryStatusSnapshot,
+  closeDialog,
+  getState,
+  markRepositoryStatusUnavailable,
+  openWorktreeView,
+  toast,
+  useStore,
+} from "../store";
 import { selectSession } from "../actions";
 import type {
   AutoStashRecord,
@@ -84,16 +92,62 @@ function BranchRow({
   branch,
   selected,
   disabled,
+  deleteBlockedReason,
+  confirmingDelete,
   onChoose,
+  onRequestDelete,
+  onConfirmDelete,
+  onCancelDelete,
   onOpenWorktree,
+  deleteButtonRef,
+  confirmDeleteRef,
 }: {
   branch: LocalBranch;
   selected: boolean;
   disabled: boolean;
+  deleteBlockedReason: string | null;
+  confirmingDelete: boolean;
   onChoose: (branch: LocalBranch) => void;
+  onRequestDelete: (branch: LocalBranch) => void;
+  onConfirmDelete: (branch: LocalBranch) => void;
+  onCancelDelete: (branch: LocalBranch) => void;
   onOpenWorktree: (worktreeId: string) => void;
+  deleteButtonRef: (element: HTMLButtonElement | null) => void;
+  confirmDeleteRef: (element: HTMLButtonElement | null) => void;
 }) {
   const occupied = Boolean(branch.checkedOutPath);
+  const effectiveDeleteBlockedReason = branch.current
+    ? "该分支已成为当前 checkout"
+    : occupied
+      ? `该分支已被 Worktree 占用：${branch.checkedOutPath}`
+      : deleteBlockedReason;
+  if (confirmingDelete) {
+    return (
+      <div
+        className={"branch-picker-row branch-picker-delete-confirm" + (selected ? " selected" : "")}
+        role="listitem"
+      >
+        <div className="branch-picker-delete-warning" role="alert" aria-live="assertive">
+          <strong>删除 <span className="mono">{branch.name}</span>？</strong>
+          <span>仅删除已合并的本地分支，不影响远端。此操作不可撤销。</span>
+          {effectiveDeleteBlockedReason ? <span>暂不能删除：{effectiveDeleteBlockedReason}</span> : null}
+        </div>
+        <div className="branch-picker-delete-confirm-actions" role="group" aria-label={`确认删除分支 ${branch.name}`}>
+          <button
+            ref={confirmDeleteRef}
+            className="btn small danger"
+            disabled={disabled || Boolean(effectiveDeleteBlockedReason)}
+            onClick={() => onConfirmDelete(branch)}
+          >
+            确认删除
+          </button>
+          <button className="btn small ghost" onClick={() => onCancelDelete(branch)}>
+            取消
+          </button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div
       className={"branch-picker-row" + (selected ? " selected" : "")}
@@ -122,6 +176,18 @@ function BranchRow({
           查看 Worktree
         </button>
       ) : null}
+      {!branch.current && !occupied ? (
+        <button
+          ref={deleteButtonRef}
+          className="btn small ghost branch-picker-delete"
+          disabled={disabled || Boolean(deleteBlockedReason)}
+          title={deleteBlockedReason || `删除本地分支 ${branch.name}`}
+          aria-label={`删除分支 ${branch.name}`}
+          onClick={() => onRequestDelete(branch)}
+        >
+          删除
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -139,33 +205,61 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
   const [eventBusy, setEventBusy] = useState(false);
   const [progress, setProgress] = useState<RepositoryOperationProgress | null>(null);
   const [failure, setFailure] = useState<BranchFailure | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<{ message: string; refreshed: boolean } | null>(null);
   const [recovery, setRecovery] = useState<AutoStashRecord[]>([]);
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const confirmDeleteRef = useRef<HTMLButtonElement | null>(null);
+  const deleteButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const restoreDeleteFocusRef = useRef<string | null>(null);
+  const selectedIndexRef = useRef(0);
   const startPointProjectRef = useRef<string | null>(null);
   const refreshSequenceRef = useRef(0);
+  const repositoryStatusRevisionRef = useRef(0);
   const localBusyRef = useRef(false);
   const eventBusyRef = useRef(false);
   const activeEventOperationsRef = useRef(new Set<string>());
 
-  const refresh = useCallback(async () => {
+  useEffect(() => {
+    if (confirmingDelete) {
+      confirmDeleteRef.current?.focus();
+      return;
+    }
+    const branchName = restoreDeleteFocusRef.current;
+    restoreDeleteFocusRef.current = null;
+    if (branchName) (deleteButtonRefs.current.get(branchName) ?? searchRef.current)?.focus();
+  }, [confirmingDelete]);
+
+  const refresh = useCallback(async (): Promise<boolean> => {
     const sequence = ++refreshSequenceRef.current;
+    const statusRevision = repositoryStatusRevisionRef.current;
     setFailure(null);
+    setRefreshError(null);
     try {
       const response = await api.listLocalBranches(projectId);
-      if (sequence !== refreshSequenceRef.current) return;
-      setData(response);
+      if (sequence !== refreshSequenceRef.current) return true;
+      const eventStatus = statusRevision === repositoryStatusRevisionRef.current
+        ? null
+        : getState().repositoryStatuses[projectId] ?? null;
+      const nextResponse = eventStatus ? { ...response, status: eventStatus } : response;
+      setData(nextResponse);
       setRecovery(response.autoStashes ?? []);
-      update((state) => ({
-        repositoryStatuses: { ...state.repositoryStatuses, [projectId]: response.status },
-      }));
+      if (!eventStatus) applyRepositoryStatusSnapshot(response.status);
       if (startPointProjectRef.current !== projectId) {
         startPointProjectRef.current = projectId;
-        setStartBranch(response.status.head?.kind === "branch" ? response.status.head.branch || "" : "");
+        setStartBranch(nextResponse.status.head?.kind === "branch" ? nextResponse.status.head.branch || "" : "");
       }
+      return true;
     } catch (error) {
-      if (sequence !== refreshSequenceRef.current) return;
-      setFailure(operationFailure(error));
+      if (sequence !== refreshSequenceRef.current) return true;
+      setData(null);
+      setRecovery([]);
+      if (statusRevision === repositoryStatusRevisionRef.current) {
+        markRepositoryStatusUnavailable(projectId);
+      }
+      setRefreshError(errorText(error));
+      return false;
     }
   }, [projectId]);
 
@@ -193,8 +287,9 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
       onRepositoryStateChanged((status) => {
         if (disposed) return;
         if (status.projectId !== projectId) return;
+        repositoryStatusRevisionRef.current += 1;
         setData((previous) => (previous ? { ...previous, status } : previous));
-        update((state) => ({ repositoryStatuses: { ...state.repositoryStatuses, [projectId]: status } }));
+        applyRepositoryStatusSnapshot(status);
       }),
       onAutoStashChanged((stash) => {
         if (disposed) return;
@@ -242,31 +337,50 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
 
   useEffect(() => setSelectedIndex(0), [query, data?.status.snapshotToken]);
 
-  const complete = async (message: string, operation: () => Promise<void>) => {
-    if (localBusyRef.current || eventBusyRef.current) return;
+  useEffect(() => {
+    if (selectedIndexRef.current === selectedIndex) return;
+    selectedIndexRef.current = selectedIndex;
+    if (confirmingDelete) {
+      restoreDeleteFocusRef.current = null;
+      setConfirmingDelete(null);
+    }
+  }, [confirmingDelete, selectedIndex]);
+
+  const complete = async (
+    message: string,
+    operation: () => Promise<void>,
+    pending: { command?: string; branch?: string | null; message?: string } = {},
+  ): Promise<boolean> => {
+    if (localBusyRef.current || eventBusyRef.current) return false;
     localBusyRef.current = true;
     setBusy(true);
     setProgress({
       operationId: "ui-pending",
-      command: "branch_picker",
+      command: pending.command ?? "branch_picker",
       projectId,
-      branch: null,
+      branch: pending.branch ?? null,
       phase: "started",
-      message: "正在重新检查仓库并执行安全操作",
+      message: pending.message ?? "正在重新检查仓库并执行安全操作",
       coreOperationId: null,
       recoverable: false,
       occurredAt: new Date().toISOString(),
     });
     setFailure(null);
+    setRefreshError(null);
     setSuccess(null);
     try {
       await operation();
-      await refresh();
-      setSuccess(message);
-      toast(message, "success");
+      const refreshed = await refresh();
+      setSuccess({ message, refreshed });
+      toast(
+        refreshed ? message : `${message}，但仓库状态刷新失败`,
+        refreshed ? "success" : "error",
+      );
+      return true;
     } catch (error) {
       await refresh();
       setFailure(operationFailure(error));
+      return false;
     } finally {
       localBusyRef.current = false;
       setBusy(false);
@@ -279,6 +393,49 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
       const result = await api.switchLocalBranch(projectId, branch.name);
       setData((previous) => (previous ? { ...previous, status: result.status } : previous));
     });
+  };
+
+  const chooseBranch = (branch: LocalBranch) => {
+    restoreDeleteFocusRef.current = null;
+    setConfirmingDelete(null);
+    switchTo(branch);
+  };
+
+  const requestDelete = (branch: LocalBranch) => {
+    if (localBusyRef.current || eventBusyRef.current || branch.current || branch.checkedOutPath) return;
+    restoreDeleteFocusRef.current = null;
+    setConfirmingDelete(branch.name);
+    setFailure(null);
+    setSuccess(null);
+  };
+
+  const cancelDelete = (branchName: string, restoreFocus = true) => {
+    restoreDeleteFocusRef.current = restoreFocus ? branchName : null;
+    setConfirmingDelete(null);
+  };
+
+  const deleteBranch = (branch: LocalBranch) => {
+    void (async () => {
+      const deleted = await complete(
+        `已删除本地分支 ${branch.name}`,
+        async () => {
+          const result = await api.deleteLocalBranch(projectId, branch.name);
+          setData((previous) => (previous ? { ...previous, status: result.status } : previous));
+        },
+        {
+          command: "delete_local_branch",
+          branch: branch.name,
+          message: `正在重新检查并删除本地分支 ${branch.name}`,
+        },
+      );
+      if (deleted) {
+        restoreDeleteFocusRef.current = null;
+        setConfirmingDelete(null);
+        searchRef.current?.focus();
+      } else {
+        confirmDeleteRef.current?.focus();
+      }
+    })();
   };
 
   const create = () => {
@@ -340,9 +497,10 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
     } else if (event.key === "Enter") {
       event.preventDefault();
       const selected = branches[selectedIndex];
-      if (selected) switchTo(selected);
+      if (selected) chooseBranch(selected);
     } else if (event.key.toLowerCase() === "r" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
+      if (confirmingDelete) cancelDelete(confirmingDelete, false);
       void refresh();
     }
   };
@@ -350,10 +508,34 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
   const status = data?.status ?? store.repositoryStatuses[projectId] ?? null;
   const changeLines = changesLabel(status);
   const controlsBusy = busy || eventBusy;
-  const canCreate = Boolean(newName.trim()) && !controlsBusy && status?.isGitRepository !== false;
+  const canCreate = Boolean(newName.trim()) && !controlsBusy && status?.isGitRepository === true;
+  let deleteBlockedReason: string | null = null;
+  if (controlsBusy) deleteBlockedReason = "仓库操作进行中，暂时不能删除分支";
+  else if (!status || !status.isGitRepository) deleteBlockedReason = "仓库状态不可用";
+  else if (status.ongoingOperation) deleteBlockedReason = `Git ${status.ongoingOperation} 操作进行中`;
+  else if (status.changes.unmerged) deleteBlockedReason = "存在未解决冲突，不能删除分支";
+
+  useEffect(() => {
+    if (!confirmingDelete) return;
+    const branch = data?.branches.find((item) => item.name === confirmingDelete);
+    const becameCurrent = status?.head?.kind === "branch" && status.head.branch === confirmingDelete;
+    if (branch && !branch.current && !branch.checkedOutPath && !becameCurrent) return;
+    restoreDeleteFocusRef.current = null;
+    searchRef.current?.focus();
+    setConfirmingDelete(null);
+  }, [confirmingDelete, data?.branches, status?.head?.branch, status?.head?.kind]);
 
   return (
     <Modal title={`管理本地分支 · ${project?.name ?? "项目"}`} onClose={closeDialog} wide>
+      <div
+        className="branch-picker-content"
+        onKeyDown={(event) => {
+          if (event.key !== "Escape" || !confirmingDelete) return;
+          event.preventDefault();
+          event.stopPropagation();
+          cancelDelete(confirmingDelete);
+        }}
+      >
       <div className="branch-picker-status" aria-live="polite">
         <div>
           <span className="branch-picker-eyebrow">当前 checkout</span>
@@ -371,7 +553,17 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
         <div className="error-bar" role="alert">该项目不是 Git 仓库，无法管理本地分支。</div>
       ) : null}
       {progress ? <div className="info-box branch-picker-progress" role="status">{controlsBusy ? "进行中" : "最近操作"}：{progress.message}（{progress.phase}）</div> : null}
-      {success ? <div className="info-box branch-picker-success" role="status">完成：{success}。已重新读取仓库状态。</div> : null}
+      {success ? (
+        <div className="info-box branch-picker-success" role="status">
+          完成：{success.message}。
+          {success.refreshed ? "已重新读取仓库状态。" : "仓库状态刷新失败；操作入口已禁用，请重试刷新。"}
+        </div>
+      ) : null}
+      {refreshError ? (
+        <div className="error-bar" role="alert">
+          <strong>仓库状态读取失败。</strong> {refreshError}
+        </div>
+      ) : null}
       {failure ? (
         <div className="error-bar" role="alert">
           <strong>分支操作未完成。</strong> {failure.message}
@@ -399,28 +591,55 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
           ref={searchRef}
           type="text"
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => {
+            if (confirmingDelete) cancelDelete(confirmingDelete, false);
+            setQuery(event.target.value);
+          }}
           onKeyDown={onSearchKeyDown}
           placeholder="搜索本地分支（↑ ↓ 选择，Enter 切换）"
           aria-label="搜索本地分支"
           aria-controls="local-branch-list"
         />
-        <button className="btn ghost" onClick={() => void refresh()} disabled={controlsBusy}>刷新</button>
+        <button
+          className="btn ghost"
+          onClick={() => {
+            if (confirmingDelete) cancelDelete(confirmingDelete, false);
+            void refresh();
+          }}
+          disabled={controlsBusy}
+        >
+          刷新
+        </button>
       </div>
       <span className="sr-only" aria-live="polite">
         {branches[selectedIndex] ? `已选择 ${branches[selectedIndex].name}` : "没有匹配的本地分支"}
       </span>
       <div id="local-branch-list" className="branch-picker-list" role="list" aria-label="本地分支">
-        {branches.length ? branches.map((branch, index) => (
-          <BranchRow
-            key={branch.name}
-            branch={branch}
-            selected={index === selectedIndex}
-            disabled={controlsBusy}
-            onChoose={switchTo}
-            onOpenWorktree={(worktreeId) => { closeDialog(); openWorktreeView(projectId, worktreeId); }}
-          />
-        )) : <div className="branch-picker-empty">没有匹配的本地分支。</div>}
+        {branches.length ? branches.map((branch, index) => {
+          const effectiveBranch = status?.head?.kind === "branch" && status.head.branch === branch.name
+            ? { ...branch, current: true }
+            : branch;
+          return (
+            <BranchRow
+              key={branch.name}
+              branch={effectiveBranch}
+              selected={index === selectedIndex}
+              disabled={controlsBusy}
+              deleteBlockedReason={deleteBlockedReason}
+              confirmingDelete={confirmingDelete === branch.name}
+              onChoose={chooseBranch}
+              onRequestDelete={requestDelete}
+              onConfirmDelete={deleteBranch}
+              onCancelDelete={(item) => cancelDelete(item.name)}
+              onOpenWorktree={(worktreeId) => { closeDialog(); openWorktreeView(projectId, worktreeId); }}
+              deleteButtonRef={(element) => {
+                if (element) deleteButtonRefs.current.set(branch.name, element);
+                else deleteButtonRefs.current.delete(branch.name);
+              }}
+              confirmDeleteRef={(element) => { confirmDeleteRef.current = element; }}
+            />
+          );
+        }) : <div className="branch-picker-empty">没有匹配的本地分支。</div>}
       </div>
 
       <section className="branch-picker-create" aria-labelledby="branch-create-title">
@@ -473,6 +692,7 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
           ))}
         </section>
       ) : null}
+      </div>
     </Modal>
   );
 }

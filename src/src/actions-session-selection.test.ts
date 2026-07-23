@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { apiMock } = vi.hoisted(() => ({
+const { apiMock, releaseTerminalMock } = vi.hoisted(() => ({
   apiMock: {
     listProjects: vi.fn(),
     markSessionSeen: vi.fn(),
   },
+  releaseTerminalMock: vi.fn(),
 }));
 
 vi.mock("./api", () => ({
@@ -21,12 +22,13 @@ vi.mock("./terminals", () => ({
   disposeHandle: vi.fn(),
   MAX_PERSISTENT_TERMINALS: 3,
   pruneHandles: vi.fn(),
-  releaseTerminal: vi.fn(),
+  releaseTerminal: releaseTerminalMock,
   resetForRestart: vi.fn(),
 }));
 
 import { selectSession } from "./actions";
 import { getState, setState } from "./store";
+import type { SessionView } from "./types";
 
 const oldSession = {
   id: "ses_old",
@@ -47,7 +49,14 @@ const oldSession = {
 };
 
 const newSession = { ...oldSession, id: "ses_new", title: "new" };
-const projectWith = (...sessions: typeof oldSession[]) => ([{
+const rpcSession = {
+  ...oldSession,
+  id: "ses_rpc",
+  title: "structured",
+  adapter: "pi",
+  transport: "json_rpc" as const,
+};
+const projectWith = (...sessions: SessionView[]) => ([{
   id: "prj_1",
   name: "Project",
   rootPath: "/tmp/project",
@@ -76,5 +85,18 @@ describe("selectSession", () => {
 
     await vi.waitFor(() => expect(getState().activeSessionId).toBe("ses_new"));
     expect(getState().attachedIds).toEqual(["ses_old", "ses_new"]);
+  });
+
+  it("never adds a JSON-RPC Session to the persistent xterm LRU", () => {
+    setState({
+      projects: projectWith(oldSession, rpcSession),
+      attachedIds: ["ses_rpc", "ses_old"],
+    });
+
+    selectSession("ses_rpc");
+
+    expect(getState().activeSessionId).toBe("ses_rpc");
+    expect(getState().attachedIds).toEqual(["ses_old"]);
+    expect(releaseTerminalMock).toHaveBeenCalledWith("ses_rpc");
   });
 });

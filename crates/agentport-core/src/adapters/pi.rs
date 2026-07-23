@@ -75,7 +75,13 @@ impl AgentAdapter for PiAdapter {
             }
         }
         if ctx.transport == AgentTransport::JsonRpc {
-            for flag in ["mode", "no-extensions", "no-skills", "no-prompt-templates", "no-themes"] {
+            for flag in [
+                "mode",
+                "no-extensions",
+                "no-skills",
+                "no-prompt-templates",
+                "no-themes",
+            ] {
                 if !super::has_flag(install, flag) {
                     return Err(CoreError::Blocked(format!(
                         "该版本 pi 无 --{flag}，无法启动结构化 RPC 会话"
@@ -101,9 +107,10 @@ impl AgentAdapter for PiAdapter {
     }
 
     fn build_resume(&self, ctx: &ResumeContext) -> Result<LaunchPlan> {
-        let native_id = ctx.agent_session_id.as_ref().ok_or_else(|| {
-            CoreError::Blocked("Pi 原生会话 ID 缺失，无法精确恢复".into())
-        })?;
+        let native_id = ctx
+            .agent_session_id
+            .as_ref()
+            .ok_or_else(|| CoreError::Blocked("Pi 原生会话 ID 缺失，无法精确恢复".into()))?;
         let install = &ctx.install;
         for flag in ["session", "session-dir", "approve"] {
             if !super::has_flag(install, flag) {
@@ -113,7 +120,13 @@ impl AgentAdapter for PiAdapter {
             }
         }
         if ctx.transport == AgentTransport::JsonRpc {
-            for flag in ["mode", "no-extensions", "no-skills", "no-prompt-templates", "no-themes"] {
+            for flag in [
+                "mode",
+                "no-extensions",
+                "no-skills",
+                "no-prompt-templates",
+                "no-themes",
+            ] {
                 if !super::has_flag(install, flag) {
                     return Err(CoreError::Blocked(format!(
                         "该版本 pi 无 --{flag}，无法恢复结构化 RPC 会话"
@@ -190,8 +203,15 @@ mod tests {
         let mut ctx = fx::launch_ctx(
             AgentType::Pi,
             &[
-                "session-id", "session", "session-dir", "approve", "mode",
-                "no-extensions", "no-skills", "no-prompt-templates", "no-themes",
+                "session-id",
+                "session",
+                "session-dir",
+                "approve",
+                "mode",
+                "no-extensions",
+                "no-skills",
+                "no-prompt-templates",
+                "no-themes",
             ],
             PermissionMode::Native,
         );
@@ -211,9 +231,15 @@ mod tests {
             Some("pi-native-id"),
         );
         let plan = PiAdapter.build_resume(&ctx).unwrap();
-        assert!(plan.argv.windows(2).any(|pair| pair == ["--session", "pi-native-id"]));
+        assert!(plan
+            .argv
+            .windows(2)
+            .any(|pair| pair == ["--session", "pi-native-id"]));
         assert!(!plan.argv.iter().any(|value| value == "--mode"));
-        assert_eq!(plan.assigned_agent_session_id.as_deref(), Some("pi-native-id"));
+        assert_eq!(
+            plan.assigned_agent_session_id.as_deref(),
+            Some("pi-native-id")
+        );
         assert_eq!(plan.transport, AgentTransport::Pty);
     }
 

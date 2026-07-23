@@ -99,14 +99,9 @@ pub fn redact_bytes(data: &[u8], secrets: &[Vec<u8>]) -> (Vec<u8>, u64) {
 fn replace_all(buf: &mut Vec<u8>, secrets: &[Vec<u8>]) -> u64 {
     let mut hits = 0u64;
     for secret in secrets {
-        loop {
-            match find_subslice(buf, secret) {
-                Some(pos) => {
-                    buf.splice(pos..pos + secret.len(), MASK.iter().copied());
-                    hits += 1;
-                }
-                None => break,
-            }
+        while let Some(pos) = find_subslice(buf, secret) {
+            buf.splice(pos..pos + secret.len(), MASK.iter().copied());
+            hits += 1;
         }
     }
     hits

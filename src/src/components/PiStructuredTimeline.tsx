@@ -61,8 +61,12 @@ export function isVisiblePiTimelineEvent(event: TimelineEvent): boolean {
   );
 }
 
-function parseReplay(chunk: Uint8Array, buffered: string): { events: TimelineEvent[]; remainder: string } {
-  const text = buffered + new TextDecoder().decode(chunk, { stream: true });
+export function parseReplay(
+  chunk: Uint8Array,
+  buffered: string,
+  decoder: TextDecoder,
+): { events: TimelineEvent[]; remainder: string } {
+  const text = buffered + decoder.decode(chunk, { stream: true });
   const lines = text.split("\n");
   const remainder = lines.pop() ?? "";
   const events: TimelineEvent[] = [];
@@ -88,17 +92,26 @@ export default function PiStructuredTimeline({ ses }: { ses: SessionView }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [attached, setAttached] = useState(false);
+  const [ended, setEnded] = useState(false);
   const replaying = useRef(true);
   const replayBuffer = useRef("");
+  const replayDecoder = useRef(new TextDecoder());
+
+  useEffect(() => {
+    if (ses.lifecycle === "running" || ses.lifecycle === "creating") setEnded(false);
+  }, [ses.lifecycle]);
 
   useEffect(() => {
     let cancelled = false;
     let attachmentId: number | null = null;
+    let attachmentEnded = false;
     replaying.current = true;
     replayBuffer.current = "";
+    replayDecoder.current = new TextDecoder();
     setEvents([]);
     setError(null);
     setAttached(false);
+    setEnded(false);
     const append = (incoming: TimelineEvent[]) => {
       if (!incoming.length) return;
       const visible = incoming.filter(isVisiblePiTimelineEvent);
@@ -108,14 +121,19 @@ export default function PiStructuredTimeline({ ses }: { ses: SessionView }) {
     channel.onmessage = (message) => {
       if (cancelled) return;
       if (message.t === "output" && replaying.current) {
-        const parsed = parseReplay(b64ToBytes(message.data), replayBuffer.current);
+        const parsed = parseReplay(
+          b64ToBytes(message.data),
+          replayBuffer.current,
+          replayDecoder.current,
+        );
         replayBuffer.current = parsed.remainder;
         append(parsed.events);
       } else if (message.t === "replay_done") {
         replaying.current = false;
-        if (replayBuffer.current.trim()) {
+        const finalLine = replayBuffer.current + replayDecoder.current.decode();
+        if (finalLine.trim()) {
           try {
-            const parsed: unknown = JSON.parse(replayBuffer.current);
+            const parsed: unknown = JSON.parse(finalLine);
             if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) append([parsed as TimelineEvent]);
           } catch {
             // Partial final frame stays a diagnostic-only log artifact.
@@ -127,9 +145,12 @@ export default function PiStructuredTimeline({ ses }: { ses: SessionView }) {
       } else if (message.t === "error") {
         setError(message.message);
       } else if (message.t === "exit") {
+        attachmentEnded = true;
         setAttached(false);
+        setEnded(true);
         setBusy(false);
       } else if (message.t === "detached") {
+        attachmentEnded = true;
         setAttached(false);
       }
     };
@@ -141,7 +162,14 @@ export default function PiStructuredTimeline({ ses }: { ses: SessionView }) {
           return;
         }
         attachmentId = info.attachmentId;
-        setAttached(info.childAlive);
+        if (attachmentEnded || !info.childAlive) {
+          setAttached(false);
+          if (!info.childAlive) setEnded(true);
+          void api.detachSession(ses.id, info.attachmentId).catch(() => undefined);
+          attachmentId = null;
+          return;
+        }
+        setAttached(true);
       })
       .catch((cause) => !cancelled && setError(errorText(cause)));
     return () => {
@@ -175,7 +203,7 @@ export default function PiStructuredTimeline({ ses }: { ses: SessionView }) {
     }
   };
 
-  const live = ses.lifecycle === "running" || ses.lifecycle === "creating";
+  const live = !ended && (ses.lifecycle === "running" || ses.lifecycle === "creating");
   return (
     <div className="pi-rpc-workspace" aria-label="Pi 结构化会话">
       <header className="pi-rpc-header">

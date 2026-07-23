@@ -350,6 +350,7 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "macos")]
+    #[ignore = "requires access to the interactive system credential store"]
     fn detect_finds_available_macos_keychain() {
         let broker = test_broker();
         assert_eq!(broker.backend(), SecretBackend::MacosKeychain);
@@ -361,6 +362,7 @@ mod tests {
 
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[ignore = "requires access to the interactive system credential store"]
     fn store_load_delete_roundtrip() {
         let broker = test_broker();
         let preset = test_preset();
@@ -399,6 +401,7 @@ mod tests {
 
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[ignore = "requires access to the interactive system credential store"]
     fn store_rejects_invalid_inputs_without_touching_the_store() {
         let broker = test_broker();
         let preset = test_preset();
@@ -435,6 +438,7 @@ mod tests {
 
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[ignore = "requires access to the interactive system credential store"]
     fn load_preset_secrets_is_all_or_nothing() {
         let broker = test_broker();
         let preset = test_preset();
@@ -563,6 +567,7 @@ mod tests {
 
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[ignore = "requires access to the interactive system credential store"]
     fn secret_ref_json_contains_metadata_only() {
         let broker = test_broker();
         let preset = test_preset();

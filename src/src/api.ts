@@ -16,6 +16,7 @@ import type {
   BranchOperationResult,
   HostInfo,
   LogCursorView,
+  RecoveryLogContext,
   LogTail,
   PermissionStr,
   Preset,
@@ -33,6 +34,7 @@ import type {
   StatusEventView,
   StatusCursorView,
   TimelineData,
+  TimelineAckSnapshot,
   WorktreeStatus,
   WorktreeView,
 } from "./types";
@@ -149,7 +151,8 @@ export const api = {
     replayTailBytes: number,
     channel: Channel<ChannelMsg>,
     resumeFrom: LogCursorView | null = null,
-  ) => invoke<AttachInfo>("attach_session", { sessionId, replayTailBytes, channel, resumeFrom }),
+    recoveryTarget: LogCursorView | null = null,
+  ) => invoke<AttachInfo>("attach_session", { sessionId, replayTailBytes, channel, resumeFrom, recoveryTarget }),
   detachSession: (sessionId: string, attachmentId: number) =>
     invoke<void>("detach_session", { sessionId, attachmentId }),
   markSessionSeen: (sessionId: string, cursor: StatusCursorView | null = null) =>
@@ -206,6 +209,8 @@ export const api = {
     }),
   switchLocalBranch: (projectId: string, branch: string) =>
     invoke<BranchOperationResult>("switch_local_branch", { projectId, branch }),
+  deleteLocalBranch: (projectId: string, branch: string) =>
+    invoke<BranchOperationResult>("delete_local_branch", { projectId, branch }),
   listAutoStashes: (projectId: string | null) =>
     invoke<AutoStashRecord[]>("list_auto_stashes", { projectId }),
   restoreAutoStash: (operationId: string, strategy: "target" | "source") =>
@@ -233,7 +238,7 @@ export const api = {
     invoke<SearchResult>("search_session_log", { sessionId, query, limit }),
   rebuildSearchIndex: () => invoke<void>("rebuild_search_index"),
   getTimeline: () => invoke<TimelineData>("get_timeline"),
-  ackTimeline: () => invoke<void>("ack_timeline"),
+  ackTimeline: (snapshots: TimelineAckSnapshot[]) => invoke<void>("ack_timeline", { snapshots }),
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
   diagHosts: () => invoke<HostInfo[]>("diag_hosts"),
@@ -247,6 +252,8 @@ export const api = {
   notifyTest: () => invoke<void>("notify_test"),
   readLogTail: (sessionId: string, bytes: number) =>
     invoke<LogTail>("read_log_tail", { sessionId, bytes }),
+  readRecoveryLogContext: (sessionId: string, cursor: LogCursorView) =>
+    invoke<RecoveryLogContext>("read_recovery_log_context", { sessionId, cursor }),
   revealInFileManager: (path: string) => invoke<void>("reveal_in_file_manager", { path }),
   openInSystemTerminal: (path: string) => invoke<void>("open_in_system_terminal", { path }),
   pickDirectory: () => invoke<string | null>("pick_directory"),

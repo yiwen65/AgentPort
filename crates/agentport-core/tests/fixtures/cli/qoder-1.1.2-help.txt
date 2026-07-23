@@ -90,4 +90,3 @@ Commands:
   status                               Show session status
   feedback                             Submit feedback
   wiki [args...]                       Generate wiki documentation for projects
-

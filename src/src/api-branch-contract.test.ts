@@ -32,6 +32,7 @@ describe("local branch Tauri contract", () => {
   it("uses the Rust command argument names exactly", async () => {
     await api.createLocalBranch("p1", "feature/new", "main");
     await api.switchLocalBranch("p1", "feature/new");
+    await api.deleteLocalBranch("p1", "feature/old");
     await api.restoreAutoStash("op-1", "target");
     await api.cleanupAutoStash("op-1");
 
@@ -44,11 +45,15 @@ describe("local branch Tauri contract", () => {
       projectId: "p1",
       branch: "feature/new",
     });
-    expect(invokeMock).toHaveBeenNthCalledWith(3, "restore_auto_stash", {
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "delete_local_branch", {
+      projectId: "p1",
+      branch: "feature/old",
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "restore_auto_stash", {
       operationId: "op-1",
       strategy: "target",
     });
-    expect(invokeMock).toHaveBeenNthCalledWith(4, "cleanup_auto_stash", {
+    expect(invokeMock).toHaveBeenNthCalledWith(5, "cleanup_auto_stash", {
       operationId: "op-1",
     });
   });

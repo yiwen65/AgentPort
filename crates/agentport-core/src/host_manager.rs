@@ -618,12 +618,25 @@ impl<'a> HostManager<'a> {
                         .db
                         .update_session_lifecycle_if_host(session_id, host_pid, run, next)?;
                 } else if !pid_alive(host_pid as i32) {
-                    let _ = self.db.update_session_lifecycle_if_host(
-                        session_id,
-                        host_pid,
-                        run,
-                        Lifecycle::Interrupted,
-                    )?;
+                    if let Some((run_id, run_ordinal)) = run {
+                        let _ = self.db.mark_host_interrupted_and_record(
+                            session_id,
+                            host_pid,
+                            run_id,
+                            run_ordinal,
+                            "host:interrupted:pid-dead",
+                        )?;
+                    } else {
+                        // This is compatibility-only data with no durable run
+                        // identity.  Preserve the lifecycle fact, but do not
+                        // invent a run-scoped timeline event we cannot fence.
+                        let _ = self.db.update_session_lifecycle_if_host(
+                            session_id,
+                            host_pid,
+                            None,
+                            Lifecycle::Interrupted,
+                        )?;
+                    }
                 } else {
                     tracing::warn!(
                         session = %session_id,
@@ -678,7 +691,7 @@ impl<'a> HostManager<'a> {
                 // fails; a newer launch cannot be classified by this pass.
                 let binding = self.db.session_host_binding(&s.id)?;
                 let result = match self.connect_bound_host(&s.id) {
-                    Ok(_) => Ok(binding),
+                    Ok((_, info, _)) => Ok((binding, info.log_cursor)),
                     Err(error) => Err((error, binding)),
                 };
                 if result.is_ok()
@@ -697,7 +710,12 @@ impl<'a> HostManager<'a> {
                 tracing::warn!(session = %s.id, skipped, "reconcile: skipped unparseable status-event lines");
             }
             match check {
-                Ok(_) => {}
+                Ok((_binding, log_cursor)) => {
+                    // This Host handshake is the only authoritative source
+                    // for GUI-closed output progress.  Persist it so a later
+                    // recovery entry can validate run + generation + offset.
+                    self.db.set_latest_log_cursor(&s.id, &log_cursor)?;
+                }
                 Err((CoreError::Host(_), binding)) => {
                     // No unlink here: session socket paths are stable across
                     // restarts, so unlinking after a failed old observation
@@ -813,15 +831,27 @@ fn spawn_host_reaper(
         let Ok(db) = Db::open(&paths) else {
             return;
         };
-        let next = terminal_lifecycle.unwrap_or(Lifecycle::Interrupted);
-        // The reaper has no authority over a replacement Host/run. A false
-        // CAS is expected when restart won the race and needs no retry.
-        let _ = db.update_session_lifecycle_if_host(
-            &session_id,
-            host_pid,
-            Some((&run_id, run_ordinal)),
-            next,
-        );
+        if let Some(next) = terminal_lifecycle {
+            // The reaper has no authority over a replacement Host/run. A
+            // false CAS is expected when restart won the race and needs no
+            // retry.
+            let _ = db.update_session_lifecycle_if_host(
+                &session_id,
+                host_pid,
+                Some((&run_id, run_ordinal)),
+                next,
+            );
+        } else {
+            // `wait` observed this exact Host child exit, but no trustworthy
+            // host-state record establishes a graceful terminal reason.
+            let _ = db.mark_host_interrupted_and_record(
+                &session_id,
+                host_pid,
+                &run_id,
+                run_ordinal,
+                "host:interrupted:reaper-observed-exit-without-record",
+            );
+        }
     });
 }
 
@@ -833,6 +863,13 @@ pub struct HostClient {
     pub session_id: String,
     pub protocol: u32,
     token: String,
+}
+
+struct ProtocolConnectOptions {
+    resume_from: Option<LogCursor>,
+    replay_target: Option<LogCursor>,
+    subscribe_output: bool,
+    requested_protocol: u32,
 }
 
 impl HostClient {
@@ -865,14 +902,40 @@ impl HostClient {
         resume_from: Option<LogCursor>,
         subscribe_output: bool,
     ) -> Result<(Self, AttachInfo)> {
+        Self::connect_with_recovery_target(
+            socket_path,
+            session_id,
+            token,
+            replay_tail_bytes,
+            resume_from,
+            None,
+            subscribe_output,
+        )
+    }
+
+    /// Connect with a bounded recovery-context target. This remains separate
+    /// from normal resume so a regular reconnect never skips a contiguous
+    /// stream merely because an old timeline entry exists.
+    pub fn connect_with_recovery_target(
+        socket_path: &str,
+        session_id: &str,
+        token: &str,
+        replay_tail_bytes: u64,
+        resume_from: Option<LogCursor>,
+        replay_target: Option<LogCursor>,
+        subscribe_output: bool,
+    ) -> Result<(Self, AttachInfo)> {
         match Self::connect_protocol(
             socket_path,
             session_id,
             token,
             replay_tail_bytes,
-            resume_from.clone(),
-            subscribe_output,
-            PROTOCOL_VERSION,
+            ProtocolConnectOptions {
+                resume_from: resume_from.clone(),
+                replay_target: replay_target.clone(),
+                subscribe_output,
+                requested_protocol: PROTOCOL_VERSION,
+            },
         ) {
             Ok(connected) => Ok(connected),
             // An old v1 Host rejects v2 before it receives any application
@@ -882,9 +945,12 @@ impl HostClient {
                 session_id,
                 token,
                 replay_tail_bytes,
-                None,
-                subscribe_output,
-                LEGACY_PROTOCOL_VERSION,
+                ProtocolConnectOptions {
+                    resume_from: None,
+                    replay_target: None,
+                    subscribe_output,
+                    requested_protocol: LEGACY_PROTOCOL_VERSION,
+                },
             ),
             Err(error) => Err(error),
         }
@@ -895,10 +961,14 @@ impl HostClient {
         session_id: &str,
         token: &str,
         replay_tail_bytes: u64,
-        resume_from: Option<LogCursor>,
-        subscribe_output: bool,
-        requested_protocol: u32,
+        options: ProtocolConnectOptions,
     ) -> Result<(Self, AttachInfo)> {
+        let ProtocolConnectOptions {
+            resume_from,
+            replay_target,
+            subscribe_output,
+            requested_protocol,
+        } = options;
         let stream = UnixStream::connect(socket_path).map_err(|e| {
             use std::io::ErrorKind::*;
             match e.kind() {
@@ -919,6 +989,7 @@ impl HostClient {
                 token: token.to_string(),
                 replay_tail_bytes,
                 resume_from,
+                replay_target,
                 subscribe_output,
             },
         )
@@ -934,6 +1005,7 @@ impl HostClient {
         })?;
         let frame = first
             .ok_or_else(|| CoreError::Host("host closed connection during handshake".into()))?;
+        let frame = normalize_host_frame(requested_protocol, frame);
 
         let info = match frame {
             HostFrame::HelloOk {
@@ -1043,6 +1115,7 @@ impl HostClient {
     /// Blocking read of one frame (None on EOF).
     pub fn read_frame(&mut self) -> Result<Option<HostFrame>> {
         crate::protocol::read_frame(&mut self.reader)
+            .map(|frame| frame.map(|frame| normalize_host_frame(self.protocol, frame)))
             .map_err(|e| CoreError::Host(format!("socket read failed: {e}")))
     }
 
@@ -1081,6 +1154,8 @@ mod tests {
     enum MockMode {
         /// Full protocol: verify Hello, echo Input, Pong, Exit on Stop.
         Normal,
+        /// A real v1 wire shape: reject v2, then omit every run-aware field.
+        LegacyStream,
         /// Accept connections but never speak (handshake timeout test).
         Silent,
     }
@@ -1164,23 +1239,118 @@ mod tests {
             Ok(f) => f,
             Err(_) => return,
         };
-        let ok = matches!(
-            &hello,
+        let requested_protocol = match &hello {
             Some(ClientFrame::Hello {
+                protocol,
                 session_id,
-                token: t,
+                token: presented_token,
                 ..
-            }) if *session_id == sid && *t == token
-        );
-        if !ok {
-            let _ = write_frame(
+            }) if *session_id == sid && *presented_token == token => *protocol,
+            _ => {
+                let _ = write_frame(
+                    &mut writer,
+                    &HostFrame::Error {
+                        session_id: None,
+                        message: "bad session id or token".into(),
+                    },
+                );
+                return;
+            }
+        };
+        if matches!(mode, MockMode::LegacyStream) {
+            if requested_protocol != LEGACY_PROTOCOL_VERSION {
+                let _ = write_frame(
+                    &mut writer,
+                    &HostFrame::Error {
+                        session_id: Some(sid),
+                        message: "unsupported protocol".into(),
+                    },
+                );
+                return;
+            }
+            if write_frame(
                 &mut writer,
-                &HostFrame::Error {
-                    session_id: None,
-                    message: "bad session id or token".into(),
-                },
-            );
-            return;
+                &serde_json::json!({
+                    "type": "hello_ok",
+                    "protocol": LEGACY_PROTOCOL_VERSION,
+                    "session_id": sid,
+                    "host_pid": std::process::id(),
+                    "child_alive": true,
+                    "log_bytes": 8,
+                }),
+            )
+            .and_then(|_| {
+                write_frame(
+                    &mut writer,
+                    &serde_json::json!({
+                        "type": "output",
+                        "session_id": sid,
+                        "data": "YWJjZA==",
+                        "offset": 0,
+                    }),
+                )
+            })
+            .and_then(|_| {
+                write_frame(
+                    &mut writer,
+                    &serde_json::json!({
+                        "type": "output",
+                        "session_id": sid,
+                        "data": "ZWZnaA==",
+                        "offset": 4,
+                    }),
+                )
+            })
+            .and_then(|_| {
+                write_frame(
+                    &mut writer,
+                    &serde_json::json!({
+                        "type": "replay_done",
+                        "session_id": sid,
+                        "offset": 8,
+                    }),
+                )
+            })
+            .is_err()
+            {
+                return;
+            }
+            loop {
+                let frame: Option<ClientFrame> = match crate::protocol::read_frame(&mut reader) {
+                    Ok(frame) => frame,
+                    Err(_) => return,
+                };
+                match frame {
+                    Some(ClientFrame::Ping { ref session_id })
+                        if write_frame(
+                            &mut writer,
+                            &serde_json::json!({
+                                "type": "output",
+                                "session_id": session_id,
+                                "data": "aWprbA==",
+                                "offset": 8,
+                            }),
+                        )
+                        .and_then(|_| {
+                            write_frame(
+                                &mut writer,
+                                &serde_json::json!({
+                                    "type": "heartbeat",
+                                    "session_id": session_id,
+                                    "at": Utc::now(),
+                                    "log_bytes": 12,
+                                }),
+                            )
+                        })
+                        .is_err() =>
+                    {
+                        return
+                    }
+                    Some(ClientFrame::Ping { .. }) => {}
+                    Some(ClientFrame::Detach { .. }) | None => return,
+                    _ => {}
+                }
+            }
         }
         if write_frame(
             &mut writer,
@@ -1208,34 +1378,36 @@ mod tests {
             };
             let Some(frame) = frame else { return };
             match frame {
-                ClientFrame::Input { session_id, data } => {
-                    if write_frame(
-                        &mut writer,
-                        &HostFrame::Output {
-                            session_id,
-                            data,
-                            offset: 0,
-                            cursor: LogCursor::default(),
-                        },
-                    )
-                    .is_err()
-                    {
-                        return;
-                    }
+                ClientFrame::Input {
+                    ref session_id,
+                    ref data,
+                } if write_frame(
+                    &mut writer,
+                    &HostFrame::Output {
+                        session_id: session_id.clone(),
+                        data: data.clone(),
+                        offset: 0,
+                        cursor: LogCursor::default(),
+                    },
+                )
+                .is_err() =>
+                {
+                    return
                 }
-                ClientFrame::Ping { session_id } => {
+                ClientFrame::Input { .. } => {}
+                ClientFrame::Ping { ref session_id }
                     if write_frame(
                         &mut writer,
                         &HostFrame::Pong {
-                            session_id,
+                            session_id: session_id.clone(),
                             at: Utc::now(),
                         },
                     )
-                    .is_err()
-                    {
-                        return;
-                    }
+                    .is_err() =>
+                {
+                    return
                 }
+                ClientFrame::Ping { .. } => {}
                 ClientFrame::Stop { session_id, .. } => {
                     let _ = write_frame(
                         &mut writer,
@@ -1349,6 +1521,94 @@ mod tests {
         ));
         client.resize(100, 40).unwrap(); // no reply expected, must not error
         client.interrupt().unwrap();
+    }
+
+    #[test]
+    fn legacy_stream_keeps_consecutive_output_and_reconnect_contiguous() {
+        fn apply_output(rendered: &mut Vec<u8>, next_offset: &mut usize, frame: HostFrame) {
+            let HostFrame::Output { data, cursor, .. } = frame else {
+                panic!("expected output frame");
+            };
+            assert_eq!(cursor.run_id, LEGACY_RUN_ID);
+            assert_eq!(cursor.run_ordinal, LEGACY_RUN_ORDINAL);
+            assert_eq!(cursor.generation, 0);
+            let start = usize::try_from(cursor.offset).unwrap();
+            let end = start + data.len();
+            if end <= *next_offset {
+                return;
+            }
+            let skip = next_offset.saturating_sub(start);
+            rendered.extend_from_slice(&data[skip..]);
+            *next_offset = end;
+        }
+
+        let (_dir, paths, _db) = fixture();
+        let sid = ids::new_id("ses");
+        let token = ids::new_host_token();
+        let sock = paths.socket_path(&sid);
+        let _mock = MockHost::start(&sock, &sid, &token, MockMode::LegacyStream);
+
+        let (client, info) = HostClient::connect(&sock.to_string_lossy(), &sid, &token, 8).unwrap();
+        assert_eq!(info.protocol, LEGACY_PROTOCOL_VERSION);
+        assert_eq!(info.log_cursor.offset, 8);
+
+        let mut client = client;
+        let mut rendered = Vec::new();
+        let mut next_offset = 0;
+        apply_output(
+            &mut rendered,
+            &mut next_offset,
+            client.read_frame().unwrap().unwrap(),
+        );
+        apply_output(
+            &mut rendered,
+            &mut next_offset,
+            client.read_frame().unwrap().unwrap(),
+        );
+        assert_eq!(rendered, b"abcdefgh");
+        assert_eq!(next_offset, 8);
+        assert!(matches!(
+            client.read_frame().unwrap(),
+            Some(HostFrame::ReplayDone { cursor, .. }) if cursor.offset == 8
+        ));
+
+        let (mut reconnected, reconnect_info) = client
+            .reconnect(&sock.to_string_lossy(), 8)
+            .expect("v2 rejection must fall back to v1 again on reconnect");
+        drop(client);
+        assert_eq!(reconnect_info.protocol, LEGACY_PROTOCOL_VERSION);
+        assert_eq!(reconnect_info.log_cursor.offset, 8);
+
+        // Replayed blocks are complete duplicates of the renderer's cursor.
+        apply_output(
+            &mut rendered,
+            &mut next_offset,
+            reconnected.read_frame().unwrap().unwrap(),
+        );
+        apply_output(
+            &mut rendered,
+            &mut next_offset,
+            reconnected.read_frame().unwrap().unwrap(),
+        );
+        assert_eq!(rendered, b"abcdefgh");
+        assert!(matches!(
+            reconnected.read_frame().unwrap(),
+            Some(HostFrame::ReplayDone { cursor, .. }) if cursor.offset == 8
+        ));
+
+        // The first live block after replay starts exactly at the replay cursor.
+        reconnected.ping().unwrap();
+        apply_output(
+            &mut rendered,
+            &mut next_offset,
+            reconnected.read_frame().unwrap().unwrap(),
+        );
+        assert_eq!(rendered, b"abcdefghijkl");
+        assert_eq!(next_offset, 12);
+        assert!(matches!(
+            reconnected.read_frame().unwrap(),
+            Some(HostFrame::Heartbeat { log_cursor, .. }) if log_cursor.offset == 12
+        ));
     }
 
     // -- 2. bad token / bad session id -> Protocol ----------------------------
@@ -1465,6 +1725,7 @@ mod tests {
             source: StateSource::Hook,
             confidence: Confidence::High,
             evidence: Some("hook:PreToolUse".into()),
+            log_cursor: None,
             occurred_at: Utc::now(),
         };
         let event_one = ev(1);
@@ -1543,6 +1804,62 @@ mod tests {
         assert_eq!(db.get_session(&id).unwrap().lifecycle, Lifecycle::Running);
     }
 
+    #[test]
+    fn reconcile_verified_dead_host_creates_one_traceable_interruption_event() {
+        let (_dir, paths, db) = fixture();
+        add_project(&db, "prj_dead_event");
+        let id = ids::new_id("ses");
+        db.insert_session(&session(&id, "prj_dead_event", Lifecycle::Creating))
+            .unwrap();
+        let run = db.create_session_run(&id, "run_dead_event").unwrap();
+        let socket = paths.socket_path(&id);
+        let log = paths.run_log_path(&id, &run.run_id);
+        db.claim_session_run(&id, &run.run_id, run.run_ordinal, &log.to_string_lossy())
+            .unwrap();
+        db.bind_session_host_for_run(
+            &id,
+            &run.run_id,
+            run.run_ordinal,
+            999_999,
+            &socket.to_string_lossy(),
+        )
+        .unwrap();
+        db.update_session_lifecycle_if_host(
+            &id,
+            999_999,
+            Some((&run.run_id, run.run_ordinal)),
+            Lifecycle::Running,
+        )
+        .unwrap();
+        let last_log = LogCursor {
+            run_id: run.run_id.clone(),
+            run_ordinal: run.run_ordinal,
+            generation: 3,
+            offset: 42,
+        };
+        db.set_latest_log_cursor(&id, &last_log).unwrap();
+        let mgr = HostManager {
+            paths: &paths,
+            db: &db,
+        };
+        mgr.reconcile_on_startup().unwrap();
+        let history = db.status_history(&id, 10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].state, AgentState::Exited);
+        assert_eq!(
+            history[0].evidence.as_deref(),
+            Some("host:interrupted:pid-dead")
+        );
+        assert_eq!(history[0].run_id, run.run_id);
+        assert_eq!(history[0].run_ordinal, run.run_ordinal);
+        assert_eq!(history[0].log_cursor.as_ref(), Some(&last_log));
+
+        // Reopen/reconcile is idempotent: the terminal lifecycle transition
+        // was the guard that emitted this recovery fact.
+        mgr.reconcile_on_startup().unwrap();
+        assert_eq!(db.status_history(&id, 10).unwrap().len(), 1);
+    }
+
     // -- 6. launch failure: no binary -> exited, nothing left behind ------------
 
     #[test]
@@ -1570,7 +1887,7 @@ mod tests {
         });
         std::env::remove_var("AGENTPORT_HOST_BIN");
 
-        let e = r.err().expect("launch must fail");
+        let e = r.expect_err("launch must fail");
         assert!(matches!(e, CoreError::Host(_)), "got {e:?}");
         assert_eq!(
             db.get_session(&sid).unwrap().lifecycle,
