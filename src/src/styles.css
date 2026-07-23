@@ -59,11 +59,16 @@
   --segment-selected-text: #ffffff;
   --unread: #60a5fa;
   /* Frosted source list: the native macOS Sidebar material provides the
-     blur; this veil only harmonizes hue and depth. `--sidebar-border` is
-     the hairline divider, `--sidebar-chip` the frosted quick-action pill.
-     Platforms without the native layer override --sidebar-glass with a
-     solid color (see the data-vibrancy rules after the theme blocks). */
-  --sidebar-glass: rgba(22, 22, 28, 0.8);
+     blur. The base veil keeps the backdrop at whisper level while the
+     layered gradient adds depth — a light catch under the window chrome,
+     gently deepening toward the footer. `--sidebar-border` is the hairline
+     divider, `--sidebar-chip` the frosted quick-action pill. Platforms
+     without the native layer override --sidebar-glass with a solid color
+     (see the data-vibrancy rules after the theme blocks). */
+  --sidebar-glass: rgba(22, 22, 28, 0.72);
+  --sidebar-glass-layers:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055) 0%, rgba(255, 255, 255, 0) 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02) 0%, rgba(0, 0, 0, 0.14) 100%);
   --sidebar-border: rgba(255, 255, 255, 0.075);
   --sidebar-chip: rgba(32, 32, 39, 0.85);
   --terminal-scroll-thumb: rgba(243, 245, 251, 0.28);
@@ -134,8 +139,12 @@
   --segment-selected-text: #ffffff;
   --unread: #34c759;
   /* Frosted source list (light): milky white veil over the native Sidebar
-     material; see the dark block and data-vibrancy fallback notes. */
-  --sidebar-glass: rgba(250, 250, 253, 0.72);
+     material, with a porcelain-top to misted-footer depth gradient; see
+     the dark block and data-vibrancy fallback notes. */
+  --sidebar-glass: rgba(250, 250, 253, 0.6);
+  --sidebar-glass-layers:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0) 30%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0) 55%, rgba(206, 210, 224, 0.3) 100%);
   --sidebar-border: rgba(17, 18, 23, 0.08);
   --sidebar-chip: rgba(255, 255, 255, 0.85);
   --terminal-scroll-thumb: rgba(17, 18, 23, 0.075);
@@ -164,10 +173,12 @@
    frontend sets data-vibrancy in applyThemeSettings (macOS = on). */
 :root[data-vibrancy="off"][data-theme="dark"] {
   --sidebar-glass: #27272b;
+  --sidebar-glass-layers: none;
 }
 
 :root[data-vibrancy="off"][data-theme="light"] {
   --sidebar-glass: #efefef;
+  --sidebar-glass-layers: none;
 }
 
 /* ------------------------------------------------------------------ */
@@ -491,9 +502,14 @@ button {
   align-self: flex-start;
   height: calc(100% + 48px);
   margin-top: -48px;
-  background: var(--sidebar-glass);
+  background-color: var(--sidebar-glass);
+  background-image: var(--sidebar-glass-layers, none);
   border-right: 1px solid var(--sidebar-border);
-  border-radius: 0 16px 16px 0;
+  /* Square column: rounded corners cut notches into the glass, and the
+     cutouts show a different backing (opaque workspace / bare material)
+     than the veiled gradient next to them — a visible patch at each
+     corner. Edge-to-edge glass with the hairline divider reads cleaner. */
+  border-radius: 0;
   overflow: hidden;
   /* The panel only ever animates transform (compositor work, zero layout
      churn); the width commit lands once per toggle, driven by the
