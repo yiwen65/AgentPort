@@ -48,12 +48,12 @@ fn probe_resolves_runtime_from_login_shell_path() {
     fs::create_dir_all(&runtime_dir).unwrap();
     fs::create_dir_all(&cli_dir).unwrap();
 
-    write_executable(
-        &runtime_dir,
-        "node",
-        "#!/bin/sh\nif [ \"$2\" = \"--version\" ]; then\n  echo 'codex-cli 9.9.9'\nelse\n  echo 'Usage: codex'\n  echo '  --sandbox'\nfi\n",
+    std::os::unix::fs::symlink("/bin/sh", runtime_dir.join("node")).unwrap();
+    let codex = write_executable(
+        &cli_dir,
+        "codex",
+        "#!/usr/bin/env node\nif [ \"$1\" = \"--version\" ]; then\n  echo 'codex-cli 9.9.9'\nelse\n  echo 'Usage: codex'\n  echo '  --sandbox'\nfi\n",
     );
-    let codex = write_executable(&cli_dir, "codex", "#!/usr/bin/env node\n");
     let login_shell = write_executable(
         temp.path(),
         "login-shell",
