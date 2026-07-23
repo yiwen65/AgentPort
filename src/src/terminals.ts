@@ -563,11 +563,40 @@ function bindTerminalContainer(handle: TermHandle, container: HTMLDivElement) {
   handle.resizeObserver.observe(container);
 }
 
+function openTerminalWithCompatibleFontMeasurement(
+  term: Terminal,
+  container: HTMLDivElement,
+) {
+  const offscreenCanvas = Object.getOwnPropertyDescriptor(globalThis, "OffscreenCanvas");
+  const canTemporarilyHideOffscreenCanvas = offscreenCanvas
+    && "value" in offscreenCanvas
+    && (offscreenCanvas.configurable || offscreenCanvas.writable);
+  if (getState().platform?.os !== "linux" || !canTemporarilyHideOffscreenCanvas) {
+    term.open(container);
+    return;
+  }
+
+  // xterm 5.5 prefers OffscreenCanvas TextMetrics when it opens. WebKitGTK
+  // can return scaled metrics here, producing oversized cells around normally
+  // sized glyphs. Hiding only this constructor makes xterm use its built-in
+  // DOM measurement fallback; CanvasAddon is loaded after the original global
+  // descriptor has been restored.
+  try {
+    Object.defineProperty(globalThis, "OffscreenCanvas", {
+      ...offscreenCanvas,
+      value: undefined,
+    });
+    term.open(container);
+  } finally {
+    Object.defineProperty(globalThis, "OffscreenCanvas", offscreenCanvas);
+  }
+}
+
 export function mountTerminal(sessionId: string, container: HTMLDivElement) {
   const handle = getOrCreateHandle(sessionId);
   if (!handle.opened) {
     handle.opened = true;
-    handle.term.open(container);
+    openTerminalWithCompatibleFontMeasurement(handle.term, container);
     bindTerminalContainer(handle, container);
     try {
       // Full-screen agent TUIs rely on Canvas to preserve their ANSI palette

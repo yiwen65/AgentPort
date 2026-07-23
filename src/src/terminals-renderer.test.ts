@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const rendererMocks = vi.hoisted(() => {
   const terminals: FakeTerminal[] = [];
   const channels: Array<{ onmessage?: (message: unknown) => void }> = [];
+  const offscreenCanvasDuringCanvasLoad: unknown[] = [];
+  const offscreenCanvasDuringOpen: unknown[] = [];
   const apiMock = {
     attachSession: vi.fn().mockResolvedValue({
       attachmentId: 1,
@@ -20,7 +22,7 @@ const rendererMocks = vi.hoisted(() => {
     resizePty: vi.fn().mockResolvedValue(undefined),
     sendInput: vi.fn().mockResolvedValue(undefined),
   };
-  const config = { canvasShouldFail: false };
+  const config = { canvasShouldFail: false, openShouldFail: false };
   class FakeTerminal {
     static strings = { promptLabel: "", tooMuchOutput: "" };
     private readonly dataListeners = new Set<(data: string) => void>();
@@ -31,8 +33,9 @@ const rendererMocks = vi.hoisted(() => {
     textarea: HTMLTextAreaElement | undefined;
     buffer = { active: { viewportY: 0, baseY: 0, type: "normal" } };
     loadAddon = vi.fn((addon: unknown) => {
-      if (addon instanceof FakeCanvasAddon && config.canvasShouldFail) {
-        throw new Error("Canvas unavailable");
+      if (addon instanceof FakeCanvasAddon) {
+        offscreenCanvasDuringCanvasLoad.push(globalThis.OffscreenCanvas);
+        if (config.canvasShouldFail) throw new Error("Canvas unavailable");
       }
     });
     onData = vi.fn((listener: (data: string) => void) => {
@@ -41,6 +44,8 @@ const rendererMocks = vi.hoisted(() => {
     });
     onScroll = vi.fn();
     open(container: HTMLDivElement) {
+      offscreenCanvasDuringOpen.push(globalThis.OffscreenCanvas);
+      if (config.openShouldFail) throw new Error("Terminal open failed");
       this.element = document.createElement("div");
       this.textarea = document.createElement("textarea");
       this.element.appendChild(this.textarea);
@@ -70,6 +75,8 @@ const rendererMocks = vi.hoisted(() => {
     apiMock,
     channels,
     config,
+    offscreenCanvasDuringCanvasLoad,
+    offscreenCanvasDuringOpen,
     terminals,
     FakeTerminal,
     FakeCanvasAddon,
@@ -111,10 +118,14 @@ describe("terminal renderer", () => {
   beforeEach(() => {
     vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
     rendererMocks.config.canvasShouldFail = false;
+    rendererMocks.config.openShouldFail = false;
     rendererMocks.channels.length = 0;
+    rendererMocks.offscreenCanvasDuringCanvasLoad.length = 0;
+    rendererMocks.offscreenCanvasDuringOpen.length = 0;
     vi.clearAllMocks();
     setState({
       activeSessionId: "renderer-test",
+      platform: null,
       projects: [{
         id: "prj_renderer",
         name: "Renderer",
@@ -158,6 +169,73 @@ describe("terminal renderer", () => {
       expect.any(rendererMocks.FakeCanvasAddon),
     );
     expect(getState().rendererMode).toBe("canvas");
+  });
+
+  it("uses DOM font measurement while retaining Canvas rendering on Linux", () => {
+    const offscreenCanvas = class {};
+    vi.stubGlobal("OffscreenCanvas", offscreenCanvas);
+    setState({
+      platform: {
+        os: "linux",
+        osVersion: "24.04",
+        arch: "x86_64",
+        webview: "WebKitGTK",
+        appVersion: "0.1.0",
+      },
+    });
+
+    mountTerminal("renderer-test", document.createElement("div"));
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+
+    expect(rendererMocks.offscreenCanvasDuringOpen[
+      rendererMocks.offscreenCanvasDuringOpen.length - 1
+    ]).toBeUndefined();
+    expect(globalThis.OffscreenCanvas).toBe(offscreenCanvas);
+    expect(rendererMocks.offscreenCanvasDuringCanvasLoad[
+      rendererMocks.offscreenCanvasDuringCanvasLoad.length - 1
+    ]).toBe(offscreenCanvas);
+    expect(terminal.loadAddon).toHaveBeenCalledWith(expect.any(rendererMocks.FakeCanvasAddon));
+    expect(getState().rendererMode).toBe("canvas");
+  });
+
+  it("restores OffscreenCanvas when opening a Linux terminal fails", () => {
+    const offscreenCanvas = class {};
+    vi.stubGlobal("OffscreenCanvas", offscreenCanvas);
+    rendererMocks.config.openShouldFail = true;
+    setState({
+      platform: {
+        os: "linux",
+        osVersion: "24.04",
+        arch: "x86_64",
+        webview: "WebKitGTK",
+        appVersion: "0.1.0",
+      },
+    });
+
+    expect(() => mountTerminal("renderer-test", document.createElement("div")))
+      .toThrow("Terminal open failed");
+    expect(globalThis.OffscreenCanvas).toBe(offscreenCanvas);
+  });
+
+  it("keeps the native font measurement path unchanged on macOS", () => {
+    const offscreenCanvas = class {};
+    vi.stubGlobal("OffscreenCanvas", offscreenCanvas);
+    setState({
+      platform: {
+        os: "macos",
+        osVersion: "15.0",
+        arch: "aarch64",
+        webview: "WebKit",
+        appVersion: "0.1.0",
+      },
+    });
+
+    mountTerminal("renderer-test", document.createElement("div"));
+
+    expect(rendererMocks.offscreenCanvasDuringOpen[
+      rendererMocks.offscreenCanvasDuringOpen.length - 1
+    ]).toBe(offscreenCanvas);
+    expect(globalThis.OffscreenCanvas).toBe(offscreenCanvas);
   });
 
   it("uses the DOM renderer only when CanvasAddon fails to initialize", () => {
