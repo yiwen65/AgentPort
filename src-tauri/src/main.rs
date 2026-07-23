@@ -95,6 +95,53 @@ struct RendererAttachment {
     id: u64,
     host: HostIdentity,
     writer: HostWriter,
+    /// Highest log cursor that this exact renderer attachment confirmed after
+    /// its xterm write queue consumed the corresponding frame. Host cursors
+    /// are producer high-waters and must never substitute for this boundary.
+    rendered_log_cursor: Option<LogCursor>,
+}
+
+fn log_cursor_is_not_older(candidate: &LogCursor, current: &LogCursor) -> bool {
+    candidate.run_ordinal > current.run_ordinal
+        || (candidate.run_ordinal == current.run_ordinal
+            && candidate.run_id == current.run_id
+            && (candidate.generation > current.generation
+                || (candidate.generation == current.generation
+                    && candidate.offset >= current.offset)))
+}
+
+fn cursor_matches_attachment(host: &HostIdentity, cursor: &LogCursor) -> bool {
+    host.matches_run(&cursor.run_id, cursor.run_ordinal)
+        || (host.protocol == agentport_core::protocol::LEGACY_PROTOCOL_VERSION
+            && cursor.run_id == LEGACY_RUN_ID
+            && cursor.run_ordinal == LEGACY_RUN_ORDINAL)
+}
+
+fn record_renderer_log_cursor(
+    attachments: &AttachmentMap,
+    session_id: &str,
+    attachment_id: u64,
+    cursor: &LogCursor,
+) -> std::result::Result<(), String> {
+    if cursor.generation < 0 || cursor.offset < 0 || cursor.run_ordinal < 0 {
+        return Err("renderer log cursor must not contain negative values".into());
+    }
+    let mut live = attachments.lock().unwrap();
+    let attachment = live
+        .get_mut(session_id)
+        .filter(|attachment| attachment.id == attachment_id)
+        .ok_or_else(|| "renderer attachment is no longer current".to_string())?;
+    if !cursor_matches_attachment(&attachment.host, cursor) {
+        return Err("renderer log cursor belongs to a different Host run".into());
+    }
+    if attachment
+        .rendered_log_cursor
+        .as_ref()
+        .is_none_or(|current| log_cursor_is_not_older(cursor, current))
+    {
+        attachment.rendered_log_cursor = Some(cursor.clone());
+    }
+    Ok(())
 }
 
 /// The latest DB Host PID and latest reserved run are the durable authority
@@ -288,6 +335,20 @@ fn replay_done_value(offset: u64, cursor: &LogCursor, partial_context: bool) -> 
     })
 }
 
+fn has_unread_output(db: &Db, session_id: &str) -> bool {
+    let Ok(Some(boundary)) = db.get_unread_log_cursor(session_id) else {
+        return false;
+    };
+    let Ok(Some((latest, _))) = db.get_latest_log_cursor_observed(session_id) else {
+        return false;
+    };
+    latest.run_ordinal > boundary.run_ordinal
+        || (latest.run_ordinal == boundary.run_ordinal
+            && (latest.run_id != boundary.run_id
+                || latest.generation > boundary.generation
+                || (latest.generation == boundary.generation && latest.offset > boundary.offset)))
+}
+
 fn session_view(db: &Db, s: &Session, active_session: Option<&str>) -> SessionView {
     let latest = db.latest_status(&s.id).ok().flatten();
     let unread = if Some(s.id.as_str()) == active_session {
@@ -295,7 +356,7 @@ fn session_view(db: &Db, s: &Session, active_session: Option<&str>) -> SessionVi
     } else {
         db.get_recovery_summary(&s.id)
             .map(|r| {
-                r.unread_output_offset >= 0
+                has_unread_output(db, &s.id)
                     || db
                         .has_unread_attention(&s.id, r.last_seen_sequence)
                         .unwrap_or(false)
@@ -1156,58 +1217,45 @@ fn finish_session_monitor(monitors: &Arc<Mutex<HashMap<String, u64>>>, session_i
     }
 }
 
-/// Capture the two recovery boundaries that the GUI actually knows while it
-/// is still attached.  Status and log positions intentionally travel through
-/// separate run-aware cursors: applying an old run's bare sequence to a new
-/// Host would otherwise hide the first events from that replacement.
-fn capture_gui_exit_recovery_boundaries(state: &AppState) {
-    let Ok(sessions) = state.db.list_sessions(None, false) else {
+/// Persist one renderer-confirmed boundary without replacing an earlier
+/// first-unread cursor. Producer high-waters from the Host or status journal
+/// are deliberately excluded: they can be ahead of WebView delivery during
+/// shutdown. A lagging renderer acknowledgement may replay a few extra bytes,
+/// but it can never omit output the user did not see.
+fn persist_renderer_recovery_boundary(
+    db: &Db,
+    session_id: &str,
+    host: &HostIdentity,
+    cursor: &LogCursor,
+) {
+    let Ok(session) = db.get_session(session_id) else {
         return;
     };
-    for session in sessions {
-        if let Ok(Some(latest)) = state.db.latest_status(&session.id) {
-            let _ = state
-                .db
-                .set_last_seen_status_cursor(&session.id, &latest.cursor());
-        }
-        if !live_session(session.lifecycle) {
-            continue;
-        }
-        let Some(socket) = session
-            .host_socket
-            .as_deref()
-            .filter(|socket| !socket.is_empty())
-        else {
-            continue;
-        };
-        let Ok((_, info)) = HostClient::connect_with_resume(
-            socket,
-            &session.id,
-            &session.host_token,
-            0,
-            None,
-            false,
-        ) else {
-            // A shutdown-time socket failure is only transport evidence. The
-            // Host reaper/reconcile path owns interrupted classification.
-            continue;
-        };
-        let host = HostIdentity::from_attach(&info);
-        if !host_identity_is_current(&state.db, &session.id, &host) {
-            continue;
-        }
-        if state
-            .db
-            .set_latest_log_cursor(&session.id, &info.log_cursor)
-            .is_ok()
-        {
-            // This is the first byte *after* the visible GUI snapshot. A
-            // later Host heartbeat advances latest_log_cursor, not this
-            // boundary, so pure GUI-closed output retains its first offset.
-            let _ = state
-                .db
-                .set_unread_log_cursor(&session.id, &info.log_cursor);
-        }
+    if !live_session(session.lifecycle) || !host_identity_is_current(db, session_id, host) {
+        return;
+    }
+    let _ = db.mark_output_unread_at(session_id, cursor);
+}
+
+/// Capture only log positions acknowledged by the current renderer. Status
+/// acknowledgements are already persisted when the focused WebView receives
+/// each concrete status cursor; promoting to DB `latest_status` here would
+/// consume monitor events that were never delivered to the renderer.
+fn capture_gui_exit_recovery_boundaries(state: &AppState) {
+    let boundaries: Vec<_> = state
+        .writers
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(session_id, attachment)| {
+            attachment
+                .rendered_log_cursor
+                .as_ref()
+                .map(|cursor| (session_id.clone(), attachment.host.clone(), cursor.clone()))
+        })
+        .collect();
+    for (session_id, host, cursor) in boundaries {
+        persist_renderer_recovery_boundary(&state.db, &session_id, &host, &cursor);
     }
 }
 
@@ -1483,12 +1531,16 @@ async fn attach_session(
             id: attachment_id,
             host: host.clone(),
             writer: writer.clone(),
+            rendered_log_cursor: None,
         },
     );
     // Replacement happens before shutdown. This makes the new attachment
     // authoritative immediately, while the old reader can only remove its
     // own ID when it observes the resulting EOF.
     if let Some(previous) = previous {
+        if let Some(cursor) = previous.rendered_log_cursor.as_ref() {
+            persist_renderer_recovery_boundary(&state.db, &session_id, &previous.host, cursor);
+        }
         shutdown_attachment(&previous);
     }
     let paths = state.paths.clone();
@@ -1780,6 +1832,9 @@ async fn detach_session(
     };
     if let Some(attachment) = take_attachment_if_current(&state.writers, &session_id, attachment_id)
     {
+        if let Some(cursor) = attachment.rendered_log_cursor.as_ref() {
+            persist_renderer_recovery_boundary(&state.db, &session_id, &attachment.host, cursor);
+        }
         shutdown_attachment(&attachment);
     }
     Ok(())
@@ -1793,14 +1848,35 @@ async fn mark_session_seen(
     session_id: String,
     cursor: Option<StatusCursor>,
 ) -> std::result::Result<(), String> {
-    match cursor {
-        // `mark_session_seen_at` advances the status acknowledgement without
-        // regressing it and clears only output that is not from a newer run.
-        // It is one SQLite transaction, so a delayed hidden-pane output cannot
-        // reintroduce a stale unread marker between two independent writes.
-        Some(cursor) => map_err!(state.db.mark_session_seen_at(&session_id, &cursor))?,
-        None => map_err!(state.db.mark_session_seen(&session_id))?,
+    if let Some(cursor) = cursor {
+        // Status delivery and xterm rendering are independent queues. Advance
+        // only the concrete status cursor here; the renderer command below is
+        // solely responsible for acknowledging terminal output.
+        map_err!(state
+            .db
+            .acknowledge_recovery_snapshot(&session_id, Some(&cursor), None))?;
     }
+    // A missing renderer cursor proves nothing. Older builds promoted it to
+    // the DB latest status, which could consume a monitor event still queued
+    // for WebView delivery during selection or shutdown.
+    Ok(())
+}
+
+/// Record a log position only after the exact renderer attachment confirms
+/// its xterm write queue consumed the frame. The process-local observation is
+/// used as the GUI-exit boundary; the DB acknowledgement atomically clears an
+/// older unread marker without consuming a producer cursor that arrived later.
+#[tauri::command]
+async fn mark_session_log_rendered(
+    state: State<'_, AppState>,
+    session_id: String,
+    attachment_id: u64,
+    cursor: LogCursor,
+) -> std::result::Result<(), String> {
+    record_renderer_log_cursor(&state.writers, &session_id, attachment_id, &cursor)?;
+    map_err!(state
+        .db
+        .acknowledge_recovery_snapshot(&session_id, None, Some(&cursor)))?;
     Ok(())
 }
 
@@ -2819,12 +2895,9 @@ async fn open_in_system_terminal(
     }
 
     let mut failures = Vec::new();
-    for (term, working_directory_arg) in [
-        ("x-terminal-emulator", "--working-directory"),
-        ("gnome-terminal", "--working-directory"),
-        ("konsole", "--workdir"),
-    ] {
-        match launch_terminal(term, &[working_directory_arg, &path], &path) {
+    for term in ["x-terminal-emulator", "gnome-terminal", "konsole"] {
+        let args = fallback_terminal_args(term, &path);
+        match launch_terminal(term, &args, &path) {
             Ok(()) => return Ok(()),
             Err(error) => failures.push(error),
         }
@@ -2833,6 +2906,15 @@ async fn open_in_system_terminal(
         "no terminal emulator launched successfully: {}",
         failures.join("; ")
     ))
+}
+
+fn fallback_terminal_args<'a>(command: &str, cwd: &'a str) -> Vec<&'a str> {
+    match command {
+        "x-terminal-emulator" => Vec::new(),
+        "gnome-terminal" => vec!["--working-directory", cwd],
+        "konsole" => vec!["--workdir", cwd],
+        _ => Vec::new(),
+    }
 }
 
 fn launch_terminal(command: &str, args: &[&str], cwd: &str) -> std::result::Result<(), String> {
@@ -2982,6 +3064,7 @@ fn main() {
             attach_session,
             detach_session,
             mark_session_seen,
+            mark_session_log_rendered,
             mark_session_output_unread,
             send_input,
             send_structured_prompt,
@@ -3074,6 +3157,7 @@ mod cleanup_tests {
                 run_ordinal: 1,
             },
             writer: Arc::new(Mutex::new(writer)),
+            rendered_log_cursor: None,
         }
     }
 
@@ -3160,6 +3244,33 @@ mod cleanup_tests {
         })
         .unwrap();
         session_id
+    }
+
+    fn bind_attachment_test_host(paths: &AppPaths, db: &Db, session_id: &str) -> HostIdentity {
+        let run = db.create_session_run(session_id, &ids::new_uuid()).unwrap();
+        let log_path = paths.run_log_path(session_id, &run.run_id);
+        db.claim_session_run(
+            session_id,
+            &run.run_id,
+            run.run_ordinal,
+            &log_path.to_string_lossy(),
+        )
+        .unwrap();
+        assert!(db
+            .bind_session_host_for_run(
+                session_id,
+                &run.run_id,
+                run.run_ordinal,
+                42,
+                "/tmp/renderer-boundary.sock",
+            )
+            .unwrap());
+        HostIdentity {
+            host_pid: 42,
+            protocol: agentport_core::protocol::PROTOCOL_VERSION,
+            run_id: run.run_id,
+            run_ordinal: run.run_ordinal,
+        }
     }
 
     #[test]
@@ -3306,6 +3417,100 @@ mod cleanup_tests {
     }
 
     #[test]
+    fn renderer_cursor_is_attachment_scoped_and_monotonic() {
+        let attachments: AttachmentMap = Arc::new(Mutex::new(HashMap::new()));
+        replace_attachment(&attachments, "ses_1".into(), test_attachment(7));
+        let cursor = LogCursor {
+            run_id: "run_test".into(),
+            run_ordinal: 1,
+            generation: 0,
+            offset: 100,
+        };
+        record_renderer_log_cursor(&attachments, "ses_1", 7, &cursor).unwrap();
+        record_renderer_log_cursor(
+            &attachments,
+            "ses_1",
+            7,
+            &LogCursor {
+                offset: 50,
+                ..cursor.clone()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            attachments
+                .lock()
+                .unwrap()
+                .get("ses_1")
+                .unwrap()
+                .rendered_log_cursor
+                .as_ref()
+                .unwrap()
+                .offset,
+            100
+        );
+        assert!(record_renderer_log_cursor(&attachments, "ses_1", 6, &cursor).is_err());
+    }
+
+    #[test]
+    fn exit_boundary_uses_renderer_cursor_and_preserves_first_unread() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("agentport"));
+        let db = Db::open(&paths).unwrap();
+        let session_id = insert_attachment_test_session(&paths, &db);
+        let host = bind_attachment_test_host(&paths, &db, &session_id);
+        let latest = LogCursor {
+            run_id: host.run_id.clone(),
+            run_ordinal: host.run_ordinal,
+            generation: 0,
+            offset: 200,
+        };
+        db.set_latest_log_cursor(&session_id, &latest).unwrap();
+        let first_unread = LogCursor {
+            offset: 50,
+            ..latest.clone()
+        };
+        db.mark_output_unread_at(&session_id, &first_unread)
+            .unwrap();
+
+        let renderer = LogCursor {
+            offset: 100,
+            ..latest
+        };
+        persist_renderer_recovery_boundary(&db, &session_id, &host, &renderer);
+
+        assert_eq!(
+            db.get_unread_log_cursor(&session_id).unwrap(),
+            Some(first_unread)
+        );
+        assert!(has_unread_output(&db, &session_id));
+    }
+
+    #[test]
+    fn equal_renderer_boundary_is_not_reported_as_unread() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("agentport"));
+        let db = Db::open(&paths).unwrap();
+        let session_id = insert_attachment_test_session(&paths, &db);
+        let host = bind_attachment_test_host(&paths, &db, &session_id);
+        let renderer = LogCursor {
+            run_id: host.run_id.clone(),
+            run_ordinal: host.run_ordinal,
+            generation: 0,
+            offset: 100,
+        };
+        db.set_latest_log_cursor(&session_id, &renderer).unwrap();
+
+        persist_renderer_recovery_boundary(&db, &session_id, &host, &renderer);
+
+        assert_eq!(
+            db.get_unread_log_cursor(&session_id).unwrap(),
+            Some(renderer)
+        );
+        assert!(!has_unread_output(&db, &session_id));
+    }
+
+    #[test]
     fn replay_done_channel_preserves_partial_recovery_context_flag() {
         let cursor = LogCursor {
             run_id: "run_1".into(),
@@ -3326,5 +3531,18 @@ mod cleanup_tests {
         let error = launch_terminal("/usr/bin/false", &[], &temp.path().to_string_lossy())
             .expect_err("a terminal command that exits nonzero must not report success");
         assert!(error.contains("exited with"), "{error}");
+    }
+
+    #[test]
+    fn generic_x_terminal_emulator_relies_on_inherited_current_dir() {
+        assert!(fallback_terminal_args("x-terminal-emulator", "/tmp/project").is_empty());
+        assert_eq!(
+            fallback_terminal_args("gnome-terminal", "/tmp/project"),
+            ["--working-directory", "/tmp/project"]
+        );
+        assert_eq!(
+            fallback_terminal_args("konsole", "/tmp/project"),
+            ["--workdir", "/tmp/project"]
+        );
     }
 }

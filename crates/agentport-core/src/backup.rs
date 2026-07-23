@@ -290,8 +290,12 @@ pub fn create(paths: &AppPaths, db: &Db, dest: &Path) -> Result<BackupReport> {
     {
         let f = private_create(&tmp_zip)?;
         let mut zw = zip::ZipWriter::new(f);
+        // Keep archives produced here compatible with the same compression-ratio
+        // guard used for untrusted imports. A manifest flag cannot safely exempt
+        // local archives because an attacker could forge it, so generated entries
+        // are stored verbatim while external Deflate entries remain ratio-limited.
         let opts = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated)
+            .compression_method(zip::CompressionMethod::Stored)
             .unix_permissions(0o600);
         zw.start_file("manifest.json", opts)
             .map_err(|e| CoreError::Export(format!("backup zip manifest: {e}")))?;
@@ -672,6 +676,24 @@ mod tests {
         assert_eq!(
             restored_db.get_session("ses_1").unwrap().title,
             "demo session"
+        );
+    }
+
+    #[test]
+    fn highly_compressible_created_backup_verifies_and_restores() {
+        let fx = fx();
+        let payload = vec![0_u8; 1024 * 1024];
+        std::fs::write(fx.paths.log_path("ses_1"), &payload).unwrap();
+
+        let archive = fx.dir.path().join("compressible.zip");
+        create(&fx.paths, &fx.db, &archive).unwrap();
+        verify(&archive).unwrap();
+
+        let target = fx.dir.path().join("restored-compressible");
+        restore(&archive, &target).unwrap();
+        assert_eq!(
+            std::fs::read(target.join("sessions/ses_1/output.log")).unwrap(),
+            payload
         );
     }
 

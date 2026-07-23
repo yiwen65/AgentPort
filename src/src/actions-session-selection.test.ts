@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { apiMock, releaseTerminalMock } = vi.hoisted(() => ({
+const { apiMock, jumpToRecoveryOutputMock, releaseTerminalMock } = vi.hoisted(() => ({
   apiMock: {
     listProjects: vi.fn(),
     markSessionSeen: vi.fn(),
   },
+  jumpToRecoveryOutputMock: vi.fn(),
   releaseTerminalMock: vi.fn(),
 }));
 
@@ -20,6 +21,7 @@ vi.mock("./terminals", () => ({
   attachHandle: vi.fn(),
   clearUnreadOutputTracking: vi.fn(),
   disposeHandle: vi.fn(),
+  jumpToRecoveryOutput: jumpToRecoveryOutputMock,
   MAX_PERSISTENT_TERMINALS: 3,
   pruneHandles: vi.fn(),
   releaseTerminal: releaseTerminalMock,
@@ -68,7 +70,11 @@ const projectWith = (...sessions: SessionView[]) => ([{
 describe("selectSession", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    apiMock.markSessionSeen.mockResolvedValue(undefined);
+    // Selection persistence refreshes projects after completion. Keep that
+    // unrelated background request pending so each test owns every snapshot
+    // it resolves and cannot leak work into the next case.
+    apiMock.markSessionSeen.mockReturnValue(new Promise(() => undefined));
+    jumpToRecoveryOutputMock.mockResolvedValue(undefined);
     setState({
       projects: projectWith(oldSession),
       activeSessionId: "ses_old",
@@ -98,5 +104,49 @@ describe("selectSession", () => {
     expect(getState().activeSessionId).toBe("ses_rpc");
     expect(getState().attachedIds).toEqual(["ses_old"]);
     expect(releaseTerminalMock).toHaveBeenCalledWith("ses_rpc");
+  });
+
+  it("keeps structured recovery on the JSON-RPC renderer instead of opening xterm", () => {
+    const recoveryTarget = {
+      runId: "run_1",
+      runOrdinal: 1,
+      generation: 0,
+      offset: 128,
+    };
+    setState({ projects: projectWith(oldSession, rpcSession) });
+
+    selectSession("ses_rpc", recoveryTarget);
+
+    expect(getState().activeSessionId).toBe("ses_rpc");
+    expect(jumpToRecoveryOutputMock).not.toHaveBeenCalled();
+  });
+
+  it("still opens xterm recovery for PTY Sessions", () => {
+    const recoveryTarget = {
+      runId: "run_1",
+      runOrdinal: 1,
+      generation: 0,
+      offset: 128,
+    };
+
+    selectSession("ses_old", recoveryTarget);
+
+    expect(jumpToRecoveryOutputMock).toHaveBeenCalledWith("ses_old", recoveryTarget);
+  });
+
+  it("does not let a missing-session refresh override a newer selection intent", async () => {
+    let resolveProjects!: (projects: ReturnType<typeof projectWith>) => void;
+    apiMock.listProjects.mockReturnValueOnce(new Promise((resolve) => {
+      resolveProjects = resolve;
+    }));
+    setState({ projects: projectWith(oldSession, rpcSession) });
+
+    selectSession("ses_new");
+    selectSession("ses_rpc");
+    resolveProjects(projectWith(oldSession, rpcSession, newSession));
+
+    await vi.waitFor(() => expect(apiMock.listProjects).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    expect(getState().activeSessionId).toBe("ses_rpc");
   });
 });

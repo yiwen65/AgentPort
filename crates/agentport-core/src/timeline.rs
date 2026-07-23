@@ -328,8 +328,11 @@ fn event_log_target(
         return (None, true, Some("输出已轮转或属于其他运行".into()));
     }
     let offset = target.offset as u64;
-    let len = std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0);
-    if latest.offset < 0 || len < latest.offset as u64 || offset >= len {
+    let Ok(metadata) = std::fs::metadata(log_path) else {
+        return (None, true, Some("输出已轮转或不再完整保留".into()));
+    };
+    let len = metadata.len();
+    if latest.offset < 0 || len < latest.offset as u64 || offset > len {
         (None, true, Some("输出已轮转或不再完整保留".into()))
     } else {
         (Some(target.clone()), false, None)
@@ -662,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn offset_at_log_end_counts_as_rotated() {
+    fn status_event_log_cursor_at_eof_is_retained() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open_memory().unwrap();
         db.add_project(&project("prj_a", "Alpha")).unwrap();
@@ -674,20 +677,32 @@ mod tests {
             &write_log(dir.path(), "ses_edge", 50),
         ))
         .unwrap();
-        db.set_unread_offset("ses_edge", 50).unwrap(); // == current file length
-        db.record_status_event(&event(
+        let run = db.create_session_run("ses_edge", "run_edge").unwrap();
+        let cursor = LogCursor {
+            run_id: run.run_id.clone(),
+            run_ordinal: run.run_ordinal,
+            generation: 0,
+            offset: 50,
+        };
+        let mut status_event = event_for_run(
             "ses_edge",
+            &run,
             1,
             AgentState::NeedsInput,
             StateSource::Hook,
             "hook:Notification",
             Utc::now(),
-        ))
-        .unwrap();
+        );
+        status_event.log_cursor = Some(cursor.clone());
+        db.record_status_event(&status_event).unwrap();
+        db.set_latest_log_cursor("ses_edge", &cursor).unwrap();
+
         let tl = Timeline { db: &db }.build().unwrap();
         assert_eq!(tl.entries.len(), 1);
         assert!(!tl.entries[0].rotated_away);
-        assert_eq!(tl.entries[0].log_offset, None);
+        assert_eq!(tl.entries[0].log_cursor.as_ref(), Some(&cursor));
+        assert_eq!(tl.entries[0].log_offset, Some(50));
+        assert_eq!(tl.entries[0].location_unavailable_reason, None);
     }
 
     #[test]

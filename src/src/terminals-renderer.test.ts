@@ -3,6 +3,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const rendererMocks = vi.hoisted(() => {
   const terminals: FakeTerminal[] = [];
+  const channels: Array<{ onmessage?: (message: unknown) => void }> = [];
+  const apiMock = {
+    attachSession: vi.fn().mockResolvedValue({
+      attachmentId: 1,
+      childAlive: true,
+      hostPid: 42,
+      logBytes: 0,
+      status: null,
+      agentSessionId: null,
+    }),
+    detachSession: vi.fn(),
+    markSessionLogRendered: vi.fn().mockResolvedValue(undefined),
+    markSessionOutputUnread: vi.fn().mockResolvedValue(undefined),
+    resizePty: vi.fn().mockResolvedValue(undefined),
+  };
   const config = { canvasShouldFail: false };
   class FakeTerminal {
     options: Record<string, unknown>;
@@ -36,20 +51,33 @@ const rendererMocks = vi.hoisted(() => {
     fit = vi.fn();
   }
   class FakeSearchAddon {}
-  return { config, terminals, FakeTerminal, FakeCanvasAddon, FakeFitAddon, FakeSearchAddon };
+  return {
+    apiMock,
+    channels,
+    config,
+    terminals,
+    FakeTerminal,
+    FakeCanvasAddon,
+    FakeFitAddon,
+    FakeSearchAddon,
+  };
 });
 
 vi.mock("@xterm/xterm", () => ({ Terminal: rendererMocks.FakeTerminal }));
 vi.mock("@xterm/addon-canvas", () => ({ CanvasAddon: rendererMocks.FakeCanvasAddon }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: rendererMocks.FakeFitAddon }));
 vi.mock("@xterm/addon-search", () => ({ SearchAddon: rendererMocks.FakeSearchAddon }));
-vi.mock("@tauri-apps/api/core", () => ({ Channel: class {} }));
-vi.mock("./api", () => ({
-  api: {
-    attachSession: vi.fn().mockResolvedValue({ attachmentId: 1, childAlive: true, hostPid: null, logBytes: 0 }),
-    detachSession: vi.fn(),
+vi.mock("@tauri-apps/api/core", () => ({
+  Channel: class {
+    onmessage?: (message: unknown) => void;
+    constructor() {
+      rendererMocks.channels.push(this);
+    }
   },
-  b64ToBytes: vi.fn(),
+}));
+vi.mock("./api", () => ({
+  api: rendererMocks.apiMock,
+  b64ToBytes: vi.fn(() => new Uint8Array([65])),
   bytesToB64: vi.fn(),
   errorText: (error: unknown) => String(error),
 }));
@@ -61,7 +89,37 @@ describe("terminal renderer", () => {
   beforeEach(() => {
     vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
     rendererMocks.config.canvasShouldFail = false;
-    setState({ rendererMode: "dom", rendererFallbackReason: null });
+    rendererMocks.channels.length = 0;
+    vi.clearAllMocks();
+    setState({
+      activeSessionId: "renderer-test",
+      projects: [{
+        id: "prj_renderer",
+        name: "Renderer",
+        rootPath: "/tmp/renderer",
+        gitRootPath: null,
+        worktrees: [],
+        sessions: [{
+          id: "renderer-test",
+          projectId: "prj_renderer",
+          worktreeId: null,
+          title: "Renderer test",
+          adapter: "shell",
+          cwd: "/tmp/renderer",
+          lifecycle: "running",
+          agentSessionId: null,
+          resumePrecision: "unavailable",
+          permissionMode: "native",
+          transport: "pty",
+          logPath: "/tmp/renderer.log",
+          unread: false,
+          status: null,
+          createdAt: "2026-07-23T00:00:00Z",
+        }],
+      }],
+      rendererMode: "dom",
+      rendererFallbackReason: null,
+    });
   });
 
   afterEach(() => {
@@ -85,5 +143,33 @@ describe("terminal renderer", () => {
 
     expect(getState().rendererMode).toBe("dom");
     expect(getState().rendererFallbackReason).toContain("Canvas unavailable");
+  });
+
+  it("acknowledges output only after xterm drains the renderer write queue", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+    const channel = rendererMocks.channels[0];
+    channel.onmessage?.({
+      t: "output",
+      data: "QQ==",
+      offset: 10,
+      cursor: { runId: "run_1", runOrdinal: 1, generation: 0, offset: 10 },
+    });
+
+    expect(rendererMocks.apiMock.markSessionLogRendered).not.toHaveBeenCalled();
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const callback = terminal.write.mock.calls
+      .map((call) => call[1])
+      .find((candidate) => typeof candidate === "function");
+    expect(callback).toBeTypeOf("function");
+    callback?.();
+
+    await vi.waitFor(() => {
+      expect(rendererMocks.apiMock.markSessionLogRendered).toHaveBeenCalledWith(
+        "renderer-test",
+        1,
+        { runId: "run_1", runOrdinal: 1, generation: 0, offset: 11 },
+      );
+    });
   });
 });

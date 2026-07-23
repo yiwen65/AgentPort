@@ -51,6 +51,7 @@ export function isMac(): boolean {
 
 let refreshTimer: number | null = null;
 let timelineRefreshRequest = 0;
+let sessionSelectionIntent = 0;
 
 export async function refreshProjects() {
   const request = beginProjectsSnapshotRequest();
@@ -158,13 +159,19 @@ export function applyThemeSettings() {
 // ---------------------------------------------------------------------------
 
 export function selectSession(id: string, recoveryTarget: LogCursorView | null = null) {
+  const intent = ++sessionSelectionIntent;
   const s = getState();
   // A newly created Session is persisted before the next project snapshot.
   // Never select against the stale tree: TerminalArea cannot mount a pane for
   // an ID it cannot resolve, which leaves the workspace blank on a fast switch.
   if (!findSession(s.projects, id)) {
     void refreshProjects().then(() => {
-      if (findSession(getState().projects, id)) selectSession(id, recoveryTarget);
+      if (
+        intent === sessionSelectionIntent &&
+        findSession(getState().projects, id)
+      ) {
+        selectSession(id, recoveryTarget);
+      }
     });
     return;
   }
@@ -198,7 +205,7 @@ export function selectSession(id: string, recoveryTarget: LogCursorView | null =
   });
   for (const evictedId of evictedIds) void releaseTerminal(evictedId);
   clearUnreadOutputTracking(id);
-  if (recoveryTarget) {
+  if (recoveryTarget && ses?.transport === "pty") {
     void jumpToRecoveryOutput(id, recoveryTarget).catch((error) => {
       toast(`无法定位恢复输出：${errorText(error)}`, "error");
     });

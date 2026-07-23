@@ -157,6 +157,11 @@ export const api = {
     invoke<void>("detach_session", { sessionId, attachmentId }),
   markSessionSeen: (sessionId: string, cursor: StatusCursorView | null = null) =>
     invoke<void>("mark_session_seen", { sessionId, cursor }),
+  markSessionLogRendered: (
+    sessionId: string,
+    attachmentId: number,
+    cursor: LogCursorView,
+  ) => invoke<void>("mark_session_log_rendered", { sessionId, attachmentId, cursor }),
   markSessionOutputUnread: (
     sessionId: string,
     offset: number,

@@ -48,6 +48,10 @@ export interface TermHandle {
   historyLoading: boolean;
   /** Last contiguous byte rendered for the current Host output stream. */
   logCursor: LogCursorView | null;
+  /** Cursor awaiting an xterm write-queue callback before it can be reported
+   * as renderer-observed to the backend. */
+  pendingRenderedLogCursor: LogCursorView | null;
+  renderObservationQueued: boolean;
   /** A recovery click loaded a bounded historical window, so the next live
    * frame may legitimately begin at the Host's newer high-water offset. */
   allowRecoveryGap: boolean;
@@ -316,6 +320,8 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     historyLoaded: false,
     historyLoading: false,
     logCursor: null,
+    pendingRenderedLogCursor: null,
+    renderObservationQueued: false,
     allowRecoveryGap: false,
     recoveryTarget: null,
     container: null,
@@ -615,6 +621,7 @@ export function fitSession(sessionId: string, forceResize = false) {
   if (handle) {
     syncHandleTheme(handle);
     fitHandle(handle, true, forceResize);
+    if (handle.logCursor) queueRenderedLogObservation(handle, handle.logCursor);
   }
 }
 
@@ -643,6 +650,8 @@ export async function attachHandle(
   if (handle.attached || handle.attaching) return;
   handle.attaching = true;
   const generation = ++handle.generation;
+  handle.pendingRenderedLogCursor = null;
+  handle.renderObservationQueued = false;
   const resumeFrom = recoveryTarget ? null : handle.logCursor;
   patchRuntime(sessionId, { attaching: true, error: null, detached: false });
   const channel = new Channel<ChannelMsg>();
@@ -676,6 +685,7 @@ export async function attachHandle(
     }
     handle.attachmentId = info.attachmentId;
     handle.attached = true;
+    if (handle.logCursor) queueRenderedLogObservation(handle, handle.logCursor);
     // Content now arrives via replay/live stream — never tail-load on top.
     handle.historyLoaded = true;
     patchRuntime(sessionId, {
@@ -721,6 +731,48 @@ function isLaterRun(incoming: LogCursorView, current: LogCursorView): boolean {
     (incoming.runOrdinal === current.runOrdinal && incoming.runId !== current.runId);
 }
 
+function renderedCursorIsNotOlder(candidate: LogCursorView, current: LogCursorView): boolean {
+  return candidate.runOrdinal > current.runOrdinal ||
+    (candidate.runOrdinal === current.runOrdinal &&
+      candidate.runId === current.runId &&
+      (candidate.generation > current.generation ||
+        (candidate.generation === current.generation && candidate.offset >= current.offset)));
+}
+
+/** Report only a cursor whose preceding writes have drained through xterm's
+ * parser queue. If output arrives behind the queued sentinel, it schedules a
+ * second sentinel instead of being acknowledged by the earlier callback. */
+function queueRenderedLogObservation(handle: TermHandle, cursor: LogCursorView) {
+  if (
+    handle.pendingRenderedLogCursor === null ||
+    renderedCursorIsNotOlder(cursor, handle.pendingRenderedLogCursor)
+  ) {
+    handle.pendingRenderedLogCursor = { ...cursor };
+  }
+  if (handle.renderObservationQueued) return;
+
+  const observed = handle.pendingRenderedLogCursor;
+  if (!observed) return;
+  handle.pendingRenderedLogCursor = null;
+  handle.renderObservationQueued = true;
+  const generation = handle.generation;
+  // The empty write is an ordering sentinel: its callback runs only after all
+  // terminal writes queued before this observation have been parsed.
+  handle.term.write("", () => {
+    if (handles.get(handle.sessionId) !== handle || handle.generation !== generation) return;
+    handle.renderObservationQueued = false;
+    const attachmentId = handle.attachmentId;
+    if (attachmentId !== null && getState().activeSessionId === handle.sessionId) {
+      void api
+        .markSessionLogRendered(handle.sessionId, attachmentId, observed)
+        .catch(() => undefined);
+    }
+    if (handle.pendingRenderedLogCursor) {
+      queueRenderedLogObservation(handle, handle.pendingRenderedLogCursor);
+    }
+  });
+}
+
 /** Render only the missing contiguous suffix of a Host output frame. */
 function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "output" }>) {
   const sessionId = handle.sessionId;
@@ -750,6 +802,8 @@ function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "out
         // explicitly instead of joining unrelated terminal bytes together.
         const attachmentId = handle.attachmentId;
         handle.generation += 1;
+        handle.pendingRenderedLogCursor = null;
+        handle.renderObservationQueued = false;
         handle.attached = false;
         handle.attaching = false;
         handle.attachmentId = null;
@@ -795,6 +849,7 @@ function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "out
     ...incoming,
     offset: incoming.offset + original.length,
   };
+  queueRenderedLogObservation(handle, handle.logCursor);
   updateScrolledUp(handle);
   if (getState().activeSessionId !== sessionId && !unreadOutputPending.has(sessionId)) {
     unreadOutputPending.add(sessionId);
@@ -812,7 +867,10 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       break;
     }
     case "replay_done": {
-      if (msg.cursor) handle.logCursor = msg.cursor;
+      if (msg.cursor) {
+        handle.logCursor = msg.cursor;
+        queueRenderedLogObservation(handle, msg.cursor);
+      }
       handle.allowRecoveryGap = msg.partialContext === true;
       finishTerminalStartupFilter(handle);
       patchRuntime(sessionId, { replayDone: true });
@@ -891,6 +949,8 @@ export function resetForRestart(sessionId: string) {
     handle.attached = false;
     handle.attaching = false;
     handle.generation += 1; // drop messages from the pre-restart channel
+    handle.pendingRenderedLogCursor = null;
+    handle.renderObservationQueued = false;
     // Clear the buffer: the re-attach replays the same log tail and would
     // otherwise duplicate it under the old content / loaded history.
     handle.term.reset();
@@ -927,6 +987,8 @@ export async function jumpToRecoveryOutput(
   const handle = getOrCreateHandle(sessionId);
   const previousAttachment = handle.attachmentId;
   handle.generation += 1;
+  handle.pendingRenderedLogCursor = null;
+  handle.renderObservationQueued = false;
   handle.attachmentId = null;
   handle.attached = false;
   handle.attaching = false;
@@ -999,6 +1061,8 @@ export function disposeHandle(sessionId: string) {
   const handle = handles.get(sessionId);
   if (!handle) return;
   handle.generation += 1;
+  handle.pendingRenderedLogCursor = null;
+  handle.renderObservationQueued = false;
   handle.attachmentId = null;
   inputRepeatDisposers.get(sessionId)?.();
   inputRepeatDisposers.delete(sessionId);
@@ -1027,6 +1091,8 @@ export async function releaseTerminal(sessionId: string): Promise<void> {
   if (!handle) return;
   // Reject messages already queued on the old Channel before disposing xterm.
   const releaseGeneration = ++handle.generation;
+  handle.pendingRenderedLogCursor = null;
+  handle.renderObservationQueued = false;
   const attachmentId = handle.attachmentId;
   handle.attachmentId = null;
   handle.attached = false;
