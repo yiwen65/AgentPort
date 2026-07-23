@@ -446,3 +446,29 @@ export interface LogTail {
 export interface RecoveryLogContext extends LogTail {
   cursor: LogCursorView;
 }
+
+/** read_session_document response: text content for the in-app viewer. */
+export interface SessionDocument {
+  /** Canonical absolute path of the file that was read. */
+  path: string;
+  /** UTF-8 text; lossy-decoded and capped at the backend limit. */
+  content: string;
+  /** True when the file exceeded the backend cap and content is a prefix. */
+  truncated: boolean;
+  /** Full file size in bytes, even when truncated. */
+  sizeBytes: number;
+}
+
+/** One entry from list_document_directory. */
+export interface DocumentDirEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+}
+
+/** list_document_directory response. */
+export interface DocumentDirListing {
+  path: string;
+  entries: DocumentDirEntry[];
+  truncated: boolean;
+}

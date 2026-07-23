@@ -150,18 +150,39 @@ export interface AppState {
   reducedMotion: boolean;
   /** Whether the project/session sidebar is hidden for terminal focus. */
   sidebarCollapsed: boolean;
+  /** Slide choreography phase for the sidebar toggle. "out" plays the
+     transform slide before the layout commit; "inPrep"/"in" commit the
+     layout off-screen first, then slide the panel back in. null = idle. */
+  sidebarAnim: "out" | "inPrep" | "in" | null;
   /** Ephemeral width of the project/session split view in CSS pixels. */
   sidebarWidth: number;
   /** Session IDs mapped to their pin timestamp for this app run. */
   pinnedSessionAt: Record<string, number>;
   /** Terminal search bar visibility for the active session. */
   termSearchOpen: boolean;
+  /** In-app document viewer target opened from a terminal link. */
+  openDocument: OpenDocumentTarget | null;
+  /** Whether the VSCode-like file tree is visible in the document panel. */
+  explorerOpen: boolean;
+  /** Root directory of the file tree (captured from the active session). */
+  explorerRoot: string | null;
+  /** Ephemeral width of the document viewer split in CSS pixels. */
+  docPanelWidth: number;
+  /** Whether the document viewer is expanded over the whole terminal page. */
+  docPanelExpanded: boolean;
   /** Project whose worktree management view replaces the sidebar list. */
   sidebarWorktreeProjectId: string | null;
   /** Worktree to emphasize after navigating here from branch management. */
   highlightedWorktreeId: string | null;
   /** Worktree ids whose session list is collapsed in the management view. */
   collapsedWorktrees: Record<string, boolean>;
+}
+
+export interface OpenDocumentTarget {
+  /** Canonical absolute path reported by the backend. */
+  path: string;
+  /** One-based line to reveal in the raw view, from `path:line` links. */
+  line: number | null;
 }
 
 const initialState: AppState = {
@@ -197,9 +218,15 @@ const initialState: AppState = {
   themeEffective: "dark",
   reducedMotion: false,
   sidebarCollapsed: false,
+  sidebarAnim: null,
   sidebarWidth: 296,
   pinnedSessionAt: {},
   termSearchOpen: false,
+  openDocument: null,
+  explorerOpen: false,
+  explorerRoot: null,
+  docPanelWidth: 480,
+  docPanelExpanded: false,
   sidebarWorktreeProjectId: null,
   highlightedWorktreeId: null,
   collapsedWorktrees: {},

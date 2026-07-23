@@ -2,6 +2,7 @@
   "ui": {
     "title": "Settings",
     "navigationAriaLabel": "Settings categories",
+    "authorCredit": "author: yiwen65",
     "contentAriaLabel": "Settings content",
     "saved": "Settings saved",
     "saveFailed": "Could not save Settings: {{detail}}",

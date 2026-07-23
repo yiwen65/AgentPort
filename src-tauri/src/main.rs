@@ -3394,6 +3394,348 @@ async fn pick_save_path(app: AppHandle, default_name: String) -> Option<String> 
     rx.recv().await.flatten()
 }
 
+fn read_session_document_impl(path: &str) -> std::result::Result<Value, Value> {
+    const MAX_DOCUMENT_BYTES: u64 = 1024 * 1024;
+    const BINARY_SNIFF_BYTES: usize = 8 * 1024;
+
+    let reject = |code: &str, message: String| {
+        runtime_command_error(code, json!({ "path": path }), message.clone(), message)
+    };
+
+    let raw = std::path::Path::new(&path);
+    if !raw.is_absolute() {
+        return Err(reject(
+            "document_path_relative",
+            format!("只能打开绝对路径的文档：{path}"),
+        ));
+    }
+    let canonical = std::fs::canonicalize(raw).map_err(|e| {
+        reject(
+            "document_not_found",
+            format!("文档不存在或无法访问：{path}（{e}）"),
+        )
+    })?;
+    let metadata = std::fs::metadata(&canonical).map_err(|e| {
+        reject(
+            "document_not_found",
+            format!("无法读取文档信息：{path}（{e}）"),
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(reject(
+            "document_not_file",
+            format!("该路径不是文件，无法在文档查看器中打开：{path}"),
+        ));
+    }
+
+    let truncated = metadata.len() > MAX_DOCUMENT_BYTES;
+    let mut bytes = vec![0u8; metadata.len().min(MAX_DOCUMENT_BYTES) as usize];
+    {
+        use std::io::Read;
+        let mut file = std::fs::File::open(&canonical).map_err(|e| {
+            reject(
+                "document_read_failed",
+                format!("无法读取文档：{path}（{e}）"),
+            )
+        })?;
+        file.read_exact(&mut bytes).map_err(|e| {
+            reject(
+                "document_read_failed",
+                format!("无法读取文档：{path}（{e}）"),
+            )
+        })?;
+    }
+    if bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
+        return Err(reject(
+            "document_binary",
+            format!("二进制文件不支持在文档查看器中预览：{path}"),
+        ));
+    }
+
+    let content = String::from_utf8_lossy(&bytes).into_owned();
+    Ok(json!({
+        "path": canonical.to_string_lossy(),
+        "content": content,
+        "truncated": truncated,
+        "sizeBytes": metadata.len(),
+    }))
+}
+
+#[tauri::command]
+async fn read_session_document(path: String) -> std::result::Result<Value, Value> {
+    read_session_document_impl(&path)
+}
+
+fn write_session_document_impl(path: &str, content: &str) -> std::result::Result<Value, Value> {
+    const MAX_WRITE_BYTES: usize = 8 * 1024 * 1024;
+
+    let reject = |code: &str, message: String| {
+        runtime_command_error(code, json!({ "path": path }), message.clone(), message)
+    };
+
+    let raw = std::path::Path::new(path);
+    if !raw.is_absolute() {
+        return Err(reject(
+            "document_path_relative",
+            format!("只能写入绝对路径的文档：{path}"),
+        ));
+    }
+    if content.len() > MAX_WRITE_BYTES {
+        return Err(reject(
+            "document_too_large",
+            format!("文档内容超过大小限制，无法保存：{path}"),
+        ));
+    }
+    let canonical = std::fs::canonicalize(raw).map_err(|e| {
+        reject(
+            "document_not_found",
+            format!("文档不存在或无法访问：{path}（{e}）"),
+        )
+    })?;
+    if !canonical.is_file() {
+        return Err(reject(
+            "document_not_file",
+            format!("该路径不是文件，无法保存：{path}"),
+        ));
+    }
+
+    // Write to a sibling temp file and rename, so a crash mid-save never
+    // leaves a half-written document behind.
+    let parent = canonical.parent().ok_or_else(|| {
+        reject(
+            "document_write_failed",
+            format!("无法确定文档所在目录：{path}"),
+        )
+    })?;
+    let tmp = parent.join(format!(
+        ".agentport-doc-save-{}-{}.tmp",
+        std::process::id(),
+        canonical
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "document".into())
+    ));
+    std::fs::write(&tmp, content.as_bytes()).map_err(|e| {
+        reject(
+            "document_write_failed",
+            format!("无法写入文档：{path}（{e}）"),
+        )
+    })?;
+    std::fs::rename(&tmp, &canonical).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        reject(
+            "document_write_failed",
+            format!("无法保存文档：{path}（{e}）"),
+        )
+    })?;
+    Ok(json!({
+        "path": canonical.to_string_lossy(),
+        "sizeBytes": content.len(),
+    }))
+}
+
+#[tauri::command]
+async fn write_session_document(path: String, content: String) -> std::result::Result<Value, Value> {
+    write_session_document_impl(&path, &content)
+}
+
+fn list_document_directory_impl(path: &str) -> std::result::Result<Value, Value> {
+    const MAX_ENTRIES: usize = 2000;
+
+    let reject = |code: &str, message: String| {
+        runtime_command_error(code, json!({ "path": path }), message.clone(), message)
+    };
+
+    let raw = std::path::Path::new(path);
+    if !raw.is_absolute() {
+        return Err(reject(
+            "document_path_relative",
+            format!("只能浏览绝对路径的目录：{path}"),
+        ));
+    }
+    let canonical = std::fs::canonicalize(raw).map_err(|e| {
+        reject(
+            "document_not_found",
+            format!("目录不存在或无法访问：{path}（{e}）"),
+        )
+    })?;
+    if !canonical.is_dir() {
+        return Err(reject(
+            "document_not_directory",
+            format!("该路径不是目录，无法在目录树中展开：{path}"),
+        ));
+    }
+
+    let mut dirs: Vec<Value> = Vec::new();
+    let mut files: Vec<Value> = Vec::new();
+    let mut truncated = false;
+    let entries = std::fs::read_dir(&canonical).map_err(|e| {
+        reject(
+            "document_read_failed",
+            format!("无法读取目录：{path}（{e}）"),
+        )
+    })?;
+    for entry in entries.flatten() {
+        if dirs.len() + files.len() >= MAX_ENTRIES {
+            truncated = true;
+            break;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // The git object store is never useful in the file tree and can hold
+        // tens of thousands of loose objects.
+        if name == ".git" {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let item = json!({
+            "name": name,
+            "path": entry.path().to_string_lossy(),
+            "isDir": is_dir,
+        });
+        if is_dir {
+            dirs.push(item);
+        } else {
+            files.push(item);
+        }
+    }
+    let key = |v: &Value| v["name"].as_str().unwrap_or("").to_lowercase();
+    dirs.sort_by_key(key);
+    files.sort_by_key(key);
+    dirs.extend(files);
+    Ok(json!({
+        "path": canonical.to_string_lossy(),
+        "entries": dirs,
+        "truncated": truncated,
+    }))
+}
+
+#[tauri::command]
+async fn list_document_directory(path: String) -> std::result::Result<Value, Value> {
+    list_document_directory_impl(&path)
+}
+
+fn create_document_entry_impl(path: &str, kind: &str) -> std::result::Result<Value, Value> {
+    let reject = |code: &str, message: String| {
+        runtime_command_error(code, json!({ "path": path }), message.clone(), message)
+    };
+
+    let raw = std::path::Path::new(path);
+    if !raw.is_absolute() {
+        return Err(reject(
+            "document_path_relative",
+            format!("只能创建绝对路径的文件或目录：{path}"),
+        ));
+    }
+    // The tree joins the name onto a listed directory; never let it escape.
+    if raw
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(reject(
+            "document_create_failed",
+            format!("路径不允许包含 .. 片段：{path}"),
+        ));
+    }
+    if raw.exists() {
+        return Err(reject(
+            "document_entry_exists",
+            format!("同名文件或目录已存在：{path}"),
+        ));
+    }
+
+    match kind {
+        "dir" => std::fs::create_dir_all(raw).map_err(|e| {
+            reject(
+                "document_create_failed",
+                format!("无法创建目录：{path}（{e}）"),
+            )
+        })?,
+        "file" => {
+            if let Some(parent) = raw.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    reject(
+                        "document_create_failed",
+                        format!("无法创建目录：{path}（{e}）"),
+                    )
+                })?;
+            }
+            // create_new fails atomically if the file appeared meanwhile.
+            std::fs::File::create_new(raw).map_err(|e| {
+                reject(
+                    "document_create_failed",
+                    format!("无法创建文件：{path}（{e}）"),
+                )
+            })?;
+        }
+        _ => {
+            return Err(reject(
+                "document_create_failed",
+                format!("不支持的创建类型：{kind}"),
+            ))
+        }
+    }
+
+    let canonical = std::fs::canonicalize(raw)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_string());
+    Ok(json!({ "path": canonical }))
+}
+
+#[tauri::command]
+async fn create_document_entry(path: String, kind: String) -> std::result::Result<Value, Value> {
+    create_document_entry_impl(&path, &kind)
+}
+
+/// Opens a local file with the system's default application (Preview for a
+/// PDF, an image viewer for a PNG, …). This is the escape hatch the document
+/// viewer offers for files it cannot display itself.
+#[tauri::command]
+async fn open_with_default_app(path: String) -> std::result::Result<(), Value> {
+    let reject = |code: &str, message: String| {
+        runtime_command_error(code, json!({ "path": path }), message.clone(), message)
+    };
+    let raw = std::path::Path::new(&path);
+    if !raw.is_absolute() {
+        return Err(reject(
+            "document_path_relative",
+            format!("只能打开绝对路径的文件：{path}"),
+        ));
+    }
+    if !raw.exists() {
+        return Err(reject(
+            "document_not_found",
+            format!("文件不存在或无法访问：{path}"),
+        ));
+    }
+    let status = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(&path).status()
+    } else if cfg!(target_os = "linux") {
+        std::process::Command::new("xdg-open").arg(&path).status()
+    } else {
+        return Err(runtime_command_error(
+            "external_url_unsupported",
+            json!({}),
+            "opening files with the default app is unsupported on this platform",
+            "opening files with the default app is unsupported on this platform",
+        ));
+    };
+    match status {
+        Ok(result) if result.success() => Ok(()),
+        Ok(result) => Err(runtime_command_error(
+            "file_manager_failed",
+            json!({}),
+            result.to_string(),
+            format!("default app open exited with {result}"),
+        )),
+        Err(e) => Err(runtime_command_error(
+            "file_manager_failed",
+            json!({}),
+            e.to_string(),
+            e.to_string(),
+        )),
+    }
+}
+
 #[tauri::command]
 async fn pick_file(app: AppHandle, filter_name: Option<String>) -> Option<String> {
     use tauri_plugin_dialog::DialogExt;
@@ -3498,6 +3840,28 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             notifications::install(app.handle());
+            // Frosted sidebar: a whole-window NSVisualEffectView sits behind
+            // the transparent webview; every region except the sidebar
+            // column paints an opaque CSS surface, so the native Sidebar
+            // material only shows through there. Always Active (not the
+            // default window-tracking state): the unfocused material renders
+            // as flat opaque gray, which reads as "the glass broke" next to
+            // the still-lit traffic lights.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::{
+                    window::{Effect, EffectState, EffectsBuilder},
+                    Manager,
+                };
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_effects(
+                        EffectsBuilder::new()
+                            .effect(Effect::Sidebar)
+                            .state(EffectState::Active)
+                            .build(),
+                    );
+                }
+            }
             Ok(())
         })
         .manage(state)
@@ -3570,6 +3934,11 @@ fn main() {
             reveal_in_file_manager,
             open_in_system_terminal,
             open_external_url,
+            read_session_document,
+            write_session_document,
+            list_document_directory,
+            create_document_entry,
+            open_with_default_app,
             pick_directory,
             pick_save_path,
             pick_file,
@@ -3773,6 +4142,150 @@ mod cleanup_tests {
         assert!(validate_external_url("javascript:alert(1)").is_err());
         assert!(validate_external_url("file:///etc/passwd").is_err());
         assert!(validate_external_url("/missing-host").is_err());
+    }
+
+    #[test]
+    fn read_session_document_reads_text_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("报告.md");
+        std::fs::write(&file, "# 标题\n\n正文\n").unwrap();
+        let value = read_session_document_impl(file.to_str().unwrap()).unwrap();
+        assert_eq!(value["content"], "# 标题\n\n正文\n");
+        assert_eq!(value["truncated"], false);
+        assert_eq!(value["sizeBytes"], value["content"].as_str().unwrap().len() as u64);
+        assert!(value["path"].as_str().unwrap().ends_with("报告.md"));
+    }
+
+    #[test]
+    fn read_session_document_rejects_relative_missing_binary_and_directory() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let relative = read_session_document_impl("docs/readme.md").unwrap_err();
+        assert_eq!(relative["code"], "document_path_relative");
+
+        let missing = read_session_document_impl(
+            temp.path().join("missing.md").to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(missing["code"], "document_not_found");
+
+        let binary = temp.path().join("image.png");
+        std::fs::write(&binary, [0x89, b'P', b'N', b'G', 0x00, 0x0d]).unwrap();
+        let error = read_session_document_impl(binary.to_str().unwrap()).unwrap_err();
+        assert_eq!(error["code"], "document_binary");
+
+        let directory = read_session_document_impl(temp.path().to_str().unwrap()).unwrap_err();
+        assert_eq!(directory["code"], "document_not_file");
+    }
+
+    #[test]
+    fn write_session_document_saves_atomically() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("notes.md");
+        std::fs::write(&file, "旧内容\n").unwrap();
+
+        let value = write_session_document_impl(file.to_str().unwrap(), "新内容\n第二行\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "新内容\n第二行\n");
+        assert_eq!(value["sizeBytes"], "新内容\n第二行\n".len() as u64);
+        // No temp file is left behind in the document's directory.
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn write_session_document_rejects_relative_missing_and_directory() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let relative = write_session_document_impl("docs/readme.md", "x").unwrap_err();
+        assert_eq!(relative["code"], "document_path_relative");
+
+        let missing = write_session_document_impl(
+            temp.path().join("missing.md").to_str().unwrap(),
+            "x",
+        )
+        .unwrap_err();
+        assert_eq!(missing["code"], "document_not_found");
+
+        let directory = write_session_document_impl(temp.path().to_str().unwrap(), "x").unwrap_err();
+        assert_eq!(directory["code"], "document_not_file");
+    }
+
+    #[test]
+    fn list_document_directory_sorts_dirs_first_and_skips_dot_git() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("zeta")).unwrap();
+        std::fs::create_dir(temp.path().join("Alpha")).unwrap();
+        std::fs::create_dir(temp.path().join(".git")).unwrap();
+        std::fs::write(temp.path().join("readme.md"), "x").unwrap();
+        std::fs::write(temp.path().join("build.log"), "x").unwrap();
+
+        let value = list_document_directory_impl(temp.path().to_str().unwrap()).unwrap();
+        let names: Vec<&str> = value["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["Alpha", "zeta", "build.log", "readme.md"]);
+        assert_eq!(value["truncated"], false);
+    }
+
+    #[test]
+    fn list_document_directory_rejects_files_and_relative_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("a.md");
+        std::fs::write(&file, "x").unwrap();
+
+        let not_dir = list_document_directory_impl(file.to_str().unwrap()).unwrap_err();
+        assert_eq!(not_dir["code"], "document_not_directory");
+
+        let relative = list_document_directory_impl("some/dir").unwrap_err();
+        assert_eq!(relative["code"], "document_path_relative");
+    }
+
+    #[test]
+    fn create_document_entry_creates_nested_files_and_dirs() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let dir = temp.path().join("a/b");
+        let value = create_document_entry_impl(dir.to_str().unwrap(), "dir").unwrap();
+        assert!(dir.is_dir());
+        let canonical_dir = std::fs::canonicalize(&dir).unwrap();
+        assert_eq!(value["path"], canonical_dir.to_string_lossy().as_ref());
+
+        let file = temp.path().join("a/b/新文档.md");
+        create_document_entry_impl(file.to_str().unwrap(), "file").unwrap();
+        assert!(file.is_file());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "");
+
+        let exists = create_document_entry_impl(file.to_str().unwrap(), "file").unwrap_err();
+        assert_eq!(exists["code"], "document_entry_exists");
+
+        let traversal = create_document_entry_impl(
+            temp.path().join("..").join("escape.md").to_str().unwrap(),
+            "file",
+        )
+        .unwrap_err();
+        assert_eq!(traversal["code"], "document_create_failed");
+
+        let relative = create_document_entry_impl("tmp/x.md", "file").unwrap_err();
+        assert_eq!(relative["code"], "document_path_relative");
+    }
+
+    #[test]
+    fn document_error_codes_cover_friendly_viewer_fallbacks() {
+        // The panel maps these codes to a friendly empty state with actions,
+        // so keep them stable: binary files and unreadable paths.
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("doc.pdf");
+        std::fs::write(&binary, [b'%', b'P', b'D', b'F', 0x00, 0x01]).unwrap();
+        let error = read_session_document_impl(binary.to_str().unwrap()).unwrap_err();
+        assert_eq!(error["code"], "document_binary");
+
+        let missing = read_session_document_impl(
+            temp.path().join("missing.pdf").to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(missing["code"], "document_not_found");
     }
 
     fn insert_attachment_test_session(paths: &AppPaths, db: &Db) -> String {

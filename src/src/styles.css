@@ -58,23 +58,35 @@
   --segment-selected-bg: #4f6fd6;
   --segment-selected-text: #ffffff;
   --unread: #60a5fa;
-  --sidebar-glass: #27272b;
+  /* Frosted source list: the native macOS Sidebar material provides the
+     blur; this veil only harmonizes hue and depth. `--sidebar-border` is
+     the hairline divider, `--sidebar-chip` the frosted quick-action pill.
+     Platforms without the native layer override --sidebar-glass with a
+     solid color (see the data-vibrancy rules after the theme blocks). */
+  --sidebar-glass: rgba(22, 22, 28, 0.8);
+  --sidebar-border: rgba(255, 255, 255, 0.075);
+  --sidebar-chip: rgba(32, 32, 39, 0.85);
   --terminal-scroll-thumb: rgba(243, 245, 251, 0.28);
   /* Sidebar hierarchy (dark): L1 repo name > session label > L2 branch /
      context row > L3 hint/age. Icons inherit their row's tier color so
      icon tone tracks text instead of sitting at one flat gray.
      State colors: hover = --sidebar-row-hover (neutral), selected =
-     --sidebar-row-active (accent-soft chip), running session = --accent
+     --sidebar-row-active (frosted accent chip), running session = --accent
      (spinner dot) with its label lifted to --sidebar-text-strong. */
-  --sidebar-text-strong: rgba(243, 245, 251, 0.95);
-  --sidebar-text: rgba(243, 245, 251, 0.78);
-  --sidebar-text-dim: rgba(243, 245, 251, 0.56);
+  --sidebar-text-strong: rgba(243, 245, 251, 0.96);
+  --sidebar-text: rgba(243, 245, 251, 0.8);
+  --sidebar-text-dim: rgba(243, 245, 251, 0.6);
   --sidebar-text-faint: rgba(243, 245, 251, 0.45);
-  --sidebar-icon: rgba(243, 245, 251, 0.52);
-  --sidebar-action: rgba(243, 245, 251, 0.6);
-  --sidebar-row-hover: rgba(243, 245, 251, 0.08);
-  --sidebar-row-active: var(--accent-soft);
-  --sidebar-action-hover-bg: rgba(243, 245, 251, 0.12);
+  --sidebar-icon: rgba(243, 245, 251, 0.56);
+  --sidebar-action: rgba(243, 245, 251, 0.62);
+  --sidebar-row-hover: rgba(243, 245, 251, 0.09);
+  --sidebar-row-active: rgba(107, 140, 255, 0.24);
+  --sidebar-action-hover-bg: rgba(243, 245, 251, 0.14);
+  /* Current-checkout branch row: One Dark Pro magenta family, kept distinct
+     from the blue accent (selection/unread) and the green running dot so a
+     branch never reads as a state. Icon inherits the row color. */
+  --sidebar-branch: #c162de;
+  --sidebar-branch-hover: #de73ff;
   --sidebar-edit-bg: rgba(0, 0, 0, 0.24);
   --sidebar-edit-border: var(--accent-text);
   --sidebar-handle: rgba(188, 199, 226, 0.45);
@@ -87,15 +99,15 @@
   --bg-elevated: #ffffff;
   --bg-hover: #e7e7e7;
   --bg-active: #ffffff;
-  /* Off-white terminal surface: kills the pure-white glare behind long
-     transcripts; mirrors `XTERM_THEMES.light.background` in terminals.ts. */
-  --bg-term: #f9f9fb;
+  /* One Light terminal surface (pairs with the dark side's One Dark Pro);
+     mirrors `XTERM_THEMES.light.background` in terminals.ts. */
+  --bg-term: #fafafa;
   --border: rgba(17, 18, 23, 0.1);
   --border-strong: rgba(17, 18, 23, 0.16);
   --text: #111217;
   /* Terminal body text for the xterm DOM-renderer fallback; mirrors
-     `XTERM_THEMES.light.foreground` in terminals.ts. */
-  --term-text: #3f3f46;
+     `XTERM_THEMES.light.foreground` (One Light) in terminals.ts. */
+  --term-text: #383a42;
   --text-dim: rgba(17, 18, 23, 0.6);
   --text-faint: rgba(17, 18, 23, 0.52);
   --accent: #007aff;
@@ -109,7 +121,7 @@
   --red-soft: rgba(189, 36, 49, 0.11);
   --shadow: 0 12px 30px rgba(0, 0, 0, 0.12);
   --focus-ring: #007aff;
-  --workspace-live: #f9f9fb;
+  --workspace-live: #fafafa;
   --workspace-idle: #f5f5f5;
   --settings-surface: #f4f4f4;
   --settings-sidebar: #efefef;
@@ -121,22 +133,41 @@
   --segment-selected-bg: #006edc;
   --segment-selected-text: #ffffff;
   --unread: #34c759;
-  --sidebar-glass: #efefef;
+  /* Frosted source list (light): milky white veil over the native Sidebar
+     material; see the dark block and data-vibrancy fallback notes. */
+  --sidebar-glass: rgba(250, 250, 253, 0.72);
+  --sidebar-border: rgba(17, 18, 23, 0.08);
+  --sidebar-chip: rgba(255, 255, 255, 0.85);
   --terminal-scroll-thumb: rgba(17, 18, 23, 0.075);
   /* Sidebar hierarchy (light): same stepping logic as dark — L1 > session
      > L2 > L3, icons inherit the row tier, states reuse the accent family. */
-  --sidebar-text-strong: rgba(17, 18, 23, 0.94);
-  --sidebar-text: rgba(17, 18, 23, 0.74);
-  --sidebar-text-dim: rgba(17, 18, 23, 0.6);
-  --sidebar-text-faint: rgba(17, 18, 23, 0.52);
-  --sidebar-icon: rgba(17, 18, 23, 0.5);
-  --sidebar-action: rgba(17, 18, 23, 0.58);
-  --sidebar-row-hover: rgba(17, 18, 23, 0.06);
-  --sidebar-row-active: var(--accent-soft);
-  --sidebar-action-hover-bg: rgba(17, 18, 23, 0.1);
+  --sidebar-text-strong: rgba(17, 18, 23, 0.95);
+  --sidebar-text: rgba(17, 18, 23, 0.78);
+  --sidebar-text-dim: rgba(17, 18, 23, 0.62);
+  --sidebar-text-faint: rgba(17, 18, 23, 0.5);
+  --sidebar-icon: rgba(17, 18, 23, 0.53);
+  --sidebar-action: rgba(17, 18, 23, 0.6);
+  --sidebar-row-hover: rgba(17, 18, 23, 0.07);
+  --sidebar-row-active: rgba(0, 122, 255, 0.2);
+  --sidebar-action-hover-bg: rgba(17, 18, 23, 0.12);
+  /* Current-checkout branch row: One Light magenta (pairs with the dark
+     side's One Dark Pro magenta); hover lifts toward the brighter hue. */
+  --sidebar-branch: #a626a4;
+  --sidebar-branch-hover: #c162de;
   --sidebar-edit-bg: rgba(255, 255, 255, 0.92);
   --sidebar-edit-border: var(--accent-text);
   --sidebar-handle: rgba(17, 18, 23, 0.24);
+}
+
+/* Platforms without the native vibrancy layer keep a solid sidebar:
+   translucency without a blur behind it reads as dirt, not glass. The
+   frontend sets data-vibrancy in applyThemeSettings (macOS = on). */
+:root[data-vibrancy="off"][data-theme="dark"] {
+  --sidebar-glass: #27272b;
+}
+
+:root[data-vibrancy="off"][data-theme="light"] {
+  --sidebar-glass: #efefef;
 }
 
 /* ------------------------------------------------------------------ */
@@ -153,7 +184,6 @@ body,
   height: 100%;
   margin: 0;
   overflow: hidden;
-  background: var(--bg);
 }
 
 body {
@@ -216,7 +246,6 @@ button {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--bg);
   --workspace-current: var(--workspace-idle);
 }
 
@@ -228,6 +257,30 @@ button {
   display: flex;
   flex: 1;
   min-height: 0;
+  position: relative;
+}
+
+/* Slide curtain: only exists while the sidebar toggle animation runs.
+   Covers the column the panel is vacating (or entering) with the opaque
+   workspace surface, so the frosted glass never reveals the window behind
+   mid-move. Extends 48px up to back the traffic-light band as well. */
+.app[data-sidebar-anim] .main::before {
+  content: "";
+  position: absolute;
+  top: -48px;
+  bottom: 0;
+  left: 0;
+  width: var(--sidebar-width, 296px);
+  background: var(--workspace-current);
+  z-index: 1;
+}
+
+.app[data-sidebar-anim] .sidebar {
+  pointer-events: none;
+}
+
+.app[data-sidebar-anim] .split-handle {
+  visibility: hidden;
 }
 
 .mono {
@@ -262,10 +315,20 @@ button {
 .topbar::before {
   content: "";
   position: absolute;
-  inset: 0 0 0 var(--sidebar-width, 296px);
+  top: 0;
+  bottom: 0;
+  right: 0;
+  left: var(--sidebar-width, 296px);
   z-index: 0;
   background: var(--workspace-current);
   pointer-events: none;
+}
+
+/* During the slide-in phase the strip recedes in sync with the panel's
+   transform slide; every other width flip (collapse commit, drag resize)
+   applies instantly so the edge never trails. */
+.app[data-sidebar-anim="in"] .topbar::before {
+  transition: left 0.16s ease;
 }
 
 .topbar > * {
@@ -429,13 +492,32 @@ button {
   height: calc(100% + 48px);
   margin-top: -48px;
   background: var(--sidebar-glass);
-  border-right: 0;
+  border-right: 1px solid var(--sidebar-border);
   border-radius: 0 16px 16px 0;
   overflow: hidden;
-  transition: width 0.16s ease, opacity 0.12s ease;
+  /* The panel only ever animates transform (compositor work, zero layout
+     churn); the width commit lands once per toggle, driven by the
+     data-sidebar-anim choreography in toggleSidebarCollapsed(). */
+  transition: transform 0.16s ease;
   position: relative;
   z-index: 2;
   box-shadow: none;
+}
+
+/* Slide phases: fully off-canvas to the left (plus border/shadow margin)
+   for hide and for the show prep frame; the show phase then transitions
+   back to identity. */
+.sidebar.anim-out {
+  transform: translateX(calc(-100% - 16px));
+}
+
+.sidebar.anim-inPrep {
+  transform: translateX(calc(-100% - 16px));
+  transition: none;
+}
+
+.sidebar.anim-in {
+  transform: translateX(0);
 }
 
 :root[data-theme="light"] .sidebar {
@@ -444,7 +526,6 @@ button {
 
 .sidebar.collapsed {
   width: 0;
-  opacity: 0;
   border-right-width: 0;
   pointer-events: none;
 }
@@ -573,7 +654,7 @@ button {
   z-index: 2;
   padding-left: 4px;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--sidebar-glass) 84%, var(--bg-panel));
+  background: var(--sidebar-chip);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s ease;
@@ -797,13 +878,13 @@ button {
 /* A checkout is context, not a third tree level: it always sits directly
    below a Git project heading and before the Worktrees drill-down. */
 .tree-row.current-branch-row {
-  color: var(--sidebar-text-dim);
+  color: var(--sidebar-branch);
   font-size: 12px;
 }
 
 .tree-row.current-branch-row:hover,
 .tree-row.current-branch-row:focus-visible {
-  color: var(--sidebar-text);
+  color: var(--sidebar-branch-hover);
 }
 
 /* Pinned "Worktrees" drill-down entry: always the first row of an expanded
@@ -1314,7 +1395,570 @@ button {
 .term-stack {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   position: relative;
+}
+
+/* Row that pairs the terminal stack with the in-app document viewer. */
+.term-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+
+/* Document viewer split (opened from terminal document links). */
+.doc-panel {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 0;
+  display: flex;
+  border-left: 1px solid var(--border);
+  /* Share the terminal page surface (One Dark Pro / One Light Pro) instead of
+     the elevated chrome tone, so the viewer reads as part of the terminal. */
+  background: var(--workspace-current);
+}
+
+.doc-editor-column {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.doc-panel-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 20px;
+  text-align: center;
+}
+
+.doc-panel-empty-icon {
+  font-size: 26px;
+  opacity: 0.5;
+}
+
+/* VSCode-like file tree column. */
+.doc-tree {
+  flex: 0 0 200px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+}
+
+.doc-tree-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.doc-tree-root {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-tree-header .spacer {
+  flex: 1;
+}
+
+.doc-tree-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0 12px;
+}
+
+.doc-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  padding: 3px 8px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Rows are drag sources, not selectable text: without this a drag starts a
+     text-selection drag of the label instead of the element's drag payload. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.doc-tree-row:hover {
+  background: var(--accent-soft);
+}
+
+.doc-tree-row.selected {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.doc-tree-icon {
+  flex: 0 0 12px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.doc-tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-tree-note {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.doc-tree-note.error {
+  color: var(--warn, #d19a66);
+}
+
+/* Inline "new file / new folder" naming row. */
+.doc-tree-create {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.doc-tree-create-base {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 3px;
+}
+
+.doc-tree-create input {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--bg-term);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  padding: 4px 7px;
+  outline: none;
+}
+
+.doc-tree-create-error {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--warn, #d19a66);
+}
+
+/* Expanded viewer: the terminal stack leaves the flex flow untouched (no
+   xterm resize/refit churn) and the panel takes the whole terminal page. */
+.term-body.doc-expanded .term-stack {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.doc-panel.expanded {
+  flex: 1 1 auto;
+  border-left: none;
+}
+
+.doc-panel-resize {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 5;
+}
+
+.doc-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.doc-panel-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+}
+
+.doc-panel-modes {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.doc-mode {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.doc-mode.active {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.doc-panel-header .spacer {
+  flex: 1;
+}
+
+.doc-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+}
+
+.doc-panel-status {
+  padding: 18px 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.doc-panel-status.error {
+  color: var(--warn, #d19a66);
+}
+
+/* Friendly empty state for files the viewer cannot display. */
+.doc-unsupported {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+  padding: 36px 28px;
+}
+
+.doc-unsupported-icon {
+  font-size: 26px;
+  opacity: 0.55;
+}
+
+.doc-unsupported-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.doc-unsupported-body {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-muted);
+  max-width: 42em;
+}
+
+.doc-unsupported-path {
+  font: 11px/1.5 var(--font-mono);
+  color: var(--text-muted);
+  opacity: 0.8;
+  word-break: break-all;
+  user-select: text;
+}
+
+.doc-unsupported-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.doc-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.doc-editor-gutter {
+  flex: 0 0 auto;
+  overflow: hidden;
+  padding: 8px 8px 16px 12px;
+  border-right: 1px solid var(--border);
+  font: 12px/1.55 var(--font-mono);
+  color: var(--text-muted);
+  text-align: right;
+  user-select: none;
+  opacity: 0.7;
+}
+
+.doc-editor-gutter-line {
+  display: block;
+  min-width: 3em;
+}
+
+.doc-editor-textarea {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--text);
+  font: 12px/1.55 var(--font-mono);
+  padding: 8px 12px 16px;
+  white-space: pre;
+  overflow: auto;
+}
+
+.doc-dirty-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+
+.doc-save {
+  flex: 0 0 auto;
+}
+
+.doc-quote {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.doc-preview-host {
+  min-height: 100%;
+}
+
+.doc-prose {
+  padding: 12px 16px 20px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Markdown preview typography, driven by theme tokens so dark and light
+   palettes both stay readable. */
+.md-preview {
+  padding: 12px 16px 24px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.md-preview h1,
+.md-preview h2,
+.md-preview h3,
+.md-preview h4,
+.md-preview h5,
+.md-preview h6 {
+  margin: 1.1em 0 0.5em;
+  line-height: 1.35;
+  color: var(--text);
+}
+
+.md-preview h1 { font-size: 20px; }
+.md-preview h2 { font-size: 17px; }
+.md-preview h3 { font-size: 15px; }
+.md-preview h4,
+.md-preview h5,
+.md-preview h6 { font-size: 13px; }
+
+.md-preview h1:first-child,
+.md-preview h2:first-child,
+.md-preview h3:first-child {
+  margin-top: 0;
+}
+
+.md-preview p {
+  margin: 0.55em 0;
+}
+
+.md-preview a.md-link {
+  color: var(--accent-text);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.md-preview code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--accent-soft);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.md-preview pre {
+  margin: 0.7em 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+  font: 12px/1.55 var(--font-mono);
+  /* Panel already sits on the terminal surface; lift code blocks one step. */
+  background: var(--bg-elevated);
+}
+
+.md-preview pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.md-preview blockquote {
+  margin: 0.7em 0;
+  padding: 2px 12px;
+  border-left: 3px solid var(--accent);
+  color: var(--text-muted);
+}
+
+.md-preview ul,
+.md-preview ol {
+  margin: 0.5em 0;
+  padding-left: 1.6em;
+}
+
+.md-preview table {
+  border-collapse: collapse;
+  margin: 0.7em 0;
+  font-size: 12px;
+}
+
+.md-preview th,
+.md-preview td {
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  text-align: left;
+}
+
+.md-preview th {
+  background: var(--accent-soft);
+}
+
+.md-preview hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1em 0;
+}
+
+/* Mermaid diagrams inside the document preview. */
+.md-mermaid {
+  margin: 0.7em 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  overflow-x: auto;
+  text-align: center;
+}
+
+.md-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.md-mermaid-status {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* Custom flowchart renderer: every part is token-driven, so diagrams match
+   the terminal surface in both themes without a re-render. */
+.flow-graph {
+  margin: 0.7em 0;
+  padding: 14px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  overflow-x: auto;
+  text-align: center;
+}
+
+.flow-graph svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.flow-node-shape {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.flow-shape-decision {
+  fill: var(--amber-soft);
+  stroke: var(--amber);
+}
+
+.flow-sub-line {
+  fill: none;
+  stroke-width: 1.2;
+}
+
+.flow-node-label {
+  fill: var(--text);
+  font: 13px/1.5 var(--font-ui);
+}
+
+.flow-edge-path {
+  fill: none;
+  stroke: var(--text-dim);
+  stroke-width: 1.6;
+}
+
+.flow-edge-dotted .flow-edge-path {
+  stroke-dasharray: 5 4;
+}
+
+.flow-edge-thick .flow-edge-path {
+  stroke-width: 2.8;
+}
+
+.flow-arrow {
+  fill: var(--text-dim);
+}
+
+.flow-edge-label {
+  fill: var(--text-dim);
+  font: 12px/1.5 var(--font-ui);
+  /* Panel-colored halo keeps labels readable where they cross edges. */
+  paint-order: stroke;
+  stroke: var(--bg-elevated);
+  stroke-width: 4px;
+  stroke-linejoin: round;
 }
 
 .term-pane {
@@ -1333,6 +1977,17 @@ button {
      zero-sized canvas; switching back can then show an empty black surface
      even though the PTY continues to produce output. */
   visibility: hidden;
+  pointer-events: none;
+}
+
+/* Dragging a project-tree entry over the terminal. */
+.term-pane.drop-target::after {
+  content: "";
+  position: absolute;
+  inset: 6px 10px;
+  border: 2px dashed var(--accent);
+  border-radius: 8px;
+  background: var(--accent-soft);
   pointer-events: none;
 }
 
@@ -1986,6 +2641,25 @@ button {
   background: var(--settings-active);
   color: var(--text);
   font-weight: 500;
+}
+
+/* Author credit pinned to the bottom of the nav rail: quiet by default,
+   accent on hover/focus like every other actionable text in the app. */
+.settings-nav-meta {
+  margin-top: auto;
+  padding: 12px 10px 2px;
+}
+
+.settings-author-link {
+  color: var(--text-faint);
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.settings-author-link:hover,
+.settings-author-link:focus-visible {
+  color: var(--accent-text);
+  text-decoration: underline;
 }
 
 .settings-page-panel {

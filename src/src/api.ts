@@ -27,8 +27,10 @@ import type {
   RepositoryStatus,
   StructuredGitError,
   RestartResult,
+  DocumentDirListing,
   SearchResult,
   SecretMeta,
+  SessionDocument,
   Settings,
   SupportedAgent,
   StatusEventView,
@@ -293,6 +295,15 @@ export const api = {
   revealInFileManager: (path: string) => invoke<void>("reveal_in_file_manager", { path }),
   openInSystemTerminal: (path: string) => invoke<void>("open_in_system_terminal", { path }),
   openExternalUrl: (url: string) => invoke<void>("open_external_url", { url }),
+  readSessionDocument: (path: string) =>
+    invoke<SessionDocument>("read_session_document", { path }),
+  writeSessionDocument: (path: string, content: string) =>
+    invoke<{ path: string; sizeBytes: number }>("write_session_document", { path, content }),
+  listDocumentDirectory: (path: string) =>
+    invoke<DocumentDirListing>("list_document_directory", { path }),
+  createDocumentEntry: (path: string, kind: "file" | "dir") =>
+    invoke<{ path: string }>("create_document_entry", { path, kind }),
+  openWithDefaultApp: (path: string) => invoke<void>("open_with_default_app", { path }),
   pickDirectory: () => invoke<string | null>("pick_directory"),
   pickSavePath: (defaultName: string) =>
     invoke<string | null>("pick_save_path", { defaultName }),

@@ -33,7 +33,28 @@ export function runtimeMessageText(envelope: RuntimeMessageEnvelope): string {
   const detail = envelope.technicalDetail?.trim() || envelope.message?.trim() || "";
   const agent = String(envelope.params?.agent ?? "Agent");
   const count = Number(envelope.params?.count ?? 0);
+  const path = String(envelope.params?.path ?? "");
   switch (envelope.code) {
+    case "document_path_relative":
+      return i18n.t("runtime:errors.documentPathRelative", { path });
+    case "document_not_found":
+      return i18n.t("runtime:errors.documentNotFound", { path });
+    case "document_not_file":
+      return i18n.t("runtime:errors.documentNotFile", { path });
+    case "document_read_failed":
+      return i18n.t("runtime:errors.documentReadFailed", { detail });
+    case "document_binary":
+      return i18n.t("runtime:errors.documentBinary", { path });
+    case "document_too_large":
+      return i18n.t("runtime:errors.documentTooLarge", { path });
+    case "document_write_failed":
+      return i18n.t("runtime:errors.documentWriteFailed", { detail });
+    case "document_not_directory":
+      return i18n.t("runtime:errors.documentNotDirectory", { path });
+    case "document_entry_exists":
+      return i18n.t("runtime:errors.documentEntryExists", { path });
+    case "document_create_failed":
+      return i18n.t("runtime:errors.documentCreateFailed", { detail });
     case "watch_database_open_failed":
       return i18n.t("runtime:errors.watchDatabaseOpenFailed", { detail });
     case "status_persistence_failed":

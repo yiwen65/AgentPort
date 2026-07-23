@@ -15,7 +15,7 @@ import {
   presetDisplayName,
   secretBackendZh,
 } from "../format";
-import { applyUiLanguage, currentUiLanguage } from "../i18n";
+import { applyUiLanguage, currentUiLanguage, i18n } from "../i18n";
 import { orderAgentIds } from "../agentOrder";
 import { applyTerminalLanguage } from "../terminals";
 import { AgentIcon } from "./AgentIcons";
@@ -1229,6 +1229,22 @@ export default function SettingsDialog() {
               {t(item.labelKey)}
             </button>
           ))}
+          <div className="settings-nav-meta">
+            <a
+              className="settings-author-link"
+              href="https://github.com/yiwen65"
+              onClick={(event) => {
+                // In-app navigation would replace the settings surface, so
+                // route the click through the native external-open path.
+                event.preventDefault();
+                void api.openExternalUrl("https://github.com/yiwen65").catch((error) =>
+                  toast(i18n.t("shell:ui.sidebar.openFailed", { detail: errorText(error) }), "error"),
+                );
+              }}
+            >
+              {t("settings:ui.authorCredit")}
+            </a>
+          </div>
         </nav>
         <section className="settings-page-panel" aria-label={t("settings:ui.contentAriaLabel")}>
           <div className="settings-content">

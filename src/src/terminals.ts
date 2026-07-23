@@ -3,7 +3,13 @@
 // All PTY I/O flows through the backend: input is base64 via send_input,
 // output arrives on the attach Channel.
 
-import { Terminal, type IBuffer, type ITheme } from "@xterm/xterm";
+import {
+  Terminal,
+  type IBuffer,
+  type ILinkProvider,
+  type ILink,
+  type ITheme,
+} from "@xterm/xterm";
 import { CanvasAddon } from "@xterm/addon-canvas";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -22,6 +28,7 @@ import {
 } from "./store";
 import { stateLabel } from "./format";
 import { i18n } from "./i18n";
+import { openDocumentTarget, parseDocumentLinkTarget } from "./documents";
 import { runtimeMessageEnvelope, runtimeMessageText } from "./runtimeMessages";
 import type { ChannelMsg, LogCursorView, RuntimeMessageEnvelope } from "./types";
 
@@ -87,10 +94,80 @@ export interface TerminalBufferMatch {
 const handles = new Map<string, TermHandle>();
 const unreadOutputPending = new Set<string>();
 
+/**
+ * Routes a clicked terminal link. Local documents (file:// OSC 8 links and
+ * plain absolute paths) open in the in-app viewer; only absolute http(s)
+ * URLs are handed to the OS, through the native validation command. Every
+ * other scheme stays inside the app and is simply rejected — terminal output
+ * is untrusted, so schemes like `vscode:` or `smb:` never reach the OS.
+ */
 function openTerminalLink(url: string) {
-  void api.openExternalUrl(url).catch((error) => {
-    toast(i18n.t("shell:ui.sidebar.openFailed", { detail: errorText(error) }), "error");
-  });
+  const documentTarget = parseDocumentLinkTarget(url);
+  if (documentTarget) {
+    openDocumentTarget(documentTarget);
+    return;
+  }
+  if (/^https?:\/\//i.test(url)) {
+    void api.openExternalUrl(url).catch((error) => {
+      toast(i18n.t("shell:ui.sidebar.openFailed", { detail: errorText(error) }), "error");
+    });
+    return;
+  }
+  toast(i18n.t("shell:ui.sidebar.openFailed", { detail: url }), "error");
+}
+
+/**
+ * Matches absolute POSIX paths printed as plain text, e.g.
+ * `/Users/w/project/docs/report.md:12`. Paths may contain spaces when the
+ * whole candidate is quoted; unquoted matches stop at whitespace. A trailing
+ * `:line[:column]` suffix is included so the viewer can reveal the line.
+ *
+ * Sentence punctuation (`,` `;` `!` `?` and CJK punctuation like `，。：`) is
+ * excluded so prose following a path — `已生成文档 /a/b.md，包含…` — never
+ * becomes part of the link. These characters are vanishingly rare in real
+ * file names, while prose punctuation right after a path is the common case.
+ */
+const LOCAL_PATH_CANDIDATE =
+  /(?:["'`(]?)(\/(?:[^\s"'`()[\]{}<>\\,;!?，。；：、！？【】《》「」『』]|\\ )+(?::\d+(?::\d+)?)?)/g;
+/** Scheme immediately before a `/…` match means the text is a URL, not a
+ * local path (the WebLinksAddon already owns those links). Covers both
+ * `https://|path` and `https:|//path` match alignments. */
+const URL_SCHEME_BEFORE_PATH = /[a-zA-Z][a-zA-Z0-9+.-]*:\/?\/?$/;
+
+function localFileLinkProvider(term: Terminal): ILinkProvider {
+  return {
+    provideLinks(bufferLineNumber, callback) {
+      const line = term.buffer.active
+        .getLine(bufferLineNumber - 1)
+        ?.translateToString(true);
+      if (!line || !line.includes("/")) {
+        callback(undefined);
+        return;
+      }
+      const links: ILink[] = [];
+      LOCAL_PATH_CANDIDATE.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = LOCAL_PATH_CANDIDATE.exec(line)) !== null) {
+        const text = match[1];
+        const startIndex = match.index + match[0].indexOf(text);
+        if (URL_SCHEME_BEFORE_PATH.test(line.slice(0, startIndex))) continue;
+        // Protocol-relative URLs (`//host/path`) are not local paths.
+        if (text.startsWith("//")) continue;
+        // Require at least one interior slash so `/` alone never links.
+        if (text.indexOf("/", 1) === -1) continue;
+        const range = {
+          start: { x: startIndex + 1, y: bufferLineNumber },
+          end: { x: startIndex + text.length, y: bufferLineNumber },
+        };
+        links.push({
+          range,
+          text,
+          activate: (_event, linkText) => openTerminalLink(linkText),
+        });
+      }
+      callback(links.length ? links : undefined);
+    },
+  };
 }
 
 function resetRenderObservation(handle: TermHandle) {
@@ -222,32 +299,37 @@ const XTERM_THEMES: Record<EffectiveTheme, ITheme> = {
     brightWhite: "#e6e6e6",
   },
   light: {
-    // Off-white surface takes the glare out of long reading sessions; keep
-    // it identical to styles.css `--bg-term`/`--workspace-live` so the pane
-    // edges never show a mismatched seam.
-    background: "#f9f9fb",
-    foreground: "#3f3f46",
-    cursor: "#3f3f46",
-    cursorAccent: "#f9f9fb",
-    selectionBackground: "#d4d4d8",
-    black: "#09090b",
-    red: "#dc2626",
-    green: "#16a34a",
-    yellow: "#ca8a04",
-    blue: "#2563eb",
-    magenta: "#9333ea",
-    cyan: "#0891b2",
+    // Atom One Light, paired with the dark side's One Dark Pro: surface and
+    // body text follow the VSCode port (#FAFAFA / #383A42), normal ANSI
+    // slots use the darker one-light-syntax hues, and bright slots use the
+    // lighter One Dark hues (the One Half Light terminal mapping) so bright
+    // keeps a visible emphasis step on a light surface. Keep `background`
+    // identical to styles.css `--bg-term`/`--workspace-live` so pane edges
+    // never show a mismatched seam.
+    background: "#fafafa",
+    foreground: "#383a42",
+    cursor: "#383a42",
+    cursorAccent: "#fafafa",
+    selectionBackground: "#e5e5e6",
+    black: "#383a42",
+    red: "#e45649",
+    green: "#50a14f",
+    yellow: "#986801",
+    blue: "#4078f2",
+    magenta: "#a626a4",
+    cyan: "#0184bc",
     // CLI TUIs commonly emit ANSI white explicitly for body copy. On a light
-    // terminal that slot must be dark, otherwise a clean launch renders the
-    // transcript almost white-on-white until another repaint changes it.
+    // terminal that slot must stay dark (native One Light maps white near
+    // the background), otherwise a clean launch renders the transcript
+    // almost white-on-white until another repaint changes it.
     white: "#52525b",
-    brightBlack: "#71717a",
-    brightRed: "#ef4444",
-    brightGreen: "#22c55e",
-    brightYellow: "#eab308",
-    brightBlue: "#3b82f6",
-    brightMagenta: "#a855f7",
-    brightCyan: "#06b6d4",
+    brightBlack: "#4f525e",
+    brightRed: "#e06c75",
+    brightGreen: "#98c379",
+    brightYellow: "#e5c07b",
+    brightBlue: "#61afef",
+    brightMagenta: "#c678dd",
+    brightCyan: "#56b6c2",
     brightWhite: "#26262c",
   },
 };
@@ -361,11 +443,13 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     scrollback: 50000,
     screenReaderMode: settings?.screenReaderMode ?? false,
     allowProposedApi: true,
-    // xterm parses OSC 8 links itself. The native command is the security
-    // boundary because terminal output is untrusted input.
+    // xterm parses OSC 8 links itself. Non-http protocols must be allowed
+    // here so `file://` hyperlinks reach the in-app document viewer; routing
+    // in openTerminalLink is the security boundary — only validated http(s)
+    // URLs ever leave the app for the OS.
     linkHandler: {
       activate: (_event, url) => openTerminalLink(url),
-      allowNonHttpProtocols: false,
+      allowNonHttpProtocols: true,
     },
     macOptionIsMeta: true,
     allowTransparency: false,
@@ -378,6 +462,9 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
   // Detect plain http(s) URLs. OSC 8 links use the handler above, so both
   // forms share the same native URL validation and browser-opening path.
   term.loadAddon(new WebLinksAddon((_event, url) => openTerminalLink(url)));
+  // Detect plain-text absolute paths so agent-printed document paths (which
+  // are not always wrapped in OSC 8 sequences) are clickable as well.
+  term.registerLinkProvider(localFileLinkProvider(term));
   const handle: TermHandle = {
     sessionId,
     term,
@@ -603,7 +690,7 @@ function bindTerminalContainer(handle: TermHandle, container: HTMLDivElement) {
     installInputCompatibility(handle.term, container),
   );
   handle.resizeObserver?.disconnect();
-  handle.resizeObserver = new ResizeObserver(() => fitHandle(handle));
+  handle.resizeObserver = new ResizeObserver(() => scheduleFitHandle(handle));
   handle.resizeObserver.observe(container);
 }
 
@@ -747,6 +834,28 @@ export async function loadHistoryTail(sessionId: string): Promise<void> {
 
 const resizeTimers = new Map<string, number>();
 
+const fitTimers = new Map<string, number>();
+
+function scheduleFitHandle(handle: TermHandle) {
+  // ResizeObserver fires per animation frame while the sidebar or the
+  // window is being resized. fit() reflows the whole scrollback
+  // synchronously, so running it per frame (xN panes) starves the main
+  // thread — and with a transparent window the skipped paints show the
+  // app behind as a ghost. Coalesce to one refit once the geometry stops
+  // moving; the opaque workspace and term-host surfaces cover the brief
+  // cell-geometry mismatch.
+  const prev = fitTimers.get(handle.sessionId);
+  if (prev !== undefined) window.clearTimeout(prev);
+  fitTimers.set(
+    handle.sessionId,
+    window.setTimeout(() => {
+      fitTimers.delete(handle.sessionId);
+      if (handles.get(handle.sessionId) !== handle) return;
+      fitHandle(handle);
+    }, 90),
+  );
+}
+
 export function fitHandle(handle: TermHandle, forceRedraw = false, forceResize = false) {
   const el = handle.container;
   if (!el || el.clientWidth === 0 || el.clientHeight === 0) return;
@@ -798,6 +907,26 @@ export function fitSession(sessionId: string, forceResize = false) {
     syncHandleTheme(handle);
     fitHandle(handle, true, forceResize);
     if (handle.logCursor) queueRenderedLogObservation(handle, handle.logCursor);
+  }
+}
+
+/**
+ * Inserts text into a session's terminal as if the user pasted it, e.g. a
+ * dragged file reference from the project tree. Returns false when the
+ * session has no live terminal to receive input.
+ */
+export function insertTextIntoTerminal(sessionId: string, text: string): boolean {
+  const handle = handles.get(sessionId);
+  if (!handle || !handle.attached) return false;
+  try {
+    // paste() does not require focus; focus afterwards so the caret is ready.
+    handle.term.paste(text);
+    handle.term.focus();
+    return true;
+  } catch {
+    // A paste failure must surface to the caller instead of dying silently
+    // inside the drop handler.
+    return false;
   }
 }
 

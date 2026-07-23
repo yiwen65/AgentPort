@@ -2,6 +2,7 @@
 // Components stay declarative; side effects live here.
 
 import { api, copyText, errorText } from "./api";
+import { setTheme as setNativeTheme } from "@tauri-apps/api/app";
 import { localizedNotices } from "./runtimeMessages";
 import {
   applyProjectsSnapshot,
@@ -162,6 +163,16 @@ export function applyThemeSettings() {
   document.documentElement.dataset.theme = theme;
   delete document.documentElement.dataset.prepaintTheme;
   document.documentElement.dataset.motion = reduced ? "reduced" : "full";
+  // Keep the native window (and with it the sidebar's vibrancy material) on
+  // the same appearance as the web content; otherwise a manual theme
+  // override would mix a dark NSVisualEffectView with light chrome.
+  void setNativeTheme(theme);
+  // Native frosted glass is only installed on macOS. Elsewhere the sidebar
+  // keeps its solid surface — translucency without a blur behind it reads
+  // as dirt, not glass.
+  document.documentElement.dataset.vibrancy = /Mac/.test(navigator.userAgent)
+    ? "on"
+    : "off";
   try {
     localStorage.setItem("agentport-theme-mode", st.theme);
     localStorage.setItem("agentport-effective-theme", theme);
@@ -171,6 +182,45 @@ export function applyThemeSettings() {
   setState({ themeEffective: theme, reducedMotion: reduced });
   applyXtermTheme(theme);
   applyTerminalSettings();
+}
+
+// Sidebar hide/show choreography: the panel only ever animates `transform`
+// (compositor work, zero layout churn — per-frame reflow is what starved
+// paints and let the window behind ghost through). The width commit lands
+// once, after the slide for hide and before it for show; an opaque curtain
+// (CSS, keyed off data-sidebar-anim) covers the vacated column during the
+// slide so the frosted glass never reveals the desktop mid-move.
+const SIDEBAR_ANIM_MS = 180;
+let sidebarAnimToken = 0;
+
+export function toggleSidebarCollapsed() {
+  const s = getState();
+  if (s.sidebarAnim) return; // let the in-flight slide finish
+  if (s.reducedMotion) {
+    // No slide under reduced motion — commit immediately instead.
+    setState({ sidebarCollapsed: !s.sidebarCollapsed });
+    return;
+  }
+  const token = ++sidebarAnimToken;
+  if (!s.sidebarCollapsed) {
+    setState({ sidebarAnim: "out" });
+    window.setTimeout(() => {
+      if (token !== sidebarAnimToken) return;
+      setState({ sidebarCollapsed: true, sidebarAnim: null });
+    }, SIDEBAR_ANIM_MS);
+  } else {
+    setState({ sidebarCollapsed: false, sidebarAnim: "inPrep" });
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (token !== sidebarAnimToken) return;
+        setState({ sidebarAnim: "in" });
+        window.setTimeout(() => {
+          if (token !== sidebarAnimToken) return;
+          setState({ sidebarAnim: null });
+        }, SIDEBAR_ANIM_MS);
+      });
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------

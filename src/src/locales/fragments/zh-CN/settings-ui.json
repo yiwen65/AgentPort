@@ -2,6 +2,7 @@
   "ui": {
     "title": "设置",
     "navigationAriaLabel": "设置分类",
+    "authorCredit": "author: yiwen65",
     "contentAriaLabel": "设置内容",
     "saved": "设置已保存",
     "saveFailed": "设置保存失败：{{detail}}",

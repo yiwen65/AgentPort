@@ -20,6 +20,7 @@ import {
   refreshActiveWorktreeStatus,
   refreshProjectsSoon,
   restartSessionFlow,
+  toggleSidebarCollapsed,
   selectSession,
   switchSessionByIndex,
 } from "./actions";
@@ -231,7 +232,7 @@ function useHotkeys() {
       if (sidebarCombo) {
         e.preventDefault();
         e.stopPropagation();
-        setState({ sidebarCollapsed: !s.sidebarCollapsed });
+        toggleSidebarCollapsed();
         return;
       }
 
@@ -428,6 +429,7 @@ export default function App() {
   });
   const sidebarCollapsed = useStore((state) => state.sidebarCollapsed);
   const sidebarWidth = useStore((state) => state.sidebarWidth);
+  const sidebarAnim = useStore((state) => state.sidebarAnim);
   const showOnboarding = useStore((state) => state.showOnboarding);
   const announcement = useStore((state) => state.announcement);
   useBoot();
@@ -459,6 +461,7 @@ export default function App() {
     <div
       className="app"
       data-workspace-state={workspaceState}
+      data-sidebar-anim={sidebarAnim ?? undefined}
       style={
         {
           "--sidebar-width": sidebarCollapsed ? "0px" : `${sidebarWidth}px`,
@@ -467,7 +470,7 @@ export default function App() {
     >
       <TopBar />
       <div className="main">
-        <Sidebar collapsed={sidebarCollapsed} width={sidebarWidth} />
+        <Sidebar collapsed={sidebarCollapsed} width={sidebarWidth} anim={sidebarAnim} />
         <SplitHandle collapsed={sidebarCollapsed} width={sidebarWidth} />
         <Suspense fallback={<section className="workspace" aria-label={t("shell:app.workspaceLabel")} aria-busy="true" />}>
           <TerminalArea />

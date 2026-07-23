@@ -34,6 +34,11 @@ import {
   type TerminalBufferMatch,
 } from "../terminals";
 import {
+  dropTreeEntryIntoTerminal,
+  hasTreeDragPayload,
+  readDragPayload,
+} from "../terminalDrop";
+import {
   copyTextWithToast,
   dismissUncommittedNotice,
   openNewSessionDialog,
@@ -45,6 +50,7 @@ import type { SearchHit, SearchResult, SessionView } from "../types";
 import { AgentIcon } from "./AgentIcons";
 import ShellIcon from "./ShellIcon";
 import PiStructuredTimeline from "./PiStructuredTimeline";
+import DocumentPanel from "./DocumentPanel";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 
@@ -235,6 +241,7 @@ function TerminalPane({ sessionId, active }: { sessionId: string; active: boolea
   const ses = useStore((state) => findSession(state.projects, sessionId));
   useStore((state) => state.runtime[sessionId]);
   const scrolledUp = getRuntime(sessionId).scrolledUp;
+  const [dropActive, setDropActive] = useState(false);
 
   useEffect(() => {
     if (hostRef.current) mountTerminal(sessionId, hostRef.current);
@@ -281,8 +288,28 @@ function TerminalPane({ sessionId, active }: { sessionId: string; active: boolea
         "term-pane" +
         (active ? "" : " hidden") +
         (ended ? " ended" : "") +
-        (scrolledUp ? " scrolled-up" : "")
+        (scrolledUp ? " scrolled-up" : "") +
+        (dropActive ? " drop-target" : "")
       }
+      onDragOver={(event) => {
+        if (!active || !hasTreeDragPayload(event.dataTransfer)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+        setDropActive(true);
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget === event.target) setDropActive(false);
+      }}
+      onDrop={(event) => {
+        setDropActive(false);
+        if (!active) return;
+        const payload = readDragPayload(event.dataTransfer);
+        // Plain non-path text falls through to the native drop, which inserts
+        // the text into the terminal as-is.
+        if (!payload) return;
+        event.preventDefault();
+        dropTreeEntryIntoTerminal(sessionId, ses?.adapter ?? "shell", payload);
+      }}
     >
       <div className="term-host" ref={hostRef} />
       <TerminalScrollbar sessionId={sessionId} />
@@ -760,6 +787,7 @@ export default function TerminalArea() {
   );
   const hasProjects = useStore((state) => state.projects.length > 0);
   const termSearchOpen = useStore((state) => state.termSearchOpen);
+  const docExpanded = useStore((state) => state.docPanelExpanded && state.openDocument !== null);
   const attachedIds = useStore((state) => state.attachedIds);
   const attachedPtyIds = attachedIds.filter(
     (id) => findSession(getState().projects, id)?.transport === "pty",
@@ -775,11 +803,14 @@ export default function TerminalArea() {
           <ReconnectBanner ses={ses} />
           <UncommittedBanner ses={ses} />
           {termSearchOpen ? <TermSearchBar sessionId={ses.id} /> : null}
-          <div className="term-stack">
-            {attachedPtyIds.map((id) => (
-                <TerminalPane key={id} sessionId={id} active={id === ses.id} />
-            ))}
-            <SessionOverlay ses={ses} />
+          <div className={`term-body${docExpanded ? " doc-expanded" : ""}`}>
+            <div className="term-stack">
+              {attachedPtyIds.map((id) => (
+                  <TerminalPane key={id} sessionId={id} active={id === ses.id} />
+              ))}
+              <SessionOverlay ses={ses} />
+            </div>
+            <DocumentPanel />
           </div>
           <TermStatusLine ses={ses} />
         </>

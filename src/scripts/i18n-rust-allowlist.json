@@ -27,12 +27,12 @@
     "原 Session 没有可恢复的对话记录（首轮可能未产生消息），已按新 Session 启动"
   ],
   "crates/agentport-core/src/adapters/codex.rs": [
-    "codex 0.144.5 的 help/doctor 未出现 notify 配置键，hook 注入不可验证，降级为 PTY 启发式",
+    "该版本未暴露可验证的会话级 Hook 能力，状态降级为 PTY 启发式",
     "TUI 模式未证实输出原生 Session ID，仅支持恢复最近的 Session（resume --last）",
     "无原生 Session ID，仅支持恢复最近的 Session"
   ],
   "crates/agentport-core/src/adapters/kimi.rs": [
-    "kimi 0.27.0 无 Session 级 Hook 注入机制（仅全局 ~/.kimi-code/config.toml，不做修改），状态降级为 PTY 启发式",
+    "Kimi 无 Session 级 Hook 注入机制（仅全局 ~/.kimi-code/config.toml，不做修改）；单轮完成使用官方 wire 事件，批准请求降级为 PTY 启发式",
     "无原生 Session ID，仅支持恢复最近的 Session"
   ],
   "crates/agentport-core/src/adapters/qoder.rs": [
@@ -73,6 +73,30 @@
     "输出日志已不存在或已轮转",
     "输出已轮转或不再完整保留，无法安全定位",
     "读取期间输出日志发生变化，无法安全定位；请重试",
-    "项目目录已不存在，无法在文件管理器中显示：{path}。可从 AgentPort 移除该项目记录。"
+    "项目目录已不存在，无法在文件管理器中显示：{path}。可从 AgentPort 移除该项目记录。",
+    "只能打开绝对路径的文档：{path}",
+    "文档不存在或无法访问：{path}（{e}）",
+    "无法读取文档信息：{path}（{e}）",
+    "该路径不是文件，无法在文档查看器中打开：{path}",
+    "无法读取文档：{path}（{e}）",
+    "二进制文件不支持在文档查看器中预览：{path}",
+    "只能写入绝对路径的文档：{path}",
+    "文档内容超过大小限制，无法保存：{path}",
+    "该路径不是文件，无法保存：{path}",
+    "无法确定文档所在目录：{path}",
+    "无法写入文档：{path}（{e}）",
+    "无法保存文档：{path}（{e}）",
+    "只能浏览绝对路径的目录：{path}",
+    "目录不存在或无法访问：{path}（{e}）",
+    "无法读取目录：{path}（{e}）",
+    "该路径不是目录，无法在目录树中展开：{path}",
+    "只能创建绝对路径的文件或目录：{path}",
+    "路径不允许包含 .. 片段：{path}",
+    "同名文件或目录已存在：{path}",
+    "无法创建目录：{path}（{e}）",
+    "无法创建文件：{path}（{e}）",
+    "不支持的创建类型：{kind}",
+    "只能打开绝对路径的文件：{path}",
+    "文件不存在或无法访问：{path}"
   ]
 }

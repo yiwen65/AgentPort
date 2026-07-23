@@ -33,7 +33,29 @@ const rendererMocks = vi.hoisted(() => {
     rows = 24;
     element: HTMLDivElement | null = null;
     textarea: HTMLTextAreaElement | undefined;
-    buffer = { active: { viewportY: 0, baseY: 0, type: "normal" } };
+    bufferLines: string[] = [];
+    linkProviders: Array<{
+      provideLinks: (
+        line: number,
+        callback: (links: Array<{ text: string; activate(e: unknown, t: string): void }> | undefined) => void,
+      ) => void;
+    }> = [];
+    registerLinkProvider = vi.fn((provider: (typeof this.linkProviders)[number]) => {
+      this.linkProviders.push(provider);
+    });
+    buffer = {
+      active: {
+        viewportY: 0,
+        baseY: 0,
+        type: "normal",
+        getLine: (row: number) => {
+          const text = this.bufferLines[row];
+          return text === undefined
+            ? undefined
+            : { translateToString: (_trimRight: boolean) => text };
+        },
+      },
+    };
     loadAddon = vi.fn((addon: unknown) => {
       if (addon instanceof FakeCanvasAddon) {
         offscreenCanvasDuringCanvasLoad.push(globalThis.OffscreenCanvas);
@@ -204,7 +226,86 @@ describe("terminal renderer", () => {
         "https://example.com/osc8",
       );
     });
-    expect(linkHandler.allowNonHttpProtocols).toBe(false);
+    // file:// OSC 8 links must reach activate() so they can open the
+    // in-app document viewer; only validated http(s) URLs leave the app.
+    expect(linkHandler.allowNonHttpProtocols).toBe(true);
+  });
+
+  it("routes file links into the in-app document viewer instead of the OS", () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const linkHandler = terminal.options.linkHandler as {
+      activate: (event: MouseEvent, url: string) => void;
+    };
+
+    linkHandler.activate(
+      new MouseEvent("click"),
+      "file:///Users/w/project/docs/%E6%8A%A5%E5%91%8A.md:12",
+    );
+
+    expect(getState().openDocument).toEqual({
+      path: "/Users/w/project/docs/报告.md",
+      line: 12,
+    });
+    expect(rendererMocks.apiMock.openExternalUrl).not.toHaveBeenCalled();
+    setState({ openDocument: null });
+  });
+
+  it("links plain-text absolute paths and skips URL path segments", () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.bufferLines = [
+      "已生成文档：[报告](/Users/w/project/docs/report.md:5) 请查收",
+      "见 https://example.com/docs/report.md 了解详情",
+    ];
+
+    const provider = terminal.linkProviders[terminal.linkProviders.length - 1];
+    const collect = (line: number) => {
+      let found:
+        | Array<{ text: string; activate(e: unknown, t: string): void }>
+        | undefined;
+      provider.provideLinks(line, (links) => {
+        found = links;
+      });
+      return found ?? [];
+    };
+
+    const lineOne = collect(1);
+    expect(lineOne.map((link) => link.text)).toEqual([
+      "/Users/w/project/docs/report.md:5",
+    ]);
+    // The path inside an http(s) URL belongs to the WebLinksAddon, not us.
+    expect(collect(2)).toEqual([]);
+
+    lineOne[0]?.activate(new MouseEvent("click"), lineOne[0].text);
+    expect(getState().openDocument).toEqual({
+      path: "/Users/w/project/docs/report.md",
+      line: 5,
+    });
+    setState({ openDocument: null });
+  });
+
+  it("stops plain-path links before prose punctuation", () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.bufferLines = [
+      "已生成文档 /Users/w/AI/AI心法.md, 包含八重心法：",
+      "详见 /tmp/说明文档.md，包含三部分。",
+    ];
+
+    const provider = terminal.linkProviders[terminal.linkProviders.length - 1];
+    const collect = (line: number) => {
+      let found: Array<{ text: string }> | undefined;
+      provider.provideLinks(line, (links) => {
+        found = links as Array<{ text: string }> | undefined;
+      });
+      return found ?? [];
+    };
+
+    // Half-width comma before the space and CJK punctuation must not leak
+    // into the link target (this produced document_not_found before).
+    expect(collect(1).map((link) => link.text)).toEqual(["/Users/w/AI/AI心法.md"]);
+    expect(collect(2).map((link) => link.text)).toEqual(["/tmp/说明文档.md"]);
   });
 
   it("uses DOM font measurement while retaining Canvas rendering on Linux", () => {

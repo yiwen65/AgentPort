@@ -776,7 +776,15 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
   );
 }
 
-export default function Sidebar({ collapsed, width }: { collapsed: boolean; width: number }) {
+export default function Sidebar({
+  collapsed,
+  width,
+  anim = null,
+}: {
+  collapsed: boolean;
+  width: number;
+  anim?: "out" | "inPrep" | "in" | null;
+}) {
   const { t } = useTranslation(["session", "shell", "common"]);
   const projects = useStore((state) => state.projects);
   const expandedProjects = useStore((state) => state.expandedProjects);
@@ -794,7 +802,7 @@ export default function Sidebar({ collapsed, width }: { collapsed: boolean; widt
     : null;
   return (
     <aside
-      className={`sidebar${collapsed ? " collapsed" : ""}`}
+      className={`sidebar${collapsed ? " collapsed" : ""}${anim ? ` anim-${anim}` : ""}`}
       aria-label={t("shell:ui.sidebar.label")}
       aria-hidden={collapsed}
       style={{ "--sidebar-width": `${width}px` } as CSSProperties}

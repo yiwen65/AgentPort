@@ -5,13 +5,44 @@ import {
   findSession,
   openContextMenu,
   openDialog,
-  setState,
   useStore,
   type MenuItem,
 } from "../store";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { useTranslation } from "react-i18next";
+import { toggleSidebarCollapsed } from "../actions";
+import { toggleExplorer } from "../documents";
+
+function IconFolder() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <path
+        d="M3.5 5.25a1.5 1.5 0 0 1 1.5-1.5h3.2l1.8 2h5.5a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5v-9Z"
+        stroke="currentColor"
+        strokeWidth="1.45"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function ExplorerToggleButton() {
+  const { t } = useTranslation("shell");
+  const explorerOpen = useStore((state) => state.explorerOpen);
+  return (
+    <button
+      className="window-control sidebar-toggle"
+      onClick={toggleExplorer}
+      aria-label={t("ui.topBar.explorer")}
+      aria-pressed={explorerOpen}
+      data-tip={t("ui.topBar.explorerTip")}
+      data-tauri-drag-region="false"
+    >
+      <IconFolder />
+    </button>
+  );
+}
 
 function IconSidebarToggle({ collapsed }: { collapsed: boolean }) {
   return (
@@ -103,7 +134,7 @@ export default function TopBar() {
       <div className="topbar-leading" data-tauri-drag-region="false">
         <button
           className="window-control sidebar-toggle"
-          onClick={() => setState({ sidebarCollapsed: !sidebarCollapsed })}
+          onClick={toggleSidebarCollapsed}
           aria-label={sidebarCollapsed
             ? t("shell:ui.topBar.showSidebar")
             : t("shell:ui.topBar.hideSidebar")}
@@ -115,6 +146,7 @@ export default function TopBar() {
         >
           <IconSidebarToggle collapsed={sidebarCollapsed} />
         </button>
+        <ExplorerToggleButton />
       </div>
       <div className="window-title">
         <span>{projectName ?? "AgentPort"}</span>
