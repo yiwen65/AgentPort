@@ -39,7 +39,7 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -92,6 +92,11 @@ pub(crate) struct Shared {
     cfg: HostConfig,
     /// Stable Session root for host-state.json and status-events.jsonl.
     session_dir: PathBuf,
+    /// Identity (dev, ino) of this Host's bound socket file, captured right
+    /// after bind. A replacement Host that rebinds the stable path creates a
+    /// different file, so a late orderly shutdown can leave the successor's
+    /// directory entry in place instead of orphaning a live Host.
+    socket_file_id: Option<(u64, u64)>,
     started_at: DateTime<Utc>,
     child_pid: i32,
     pgid: i32,
@@ -458,6 +463,10 @@ fn run() -> i32 {
         let _ = std::fs::remove_file(&socket_path);
         return EXIT_SOCKET;
     }
+    // Remember which file this Host bound. Every later cleanup may only
+    // unlink the path while it still names THIS binding; a successor Host
+    // may have rebound the stable path by then.
+    let socket_file_id = socket_file_id(&socket_path);
 
     // Adapter hooks append to a Session-stable file. Snapshot its length
     // before the new child can write so this run consumes only its own new
@@ -626,6 +635,7 @@ fn run() -> i32 {
     let shared = Arc::new(Shared {
         cfg: cfg.clone(),
         session_dir,
+        socket_file_id,
         started_at: Utc::now(),
         child_pid,
         pgid,
@@ -1119,6 +1129,33 @@ fn wait_pty_eof(rx: &mpsc::Receiver<HostMsg>, timeout: Duration) {
     }
 }
 
+/// Identity (dev, ino) of the bound socket file; `None` when metadata is
+/// unavailable. Compared at shutdown to distinguish this Host's own binding
+/// from a successor Host that rebound the same stable path.
+fn socket_file_id(path: &Path) -> Option<(u64, u64)> {
+    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
+/// Unlink the socket file only while it still names THIS Host's binding.
+/// During a Session restart the successor Host rebinds the stable path while
+/// this Host is still draining clients; an unconditional unlink would delete
+/// the successor's directory entry and leave a live Host permanently
+/// unreachable — attach/stop/archive could no longer verify it ("host is
+/// unreachable; stop cannot be verified safely").
+fn remove_socket_file(path: &Path, owned_id: Option<(u64, u64)>) {
+    let should_remove = match (owned_id, socket_file_id(path)) {
+        (Some(owned), Some(current)) => owned == current,
+        // Already gone (the successor removed our stale file): nothing to do.
+        (_, None) => false,
+        // Identity was never captured at bind: keep the legacy cleanup
+        // semantics rather than leaking the socket file.
+        (None, Some(_)) => true,
+    };
+    if should_remove {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 fn shutdown(
     shared: &Shared,
     code: Option<i32>,
@@ -1130,7 +1167,7 @@ fn shutdown(
     // Otherwise an archive request can observe a live Host PID, a missing
     // socket, and no safe evidence that the Agent already exited.
     write_host_state(shared, Some((code, signal, group_cleaned, exit_reason)));
-    let _ = std::fs::remove_file(&shared.cfg.socket_path);
+    remove_socket_file(Path::new(&shared.cfg.socket_path), shared.socket_file_id);
     info!("host shutdown complete");
 }
 
@@ -1814,5 +1851,44 @@ mod pi_pty_startup_notice_tests {
         let mut filter = PiPtyStartupNoticeFilter::new("pi-native-test-id".into());
         let diagnostic = b"Warning: provider authentication failed\r\n";
         assert_eq!(filter.feed(diagnostic), diagnostic);
+    }
+}
+
+#[cfg(test)]
+mod socket_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn remove_socket_file_unlinks_own_binding() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("h.sock");
+        std::fs::write(&path, b"a").unwrap();
+        let owned = socket_file_id(&path);
+        remove_socket_file(&path, owned);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn remove_socket_file_preserves_rebound_successor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("h.sock");
+        std::fs::write(&path, b"a").unwrap();
+        let owned = socket_file_id(&path);
+        // Successor rebinds the stable path: remove + recreate yields a new
+        // file identity that must not be touched by the old owner's cleanup.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"b").unwrap();
+        remove_socket_file(&path, owned);
+        assert_eq!(std::fs::read(&path).unwrap(), b"b");
+    }
+
+    #[test]
+    fn remove_socket_file_tolerates_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("h.sock");
+        // Must not panic and must not create anything.
+        remove_socket_file(&path, Some((1, 2)));
+        remove_socket_file(&path, None);
+        assert!(!path.exists());
     }
 }

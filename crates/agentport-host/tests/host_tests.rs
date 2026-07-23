@@ -1900,3 +1900,68 @@ fn secret_redaction() {
         .windows(secret.len())
         .any(|w| w == secret.as_bytes()));
 }
+
+/// Regression: an orderly shutdown must not unlink a socket path that a
+/// replacement Host has already rebound. A restart overlaps the old Host's
+/// client drain; the old unconditional unlink deleted the successor's
+/// directory entry, leaving a live Host permanently unreachable so
+/// attach/stop/archive failed with "host is unreachable; stop cannot be
+/// verified safely" (the pi-15 incident).
+#[test]
+fn orderly_shutdown_preserves_rebound_socket() {
+    // Host A's agent exits on its own: the natural-exit path sleeps a fixed
+    // 2s client drain before shutdown() cleans up the socket. During that
+    // window a restart (Host B) rebinds the same stable socket path.
+    let ctx_a = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), "exit 0".into()],
+        1 << 20,
+        vec![],
+    );
+    let stable_socket = ctx_a.socket.clone();
+    let mut guard_a = spawn_host(&ctx_a, &[]);
+    wait_socket(&ctx_a);
+
+    // The replacement Host: same stable socket path, its own identity.
+    let mut ctx_b = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), "sleep 300".into()],
+        1 << 20,
+        vec![],
+    );
+    let mut cfg_b: HostConfig =
+        serde_json::from_str(&std::fs::read_to_string(&ctx_b.cfg_path).unwrap()).unwrap();
+    cfg_b.socket_path = stable_socket.to_string_lossy().into_owned();
+    std::fs::write(&ctx_b.cfg_path, serde_json::to_vec(&cfg_b).unwrap()).unwrap();
+    ctx_b.socket = stable_socket.clone();
+    let guard_b = spawn_host(&ctx_b, &[]);
+
+    // The test only exercises the race when B rebinds while A is still in
+    // its 2s drain; the drain is an unconditional sleep and a bind takes
+    // milliseconds, so the overlap holds by construction.
+    wait_socket(&ctx_b);
+    assert!(
+        matches!(guard_a.child.as_mut().unwrap().try_wait(), Ok(None)),
+        "host A must still be draining when B rebinds the socket"
+    );
+    assert!(
+        guard_a.wait_exit(Duration::from_secs(20)).is_some(),
+        "host A finishes its orderly shutdown"
+    );
+
+    // A's shutdown must have left B's binding in place: B answers a
+    // handshake on the stable path with its own host pid.
+    let mut conn = connect(&ctx_b, &ctx_b.session_id, TOKEN, 0);
+    let (host_pid, child_alive) = conn.expect_hello_ok();
+    assert_eq!(host_pid, guard_b.pid() as u32);
+    assert!(child_alive);
+    drop(conn);
+
+    // B still removes its own binding on shutdown.
+    kill(Pid::from_raw(guard_b.pid()), Signal::SIGTERM).unwrap();
+    let mut guard_b = guard_b;
+    assert!(guard_b.wait_exit(Duration::from_secs(20)).is_some());
+    wait_for(
+        || !stable_socket.exists(),
+        Duration::from_secs(5),
+        "B removes its own socket on shutdown",
+    );
+}
