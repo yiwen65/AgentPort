@@ -101,6 +101,8 @@ struct TestFailure {
 #[cfg(test)]
 #[derive(Debug)]
 struct TestRefMove {
+    command: OsString,
+    required_arg: Option<OsString>,
     refname: OsString,
     new_oid: OsString,
     triggered: AtomicBool,
@@ -160,6 +162,24 @@ impl GitRunner {
             timeout: Duration::from_secs(15),
             fail_once: None,
             ref_move_once: Some(Arc::new(TestRefMove {
+                command: "update-ref".into(),
+                required_arg: Some("-d".into()),
+                refname: refname.into(),
+                new_oid: new_oid.into(),
+                triggered: AtomicBool::new(false),
+            })),
+            recorded: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn moving_ref_before_worktree_add(refname: &str, new_oid: &str) -> Self {
+        Self {
+            timeout: Duration::from_secs(15),
+            fail_once: None,
+            ref_move_once: Some(Arc::new(TestRefMove {
+                command: "worktree".into(),
+                required_arg: Some("add".into()),
                 refname: refname.into(),
                 new_oid: new_oid.into(),
                 triggered: AtomicBool::new(false),
@@ -226,8 +246,11 @@ impl GitRunner {
 
         #[cfg(test)]
         if let Some(ref_move) = &self.ref_move_once {
-            if argv.iter().any(|arg| arg == "update-ref")
-                && argv.iter().any(|arg| arg == "-d")
+            if argv.iter().any(|arg| arg == &ref_move.command)
+                && ref_move
+                    .required_arg
+                    .as_ref()
+                    .is_none_or(|required| argv.iter().any(|arg| arg == required))
                 && !ref_move.triggered.swap(true, Ordering::SeqCst)
             {
                 let root = repo.ok_or_else(|| {

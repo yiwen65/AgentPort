@@ -963,6 +963,27 @@ where
 }
 
 impl CommandError {
+    pub(crate) fn for_project_command(
+        error: CoreError,
+        db: Option<&Db>,
+        project_id: Option<&str>,
+        command: &'static str,
+        phase: &'static str,
+    ) -> Self {
+        Self::from_core(
+            error,
+            db,
+            project_id,
+            wrapper_operation_id(command),
+            command,
+            phase,
+        )
+    }
+
+    pub(crate) fn for_join(command: &'static str, phase: &'static str, message: String) -> Self {
+        Self::join_error(wrapper_operation_id(command), command, phase, message)
+    }
+
     fn from_core(
         error: CoreError,
         db: Option<&Db>,
@@ -1148,6 +1169,14 @@ fn recovery_actions(code: &str, command: &'static str, recoverable: bool) -> Vec
         ];
     }
     match (code, command) {
+        ("blocked", "create_worktree") => vec![
+            "Refresh local branches and choose one that is not checked out in any Worktree."
+                .into(),
+        ],
+        ("conflict" | "not_found", "create_worktree") => vec![
+            "Refresh local branches and reselect the branch before creating the Worktree."
+                .into(),
+        ],
         ("blocked", _) => vec![
             "Resolve active sessions, dirty submodules, merge/rebase state, or index conflicts, then retry."
                 .into(),

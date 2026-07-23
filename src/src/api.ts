@@ -36,6 +36,7 @@ import type {
   TimelineData,
   TimelineAckSnapshot,
   WorktreeStatus,
+  WorktreeBranchMode,
   WorktreeView,
 } from "./types";
 
@@ -191,8 +192,22 @@ export const api = {
   deleteAllArchivedSessions: () => invoke<void>("delete_all_archived_sessions"),
   sessionHistory: (sessionId: string) =>
     invoke<StatusEventView[]>("session_history", { sessionId }),
-  createWorktree: (projectId: string, task: string, baseRef: string | null, branch: string | null) =>
-    invoke<CreateWorktreeResult>("create_worktree", { projectId, task, baseRef, branch }),
+  createWorktree: (
+    projectId: string,
+    task: string,
+    baseRef: string | null,
+    branch: string | null,
+    branchMode: WorktreeBranchMode | null = null,
+    expectedBranchOid: string | null = null,
+  ) =>
+    invoke<CreateWorktreeResult>("create_worktree", {
+      projectId,
+      task,
+      baseRef,
+      branch,
+      branchMode,
+      expectedBranchOid,
+    }),
   listWorktrees: (projectId: string) =>
     invoke<WorktreeView[]>("list_worktrees", { projectId }),
   removeWorktree: (worktreeId: string) => invoke<void>("remove_worktree", { worktreeId }),

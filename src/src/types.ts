@@ -12,6 +12,7 @@ export type LifecycleStr = "creating" | "running" | "interrupted" | "exited" | "
 export type PermissionStr = "native" | "auto" | "bypass";
 export type ResumePrecisionStr = "exact" | "latest" | "unavailable";
 export type WorktreeHealthStr = "clean" | "dirty" | "missing" | "locked";
+export type WorktreeBranchMode = "auto" | "new" | "existing";
 export type ThemeSetting = "system" | "dark" | "light";
 export type ReducedMotionSetting = "system" | "on" | "off";
 

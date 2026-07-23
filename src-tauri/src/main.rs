@@ -9,7 +9,9 @@ use agentport_core::db::Db;
 use agentport_core::diag::Diagnostics;
 use agentport_core::error::{CoreError, Result};
 use agentport_core::export::{AnsiMode, Exporter, LogRange, MdBlocks};
-use agentport_core::git::{GitRunner, RepositoryFileLock, RepositoryIdentity, WorktreeManager};
+use agentport_core::git::{
+    GitRunner, RepositoryFileLock, RepositoryIdentity, WorktreeBranchSelection, WorktreeManager,
+};
 use agentport_core::host_manager::{
     write_private_file, AttachInfo, HostClient, HostManager, LaunchSpec,
 };
@@ -2343,7 +2345,56 @@ async fn session_history(
 // Worktrees
 // ---------------------------------------------------------------------------
 
+fn parse_worktree_branch_selection(
+    mode: Option<&str>,
+    branch: Option<&str>,
+    expected_branch_oid: Option<&str>,
+) -> Result<WorktreeBranchSelection> {
+    let required_branch = || {
+        branch
+            .map(str::trim)
+            .filter(|branch| !branch.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| CoreError::Validation("branch name is required for this mode".into()))
+    };
+    match mode {
+        Some("auto") => {
+            if branch.is_some_and(|branch| !branch.trim().is_empty()) {
+                return Err(CoreError::Validation(
+                    "auto Worktree branch mode must not include a branch name".into(),
+                ));
+            }
+            Ok(WorktreeBranchSelection::Auto)
+        }
+        Some("new") => Ok(WorktreeBranchSelection::New {
+            name: required_branch()?,
+        }),
+        Some("existing") => Ok(WorktreeBranchSelection::Existing {
+            name: required_branch()?,
+            expected_oid: expected_branch_oid
+                .map(str::trim)
+                .filter(|oid| !oid.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    CoreError::Validation(
+                        "expected branch OID is required when using an existing branch".into(),
+                    )
+                })?,
+        }),
+        Some(other) => Err(CoreError::Validation(format!(
+            "unsupported Worktree branch mode: {other}"
+        ))),
+        None => Err(CoreError::Validation(
+            "explicit Worktree branch mode is required".into(),
+        )),
+    }
+}
+
 #[tauri::command]
+// Tauri exposes command arguments as individual invoke keys, so keeping this
+// boundary flat preserves the existing frontend contract. CommandError also
+// intentionally carries the complete recovery snapshot across that boundary.
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
 async fn create_worktree(
     state: State<'_, AppState>,
     app: AppHandle,
@@ -2351,12 +2402,71 @@ async fn create_worktree(
     task: String,
     base_ref: Option<String>,
     branch: Option<String>,
-) -> std::result::Result<Value, String> {
-    let mgr = WorktreeManager {
-        paths: &state.paths,
-        db: &state.db,
+    branch_mode: Option<String>,
+    expected_branch_oid: Option<String>,
+) -> std::result::Result<Value, git_commands::CommandError> {
+    let explicit_selection = match branch_mode.as_deref() {
+        Some(mode) => Some(
+            parse_worktree_branch_selection(
+                Some(mode),
+                branch.as_deref(),
+                expected_branch_oid.as_deref(),
+            )
+            .map_err(|error| {
+                git_commands::CommandError::for_project_command(
+                    error,
+                    Some(&state.db),
+                    Some(&project_id),
+                    "create_worktree",
+                    "validate",
+                )
+            })?,
+        ),
+        None => None,
     };
-    let w = map_err!(mgr.create(&project_id, &task, base_ref.as_deref(), branch.as_deref()))?;
+    let paths = state.paths.clone();
+    let command_project_id = project_id.clone();
+    let join = tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&paths).map_err(|error| {
+            git_commands::CommandError::for_project_command(
+                error,
+                None,
+                Some(&command_project_id),
+                "create_worktree",
+                "open_database",
+            )
+        })?;
+        let manager = WorktreeManager {
+            paths: &paths,
+            db: &db,
+        };
+        let created = match explicit_selection {
+            Some(selection) => {
+                manager.create_selected(&command_project_id, &task, base_ref.as_deref(), selection)
+            }
+            None => manager.create(
+                &command_project_id,
+                &task,
+                base_ref.as_deref(),
+                branch.as_deref(),
+            ),
+        }
+        .map_err(|error| {
+            git_commands::CommandError::for_project_command(
+                error,
+                Some(&db),
+                Some(&command_project_id),
+                "create_worktree",
+                "create",
+            )
+        })?;
+        Ok::<Worktree, git_commands::CommandError>(created)
+    })
+    .await
+    .map_err(|error| {
+        git_commands::CommandError::for_join("create_worktree", "create", error.to_string())
+    })?;
+    let w = join?;
     emit_sessions_changed(&app, &state, None);
     Ok(json!({"id": w.id, "branch": w.branch, "path": w.path, "baseCommit": w.base_commit}))
 }
@@ -3145,6 +3255,32 @@ fn main() {
 mod cleanup_tests {
     use super::*;
     use std::sync::mpsc;
+
+    #[test]
+    fn worktree_branch_mode_distinguishes_auto_new_and_selected_existing() {
+        assert!(matches!(
+            parse_worktree_branch_selection(Some("auto"), None, None).unwrap(),
+            WorktreeBranchSelection::Auto
+        ));
+        assert!(matches!(
+            parse_worktree_branch_selection(Some("new"), Some("feature/new"), None).unwrap(),
+            WorktreeBranchSelection::New { name } if name == "feature/new"
+        ));
+        assert!(matches!(
+            parse_worktree_branch_selection(
+                Some("existing"),
+                Some("feature/existing"),
+                Some("aabbcc")
+            )
+            .unwrap(),
+            WorktreeBranchSelection::Existing { name, expected_oid }
+                if name == "feature/existing" && expected_oid == "aabbcc"
+        ));
+        assert!(
+            parse_worktree_branch_selection(Some("existing"), Some("feature/existing"), None)
+                .is_err()
+        );
+    }
 
     fn test_attachment(id: u64) -> RendererAttachment {
         let (writer, _peer) = std::os::unix::net::UnixStream::pair().unwrap();

@@ -9,6 +9,7 @@ use crate::ids::new_id;
 use crate::models::*;
 use crate::paths::{slugify, AppPaths};
 use chrono::Utc;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 pub mod branch;
 pub mod command;
@@ -199,6 +200,22 @@ pub struct WorktreeManager<'a> {
     pub db: &'a Db,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorktreeBranchSelection {
+    Auto,
+    New { name: String },
+    Existing { name: String, expected_oid: String },
+}
+
+enum InternalWorktreeBranchSelection {
+    Auto,
+    New(String),
+    Existing {
+        name: String,
+        expected_oid: Option<String>,
+    },
+}
+
 impl<'a> WorktreeManager<'a> {
     /// Create branch `agent/<slug>` (or adopt existing branch when
     /// `use_existing_branch` is set) + directory under
@@ -214,45 +231,138 @@ impl<'a> WorktreeManager<'a> {
         base_ref: Option<&str>,
         use_existing_branch: Option<&str>,
     ) -> Result<Worktree> {
+        let selection = match use_existing_branch {
+            Some(branch) => InternalWorktreeBranchSelection::Existing {
+                name: branch.to_owned(),
+                expected_oid: None,
+            },
+            None => InternalWorktreeBranchSelection::Auto,
+        };
+        self.create_internal(project_id, task_name, base_ref, selection)
+    }
+
+    pub fn create_selected(
+        &self,
+        project_id: &str,
+        task_name: &str,
+        base_ref: Option<&str>,
+        selection: WorktreeBranchSelection,
+    ) -> Result<Worktree> {
+        let selection = match selection {
+            WorktreeBranchSelection::Auto => InternalWorktreeBranchSelection::Auto,
+            WorktreeBranchSelection::New { name } => InternalWorktreeBranchSelection::New(name),
+            WorktreeBranchSelection::Existing { name, expected_oid } => {
+                InternalWorktreeBranchSelection::Existing {
+                    name,
+                    expected_oid: Some(expected_oid),
+                }
+            }
+        };
+        self.create_internal(project_id, task_name, base_ref, selection)
+    }
+
+    fn create_internal(
+        &self,
+        project_id: &str,
+        task_name: &str,
+        base_ref: Option<&str>,
+        selection: InternalWorktreeBranchSelection,
+    ) -> Result<Worktree> {
+        let runner = GitRunner::default();
+        self.create_internal_with_runner(project_id, task_name, base_ref, selection, &runner)
+    }
+
+    fn create_internal_with_runner(
+        &self,
+        project_id: &str,
+        task_name: &str,
+        base_ref: Option<&str>,
+        selection: InternalWorktreeBranchSelection,
+        runner: &GitRunner,
+    ) -> Result<Worktree> {
         let project = self.db.get_project(project_id)?;
-        let git_root = project
-            .git_root_path
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .ok_or_else(|| {
-                CoreError::Validation(format!(
-                    "not a git repo: project '{}' has no git root",
-                    project.name
-                ))
-            })?;
-        let repo = GitRepo::discover(Path::new(git_root))?;
+        let identity = RepositoryIdentity::from_project(&project, runner)?;
+        let lock = repository::repository_lock(&identity.repo_key);
+        let _guard = lock.lock().unwrap();
+        let identity = RepositoryIdentity::from_project(&project, runner)?;
+        let _file_guard = RepositoryFileLock::acquire(&identity.common_dir)?;
+        let identity = RepositoryIdentity::from_project(&project, runner)?;
 
         let task_slug = slugify(task_name);
-        let (branch, create_branch) = match use_existing_branch {
-            Some(b) if b.trim().is_empty() => {
-                return Err(CoreError::Validation(
-                    "use_existing_branch must not be empty".into(),
-                ))
+        let (branch, create_branch, expected_oid) = match selection {
+            InternalWorktreeBranchSelection::Auto => (format!("agent/{task_slug}"), true, None),
+            InternalWorktreeBranchSelection::New(name) => (name, true, None),
+            InternalWorktreeBranchSelection::Existing { name, expected_oid } => {
+                (name, false, expected_oid)
             }
-            Some(b) => (b.to_string(), false),
-            None => (format!("agent/{task_slug}"), true),
         };
+        let branch = branch.trim().to_owned();
+        if branch.is_empty() {
+            return Err(CoreError::Validation(
+                "branch name must not be empty".into(),
+            ));
+        }
+        if !create_branch
+            && expected_oid
+                .as_deref()
+                .is_some_and(|oid| oid.trim().is_empty())
+        {
+            return Err(CoreError::Validation(
+                "expected branch OID must not be empty".into(),
+            ));
+        }
+        validate_worktree_branch_name(&identity, runner, &branch)?;
 
-        let exists = repo.branch_exists(&branch)?;
-        if create_branch && exists {
+        let observed_oid = local_branch_oid(&identity, runner, &branch)?;
+        if create_branch && observed_oid.is_some() {
             return Err(CoreError::Conflict(format!(
-                "branch exists: {branch} — use existing?"
+                "local branch already exists: {branch}; select it from the local branch list to use it"
             )));
         }
-        if !create_branch && !exists {
-            return Err(CoreError::NotFound(format!("branch not found: {branch}")));
+        if !create_branch && observed_oid.is_none() {
+            return Err(CoreError::NotFound(format!(
+                "local branch no longer exists: {branch}"
+            )));
         }
+        if let (Some(expected), Some(observed)) = (expected_oid.as_deref(), observed_oid.as_deref())
+        {
+            if expected != observed {
+                return Err(CoreError::Conflict(format!(
+                    "local branch {branch} moved after selection; expected {expected}, observed {observed}"
+                )));
+            }
+        }
+        ensure_worktree_branch_unoccupied(&identity, runner, &branch)?;
 
         // Base: explicit ref (validated) or current HEAD.
-        let base_commit = match base_ref {
-            Some(r) => repo.resolve_ref(r)?,
-            None => repo.head_commit()?,
+        let base_commit = if create_branch {
+            resolve_worktree_base(&identity, runner, base_ref)?
+        } else {
+            observed_oid.expect("existing branch OID checked above")
         };
+
+        // Re-read the exact local ref and occupancy immediately before the
+        // mutation. The in-process and common-dir locks serialize AgentPort;
+        // Git's own worktree protection remains authoritative for external
+        // clients racing after this check.
+        let final_oid = local_branch_oid(&identity, runner, &branch)?;
+        if create_branch {
+            if final_oid.is_some() {
+                return Err(CoreError::Conflict(format!(
+                    "local branch appeared before Worktree creation: {branch}"
+                )));
+            }
+        } else {
+            let final_oid = final_oid.ok_or_else(|| {
+                CoreError::NotFound(format!("local branch no longer exists: {branch}"))
+            })?;
+            if final_oid != base_commit {
+                return Err(CoreError::Conflict(format!(
+                    "local branch {branch} moved before Worktree creation; expected {base_commit}, observed {final_oid}"
+                )));
+            }
+        }
+        ensure_worktree_branch_unoccupied(&identity, runner, &branch)?;
 
         let dir = self.paths.worktree_dir(&slugify(&project.name), &task_slug);
         // `owned` tracks whether THIS call created the directory; rollback may
@@ -277,11 +387,64 @@ impl<'a> WorktreeManager<'a> {
             owned = true;
         }
 
-        if let Err(e) = repo.worktree_add(&dir, &branch, &base_commit, create_branch) {
-            if owned {
-                let _ = std::fs::remove_dir_all(&dir);
+        let mut args = vec![OsString::from("worktree"), OsString::from("add")];
+        if create_branch {
+            args.extend([
+                OsString::from("--no-track"),
+                OsString::from("-b"),
+                OsString::from(&branch),
+                dir.as_os_str().to_owned(),
+                OsString::from(&base_commit),
+            ]);
+        } else {
+            args.extend([dir.as_os_str().to_owned(), OsString::from(&branch)]);
+        }
+        let add_result = runner
+            .run(Some(&identity.root), args)
+            .and_then(|output| output.require_success().map(|_| ()));
+        if let Err(error) = add_result {
+            let registered = identity.worktrees(runner).ok().and_then(|worktrees| {
+                worktrees.into_iter().find(|worktree| {
+                    same_path(&worktree.path, &dir)
+                        && worktree.branch.as_deref() == Some(branch.as_str())
+                })
+            });
+            if registered.is_none() {
+                if owned {
+                    let _ = std::fs::remove_dir_all(&dir);
+                }
+                if let Some(classified) = classify_worktree_add_failure(
+                    &identity,
+                    runner,
+                    &branch,
+                    &base_commit,
+                    create_branch,
+                )? {
+                    return Err(classified);
+                }
+                return Err(error);
             }
-            return Err(e);
+        }
+
+        // A branch can be moved by an external Git process after our final
+        // preflight. Verify both the local ref and the registered Worktree HEAD
+        // before persisting anything. A mismatched fresh Worktree is removed
+        // with normal Git protection; force removal is never used.
+        if let Err(verification_error) =
+            verify_created_worktree(&identity, runner, &dir, &branch, &base_commit)
+        {
+            if let Err(rollback_error) = rollback_created_worktree(
+                &identity,
+                runner,
+                &dir,
+                owned,
+                create_branch.then_some((branch.as_str(), base_commit.as_str())),
+            ) {
+                return Err(CoreError::Internal(format!(
+                    "{verification_error}; Worktree rollback failed: {rollback_error}"
+                )));
+            }
+            return Err(verification_error);
         }
 
         // Store the canonical path: `git worktree list --porcelain` reports
@@ -292,18 +455,26 @@ impl<'a> WorktreeManager<'a> {
             project_id: project.id.clone(),
             branch: branch.clone(),
             base_commit,
-            base_ref: base_ref.map(str::to_string),
+            base_ref: if create_branch {
+                base_ref.map(str::to_string)
+            } else {
+                None
+            },
             path: canon.to_string_lossy().into_owned(),
             health: WorktreeHealth::Clean,
             created_at: Utc::now(),
         };
         if let Err(e) = self.db.insert_worktree(&wt) {
-            if owned {
-                let _ = repo.worktree_remove(&canon);
-                let _ = repo.worktree_prune();
-                if canon.exists() {
-                    let _ = std::fs::remove_dir_all(&canon);
-                }
+            if let Err(rollback_error) = rollback_created_worktree(
+                &identity,
+                runner,
+                &canon,
+                owned,
+                create_branch.then_some((branch.as_str(), wt.base_commit.as_str())),
+            ) {
+                return Err(CoreError::Internal(format!(
+                    "failed to persist Worktree: {e}; Git rollback failed: {rollback_error}"
+                )));
             }
             return Err(match e {
                 CoreError::Conflict(msg) => {
@@ -399,6 +570,253 @@ impl<'a> WorktreeManager<'a> {
         let repo = GitRepo::discover(path)?;
         repo.status(path)
     }
+}
+
+fn validate_worktree_branch_name(
+    identity: &RepositoryIdentity,
+    runner: &GitRunner,
+    branch: &str,
+) -> Result<()> {
+    let output = runner.run(
+        Some(&identity.root),
+        [
+            OsString::from("check-ref-format"),
+            OsString::from("--branch"),
+            OsString::from(branch),
+        ],
+    )?;
+    if output.success() {
+        return Ok(());
+    }
+    Err(CoreError::Validation(format!(
+        "invalid local branch name {branch:?}"
+    )))
+}
+
+fn local_branch_oid(
+    identity: &RepositoryIdentity,
+    runner: &GitRunner,
+    branch: &str,
+) -> Result<Option<String>> {
+    let full_ref = format!("refs/heads/{branch}");
+    let revision = format!("{full_ref}^{{commit}}");
+    let output = runner.run(
+        Some(&identity.root),
+        [
+            OsString::from("rev-parse"),
+            OsString::from("--verify"),
+            OsString::from("--quiet"),
+            OsString::from("--end-of-options"),
+            OsString::from(revision),
+        ],
+    )?;
+    if output.success() {
+        let oid = output.stdout_lossy().trim().to_owned();
+        if oid.is_empty() {
+            return Err(CoreError::Internal(format!(
+                "local branch {branch} resolved to an empty OID"
+            )));
+        }
+        return Ok(Some(oid));
+    }
+    if !output.timed_out && output.exit_code() == Some(1) {
+        return Ok(None);
+    }
+    output.require_success().map(|_| None)
+}
+
+fn ensure_worktree_branch_unoccupied(
+    identity: &RepositoryIdentity,
+    runner: &GitRunner,
+    branch: &str,
+) -> Result<()> {
+    if let Some(worktree) = identity
+        .worktrees(runner)?
+        .into_iter()
+        .find(|worktree| worktree.branch.as_deref() == Some(branch))
+    {
+        return Err(CoreError::Blocked(format!(
+            "local branch {branch} is already checked out at {}",
+            worktree.path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn verify_created_worktree(
+    identity: &RepositoryIdentity,
+    runner: &GitRunner,
+    dir: &Path,
+    branch: &str,
+    expected_oid: &str,
+) -> Result<()> {
+    let registered = identity
+        .worktrees(runner)?
+        .into_iter()
+        .find(|worktree| same_path(&worktree.path, dir))
+        .ok_or_else(|| {
+            CoreError::Internal(format!(
+                "Git did not register the new Worktree at {}",
+                dir.display()
+            ))
+        })?;
+    if registered.branch.as_deref() != Some(branch) {
+        return Err(CoreError::Conflict(format!(
+            "new Worktree branch changed during creation; expected {branch}, observed {}",
+            registered.branch.as_deref().unwrap_or("detached HEAD")
+        )));
+    }
+
+    let observed_ref = local_branch_oid(identity, runner, branch)?.ok_or_else(|| {
+        CoreError::NotFound(format!(
+            "local branch was deleted during Worktree creation: {branch}"
+        ))
+    })?;
+    let observed_head = runner
+        .run(
+            Some(dir),
+            [
+                OsString::from("rev-parse"),
+                OsString::from("--verify"),
+                OsString::from("HEAD^{commit}"),
+            ],
+        )?
+        .require_success()?
+        .stdout_lossy()
+        .trim()
+        .to_owned();
+    if observed_ref != expected_oid || observed_head != expected_oid {
+        return Err(CoreError::Conflict(format!(
+            "local branch {branch} moved during Worktree creation; expected {expected_oid}, observed ref {observed_ref}, Worktree HEAD {observed_head}"
+        )));
+    }
+    Ok(())
+}
+
+fn rollback_created_worktree(
+    identity: &RepositoryIdentity,
+    runner: &GitRunner,
+    dir: &Path,
+    owned: bool,
+    created_branch: Option<(&str, &str)>,
+) -> Result<()> {
+    let existed_before = !owned;
+    runner
+        .run(
+            Some(&identity.root),
+            [
+                OsString::from("worktree"),
+                OsString::from("remove"),
+                dir.as_os_str().to_owned(),
+            ],
+        )?
+        .require_success()?;
+    if owned && dir.exists() {
+        // Never recursively remove a path after Git has released it: an
+        // external process could have populated the directory in that small
+        // window. Removing an empty directory is sufficient cleanup.
+        std::fs::remove_dir(dir)?;
+    } else if existed_before && !dir.exists() {
+        std::fs::create_dir_all(dir)?;
+    }
+    if let Some((branch, expected_oid)) = created_branch {
+        runner
+            .run(
+                Some(&identity.root),
+                [
+                    OsString::from("update-ref"),
+                    OsString::from("-d"),
+                    OsString::from(format!("refs/heads/{branch}")),
+                    OsString::from(expected_oid),
+                ],
+            )?
+            .require_success()?;
+        if local_branch_oid(identity, runner, branch)?.is_some() {
+            return Err(CoreError::Conflict(format!(
+                "new branch {branch} was retained because its ref changed during rollback"
+            )));
+        }
+    }
+    runner
+        .run(
+            Some(&identity.root),
+            [OsString::from("worktree"), OsString::from("prune")],
+        )?
+        .require_success()?;
+    Ok(())
+}
+
+fn resolve_worktree_base(
+    identity: &RepositoryIdentity,
+    runner: &GitRunner,
+    base_ref: Option<&str>,
+) -> Result<String> {
+    let base = base_ref.unwrap_or("HEAD").trim();
+    if base.is_empty() || base.starts_with('-') {
+        return Err(CoreError::Validation(
+            "Base Ref must not be empty or option-like".into(),
+        ));
+    }
+    let revision = format!("{base}^{{commit}}");
+    Ok(runner
+        .run(
+            Some(&identity.root),
+            [
+                OsString::from("rev-parse"),
+                OsString::from("--verify"),
+                OsString::from("--end-of-options"),
+                OsString::from(revision),
+            ],
+        )?
+        .require_success()?
+        .stdout_lossy()
+        .trim()
+        .to_owned())
+}
+
+fn classify_worktree_add_failure(
+    identity: &RepositoryIdentity,
+    runner: &GitRunner,
+    branch: &str,
+    expected_oid: &str,
+    create_branch: bool,
+) -> Result<Option<CoreError>> {
+    let observed_oid = local_branch_oid(identity, runner, branch)?;
+    if create_branch {
+        if observed_oid.is_some() {
+            return Ok(Some(CoreError::Conflict(format!(
+                "local branch appeared while creating the Worktree: {branch}"
+            ))));
+        }
+        return Ok(None);
+    }
+    let Some(observed_oid) = observed_oid else {
+        return Ok(Some(CoreError::NotFound(format!(
+            "local branch was deleted before Worktree creation: {branch}"
+        ))));
+    };
+    if observed_oid != expected_oid {
+        return Ok(Some(CoreError::Conflict(format!(
+            "local branch {branch} moved before Worktree creation; expected {expected_oid}, observed {observed_oid}"
+        ))));
+    }
+    if let Some(worktree) = identity
+        .worktrees(runner)?
+        .into_iter()
+        .find(|worktree| worktree.branch.as_deref() == Some(branch))
+    {
+        return Ok(Some(CoreError::Blocked(format!(
+            "local branch {branch} became checked out at {}",
+            worktree.path.display()
+        ))));
+    }
+    Ok(None)
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    let left = std::fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
+    let right = std::fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
+    left == right
 }
 
 #[cfg(test)]
@@ -718,6 +1136,161 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, CoreError::Git(_)), "{err}");
+    }
+
+    #[test]
+    fn selected_branch_creation_trace_has_no_network_force_or_worktree_bypass() {
+        let fx = fixture();
+        git(&fx.repo_dir, &["branch", "trace-existing"]);
+        let expected_oid = git(&fx.repo_dir, &["rev-parse", "refs/heads/trace-existing"])
+            .trim()
+            .to_owned();
+        let (runner, recorded) = GitRunner::recording();
+
+        mgr(&fx)
+            .create_internal_with_runner(
+                &fx.project_id,
+                "trace existing",
+                None,
+                InternalWorktreeBranchSelection::Existing {
+                    name: "trace-existing".into(),
+                    expected_oid: Some(expected_oid),
+                },
+                &runner,
+            )
+            .unwrap();
+
+        let recorded = recorded.lock().unwrap();
+        assert!(recorded.iter().any(|argv| {
+            argv.iter()
+                .map(|arg| arg.to_string_lossy())
+                .collect::<Vec<_>>()
+                .windows(4)
+                .any(|window| {
+                    window[0] == "worktree" && window[1] == "add" && window[3] == "trace-existing"
+                })
+        }));
+        for argv in recorded.iter() {
+            let args = if argv.first().is_some_and(|arg| arg == "-C") {
+                &argv[2..]
+            } else {
+                argv.as_slice()
+            };
+            let command = args.first().map(|arg| arg.to_string_lossy());
+            assert!(
+                !matches!(command.as_deref(), Some("fetch" | "pull" | "push")),
+                "network command trace: {argv:?}"
+            );
+            assert!(
+                args.iter().all(|arg| {
+                    !matches!(
+                        arg.to_string_lossy().as_ref(),
+                        "--force" | "-f" | "--ignore-other-worktrees"
+                    )
+                }),
+                "forbidden worktree bypass trace: {argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn selected_branch_move_during_worktree_add_is_verified_and_rolled_back() {
+        let fx = fixture();
+        let expected_oid = git(&fx.repo_dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        git(&fx.repo_dir, &["branch", "race-existing"]);
+        git(&fx.repo_dir, &["switch", "-c", "race-move-source"]);
+        commit_file(
+            &fx.repo_dir,
+            "race.txt",
+            "external branch move\n",
+            "race move",
+        );
+        let moved_oid = git(&fx.repo_dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        git(&fx.repo_dir, &["switch", "main"]);
+
+        let runner =
+            GitRunner::moving_ref_before_worktree_add("refs/heads/race-existing", &moved_oid);
+        let error = mgr(&fx)
+            .create_internal_with_runner(
+                &fx.project_id,
+                "race existing",
+                None,
+                InternalWorktreeBranchSelection::Existing {
+                    name: "race-existing".into(),
+                    expected_oid: Some(expected_oid.clone()),
+                },
+                &runner,
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, CoreError::Conflict(_)), "{error}");
+        assert!(error.to_string().contains(&expected_oid));
+        assert!(error.to_string().contains(&moved_oid));
+        assert!(!fx.paths.worktree_dir("main-api", "race-existing").exists());
+        assert!(mgr(&fx)
+            .db
+            .list_worktrees(&fx.project_id)
+            .unwrap()
+            .is_empty());
+        assert!(!RepositoryIdentity::from_project(
+            &fx.db.get_project(&fx.project_id).unwrap(),
+            &GitRunner::default(),
+        )
+        .unwrap()
+        .worktrees(&GitRunner::default())
+        .unwrap()
+        .into_iter()
+        .any(|worktree| worktree.branch.as_deref() == Some("race-existing")));
+    }
+
+    #[test]
+    fn database_failure_rolls_back_git_and_preserves_a_reused_empty_directory() {
+        let fx = fixture();
+        let task = "db conflict";
+        let dir = fx.paths.worktree_dir("main-api", "db-conflict");
+        std::fs::create_dir_all(&dir).unwrap();
+        let canonical_dir = std::fs::canonicalize(&dir).unwrap();
+        let base_commit = git(&fx.repo_dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        fx.db
+            .insert_worktree(&Worktree {
+                id: "wt_existing_record".into(),
+                project_id: fx.project_id.clone(),
+                branch: "recorded-only".into(),
+                base_commit: base_commit.clone(),
+                base_ref: None,
+                path: canonical_dir.to_string_lossy().into_owned(),
+                health: WorktreeHealth::Missing,
+                created_at: Utc::now(),
+            })
+            .unwrap();
+
+        let error = mgr(&fx)
+            .create_selected(
+                &fx.project_id,
+                task,
+                None,
+                WorktreeBranchSelection::New {
+                    name: "feature/db-conflict".into(),
+                },
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, CoreError::Conflict(_)), "{error}");
+        assert!(dir.is_dir());
+        assert!(std::fs::read_dir(&dir).unwrap().next().is_none());
+        assert!(!GitRepo::discover(&fx.repo_dir)
+            .unwrap()
+            .branch_exists("feature/db-conflict")
+            .unwrap());
+        assert!(!RepositoryIdentity::from_project(
+            &fx.db.get_project(&fx.project_id).unwrap(),
+            &GitRunner::default(),
+        )
+        .unwrap()
+        .worktrees(&GitRunner::default())
+        .unwrap()
+        .into_iter()
+        .any(|worktree| same_path(&worktree.path, &dir)));
     }
 
     #[test]
