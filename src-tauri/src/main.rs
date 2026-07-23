@@ -3535,7 +3535,10 @@ fn write_session_document_impl(path: &str, content: &str) -> std::result::Result
 }
 
 #[tauri::command]
-async fn write_session_document(path: String, content: String) -> std::result::Result<Value, Value> {
+async fn write_session_document(
+    path: String,
+    content: String,
+) -> std::result::Result<Value, Value> {
     write_session_document_impl(&path, &content)
 }
 
@@ -4152,7 +4155,10 @@ mod cleanup_tests {
         let value = read_session_document_impl(file.to_str().unwrap()).unwrap();
         assert_eq!(value["content"], "# 标题\n\n正文\n");
         assert_eq!(value["truncated"], false);
-        assert_eq!(value["sizeBytes"], value["content"].as_str().unwrap().len() as u64);
+        assert_eq!(
+            value["sizeBytes"],
+            value["content"].as_str().unwrap().len() as u64
+        );
         assert!(value["path"].as_str().unwrap().ends_with("报告.md"));
     }
 
@@ -4163,10 +4169,8 @@ mod cleanup_tests {
         let relative = read_session_document_impl("docs/readme.md").unwrap_err();
         assert_eq!(relative["code"], "document_path_relative");
 
-        let missing = read_session_document_impl(
-            temp.path().join("missing.md").to_str().unwrap(),
-        )
-        .unwrap_err();
+        let missing = read_session_document_impl(temp.path().join("missing.md").to_str().unwrap())
+            .unwrap_err();
         assert_eq!(missing["code"], "document_not_found");
 
         let binary = temp.path().join("image.png");
@@ -4184,7 +4188,8 @@ mod cleanup_tests {
         let file = temp.path().join("notes.md");
         std::fs::write(&file, "旧内容\n").unwrap();
 
-        let value = write_session_document_impl(file.to_str().unwrap(), "新内容\n第二行\n").unwrap();
+        let value =
+            write_session_document_impl(file.to_str().unwrap(), "新内容\n第二行\n").unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "新内容\n第二行\n");
         assert_eq!(value["sizeBytes"], "新内容\n第二行\n".len() as u64);
         // No temp file is left behind in the document's directory.
@@ -4198,14 +4203,13 @@ mod cleanup_tests {
         let relative = write_session_document_impl("docs/readme.md", "x").unwrap_err();
         assert_eq!(relative["code"], "document_path_relative");
 
-        let missing = write_session_document_impl(
-            temp.path().join("missing.md").to_str().unwrap(),
-            "x",
-        )
-        .unwrap_err();
+        let missing =
+            write_session_document_impl(temp.path().join("missing.md").to_str().unwrap(), "x")
+                .unwrap_err();
         assert_eq!(missing["code"], "document_not_found");
 
-        let directory = write_session_document_impl(temp.path().to_str().unwrap(), "x").unwrap_err();
+        let directory =
+            write_session_document_impl(temp.path().to_str().unwrap(), "x").unwrap_err();
         assert_eq!(directory["code"], "document_not_file");
     }
 
@@ -4281,10 +4285,8 @@ mod cleanup_tests {
         let error = read_session_document_impl(binary.to_str().unwrap()).unwrap_err();
         assert_eq!(error["code"], "document_binary");
 
-        let missing = read_session_document_impl(
-            temp.path().join("missing.pdf").to_str().unwrap(),
-        )
-        .unwrap_err();
+        let missing = read_session_document_impl(temp.path().join("missing.pdf").to_str().unwrap())
+            .unwrap_err();
         assert_eq!(missing["code"], "document_not_found");
     }
 
