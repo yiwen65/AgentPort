@@ -5,9 +5,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ startDragging: vi.fn().mockResolvedValue(undefined) }),
 }));
+vi.mock("./actions", () => ({ toggleSidebarCollapsed: vi.fn() }));
+vi.mock("./documents", () => ({ toggleExplorer: vi.fn() }));
+vi.mock("./gitCenter", () => ({
+  closeGitCenter: vi.fn(),
+  openGitCenter: vi.fn(),
+}));
 
 import TopBar from "./components/TopBar";
-import { setState } from "./store";
+import { closeGitCenter, openGitCenter } from "./gitCenter";
+import { emptyGitCenterState, setState } from "./store";
 import type { ProjectView, RepositoryStatus, SessionView } from "./types";
 
 const session = (worktreeId: string | null): SessionView => ({
@@ -60,9 +67,11 @@ const repositoryStatus: RepositoryStatus = {
 
 describe("topbar project branch", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     setState({
       activeSessionId: "ses_1",
       repositoryStatuses: { prj_1: repositoryStatus },
+      gitCenter: emptyGitCenterState(),
     });
   });
 
@@ -77,12 +86,48 @@ describe("topbar project branch", () => {
     expect(screen.getByText("dev/system-time-domain")).toBeTruthy();
   });
 
-  it("shows the project branch instead of the Worktree branch", () => {
+  it("shows the exact Worktree branch for a Worktree Session", () => {
     setState({ projects: [project(session("wt_1"))] });
 
     render(<TopBar />);
 
-    expect(screen.getByText("dev/system-time-domain")).toBeTruthy();
-    expect(screen.queryByText("worktree/branch")).toBeNull();
+    expect(screen.getByText("worktree/branch")).toBeTruthy();
+    expect(screen.queryByText("dev/system-time-domain")).toBeNull();
+  });
+
+  it("keeps Git Center available when Git was initialized after Project creation", () => {
+    const current = session(null);
+    setState({
+      projects: [{ ...project(current), gitRootPath: null }],
+    });
+
+    render(<TopBar />);
+
+    const button = screen.getByRole("button", { name: "打开 Git Center" });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    button.click();
+    expect(openGitCenter).toHaveBeenCalledWith({
+      kind: "session",
+      sessionId: current.id,
+    });
+  });
+
+  it("closes Git Center when its active top-bar button is clicked again", () => {
+    const current = session(null);
+    setState({
+      projects: [project(current)],
+      gitCenter: {
+        ...emptyGitCenterState(),
+        open: true,
+      },
+    });
+
+    render(<TopBar />);
+
+    const button = screen.getByRole("button", { name: "关闭 Git Center" });
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    button.click();
+    expect(closeGitCenter).toHaveBeenCalledTimes(1);
+    expect(openGitCenter).not.toHaveBeenCalled();
   });
 });

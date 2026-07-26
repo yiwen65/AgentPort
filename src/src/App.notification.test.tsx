@@ -18,6 +18,7 @@ vi.mock("./api", () => ({
   api: mocks.api,
   errorText: (error: unknown) => String(error),
   onNotificationActivated: mocks.onNotificationActivated,
+  onGitStateInvalidated: vi.fn().mockResolvedValue(vi.fn()),
   onProjectsChanged: vi.fn().mockResolvedValue(vi.fn()),
   onRepositoryStateChanged: vi.fn().mockResolvedValue(vi.fn()),
   onSessionAgentId: vi.fn().mockResolvedValue(vi.fn()),

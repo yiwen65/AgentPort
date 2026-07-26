@@ -36,6 +36,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 mod git_commands;
+mod git_workspace_commands;
 mod notifications;
 
 // ---------------------------------------------------------------------------
@@ -663,6 +664,7 @@ async fn boot(state: State<'_, AppState>, app: AppHandle) -> std::result::Result
     ensure_live_session_monitors(&app, &state);
     if !state.branch_reconcile_started.swap(true, Ordering::AcqRel) {
         git_commands::spawn_startup_reconcile(app.clone(), state.paths.clone());
+        git_workspace_commands::spawn_startup_reconcile(app.clone(), state.paths.clone());
     }
     let idx = SearchIndex {
         db: &state.db,
@@ -885,6 +887,24 @@ async fn remove_project(state: State<'_, AppState>, id: String) -> std::result::
 }
 
 #[tauri::command]
+async fn project_remove_preflight(
+    state: State<'_, AppState>,
+    id: String,
+) -> std::result::Result<Value, String> {
+    let (session_count, worktree_count, recoverable_operation_count) =
+        map_err!(state.db.project_dependency_counts(&id))?;
+    Ok(json!({
+        "projectId": id,
+        "sessionCount": session_count,
+        "worktreeCount": worktree_count,
+        "recoverableOperationCount": recoverable_operation_count,
+        "canRemove": session_count == 0
+            && worktree_count == 0
+            && recoverable_operation_count == 0,
+    }))
+}
+
+#[tauri::command]
 async fn list_presets(
     state: State<'_, AppState>,
     agent: Option<String>,
@@ -1057,7 +1077,11 @@ fn build_launch_plan(
     let preset = preset_for(state, agent, preset_id, &install)?;
     adapters::validate_user_args(agent, &preset.args)?;
     let cwd = match &worktree_id {
-        Some(w) => state.db.get_worktree(w)?.path,
+        Some(w) => {
+            let worktree = state.db.get_worktree(w)?;
+            validate_worktree_project(&project, &worktree)?;
+            worktree.path
+        }
         None => project.root_path,
     };
     let session_id = ids::new_id("ses");
@@ -1099,6 +1123,16 @@ fn build_launch_plan(
         plan.argv.extend(extra);
     }
     Ok((plan, preset, cwd, Some(session_id)))
+}
+
+fn validate_worktree_project(project: &Project, worktree: &Worktree) -> Result<()> {
+    if worktree.project_id != project.id {
+        return Err(CoreError::Conflict(format!(
+            "worktree {} belongs to project {}, not {}",
+            worktree.id, worktree.project_id, project.id
+        )));
+    }
+    Ok(())
 }
 
 fn parse_permission(s: &str) -> Result<PermissionMode> {
@@ -2543,6 +2577,43 @@ async fn session_history(
 // Worktrees
 // ---------------------------------------------------------------------------
 
+#[tauri::command]
+async fn preview_worktree(
+    state: State<'_, AppState>,
+    project_id: String,
+    task: String,
+) -> std::result::Result<agentport_core::git::WorktreePreview, String> {
+    let manager = WorktreeManager {
+        paths: &state.paths,
+        db: &state.db,
+    };
+    map_err!(manager.preview(&project_id, &task))
+}
+
+#[tauri::command]
+async fn reconcile_worktrees(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    project_id: String,
+) -> std::result::Result<usize, String> {
+    let paths = state.paths.clone();
+    let recovered = tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&paths)?;
+        WorktreeManager {
+            paths: &paths,
+            db: &db,
+        }
+        .reconcile_owned_worktrees(&project_id)
+    })
+    .await
+    .map_err(|error| format!("Worktree reconciliation task failed: {error}"))?
+    .map_err(|error| error.to_string())?;
+    if recovered > 0 {
+        emit_sessions_changed(&app, &state, None);
+    }
+    Ok(recovered)
+}
+
 fn parse_worktree_branch_selection(
     mode: Option<&str>,
     branch: Option<&str>,
@@ -2664,8 +2735,12 @@ async fn create_worktree(
     .map_err(|error| {
         git_commands::CommandError::for_join("create_worktree", "create", error.to_string())
     })?;
-    let w = join?;
+    let result = join;
+    // Reconciliation at the start of creation may have recovered an orphan
+    // even when the requested branch then conflicts. Always publish the
+    // authoritative project tree after the operation finishes.
     emit_sessions_changed(&app, &state, None);
+    let w = result?;
     Ok(json!({"id": w.id, "branch": w.branch, "path": w.path, "baseCommit": w.base_commit}))
 }
 
@@ -2703,6 +2778,18 @@ async fn remove_worktree(
 }
 
 #[tauri::command]
+async fn worktree_delete_preflight(
+    state: State<'_, AppState>,
+    worktree_id: String,
+) -> std::result::Result<agentport_core::git::WorktreeDeletePreflight, String> {
+    let manager = WorktreeManager {
+        paths: &state.paths,
+        db: &state.db,
+    };
+    map_err!(manager.deletion_preflight(&worktree_id))
+}
+
+#[tauri::command]
 async fn worktree_status_text(
     state: State<'_, AppState>,
     worktree_id: String,
@@ -2716,6 +2803,7 @@ async fn worktree_status_text(
     Ok(json!({
         "health": h.as_str(),
         "modified": s.modified, "staged": s.staged, "untracked": s.untracked,
+        "ignored": s.ignored, "ignoredSample": s.ignored_sample,
         "raw": s.raw,
     }))
 }
@@ -3840,6 +3928,7 @@ fn main() {
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             notifications::install(app.handle());
@@ -3878,6 +3967,7 @@ fn main() {
             add_project,
             rename_project,
             remove_project,
+            project_remove_preflight,
             list_presets,
             create_session,
             attach_session,
@@ -3899,18 +3989,32 @@ fn main() {
             delete_archived_session,
             delete_all_archived_sessions,
             session_history,
+            preview_worktree,
+            reconcile_worktrees,
             create_worktree,
             list_worktrees,
             remove_worktree,
+            worktree_delete_preflight,
             worktree_status_text,
             git_commands::get_repository_status,
             git_commands::list_local_branches,
             git_commands::create_local_branch,
+            git_commands::create_and_switch_local_branch,
             git_commands::delete_local_branch,
             git_commands::switch_local_branch,
             git_commands::list_auto_stashes,
             git_commands::restore_auto_stash,
             git_commands::cleanup_auto_stash,
+            git_workspace_commands::resolve_git_context,
+            git_workspace_commands::get_git_changes,
+            git_workspace_commands::get_git_diff,
+            git_workspace_commands::get_git_history,
+            git_workspace_commands::get_git_commit_detail,
+            git_workspace_commands::get_git_commit_diff,
+            git_workspace_commands::stage_git_paths,
+            git_workspace_commands::unstage_git_paths,
+            git_workspace_commands::prepare_git_commit,
+            git_workspace_commands::commit_git_changes,
             export_session,
             backup_create,
             backup_list,
@@ -4074,6 +4178,31 @@ mod cleanup_tests {
             parse_worktree_branch_selection(Some("existing"), Some("feature/existing"), None)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn session_launch_rejects_a_worktree_owned_by_another_project() {
+        let project = Project {
+            id: "project-a".into(),
+            name: "A".into(),
+            root_path: "/mock/a".into(),
+            git_root_path: Some("/mock/a".into()),
+            created_at: Utc::now(),
+        };
+        let worktree = Worktree {
+            id: "worktree-b".into(),
+            project_id: "project-b".into(),
+            branch: "feature/b".into(),
+            base_commit: "a".repeat(40),
+            base_ref: None,
+            path: "/mock/b".into(),
+            health: WorktreeHealth::Clean,
+            created_at: Utc::now(),
+        };
+
+        let error = validate_worktree_project(&project, &worktree).unwrap_err();
+        assert!(matches!(error, CoreError::Conflict(_)));
+        assert!(error.to_string().contains("belongs to project project-b"));
     }
 
     fn test_attachment(id: u64) -> RendererAttachment {

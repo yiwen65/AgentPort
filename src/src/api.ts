@@ -4,6 +4,7 @@
 
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { writeText as writeNativeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import type {
   AddProjectResult,
   ArchivedSessionView,
@@ -22,10 +23,25 @@ import type {
   Preset,
   ProbeOutcome,
   ProjectView,
+  ProjectRemovalPreflight,
   LocalBranchesResponse,
   RepositoryOperationProgress,
   RepositoryStatus,
   StructuredGitError,
+  GitChangesSnapshot,
+  GitCheckoutDescriptor,
+  GitCommitDetail,
+  GitCommitPatch,
+  GitCommitResult,
+  GitCommitReview,
+  GitContextLocator,
+  GitDiffSide,
+  GitFileDiff,
+  GitHistoryPage,
+  GitMutationResult,
+  GitPathSelection,
+  GitStateInvalidated,
+  GitWorkspaceCommandError,
   RestartResult,
   DocumentDirListing,
   SearchResult,
@@ -38,7 +54,9 @@ import type {
   TimelineData,
   TimelineAckSnapshot,
   WorktreeStatus,
+  WorktreeDeletePreflight,
   WorktreeBranchMode,
+  WorktreePreview,
   WorktreeView,
 } from "./types";
 import { runtimeMessageEnvelope, runtimeMessageText } from "./runtimeMessages";
@@ -122,6 +140,19 @@ export function isStructuredGitError(value: unknown): value is StructuredGitErro
     isStringArray(record.liveSessionIds);
 }
 
+/** Structured Git Center rejection with an optional authoritative refresh. */
+export function isGitWorkspaceCommandError(
+  value: unknown,
+): value is GitWorkspaceCommandError {
+  const record = asRecord(value);
+  if (!record) return false;
+  return typeof record.code === "string" &&
+    typeof record.message === "string" &&
+    typeof record.recoverable === "boolean" &&
+    (record.currentChanges === null ||
+      (typeof record.currentChanges === "object" && record.currentChanges !== null));
+}
+
 // ---------------------------------------------------------------------------
 // commands
 // ---------------------------------------------------------------------------
@@ -161,6 +192,8 @@ export const api = {
   renameProject: (id: string, name: string) =>
     invoke<void>("rename_project", { id, name }),
   removeProject: (id: string) => invoke<void>("remove_project", { id }),
+  projectRemovePreflight: (id: string) =>
+    invoke<ProjectRemovalPreflight>("project_remove_preflight", { id }),
   listPresets: (agent: string | null) => invoke<Preset[]>("list_presets", { agent }),
   createSession: (args: CreateSessionArgs) =>
     invoke<CreateSessionResult>("create_session", args),
@@ -209,6 +242,10 @@ export const api = {
   deleteAllArchivedSessions: () => invoke<void>("delete_all_archived_sessions"),
   sessionHistory: (sessionId: string) =>
     invoke<StatusEventView[]>("session_history", { sessionId }),
+  previewWorktree: (projectId: string, task: string) =>
+    invoke<WorktreePreview>("preview_worktree", { projectId, task }),
+  reconcileWorktrees: (projectId: string) =>
+    invoke<number>("reconcile_worktrees", { projectId }),
   createWorktree: (
     projectId: string,
     task: string,
@@ -228,6 +265,8 @@ export const api = {
   listWorktrees: (projectId: string) =>
     invoke<WorktreeView[]>("list_worktrees", { projectId }),
   removeWorktree: (worktreeId: string) => invoke<void>("remove_worktree", { worktreeId }),
+  worktreeDeletePreflight: (worktreeId: string) =>
+    invoke<WorktreeDeletePreflight>("worktree_delete_preflight", { worktreeId }),
   worktreeStatusText: (worktreeId: string) =>
     invoke<WorktreeStatus>("worktree_status_text", { worktreeId }),
   getRepositoryStatus: (projectId: string) =>
@@ -244,6 +283,16 @@ export const api = {
       name,
       startPoint,
     }),
+  createAndSwitchLocalBranch: (
+    projectId: string,
+    name: string,
+    startPoint: string | null,
+  ) =>
+    invoke<BranchOperationResult>("create_and_switch_local_branch", {
+      projectId,
+      name,
+      startPoint,
+    }),
   switchLocalBranch: (projectId: string, branch: string) =>
     invoke<BranchOperationResult>("switch_local_branch", { projectId, branch }),
   deleteLocalBranch: (projectId: string, branch: string) =>
@@ -254,6 +303,90 @@ export const api = {
     invoke<BranchOperationResult>("restore_auto_stash", { operationId, strategy }),
   cleanupAutoStash: (operationId: string) =>
     invoke<BranchOperationResult>("cleanup_auto_stash", { operationId }),
+  resolveGitContext: (locator: GitContextLocator) =>
+    invoke<GitCheckoutDescriptor>("resolve_git_context", { locator }),
+  getGitChanges: (locator: GitContextLocator, includeIgnored = true) =>
+    invoke<GitChangesSnapshot>("get_git_changes", { locator, includeIgnored }),
+  getGitDiff: (
+    locator: GitContextLocator,
+    expectedStatusToken: string,
+    side: GitDiffSide,
+    pathToken: string,
+  ) =>
+    invoke<GitFileDiff>("get_git_diff", {
+      locator,
+      expectedStatusToken,
+      side,
+      pathToken,
+    }),
+  getGitHistory: (
+    locator: GitContextLocator,
+    cursor: string | null,
+    limit = 50,
+  ) =>
+    invoke<GitHistoryPage>("get_git_history", { locator, cursor, limit }),
+  getGitCommitDetail: (locator: GitContextLocator, commitOid: string) =>
+    invoke<GitCommitDetail>("get_git_commit_detail", { locator, commitOid }),
+  getGitCommitDiff: (
+    locator: GitContextLocator,
+    commitOid: string,
+    parentOid: string | null,
+    pathToken: string | null,
+  ) =>
+    invoke<GitCommitPatch>("get_git_commit_diff", {
+      locator,
+      commitOid,
+      parentOid,
+      pathToken,
+    }),
+  stageGitPaths: (
+    locator: GitContextLocator,
+    expectedCheckoutId: string,
+    expectedStatusToken: string,
+    selections: GitPathSelection[],
+  ) =>
+    invoke<GitMutationResult>("stage_git_paths", {
+      locator,
+      expectedCheckoutId,
+      expectedStatusToken,
+      selections,
+    }),
+  unstageGitPaths: (
+    locator: GitContextLocator,
+    expectedCheckoutId: string,
+    expectedStatusToken: string,
+    selections: GitPathSelection[],
+  ) =>
+    invoke<GitMutationResult>("unstage_git_paths", {
+      locator,
+      expectedCheckoutId,
+      expectedStatusToken,
+      selections,
+    }),
+  prepareGitCommit: (
+    locator: GitContextLocator,
+    expectedCheckoutId: string,
+    expectedStatusToken: string,
+    message: string,
+  ) =>
+    invoke<GitCommitReview>("prepare_git_commit", {
+      locator,
+      expectedCheckoutId,
+      expectedStatusToken,
+      message,
+    }),
+  commitGitChanges: (
+    locator: GitContextLocator,
+    expectedCheckoutId: string,
+    expectedCommitToken: string,
+    message: string,
+  ) =>
+    invoke<GitCommitResult>("commit_git_changes", {
+      locator,
+      expectedCheckoutId,
+      expectedCommitToken,
+      message,
+    }),
   exportSession: (args: ExportArgs) => invoke<string>("export_session", args),
   backupCreate: (dest: string | null) =>
     invoke<{ path: string; files: number; bytes: number; verified: boolean }>("backup_create", {
@@ -371,11 +504,27 @@ export function onAutoStashChanged(cb: (stash: AutoStashRecord) => void): Promis
   return listen<AutoStashRecord>("auto-stash-changed", (e) => cb(e.payload));
 }
 
+/** Invalidation only; callers must perform a fresh authoritative read. */
+export function onGitStateInvalidated(
+  cb: (event: GitStateInvalidated) => void,
+): Promise<UnlistenFn> {
+  return listen<GitStateInvalidated>("git-state-invalidated", (event) => cb(event.payload));
+}
+
 // ---------------------------------------------------------------------------
-// clipboard (no dialog/clipboard plugin is registered; use the webview API)
+// clipboard
 // ---------------------------------------------------------------------------
 
 export async function copyText(text: string): Promise<boolean> {
+  try {
+    // WKWebView's ClipboardEvent and execCommand paths can reinterpret UTF-8
+    // bytes as MacRoman. The Tauri plugin writes the Unicode string through
+    // the native platform clipboard and is the authoritative desktop path.
+    await writeNativeClipboardText(text);
+    return true;
+  } catch {
+    // Keep browser/dev previews usable when the native Tauri runtime is absent.
+  }
   try {
     await navigator.clipboard.writeText(text);
     return true;

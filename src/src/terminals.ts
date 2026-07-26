@@ -15,7 +15,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Channel } from "@tauri-apps/api/core";
-import { api, b64ToBytes, bytesToB64, errorText } from "./api";
+import { api, b64ToBytes, bytesToB64, copyText, errorText } from "./api";
 import { PiStartupNoticeFilter } from "./piStartupNotice";
 import {
   announce,
@@ -680,7 +680,25 @@ function installInputCompatibility(term: Terminal, container: HTMLElement): () =
   };
 }
 
+function installClipboardCompatibility(term: Terminal, container: HTMLElement): () => void {
+  const onCopy = (event: ClipboardEvent) => {
+    const selection = term.getSelection();
+    if (!selection) return;
+
+    // xterm's built-in copy handler writes through ClipboardEvent.setData().
+    // WKWebView can mis-encode non-ASCII text on that path (for example Chinese
+    // becomes repeated MacRoman mojibake). Use the same async clipboard path as
+    // the app's other copy actions and stop xterm's later bubble-phase handler.
+    void copyText(selection);
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  container.addEventListener("copy", onCopy, true);
+  return () => container.removeEventListener("copy", onCopy, true);
+}
+
 const inputCompatibilityDisposers = new Map<string, () => void>();
+const clipboardCompatibilityDisposers = new Map<string, () => void>();
 
 function bindTerminalContainer(handle: TermHandle, container: HTMLDivElement) {
   handle.container = container;
@@ -688,6 +706,11 @@ function bindTerminalContainer(handle: TermHandle, container: HTMLDivElement) {
   inputCompatibilityDisposers.set(
     handle.sessionId,
     installInputCompatibility(handle.term, container),
+  );
+  clipboardCompatibilityDisposers.get(handle.sessionId)?.();
+  clipboardCompatibilityDisposers.set(
+    handle.sessionId,
+    installClipboardCompatibility(handle.term, container),
   );
   handle.resizeObserver?.disconnect();
   handle.resizeObserver = new ResizeObserver(() => scheduleFitHandle(handle));
@@ -859,10 +882,28 @@ function scheduleFitHandle(handle: TermHandle) {
 export function fitHandle(handle: TermHandle, forceRedraw = false, forceResize = false) {
   const el = handle.container;
   if (!el || el.clientWidth === 0 || el.clientHeight === 0) return;
+  const bufferBeforeFit = handle.term.buffer.active;
+  const bufferTypeBeforeFit = bufferBeforeFit.type;
+  const viewportBeforeFit = bufferBeforeFit.viewportY;
+  const wasReadingScrollback =
+    bufferTypeBeforeFit === "normal" &&
+    viewportBeforeFit > 0 &&
+    viewportBeforeFit < bufferBeforeFit.baseY;
   try {
     handle.fit.fit();
   } catch {
     return;
+  }
+  const bufferAfterFit = handle.term.buffer.active;
+  if (
+    wasReadingScrollback &&
+    bufferAfterFit.type === bufferTypeBeforeFit &&
+    bufferAfterFit.baseY > 0 &&
+    bufferAfterFit.viewportY === 0
+  ) {
+    // A column reflow can occasionally drop xterm's viewport to the oldest
+    // row. That is never the user's intent during a passive pane/window fit.
+    handle.term.scrollToLine(Math.min(viewportBeforeFit, bufferAfterFit.baseY));
   }
   const { cols, rows } = handle.term;
   if (forceRedraw && rows > 0) {
@@ -1433,6 +1474,8 @@ export function disposeHandle(sessionId: string) {
   handle.attachmentId = null;
   inputCompatibilityDisposers.get(sessionId)?.();
   inputCompatibilityDisposers.delete(sessionId);
+  clipboardCompatibilityDisposers.get(sessionId)?.();
+  clipboardCompatibilityDisposers.delete(sessionId);
   const resizeTimer = resizeTimers.get(sessionId);
   if (resizeTimer !== undefined) {
     window.clearTimeout(resizeTimer);

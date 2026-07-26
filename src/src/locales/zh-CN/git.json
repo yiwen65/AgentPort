@@ -1,0 +1,142 @@
+{
+  "title": "Git Center",
+  "open": "打开 Git Center",
+  "close": "关闭 Git Center",
+  "refresh": "刷新",
+  "refreshing": "正在刷新…",
+  "retry": "重试",
+  "tabs": {
+    "changes": "更改",
+    "history": "历史"
+  },
+  "context": {
+    "main": "主 Checkout",
+    "worktree": "Worktree",
+    "detached": "detached HEAD",
+    "unborn": "尚无提交",
+    "activeSessions": "{{count}} 个活动 Session 正在使用此 Checkout",
+    "readOnly": "只读",
+    "writable": "可写",
+    "canonicalPath": "规范路径",
+    "head": "HEAD",
+    "branch": "分支",
+    "missing": "Worktree 缺失或已漂移",
+    "operationBlocked": "检测到进行中的 Git 操作：{{operation}}"
+  },
+  "sessionSwitch": {
+    "message": "Git 仍在查看原 Checkout。",
+    "switch": "切换到当前 Session",
+    "keep": "保持原 Checkout"
+  },
+  "targetSwitch": {
+    "title": "切换 Git Checkout？",
+    "body": "当前有文件选择或尚未提交的草稿。切换后草稿会保留在原 Checkout，但不会带到新目标。",
+    "confirm": "切换 Checkout"
+  },
+  "states": {
+    "loading": "正在读取 Git 状态…",
+    "empty": "此 Checkout 没有未提交更改。",
+    "error": "Git 状态读取失败",
+    "stale": "仓库状态已变化，正在重新读取；写操作已暂停。",
+    "partial": "结果不完整（{{reason}}）。为避免误操作，暂存和提交已禁用。",
+    "missing": "目标 Worktree 不存在或不再属于该 Project。",
+    "readOnly": "此 Checkout 当前为只读：{{reason}}",
+    "conflicts": "存在 {{count}} 个冲突；解决后请明确选择“标记为已解决并暂存”。",
+    "unknown": "未知状态"
+  },
+  "groups": {
+    "conflict": "冲突",
+    "staged": "已暂存",
+    "unstaged": "未暂存",
+    "untracked": "未跟踪",
+    "ignored": "已忽略"
+  },
+  "selection": {
+    "selectAll": "选择本组全部文件",
+    "clearAll": "清除本组选择",
+    "selected": "已选 {{count}} 项"
+  },
+  "actions": {
+    "stage": "暂存",
+    "stageSelected": "暂存所选",
+    "unstage": "取消暂存",
+    "unstageSelected": "取消暂存所选",
+    "markResolved": "标记为已解决并暂存",
+    "reviewCommit": "审查提交",
+    "loadMore": "加载更多",
+    "showAllChanges": "查看更改",
+    "viewGit": "Git"
+  },
+  "entry": {
+    "renamedFrom": "原路径：{{path}}",
+    "submodule": "Submodule：{{state}}",
+    "ignoredNoPreview": "为保护本地数据，ignored 文件只显示名称，不能预览或暂存。",
+    "kinds": {
+      "added": "新增",
+      "modified": "修改",
+      "deleted": "删除",
+      "renamed": "重命名",
+      "copied": "复制",
+      "type_changed": "类型变化",
+      "conflict": "冲突",
+      "untracked": "未跟踪",
+      "ignored": "已忽略"
+    }
+  },
+  "diff": {
+    "title": "Diff 预览",
+    "empty": "选择一个文件查看差异。",
+    "staged": "已暂存",
+    "unstaged": "未暂存",
+    "binary": "二进制文件不显示正文。",
+    "summary": "仅显示文件摘要",
+    "summaryReason": "正文未读取（{{reason}}）。",
+    "large": "Diff 超出安全显示上限，仅显示截断结果或统计。",
+    "conflict": "冲突预览（{{code}}）",
+    "stats": "+{{additions}} −{{deletions}}",
+    "size": "{{size}} 字节"
+  },
+  "history": {
+    "empty": "此仓库尚无提交。",
+    "newCommits": "发现新提交。当前分页仍固定在原 HEAD。",
+    "refreshNow": "刷新到最新 HEAD",
+    "select": "选择一个提交查看详情。",
+    "by": "{{author}} · {{date}}",
+    "parent": "比较父提交",
+    "firstParent": "第一父提交",
+    "otherParent": "第 {{count}} 父提交",
+    "allFiles": "完整提交 Diff",
+    "files": "文件（{{count}}）",
+    "message": "完整提交信息"
+  },
+  "commit": {
+    "title": "提交",
+    "project": "Project",
+    "checkout": "Checkout",
+    "placeholder": "提交主题\n\n可选正文",
+    "scopeNote": "Commit 将提交此 Checkout 当前 index 中的全部已暂存内容，不会自动暂存文件。",
+    "noStaged": "没有可提交的已暂存更改。",
+    "detachedBlocked": "detached HEAD 下不能执行普通 Commit。",
+    "operationBlocked": "{{operation}} 进行中，不能执行普通 Commit。",
+    "conflictsBlocked": "仍有冲突，全部解决并暂存后才能 Commit。",
+    "reviewTitle": "审查提交范围",
+    "reviewWarning": "确认后将执行一次 git commit。提交范围、HEAD、index 或消息发生变化时，后端会拒绝写入并要求重新审查。",
+    "fullMessage": "完整提交信息",
+    "scope": "提交范围（{{count}} 个文件）",
+    "outsideProject": "以下已暂存路径位于 Project 目录之外：",
+    "subjectOver72": "主题超过 72 个字符；这只是提醒，不会阻止提交。",
+    "activeSessionWarning": "此 Checkout 正被活动 Session 使用。提交可能影响该 Session 后续操作。",
+    "confirm": "确认并提交全部已暂存内容",
+    "cancel": "返回修改",
+    "preparing": "正在重新生成准确提交范围…",
+    "committing": "正在执行 Git commit…",
+    "succeeded": "提交成功",
+    "draftPreserved": "提交草稿已保留，请重新审查后再试。",
+    "outcomes": {
+      "succeeded": "提交成功",
+      "not_executed": "提交未执行；请检查错误并重新审查。",
+      "scope_drift": "提交已创建，但 hook 改变了确认范围；请立即核对提交内容。",
+      "indeterminate": "无法确定提交结果。请核对真实 HEAD；不要自动重试。"
+    }
+  }
+}

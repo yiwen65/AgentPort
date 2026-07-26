@@ -17,6 +17,8 @@ import {
 import {
   applyRepositoryStatusSnapshot,
   closeDialog,
+  confirmDialog,
+  findSession,
   getState,
   markRepositoryStatusUnavailable,
   openWorktreeView,
@@ -33,8 +35,10 @@ import type {
   AutoStashRecord,
   LocalBranch,
   LocalBranchesResponse,
+  LifecycleStr,
   RepositoryOperationProgress,
   RepositoryStatus,
+  SessionView,
 } from "../types";
 import Modal from "./Modal";
 
@@ -44,8 +48,37 @@ interface BranchFailure {
   recoveryActions: string[];
 }
 
+type CheckoutChangingOperation =
+  | { kind: "switch"; branch: string }
+  | { kind: "createAndSwitch"; branch: string; startPoint: string | null };
+
+interface SessionHandlingIssue {
+  reason: "stopFailed" | "checkoutChanged";
+  affectedSessionIds: string[];
+}
+
+interface SessionHandlingProgress {
+  currentSessionId: string;
+  currentIndex: number;
+  total: number;
+}
+
 function stringIds(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function sameIds(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  const expected = new Set(left);
+  return right.every((id) => expected.has(id));
+}
+
+function sameCheckoutIdentity(left: RepositoryStatus, right: RepositoryStatus): boolean {
+  return left.repoKey === right.repoKey
+    && left.checkoutRoot === right.checkoutRoot
+    && left.head?.kind === right.head?.kind
+    && (left.head?.branch ?? null) === (right.head?.branch ?? null)
+    && (left.head?.oid ?? null) === (right.head?.oid ?? null);
 }
 
 function operationFailure(error: unknown): BranchFailure {
@@ -72,6 +105,24 @@ function operationFailure(error: unknown): BranchFailure {
     };
   }
   return { message: errorText(error), liveSessionIds: [], recoveryActions: [] };
+}
+
+function lifecycleLabel(
+  lifecycle: LifecycleStr,
+  t: TFunction<["worktree", "common"]>,
+): string {
+  switch (lifecycle) {
+    case "creating":
+      return t("worktree:ui.branchPicker.sessionHandling.lifecycle.creating");
+    case "running":
+      return t("worktree:ui.branchPicker.sessionHandling.lifecycle.running");
+    case "interrupted":
+      return t("worktree:ui.branchPicker.sessionHandling.lifecycle.interrupted");
+    case "exited":
+      return t("worktree:ui.branchPicker.sessionHandling.lifecycle.exited");
+    case "stopped":
+      return t("worktree:ui.branchPicker.sessionHandling.lifecycle.stopped");
+  }
 }
 
 function headLabel(status: RepositoryStatus | null, t: TFunction<["worktree", "common"]>): string {
@@ -251,6 +302,11 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
   const [eventBusy, setEventBusy] = useState(false);
   const [progress, setProgress] = useState<RepositoryOperationProgress | null>(null);
   const [failure, setFailure] = useState<BranchFailure | null>(null);
+  const [sessionHandlingProgress, setSessionHandlingProgress] =
+    useState<SessionHandlingProgress | null>(null);
+  const [sessionHandlingIssue, setSessionHandlingIssue] =
+    useState<SessionHandlingIssue | null>(null);
+  const [stoppedSessionIds, setStoppedSessionIds] = useState<string[]>([]);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ message: string; refreshed: boolean } | null>(null);
   const [recovery, setRecovery] = useState<AutoStashRecord[]>([]);
@@ -392,14 +448,49 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
     }
   }, [confirmingDelete, selectedIndex]);
 
-  const complete = async (
+  const sessionForId = (id: string): SessionView | null =>
+    findSession(store.projects, id);
+
+  const sessionTitle = (id: string, index: number): string =>
+    sessionForId(id)?.title || t("worktree:ui.branchPicker.sessionHandling.unknownSession", {
+      index: index + 1,
+    });
+
+  const sessionDetail = (id: string, index: number): string => {
+    const session = sessionForId(id);
+    const liveLifecycle: LifecycleStr = session?.lifecycle === "creating"
+      ? "creating"
+      : "running";
+    return t("worktree:ui.branchPicker.sessionHandling.sessionDetail", {
+      title: sessionTitle(id, index),
+      status: lifecycleLabel(liveLifecycle, t),
+    });
+  };
+
+  const applyPreflight = (response: LocalBranchesResponse) => {
+    setData(response);
+    setRecovery(response.autoStashes ?? []);
+    applyRepositoryStatusSnapshot(response.status);
+  };
+
+  const setOperationFailure = (error: unknown) => {
+    const nextFailure = operationFailure(error);
+    if (nextFailure.liveSessionIds.length > 0) {
+      setFailure(null);
+      setSessionHandlingIssue({
+        reason: "checkoutChanged",
+        affectedSessionIds: nextFailure.liveSessionIds,
+      });
+    } else {
+      setFailure(nextFailure);
+    }
+  };
+
+  const executeOperation = async (
     message: string,
     operation: () => Promise<void>,
     pending: { command?: string; branch?: string | null; message?: string } = {},
   ): Promise<boolean> => {
-    if (localBusyRef.current || eventBusyRef.current) return false;
-    localBusyRef.current = true;
-    setBusy(true);
     setProgress({
       operationId: "ui-pending",
       command: pending.command ?? "branch_picker",
@@ -412,6 +503,7 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
       occurredAt: new Date().toISOString(),
     });
     setFailure(null);
+    setSessionHandlingIssue(null);
     setRefreshError(null);
     setSuccess(null);
     try {
@@ -427,20 +519,139 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
       return true;
     } catch (error) {
       await refresh();
-      setFailure(operationFailure(error));
+      setOperationFailure(error);
       return false;
+    }
+  };
+
+  const complete = async (
+    message: string,
+    operation: () => Promise<void>,
+    pending: { command?: string; branch?: string | null; message?: string } = {},
+  ): Promise<boolean> => {
+    if (localBusyRef.current || eventBusyRef.current) return false;
+    localBusyRef.current = true;
+    setBusy(true);
+    try {
+      return await executeOperation(message, operation, pending);
     } finally {
       localBusyRef.current = false;
       setBusy(false);
     }
   };
 
+  const executeCheckoutChangingOperation = async (intent: CheckoutChangingOperation) => {
+    const completionMessage = intent.kind === "switch"
+      ? t("worktree:ui.branchPicker.operation.switched", { branch: intent.branch })
+      : t("worktree:ui.branchPicker.operation.createdAndSwitched", { branch: intent.branch });
+    const command = intent.kind === "switch"
+      ? "switch_local_branch"
+      : "create_and_switch_local_branch";
+    const pendingMessage = intent.kind === "switch"
+      ? t("worktree:ui.branchPicker.operation.switchingLocalBranch", { branch: intent.branch })
+      : t("worktree:ui.branchPicker.operation.creatingAndSwitching", { branch: intent.branch });
+    return executeOperation(
+      completionMessage,
+      async () => {
+        const result = intent.kind === "switch"
+          ? await api.switchLocalBranch(projectId, intent.branch)
+          : await api.createAndSwitchLocalBranch(projectId, intent.branch, intent.startPoint);
+        setData((previous) => (previous ? { ...previous, status: result.status } : previous));
+        if (result.autoStash) setRecovery((items) => [result.autoStash!, ...items]);
+        if (intent.kind === "createAndSwitch") setNewName("");
+      },
+      { command, branch: intent.branch, message: pendingMessage },
+    );
+  };
+
+  const runCheckoutChangingOperation = (intent: CheckoutChangingOperation) => {
+    void (async () => {
+      if (localBusyRef.current || eventBusyRef.current) return;
+      localBusyRef.current = true;
+      setBusy(true);
+      try {
+        setFailure(null);
+        setSessionHandlingIssue(null);
+        setStoppedSessionIds([]);
+        setRefreshError(null);
+        setSuccess(null);
+
+        const preflight = await api.listLocalBranches(projectId);
+        applyPreflight(preflight);
+        const confirmedSessionIds = [...preflight.status.liveSessionIds];
+        if (confirmedSessionIds.length > 0) {
+          const branch = headLabel(preflight.status, t);
+          const confirmed = await confirmDialog({
+            title: t("worktree:ui.branchPicker.sessionHandling.confirmTitle"),
+            body: t("worktree:ui.branchPicker.sessionHandling.confirmBody", {
+              count: confirmedSessionIds.length,
+              branch,
+            }),
+            details: confirmedSessionIds.map(sessionDetail),
+            confirmLabel: t("worktree:ui.branchPicker.sessionHandling.confirmAction"),
+          });
+          if (!confirmed) return;
+        }
+
+        const stoppedIds: string[] = [];
+        if (confirmedSessionIds.length > 0) {
+          const confirmationCheck = await api.listLocalBranches(projectId);
+          applyPreflight(confirmationCheck);
+          const currentIds = confirmationCheck.status.liveSessionIds;
+          if (!sameCheckoutIdentity(confirmationCheck.status, preflight.status)
+            || !sameIds(currentIds, confirmedSessionIds)) {
+            setSessionHandlingIssue({
+              reason: "checkoutChanged",
+              affectedSessionIds: currentIds,
+            });
+            return;
+          }
+
+          for (const [index, sessionId] of confirmedSessionIds.entries()) {
+            setSessionHandlingProgress({
+              currentSessionId: sessionId,
+              currentIndex: index,
+              total: confirmedSessionIds.length,
+            });
+            try {
+              await api.stopSession(sessionId);
+              stoppedIds.push(sessionId);
+              setStoppedSessionIds([...stoppedIds]);
+            } catch {
+              setSessionHandlingIssue({
+                reason: "stopFailed",
+                affectedSessionIds: confirmedSessionIds.slice(index),
+              });
+              return;
+            }
+          }
+
+          const verified = await api.listLocalBranches(projectId);
+          applyPreflight(verified);
+          if (!sameCheckoutIdentity(verified.status, preflight.status)
+            || verified.status.liveSessionIds.length > 0) {
+            setSessionHandlingIssue({
+              reason: "checkoutChanged",
+              affectedSessionIds: verified.status.liveSessionIds,
+            });
+            return;
+          }
+        }
+
+        await executeCheckoutChangingOperation(intent);
+      } catch (error) {
+        setOperationFailure(error);
+      } finally {
+        setSessionHandlingProgress(null);
+        localBusyRef.current = false;
+        setBusy(false);
+      }
+    })();
+  };
+
   const switchTo = (branch: LocalBranch) => {
     if (localBusyRef.current || eventBusyRef.current || branch.current || branch.checkedOutPath) return;
-    void complete(t("worktree:ui.branchPicker.operation.switched", { branch: branch.name }), async () => {
-      const result = await api.switchLocalBranch(projectId, branch.name);
-      setData((previous) => (previous ? { ...previous, status: result.status } : previous));
-    });
+    runCheckoutChangingOperation({ kind: "switch", branch: branch.name });
   };
 
   const chooseBranch = (branch: LocalBranch) => {
@@ -489,50 +700,44 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
   const create = () => {
     const name = newName.trim();
     if (!name) return;
-    void complete(
-      switchAfterCreate
-        ? t("worktree:ui.branchPicker.operation.createdAndSwitched", { branch: name })
-        : t("worktree:ui.branchPicker.operation.created", { branch: name }),
-      async () => {
-        let result = await api.createLocalBranch(projectId, name, startBranch.trim() || null);
-        if (switchAfterCreate) {
-          try {
-            result = await api.switchLocalBranch(projectId, name);
-          } catch (error) {
-            const failure = operationFailure(error);
-            throw {
-              ...(isStructuredGitError(error) ? error : {}),
-              code: isStructuredGitError(error) ? error.code : "switch_after_create_failed",
-              message: t("worktree:ui.branchPicker.operation.createdButSwitchFailed", {
-                branch: name,
-                detail: failure.message,
-              }),
-              phase: isStructuredGitError(error) ? error.phase : "switch",
-              operationId: isStructuredGitError(error) ? error.operationId : "ui-create-switch",
-              recoverable: true,
-              currentStatus: isStructuredGitError(error) ? error.currentStatus : null,
-              recoveryActions: failure.recoveryActions,
-              diagnostics: isStructuredGitError(error) ? error.diagnostics : {},
-              liveSessionIds: failure.liveSessionIds,
-            };
-          }
-        }
-        setData((previous) => (previous ? { ...previous, status: result.status } : previous));
-        if (result.autoStash) setRecovery((items) => [result.autoStash!, ...items]);
-        setNewName("");
-      },
-    );
+    const startPoint = startBranch.trim() || null;
+    if (switchAfterCreate) {
+      runCheckoutChangingOperation({
+        kind: "createAndSwitch",
+        branch: name,
+        startPoint,
+      });
+      return;
+    }
+    void complete(t("worktree:ui.branchPicker.operation.created", { branch: name }), async () => {
+      const result = await api.createLocalBranch(projectId, name, startPoint);
+      setData((previous) => (previous ? { ...previous, status: result.status } : previous));
+      setNewName("");
+    });
   };
 
   const restore = (stash: AutoStashRecord, strategy: "target" | "source") => {
-    void complete(
-      strategy === "target"
-        ? t("worktree:ui.branchPicker.operation.restoreAttemptedOnCurrentCheckout")
-        : t("worktree:ui.branchPicker.operation.returnedToSourceCheckout"),
-      async () => {
-        await api.restoreAutoStash(stash.operationId, strategy);
-      },
-    );
+    void (async () => {
+      const restored = await complete(
+        strategy === "target"
+          ? t("worktree:ui.branchPicker.operation.restoreAttemptedOnCurrentCheckout")
+          : t("worktree:ui.branchPicker.operation.returnedToSourceCheckout"),
+        async () => {
+          await api.restoreAutoStash(stash.operationId, strategy);
+        },
+      );
+      if (!restored) return;
+
+      const cleaned = await complete(
+        t("worktree:ui.branchPicker.operation.restoredAndCleaned"),
+        async () => {
+          await api.cleanupAutoStash(stash.operationId);
+        },
+      );
+      if (!cleaned) {
+        toast(t("worktree:ui.branchPicker.recovery.cleanupDeferred"), "info");
+      }
+    })();
   };
 
   const cleanup = (stash: AutoStashRecord) => {
@@ -644,7 +849,19 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
       {status && !status.isGitRepository ? (
         <div className="error-bar" role="alert">{t("worktree:ui.branchPicker.notGitRepository")}</div>
       ) : null}
-      {progress ? (
+      {sessionHandlingProgress ? (
+        <div className="info-box branch-picker-progress" role="status">
+          {t("worktree:ui.branchPicker.sessionHandling.stopping", {
+            title: sessionTitle(
+              sessionHandlingProgress.currentSessionId,
+              sessionHandlingProgress.currentIndex,
+            ),
+            current: sessionHandlingProgress.currentIndex + 1,
+            total: sessionHandlingProgress.total,
+          })}
+        </div>
+      ) : null}
+      {progress && !failure && !sessionHandlingIssue && !sessionHandlingProgress ? (
         <div className="info-box branch-picker-progress" role="status">
           {t("worktree:ui.branchPicker.progress.detail", {
             label: controlsBusy
@@ -663,28 +880,64 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
             : t("worktree:ui.branchPicker.success.repositoryRefreshFailed")}
         </div>
       ) : null}
+      {stoppedSessionIds.length ? (
+        <div className="info-box branch-picker-success" role="status">
+          <strong>
+            {t("worktree:ui.branchPicker.sessionHandling.stoppedSummary", {
+              count: stoppedSessionIds.length,
+            })}
+          </strong>{" "}
+          {t("worktree:ui.branchPicker.sessionHandling.notRestarted")}
+          <div className="branch-picker-live-sessions">
+            {stoppedSessionIds.map((id, index) => sessionForId(id) ? (
+              <button key={id} className="btn small ghost" onClick={() => openLiveSession(id)}>
+                {t("worktree:ui.branchPicker.sessionHandling.openNamedSession", {
+                  title: sessionTitle(id, index),
+                })}
+              </button>
+            ) : null)}
+          </div>
+        </div>
+      ) : null}
       {refreshError ? (
         <div className="error-bar" role="alert">
           <strong>{t("worktree:ui.branchPicker.error.repositoryReadFailed")}</strong> {refreshError}
         </div>
       ) : null}
-      {failure ? (
+      {sessionHandlingIssue ? (
         <div className="error-bar" role="alert">
-          <strong>{t("worktree:ui.branchPicker.error.branchOperationFailed")}</strong> {failure.message}
-          {failure.liveSessionIds.length ? (
+          <strong>
+            {sessionHandlingIssue.reason === "stopFailed"
+              ? t("worktree:ui.branchPicker.sessionHandling.stopFailed", {
+                  title: sessionTitle(sessionHandlingIssue.affectedSessionIds[0] ?? "", 0),
+                })
+              : t("worktree:ui.branchPicker.sessionHandling.checkoutChanged")}
+          </strong>
+          <div>{t("worktree:ui.branchPicker.sessionHandling.branchUnchanged")}</div>
+          {sessionHandlingIssue.affectedSessionIds.length ? (
             <div className="branch-picker-live-sessions">
-              <span>
-                {t("worktree:ui.branchPicker.error.liveSessionsUsingCheckout", {
-                  count: failure.liveSessionIds.length,
-                })}
-              </span>
-              {failure.liveSessionIds.map((id) => (
-                <button key={id} className="btn small ghost" onClick={() => openLiveSession(id)}>
-                  {t("worktree:ui.branchPicker.error.openSession", { id: id.slice(0, 8) })}
-                </button>
+              {sessionHandlingIssue.affectedSessionIds.map((id, index) => (
+                <span key={id}>
+                  {sessionDetail(id, index)}{" "}
+                  {sessionForId(id) ? (
+                    <button className="btn small ghost" onClick={() => openLiveSession(id)}>
+                      {t("worktree:ui.branchPicker.sessionHandling.openNamedSession", {
+                        title: sessionTitle(id, index),
+                      })}
+                    </button>
+                  ) : null}
+                </span>
               ))}
             </div>
           ) : null}
+          <div className="branch-picker-recovery-actions">
+            {t("worktree:ui.branchPicker.sessionHandling.nextStep")}
+          </div>
+        </div>
+      ) : null}
+      {failure ? (
+        <div className="error-bar" role="alert">
+          <strong>{t("worktree:ui.branchPicker.error.branchOperationFailed")}</strong> {failure.message}
           {failure.recoveryActions.length ? (
             <div className="branch-picker-recovery-actions">
               <span>{t("worktree:ui.branchPicker.error.recoveryActions")}</span>
@@ -788,7 +1041,7 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
           <p className="form-hint">{t("worktree:ui.branchPicker.recovery.description")}</p>
           {recovery.map((stash) => (
             <div className="branch-picker-stash" key={stash.id}>
-              <div><strong>{stash.targetBranch}</strong><span className="mono">{stash.stashOid || stash.id}</span><span>{branchOperationPhaseLabel(stash.state)}</span>{stash.lastError ? <span>{t("worktree:ui.branchPicker.recovery.error", { detail: stash.lastError })}</span> : null}</div>
+              <div><strong>{stash.targetBranch}</strong>{stash.restorable === false && stash.stashOid ? <span className="mono">{stash.stashOid.slice(0, 12)}</span> : null}<span>{branchOperationPhaseLabel(stash.state)}</span>{stash.lastError ? <span>{t("worktree:ui.branchPicker.recovery.error", { detail: stash.lastError })}</span> : null}</div>
               {stash.restorable === false ? (
                 <p className="form-hint" role="status">
                   {t("worktree:ui.branchPicker.recovery.missingSnapshot")}

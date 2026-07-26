@@ -9,31 +9,44 @@ use crate::ids::new_id;
 use crate::models::*;
 use crate::paths::{slugify, AppPaths};
 use chrono::Utc;
+use serde::Serialize;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 pub mod branch;
 pub mod command;
+pub mod commit;
+pub mod context;
+pub mod diff;
+pub mod history;
 pub mod operation;
 pub mod repository;
+pub mod status;
+mod token;
 pub mod worktree;
 
 pub use branch::{
     BranchInfo, BranchManager, BranchSnapshot, CheckoutState, CreateBranchOutcome,
     DeleteBranchOutcome, RepoStatus, SwitchOutcome,
 };
-pub use command::{GitOutput, GitRunner};
+pub use command::{GitOutput, GitRunOptions, GitRunner};
+pub use commit::{
+    GitCommitOutcome, GitCommitRecovery, GitCommitResult, GitCommitReview, GitCommitScopeFile,
+    GitMutationResult, GitPathSelection,
+};
+pub use context::{
+    GitCheckoutDescriptor, GitCheckoutKind, GitCheckoutTarget, GitContextLocator,
+    GitWorkspaceManager, ResolvedGitContext,
+};
+pub use diff::{GitDiffFormat, GitDiffSide, GitFileDiff};
+pub use history::{
+    GitCommitDetail, GitCommitFile, GitCommitPatch, GitCommitSummary, GitHistoryPage,
+};
 pub use operation::{
     AutoStash, BranchOperation, BranchOperationKind, BranchOperationPhase, BranchOperationStep,
     ReconcileReport, RestoreStrategy,
 };
 pub use repository::{RepositoryFileLock, RepositoryIdentity, RepositoryManager};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatusEntry {
-    pub xy: String,
-    pub path: String,
-    pub untracked: bool,
-}
+pub use status::{GitChangeCounts, GitChangeEntry, GitChangeKind, GitChangesSnapshot};
 
 #[derive(Debug, Clone)]
 pub struct GitWorktreeInfo {
@@ -49,8 +62,40 @@ pub struct DirtySummary {
     pub modified: usize,
     pub untracked: usize,
     pub staged: usize,
-    /// `git status --porcelain=v1` raw text for "copy git status".
+    /// Ignored files are still local user data. `git worktree remove` deletes
+    /// them even though ordinary porcelain status hides them, so safe removal
+    /// must count them explicitly.
+    pub ignored: usize,
+    pub ignored_sample: Vec<String>,
+    /// Human-readable summary generated from the authoritative porcelain v2
+    /// records for "copy git status".
     pub raw: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreePreview {
+    pub task_slug: String,
+    pub branch: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeDeletePreflight {
+    pub worktree_id: String,
+    pub branch: String,
+    pub path: String,
+    pub health: WorktreeHealth,
+    pub modified: usize,
+    pub staged: usize,
+    pub untracked: usize,
+    pub ignored: usize,
+    pub ignored_sample: Vec<String>,
+    pub session_count: usize,
+    pub active_session_count: usize,
+    pub can_remove: bool,
+    pub blockers: Vec<String>,
 }
 
 pub struct GitRepo {
@@ -142,13 +187,17 @@ impl GitRepo {
     }
 
     pub fn status(&self, path: &Path) -> Result<DirtySummary> {
-        let out = run_git_at(path, &["status", "--porcelain=v1"])?;
-        Ok(worktree::parse_porcelain_status(&out))
+        let runner = GitRunner::default();
+        let identity = RepositoryIdentity::discover(path, &runner)?;
+        status::read_dirty_summary(&identity, path, &runner)
     }
 
     pub fn worktree_list(&self) -> Result<Vec<GitWorktreeInfo>> {
-        let out = run_git(Some(&self.root), &["worktree", "list", "--porcelain"])?;
-        Ok(worktree::parse_worktree_list(&out))
+        let runner = GitRunner::default();
+        let output = runner
+            .run_read_only(Some(&self.root), ["worktree", "list", "--porcelain", "-z"])?
+            .require_success()?;
+        worktree::parse_worktree_list_z(&output.stdout)
     }
 
     /// `git worktree add <path> -b <branch> <base>` (create_branch=true) or
@@ -217,6 +266,102 @@ enum InternalWorktreeBranchSelection {
 }
 
 impl<'a> WorktreeManager<'a> {
+    /// Return the exact backend-generated auto branch and directory before any
+    /// mutation. The renderer must display this result instead of maintaining
+    /// a second slug implementation that can drift.
+    pub fn preview(&self, project_id: &str, task_name: &str) -> Result<WorktreePreview> {
+        let project = self.db.get_project(project_id)?;
+        let task_slug = worktree_task_slug(task_name);
+        let worktrees_root = std::fs::canonicalize(self.paths.worktrees_root())
+            .unwrap_or_else(|_| self.paths.worktrees_root());
+        Ok(WorktreePreview {
+            branch: format!("agent/{task_slug}"),
+            path: worktrees_root
+                .join(slugify(&project.name))
+                .join(&task_slug)
+                .to_string_lossy()
+                .into_owned(),
+            task_slug,
+        })
+    }
+
+    /// Recover a Git Worktree that was fully created under AgentPort's own
+    /// project directory but could not be persisted because the process
+    /// stopped between the Git mutation and the database insert. Worktrees
+    /// anywhere outside that exact owned directory are never adopted.
+    pub fn reconcile_owned_worktrees(&self, project_id: &str) -> Result<usize> {
+        let project = self.db.get_project(project_id)?;
+        let runner = GitRunner::default();
+        let identity = RepositoryIdentity::from_project(&project, &runner)?;
+        let lock = repository::repository_lock(&identity.repo_key);
+        let _guard = lock.lock().unwrap();
+        let identity = RepositoryIdentity::from_project(&project, &runner)?;
+        let _file_guard = RepositoryFileLock::acquire(&identity.common_dir)?;
+        let identity = RepositoryIdentity::from_project(&project, &runner)?;
+        self.reconcile_owned_worktrees_with_identity(&project, &identity, &runner)
+    }
+
+    fn reconcile_owned_worktrees_with_identity(
+        &self,
+        project: &Project,
+        identity: &RepositoryIdentity,
+        runner: &GitRunner,
+    ) -> Result<usize> {
+        let owned_root = self.paths.worktrees_root().join(slugify(&project.name));
+        if !owned_root.is_dir() {
+            return Ok(0);
+        }
+        let owned_root = std::fs::canonicalize(owned_root)?;
+        let mut known = self.db.list_worktrees(&project.id)?;
+        let mut recovered = 0;
+        for git_worktree in identity.worktrees(runner)? {
+            if git_worktree.prunable || !git_worktree.path.is_dir() {
+                continue;
+            }
+            let path = std::fs::canonicalize(&git_worktree.path)?;
+            if path.parent() != Some(owned_root.as_path())
+                || known
+                    .iter()
+                    .any(|worktree| same_path(Path::new(&worktree.path), &path))
+            {
+                continue;
+            }
+            let (Some(branch), Some(head)) = (git_worktree.branch, git_worktree.head) else {
+                continue;
+            };
+            let status = GitRepo::discover(&path)?.status(&path)?;
+            let health = if git_worktree.locked {
+                WorktreeHealth::Locked
+            } else if status.raw.trim().is_empty() && status.ignored == 0 {
+                WorktreeHealth::Clean
+            } else {
+                WorktreeHealth::Dirty
+            };
+            let worktree = Worktree {
+                id: new_id("wt"),
+                project_id: project.id.clone(),
+                branch,
+                base_commit: head,
+                base_ref: None,
+                path: path.to_string_lossy().into_owned(),
+                health,
+                created_at: Utc::now(),
+            };
+            match self.db.insert_worktree(&worktree) {
+                Ok(()) => {
+                    known.push(worktree);
+                    recovered += 1;
+                }
+                Err(CoreError::Conflict(_))
+                    if self.db.list_worktrees(&project.id)?.iter().any(|known| {
+                        same_path(Path::new(&known.path), Path::new(&worktree.path))
+                    }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(recovered)
+    }
+
     /// Create branch `agent/<slug>` (or adopt existing branch when
     /// `use_existing_branch` is set) + directory under
     /// `<data>/worktrees/<project-slug>/<task-slug>`, from HEAD or an explicit
@@ -287,10 +432,15 @@ impl<'a> WorktreeManager<'a> {
         let identity = RepositoryIdentity::from_project(&project, runner)?;
         let _file_guard = RepositoryFileLock::acquire(&identity.common_dir)?;
         let identity = RepositoryIdentity::from_project(&project, runner)?;
+        self.reconcile_owned_worktrees_with_identity(&project, &identity, runner)?;
 
-        let task_slug = slugify(task_name);
+        let WorktreePreview {
+            task_slug: _,
+            branch: auto_branch,
+            path: preview_path,
+        } = self.preview(project_id, task_name)?;
         let (branch, create_branch, expected_oid) = match selection {
-            InternalWorktreeBranchSelection::Auto => (format!("agent/{task_slug}"), true, None),
+            InternalWorktreeBranchSelection::Auto => (auto_branch, true, None),
             InternalWorktreeBranchSelection::New(name) => (name, true, None),
             InternalWorktreeBranchSelection::Existing { name, expected_oid } => {
                 (name, false, expected_oid)
@@ -364,7 +514,7 @@ impl<'a> WorktreeManager<'a> {
         }
         ensure_worktree_branch_unoccupied(&identity, runner, &branch)?;
 
-        let dir = self.paths.worktree_dir(&slugify(&project.name), &task_slug);
+        let dir = PathBuf::from(preview_path);
         // `owned` tracks whether THIS call created the directory; rollback may
         // only ever delete directories we own (PRD 3.5 failure B).
         let mut owned = false;
@@ -423,6 +573,26 @@ impl<'a> WorktreeManager<'a> {
                     return Err(classified);
                 }
                 return Err(error);
+            }
+        }
+
+        // `--no-track` does not clear stale branch.<name> configuration left
+        // behind by an older deleted branch. A newly-created branch must not
+        // silently inherit that historical upstream.
+        if create_branch {
+            if let Err(config_error) = clear_stale_branch_tracking(&identity, runner, &branch) {
+                if let Err(rollback_error) = rollback_created_worktree(
+                    &identity,
+                    runner,
+                    &dir,
+                    owned,
+                    Some((branch.as_str(), base_commit.as_str())),
+                ) {
+                    return Err(CoreError::Internal(format!(
+                        "{config_error}; Worktree rollback failed: {rollback_error}"
+                    )));
+                }
+                return Err(config_error);
             }
         }
 
@@ -507,22 +677,75 @@ impl<'a> WorktreeManager<'a> {
             let repo = GitRepo::discover(path)?;
             if repo.is_locked(path)? {
                 WorktreeHealth::Locked
-            } else if repo.status(path)?.raw.trim().is_empty() {
-                WorktreeHealth::Clean
             } else {
-                WorktreeHealth::Dirty
+                let status = repo.status(path)?;
+                if status.raw.trim().is_empty() && status.ignored == 0 {
+                    WorktreeHealth::Clean
+                } else {
+                    WorktreeHealth::Dirty
+                }
             }
         };
         self.db.set_worktree_health(worktree_id, health)?;
         Ok(health)
     }
 
+    /// Re-read all deletion-sensitive facts immediately before confirmation.
+    /// This is intentionally richer than the sidebar's cached health badge.
+    pub fn deletion_preflight(&self, worktree_id: &str) -> Result<WorktreeDeletePreflight> {
+        let health = self.refresh_health(worktree_id)?;
+        let worktree = self.db.get_worktree(worktree_id)?;
+        let summary = if Path::new(&worktree.path).is_dir() {
+            self.dirty_summary(worktree_id)?
+        } else {
+            DirtySummary::default()
+        };
+        let (session_count, active_session_count) = self.db.worktree_session_counts(worktree_id)?;
+        let mut blockers = Vec::new();
+        if summary.modified + summary.staged + summary.untracked > 0 {
+            blockers.push("uncommitted_changes".into());
+        }
+        if summary.ignored > 0 {
+            blockers.push("ignored_local_files".into());
+        }
+        if session_count > 0 {
+            blockers.push("session_references".into());
+        }
+        if health == WorktreeHealth::Locked {
+            blockers.push("locked".into());
+        }
+        let can_remove = blockers.is_empty()
+            && matches!(health, WorktreeHealth::Clean | WorktreeHealth::Missing);
+        Ok(WorktreeDeletePreflight {
+            worktree_id: worktree.id,
+            branch: worktree.branch,
+            path: worktree.path,
+            health,
+            modified: summary.modified,
+            staged: summary.staged,
+            untracked: summary.untracked,
+            ignored: summary.ignored,
+            ignored_sample: summary.ignored_sample,
+            session_count,
+            active_session_count,
+            can_remove,
+            blockers,
+        })
+    }
+
     /// Safe delete (PRD 3.5 failure C): dirty/missing handling — dirty BLOCKS by
     /// default (no force button in P0/P1/P2); on success run `worktree remove`
     /// + prune, delete the db record, and verify the main checkout is untouched.
     pub fn remove(&self, worktree_id: &str) -> Result<()> {
-        let health = self.refresh_health(worktree_id)?;
+        let preflight = self.deletion_preflight(worktree_id)?;
+        let health = preflight.health;
         let w = self.db.get_worktree(worktree_id)?;
+        if preflight.session_count > 0 {
+            return Err(CoreError::Blocked(format!(
+                "worktree is used by {} session(s), including {} active session(s); archive does not remove the dependency",
+                preflight.session_count, preflight.active_session_count
+            )));
+        }
         let project = self.db.get_project(&w.project_id)?;
         let git_root = project
             .git_root_path
@@ -538,29 +761,41 @@ impl<'a> WorktreeManager<'a> {
         // target argument, so the main checkout is never touched.
         let repo = GitRepo::discover(Path::new(git_root))?;
         match health {
-            WorktreeHealth::Dirty => {
-                let s = self.dirty_summary(worktree_id)?;
-                Err(CoreError::Blocked(format!(
-                    "worktree is dirty ({} modified, {} staged, {} untracked); \
-                     commit or clean it up before removing: {}",
-                    s.modified, s.staged, s.untracked, w.path
-                )))
-            }
+            WorktreeHealth::Dirty => Err(CoreError::Blocked(format!(
+                "worktree contains local data ({} modified, {} staged, {} untracked, {} ignored); \
+                     commit, move, or clean it up before removing: {}",
+                preflight.modified,
+                preflight.staged,
+                preflight.untracked,
+                preflight.ignored,
+                w.path
+            ))),
             WorktreeHealth::Locked => Err(CoreError::Blocked(format!(
                 "worktree is locked; unlock it outside AgentPort first: {}",
                 w.path
             ))),
-            WorktreeHealth::Missing => {
-                repo.worktree_prune()?;
-                self.db.delete_worktree(worktree_id)?;
-                Ok(())
-            }
-            WorktreeHealth::Clean => {
+            WorktreeHealth::Missing => self
+                .db
+                .delete_worktree_after(worktree_id, || {
+                    if Path::new(&w.path).is_dir() {
+                        return Err(CoreError::Blocked(format!(
+                            "worktree path reappeared after the safety check; retry removal: {}",
+                            w.path
+                        )));
+                    }
+                    repo.worktree_prune()
+                }),
+            WorktreeHealth::Clean => self.db.delete_worktree_after(worktree_id, || {
+                let latest = repo.status(Path::new(&w.path))?;
+                if !latest.raw.trim().is_empty() || latest.ignored > 0 {
+                    return Err(CoreError::Blocked(format!(
+                        "worktree changed after the safety check ({} modified, {} staged, {} untracked, {} ignored); retry after reviewing it",
+                        latest.modified, latest.staged, latest.untracked, latest.ignored
+                    )));
+                }
                 repo.worktree_remove(Path::new(&w.path))?;
-                repo.worktree_prune()?;
-                self.db.delete_worktree(worktree_id)?;
-                Ok(())
-            }
+                repo.worktree_prune()
+            }),
         }
     }
 
@@ -570,6 +805,60 @@ impl<'a> WorktreeManager<'a> {
         let repo = GitRepo::discover(path)?;
         repo.status(path)
     }
+}
+
+/// Worktree task names may be non-English. Keep letters and numbers from all
+/// scripts while retaining a conservative set of separators for Git refs and
+/// directory components.
+fn worktree_task_slug(input: &str) -> String {
+    let mut slug = String::with_capacity(input.len());
+    let mut last_dash = false;
+    for character in input.trim().chars() {
+        if character.is_alphanumeric() {
+            for lower in character.to_lowercase() {
+                slug.push(lower);
+            }
+            last_dash = false;
+        } else if !last_dash && !slug.is_empty() {
+            slug.push('-');
+            last_dash = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    let mut slug: String = slug.chars().take(60).collect();
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        "task".into()
+    } else {
+        slug
+    }
+}
+
+fn clear_stale_branch_tracking(
+    identity: &RepositoryIdentity,
+    runner: &GitRunner,
+    branch: &str,
+) -> Result<()> {
+    for field in ["remote", "merge", "rebase", "pushRemote"] {
+        let key = format!("branch.{branch}.{field}");
+        let output = runner.run(
+            Some(&identity.root),
+            [
+                OsString::from("config"),
+                OsString::from("--unset-all"),
+                OsString::from(key),
+            ],
+        )?;
+        if output.success() || output.exit_code() == Some(5) {
+            continue;
+        }
+        return output.require_success().map(|_| ());
+    }
+    Ok(())
 }
 
 fn validate_worktree_branch_name(
@@ -925,6 +1214,22 @@ mod tests {
     }
 
     #[test]
+    fn preview_and_create_share_the_same_unicode_task_slug() {
+        let fx = fixture();
+        let manager = mgr(&fx);
+        let preview = manager.preview(&fx.project_id, "修复 登录超时").unwrap();
+        assert_eq!(preview.task_slug, "修复-登录超时");
+        assert_eq!(preview.branch, "agent/修复-登录超时");
+        assert!(preview.path.ends_with("/worktrees/main-api/修复-登录超时"));
+
+        let created = manager
+            .create(&fx.project_id, "修复 登录超时", None, None)
+            .unwrap();
+        assert_eq!(created.branch, preview.branch);
+        assert_eq!(created.path, preview.path);
+    }
+
+    #[test]
     fn create_with_base_ref() {
         let fx = fixture();
         let mgr = mgr(&fx);
@@ -1042,6 +1347,125 @@ mod tests {
         // Main checkout untouched: identical bytes and HEAD.
         assert_eq!(std::fs::read(&main_file).unwrap(), bytes_before);
         assert_eq!(repo.head_commit().unwrap(), head_before);
+    }
+
+    #[test]
+    fn ignored_local_files_block_removal_and_are_reported_by_preflight() {
+        let fx = fixture();
+        let manager = mgr(&fx);
+        std::fs::write(
+            fx.repo_dir.join(".git/info/exclude"),
+            ".agentport-local-secret\n",
+        )
+        .unwrap();
+        let wt = manager
+            .create(&fx.project_id, "ignored data", None, None)
+            .unwrap();
+        let local_file = Path::new(&wt.path).join(".agentport-local-secret");
+        std::fs::write(&local_file, "mock-only-value\n").unwrap();
+
+        let preflight = manager.deletion_preflight(&wt.id).unwrap();
+        assert_eq!(preflight.health, WorktreeHealth::Dirty);
+        assert_eq!(preflight.ignored, 1);
+        assert_eq!(
+            preflight.ignored_sample,
+            vec![".agentport-local-secret".to_string()]
+        );
+        assert!(!preflight.can_remove);
+        assert!(preflight
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "ignored_local_files"));
+
+        let error = manager.remove(&wt.id).unwrap_err();
+        assert!(matches!(error, CoreError::Blocked(_)), "{error}");
+        assert!(error.to_string().contains("1 ignored"), "{error}");
+        assert!(local_file.exists());
+        assert!(fx.db.get_worktree(&wt.id).is_ok());
+
+        std::fs::remove_file(local_file).unwrap();
+        manager.remove(&wt.id).unwrap();
+    }
+
+    #[test]
+    fn stale_tracking_config_is_cleared_for_a_recreated_auto_branch() {
+        let fx = fixture();
+        git(
+            &fx.repo_dir,
+            &["config", "branch.agent/stale-tracking.remote", "origin"],
+        );
+        git(
+            &fx.repo_dir,
+            &[
+                "config",
+                "branch.agent/stale-tracking.merge",
+                "refs/heads/main",
+            ],
+        );
+
+        let wt = mgr(&fx)
+            .create(&fx.project_id, "stale tracking", None, None)
+            .unwrap();
+        assert_eq!(wt.branch, "agent/stale-tracking");
+        assert!(run_git_at(
+            &fx.repo_dir,
+            &["config", "--get", "branch.agent/stale-tracking.remote"]
+        )
+        .is_err());
+        assert!(run_git_at(
+            &fx.repo_dir,
+            &["config", "--get", "branch.agent/stale-tracking.merge"]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn reconciles_only_unrecorded_worktrees_inside_agentport_owned_directory() {
+        let fx = fixture();
+        let owned_path = fx.paths.worktree_dir("main-api", "crash-recovery");
+        std::fs::create_dir_all(owned_path.parent().unwrap()).unwrap();
+        git(
+            &fx.repo_dir,
+            &[
+                "worktree",
+                "add",
+                "--no-track",
+                "-b",
+                "agent/crash-recovery",
+                owned_path.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        let outside_path = fx._tmp.path().join("user-owned-worktree");
+        git(
+            &fx.repo_dir,
+            &[
+                "worktree",
+                "add",
+                "--no-track",
+                "-b",
+                "user/outside",
+                outside_path.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+
+        let manager = mgr(&fx);
+        assert_eq!(
+            manager.reconcile_owned_worktrees(&fx.project_id).unwrap(),
+            1
+        );
+        let worktrees = fx.db.list_worktrees(&fx.project_id).unwrap();
+        assert_eq!(worktrees.len(), 1);
+        assert_eq!(worktrees[0].branch, "agent/crash-recovery");
+        assert!(same_path(Path::new(&worktrees[0].path), &owned_path));
+        assert!(!worktrees
+            .iter()
+            .any(|worktree| same_path(Path::new(&worktree.path), &outside_path)));
+        assert_eq!(
+            manager.reconcile_owned_worktrees(&fx.project_id).unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -1294,19 +1718,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_status_counts_xy_columns() {
-        let s = worktree::parse_porcelain_status(" M a.txt\nM  b.txt\nMM c.txt\n?? new.txt\n");
-        assert_eq!((s.modified, s.staged, s.untracked), (2, 2, 1));
-        assert!(s.raw.contains("MM c.txt"));
-        assert!(worktree::parse_porcelain_status("").raw.is_empty());
-    }
-
-    #[test]
-    fn parse_worktree_list_blocks() {
-        let raw = "worktree /repo/main\nHEAD aaaa\nbranch refs/heads/main\n\n\
-                   worktree /repo/wt1\nHEAD bbbb\ndetached\nlocked reason\n\n\
-                   worktree /repo/wt2\nHEAD cccc\nbranch refs/heads/feat\nprunable gone\n";
-        let list = worktree::parse_worktree_list(raw);
+    fn parse_nul_worktree_list_blocks() {
+        let raw = b"worktree /repo/main\0HEAD aaaa\0branch refs/heads/main\0\0\
+                    worktree /repo/wt1\0HEAD bbbb\0detached\0locked reason\0\0\
+                    worktree /repo/wt2\0HEAD cccc\0branch refs/heads/feat\0prunable gone\0";
+        let list = worktree::parse_worktree_list_z(raw).unwrap();
         assert_eq!(list.len(), 3);
         assert_eq!(list[0].branch.as_deref(), Some("main"));
         assert!(!list[0].locked && !list[0].prunable);

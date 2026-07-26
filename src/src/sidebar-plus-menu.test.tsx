@@ -1,11 +1,17 @@
 // @vitest-environment jsdom
 // 项目行「＋」按钮的菜单必须与右键菜单同源（projectMenu），
 // 只去掉「新建 Session…」——不与新建 Session 弹窗/quick-launch 重复。
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { archiveSessionFlowMock, refreshRepositoryStatusMock, quickStartSessionMock } = vi.hoisted(() => ({
+const {
+  archiveSessionFlowMock,
+  listWorktreesMock,
+  refreshRepositoryStatusMock,
+  quickStartSessionMock,
+} = vi.hoisted(() => ({
   archiveSessionFlowMock: vi.fn(),
+  listWorktreesMock: vi.fn(),
   refreshRepositoryStatusMock: vi.fn(),
   quickStartSessionMock: vi.fn(),
 }));
@@ -33,6 +39,7 @@ vi.mock("./api", () => ({
     revealInFileManager: vi.fn(),
     openInSystemTerminal: vi.fn(),
     worktreeStatusText: vi.fn(),
+    listWorktrees: listWorktreesMock,
   },
   copyText: vi.fn().mockResolvedValue(true),
   errorText: (error: unknown) => String(error),
@@ -112,6 +119,7 @@ function dispatchPointer(target: HTMLElement, type: "pointerdown" | "pointerup")
 describe("project row plus button menu", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    listWorktreesMock.mockResolvedValue([]);
     refreshRepositoryStatusMock.mockResolvedValue(null);
     capturedPointerTarget = null;
     Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
@@ -150,6 +158,7 @@ describe("project row plus button menu", () => {
     expect(menu).not.toBeNull();
     const labels = menu!.items.map((i) => i.label).filter((l) => l !== "");
     expect(labels).toEqual([
+      "打开 Git Center",
       "新建 Worktree…",
       "管理本地分支…",
       "在系统文件管理器中显示",
@@ -196,5 +205,27 @@ describe("project row plus button menu", () => {
     render(<Sidebar collapsed={false} width={296} />);
 
     expect(screen.getByLabelText("有未读更新")).toBeTruthy();
+  });
+
+  it("refreshes health only for the project shown in the Worktree view", async () => {
+    const cachedWorktree = {
+      id: "wt1",
+      branch: "agent/task",
+      baseCommit: "abc123",
+      baseRef: "main",
+      path: "/tmp/demo-worktrees/task",
+      health: "clean" as const,
+    };
+    listWorktreesMock.mockResolvedValue([{ ...cachedWorktree, health: "dirty" }]);
+    setState({
+      projects: [{ ...project, worktrees: [cachedWorktree] }],
+      sidebarWorktreeProjectId: project.id,
+    });
+
+    render(<Sidebar collapsed={false} width={296} />);
+
+    await waitFor(() => expect(screen.getByText("有本地文件改动")).toBeTruthy());
+    expect(listWorktreesMock).toHaveBeenCalledTimes(1);
+    expect(listWorktreesMock).toHaveBeenCalledWith(project.id);
   });
 });

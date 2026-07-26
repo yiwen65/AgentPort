@@ -270,6 +270,32 @@ pub mod schema {
         ALTER TABLE recovery_summary ADD COLUMN latest_log_offset INTEGER;
         ALTER TABLE recovery_summary ADD COLUMN latest_log_observed_at TEXT;
         "#,
+        // v9 -> v10: durable Git commit recovery evidence. Commit messages and
+        // Diff contents are intentionally excluded; hashes are sufficient to
+        // reconcile a timeout or crash against the authoritative Git objects.
+        r#"
+        CREATE TABLE git_commit_operations (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id),
+            worktree_id TEXT,
+            repo_key TEXT NOT NULL,
+            checkout_id TEXT NOT NULL,
+            checkout_root TEXT NOT NULL,
+            before_head TEXT,
+            expected_tree_oid TEXT NOT NULL,
+            index_hash TEXT NOT NULL,
+            message_hash TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            result_head TEXT,
+            result_tree TEXT,
+            error_summary TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT
+        );
+        CREATE INDEX idx_git_commit_operations_recovery
+            ON git_commit_operations(repo_key,phase,created_at);
+        "#,
     ];
 }
 
@@ -1132,6 +1158,21 @@ impl Db {
                 "project {id} still has {live} session(s); restore or permanently delete them first"
             )));
         }
+        // A Worktree is both a Git registration and a directory outside the
+        // project checkout. Dropping only its database row would make the
+        // Worktree disappear from AgentPort while leaving Git and disk state
+        // behind, so users must remove Worktrees through the dedicated safe
+        // flow before removing the project record.
+        let worktrees: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM worktrees WHERE project_id=?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        if worktrees > 0 {
+            return Err(CoreError::Blocked(format!(
+                "project {id} still has {worktrees} Worktree(s); remove them first"
+            )));
+        }
         let pending_checkout_roots = {
             let mut statement = conn.prepare(
                 "SELECT checkout_root FROM branch_operations
@@ -1146,16 +1187,27 @@ impl Db {
         // is stale metadata, so do not let it permanently trap the project in
         // the sidebar. An operation remains protected while its own checkout
         // exists, even if the project root has since drifted or disappeared.
-        if pending_checkout_roots
+        let recoverable_operations = pending_checkout_roots
             .iter()
-            .any(|root| std::path::Path::new(root).exists())
-        {
+            .filter(|root| std::path::Path::new(root).exists())
+            .count();
+        if recoverable_operations > 0 {
             return Err(CoreError::Blocked(format!(
-                "project {id} still has {} recoverable branch operation(s)",
-                pending_checkout_roots.len()
+                "project {id} still has {recoverable_operations} recoverable branch operation(s)"
             )));
         }
-        // Clean dependent rows first (FK constraints), then sessions/worktrees.
+        let pending_commits: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM git_commit_operations
+             WHERE project_id=?1 AND phase='started'",
+            params![id],
+            |r| r.get(0),
+        )?;
+        if pending_commits > 0 {
+            return Err(CoreError::Blocked(format!(
+                "project {id} still has {pending_commits} unresolved Git commit operation(s)"
+            )));
+        }
+        // Clean dependent rows first (FK constraints), then the project.
         conn.execute(
             "DELETE FROM status_events WHERE session_id IN (SELECT id FROM sessions WHERE project_id=?1)",
             params![id],
@@ -1173,7 +1225,6 @@ impl Db {
             params![id],
         )?;
         conn.execute("DELETE FROM sessions WHERE project_id=?1", params![id])?;
-        conn.execute("DELETE FROM worktrees WHERE project_id=?1", params![id])?;
         conn.execute(
             "DELETE FROM branch_operation_steps
              WHERE operation_id IN (SELECT id FROM branch_operations WHERE project_id=?1)",
@@ -1181,6 +1232,10 @@ impl Db {
         )?;
         conn.execute(
             "DELETE FROM branch_operations WHERE project_id=?1",
+            params![id],
+        )?;
+        conn.execute(
+            "DELETE FROM git_commit_operations WHERE project_id=?1",
             params![id],
         )?;
         let n = conn.execute("DELETE FROM projects WHERE id=?1", params![id])?;
@@ -1455,17 +1510,103 @@ impl Db {
     }
 
     pub fn delete_worktree(&self, id: &str) -> Result<()> {
+        self.delete_worktree_after(id, || Ok(()))
+    }
+
+    /// Run the filesystem/Git removal while the database mutex protects the
+    /// final "no Session references this Worktree" check. This closes the race
+    /// where a Session could otherwise be created after a preflight but before
+    /// the Worktree row is deleted.
+    pub fn delete_worktree_after<F>(&self, id: &str, remove: F) -> Result<()>
+    where
+        F: FnOnce() -> Result<()>,
+    {
         let conn = self.conn.lock().unwrap();
-        // Sessions keep their cwd/history but lose the worktree link.
-        conn.execute(
-            "UPDATE sessions SET worktree_id=NULL WHERE worktree_id=?1",
+        let exists: i64 = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM worktrees WHERE id=?1)",
             params![id],
+            |r| r.get(0),
         )?;
+        if exists == 0 {
+            return Err(CoreError::NotFound(format!("worktree {id}")));
+        }
+        let references: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE worktree_id=?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        if references > 0 {
+            return Err(CoreError::Blocked(format!(
+                "worktree {id} is still used by {references} session(s); archive does not remove this dependency"
+            )));
+        }
+        remove()?;
         let n = conn.execute("DELETE FROM worktrees WHERE id=?1", params![id])?;
         if n == 0 {
             return Err(CoreError::NotFound(format!("worktree {id}")));
         }
         Ok(())
+    }
+
+    pub fn worktree_session_counts(&self, id: &str) -> Result<(usize, usize)> {
+        let conn = self.conn.lock().unwrap();
+        let exists: i64 = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM worktrees WHERE id=?1)",
+            params![id],
+            |r| r.get(0),
+        )?;
+        if exists == 0 {
+            return Err(CoreError::NotFound(format!("worktree {id}")));
+        }
+        let (all, active): (i64, i64) = conn.query_row(
+            "SELECT COUNT(*),
+                    SUM(CASE WHEN archived_at IS NULL THEN 1 ELSE 0 END)
+             FROM sessions WHERE worktree_id=?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
+        )?;
+        Ok((all as usize, active as usize))
+    }
+
+    pub fn project_dependency_counts(&self, id: &str) -> Result<(usize, usize, usize)> {
+        let conn = self.conn.lock().unwrap();
+        let exists: i64 = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?1)",
+            params![id],
+            |r| r.get(0),
+        )?;
+        if exists == 0 {
+            return Err(CoreError::NotFound(format!("project {id}")));
+        }
+        let sessions: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE project_id=?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        let worktrees: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM worktrees WHERE project_id=?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        let pending_checkout_roots = {
+            let mut statement = conn.prepare(
+                "SELECT checkout_root FROM branch_operations
+                 WHERE project_id=?1 AND phase NOT IN ('completed','failed')",
+            )?;
+            let roots = statement
+                .query_map(params![id], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            roots
+        };
+        let recoverable_operations = pending_checkout_roots
+            .iter()
+            .filter(|root| std::path::Path::new(root).exists())
+            .count();
+        Ok((
+            sessions as usize,
+            worktrees as usize,
+            recoverable_operations,
+        ))
     }
 
     // -- sessions -----------------------------------------------------------
@@ -3663,6 +3804,32 @@ mod tests {
     }
 
     #[test]
+    fn remove_project_blocks_while_worktrees_are_registered() {
+        let db = db();
+        db.add_project(&project("prj_1")).unwrap();
+        let w = Worktree {
+            id: "wt_1".into(),
+            project_id: "prj_1".into(),
+            branch: "agent/fix-x".into(),
+            base_commit: "abc123".into(),
+            base_ref: None,
+            path: "/tmp/wt/fix-x".into(),
+            health: WorktreeHealth::Clean,
+            created_at: Utc::now(),
+        };
+        db.insert_worktree(&w).unwrap();
+
+        let error = db.remove_project("prj_1").unwrap_err();
+        assert!(matches!(error, CoreError::Blocked(_)), "{error}");
+        assert!(error.to_string().contains("1 Worktree"), "{error}");
+        assert!(db.get_project("prj_1").is_ok());
+        assert!(db.get_worktree("wt_1").is_ok());
+
+        db.delete_worktree("wt_1").unwrap();
+        db.remove_project("prj_1").unwrap();
+    }
+
+    #[test]
     fn remove_project_allows_stale_branch_operations_only_when_checkout_is_gone() {
         let db = db();
         let recoverable_checkout = tempfile::tempdir().unwrap();
@@ -3682,6 +3849,10 @@ mod tests {
             "op_live_branch_operation",
             &live_project.id,
             &recoverable_checkout,
+        );
+        assert_eq!(
+            db.project_dependency_counts(&live_project.id).unwrap(),
+            (0, 0, 1)
         );
         assert!(matches!(
             db.remove_project(&live_project.id),
@@ -3703,6 +3874,10 @@ mod tests {
             "op_stale_branch_operation",
             &stale_project.id,
             &missing_root,
+        );
+        assert_eq!(
+            db.project_dependency_counts(&stale_project.id).unwrap(),
+            (0, 0, 0)
         );
 
         db.remove_project(&stale_project.id).unwrap();
@@ -4773,6 +4948,44 @@ mod tests {
             db.get_worktree("wt_1"),
             Err(CoreError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn deleting_worktree_never_detaches_referencing_sessions() {
+        let db = db();
+        db.add_project(&project("prj_1")).unwrap();
+        let w = Worktree {
+            id: "wt_1".into(),
+            project_id: "prj_1".into(),
+            branch: "agent/fix-x".into(),
+            base_commit: "abc123".into(),
+            base_ref: None,
+            path: "/tmp/wt/fix-x".into(),
+            health: WorktreeHealth::Clean,
+            created_at: Utc::now(),
+        };
+        db.insert_worktree(&w).unwrap();
+        let mut s = session("ses_1", "prj_1");
+        s.worktree_id = Some(w.id.clone());
+        s.cwd = w.path.clone();
+        db.insert_session(&s).unwrap();
+
+        let error = db.delete_worktree("wt_1").unwrap_err();
+        assert!(matches!(error, CoreError::Blocked(_)), "{error}");
+        assert_eq!(
+            db.get_session("ses_1").unwrap().worktree_id.as_deref(),
+            Some("wt_1")
+        );
+        assert!(db.get_worktree("wt_1").is_ok());
+
+        db.archive_session("ses_1").unwrap();
+        let archived_error = db.delete_worktree("wt_1").unwrap_err();
+        assert!(
+            matches!(archived_error, CoreError::Blocked(_)),
+            "{archived_error}"
+        );
+        db.purge_archived_session("ses_1").unwrap();
+        db.delete_worktree("wt_1").unwrap();
     }
 
     #[test]

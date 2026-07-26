@@ -13,6 +13,7 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { toggleSidebarCollapsed } from "../actions";
 import { toggleExplorer } from "../documents";
+import { closeGitCenter, openGitCenter } from "../gitCenter";
 
 function IconFolder() {
   return (
@@ -83,24 +84,54 @@ function IconBranch() {
   );
 }
 
+function IconGitCenter() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <circle cx="5" cy="4.5" r="1.8" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="5" cy="15.5" r="1.8" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="15" cy="10" r="1.8" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M5 6.3v7.4M6.8 5.1c4.5.6 2.1 4.9 6.4 4.9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export default function TopBar() {
-  const { t } = useTranslation(["shell", "common"]);
-  const projectName = useStore((state) => {
-    const session = findSession(state.projects, state.activeSessionId);
-    return session
-      ? state.projects.find((project) => project.id === session.projectId)?.name
-      : undefined;
-  });
-  const projectBranch = useStore((state) => {
-    const session = findSession(state.projects, state.activeSessionId);
-    const repositoryStatus = session ? state.repositoryStatuses[session.projectId] : null;
-    return repositoryStatus?.isGitRepository && repositoryStatus.head.kind === "branch"
-      ? repositoryStatus.head.branch
+  const { t } = useTranslation(["shell", "common", "git"]);
+  const activeSession = useStore((state) =>
+    findSession(state.projects, state.activeSessionId),
+  );
+  const activeProject = useStore((state) =>
+    activeSession
+      ? state.projects.find((project) => project.id === activeSession.projectId) ?? null
+      : null,
+  );
+  const mainBranch = useStore((state) => {
+    if (!activeSession) return null;
+    const status = state.repositoryStatuses[activeSession.projectId];
+    return status?.isGitRepository && status.head.kind === "branch"
+      ? status.head.branch ?? null
       : null;
   });
+  const activeRepositoryIsGit = useStore((state) =>
+    activeSession
+      ? state.repositoryStatuses[activeSession.projectId]?.isGitRepository === true
+      : false,
+  );
+  const worktreeBranch = activeSession?.worktreeId
+    ? activeProject?.worktrees.find(
+      (worktree) => worktree.id === activeSession.worktreeId,
+    )?.branch ?? null
+    : null;
+  const gitTarget = activeSession && activeRepositoryIsGit
+    ? { locator: { kind: "session", sessionId: activeSession.id } as const }
+    : null;
+  const projectName = activeProject?.name;
+  const projectBranch = worktreeBranch ?? mainBranch;
   const pending = useStore((state) => state.timeline.entries.length);
   const sidebarCollapsed = useStore((state) => state.sidebarCollapsed);
+  const gitCenterOpen = useStore((state) => state.gitCenter.open);
   const sidebarShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘B" : "Ctrl+B";
+  const gitCenterToggleLabel = t(gitCenterOpen ? "git:close" : "git:open");
 
   // WebKit does not consistently forward `data-tauri-drag-region` through
   // translucent compositing layers on macOS. Start the native drag explicitly
@@ -117,6 +148,13 @@ export default function TopBar() {
     const items: MenuItem[] = [
       { label: t("shell:ui.topBar.commandPalette"), action: () => openDialog({ kind: "palette" }) },
       { label: `${t("common:actions.search")}…`, action: () => openDialog({ kind: "search" }) },
+      {
+        label: t("git:open"),
+        disabled: !gitTarget,
+        action: gitTarget
+          ? () => void openGitCenter(gitTarget.locator)
+          : undefined,
+      },
       {
         label: pending > 0
           ? t("shell:ui.topBar.recoveryTimelineCount", { count: pending })
@@ -147,6 +185,20 @@ export default function TopBar() {
           <IconSidebarToggle collapsed={sidebarCollapsed} />
         </button>
         <ExplorerToggleButton />
+        <button
+          className="window-control sidebar-toggle"
+          onClick={() => {
+            if (gitCenterOpen) closeGitCenter();
+            else if (gitTarget) void openGitCenter(gitTarget.locator);
+          }}
+          disabled={!gitCenterOpen && !gitTarget}
+          aria-label={gitCenterToggleLabel}
+          aria-pressed={gitCenterOpen}
+          data-tip={gitCenterToggleLabel}
+          data-tauri-drag-region="false"
+        >
+          <IconGitCenter />
+        </button>
       </div>
       <div className="window-title">
         <span>{projectName ?? "AgentPort"}</span>

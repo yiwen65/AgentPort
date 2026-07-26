@@ -1,7 +1,7 @@
 {
   "health": {
-    "clean": "干净",
-    "dirty": "有未提交修改",
+    "clean": "未发现本地改动",
+    "dirty": "有本地文件改动",
     "missing": "目录缺失",
     "locked": "已锁定"
   }

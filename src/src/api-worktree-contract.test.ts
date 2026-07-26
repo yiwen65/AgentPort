@@ -60,4 +60,25 @@ describe("Worktree branch selection Tauri contract", () => {
       expectedBranchOid: null,
     });
   });
+
+  it("uses backend preflight and preview commands for destructive and generated state", async () => {
+    await api.previewWorktree("project-1", "修复 登录超时");
+    await api.reconcileWorktrees("project-1");
+    await api.worktreeDeletePreflight("wt-1");
+    await api.projectRemovePreflight("project-1");
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "preview_worktree", {
+      projectId: "project-1",
+      task: "修复 登录超时",
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "reconcile_worktrees", {
+      projectId: "project-1",
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "worktree_delete_preflight", {
+      worktreeId: "wt-1",
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "project_remove_preflight", {
+      id: "project-1",
+    });
+  });
 });

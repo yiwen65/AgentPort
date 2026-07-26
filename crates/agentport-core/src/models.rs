@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level data model version (PRD ch.5 `version`). Bump when the schema
 /// changes in a way the migrator must handle; SQLite user_version tracks the same.
-pub const DATA_MODEL_VERSION: i64 = 9;
+pub const DATA_MODEL_VERSION: i64 = 10;
 pub const APP_ID: &str = "agentport.local";
 pub const DELIVERY_SCOPE: &str = "p0_p2";
 

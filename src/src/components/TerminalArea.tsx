@@ -17,8 +17,11 @@ import {
   findSession,
   getRuntime,
   getState,
+  dismissUncommittedNotice,
   openDialog,
   setState,
+  syncUncommittedNotice,
+  uncommittedNoticeFingerprint,
   useStore,
 } from "../store";
 import {
@@ -40,7 +43,6 @@ import {
 } from "../terminalDrop";
 import {
   copyTextWithToast,
-  dismissUncommittedNotice,
   openNewSessionDialog,
   refreshActiveWorktreeStatus,
   restartSessionFlow,
@@ -53,6 +55,7 @@ import PiStructuredTimeline from "./PiStructuredTimeline";
 import DocumentPanel from "./DocumentPanel";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
+import { openGitCenter } from "../gitCenter";
 
 // ---------------------------------------------------------------------------
 // persistent pane
@@ -65,10 +68,16 @@ interface TerminalScrollPosition {
   max: number;
 }
 
-function readTerminalScrollPosition(sessionId: string): TerminalScrollPosition {
+function readTerminalScrollPosition(
+  sessionId: string,
+  viewportY?: number,
+): TerminalScrollPosition {
   const buffer = getHandle(sessionId)?.term.buffer.active;
   return buffer
-    ? { value: Math.min(buffer.viewportY, buffer.baseY), max: buffer.baseY }
+    ? {
+        value: Math.min(viewportY ?? buffer.viewportY, buffer.baseY),
+        max: buffer.baseY,
+      }
     : { value: 0, max: 0 };
 }
 
@@ -78,22 +87,41 @@ function readTerminalScrollPosition(sessionId: string): TerminalScrollPosition {
  * handle maps its complete travel to xterm's complete scrollback, so dragging
  * it remains fast even when a Session has a very large log.
  */
-function TerminalScrollbar({ sessionId }: { sessionId: string }) {
+export function TerminalScrollbar({ sessionId }: { sessionId: string }) {
   const { t } = useTranslation("shell");
   const trackRef = useRef<HTMLDivElement>(null);
   const thumbRef = useRef<HTMLDivElement>(null);
   const dragOffsetRef = useRef(TERMINAL_SCROLL_THUMB_PX / 2);
   const draggingRef = useRef(false);
+  const positionFrameRef = useRef(0);
+  const pendingViewportRef = useRef<{ buffer: object; value: number }>();
   const [dragging, setDragging] = useState(false);
   const [position, setPosition] = useState<TerminalScrollPosition>(() =>
     readTerminalScrollPosition(sessionId),
   );
 
-  const syncPosition = useCallback(() => {
-    const next = readTerminalScrollPosition(sessionId);
-    setPosition((current) =>
-      current.value === next.value && current.max === next.max ? current : next,
-    );
+  const schedulePositionSync = useCallback((viewportY?: number) => {
+    if (viewportY !== undefined) {
+      const buffer = getHandle(sessionId)?.term.buffer.active;
+      pendingViewportRef.current = buffer
+        ? { buffer, value: viewportY }
+        : undefined;
+    }
+    if (positionFrameRef.current) return;
+    positionFrameRef.current = requestAnimationFrame(() => {
+      positionFrameRef.current = 0;
+      const activeBuffer = getHandle(sessionId)?.term.buffer.active;
+      const pendingViewport = pendingViewportRef.current;
+      pendingViewportRef.current = undefined;
+      const pendingViewportY =
+        activeBuffer && pendingViewport?.buffer === activeBuffer
+          ? pendingViewport.value
+          : undefined;
+      const next = readTerminalScrollPosition(sessionId, pendingViewportY);
+      setPosition((current) =>
+        current.value === next.value && current.max === next.max ? current : next,
+      );
+    });
   }, [sessionId]);
 
   useEffect(() => {
@@ -107,18 +135,27 @@ function TerminalScrollbar({ sessionId }: { sessionId: string }) {
         connectFrame = requestAnimationFrame(connect);
         return;
       }
-      syncPosition();
-      scrollDisposable = handle.term.onScroll(syncPosition);
-      writeDisposable = handle.term.onWriteParsed(syncPosition);
+      schedulePositionSync();
+      scrollDisposable = handle.term.onScroll((viewportY) => {
+        schedulePositionSync(viewportY);
+      });
+      writeDisposable = handle.term.onWriteParsed(() => {
+        schedulePositionSync();
+      });
     };
 
     connectFrame = requestAnimationFrame(connect);
     return () => {
       cancelAnimationFrame(connectFrame);
+      if (positionFrameRef.current) {
+        cancelAnimationFrame(positionFrameRef.current);
+        positionFrameRef.current = 0;
+      }
+      pendingViewportRef.current = undefined;
       scrollDisposable?.dispose();
       writeDisposable?.dispose();
     };
-  }, [sessionId, syncPosition]);
+  }, [sessionId, schedulePositionSync]);
 
   const scrollFromPointer = (clientY: number) => {
     const track = trackRef.current;
@@ -701,11 +738,11 @@ function ReconnectBanner({ ses }: { ses: SessionView }) {
   );
 }
 
-function UncommittedBanner({ ses }: { ses: SessionView }) {
-  const { t } = useTranslation("session");
+export function UncommittedBanner({ ses }: { ses: SessionView }) {
+  const { t } = useTranslation(["session", "git"]);
   useStore((state) => state.runtime[ses.id]);
   const ws = useStore((state) => state.activeWorktreeStatus);
-  const dismissedSequence = useStore((state) => state.noticeDismissed[ses.id]);
+  const notice = useStore((state) => state.uncommittedNotices[ses.id]);
   const r = getRuntime(ses.id);
   const stateNow = r.status?.state ?? ses.status?.state;
   const doneLike =
@@ -713,10 +750,21 @@ function UncommittedBanner({ ses }: { ses: SessionView }) {
     ses.lifecycle === "stopped" ||
     stateNow === "idle" ||
     stateNow === "exited";
-  const seq = r.status?.sequence ?? ses.status?.sequence ?? 0;
+  const fingerprint = ws?.health === "dirty" ? uncommittedNoticeFingerprint(ws) : null;
   const show = Boolean(
-    ses.worktreeId && doneLike && ws?.health === "dirty" && dismissedSequence !== seq,
+    ses.worktreeId &&
+      fingerprint &&
+      notice?.fingerprint === fingerprint &&
+      !notice.dismissed,
   );
+
+  // Once shown, keep the same dirty-result notice stable across PTY
+  // working/idle churn. A changed or confirmed-clean Worktree creates a new
+  // boundary; null means the live probe is still pending, not "clean".
+  useEffect(() => {
+    if (!ws) return;
+    syncUncommittedNotice(ses.id, fingerprint, doneLike);
+  }, [doneLike, fingerprint, ses.id, ws]);
 
   // Refresh health when the session settles into a finished-looking state.
   useEffect(() => {
@@ -736,6 +784,12 @@ function UncommittedBanner({ ses }: { ses: SessionView }) {
       <span className="spacer" />
       <button
         className="btn small"
+        onClick={() => void openGitCenter({ kind: "session", sessionId: ses.id })}
+      >
+        {t("git:actions.showAllChanges")}
+      </button>
+      <button
+        className="btn small"
         onClick={() =>
           void copyTextWithToast(ws.raw, t("ui.toast.gitStatusCopied"))
         }
@@ -744,7 +798,7 @@ function UncommittedBanner({ ses }: { ses: SessionView }) {
       </button>
       <button
         className="btn small ghost"
-        onClick={() => dismissUncommittedNotice(ses.id, seq)}
+        onClick={() => dismissUncommittedNotice(ses.id, fingerprint!)}
         aria-label={t("ui.uncommitted.dismissLabel")}
       >
         {t("ui.actions.gotIt")}
@@ -800,8 +854,10 @@ export default function TerminalArea() {
           <PiStructuredTimeline ses={ses} />
         ) : (
         <>
-          <ReconnectBanner ses={ses} />
-          <UncommittedBanner ses={ses} />
+          <div className="workspace-banners">
+            <ReconnectBanner ses={ses} />
+            <UncommittedBanner ses={ses} />
+          </div>
           {termSearchOpen ? <TermSearchBar sessionId={ses.id} /> : null}
           <div className={`term-body${docExpanded ? " doc-expanded" : ""}`}>
             <div className="term-stack">

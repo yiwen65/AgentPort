@@ -9,6 +9,7 @@ import {
   onNotificationActivated,
   onProjectsChanged,
   onRepositoryStateChanged,
+  onGitStateInvalidated,
   onSessionAgentId,
   onSessionExit,
   onSessionState,
@@ -24,6 +25,10 @@ import {
   selectSession,
   switchSessionByIndex,
 } from "./actions";
+import {
+  handleGitStateInvalidation,
+  noteActiveSessionForGitCenter,
+} from "./gitCenter";
 import {
   applyProjectsSnapshot,
   applyRepositoryStatusSnapshot,
@@ -57,6 +62,7 @@ const ExportDialog = lazy(() => import("./components/ExportDialog"));
 const CommandPalette = lazy(() => import("./components/CommandPalette"));
 const BranchPickerDialog = lazy(() => import("./components/BranchPickerDialog"));
 const Onboarding = lazy(() => import("./components/Onboarding"));
+const GitCenter = lazy(() => import("./components/GitCenter"));
 
 function useBoot() {
   useEffect(() => {
@@ -88,6 +94,9 @@ function useBoot() {
             applyWhenBooted(() => {
               applyRepositoryStatusSnapshot(status);
             });
+          }),
+          onGitStateInvalidated((event) => {
+            applyWhenBooted(() => handleGitStateInvalidation(event));
           }),
           onSessionState((ev) => {
             applyWhenBooted(() => {
@@ -432,8 +441,13 @@ export default function App() {
   const sidebarAnim = useStore((state) => state.sidebarAnim);
   const showOnboarding = useStore((state) => state.showOnboarding);
   const announcement = useStore((state) => state.announcement);
+  const activeSessionId = useStore((state) => state.activeSessionId);
+  const gitCenterOpen = useStore((state) => state.gitCenter.open);
   useBoot();
   useHotkeys();
+  useEffect(() => {
+    noteActiveSessionForGitCenter(activeSessionId);
+  }, [activeSessionId]);
 
   if (!ready) {
     return (
@@ -472,9 +486,23 @@ export default function App() {
       <div className="main">
         <Sidebar collapsed={sidebarCollapsed} width={sidebarWidth} anim={sidebarAnim} />
         <SplitHandle collapsed={sidebarCollapsed} width={sidebarWidth} />
-        <Suspense fallback={<section className="workspace" aria-label={t("shell:app.workspaceLabel")} aria-busy="true" />}>
-          <TerminalArea />
-        </Suspense>
+        <div className="workspace-stack">
+          <div
+            className={`workspace-surface terminal-surface${gitCenterOpen ? " git-surface-hidden" : ""}`}
+            aria-hidden={gitCenterOpen || undefined}
+          >
+            <Suspense fallback={<section className="workspace" aria-label={t("shell:app.workspaceLabel")} aria-busy="true" />}>
+              <TerminalArea />
+            </Suspense>
+          </div>
+          {gitCenterOpen ? (
+            <div className="workspace-surface git-surface">
+              <Suspense fallback={<section className="workspace" aria-busy="true" />}>
+                <GitCenter />
+              </Suspense>
+            </div>
+          ) : null}
+        </div>
       </div>
       <Suspense fallback={null}>
         <DialogRouter />

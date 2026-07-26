@@ -1,7 +1,7 @@
 {
   "health": {
-    "clean": "Clean",
-    "dirty": "Uncommitted changes",
+    "clean": "No local changes found",
+    "dirty": "Local file changes",
     "missing": "Directory missing",
     "locked": "Locked"
   }

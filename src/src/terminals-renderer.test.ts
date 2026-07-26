@@ -6,6 +6,7 @@ const rendererMocks = vi.hoisted(() => {
   const channels: Array<{ onmessage?: (message: unknown) => void }> = [];
   const offscreenCanvasDuringCanvasLoad: unknown[] = [];
   const offscreenCanvasDuringOpen: unknown[] = [];
+  const defaultClipboardCopies: string[] = [];
   const apiMock = {
     attachSession: vi.fn().mockResolvedValue({
       attachmentId: 1,
@@ -19,6 +20,7 @@ const rendererMocks = vi.hoisted(() => {
     markSessionLogRendered: vi.fn().mockResolvedValue(undefined),
     markSessionOutputUnread: vi.fn().mockResolvedValue(undefined),
     autoRenameSessionFromFirstInput: vi.fn().mockResolvedValue(true),
+    copyText: vi.fn().mockResolvedValue(true),
     openExternalUrl: vi.fn().mockResolvedValue(undefined),
     readRecoveryLogContext: vi.fn(),
     resizePty: vi.fn().mockResolvedValue(undefined),
@@ -34,6 +36,7 @@ const rendererMocks = vi.hoisted(() => {
     element: HTMLDivElement | null = null;
     textarea: HTMLTextAreaElement | undefined;
     bufferLines: string[] = [];
+    selectionText = "";
     linkProviders: Array<{
       provideLinks: (
         line: number,
@@ -73,15 +76,22 @@ const rendererMocks = vi.hoisted(() => {
       this.element = document.createElement("div");
       this.textarea = document.createElement("textarea");
       this.element.appendChild(this.textarea);
+      this.element.addEventListener("copy", () => {
+        if (this.selectionText) defaultClipboardCopies.push(this.selectionText);
+      });
       container.appendChild(this.element);
     }
     emitData(data: string) {
       for (const listener of this.dataListeners) listener(data);
     }
     input = vi.fn((data: string) => this.emitData(data));
+    getSelection = vi.fn(() => this.selectionText);
     clearTextureAtlas = vi.fn();
     refresh = vi.fn();
     focus = vi.fn();
+    scrollToLine = vi.fn((line: number) => {
+      this.buffer.active.viewportY = line;
+    });
     write = vi.fn();
     reset = vi.fn();
     dispose = vi.fn();
@@ -102,6 +112,7 @@ const rendererMocks = vi.hoisted(() => {
     apiMock,
     channels,
     config,
+    defaultClipboardCopies,
     offscreenCanvasDuringCanvasLoad,
     offscreenCanvasDuringOpen,
     terminals,
@@ -131,12 +142,15 @@ vi.mock("./api", () => ({
   b64ToBytes: vi.fn((value: string) =>
     Uint8Array.from(atob(value), (char) => char.charCodeAt(0))),
   bytesToB64: vi.fn(() => "encoded-input"),
+  copyText: rendererMocks.apiMock.copyText,
   errorText: (error: unknown) => String(error),
 }));
 
 import {
   applyTerminalLanguage,
   disposeHandle,
+  fitHandle,
+  getHandle,
   jumpToRecoveryOutput,
   mountTerminal,
 } from "./terminals";
@@ -149,6 +163,7 @@ describe("terminal renderer", () => {
     rendererMocks.config.canvasShouldFail = false;
     rendererMocks.config.openShouldFail = false;
     rendererMocks.channels.length = 0;
+    rendererMocks.defaultClipboardCopies.length = 0;
     rendererMocks.offscreenCanvasDuringCanvasLoad.length = 0;
     rendererMocks.offscreenCanvasDuringOpen.length = 0;
     vi.clearAllMocks();
@@ -198,6 +213,55 @@ describe("terminal renderer", () => {
       expect.any(rendererMocks.FakeCanvasAddon),
     );
     expect(getState().rendererMode).toBe("canvas");
+  });
+
+  it("preserves a user's scrollback position when fitting reflows the viewport", () => {
+    const container = document.createElement("div");
+    Object.defineProperties(container, {
+      clientWidth: { configurable: true, value: 800 },
+      clientHeight: { configurable: true, value: 600 },
+    });
+    mountTerminal("renderer-test", container);
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.buffer.active.baseY = 1_000;
+    terminal.buffer.active.viewportY = 400;
+    const handle = getHandle("renderer-test");
+    expect(handle).toBeDefined();
+    handle!.fit.fit = vi.fn(() => {
+      terminal.buffer.active.viewportY = 0;
+    });
+
+    fitHandle(handle!);
+
+    expect(terminal.scrollToLine).toHaveBeenCalledWith(400);
+    expect(terminal.buffer.active.viewportY).toBe(400);
+  });
+
+  it.each([
+    ["already at the top", "normal", 0, 1_000, "normal"],
+    ["already at the bottom", "normal", 1_000, 1_000, "normal"],
+    ["using the alternate buffer", "alternate", 400, 1_000, "alternate"],
+    ["switching buffers during fit", "normal", 400, 1_000, "alternate"],
+  ])("does not restore scrollback when %s", (_label, beforeType, viewport, base, afterType) => {
+    const container = document.createElement("div");
+    Object.defineProperties(container, {
+      clientWidth: { configurable: true, value: 800 },
+      clientHeight: { configurable: true, value: 600 },
+    });
+    mountTerminal("renderer-test", container);
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.buffer.active.type = beforeType;
+    terminal.buffer.active.viewportY = viewport;
+    terminal.buffer.active.baseY = base;
+    const handle = getHandle("renderer-test")!;
+    handle.fit.fit = vi.fn(() => {
+      terminal.buffer.active.type = afterType;
+      terminal.buffer.active.viewportY = 0;
+    });
+
+    fitHandle(handle);
+
+    expect(terminal.scrollToLine).not.toHaveBeenCalled();
   });
 
   it("opens plain and OSC 8 web links through the native URL command", async () => {
@@ -373,6 +437,24 @@ describe("terminal renderer", () => {
       rendererMocks.offscreenCanvasDuringOpen.length - 1
     ]).toBe(offscreenCanvas);
     expect(globalThis.OffscreenCanvas).toBe(offscreenCanvas);
+  });
+
+  it("copies Unicode terminal selections through the async clipboard path", async () => {
+    const container = document.createElement("div");
+    mountTerminal("renderer-test", container);
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const selection = '/wjskill-prompt-refiner "审查 @/Users/w/AD/Apollo/模块，给出结论"';
+    terminal.selectionText = selection;
+
+    terminal.element?.dispatchEvent(new Event("copy", {
+      bubbles: true,
+      cancelable: true,
+    }));
+
+    await vi.waitFor(() => {
+      expect(rendererMocks.apiMock.copyText).toHaveBeenCalledWith(selection);
+    });
+    expect(rendererMocks.defaultClipboardCopies).toEqual([]);
   });
 
   it("uses the DOM renderer only when CanvasAddon fails to initialize", () => {

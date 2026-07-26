@@ -241,6 +241,102 @@ pub async fn create_local_branch(
 }
 
 #[tauri::command]
+pub async fn create_and_switch_local_branch(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    project_id: String,
+    name: String,
+    start_point: Option<String>,
+) -> CommandResult<BranchOperationResult> {
+    let operation_id = wrapper_operation_id("create_switch_branch");
+    emit_progress(
+        &app,
+        RepositoryOperationProgress {
+            operation_id: operation_id.clone(),
+            command: "create_and_switch_local_branch",
+            project_id: Some(project_id.clone()),
+            branch: Some(name.clone()),
+            phase: "started".into(),
+            message: "creating and switching local branch".into(),
+            core_operation_id: None,
+            recoverable: false,
+            occurred_at: now_string(),
+        },
+    );
+    let error_branch = name.clone();
+    let result = run_blocking(
+        state.paths.clone(),
+        Some(project_id.clone()),
+        operation_id.clone(),
+        "create_and_switch_local_branch",
+        "create_and_switch",
+        move |db, manager| {
+            let outcome = manager.create_and_switch(&project_id, &name, start_point.as_deref())?;
+            let operation = manager.operation(&outcome.operation_id)?;
+            let restore_required = outcome.pending_restore
+                || (outcome.stashed && matches!(operation.phase, BranchOperationPhase::Switched));
+            let response = repository_response(db, manager, &project_id)?;
+            let auto_stash = response
+                .auto_stashes
+                .iter()
+                .find(|stash| stash.operation_id == outcome.operation_id)
+                .cloned();
+            Ok((
+                BranchOperationResult {
+                    operation_id: outcome.operation_id,
+                    status: response.status,
+                    auto_stash,
+                },
+                restore_required,
+            ))
+        },
+    )
+    .await;
+    match result {
+        Ok((result, restore_required)) => {
+            emit_repository_state(&app, &result.status);
+            emit_progress(
+                &app,
+                RepositoryOperationProgress {
+                    operation_id,
+                    command: "create_and_switch_local_branch",
+                    project_id: Some(result.status.project_id.clone()),
+                    branch: Some(error_branch),
+                    phase: if restore_required {
+                        "pending_restore".into()
+                    } else {
+                        "completed".into()
+                    },
+                    message: if restore_required {
+                        "local branch created and switched; dirty state restore is required".into()
+                    } else {
+                        "local branch created and switched".into()
+                    },
+                    core_operation_id: Some(result.operation_id.clone()),
+                    recoverable: restore_required,
+                    occurred_at: now_string(),
+                },
+            );
+            if let Some(stash) = &result.auto_stash {
+                emit_auto_stash_changed(&app, stash);
+            }
+            Ok(result)
+        }
+        Err(error) => {
+            emit_error_progress(
+                &app,
+                "create_and_switch_local_branch",
+                &error,
+                Some(error_branch),
+                operation_id,
+                None,
+            );
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
 pub async fn delete_local_branch(
     state: State<'_, AppState>,
     app: AppHandle,

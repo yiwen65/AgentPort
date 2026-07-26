@@ -105,6 +105,11 @@ describe("UI language runtime", () => {
       phase: "started",
       message: "switching local branch",
     })).toBe("正在切换本地分支");
+    expect(repositoryProgressMessage({
+      command: "switch_local_branch",
+      phase: "failed",
+      message: "blocked: session ses_internal is running in this checkout",
+    })).toBe("分支操作未完成");
     expect(recoveryActionLabel("refresh_and_choose_available_branch"))
       .toContain("未被任何 Worktree checkout");
 
@@ -115,6 +120,11 @@ describe("UI language runtime", () => {
       phase: "started",
       message: "switching local branch",
     })).toBe("Switching local branch");
+    expect(repositoryProgressMessage({
+      command: "create_and_switch_local_branch",
+      phase: "failed",
+      message: "blocked: session ses_internal is running in this checkout",
+    })).toBe("The branch operation did not complete");
     expect(branchOperationPhaseLabel("future_phase")).toBe("Unknown state (future_phase)");
     expect(recoveryActionLabel("refresh_and_choose_available_branch"))
       .toContain("not checked out in any Worktree");

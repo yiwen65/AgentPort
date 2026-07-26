@@ -282,7 +282,39 @@ export interface WorktreeStatus {
   modified: number;
   staged: number;
   untracked: number;
+  ignored?: number;
+  ignoredSample?: string[];
   raw: string;
+}
+
+export interface WorktreePreview {
+  taskSlug: string;
+  branch: string;
+  path: string;
+}
+
+export interface WorktreeDeletePreflight {
+  worktreeId: string;
+  branch: string;
+  path: string;
+  health: WorktreeHealthStr;
+  modified: number;
+  staged: number;
+  untracked: number;
+  ignored: number;
+  ignoredSample: string[];
+  sessionCount: number;
+  activeSessionCount: number;
+  canRemove: boolean;
+  blockers: string[];
+}
+
+export interface ProjectRemovalPreflight {
+  projectId: string;
+  sessionCount: number;
+  worktreeCount: number;
+  recoverableOperationCount: number;
+  canRemove: boolean;
 }
 
 export interface SearchHit {
@@ -430,6 +462,228 @@ export interface StructuredGitError {
   recoveryActionCodes?: string[];
   diagnostics: Record<string, unknown>;
   liveSessionIds: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Git Center — checkout-scoped contracts
+// ---------------------------------------------------------------------------
+
+export type GitContextLocator =
+  | { kind: "session"; sessionId: string }
+  | { kind: "projectMain"; projectId: string }
+  | { kind: "worktree"; projectId: string; worktreeId: string };
+
+export type GitCheckoutKind = "main" | "worktree";
+
+export interface GitCheckoutDescriptor {
+  target: {
+    projectId: string;
+    kind: GitCheckoutKind;
+    worktreeId: string | null;
+  };
+  checkoutId: string;
+  repoKey: string;
+  projectName: string;
+  projectRoot: string;
+  checkoutRoot: string;
+  expectedBranch: string | null;
+  actualBranch: string | null;
+  headOid: string | null;
+  detached: boolean;
+  unborn: boolean;
+  ongoingOperation: string | null;
+  worktreeHealth: string | null;
+  liveSessionIds: string[];
+  writable: boolean;
+  blockers: string[];
+  warnings: string[];
+}
+
+export type GitChangeKind =
+  | "added"
+  | "modified"
+  | "deleted"
+  | "renamed"
+  | "copied"
+  | "type_changed"
+  | "conflict"
+  | "untracked"
+  | "ignored";
+
+export interface GitChangeCounts {
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  ignored: number;
+  conflict: number;
+  renamed: number;
+  submodule: number;
+}
+
+export interface GitChangeEntry {
+  entryToken: string;
+  pathToken: string;
+  displayPath: string;
+  oldPathToken: string | null;
+  displayOldPath: string | null;
+  indexStatus: string | null;
+  worktreeStatus: string | null;
+  conflictCode: string | null;
+  kind: GitChangeKind;
+  submoduleState: string | null;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+  ignored: boolean;
+  conflicted: boolean;
+}
+
+export interface GitChangesSnapshot {
+  context: GitCheckoutDescriptor;
+  statusToken: string;
+  complete: boolean;
+  partialReason: string | null;
+  counts: GitChangeCounts;
+  entries: GitChangeEntry[];
+  observedAt: string;
+}
+
+export type GitDiffSide = "staged" | "unstaged";
+export type GitDiffFormat = "text" | "binary" | "summary" | "conflict";
+
+export interface GitFileDiff {
+  context: GitCheckoutDescriptor;
+  statusToken: string;
+  side: GitDiffSide;
+  pathToken: string;
+  displayPath: string;
+  format: GitDiffFormat;
+  patch: string | null;
+  additions: number | null;
+  deletions: number | null;
+  fileSize: number | null;
+  truncated: boolean;
+  reason: string | null;
+  conflictCode: string | null;
+}
+
+export interface GitCommitSummary {
+  oid: string;
+  shortOid: string;
+  parentOids: string[];
+  authorName: string;
+  authorEmail: string;
+  authoredAt: string;
+  committedAt: string;
+  subject: string;
+}
+
+export interface GitHistoryPage {
+  context: GitCheckoutDescriptor;
+  anchorOid: string | null;
+  commits: GitCommitSummary[];
+  nextCursor: string | null;
+  headChanged: boolean;
+  observedAt: string;
+}
+
+export interface GitCommitFile {
+  status: string;
+  pathToken: string;
+  displayPath: string;
+  oldPathToken: string | null;
+  displayOldPath: string | null;
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+}
+
+export interface GitCommitDetail {
+  context: GitCheckoutDescriptor;
+  commit: GitCommitSummary;
+  message: string;
+  files: GitCommitFile[];
+  selectedParentOid: string | null;
+}
+
+export interface GitCommitPatch {
+  context: GitCheckoutDescriptor;
+  commitOid: string;
+  parentOid: string | null;
+  pathToken: string | null;
+  format: GitDiffFormat;
+  patch: string | null;
+  truncated: boolean;
+  reason: string | null;
+}
+
+export interface GitPathSelection {
+  pathToken: string;
+  entryToken: string;
+}
+
+export interface GitMutationResult {
+  operationId: string;
+  changes: GitChangesSnapshot;
+}
+
+export interface GitCommitScopeFile {
+  status: string;
+  pathToken: string;
+  displayPath: string;
+  oldPathToken: string | null;
+  displayOldPath: string | null;
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+  outsideProject: boolean;
+}
+
+export interface GitCommitReview {
+  context: GitCheckoutDescriptor;
+  commitToken: string;
+  message: string;
+  messageHash: string;
+  beforeHead: string | null;
+  indexHash: string;
+  expectedTreeOid: string;
+  files: GitCommitScopeFile[];
+  outsideProjectPaths: string[];
+  subjectOver72: boolean;
+  warnings: string[];
+}
+
+export type GitCommitOutcome =
+  | "succeeded"
+  | "not_executed"
+  | "scope_drift"
+  | "indeterminate";
+
+export interface GitCommitResult {
+  operationId: string;
+  outcome: GitCommitOutcome;
+  beforeHead: string | null;
+  afterHead: string | null;
+  expectedTreeOid: string;
+  actualTreeOid: string | null;
+  changes: GitChangesSnapshot;
+  error: string | null;
+}
+
+export interface GitWorkspaceCommandError {
+  code: string;
+  message: string;
+  recoverable: boolean;
+  currentChanges: GitChangesSnapshot | null;
+}
+
+export interface GitStateInvalidated {
+  repoKey: string | null;
+  checkoutIds: string[];
+  scopes: string[];
+  reason: string;
+  operationId: string;
+  observedAt: string;
 }
 
 /** read_log_tail response: last bytes of a session's raw output log. */

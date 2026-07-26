@@ -196,6 +196,16 @@ impl<'a> BranchManager<'a> {
         let identity = self.identity(project_id)?;
         let _file_guard = RepositoryFileLock::acquire(&identity.common_dir)?;
         let identity = self.identity(project_id)?;
+        self.create_locked(project_id, name, start_point, identity)
+    }
+
+    fn create_locked(
+        &self,
+        project_id: &str,
+        name: &str,
+        start_point: Option<&str>,
+        identity: RepositoryIdentity,
+    ) -> Result<CreateBranchOutcome> {
         self.validate_branch_name(&identity, name)?;
         let status = self.status(&identity)?;
         self.ensure_mutation_allowed(&identity, &status)?;
@@ -253,26 +263,28 @@ impl<'a> BranchManager<'a> {
             updated_at: now,
             completed_at: None,
         })?;
-        // --no-track makes the local-only product boundary independent from
-        // branch.autoSetupMerge or other user Git configuration.
-        let mut args = vec![
-            OsString::from("branch"),
-            OsString::from("--no-track"),
-            OsString::from("--"),
-            name.into(),
-        ];
-        // Use the already verified immutable local-branch OID. An unqualified
-        // branch name can be ambiguous when a same-named tag exists, and an
-        // external ref move must not change this prepared operation's base.
-        args.push(expected_oid.clone().into());
-        let result = self.runner.run(Some(&identity.root), args);
+        // Create the exact local ref only if it is still absent. A porcelain
+        // `git branch` failure followed by observing the expected OID is
+        // ambiguous: another Git client may have won the same-name/same-OID
+        // race. The expected-absent CAS gives this operation unambiguous
+        // ownership of the ref before create-and-switch may roll it back.
+        let full_ref = format!("refs/heads/{name}");
+        let result = self.runner.run(
+            Some(&identity.root),
+            [
+                OsString::from("update-ref"),
+                OsString::from(&full_ref),
+                OsString::from(&expected_oid),
+                OsString::new(),
+            ],
+        );
         let created = self
             .list_branches(&identity)?
             .into_iter()
             .find(|branch| branch.name == name)
             .filter(|branch| branch.oid == expected_oid);
         match (result, created) {
-            (_, Some(branch)) => {
+            (Ok(output), Some(branch)) if output.success() => {
                 let observed_status = self.status(&identity)?;
                 let observed_head = self
                     .run_success(&identity, ["rev-parse", "HEAD"])?
@@ -311,32 +323,162 @@ impl<'a> BranchManager<'a> {
                     branch,
                 })
             }
-            (Ok(output), None) => {
-                let error = match output.require_success() {
-                    Ok(_) => CoreError::Internal(format!(
-                        "created branch {name} is missing or points at an unexpected commit"
-                    )),
-                    Err(error) => error,
+            (Ok(output), observed) => {
+                let error = if output.success() {
+                    CoreError::Conflict(format!(
+                        "created branch {name} changed before its result could be verified"
+                    ))
+                } else {
+                    output.require_success().err().unwrap_or_else(|| {
+                        CoreError::Internal(format!(
+                            "branch {name} creation failed with an unknown result"
+                        ))
+                    })
+                };
+                let detail = if observed.is_some() {
+                    "expected-absent branch create lost ownership; observed ref retained"
+                } else {
+                    "local branch ref was not created"
                 };
                 journal.update(
                     &operation_id,
                     BranchOperationPhase::Failed,
                     None,
                     Some(&error.to_string()),
-                    Some("local branch ref was not created"),
+                    Some(detail),
                 )?;
                 Err(error)
             }
-            (Err(error), None) => {
+            (Err(error), observed) => {
+                let detail = if observed.is_some() {
+                    "branch create command was ambiguous; observed ref retained as externally owned"
+                } else {
+                    "local branch create command could not be observed as successful"
+                };
                 journal.update(
                     &operation_id,
                     BranchOperationPhase::Failed,
                     None,
                     Some(&error.to_string()),
-                    Some("local branch create command could not be observed as successful"),
+                    Some(detail),
                 )?;
                 Err(error)
             }
+        }
+    }
+
+    /// Create a local branch and switch to it while holding one repository
+    /// reservation. AgentPort Session launch uses the same common-dir lock, so
+    /// a new Creating/Running Session cannot enter between the ref creation and
+    /// the checkout mutation.
+    pub fn create_and_switch(
+        &self,
+        project_id: &str,
+        name: &str,
+        start_point: Option<&str>,
+    ) -> Result<SwitchOutcome> {
+        let identity = self.identity(project_id)?;
+        let lock = repository_lock(&identity.repo_key);
+        let _guard = lock.lock().unwrap();
+        let identity = self.identity(project_id)?;
+        let _file_guard = RepositoryFileLock::acquire(&identity.common_dir)?;
+        let identity = self.identity(project_id)?;
+        let created = self.create_locked(project_id, name, start_point, identity.clone())?;
+        match self.switch_locked(project_id, name, identity.clone()) {
+            Ok(outcome) => Ok(outcome),
+            Err(switch_error) => match self.rollback_created_branch(
+                &identity,
+                name,
+                &created.branch.oid,
+            ) {
+                Ok(()) => Err(switch_error),
+                Err(rollback_error) => Err(CoreError::Git(format!(
+                    "create-and-switch failed: {switch_error}; the new branch could not be safely rolled back: {rollback_error}"
+                ))),
+            },
+        }
+    }
+
+    fn rollback_created_branch(
+        &self,
+        identity: &RepositoryIdentity,
+        name: &str,
+        expected_oid: &str,
+    ) -> Result<()> {
+        // A non-terminal switch operation may retain an automatic stash whose
+        // source/target recovery still depends on this ref. In that case the
+        // safe outcome is to keep the new branch and expose recovery, not to
+        // satisfy atomic appearance by breaking the recovery journal.
+        self.ensure_branch_not_referenced(identity, name, None)?;
+        let Some(branch) = self.local_branch(identity, name)? else {
+            return Ok(());
+        };
+        if branch.current || branch.occupied_worktree.is_some() || branch.oid != expected_oid {
+            return Err(CoreError::Conflict(format!(
+                "new branch {name} changed or became checked out before rollback"
+            )));
+        }
+        let full_ref = format!("refs/heads/{name}");
+        let result = self.runner.run(
+            Some(&identity.root),
+            [
+                OsString::from("update-ref"),
+                OsString::from("-d"),
+                OsString::from(&full_ref),
+                OsString::from(expected_oid),
+            ],
+        );
+        match self.local_branch(identity, name)? {
+            None => {
+                let occupied = identity
+                    .worktrees(&self.runner)?
+                    .into_iter()
+                    .find(|worktree| worktree.branch.as_deref() == Some(name));
+                if let Some(worktree) = occupied {
+                    // `update-ref -d` does not reserve external worktree
+                    // creation. If another Git client checked out the branch
+                    // during the deletion CAS, restore the exact ref only
+                    // while it is still absent and report the race.
+                    let restore = self.runner.run(
+                        Some(&identity.root),
+                        [
+                            OsString::from("update-ref"),
+                            OsString::from(&full_ref),
+                            OsString::from(expected_oid),
+                            OsString::new(),
+                        ],
+                    );
+                    let restored = matches!(
+                        self.observe_exact_ref(identity, name),
+                        ExactRefObservation::Present(ref oid) if oid == expected_oid
+                    );
+                    if restored {
+                        return Err(CoreError::Blocked(format!(
+                            "new branch {name} became checked out in {} during rollback; its ref was restored",
+                            worktree.path.display()
+                        )));
+                    }
+                    let restore_error = match restore {
+                        Ok(output) => output
+                            .require_success()
+                            .err()
+                            .map(|error| error.to_string()),
+                        Err(error) => Some(error.to_string()),
+                    }
+                    .unwrap_or_else(|| "restored ref could not be verified".into());
+                    return Err(CoreError::Conflict(format!(
+                        "new branch {name} became checked out during rollback and its ref could not be restored safely: {restore_error}"
+                    )));
+                }
+                Ok(())
+            }
+            Some(remaining) if remaining.oid != expected_oid => Err(CoreError::Conflict(format!(
+                "new branch {name} moved during rollback; the moved ref was retained"
+            ))),
+            Some(_) => match result {
+                Ok(output) => output.require_success().map(|_| ()),
+                Err(error) => Err(error),
+            },
         }
     }
 
@@ -684,6 +826,15 @@ impl<'a> BranchManager<'a> {
         let identity = self.identity(project_id)?;
         let _file_guard = RepositoryFileLock::acquire(&identity.common_dir)?;
         let identity = self.identity(project_id)?;
+        self.switch_locked(project_id, target, identity)
+    }
+
+    fn switch_locked(
+        &self,
+        project_id: &str,
+        target: &str,
+        identity: RepositoryIdentity,
+    ) -> Result<SwitchOutcome> {
         self.validate_branch_name(&identity, target)?;
         let status = self.status(&identity)?;
         self.ensure_operation_conflicts_and_sessions(&identity, &status)?;
@@ -1719,18 +1870,7 @@ impl<'a> BranchManager<'a> {
     }
 
     fn status(&self, identity: &RepositoryIdentity) -> Result<RepoStatus> {
-        let output = self.run_success(
-            identity,
-            [
-                "status",
-                "--porcelain=v2",
-                "-z",
-                "--branch",
-                "--untracked-files=all",
-                "--ignore-submodules=none",
-            ],
-        )?;
-        let mut status = parse_status_v2(&output.stdout)?;
+        let mut status = super::status::read_repo_status(identity, &self.runner)?;
         status.operation_state = detect_operation_state(&identity.git_dir);
         Ok(status)
     }
@@ -3271,89 +3411,9 @@ fn git_result_error(result: Result<GitOutput>) -> Option<CoreError> {
     }
 }
 
+#[cfg(test)]
 fn parse_status_v2(raw: &[u8]) -> Result<RepoStatus> {
-    let records = raw.split(|byte| *byte == 0).collect::<Vec<_>>();
-    let mut branch_head = None;
-    let mut branch_oid = None;
-    let mut paths = Vec::new();
-    let mut index = 0;
-    while index < records.len() {
-        let record = records[index];
-        index += 1;
-        if record.is_empty() {
-            continue;
-        }
-        if let Some(value) = record.strip_prefix(b"# branch.head ") {
-            branch_head = Some(bytes_to_string(value)?);
-            continue;
-        }
-        if let Some(value) = record.strip_prefix(b"# branch.oid ") {
-            branch_oid = Some(bytes_to_string(value)?);
-            continue;
-        }
-        if record.starts_with(b"1 ") || record.starts_with(b"2 ") || record.starts_with(b"u ") {
-            let kind = record[0];
-            // Porcelain v2 type-2 records include an extra rename/copy score
-            // before the path, so their fixed width is 10 rather than 9.
-            let width = match kind {
-                b'u' => 11,
-                b'2' => 10,
-                _ => 9,
-            };
-            let fields = split_spaces(record, width);
-            if fields.len() < width {
-                return Err(CoreError::Internal(
-                    "malformed git status porcelain v2 tracked record".into(),
-                ));
-            }
-            let xy = fields[1];
-            let submodule = fields[2];
-            let path = bytes_to_string(fields.last().copied().unwrap_or_default())?;
-            paths.push(StatusPath {
-                path,
-                staged: xy.first().is_some_and(|value| *value != b'.'),
-                unstaged: xy.get(1).is_some_and(|value| *value != b'.'),
-                untracked: false,
-                unmerged: kind == b'u',
-                submodule_dirty: submodule.starts_with(b"S")
-                    && submodule.iter().skip(1).any(|value| *value != b'.'),
-            });
-            if kind == b'2' {
-                index += 1; // orig-path is the next NUL field.
-            }
-            continue;
-        }
-        if let Some(path) = record.strip_prefix(b"? ") {
-            paths.push(StatusPath {
-                path: bytes_to_string(path)?,
-                staged: false,
-                unstaged: false,
-                untracked: true,
-                unmerged: false,
-                submodule_dirty: false,
-            });
-        }
-    }
-    paths.sort_by(|a, b| a.path.cmp(&b.path));
-    let checkout = match (branch_head.as_deref(), branch_oid.as_deref()) {
-        (Some("(detached)"), Some(oid)) => CheckoutState::Detached(oid.to_owned()),
-        (head, Some("(initial)")) | (head, None) => CheckoutState::Unborn(
-            head.filter(|value| *value != "(detached)")
-                .map(str::to_owned),
-        ),
-        (Some(head), _) => CheckoutState::Branch(head.to_owned()),
-        (None, Some(oid)) => CheckoutState::Detached(oid.to_owned()),
-    };
-    Ok(RepoStatus {
-        staged: paths.iter().any(|path| path.staged),
-        unstaged: paths.iter().any(|path| path.unstaged),
-        untracked: paths.iter().any(|path| path.untracked),
-        unmerged: paths.iter().any(|path| path.unmerged),
-        dirty_submodule: paths.iter().any(|path| path.submodule_dirty),
-        checkout,
-        paths,
-        operation_state: None,
-    })
+    super::status::parse_repo_status_v2(raw)
 }
 
 fn parse_branches(raw: &[u8]) -> Result<Vec<BranchInfo>> {
@@ -3410,20 +3470,6 @@ fn nul_records(raw: &[u8], width: usize) -> Result<Vec<Vec<&[u8]>>> {
         )));
     }
     Ok(fields.chunks(width).map(|chunk| chunk.to_vec()).collect())
-}
-
-fn split_spaces(input: &[u8], max_fields: usize) -> Vec<&[u8]> {
-    let mut fields = Vec::new();
-    let mut remaining = input;
-    while fields.len() + 1 < max_fields {
-        let Some(position) = remaining.iter().position(|byte| *byte == b' ') else {
-            break;
-        };
-        fields.push(&remaining[..position]);
-        remaining = &remaining[position + 1..];
-    }
-    fields.push(remaining);
-    fields
 }
 
 fn detect_operation_state(git_dir: &Path) -> Option<String> {
@@ -3610,6 +3656,217 @@ mod tests {
             manager.operation(&outcome.operation_id).unwrap().phase,
             BranchOperationPhase::Completed
         );
+    }
+
+    #[test]
+    fn create_and_switch_completes_under_one_branch_operation() {
+        let fixture = fixture();
+        let outcome = manager(&fixture)
+            .create_and_switch(&fixture.project_id, "feature/atomic", None)
+            .unwrap();
+
+        assert_eq!(outcome.target_branch, "feature/atomic");
+        assert!(!outcome.stashed);
+        assert!(matches!(
+            manager(&fixture).list(&fixture.project_id).unwrap().status.checkout,
+            CheckoutState::Branch(ref branch) if branch == "feature/atomic"
+        ));
+    }
+
+    #[test]
+    fn create_and_switch_does_not_create_a_ref_while_a_session_is_live() {
+        let fixture = fixture();
+        fixture
+            .db
+            .insert_session(&Session {
+                id: "ses_create_switch_live".into(),
+                project_id: fixture.project_id.clone(),
+                worktree_id: None,
+                preset_id: "preset".into(),
+                title: "live create and switch".into(),
+                cwd: fixture.root.to_string_lossy().into_owned(),
+                host_pid: None,
+                host_socket: None,
+                host_token: "token".into(),
+                lifecycle: Lifecycle::Running,
+                agent_session_id: None,
+                resume_precision: ResumePrecision::Unavailable,
+                log_path: fixture.root.join("log").to_string_lossy().into_owned(),
+                adapter_type: AgentType::Shell,
+                transport: AgentTransport::Pty,
+                command: vec![],
+                permission_mode: PermissionMode::Native,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                archived_at: None,
+            })
+            .unwrap();
+
+        let error = manager(&fixture)
+            .create_and_switch(&fixture.project_id, "feature/not-created", None)
+            .unwrap_err();
+
+        assert!(matches!(error, CoreError::Blocked(_)), "{error}");
+        assert!(!manager(&fixture)
+            .list(&fixture.project_id)
+            .unwrap()
+            .branches
+            .iter()
+            .any(|branch| branch.name == "feature/not-created"));
+        assert!(matches!(
+            manager(&fixture).list(&fixture.project_id).unwrap().status.checkout,
+            CheckoutState::Branch(ref branch) if branch == "main"
+        ));
+    }
+
+    #[test]
+    fn create_and_switch_rolls_back_the_new_ref_when_checkout_is_blocked() {
+        let fixture = fixture();
+        git(
+            &fixture.root,
+            &["switch", "-c", "start-with-generated-file"],
+        );
+        commit(
+            &fixture.root,
+            "generated/cache.bin",
+            "tracked target\n",
+            "target file",
+        );
+        git(&fixture.root, &["switch", "main"]);
+        std::fs::write(fixture.root.join(".gitignore"), "generated/\n").unwrap();
+        std::fs::create_dir_all(fixture.root.join("generated")).unwrap();
+        std::fs::write(fixture.root.join("generated/cache.bin"), "local secret\n").unwrap();
+        let before = hash_path(&fixture.root.join("generated/cache.bin")).unwrap();
+
+        let error = manager(&fixture)
+            .create_and_switch(
+                &fixture.project_id,
+                "feature/rolled-back",
+                Some("start-with-generated-file"),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, CoreError::Blocked(_)), "{error}");
+        assert!(!manager(&fixture)
+            .list(&fixture.project_id)
+            .unwrap()
+            .branches
+            .iter()
+            .any(|branch| branch.name == "feature/rolled-back"));
+        assert!(matches!(
+            manager(&fixture).list(&fixture.project_id).unwrap().status.checkout,
+            CheckoutState::Branch(ref branch) if branch == "main"
+        ));
+        assert_eq!(
+            hash_path(&fixture.root.join("generated/cache.bin")).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn create_does_not_claim_an_externally_created_same_oid_ref() {
+        let fixture = fixture();
+        let main_oid = git(&fixture.root, &["rev-parse", "HEAD"]).trim().to_owned();
+        let manager = BranchManager {
+            db: &fixture.db,
+            runner: GitRunner::creating_external_ref_before_update(
+                "refs/heads/feature/external-winner",
+                &main_oid,
+            ),
+        };
+
+        let error = manager
+            .create_and_switch(&fixture.project_id, "feature/external-winner", None)
+            .unwrap_err();
+
+        assert!(matches!(error, CoreError::Git(_)), "{error}");
+        assert_eq!(
+            git(
+                &fixture.root,
+                &["rev-parse", "refs/heads/feature/external-winner"]
+            )
+            .trim(),
+            main_oid
+        );
+        assert!(matches!(
+            manager.list(&fixture.project_id).unwrap().status.checkout,
+            CheckoutState::Branch(ref branch) if branch == "main"
+        ));
+    }
+
+    #[test]
+    fn create_and_switch_retains_ref_required_by_stash_recovery() {
+        let fixture = fixture();
+        std::fs::write(fixture.root.join("tracked.txt"), "dirty\n").unwrap();
+        let manager = BranchManager {
+            db: &fixture.db,
+            runner: GitRunner::failing_once("switch"),
+        };
+
+        let error = manager
+            .create_and_switch(&fixture.project_id, "feature/recovery-target", None)
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("could not be safely rolled back"));
+        assert!(manager
+            .list(&fixture.project_id)
+            .unwrap()
+            .branches
+            .iter()
+            .any(|branch| branch.name == "feature/recovery-target"));
+        let pending = manager.list_auto_stashes(&fixture.project_id).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].target_branch, "feature/recovery-target");
+        assert_eq!(pending[0].phase, BranchOperationPhase::RestoredVerified);
+    }
+
+    #[test]
+    fn rollback_restores_ref_if_an_external_worktree_occupies_it_during_delete() {
+        let fixture = fixture();
+        git(
+            &fixture.root,
+            &["switch", "-c", "start-with-generated-file"],
+        );
+        commit(
+            &fixture.root,
+            "generated/cache.bin",
+            "tracked target\n",
+            "target file",
+        );
+        git(&fixture.root, &["switch", "main"]);
+        std::fs::write(fixture.root.join(".gitignore"), "generated/\n").unwrap();
+        std::fs::create_dir_all(fixture.root.join("generated")).unwrap();
+        std::fs::write(fixture.root.join("generated/cache.bin"), "local secret\n").unwrap();
+        let occupied_path = fixture.root.parent().unwrap().join("occupied rollback");
+        let manager = BranchManager {
+            db: &fixture.db,
+            runner: GitRunner::occupying_branch_before_delete(
+                "feature/occupied-during-rollback",
+                &occupied_path,
+            ),
+        };
+
+        let error = manager
+            .create_and_switch(
+                &fixture.project_id,
+                "feature/occupied-during-rollback",
+                Some("start-with-generated-file"),
+            )
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains("its ref was restored"),
+            "{error}"
+        );
+        assert!(manager
+            .list(&fixture.project_id)
+            .unwrap()
+            .branches
+            .iter()
+            .any(|branch| branch.name == "feature/occupied-during-rollback"
+                && branch.occupied_worktree.is_some()));
     }
 
     #[test]

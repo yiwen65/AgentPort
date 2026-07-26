@@ -31,6 +31,7 @@ describe("local branch Tauri contract", () => {
 
   it("uses the Rust command argument names exactly", async () => {
     await api.createLocalBranch("p1", "feature/new", "main");
+    await api.createAndSwitchLocalBranch("p1", "feature/ready", "main");
     await api.switchLocalBranch("p1", "feature/new");
     await api.deleteLocalBranch("p1", "feature/old");
     await api.restoreAutoStash("op-1", "target");
@@ -41,19 +42,24 @@ describe("local branch Tauri contract", () => {
       name: "feature/new",
       startPoint: "main",
     });
-    expect(invokeMock).toHaveBeenNthCalledWith(2, "switch_local_branch", {
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "create_and_switch_local_branch", {
+      projectId: "p1",
+      name: "feature/ready",
+      startPoint: "main",
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "switch_local_branch", {
       projectId: "p1",
       branch: "feature/new",
     });
-    expect(invokeMock).toHaveBeenNthCalledWith(3, "delete_local_branch", {
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "delete_local_branch", {
       projectId: "p1",
       branch: "feature/old",
     });
-    expect(invokeMock).toHaveBeenNthCalledWith(4, "restore_auto_stash", {
+    expect(invokeMock).toHaveBeenNthCalledWith(5, "restore_auto_stash", {
       operationId: "op-1",
       strategy: "target",
     });
-    expect(invokeMock).toHaveBeenNthCalledWith(5, "cleanup_auto_stash", {
+    expect(invokeMock).toHaveBeenNthCalledWith(6, "cleanup_auto_stash", {
       operationId: "op-1",
     });
   });

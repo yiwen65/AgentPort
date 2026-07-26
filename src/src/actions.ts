@@ -24,7 +24,6 @@ import {
   setSessionArchiving,
   setState,
   toast,
-  update,
   type EffectiveTheme,
 } from "./store";
 import {
@@ -41,7 +40,7 @@ import {
 } from "./terminals";
 import { agentDisplay } from "./format";
 import { i18n } from "./i18n";
-import type { LogCursorView } from "./types";
+import type { LogCursorView, WorktreeDeletePreflight } from "./types";
 
 export function isMac(): boolean {
   const os = getState().platform?.os;
@@ -336,10 +335,6 @@ export async function refreshActiveWorktreeStatus() {
   }
 }
 
-export function dismissUncommittedNotice(sessionId: string, sequence: number) {
-  update((s) => ({ noticeDismissed: { ...s.noticeDismissed, [sessionId]: sequence } }));
-}
-
 // ---------------------------------------------------------------------------
 // session lifecycle flows
 // ---------------------------------------------------------------------------
@@ -494,6 +489,21 @@ export async function renameProjectFlow(projectId: string) {
 export async function removeProjectFlow(projectId: string) {
   const proj = getState().projects.find((p) => p.id === projectId);
   if (!proj) return;
+  let preflight;
+  try {
+    preflight = await api.projectRemovePreflight(projectId);
+  } catch (e) {
+    toast(i18n.t("shell:project.removeFailed", { detail: errorText(e) }), "error");
+    return;
+  }
+  if (!preflight.canRemove) {
+    toast(i18n.t("shell:project.removeBlocked", {
+      sessions: preflight.sessionCount,
+      worktrees: preflight.worktreeCount,
+      operations: preflight.recoverableOperationCount,
+    }), "error");
+    return;
+  }
   const ok = await confirmDialog({
     title: i18n.t("shell:project.removeTitle", { name: proj.name }),
     body: i18n.t("shell:project.removeBody"),
@@ -512,24 +522,69 @@ export async function removeProjectFlow(projectId: string) {
   }
 }
 
+function worktreeDeleteBlockerDetails(preflight: WorktreeDeletePreflight): string[] {
+  const details: string[] = [];
+  if (preflight.modified + preflight.staged + preflight.untracked > 0) {
+    details.push(i18n.t("worktree:flow.changesBlocker", {
+      modified: preflight.modified,
+      staged: preflight.staged,
+      untracked: preflight.untracked,
+    }));
+  }
+  if (preflight.ignored > 0) {
+    details.push(i18n.t("worktree:flow.ignoredBlocker", {
+      count: preflight.ignored,
+      sample: preflight.ignoredSample.join(", "),
+    }));
+  }
+  if (preflight.sessionCount > 0) {
+    details.push(i18n.t("worktree:flow.sessionsBlocker", {
+      count: preflight.sessionCount,
+      active: preflight.activeSessionCount,
+    }));
+  }
+  if (preflight.health === "locked") {
+    details.push(i18n.t("worktree:flow.lockedBlocker"));
+  }
+  return details;
+}
+
 export async function removeWorktreeFlow(worktreeId: string) {
   const s = getState();
   for (const p of s.projects) {
     const w = p.worktrees.find((x) => x.id === worktreeId);
     if (!w) continue;
-    if (w.health !== "clean") {
-      toast(i18n.t("worktree:flow.dirtyDeleteBlocked"), "error");
+    let preflight: WorktreeDeletePreflight;
+    try {
+      preflight = await api.worktreeDeletePreflight(worktreeId);
+    } catch (e) {
+      toast(i18n.t("worktree:flow.deleteFailed", { detail: errorText(e) }), "error");
+      return;
+    }
+    const blockers = worktreeDeleteBlockerDetails(preflight);
+    if (!preflight.canRemove) {
+      toast(i18n.t("worktree:flow.deleteBlocked", {
+        detail: blockers.join(i18n.t("worktree:flow.blockerSeparator"))
+          || i18n.t("worktree:flow.unknownBlocker"),
+      }), "error");
       return;
     }
     const ok = await confirmDialog({
-      title: i18n.t("worktree:flow.deleteTitle", { branch: w.branch }),
-      body: i18n.t("worktree:flow.deleteBody", { path: w.path }),
+      title: i18n.t("worktree:flow.deleteTitle", { branch: preflight.branch }),
+      body: preflight.health === "missing"
+        ? i18n.t("worktree:flow.deleteMissingBody")
+        : i18n.t("worktree:flow.deleteBody"),
+      details: [
+        i18n.t("worktree:flow.pathDetail", { path: preflight.path }),
+        i18n.t("worktree:flow.safeDetail"),
+      ],
       confirmLabel: i18n.t("worktree:flow.deleteAction"),
       danger: true,
     });
     if (!ok) return;
     try {
       await api.removeWorktree(worktreeId);
+      await refreshProjects();
       toast(i18n.t("worktree:flow.deleted"), "success");
     } catch (e) {
       toast(i18n.t("worktree:flow.deleteFailed", { detail: errorText(e) }), "error");

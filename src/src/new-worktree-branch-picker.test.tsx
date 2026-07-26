@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const { apiMock, refreshProjectsMock } = vi.hoisted(() => ({
   apiMock: {
     listLocalBranches: vi.fn(),
+    previewWorktree: vi.fn(),
+    reconcileWorktrees: vi.fn(),
     createWorktree: vi.fn(),
   },
   refreshProjectsMock: vi.fn(),
@@ -55,6 +57,16 @@ describe("New Worktree local branch picker", () => {
       }],
     });
     apiMock.listLocalBranches.mockResolvedValue({ status, branches, autoStashes: [] });
+    apiMock.reconcileWorktrees.mockResolvedValue(0);
+    apiMock.previewWorktree.mockImplementation((_projectId: string, task: string) => {
+      const taskSlug = task.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
+        || "task";
+      return Promise.resolve({
+        taskSlug,
+        branch: `agent/${taskSlug}`,
+        path: `/agentport/worktrees/demo/${taskSlug}`,
+      });
+    });
     apiMock.createWorktree.mockResolvedValue({
       id: "wt-created",
       branch: "feature/local-ü",
@@ -163,7 +175,7 @@ describe("New Worktree local branch picker", () => {
     render(<NewWorktreeDialog projectId="p1" />);
     await screen.findByRole("combobox", { name: "本地 branch" });
     await user.type(screen.getByLabelText("任务名"), "auto branch task");
-    expect(screen.getByText("agent/auto-branch-task")).toBeTruthy();
+    expect(await screen.findByText("agent/auto-branch-task")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "创建 Worktree" }));
 
     await waitFor(() => expect(apiMock.createWorktree).toHaveBeenCalledWith(
@@ -174,6 +186,23 @@ describe("New Worktree local branch picker", () => {
       "auto",
       null,
     ));
+  });
+
+  it("shows the backend-authoritative Unicode auto branch and directory", async () => {
+    const user = userEvent.setup();
+    apiMock.previewWorktree.mockResolvedValue({
+      taskSlug: "修复-登录超时",
+      branch: "agent/修复-登录超时",
+      path: "/agentport/worktrees/demo/修复-登录超时",
+    });
+    render(<NewWorktreeDialog projectId="p1" />);
+    await user.type(screen.getByLabelText("任务名"), "修复 登录超时");
+
+    expect(await screen.findByText("agent/修复-登录超时")).toBeTruthy();
+    expect(screen.getByText((content) =>
+      content.includes("实际目录：/agentport/worktrees/demo/修复-登录超时")
+    )).toBeTruthy();
+    expect(apiMock.previewWorktree).toHaveBeenLastCalledWith("p1", "修复 登录超时");
   });
 
   it("refreshes a stale selected branch after backend rejection and preserves the task", async () => {

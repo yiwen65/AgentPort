@@ -34,12 +34,18 @@ import {
   useStore,
   type MenuItem,
 } from "../store";
-import type { ProjectView, SessionView, WorktreeView } from "../types";
+import type {
+  ProjectView,
+  SessionView,
+  WorktreeHealthStr,
+  WorktreeView,
+} from "../types";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
+import { openGitCenter } from "../gitCenter";
 
-type SidebarT = TFunction<["session", "shell", "common"]>;
+type SidebarT = TFunction<["session", "shell", "common", "git"]>;
 
 function IconFolder({ open = false }: { open?: boolean }) {
   return (
@@ -150,7 +156,7 @@ function QuickAgentStrip({
   worktreeId?: string;
   scopeLabel: string;
 }) {
-  const { t } = useTranslation(["session", "shell", "common"]);
+  const { t } = useTranslation(["session", "shell", "common", "git"]);
   const agentOrder = useStore((state) => state.settings?.agentOrder);
   const adapters = useStore((state) => state.adapters);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -291,6 +297,12 @@ function projectMenu(
       ? []
       : [{ label: t("session:ui.actions.newEllipsis"), action: () => openNewSessionDialog(p.id) } as MenuItem]),
     {
+      label: t("git:open"),
+      disabled: !isGitRepository,
+      tip: isGitRepository ? undefined : t("shell:ui.sidebar.notGitRepository"),
+      action: () => void openGitCenter({ kind: "projectMain", projectId: p.id }),
+    },
+    {
       label: t("shell:ui.sidebar.projectMenu.newWorktree"),
       disabled: !p.gitRootPath,
       tip: p.gitRootPath ? undefined : t("shell:ui.sidebar.notGitRepository"),
@@ -327,6 +339,14 @@ function worktreeMenu(
       ? []
       : [{ label: t("session:ui.actions.newEllipsis"), action: () => openNewSessionDialog(p.id, w.id) } as MenuItem]),
     {
+      label: t("git:open"),
+      action: () => void openGitCenter({
+        kind: "worktree",
+        projectId: p.id,
+        worktreeId: w.id,
+      }),
+    },
+    {
       label: t("shell:ui.sidebar.worktreeMenu.copyPath"),
       action: () => void copyTextWithToast(w.path, t("shell:ui.sidebar.toast.pathCopied")),
     },
@@ -352,18 +372,13 @@ function worktreeMenu(
     {
       label: t("shell:ui.sidebar.worktreeMenu.delete"),
       danger: true,
-      disabled: w.health !== "clean",
-      tip:
-        w.health !== "clean"
-          ? t("shell:ui.sidebar.worktreeMenu.deleteBlocked")
-          : undefined,
       action: () => void removeWorktreeFlow(w.id),
     },
   ];
 }
 
 function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
-  const { t } = useTranslation(["session", "shell", "common"]);
+  const { t } = useTranslation(["session", "shell", "common", "git"]);
   const active = useStore((state) => state.activeSessionId === ses.id);
   const pinned = useStore((state) => state.pinnedSessionAt[ses.id] !== undefined);
   const [editing, setEditing] = useState(false);
@@ -496,7 +511,7 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
 }
 
 function WorktreeNode({ p, w, sessions, highlighted }: { p: ProjectView; w: WorktreeView; sessions: SessionView[]; highlighted: boolean }) {
-  const { t } = useTranslation(["session", "shell", "common"]);
+  const { t } = useTranslation(["session", "shell", "common", "git"]);
   const collapsed = useStore((state) => state.collapsedWorktrees[w.id] === true);
   return (
     <div role="treeitem" aria-expanded={!collapsed}>
@@ -538,6 +553,18 @@ function WorktreeNode({ p, w, sessions, highlighted }: { p: ProjectView; w: Work
             worktreeId={w.id}
             scopeLabel={t("shell:ui.sidebar.worktreeScope", { branch: w.branch })}
           />
+          <button
+            className="icon-btn tree-action git-entry-action"
+            aria-label={t("git:open")}
+            data-tip={t("git:open")}
+            onClick={() => void openGitCenter({
+              kind: "worktree",
+              projectId: p.id,
+              worktreeId: w.id,
+            })}
+          >
+            ⎇
+          </button>
           <button
             className="icon-btn tree-action"
             aria-label={t("shell:ui.sidebar.worktreeMoreActions", { branch: w.branch })}
@@ -601,7 +628,7 @@ function WorktreesEntryRow({ p }: { p: ProjectView }) {
 }
 
 function ProjectNode({ p }: { p: ProjectView }) {
-  const { t } = useTranslation(["session", "shell", "common"]);
+  const { t } = useTranslation(["session", "shell", "common", "git"]);
   const expanded = useStore((state) => state.expandedProjects[p.id] !== false);
   const order = useSessionOrder();
   const archiving = useStore((state) => state.archivingSessionIds);
@@ -664,6 +691,17 @@ function ProjectNode({ p }: { p: ProjectView }) {
             scopeLabel={t("shell:ui.sidebar.projectScope", { project: p.name })}
           />
           <button
+            className="icon-btn tree-action git-entry-action"
+            aria-label={t("git:open")}
+            data-tip={t("git:open")}
+            disabled={!isGitRepository}
+            onClick={() =>
+              void openGitCenter({ kind: "projectMain", projectId: p.id })
+            }
+          >
+            ⎇
+          </button>
+          <button
             className="icon-btn tree-action"
             aria-label={t("shell:ui.sidebar.projectMoreActions", { project: p.name })}
             data-tip={t("shell:ui.sidebar.moreActions")}
@@ -722,12 +760,43 @@ function ProjectNode({ p }: { p: ProjectView }) {
  * worktree so branch context and the guarded delete flow remain intact.
  */
 function WorktreeSessionsView({ p }: { p: ProjectView }) {
-  const { t } = useTranslation(["session", "shell", "common"]);
+  const { t } = useTranslation(["session", "shell", "common", "git"]);
   const order = useSessionOrder();
   const canCreate = Boolean(p.gitRootPath);
   const archiving = useStore((state) => state.archivingSessionIds);
   const highlightedWorktreeId = useStore((state) => state.highlightedWorktreeId);
+  const [liveHealth, setLiveHealth] = useState<Record<string, WorktreeHealthStr>>({});
+  const worktreeIds = p.worktrees.map((worktree) => worktree.id).join("\0");
   const archivingSessionIds = new Set(archiving);
+  useEffect(() => {
+    let disposed = false;
+    let requestSequence = 0;
+
+    const refresh = async () => {
+      const sequence = ++requestSequence;
+      try {
+        const worktrees = await api.listWorktrees(p.id);
+        if (disposed || sequence !== requestSequence) return;
+        setLiveHealth(Object.fromEntries(
+          worktrees.map((worktree) => [worktree.id, worktree.health]),
+        ));
+      } catch {
+        // Keep the last known project snapshot when a background refresh fails.
+      }
+    };
+    const refreshOnFocus = () => {
+      void refresh();
+    };
+
+    setLiveHealth({});
+    void refresh();
+    window.addEventListener("focus", refreshOnFocus);
+    return () => {
+      disposed = true;
+      window.removeEventListener("focus", refreshOnFocus);
+    };
+  }, [p.id, worktreeIds]);
+
   return (
     <div className="worktree-view">
       <button
@@ -762,7 +831,7 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
           <WorktreeNode
             key={w.id}
             p={p}
-            w={w}
+            w={{ ...w, health: liveHealth[w.id] ?? w.health }}
             highlighted={highlightedWorktreeId === w.id}
             sessions={order(p.sessions.filter(
               (session) =>
@@ -785,7 +854,7 @@ export default function Sidebar({
   width: number;
   anim?: "out" | "inPrep" | "in" | null;
 }) {
-  const { t } = useTranslation(["session", "shell", "common"]);
+  const { t } = useTranslation(["session", "shell", "common", "git"]);
   const projects = useStore((state) => state.projects);
   const expandedProjects = useStore((state) => state.expandedProjects);
   const collapsedWorktrees = useStore((state) => state.collapsedWorktrees);

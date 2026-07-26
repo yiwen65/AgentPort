@@ -68,9 +68,12 @@
         "deletingLocalBranch": "Rechecking and deleting local branch {{branch}}",
         "createdAndSwitched": "Created and switched to {{branch}}",
         "created": "Created {{branch}}",
+        "switchingLocalBranch": "Switching to {{branch}}",
+        "creatingAndSwitching": "Creating and switching to {{branch}}",
         "createdButSwitchFailed": "Local branch {{branch}} was created, but checkout failed. {{detail}}",
         "restoreAttemptedOnCurrentCheckout": "Restore attempted in the current checkout",
         "returnedToSourceCheckout": "Returned to the original checkout",
+        "restoredAndCleaned": "Changes restored and the temporary recovery record was cleaned up",
         "recoveryRecordCleaned": "Restore record cleaned up"
       },
       "progress": {
@@ -93,6 +96,8 @@
         "message": {
           "createStarted": "Creating local branch",
           "createCompleted": "Local branch created",
+          "createAndSwitchStarted": "Creating and switching local branch",
+          "createAndSwitchCompleted": "Local branch created and switched",
           "deleteStarted": "Deleting merged local branch",
           "deleteCompleted": "Local branch deleted",
           "switchStarted": "Switching local branch",
@@ -102,6 +107,7 @@
           "restoreFinished": "Auto-stash restore command finished",
           "cleanupStarted": "Cleaning up the AgentPort auto-stash",
           "cleanupCompleted": "Auto-stash cleanup finished",
+          "branchOperationFailed": "The branch operation did not complete",
           "failed": "Operation failed: {{detail}}",
           "unknown": "Unknown repository operation state ({{command}} / {{phase}})"
         }
@@ -110,6 +116,28 @@
         "completed": "Completed: {{message}}.",
         "repositoryRefreshed": "Repository status was reloaded.",
         "repositoryRefreshFailed": "The repository status refresh failed. Operation controls are disabled; try refreshing again."
+      },
+      "sessionHandling": {
+        "confirmTitle": "Stop Sessions safely and continue?",
+        "confirmBody": "{{count}} Sessions are using {{branch}}. Switching branches changes the files they are working with. AgentPort can stop these Sessions safely, confirm they stopped, and then continue this operation.",
+        "confirmAction": "Handle automatically and continue",
+        "unknownSession": "Unnamed Session {{index}}",
+        "sessionDetail": "{{title}} · {{status}}",
+        "lifecycle": {
+          "creating": "Creating",
+          "running": "Running",
+          "interrupted": "Interrupted",
+          "exited": "Exited",
+          "stopped": "Stopped"
+        },
+        "stopping": "Stopping “{{title}}” safely ({{current}}/{{total}})…",
+        "stoppedSummary": "Safely stopped {{count}} Sessions.",
+        "notRestarted": "AgentPort did not restart them automatically. Open a Session to use its existing recovery controls.",
+        "stopFailed": "Could not confirm that “{{title}}” stopped safely.",
+        "checkoutChanged": "Checkout usage changed while Sessions were stopping.",
+        "branchUnchanged": "The branch operation was cancelled and the current branch is unchanged.",
+        "nextStep": "Open the affected Session and check its state. After it is stopped, run the branch operation again.",
+        "openNamedSession": "Open Session “{{title}}”"
       },
       "error": {
         "repositoryReadFailed": "Could not read repository status.",
@@ -150,7 +178,7 @@
       },
       "recovery": {
         "title": "Restorable auto-stashes",
-        "description": "After an interruption or conflict, each record remains here until you Restore it or explicitly clean it up.",
+        "description": "After an interruption or conflict, choose where to restore. Once verified, AgentPort automatically cleans up the temporary record; a failed cleanup keeps the backup for retry.",
         "error": "Error: {{detail}}",
         "missingSnapshot": "This backup is missing its operation snapshot. AgentPort will not apply or clean it up automatically; confirm the checkout, then Restore it manually with the persistent OID.",
         "restoreToTarget": "Restore to target local branch",
@@ -159,6 +187,7 @@
         "copyManualCommand": "Copy manual Restore command",
         "deleteVerifiedRecord": "Delete verified Restore record",
         "cleanupRequiresVerification": "Cleanup is available only after Restore is verified",
+        "cleanupDeferred": "Your changes were restored, but the temporary record could not be cleaned up. The backup was kept so you can retry.",
         "cleanupRecord": "Clean up record"
       }
     },
@@ -169,8 +198,11 @@
       "taskName": "Task name",
       "createdToast": "Worktree created: {{branch}}",
       "loadBranchesFailed": "Could not load local branches: {{detail}}",
+      "previewFailed": "Could not generate the Worktree preview: {{detail}}",
+      "recoveredOrphans": "Recovered {{count}} Worktree record(s) created before the previous interruption.",
       "createFailed": "Could not create the Worktree: {{detail}}",
-      "directoryHint": "The Worktree is created under the app data directory, leaving the main repository untouched. Uncommitted changes are checked before deletion.",
+      "directoryHint": "Calculating the exact branch and directory in the backend…",
+      "directoryPreview": "Directory: {{path}}. The main checkout stays untouched; deletion rechecks all local changes, ignored files, and Session references.",
       "staleSelection": {
         "deleted": "The selected local branch {{branch}} was deleted. Choose another local branch.",
         "moved": "The selected local branch {{branch}} moved. Select its latest commit.",

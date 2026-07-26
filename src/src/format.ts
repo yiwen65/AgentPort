@@ -197,6 +197,14 @@ export function repositoryProgressMessage(
   progress: Pick<RepositoryOperationProgress, "command" | "phase" | "message">,
 ): string {
   if (progress.phase === "failed") {
+    if ([
+      "create_local_branch",
+      "create_and_switch_local_branch",
+      "delete_local_branch",
+      "switch_local_branch",
+    ].includes(progress.command)) {
+      return i18n.t("worktree:ui.branchPicker.progress.message.branchOperationFailed");
+    }
     return i18n.t("worktree:ui.branchPicker.progress.message.failed", {
       detail: progress.message,
     });
@@ -206,6 +214,12 @@ export function repositoryProgressMessage(
       return i18n.t("worktree:ui.branchPicker.progress.message.createStarted");
     case "create_local_branch:completed":
       return i18n.t("worktree:ui.branchPicker.progress.message.createCompleted");
+    case "create_and_switch_local_branch:started":
+      return i18n.t("worktree:ui.branchPicker.progress.message.createAndSwitchStarted");
+    case "create_and_switch_local_branch:completed":
+      return i18n.t("worktree:ui.branchPicker.progress.message.createAndSwitchCompleted");
+    case "create_and_switch_local_branch:pending_restore":
+      return i18n.t("worktree:ui.branchPicker.progress.message.switchPendingRestore");
     case "delete_local_branch:started":
       return i18n.t("worktree:ui.branchPicker.progress.message.deleteStarted");
     case "delete_local_branch:completed":

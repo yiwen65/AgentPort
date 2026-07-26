@@ -29,7 +29,7 @@ impl RepositoryIdentity {
             )));
         }
         let output = runner
-            .run(
+            .run_read_only(
                 Some(path),
                 [
                     "rev-parse",
@@ -114,7 +114,7 @@ impl RepositoryIdentity {
 
     pub fn worktrees(&self, runner: &GitRunner) -> Result<Vec<GitWorktreeInfo>> {
         let output = runner
-            .run(Some(&self.root), ["worktree", "list", "--porcelain", "-z"])?
+            .run_read_only(Some(&self.root), ["worktree", "list", "--porcelain", "-z"])?
             .require_success()?;
         parse_worktree_list_z(&output.stdout)
     }

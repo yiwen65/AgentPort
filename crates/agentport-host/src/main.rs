@@ -359,6 +359,19 @@ fn leader_alive(pid: i32) -> bool {
     )
 }
 
+#[cfg(target_os = "macos")]
+const DEFAULT_UTF8_CTYPE: &str = "UTF-8";
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_UTF8_CTYPE: &str = "C.UTF-8";
+
+fn default_utf8_ctype(cfg: &HostConfig) -> Option<&'static str> {
+    const LOCALE_NAMES: [&str; 3] = ["LC_ALL", "LC_CTYPE", "LANG"];
+    let configured = LOCALE_NAMES
+        .iter()
+        .any(|name| cfg.env.iter().any(|(key, _)| key == name) || std::env::var_os(name).is_some());
+    (!configured).then_some(DEFAULT_UTF8_CTYPE)
+}
+
 fn main() {
     std::process::exit(run());
 }
@@ -477,6 +490,7 @@ fn run() -> i32 {
     // PTY remains the compatibility transport. Pi's structured RPC mode uses
     // ordinary pipes exclusively so terminal control bytes and TUI prompts
     // can never leak into its JSONL protocol.
+    let utf8_ctype = default_utf8_ctype(&cfg);
     #[allow(clippy::type_complexity)]
     let (input_writer, output_reader, master, child_pid, agent_child, pipe_stderr): (
         Box<dyn Write + Send>,
@@ -531,6 +545,13 @@ fn run() -> i32 {
                     command.env(name, value);
                 }
             }
+            if let Some(locale) = utf8_ctype {
+                // Finder/LaunchServices apps commonly start without locale
+                // variables. macOS clipboard tools then decode UTF-8 terminal
+                // text as MacRoman. Match a UTF-8 terminal's baseline while
+                // preserving every explicitly configured/inherited locale.
+                command.env("LC_CTYPE", locale);
+            }
             // The child runs inside AgentPort's xterm.js PTY, not the terminal
             // that launched the desktop app.
             command.env("TERM", "xterm-256color");
@@ -579,6 +600,9 @@ fn run() -> i32 {
                 if let Ok(value) = std::env::var(name) {
                     command.env(name, value);
                 }
+            }
+            if let Some(locale) = utf8_ctype {
+                command.env("LC_CTYPE", locale);
             }
             // Process-group lifecycle is identical to PTY mode. `setsid` runs
             // in the child immediately before exec, so stop/interrupt signal

@@ -17,7 +17,8 @@
     "newName": "新名称",
     "renameFailed": "重命名失败：{{detail}}",
     "removeTitle": "从 AgentPort 移除“{{name}}”？",
-    "removeBody": "仅移除应用内记录与其 Session，不会删除磁盘上的项目目录。",
+    "removeBody": "仅移除 AgentPort 中的项目记录，不会删除磁盘上的项目目录。该操作只在所有 Session 与 Worktree 已单独处理后可用。",
+    "removeBlocked": "暂时无法移除：项目仍有 {{sessions}} 个 Session、{{worktrees}} 个 Worktree、{{operations}} 个待恢复分支操作。请先分别处理这些内容。",
     "removeFailed": "移除失败：{{detail}}"
   },
   "onboarding": {

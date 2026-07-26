@@ -1,8 +1,17 @@
 {
   "flow": {
-    "dirtyDeleteBlocked": "This Worktree has uncommitted or untracked files and cannot be deleted.",
     "deleteTitle": "Delete Worktree “{{branch}}”?",
-    "deleteBody": "This deletes {{path}} and removes its Git Worktree record.",
+    "deleteBody": "This permanently deletes the Worktree directory and removes its Git Worktree record.",
+    "deleteMissingBody": "The directory is already missing. AgentPort will clean up the stale Git and app records.",
+    "pathDetail": "Directory: {{path}}",
+    "safeDetail": "Checked just now: no modified, staged, untracked, or ignored local files, and no Session references.",
+    "changesBlocker": "local changes exist ({{modified}} modified, {{staged}} staged, {{untracked}} untracked)",
+    "ignoredBlocker": "{{count}} Git-ignored local file or directory exists ({{sample}})",
+    "sessionsBlocker": "{{count}} Session still references it ({{active}} not archived)",
+    "lockedBlocker": "Git has locked this Worktree",
+    "unknownBlocker": "the live safety check did not pass",
+    "blockerSeparator": "; ",
+    "deleteBlocked": "Deletion was blocked to protect local data: {{detail}}.",
     "deleteAction": "Delete Worktree",
     "deleted": "Worktree deleted",
     "deleteFailed": "Could not delete the Worktree: {{detail}}"

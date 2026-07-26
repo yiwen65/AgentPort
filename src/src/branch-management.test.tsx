@@ -16,8 +16,10 @@ const { listeners, listenerRegistration, listenerUnlistens, apiMock } = vi.hoist
   listenerUnlistens: [] as Array<ReturnType<typeof vi.fn>>,
   apiMock: {
     listLocalBranches: vi.fn(),
+    stopSession: vi.fn(),
     switchLocalBranch: vi.fn(),
     createLocalBranch: vi.fn(),
+    createAndSwitchLocalBranch: vi.fn(),
     deleteLocalBranch: vi.fn(),
     listAutoStashes: vi.fn(),
     restoreAutoStash: vi.fn(),
@@ -48,8 +50,10 @@ vi.mock("./api", async () => {
 vi.mock("./actions", () => ({ selectSession: vi.fn() }));
 
 import BranchPickerDialog from "./components/BranchPickerDialog";
+import { ConfirmDialogHost } from "./components/Dialogs";
 import { isStructuredGitError } from "./api";
 import { setState } from "./store";
+import type { SessionView } from "./types";
 
 const status = {
   projectId: "p1",
@@ -59,7 +63,7 @@ const status = {
   head: { kind: "branch", branch: "main", oid: "a".repeat(40), shortOid: "aaaaaaaaaaaa" },
   changes: { staged: 1, unstaged: 2, untracked: 1, unmerged: 1, dirtySubmodules: 0 },
   ongoingOperation: null,
-  liveSessionIds: ["session-live"],
+  liveSessionIds: [],
   pendingAutoStashes: 2,
   observedAt: new Date().toISOString(),
   snapshotToken: "1",
@@ -96,10 +100,61 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function projectState() {
+function sessionView(
+  id: string,
+  title: string,
+  lifecycle: "creating" | "running" | "interrupted" | "exited" | "stopped" = "running",
+  projectId = "p1",
+): SessionView {
   return {
-    projects: [{ id: "p1", name: "Demo", rootPath: "/repo", gitRootPath: "/repo", sessions: [], worktrees: [] }],
+    id,
+    projectId,
+    worktreeId: null,
+    title,
+    adapter: "shell",
+    cwd: projectId === "p1" ? "/repo" : "/other",
+    lifecycle,
+    agentSessionId: null,
+    resumePrecision: "unavailable" as const,
+    permissionMode: "native" as const,
+    transport: "pty" as const,
+    logPath: `/tmp/${id}.log`,
+    unread: false,
+    status: null,
+    createdAt: "2026-07-26T00:00:00.000Z",
   };
+}
+
+function projectState(sessions: ReturnType<typeof sessionView>[] = []) {
+  return {
+    projects: [
+      {
+        id: "p1",
+        name: "Demo",
+        rootPath: "/repo",
+        gitRootPath: "/repo",
+        sessions: sessions.filter((session) => session.projectId === "p1"),
+        worktrees: [],
+      },
+      {
+        id: "p2",
+        name: "Other",
+        rootPath: "/other",
+        gitRootPath: "/other",
+        sessions: sessions.filter((session) => session.projectId === "p2"),
+        worktrees: [],
+      },
+    ],
+  };
+}
+
+function renderPickerWithConfirm() {
+  return render(
+    <>
+      <BranchPickerDialog projectId="p1" />
+      <ConfirmDialogHost />
+    </>,
+  );
 }
 
 describe("local branch management", () => {
@@ -120,7 +175,11 @@ describe("local branch management", () => {
     ] });
     apiMock.switchLocalBranch.mockResolvedValue({ operationId: "op", status });
     apiMock.createLocalBranch.mockResolvedValue({ operationId: "op", status });
+    apiMock.createAndSwitchLocalBranch.mockResolvedValue({ operationId: "op", status });
+    apiMock.stopSession.mockResolvedValue(undefined);
     apiMock.deleteLocalBranch.mockResolvedValue({ operationId: "op-delete", status });
+    apiMock.restoreAutoStash.mockResolvedValue({ operationId: "op1", status });
+    apiMock.cleanupAutoStash.mockResolvedValue({ operationId: "op1", status });
   });
 
   it("focuses search, filters with keyboard, and does not allow occupied worktrees", async () => {
@@ -138,6 +197,203 @@ describe("local branch management", () => {
     await user.type(search, "feature/ui");
     await user.keyboard("{Enter}");
     await waitFor(() => expect(apiMock.switchLocalBranch).toHaveBeenCalledWith("p1", "feature/ui"));
+  });
+
+  it("cancels live-Session handling without stopping or mutating the checkout", async () => {
+    const user = userEvent.setup();
+    const liveStatus = { ...status, liveSessionIds: ["same-1", "same-2"] };
+    setState(projectState([
+      sessionView("same-1", "编译任务"),
+      sessionView("same-2", "代码审查", "creating"),
+    ]));
+    apiMock.listLocalBranches.mockResolvedValue({ status: liveStatus, branches, autoStashes: [] });
+    renderPickerWithConfirm();
+
+    await user.click(await screen.findByRole("button", { name: "feature/ui" }));
+
+    expect(await screen.findByRole("dialog", { name: "安全停止 Session 后继续？" })).toBeTruthy();
+    expect(screen.getByText(/当前有 2 个 Session 正在使用 main/)).toBeTruthy();
+    expect(screen.getByText("编译任务（运行中）")).toBeTruthy();
+    expect(screen.getByText("代码审查（正在创建）")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "取消" }));
+
+    expect(apiMock.stopSession).not.toHaveBeenCalled();
+    expect(apiMock.switchLocalBranch).not.toHaveBeenCalled();
+    expect(apiMock.createAndSwitchLocalBranch).not.toHaveBeenCalled();
+  });
+
+  it("stops every affected Session sequentially, revalidates, and continues the switch", async () => {
+    const user = userEvent.setup();
+    const firstStop = deferred<void>();
+    const liveStatus = { ...status, liveSessionIds: ["same-1", "same-2"] };
+    const clearStatus = { ...status, liveSessionIds: [], snapshotToken: "clear" };
+    setState(projectState([
+      sessionView("same-1", "编译任务"),
+      sessionView("same-2", "代码审查"),
+    ]));
+    apiMock.listLocalBranches
+      .mockResolvedValueOnce({ status: liveStatus, branches, autoStashes: [] })
+      .mockResolvedValueOnce({ status: liveStatus, branches, autoStashes: [] })
+      .mockResolvedValueOnce({ status: liveStatus, branches, autoStashes: [] })
+      .mockResolvedValue({ status: clearStatus, branches, autoStashes: [] });
+    apiMock.stopSession
+      .mockReturnValueOnce(firstStop.promise)
+      .mockResolvedValueOnce(undefined);
+    renderPickerWithConfirm();
+
+    await user.click(await screen.findByRole("button", { name: "feature/ui" }));
+    await user.click(await screen.findByRole("button", { name: "自动处理并继续" }));
+
+    await waitFor(() => expect(apiMock.stopSession).toHaveBeenCalledWith("same-1"));
+    expect(apiMock.stopSession).not.toHaveBeenCalledWith("same-2");
+    await act(async () => {
+      firstStop.resolve();
+      await firstStop.promise;
+    });
+    await waitFor(() => expect(apiMock.stopSession.mock.calls).toEqual([
+      ["same-1"],
+      ["same-2"],
+    ]));
+    await waitFor(() => expect(apiMock.switchLocalBranch).toHaveBeenCalledWith("p1", "feature/ui"));
+    expect(apiMock.stopSession.mock.invocationCallOrder[1])
+      .toBeLessThan(apiMock.switchLocalBranch.mock.invocationCallOrder[0]);
+    expect(await screen.findByText(/已安全停止 2 个 Session/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "打开 Session“编译任务”" })).toBeTruthy();
+    expect(screen.queryByText(/blocked: session|ses_/)).toBeNull();
+  });
+
+  it("aborts before Git mutation when one Session cannot be confirmed stopped", async () => {
+    const user = userEvent.setup();
+    const liveStatus = { ...status, liveSessionIds: ["same-1", "same-2", "same-3"] };
+    setState(projectState([
+      sessionView("same-1", "编译任务"),
+      sessionView("same-2", "无法停止的任务"),
+      sessionView("same-3", "不应被停止的后续任务"),
+    ]));
+    apiMock.listLocalBranches.mockResolvedValue({ status: liveStatus, branches, autoStashes: [] });
+    apiMock.stopSession
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("host is unreachable; stop cannot be verified safely"));
+    renderPickerWithConfirm();
+
+    await user.click(await screen.findByRole("button", { name: "feature/ui" }));
+    await user.click(await screen.findByRole("button", { name: "自动处理并继续" }));
+
+    expect(await screen.findByText(/无法确认“无法停止的任务”已安全停止/)).toBeTruthy();
+    expect(screen.getByText(/当前分支保持不变/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "打开 Session“无法停止的任务”" })).toBeTruthy();
+    expect(apiMock.stopSession.mock.calls).toEqual([["same-1"], ["same-2"]]);
+    expect(apiMock.stopSession).not.toHaveBeenCalledWith("same-3");
+    expect(apiMock.switchLocalBranch).not.toHaveBeenCalled();
+    expect(screen.queryByText(/host is unreachable|blocked: session|ses_/)).toBeNull();
+  });
+
+  it("aborts when checkout usage changes after stopping and never touches unrelated Sessions", async () => {
+    const user = userEvent.setup();
+    const initialStatus = { ...status, liveSessionIds: ["same-1"] };
+    const changedStatus = { ...status, liveSessionIds: ["new-same"], snapshotToken: "changed" };
+    setState(projectState([
+      sessionView("same-1", "当前 Checkout 任务"),
+      sessionView("new-same", "刚启动的任务"),
+      {
+        ...sessionView("other-checkout", "同 Project 其他 Checkout"),
+        worktreeId: "wt-other",
+        cwd: "/repo-worktree",
+      },
+      sessionView("other-project", "其他 Project 任务", "running", "p2"),
+    ]));
+    apiMock.listLocalBranches
+      .mockResolvedValueOnce({ status: initialStatus, branches, autoStashes: [] })
+      .mockResolvedValueOnce({ status: initialStatus, branches, autoStashes: [] })
+      .mockResolvedValueOnce({ status: initialStatus, branches, autoStashes: [] })
+      .mockResolvedValue({ status: changedStatus, branches, autoStashes: [] });
+    renderPickerWithConfirm();
+
+    await user.click(await screen.findByRole("button", { name: "feature/ui" }));
+    await user.click(await screen.findByRole("button", { name: "自动处理并继续" }));
+
+    expect(await screen.findByText(/停止过程中 checkout 状态已变化/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "打开 Session“刚启动的任务”" })).toBeTruthy();
+    expect(apiMock.stopSession.mock.calls).toEqual([["same-1"]]);
+    expect(apiMock.stopSession).not.toHaveBeenCalledWith("other-checkout");
+    expect(apiMock.stopSession).not.toHaveBeenCalledWith("other-project");
+    expect(apiMock.switchLocalBranch).not.toHaveBeenCalled();
+  });
+
+  it("aborts before stopping when HEAD changes with the same confirmed Session IDs", async () => {
+    const user = userEvent.setup();
+    const liveStatus = { ...status, liveSessionIds: ["same-1"] };
+    const changedHeadStatus = {
+      ...liveStatus,
+      head: { ...liveStatus.head, oid: "d".repeat(40), shortOid: "dddddddddddd" },
+      snapshotToken: "changed-head",
+    };
+    setState(projectState([sessionView("same-1", "当前 Checkout 任务")]));
+    apiMock.listLocalBranches
+      .mockResolvedValueOnce({ status: liveStatus, branches, autoStashes: [] })
+      .mockResolvedValueOnce({ status: liveStatus, branches, autoStashes: [] })
+      .mockResolvedValue({ status: changedHeadStatus, branches, autoStashes: [] });
+    renderPickerWithConfirm();
+
+    await user.click(await screen.findByRole("button", { name: "feature/ui" }));
+    await user.click(await screen.findByRole("button", { name: "自动处理并继续" }));
+
+    expect(await screen.findByText(/停止过程中 checkout 状态已变化/)).toBeTruthy();
+    expect(apiMock.stopSession).not.toHaveBeenCalled();
+    expect(apiMock.switchLocalBranch).not.toHaveBeenCalled();
+  });
+
+  it("aborts after stopping when the checkout root changes before final verification", async () => {
+    const user = userEvent.setup();
+    const liveStatus = { ...status, liveSessionIds: ["same-1"] };
+    const changedRootStatus = {
+      ...status,
+      checkoutRoot: "/repo-moved",
+      liveSessionIds: [],
+      snapshotToken: "changed-root",
+    };
+    setState(projectState([sessionView("same-1", "当前 Checkout 任务")]));
+    apiMock.listLocalBranches
+      .mockResolvedValueOnce({ status: liveStatus, branches, autoStashes: [] })
+      .mockResolvedValueOnce({ status: liveStatus, branches, autoStashes: [] })
+      .mockResolvedValueOnce({ status: liveStatus, branches, autoStashes: [] })
+      .mockResolvedValue({ status: changedRootStatus, branches, autoStashes: [] });
+    renderPickerWithConfirm();
+
+    await user.click(await screen.findByRole("button", { name: "feature/ui" }));
+    await user.click(await screen.findByRole("button", { name: "自动处理并继续" }));
+
+    expect(await screen.findByText(/停止过程中 checkout 状态已变化/)).toBeTruthy();
+    expect(apiMock.stopSession.mock.calls).toEqual([["same-1"]]);
+    expect(apiMock.switchLocalBranch).not.toHaveBeenCalled();
+  });
+
+  it("preflights and stops Sessions before one atomic create-and-switch command", async () => {
+    const user = userEvent.setup();
+    const liveStatus = { ...status, liveSessionIds: ["same-1"] };
+    const clearStatus = { ...status, liveSessionIds: [], snapshotToken: "clear" };
+    setState(projectState([sessionView("same-1", "创建前任务")]));
+    apiMock.listLocalBranches
+      .mockResolvedValueOnce({ status: liveStatus, branches, autoStashes: [] })
+      .mockResolvedValueOnce({ status: liveStatus, branches, autoStashes: [] })
+      .mockResolvedValueOnce({ status: liveStatus, branches, autoStashes: [] })
+      .mockResolvedValue({ status: clearStatus, branches, autoStashes: [] });
+    renderPickerWithConfirm();
+    await screen.findAllByText("feature/ui");
+    await user.type(screen.getByRole("textbox", { name: "新分支名称" }), "feature/atomic");
+
+    await user.click(screen.getByRole("button", { name: "创建分支" }));
+    await user.click(await screen.findByRole("button", { name: "自动处理并继续" }));
+
+    await waitFor(() => expect(apiMock.createAndSwitchLocalBranch).toHaveBeenCalledWith(
+      "p1",
+      "feature/atomic",
+      "main",
+    ));
+    expect(apiMock.stopSession.mock.invocationCallOrder[0])
+      .toBeLessThan(apiMock.createAndSwitchLocalBranch.mock.invocationCallOrder[0]);
+    expect(apiMock.createLocalBranch).not.toHaveBeenCalled();
+    expect(apiMock.switchLocalBranch).not.toHaveBeenCalled();
   });
 
   it("renders dirty/conflict and progress state, and gates cleanup until verified", async () => {
@@ -160,6 +416,16 @@ describe("local branch management", () => {
       occurredAt: "2026-07-22T00:00:00.000Z",
     }));
     expect(await screen.findByText(/正在切换本地分支（已开始）/)).toBeTruthy();
+  });
+
+  it("automatically cleans the verified recovery record after restoring changes", async () => {
+    const user = userEvent.setup();
+    render(<BranchPickerDialog projectId="p1" />);
+    const restoreButtons = await screen.findAllByRole("button", { name: "恢复到目标分支" });
+    await user.click(restoreButtons[0]);
+
+    await waitFor(() => expect(apiMock.restoreAutoStash).toHaveBeenCalledWith("op1", "target"));
+    await waitFor(() => expect(apiMock.cleanupAutoStash).toHaveBeenCalledWith("op1"));
   });
 
   it("updates a repository event without recursively refreshing the branch list", async () => {
@@ -440,8 +706,11 @@ describe("local branch management", () => {
     await user.type(screen.getByRole("textbox", { name: "新分支名称" }), "feature/new");
     await user.selectOptions(screen.getByRole("combobox", { name: "新分支起点" }), "feature/ui");
     await user.click(screen.getByRole("button", { name: "创建分支" }));
-    await waitFor(() => expect(apiMock.createLocalBranch).toHaveBeenCalledWith("p1", "feature/new", "feature/ui"));
-    expect(apiMock.switchLocalBranch).toHaveBeenCalledWith("p1", "feature/new");
+    await waitFor(() => expect(apiMock.createAndSwitchLocalBranch).toHaveBeenCalledWith(
+      "p1",
+      "feature/new",
+      "feature/ui",
+    ));
   });
 
   it("keeps Current HEAD as an optional null start point", async () => {
@@ -451,7 +720,11 @@ describe("local branch management", () => {
     await user.type(screen.getByRole("textbox", { name: "新分支名称" }), "feature/head");
     await user.selectOptions(screen.getByRole("combobox", { name: "新分支起点" }), "");
     await user.click(screen.getByRole("button", { name: "创建分支" }));
-    await waitFor(() => expect(apiMock.createLocalBranch).toHaveBeenCalledWith("p1", "feature/head", null));
+    await waitFor(() => expect(apiMock.createAndSwitchLocalBranch).toHaveBeenCalledWith(
+      "p1",
+      "feature/head",
+      null,
+    ));
   });
 
   it("keeps structured live-session and recovery metadata without parsing a message", () => {

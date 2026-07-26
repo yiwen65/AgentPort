@@ -1,4 +1,5 @@
 import commonEnUS from "./en-US/common.json";
+import gitEnUS from "./en-US/git.json";
 import runtimeEnUS from "./en-US/runtime.json";
 import sessionEnUS from "./en-US/session.json";
 import settingsEnUS from "./en-US/settings.json";
@@ -21,13 +22,14 @@ import shellUiZhCN from "./fragments/zh-CN/shell-ui.json";
 import worktreeUiEnUS from "./fragments/en-US/worktree-ui.json";
 import worktreeUiZhCN from "./fragments/zh-CN/worktree-ui.json";
 import commonZhCN from "./zh-CN/common.json";
+import gitZhCN from "./zh-CN/git.json";
 import runtimeZhCN from "./zh-CN/runtime.json";
 import sessionZhCN from "./zh-CN/session.json";
 import settingsZhCN from "./zh-CN/settings.json";
 import shellZhCN from "./zh-CN/shell.json";
 import worktreeZhCN from "./zh-CN/worktree.json";
 
-export const namespaces = ["common", "shell", "session", "worktree", "settings", "runtime"] as const;
+export const namespaces = ["common", "shell", "session", "worktree", "settings", "runtime", "git"] as const;
 
 export const resources = {
   "zh-CN": {
@@ -37,6 +39,7 @@ export const resources = {
     worktree: { ...worktreeZhCN, ...worktreeExtraZhCN, ...worktreeUiZhCN },
     settings: { ...settingsZhCN, ...settingsUiZhCN },
     runtime: { ...runtimeZhCN, ...runtimeExtraZhCN },
+    git: gitZhCN,
   },
   "en-US": {
     common: commonEnUS,
@@ -45,5 +48,6 @@ export const resources = {
     worktree: { ...worktreeEnUS, ...worktreeExtraEnUS, ...worktreeUiEnUS },
     settings: { ...settingsEnUS, ...settingsUiEnUS },
     runtime: { ...runtimeEnUS, ...runtimeExtraEnUS },
+    git: gitEnUS,
   },
 } as const;

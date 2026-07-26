@@ -14,6 +14,16 @@ import type {
   RuntimeMessageEnvelope,
   WorktreeStatus,
   RepositoryStatus,
+  GitChangesSnapshot,
+  GitCheckoutDescriptor,
+  GitCommitDetail,
+  GitCommitPatch,
+  GitCommitResult,
+  GitCommitReview,
+  GitContextLocator,
+  GitDiffSide,
+  GitFileDiff,
+  GitHistoryPage,
 } from "./types";
 
 export interface SessionRuntime {
@@ -59,6 +69,12 @@ export interface Toast {
   text: string;
 }
 
+export interface UncommittedNoticeState {
+  /** Identifies the concrete dirty Worktree result, not transient PTY state. */
+  fingerprint: string;
+  dismissed: boolean;
+}
+
 export interface MenuItem {
   label: string;
   danger?: boolean;
@@ -77,6 +93,7 @@ export interface ContextMenuState {
 export interface ConfirmOptions {
   title: string;
   body?: string;
+  details?: string[];
   confirmLabel?: string;
   danger?: boolean;
 }
@@ -95,6 +112,72 @@ export interface PromptOptions {
 
 export interface PromptState extends PromptOptions {
   resolve: (v: string | null) => void;
+}
+
+export type GitCenterPhase =
+  | "idle"
+  | "loading"
+  | "refreshing"
+  | "ready"
+  | "stale"
+  | "error";
+
+export interface GitDiffSelection {
+  entryToken: string;
+  pathToken: string;
+  side: GitDiffSide;
+}
+
+export interface GitCheckoutUiState {
+  context: GitCheckoutDescriptor;
+  changes: GitChangesSnapshot | null;
+  changesPhase: GitCenterPhase;
+  changesError: string | null;
+  selectedEntries: Record<string, boolean>;
+  diffSelection: GitDiffSelection | null;
+  diff: GitFileDiff | null;
+  diffPhase: GitCenterPhase;
+  diffError: string | null;
+  history: GitHistoryPage | null;
+  historyPhase: GitCenterPhase;
+  historyError: string | null;
+  selectedCommitOid: string | null;
+  commitDetail: GitCommitDetail | null;
+  commitPatch: GitCommitPatch | null;
+  commitDetailPhase: GitCenterPhase;
+  commitDetailError: string | null;
+  commitDraft: string;
+  commitReview: GitCommitReview | null;
+  commitReviewOpen: boolean;
+  commitPhase: GitCenterPhase;
+  commitError: string | null;
+  lastCommitResult: GitCommitResult | null;
+}
+
+export interface GitCenterState {
+  open: boolean;
+  view: "changes" | "history";
+  locator: GitContextLocator | null;
+  sourceActiveSessionId: string | null;
+  activeCheckoutId: string | null;
+  resolvePhase: GitCenterPhase;
+  resolveError: string | null;
+  pendingSessionLocator: GitContextLocator | null;
+  caches: Record<string, GitCheckoutUiState>;
+}
+
+export function emptyGitCenterState(): GitCenterState {
+  return {
+    open: false,
+    view: "changes",
+    locator: null,
+    sourceActiveSessionId: null,
+    activeCheckoutId: null,
+    resolvePhase: "idle",
+    resolveError: null,
+    pendingSessionLocator: null,
+    caches: {},
+  };
 }
 
 export type DialogState =
@@ -143,8 +226,8 @@ export interface AppState {
   activeWorktreeStatus: WorktreeStatus | null;
   /** Last backend-confirmed checkout state keyed by project. */
   repositoryStatuses: Record<string, RepositoryStatus>;
-  /** Dismissed "结果尚未提交" notices (sessionId -> status sequence). */
-  noticeDismissed: Record<string, number>;
+  /** Latched "结果尚未提交" notices keyed by Session. */
+  uncommittedNotices: Record<string, UncommittedNoticeState>;
   announcement: string;
   themeEffective: EffectiveTheme;
   reducedMotion: boolean;
@@ -176,6 +259,8 @@ export interface AppState {
   highlightedWorktreeId: string | null;
   /** Worktree ids whose session list is collapsed in the management view. */
   collapsedWorktrees: Record<string, boolean>;
+  /** Checkout-frozen Git Center state, with all snapshots keyed by checkoutId. */
+  gitCenter: GitCenterState;
 }
 
 export interface OpenDocumentTarget {
@@ -213,7 +298,7 @@ const initialState: AppState = {
   expandedProjects: {},
   activeWorktreeStatus: null,
   repositoryStatuses: {},
-  noticeDismissed: {},
+  uncommittedNotices: {},
   announcement: "",
   themeEffective: "dark",
   reducedMotion: false,
@@ -230,6 +315,7 @@ const initialState: AppState = {
   sidebarWorktreeProjectId: null,
   highlightedWorktreeId: null,
   collapsedWorktrees: {},
+  gitCenter: emptyGitCenterState(),
 };
 
 let state = initialState;
@@ -326,6 +412,58 @@ export function toast(text: string, kind: Toast["kind"] = "info") {
 
 export function announce(text: string) {
   setState({ announcement: text });
+}
+
+export function uncommittedNoticeFingerprint(status: WorktreeStatus): string {
+  return [
+    status.health,
+    status.modified,
+    status.staged,
+    status.untracked,
+    status.ignored ?? 0,
+    (status.ignoredSample ?? []).join("\u0001"),
+    status.raw,
+  ].join("\u0000");
+}
+
+/**
+ * Latch a dirty-result notice when a Session first looks complete. PTY status
+ * can oscillate between working and idle while a TUI repaints; keeping this
+ * state independent from the status sequence prevents repeated banners.
+ */
+export function syncUncommittedNotice(
+  sessionId: string,
+  fingerprint: string | null,
+  doneLike: boolean,
+) {
+  const notices = getState().uncommittedNotices;
+  const current = notices[sessionId];
+  if (fingerprint === null) {
+    if (!current) return;
+    const next = { ...notices };
+    delete next[sessionId];
+    setState({ uncommittedNotices: next });
+    return;
+  }
+  if (!doneLike || current?.fingerprint === fingerprint) return;
+  setState({
+    uncommittedNotices: {
+      ...notices,
+      [sessionId]: { fingerprint, dismissed: false },
+    },
+  });
+}
+
+export function dismissUncommittedNotice(sessionId: string, fingerprint: string) {
+  const notices = getState().uncommittedNotices;
+  const current = notices[sessionId];
+  if (!current || current.fingerprint !== fingerprint || current.dismissed) return;
+  setState({
+    uncommittedNotices: {
+      ...notices,
+      [sessionId]: { ...current, dismissed: true },
+    },
+  });
 }
 
 export function openDialog(dialog: DialogState) {
@@ -461,7 +599,7 @@ function sessionScopedState(s: AppState, alive: Set<string>): Partial<AppState> 
   const activeSessionId = s.activeSessionId && alive.has(s.activeSessionId) ? s.activeSessionId : null;
   return {
     runtime: retainSessionEntries(s.runtime, alive),
-    noticeDismissed: retainSessionEntries(s.noticeDismissed, alive),
+    uncommittedNotices: retainSessionEntries(s.uncommittedNotices, alive),
     pinnedSessionAt: retainSessionEntries(s.pinnedSessionAt, alive),
     attachedIds: retainAttachedIds(s.attachedIds, alive),
     activeSessionId,

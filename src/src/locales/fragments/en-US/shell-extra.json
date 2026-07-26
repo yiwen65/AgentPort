@@ -17,7 +17,8 @@
     "newName": "New name",
     "renameFailed": "Could not rename the project: {{detail}}",
     "removeTitle": "Remove “{{name}}” from AgentPort?",
-    "removeBody": "This removes the project and its Sessions from AgentPort without deleting the project directory from disk.",
+    "removeBody": "This removes only the AgentPort project record; the project directory stays on disk. It is available only after every Session and Worktree has been handled separately.",
+    "removeBlocked": "This project still has {{sessions}} Session(s), {{worktrees}} Worktree(s), and {{operations}} recoverable branch operation(s). Handle each item before removing the project.",
     "removeFailed": "Could not remove the project: {{detail}}"
   },
   "onboarding": {

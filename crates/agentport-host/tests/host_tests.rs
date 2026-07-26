@@ -221,6 +221,23 @@ fn spawn_host(ctx: &TestCtx, extra_env: &[(&str, &str)]) -> HostGuard {
     }
 }
 
+fn spawn_host_without_locale(ctx: &TestCtx) -> HostGuard {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentport-host"));
+    cmd.arg("--config")
+        .arg(&ctx.cfg_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    for name in ["LANG", "LC_ALL", "LC_CTYPE"] {
+        cmd.env_remove(name);
+    }
+    let child = cmd.spawn().unwrap();
+    HostGuard {
+        child: Some(child),
+        dir: ctx.dir.clone(),
+    }
+}
+
 fn wait_for(mut pred: impl FnMut() -> bool, timeout: Duration, what: &str) {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -1174,6 +1191,32 @@ fn terminal_capabilities_are_normalized_for_agent_tui_and_colors() {
             .windows(marker.len())
             .any(|bytes| bytes == marker.as_bytes()),
         "the child must receive AgentPort terminal capabilities, got: {}",
+        String::from_utf8_lossy(&output_bytes(&frames))
+    );
+}
+
+#[test]
+fn terminal_child_defaults_to_utf8_when_the_desktop_host_has_no_locale() {
+    let marker = "CHARMAP=UTF-8";
+    let ctx = make_ctx(vec!["/bin/sh".into()], 1 << 20, vec![]);
+    let _guard = spawn_host_without_locale(&ctx);
+    wait_socket(&ctx);
+    let mut c = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    c.expect_hello_ok();
+    c.send(&ClientFrame::Input {
+        session_id: ctx.session_id.clone(),
+        data: b"printf 'CHARMAP=%s\\n' \"$(locale charmap)\"\n".to_vec(),
+    });
+    let frames = c.collect_until(Duration::from_secs(10), |fs| {
+        output_bytes(fs)
+            .windows(marker.len())
+            .any(|bytes| bytes == marker.as_bytes())
+    });
+    assert!(
+        output_bytes(&frames)
+            .windows(marker.len())
+            .any(|bytes| bytes == marker.as_bytes()),
+        "the child must default to a UTF-8 locale, got: {}",
         String::from_utf8_lossy(&output_bytes(&frames))
     );
 }

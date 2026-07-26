@@ -68,9 +68,12 @@
         "deletingLocalBranch": "正在重新检查并删除本地分支 {{branch}}",
         "createdAndSwitched": "已创建并切换到 {{branch}}",
         "created": "已创建 {{branch}}",
+        "switchingLocalBranch": "正在切换到 {{branch}}",
+        "creatingAndSwitching": "正在创建并切换到 {{branch}}",
         "createdButSwitchFailed": "分支 {{branch}} 已创建，但未能切换。{{detail}}",
         "restoreAttemptedOnCurrentCheckout": "已尝试恢复到当前 checkout",
         "returnedToSourceCheckout": "已返回原 checkout",
+        "restoredAndCleaned": "改动已恢复，临时恢复记录已自动清理",
         "recoveryRecordCleaned": "恢复记录已清理"
       },
       "progress": {
@@ -93,6 +96,8 @@
         "message": {
           "createStarted": "正在创建本地分支",
           "createCompleted": "本地分支已创建",
+          "createAndSwitchStarted": "正在创建并切换本地分支",
+          "createAndSwitchCompleted": "本地分支已创建并切换",
           "deleteStarted": "正在删除已合并的本地分支",
           "deleteCompleted": "本地分支已删除",
           "switchStarted": "正在切换本地分支",
@@ -102,6 +107,7 @@
           "restoreFinished": "自动暂存恢复命令已完成",
           "cleanupStarted": "正在清理 AgentPort 自动暂存",
           "cleanupCompleted": "自动暂存清理已完成",
+          "branchOperationFailed": "分支操作未完成",
           "failed": "操作失败：{{detail}}",
           "unknown": "仓库操作状态未知（{{command}} / {{phase}}）"
         }
@@ -110,6 +116,28 @@
         "completed": "完成：{{message}}。",
         "repositoryRefreshed": "已重新读取仓库状态。",
         "repositoryRefreshFailed": "仓库状态刷新失败；操作入口已禁用，请重试刷新。"
+      },
+      "sessionHandling": {
+        "confirmTitle": "安全停止 Session 后继续？",
+        "confirmBody": "当前有 {{count}} 个 Session 正在使用 {{branch}}。切换分支会改变它们正在处理的文件。AgentPort 可以先安全停止这些 Session，确认停止后继续本次操作。",
+        "confirmAction": "自动处理并继续",
+        "unknownSession": "未命名 Session {{index}}",
+        "sessionDetail": "{{title}}（{{status}}）",
+        "lifecycle": {
+          "creating": "正在创建",
+          "running": "运行中",
+          "interrupted": "已中断",
+          "exited": "已退出",
+          "stopped": "已停止"
+        },
+        "stopping": "正在安全停止“{{title}}”（{{current}}/{{total}}）…",
+        "stoppedSummary": "已安全停止 {{count}} 个 Session。",
+        "notRestarted": "AgentPort 未自动重启它们；可打开 Session 使用现有恢复入口。",
+        "stopFailed": "无法确认“{{title}}”已安全停止。",
+        "checkoutChanged": "停止过程中 checkout 状态已变化。",
+        "branchUnchanged": "本次分支操作已中止，当前分支保持不变。",
+        "nextStep": "请打开受影响的 Session 检查状态；确认已停止后，重新执行原分支操作。",
+        "openNamedSession": "打开 Session“{{title}}”"
       },
       "error": {
         "repositoryReadFailed": "仓库状态读取失败。",
@@ -150,7 +178,7 @@
       },
       "recovery": {
         "title": "可恢复的自动暂存",
-        "description": "操作中断或冲突后，记录会保留在此处，直到恢复或明确清理。",
+        "description": "操作中断或冲突后，先选择恢复位置；验证成功后 AgentPort 会自动清理临时记录。清理失败时会保留备份供重试。",
         "error": "错误：{{detail}}",
         "missingSnapshot": "此备份缺少操作快照，AgentPort 不会自动 apply 或清理；请确认 checkout 后手动使用持久化 OID 恢复。",
         "restoreToTarget": "恢复到目标分支",
@@ -159,6 +187,7 @@
         "copyManualCommand": "复制手动恢复命令",
         "deleteVerifiedRecord": "删除已验证恢复记录",
         "cleanupRequiresVerification": "仅恢复已验证后可清理",
+        "cleanupDeferred": "改动已恢复，但临时记录未能清理；备份已保留，可稍后重试清理。",
         "cleanupRecord": "清理记录"
       }
     },
@@ -169,8 +198,11 @@
       "taskName": "任务名",
       "createdToast": "已创建 Worktree：{{branch}}",
       "loadBranchesFailed": "无法读取本地分支：{{detail}}",
+      "previewFailed": "无法生成 Worktree 预览：{{detail}}",
+      "recoveredOrphans": "已恢复 {{count}} 个上次中断时创建成功的 Worktree 记录。",
       "createFailed": "无法创建 Worktree：{{detail}}",
-      "directoryHint": "Worktree 目录创建在应用数据目录下，不污染主仓库；删除前会检查未提交修改。",
+      "directoryHint": "正在由后端计算实际分支名与目录…",
+      "directoryPreview": "实际目录：{{path}}。不会污染主仓库；删除前会复查所有本地改动、被忽略文件与 Session 引用。",
       "staleSelection": {
         "deleted": "所选 branch {{branch}} 已被删除，请重新选择。",
         "moved": "所选 branch {{branch}} 已移动，请重新选择最新提交。",

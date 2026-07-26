@@ -11,6 +11,7 @@ sha2 = { workspace = true }
 
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
 agentport-core = { path = "../crates/agentport-core" }
 serde = { workspace = true }

@@ -7,9 +7,13 @@ import { Trans, useTranslation } from "react-i18next";
 import Modal from "./Modal";
 import { api, errorText, isStructuredGitError } from "../api";
 import { refreshProjects } from "../actions";
-import { slugify } from "../format";
 import { closeDialog, toast, useStore } from "../store";
-import type { LocalBranch, LocalBranchesResponse, WorktreeBranchMode } from "../types";
+import type {
+  LocalBranch,
+  LocalBranchesResponse,
+  WorktreeBranchMode,
+  WorktreePreview,
+} from "../types";
 
 function displayError(error: unknown): string {
   return isStructuredGitError(error) ? error.message : errorText(error);
@@ -63,6 +67,8 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
   const [activeBranchIndex, setActiveBranchIndex] = useState(0);
   const [selectedExisting, setSelectedExisting] = useState<LocalBranch | null>(null);
   const [selectionIssue, setSelectionIssue] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ task: string; value: WorktreePreview } | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const branchInputRef = useRef<HTMLInputElement>(null);
   const branchPickerRef = useRef<HTMLDivElement>(null);
   const selectedExistingRef = useRef<LocalBranch | null>(null);
@@ -109,6 +115,45 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
     window.addEventListener("focus", refreshOnFocus);
     return () => window.removeEventListener("focus", refreshOnFocus);
   }, [refreshBranches]);
+
+  useEffect(() => {
+    void api.reconcileWorktrees(projectId).then(
+      (recovered) => {
+        if (recovered > 0) {
+          void refreshProjects();
+          toast(t("worktree:ui.newWorktree.recoveredOrphans", { count: recovered }), "info");
+        }
+      },
+      () => {
+        // Branch enumeration and creation still surface authoritative Git
+        // errors. A recovery probe must not make the dialog unusable.
+      },
+    );
+  }, [projectId, t]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreview(null);
+    setPreviewError(null);
+    const timer = window.setTimeout(() => {
+      void api.previewWorktree(projectId, task).then(
+        (value) => {
+          if (!cancelled) setPreview({ task, value });
+        },
+        (previewFailure) => {
+          if (!cancelled) {
+            setPreviewError(t("worktree:ui.newWorktree.previewFailed", {
+              detail: displayError(previewFailure),
+            }));
+          }
+        },
+      );
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [projectId, task, t]);
 
   useEffect(() => {
     const closeOnOutsideClick = (event: MouseEvent) => {
@@ -178,14 +223,17 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
     }
   };
 
-  const slug = slugify(task);
-  const previewBranch = branch.trim() || (slug ? `agent/${slug}` : "agent/…");
+  const currentPreview = preview?.task === task ? preview.value : null;
+  const previewBranch = branch.trim() || currentPreview?.branch || "agent/…";
   const branchMode: WorktreeBranchMode = selectedExisting
     ? "existing"
     : branch.trim()
       ? "new"
       : "auto";
-  const canSubmit = Boolean(slug || branch.trim()) && !busy && !selectionIssue;
+  const canSubmit = Boolean(task.trim() || branch.trim())
+    && !busy
+    && !selectionIssue
+    && (branchMode !== "auto" || Boolean(currentPreview));
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -256,9 +304,8 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
               role={showBranchCandidates ? "combobox" : undefined}
               className="mono"
               value={branch}
-              placeholder={slug
-                ? `agent/${slug}`
-                : t("worktree:ui.newWorktree.branch.autoPlaceholder")}
+              placeholder={currentPreview?.branch
+                ?? t("worktree:ui.newWorktree.branch.autoPlaceholder")}
               aria-label={showBranchCandidates
                 ? t("worktree:ui.newWorktree.branch.localBranchAria")
                 : undefined}
@@ -458,8 +505,13 @@ export default function NewWorktreeDialog({ projectId }: { projectId: string }) 
           ) : null}
         </div>
       )}
+      {previewError && branchMode === "auto" ? (
+        <div className="error-bar compact" role="alert">{previewError}</div>
+      ) : null}
       <p className="form-hint">
-        {t("worktree:ui.newWorktree.directoryHint")}
+        {currentPreview
+          ? t("worktree:ui.newWorktree.directoryPreview", { path: currentPreview.path })
+          : t("worktree:ui.newWorktree.directoryHint")}
       </p>
     </Modal>
   );

@@ -2,7 +2,7 @@
 
 use crate::error::{CoreError, Result};
 use std::ffi::{OsStr, OsString};
-use std::io::Read;
+use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -35,11 +35,34 @@ pub struct GitOutput {
     pub argv: Vec<OsString>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
     pub status: ExitStatus,
     /// A timeout is an observation about the process, not proof that the Git
     /// mutation did not happen. Callers must inspect repository state before
     /// deciding whether to roll back or report success.
     pub timed_out: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct GitRunOptions {
+    pub input: Option<Vec<u8>>,
+    pub max_stdout: usize,
+    pub max_stderr: usize,
+    pub read_only: bool,
+    pub timeout: Option<Duration>,
+}
+
+impl Default for GitRunOptions {
+    fn default() -> Self {
+        Self {
+            input: None,
+            max_stdout: 8 * 1024 * 1024,
+            max_stderr: 256 * 1024,
+            read_only: false,
+            timeout: None,
+        }
+    }
 }
 
 impl GitOutput {
@@ -63,18 +86,23 @@ impl GitOutput {
         if self.success() {
             return Ok(self);
         }
+        let stderr = if self.stderr_truncated {
+            format!("{} [stderr truncated]", self.stderr_lossy().trim())
+        } else {
+            self.stderr_lossy().trim().to_owned()
+        };
         if self.timed_out {
             return Err(CoreError::Timeout(format!(
                 "git {} timed out: {}",
                 display_argv(&self.argv),
-                self.stderr_lossy().trim()
+                stderr
             )));
         }
         Err(CoreError::Git(format!(
             "git {} failed (exit {:?}): {}",
             display_argv(&self.argv),
             self.exit_code(),
-            self.stderr_lossy().trim()
+            stderr
         )))
     }
 }
@@ -86,6 +114,8 @@ pub struct GitRunner {
     fail_once: Option<Arc<TestFailure>>,
     #[cfg(test)]
     ref_move_once: Option<Arc<TestRefMove>>,
+    #[cfg(test)]
+    worktree_occupy_once: Option<Arc<TestWorktreeOccupy>>,
     #[cfg(test)]
     recorded: Option<Arc<Mutex<Vec<Vec<OsString>>>>>,
 }
@@ -108,6 +138,14 @@ struct TestRefMove {
     triggered: AtomicBool,
 }
 
+#[cfg(test)]
+#[derive(Debug)]
+struct TestWorktreeOccupy {
+    branch: OsString,
+    path: OsString,
+    triggered: AtomicBool,
+}
+
 impl Default for GitRunner {
     fn default() -> Self {
         Self::new(Duration::from_secs(15))
@@ -123,6 +161,8 @@ impl GitRunner {
             #[cfg(test)]
             ref_move_once: None,
             #[cfg(test)]
+            worktree_occupy_once: None,
+            #[cfg(test)]
             recorded: None,
         }
     }
@@ -137,6 +177,7 @@ impl GitRunner {
                 seen: AtomicUsize::new(0),
             })),
             ref_move_once: None,
+            worktree_occupy_once: None,
             recorded: None,
         }
     }
@@ -152,6 +193,7 @@ impl GitRunner {
                 seen: AtomicUsize::new(0),
             })),
             ref_move_once: None,
+            worktree_occupy_once: None,
             recorded: None,
         }
     }
@@ -166,6 +208,39 @@ impl GitRunner {
                 required_arg: Some("-d".into()),
                 refname: refname.into(),
                 new_oid: new_oid.into(),
+                triggered: AtomicBool::new(false),
+            })),
+            worktree_occupy_once: None,
+            recorded: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn creating_external_ref_before_update(refname: &str, new_oid: &str) -> Self {
+        Self {
+            timeout: Duration::from_secs(15),
+            fail_once: None,
+            ref_move_once: Some(Arc::new(TestRefMove {
+                command: "update-ref".into(),
+                required_arg: None,
+                refname: refname.into(),
+                new_oid: new_oid.into(),
+                triggered: AtomicBool::new(false),
+            })),
+            worktree_occupy_once: None,
+            recorded: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn occupying_branch_before_delete(branch: &str, path: &Path) -> Self {
+        Self {
+            timeout: Duration::from_secs(15),
+            fail_once: None,
+            ref_move_once: None,
+            worktree_occupy_once: Some(Arc::new(TestWorktreeOccupy {
+                branch: branch.into(),
+                path: path.as_os_str().to_owned(),
                 triggered: AtomicBool::new(false),
             })),
             recorded: None,
@@ -184,6 +259,7 @@ impl GitRunner {
                 new_oid: new_oid.into(),
                 triggered: AtomicBool::new(false),
             })),
+            worktree_occupy_once: None,
             recorded: None,
         }
     }
@@ -196,6 +272,7 @@ impl GitRunner {
                 timeout: Duration::from_secs(15),
                 fail_once: None,
                 ref_move_once: None,
+                worktree_occupy_once: None,
                 recorded: Some(recorded.clone()),
             },
             recorded,
@@ -207,14 +284,42 @@ impl GitRunner {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        self.run_inner(repo, args, None)
+        self.run_with_options(repo, args, GitRunOptions::default())
+    }
+
+    pub fn run_read_only<I, S>(&self, repo: Option<&Path>, args: I) -> Result<GitOutput>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.run_with_options(
+            repo,
+            args,
+            GitRunOptions {
+                read_only: true,
+                ..GitRunOptions::default()
+            },
+        )
+    }
+
+    pub fn run_with_options<I, S>(
+        &self,
+        repo: Option<&Path>,
+        args: I,
+        options: GitRunOptions,
+    ) -> Result<GitOutput>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.run_inner(repo, args, options)
     }
 
     fn run_inner<I, S>(
         &self,
         repo: Option<&Path>,
         args: I,
-        _input: Option<&[u8]>,
+        options: GitRunOptions,
     ) -> Result<GitOutput>
     where
         I: IntoIterator<Item = S>,
@@ -273,17 +378,56 @@ impl GitRunner {
             }
         }
 
+        #[cfg(test)]
+        if let Some(occupy) = &self.worktree_occupy_once {
+            if argv.iter().any(|arg| arg == "update-ref")
+                && argv.iter().any(|arg| arg == "-d")
+                && !occupy.triggered.swap(true, Ordering::SeqCst)
+            {
+                let root = repo.ok_or_else(|| {
+                    CoreError::Internal("test worktree injection requires a repository".into())
+                })?;
+                let output = Command::new("git")
+                    .arg("-C")
+                    .arg(root)
+                    .arg("worktree")
+                    .arg("add")
+                    .arg(&occupy.path)
+                    .arg(&occupy.branch)
+                    .stdin(Stdio::null())
+                    .output()?;
+                if !output.status.success() {
+                    return Err(CoreError::Git(format!(
+                        "test worktree-occupancy injection failed: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    )));
+                }
+            }
+        }
+
         let mut command = Command::new("git");
         command
             .args(&argv)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        command.stdin(Stdio::null());
+        command.stdin(if options.input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
         for name in REPOSITORY_ENV {
             command.env_remove(name);
         }
         command.env("GIT_TERMINAL_PROMPT", "0");
         command.env("GIT_PAGER", "cat");
+        if options.read_only {
+            command.env("GIT_OPTIONAL_LOCKS", "0");
+            // Machine-readable commands and binary markers must not depend on
+            // the GUI process locale. Write commands keep the user's locale so
+            // repository hooks retain their normal environment.
+            command.env("LC_ALL", "C");
+            command.env("LANG", "C");
+        }
         // Git can start hooks, filters and aliases. Give the whole invocation
         // its own process group so a timeout terminates descendants that may
         // otherwise keep the stdout/stderr pipes open indefinitely.
@@ -291,6 +435,15 @@ impl GitRunner {
         command.process_group(0);
 
         let mut child = command.spawn()?;
+        let stdin_thread = options.input.map(|input| {
+            let mut stdin = child
+                .stdin
+                .take()
+                .expect("Git stdin must be piped when input is configured");
+            std::thread::spawn(move || {
+                let _ = stdin.write_all(&input);
+            })
+        });
         let mut stdout = child
             .stdout
             .take()
@@ -299,18 +452,12 @@ impl GitRunner {
             .stderr
             .take()
             .ok_or_else(|| CoreError::Internal("git stderr was not piped".into()))?;
-        let stdout_thread = std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = stdout.read_to_end(&mut bytes);
-            bytes
-        });
-        let stderr_thread = std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = stderr.read_to_end(&mut bytes);
-            bytes
-        });
+        let max_stdout = options.max_stdout;
+        let max_stderr = options.max_stderr;
+        let stdout_thread = std::thread::spawn(move || read_bounded(&mut stdout, max_stdout));
+        let stderr_thread = std::thread::spawn(move || read_bounded(&mut stderr, max_stderr));
 
-        let deadline = Instant::now() + self.timeout;
+        let deadline = Instant::now() + options.timeout.unwrap_or(self.timeout);
         let (status, timed_out) = loop {
             if let Some(status) = child.try_wait()? {
                 break (status, false);
@@ -322,15 +469,41 @@ impl GitRunner {
             }
             std::thread::sleep(Duration::from_millis(10));
         };
+        if let Some(stdin_thread) = stdin_thread {
+            let _ = stdin_thread.join();
+        }
+        let (stdout, stdout_truncated) = stdout_thread.join().unwrap_or_default();
+        let (stderr, stderr_truncated) = stderr_thread.join().unwrap_or_default();
 
         Ok(GitOutput {
             argv,
-            stdout: stdout_thread.join().unwrap_or_default(),
-            stderr: stderr_thread.join().unwrap_or_default(),
+            stdout,
+            stderr,
+            stdout_truncated,
+            stderr_truncated,
             status,
             timed_out,
         })
     }
+}
+
+fn read_bounded(reader: &mut impl Read, limit: usize) -> (Vec<u8>, bool) {
+    let mut kept = Vec::with_capacity(limit.min(64 * 1024));
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut truncated = false;
+    loop {
+        let read = match reader.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        let remaining = limit.saturating_sub(kept.len());
+        let take = read.min(remaining);
+        kept.extend_from_slice(&buffer[..take]);
+        if take < read {
+            truncated = true;
+        }
+    }
+    (kept, truncated)
 }
 
 #[cfg(unix)]

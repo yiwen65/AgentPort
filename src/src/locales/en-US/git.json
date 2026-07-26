@@ -1,0 +1,142 @@
+{
+  "title": "Git Center",
+  "open": "Open Git Center",
+  "close": "Close Git Center",
+  "refresh": "Refresh",
+  "refreshing": "Refreshing…",
+  "retry": "Retry",
+  "tabs": {
+    "changes": "Changes",
+    "history": "History"
+  },
+  "context": {
+    "main": "Main checkout",
+    "worktree": "Worktree",
+    "detached": "detached HEAD",
+    "unborn": "No commits yet",
+    "activeSessions": "{{count}} active Sessions use this checkout",
+    "readOnly": "Read-only",
+    "writable": "Writable",
+    "canonicalPath": "Canonical path",
+    "head": "HEAD",
+    "branch": "Branch",
+    "missing": "Worktree is missing or has drifted",
+    "operationBlocked": "Git operation in progress: {{operation}}"
+  },
+  "sessionSwitch": {
+    "message": "Git is still showing the original checkout.",
+    "switch": "Switch to current Session",
+    "keep": "Keep original checkout"
+  },
+  "targetSwitch": {
+    "title": "Switch Git checkout?",
+    "body": "The current checkout has a selection or commit draft. It will remain with the original checkout and will not move to the new target.",
+    "confirm": "Switch checkout"
+  },
+  "states": {
+    "loading": "Reading Git state…",
+    "empty": "This checkout has no uncommitted changes.",
+    "error": "Could not read Git state",
+    "stale": "The repository changed. Git state is being refreshed and writes are paused.",
+    "partial": "The result is incomplete ({{reason}}). Stage and commit are disabled.",
+    "missing": "The Worktree is missing or no longer belongs to this Project.",
+    "readOnly": "This checkout is read-only: {{reason}}",
+    "conflicts": "{{count}} conflicts remain. Resolve them, then explicitly mark them resolved and stage.",
+    "unknown": "Unknown state"
+  },
+  "groups": {
+    "conflict": "Conflicts",
+    "staged": "Staged",
+    "unstaged": "Unstaged",
+    "untracked": "Untracked",
+    "ignored": "Ignored"
+  },
+  "selection": {
+    "selectAll": "Select every file in this group",
+    "clearAll": "Clear this group selection",
+    "selected": "{{count}} selected"
+  },
+  "actions": {
+    "stage": "Stage",
+    "stageSelected": "Stage selected",
+    "unstage": "Unstage",
+    "unstageSelected": "Unstage selected",
+    "markResolved": "Mark resolved and stage",
+    "reviewCommit": "Review commit",
+    "loadMore": "Load more",
+    "showAllChanges": "View changes",
+    "viewGit": "Git"
+  },
+  "entry": {
+    "renamedFrom": "From: {{path}}",
+    "submodule": "Submodule: {{state}}",
+    "ignoredNoPreview": "Ignored files show names only and cannot be previewed or staged.",
+    "kinds": {
+      "added": "Added",
+      "modified": "Modified",
+      "deleted": "Deleted",
+      "renamed": "Renamed",
+      "copied": "Copied",
+      "type_changed": "Type changed",
+      "conflict": "Conflict",
+      "untracked": "Untracked",
+      "ignored": "Ignored"
+    }
+  },
+  "diff": {
+    "title": "Diff preview",
+    "empty": "Select a file to preview its diff.",
+    "staged": "Staged",
+    "unstaged": "Unstaged",
+    "binary": "Binary contents are not displayed.",
+    "summary": "File summary only",
+    "summaryReason": "Contents were not read ({{reason}}).",
+    "large": "This diff exceeds the safe display limit. Only a truncated result or statistics are shown.",
+    "conflict": "Conflict preview ({{code}})",
+    "stats": "+{{additions}} −{{deletions}}",
+    "size": "{{size}} bytes"
+  },
+  "history": {
+    "empty": "This repository has no commits.",
+    "newCommits": "New commits found. Existing pagination remains anchored to the original HEAD.",
+    "refreshNow": "Refresh to latest HEAD",
+    "select": "Select a commit to view its details.",
+    "by": "{{author}} · {{date}}",
+    "parent": "Compare parent",
+    "firstParent": "First parent",
+    "otherParent": "Parent {{count}}",
+    "allFiles": "Full commit diff",
+    "files": "Files ({{count}})",
+    "message": "Full commit message"
+  },
+  "commit": {
+    "title": "Commit",
+    "project": "Project",
+    "checkout": "Checkout",
+    "placeholder": "Commit subject\n\nOptional body",
+    "scopeNote": "Commit includes every currently staged change in this checkout. Files are never staged automatically.",
+    "noStaged": "There are no staged changes to commit.",
+    "detachedBlocked": "Ordinary Commit is disabled on detached HEAD.",
+    "operationBlocked": "Ordinary Commit is disabled while {{operation}} is in progress.",
+    "conflictsBlocked": "Resolve and stage every conflict before Commit.",
+    "reviewTitle": "Review commit scope",
+    "reviewWarning": "Confirming runs one git commit. If HEAD, index, scope, or message changes, the backend rejects the write and requires a new review.",
+    "fullMessage": "Full commit message",
+    "scope": "Commit scope ({{count}} files)",
+    "outsideProject": "These staged paths are outside the Project directory:",
+    "subjectOver72": "The subject exceeds 72 characters. This is a warning only.",
+    "activeSessionWarning": "An active Session uses this checkout. Committing may affect its next operation.",
+    "confirm": "Confirm and commit every staged change",
+    "cancel": "Back to edit",
+    "preparing": "Regenerating the exact commit scope…",
+    "committing": "Running Git commit…",
+    "succeeded": "Commit succeeded",
+    "draftPreserved": "Your draft was preserved. Review again before retrying.",
+    "outcomes": {
+      "succeeded": "Commit succeeded",
+      "not_executed": "The commit did not run. Check the error and review again.",
+      "scope_drift": "A commit was created, but a hook changed the confirmed scope. Inspect it immediately.",
+      "indeterminate": "The commit result is uncertain. Inspect the real HEAD and do not retry automatically."
+    }
+  }
+}
