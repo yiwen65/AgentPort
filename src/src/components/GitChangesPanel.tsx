@@ -1,13 +1,22 @@
-import { useMemo } from "react";
+import { useMemo, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  discardGitEntry,
   gitWritesEnabled,
+  ignoreGitEntry,
+  mutateAllGitChanges,
   mutateGitSelection,
+  openGitFile,
   selectGitDiff,
   setAllGitSelections,
   setGitSelection,
+  trashGitEntry,
 } from "../gitCenter";
-import { useStore, type GitCheckoutUiState } from "../store";
+import {
+  openContextMenu,
+  useStore,
+  type GitCheckoutUiState,
+} from "../store";
 import type {
   GitChangeEntry,
   GitDiffSide,
@@ -20,7 +29,7 @@ type ChangeGroup = {
 };
 
 function groupsFor(cache: GitCheckoutUiState): ChangeGroup[] {
-  const entries = cache.changes?.entries ?? [];
+  const entries = (cache.changes?.entries ?? []).filter((entry) => !entry.ignored);
   return [
     {
       id: "conflict",
@@ -81,11 +90,66 @@ function ChangeRow({
       : groupId === "conflict"
         ? t("actions.markResolved")
         : t("actions.stage");
+  const openMenu = (event: MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const diffSelection = {
+      entryToken: entry.entryToken,
+      pathToken: entry.pathToken,
+      side,
+    };
+    openContextMenu(event.clientX, event.clientY, [
+      {
+        label: actionLabel,
+        disabled: !writeEnabled,
+        action: () => void mutateGitSelection(side, entry),
+      },
+      ...(entry.unstaged && !entry.untracked && !entry.conflicted
+        ? [{
+          label: t("fileActions.discard"),
+          danger: true,
+          disabled: !writeEnabled,
+          action: () => void discardGitEntry(entry),
+        }]
+        : []),
+      ...(entry.untracked
+        ? [
+          {
+            label: t("fileActions.trash"),
+            danger: true,
+            disabled: !writeEnabled,
+            action: () => void trashGitEntry(entry),
+          },
+          {
+            label: t("fileActions.ignoreRepository"),
+            disabled: !writeEnabled,
+            action: () => void ignoreGitEntry(entry, "repository"),
+          },
+          {
+            label: t("fileActions.ignoreLocal"),
+            disabled: !writeEnabled,
+            action: () => void ignoreGitEntry(entry, "local"),
+          },
+        ]
+        : []),
+      { label: "", separator: true },
+      {
+        label: t("fileActions.openDiff"),
+        action: () => void selectGitDiff(diffSelection),
+      },
+      {
+        label: t("fileActions.viewFile"),
+        disabled: entry.kind === "deleted",
+        action: () => void openGitFile(entry),
+      },
+    ]);
+  };
 
   return (
     <div
       className={`git-change-row${active ? " active" : ""}${entry.conflicted ? " conflict" : ""}`}
       role="row"
+      onContextMenu={openMenu}
       onClick={() => {
         if (!entry.ignored) {
           void selectGitDiff({
@@ -108,7 +172,7 @@ function ChangeRow({
         {entry.conflictCode ?? entry.indexStatus ?? entry.worktreeStatus ?? "·"}
       </span>
       <span className="git-change-path">
-        <span className="mono">{entry.displayPath}</span>
+        <span className="mono" title={entry.displayPath}>{entry.displayPath}</span>
         {entry.displayOldPath ? (
           <small>{t("entry.renamedFrom", { path: entry.displayOldPath })}</small>
         ) : null}
@@ -116,9 +180,9 @@ function ChangeRow({
           <small>{t("entry.submodule", { state: entry.submoduleState })}</small>
         ) : null}
         {entry.ignored ? <small>{t("entry.ignoredNoPreview")}</small> : null}
-      </span>
-      <span className="git-change-label">
-        {t(`entry.kinds.${entry.kind}`)}
+        <small className="git-change-label">
+          {t(`entry.kinds.${entry.kind}`)}
+        </small>
       </span>
       {actionable ? (
         <button
@@ -132,6 +196,13 @@ function ChangeRow({
           {actionLabel}
         </button>
       ) : null}
+      <button
+        className="icon-btn git-file-menu"
+        aria-label={t("fileActions.more", { path: entry.displayPath })}
+        onClick={openMenu}
+      >
+        ⋯
+      </button>
     </div>
   );
 }
@@ -235,8 +306,38 @@ export default function GitChangesPanel() {
   }
 
   const changes = cache.changes;
+  const stageable = changes.entries.filter(
+    (entry) => !entry.ignored && (entry.unstaged || entry.untracked || entry.conflicted),
+  ).length;
+  const unstageable = changes.entries.filter(
+    (entry) => entry.staged && !entry.conflicted,
+  ).length;
   return (
     <div className="git-changes-panel">
+      {stageable > 0 || unstageable > 0 ? (
+        <div className="git-changes-toolbar">
+          <span>{t("actions.allChanges")}</span>
+          <span className="spacer" />
+          {unstageable > 0 ? (
+            <button
+              className="btn small ghost"
+              disabled={!gitWritesEnabled(cache)}
+              onClick={() => void mutateAllGitChanges("staged")}
+            >
+              {t("actions.unstageAll")}
+            </button>
+          ) : null}
+          {stageable > 0 ? (
+            <button
+              className="btn small"
+              disabled={!gitWritesEnabled(cache)}
+              onClick={() => void mutateAllGitChanges("unstaged")}
+            >
+              {t("actions.stageAll")}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {cache.changesPhase === "stale" ? (
         <div className="git-inline-state warn" role="status">{t("states.stale")}</div>
       ) : null}

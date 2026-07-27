@@ -57,6 +57,9 @@
     "selected": "{{count}} selected"
   },
   "actions": {
+    "allChanges": "All changes",
+    "stageAll": "Stage all",
+    "unstageAll": "Unstage all",
     "stage": "Stage",
     "stageSelected": "Stage selected",
     "unstage": "Unstage",
@@ -66,6 +69,80 @@
     "loadMore": "Load more",
     "showAllChanges": "View changes",
     "viewGit": "Git"
+  },
+  "fileActions": {
+    "more": "More actions for {{path}}",
+    "discard": "Discard unstaged changes",
+    "discardTitle": "Discard local changes?",
+    "discardBody": "Restore the unstaged contents of {{path}} from the index. AgentPort cannot undo this action.",
+    "trash": "Move to Trash",
+    "trashTitle": "Move untracked file to Trash?",
+    "trashBody": "{{path}} will be moved to the macOS Trash and can be restored from there.",
+    "ignoreRepository": "Add to .gitignore",
+    "ignoreLocal": "Add to .git/info/exclude",
+    "openDiff": "Open Diff",
+    "viewFile": "View File"
+  },
+  "remote": {
+    "ahead": "{{count}} ahead",
+    "behind": "{{count}} behind",
+    "noRemote": "No remote",
+    "noUpstream": "No upstream",
+    "more": "More remote actions",
+    "syncing": "Syncing…",
+    "protectedBranch": "Force Push is disabled for main/master",
+    "blocked": {
+      "syncing": "Git status is refreshing",
+      "partial": "Git status is incomplete",
+      "readOnly": "This Checkout is read-only",
+      "busy": "Another Git operation is in progress",
+      "branchRequired": "A committed local branch is required",
+      "ongoingOperation": "Finish {{operation}} first",
+      "conflicts": "Resolve Git conflicts first",
+      "noRemote": "No remote is configured",
+      "noUpstream": "The current branch has no upstream"
+    },
+    "actions": {
+      "fetch": "Fetch",
+      "pull": "Pull (fast-forward only)",
+      "pull_rebase": "Pull (Rebase)",
+      "push": "Push",
+      "force_push": "Safe Force Push"
+    },
+    "success": {
+      "fetch": "Fetch completed",
+      "pull": "Pull completed",
+      "pull_rebase": "Pull Rebase completed",
+      "push": "Push completed",
+      "force_push": "Safe Force Push completed"
+    },
+    "confirm": {
+      "target": "{{branch}} ← {{upstream}}",
+      "noIncoming": "The last refresh found no incoming commits; Pull will still Fetch the latest state.",
+      "sessionWarning": "{{count}} active Session(s) use this Checkout; Pull changes the files they see.",
+      "pull": {
+        "title": "Pull the current branch?",
+        "body": "Fast-forward {{branch}} from {{upstream}}."
+      },
+      "pull_rebase": {
+        "title": "Pull and rebase the current branch?",
+        "body": "Fetch from {{upstream}} and rebase the local {{branch}} commits onto it."
+      },
+      "push": {
+        "title": "Push the current branch?",
+        "body": "Push {{branch}} to {{upstream}}."
+      },
+      "force_push": {
+        "title": "Safe Force Push the current branch?",
+        "body": "Rewrite {{upstream}} using --force-with-lease. Git rejects the operation if the remote has changed."
+      }
+    },
+    "dirty": {
+      "title": "Auto-stash local changes, then {{action}}?",
+      "body": "Git temporarily auto-stashes tracked local changes and restores the staged and unstaged state after updating. Untracked files stay in place; Git refuses the operation if the remote would overwrite them.",
+      "confirm": "Auto-stash and {{action}}",
+      "commitFirst": "Commit first"
+    }
   },
   "entry": {
     "renamedFrom": "From: {{path}}",
@@ -132,6 +209,14 @@
     "committing": "Running Git commit…",
     "succeeded": "Commit succeeded",
     "draftPreserved": "Your draft was preserved. Review again before retrying.",
+    "aiGenerate": "Generate with AI",
+    "aiGenerating": "Generating…",
+    "aiReplaceTitle": "Replace the current commit message?",
+    "aiReplaceBody": "The generated subject and body will replace this draft. Generation does not modify the index.",
+    "aiReplaceConfirm": "Generate and replace",
+    "aiDraftPreserved": "The current draft was not changed. Check the service under Settings → Commit AI and try again.",
+    "aiStale": "Staged changes changed during generation. The result was discarded; refresh and try again.",
+    "aiTruncated": "The staged diff was large, so AI used a size-limited excerpt. Review the message carefully.",
     "outcomes": {
       "succeeded": "Commit succeeded",
       "not_executed": "The commit did not run. Check the error and review again.",

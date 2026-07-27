@@ -172,6 +172,26 @@ impl AgentAdapter for ClaudeAdapter {
         let exe = || install.executable_path.clone();
         let mut argv = vec![exe()];
         let mut notices = Vec::new();
+        let mut helper_files = vec![];
+
+        // Resume is a new Claude invocation, so the per-session hooks must be
+        // injected again just like they are for the initial launch.
+        let hook_status = if super::has_flag(install, "settings") {
+            let file = format!("{}/claude-settings.json", ctx.session_dir);
+            helper_files.push((
+                file.clone(),
+                settings_json(&ctx.session_id, &ctx.hook_events_path),
+            ));
+            argv.push("--settings".into());
+            argv.push(file);
+            HookStatus::Supported
+        } else {
+            notices.push(LaunchNotice::new(
+                "hook_settings_unavailable",
+                "该版本无 --settings，hook 降级为 PTY 启发式",
+            ));
+            HookStatus::Degraded
+        };
 
         let resume_precision = match &ctx.agent_session_id {
             Some(id) => {
@@ -201,7 +221,7 @@ impl AgentAdapter for ClaudeAdapter {
         argv.extend(ctx.preset.args.clone());
         argv.extend(super::permission_argv(
             AgentType::Claude,
-            ctx.preset.permission_mode,
+            ctx.permission_mode,
             install,
         )?);
 
@@ -210,9 +230,9 @@ impl AgentAdapter for ClaudeAdapter {
             env: vec![],
             assigned_agent_session_id: None,
             resume_precision,
-            hook_status: install.hook_status,
+            hook_status,
             transport: ctx.transport,
-            helper_files: vec![],
+            helper_files,
             notices,
         })
     }
@@ -262,15 +282,7 @@ impl ClaudeAdapter {
                 // The recorded conversation was never persisted (or is gone).
                 // Start a fresh conversation with a newly assigned native id
                 // instead of failing the whole restart.
-                let mut plan = self.build_launch(&LaunchContext {
-                    install: ctx.install.clone(),
-                    preset: ctx.preset.clone(),
-                    cwd: ctx.cwd.clone(),
-                    session_id: ctx.session_id.clone(),
-                    hook_events_path: ctx.hook_events_path.clone(),
-                    session_dir: ctx.session_dir.clone(),
-                    transport: ctx.transport,
-                })?;
+                let mut plan = self.build_launch(&ctx.to_launch_context())?;
                 plan.notices.push(LaunchNotice::new(
                     "claude_conversation_missing",
                     "原 Session 没有可恢复的对话记录（首轮可能未产生消息），已按新 Session 启动",
@@ -453,6 +465,41 @@ mod tests {
             ClaudeAdapter.build_resume(&ctx),
             Err(crate::error::CoreError::Blocked(_))
         ));
+    }
+
+    #[test]
+    fn build_resume_reinjects_per_session_hook_settings() {
+        let mut ctx = fx::resume_ctx(
+            AgentType::Claude,
+            &[
+                "settings",
+                "resume",
+                "continue",
+                "dangerously-skip-permissions",
+            ],
+            Some("uuid-1"),
+        );
+        ctx.permission_mode = PermissionMode::Bypass;
+        let plan = ClaudeAdapter.build_resume(&ctx).unwrap();
+
+        assert_eq!(
+            plan.argv[1..],
+            [
+                "--settings",
+                "/tmp/work/.agentport/claude-settings.json",
+                "--resume",
+                "uuid-1",
+                "--dangerously-skip-permissions"
+            ]
+        );
+        assert_eq!(plan.hook_status, HookStatus::Supported);
+        assert_eq!(plan.helper_files.len(), 1);
+        assert_eq!(
+            plan.helper_files[0].0,
+            "/tmp/work/.agentport/claude-settings.json"
+        );
+        let settings: serde_json::Value = serde_json::from_str(&plan.helper_files[0].1).unwrap();
+        assert!(settings["hooks"]["SessionStart"].is_array());
     }
 
     #[test]

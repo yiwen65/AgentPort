@@ -3478,6 +3478,66 @@ impl Db {
         Ok(())
     }
 
+    pub fn load_commit_ai_settings(&self) -> Result<CommitAiSettings> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn.prepare(
+            "SELECT key,value FROM settings
+             WHERE key IN (
+                 'commit_ai_provider',
+                 'commit_ai_base_url',
+                 'commit_ai_model',
+                 'commit_ai_api_key_secret_ref_id'
+             )",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?;
+        let settings = CommitAiSettings {
+            provider: match rows.get("commit_ai_provider").map(String::as_str) {
+                Some("anthropic") => CommitAiProvider::Anthropic,
+                _ => CommitAiProvider::OpenAi,
+            },
+            base_url: rows.get("commit_ai_base_url").cloned().unwrap_or_default(),
+            model: rows.get("commit_ai_model").cloned().unwrap_or_default(),
+            api_key_secret_ref_id: rows
+                .get("commit_ai_api_key_secret_ref_id")
+                .filter(|value| !value.is_empty())
+                .cloned(),
+        };
+        settings.validate()?;
+        Ok(settings)
+    }
+
+    pub fn save_commit_ai_settings(&self, settings: &CommitAiSettings) -> Result<()> {
+        settings.validate()?;
+        let provider = match settings.provider {
+            CommitAiProvider::OpenAi => "openai",
+            CommitAiProvider::Anthropic => "anthropic",
+        };
+        let pairs = [
+            ("commit_ai_provider", provider.to_owned()),
+            ("commit_ai_base_url", settings.base_url.clone()),
+            ("commit_ai_model", settings.model.clone()),
+            (
+                "commit_ai_api_key_secret_ref_id",
+                settings.api_key_secret_ref_id.clone().unwrap_or_default(),
+            ),
+        ];
+        let mut conn = self.conn.lock().unwrap();
+        let transaction = conn.transaction()?;
+        for (key, value) in pairs {
+            transaction.execute(
+                "INSERT INTO settings(key,value) VALUES(?1,?2)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![key, value],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn meta_get(&self, key: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         match conn.query_row(

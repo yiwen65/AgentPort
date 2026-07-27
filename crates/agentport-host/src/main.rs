@@ -1768,14 +1768,13 @@ fn spawn_rpc_stderr_reader(
 
 /// Hook-event poller: every 250ms consume new JSON lines from
 /// `hook_events_path` ("event"/"hook_event_name"/"type" -> Hook observation;
-/// "session_id"/"sessionId" -> native session id capture).
+/// nested "data.session_id" or raw "session_id" -> native session id capture).
 fn hook_snapshot_offset(path: &str) -> u64 {
     std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
 }
 
 fn spawn_hook_poller(shared: Arc<Shared>, tx: mpsc::Sender<HostMsg>, initial_offset: u64) {
     let path = PathBuf::from(&shared.cfg.hook_events_path);
-    let hint_wins = shared.cfg.agent_session_id_hint.is_some();
     std::thread::spawn(move || {
         // The snapshot was captured before child spawn. Starting here avoids
         // feeding prior-run hook events into a new run's state machine.
@@ -1813,20 +1812,34 @@ fn spawn_hook_poller(shared: Arc<Shared>, tx: mpsc::Sender<HostMsg>, initial_off
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                if let Some(name) = ["event", "hook_event_name", "type"]
+                let event_name = ["event", "hook_event_name", "type"]
                     .iter()
                     .find_map(|k| v.get(*k))
-                    .and_then(|x| x.as_str())
-                {
+                    .and_then(|x| x.as_str());
+                if let Some(name) = event_name {
                     let _ = tx.send(HostMsg::Obs(Observation::Hook(name.to_string())));
                 }
-                if !hint_wins {
-                    if let Some(id) = ["session_id", "sessionId"]
+
+                // A launch hint proves the initial identity, but Claude may
+                // legitimately replace it after /clear or a foreground fork.
+                // Only SessionStart may replace a hint; without a hint, any
+                // native-bearing hook can establish the initial identity.
+                let may_update_id = shared.cfg.agent_session_id_hint.is_none()
+                    || event_name == Some("SessionStart");
+                if may_update_id {
+                    let native_id = ["/data/session_id", "/data/sessionId"]
                         .iter()
-                        .find_map(|k| v.get(*k))
-                        .and_then(|x| x.as_str())
-                    {
-                        if !id.is_empty() {
+                        .find_map(|pointer| v.pointer(pointer))
+                        .or_else(|| {
+                            ["session_id", "sessionId"]
+                                .iter()
+                                .find_map(|key| v.get(*key))
+                        })
+                        .and_then(|value| value.as_str());
+                    if let Some(id) = native_id {
+                        // AgentPort's hook wrapper also has a top-level
+                        // session_id. It is routing metadata, not a native ID.
+                        if !id.is_empty() && id != shared.cfg.session_id {
                             set_agent_session_id(&shared, id);
                         }
                     }

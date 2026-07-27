@@ -942,6 +942,7 @@ fn cmd_session_restart(ctx: &Ctx, args: &[String]) -> Result<()> {
     let rctx = ResumeContext {
         install,
         preset: preset.clone(),
+        permission_mode: session.permission_mode,
         cwd: session.cwd.clone(),
         agent_session_id: session.agent_session_id.clone(),
         session_id: session.id.clone(),

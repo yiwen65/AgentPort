@@ -95,6 +95,7 @@ export interface ConfirmOptions {
   body?: string;
   details?: string[];
   confirmLabel?: string;
+  cancelLabel?: string;
   danger?: boolean;
 }
 
@@ -151,6 +152,8 @@ export interface GitCheckoutUiState {
   commitReviewOpen: boolean;
   commitPhase: GitCenterPhase;
   commitError: string | null;
+  commitAiPhase: GitCenterPhase;
+  commitAiError: string | null;
   lastCommitResult: GitCommitResult | null;
 }
 

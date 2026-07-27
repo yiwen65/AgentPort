@@ -1,10 +1,14 @@
 // @vitest-environment jsdom
+// @ts-expect-error Vitest executes this regression test in Node.
+import { readFileSync } from "node:fs";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import GitCenter from "./components/GitCenter";
 import {
   emptyGitCenterState,
+  getState,
+  resolveConfirm,
   setState,
   type GitCheckoutUiState,
 } from "./store";
@@ -13,6 +17,8 @@ import type {
   GitChangesSnapshot,
   GitCheckoutDescriptor,
 } from "./types";
+
+const gitCenterStyles = readFileSync("src/styles.css", "utf8");
 
 const context: GitCheckoutDescriptor = {
   target: { projectId: "project-1", kind: "worktree", worktreeId: "worktree-1" },
@@ -27,6 +33,11 @@ const context: GitCheckoutDescriptor = {
   detached: false,
   unborn: false,
   ongoingOperation: null,
+  hasRemote: true,
+  remote: "origin",
+  upstream: "origin/feature/mock",
+  ahead: 2,
+  behind: 0,
   worktreeHealth: "dirty",
   liveSessionIds: [],
   writable: true,
@@ -76,6 +87,19 @@ const ignoredEntry: GitChangeEntry = {
   staged: false,
   unstaged: false,
   ignored: true,
+};
+
+const untrackedEntry: GitChangeEntry = {
+  ...bothEntry,
+  entryToken: "untracked-entry",
+  pathToken: "untracked-path",
+  displayPath: "docs/new-file.md",
+  indexStatus: null,
+  worktreeStatus: null,
+  kind: "untracked",
+  staged: false,
+  unstaged: false,
+  untracked: true,
 };
 
 function snapshot(
@@ -132,6 +156,8 @@ function cache(overrides: Partial<GitCheckoutUiState> = {}): GitCheckoutUiState 
     commitReviewOpen: false,
     commitPhase: "idle",
     commitError: null,
+    commitAiPhase: "idle",
+    commitAiError: null,
     lastCommitResult: null,
     ...overrides,
   };
@@ -157,7 +183,7 @@ function show(current: GitCheckoutUiState, view: "changes" | "history" = "change
 
 describe("Git Center states", () => {
   beforeEach(() => {
-    setState({ gitCenter: emptyGitCenterState() });
+    setState({ gitCenter: emptyGitCenterState(), contextMenu: null });
   });
   afterEach(cleanup);
 
@@ -170,7 +196,22 @@ describe("Git Center states", () => {
     expect(screen.getAllByText("src/both.ts")).toHaveLength(2);
   });
 
-  it("blocks writes for partial state while rendering conflict and ignored details", () => {
+  it("offers AI commit generation only when staged changes are eligible", () => {
+    show(cache());
+    const { rerender } = render(<GitCenter />);
+
+    expect(
+      (screen.getByRole("button", { name: /AI 生成/ }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+
+    act(() => show(cache({ changes: snapshot([untrackedEntry]) })));
+    rerender(<GitCenter />);
+    expect(
+      (screen.getByRole("button", { name: /AI 生成/ }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it("blocks writes for partial state while hiding ignored changes", () => {
     show(cache({
       context: { ...context, writable: false, blockers: ["status_partial"] },
       changes: snapshot([conflictEntry, ignoredEntry], false),
@@ -179,10 +220,142 @@ describe("Git Center states", () => {
 
     expect(screen.getByText(/结果不完整/)).toBeTruthy();
     expect(screen.getByText(/存在 1 个冲突/)).toBeTruthy();
-    expect(screen.getByText(/ignored 文件只显示名称/)).toBeTruthy();
+    expect(screen.queryByText(".local-secret")).toBeNull();
+    expect(screen.queryByText("已忽略")).toBeNull();
     for (const checkbox of screen.getAllByRole("checkbox")) {
       expect((checkbox as HTMLInputElement).disabled).toBe(true);
     }
+  });
+
+  it("offers batch, file, ignore, trash, diff, view, and remote actions", () => {
+    show(cache({
+      changes: snapshot([untrackedEntry]),
+    }));
+    render(<GitCenter />);
+
+    expect(screen.getByRole("button", { name: "全部暂存" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Push" })).toBeTruthy();
+    fireEvent.contextMenu(screen.getByText("docs/new-file.md"));
+
+    const labels = getState().contextMenu?.items
+      .filter((item) => !item.separator)
+      .map((item) => item.label);
+    expect(labels).toEqual([
+      "暂存",
+      "移入废纸篓",
+      "加入 .gitignore",
+      "加入 .git/info/exclude",
+      "打开 Diff",
+      "查看文件",
+    ]);
+  });
+
+  it("keeps Pull available for local changes and offers an explicit auto-stash path", async () => {
+    show(cache({
+      context: {
+        ...context,
+        liveSessionIds: ["session-1", "session-2"],
+      },
+    }));
+    render(<GitCenter />);
+
+    fireEvent.click(screen.getByRole("button", { name: "更多远端操作" }));
+    const pull = getState().contextMenu?.items.find(
+      (item) => item.label.startsWith("Pull（仅快进）"),
+    );
+    expect(pull?.disabled).toBe(false);
+
+    act(() => pull?.action?.());
+    expect(getState().confirm).toMatchObject({
+      title: "自动储藏本地更改后 Pull？",
+      confirmLabel: "自动储藏并 Pull",
+      cancelLabel: "先提交",
+    });
+    expect(getState().confirm?.details).toContain(
+      "2 个活动 Session 正在使用此 Checkout；Pull 会修改它们看到的文件。",
+    );
+
+    await act(async () => {
+      resolveConfirm(false);
+      await Promise.resolve();
+    });
+  });
+
+  it("disables Pull only for a real blocker and exposes the reason", () => {
+    show(cache({
+      context: {
+        ...context,
+        upstream: null,
+      },
+    }));
+    render(<GitCenter />);
+
+    fireEvent.click(screen.getByRole("button", { name: "更多远端操作" }));
+    const pull = getState().contextMenu?.items.find(
+      (item) => item.label.startsWith("Pull（仅快进）"),
+    );
+    expect(pull?.disabled).toBe(true);
+    expect(pull?.tip).toBe("当前分支未设置 upstream");
+  });
+
+  it("keeps long Git text inside a narrow Changes column without clipping it", () => {
+    show(cache({
+      changes: snapshot([{
+        ...untrackedEntry,
+        displayPath: "docs/system-dataflow-and-startup-architecture.html",
+      }]),
+      diffSelection: {
+        entryToken: untrackedEntry.entryToken,
+        pathToken: untrackedEntry.pathToken,
+        side: "unstaged",
+      },
+      diffPhase: "ready",
+      diff: {
+        context,
+        statusToken: "status-1",
+        side: "unstaged",
+        pathToken: untrackedEntry.pathToken,
+        displayPath: "docs/system-dataflow-and-startup-architecture.html",
+        format: "text",
+        patch: "+content",
+        additions: 1,
+        deletions: 0,
+        fileSize: 8,
+        truncated: false,
+        reason: null,
+        conflictCode: null,
+      },
+    }));
+    const { container } = render(<GitCenter />);
+
+    const path = container.querySelector<HTMLElement>(".git-change-path > span");
+    const diffTitle = container.querySelector<HTMLElement>(
+      ".git-diff-panel > header strong",
+    );
+
+    expect(path?.title).toBe("docs/system-dataflow-and-startup-architecture.html");
+    expect(
+      container.querySelector(".git-change-path .git-change-label")?.textContent,
+    ).toBe("未跟踪");
+    expect(diffTitle?.title).toBe(
+      "docs/system-dataflow-and-startup-architecture.html",
+    );
+    expect(gitCenterStyles).toMatch(
+      /\.git-center-left\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;/,
+    );
+    expect(gitCenterStyles).not.toContain("container-type:");
+    expect(gitCenterStyles).toMatch(
+      /\.git-change-path\s*>\s*span\s*\{[^}]*overflow-wrap:\s*anywhere;[^}]*white-space:\s*normal;/,
+    );
+    expect(gitCenterStyles).toMatch(
+      /\.git-remote-branch\s*\{[^}]*flex:\s*1;[^}]*overflow:\s*hidden;/,
+    );
+    expect(gitCenterStyles).toMatch(
+      /\.git-commit-composer\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);[^}]*overflow:\s*hidden;/,
+    );
+    expect(gitCenterStyles).toMatch(
+      /\.git-diff-panel\s*>\s*header\s+strong\s*\{[^}]*overflow-wrap:\s*anywhere;[^}]*white-space:\s*normal;/,
+    );
   });
 
   it("renders a dedicated missing Worktree state even when Changes cannot be read", () => {

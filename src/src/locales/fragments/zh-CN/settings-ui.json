@@ -15,6 +15,7 @@
       "notifications": "通知与日志",
       "search": "搜索与渲染",
       "adapters": "Agent 适配器",
+      "commitAi": "提交 AI",
       "secrets": "Secret 管理",
       "archive": "归档 Session",
       "backup": "备份与恢复"
@@ -104,6 +105,37 @@
       "probePassed_other": "已自动选择 {{count}} 个可用 Agent",
       "probeNone": "没有找到可用 Agent；请打开高级选项查看详情。",
       "reprobeFailed": "无法重新检测 Agent：{{detail}}"
+    },
+    "commitAi": {
+      "description": "使用 OpenAI 或 Anthropic 兼容服务，根据当前已暂存 Diff 生成符合 Conventional Commits 1.0.0 的中文提交主题与正文。",
+      "providerLabel": "兼容协议",
+      "providers": {
+        "openai": "OpenAI 兼容",
+        "anthropic": "Anthropic 兼容"
+      },
+      "providerHint": "AgentPort 会按所选协议拼接标准消息接口路径。",
+      "baseUrlLabel": "服务地址（Base URL）",
+      "baseUrlHint": "可填写服务根地址、版本地址，或完整的消息接口地址；仅支持 HTTP(S)。",
+      "httpWarning": "HTTP 会以明文传输 API Key 与暂存 Diff；仅建议用于可信的本机服务。",
+      "modelLabel": "模型",
+      "modelHint": "填写兼容服务实际提供的模型 ID。",
+      "apiKeyLabel": "API Key",
+      "apiKeyPlaceholder": "输入 API Key",
+      "apiKeyConfigured": "已配置；留空则保持不变",
+      "apiKeyKeepHint": "已存入系统安全存储。留空保存不会覆盖现有 Key。",
+      "apiKeyStorageHint": "只写入 macOS Keychain / Linux Secret Service，不写入设置数据库；保存成功后会立即清空输入框。",
+      "save": "保存提交 AI 配置",
+      "saved": "提交 AI 配置已保存",
+      "clearKey": "清除 API Key",
+      "clearKeyTitle": "清除提交 AI 的 API Key？",
+      "clearKeyBody": "将从系统安全存储中删除此凭据；Base URL 与模型设置会保留。",
+      "clearKeyConfirm": "清除 Key",
+      "keyCleared": "API Key 已清除",
+      "privacyTitle": "发送范围",
+      "privacyBody": "只有在 Git Center 明确点击“AI 生成”时，当前已暂存 Diff、分支名和最近提交主题才会发送到配置的服务。未暂存和已忽略文件不会发送，生成结果仍需人工审查后才能提交。",
+      "loadFailed": "无法读取提交 AI 配置：{{detail}}",
+      "saveFailed": "无法保存提交 AI 配置：{{detail}}",
+      "clearKeyFailed": "无法清除 API Key：{{detail}}"
     },
     "secrets": {
       "backendLabel": "存储后端",

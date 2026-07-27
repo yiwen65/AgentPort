@@ -15,6 +15,7 @@
       "notifications": "Notifications & Logs",
       "search": "Search & Rendering",
       "adapters": "Agent Adapters",
+      "commitAi": "Commit AI",
       "secrets": "Secret Management",
       "archive": "Archived Sessions",
       "backup": "Backup & Restore"
@@ -104,6 +105,37 @@
       "probePassed_other": "Automatically selected {{count}} working Agents",
       "probeNone": "No working Agent was found. Open advanced options for details.",
       "reprobeFailed": "Could not check Agents again: {{detail}}"
+    },
+    "commitAi": {
+      "description": "Use an OpenAI- or Anthropic-compatible service to draft an editable Chinese subject and body that follow Conventional Commits 1.0.0.",
+      "providerLabel": "Compatible protocol",
+      "providers": {
+        "openai": "OpenAI compatible",
+        "anthropic": "Anthropic compatible"
+      },
+      "providerHint": "AgentPort appends the standard message endpoint for the selected protocol.",
+      "baseUrlLabel": "Base URL",
+      "baseUrlHint": "Enter a service root, version URL, or complete message endpoint. Only HTTP(S) is supported.",
+      "httpWarning": "HTTP sends the API key and staged diff in plaintext. Use it only for a trusted local service.",
+      "modelLabel": "Model",
+      "modelHint": "Enter a model ID that the compatible service actually provides.",
+      "apiKeyLabel": "API key",
+      "apiKeyPlaceholder": "Enter API key",
+      "apiKeyConfigured": "Configured; leave blank to keep it",
+      "apiKeyKeepHint": "Stored in system secure storage. Saving a blank field keeps the existing key.",
+      "apiKeyStorageHint": "Written only to macOS Keychain / Linux Secret Service, never to the settings database. The field is cleared immediately after a successful save.",
+      "save": "Save Commit AI settings",
+      "saved": "Commit AI settings saved",
+      "clearKey": "Clear API key",
+      "clearKeyTitle": "Clear the Commit AI API key?",
+      "clearKeyBody": "This deletes the credential from system secure storage. The Base URL and model remain configured.",
+      "clearKeyConfirm": "Clear key",
+      "keyCleared": "API key cleared",
+      "privacyTitle": "Data sent",
+      "privacyBody": "Only an explicit “Generate with AI” click in Git Center sends the staged diff, branch name, and recent commit subjects to the configured service. Unstaged and ignored files are not sent, and the result must still pass human review before commit.",
+      "loadFailed": "Could not load Commit AI settings: {{detail}}",
+      "saveFailed": "Could not save Commit AI settings: {{detail}}",
+      "clearKeyFailed": "Could not clear the API key: {{detail}}"
     },
     "secrets": {
       "backendLabel": "Storage backend",

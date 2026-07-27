@@ -172,7 +172,7 @@ impl AgentAdapter for CodexAdapter {
         argv.extend(ctx.preset.args.clone());
         argv.extend(super::permission_argv(
             AgentType::Codex,
-            ctx.preset.permission_mode,
+            ctx.permission_mode,
             install,
         )?);
         Ok(LaunchPlan {

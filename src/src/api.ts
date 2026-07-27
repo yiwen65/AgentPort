@@ -34,14 +34,20 @@ import type {
   GitCommitPatch,
   GitCommitResult,
   GitCommitReview,
+  GitCommitMessageSuggestion,
   GitContextLocator,
   GitDiffSide,
   GitFileDiff,
   GitHistoryPage,
+  GitIgnoreTarget,
   GitMutationResult,
   GitPathSelection,
+  GitRemoteAction,
+  GitResolvedFile,
   GitStateInvalidated,
   GitWorkspaceCommandError,
+  CommitAiConfig,
+  CommitAiProvider,
   RestartResult,
   DocumentDirListing,
   SearchResult,
@@ -151,6 +157,17 @@ export function isGitWorkspaceCommandError(
     typeof record.recoverable === "boolean" &&
     (record.currentChanges === null ||
       (typeof record.currentChanges === "object" && record.currentChanges !== null));
+}
+
+/** Commit AI errors are structured but do not carry Git snapshots. */
+export function commitAiErrorText(value: unknown): string {
+  const record = asRecord(value);
+  return record &&
+    typeof record.code === "string" &&
+    typeof record.message === "string" &&
+    typeof record.recoverable === "boolean"
+    ? record.message
+    : errorText(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +380,78 @@ export const api = {
       expectedStatusToken,
       selections,
     }),
+  discardGitPaths: (
+    locator: GitContextLocator,
+    expectedCheckoutId: string,
+    expectedStatusToken: string,
+    selections: GitPathSelection[],
+  ) =>
+    invoke<GitMutationResult>("discard_git_paths", {
+      locator,
+      expectedCheckoutId,
+      expectedStatusToken,
+      selections,
+    }),
+  addGitIgnore: (
+    locator: GitContextLocator,
+    expectedCheckoutId: string,
+    expectedStatusToken: string,
+    selection: GitPathSelection,
+    target: GitIgnoreTarget,
+  ) =>
+    invoke<GitMutationResult>("add_git_ignore", {
+      locator,
+      expectedCheckoutId,
+      expectedStatusToken,
+      selection,
+      target,
+    }),
+  trashGitPath: (
+    locator: GitContextLocator,
+    expectedCheckoutId: string,
+    expectedStatusToken: string,
+    selection: GitPathSelection,
+  ) =>
+    invoke<GitMutationResult>("trash_git_path", {
+      locator,
+      expectedCheckoutId,
+      expectedStatusToken,
+      selection,
+    }),
+  resolveGitFile: (
+    locator: GitContextLocator,
+    expectedCheckoutId: string,
+    expectedStatusToken: string,
+    selection: GitPathSelection,
+  ) =>
+    invoke<GitResolvedFile>("resolve_git_file", {
+      locator,
+      expectedCheckoutId,
+      expectedStatusToken,
+      selection,
+    }),
+  syncGitRemote: (
+    locator: GitContextLocator,
+    expectedCheckoutId: string,
+    expectedStatusToken: string,
+    action: GitRemoteAction,
+  ) =>
+    invoke<GitMutationResult>("sync_git_remote", {
+      locator,
+      expectedCheckoutId,
+      expectedStatusToken,
+      action,
+    }),
+  generateGitCommitMessage: (
+    locator: GitContextLocator,
+    expectedCheckoutId: string,
+    expectedStatusToken: string,
+  ) =>
+    invoke<GitCommitMessageSuggestion>("generate_git_commit_message", {
+      locator,
+      expectedCheckoutId,
+      expectedStatusToken,
+    }),
   prepareGitCommit: (
     locator: GitContextLocator,
     expectedCheckoutId: string,
@@ -411,6 +500,21 @@ export const api = {
   ackTimeline: (snapshots: TimelineAckSnapshot[]) => invoke<void>("ack_timeline", { snapshots }),
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
+  getCommitAiConfig: () => invoke<CommitAiConfig>("get_commit_ai_config"),
+  saveCommitAiConfig: (
+    provider: CommitAiProvider,
+    baseUrl: string,
+    model: string,
+    apiKey: string | null,
+  ) =>
+    invoke<CommitAiConfig>("save_commit_ai_config", {
+      provider,
+      baseUrl,
+      model,
+      apiKey,
+    }),
+  clearCommitAiApiKey: () =>
+    invoke<CommitAiConfig>("clear_commit_ai_api_key"),
   diagHosts: () => invoke<HostInfo[]>("diag_hosts"),
   diagSummary: () => invoke<string>("diag_summary"),
   diagCapabilities: () => invoke<string>("diag_capabilities"),

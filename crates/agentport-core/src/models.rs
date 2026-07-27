@@ -779,6 +779,71 @@ impl UiLanguage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CommitAiProvider {
+    #[default]
+    #[serde(rename = "openai")]
+    OpenAi,
+    #[serde(rename = "anthropic")]
+    Anthropic,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitAiSettings {
+    pub provider: CommitAiProvider,
+    pub base_url: String,
+    pub model: String,
+    pub api_key_secret_ref_id: Option<String>,
+}
+
+impl Default for CommitAiSettings {
+    fn default() -> Self {
+        Self {
+            provider: CommitAiProvider::OpenAi,
+            base_url: String::new(),
+            model: String::new(),
+            api_key_secret_ref_id: None,
+        }
+    }
+}
+
+impl CommitAiSettings {
+    pub fn validate(&self) -> Result<(), crate::error::CoreError> {
+        use crate::error::CoreError;
+        if self.base_url.len() > 2048
+            || self
+                .base_url
+                .chars()
+                .any(|value| matches!(value, '\0' | '\r' | '\n'))
+        {
+            return Err(CoreError::Validation(
+                "commit AI base URL must be one line up to 2048 bytes".into(),
+            ));
+        }
+        if self.model.len() > 256
+            || self
+                .model
+                .chars()
+                .any(|value| matches!(value, '\0' | '\r' | '\n'))
+        {
+            return Err(CoreError::Validation(
+                "commit AI model must be one line up to 256 bytes".into(),
+            ));
+        }
+        if self
+            .api_key_secret_ref_id
+            .as_ref()
+            .is_some_and(|value| value.is_empty() || value.len() > 256)
+        {
+            return Err(CoreError::Validation(
+                "commit AI API key reference is invalid".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {

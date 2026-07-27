@@ -16,7 +16,7 @@ export function ConfirmDialogHost() {
       footer={
         <>
           <button className="btn ghost" onClick={() => resolveConfirm(false)}>
-            {t("actions.cancel")}
+            {confirm.cancelLabel ?? t("actions.cancel")}
           </button>
           <button
             className={confirm.danger ? "btn danger" : "btn primary"}

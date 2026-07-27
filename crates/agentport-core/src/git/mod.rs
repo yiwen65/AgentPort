@@ -15,12 +15,15 @@ use std::path::{Path, PathBuf};
 pub mod branch;
 pub mod command;
 pub mod commit;
+pub mod commit_ai;
 pub mod context;
 pub mod diff;
+pub mod file_actions;
 pub mod history;
 pub mod operation;
 pub mod repository;
 pub mod status;
+pub mod sync;
 mod token;
 pub mod worktree;
 
@@ -33,11 +36,13 @@ pub use commit::{
     GitCommitOutcome, GitCommitRecovery, GitCommitResult, GitCommitReview, GitCommitScopeFile,
     GitMutationResult, GitPathSelection,
 };
+pub use commit_ai::GitCommitAiContext;
 pub use context::{
     GitCheckoutDescriptor, GitCheckoutKind, GitCheckoutTarget, GitContextLocator,
     GitWorkspaceManager, ResolvedGitContext,
 };
 pub use diff::{GitDiffFormat, GitDiffSide, GitFileDiff};
+pub use file_actions::{GitIgnoreTarget, GitResolvedFile};
 pub use history::{
     GitCommitDetail, GitCommitFile, GitCommitPatch, GitCommitSummary, GitHistoryPage,
 };
@@ -47,6 +52,7 @@ pub use operation::{
 };
 pub use repository::{RepositoryFileLock, RepositoryIdentity, RepositoryManager};
 pub use status::{GitChangeCounts, GitChangeEntry, GitChangeKind, GitChangesSnapshot};
+pub use sync::GitRemoteAction;
 
 #[derive(Debug, Clone)]
 pub struct GitWorktreeInfo {

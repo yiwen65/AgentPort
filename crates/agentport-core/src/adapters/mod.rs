@@ -45,6 +45,10 @@ pub struct LaunchContext {
 pub struct ResumeContext {
     pub install: AdapterInstall,
     pub preset: Preset,
+    /// Permission mode persisted on the Session being resumed. This is
+    /// intentionally separate from the preset, which may have changed since
+    /// the Session was created.
+    pub permission_mode: PermissionMode,
     pub cwd: String,
     pub agent_session_id: Option<String>,
     pub session_id: String,
@@ -55,9 +59,11 @@ pub struct ResumeContext {
 
 impl ResumeContext {
     fn to_launch_context(&self) -> LaunchContext {
+        let mut preset = self.preset.clone();
+        preset.permission_mode = self.permission_mode;
         LaunchContext {
             install: self.install.clone(),
-            preset: self.preset.clone(),
+            preset,
             cwd: self.cwd.clone(),
             session_id: self.session_id.clone(),
             hook_events_path: self.hook_events_path.clone(),
@@ -349,6 +355,7 @@ pub(crate) mod test_fixtures {
         super::ResumeContext {
             install: install(t, flags),
             preset: preset(t, PermissionMode::Native),
+            permission_mode: PermissionMode::Native,
             cwd: "/tmp/work".into(),
             agent_session_id: agent_session_id.map(str::to_string),
             session_id: "ses_test".into(),

@@ -492,6 +492,11 @@ export interface GitCheckoutDescriptor {
   detached: boolean;
   unborn: boolean;
   ongoingOperation: string | null;
+  hasRemote: boolean;
+  remote: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
   worktreeHealth: string | null;
   liveSessionIds: string[];
   writable: boolean;
@@ -625,6 +630,39 @@ export interface GitPathSelection {
 export interface GitMutationResult {
   operationId: string;
   changes: GitChangesSnapshot;
+}
+
+export type GitIgnoreTarget = "repository" | "local";
+export type GitRemoteAction =
+  | "fetch"
+  | "pull"
+  | "pull_autostash"
+  | "pull_rebase"
+  | "pull_rebase_autostash"
+  | "push"
+  | "force_push";
+
+export type CommitAiProvider = "openai" | "anthropic";
+
+export interface CommitAiConfig {
+  provider: CommitAiProvider;
+  baseUrl: string;
+  model: string;
+  hasApiKey: boolean;
+}
+
+export interface GitCommitMessageSuggestion {
+  statusToken: string;
+  subject: string;
+  body: string;
+  message: string;
+  truncated: boolean;
+}
+
+export interface GitResolvedFile {
+  context: GitCheckoutDescriptor;
+  displayPath: string;
+  absolutePath: string;
 }
 
 export interface GitCommitScopeFile {

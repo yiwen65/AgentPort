@@ -12,6 +12,8 @@ const { apiMock } = vi.hoisted(() => ({
     getGitCommitDiff: vi.fn(),
     stageGitPaths: vi.fn(),
     unstageGitPaths: vi.fn(),
+    syncGitRemote: vi.fn(),
+    generateGitCommitMessage: vi.fn(),
     prepareGitCommit: vi.fn(),
     commitGitChanges: vi.fn(),
   },
@@ -31,10 +33,12 @@ import {
   prepareGitCommitReview,
   refreshGitChanges,
   resetGitCenterStateForTests,
+  generateGitCommitMessage,
+  runGitRemoteAction,
   setGitCommitDraft,
   setGitSelection,
 } from "./gitCenter";
-import { getState, setState } from "./store";
+import { getState, resolveConfirm, setState } from "./store";
 import type {
   GitChangeEntry,
   GitChangesSnapshot,
@@ -68,6 +72,11 @@ function context(id: string, projectId = "project-1"): GitCheckoutDescriptor {
     detached: false,
     unborn: false,
     ongoingOperation: null,
+    hasRemote: true,
+    remote: "origin",
+    upstream: "origin/main",
+    ahead: 0,
+    behind: 0,
     worktreeHealth: null,
     liveSessionIds: [],
     writable: true,
@@ -241,6 +250,79 @@ describe("Git Center checkout authority", () => {
     expect(cache.changes?.statusToken).toBe("status-new");
     expect(cache.changesPhase).toBe("stale");
     expect(cache.commitDraft).toBe("keep this draft");
+  });
+
+  it("maps a confirmed dirty Pull to the explicit backend auto-stash action", async () => {
+    const target = {
+      ...context("checkout-a", "a"),
+      liveSessionIds: ["session-1"],
+    };
+    const dirty = changes(target, "status-dirty");
+    apiMock.resolveGitContext.mockResolvedValue(target);
+    apiMock.getGitChanges.mockResolvedValue(dirty);
+    apiMock.getGitHistory.mockResolvedValue(history(target));
+    apiMock.syncGitRemote.mockResolvedValue({
+      operationId: "remote-1",
+      changes: dirty,
+    });
+    await act(async () => {
+      await openGitCenter(locator("a"));
+    });
+
+    let pulling!: Promise<void>;
+    act(() => {
+      pulling = runGitRemoteAction("pull");
+    });
+    expect(getState().confirm?.confirmLabel).toBe("自动储藏并 Pull");
+
+    await act(async () => {
+      resolveConfirm(true);
+      await pulling;
+    });
+    expect(apiMock.syncGitRemote).toHaveBeenCalledWith(
+      locator("a"),
+      "checkout-a",
+      "status-dirty",
+      "pull_autostash",
+    );
+  });
+
+  it("fills the commit draft only from a suggestion for the current staged status", async () => {
+    const stagedEntry = {
+      ...entry,
+      indexStatus: "M",
+      worktreeStatus: null,
+      staged: true,
+      unstaged: false,
+    };
+    const target = context("checkout-a", "a");
+    const staged = changes(target, "status-staged", [stagedEntry]);
+    apiMock.resolveGitContext.mockResolvedValue(target);
+    apiMock.getGitChanges.mockResolvedValue(staged);
+    apiMock.getGitHistory.mockResolvedValue(history(target));
+    apiMock.generateGitCommitMessage.mockResolvedValue({
+      statusToken: "status-staged",
+      subject: "feat(git): 新增提交信息生成功能",
+      body: "根据已暂存变更生成符合规范的中文提交主题和正文。",
+      message:
+        "feat(git): 新增提交信息生成功能\n\n" +
+        "根据已暂存变更生成符合规范的中文提交主题和正文。",
+      truncated: false,
+    });
+    await act(async () => {
+      await openGitCenter(locator("a"));
+      await generateGitCommitMessage();
+    });
+
+    expect(apiMock.generateGitCommitMessage).toHaveBeenCalledWith(
+      locator("a"),
+      "checkout-a",
+      "status-staged",
+    );
+    expect(getState().gitCenter.caches["checkout-a"].commitDraft).toBe(
+      "feat(git): 新增提交信息生成功能\n\n" +
+        "根据已暂存变更生成符合规范的中文提交主题和正文。",
+    );
   });
 
   it("treats an event as invalidation, never as a replacement snapshot", async () => {

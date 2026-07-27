@@ -1555,10 +1555,16 @@ button {
 }
 
 .git-center-left {
+  min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  overflow: hidden;
   border-right: 1px solid var(--border);
+}
+
+.git-center-left > * {
+  min-width: 0;
 }
 
 .git-changes-panel,
@@ -1573,6 +1579,90 @@ button {
 
 .git-changes-panel {
   padding: 8px;
+}
+
+.git-changes-toolbar,
+.git-remote-controls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  margin-bottom: 8px;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--git-surface-raised);
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.git-remote-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin: 0;
+  border-width: 1px 0 0;
+  border-radius: 0;
+  padding: 7px 10px;
+}
+
+.git-remote-branch {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.git-remote-branch > span[aria-hidden="true"] {
+  grid-column: 1;
+  grid-row: 1 / 3;
+}
+
+.git-remote-branch strong {
+  grid-column: 2;
+  grid-row: 1;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.git-remote-branch small {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-dim);
+  white-space: normal;
+}
+
+.git-remote-status {
+  grid-column: 3;
+  grid-row: 1 / 3;
+  align-self: center;
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  white-space: nowrap;
+}
+
+.git-remote-actions {
+  flex: none;
+  display: flex;
+  margin-left: 8px;
+}
+
+.git-remote-actions .btn:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.git-remote-menu {
+  min-width: 28px;
+  margin-left: -1px;
+  border-radius: 0 6px 6px 0;
 }
 
 .git-inline-state {
@@ -1674,12 +1764,24 @@ button {
 .git-change-row {
   min-height: 42px;
   display: grid;
-  grid-template-columns: 18px 30px minmax(0, 1fr) auto auto;
+  grid-template-columns: 18px 30px minmax(0, 1fr) 28px;
   align-items: center;
   gap: 7px;
   padding: 5px 7px;
   border-bottom: 1px solid var(--border);
   cursor: default;
+}
+
+.git-file-menu {
+  width: 26px;
+  height: 26px;
+  opacity: 0.45;
+}
+
+.git-change-row:hover .git-file-menu,
+.git-change-row.active .git-file-menu,
+.git-file-menu:focus-visible {
+  opacity: 1;
 }
 
 .git-change-row:last-child {
@@ -1741,9 +1843,9 @@ button {
 }
 
 .git-change-path > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+  white-space: normal;
 }
 
 .git-change-path small {
@@ -1754,20 +1856,15 @@ button {
   white-space: nowrap;
 }
 
-.git-change-label {
+.git-change-path .git-change-label {
   color: var(--text-dim);
   font-size: 10px;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .git-file-action {
-  opacity: 0;
+  display: none;
   white-space: nowrap;
-}
-
-.git-change-row:hover .git-file-action,
-.git-change-row:focus-within .git-file-action {
-  opacity: 1;
 }
 
 .git-diff-panel {
@@ -1779,7 +1876,7 @@ button {
   min-height: 45px;
   flex: none;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   padding: 8px 12px;
@@ -1794,10 +1891,15 @@ button {
   gap: 8px;
 }
 
+.git-diff-panel > header > div:first-child {
+  flex: 1;
+}
+
 .git-diff-panel > header strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex: 1;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+  white-space: normal;
 }
 
 .git-diff-side {
@@ -1811,8 +1913,12 @@ button {
 
 .git-diff-stats {
   flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   color: var(--text-dim);
   font-size: 10px;
+  white-space: nowrap;
 }
 
 .git-diff-code {
@@ -1849,10 +1955,12 @@ button {
 }
 
 .git-commit-composer {
+  min-width: 0;
   max-height: 285px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
+  overflow: hidden;
   padding: 10px;
   border-top: 1px solid var(--border);
   background: var(--git-surface-raised);
@@ -1865,10 +1973,30 @@ button {
   gap: 7px;
 }
 
+.git-commit-heading {
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.git-commit-heading > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.git-commit-ai-button {
+  flex: none;
+  gap: 5px;
+}
+
 .git-commit-composer textarea {
   grid-column: 1 / -1;
   min-height: 76px;
+  width: 100%;
+  min-width: 0;
   max-height: 140px;
+  box-sizing: border-box;
   resize: vertical;
   padding: 8px 9px;
   border: 1px solid var(--border-strong);
@@ -1889,6 +2017,16 @@ button {
 .git-commit-composer .git-inline-state {
   grid-column: 1 / -1;
   margin: 0;
+}
+
+.git-commit-composer > button,
+.git-commit-composer > small {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.git-commit-composer > small {
+  overflow-wrap: anywhere;
 }
 
 .git-history-panel {
@@ -3902,6 +4040,12 @@ textarea:focus {
   flex: 1;
   min-width: 0;
   word-break: break-all;
+}
+
+.commit-ai-settings-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .kv .v.mono {

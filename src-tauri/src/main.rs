@@ -35,6 +35,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
+mod commit_ai;
 mod git_commands;
 mod git_workspace_commands;
 mod notifications;
@@ -2336,6 +2337,7 @@ async fn restart_session(
         adapters::adapter_for(session.adapter_type).build_resume_checked(&ResumeContext {
             install,
             preset: preset.clone(),
+            permission_mode: session.permission_mode,
             cwd: session.cwd.clone(),
             agent_session_id: session.agent_session_id.clone(),
             session_id: session.id.clone(),
@@ -3156,6 +3158,11 @@ async fn secret_delete(state: State<'_, AppState>, id: String) -> std::result::R
     let r = map_err!(state.db.get_secret_ref(&id))?;
     if let Ok(broker) = CredentialBroker::detect() {
         let _ = broker.delete(&r);
+    }
+    let mut commit_ai = map_err!(state.db.load_commit_ai_settings())?;
+    if commit_ai.api_key_secret_ref_id.as_deref() == Some(&id) {
+        commit_ai.api_key_secret_ref_id = None;
+        map_err!(state.db.save_commit_ai_settings(&commit_ai))?;
     }
     map_err!(state.db.delete_secret_ref(&id))?;
     for mut p in map_err!(state.db.list_presets(None))? {
@@ -4013,8 +4020,17 @@ fn main() {
             git_workspace_commands::get_git_commit_diff,
             git_workspace_commands::stage_git_paths,
             git_workspace_commands::unstage_git_paths,
+            git_workspace_commands::discard_git_paths,
+            git_workspace_commands::add_git_ignore,
+            git_workspace_commands::trash_git_path,
+            git_workspace_commands::resolve_git_file,
+            git_workspace_commands::sync_git_remote,
             git_workspace_commands::prepare_git_commit,
             git_workspace_commands::commit_git_changes,
+            commit_ai::get_commit_ai_config,
+            commit_ai::save_commit_ai_config,
+            commit_ai::clear_commit_ai_api_key,
+            commit_ai::generate_git_commit_message,
             export_session,
             backup_create,
             backup_list,

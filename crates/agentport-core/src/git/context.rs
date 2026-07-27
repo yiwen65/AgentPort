@@ -58,6 +58,11 @@ pub struct GitCheckoutDescriptor {
     pub detached: bool,
     pub unborn: bool,
     pub ongoing_operation: Option<String>,
+    pub has_remote: bool,
+    pub remote: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: usize,
+    pub behind: usize,
     pub worktree_health: Option<String>,
     pub live_session_ids: Vec<String>,
     pub writable: bool,
@@ -308,6 +313,11 @@ impl<'a> GitWorkspaceManager<'a> {
         let detached = !unborn && actual_branch.is_none();
         let expected_branch = worktree.map(|value| value.branch.clone());
         let actual_branch = registered_branch.or(actual_branch);
+        let remote = if checkout_exists {
+            remote_state(&self.runner, &checkout_root, actual_branch.as_deref())
+        } else {
+            RemoteState::default()
+        };
         let target = GitCheckoutTarget {
             project_id: project.id.clone(),
             kind: if worktree.is_some() {
@@ -353,6 +363,11 @@ impl<'a> GitWorkspaceManager<'a> {
             ongoing_operation: checkout_exists
                 .then(|| detect_operation(&identity.git_dir))
                 .flatten(),
+            has_remote: remote.has_remote,
+            remote: remote.remote,
+            upstream: remote.upstream,
+            ahead: remote.ahead,
+            behind: remote.behind,
             worktree_health: worktree_health.map(|health| health.as_str().to_owned()),
             live_session_ids,
             writable: blockers.is_empty(),
@@ -380,6 +395,98 @@ impl<'a> GitWorkspaceManager<'a> {
             return Ok(Some(output.stdout_lossy().trim().to_owned()));
         }
         Ok(None)
+    }
+}
+
+#[derive(Default)]
+struct RemoteState {
+    has_remote: bool,
+    remote: Option<String>,
+    upstream: Option<String>,
+    ahead: usize,
+    behind: usize,
+}
+
+fn remote_state(runner: &GitRunner, checkout: &Path, branch: Option<&str>) -> RemoteState {
+    let remotes = runner
+        .run_read_only(Some(checkout), ["remote"])
+        .ok()
+        .filter(|output| output.success())
+        .map(|output| {
+            output
+                .stdout_lossy()
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let has_remote = !remotes.is_empty();
+    let configured_remote = branch.and_then(|branch| {
+        runner
+            .run_read_only(
+                Some(checkout),
+                ["config", "--get", &format!("branch.{branch}.remote")],
+            )
+            .ok()
+            .filter(|output| output.success())
+            .map(|output| output.stdout_lossy().trim().to_owned())
+            .filter(|value| !value.is_empty() && value != ".")
+    });
+    let remote = configured_remote
+        .filter(|value| remotes.contains(value))
+        .or_else(|| {
+            remotes
+                .iter()
+                .find(|value| value.as_str() == "origin")
+                .cloned()
+        })
+        .or_else(|| remotes.first().cloned());
+    let upstream = branch.and_then(|branch| {
+        runner
+            .run_read_only(
+                Some(checkout),
+                [
+                    "for-each-ref",
+                    "--format=%(upstream:short)",
+                    &format!("refs/heads/{branch}"),
+                ],
+            )
+            .ok()
+            .filter(|output| output.success())
+            .map(|output| output.stdout_lossy().trim().to_owned())
+            .filter(|value| !value.is_empty())
+    });
+    let (ahead, behind) = upstream
+        .as_deref()
+        .and_then(|upstream| {
+            runner
+                .run_read_only(
+                    Some(checkout),
+                    [
+                        "rev-list",
+                        "--left-right",
+                        "--count",
+                        &format!("HEAD...{upstream}"),
+                    ],
+                )
+                .ok()
+                .filter(|output| output.success())
+                .and_then(|output| {
+                    let values = output
+                        .stdout_lossy()
+                        .split_whitespace()
+                        .filter_map(|value| value.parse::<usize>().ok())
+                        .collect::<Vec<_>>();
+                    (values.len() == 2).then(|| (values[0], values[1]))
+                })
+        })
+        .unwrap_or((0, 0));
+    RemoteState {
+        has_remote,
+        remote,
+        upstream,
+        ahead,
+        behind,
     }
 }
 

@@ -43,7 +43,9 @@ export default function GitDiffPanel() {
     <section className="git-diff-panel">
       <header>
         <div>
-          <strong className="mono">{diff?.displayPath ?? "…"}</strong>
+          <strong className="mono" title={diff?.displayPath ?? undefined}>
+            {diff?.displayPath ?? "…"}
+          </strong>
           <span className="git-diff-side">
             {cache.diffSelection.side === "staged"
               ? t("diff.staged")
@@ -53,12 +55,18 @@ export default function GitDiffPanel() {
         {diff ? (
           <div className="git-diff-stats">
             {diff.additions !== null && diff.deletions !== null
-              ? t("diff.stats", {
-                additions: diff.additions,
-                deletions: diff.deletions,
-              })
+              ? (
+                <span>
+                  {t("diff.stats", {
+                    additions: diff.additions,
+                    deletions: diff.deletions,
+                  })}
+                </span>
+              )
               : null}
-            {diff.fileSize !== null ? t("diff.size", { size: diff.fileSize }) : null}
+            {diff.fileSize !== null ? (
+              <span>{t("diff.size", { size: diff.fileSize })}</span>
+            ) : null}
           </div>
         ) : null}
       </header>

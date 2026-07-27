@@ -1,8 +1,10 @@
 import {
   api,
+  commitAiErrorText,
   errorText,
   isGitWorkspaceCommandError,
 } from "./api";
+import { openDocumentTarget } from "./documents";
 import { i18n } from "./i18n";
 import {
   confirmDialog,
@@ -20,7 +22,9 @@ import type {
   GitCommitPatch,
   GitContextLocator,
   GitDiffSide,
+  GitIgnoreTarget,
   GitPathSelection,
+  GitRemoteAction,
   GitStateInvalidated,
 } from "./types";
 
@@ -31,6 +35,7 @@ type RequestScope =
   | "commitDetail"
   | "commitPatch"
   | "mutation"
+  | "commitAi"
   | "review"
   | "commit";
 
@@ -64,6 +69,7 @@ function nextRequest(checkoutId: string, scope: RequestScope): number {
     commitDetail: 0,
     commitPatch: 0,
     mutation: 0,
+    commitAi: 0,
     review: 0,
     commit: 0,
   };
@@ -107,6 +113,8 @@ function createCheckoutState(
     commitReviewOpen: false,
     commitPhase: "idle",
     commitError: null,
+    commitAiPhase: "idle",
+    commitAiError: null,
     lastCommitResult: null,
   };
 }
@@ -327,6 +335,13 @@ function selectedPaths(
   return [...deduplicated.values()];
 }
 
+function pathSelection(entry: GitChangeEntry): GitPathSelection {
+  return {
+    pathToken: entry.pathToken,
+    entryToken: entry.entryToken,
+  };
+}
+
 function applyAuthoritativeChanges(
   checkoutId: string,
   changes: GitChangesSnapshot,
@@ -497,6 +512,34 @@ export async function mutateGitSelection(
   const { checkoutId, locator, cache } = target;
   const statusToken = target.cache.changes.statusToken;
   const selections = selectedPaths(cache, side, explicitEntry);
+  await mutateGitPaths(checkoutId, locator, statusToken, side, selections);
+}
+
+export async function mutateAllGitChanges(side: GitDiffSide): Promise<void> {
+  const target = activeTarget();
+  if (!target?.cache.changes || !gitWritesEnabled(target.cache)) return;
+  const entries = target.cache.changes.entries.filter((entry) =>
+    side === "staged"
+      ? entry.staged && !entry.conflicted
+      : !entry.ignored &&
+        (entry.unstaged || entry.untracked || entry.conflicted)
+  );
+  await mutateGitPaths(
+    target.checkoutId,
+    target.locator,
+    target.cache.changes.statusToken,
+    side,
+    entries.map(pathSelection),
+  );
+}
+
+async function mutateGitPaths(
+  checkoutId: string,
+  locator: GitContextLocator,
+  statusToken: string,
+  side: GitDiffSide,
+  selections: GitPathSelection[],
+): Promise<void> {
   if (selections.length === 0) return;
   const request = nextRequest(checkoutId, "mutation");
   updateCheckout(checkoutId, (current) => ({
@@ -531,6 +574,190 @@ export async function mutateGitSelection(
   } catch (error) {
     if (!requestIsCurrent(checkoutId, "mutation", request)) return;
     applyWriteError(checkoutId, error);
+  }
+}
+
+async function runFileMutation(
+  operation: (
+    locator: GitContextLocator,
+    checkoutId: string,
+    statusToken: string,
+  ) => Promise<{ changes: GitChangesSnapshot }>,
+): Promise<void> {
+  const target = activeTarget();
+  if (!target?.cache.changes || !gitWritesEnabled(target.cache)) return;
+  const { checkoutId, locator } = target;
+  const request = nextRequest(checkoutId, "mutation");
+  updateCheckout(checkoutId, (current) => ({
+    ...current,
+    changesPhase: "refreshing",
+    changesError: null,
+  }));
+  try {
+    const result = await operation(
+      locator,
+      checkoutId,
+      target.cache.changes.statusToken,
+    );
+    if (
+      !requestIsCurrent(checkoutId, "mutation", request) ||
+      result.changes.context.checkoutId !== checkoutId
+    ) {
+      return;
+    }
+    nextRequest(checkoutId, "changes");
+    applyAuthoritativeChanges(checkoutId, result.changes, {
+      clearSelection: true,
+    });
+  } catch (error) {
+    if (!requestIsCurrent(checkoutId, "mutation", request)) return;
+    applyWriteError(checkoutId, error);
+  }
+}
+
+export async function discardGitEntry(entry: GitChangeEntry): Promise<void> {
+  const confirmed = await confirmDialog({
+    title: i18n.t("git:fileActions.discardTitle"),
+    body: i18n.t("git:fileActions.discardBody", { path: entry.displayPath }),
+    confirmLabel: i18n.t("git:fileActions.discard"),
+    danger: true,
+  });
+  if (!confirmed) return;
+  await runFileMutation((locator, checkoutId, statusToken) =>
+    api.discardGitPaths(
+      locator,
+      checkoutId,
+      statusToken,
+      [pathSelection(entry)],
+    )
+  );
+}
+
+export async function ignoreGitEntry(
+  entry: GitChangeEntry,
+  target: GitIgnoreTarget,
+): Promise<void> {
+  await runFileMutation((locator, checkoutId, statusToken) =>
+    api.addGitIgnore(
+      locator,
+      checkoutId,
+      statusToken,
+      pathSelection(entry),
+      target,
+    )
+  );
+}
+
+export async function trashGitEntry(entry: GitChangeEntry): Promise<void> {
+  const confirmed = await confirmDialog({
+    title: i18n.t("git:fileActions.trashTitle"),
+    body: i18n.t("git:fileActions.trashBody", { path: entry.displayPath }),
+    confirmLabel: i18n.t("git:fileActions.trash"),
+    danger: true,
+  });
+  if (!confirmed) return;
+  await runFileMutation((locator, checkoutId, statusToken) =>
+    api.trashGitPath(
+      locator,
+      checkoutId,
+      statusToken,
+      pathSelection(entry),
+    )
+  );
+}
+
+export async function openGitFile(entry: GitChangeEntry): Promise<void> {
+  const target = activeTarget();
+  if (!target?.cache.changes) return;
+  try {
+    const resolved = await api.resolveGitFile(
+      target.locator,
+      target.checkoutId,
+      target.cache.changes.statusToken,
+      pathSelection(entry),
+    );
+    if (
+      resolved.context.checkoutId !== target.checkoutId ||
+      activeTarget()?.checkoutId !== target.checkoutId
+    ) {
+      return;
+    }
+    closeGitCenter();
+    openDocumentTarget({ path: resolved.absolutePath, line: null });
+  } catch (error) {
+    toast(errorText(error), "error");
+  }
+}
+
+export async function runGitRemoteAction(action: GitRemoteAction): Promise<void> {
+  const target = activeTarget();
+  if (!target?.cache.changes || !gitWritesEnabled(target.cache)) return;
+  const context = target.cache.context;
+  const requestedAction = action === "pull_autostash"
+    ? "pull"
+    : action === "pull_rebase_autostash"
+    ? "pull_rebase"
+    : action;
+  const pulling = requestedAction === "pull" || requestedAction === "pull_rebase";
+  const localChanges = target.cache.changes.entries.filter((entry) => !entry.ignored);
+  const activeSessionWarning = pulling && context.liveSessionIds.length > 0
+    ? i18n.t("git:remote.confirm.sessionWarning", {
+      count: context.liveSessionIds.length,
+    })
+    : null;
+  const noIncomingWarning = pulling && context.behind === 0
+    ? i18n.t("git:remote.confirm.noIncoming")
+    : null;
+  const pullActionName = requestedAction === "pull" ? "Pull" : "Pull Rebase";
+  let effectiveAction = action;
+
+  if (pulling && localChanges.length > 0) {
+    const confirmed = await confirmDialog({
+      title: i18n.t("git:remote.dirty.title", {
+        action: pullActionName,
+      }),
+      body: i18n.t("git:remote.dirty.body"),
+      details: [
+        i18n.t("git:remote.confirm.target", {
+          branch: context.actualBranch ?? "—",
+          upstream: context.upstream ?? context.remote ?? "—",
+        }),
+        noIncomingWarning,
+        activeSessionWarning,
+      ].filter((detail): detail is string => Boolean(detail)),
+      confirmLabel: i18n.t("git:remote.dirty.confirm", {
+        action: pullActionName,
+      }),
+      cancelLabel: i18n.t("git:remote.dirty.commitFirst"),
+    });
+    if (!confirmed) {
+      document.querySelector<HTMLTextAreaElement>(
+        ".git-commit-composer textarea",
+      )?.focus();
+      return;
+    }
+    effectiveAction = requestedAction === "pull"
+      ? "pull_autostash"
+      : "pull_rebase_autostash";
+  } else if (requestedAction !== "fetch") {
+    const confirmed = await confirmDialog({
+      title: i18n.t(`git:remote.confirm.${requestedAction}.title`),
+      body: i18n.t(`git:remote.confirm.${requestedAction}.body`, {
+        branch: context.actualBranch ?? "—",
+        upstream: context.upstream ?? context.remote ?? "—",
+      }),
+      details: [noIncomingWarning, activeSessionWarning]
+        .filter((detail): detail is string => Boolean(detail)),
+      confirmLabel: i18n.t(`git:remote.actions.${requestedAction}`),
+      danger: requestedAction === "force_push",
+    });
+    if (!confirmed) return;
+  }
+  await runFileMutation((locator, checkoutId, statusToken) =>
+    api.syncGitRemote(locator, checkoutId, statusToken, effectiveAction)
+  );
+  if (activeTarget()?.cache.changesPhase === "ready") {
+    toast(i18n.t(`git:remote.success.${requestedAction}`), "success");
   }
 }
 
@@ -680,7 +907,9 @@ export function setGitCommitDraft(message: string) {
   const target = activeTarget();
   if (!target) return;
   const cancelPendingReview = target.cache.commitPhase === "refreshing";
+  const cancelPendingAi = target.cache.commitAiPhase === "loading";
   if (cancelPendingReview) nextRequest(target.checkoutId, "review");
+  if (cancelPendingAi) nextRequest(target.checkoutId, "commitAi");
   updateCheckout(target.checkoutId, (cache) => ({
     ...cache,
     commitDraft: message,
@@ -688,7 +917,79 @@ export function setGitCommitDraft(message: string) {
     commitReviewOpen: cache.commitReview?.message === message && cache.commitReviewOpen,
     commitPhase: cancelPendingReview ? "ready" : cache.commitPhase,
     commitError: null,
+    commitAiPhase: cancelPendingAi ? "ready" : cache.commitAiPhase,
+    commitAiError: null,
   }));
+}
+
+export async function generateGitCommitMessage(): Promise<void> {
+  const target = activeTarget();
+  if (
+    !target?.cache.changes ||
+    !gitCommitEnabled(target.cache) ||
+    target.cache.changes.counts.staged === 0 ||
+    target.cache.commitAiPhase === "loading"
+  ) {
+    return;
+  }
+  if (target.cache.commitDraft.trim()) {
+    const replace = await confirmDialog({
+      title: i18n.t("git:commit.aiReplaceTitle"),
+      body: i18n.t("git:commit.aiReplaceBody"),
+      confirmLabel: i18n.t("git:commit.aiReplaceConfirm"),
+    });
+    if (!replace) return;
+  }
+
+  const { checkoutId, locator } = target;
+  const statusToken = target.cache.changes.statusToken;
+  const request = nextRequest(checkoutId, "commitAi");
+  updateCheckout(checkoutId, (current) => ({
+    ...current,
+    commitAiPhase: "loading",
+    commitAiError: null,
+  }));
+  try {
+    const suggestion = await api.generateGitCommitMessage(
+      locator,
+      checkoutId,
+      statusToken,
+    );
+    const current = activeTarget();
+    if (
+      !requestIsCurrent(checkoutId, "commitAi", request) ||
+      current?.cache.changes?.statusToken !== statusToken ||
+      suggestion.statusToken !== statusToken
+    ) {
+      if (requestIsCurrent(checkoutId, "commitAi", request)) {
+        updateCheckout(checkoutId, (cache) => ({
+          ...cache,
+          commitAiPhase: "stale",
+          commitAiError: i18n.t("git:commit.aiStale"),
+        }));
+      }
+      return;
+    }
+    updateCheckout(checkoutId, (cache) => ({
+      ...cache,
+      commitDraft: suggestion.message,
+      commitReview: null,
+      commitReviewOpen: false,
+      commitAiPhase: "ready",
+      commitAiError: null,
+      commitError: null,
+    }));
+    if (suggestion.truncated) {
+      toast(i18n.t("git:commit.aiTruncated"), "info");
+    }
+  } catch (error) {
+    if (!requestIsCurrent(checkoutId, "commitAi", request)) return;
+    updateCheckout(checkoutId, (cache) => ({
+      ...cache,
+      commitAiPhase: "error",
+      commitAiError: commitAiErrorText(error),
+    }));
+  }
 }
 
 export async function prepareGitCommitReview(): Promise<void> {

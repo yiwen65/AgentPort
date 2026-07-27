@@ -57,6 +57,9 @@
     "selected": "已选 {{count}} 项"
   },
   "actions": {
+    "allChanges": "全部更改",
+    "stageAll": "全部暂存",
+    "unstageAll": "全部取消暂存",
     "stage": "暂存",
     "stageSelected": "暂存所选",
     "unstage": "取消暂存",
@@ -66,6 +69,80 @@
     "loadMore": "加载更多",
     "showAllChanges": "查看更改",
     "viewGit": "Git"
+  },
+  "fileActions": {
+    "more": "{{path}} 的更多操作",
+    "discard": "丢弃未暂存修改",
+    "discardTitle": "丢弃本地修改？",
+    "discardBody": "将 {{path}} 的未暂存内容恢复为 index 中的版本。此操作无法通过 AgentPort 撤销。",
+    "trash": "移入废纸篓",
+    "trashTitle": "将未跟踪文件移入废纸篓？",
+    "trashBody": "{{path}} 将移入 macOS 废纸篓，可从废纸篓恢复。",
+    "ignoreRepository": "加入 .gitignore",
+    "ignoreLocal": "加入 .git/info/exclude",
+    "openDiff": "打开 Diff",
+    "viewFile": "查看文件"
+  },
+  "remote": {
+    "ahead": "领先 {{count}}",
+    "behind": "落后 {{count}}",
+    "noRemote": "未配置远端",
+    "noUpstream": "未设置 upstream",
+    "more": "更多远端操作",
+    "syncing": "同步中…",
+    "protectedBranch": "main/master 禁止强推",
+    "blocked": {
+      "syncing": "正在刷新 Git 状态",
+      "partial": "Git 状态不完整",
+      "readOnly": "此 Checkout 当前只读",
+      "busy": "另一项 Git 操作正在进行",
+      "branchRequired": "需要已提交的本地分支",
+      "ongoingOperation": "请先完成 {{operation}}",
+      "conflicts": "请先解决 Git 冲突",
+      "noRemote": "未配置远端",
+      "noUpstream": "当前分支未设置 upstream"
+    },
+    "actions": {
+      "fetch": "Fetch",
+      "pull": "Pull（仅快进）",
+      "pull_rebase": "Pull（Rebase）",
+      "push": "Push",
+      "force_push": "安全强推"
+    },
+    "success": {
+      "fetch": "Fetch 完成",
+      "pull": "Pull 完成",
+      "pull_rebase": "Pull Rebase 完成",
+      "push": "Push 完成",
+      "force_push": "安全强推完成"
+    },
+    "confirm": {
+      "target": "{{branch}} ← {{upstream}}",
+      "noIncoming": "上次刷新未发现远端新提交；Pull 仍会先 Fetch 最新状态。",
+      "sessionWarning": "{{count}} 个活动 Session 正在使用此 Checkout；Pull 会修改它们看到的文件。",
+      "pull": {
+        "title": "Pull 当前分支？",
+        "body": "将从 {{upstream}} 仅快进更新 {{branch}}。"
+      },
+      "pull_rebase": {
+        "title": "Pull 并 Rebase 当前分支？",
+        "body": "将从 {{upstream}} 拉取并把 {{branch}} 的本地提交变基到其上。"
+      },
+      "push": {
+        "title": "Push 当前分支？",
+        "body": "将 {{branch}} 推送到 {{upstream}}。"
+      },
+      "force_push": {
+        "title": "安全强推当前分支？",
+        "body": "将使用 --force-with-lease 改写 {{upstream}}。远端已变化时 Git 会拒绝操作。"
+      }
+    },
+    "dirty": {
+      "title": "自动储藏本地更改后 {{action}}？",
+      "body": "Git 会临时创建 auto-stash 保护已跟踪的本地更改，更新完成后恢复原来的已暂存与未暂存状态。未跟踪文件会留在原位；若远端会覆盖它们，Git 将拒绝操作。",
+      "confirm": "自动储藏并 {{action}}",
+      "commitFirst": "先提交"
+    }
   },
   "entry": {
     "renamedFrom": "原路径：{{path}}",
@@ -132,6 +209,14 @@
     "committing": "正在执行 Git commit…",
     "succeeded": "提交成功",
     "draftPreserved": "提交草稿已保留，请重新审查后再试。",
+    "aiGenerate": "AI 生成",
+    "aiGenerating": "正在生成…",
+    "aiReplaceTitle": "替换当前提交信息？",
+    "aiReplaceBody": "AI 生成的主题和正文将替换当前草稿；生成前不会修改暂存区。",
+    "aiReplaceConfirm": "生成并替换",
+    "aiDraftPreserved": "当前草稿未被修改。请检查“设置 → 提交 AI”的服务配置后重试。",
+    "aiStale": "生成期间暂存内容发生变化。结果已丢弃，请刷新后重新生成。",
+    "aiTruncated": "暂存 Diff 较大，AI 基于受限大小的截断内容生成；请重点审查文案。",
     "outcomes": {
       "succeeded": "提交成功",
       "not_executed": "提交未执行；请检查错误并重新审查。",

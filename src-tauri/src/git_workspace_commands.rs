@@ -8,8 +8,8 @@ use agentport_core::db::Db;
 use agentport_core::error::CoreError;
 use agentport_core::git::{
     GitChangesSnapshot, GitCheckoutDescriptor, GitCommitDetail, GitCommitPatch, GitCommitResult,
-    GitCommitReview, GitContextLocator, GitDiffSide, GitFileDiff, GitHistoryPage,
-    GitMutationResult, GitPathSelection, GitWorkspaceManager,
+    GitCommitReview, GitContextLocator, GitDiffSide, GitFileDiff, GitHistoryPage, GitIgnoreTarget,
+    GitMutationResult, GitPathSelection, GitRemoteAction, GitResolvedFile, GitWorkspaceManager,
 };
 use agentport_core::paths::AppPaths;
 use chrono::{SecondsFormat, Utc};
@@ -180,6 +180,155 @@ pub async fn unstage_git_paths(
 }
 
 #[tauri::command]
+pub async fn discard_git_paths(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    locator: GitContextLocator,
+    expected_checkout_id: String,
+    expected_status_token: String,
+    selections: Vec<GitPathSelection>,
+) -> CommandResult<GitMutationResult> {
+    let error_locator = locator.clone();
+    let result = run_write(state.paths.clone(), error_locator, move |manager| {
+        manager.discard_paths(
+            &locator,
+            &expected_checkout_id,
+            &expected_status_token,
+            &selections,
+        )
+    })
+    .await?;
+    emit_invalidation(
+        &app,
+        &result.changes,
+        &result.operation_id,
+        "discard",
+        &["changes", "diff", "commitReview"],
+    );
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn add_git_ignore(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    locator: GitContextLocator,
+    expected_checkout_id: String,
+    expected_status_token: String,
+    selection: GitPathSelection,
+    target: GitIgnoreTarget,
+) -> CommandResult<GitMutationResult> {
+    let error_locator = locator.clone();
+    let result = run_write(state.paths.clone(), error_locator, move |manager| {
+        manager.ignore_path(
+            &locator,
+            &expected_checkout_id,
+            &expected_status_token,
+            &selection,
+            target,
+        )
+    })
+    .await?;
+    emit_invalidation(
+        &app,
+        &result.changes,
+        &result.operation_id,
+        "ignore",
+        &["changes", "diff", "commitReview"],
+    );
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn trash_git_path(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    locator: GitContextLocator,
+    expected_checkout_id: String,
+    expected_status_token: String,
+    selection: GitPathSelection,
+) -> CommandResult<GitMutationResult> {
+    let error_locator = locator.clone();
+    let result = run_write(state.paths.clone(), error_locator, move |manager| {
+        manager.trash_path(
+            &locator,
+            &expected_checkout_id,
+            &expected_status_token,
+            &selection,
+            move_to_trash,
+        )
+    })
+    .await?;
+    emit_invalidation(
+        &app,
+        &result.changes,
+        &result.operation_id,
+        "trash",
+        &["changes", "diff", "commitReview"],
+    );
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn resolve_git_file(
+    state: State<'_, AppState>,
+    locator: GitContextLocator,
+    expected_checkout_id: String,
+    expected_status_token: String,
+    selection: GitPathSelection,
+) -> CommandResult<GitResolvedFile> {
+    run_read(state.paths.clone(), move |manager| {
+        manager.resolve_file(
+            &locator,
+            &expected_checkout_id,
+            &expected_status_token,
+            &selection,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn sync_git_remote(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    locator: GitContextLocator,
+    expected_checkout_id: String,
+    expected_status_token: String,
+    action: GitRemoteAction,
+) -> CommandResult<GitMutationResult> {
+    let error_locator = locator.clone();
+    let result = run_write(state.paths.clone(), error_locator, move |manager| {
+        manager.sync_remote(
+            &locator,
+            &expected_checkout_id,
+            &expected_status_token,
+            action,
+        )
+    })
+    .await?;
+    let _ = app.emit(
+        "git-state-invalidated",
+        GitStateInvalidated {
+            repo_key: result.changes.context.repo_key.clone(),
+            checkout_ids: Vec::new(),
+            scopes: vec![
+                "refs",
+                "index",
+                "changes",
+                "diff",
+                "history",
+                "commitReview",
+            ],
+            reason: "remoteSync",
+            operation_id: result.operation_id.clone(),
+            observed_at: now_string(),
+        },
+    );
+    Ok(result)
+}
+
+#[tauri::command]
 pub async fn prepare_git_commit(
     state: State<'_, AppState>,
     locator: GitContextLocator,
@@ -342,6 +491,24 @@ fn emit_invalidation(
 
 fn now_string() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+#[cfg(target_os = "macos")]
+fn move_to_trash(path: &std::path::Path) -> agentport_core::error::Result<()> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+
+    let path = NSString::from_str(&path.to_string_lossy());
+    let url = NSURL::fileURLWithPath(&path);
+    NSFileManager::defaultManager()
+        .trashItemAtURL_resultingItemURL_error(&url, None)
+        .map_err(|error| std::io::Error::other(format!("move file to macOS Trash: {error}")).into())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn move_to_trash(_path: &std::path::Path) -> agentport_core::error::Result<()> {
+    Err(CoreError::Blocked(
+        "moving Git files to Trash is currently supported on macOS".into(),
+    ))
 }
 
 impl From<CoreError> for GitWorkspaceCommandError {

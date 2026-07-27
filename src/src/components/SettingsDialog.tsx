@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { api, errorText } from "../api";
+import { api, commitAiErrorText, errorText } from "../api";
 import { applyThemeSettings, refreshProjects } from "../actions";
 import {
   agentDisplay,
@@ -21,7 +21,15 @@ import { applyTerminalLanguage } from "../terminals";
 import { AgentIcon } from "./AgentIcons";
 import ShellIcon from "./ShellIcon";
 import { closeDialog, confirmDialog, setState, toast, useStore } from "../store";
-import type { AdapterInstall, ArchivedSessionView, Preset, SecretMeta, Settings } from "../types";
+import type {
+  AdapterInstall,
+  ArchivedSessionView,
+  CommitAiConfig,
+  CommitAiProvider,
+  Preset,
+  SecretMeta,
+  Settings,
+} from "../types";
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -235,6 +243,224 @@ function SecretSection() {
           </tbody>
         </table>
       )}
+    </>
+  );
+}
+
+function CommitAiSection() {
+  const { t } = useTranslation(["settings", "common"]);
+  const [config, setConfig] = useState<CommitAiConfig | null>(null);
+  const [provider, setProvider] = useState<CommitAiProvider>("openai");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [model, setModel] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const applyConfig = (next: CommitAiConfig) => {
+    setConfig(next);
+    setProvider(next.provider);
+    setBaseUrl(next.baseUrl);
+    setModel(next.model);
+    setApiKey("");
+  };
+
+  useEffect(() => {
+    let active = true;
+    api
+      .getCommitAiConfig()
+      .then((next) => {
+        if (active) applyConfig(next);
+      })
+      .catch((reason) => {
+        if (active) {
+          setError(t("settings:ui.commitAi.loadFailed", {
+            detail: commitAiErrorText(reason),
+          }));
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [t]);
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const next = await api.saveCommitAiConfig(
+        provider,
+        baseUrl.trim(),
+        model.trim(),
+        apiKey.trim() || null,
+      );
+      applyConfig(next);
+      toast(t("settings:ui.commitAi.saved"), "success");
+    } catch (reason) {
+      setError(t("settings:ui.commitAi.saveFailed", {
+        detail: commitAiErrorText(reason),
+      }));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clearKey = async () => {
+    const confirmed = await confirmDialog({
+      title: t("settings:ui.commitAi.clearKeyTitle"),
+      body: t("settings:ui.commitAi.clearKeyBody"),
+      confirmLabel: t("settings:ui.commitAi.clearKeyConfirm"),
+      danger: true,
+    });
+    if (!confirmed) return;
+    setSaving(true);
+    setError(null);
+    try {
+      applyConfig(await api.clearCommitAiApiKey());
+      toast(t("settings:ui.commitAi.keyCleared"), "success");
+    } catch (reason) {
+      setError(t("settings:ui.commitAi.clearKeyFailed", {
+        detail: commitAiErrorText(reason),
+      }));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const insecure = baseUrl.trim().toLocaleLowerCase().startsWith("http://");
+  const placeholderUrl = provider === "openai"
+    ? "https://api.openai.com/v1"
+    : "https://api.anthropic.com";
+  const placeholderModel = provider === "openai" ? "gpt-5.1" : "claude-sonnet-4-5";
+
+  return (
+    <>
+      <div className="settings-section-heading">
+        <div className="section-title">{t("settings:ui.sections.commitAi")}</div>
+        <p className="form-hint">{t("settings:ui.commitAi.description")}</p>
+      </div>
+      {loading ? <p className="dim">{t("common:status.loading")}</p> : null}
+      {error ? <div className="error-bar" role="alert">{error}</div> : null}
+      {!loading ? (
+        <>
+          <div className="settings-grid">
+            <label htmlFor="commit-ai-provider">
+              {t("settings:ui.commitAi.providerLabel")}
+            </label>
+            <div className="control">
+              <select
+                id="commit-ai-provider"
+                value={provider}
+                disabled={saving}
+                onChange={(event) =>
+                  setProvider(event.target.value as CommitAiProvider)}
+              >
+                <option value="openai">
+                  {t("settings:ui.commitAi.providers.openai")}
+                </option>
+                <option value="anthropic">
+                  {t("settings:ui.commitAi.providers.anthropic")}
+                </option>
+              </select>
+              <span className="form-hint">
+                {t("settings:ui.commitAi.providerHint")}
+              </span>
+            </div>
+
+            <label htmlFor="commit-ai-base-url">
+              {t("settings:ui.commitAi.baseUrlLabel")}
+            </label>
+            <div className="control">
+              <input
+                id="commit-ai-base-url"
+                type="url"
+                value={baseUrl}
+                disabled={saving}
+                placeholder={placeholderUrl}
+                spellCheck={false}
+                onChange={(event) => setBaseUrl(event.target.value)}
+              />
+              <span className="form-hint">
+                {t("settings:ui.commitAi.baseUrlHint")}
+              </span>
+              {insecure ? (
+                <span className="warn-text" role="alert">
+                  {t("settings:ui.commitAi.httpWarning")}
+                </span>
+              ) : null}
+            </div>
+
+            <label htmlFor="commit-ai-model">
+              {t("settings:ui.commitAi.modelLabel")}
+            </label>
+            <div className="control">
+              <input
+                id="commit-ai-model"
+                type="text"
+                value={model}
+                disabled={saving}
+                placeholder={placeholderModel}
+                spellCheck={false}
+                onChange={(event) => setModel(event.target.value)}
+              />
+              <span className="form-hint">
+                {t("settings:ui.commitAi.modelHint")}
+              </span>
+            </div>
+
+            <label htmlFor="commit-ai-api-key">
+              {t("settings:ui.commitAi.apiKeyLabel")}
+            </label>
+            <div className="control">
+              <input
+                id="commit-ai-api-key"
+                type="password"
+                value={apiKey}
+                disabled={saving}
+                placeholder={config?.hasApiKey
+                  ? t("settings:ui.commitAi.apiKeyConfigured")
+                  : t("settings:ui.commitAi.apiKeyPlaceholder")}
+                autoComplete="new-password"
+                spellCheck={false}
+                onChange={(event) => setApiKey(event.target.value)}
+              />
+              <span className="form-hint">
+                {config?.hasApiKey
+                  ? t("settings:ui.commitAi.apiKeyKeepHint")
+                  : t("settings:ui.commitAi.apiKeyStorageHint")}
+              </span>
+            </div>
+          </div>
+          <div className="commit-ai-settings-actions">
+            <button
+              className="btn primary"
+              disabled={saving || !baseUrl.trim() || !model.trim()}
+              onClick={() => void save()}
+            >
+              {saving
+                ? t("common:actions.saving")
+                : t("settings:ui.commitAi.save")}
+            </button>
+            {config?.hasApiKey ? (
+              <button
+                className="btn danger"
+                disabled={saving}
+                onClick={() => void clearKey()}
+              >
+                {t("settings:ui.commitAi.clearKey")}
+              </button>
+            ) : null}
+          </div>
+          <div className="info-box">
+            <strong>{t("settings:ui.commitAi.privacyTitle")}</strong>
+            <p className="form-hint">{t("settings:ui.commitAi.privacyBody")}</p>
+          </div>
+        </>
+      ) : null}
     </>
   );
 }
@@ -809,6 +1035,7 @@ type SettingsSection =
   | "notifications"
   | "search"
   | "adapters"
+  | "commitAi"
   | "secrets"
   | "archive"
   | "backup";
@@ -818,6 +1045,7 @@ const SETTINGS_SECTIONS = [
   { id: "notifications", labelKey: "settings:ui.sections.notifications" },
   { id: "search", labelKey: "settings:ui.sections.search" },
   { id: "adapters", labelKey: "settings:ui.sections.adapters" },
+  { id: "commitAi", labelKey: "settings:ui.sections.commitAi" },
   { id: "secrets", labelKey: "settings:ui.sections.secrets" },
   { id: "archive", labelKey: "settings:ui.sections.archive" },
   { id: "backup", labelKey: "settings:ui.sections.backup" },
@@ -1164,6 +1392,7 @@ export default function SettingsDialog() {
     notifications: notificationsSection,
     search: searchSection,
     adapters: <AdapterSection agentOrder={draft.agentOrder} onAgentOrderChange={(agentOrder) => patch({ agentOrder })} />,
+    commitAi: <CommitAiSection />,
     secrets: <SecretSection />,
     archive: <ArchiveSection />,
     backup: <BackupSection />,

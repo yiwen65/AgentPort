@@ -1408,6 +1408,86 @@ fn hook_poller_ignores_events_before_the_run_snapshot() {
     );
 }
 
+#[test]
+fn hook_poller_updates_a_hint_when_claude_starts_a_new_native_session() {
+    const OLD_NATIVE_ID: &str = "3322eb77-e4d5-421c-92a1-aff429b700cf";
+    const NEW_NATIVE_ID: &str = "755bfca0-6dac-48ac-9bf9-1b3ccc46acfc";
+
+    let ctx = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), "sleep 60".into()],
+        1 << 20,
+        vec![],
+    );
+    let mut cfg: HostConfig =
+        serde_json::from_str(&std::fs::read_to_string(&ctx.cfg_path).unwrap()).unwrap();
+    cfg.adapter_type = "claude".into();
+    cfg.agent_session_id_hint = Some(OLD_NATIVE_ID.into());
+    std::fs::write(&ctx.cfg_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+
+    let hook_path = ctx.dir.join("events.jsonl");
+    std::fs::write(
+        &hook_path,
+        format!(
+            "{{\"event\":\"SessionStart\",\"session_id\":\"{}\",\"data\":{{\"session_id\":\"{OLD_NATIVE_ID}\",\"source\":\"startup\"}}}}\n",
+            ctx.session_id
+        ),
+    )
+    .unwrap();
+
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut client = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    client.expect_hello_ok();
+
+    let mut hook = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&hook_path)
+        .unwrap();
+    writeln!(
+        hook,
+        "{{\"event\":\"Notification\",\"session_id\":\"{}\",\"data\":{{}}}}",
+        ctx.session_id
+    )
+    .unwrap();
+    writeln!(
+        hook,
+        "{{\"event\":\"SessionStart\",\"session_id\":\"{}\",\"data\":{{\"session_id\":\"{NEW_NATIVE_ID}\",\"source\":\"clear\"}}}}",
+        ctx.session_id
+    )
+    .unwrap();
+    hook.flush().unwrap();
+
+    let frames = client.collect_until(Duration::from_secs(3), |frames| {
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::AgentSession { agent_session_id, .. }
+                    if agent_session_id == NEW_NATIVE_ID
+            )
+        })
+    });
+    assert!(
+        frames.iter().any(|frame| matches!(
+            frame,
+            HostFrame::AgentSession { agent_session_id, .. }
+                if agent_session_id == NEW_NATIVE_ID
+        )),
+        "new Claude native session id was not reported: {frames:?}"
+    );
+    assert!(
+        !frames.iter().any(|frame| matches!(
+            frame,
+            HostFrame::AgentSession { agent_session_id, .. }
+                if agent_session_id == &ctx.session_id
+        )),
+        "AgentPort wrapper id was mistaken for a native session id: {frames:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ctx.dir.join("agent_session_id")).unwrap(),
+        NEW_NATIVE_ID
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 4b. Job-control escapees: interactive shells put background jobs into their
 // own process groups — Stop must still kill them (PRD: 所有后代进程).
