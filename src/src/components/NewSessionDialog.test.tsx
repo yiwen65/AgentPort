@@ -80,4 +80,62 @@ describe("NewSessionDialog", () => {
       expect.objectContaining({ extraArgs: null }),
     ));
   });
+
+  it("restores native permission when switching away from a bypass preset", async () => {
+    setState({
+      adapters: [{
+        agentType: "qoder",
+        executablePath: "/usr/local/bin/qoder",
+        versionText: "qoder",
+        capabilityHash: "sha256:qoder",
+        exactResume: true,
+        hookStatus: "supported",
+        approvalModel: "native_prompts",
+        defaultTransport: "pty",
+        probedAt: "2026-07-23T00:00:00.000Z",
+        candidates: [],
+        flags: [],
+      }],
+    });
+    listPresetsMock.mockResolvedValue([
+      {
+        id: "qoder-bypass",
+        agentType: "qoder",
+        name: "Bypass",
+        executablePath: "/usr/local/bin/qoder",
+        args: [],
+        permissionMode: "bypass",
+        envNames: [],
+        secretRefIds: [],
+        builtIn: false,
+      },
+      {
+        id: "qoder-native",
+        agentType: "qoder",
+        name: "Native",
+        executablePath: "/usr/local/bin/qoder",
+        args: [],
+        permissionMode: "native",
+        envNames: [],
+        secretRefIds: [],
+        builtIn: false,
+      },
+    ]);
+
+    render(<NewSessionDialog projectId="project-1" agent="qoder" />);
+    fireEvent.click(screen.getByRole("button", { name: "高级设置 展开" }));
+    const preset = await screen.findByLabelText("预设");
+    fireEvent.change(preset, { target: { value: "qoder-bypass" } });
+    expect((screen.getByLabelText("权限") as HTMLSelectElement).value).toBe("bypass");
+    fireEvent.change(preset, { target: { value: "qoder-native" } });
+    expect((screen.getByLabelText("权限") as HTMLSelectElement).value).toBe("native");
+
+    fireEvent.click(screen.getByRole("button", { name: "启动" }));
+    await waitFor(() => expect(createSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        presetId: "qoder-native",
+        permission: "native",
+      }),
+    ));
+  });
 });

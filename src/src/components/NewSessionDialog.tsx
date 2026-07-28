@@ -39,14 +39,12 @@ export default function NewSessionDialog(props: {
   );
   const isShell = agent === "shell";
   const isPi = agent === "pi";
-  const isQoder = agent === "qoder";
 
   useEffect(() => {
     let cancelled = false;
     setPresets([]);
     setPresetId("");
-    if (agent === "shell" || agent === "pi") setPermission("native");
-    else if (agent === "qoder") setPermission("bypass");
+    setPermission("native");
     api
       .listPresets(agent)
       .then((list) => {
@@ -75,7 +73,7 @@ export default function NewSessionDialog(props: {
       title: title.trim() || null,
       presetId: presetId || null,
       worktreeId: position === "main" ? null : position,
-      permission: isShell || isPi ? "native" : isQoder ? "bypass" : permission,
+      permission: isShell || isPi ? "native" : permission,
       transport,
       riskAck: true,
       cols: null,
@@ -160,8 +158,7 @@ export default function NewSessionDialog(props: {
                     className={"radio-chip" + (agent === a ? " selected" : "")}
                     onClick={() => {
                       setAgent(a);
-                      if (a === "shell" || a === "pi") setPermission("native");
-                      else if (a === "qoder") setPermission("bypass");
+                      setPermission("native");
                     }}
                     data-tip={
                       t("session:new.versionTooltip", {
@@ -234,14 +231,6 @@ export default function NewSessionDialog(props: {
             </div>
           ) : null}
 
-          {isQoder ? (
-            <div className="form-row">
-              <span className="warn-text">
-                {t("session:new.qoderNotice")}
-              </span>
-            </div>
-          ) : null}
-
           <div className="advanced-fields">
             <button
               type="button"
@@ -265,16 +254,14 @@ export default function NewSessionDialog(props: {
                       const id = e.target.value;
                       setPresetId(id);
                       const p = presets.find((x) => x.id === id);
-                      if (p && p.permissionMode !== "native") {
-                        if (!isShell && !isPi && !isQoder) setPermission(p.permissionMode);
-                        setAdvancedOpen(true);
+                      if (p && !isShell && !isPi) {
+                        setPermission(p.permissionMode);
+                        if (p.permissionMode !== "native") setAdvancedOpen(true);
                       }
                     }}
                   >
                     <option value="">
-                      {isQoder
-                        ? t("session:new.defaultFullAccess")
-                        : isPi
+                      {isPi
                           ? t("session:new.defaultLocalPermissions")
                           : t("session:new.defaultSafe")}
                     </option>
@@ -303,8 +290,6 @@ export default function NewSessionDialog(props: {
                   <div className="form-hint">{t("session:new.shellPermissionNote")}</div>
                 ) : isPi ? (
                   <div className="form-hint">{t("session:new.piPermissionNote")}</div>
-                ) : isQoder ? (
-                  <div className="form-hint">{t("session:new.qoderParameterNote")}</div>
                 ) : (
                   <div className="form-row">
                     <label htmlFor="ns-permission">{t("session:new.permission")}</label>

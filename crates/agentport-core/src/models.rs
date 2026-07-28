@@ -110,10 +110,7 @@ impl AgentType {
     }
 
     pub fn default_permission_mode(&self) -> PermissionMode {
-        match self {
-            AgentType::Qoder => PermissionMode::Bypass,
-            _ => PermissionMode::Native,
-        }
+        PermissionMode::Native
     }
 
     /// Generic shells have no approval protocol. Keep `Native` as the stored
@@ -121,10 +118,6 @@ impl AgentType {
     /// mode for them.
     pub fn effective_permission_mode(&self, requested: PermissionMode) -> PermissionMode {
         match self {
-            // Qoder is an AgentPort-managed full-access integration. Its
-            // required capability gate lives in `permission_argv`; callers
-            // cannot silently turn it into a native-prompt Session.
-            AgentType::Qoder => PermissionMode::Bypass,
             AgentType::Shell | AgentType::Pi => PermissionMode::Native,
             _ => requested,
         }

@@ -3,7 +3,7 @@
     "Claude 安全默认",
     "Codex 安全默认",
     "Kimi 安全默认",
-    "Qoder 全权限默认",
+    "Qoder 安全默认",
     "Pi 本地权限默认",
     "Shell 安全默认"
   ],
@@ -47,7 +47,7 @@
   ],
   "crates/agentport-cli/src/main.rs": [
     "{} 的可执行文件已失效（{}），重新探测也未找到: {}",
-    "Qoder 全权限默认",
+    "Qoder 安全默认",
     "Pi 本地权限默认",
     "{} 安全默认",
     "自动批准：文件写入与部分操作无需逐次确认",
@@ -61,7 +61,7 @@
   ],
   "src-tauri/src/main.rs": [
     "恢复时间线读取失败：{error}",
-    "Qoder 全权限默认",
+    "Qoder 安全默认",
     "Pi 本地权限默认",
     "{} 安全默认",
     "无法打开 Session 数据库：{detail}",

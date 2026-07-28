@@ -406,10 +406,10 @@ mod tests {
     }
 
     #[test]
-    fn qoder_effective_permission_is_always_full_access() {
+    fn qoder_respects_the_explicit_native_permission_mode() {
         assert_eq!(
             AgentType::Qoder.effective_permission_mode(PermissionMode::Native),
-            PermissionMode::Bypass
+            PermissionMode::Native
         );
     }
 

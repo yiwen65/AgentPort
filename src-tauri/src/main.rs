@@ -972,7 +972,7 @@ fn preset_for(
                 id: format!("pre_{}_safe", t.as_str()),
                 agent_type: t,
                 name: match t {
-                    AgentType::Qoder => "Qoder 全权限默认".into(),
+                    AgentType::Qoder => "Qoder 安全默认".into(),
                     AgentType::Pi => "Pi 本地权限默认".into(),
                     _ => format!("{} 安全默认", t.display_name()),
                 },
@@ -1076,7 +1076,11 @@ fn build_launch_plan(
     }
     let project = state.db.get_project(project_id)?;
     let install = install_for(state, agent)?;
-    let preset = preset_for(state, agent, preset_id, &install)?;
+    let mut preset = preset_for(state, agent, preset_id, &install)?;
+    // The creation form is the authoritative permission choice. Do not let a
+    // historical built-in preset silently reintroduce a bypass flag when the
+    // user selected native approvals.
+    preset.permission_mode = permission;
     adapters::validate_user_args(agent, &preset.args)?;
     let cwd = match &worktree_id {
         Some(w) => {
@@ -1102,17 +1106,7 @@ fn build_launch_plan(
         session_dir: session_dir.to_string_lossy().into_owned(),
         transport,
     };
-    let plan = adapters::adapter_for(agent).build_launch(&ctx)?;
-    let mut plan = if permission != PermissionMode::Native {
-        // Re-derive the permission argv through the capability gate (adapters
-        // embed native defaults; auto/bypass flags come from the preset's mode).
-        let mut p2 = preset.clone();
-        p2.permission_mode = permission;
-        let ctx2 = LaunchContext { preset: p2, ..ctx };
-        adapters::adapter_for(agent).build_launch(&ctx2)?
-    } else {
-        plan
-    };
+    let mut plan = adapters::adapter_for(agent).build_launch(&ctx)?;
     // Ad-hoc CLI args from the UI (PRD 3.2 参数框): appended as argv array
     // items only — never shell-concatenated.
     if let Some(extra) = extra_args {
@@ -1150,11 +1144,8 @@ fn parse_transport(s: &str) -> Result<AgentTransport> {
     s.parse()
 }
 
-/// Qoder's only supported AgentPort mode is its documented full-access flag.
-/// It is a fixed product decision rather than an opt-in per-session risk gate;
-/// existing Agents keep the historical acknowledgement rule.
-fn permission_requires_risk_ack(agent: AgentType, mode: PermissionMode) -> bool {
-    mode != PermissionMode::Native && agent != AgentType::Qoder
+fn permission_requires_risk_ack(_agent: AgentType, mode: PermissionMode) -> bool {
+    mode != PermissionMode::Native
 }
 
 fn acquire_session_repository_lock(cwd: &str) -> Result<Option<RepositoryFileLock>> {

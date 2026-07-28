@@ -1374,7 +1374,7 @@ impl Db {
             ("pre_claude_safe", AgentType::Claude, "Claude 安全默认"),
             ("pre_codex_safe", AgentType::Codex, "Codex 安全默认"),
             ("pre_kimi_safe", AgentType::Kimi, "Kimi 安全默认"),
-            ("pre_qoder_safe", AgentType::Qoder, "Qoder 全权限默认"),
+            ("pre_qoder_safe", AgentType::Qoder, "Qoder 安全默认"),
             ("pre_pi_safe", AgentType::Pi, "Pi 本地权限默认"),
             ("pre_shell_safe", AgentType::Shell, "Shell 安全默认"),
         ] {
@@ -1396,6 +1396,15 @@ impl Db {
                 params![p.id, p.agent_type.as_str(), p.name, p.permission_mode.as_str()],
             )?;
         }
+        // Earlier builds forced the built-in Qoder preset to bypass native
+        // approvals. Only migrate AgentPort's own immutable preset; user
+        // presets retain their explicit permission choice.
+        self.conn.lock().unwrap().execute(
+            "UPDATE presets
+             SET name='Qoder 安全默认', permission_mode='native'
+             WHERE id='pre_qoder_safe' AND built_in=1",
+            [],
+        )?;
         Ok(())
     }
 
@@ -3954,15 +3963,15 @@ mod tests {
         db.seed_builtin_presets().unwrap(); // idempotent
         let presets = db.list_presets(None).unwrap();
         assert_eq!(presets.len(), 6);
-        assert!(presets.iter().all(
-            |p| p.agent_type == AgentType::Qoder || p.permission_mode == PermissionMode::Native
-        ));
+        assert!(presets
+            .iter()
+            .all(|preset| preset.permission_mode == PermissionMode::Native));
         assert_eq!(
             presets
                 .iter()
                 .find(|preset| preset.agent_type == AgentType::Qoder)
                 .map(|preset| preset.permission_mode),
-            Some(PermissionMode::Bypass)
+            Some(PermissionMode::Native)
         );
         assert!(matches!(
             db.delete_preset("pre_kimi_safe"),

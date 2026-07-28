@@ -376,7 +376,7 @@ fn preset_for(
                 id,
                 agent_type: t,
                 name: match t {
-                    AgentType::Qoder => "Qoder 全权限默认".into(),
+                    AgentType::Qoder => "Qoder 安全默认".into(),
                     AgentType::Pi => "Pi 本地权限默认".into(),
                     _ => format!("{} 安全默认", t.display_name()),
                 },

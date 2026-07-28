@@ -213,15 +213,18 @@ mod tests {
     use crate::adapters::test_fixtures as fx;
 
     #[test]
-    fn qoder_requires_the_full_access_flag() {
+    fn qoder_native_launch_does_not_require_the_full_access_flag() {
         let install = fx::install(
             AgentType::Qoder,
             &["session-id", "resume", "continue", "settings"],
         );
-        let mut ctx = fx::launch_ctx(AgentType::Qoder, &[], PermissionMode::Bypass);
+        let mut ctx = fx::launch_ctx(AgentType::Qoder, &[], PermissionMode::Native);
         ctx.install = install;
-        let error = QoderAdapter.build_launch(&ctx).unwrap_err();
-        assert!(error.to_string().contains("dangerously-skip-permissions"));
+        let plan = QoderAdapter.build_launch(&ctx).unwrap();
+        assert!(!plan
+            .argv
+            .iter()
+            .any(|value| value == "--dangerously-skip-permissions"));
     }
 
     #[test]
