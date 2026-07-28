@@ -4,7 +4,10 @@
 
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { writeText as writeNativeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
+import {
+  readText as readNativeClipboardText,
+  writeText as writeNativeClipboardText,
+} from "@tauri-apps/plugin-clipboard-manager";
 import type {
   AddProjectResult,
   ArchivedSessionView,
@@ -653,5 +656,13 @@ export async function copyText(text: string): Promise<boolean> {
     } catch {
       return false;
     }
+  }
+}
+
+export async function readClipboardText(): Promise<string> {
+  try {
+    return await readNativeClipboardText();
+  } catch {
+    return navigator.clipboard.readText();
   }
 }

@@ -831,16 +831,19 @@ function TermStatusLine({ ses }: { ses: SessionView }) {
   const { t } = useTranslation("shell");
   useStore((state) => state.runtime[ses.id]);
   const r = getRuntime(ses.id);
-  if (!r.scrolledUp) return null;
+  if (!r.scrolledUp && !r.terminalTitle) return null;
   return (
     <div className="term-statusline">
-      <button
-        className="back-to-latest"
-        onClick={() => scrollToBottom(ses.id)}
-        data-tip={t("ui.terminal.backToLatestTip")}
-      >
-        {t("ui.terminal.backToLatest")}
-      </button>
+      {r.terminalTitle ? <span className="term-title">{r.terminalTitle}</span> : null}
+      {r.scrolledUp ? (
+        <button
+          className="back-to-latest"
+          onClick={() => scrollToBottom(ses.id)}
+          data-tip={t("ui.terminal.backToLatestTip")}
+        >
+          {t("ui.terminal.backToLatest")}
+        </button>
+      ) : null}
     </div>
   );
 }

@@ -44,6 +44,26 @@ export function readDragPayload(dt: DataTransfer): TreeDragPayload | null {
       // fall through to the text/plain fallback
     }
   }
+  for (const file of Array.from(dt.files ?? [])) {
+    const path = (file as File & { path?: string }).path;
+    if (typeof path === "string" && path.startsWith("/")) {
+      return { path, isDir: file.type === "" };
+    }
+  }
+  const uriList = dt.getData("text/uri-list");
+  for (const line of uriList.split(/\r?\n/)) {
+    const value = line.trim();
+    if (!value || value.startsWith("#")) continue;
+    try {
+      const url = new URL(value);
+      if (url.protocol === "file:") {
+        const path = decodeURIComponent(url.pathname);
+        if (path.startsWith("/")) return { path, isDir: false };
+      }
+    } catch {
+      // Continue to the validated plain-text fallback below.
+    }
+  }
   // Fallback: a dragged text snippet that is itself an absolute path (e.g.
   // selected text from the terminal or another app).
   const text = dt.getData("text/plain").trim();
@@ -81,7 +101,10 @@ export function formatTerminalReference(path: string, isDir: boolean, adapter: s
  */
 export function hasTreeDragPayload(dt: DataTransfer): boolean {
   const types = Array.from(dt.types ?? []);
-  return types.includes(TREE_DND_MIME) || types.includes("text/plain");
+  return types.includes(TREE_DND_MIME)
+    || types.includes("text/plain")
+    || types.includes("text/uri-list")
+    || types.includes("Files");
 }
 
 /** Inserts a dropped tree entry into the terminal as an agent reference. */

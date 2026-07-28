@@ -44,6 +44,15 @@ describe("tree drag payload round-trip", () => {
     dt.setData("text/plain", "hello world");
     expect(readDragPayload(dt)).toBeNull();
   });
+
+  it("accepts Finder file URLs", () => {
+    const dt = fakeDataTransfer();
+    dt.setData("text/uri-list", "file:///Users/w/My%20Docs/%E6%8A%A5%E5%91%8A.md\r\n");
+    expect(readDragPayload(dt)).toEqual({
+      path: "/Users/w/My Docs/报告.md",
+      isDir: false,
+    });
+  });
 });
 
 describe("formatTerminalReference", () => {

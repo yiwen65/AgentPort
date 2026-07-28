@@ -9,6 +9,10 @@
   },
   "terminal": {
     "promptLabel": "终端输入",
-    "tooMuchOutput": "输出过多，部分内容未供屏幕阅读器朗读"
+    "tooMuchOutput": "输出过多，部分内容未供屏幕阅读器朗读",
+    "copy": "复制",
+    "paste": "粘贴",
+    "selectAll": "全选",
+    "search": "查找…"
   }
 }

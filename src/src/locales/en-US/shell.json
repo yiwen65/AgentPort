@@ -9,6 +9,10 @@
   },
   "terminal": {
     "promptLabel": "Terminal input",
-    "tooMuchOutput": "Some output was omitted from screen reader announcements"
+    "tooMuchOutput": "Some output was omitted from screen reader announcements",
+    "copy": "Copy",
+    "paste": "Paste",
+    "selectAll": "Select All",
+    "search": "Find…"
   }
 }

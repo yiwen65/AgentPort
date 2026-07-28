@@ -14,17 +14,28 @@ import { CanvasAddon } from "@xterm/addon-canvas";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import { Channel } from "@tauri-apps/api/core";
-import { api, b64ToBytes, bytesToB64, copyText, errorText } from "./api";
+import {
+  api,
+  b64ToBytes,
+  bytesToB64,
+  copyText,
+  errorText,
+  readClipboardText,
+} from "./api";
 import { PiStartupNoticeFilter } from "./piStartupNotice";
 import {
   announce,
   getState,
+  openContextMenu,
   patchRuntime,
   patchSession,
   setState,
   toast,
   type EffectiveTheme,
+  type MenuItem,
 } from "./store";
 import { stateLabel } from "./format";
 import { i18n } from "./i18n";
@@ -37,6 +48,8 @@ import type { ChannelMsg, LogCursorView, RuntimeMessageEnvelope } from "./types"
 // 4 MiB covers normal agent sessions (including the current 1.5 MiB repro)
 // without replaying an entire configured retained-log window every time a pane opens.
 const REPLAY_TAIL_BYTES = 4 * 1024 * 1024;
+const TERMINAL_SNAPSHOT_VERSION = 1;
+const MAX_TERMINAL_SNAPSHOT_CHARS = 2 * 1024 * 1024;
 /** Keep a bounded LRU of mounted xterm instances instead of retaining every
  * Session the user has ever visited in this renderer process. */
 export const MAX_PERSISTENT_TERMINALS = 3;
@@ -46,6 +59,7 @@ export interface TermHandle {
   term: Terminal;
   fit: FitAddon;
   search: SearchAddon;
+  serialize: SerializeAddon;
   opened: boolean;
   attached: boolean;
   attaching: boolean;
@@ -457,8 +471,12 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
   });
   const fit = new FitAddon();
   const search = new SearchAddon();
+  const serialize = new SerializeAddon();
+  term.loadAddon(new Unicode11Addon());
+  term.unicode.activeVersion = "11";
   term.loadAddon(fit);
   term.loadAddon(search);
+  term.loadAddon(serialize);
   // Detect plain http(s) URLs. OSC 8 links use the handler above, so both
   // forms share the same native URL validation and browser-opening path.
   term.loadAddon(new WebLinksAddon((_event, url) => openTerminalLink(url)));
@@ -470,6 +488,7 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     term,
     fit,
     search,
+    serialize,
     opened: false,
     attached: false,
     attaching: false,
@@ -495,11 +514,23 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
         ? new PiStartupNoticeFilter(session.agentSessionId)
         : null,
   };
+  term.onTitleChange((title) => {
+    patchRuntime(sessionId, { terminalTitle: title.trim() || null });
+  });
+  term.onBell(() => {
+    const target = handle.container;
+    if (!target) return;
+    target.classList.remove("terminal-bell");
+    // Restart the animation even when several BELs arrive close together.
+    void target.offsetWidth;
+    target.classList.add("terminal-bell");
+    window.setTimeout(() => target.classList.remove("terminal-bell"), 240);
+  });
   term.onData((data) => {
     // Input is only writable once attached — writers register at attach time.
     if (!handle.attached) return;
     const firstInput = captureFirstSubmittedInput(handle, data);
-    void sendTerminalInput(sessionId, data)
+    void queueTerminalInput(sessionId, data)
       .then(() => {
         if (!firstInput) return;
         void api.autoRenameSessionFromFirstInput(sessionId, firstInput).catch(() => {
@@ -515,6 +546,15 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
   });
   term.onScroll(() => updateScrolledUp(handle));
   handles.set(sessionId, handle);
+  const snapshot = readTerminalSnapshot(sessionId);
+  if (snapshot) {
+    handle.logCursor = snapshot.cursor;
+    if (snapshot.cols > 0 && snapshot.rows > 0) {
+      term.resize(snapshot.cols, snapshot.rows);
+    }
+    term.write(snapshot.content);
+    handle.historyLoaded = true;
+  }
   return handle;
 }
 
@@ -529,6 +569,90 @@ function finishTerminalStartupFilter(handle: TermHandle) {
 }
 
 const MAX_INPUT_FRAME_BYTES = 256 * 1024;
+const terminalInputQueues = new Map<string, Promise<void>>();
+const snapshotTimers = new Map<string, number>();
+
+interface TerminalSnapshot {
+  version: typeof TERMINAL_SNAPSHOT_VERSION;
+  cursor: LogCursorView;
+  cols: number;
+  rows: number;
+  content: string;
+}
+
+function snapshotKey(sessionId: string) {
+  return `agentport:terminal-snapshot:v${TERMINAL_SNAPSHOT_VERSION}:${sessionId}`;
+}
+
+function readTerminalSnapshot(sessionId: string): TerminalSnapshot | null {
+  try {
+    const raw = localStorage.getItem(snapshotKey(sessionId));
+    if (!raw || raw.length > MAX_TERMINAL_SNAPSHOT_CHARS + 4096) return null;
+    const parsed = JSON.parse(raw) as Partial<TerminalSnapshot>;
+    if (
+      parsed.version !== TERMINAL_SNAPSHOT_VERSION
+      || typeof parsed.content !== "string"
+      || parsed.content.length > MAX_TERMINAL_SNAPSHOT_CHARS
+      || typeof parsed.cols !== "number"
+      || typeof parsed.rows !== "number"
+      || !parsed.cursor
+      || typeof parsed.cursor.runId !== "string"
+      || typeof parsed.cursor.runOrdinal !== "number"
+      || typeof parsed.cursor.generation !== "number"
+      || typeof parsed.cursor.offset !== "number"
+    ) {
+      return null;
+    }
+    return parsed as TerminalSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+function clearTerminalSnapshot(sessionId: string) {
+  try {
+    localStorage.removeItem(snapshotKey(sessionId));
+  } catch {
+    // A disabled Web storage backend only degrades crash-time restoration.
+  }
+}
+
+function scheduleTerminalSnapshot(handle: TermHandle) {
+  const existing = snapshotTimers.get(handle.sessionId);
+  if (existing !== undefined) window.clearTimeout(existing);
+  snapshotTimers.set(
+    handle.sessionId,
+    window.setTimeout(() => {
+      snapshotTimers.delete(handle.sessionId);
+      if (handles.get(handle.sessionId) !== handle || !handle.logCursor) return;
+      const cursor = { ...handle.logCursor };
+      const generation = handle.generation;
+      // Serialize only after every write covered by `cursor` has passed
+      // xterm's parser. Later writes remain queued behind this sentinel, so
+      // screen state and replay cursor form one consistent checkpoint.
+      handle.term.write("", () => {
+        if (handles.get(handle.sessionId) !== handle || handle.generation !== generation) return;
+        try {
+          const content = handle.serialize.serialize({ scrollback: 5000 });
+          if (content.length > MAX_TERMINAL_SNAPSHOT_CHARS) {
+            clearTerminalSnapshot(handle.sessionId);
+            return;
+          }
+          const snapshot: TerminalSnapshot = {
+            version: TERMINAL_SNAPSHOT_VERSION,
+            cursor,
+            cols: handle.term.cols,
+            rows: handle.term.rows,
+            content,
+          };
+          localStorage.setItem(snapshotKey(handle.sessionId), JSON.stringify(snapshot));
+        } catch {
+          // Quota/private-mode failures must never interrupt terminal output.
+        }
+      });
+    }, 1000),
+  );
+}
 
 /** Preserve byte ordering while splitting a large paste into bounded IPC
  * frames. The backend applies the same limit before forwarding to the Host. */
@@ -540,6 +664,22 @@ async function sendTerminalInput(sessionId: string, data: string): Promise<void>
       bytesToB64(bytes.subarray(start, start + MAX_INPUT_FRAME_BYTES)),
     );
   }
+}
+
+/** Serialize every xterm input event per session. A large paste spans several
+ * awaited IPC calls; without this queue a later keypress can overtake one of
+ * those chunks and corrupt the byte stream observed by the PTY. */
+function queueTerminalInput(sessionId: string, data: string): Promise<void> {
+  const previous = terminalInputQueues.get(sessionId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(() => sendTerminalInput(sessionId, data));
+  terminalInputQueues.set(sessionId, next);
+  const cleanup = () => {
+    if (terminalInputQueues.get(sessionId) === next) {
+      terminalInputQueues.delete(sessionId);
+    }
+  };
+  next.then(cleanup, cleanup);
+  return next;
 }
 
 function updateScrolledUp(handle: TermHandle) {
@@ -693,8 +833,64 @@ function installClipboardCompatibility(term: Terminal, container: HTMLElement): 
     event.preventDefault();
     event.stopImmediatePropagation();
   };
+  const onPaste = (event: ClipboardEvent) => {
+    const clipboard = event.clipboardData;
+    if (!clipboard) return;
+    const hasImage = Array.from(clipboard.items).some(
+      (item) => item.kind === "file" && item.type.startsWith("image/"),
+    ) || Array.from(clipboard.files).some((file) => file.type.startsWith("image/"));
+    if (!hasImage) return;
+
+    // xterm only reads text/plain from ClipboardEvent, so an image paste would
+    // otherwise send an empty string. Ctrl+V is the image-paste shortcut
+    // understood by interactive Agent TUIs such as Codex and Claude Code; they
+    // retain ownership of reading, encoding and attaching the native clipboard.
+    term.input("\x16");
+    term.focus();
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  const onContextMenu = (event: MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const selection = term.getSelection();
+    const items: MenuItem[] = [
+      {
+        label: i18n.t("shell:terminal.copy"),
+        disabled: !selection,
+        action: selection ? () => void copyText(selection) : undefined,
+      },
+      {
+        label: i18n.t("shell:terminal.paste"),
+        action: () => {
+          void readClipboardText()
+            .then((text) => {
+              if (text) term.paste(text);
+              term.focus();
+            })
+            .catch((error) => toast(errorText(error), "error"));
+        },
+      },
+      { label: "", separator: true },
+      {
+        label: i18n.t("shell:terminal.selectAll"),
+        action: () => term.selectAll(),
+      },
+      {
+        label: i18n.t("shell:terminal.search"),
+        action: () => setState({ termSearchOpen: true }),
+      },
+    ];
+    openContextMenu(event.clientX, event.clientY, items);
+  };
   container.addEventListener("copy", onCopy, true);
-  return () => container.removeEventListener("copy", onCopy, true);
+  container.addEventListener("paste", onPaste, true);
+  container.addEventListener("contextmenu", onContextMenu, true);
+  return () => {
+    container.removeEventListener("copy", onCopy, true);
+    container.removeEventListener("paste", onPaste, true);
+    container.removeEventListener("contextmenu", onContextMenu, true);
+  };
 }
 
 const inputCompatibilityDisposers = new Map<string, () => void>();
@@ -1129,6 +1325,7 @@ function queueRenderedLogObservation(handle: TermHandle, cursor: LogCursorView) 
     if (handle.pendingRenderedLogCursor) {
       queueRenderedLogObservation(handle, handle.pendingRenderedLogCursor);
     }
+    scheduleTerminalSnapshot(handle);
   });
 }
 
@@ -1255,6 +1452,7 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       handle.term.reset();
       handle.logCursor = null;
       handle.historyLoaded = false;
+      clearTerminalSnapshot(sessionId);
       const historyMessage: RuntimeMessageEnvelope = {
         code: "terminal_resynced",
         params: { reason: msg.reason },
@@ -1329,6 +1527,7 @@ export function writeMarker(sessionId: string, text: string) {
 }
 
 export function resetForRestart(sessionId: string) {
+  clearTerminalSnapshot(sessionId);
   const handle = handles.get(sessionId);
   if (handle) {
     handle.attached = false;
@@ -1378,6 +1577,7 @@ export async function jumpToRecoveryOutput(
   handle.attached = false;
   handle.attaching = false;
   handle.term.reset();
+  clearTerminalSnapshot(sessionId);
   handle.logCursor = null;
   handle.allowRecoveryGap = false;
   handle.recoveryTarget = cursor;
@@ -1495,6 +1695,11 @@ export function disposeHandle(sessionId: string) {
   if (resizeTimer !== undefined) {
     window.clearTimeout(resizeTimer);
     resizeTimers.delete(sessionId);
+  }
+  const snapshotTimer = snapshotTimers.get(sessionId);
+  if (snapshotTimer !== undefined) {
+    window.clearTimeout(snapshotTimer);
+    snapshotTimers.delete(sessionId);
   }
   handle.resizeObserver?.disconnect();
   try {

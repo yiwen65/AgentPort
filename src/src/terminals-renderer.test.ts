@@ -30,12 +30,15 @@ const rendererMocks = vi.hoisted(() => {
   class FakeTerminal {
     static strings = { promptLabel: "", tooMuchOutput: "" };
     private readonly dataListeners = new Set<(data: string) => void>();
+    private readonly titleListeners = new Set<(title: string) => void>();
+    private readonly bellListeners = new Set<() => void>();
     options: Record<string, unknown>;
     cols = 80;
     rows = 24;
     element: HTMLDivElement | null = null;
     textarea: HTMLTextAreaElement | undefined;
     bufferLines: string[] = [];
+    unicode = { activeVersion: "6" };
     selectionText = "";
     linkProviders: Array<{
       provideLinks: (
@@ -70,6 +73,14 @@ const rendererMocks = vi.hoisted(() => {
       return { dispose: () => this.dataListeners.delete(listener) };
     });
     onScroll = vi.fn();
+    onTitleChange = vi.fn((listener: (title: string) => void) => {
+      this.titleListeners.add(listener);
+      return { dispose: () => this.titleListeners.delete(listener) };
+    });
+    onBell = vi.fn((listener: () => void) => {
+      this.bellListeners.add(listener);
+      return { dispose: () => this.bellListeners.delete(listener) };
+    });
     open(container: HTMLDivElement) {
       offscreenCanvasDuringOpen.push(globalThis.OffscreenCanvas);
       if (config.openShouldFail) throw new Error("Terminal open failed");
@@ -85,9 +96,15 @@ const rendererMocks = vi.hoisted(() => {
       for (const listener of this.dataListeners) listener(data);
     }
     input = vi.fn((data: string) => this.emitData(data));
+    paste = vi.fn((data: string) => this.emitData(data));
+    selectAll = vi.fn();
     getSelection = vi.fn(() => this.selectionText);
     clearTextureAtlas = vi.fn();
     refresh = vi.fn();
+    resize = vi.fn((cols: number, rows: number) => {
+      this.cols = cols;
+      this.rows = rows;
+    });
     focus = vi.fn();
     scrollToLine = vi.fn((line: number) => {
       this.buffer.active.viewportY = line;
@@ -108,6 +125,10 @@ const rendererMocks = vi.hoisted(() => {
     fit = vi.fn();
   }
   class FakeSearchAddon {}
+  class FakeUnicode11Addon {}
+  class FakeSerializeAddon {
+    serialize = vi.fn(() => "");
+  }
   return {
     apiMock,
     channels,
@@ -121,6 +142,8 @@ const rendererMocks = vi.hoisted(() => {
     FakeWebLinksAddon,
     FakeFitAddon,
     FakeSearchAddon,
+    FakeUnicode11Addon,
+    FakeSerializeAddon,
   };
 });
 
@@ -129,6 +152,8 @@ vi.mock("@xterm/addon-canvas", () => ({ CanvasAddon: rendererMocks.FakeCanvasAdd
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: rendererMocks.FakeFitAddon }));
 vi.mock("@xterm/addon-search", () => ({ SearchAddon: rendererMocks.FakeSearchAddon }));
 vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: rendererMocks.FakeWebLinksAddon }));
+vi.mock("@xterm/addon-unicode11", () => ({ Unicode11Addon: rendererMocks.FakeUnicode11Addon }));
+vi.mock("@xterm/addon-serialize", () => ({ SerializeAddon: rendererMocks.FakeSerializeAddon }));
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {
     onmessage?: (message: unknown) => void;
@@ -197,6 +222,12 @@ describe("terminal renderer", () => {
       rendererMode: "dom",
       rendererFallbackReason: null,
     });
+  });
+
+  it("uses Unicode 11 width tables for modern emoji and combining text", () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    expect(terminal.unicode.activeVersion).toBe("11");
   });
 
   afterEach(() => {
@@ -455,6 +486,52 @@ describe("terminal renderer", () => {
       expect(rendererMocks.apiMock.copyText).toHaveBeenCalledWith(selection);
     });
     expect(rendererMocks.defaultClipboardCopies).toEqual([]);
+  });
+
+  it("forwards an image clipboard paste to the Agent image-paste shortcut", async () => {
+    const container = document.createElement("div");
+    mountTerminal("renderer-test", container);
+    await vi.waitFor(() => expect(getState().runtime["renderer-test"]?.attached).toBe(true));
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        items: [{ kind: "file", type: "image/png" }],
+        files: [],
+        types: ["Files"],
+        getData: () => "",
+      },
+    });
+
+    terminal.textarea?.dispatchEvent(paste);
+
+    expect(paste.defaultPrevented).toBe(true);
+    expect(terminal.input).toHaveBeenCalledWith("\x16");
+    await vi.waitFor(() => {
+      expect(rendererMocks.apiMock.sendInput).toHaveBeenCalledWith(
+        "renderer-test",
+        "encoded-input",
+      );
+    });
+  });
+
+  it("serializes independent terminal input events behind an in-flight send", async () => {
+    let releaseFirst: (() => void) | undefined;
+    rendererMocks.apiMock.sendInput.mockImplementationOnce(
+      () => new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      }),
+    );
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(getState().runtime["renderer-test"]?.attached).toBe(true));
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+
+    terminal.emitData("first");
+    terminal.emitData("second");
+    await vi.waitFor(() => expect(rendererMocks.apiMock.sendInput).toHaveBeenCalledTimes(1));
+
+    releaseFirst?.();
+    await vi.waitFor(() => expect(rendererMocks.apiMock.sendInput).toHaveBeenCalledTimes(2));
   });
 
   it("uses the DOM renderer only when CanvasAddon fails to initialize", () => {

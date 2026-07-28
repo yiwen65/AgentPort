@@ -3376,6 +3376,24 @@ button {
   z-index: 6;
 }
 
+.term-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+@keyframes terminal-bell-flash {
+  0%, 100% { box-shadow: inset 0 0 0 0 transparent; }
+  35% { box-shadow: inset 0 0 0 2px var(--accent); }
+}
+
+.term-host.terminal-bell,
+.term-pane.terminal-bell {
+  animation: terminal-bell-flash 220ms ease-out;
+}
+
 .term-statusline .spacer {
   flex: 1;
 }
