@@ -1518,6 +1518,37 @@ impl Db {
         Ok(())
     }
 
+    pub fn update_worktree_branch_if(
+        &self,
+        id: &str,
+        expected_branch: &str,
+        branch: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "UPDATE worktrees SET branch=?3 WHERE id=?1 AND branch=?2",
+            params![id, expected_branch, branch],
+        )?;
+        if n == 1 {
+            return Ok(());
+        }
+        let current = conn
+            .query_row(
+                "SELECT branch FROM worktrees WHERE id=?1",
+                params![id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    CoreError::NotFound(format!("worktree {id}"))
+                }
+                other => CoreError::Sqlite(other),
+            })?;
+        Err(CoreError::Conflict(format!(
+            "worktree {id} branch changed from expected {expected_branch} to {current}"
+        )))
+    }
+
     pub fn delete_worktree(&self, id: &str) -> Result<()> {
         self.delete_worktree_after(id, || Ok(()))
     }

@@ -1,6 +1,7 @@
 import { useMemo, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  adoptCurrentGitWorktreeBranch,
   discardGitEntry,
   gitWritesEnabled,
   ignoreGitEntry,
@@ -312,6 +313,13 @@ export default function GitChangesPanel() {
   const unstageable = changes.entries.filter(
     (entry) => entry.staged && !entry.conflicted,
   ).length;
+  const canAdoptBranch =
+    cache.context.target.kind === "worktree" &&
+    Boolean(cache.context.expectedBranch) &&
+    Boolean(cache.context.actualBranch) &&
+    cache.context.expectedBranch !== cache.context.actualBranch &&
+    cache.context.blockers.length === 1 &&
+    cache.context.blockers[0] === "worktree_branch_drift";
   return (
     <div className="git-changes-panel">
       {stageable > 0 || unstageable > 0 ? (
@@ -353,11 +361,26 @@ export default function GitChangesPanel() {
       ) : null}
       {!cache.context.writable ? (
         <div className="git-inline-state warn" role="alert">
-          {cache.context.blockers.includes("worktree_missing")
-            ? t("states.missing")
-            : t("states.readOnly", {
-              reason: cache.context.blockers.join(", ") || t("states.unknown"),
-            })}
+          <span>
+            {cache.context.blockers.includes("worktree_missing")
+              ? t("states.missing")
+              : canAdoptBranch
+                ? t("branchAdoption.notice", {
+                  expectedBranch: cache.context.expectedBranch,
+                  actualBranch: cache.context.actualBranch,
+                })
+                : t("states.readOnly", {
+                  reason: cache.context.blockers.join(", ") || t("states.unknown"),
+                })}
+          </span>
+          {canAdoptBranch ? (
+            <button
+              className="btn small"
+              onClick={() => void adoptCurrentGitWorktreeBranch()}
+            >
+              {t("branchAdoption.confirm")}
+            </button>
+          ) : null}
         </div>
       ) : null}
       {changes.counts.conflict > 0 ? (

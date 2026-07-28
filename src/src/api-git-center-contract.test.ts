@@ -182,6 +182,22 @@ describe("Git Center Tauri contract", () => {
     });
   });
 
+  it("binds Worktree branch adoption to the exact observed checkout and branches", async () => {
+    await api.adoptCurrentGitWorktreeBranch(
+      locator,
+      "checkout-1",
+      "agent/original",
+      "fix/current",
+    );
+
+    expect(invokeMock).toHaveBeenCalledWith("adopt_git_worktree_branch", {
+      locator,
+      expectedCheckoutId: "checkout-1",
+      expectedBranch: "agent/original",
+      actualBranch: "fix/current",
+    });
+  });
+
   it("keeps Commit AI configuration behind dedicated native commands", async () => {
     await api.getCommitAiConfig();
     await api.saveCommitAiConfig(

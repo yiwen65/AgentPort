@@ -4045,6 +4045,7 @@ fn main() {
             git_commands::restore_auto_stash,
             git_commands::cleanup_auto_stash,
             git_workspace_commands::resolve_git_context,
+            git_workspace_commands::adopt_git_worktree_branch,
             git_workspace_commands::get_git_changes,
             git_workspace_commands::get_git_diff,
             git_workspace_commands::get_git_history,

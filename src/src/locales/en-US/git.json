@@ -33,6 +33,14 @@
     "body": "The current checkout has a selection or commit draft. It will remain with the original checkout and will not move to the new target.",
     "confirm": "Switch checkout"
   },
+  "branchAdoption": {
+    "notice": "AgentPort saved {{expectedBranch}}, but this Worktree is currently on {{actualBranch}}.",
+    "title": "Accept current branch?",
+    "body": "Update AgentPort's saved branch from {{expectedBranch}} to {{actualBranch}}. This does not switch branches or modify working files.",
+    "activeSessions": "{{count}} active Sessions use this Worktree; their working directory will not change.",
+    "confirm": "Accept current branch",
+    "succeeded": "Current branch accepted; Git Center writes are enabled"
+  },
   "states": {
     "loading": "Reading Git state…",
     "empty": "This checkout has no uncommitted changes.",

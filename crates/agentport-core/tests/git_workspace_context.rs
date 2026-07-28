@@ -126,6 +126,41 @@ fn persisted_external_linked_worktree_is_read_only_at_the_production_boundary() 
 }
 
 #[test]
+fn adopts_the_registered_branch_only_for_an_exact_branch_drift() {
+    let fixture = MockRepo::new();
+    let db = Db::open_memory().unwrap();
+    fixture.add_project(&db, "project-a");
+    let worktree = fixture.add_worktree(&db, "project-a", "wt-a", "agent/original");
+    fixture.git(&worktree, &["switch", "-c", "fix/current"]);
+    let locator = GitContextLocator::Worktree {
+        project_id: "project-a".into(),
+        worktree_id: "wt-a".into(),
+    };
+    let manager = GitWorkspaceManager::new(&db);
+    let drifted = manager.resolve(&locator).unwrap();
+
+    assert!(!drifted.writable);
+    assert_eq!(drifted.expected_branch.as_deref(), Some("agent/original"));
+    assert_eq!(drifted.actual_branch.as_deref(), Some("fix/current"));
+    assert_eq!(drifted.blockers, vec!["worktree_branch_drift"]);
+
+    let adopted = manager
+        .adopt_current_worktree_branch(
+            &locator,
+            &drifted.checkout_id,
+            "agent/original",
+            "fix/current",
+        )
+        .unwrap();
+
+    assert!(adopted.writable);
+    assert_eq!(adopted.expected_branch.as_deref(), Some("fix/current"));
+    assert_eq!(adopted.actual_branch.as_deref(), Some("fix/current"));
+    assert!(adopted.blockers.is_empty());
+    assert_eq!(db.get_worktree("wt-a").unwrap().branch, "fix/current");
+}
+
+#[test]
 fn worktree_path_and_common_directory_drift_are_rejected() {
     let fixture = MockRepo::new();
     let unrelated = MockRepo::new();

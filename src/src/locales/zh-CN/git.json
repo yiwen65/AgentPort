@@ -33,6 +33,14 @@
     "body": "当前有文件选择或尚未提交的草稿。切换后草稿会保留在原 Checkout，但不会带到新目标。",
     "confirm": "切换 Checkout"
   },
+  "branchAdoption": {
+    "notice": "AgentPort 记录的分支 {{expectedBranch}} 与当前分支 {{actualBranch}} 不一致。",
+    "title": "接受当前分支？",
+    "body": "将 AgentPort 记录的分支从 {{expectedBranch}} 更新为 {{actualBranch}}。此操作不会切换分支或修改工作区文件。",
+    "activeSessions": "{{count}} 个活动 Session 正在使用此 Worktree；它们的工作目录不会改变。",
+    "confirm": "接受当前分支",
+    "succeeded": "已接受当前分支，Git Center 已恢复写入"
+  },
   "states": {
     "loading": "正在读取 Git 状态…",
     "empty": "此 Checkout 没有未提交更改。",

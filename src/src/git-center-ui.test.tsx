@@ -227,6 +227,29 @@ describe("Git Center states", () => {
     }
   });
 
+  it("offers a guarded repair only for an exact Worktree branch drift", () => {
+    const drifted = {
+      ...context,
+      expectedBranch: "agent/original",
+      actualBranch: "fix/current",
+      writable: false,
+      blockers: ["worktree_branch_drift"],
+    };
+    show(cache({
+      context: drifted,
+      changes: { ...snapshot(), context: drifted },
+    }));
+    render(<GitCenter />);
+
+    fireEvent.click(screen.getByRole("button", { name: "接受当前分支" }));
+    expect(getState().confirm).toMatchObject({
+      title: "接受当前分支？",
+      confirmLabel: "接受当前分支",
+    });
+    expect(getState().confirm?.body).toContain("agent/original");
+    expect(getState().confirm?.body).toContain("fix/current");
+  });
+
   it("offers batch, file, ignore, trash, diff, view, and remote actions", () => {
     show(cache({
       changes: snapshot([untrackedEntry]),

@@ -1,5 +1,5 @@
 use super::command::GitRunner;
-use super::repository::RepositoryIdentity;
+use super::repository::{repository_lock, RepositoryFileLock, RepositoryIdentity};
 use crate::db::Db;
 use crate::error::{CoreError, Result};
 use crate::models::{Lifecycle, Project, Worktree, WorktreeHealth};
@@ -115,6 +115,52 @@ impl<'a> GitWorkspaceManager<'a> {
 
     pub fn resolve(&self, locator: &GitContextLocator) -> Result<GitCheckoutDescriptor> {
         Ok(self.resolve_internal(locator)?.descriptor)
+    }
+
+    /// Accept an externally switched branch without touching the checkout.
+    /// The caller must present the exact saved and registered branches it saw;
+    /// any other blocker or intervening change keeps the Worktree read-only.
+    pub fn adopt_current_worktree_branch(
+        &self,
+        locator: &GitContextLocator,
+        expected_checkout_id: &str,
+        expected_branch: &str,
+        actual_branch: &str,
+    ) -> Result<GitCheckoutDescriptor> {
+        let initial = self.resolve_internal(locator)?;
+        validate_branch_adoption(
+            &initial,
+            expected_checkout_id,
+            expected_branch,
+            actual_branch,
+        )?;
+        let lock = repository_lock(&initial.identity.repo_key);
+        let _guard = lock.lock().unwrap();
+        let _file_guard = RepositoryFileLock::acquire(&initial.identity.common_dir)?;
+
+        let current = self.resolve_internal(locator)?;
+        validate_branch_adoption(
+            &current,
+            expected_checkout_id,
+            expected_branch,
+            actual_branch,
+        )?;
+        let worktree = current.worktree.as_ref().ok_or_else(|| {
+            CoreError::Validation("only a linked Worktree branch can be adopted".into())
+        })?;
+        self.db
+            .update_worktree_branch_if(&worktree.id, expected_branch, actual_branch)?;
+
+        let adopted = self.resolve_internal(locator)?.descriptor;
+        if !adopted.writable
+            || adopted.expected_branch.as_deref() != Some(actual_branch)
+            || adopted.actual_branch.as_deref() != Some(actual_branch)
+        {
+            return Err(CoreError::Conflict(
+                "Worktree branch changed again while accepting the current branch".into(),
+            ));
+        }
+        Ok(adopted)
     }
 
     pub(crate) fn resolve_internal(
@@ -405,6 +451,35 @@ struct RemoteState {
     upstream: Option<String>,
     ahead: usize,
     behind: usize,
+}
+
+fn validate_branch_adoption(
+    resolved: &ResolvedGitContext,
+    expected_checkout_id: &str,
+    expected_branch: &str,
+    actual_branch: &str,
+) -> Result<()> {
+    if resolved.worktree.is_none() {
+        return Err(CoreError::Validation(
+            "only a linked Worktree branch can be adopted".into(),
+        ));
+    }
+    if resolved.descriptor.checkout_id != expected_checkout_id
+        || resolved.descriptor.expected_branch.as_deref() != Some(expected_branch)
+        || resolved.descriptor.actual_branch.as_deref() != Some(actual_branch)
+    {
+        return Err(CoreError::Conflict(
+            "Worktree branch state changed; refresh before accepting it".into(),
+        ));
+    }
+    if expected_branch == actual_branch
+        || resolved.descriptor.blockers.as_slice() != ["worktree_branch_drift"]
+    {
+        return Err(CoreError::Blocked(
+            "the Worktree is not blocked only by branch drift".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn remote_state(runner: &GitRunner, checkout: &Path, branch: Option<&str>) -> RemoteState {

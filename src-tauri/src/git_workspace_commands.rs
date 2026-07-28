@@ -52,6 +52,36 @@ pub async fn resolve_git_context(
 }
 
 #[tauri::command]
+pub async fn adopt_git_worktree_branch(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    locator: GitContextLocator,
+    expected_checkout_id: String,
+    expected_branch: String,
+    actual_branch: String,
+) -> CommandResult<GitChangesSnapshot> {
+    let error_locator = locator.clone();
+    let changes = run_write(state.paths.clone(), error_locator, move |manager| {
+        manager.adopt_current_worktree_branch(
+            &locator,
+            &expected_checkout_id,
+            &expected_branch,
+            &actual_branch,
+        )?;
+        manager.changes(&locator, true)
+    })
+    .await?;
+    emit_invalidation(
+        &app,
+        &changes,
+        &format!("branch-adopt-{}", Utc::now().timestamp_millis()),
+        "branchAdopted",
+        &["refs", "changes", "history"],
+    );
+    Ok(changes)
+}
+
+#[tauri::command]
 pub async fn get_git_changes(
     state: State<'_, AppState>,
     locator: GitContextLocator,

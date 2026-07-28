@@ -331,6 +331,18 @@ export const api = {
     invoke<BranchOperationResult>("cleanup_auto_stash", { operationId }),
   resolveGitContext: (locator: GitContextLocator) =>
     invoke<GitCheckoutDescriptor>("resolve_git_context", { locator }),
+  adoptCurrentGitWorktreeBranch: (
+    locator: GitContextLocator,
+    expectedCheckoutId: string,
+    expectedBranch: string,
+    actualBranch: string,
+  ) =>
+    invoke<GitChangesSnapshot>("adopt_git_worktree_branch", {
+      locator,
+      expectedCheckoutId,
+      expectedBranch,
+      actualBranch,
+    }),
   getGitChanges: (locator: GitContextLocator, includeIgnored = true) =>
     invoke<GitChangesSnapshot>("get_git_changes", { locator, includeIgnored }),
   getGitDiff: (

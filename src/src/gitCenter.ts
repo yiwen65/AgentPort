@@ -4,6 +4,7 @@ import {
   errorText,
   isGitWorkspaceCommandError,
 } from "./api";
+import { refreshProjects } from "./actions";
 import { openDocumentTarget } from "./documents";
 import { i18n } from "./i18n";
 import {
@@ -513,6 +514,69 @@ export async function mutateGitSelection(
   const statusToken = target.cache.changes.statusToken;
   const selections = selectedPaths(cache, side, explicitEntry);
   await mutateGitPaths(checkoutId, locator, statusToken, side, selections);
+}
+
+export async function adoptCurrentGitWorktreeBranch(): Promise<void> {
+  const target = activeTarget();
+  if (!target) return;
+  const { checkoutId, locator, cache } = target;
+  const { context } = cache;
+  const expectedBranch = context.expectedBranch;
+  const actualBranch = context.actualBranch;
+  if (
+    context.target.kind !== "worktree" ||
+    !expectedBranch ||
+    !actualBranch ||
+    expectedBranch === actualBranch ||
+    context.blockers.length !== 1 ||
+    context.blockers[0] !== "worktree_branch_drift"
+  ) {
+    return;
+  }
+  const confirmed = await confirmDialog({
+    title: i18n.t("git:branchAdoption.title"),
+    body: i18n.t("git:branchAdoption.body", {
+      expectedBranch,
+      actualBranch,
+    }),
+    details: context.liveSessionIds.length
+      ? [
+        i18n.t("git:branchAdoption.activeSessions", {
+          count: context.liveSessionIds.length,
+        }),
+      ]
+      : undefined,
+    confirmLabel: i18n.t("git:branchAdoption.confirm"),
+  });
+  if (!confirmed) return;
+
+  const request = nextRequest(checkoutId, "mutation");
+  updateCheckout(checkoutId, (current) => ({
+    ...current,
+    changesPhase: "refreshing",
+    changesError: null,
+  }));
+  try {
+    const changes = await api.adoptCurrentGitWorktreeBranch(
+      locator,
+      checkoutId,
+      expectedBranch,
+      actualBranch,
+    );
+    if (
+      !requestIsCurrent(checkoutId, "mutation", request) ||
+      changes.context.checkoutId !== checkoutId
+    ) {
+      return;
+    }
+    nextRequest(checkoutId, "changes");
+    applyAuthoritativeChanges(checkoutId, changes);
+    toast(i18n.t("git:branchAdoption.succeeded"), "success");
+    await refreshProjects();
+  } catch (error) {
+    if (!requestIsCurrent(checkoutId, "mutation", request)) return;
+    applyWriteError(checkoutId, error);
+  }
 }
 
 export async function mutateAllGitChanges(side: GitDiffSide): Promise<void> {
