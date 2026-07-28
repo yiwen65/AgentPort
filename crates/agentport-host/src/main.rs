@@ -540,6 +540,11 @@ fn run() -> i32 {
                 }
             };
             let mut command = CommandBuilder::new(&cfg.command[0]);
+            // The Host itself carries launch-only Secret values. Never let
+            // ambient GUI/Host variables leak into the Agent implicitly:
+            // the manager materializes an explicit safe login-shell baseline
+            // plus preset variables and named Secrets.
+            command.env_clear();
             for arg in &cfg.command[1..] {
                 command.arg(arg);
             }
@@ -595,6 +600,7 @@ fn run() -> i32 {
         AgentTransport::JsonRpc => {
             let mut command = std::process::Command::new(&cfg.command[0]);
             command
+                .env_clear()
                 .args(&cfg.command[1..])
                 .current_dir(&cfg.cwd)
                 .stdin(std::process::Stdio::piped())

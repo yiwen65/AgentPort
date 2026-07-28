@@ -1008,7 +1008,8 @@ fn materialize_launch_environment(
     preset: &Preset,
     plan_env: &[(String, String)],
 ) -> Result<MaterializedLaunchEnvironment> {
-    let mut env = plan_env.to_vec();
+    let mut env = capability::login_shell_launch_environment();
+    env.extend_from_slice(plan_env);
     for name in &preset.env_names {
         if let Ok(value) = std::env::var(name) {
             env.push((name.clone(), value));

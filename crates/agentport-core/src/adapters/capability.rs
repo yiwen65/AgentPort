@@ -14,6 +14,7 @@
 use crate::error::{CoreError, Result};
 use crate::models::*;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -169,6 +170,19 @@ fn run_readonly_probe_with_path(exe: &Path, path_env: &OsStr) -> Result<(String,
     Ok((version, help))
 }
 
+fn run_readonly_probe_for_agent(
+    agent: AgentType,
+    exe: &Path,
+    path_env: &OsStr,
+) -> Result<(String, String)> {
+    match run_readonly_probe_with_path(exe, path_env) {
+        Err(CoreError::Timeout(_)) if agent == AgentType::Qoder => {
+            run_readonly_probe_with_path(exe, path_env)
+        }
+        result => result,
+    }
+}
+
 /// sha256 over version+help — the capability snapshot identity.
 pub fn capability_hash(version: &str, help: &str) -> String {
     let mut h = Sha256::new();
@@ -315,6 +329,97 @@ fn login_shell_path_entries() -> Vec<PathBuf> {
     Vec::new()
 }
 
+const LOGIN_ENV_MARKER: &str = "__AGENTPORT_ENV__=";
+
+fn launch_environment_name_is_safe(name: &str) -> bool {
+    name.starts_with("LC_")
+        || matches!(
+            name,
+            "HOME"
+                | "USER"
+                | "LOGNAME"
+                | "SHELL"
+                | "TMPDIR"
+                | "LANG"
+                | "EDITOR"
+                | "VISUAL"
+                | "PAGER"
+                | "MANPAGER"
+                | "BROWSER"
+                | "SSH_AUTH_SOCK"
+                | "XDG_CONFIG_HOME"
+                | "XDG_CACHE_HOME"
+                | "XDG_DATA_HOME"
+                | "XDG_STATE_HOME"
+                | "CARGO_HOME"
+                | "RUSTUP_HOME"
+                | "GOPATH"
+                | "GOMODCACHE"
+                | "NVM_DIR"
+                | "FNM_DIR"
+                | "PNPM_HOME"
+                | "BUN_INSTALL"
+                | "VOLTA_HOME"
+                | "PYENV_ROOT"
+                | "PIPX_HOME"
+                | "CONDA_PREFIX"
+                | "CONDA_DEFAULT_ENV"
+                | "VIRTUAL_ENV"
+                | "DOCKER_HOST"
+                | "KUBECONFIG"
+                | "CLICOLOR"
+                | "CLICOLOR_FORCE"
+        )
+}
+
+fn parse_login_shell_environment(output: &str) -> Vec<(String, String)> {
+    let mut values = BTreeMap::new();
+    for payload in output
+        .lines()
+        .filter_map(|line| line.strip_prefix(LOGIN_ENV_MARKER))
+    {
+        let Some((name, value)) = payload.split_once('=') else {
+            continue;
+        };
+        if launch_environment_name_is_safe(name) {
+            values.insert(name.to_string(), value.to_string());
+        }
+    }
+    values.into_iter().collect()
+}
+
+/// Non-secret terminal context sourced from the user's interactive login
+/// shell. Values that commonly carry credentials (API keys, tokens and proxy
+/// URLs) remain opt-in through preset environment names or Secret references.
+pub fn login_shell_launch_environment() -> Vec<(String, String)> {
+    let mut values = BTreeMap::new();
+    for (name, value) in std::env::vars() {
+        if launch_environment_name_is_safe(&name) {
+            values.insert(name, value);
+        }
+    }
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let script =
+        "env | while IFS= read -r line; do printf '__AGENTPORT_ENV__=%s\\n' \"$line\"; done";
+    for flags in [&["-i", "-l"][..], &["-l"][..]] {
+        let mut args: Vec<&str> = flags.to_vec();
+        args.extend(["-c", script]);
+        if let Ok(output) = spawn_capture(
+            Path::new(&shell),
+            &args,
+            LOGIN_SHELL_TIMEOUT,
+            MAX_PROBE_OUTPUT,
+        ) {
+            for (name, value) in parse_login_shell_environment(&output) {
+                values.insert(name, value);
+            }
+            break;
+        }
+    }
+    values.into_iter().collect()
+}
+
 /// Collect candidate executables from explicit process and login-shell PATH
 /// sources. Each source keeps its own priority label for diagnostics.
 fn find_candidates_from_paths(
@@ -375,7 +480,7 @@ fn probe_install(
     path_env: &OsStr,
 ) -> Result<AdapterInstall> {
     let adapter = super::adapter_for(t);
-    let probed = run_readonly_probe_with_path(exe, path_env);
+    let probed = run_readonly_probe_for_agent(t, exe, path_env);
     // Shell fallback: /bin/sh may be dash (no --version/--help). A shell
     // that merely exists and is executable is usable — mark it Available
     // with an "unknown" version instead of Unavailable (PRD 3.1: 降级不阻塞).
@@ -643,6 +748,24 @@ mod tests {
     use std::time::Instant;
 
     const CLAUDE: &str = "/Users/w/.local/bin/claude";
+
+    #[test]
+    fn login_shell_launch_env_keeps_terminal_context_without_ambient_secrets() {
+        let parsed = parse_login_shell_environment(
+            "__AGENTPORT_ENV__=EDITOR=nvim\n\
+             __AGENTPORT_ENV__=SSH_AUTH_SOCK=/tmp/agent.sock\n\
+             __AGENTPORT_ENV__=OPENAI_API_KEY=secret\n\
+             __AGENTPORT_ENV__=HTTP_PROXY=http://user:password@proxy\n",
+        );
+        assert!(parsed
+            .iter()
+            .any(|(name, value)| name == "EDITOR" && value == "nvim"));
+        assert!(parsed
+            .iter()
+            .any(|(name, value)| name == "SSH_AUTH_SOCK" && value == "/tmp/agent.sock"));
+        assert!(!parsed.iter().any(|(name, _)| name == "OPENAI_API_KEY"));
+        assert!(!parsed.iter().any(|(name, _)| name == "HTTP_PROXY"));
+    }
     const CODEX: &str = "/Users/w/.local/bin/codex";
     const KIMI: &str = "/Users/w/.kimi-code/bin/kimi";
     const QODER: &str = "/Users/w/.local/bin/qodercli";
@@ -704,6 +827,33 @@ mod tests {
             "probe child still running: {}",
             String::from_utf8_lossy(&out.stdout)
         );
+    }
+
+    #[test]
+    fn qoder_probe_retries_one_cold_start_timeout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first_help = tmp.path().join("first-help");
+        let exe = write_exe(
+            tmp.path(),
+            "qodercli",
+            &format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = \"--version\" ]; then echo '1.1.5'; exit 0; fi\n\
+                 if [ ! -f '{}' ]; then touch '{}'; sleep 10; fi\n\
+                 echo 'Usage: qodercli [options]'\n",
+                first_help.display(),
+                first_help.display(),
+            ),
+        );
+        let path_env = effective_path_env();
+        let start = Instant::now();
+
+        let (version, help) =
+            run_readonly_probe_for_agent(AgentType::Qoder, &exe, &path_env).unwrap();
+
+        assert_eq!(version, "1.1.5");
+        assert!(help.contains("Usage: qodercli"));
+        assert!(start.elapsed() < Duration::from_secs(6));
     }
 
     #[test]
