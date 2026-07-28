@@ -58,19 +58,26 @@
   --segment-selected-bg: #4f6fd6;
   --segment-selected-text: #ffffff;
   --unread: #60a5fa;
-  /* Frosted source list: the native macOS Sidebar material provides the
-     blur. The base veil keeps the backdrop at whisper level while the
-     layered gradient adds depth — a light catch under the window chrome,
-     gently deepening toward the footer. `--sidebar-border` is the hairline
+  /* Frosted source list: a single CSS glass layer over the transparent
+     window — backdrop-filter supplies the desktop blur, the veil owns the
+     tone: a heavy smoked tint, so the column stays deep glass whatever the
+     wallpaper, while the blur underneath supplies soft shapes. Layered
+     gradient adds depth: a light catch under the window chrome, gently
+     deepening toward the footer. `--sidebar-border` is the hairline
      divider, `--sidebar-chip` the frosted quick-action pill. Platforms
-     without the native layer override --sidebar-glass with a solid color
+     without the glass stack override --sidebar-glass with a solid color
      (see the data-vibrancy rules after the theme blocks). */
-  --sidebar-glass: rgba(22, 22, 28, 0.72);
+  --sidebar-glass: rgba(13, 13, 19, 0.65);
   --sidebar-glass-layers:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.055) 0%, rgba(255, 255, 255, 0) 28%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02) 0%, rgba(0, 0, 0, 0.14) 100%);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0) 22%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.01) 0%, rgba(0, 0, 0, 0.3) 100%);
   --sidebar-border: rgba(255, 255, 255, 0.075);
-  --sidebar-chip: rgba(32, 32, 39, 0.85);
+  --sidebar-chip: rgba(32, 32, 39, 0.78);
+  /* Frosted selection chip: inset top highlight + accent hairline ring, so
+     the active row reads as glass resting on glass instead of a flat fill. */
+  --sidebar-active-ring: rgba(140, 166, 255, 0.32);
+  --sidebar-active-highlight: rgba(255, 255, 255, 0.13);
+  --sidebar-footer-frost: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.18) 100%);
   --terminal-scroll-thumb: rgba(243, 245, 251, 0.28);
   /* Sidebar hierarchy (dark): L1 repo name > session label > L2 branch /
      context row > L3 hint/age. Icons inherit their row's tier color so
@@ -78,20 +85,20 @@
      State colors: hover = --sidebar-row-hover (neutral), selected =
      --sidebar-row-active (frosted accent chip), running session = --accent
      (spinner dot) with its label lifted to --sidebar-text-strong. */
-  --sidebar-text-strong: rgba(243, 245, 251, 0.96);
-  --sidebar-text: rgba(243, 245, 251, 0.8);
-  --sidebar-text-dim: rgba(243, 245, 251, 0.6);
-  --sidebar-text-faint: rgba(243, 245, 251, 0.45);
-  --sidebar-icon: rgba(243, 245, 251, 0.56);
-  --sidebar-action: rgba(243, 245, 251, 0.62);
+  --sidebar-text-strong: rgba(243, 245, 251, 0.98);
+  --sidebar-text: rgba(243, 245, 251, 0.94);
+  --sidebar-text-dim: rgba(243, 245, 251, 0.8);
+  --sidebar-text-faint: rgba(243, 245, 251, 0.64);
+  --sidebar-icon: rgba(243, 245, 251, 0.74);
+  --sidebar-action: rgba(243, 245, 251, 0.78);
   --sidebar-row-hover: rgba(243, 245, 251, 0.09);
   --sidebar-row-active: rgba(107, 140, 255, 0.24);
   --sidebar-action-hover-bg: rgba(243, 245, 251, 0.14);
   /* Current-checkout branch row: One Dark Pro magenta family, kept distinct
      from the blue accent (selection/unread) and the green running dot so a
      branch never reads as a state. Icon inherits the row color. */
-  --sidebar-branch: #c162de;
-  --sidebar-branch-hover: #de73ff;
+  --sidebar-branch: #d47bf2;
+  --sidebar-branch-hover: #e48cff;
   --sidebar-edit-bg: rgba(0, 0, 0, 0.24);
   --sidebar-edit-border: var(--accent-text);
   --sidebar-handle: rgba(188, 199, 226, 0.45);
@@ -138,24 +145,28 @@
   --segment-selected-bg: #006edc;
   --segment-selected-text: #ffffff;
   --unread: #34c759;
-  /* Frosted source list (light): milky white veil over the native Sidebar
-     material, with a porcelain-top to misted-footer depth gradient; see
-     the dark block and data-vibrancy fallback notes. */
-  --sidebar-glass: rgba(250, 250, 253, 0.6);
+  /* Frosted source list (light): milky white veil kept thin so the crisp
+     desktop-blur material stays visible, with a porcelain-top to
+     misted-footer depth gradient; see the dark block and data-vibrancy
+     fallback notes. */
+  --sidebar-glass: rgba(250, 250, 253, 0.55);
   --sidebar-glass-layers:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0) 30%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0) 55%, rgba(206, 210, 224, 0.3) 100%);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.32) 0%, rgba(255, 255, 255, 0) 24%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0) 55%, rgba(196, 201, 218, 0.38) 100%);
   --sidebar-border: rgba(17, 18, 23, 0.08);
-  --sidebar-chip: rgba(255, 255, 255, 0.85);
+  --sidebar-chip: rgba(255, 255, 255, 0.75);
+  --sidebar-active-ring: rgba(0, 122, 255, 0.26);
+  --sidebar-active-highlight: rgba(255, 255, 255, 0.55);
+  --sidebar-footer-frost: linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, rgba(206, 210, 224, 0.32) 100%);
   --terminal-scroll-thumb: rgba(17, 18, 23, 0.075);
   /* Sidebar hierarchy (light): same stepping logic as dark — L1 > session
      > L2 > L3, icons inherit the row tier, states reuse the accent family. */
-  --sidebar-text-strong: rgba(17, 18, 23, 0.95);
-  --sidebar-text: rgba(17, 18, 23, 0.78);
-  --sidebar-text-dim: rgba(17, 18, 23, 0.62);
-  --sidebar-text-faint: rgba(17, 18, 23, 0.5);
-  --sidebar-icon: rgba(17, 18, 23, 0.53);
-  --sidebar-action: rgba(17, 18, 23, 0.6);
+  --sidebar-text-strong: rgba(17, 18, 23, 0.97);
+  --sidebar-text: rgba(17, 18, 23, 0.9);
+  --sidebar-text-dim: rgba(17, 18, 23, 0.76);
+  --sidebar-text-faint: rgba(17, 18, 23, 0.64);
+  --sidebar-icon: rgba(17, 18, 23, 0.66);
+  --sidebar-action: rgba(17, 18, 23, 0.74);
   --sidebar-row-hover: rgba(17, 18, 23, 0.07);
   --sidebar-row-active: rgba(0, 122, 255, 0.2);
   --sidebar-action-hover-bg: rgba(17, 18, 23, 0.12);
@@ -168,9 +179,9 @@
   --sidebar-handle: rgba(17, 18, 23, 0.24);
 }
 
-/* Platforms without the native vibrancy layer keep a solid sidebar:
-   translucency without a blur behind it reads as dirt, not glass. The
-   frontend sets data-vibrancy in applyThemeSettings (macOS = on). */
+/* Platforms without the glass stack keep a solid sidebar: translucency
+   without a blur behind it reads as dirt, not glass. The frontend sets
+   data-vibrancy in applyThemeSettings (macOS = on). */
 :root[data-vibrancy="off"][data-theme="dark"] {
   --sidebar-glass: #27272b;
   --sidebar-glass-layers: none;
@@ -313,33 +324,16 @@ button {
   align-items: center;
   justify-content: space-between;
   padding: 0 22px 0 78px;
-  /* The sidebar owns the full left column, including macOS window chrome.
-     Paint only the workspace segment here so the glass layer remains one
-     continuous surface from top to bottom. */
+  /* One panel: the workspace surface underlaps this bar (same -48px trick
+     as the sidebar column), so window chrome and workspace are one
+     continuous surface by construction — no seam, no color drift between
+     two separately painted strips. The bar itself is a transparent
+     overlay: only its controls and the drag region live here. */
   background: transparent;
   position: relative;
   z-index: 3;
   isolation: isolate;
   user-select: none;
-}
-
-.topbar::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  right: 0;
-  left: var(--sidebar-width, 296px);
-  z-index: 0;
-  background: var(--workspace-current);
-  pointer-events: none;
-}
-
-/* During the slide-in phase the strip recedes in sync with the panel's
-   transform slide; every other width flip (collapse commit, drag resize)
-   applies instantly so the edge never trails. */
-.app[data-sidebar-anim="in"] .topbar::before {
-  transition: left 0.16s ease;
 }
 
 .topbar > * {
@@ -382,7 +376,7 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: rgba(243, 245, 251, 0.82);
+  color: color-mix(in srgb, var(--text) 82%, transparent);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.012em;
@@ -391,21 +385,12 @@ button {
 
 .window-title-branch-icon,
 .window-title-branch {
-  color: rgba(243, 245, 251, 0.45);
+  color: color-mix(in srgb, var(--text) 45%, transparent);
   font-weight: 500;
 }
 
 .window-title-branch-icon {
   display: inline-flex;
-}
-
-:root[data-theme="light"] .window-title {
-  color: rgba(17, 18, 23, 0.82);
-}
-
-:root[data-theme="light"] .window-title-branch-icon,
-:root[data-theme="light"] .window-title-branch {
-  color: rgba(17, 18, 23, 0.45);
 }
 
 .terminal-menu {
@@ -502,6 +487,11 @@ button {
   align-self: flex-start;
   height: calc(100% + 48px);
   margin-top: -48px;
+  /* The 48px title strip stays outside the scroll region: tree rows must
+     never slide under the traffic lights / top-bar controls, so the first
+     project's position is fixed instead of scroll-away padding. The glass
+     background is unaffected by padding and still paints the full strip. */
+  padding-top: 48px;
   background-color: var(--sidebar-glass);
   background-image: var(--sidebar-glass-layers, none);
   border-right: 1px solid var(--sidebar-border);
@@ -538,6 +528,35 @@ button {
 
 :root[data-theme="light"] .sidebar {
   box-shadow: none;
+}
+
+/* The sidebar glass is a single CSS layer: with the transparent window,
+   backdrop-filter blurs the desktop directly — no native material underlay
+   (the NSVisualEffectView stack was removed; two glass layers only read as
+   fog). Saturation stays moderate: vivid wallpaper noise behind the rows
+   costs text clarity. Only where the glass stack is enabled. */
+:root[data-vibrancy="on"] .sidebar {
+  backdrop-filter: blur(28px) saturate(1.4);
+  -webkit-backdrop-filter: blur(28px) saturate(1.4);
+}
+
+/* Hairline text separation from the blurred backdrop — the difference
+   between "printed on glass" and "floating in fog". */
+:root[data-vibrancy="on"][data-theme="dark"] .sidebar-scroll {
+  text-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.42);
+}
+
+:root[data-vibrancy="on"][data-theme="light"] .sidebar-scroll {
+  text-shadow: 0 0.5px 1px rgba(255, 255, 255, 0.5);
+}
+
+/* WKWebView recomputes the backdrop blur every frame while the window
+   moves, and the glass edge shimmers against the opaque workspace layer.
+   Drop the filter mid-drag (body.is-window-dragging): the smoked tint
+   alone carries the look for those few hundred milliseconds. */
+body.is-window-dragging .sidebar {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .sidebar.collapsed {
@@ -582,8 +601,10 @@ button {
 .sidebar-scroll {
   flex: 1;
   overflow-y: auto;
-  /* Unpeel starts the first project directly below the compact title strip. */
-  padding: 50px 8px 10px;
+  /* First project starts directly below the title strip; the aside's own
+     padding-top owns that offset, so scrolling can never carry rows into
+     the window-chrome zone. */
+  padding: 2px 8px 10px;
   position: relative;
   z-index: 4;
   pointer-events: none;
@@ -595,6 +616,13 @@ button {
 
 .tree-project {
   margin-bottom: 6px;
+}
+
+/* Hairline between project groups: full-bleed across the glass so each repo
+   reads as its own section of the source list. */
+.tree-project + .tree-project {
+  border-top: 1px solid var(--sidebar-border);
+  padding-top: 7px;
 }
 
 .tree-project-header {
@@ -625,7 +653,12 @@ button {
 
 .tree-row.active {
   background: var(--sidebar-row-active);
-  box-shadow: none;
+  /* Frosted chip on glass: accent hairline ring + top light catch. */
+  box-shadow:
+    inset 0 0 0 1px var(--sidebar-active-ring),
+    inset 0 1px 0 var(--sidebar-active-highlight);
+  backdrop-filter: saturate(1.3);
+  -webkit-backdrop-filter: saturate(1.3);
 }
 
 .tree-row.active .tree-label {
@@ -671,6 +704,9 @@ button {
   padding-left: 4px;
   border-radius: 8px;
   background: var(--sidebar-chip);
+  box-shadow:
+    inset 0 0 0 1px var(--sidebar-border),
+    0 2px 10px rgba(0, 0, 0, 0.16);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s ease;
@@ -1031,7 +1067,10 @@ button {
   align-items: center;
   gap: 1px;
   padding: 8px 6px 10px;
-  border-top: 0;
+  /* Hairline + deepening frost: the glass thickens toward the window's
+     bottom edge, grounding the column. */
+  border-top: 1px solid var(--sidebar-border);
+  background: var(--sidebar-footer-frost, none);
 }
 
 .tree-empty {
@@ -1296,7 +1335,11 @@ button {
 
 .tooltip-host {
   position: fixed;
-  z-index: 1000;
+  /* Above modal backdrops (1100): data-tip is used inside dialogs too
+     (e.g. SearchDialog's rotated hint), and a tooltip buried under the
+     dimmed backdrop is invisible. Ephemeral + pointer-events: none, so
+     sitting on top of everything is safe. */
+  z-index: 1200;
   max-width: 320px;
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
@@ -1329,6 +1372,12 @@ button {
   position: relative;
   overflow: hidden;
   background: var(--workspace-current);
+  /* Underlap the topbar (mirrors the sidebar column's -48px): the surface
+     owns the full column height, so window chrome and workspace read as
+     one panel; surfaces pad their content back below the bar. */
+  align-self: flex-start;
+  height: calc(100% + 48px);
+  margin-top: -48px;
 }
 
 .workspace-surface {
@@ -1337,6 +1386,8 @@ button {
   min-width: 0;
   min-height: 0;
   display: flex;
+  /* Content starts below the 48px title strip the stack underlaps. */
+  padding-top: 48px;
 }
 
 .workspace-surface > .workspace {
@@ -3125,10 +3176,18 @@ button {
 }
 
 /* The lifecycle card owns the recovery action while the backdrop lets ended
-   output remain visible as historical context. */
+   output remain visible as historical context. The veil reaches 48px above
+   the pane so an ended session dims the title strip as well — the whole
+   column enters the stopped state, not just the area below the chrome
+   (pointer-events: none keeps the top bar interactive; padding-top keeps
+   the card centered on the original pane region). */
 .term-overlay {
   position: absolute;
-  inset: 0;
+  top: -48px;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  padding-top: 48px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4821,7 +4880,7 @@ textarea:focus {
   background: transparent;
   text-align: left;
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .ctx-item:hover:not(:disabled),

@@ -42,6 +42,7 @@ import {
   useStore,
 } from "./store";
 import { applyTerminalLanguage, pruneHandles, scrollToBottom } from "./terminals";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import TopBar from "./components/TopBar";
 import Sidebar from "./components/Sidebar";
 import TooltipHost from "./components/Tooltip";
@@ -63,6 +64,30 @@ const CommandPalette = lazy(() => import("./components/CommandPalette"));
 const BranchPickerDialog = lazy(() => import("./components/BranchPickerDialog"));
 const Onboarding = lazy(() => import("./components/Onboarding"));
 const GitCenter = lazy(() => import("./components/GitCenter"));
+
+// While the window is dragged, WKWebView recomputes the sidebar's backdrop
+// blur every frame and the glass edge shimmers. Track tauri://move with a
+// debounce and flag the body so CSS can drop the filter mid-drag; the flag
+// self-clears, so it can never stick after the drag ends.
+function useWindowDragClass() {
+  useEffect(() => {
+    // jsdom and browsers have no Tauri window to track.
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let timer: number | undefined;
+    const unlisten = getCurrentWindow().listen("tauri://move", () => {
+      document.body.classList.add("is-window-dragging");
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        document.body.classList.remove("is-window-dragging");
+      }, 180);
+    });
+    return () => {
+      window.clearTimeout(timer);
+      document.body.classList.remove("is-window-dragging");
+      void unlisten.then((off) => off());
+    };
+  }, []);
+}
 
 function useBoot() {
   useEffect(() => {
@@ -445,6 +470,7 @@ export default function App() {
   const gitCenterOpen = useStore((state) => state.gitCenter.open);
   useBoot();
   useHotkeys();
+  useWindowDragClass();
   useEffect(() => {
     noteActiveSessionForGitCenter(activeSessionId);
   }, [activeSessionId]);

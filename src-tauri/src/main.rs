@@ -3970,28 +3970,12 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             notifications::install(app.handle());
-            // Frosted sidebar: a whole-window NSVisualEffectView sits behind
-            // the transparent webview; every region except the sidebar
-            // column paints an opaque CSS surface, so the native Sidebar
-            // material only shows through there. Always Active (not the
-            // default window-tracking state): the unfocused material renders
-            // as flat opaque gray, which reads as "the glass broke" next to
-            // the still-lit traffic lights.
-            #[cfg(target_os = "macos")]
-            {
-                use tauri::{
-                    window::{Effect, EffectState, EffectsBuilder},
-                    Manager,
-                };
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.set_effects(
-                        EffectsBuilder::new()
-                            .effect(Effect::Sidebar)
-                            .state(EffectState::Active)
-                            .build(),
-                    );
-                }
-            }
+            // The sidebar glass is pure CSS now: the window stays
+            // transparent (tauri.conf.json) and `.sidebar` owns blur,
+            // saturation, and tint via backdrop-filter. A native
+            // NSVisualEffectView underlay was tried (Sidebar material:
+            // milky; UnderWindowBackground: desaturating) and removed —
+            // two stacked glass layers only ever read as fog.
             Ok(())
         })
         .manage(state)
