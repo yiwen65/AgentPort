@@ -50,6 +50,7 @@ import type {
   GitStateInvalidated,
   GitWorkspaceCommandError,
   CommitAiConfig,
+  CommitAiLanguage,
   CommitAiProvider,
   RestartResult,
   DocumentDirListing,
@@ -527,12 +528,14 @@ export const api = {
     baseUrl: string,
     model: string,
     apiKey: string | null,
+    language: CommitAiLanguage,
   ) =>
     invoke<CommitAiConfig>("save_commit_ai_config", {
       provider,
       baseUrl,
       model,
       apiKey,
+      language,
     }),
   clearCommitAiApiKey: () =>
     invoke<CommitAiConfig>("clear_commit_ai_api_key"),

@@ -3526,7 +3526,8 @@ impl Db {
                  'commit_ai_provider',
                  'commit_ai_base_url',
                  'commit_ai_model',
-                 'commit_ai_api_key_secret_ref_id'
+                 'commit_ai_api_key_secret_ref_id',
+                 'commit_ai_language'
              )",
         )?;
         let rows = statement
@@ -3545,6 +3546,10 @@ impl Db {
                 .get("commit_ai_api_key_secret_ref_id")
                 .filter(|value| !value.is_empty())
                 .cloned(),
+            language: match rows.get("commit_ai_language").map(String::as_str) {
+                Some("en") => CommitAiLanguage::En,
+                _ => CommitAiLanguage::Zh,
+            },
         };
         settings.validate()?;
         Ok(settings)
@@ -3556,6 +3561,10 @@ impl Db {
             CommitAiProvider::OpenAi => "openai",
             CommitAiProvider::Anthropic => "anthropic",
         };
+        let language = match settings.language {
+            CommitAiLanguage::Zh => "zh",
+            CommitAiLanguage::En => "en",
+        };
         let pairs = [
             ("commit_ai_provider", provider.to_owned()),
             ("commit_ai_base_url", settings.base_url.clone()),
@@ -3564,6 +3573,7 @@ impl Db {
                 "commit_ai_api_key_secret_ref_id",
                 settings.api_key_secret_ref_id.clone().unwrap_or_default(),
             ),
+            ("commit_ai_language", language.to_owned()),
         ];
         let mut conn = self.conn.lock().unwrap();
         let transaction = conn.transaction()?;

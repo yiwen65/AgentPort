@@ -205,6 +205,7 @@ describe("Git Center Tauri contract", () => {
       "https://provider.example/v1",
       "claude-compatible",
       "secret-api-key",
+      "en",
     );
     await api.clearCommitAiApiKey();
 
@@ -214,6 +215,7 @@ describe("Git Center Tauri contract", () => {
       baseUrl: "https://provider.example/v1",
       model: "claude-compatible",
       apiKey: "secret-api-key",
+      language: "en",
     });
     expect(invokeMock).toHaveBeenNthCalledWith(3, "clear_commit_ai_api_key");
   });

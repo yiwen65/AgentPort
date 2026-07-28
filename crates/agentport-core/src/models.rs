@@ -781,6 +781,17 @@ pub enum CommitAiProvider {
     Anthropic,
 }
 
+/// Language of the generated commit subject/body. Stored per provider
+/// config so every AI feature sharing it generates in one language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CommitAiLanguage {
+    #[default]
+    #[serde(rename = "zh")]
+    Zh,
+    #[serde(rename = "en")]
+    En,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitAiSettings {
@@ -788,6 +799,7 @@ pub struct CommitAiSettings {
     pub base_url: String,
     pub model: String,
     pub api_key_secret_ref_id: Option<String>,
+    pub language: CommitAiLanguage,
 }
 
 impl Default for CommitAiSettings {
@@ -797,6 +809,7 @@ impl Default for CommitAiSettings {
             base_url: String::new(),
             model: String::new(),
             api_key_secret_ref_id: None,
+            language: CommitAiLanguage::Zh,
         }
     }
 }

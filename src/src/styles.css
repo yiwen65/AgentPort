@@ -3907,6 +3907,19 @@ button {
   line-height: 1.45;
 }
 
+/* Group label inside a settings section (连接 / 凭据 / 生成 …): breaks one
+   long form into scannable blocks without another navigation level. */
+.settings-subheading {
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-grid + .settings-subheading {
+  margin-top: 20px;
+}
+
 .settings-page input,
 .settings-page select,
 .settings-page textarea {

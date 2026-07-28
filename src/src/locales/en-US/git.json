@@ -222,7 +222,7 @@
     "aiReplaceTitle": "Replace the current commit message?",
     "aiReplaceBody": "The generated subject and body will replace this draft. Generation does not modify the index.",
     "aiReplaceConfirm": "Generate and replace",
-    "aiDraftPreserved": "The current draft was not changed. Check the service under Settings → Commit AI and try again.",
+    "aiDraftPreserved": "The current draft was not changed. Check the service under Settings → AI Provider and try again.",
     "aiStale": "Staged changes changed during generation. The result was discarded; refresh and try again.",
     "aiTruncated": "The staged diff was large, so AI used a size-limited excerpt. Review the message carefully.",
     "outcomes": {

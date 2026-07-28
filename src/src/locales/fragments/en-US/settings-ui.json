@@ -15,7 +15,7 @@
       "notifications": "Notifications & Logs",
       "search": "Search & Rendering",
       "adapters": "Agent Adapters",
-      "commitAi": "Commit AI",
+      "commitAi": "AI Provider",
       "secrets": "Secret Management",
       "archive": "Archived Sessions",
       "backup": "Backup & Restore"
@@ -107,7 +107,10 @@
       "reprobeFailed": "Could not check Agents again: {{detail}}"
     },
     "commitAi": {
-      "description": "Use an OpenAI- or Anthropic-compatible service to draft an editable Chinese subject and body that follow Conventional Commits 1.0.0.",
+      "description": "Configure an OpenAI- or Anthropic-compatible service. AI features such as commit message generation in Git Center share this configuration.",
+      "connectionTitle": "Connection",
+      "credentialsTitle": "Credentials",
+      "generationTitle": "Generation",
       "providerLabel": "Compatible protocol",
       "providers": {
         "openai": "OpenAI compatible",
@@ -124,17 +127,19 @@
       "apiKeyConfigured": "Configured; leave blank to keep it",
       "apiKeyKeepHint": "Stored in system secure storage. Saving a blank field keeps the existing key.",
       "apiKeyStorageHint": "Written only to macOS Keychain / Linux Secret Service, never to the settings database. The field is cleared immediately after a successful save.",
-      "save": "Save Commit AI settings",
-      "saved": "Commit AI settings saved",
+      "languageLabel": "Commit language",
+      "languageHint": "Language used for generated commit subjects and bodies; future AI features will follow it.",
+      "save": "Save settings",
+      "saved": "AI provider settings saved",
       "clearKey": "Clear API key",
-      "clearKeyTitle": "Clear the Commit AI API key?",
+      "clearKeyTitle": "Clear the AI provider API key?",
       "clearKeyBody": "This deletes the credential from system secure storage. The Base URL and model remain configured.",
       "clearKeyConfirm": "Clear key",
       "keyCleared": "API key cleared",
       "privacyTitle": "Data sent",
       "privacyBody": "Only an explicit “Generate with AI” click in Git Center sends the staged diff, branch name, and recent commit subjects to the configured service. Unstaged and ignored files are not sent, and the result must still pass human review before commit.",
-      "loadFailed": "Could not load Commit AI settings: {{detail}}",
-      "saveFailed": "Could not save Commit AI settings: {{detail}}",
+      "loadFailed": "Could not load AI provider settings: {{detail}}",
+      "saveFailed": "Could not save AI provider settings: {{detail}}",
       "clearKeyFailed": "Could not clear the API key: {{detail}}"
     },
     "secrets": {

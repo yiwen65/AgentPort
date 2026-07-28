@@ -646,11 +646,14 @@ export type GitRemoteAction =
 
 export type CommitAiProvider = "openai" | "anthropic";
 
+export type CommitAiLanguage = "zh" | "en";
+
 export interface CommitAiConfig {
   provider: CommitAiProvider;
   baseUrl: string;
   model: string;
   hasApiKey: boolean;
+  language: CommitAiLanguage;
 }
 
 export interface GitCommitMessageSuggestion {

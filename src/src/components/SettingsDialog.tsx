@@ -25,6 +25,7 @@ import type {
   AdapterInstall,
   ArchivedSessionView,
   CommitAiConfig,
+  CommitAiLanguage,
   CommitAiProvider,
   Preset,
   SecretMeta,
@@ -254,6 +255,7 @@ function CommitAiSection() {
   const [baseUrl, setBaseUrl] = useState("");
   const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [language, setLanguage] = useState<CommitAiLanguage>("zh");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -263,6 +265,7 @@ function CommitAiSection() {
     setProvider(next.provider);
     setBaseUrl(next.baseUrl);
     setModel(next.model);
+    setLanguage(next.language);
     setApiKey("");
   };
 
@@ -297,6 +300,7 @@ function CommitAiSection() {
         baseUrl.trim(),
         model.trim(),
         apiKey.trim() || null,
+        language,
       );
       applyConfig(next);
       toast(t("settings:ui.commitAi.saved"), "success");
@@ -347,6 +351,9 @@ function CommitAiSection() {
       {error ? <div className="error-bar" role="alert">{error}</div> : null}
       {!loading ? (
         <>
+          <div className="settings-subheading">
+            {t("settings:ui.commitAi.connectionTitle")}
+          </div>
           <div className="settings-grid">
             <label htmlFor="commit-ai-provider">
               {t("settings:ui.commitAi.providerLabel")}
@@ -411,7 +418,12 @@ function CommitAiSection() {
                 {t("settings:ui.commitAi.modelHint")}
               </span>
             </div>
+          </div>
 
+          <div className="settings-subheading">
+            {t("settings:ui.commitAi.credentialsTitle")}
+          </div>
+          <div className="settings-grid">
             <label htmlFor="commit-ai-api-key">
               {t("settings:ui.commitAi.apiKeyLabel")}
             </label>
@@ -435,6 +447,46 @@ function CommitAiSection() {
               </span>
             </div>
           </div>
+
+          <div className="settings-subheading">
+            {t("settings:ui.commitAi.generationTitle")}
+          </div>
+          <div className="settings-grid">
+            <label id="commit-ai-language-label">
+              {t("settings:ui.commitAi.languageLabel")}
+            </label>
+            <div className="control theme-control">
+              <div
+                className="theme-segmented"
+                role="radiogroup"
+                aria-labelledby="commit-ai-language-label"
+              >
+                {(
+                  [
+                    ["zh", "中文"],
+                    ["en", "English"],
+                  ] as const
+                ).map(([value, label]) => (
+                  <label className="theme-segment" key={value}>
+                    <input
+                      className="sr-only"
+                      type="radio"
+                      name="commit-ai-language"
+                      value={value}
+                      checked={language === value}
+                      disabled={saving}
+                      onChange={() => setLanguage(value)}
+                    />
+                    <span>{label}</span>
+                  </label>
+                ))}
+              </div>
+              <span className="form-hint">
+                {t("settings:ui.commitAi.languageHint")}
+              </span>
+            </div>
+          </div>
+
           <div className="commit-ai-settings-actions">
             <button
               className="btn primary"

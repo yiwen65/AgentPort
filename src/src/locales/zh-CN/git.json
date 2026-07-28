@@ -222,7 +222,7 @@
     "aiReplaceTitle": "替换当前提交信息？",
     "aiReplaceBody": "AI 生成的主题和正文将替换当前草稿；生成前不会修改暂存区。",
     "aiReplaceConfirm": "生成并替换",
-    "aiDraftPreserved": "当前草稿未被修改。请检查“设置 → 提交 AI”的服务配置后重试。",
+    "aiDraftPreserved": "当前草稿未被修改。请检查“设置 → AI 提供商”的服务配置后重试。",
     "aiStale": "生成期间暂存内容发生变化。结果已丢弃，请刷新后重新生成。",
     "aiTruncated": "暂存 Diff 较大，AI 基于受限大小的截断内容生成；请重点审查文案。",
     "outcomes": {

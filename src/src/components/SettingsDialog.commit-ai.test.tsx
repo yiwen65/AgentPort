@@ -55,16 +55,18 @@ describe("Commit AI settings", () => {
       baseUrl: "",
       model: "",
       hasApiKey: false,
+      language: "zh",
     });
     const save = vi.spyOn(api, "saveCommitAiConfig").mockResolvedValue({
       provider: "anthropic",
       baseUrl: "https://provider.example/v1",
       model: "claude-compatible",
       hasApiKey: true,
+      language: "en",
     });
     render(<SettingsDialog />);
 
-    fireEvent.click(screen.getByRole("button", { name: "提交 AI" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI 提供商" }));
     await screen.findByLabelText("兼容协议");
     fireEvent.change(screen.getByLabelText("兼容协议"), {
       target: { value: "anthropic" },
@@ -78,8 +80,9 @@ describe("Commit AI settings", () => {
     fireEvent.change(screen.getByLabelText("API Key"), {
       target: { value: "secret-api-key" },
     });
+    fireEvent.click(screen.getByRole("radio", { name: "English" }));
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "保存提交 AI 配置" }));
+      fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
     });
 
     expect(save).toHaveBeenCalledWith(
@@ -87,6 +90,7 @@ describe("Commit AI settings", () => {
       "https://provider.example/v1",
       "claude-compatible",
       "secret-api-key",
+      "en",
     );
     await waitFor(() => {
       const key = screen.getByLabelText("API Key") as HTMLInputElement;
