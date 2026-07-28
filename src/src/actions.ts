@@ -401,6 +401,14 @@ export async function interruptSessionFlow(sessionId: string) {
   }
 }
 
+export async function resumeSessionFlow(sessionId: string) {
+  try {
+    await api.resumeSession(sessionId);
+  } catch (e) {
+    toast(i18n.t("session:flow.resumeFailed", { detail: errorText(e) }), "error");
+  }
+}
+
 export async function archiveSessionFlow(sessionId: string) {
   const initial = getState();
   const ses = findSession(initial.projects, sessionId);

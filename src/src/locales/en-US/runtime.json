@@ -20,6 +20,7 @@
       "connectionFailed": "Could not connect to the Host: {{detail}}",
       "changedDuringAttach": "The Host changed while the Session was connecting. Reconnect to continue.",
       "statusJournalFailed": "The Host could not save its status journal, so state recovery is degraded.",
+      "outputLogFailed": "The Host could not save terminal output. Live output remains visible, but affected bytes cannot be replayed after reconnecting.",
       "sessionIdMismatch": "The Host rejected a request with a mismatched Session ID.",
       "terminalInputUnavailable": "Terminal input is unavailable for structured Sessions.",
       "structuredPromptTransportRequired": "Structured prompts require the json_rpc transport.",

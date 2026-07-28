@@ -376,7 +376,8 @@ pub fn throughput(ctx: &PerfCtx) -> Result<()> {
     let mut done = false;
     while start.elapsed() < Duration::from_secs(75) && !done {
         match c.read_frame() {
-            Ok(Some(HostFrame::Output { data, .. })) => {
+            Ok(Some(HostFrame::Output { data, .. }))
+            | Ok(Some(HostFrame::TransientOutput { data, .. })) => {
                 let now = Instant::now();
                 if first_at.is_none() {
                     first_at = Some(now);
@@ -763,6 +764,7 @@ pub fn log_rotation_perf(ctx: &PerfCtx) -> Result<()> {
     while start.elapsed() < Duration::from_secs(300) && !done {
         match c.read_frame() {
             Ok(Some(HostFrame::Output { data, .. }))
+            | Ok(Some(HostFrame::TransientOutput { data, .. }))
                 if data.windows(7).any(|w| w == b"ROTDONE") =>
             {
                 done = true;
@@ -806,7 +808,8 @@ pub fn input_echo(ctx: &PerfCtx) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             match c.read_frame() {
-                Ok(Some(HostFrame::Output { data, .. })) => {
+                Ok(Some(HostFrame::Output { data, .. }))
+                | Ok(Some(HostFrame::TransientOutput { data, .. })) => {
                     buf.extend_from_slice(&data);
                     if buf.windows(marker.len()).any(|w| w == marker.as_bytes()) {
                         break;
@@ -855,7 +858,9 @@ pub fn state_notify(ctx: &PerfCtx) -> Result<()> {
         std::thread::sleep(Duration::from_secs(4));
         loop {
             match c.read_frame() {
-                Ok(Some(HostFrame::Output { .. })) | Ok(Some(HostFrame::State { .. })) => continue,
+                Ok(Some(HostFrame::Output { .. }))
+                | Ok(Some(HostFrame::TransientOutput { .. }))
+                | Ok(Some(HostFrame::State { .. })) => continue,
                 Ok(Some(HostFrame::Heartbeat { .. })) => break,
                 Ok(Some(_)) => continue,
                 Ok(None) | Err(_) => break,

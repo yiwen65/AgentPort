@@ -800,7 +800,7 @@ fn read_session(
             continue;
         };
         match frame {
-            HostFrame::Output { data, .. } => {
+            HostFrame::Output { data, .. } | HostFrame::TransientOutput { data, .. } => {
                 output.extend_from_slice(&data);
             }
             HostFrame::State {
@@ -1072,7 +1072,8 @@ fn cmd_session_attach(ctx: &Ctx, args: &[String]) -> Result<()> {
             client.send_input(&data)?;
         }
         match read_frame_timeout(&mut client, Duration::from_millis(50))? {
-            Some(HostFrame::Output { data, .. }) => {
+            Some(HostFrame::Output { data, .. })
+            | Some(HostFrame::TransientOutput { data, .. }) => {
                 out.write_all(&data)?;
                 out.flush()?;
             }

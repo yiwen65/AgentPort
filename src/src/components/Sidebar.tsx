@@ -13,6 +13,7 @@ import {
   removeWorktreeFlow,
   renameProjectFlow,
   renameSessionInlineFlow,
+  resumeSessionFlow,
   restartSessionFlow,
   quickStartSession,
   archiveSessionFlow,
@@ -264,7 +265,12 @@ function IconCollapseProjects({ collapsed }: { collapsed: boolean }) {
   );
 }
 
-function sessionMenu(ses: SessionView, onRemove: () => void, t: SidebarT): MenuItem[] {
+function sessionMenu(
+  ses: SessionView,
+  suspended: boolean,
+  onRemove: () => void,
+  t: SidebarT,
+): MenuItem[] {
   return [
     {
       label: t("session:ui.menu.copyId"),
@@ -275,6 +281,12 @@ function sessionMenu(ses: SessionView, onRemove: () => void, t: SidebarT): MenuI
     { label: t("session:ui.menu.exportRawLog"), action: () => openDialog({ kind: "export", sessionId: ses.id, exportKind: "log" }) },
     { label: "", separator: true },
     { label: t("session:ui.menu.restartAndResume"), action: () => void restartSessionFlow(ses.id) },
+    ...(suspended
+      ? [{
+          label: t("session:ui.menu.resume"),
+          action: () => void resumeSessionFlow(ses.id),
+        }]
+      : []),
     {
       label: t("session:ui.menu.interrupt"),
       disabled: ses.lifecycle !== "running",
@@ -381,6 +393,7 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
   const active = useStore((state) => state.activeSessionId === ses.id);
   const pinned = useStore((state) => state.pinnedSessionAt[ses.id] !== undefined);
+  const suspended = useStore((state) => state.runtime[ses.id]?.suspended === true);
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(ses.title);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
@@ -433,7 +446,11 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
       onDoubleClick={() => setEditing(true)}
       onContextMenu={(e) => {
         e.preventDefault();
-        openContextMenu(e.clientX, e.clientY, sessionMenu(ses, () => setConfirmingRemove(true), t));
+        openContextMenu(
+          e.clientX,
+          e.clientY,
+          sessionMenu(ses, suspended, () => setConfirmingRemove(true), t),
+        );
       }}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {

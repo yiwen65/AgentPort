@@ -38,6 +38,10 @@ export interface SessionRuntime {
   /** Stable source for re-localizing an application-owned runtime error. */
   errorMessage: RuntimeMessageEnvelope | null;
   hostPid: number | null;
+  /** True while the direct Agent process group is stopped by Ctrl-Z. */
+  suspended: boolean;
+  /** Latest OSC 0/2 title emitted by the terminal application. */
+  terminalTitle: string | null;
   scrolledUp: boolean;
   /** Set when the read-only history terminal shows a truncated log tail. */
   historyNote: string | null;
@@ -57,6 +61,8 @@ export function emptyRuntime(): SessionRuntime {
     error: null,
     errorMessage: null,
     hostPid: null,
+    suspended: false,
+    terminalTitle: null,
     scrolledUp: false,
     historyNote: null,
     historyMessage: null,

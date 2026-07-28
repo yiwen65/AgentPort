@@ -102,6 +102,7 @@ pub(crate) struct Shared {
     pgid: i32,
     pgid_verified: bool,
     child_alive: AtomicBool,
+    process_suspended: AtomicBool,
     /// Bytes in the output log (mirrors `LogWriter::total_appended`).
     log_bytes: AtomicU64,
     /// Current generation and byte position within that generation. These are
@@ -123,6 +124,7 @@ pub(crate) struct Shared {
     /// an in-memory-only state transition. A subsequent successful write
     /// clears the flag and permits a new signal for a later failure.
     status_journal_faulted: AtomicBool,
+    output_log_faulted: AtomicBool,
     clients: Mutex<HashMap<u64, server::ClientSink>>,
     next_client_id: AtomicU64,
     /// Connections that completed authentication, including a connection
@@ -169,7 +171,10 @@ pub(crate) fn broadcast(shared: &Shared, frame: &HostFrame) {
     let mut evicted = Vec::new();
     let mut clients = shared.clients.lock().unwrap();
     let mut drop_ids = Vec::new();
-    let is_output = matches!(frame, HostFrame::Output { .. });
+    let is_output = matches!(
+        frame,
+        HostFrame::Output { .. } | HostFrame::TransientOutput { .. }
+    );
     for (&id, client) in clients.iter() {
         if is_output && !client.subscribe_output {
             continue;
@@ -225,6 +230,7 @@ pub(crate) fn status_frame(ev: &StatusEvent) -> HostFrame {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum HostErrorCode {
     StatusJournalFailed,
+    OutputLogFailed,
     SessionIdMismatch,
     TerminalInputUnavailable,
     StructuredPromptTransportRequired,
@@ -238,6 +244,7 @@ impl HostErrorCode {
     fn as_str(self) -> &'static str {
         match self {
             Self::StatusJournalFailed => "host_status_journal_failed",
+            Self::OutputLogFailed => "host_output_log_failed",
             Self::SessionIdMismatch => "host_session_id_mismatch",
             Self::TerminalInputUnavailable => "host_terminal_input_unavailable",
             Self::StructuredPromptTransportRequired => "host_structured_prompt_transport_required",
@@ -665,6 +672,7 @@ fn run() -> i32 {
         pgid,
         pgid_verified,
         child_alive: AtomicBool::new(true),
+        process_suspended: AtomicBool::new(false),
         log_bytes: AtomicU64::new(initial_log_bytes),
         log_position: Mutex::new((initial_log_generation, initial_log_offset)),
         output_serial: Mutex::new(()),
@@ -673,6 +681,7 @@ fn run() -> i32 {
         agent_session_id: Mutex::new(None),
         current_status: Mutex::new(None),
         status_journal_faulted: AtomicBool::new(false),
+        output_log_faulted: AtomicBool::new(false),
         clients: Mutex::new(HashMap::new()),
         next_client_id: AtomicU64::new(1),
         authenticated_client_count: AtomicUsize::new(0),
@@ -795,6 +804,14 @@ fn verify_pgid(child_pid: i32) -> (i32, bool) {
 struct Reaper {
     pid: Pid,
     status: Option<(Option<i32>, Option<i32>)>,
+    suspended: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessWaitEvent {
+    Suspended(i32),
+    Continued,
+    Exited,
 }
 
 impl Reaper {
@@ -802,6 +819,7 @@ impl Reaper {
         Reaper {
             pid: Pid::from_raw(pid),
             status: None,
+            suspended: false,
         }
     }
 
@@ -809,18 +827,42 @@ impl Reaper {
         self.status.is_some()
     }
 
+    /// Observe job-control and exit transitions without blocking. Exit status
+    /// remains retained so the later EOF/stop flow reports the real cause.
+    fn poll_event(&mut self) -> Option<ProcessWaitEvent> {
+        if self.status.is_some() {
+            return None;
+        }
+        let flags = WaitPidFlag::WNOHANG | WaitPidFlag::WUNTRACED | WaitPidFlag::WCONTINUED;
+        match waitpid(self.pid, Some(flags)) {
+            Ok(WaitStatus::Exited(_, c)) => {
+                self.status = Some((Some(c), None));
+                Some(ProcessWaitEvent::Exited)
+            }
+            Ok(WaitStatus::Signaled(_, s, _)) => {
+                self.status = Some((None, Some(s as i32)));
+                Some(ProcessWaitEvent::Exited)
+            }
+            Ok(WaitStatus::Stopped(_, signal)) => {
+                self.suspended = true;
+                Some(ProcessWaitEvent::Suspended(signal as i32))
+            }
+            Ok(WaitStatus::Continued(_)) if self.suspended => {
+                self.suspended = false;
+                Some(ProcessWaitEvent::Continued)
+            }
+            Ok(_) => None,
+            Err(Errno::ECHILD) => {
+                self.status = Some((None, None));
+                Some(ProcessWaitEvent::Exited)
+            }
+            Err(_) => None,
+        }
+    }
+
     /// One non-blocking reap attempt; true once the leader is collected.
     fn poll(&mut self) -> bool {
-        if self.status.is_some() {
-            return true;
-        }
-        match waitpid(self.pid, Some(WaitPidFlag::WNOHANG)) {
-            Ok(WaitStatus::Exited(_, c)) => self.status = Some((Some(c), None)),
-            Ok(WaitStatus::Signaled(_, s, _)) => self.status = Some((None, Some(s as i32))),
-            Ok(_) => {}
-            Err(Errno::ECHILD) => self.status = Some((None, None)),
-            Err(_) => {}
-        }
+        let _ = self.poll_event();
         self.status.is_some()
     }
 
@@ -865,6 +907,7 @@ fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
         shared.cfg.run_ordinal,
     );
     let mut status_file = open_status_file(&shared.session_dir);
+    let mut reaper = Reaper::new(shared.child_pid);
 
     if let Some(ev) = sm.observe(Observation::ProcessSpawned) {
         emit_event(shared, &mut status_file, ev);
@@ -880,7 +923,7 @@ fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
     loop {
         let now = Instant::now();
         if now >= next_tick {
-            tick(shared, &mut sm, &mut status_file);
+            tick(shared, &mut sm, &mut status_file, &mut reaper);
             next_tick += tick_interval;
             // Avoid a burst of catch-up heartbeats if a slow state operation
             // took longer than a tick interval. Subsequent ticks resume from
@@ -897,10 +940,20 @@ fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
                     emit_event(shared, &mut status_file, ev);
                 }
             }
-            Ok(HostMsg::PtyEof) => return natural_exit(shared, &mut sm, &mut status_file, &rx),
+            Ok(HostMsg::PtyEof) => {
+                return natural_exit(shared, &mut sm, &mut status_file, &rx, &mut reaper)
+            }
             Ok(HostMsg::PtyFault { message }) => {
                 warn!(error = %message, "pty reader failed; entering controlled stop flow");
-                return stop_flow(shared, &mut sm, &mut status_file, None, &rx, "pty_fault");
+                return stop_flow(
+                    shared,
+                    &mut sm,
+                    &mut status_file,
+                    None,
+                    &rx,
+                    "pty_fault",
+                    &mut reaper,
+                );
             }
             Ok(HostMsg::Stop { grace_ms }) => {
                 return stop_flow(
@@ -910,18 +963,35 @@ fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
                     Some(grace_ms),
                     &rx,
                     "client_stop",
+                    &mut reaper,
                 )
             }
             Ok(HostMsg::HostSignal(sig)) => {
                 info!(sig, "host received signal; cleaning up process group");
-                return stop_flow(shared, &mut sm, &mut status_file, None, &rx, "host_signal");
+                return stop_flow(
+                    shared,
+                    &mut sm,
+                    &mut status_file,
+                    None,
+                    &rx,
+                    "host_signal",
+                    &mut reaper,
+                );
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // The next loop iteration observes the due absolute deadline.
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 error!("control channel disconnected");
-                return stop_flow(shared, &mut sm, &mut status_file, None, &rx, "channel_lost");
+                return stop_flow(
+                    shared,
+                    &mut sm,
+                    &mut status_file,
+                    None,
+                    &rx,
+                    "channel_lost",
+                    &mut reaper,
+                );
             }
         }
     }
@@ -929,7 +999,12 @@ fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
 
 /// 1s tick: heartbeat broadcast + silence detection for the state machine +
 /// descendant snapshot refresh (every 3rd tick, for tree cleanup).
-fn tick(shared: &Shared, sm: &mut StateMachine, status_file: &mut Option<File>) {
+fn tick(
+    shared: &Shared,
+    sm: &mut StateMachine,
+    status_file: &mut Option<File>,
+    reaper: &mut Reaper,
+) {
     broadcast(
         shared,
         &HostFrame::Heartbeat {
@@ -939,6 +1014,31 @@ fn tick(shared: &Shared, sm: &mut StateMachine, status_file: &mut Option<File>) 
             log_cursor: current_log_cursor(shared),
         },
     );
+    match reaper.poll_event() {
+        Some(ProcessWaitEvent::Suspended(signal)) => {
+            shared.process_suspended.store(true, Ordering::Release);
+            broadcast(
+                shared,
+                &HostFrame::ProcessStatus {
+                    session_id: shared.cfg.session_id.clone(),
+                    suspended: true,
+                    signal: Some(signal),
+                },
+            )
+        }
+        Some(ProcessWaitEvent::Continued) => {
+            shared.process_suspended.store(false, Ordering::Release);
+            broadcast(
+                shared,
+                &HostFrame::ProcessStatus {
+                    session_id: shared.cfg.session_id.clone(),
+                    suspended: false,
+                    signal: None,
+                },
+            )
+        }
+        Some(ProcessWaitEvent::Exited) | None => {}
+    }
     if shared
         .tick_count
         .fetch_add(1, Ordering::Relaxed)
@@ -1023,9 +1123,9 @@ fn stop_flow(
     grace_override: Option<u64>,
     rx: &mpsc::Receiver<HostMsg>,
     reason: &str,
+    reaper: &mut Reaper,
 ) -> i32 {
     info!(reason, "stop requested");
-    let mut reaper = Reaper::new(shared.child_pid);
     if shared.child_alive.load(Ordering::Relaxed) {
         let sigint_ms = grace_override.unwrap_or(shared.cfg.sigint_grace_ms);
         for (sig, budget_ms) in [
@@ -1037,7 +1137,7 @@ fn stop_flow(
                 warn!("process group still alive; escalating to SIGKILL (last resort)");
             }
             signal_group(shared, sig);
-            if wait_dead(shared, &mut reaper, Duration::from_millis(budget_ms)) {
+            if wait_dead(shared, reaper, Duration::from_millis(budget_ms)) {
                 break;
             }
         }
@@ -1082,8 +1182,8 @@ fn natural_exit(
     sm: &mut StateMachine,
     status_file: &mut Option<File>,
     rx: &mpsc::Receiver<HostMsg>,
+    reaper: &mut Reaper,
 ) -> i32 {
-    let mut reaper = Reaper::new(shared.child_pid);
     let (code, signal) = reaper.reap_timeout(Duration::from_secs(3));
     // EOF normally follows a child exit, but a PTY can close independently.
     // Never let the Host report a natural completion while the process leader
@@ -1093,7 +1193,15 @@ fn natural_exit(
             child_pid = shared.child_pid,
             "pty EOF arrived before child exit; entering controlled stop flow"
         );
-        return stop_flow(shared, sm, status_file, None, rx, "pty_eof_before_exit");
+        return stop_flow(
+            shared,
+            sm,
+            status_file,
+            None,
+            rx,
+            "pty_eof_before_exit",
+            reaper,
+        );
     }
     shared.child_alive.store(false, Ordering::Relaxed);
     // Clean up any descendants that survived the leader (best effort, using
@@ -1379,6 +1487,7 @@ fn append_pty_output(writer: &mut LogWriter, data: Vec<u8>, shared: &Shared) {
     let _output_guard = shared.output_serial.lock().unwrap();
     match writer.append(&data) {
         Ok(receipt) => {
+            shared.output_log_faulted.store(false, Ordering::Release);
             shared
                 .log_bytes
                 .store(writer.total_appended(), Ordering::Relaxed);
@@ -1404,7 +1513,26 @@ fn append_pty_output(writer: &mut LogWriter, data: Vec<u8>, shared: &Shared) {
                 },
             );
         }
-        Err(error) => error!("log append failed: {error}"),
+        Err(error) => {
+            error!("log append failed; forwarding live-only output: {error}");
+            if !shared.output_log_faulted.swap(true, Ordering::AcqRel) {
+                broadcast(
+                    shared,
+                    &err_frame(
+                        Some(&shared.cfg.session_id),
+                        HostErrorCode::OutputLogFailed,
+                        "output log append failed; live output remains visible but cannot be replayed",
+                    ),
+                );
+            }
+            broadcast(
+                shared,
+                &HostFrame::TransientOutput {
+                    session_id: shared.cfg.session_id.clone(),
+                    data,
+                },
+            );
+        }
     }
 }
 

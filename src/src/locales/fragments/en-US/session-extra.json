@@ -58,6 +58,7 @@
     "freshStartNotice": "This Agent cannot resume its context, so a new Session was started",
     "restartFailed": "Could not restart the Session: {{detail}}",
     "interruptFailed": "Could not interrupt the Session: {{detail}}",
+    "resumeFailed": "Could not resume the suspended Session: {{detail}}",
     "archiveFailed": "Could not archive the Session: {{detail}}",
     "renameTitle": "Rename Session",
     "newTitle": "New title",

@@ -58,6 +58,7 @@
     "freshStartNotice": "该 Agent 不支持恢复上下文，已启动全新 Session",
     "restartFailed": "重启失败：{{detail}}",
     "interruptFailed": "中断失败：{{detail}}",
+    "resumeFailed": "无法继续已挂起的 Session：{{detail}}",
     "archiveFailed": "归档失败：{{detail}}",
     "renameTitle": "重命名 Session",
     "newTitle": "新标题",

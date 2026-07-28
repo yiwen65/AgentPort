@@ -20,6 +20,7 @@
       "connectionFailed": "无法连接 Host：{{detail}}",
       "changedDuringAttach": "连接 Session 时 Host 已发生变化，请重新连接。",
       "statusJournalFailed": "Host 无法保存状态日志，状态恢复能力已降级。",
+      "outputLogFailed": "Host 无法保存终端输出；实时内容仍可见，但受影响的字节在重连后无法回放。",
       "sessionIdMismatch": "Host 拒绝了 Session ID 不匹配的请求。",
       "terminalInputUnavailable": "结构化 Session 不支持终端输入。",
       "structuredPromptTransportRequired": "结构化提示需要 json_rpc transport。",

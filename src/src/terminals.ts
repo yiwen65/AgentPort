@@ -931,7 +931,13 @@ export function fitHandle(handle: TermHandle, forceRedraw = false, forceResize =
       window.setTimeout(() => {
         resizeTimers.delete(handle.sessionId);
         if (handles.get(handle.sessionId) !== handle || handle.generation !== resizeGeneration) return;
-        api.resizePty(handle.sessionId, cols, rows).catch(() => undefined);
+        const rect = handle.container?.getBoundingClientRect();
+        const scale = window.devicePixelRatio || 1;
+        const pixelWidth = Math.min(65535, Math.max(0, Math.round((rect?.width ?? 0) * scale)));
+        const pixelHeight = Math.min(65535, Math.max(0, Math.round((rect?.height ?? 0) * scale)));
+        api
+          .resizePty(handle.sessionId, cols, rows, pixelWidth, pixelHeight)
+          .catch(() => undefined);
       }, 100),
     );
   }
@@ -1218,6 +1224,15 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
   switch (msg.t) {
     case "output": {
       applyOutputFrame(handle, msg);
+      break;
+    }
+    case "transient_output": {
+      writeTerminalOutput(handle, b64ToBytes(msg.data));
+      updateScrolledUp(handle);
+      break;
+    }
+    case "process_status": {
+      patchRuntime(sessionId, { suspended: msg.suspended });
       break;
     }
     case "replay_done": {

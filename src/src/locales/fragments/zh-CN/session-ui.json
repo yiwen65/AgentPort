@@ -14,6 +14,7 @@
       "exportMarkdown": "导出 Markdown…",
       "exportRawLog": "导出原始日志…",
       "restartAndResume": "重启并恢复…",
+      "resume": "继续已挂起的 Agent",
       "interrupt": "中断（Ctrl-C）",
       "stop": "停止 Session…",
       "remove": "移除 Session…"
@@ -61,6 +62,10 @@
     "disconnected": {
       "checking": "连接已断开，正在确认 Agent 是否仍在运行。",
       "errorDetail": "（{{detail}}）"
+    },
+    "suspended": {
+      "message": "Agent 已被 Ctrl-Z 挂起。",
+      "resume": "继续运行"
     },
     "uncommitted": {
       "summary": "任务看起来已完成，但 Worktree 的结果尚未提交（{{modified}} · {{staged}} · {{untracked}}）。",

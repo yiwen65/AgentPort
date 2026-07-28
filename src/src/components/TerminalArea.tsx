@@ -45,6 +45,7 @@ import {
   copyTextWithToast,
   openNewSessionDialog,
   refreshActiveWorktreeStatus,
+  resumeSessionFlow,
   restartSessionFlow,
 } from "../actions";
 import { precisionLabel } from "../format";
@@ -738,6 +739,21 @@ function ReconnectBanner({ ses }: { ses: SessionView }) {
   );
 }
 
+function SuspendedBanner({ ses }: { ses: SessionView }) {
+  const { t } = useTranslation("session");
+  const suspended = useStore((state) => state.runtime[ses.id]?.suspended === true);
+  if (!suspended) return null;
+  return (
+    <div className="banner warn" role="status">
+      <span>{t("ui.suspended.message")}</span>
+      <span className="spacer" />
+      <button className="btn small primary" onClick={() => void resumeSessionFlow(ses.id)}>
+        {t("ui.suspended.resume")}
+      </button>
+    </div>
+  );
+}
+
 export function UncommittedBanner({ ses }: { ses: SessionView }) {
   const { t } = useTranslation(["session", "git"]);
   useStore((state) => state.runtime[ses.id]);
@@ -856,6 +872,7 @@ export default function TerminalArea() {
         <>
           <div className="workspace-banners">
             <ReconnectBanner ses={ses} />
+            <SuspendedBanner ses={ses} />
             <UncommittedBanner ses={ses} />
           </div>
           {termSearchOpen ? <TermSearchBar sessionId={ses.id} /> : null}

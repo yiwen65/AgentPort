@@ -77,9 +77,17 @@ pub enum ClientFrame {
         session_id: String,
         cols: u16,
         rows: u16,
+        #[serde(default)]
+        pixel_width: u16,
+        #[serde(default)]
+        pixel_height: u16,
     },
     /// Graceful interrupt of the foreground process group (Ctrl-C semantics).
     Interrupt {
+        session_id: String,
+    },
+    /// Resume a process group suspended by terminal job-control (Ctrl-Z).
+    Continue {
         session_id: String,
     },
     /// Stop the whole session: SIGINT -> SIGTERM -> SIGKILL on the process group,
@@ -137,6 +145,20 @@ pub enum HostFrame {
         /// run/generation-zero cursor.
         #[serde(default)]
         cursor: LogCursor,
+    },
+    /// Live PTY bytes whose durable log append failed. These bytes are
+    /// intentionally cursorless and are never replayed; clients must render
+    /// them without advancing their durable replay cursor.
+    TransientOutput {
+        session_id: String,
+        #[serde(with = "serde_bytes_b64")]
+        data: Vec<u8>,
+    },
+    /// Ephemeral job-control state for the direct Agent process group.
+    ProcessStatus {
+        session_id: String,
+        suspended: bool,
+        signal: Option<i32>,
     },
     /// A validated agent JSON-RPC event. The value is retained verbatim so
     /// the UI can render newly introduced Pi event kinds without a Host

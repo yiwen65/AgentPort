@@ -428,8 +428,11 @@ fn connect_with_recovery_target(
 fn output_bytes(frames: &[HostFrame]) -> Vec<u8> {
     let mut out = Vec::new();
     for f in frames {
-        if let HostFrame::Output { data, .. } = f {
-            out.extend_from_slice(data);
+        match f {
+            HostFrame::Output { data, .. } | HostFrame::TransientOutput { data, .. } => {
+                out.extend_from_slice(data);
+            }
+            _ => {}
         }
     }
     out
@@ -1969,6 +1972,114 @@ fn log_rotation() {
         .wait_exit(Duration::from_secs(15))
         .expect("host exits");
     assert_eq!(status.code(), Some(0));
+}
+
+#[test]
+fn live_output_survives_a_log_rotation_failure() {
+    let ctx = make_ctx(vec!["/bin/sh".into()], 64, vec![]);
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut client = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    client.expect_hello_ok();
+    wait_for(
+        || std::fs::metadata(&ctx.log).is_ok_and(|metadata| metadata.len() > 0),
+        Duration::from_secs(5),
+        "initial PTY output persisted",
+    );
+
+    std::fs::remove_file(&ctx.log).unwrap();
+    std::fs::create_dir(&ctx.log).unwrap();
+    let marker = uniq("log-failure-live-output");
+    client.send(&ClientFrame::Input {
+        session_id: ctx.session_id.clone(),
+        data: format!("printf '{}%080d\\n' 0\n", marker).into_bytes(),
+    });
+    let frames = client.collect_until(Duration::from_secs(5), |frames| {
+        output_bytes(frames)
+            .windows(marker.len())
+            .any(|window| window == marker.as_bytes())
+    });
+
+    assert!(
+        output_bytes(&frames)
+            .windows(marker.len())
+            .any(|window| window == marker.as_bytes()),
+        "live PTY output must not depend on log persistence: {frames:?}",
+    );
+}
+
+#[test]
+fn reports_and_resumes_a_ctrl_z_suspended_agent() {
+    let ready = uniq("suspend-ready");
+    let ctx = make_ctx(
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            format!("printf '{ready}\\n'; exec sleep 300"),
+        ],
+        1 << 20,
+        vec![],
+    );
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut client = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    client.expect_hello_ok();
+    client.collect_until(Duration::from_secs(5), |frames| {
+        output_bytes(frames)
+            .windows(ready.len())
+            .any(|window| window == ready.as_bytes())
+    });
+
+    client.send(&ClientFrame::Input {
+        session_id: ctx.session_id.clone(),
+        data: vec![0x1a],
+    });
+    let stopped = client.collect_until(Duration::from_secs(5), |frames| {
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::ProcessStatus {
+                    suspended: true,
+                    ..
+                }
+            )
+        })
+    });
+    assert!(
+        stopped.iter().any(|frame| matches!(
+            frame,
+            HostFrame::ProcessStatus {
+                suspended: true,
+                ..
+            }
+        )),
+        "Ctrl-Z must surface the stopped process state: {stopped:?}",
+    );
+
+    client.send(&ClientFrame::Continue {
+        session_id: ctx.session_id.clone(),
+    });
+    let resumed = client.collect_until(Duration::from_secs(5), |frames| {
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::ProcessStatus {
+                    suspended: false,
+                    ..
+                }
+            )
+        })
+    });
+    assert!(
+        resumed.iter().any(|frame| matches!(
+            frame,
+            HostFrame::ProcessStatus {
+                suspended: false,
+                ..
+            }
+        )),
+        "SIGCONT must surface the resumed process state: {resumed:?}",
+    );
 }
 
 // ---------------------------------------------------------------------------

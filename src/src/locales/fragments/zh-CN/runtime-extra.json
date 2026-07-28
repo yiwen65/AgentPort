@@ -17,6 +17,7 @@
     "exportLog": "导出当前 Session 的原始日志…",
     "restartSession": "重启并恢复当前 Session…",
     "interruptSession": "中断当前 Session（Ctrl-C）",
+    "resumeSession": "继续已挂起的 Agent",
     "stopSession": "停止当前 Session…",
     "title": "命令面板",
     "filterPlaceholder": "输入以过滤操作…",

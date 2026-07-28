@@ -118,6 +118,8 @@ export function runtimeMessageText(envelope: RuntimeMessageEnvelope): string {
       return i18n.t("session:terminal.outputGap");
     case "host_status_journal_failed":
       return i18n.t("runtime:errors.host.statusJournalFailed");
+    case "host_output_log_failed":
+      return i18n.t("runtime:errors.host.outputLogFailed");
     case "host_session_id_mismatch":
       return i18n.t("runtime:errors.host.sessionIdMismatch");
     case "host_terminal_input_unavailable":

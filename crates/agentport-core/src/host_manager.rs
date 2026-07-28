@@ -605,6 +605,11 @@ impl<'a> HostManager<'a> {
         client.interrupt()
     }
 
+    pub fn resume(&self, session_id: &str) -> Result<()> {
+        let (mut client, _info) = self.attach(session_id)?;
+        client.resume()
+    }
+
     /// Apply an offline-host classification only if the binding observed
     /// before the failed socket operation is still current. New sessions have
     /// a run claim even before a PID exists; pre-v5 rows fall back to the
@@ -1143,10 +1148,17 @@ impl HostClient {
             session_id: self.session_id.clone(),
             cols,
             rows,
+            pixel_width: 0,
+            pixel_height: 0,
         })
     }
     pub fn interrupt(&mut self) -> Result<()> {
         self.write(&ClientFrame::Interrupt {
+            session_id: self.session_id.clone(),
+        })
+    }
+    pub fn resume(&mut self) -> Result<()> {
+        self.write(&ClientFrame::Continue {
             session_id: self.session_id.clone(),
         })
     }

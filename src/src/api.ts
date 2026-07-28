@@ -243,10 +243,16 @@ export const api = {
     invoke<void>("abort_structured_turn", { sessionId }),
   autoRenameSessionFromFirstInput: (sessionId: string, input: string) =>
     invoke<boolean>("auto_rename_session_from_first_input", { sessionId, input }),
-  resizePty: (sessionId: string, cols: number, rows: number) =>
-    invoke<void>("resize_pty", { sessionId, cols, rows }),
+  resizePty: (
+    sessionId: string,
+    cols: number,
+    rows: number,
+    pixelWidth: number,
+    pixelHeight: number,
+  ) => invoke<void>("resize_pty", { sessionId, cols, rows, pixelWidth, pixelHeight }),
   stopSession: (sessionId: string) => invoke<void>("stop_session", { sessionId }),
   interruptSession: (sessionId: string) => invoke<void>("interrupt_session", { sessionId }),
+  resumeSession: (sessionId: string) => invoke<void>("resume_session", { sessionId }),
   restartSession: (sessionId: string, riskAck: boolean) =>
     invoke<RestartResult>("restart_session", { sessionId, riskAck }),
   renameSession: (sessionId: string, title: string) =>

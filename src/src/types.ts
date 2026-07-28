@@ -259,6 +259,8 @@ export interface AttachInfo {
 /** Messages pushed by the backend over the attach Channel (watch_loop). */
 export type ChannelMsg =
   | { t: "output"; data: string; offset: number; cursor: LogCursorView }
+  | { t: "transient_output"; data: string }
+  | { t: "process_status"; suspended: boolean; signal: number | null }
   | { t: "structured"; event: Record<string, unknown> }
   | { t: "replay_done"; offset?: number; cursor?: LogCursorView; partialContext?: boolean }
   | { t: "resync_required"; earliest: LogCursorView; reason: string }

@@ -10,6 +10,7 @@ import {
   interruptSessionFlow,
   openNewSessionDialog,
   renameSessionFlow,
+  resumeSessionFlow,
   restartSessionFlow,
   stopSessionFlow,
 } from "../actions";
@@ -102,6 +103,9 @@ export default function CommandPalette() {
         openDialog({ kind: "export", sessionId: activeSes.id, exportKind: "log" }),
       );
       act("restart", t("palette.restartSession"), () => void restartSessionFlow(activeSes.id));
+      if (s.runtime[activeSes.id]?.suspended) {
+        act("resume", t("palette.resumeSession"), () => void resumeSessionFlow(activeSes.id));
+      }
       if (activeSes.lifecycle === "running") {
         act("interrupt", t("palette.interruptSession"), () => void interruptSessionFlow(activeSes.id));
       }
@@ -121,7 +125,7 @@ export default function CommandPalette() {
       .sort((a, b) => b.score - a.score)
       .slice(0, 40)
       .map((x) => x.item);
-  }, [q, s.projects, s.activeSessionId, s.repositoryStatuses, t]);
+  }, [q, s.projects, s.activeSessionId, s.repositoryStatuses, s.runtime, t]);
 
   useEffect(() => setSelected(0), [q]);
 

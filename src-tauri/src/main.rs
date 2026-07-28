@@ -1818,6 +1818,29 @@ fn watch_loop(
                             "cursor": cursor,
                         }));
                     }
+                    HostFrame::TransientOutput { data, .. } => {
+                        if !host_identity_is_current(&db, &session_id, &host) {
+                            tracing::warn!(session = %session_id, attachment_id, "dropping transient output from a stale Host attachment");
+                            break;
+                        }
+                        let _ = channel.send(json!({
+                            "t": "transient_output",
+                            "data": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data),
+                        }));
+                    }
+                    HostFrame::ProcessStatus {
+                        suspended, signal, ..
+                    } => {
+                        if !host_identity_is_current(&db, &session_id, &host) {
+                            tracing::warn!(session = %session_id, attachment_id, "dropping process status from a stale Host attachment");
+                            break;
+                        }
+                        let _ = channel.send(json!({
+                            "t": "process_status",
+                            "suspended": suspended,
+                            "signal": signal,
+                        }));
+                    }
                     HostFrame::Structured { event, .. } => {
                         if !host_identity_is_current(&db, &session_id, &host) {
                             tracing::warn!(session = %session_id, attachment_id, "dropping structured event from a stale Host attachment");
@@ -2242,6 +2265,8 @@ async fn resize_pty(
     session_id: String,
     cols: u16,
     rows: u16,
+    pixel_width: u16,
+    pixel_height: u16,
 ) -> std::result::Result<(), String> {
     use agentport_core::protocol::{write_frame, ClientFrame};
     let writer = {
@@ -2260,6 +2285,8 @@ async fn resize_pty(
             session_id: session_id.clone(),
             cols,
             rows,
+            pixel_width,
+            pixel_height,
         }
     ))
 }
@@ -2289,6 +2316,18 @@ async fn interrupt_session(
         db: &state.db,
     };
     map_err!(mgr.interrupt(&session_id))
+}
+
+#[tauri::command]
+async fn resume_session(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> std::result::Result<(), String> {
+    let mgr = HostManager {
+        paths: &state.paths,
+        db: &state.db,
+    };
+    map_err!(mgr.resume(&session_id))
 }
 
 #[tauri::command]
@@ -3989,6 +4028,7 @@ fn main() {
             resize_pty,
             stop_session,
             interrupt_session,
+            resume_session,
             restart_session,
             rename_session,
             archive_session,

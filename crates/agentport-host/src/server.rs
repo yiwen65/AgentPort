@@ -207,6 +207,13 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
             current_status: shared.current_status.lock().unwrap().clone(),
             log_cursor: high_water.clone(),
         }];
+        if shared.process_suspended.load(Ordering::Acquire) {
+            initial_frames.push(HostFrame::ProcessStatus {
+                session_id: shared.cfg.session_id.clone(),
+                suspended: true,
+                signal: None,
+            });
+        }
         if subscribe_output
             && (resume_from.is_some() || replay_target.is_some() || replay_tail_bytes > 0)
         {
@@ -284,6 +291,15 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                     );
                     continue;
                 }
+                // xterm delivers Ctrl-Z as a byte. The direct Agent process
+                // group is orphaned from a job-control shell, so POSIX permits
+                // SIGTSTP to be discarded. SIGSTOP gives the user the same
+                // visible suspension and the GUI supplies the missing `fg`
+                // operation through SIGCONT.
+                if data.as_slice() == [0x1a] {
+                    signal_group(&shared, Signal::SIGSTOP);
+                    continue;
+                }
                 let mut w = shared.input_writer.lock().unwrap();
                 if w.write_all(&data).and_then(|_| w.flush()).is_err() {
                     break; // PTY gone — nothing more to do for this client
@@ -343,17 +359,24 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                     break;
                 }
             }
-            ClientFrame::Resize { cols, rows, .. } => {
+            ClientFrame::Resize {
+                cols,
+                rows,
+                pixel_width,
+                pixel_height,
+                ..
+            } => {
                 if let Some(master) = shared.master.lock().unwrap().as_mut() {
                     let _ = master.resize(PtySize {
                         rows,
                         cols,
-                        pixel_width: 0,
-                        pixel_height: 0,
+                        pixel_width,
+                        pixel_height,
                     });
                 }
             }
             ClientFrame::Interrupt { .. } => signal_group(&shared, Signal::SIGINT),
+            ClientFrame::Continue { .. } => signal_group(&shared, Signal::SIGCONT),
             ClientFrame::Stop { grace_ms, .. } => {
                 let _ = tx.send(HostMsg::Stop { grace_ms });
             }
@@ -451,6 +474,7 @@ fn frame_session_id(f: &ClientFrame) -> &str {
         | ClientFrame::AbortStructuredTurn { session_id }
         | ClientFrame::Resize { session_id, .. }
         | ClientFrame::Interrupt { session_id }
+        | ClientFrame::Continue { session_id }
         | ClientFrame::Stop { session_id, .. }
         | ClientFrame::StatusRequest { session_id }
         | ClientFrame::Ping { session_id }

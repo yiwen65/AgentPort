@@ -17,6 +17,7 @@
     "exportLog": "Export current Session's raw log…",
     "restartSession": "Restart and resume current Session…",
     "interruptSession": "Interrupt current Session (Ctrl-C)",
+    "resumeSession": "Resume suspended Agent",
     "stopSession": "Stop current Session…",
     "title": "Command Palette",
     "filterPlaceholder": "Type to filter actions…",
