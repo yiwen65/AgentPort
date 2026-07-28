@@ -28,7 +28,7 @@
   ],
   "crates/agentport-core/src/adapters/codex.rs": [
     "该版本未暴露可验证的会话级 Hook 能力，状态降级为 PTY 启发式",
-    "TUI 模式未证实输出原生 Session ID，仅支持恢复最近的 Session（resume --last）",
+    "首轮完成通知前尚无原生 Session ID；收到通知后将升级为精确恢复",
     "无原生 Session ID，仅支持恢复最近的 Session"
   ],
   "crates/agentport-core/src/adapters/kimi.rs": [

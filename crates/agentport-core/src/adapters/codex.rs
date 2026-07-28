@@ -33,7 +33,17 @@ case "$3" in
   *'"type":"approval-requested"'*) event='PermissionRequest' ;;
   *) exit 0 ;;
 esac
-printf '{"event":"%s","agentport_session_id":"%s"}\n' "$event" "$1" >> "$2"
+native_id=$(
+  printf '%s\n' "$3" |
+    sed -n 's/.*"thread-id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+)
+if [ "${#native_id}" -eq 36 ] &&
+   ! printf '%s' "$native_id" | grep -q '[^0-9a-fA-F-]'; then
+  printf '{"event":"%s","agentport_session_id":"%s","data":{"session_id":"%s"}}\n' \
+    "$event" "$1" "$native_id" >> "$2"
+else
+  printf '{"event":"%s","agentport_session_id":"%s"}\n' "$event" "$1" >> "$2"
+fi
 "#
     .into()
 }
@@ -135,7 +145,7 @@ impl AgentAdapter for CodexAdapter {
             notices: {
                 notices.push(LaunchNotice::new(
                     "codex_session_id_unverified",
-                    "TUI 模式未证实输出原生 Session ID，仅支持恢复最近的 Session（resume --last）",
+                    "首轮完成通知前尚无原生 Session ID；收到通知后将升级为精确恢复",
                 ));
                 notices
             },
@@ -340,7 +350,7 @@ mod tests {
         std::fs::write(&relay, notifier_relay_script()).unwrap();
 
         for payload in [
-            r#"{"type":"agent-turn-complete","secret":"discard-me"}"#,
+            r#"{"type":"agent-turn-complete","thread-id":"019f779d-efd0-76a2-a39e-eb95459089a0","secret":"discard-me"}"#,
             r#"{"type":"approval-requested","secret":"discard-me"}"#,
             r#"{"type":"unrelated","secret":"discard-me"}"#,
         ] {
@@ -364,7 +374,10 @@ mod tests {
             vec![
                 serde_json::json!({
                 "event": "Stop",
-                "agentport_session_id": "ses_abc"
+                "agentport_session_id": "ses_abc",
+                "data": {
+                    "session_id": "019f779d-efd0-76a2-a39e-eb95459089a0"
+                }
                 }),
                 serde_json::json!({
                     "event": "PermissionRequest",
