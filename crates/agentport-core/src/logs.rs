@@ -2,10 +2,10 @@
 //! ch.10 log-limit metric).
 //!
 //! Policy: one `output.log` per session. When appending would exceed the limit,
-//! the file is deleted and a fresh one started — "最近 N MiB 保留" (7.4).
-//! Rotation never blocks a write mid-chunk: a chunk is always written atomically
-//! as one `write_all`, so byte order within a generation is exactly the PTY
-//! stream order (ch.10 日志一致性 SHA-256).
+//! the oldest bytes are removed so the file remains the most recent bounded
+//! window — "最近 N MiB 保留" (7.4). Rotation never splits an incoming PTY
+//! chunk, so byte order within a generation is exactly the stream order
+//! (ch.10 日志一致性 SHA-256).
 
 use crate::error::Result;
 use crate::redact::Redactor;
@@ -19,7 +19,8 @@ pub struct WriteReceipt {
     /// Offset within the CURRENT generation where the chunk starts.
     pub offset: u64,
     pub len: u64,
-    /// True when this write started a new generation (old content dropped).
+    /// True when this write started a new generation (the recent tail is
+    /// reclassified into a new cursor generation).
     pub rotated: bool,
     /// Monotonic generation counter (0 = first file).
     pub generation: u64,
@@ -99,8 +100,13 @@ impl LogWriter {
             });
         }
         let mut rotated = false;
+        if data.len() as u64 > self.limit_bytes {
+            return Err(crate::error::CoreError::Validation(
+                "one output chunk exceeds the configured log limit".into(),
+            ));
+        }
         if self.len + data.len() as u64 > self.limit_bytes && self.len > 0 {
-            self.rotate()?;
+            self.rotate_for(data.len() as u64)?;
             rotated = true;
         }
         let offset = self.len;
@@ -123,7 +129,7 @@ impl LogWriter {
             self.redaction_hits = r.hits();
             if !tail.is_empty() {
                 if self.len + tail.len() as u64 > self.limit_bytes && self.len > 0 {
-                    self.rotate()?;
+                    self.rotate_for(tail.len() as u64)?;
                 }
                 self.file.write_all(&tail)?;
                 self.file.flush()?;
@@ -133,15 +139,30 @@ impl LogWriter {
         Ok(())
     }
 
-    fn rotate(&mut self) -> Result<()> {
-        // Drop the current generation entirely and start fresh (PRD 7.4:
-        // only the most recent window is kept). The search index marks hits
-        // into dropped generations as "输出已轮转".
+    fn rotate_for(&mut self, incoming_len: u64) -> Result<()> {
+        // Carry the newest part of the previous generation into the new one
+        // so an unaligned PTY chunk does not discard substantially more than
+        // the configured recent-output window.
+        let retain = self.limit_bytes.saturating_sub(incoming_len).min(self.len);
+        self.file.flush()?;
+        let tail = if retain > 0 {
+            let mut previous = File::open(&self.path)?;
+            previous.seek(SeekFrom::Start(self.len - retain))?;
+            let mut bytes = Vec::with_capacity(retain as usize);
+            previous.read_to_end(&mut bytes)?;
+            bytes
+        } else {
+            Vec::new()
+        };
         self.file = OpenOptions::new()
             .write(true)
             .truncate(true)
             .open(&self.path)?;
-        self.len = 0;
+        if !tail.is_empty() {
+            self.file.write_all(&tail)?;
+            self.file.flush()?;
+        }
+        self.len = tail.len() as u64;
         self.generation += 1;
         Ok(())
     }
@@ -231,6 +252,27 @@ mod tests {
         w.finish().unwrap();
         assert!(rotated);
         assert!(std::fs::metadata(&p).unwrap().len() <= limit);
+        assert_eq!(
+            std::fs::read(&p).unwrap(),
+            vec![b'x'; limit as usize],
+            "rotation must retain the most recent bounded window, not discard the previous window",
+        );
+    }
+
+    #[test]
+    fn rotation_retains_the_latest_window_across_unaligned_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("out.log");
+        let limit = 64 * 1024u64;
+        let mut writer = LogWriter::open(&p, limit, None).unwrap();
+        let mut stream = Vec::new();
+        for index in 0..19u8 {
+            let chunk = vec![index; 10 * 1024];
+            stream.extend_from_slice(&chunk);
+            writer.append(&chunk).unwrap();
+        }
+        let expected = &stream[stream.len() - limit as usize..];
+        assert_eq!(std::fs::read(&p).unwrap(), expected);
     }
 
     #[test]
