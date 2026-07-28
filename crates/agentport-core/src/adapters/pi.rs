@@ -1,7 +1,7 @@
 //! Pi coding-agent adapter.
 //!
-//! Pi has no tool-by-tool approval protocol.  AgentPort starts it with project
-//! trust pre-approved as requested and owns its native Session ID and storage.
+//! Pi has no tool-by-tool approval protocol. AgentPort owns its native Session
+//! ID and private storage while preserving Pi's native project-trust prompt.
 
 use super::{AgentAdapter, LaunchContext, LaunchNotice, LaunchPlan, ResumeContext};
 use crate::error::{CoreError, Result};
@@ -24,7 +24,6 @@ fn managed_args(transport: AgentTransport, native_id: &str, dir: &str) -> Vec<St
         native_id.into(),
         "--session-dir".into(),
         dir.into(),
-        "--approve".into(),
     ]);
     if transport == AgentTransport::JsonRpc {
         args.extend([
@@ -71,7 +70,7 @@ impl AgentAdapter for PiAdapter {
 
     fn build_launch(&self, ctx: &LaunchContext) -> Result<LaunchPlan> {
         let install = &ctx.install;
-        for flag in ["session-id", "session-dir", "approve"] {
+        for flag in ["session-id", "session-dir"] {
             if !super::has_flag(install, flag) {
                 return Err(CoreError::Blocked(format!(
                     "this version of pi has no --{flag} flag and cannot satisfy AgentPort's managed Session requirements"
@@ -120,7 +119,7 @@ impl AgentAdapter for PiAdapter {
             )
         })?;
         let install = &ctx.install;
-        for flag in ["session-id", "session-dir", "approve"] {
+        for flag in ["session-id", "session-dir"] {
             if !super::has_flag(install, flag) {
                 return Err(CoreError::Blocked(format!(
                     "this version of pi has no --{flag} flag and cannot resume a Session exactly"
@@ -156,7 +155,6 @@ impl AgentAdapter for PiAdapter {
             native_id.clone(),
             "--session-dir".into(),
             dir,
-            "--approve".into(),
         ]);
         if ctx.transport == AgentTransport::JsonRpc {
             argv.extend([
@@ -191,7 +189,7 @@ mod tests {
     use crate::adapters::test_fixtures as fx;
 
     #[test]
-    fn pi_tui_launch_uses_private_storage_and_approval() {
+    fn pi_tui_launch_preserves_the_native_project_trust_prompt() {
         let ctx = fx::launch_ctx(
             AgentType::Pi,
             &["session-id", "session", "session-dir", "approve"],
@@ -200,12 +198,12 @@ mod tests {
         let plan = PiAdapter.build_launch(&ctx).unwrap();
         assert!(!plan.argv.iter().any(|value| value == "--mode"));
         assert!(plan.argv.iter().any(|value| value == "--session-dir"));
-        assert!(plan.argv.iter().any(|value| value == "--approve"));
+        assert!(!plan.argv.iter().any(|value| value == "--approve"));
         assert_eq!(plan.transport, AgentTransport::Pty);
     }
 
     #[test]
-    fn pi_rpc_launch_uses_private_storage_and_approval() {
+    fn pi_rpc_launch_uses_private_storage_without_skipping_project_trust() {
         let mut ctx = fx::launch_ctx(
             AgentType::Pi,
             &[
@@ -225,7 +223,7 @@ mod tests {
         let plan = PiAdapter.build_launch(&ctx).unwrap();
         assert!(plan.argv.windows(2).any(|pair| pair == ["--mode", "rpc"]));
         assert!(plan.argv.iter().any(|value| value == "--session-dir"));
-        assert!(plan.argv.iter().any(|value| value == "--approve"));
+        assert!(!plan.argv.iter().any(|value| value == "--approve"));
         assert_eq!(plan.transport, AgentTransport::JsonRpc);
     }
 
