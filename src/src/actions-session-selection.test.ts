@@ -79,7 +79,6 @@ describe("selectSession", () => {
       projects: projectWith(oldSession),
       activeSessionId: "ses_old",
       attachedIds: ["ses_old"],
-      activeWorktreeStatus: null,
     });
   });
 

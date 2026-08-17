@@ -1,5 +1,5 @@
 // Terminal workspace: persistent xterm panes (display:none toggling), header
-// with session actions, reconnect/uncommitted banners, in-terminal search
+// with session actions, reconnect/suspension banners, in-terminal search
 // bar (⌘F — never sends to the PTY), lifecycle overlays, status line and
 // "回到最新" (⌘↓).
 
@@ -17,11 +17,8 @@ import {
   findSession,
   getRuntime,
   getState,
-  dismissUncommittedNotice,
   openDialog,
   setState,
-  syncUncommittedNotice,
-  uncommittedNoticeFingerprint,
   useStore,
 } from "../store";
 import {
@@ -42,9 +39,7 @@ import {
   readDragPayload,
 } from "../terminalDrop";
 import {
-  copyTextWithToast,
   openNewSessionDialog,
-  refreshActiveWorktreeStatus,
   resumeSessionFlow,
   restartSessionFlow,
 } from "../actions";
@@ -56,7 +51,6 @@ import PiStructuredTimeline from "./PiStructuredTimeline";
 import DocumentPanel from "./DocumentPanel";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { openGitCenter } from "../gitCenter";
 
 // ---------------------------------------------------------------------------
 // persistent pane
@@ -754,75 +748,6 @@ function SuspendedBanner({ ses }: { ses: SessionView }) {
   );
 }
 
-export function UncommittedBanner({ ses }: { ses: SessionView }) {
-  const { t } = useTranslation(["session", "git"]);
-  useStore((state) => state.runtime[ses.id]);
-  const ws = useStore((state) => state.activeWorktreeStatus);
-  const notice = useStore((state) => state.uncommittedNotices[ses.id]);
-  const r = getRuntime(ses.id);
-  const stateNow = r.status?.state ?? ses.status?.state;
-  const doneLike =
-    ses.lifecycle === "exited" ||
-    ses.lifecycle === "stopped" ||
-    stateNow === "idle" ||
-    stateNow === "exited";
-  const fingerprint = ws?.health === "dirty" ? uncommittedNoticeFingerprint(ws) : null;
-  const show = Boolean(
-    ses.worktreeId &&
-      fingerprint &&
-      notice?.fingerprint === fingerprint &&
-      !notice.dismissed,
-  );
-
-  // Once shown, keep the same dirty-result notice stable across PTY
-  // working/idle churn. A changed or confirmed-clean Worktree creates a new
-  // boundary; null means the live probe is still pending, not "clean".
-  useEffect(() => {
-    if (!ws) return;
-    syncUncommittedNotice(ses.id, fingerprint, doneLike);
-  }, [doneLike, fingerprint, ses.id, ws]);
-
-  // Refresh health when the session settles into a finished-looking state.
-  useEffect(() => {
-    if (doneLike && ses.worktreeId) void refreshActiveWorktreeStatus();
-  }, [doneLike, ses.worktreeId, ses.id]);
-
-  if (!show || !ws) return null;
-  return (
-    <div className="banner info" role="status">
-      <span>
-        {t("ui.uncommitted.summary", {
-          modified: t("ui.uncommitted.modified", { count: ws.modified }),
-          staged: t("ui.uncommitted.staged", { count: ws.staged }),
-          untracked: t("ui.uncommitted.untracked", { count: ws.untracked }),
-        })}
-      </span>
-      <span className="spacer" />
-      <button
-        className="btn small"
-        onClick={() => void openGitCenter({ kind: "session", sessionId: ses.id })}
-      >
-        {t("git:actions.showAllChanges")}
-      </button>
-      <button
-        className="btn small"
-        onClick={() =>
-          void copyTextWithToast(ws.raw, t("ui.toast.gitStatusCopied"))
-        }
-      >
-        {t("ui.actions.copyGitStatus")}
-      </button>
-      <button
-        className="btn small ghost"
-        onClick={() => dismissUncommittedNotice(ses.id, fingerprint!)}
-        aria-label={t("ui.uncommitted.dismissLabel")}
-      >
-        {t("ui.actions.gotIt")}
-      </button>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // session status affordance
 // ---------------------------------------------------------------------------
@@ -876,7 +801,6 @@ export default function TerminalArea() {
           <div className="workspace-banners">
             <ReconnectBanner ses={ses} />
             <SuspendedBanner ses={ses} />
-            <UncommittedBanner ses={ses} />
           </div>
           {termSearchOpen ? <TermSearchBar sessionId={ses.id} /> : null}
           <div className={`term-body${docExpanded ? " doc-expanded" : ""}`}>

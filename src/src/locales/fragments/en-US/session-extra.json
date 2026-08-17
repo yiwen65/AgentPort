@@ -71,7 +71,7 @@
     "operationFailed": "Operation failed: {{detail}}"
   },
   "timeline": {
-    "outputRotated": "Output has rotated",
+    "outputRotated": "Older terminal output has rotated; the Agent's native context is unaffected",
     "noVerifiedPosition": "This event has no verified output position",
     "generationUnverified": "The retained output generation could not be verified",
     "logLocation": "Log {{runId}} / generation {{generation}} / offset {{offset}}",
@@ -96,7 +96,7 @@
     "logReadFailed": "Could not read the log: {{detail}}",
     "returnedToLatest": "Returned from the recovery event to the latest output",
     "outputGap": "The output stream has a gap; resynchronizing",
-    "outputRotated": "The output log has rotated",
+    "outputRotated": "Older terminal output has rotated; the Agent's native context is unaffected",
     "recoveryLocation": "Recovery event location",
     "resynced": "Output resynchronized: {{reason}}",
     "stateAnnouncement": "Session {{title}} is now {{state}}",

@@ -69,7 +69,7 @@
       "permissionHintMacos": "If notifications do not appear, allow AgentPort under System Settings → Notifications. In-app unread indicators are unaffected.",
       "permissionHintLinux": "If notifications do not appear, check that the desktop notification service is available and notify-send is installed. In-app unread indicators are unaffected.",
       "logLimitLabel": "Log limit (20–2048 MiB)",
-      "logLimitHint": "Older logs are rotated at the limit, preserving only the newest portion",
+      "logLimitHint": "Only terminal-output history rotates at the limit; the newest portion is kept and the Agent's native context is unaffected",
       "terminalCommandLabel": "System terminal command (optional)",
       "terminalCommandPlaceholder": "Auto-detect (x-terminal-emulator, GNOME Terminal, Konsole)",
       "terminalCommandHint": "Enter a terminal executable name or absolute path. Arguments are not parsed; the target project directory is used as the working directory."

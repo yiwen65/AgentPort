@@ -32,10 +32,10 @@
     },
     "recovery": {
       "contextFailed": "无法读取恢复输出：{{detail}}",
-      "generationUnavailable": "无法确认当前保留的输出代际；输出可能已轮转。",
-      "outputRotated": "输出已轮转或不属于当前保留日志，无法安全定位。",
+      "generationUnavailable": "无法确认当前保留的终端输出代际；终端输出可能已轮转，但不影响 Agent 原生上下文。",
+      "outputRotated": "终端输出已轮转或不属于当前保留日志，无法安全定位；不影响 Agent 原生上下文。",
       "logMissing": "输出日志已不存在或已轮转。",
-      "logIncomplete": "输出已轮转或不再完整保留，无法安全定位。",
+      "logIncomplete": "终端输出已轮转或不再完整保留，无法安全定位；不影响 Agent 原生上下文。",
       "logChanged": "读取期间输出日志发生变化，无法安全定位；请重试。"
     },
     "projectPathMissing": "项目目录已不存在，无法在文件管理器中显示：{{path}}。可从 AgentPort 移除该项目记录。",

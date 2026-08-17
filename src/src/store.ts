@@ -12,7 +12,6 @@ import type {
   StatusEventView,
   TimelineData,
   RuntimeMessageEnvelope,
-  WorktreeStatus,
   RepositoryStatus,
   GitChangesSnapshot,
   GitCheckoutDescriptor,
@@ -73,12 +72,6 @@ export interface Toast {
   id: number;
   kind: "info" | "error" | "success";
   text: string;
-}
-
-export interface UncommittedNoticeState {
-  /** Identifies the concrete dirty Worktree result, not transient PTY state. */
-  fingerprint: string;
-  dismissed: boolean;
 }
 
 export interface MenuItem {
@@ -232,11 +225,8 @@ export interface AppState {
   toasts: Toast[];
   showOnboarding: boolean;
   expandedProjects: Record<string, boolean>;
-  activeWorktreeStatus: WorktreeStatus | null;
   /** Last backend-confirmed checkout state keyed by project. */
   repositoryStatuses: Record<string, RepositoryStatus>;
-  /** Latched "结果尚未提交" notices keyed by Session. */
-  uncommittedNotices: Record<string, UncommittedNoticeState>;
   announcement: string;
   themeEffective: EffectiveTheme;
   reducedMotion: boolean;
@@ -305,9 +295,7 @@ const initialState: AppState = {
   toasts: [],
   showOnboarding: false,
   expandedProjects: {},
-  activeWorktreeStatus: null,
   repositoryStatuses: {},
-  uncommittedNotices: {},
   announcement: "",
   themeEffective: "dark",
   reducedMotion: false,
@@ -421,58 +409,6 @@ export function toast(text: string, kind: Toast["kind"] = "info") {
 
 export function announce(text: string) {
   setState({ announcement: text });
-}
-
-export function uncommittedNoticeFingerprint(status: WorktreeStatus): string {
-  return [
-    status.health,
-    status.modified,
-    status.staged,
-    status.untracked,
-    status.ignored ?? 0,
-    (status.ignoredSample ?? []).join("\u0001"),
-    status.raw,
-  ].join("\u0000");
-}
-
-/**
- * Latch a dirty-result notice when a Session first looks complete. PTY status
- * can oscillate between working and idle while a TUI repaints; keeping this
- * state independent from the status sequence prevents repeated banners.
- */
-export function syncUncommittedNotice(
-  sessionId: string,
-  fingerprint: string | null,
-  doneLike: boolean,
-) {
-  const notices = getState().uncommittedNotices;
-  const current = notices[sessionId];
-  if (fingerprint === null) {
-    if (!current) return;
-    const next = { ...notices };
-    delete next[sessionId];
-    setState({ uncommittedNotices: next });
-    return;
-  }
-  if (!doneLike || current?.fingerprint === fingerprint) return;
-  setState({
-    uncommittedNotices: {
-      ...notices,
-      [sessionId]: { fingerprint, dismissed: false },
-    },
-  });
-}
-
-export function dismissUncommittedNotice(sessionId: string, fingerprint: string) {
-  const notices = getState().uncommittedNotices;
-  const current = notices[sessionId];
-  if (!current || current.fingerprint !== fingerprint || current.dismissed) return;
-  setState({
-    uncommittedNotices: {
-      ...notices,
-      [sessionId]: { ...current, dismissed: true },
-    },
-  });
 }
 
 export function openDialog(dialog: DialogState) {
@@ -608,11 +544,9 @@ function sessionScopedState(s: AppState, alive: Set<string>): Partial<AppState> 
   const activeSessionId = s.activeSessionId && alive.has(s.activeSessionId) ? s.activeSessionId : null;
   return {
     runtime: retainSessionEntries(s.runtime, alive),
-    uncommittedNotices: retainSessionEntries(s.uncommittedNotices, alive),
     pinnedSessionAt: retainSessionEntries(s.pinnedSessionAt, alive),
     attachedIds: retainAttachedIds(s.attachedIds, alive),
     activeSessionId,
-    activeWorktreeStatus: activeSessionId ? s.activeWorktreeStatus : null,
     termSearchOpen: activeSessionId ? s.termSearchOpen : false,
   };
 }

@@ -1,16 +1,14 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getHandleMock, refreshMock } = vi.hoisted(() => ({
+const { getHandleMock } = vi.hoisted(() => ({
   getHandleMock: vi.fn(),
-  refreshMock: vi.fn(),
 }));
 
 vi.mock("../actions", () => ({
   copyTextWithToast: vi.fn(),
   openNewSessionDialog: vi.fn(),
-  refreshActiveWorktreeStatus: refreshMock,
   restartSessionFlow: vi.fn(),
 }));
 
@@ -26,9 +24,9 @@ vi.mock("../terminals", () => ({
   searchTerminalBuffers: vi.fn(() => []),
 }));
 
-import { patchRuntime, setState } from "../store";
-import type { SessionView, StatusEventView } from "../types";
-import { TerminalScrollbar, UncommittedBanner } from "./TerminalArea";
+import { setState } from "../store";
+import type { SessionView } from "../types";
+import TerminalArea, { TerminalScrollbar } from "./TerminalArea";
 
 const session: SessionView = {
   id: "ses_1",
@@ -48,80 +46,41 @@ const session: SessionView = {
   createdAt: "2026-07-25T00:00:00.000Z",
 };
 
-function status(sequence: number, state: StatusEventView["state"]): StatusEventView {
-  return {
-    sessionId: session.id,
-    runId: "run_1",
-    runOrdinal: 1,
-    sequence,
-    state,
-    source: "pty",
-    confidence: "medium",
-    evidence: `pty:${state}`,
-    logCursor: null,
-    occurredAt: `2026-07-25T00:00:${sequence.toString().padStart(2, "0")}.000Z`,
-  };
-}
-
-describe("uncommitted worktree notice", () => {
+describe("terminal workspace Git notice", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getHandleMock.mockReturnValue(undefined);
     setState({
-      activeWorktreeStatus: {
-        health: "dirty",
-        modified: 1,
-        staged: 0,
-        untracked: 0,
-        raw: " M src/example.ts",
-      },
-      uncommittedNotices: {},
       runtime: {},
     });
-    patchRuntime(session.id, { status: status(1, "idle") });
   });
 
   afterEach(cleanup);
 
-  it("stays dismissed when PTY status sequence churns for the same dirty result", () => {
-    const { container } = render(<UncommittedBanner ses={session} />);
-    const dismiss = container.querySelector<HTMLButtonElement>(".banner button.ghost");
-    expect(dismiss).not.toBeNull();
+  it("does not render an uncommitted Git banner above the terminal", () => {
+    setState({
+      activeSessionId: session.id,
+      attachedIds: [],
+      projects: [{
+        id: "prj_1",
+        name: "Project",
+        rootPath: "/tmp/project",
+        gitRootPath: "/tmp/project",
+        worktrees: [{
+          id: "wt_1",
+          branch: "task",
+          baseCommit: "a".repeat(40),
+          baseRef: "main",
+          path: session.cwd,
+          health: "dirty",
+        }],
+        sessions: [session],
+      }],
+    });
 
-    fireEvent.click(dismiss!);
-    expect(screen.queryByRole("status")).toBeNull();
+    const { container } = render(<TerminalArea />);
 
-    act(() => patchRuntime(session.id, { status: status(2, "working") }));
-    act(() => patchRuntime(session.id, { status: status(3, "idle") }));
-
-    expect(screen.queryByRole("status")).toBeNull();
-  });
-
-  it("stays mounted while PTY activity briefly changes idle back to working", () => {
-    render(<UncommittedBanner ses={session} />);
-    expect(screen.getByRole("status")).not.toBeNull();
-
-    act(() => patchRuntime(session.id, { status: status(2, "working") }));
-
-    expect(screen.getByRole("status")).not.toBeNull();
-  });
-
-  it("keeps dismissal while Worktree status is temporarily unknown during Session switching", () => {
-    const { container } = render(<UncommittedBanner ses={session} />);
-    fireEvent.click(container.querySelector<HTMLButtonElement>(".banner button.ghost")!);
-
-    act(() => setState({ activeWorktreeStatus: null }));
-    act(() => setState({
-      activeWorktreeStatus: {
-        health: "dirty",
-        modified: 1,
-        staged: 0,
-        untracked: 0,
-        raw: " M src/example.ts",
-      },
-    }));
-
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(container.querySelector(".workspace-banners .banner.info")).toBeNull();
   });
 });
 

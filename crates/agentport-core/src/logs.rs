@@ -2,10 +2,11 @@
 //! ch.10 log-limit metric).
 //!
 //! Policy: one `output.log` per session. When appending would exceed the limit,
-//! the oldest bytes are removed so the file remains the most recent bounded
-//! window — "最近 N MiB 保留" (7.4). Rotation never splits an incoming PTY
-//! chunk, so byte order within a generation is exactly the stream order
-//! (ch.10 日志一致性 SHA-256).
+//! the oldest bytes are removed so the file remains a recent bounded window —
+//! "最近 N MiB 保留" (7.4). Rotation leaves headroom before the next rotation
+//! instead of compacting the whole file for every following PTY chunk.
+//! Rotation never splits an incoming PTY chunk, so byte order within a
+//! generation is exactly the stream order (ch.10 日志一致性 SHA-256).
 
 use crate::error::Result;
 use crate::redact::Redactor;
@@ -140,10 +141,11 @@ impl LogWriter {
     }
 
     fn rotate_for(&mut self, incoming_len: u64) -> Result<()> {
-        // Carry the newest part of the previous generation into the new one
-        // so an unaligned PTY chunk does not discard substantially more than
-        // the configured recent-output window.
-        let retain = self.limit_bytes.saturating_sub(incoming_len).min(self.len);
+        // Keep a recent suffix, but compact to roughly half full. Filling the
+        // file back to exactly its limit would make every subsequent PTY chunk
+        // start another generation and copy the entire retained log again.
+        let target_len = self.limit_bytes.div_ceil(2).max(incoming_len);
+        let retain = target_len.saturating_sub(incoming_len).min(self.len);
         self.file.flush()?;
         let tail = if retain > 0 {
             let mut previous = File::open(&self.path)?;
@@ -251,12 +253,10 @@ mod tests {
         }
         w.finish().unwrap();
         assert!(rotated);
-        assert!(std::fs::metadata(&p).unwrap().len() <= limit);
-        assert_eq!(
-            std::fs::read(&p).unwrap(),
-            vec![b'x'; limit as usize],
-            "rotation must retain the most recent bounded window, not discard the previous window",
-        );
+        let retained = std::fs::read(&p).unwrap();
+        assert!(retained.len() as u64 <= limit);
+        assert!(retained.len() as u64 >= limit / 2);
+        assert_eq!(retained, vec![b'x'; retained.len()]);
     }
 
     #[test]
@@ -271,8 +271,33 @@ mod tests {
             stream.extend_from_slice(&chunk);
             writer.append(&chunk).unwrap();
         }
-        let expected = &stream[stream.len() - limit as usize..];
-        assert_eq!(std::fs::read(&p).unwrap(), expected);
+        let retained = std::fs::read(&p).unwrap();
+        assert!(retained.len() as u64 <= limit);
+        assert!(retained.len() as u64 >= limit / 2);
+        assert_eq!(retained, stream[stream.len() - retained.len()..]);
+    }
+
+    #[test]
+    fn rotation_releases_headroom_for_following_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("out.log");
+        let limit = 64 * 1024u64;
+        let chunk = vec![b'x'; 1024];
+        let mut writer = LogWriter::open(&p, limit, None).unwrap();
+        for _ in 0..64 {
+            assert!(!writer.append(&chunk).unwrap().rotated);
+        }
+
+        let first_rotation = writer.append(&chunk).unwrap();
+        assert!(first_rotation.rotated);
+        let generation = first_rotation.generation;
+        for _ in 0..16 {
+            assert!(
+                !writer.append(&chunk).unwrap().rotated,
+                "one full log must not rotate again for every following PTY chunk"
+            );
+        }
+        assert_eq!(writer.generation(), generation);
     }
 
     #[test]

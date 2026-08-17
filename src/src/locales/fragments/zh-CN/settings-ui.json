@@ -69,7 +69,7 @@
       "permissionHintMacos": "若通知未出现，请在“系统设置 → 通知 → AgentPort”中允许通知。应用内未读标记不受影响。",
       "permissionHintLinux": "若通知未出现，请确认桌面通知服务可用且 notify-send 已安装。应用内未读标记不受影响。",
       "logLimitLabel": "日志上限（20–2048 MiB）",
-      "logLimitHint": "达到上限后历史日志轮转，仅保留最近部分",
+      "logLimitHint": "达到上限后仅轮转终端输出历史并保留最近部分；不影响 Agent 原生上下文",
       "terminalCommandLabel": "系统终端命令（可选）",
       "terminalCommandPlaceholder": "自动检测（x-terminal-emulator、GNOME Terminal、Konsole）",
       "terminalCommandHint": "填写终端可执行文件名或绝对路径；不解析参数，以目标项目目录作为工作目录启动。"

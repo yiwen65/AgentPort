@@ -5,9 +5,7 @@
       "newEllipsis": "New Session…",
       "restart": "Restart",
       "reconnect": "Reconnect",
-      "openDiagnostics": "Diagnostics",
-      "copyGitStatus": "Copy git status",
-      "gotIt": "Got it"
+      "openDiagnostics": "Diagnostics"
     },
     "menu": {
       "copyId": "Copy Session ID",
@@ -20,8 +18,7 @@
       "remove": "Remove Session…"
     },
     "toast": {
-      "idCopied": "Session ID copied",
-      "gitStatusCopied": "git status copied"
+      "idCopied": "Session ID copied"
     },
     "sidebar": {
       "removeConfirm": "Remove from the list?",
@@ -66,16 +63,6 @@
     "suspended": {
       "message": "Agent suspended by Ctrl-Z.",
       "resume": "Resume"
-    },
-    "uncommitted": {
-      "summary": "The task appears complete, but the Worktree results have not been committed ({{modified}} · {{staged}} · {{untracked}}).",
-      "modified_one": "{{count}} modified file",
-      "modified_other": "{{count}} modified files",
-      "staged_one": "{{count}} staged file",
-      "staged_other": "{{count}} staged files",
-      "untracked_one": "{{count}} untracked file",
-      "untracked_other": "{{count}} untracked files",
-      "dismissLabel": "Dismiss this reminder"
     }
   }
 }

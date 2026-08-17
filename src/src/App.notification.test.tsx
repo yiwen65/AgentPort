@@ -30,7 +30,6 @@ vi.mock("./actions", () => ({
   applyThemeSettings: vi.fn(),
   isMac: vi.fn().mockReturnValue(true),
   openNewSessionDialog: vi.fn(),
-  refreshActiveWorktreeStatus: vi.fn(),
   refreshProjectsSoon: vi.fn(),
   restartSessionFlow: vi.fn(),
   selectSession: mocks.selectSession,

@@ -32,7 +32,12 @@
      `XTERM_THEMES.dark.foreground` (One Dark Pro) in terminals.ts. */
   --term-text: #abb2bf;
   --text-dim: rgba(243, 245, 251, 0.66);
+  /* Mid-tier de-emphasis between dim and faint (tree icons, captions,
+     blockquote bodies); referenced across the document panel. */
+  --text-muted: rgba(243, 245, 251, 0.55);
   --text-faint: rgba(243, 245, 251, 0.44);
+  /* One Dark Pro orange; used for tree/status error hints. */
+  --warn: #d19a66;
   --accent: #6b8cff;
   --accent-soft: rgba(107, 140, 255, 0.14);
   --accent-text: #a8bbff;
@@ -99,6 +104,11 @@
      branch never reads as a state. Icon inherits the row color. */
   --sidebar-branch: #d47bf2;
   --sidebar-branch-hover: #e48cff;
+  /* Worktrees drill-down entry: muted champagne gold — reads as a structural
+     entry, kept clear of the accent/branch/running hues; icon inherits the
+     row color. */
+  --sidebar-worktree: #d4b36c;
+  --sidebar-worktree-hover: #e6c886;
   --sidebar-edit-bg: rgba(0, 0, 0, 0.24);
   --sidebar-edit-border: var(--accent-text);
   --sidebar-handle: rgba(188, 199, 226, 0.45);
@@ -121,7 +131,10 @@
      `XTERM_THEMES.light.foreground` (One Light) in terminals.ts. */
   --term-text: #383a42;
   --text-dim: rgba(17, 18, 23, 0.6);
+  --text-muted: rgba(17, 18, 23, 0.55);
   --text-faint: rgba(17, 18, 23, 0.52);
+  /* One Light orange (pairs with the dark side's #d19a66). */
+  --warn: #b76b01;
   --accent: #007aff;
   --accent-soft: rgba(0, 122, 255, 0.12);
   --accent-text: #005fc7;
@@ -174,6 +187,10 @@
      side's One Dark Pro magenta); hover lifts toward the brighter hue. */
   --sidebar-branch: #a626a4;
   --sidebar-branch-hover: #c162de;
+  /* Worktrees drill-down entry (light): antique gold deep enough to hold
+     contrast on the light sidebar; hover lifts toward the brighter hue. */
+  --sidebar-worktree: #96771f;
+  --sidebar-worktree-hover: #b08d2a;
   --sidebar-edit-bg: rgba(255, 255, 255, 0.92);
   --sidebar-edit-border: var(--accent-text);
   --sidebar-handle: rgba(17, 18, 23, 0.24);
@@ -942,22 +959,26 @@ body.is-window-dragging .sidebar {
 /* Pinned "Worktrees" drill-down entry: always the first row of an expanded
    project group. Not a session row — no rename, no context menu, no sorting. */
 .tree-row.worktrees-entry {
-  color: var(--sidebar-text);
+  color: var(--sidebar-worktree);
   font-size: 13px;
   font-weight: 500;
+}
+
+.tree-row.worktrees-entry:hover,
+.tree-row.worktrees-entry:focus-visible {
+  color: var(--sidebar-worktree-hover);
 }
 
 .worktrees-entry-chevron {
   flex: none;
   display: inline-flex;
   align-items: center;
-  color: var(--sidebar-icon);
+  color: currentColor;
   opacity: 0.7;
 }
 
 .tree-row.worktrees-entry:hover .worktrees-entry-chevron,
 .tree-row.worktrees-entry:focus-visible .worktrees-entry-chevron {
-  color: var(--sidebar-text-strong);
   opacity: 1;
 }
 
@@ -2524,20 +2545,22 @@ body.is-window-dragging .sidebar {
   opacity: 0.5;
 }
 
-/* VSCode-like file tree column. */
+/* VSCode-like file tree column. Lifted one surface step above the terminal
+   page so the tree and the preview read as two distinct zones. */
 .doc-tree {
-  flex: 0 0 200px;
+  flex: 0 0 184px;
   min-width: 0;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
+  background: var(--bg-panel);
 }
 
 .doc-tree-header {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 8px;
+  padding: 7px 10px;
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
 }
@@ -2545,7 +2568,7 @@ body.is-window-dragging .sidebar {
 .doc-tree-root {
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--text-muted);
   white-space: nowrap;
@@ -2557,23 +2580,37 @@ body.is-window-dragging .sidebar {
   flex: 1;
 }
 
+/* Header actions stay out of the way until the column is hovered (or one of
+   them is tabbed to), so the root name keeps the full header width instead
+   of truncating behind four buttons. */
+.doc-tree-header .btn {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.doc-tree:hover .doc-tree-header .btn,
+.doc-tree-header:focus-within .btn {
+  opacity: 1;
+}
+
 .doc-tree-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 4px 0 12px;
+  padding: 6px 0 12px;
 }
 
 .doc-tree-row {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   width: 100%;
   border: none;
   background: transparent;
   color: var(--text);
   font-size: 12px;
-  padding: 3px 8px;
+  line-height: 1.35;
+  padding: 4px 8px;
   text-align: left;
   cursor: pointer;
   white-space: nowrap;
@@ -2589,20 +2626,72 @@ body.is-window-dragging .sidebar {
   background: var(--accent-soft);
 }
 
+/* Selected file: accent fill + a 2px leading bar so the open document stays
+   visible even when the tree column is scrolled. */
 .doc-tree-row.selected {
   background: var(--accent-soft);
   color: var(--accent-text);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .doc-tree-icon {
   flex: 0 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: var(--text-muted);
-  font-size: 10px;
+}
+
+.doc-tree-chevron {
+  display: block;
+  transition: transform 0.12s ease;
+}
+
+.doc-tree-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+/* Entry-kind glyph: folders take the amber family, files stay one tier below
+   the label color so the name remains the strongest element on the row. */
+.doc-tree-kind {
+  flex: 0 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.doc-tree-kind.dir {
+  color: var(--amber);
+}
+
+.doc-tree-kind.file {
+  color: var(--text-dim);
+}
+
+.doc-tree-row.selected .doc-tree-kind.file {
+  color: var(--accent-text);
 }
 
 .doc-tree-name {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Indent guide: a hairline running through the parent's chevron center, so
+   nested levels stay scannable without widening the indentation itself. The
+   x position comes from the row's inline --guide-x. */
+.doc-tree-children {
+  position: relative;
+}
+
+.doc-tree-children::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--guide-x, 11px);
+  width: 1px;
+  background: var(--border);
 }
 
 .doc-tree-note {
@@ -2684,13 +2773,14 @@ body.is-window-dragging .sidebar {
 }
 
 .doc-panel-name {
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: 12px;
   font-weight: 600;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 40%;
 }
 
 .doc-panel-modes {
@@ -2809,7 +2899,9 @@ body.is-window-dragging .sidebar {
   outline: none;
   resize: none;
   background: transparent;
-  color: var(--text);
+  /* Raw view shares the terminal surface; match its foreground too so raw
+     and terminal text read identically. */
+  color: var(--term-text);
   font: 12px/1.55 var(--font-mono);
   padding: 8px 12px 16px;
   white-space: pre;
@@ -2840,21 +2932,29 @@ body.is-window-dragging .sidebar {
 }
 
 .doc-prose {
-  padding: 12px 16px 20px;
+  padding: 20px 24px 36px;
+  max-width: 780px;
   font-size: 13px;
-  line-height: 1.7;
-  color: var(--text);
+  line-height: 1.75;
+  /* Terminal surface + terminal foreground: prose reads as One Dark / One
+     Light body text, same as xterm output. */
+  color: var(--term-text);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 /* Markdown preview typography, driven by theme tokens so dark and light
-   palettes both stay readable. */
+   palettes both stay readable. Scale: h1 21 > h2 17 > h3 15 > h4 13.5 >
+   h5/h6 12.5 against 13px body, with weight doing the rest of the
+   separation; body line-height 1.75 keeps long documents scannable. Body
+   text mirrors the terminal foreground (One Dark / One Light) on the shared
+   terminal surface; headings keep the brighter --text for hierarchy. */
 .md-preview {
-  padding: 12px 16px 24px;
+  padding: 20px 24px 36px;
+  max-width: 780px;
   font-size: 13px;
-  line-height: 1.7;
-  color: var(--text);
+  line-height: 1.75;
+  color: var(--term-text);
   word-break: break-word;
 }
 
@@ -2864,26 +2964,41 @@ body.is-window-dragging .sidebar {
 .md-preview h4,
 .md-preview h5,
 .md-preview h6 {
-  margin: 1.1em 0 0.5em;
+  margin: 1.5em 0 0.6em;
   line-height: 1.35;
+  font-weight: 600;
   color: var(--text);
 }
 
-.md-preview h1 { font-size: 20px; }
+.md-preview h1 {
+  font-size: 21px;
+  font-weight: 700;
+  margin: 1.2em 0 0.7em;
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid var(--border);
+}
+
 .md-preview h2 { font-size: 17px; }
 .md-preview h3 { font-size: 15px; }
-.md-preview h4,
+.md-preview h4 { font-size: 13.5px; }
+
 .md-preview h5,
-.md-preview h6 { font-size: 13px; }
+.md-preview h6 {
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
 
 .md-preview h1:first-child,
 .md-preview h2:first-child,
-.md-preview h3:first-child {
+.md-preview h3:first-child,
+.md-preview h4:first-child,
+.md-preview h5:first-child,
+.md-preview h6:first-child {
   margin-top: 0;
 }
 
 .md-preview p {
-  margin: 0.55em 0;
+  margin: 0.6em 0;
 }
 
 .md-preview a.md-link {
@@ -2894,62 +3009,74 @@ body.is-window-dragging .sidebar {
 
 .md-preview code {
   font-family: var(--font-mono);
-  font-size: 0.92em;
+  font-size: 0.9em;
   background: var(--accent-soft);
   border-radius: 4px;
-  padding: 1px 5px;
+  padding: 1.5px 5px;
 }
 
 .md-preview pre {
-  margin: 0.7em 0;
-  padding: 10px 12px;
+  margin: 0.9em 0;
+  padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow-x: auto;
-  font: 12px/1.55 var(--font-mono);
-  /* Panel already sits on the terminal surface; lift code blocks one step. */
-  background: var(--bg-elevated);
+  font: 12.5px/1.6 var(--font-mono);
+  /* Panel sits on the terminal surface; step code blocks away from it (one
+     shade darker in dark theme, one lighter in light) so they stand out. */
+  background: var(--bg-active);
 }
 
 .md-preview pre code {
   background: transparent;
   padding: 0;
+  font-size: inherit;
 }
 
 .md-preview blockquote {
-  margin: 0.7em 0;
-  padding: 2px 12px;
+  margin: 0.9em 0;
+  padding: 4px 14px;
   border-left: 3px solid var(--accent);
   color: var(--text-muted);
 }
 
 .md-preview ul,
 .md-preview ol {
-  margin: 0.5em 0;
-  padding-left: 1.6em;
+  margin: 0.6em 0;
+  padding-left: 1.5em;
+}
+
+.md-preview li {
+  margin: 4px 0;
+}
+
+.md-preview li > ul,
+.md-preview li > ol {
+  margin: 4px 0;
 }
 
 .md-preview table {
   border-collapse: collapse;
-  margin: 0.7em 0;
-  font-size: 12px;
+  margin: 0.9em 0;
+  font-size: 12.5px;
 }
 
 .md-preview th,
 .md-preview td {
   border: 1px solid var(--border);
-  padding: 4px 10px;
+  padding: 5px 12px;
   text-align: left;
 }
 
 .md-preview th {
   background: var(--accent-soft);
+  font-weight: 600;
 }
 
 .md-preview hr {
   border: none;
   border-top: 1px solid var(--border);
-  margin: 1em 0;
+  margin: 1.5em 0;
 }
 
 /* Mermaid diagrams inside the document preview. */
@@ -3391,7 +3518,7 @@ body.is-window-dragging .sidebar {
   animation: dot-pulse 1.4s ease-in-out infinite;
 }
 
-/* Banner bars (reconnect / uncommitted / notice) */
+/* Terminal lifecycle banners (reconnect / suspension). */
 .workspace-banners {
   position: absolute;
   z-index: 8;

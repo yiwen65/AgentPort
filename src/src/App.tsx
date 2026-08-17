@@ -18,7 +18,6 @@ import {
   applyThemeSettings,
   isMac,
   openNewSessionDialog,
-  refreshActiveWorktreeStatus,
   refreshProjectsSoon,
   restartSessionFlow,
   toggleSidebarCollapsed,
@@ -112,7 +111,6 @@ function useBoot() {
               invalidateProjectsSnapshotRequests();
               applyProjectsSnapshot(projects);
               pruneHandles();
-              void refreshActiveWorktreeStatus();
             });
           }),
           onRepositoryStateChanged((status) => {

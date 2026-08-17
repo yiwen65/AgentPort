@@ -71,7 +71,7 @@
     "operationFailed": "操作失败：{{detail}}"
   },
   "timeline": {
-    "outputRotated": "输出已轮转",
+    "outputRotated": "较早的终端输出已轮转；不影响 Agent 原生上下文",
     "noVerifiedPosition": "此事件没有可验证的输出位置",
     "generationUnverified": "无法确认当前保留的输出代际",
     "logLocation": "日志 {{runId}} / 代际 {{generation}} / 偏移 {{offset}}",
@@ -96,7 +96,7 @@
     "logReadFailed": "日志读取失败：{{detail}}",
     "returnedToLatest": "已从恢复事件附近跳回最新输出",
     "outputGap": "输出流出现间隙，正在重新同步",
-    "outputRotated": "输出日志已轮转",
+    "outputRotated": "较早的终端输出已轮转，不影响 Agent 原生上下文",
     "recoveryLocation": "恢复事件定位处",
     "resynced": "输出已重新同步：{{reason}}",
     "stateAnnouncement": "Session {{title}} 状态变为{{state}}",

@@ -5,9 +5,7 @@
       "newEllipsis": "新建 Session…",
       "restart": "重启",
       "reconnect": "重新连接",
-      "openDiagnostics": "诊断中心",
-      "copyGitStatus": "复制 git status",
-      "gotIt": "知道了"
+      "openDiagnostics": "诊断中心"
     },
     "menu": {
       "copyId": "复制 Session ID",
@@ -20,8 +18,7 @@
       "remove": "移除 Session…"
     },
     "toast": {
-      "idCopied": "已复制 Session ID",
-      "gitStatusCopied": "已复制 git status"
+      "idCopied": "已复制 Session ID"
     },
     "sidebar": {
       "removeConfirm": "从列表移除？",
@@ -66,16 +63,6 @@
     "suspended": {
       "message": "Agent 已被 Ctrl-Z 挂起。",
       "resume": "继续运行"
-    },
-    "uncommitted": {
-      "summary": "任务看起来已完成，但 Worktree 的结果尚未提交（{{modified}} · {{staged}} · {{untracked}}）。",
-      "modified_one": "修改 {{count}}",
-      "modified_other": "修改 {{count}}",
-      "staged_one": "暂存 {{count}}",
-      "staged_other": "暂存 {{count}}",
-      "untracked_one": "未跟踪 {{count}}",
-      "untracked_other": "未跟踪 {{count}}",
-      "dismissLabel": "忽略此提醒"
     }
   }
 }

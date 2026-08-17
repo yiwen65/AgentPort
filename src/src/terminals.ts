@@ -72,6 +72,9 @@ export interface TermHandle {
   historyLoading: boolean;
   /** Last contiguous byte rendered for the current Host output stream. */
   logCursor: LogCursorView | null;
+  /** The retained-log boundary is useful once, but routine later rotations in
+   * the same live run must not become terminal output themselves. */
+  rotationNoticeShown: boolean;
   /** Cursor awaiting an xterm write-queue callback before it can be reported
    * as renderer-observed to the backend. */
   pendingRenderedLogCursor: LogCursorView | null;
@@ -497,6 +500,7 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     historyLoaded: false,
     historyLoading: false,
     logCursor: null,
+    rotationNoticeShown: false,
     pendingRenderedLogCursor: null,
     renderObservationQueued: false,
     allowRecoveryGap: false,
@@ -558,14 +562,42 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
   return handle;
 }
 
+/**
+ * Follow new output only while the user is already at the bottom. When the
+ * user is reading scrollback, a write must never move their viewport — but
+ * renderer quirks or a buffer reflow can still snap it to the bottom (or the
+ * top) mid-write. Capture the reading row before the write and restore it
+ * once the bytes have drained through xterm's parser. Plain writes already
+ * keep the viewport steady inside xterm, so the restore only fires when
+ * something actually moved it; it never pushes the viewport further down
+ * than the row the user was reading, and it never fights xterm's own
+ * trim-compensation (which lowers viewportY to keep the text stable).
+ */
+function writePreservingViewport(handle: TermHandle, data: Uint8Array | string) {
+  const before = handle.term.buffer.active;
+  const atBottom = before.type !== "normal" || before.viewportY >= before.baseY;
+  const readingRow = before.viewportY;
+  const generation = handle.generation;
+  handle.term.write(data, () => {
+    if (atBottom) return;
+    if (handles.get(handle.sessionId) !== handle || handle.generation !== generation) return;
+    const after = handle.term.buffer.active;
+    if (after.type !== "normal") return;
+    const target = Math.min(readingRow, after.baseY);
+    if (after.viewportY > target || (after.viewportY === 0 && target > 0)) {
+      handle.term.scrollToLine(target);
+    }
+  });
+}
+
 function writeTerminalOutput(handle: TermHandle, bytes: Uint8Array) {
   const visible = handle.piStartupNoticeFilter?.feed(bytes) ?? bytes;
-  if (visible.length) handle.term.write(visible);
+  if (visible.length) writePreservingViewport(handle, visible);
 }
 
 function finishTerminalStartupFilter(handle: TermHandle) {
   const visible = handle.piStartupNoticeFilter?.finish();
-  if (visible?.length) handle.term.write(visible);
+  if (visible?.length) writePreservingViewport(handle, visible);
 }
 
 const MAX_INPUT_FRAME_BYTES = 256 * 1024;
@@ -1344,6 +1376,7 @@ function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "out
       // old terminal. The next frames belong to a distinct Host run.
       handle.term.reset();
       handle.logCursor = null;
+      handle.rotationNoticeShown = false;
     } else if (incoming.generation < current.generation) {
       return;
     } else if (incoming.generation === current.generation) {
@@ -1380,8 +1413,9 @@ function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "out
       if (incoming.offset < current.offset) {
         bytes = original.slice(current.offset - incoming.offset);
       }
-    } else {
+    } else if (!handle.rotationNoticeShown) {
       handle.term.write(`\r\n\x1b[2m── ${i18n.t("session:terminal.outputRotated")} ──\x1b[0m\r\n`);
+      handle.rotationNoticeShown = true;
     }
   }
 
@@ -1538,6 +1572,7 @@ export function resetForRestart(sessionId: string) {
     // otherwise duplicate it under the old content / loaded history.
     handle.term.reset();
     handle.logCursor = null;
+    handle.rotationNoticeShown = false;
     handle.allowRecoveryGap = false;
     handle.recoveryTarget = null;
     handle.historyLoaded = false;

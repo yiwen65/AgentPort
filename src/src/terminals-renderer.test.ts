@@ -916,6 +916,146 @@ describe("terminal renderer", () => {
     await vi.waitFor(() => expect(rendererMocks.apiMock.sendInput).toHaveBeenCalledOnce());
   });
 
+  it("shows the live log-rotation notice only once per run", async () => {
+    await applyUiLanguage("en-US", { persistHint: false });
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+    const channel = rendererMocks.channels[0];
+
+    for (let generation = 0; generation < 3; generation += 1) {
+      channel.onmessage?.({
+        t: "output",
+        data: "QQ==",
+        offset: 0,
+        cursor: { runId: "run_rotation", runOrdinal: 1, generation, offset: 0 },
+      });
+    }
+
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const notices = terminal.write.mock.calls.filter(
+      ([value]) => typeof value === "string" && value.includes("Older terminal output has rotated"),
+    );
+    expect(notices).toHaveLength(1);
+
+    channel.onmessage?.({
+      t: "output",
+      data: "QQ==",
+      offset: 0,
+      cursor: { runId: "run_after_restart", runOrdinal: 2, generation: 0, offset: 0 },
+    });
+    channel.onmessage?.({
+      t: "output",
+      data: "QQ==",
+      offset: 0,
+      cursor: { runId: "run_after_restart", runOrdinal: 2, generation: 1, offset: 0 },
+    });
+
+    const noticesAfterRestart = terminal.write.mock.calls.filter(
+      ([value]) => typeof value === "string" && value.includes("Older terminal output has rotated"),
+    );
+    expect(noticesAfterRestart).toHaveLength(2);
+  });
+
+  it("restores the user's reading row when a write snaps the viewport to the bottom", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    // The user is reading scrollback, not following the tail.
+    terminal.buffer.active.baseY = 500;
+    terminal.buffer.active.viewportY = 200;
+
+    rendererMocks.channels[0].onmessage?.({
+      t: "output",
+      data: "QQ==",
+      offset: 0,
+      cursor: { runId: "run_1", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+
+    const contentWrite = terminal.write.mock.calls.find(
+      ([data, callback]) => data !== "" && typeof callback === "function",
+    );
+    expect(contentWrite).toBeDefined();
+    // The renderer snaps the viewport to the bottom while the write parses.
+    terminal.buffer.active.baseY = 502;
+    terminal.buffer.active.viewportY = 502;
+    (contentWrite?.[1] as () => void)();
+
+    expect(terminal.scrollToLine).toHaveBeenCalledWith(200);
+    expect(terminal.buffer.active.viewportY).toBe(200);
+  });
+
+  it("restores the user's reading row when a write drops the viewport to the top", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.buffer.active.baseY = 500;
+    terminal.buffer.active.viewportY = 200;
+
+    rendererMocks.channels[0].onmessage?.({
+      t: "output",
+      data: "QQ==",
+      offset: 0,
+      cursor: { runId: "run_1", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+
+    const contentWrite = terminal.write.mock.calls.find(
+      ([data, callback]) => data !== "" && typeof callback === "function",
+    );
+    terminal.buffer.active.viewportY = 0;
+    (contentWrite?.[1] as () => void)();
+
+    expect(terminal.scrollToLine).toHaveBeenCalledWith(200);
+  });
+
+  it("lets output keep following the tail while the user is at the bottom", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.buffer.active.baseY = 500;
+    terminal.buffer.active.viewportY = 500;
+
+    rendererMocks.channels[0].onmessage?.({
+      t: "output",
+      data: "QQ==",
+      offset: 0,
+      cursor: { runId: "run_1", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+
+    const contentWrite = terminal.write.mock.calls.find(
+      ([data, callback]) => data !== "" && typeof callback === "function",
+    );
+    terminal.buffer.active.baseY = 502;
+    terminal.buffer.active.viewportY = 502;
+    (contentWrite?.[1] as () => void)();
+
+    expect(terminal.scrollToLine).not.toHaveBeenCalled();
+  });
+
+  it("does not fight xterm's trim compensation that lowers viewportY", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.buffer.active.baseY = 500;
+    terminal.buffer.active.viewportY = 200;
+
+    rendererMocks.channels[0].onmessage?.({
+      t: "output",
+      data: "QQ==",
+      offset: 0,
+      cursor: { runId: "run_1", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+
+    const contentWrite = terminal.write.mock.calls.find(
+      ([data, callback]) => data !== "" && typeof callback === "function",
+    );
+    // Scrollback trimmed lines above the reading row; xterm lowered viewportY
+    // to keep the same text on screen. That is not a snap — leave it alone.
+    terminal.buffer.active.viewportY = 198;
+    (contentWrite?.[1] as () => void)();
+
+    expect(terminal.scrollToLine).not.toHaveBeenCalled();
+  });
+
   it("acknowledges output only after xterm drains the renderer write queue", async () => {
     mountTerminal("renderer-test", document.createElement("div"));
     await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
@@ -929,7 +1069,11 @@ describe("terminal renderer", () => {
 
     expect(rendererMocks.apiMock.markSessionLogRendered).not.toHaveBeenCalled();
     const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    // The rendered-cursor acknowledgement rides the empty sentinel write that
+    // is queued after the content write; content writes carry their own
+    // viewport-restore callback now.
     const callback = terminal.write.mock.calls
+      .filter((call) => call[0] === "")
       .map((call) => call[1])
       .find((candidate) => typeof candidate === "function");
     expect(callback).toBeTypeOf("function");

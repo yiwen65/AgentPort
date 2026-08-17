@@ -28,6 +28,54 @@ function parentDir(path: string): string {
   return slash > 0 ? trimmed.slice(0, slash) : "/";
 }
 
+function IconChevron({ expanded }: { expanded: boolean }) {
+  return (
+    <svg
+      className={`doc-tree-chevron${expanded ? " expanded" : ""}`}
+      width="10"
+      height="10"
+      viewBox="0 0 10 10"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M3.25 1.75 6.75 5l-3.5 3.25"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconFolder() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M2 4.25a1 1 0 0 1 1-1h2.6l1.4 1.6h6a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.25Z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconFile() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M9 1.75H4.5a1 1 0 0 0-1 1v10.5a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5.25L9 1.75Zm0 0v3.5h3.5"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function IconNewFile() {
   return (
     <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -176,7 +224,7 @@ export default function DocumentTree() {
         <div key={entry.path}>
           <button
             className={`doc-tree-row${entry.isDir ? " dir" : " file"}${selected ? " selected" : ""}`}
-            style={{ paddingLeft: 8 + depth * 14 }}
+            style={{ paddingLeft: 6 + depth * 16 }}
             data-tip={entry.path}
             draggable
             onDragStart={(event) => {
@@ -192,22 +240,30 @@ export default function DocumentTree() {
             }}
           >
             <span className="doc-tree-icon" aria-hidden="true">
-              {entry.isDir ? (expanded ? "▾" : "▸") : ""}
+              {entry.isDir ? <IconChevron expanded={expanded} /> : null}
+            </span>
+            <span className={`doc-tree-kind${entry.isDir ? " dir" : " file"}`} aria-hidden="true">
+              {entry.isDir ? <IconFolder /> : <IconFile />}
             </span>
             <span className="doc-tree-name">{entry.name}</span>
           </button>
           {entry.isDir && expanded ? (
-            child?.error ? (
-              <div className="doc-tree-note" style={{ paddingLeft: 30 + depth * 14 }}>
-                {child.error}
-              </div>
-            ) : child?.entries ? (
-              renderDir(child.entries, depth + 1)
-            ) : (
-              <div className="doc-tree-note" style={{ paddingLeft: 30 + depth * 14 }}>
-                {t("ui.document.treeLoading")}
-              </div>
-            )
+            <div
+              className="doc-tree-children"
+              style={{ "--guide-x": `${11 + depth * 16}px` } as React.CSSProperties}
+            >
+              {child?.error ? (
+                <div className="doc-tree-note" style={{ paddingLeft: 34 + depth * 16 }}>
+                  {child.error}
+                </div>
+              ) : child?.entries ? (
+                renderDir(child.entries, depth + 1)
+              ) : (
+                <div className="doc-tree-note" style={{ paddingLeft: 34 + depth * 16 }}>
+                  {t("ui.document.treeLoading")}
+                </div>
+              )}
+            </div>
           ) : null}
         </div>
       );

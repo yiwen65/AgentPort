@@ -32,10 +32,10 @@
     },
     "recovery": {
       "contextFailed": "Could not read the recovery output: {{detail}}",
-      "generationUnavailable": "The retained output generation could not be verified; the output may have rotated.",
-      "outputRotated": "The output has rotated or does not belong to the retained log, so it cannot be located safely.",
+      "generationUnavailable": "The retained terminal-output generation could not be verified; terminal output may have rotated, but the Agent's native context is unaffected.",
+      "outputRotated": "Terminal output has rotated or does not belong to the retained log, so it cannot be located safely; the Agent's native context is unaffected.",
       "logMissing": "The output log no longer exists or has rotated.",
-      "logIncomplete": "The output has rotated or is no longer fully retained, so it cannot be located safely.",
+      "logIncomplete": "Terminal output has rotated or is no longer fully retained, so it cannot be located safely; the Agent's native context is unaffected.",
       "logChanged": "The output log changed while it was being read. Try again."
     },
     "projectPathMissing": "The project directory no longer exists and cannot be shown in the file manager: {{path}}. You can remove the project record from AgentPort.",

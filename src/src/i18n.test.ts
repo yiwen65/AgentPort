@@ -71,6 +71,23 @@ describe("UI language runtime", () => {
     expect(formatTimelineTime("2026-07-20T08:30:00Z", new Date("2026-07-23T08:30:00Z"))).not.toBe(englishDate);
   });
 
+  it("clarifies that terminal-output rotation does not remove the Agent's native context", async () => {
+    expect(i18n.t("session:terminal.outputRotated")).toContain("不影响 Agent 原生上下文");
+    expect(i18n.t("session:timeline.outputRotated")).toContain("不影响 Agent 原生上下文");
+    expect(i18n.t("settings:ui.notifications.logLimitHint")).toContain("不影响 Agent 原生上下文");
+    expect(i18n.t("runtime:errors.recovery.generationUnavailable")).toContain("不影响 Agent 原生上下文");
+    expect(i18n.t("runtime:errors.recovery.outputRotated")).toContain("不影响 Agent 原生上下文");
+    expect(i18n.t("runtime:errors.recovery.logIncomplete")).toContain("不影响 Agent 原生上下文");
+
+    await applyUiLanguage("en-US", { persistHint: false });
+    expect(i18n.t("session:terminal.outputRotated")).toContain("Agent's native context is unaffected");
+    expect(i18n.t("session:timeline.outputRotated")).toContain("Agent's native context is unaffected");
+    expect(i18n.t("settings:ui.notifications.logLimitHint")).toContain("Agent's native context is unaffected");
+    expect(i18n.t("runtime:errors.recovery.generationUnavailable")).toContain("Agent's native context is unaffected");
+    expect(i18n.t("runtime:errors.recovery.outputRotated")).toContain("Agent's native context is unaffected");
+    expect(i18n.t("runtime:errors.recovery.logIncomplete")).toContain("Agent's native context is unaffected");
+  });
+
   it("keeps sidebar session ages compact and language-independent", async () => {
     const now = Date.parse("2026-07-23T08:30:00Z");
     const ages = [

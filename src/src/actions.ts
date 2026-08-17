@@ -269,7 +269,6 @@ export function selectSession(id: string, recoveryTarget: LogCursorView | null =
     attachedIds,
     expandedProjects,
     collapsedWorktrees,
-    activeWorktreeStatus: s.activeSessionId === id ? s.activeWorktreeStatus : null,
     termSearchOpen: false,
   });
   for (const evictedId of evictedIds) void releaseTerminal(evictedId);
@@ -284,7 +283,6 @@ export function selectSession(id: string, recoveryTarget: LogCursorView | null =
   void api.markSessionSeen(id, findSession(s.projects, id)?.status ?? null)
     .then(refreshProjects)
     .catch(() => undefined);
-  void refreshActiveWorktreeStatus();
 }
 
 export function switchSessionByIndex(index: number) {
@@ -293,47 +291,6 @@ export function switchSessionByIndex(index: number) {
   const list = flattenSessions(s.projects).filter((session) => !archiving.has(session.id));
   const target = list[index];
   if (target) selectSession(target.id);
-}
-
-// ---------------------------------------------------------------------------
-// worktree status / "结果尚未提交" notice
-// ---------------------------------------------------------------------------
-
-let worktreeStatusRequest = 0;
-
-export async function refreshActiveWorktreeStatus() {
-  const s = getState();
-  const ses = findSession(s.projects, s.activeSessionId);
-  const request = ++worktreeStatusRequest;
-  const sessionId = s.activeSessionId;
-  const worktreeId = ses?.worktreeId;
-  if (!worktreeId) {
-    if (request === worktreeStatusRequest && getState().activeSessionId === sessionId) {
-      setState({ activeWorktreeStatus: null });
-    }
-    return;
-  }
-  try {
-    const st = await api.worktreeStatusText(worktreeId);
-    const current = getState();
-    if (
-      request !== worktreeStatusRequest ||
-      current.activeSessionId !== sessionId ||
-      findSession(current.projects, current.activeSessionId)?.worktreeId !== worktreeId
-    ) {
-      return;
-    }
-    setState({ activeWorktreeStatus: st });
-  } catch {
-    const current = getState();
-    if (
-      request === worktreeStatusRequest &&
-      current.activeSessionId === sessionId &&
-      findSession(current.projects, current.activeSessionId)?.worktreeId === worktreeId
-    ) {
-      setState({ activeWorktreeStatus: null });
-    }
-  }
 }
 
 // ---------------------------------------------------------------------------
