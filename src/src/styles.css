@@ -5423,6 +5423,20 @@ textarea:focus {
   background: transparent;
 }
 
+/* On wide/fullscreen windows, keep every Settings section in the visual
+   center of the workspace rather than pinned beside the navigation rail. */
+@media (min-width: 1200px) {
+  .settings-page-header,
+  .settings-content,
+  .settings-page-footer {
+    padding-inline: max(48px, calc((100% - 690px) / 2));
+  }
+
+  .settings-content > * {
+    width: 100%;
+  }
+}
+
 @media (max-width: 900px) {
   .topbar-meta,
   .topbar-session .warn-chip {
