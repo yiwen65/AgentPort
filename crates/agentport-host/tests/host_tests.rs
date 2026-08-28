@@ -837,11 +837,31 @@ done"#,
         "successful get_state is internal startup validation, not a timeline event"
     );
 
+    // Abort remains available while a turn is active. Once Pi reports that
+    // the turn settled, AgentPort automatically stops the idle process.
+    conn.send(&ClientFrame::AbortStructuredTurn {
+        session_id: ctx.session_id.clone(),
+    });
+    let aborted = conn.collect_until(Duration::from_secs(5), |frames| {
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::Structured { event, .. }
+                    if event.get("command").and_then(|value| value.as_str()) == Some("abort")
+            )
+        })
+    });
+    assert!(aborted.iter().any(|frame| matches!(
+        frame,
+        HostFrame::Structured { event, .. }
+            if event.get("command").and_then(|value| value.as_str()) == Some("abort")
+    )));
+
     conn.send(&ClientFrame::StructuredPrompt {
         session_id: ctx.session_id.clone(),
         text: "hello Pi".into(),
     });
-    let prompted = conn.collect_until(Duration::from_secs(5), |frames| {
+    let prompted = conn.collect_until(Duration::from_secs(8), |frames| {
         frames.iter().any(|frame| {
             matches!(
                 frame,
@@ -872,25 +892,26 @@ done"#,
         "Pi agent_settled was not projected as a semantic turn end: {prompted:?}"
     );
 
-    conn.send(&ClientFrame::AbortStructuredTurn {
-        session_id: ctx.session_id.clone(),
-    });
-    let aborted = conn.collect_until(Duration::from_secs(5), |frames| {
+    let terminal = conn.collect_until(Duration::from_secs(8), |frames| {
         frames.iter().any(|frame| {
             matches!(
                 frame,
-                HostFrame::Structured { event, .. }
-                    if event.get("command").and_then(|value| value.as_str()) == Some("abort")
+                HostFrame::Exit { reason, group_cleaned: true, .. } if reason == "turn_complete"
             )
         })
     });
-    assert!(aborted.iter().any(|frame| matches!(
-        frame,
-        HostFrame::Structured { event, .. }
-            if event.get("command").and_then(|value| value.as_str()) == Some("abort")
-    )));
+    assert!(
+        terminal.iter().any(|frame| matches!(
+            frame,
+            HostFrame::Exit { reason, group_cleaned: true, .. } if reason == "turn_complete"
+        )),
+        "settled Pi RPC turn did not stop its process group: {terminal:?}"
+    );
     assert!(String::from_utf8_lossy(&output_bytes(&prompted)).contains("prompt received"));
-    assert!(!ctx.log.exists(), "structured events must not be duplicated to output.log");
+    assert!(
+        !ctx.log.exists(),
+        "structured events must not be duplicated to output.log"
+    );
 }
 
 #[test]
@@ -913,7 +934,7 @@ fn pi_pty_hides_only_the_first_private_session_notice() {
 }
 
 #[test]
-fn pi_pty_session_jsonl_emits_only_new_semantic_turn_ends() {
+fn pi_pty_session_jsonl_emits_only_new_semantic_turn_ends_and_stops_idle_process() {
     let ctx = make_pi_pty_ctx("printf 'Pi TUI ready\\r\\n'; sleep 60");
     let session_dir = ctx.dir.join("pi");
     std::fs::create_dir_all(&session_dir).unwrap();
@@ -924,8 +945,9 @@ fn pi_pty_session_jsonl_emits_only_new_semantic_turn_ends() {
     )
     .unwrap();
 
-    let _guard = spawn_host(&ctx, &[]);
+    let mut guard = spawn_host(&ctx, &[]);
     wait_socket(&ctx);
+    let agent_pid = guard.agent_pid().unwrap();
     let mut conn = connect(&ctx, &ctx.session_id, TOKEN, 0);
     conn.expect_hello_ok();
     let old = conn.collect_until(Duration::from_millis(700), |_| false);
@@ -971,6 +993,36 @@ fn pi_pty_session_jsonl_emits_only_new_semantic_turn_ends() {
             ..
         } if evidence == "adapter:pi:TurnEnd"
     )));
+    let terminal = conn.collect_until(Duration::from_secs(8), |frames| {
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::Exit { reason, group_cleaned: true, .. } if reason == "turn_complete"
+            )
+        })
+    });
+    assert!(
+        terminal.iter().any(|frame| matches!(
+            frame,
+            HostFrame::Exit { reason, group_cleaned: true, .. } if reason == "turn_complete"
+        )),
+        "completed Pi PTY turn did not stop its process group: {terminal:?}"
+    );
+    assert_eq!(
+        guard
+            .wait_exit(Duration::from_secs(10))
+            .expect("host exits after Pi TurnEnd")
+            .code(),
+        Some(0)
+    );
+    assert_eq!(
+        kill(Pid::from_raw(-agent_pid), None::<Signal>),
+        Err(nix::errno::Errno::ESRCH)
+    );
+    let state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(ctx.dir.join("host-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["exit_reason"], serde_json::json!("turn_complete"));
 }
 
 #[test]

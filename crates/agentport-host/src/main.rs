@@ -1052,8 +1052,29 @@ fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
 
         match rx.recv_timeout(next_tick.saturating_duration_since(now)) {
             Ok(HostMsg::Obs(obs)) => {
+                // Pi is resumed from its native transcript for every new turn,
+                // so keeping its interactive CLI alive after a definitive
+                // TurnEnd only accumulates idle Host/Node processes. Persist
+                // and broadcast the completion first, then clean the complete
+                // process group. PTY silence is intentionally insufficient:
+                // it can occur during a long-running or input-blocked turn.
+                let pi_turn_complete = matches!(
+                    &obs,
+                    Observation::AdapterTurnEnd { adapter } if adapter == "pi"
+                );
                 if let Some(ev) = sm.observe(obs) {
                     emit_event(shared, &mut status_file, ev);
+                }
+                if pi_turn_complete {
+                    return stop_flow(
+                        shared,
+                        &mut sm,
+                        &mut status_file,
+                        None,
+                        &rx,
+                        "pi_turn_complete",
+                        &mut reaper,
+                    );
                 }
             }
             Ok(HostMsg::PtyEof) => {
@@ -1261,12 +1282,18 @@ fn stop_flow(
     let (code, signal) = reaper.reap_timeout(Duration::from_secs(5));
     shared.child_alive.store(false, Ordering::Relaxed);
     let group_cleaned = shared.pgid_verified && group_gone(shared) && tree_gone(shared);
-    if let Some(ev) = sm.observe(Observation::ProcessExited { code, signal }) {
-        emit_event(shared, status_file, ev);
+    // A semantic Pi TurnEnd is already the authoritative completed state.
+    // Do not replace it with the signal used to retire the now-idle CLI: that
+    // would misclassify a successful turn as a failed process exit.
+    if reason != "pi_turn_complete" {
+        if let Some(ev) = sm.observe(Observation::ProcessExited { code, signal }) {
+            emit_event(shared, status_file, ev);
+        }
     }
     let exit_reason = match reason {
         "client_stop" => "user_stop",
         "host_signal" => "host_signal",
+        "pi_turn_complete" => "turn_complete",
         _ => "fault",
     };
     broadcast(
