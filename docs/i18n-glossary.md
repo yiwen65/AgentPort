@@ -13,7 +13,7 @@
 | 恢复 Session / 继续 Agent 对话 | Resume | 恢复交互上下文或继续最近一次 Session | 不用 Restore |
 | 恢复备份、归档或 stash | Restore | 把保存的数据恢复到可用状态 | 不用 Resume |
 | 恢复时间线 | Recovery Timeline | 产品功能名，标题式大小写 | 不用 Resume Timeline |
-| 移除项目 | Remove project | 只移除 AgentPort 记录，不删除目录 | 不用 Delete project |
+| 移除项目 | Remove project | 保留项目主目录，但清理 AgentPort Session、托管 Worktree 与应用记录 | 不用 Delete project |
 | 删除 Worktree | Delete Worktree | 删除 Worktree 目录与记录的危险操作 | 不用 Remove Worktree |
 | 永久删除归档 | Permanently delete archive | 不可撤销地删除归档数据 | 不省略 Permanently |
 | Agent 正在处理 | Working | Agent 状态，表示正在思考或执行任务 | 不用 Running |

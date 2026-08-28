@@ -52,11 +52,11 @@ PRD 基线为 M1/8GiB 与 Ubuntu 22.04/4核/8GiB —— 本环境更强，数字
 | Worktree 创建（20k 文件） | P95 ≤8s | P95 1.65s（n=5） | ✅ |
 | 日志上限轮转 | ≤limit+5MiB | 写入 220MiB 后磁盘 21.1MiB（limit 200） | ✅ |
 | 恢复时间线生成（100 事件） | P95 ≤300ms | P95 3.5ms（n=30） | ✅ |
-| 搜索索引吞吐 | ≥20 MiB/s | 33.2 MiB/s（100 MiB，release） | ✅ |
+| 会话正文搜索 | 不持久化正文索引 | 按需流式扫描 Agent 原生日志；旧 FTS 正文启动时清空 | ✅ |
 | 全局搜索首批结果 | P95 ≤200ms | P95 1.0ms（现实密度，n=30）；最坏密度（每行命中）268ms | ✅/记录 |
-| 搜索索引磁盘占比 | ≤原文本 35% | 实测 ≈259%（trigram 存文本+postings） | ⚠️ 未达标（见 known-limitations #5） |
+| AgentPort 正文副本磁盘占比 | 0% | 新 Host 不创建 `output.log`；正文索引为空 | ✅ |
 | Secret 读取注入 | P95 ≤300ms，泄漏 0 | P95 1.3ms；泄漏扫描 0（play5/wave2） | ✅ |
-| 诊断 ZIP（200 MiB 输入） | ≤15s | 0.09s（zip 内 terminal.log 按设计截 2MiB） | ✅ |
+| 诊断 ZIP | 不复制会话正文 | ZIP 仅包含状态事件与诊断元数据 | ✅ |
 | 可访问性键盘路径 | 12 条 100% | 未人工验证（实现具备：焦点圈定/aria-live/screenReaderMode/快捷键全覆盖） | ⚠️ 未验证 |
 | 文本对比度 | WCAG AA | 深浅主题仍需自动扫描与人工复核 | ⚠️ 未验证 |
 | 跨平台发布矩阵 | 正式 100% | 见 §五 | 部分 |
@@ -64,10 +64,10 @@ PRD 基线为 M1/8GiB 与 Ubuntu 22.04/4核/8GiB —— 本环境更强，数字
 ## 四、验收剧本执行记录
 
 - **剧本 1（跨平台安装/IME/可访问性）**：macOS .app 启动/窗口渲染/db 初始化通过；Ubuntu 24.04 deb 干净容器安装→PTY E2E→xvfb 启动→卸载通过。IME、VoiceOver/Orca 键盘路径、Fedora/Arch 干净 VM 人工回归：未验证（实现具备：焦点管理/aria-live/screenReaderMode/深浅主题/减少动效；可复现验证脚本见 scripts/linux/verify-in-container.sh）。
-- **剧本 2（持久与恢复）**：PASS。两项目三 session 持续输出 120s，kill -9 全部 GUI（真实 agentport-cli 进程），3 个 Host 全部存活；重连+可输入 worst 26ms（<800ms）；三 session tick 序号无缺口；离开期间摘要非空。
-- **剧本 3（恢复矩阵+搜索）**：PASS。claude exact（同一原生 ID）；codex latest（`resume --last`）；kimi latest（`--continue`）；后两者 UI 明确显示恢复精度。已关闭 session 关键词搜索 50ms 命中。
+- **剧本 2（持久与恢复）**：历史发布基线 PASS。当前实现把磁盘日志重放替换为 Host 内 4 MiB 有界尾部；自动化回归验证 Host 存活、重连可输入且新运行不创建 `output.log`，完整 120s 人工重跑待下次发布验收。
+- **剧本 3（恢复矩阵+搜索）**：恢复矩阵沿用历史基线；当前实现的关闭会话搜索改为按需扫描已验证的 Agent 原生日志，并由 Core/Tauri 回归覆盖。旧 50ms FTS 数字不再适用。
 - **剧本 4（Worktree）**：PASS。Base Ref=HEAD~1 生效；主 checkout 不变；完成后 dirty 显示"结果尚未提交"；dirty 删除被阻止；清理后删除成功且 `git worktree list` 消失。
-- **剧本 5（Secret/清理/轮转）**：PASS（macOS Keychain）。Agent 可读变量；前端/SQLite/进程参数/日志/索引/诊断 zip 字节扫描 0 泄漏；输出命中处为 `[redacted]`；agent 树 5s 内消失；日志轮转见 §三。Secret Service 锁定场景（Linux）未自动化（见 known-limitations）。
+- **剧本 5（Secret/清理/存储）**：历史 Keychain 与进程组回归保持 PASS。当前 AgentPort 实时尾部继续脱敏，诊断 ZIP 不再包含正文，旧日志只允许按精确清单二次确认删除；Agent 原生日志属于 Provider 安全边界，需在发布验收中单独审计。Secret Service 锁定场景（Linux）未自动化（见 known-limitations）。
 
 ## 五、跨平台发布矩阵
 

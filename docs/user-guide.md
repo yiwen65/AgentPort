@@ -41,7 +41,7 @@ AgentPort 是 macOS/Linux 上的本地 AI CLI 工作台：用一个界面同时�
 
 ### 添加项目
 
-"添加项目"选择一个本地代码目录（会被规范化为绝对路径并检查可读可进入）。同一路径重复添加只会聚焦到已有项目。移除项目不会删除磁盘上的目录。
+"添加项目"选择一个本地代码目录（会被规范化为绝对路径并检查可读可进入）。同一路径重复添加只会聚焦到已有项目。移除项目不会删除磁盘上的项目目录本身，但会在确认后自动停止并永久删除该项目的 Session、AgentPort 托管 Worktree 目录及未完成操作记录。
 
 ### 新建 Session
 
@@ -97,7 +97,7 @@ AgentPort 绝不会默认添加 `--yolo` 类的跳过审批参数。
   - Linux：`~/.local/share/agentport/worktrees/<项目>/<任务名>`
 - 分支名默认为 `agent/<任务名>`；默认从当前 HEAD 创建，也可以指定 Base Ref，或采用已有分支/已有 Worktree（已存在时只允许"使用现有"，禁止覆盖）。
 - Session 标题旁持续显示 clean/dirty 徽标；任务完成但还有未提交修改时会提醒"结果尚未提交"。
-- **删除保护**：删除前检查未提交修改和未跟踪文件，dirty 状态默认阻止删除，且不提供强制删除按钮——请先在终端里提交或清理（Worktree 菜单提供"在系统终端中打开"和"复制 git status"）。
+- **删除清理**：删除前会展示未提交、已暂存、未跟踪、被忽略文件及关联 Session；确认后这些内容会随托管 Worktree 目录自动清理，不会因 dirty、Git 锁或 Session 引用而阻止删除。需要保留的改动请在确认前提交或移出该目录。
 - AgentPort 不做自动合并（无 auto-merge/rebase/PR 创建）；合并请在你的主 Checkout 中按正常 Git 流程完成。
 - 所有 Git 调用使用系统 `git` 命令，保留你已有的凭据与配置。
 
@@ -123,35 +123,48 @@ AgentPort 绝不会默认添加 `--yolo` 类的跳过审批参数。
 
 ## 恢复时间线
 
-重新打开 GUI 时，"恢复时间线"用摘要展示你离开期间发生的事件：谁完成了、谁在等待、谁异常退出。点击事件直达对应 Session 并定位到事件附近的输出；可一键"全部已读"。
+重新打开 GUI 时，"恢复时间线"用摘要展示你离开期间发生的事件：谁完成了、谁在等待、谁异常退出。运行中的 Session 可定位到 Host 内存尾部；已结束的 Session 会打开对应 Agent 原生日志的规范化历史。可一键"全部已读"。
 
 ## 日志与导出
 
-- 每个 Session 的原始终端输出按字节流追加落盘（先落盘再展示），默认上限 **200 MiB**（可在 20–2048 MiB 间调整）。到达上限后轮转，只保留最近的窗口，界面会提示"历史日志已轮转"。
+- 运行中终端只保留在 `agentport-host` 的 **4 MiB 有界内存尾部**，用于实时展示和短暂重连；AgentPort 不再把 PTY 输出另存为 `output.log`。
+- Session 结束后，历史按需从 Claude、Codex、Pi、Kimi 或 Qoder 自己的原生日志读取并规范化：首次只读最新一页，向上滚动到顶部时自动加载更早记录并保持当前阅读位置。Generic Shell 没有原生会话日志，因此结束后不提供历史。
+- Pi 的 PTY 会话由 AgentPort 以 `--tui-mode fullscreen` 启动；工具展开等全屏重绘停留在 alternate screen，不会把同一画面反复追加成终端历史。完整历史仍以 Pi 原生日志为准。
 - 导出格式：
-  - `.log` 原始终端日志（全部或最近 10,000 行；可保留或去除 ANSI 控制序列）；
-  - `.md` Markdown（全部或最近 20/50/100 个可见输出块，含 Session、Agent、项目、分支和时间头）；
-  - `.zip` 诊断包（标准或脱敏诊断，默认不含环境变量值和凭据）。
-- 导出是原子操作：任何一步失败都会删除本次临时文件，**不破坏源日志和元数据**。
+  - `.md` / `.json`：用户显式选择目标后，直接流式读取 Agent 原生日志并导出完整规范化对话；
+  - `.zip`：诊断包只包含 AgentPort 元数据、状态事件和诊断信息，不包含会话正文。
+- 导出使用排他创建；失败会删除未完成产物，**不修改 Agent 原生日志和 AgentPort 元数据**。
+- 升级前遗留的 `output.log` 不会自动删除；可在“设置 → 历史与存储”查看原生日志覆盖状态、选择并二次确认清理。
+
+## 备份与恢复
+
+在“设置 → 备份与恢复”可创建并自动校验 v2 备份，或校验已有 v1/v2 ZIP。
+
+- v2 备份包含数据库、AgentPort Session 元数据，以及能够按原生 Session ID（必要时同时校验工作目录）唯一定位的 Claude、Codex、Pi、Kimi 或 Qoder Session 文件。旧 `output.log`、Worktree、导出物和诊断物不入包。
+- 被捕获的原生 Session 包含**完整对话和工具输出**，可能含提示词、代码、路径或其他敏感信息。备份 ZIP **不加密**，请按敏感明文文件保管。
+- macOS Keychain / Linux Secret Service 的系统凭据和 Secret 原值不入包；恢复后如需这些凭据，需由目标系统安全存储另行提供。
+- 创建和校验结果会显示原生覆盖：v2 的“完整”表示 `missing=0` 且 `ambiguous=0`；若缺失或来源歧义则显示“不完整”及计数。Generic Shell 等没有原生会话来源的项目记为“不支持”。v1 显示为“旧版”，不声称含原生正文。
+- 恢复先校验整个 ZIP，再写入新的 AgentPort 数据目录，并把包内原生 Session 安装到**当前配置的 Provider home**。目标文件缺失或内容完全相同才允许安装；同路径不同内容会报告冲突，绝不覆盖。
+- 启用新数据目录仍需退出 AgentPort 后手工替换目录；恢复过程不会删除当前 AgentPort 数据目录。
 
 ## 搜索
 
-- 输入至少 2 个字符开始搜索；范围覆盖项目、Session、分支等元数据和终端文本全文（索引的是去除 ANSI 后的文本）。
-- 结果按 Session 分组展示；命中内容的原始输出如果已被轮转，会保留事件元数据并明示"对应输出已轮转"。
-- 搜索索引是派生数据，可在设置页删除并重建；重建不修改源日志，重建期间可取消、不阻塞 Session 输入。索引损坏时会自动回退为当前 Session 文本搜索并在后台重建。
+- 输入至少 2 个字符开始搜索；项目、Session、分支等元数据由 SQLite 查询，会话正文则在查询时流式扫描各 Agent 原生日志。
+- AgentPort 不保存正文索引；升级时会清空旧版 FTS 正文与分块缓存。搜索结果携带原生事件 ID 和 Provider，打开后进入规范化历史。
+- 原生来源不存在或无法唯一验证时，结果明确标为不可用/歧义，不会猜测文件或回退到旧 `output.log`。
 
 ## 敏感环境变量（Secret）
 
 - API Key 等敏感值只保存在 **macOS Keychain 或 Linux Secret Service** 中；AgentPort 的 SQLite 只保存引用（变量名、后端、账户键），绝不保存原值。
-- 原值只在启动瞬间经环境变量注入目标 Agent 子进程；不出现在进程参数、日志、搜索索引、前端状态和诊断包中。
+- 原值只在启动瞬间经环境变量注入目标 Agent 子进程；不进入 AgentPort 的进程参数、SQLite、前端状态、正文索引或诊断包。Agent 自己是否把内容写入原生日志，遵循该 Agent 的日志与脱敏策略。
 - 系统安全存储不可用（如未运行 Secret Service 的 Linux 桌面）时，保存 Secret 的功能被禁用，**不会回退到明文文件**；你仍可在启动 AgentPort 前通过 Shell 环境注入变量。
-- Agent 输出中一旦出现与 Secret 相同的内容，写盘前会被替换为 `[redacted]` 并在诊断中心计数（不展示原值）。
+- Agent 输出中一旦出现与 Secret 相同的内容，AgentPort 的实时 PTY 展示会替换为 `[redacted]` 并在诊断中心计数（不展示原值）；AgentPort 不改写 Agent 原生日志。
 
 ## 诊断中心
 
 诊断中心提供：
 
-- **Host 列表**：每个 Session 的 Host 进程、Socket、日志大小与存活状态；
+- **Host 列表**：每个 Session 的 Host 进程、Socket、当前运行累计输出字节与存活状态；
 - **CLI 能力快照**：各 Agent 探测到的版本与能力；
 - **复制诊断摘要**：一键复制文本摘要，方便贴到 Issue；
 - **导出诊断 ZIP**：默认脱敏，不含环境变量值与凭据。
@@ -160,7 +173,6 @@ AgentPort 绝不会默认添加 `--yolo` 类的跳过审批参数。
 
 | 设置 | 默认值 | 范围/取值 |
 |---|---|---|
-| 每 Session 日志上限 | 200 MiB | 20–2048 MiB |
 | 通知 | 开启 | 仍受系统权限控制 |
 | 界面语言 | 简体中文 | zh-CN / en-US；切换后立即生效并独立自动保存 |
 | 主题 | 跟随系统 | system / dark / light；点击后立即生效并保存 |
@@ -168,7 +180,7 @@ AgentPort 绝不会默认添加 `--yolo` 类的跳过审批参数。
 | 终端字号 | 13 px | 10–28 px |
 | 减少动效 | 跟随系统 | system / on / off |
 | 屏幕阅读器模式 | 关闭 | — |
-| 搜索索引 | 开启 | 可删除并重建 |
+| 历史与存储 | 按需读取 | 原生日志无正文缓存；遗留副本只可显式确认清理 |
 | 遥测 | 关闭 | **恒为关闭，无开启选项** |
 
 ## 键盘快捷键
@@ -189,7 +201,7 @@ AgentPort 绝不会默认添加 `--yolo` 类的跳过审批参数。
 
 | 内容 | macOS | Linux |
 |---|---|---|
-| 应用数据（SQLite、日志、搜索索引、导出、诊断） | `~/Library/Application Support/AgentPort` | `~/.local/share/agentport` |
+| 应用数据（SQLite 元数据、状态、导出、诊断） | `~/Library/Application Support/AgentPort` | `~/.local/share/agentport` |
 | Worktree | `~/Library/Application Support/AgentPort/worktrees` | `~/.local/share/agentport/worktrees` |
 | Socket | 系统临时目录下 `agentport-<uid>/`（权限 0700） | 同左 |
 
@@ -218,4 +230,4 @@ agentport-cli [--json] <command>
   reconcile                              重新核对运行中 Session 与存活 Host
 ```
 
-另有 `export`（导出 .log/.md/.zip）、`search`（搜索与 `--reindex` 重建索引）、`timeline`、`diag`（诊断中心）、`secret`（敏感变量，`secret add` 的值只从 stdin 读取）、`settings`、`perf` 等子命令组，与 GUI 共享同一份本地数据。
+另有 `export`（从 Agent 原生日志导出 `.md`/`.json`，或导出无正文的诊断 `.zip`）、`search`（按需扫描原生日志；`--reindex` 仅清空旧版正文缓存）、`timeline`、`diag`（诊断中心）、`secret`（敏感变量，`secret add` 的值只从 stdin 读取）、`settings`、`perf` 等子命令组，与 GUI 共享同一份本地数据。

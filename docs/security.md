@@ -4,13 +4,13 @@
 
 ## 本地优先，无遥测
 
-- 所有数据（项目、Session 元数据、原始终端日志、搜索索引、Worktree）只保存在本机应用数据目录：macOS 为 `~/Library/Application Support/AgentPort`，Linux 为 `~/.local/share/agentport`。
+- AgentPort 自己的数据（项目、Session 元数据、状态事件、Worktree、备份与用户显式导出）只保存在本机。常规历史与搜索按需只读各 Agent 的原生日志，不建立正文索引或 PTY 副本；只有用户明确创建 v2 备份时，能够唯一绑定到 Session 的原生正文才会复制进备份 ZIP。
 - 无账号体系、无云端同步、无遥测上报。遥测开关在数据模型中是硬约束：默认值和唯一允许值均为 `false`，不存在开启入口。
 - Agent 的模型账号、API Key 与费用仍由各 CLI 自己管理，AgentPort 不代购、不代理、不转发。
 
 ## Session 隔离与输入认证
 
-每个 Session 由独立的 Host 进程持有：独立 PTY、独立 Unix Domain Socket、独立日志文件。Session 之间的输入、输出、工作目录和环境严格隔离。
+每个 Session 由独立的 Host 进程持有：独立 PTY、独立 Unix Domain Socket、独立 4 MiB 实时输出内存尾部。Session 之间的输入、输出、工作目录和环境严格隔离。
 
 - GUI（以及 `agentport-cli`）只是可重连的客户端，不拥有 Agent 进程的生命周期。
 - 每次启动生成一个随机 Host Token。客户端连接 Socket 时的握手必须同时出示 **Session ID + Token**，缺一即被拒绝并断开；此后每一条输入帧都重新校验 Session ID。Host PID 只用于诊断，绝不作为身份依据。
@@ -39,10 +39,10 @@
 敏感环境变量（如 API Key）的存储与使用遵守以下硬边界：
 
 - **只存系统安全存储**：macOS Keychain 或 Linux Secret Service（service 名称为 `agentport`）。SQLite 中只保存引用（变量名、后端、账户键），不保存原值。
-- **原值的唯一流动路径**：系统安全存储 → 启动瞬间经 Credential Broker 读入受限内存 → 作为环境变量注入目标 Agent 子进程 → 立即清除临时缓冲。原值不经过前端、不进入 SQLite、不出现在进程参数、日志、搜索索引、导出和诊断包中。
+- **AgentPort 内的流动路径**：系统安全存储 → 启动瞬间经 Credential Broker 读入受限内存 → 作为环境变量注入目标 Agent 子进程 → 立即清除临时缓冲。原值不进入 AgentPort 前端状态、SQLite、进程参数、正文索引或诊断包。目标 Agent 自己的原生日志属于其安全边界。
 - **无明文回退**：后端不可用（如 Linux 未运行 Secret Service）时，保存 Secret 的功能直接禁用，绝不退化为明文配置文件；此时仍可使用 Shell 环境中已有的变量。
-- **输出脱敏**：Agent 输出一旦命中已登记 Secret 的字节序列，写盘前即替换为固定掩码 `[redacted]`（掩码长度与原值无关），并在诊断中心记录命中类型与计数——计数不含原值。短于 4 字节的值无法可靠脱敏，保存时会被直接拒绝。
-- 搜索索引只收录经脱敏、去 ANSI 的终端文本；Secret 值与环境变量值不进入索引。
+- **实时输出脱敏**：PTY 输出一旦命中已登记 Secret 的字节序列，进入 AgentPort 实时内存尾部和前端前即替换为固定掩码 `[redacted]`，并只记录命中计数。AgentPort 不改写 Agent 原生日志。
+- 会话正文搜索按需读取 Agent 原生日志，不建立正文索引；原生日志是否含敏感信息由对应 Agent 的策略决定。
 
 ## 不修改你的全局 CLI 配置
 
@@ -58,13 +58,21 @@ Agent 状态 Hook 的集成遵循"按调用注入、可撤销、绝不静默改�
 
 - 所有 Git 操作（`worktree add/list/status/remove` 等）使用系统 `git` 命令，以**参数数组**方式调用，绝不拼接 Shell 字符串，杜绝参数注入。
 - 使用系统 Git 也意味着沿用你已有的凭据、过滤器与全局配置，AgentPort 不另建凭据通道。
-- Worktree 目录放在应用数据目录下，不污染主 Checkout；删除前强制检查未提交/未跟踪文件，dirty 默认阻止删除且不提供强制删除按钮；不做自动合并。
+- Worktree 目录放在应用数据目录下，不污染主 Checkout；删除前展示未提交、未跟踪、被忽略文件与 Session 引用，确认后只对 AgentPort 托管目录执行强制清理，不因 dirty、Git 锁或引用关系阻止删除；不做自动合并。
 
 ## 日志、导出与诊断包
 
-- 原始输出先落盘再展示；日志文件以受限权限创建；到达上限（默认 200 MiB）后轮转，只保留最近窗口。
-- 导出（`.log` / `.md` / `.zip`）经脱敏器处理并在临时目录构建后原子落位：任一步失败都会删除临时产物，源日志与元数据不受破坏；若脱敏本身失败，导出中止。
-- 诊断 ZIP **默认脱敏**：不含环境变量值与模型凭据，每个 Session 只打包日志尾部片段；随包的 `manifest.json` 声明导出版本、时间与脱敏规则，不含 Token 与 API Key。
+- PTY 输出只进入 4 MiB 有界内存尾部，用于实时展示和短暂重连；Host 不创建 `output.log`。
+- 用户显式导出 `.md` / `.json` 时直接流式读取 Agent 原生日志并排他创建目标文件；失败会删除未完成产物。AgentPort 不对原生日志做原地修改。
+- 诊断 ZIP 不包含会话正文或终端尾部，只包含状态事件、AgentPort 诊断信息和无 Secret 的清单；`manifest.json` 不含 Host Token 与 API Key。
+
+## 备份的数据与安全边界
+
+- v2 备份包含 SQLite 快照、AgentPort 管理的 Session 元数据，以及能够通过原生 Session ID（必要时同时校验 CWD）唯一定位的 Provider 原生文件。它不打包旧 `output.log`、Worktree、导出物、诊断物或整个 Provider home。
+- 原生文件可能包含**完整对话、工具调用与工具输出**，也可能包含提示词、源码、路径或 Provider 自己写入的其他敏感正文。备份 ZIP **不加密**，应按敏感明文文件存储和传输。
+- AgentPort 不会为备份主动读取 macOS Keychain / Linux Secret Service 的凭据原值；SQLite 中的 Secret 引用元数据会随数据库快照保留。若 Secret 已被 Agent 或工具输出到原生对话中，它仍可能随原生 Session 正文进入备份。
+- 每个 v2 Manifest 记录 `nativeCoverage`。`missing` 或 `ambiguous` 非零表示正文覆盖不完整；`unsupported`（例如 Generic Shell）表示该 Provider 没有可归档的原生 Session。v1 旧版备份没有原生正文合同。
+- 恢复会将原生 Session 安装到**恢复时当前配置的 Provider home**。目标文件不存在或字节完全相同时才允许继续；同路径不同内容会使恢复以冲突失败，绝不覆盖已有 Provider 文件。
 
 ## 已知限制
 
