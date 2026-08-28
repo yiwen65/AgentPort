@@ -3,12 +3,28 @@
 // Field names match the serialized JSON exactly (camelCase where the
 // backend applies #[serde(rename_all = "camelCase")] or explicit json! keys).
 
-export type AgentTypeStr = "claude" | "codex" | "kimi" | "qoder" | "pi" | "shell";
+export type AgentTypeStr =
+  | "claude"
+  | "codex"
+  | "kimi"
+  | "qoder"
+  | "pi"
+  | "shell";
 export type AgentTransportStr = "pty" | "json_rpc";
-export type AgentStateStr = "working" | "needs_input" | "idle" | "exited" | "unknown";
+export type AgentStateStr =
+  | "working"
+  | "needs_input"
+  | "idle"
+  | "exited"
+  | "unknown";
 export type StateSourceStr = "hook" | "pty" | "process" | "adapter";
 export type ConfidenceStr = "low" | "medium" | "high";
-export type LifecycleStr = "creating" | "running" | "interrupted" | "exited" | "stopped";
+export type LifecycleStr =
+  | "creating"
+  | "running"
+  | "interrupted"
+  | "exited"
+  | "stopped";
 export type PermissionStr = "native" | "auto" | "bypass";
 export type ResumePrecisionStr = "exact" | "latest" | "unavailable";
 export type WorktreeHealthStr = "clean" | "dirty" | "missing" | "locked";
@@ -61,6 +77,8 @@ export interface SessionView {
   logPath: string;
   unread: boolean;
   status: StatusEventView | null;
+  /** RFC3339 pin timestamp; null means unpinned. Latest pin sorts first. */
+  pinnedAt: string | null;
   createdAt: string;
 }
 
@@ -89,8 +107,15 @@ export interface ProjectView {
   name: string;
   rootPath: string;
   gitRootPath: string | null;
+  pinned: boolean;
   sessions: SessionView[];
   worktrees: WorktreeView[];
+}
+
+/** Complete canonical Project layout; pinned entries must come first. */
+export interface ProjectLayoutEntry {
+  id: string;
+  pinned: boolean;
 }
 
 export interface Settings {
@@ -107,6 +132,8 @@ export interface Settings {
   searchIndexEnabled: boolean;
   /** Ordered quick-launch icons; new adapters append after saved entries. */
   agentOrder: string[];
+  /** Adapters removed from pickers; detection results are kept for restore. */
+  agentHidden: string[];
   /** Hard constraint: always false (PRD ch.5). */
   telemetryEnabled: boolean;
 }
@@ -229,7 +256,10 @@ export interface CreateSessionResult {
   command: string[];
 }
 
-export type RuntimeMessageParams = Record<string, string | number | boolean | null>;
+export type RuntimeMessageParams = Record<
+  string,
+  string | number | boolean | null
+>;
 
 export interface RuntimeMessageEnvelope {
   /** Stable application-owned message identifier. Older Hosts may omit it. */
@@ -262,7 +292,12 @@ export type ChannelMsg =
   | { t: "transient_output"; data: string }
   | { t: "process_status"; suspended: boolean; signal: number | null }
   | { t: "structured"; event: Record<string, unknown> }
-  | { t: "replay_done"; offset?: number; cursor?: LogCursorView; partialContext?: boolean }
+  | {
+      t: "replay_done";
+      offset?: number;
+      cursor?: LogCursorView;
+      partialContext?: boolean;
+    }
   | { t: "resync_required"; earliest: LogCursorView; reason: string }
   | { t: "state"; event: StatusEventView }
   | { t: "agent_session"; id: string }
@@ -276,7 +311,11 @@ export type ChannelMsg =
       runId: string;
       runOrdinal: number;
     }
-  | ({ t: "error"; message: string; persistenceDegraded?: boolean } & RuntimeMessageEnvelope)
+  | ({
+      t: "error";
+      message: string;
+      persistenceDegraded?: boolean;
+    } & RuntimeMessageEnvelope)
   | ({ t: "detached" } & RuntimeMessageEnvelope);
 
 export interface WorktreeStatus {
@@ -307,15 +346,30 @@ export interface WorktreeDeletePreflight {
   ignoredSample: string[];
   sessionCount: number;
   activeSessionCount: number;
+  repositoryMissing: boolean;
   canRemove: boolean;
   blockers: string[];
+}
+
+export interface ConfirmedArchivedSession {
+  id: string;
+  archiveGeneration: number;
+}
+
+export interface DestructiveRemovalOutcome {
+  stopWarnings: number;
+  cleanupWarnings: number;
 }
 
 export interface ProjectRemovalPreflight {
   projectId: string;
   sessionCount: number;
+  activeSessionCount: number;
+  archivedSessionCount: number;
+  archivedSessions: ConfirmedArchivedSession[];
   worktreeCount: number;
   recoverableOperationCount: number;
+  pendingCommitOperationCount: number;
   canRemove: boolean;
 }
 
@@ -325,6 +379,8 @@ export interface SearchHit {
   projectId: string | null;
   title: string;
   snippet: string;
+  eventId?: string;
+  provider?: AgentTypeStr;
   logOffset: number | null;
   rotatedAway: boolean;
 }
@@ -729,7 +785,7 @@ export interface GitStateInvalidated {
   observedAt: string;
 }
 
-/** read_log_tail response: last bytes of a session's raw output log. */
+/** Bounded binary log slice returned by recovery diagnostics. */
 export interface LogTail {
   /** base64 of the tail bytes */
   data: string;
@@ -737,6 +793,58 @@ export interface LogTail {
   offset: number;
   /** total log size in bytes */
   total: number;
+}
+
+export type HistoryRole = "user" | "assistant" | "tool" | "system";
+
+export interface HistoryEvent {
+  id: string;
+  sourceId: string;
+  provider: AgentTypeStr;
+  kind: string;
+  role: HistoryRole | null;
+  timestamp: string | null;
+  text: string;
+}
+
+export interface HistorySourceInfo {
+  id: string;
+  provider: AgentTypeStr;
+  path: string;
+  bytes: number;
+}
+
+export type HistorySourceStatus =
+  | { status: "available"; sources: HistorySourceInfo[] }
+  | { status: "unavailable"; reason: string }
+  | { status: "ambiguous"; reason: string; candidates: number };
+
+export interface HistoryPage {
+  sourceStatus: HistorySourceStatus;
+  events: HistoryEvent[];
+  nextCursor: string | null;
+  skippedLines: number;
+}
+
+export interface LegacyLogEntry {
+  id: string;
+  sessionId: string;
+  runId: string | null;
+  path: string;
+  bytes: number;
+  active: boolean;
+  nativeStatus: HistorySourceStatus;
+}
+
+export interface LegacyLogInventory {
+  entries: LegacyLogEntry[];
+  totalBytes: number;
+  deletableBytes: number;
+}
+
+export interface LegacyDeleteReport {
+  deleted: string[];
+  bytesReclaimed: number;
 }
 
 /** Bounded, generation-validated bytes surrounding a recovery cursor. */

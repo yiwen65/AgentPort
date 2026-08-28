@@ -26,6 +26,7 @@ const settings: Settings = {
   screenReaderMode: false,
   searchIndexEnabled: true,
   agentOrder: ["claude", "codex", "shell"],
+  agentHidden: [],
   telemetryEnabled: false,
 };
 

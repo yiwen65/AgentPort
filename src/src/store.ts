@@ -29,6 +29,8 @@ export interface SessionRuntime {
   attached: boolean;
   attaching: boolean;
   replayDone: boolean;
+  /** Restarted Pi is still constructing its first stable terminal frame. */
+  startupPending: boolean;
   detached: boolean;
   status: StatusEventView | null;
   logBytes: number;
@@ -53,6 +55,7 @@ export function emptyRuntime(): SessionRuntime {
     attached: false,
     attaching: false,
     replayDone: false,
+    startupPending: false,
     detached: false,
     status: null,
     logBytes: 0,
@@ -192,7 +195,7 @@ export type DialogState =
   | { kind: "palette" }
   | { kind: "search" }
   | { kind: "addProject" }
-  | { kind: "export"; sessionId: string; exportKind: "md" | "log" }
+  | { kind: "export"; sessionId: string; exportKind: "md" | "json" }
   | null;
 
 export type EffectiveTheme = "dark" | "light";
@@ -238,8 +241,10 @@ export interface AppState {
   sidebarAnim: "out" | "inPrep" | "in" | null;
   /** Ephemeral width of the project/session split view in CSS pixels. */
   sidebarWidth: number;
-  /** Session IDs mapped to their pin timestamp for this app run. */
-  pinnedSessionAt: Record<string, number>;
+  /** Prevent overlapping persistent Project layout mutations. */
+  projectLayoutSaving: boolean;
+  /** Monotonic revision of backend/event-owned Project snapshots. */
+  projectsAuthorityRevision: number;
   /** Terminal search bar visibility for the active session. */
   termSearchOpen: boolean;
   /** In-app document viewer target opened from a terminal link. */
@@ -252,6 +257,11 @@ export interface AppState {
   docPanelWidth: number;
   /** Whether the document viewer is expanded over the whole terminal page. */
   docPanelExpanded: boolean;
+  /** Transient font zoom of the terminal area (xterm fontSize multiplier and
+   * the pi timeline's `--term-font-scale`), adjusted via Ctrl/⌘ +/-. */
+  termFontScale: number;
+  /** Transient font zoom of the document viewer body (`--doc-font-scale`). */
+  docFontScale: number;
   /** Project whose worktree management view replaces the sidebar list. */
   sidebarWorktreeProjectId: string | null;
   /** Worktree to emphasize after navigating here from branch management. */
@@ -267,6 +277,57 @@ export interface OpenDocumentTarget {
   path: string;
   /** One-based line to reveal in the raw view, from `path:line` links. */
   line: number | null;
+}
+
+export const COLLAPSED_PROJECTS_STORAGE_KEY =
+  "agentport-collapsed-project-ids";
+
+/** Restore collapsed Projects while keeping unknown/new Projects expanded. */
+export function readPersistedProjectExpansion(): Record<string, boolean> {
+  try {
+    const value = window.localStorage.getItem(COLLAPSED_PROJECTS_STORAGE_KEY);
+    if (!value) return {};
+    const ids: unknown = JSON.parse(value);
+    if (!Array.isArray(ids)) return {};
+    return Object.fromEntries(
+      ids.filter((id): id is string => typeof id === "string").map((id) => [id, false]),
+    );
+  } catch {
+    return {};
+  }
+}
+
+const LEGACY_TERMINAL_SNAPSHOT_STORAGE_PREFIX =
+  "agentport:terminal-snapshot:v1:";
+
+function reclaimObsoleteTerminalSnapshots() {
+  for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
+    const key = window.localStorage.key(index);
+    if (key?.startsWith(LEGACY_TERMINAL_SNAPSHOT_STORAGE_PREFIX)) {
+      window.localStorage.removeItem(key);
+    }
+  }
+}
+
+export function persistProjectExpansion(expandedProjects: Record<string, boolean>) {
+  const collapsedIds = Object.entries(expandedProjects)
+    .filter(([, expanded]) => expanded === false)
+    .map(([id]) => id)
+    .sort();
+  const encoded = JSON.stringify(collapsedIds);
+  try {
+    window.localStorage.setItem(COLLAPSED_PROJECTS_STORAGE_KEY, encoded);
+  } catch {
+    try {
+      // Terminal snapshots share WKWebView's small LocalStorage quota. Old v1
+      // snapshots are only a crash-time optimization and can safely fall back
+      // to Host replay; reclaim them before retrying compact UI state.
+      reclaimObsoleteTerminalSnapshots();
+      window.localStorage.setItem(COLLAPSED_PROJECTS_STORAGE_KEY, encoded);
+    } catch {
+      // Expansion remains usable when WebView storage is unavailable.
+    }
+  }
 }
 
 const initialState: AppState = {
@@ -294,7 +355,7 @@ const initialState: AppState = {
   contextMenu: null,
   toasts: [],
   showOnboarding: false,
-  expandedProjects: {},
+  expandedProjects: readPersistedProjectExpansion(),
   repositoryStatuses: {},
   announcement: "",
   themeEffective: "dark",
@@ -302,13 +363,16 @@ const initialState: AppState = {
   sidebarCollapsed: false,
   sidebarAnim: null,
   sidebarWidth: 296,
-  pinnedSessionAt: {},
+  projectLayoutSaving: false,
+  projectsAuthorityRevision: 0,
   termSearchOpen: false,
   openDocument: null,
   explorerOpen: false,
   explorerRoot: null,
   docPanelWidth: 480,
   docPanelExpanded: false,
+  termFontScale: 1,
+  docFontScale: 1,
   sidebarWorktreeProjectId: null,
   highlightedWorktreeId: null,
   collapsedWorktrees: {},
@@ -350,6 +414,7 @@ export function invalidateProjectsSnapshotRequests() {
 export function isCurrentProjectsSnapshotRequest(request: number): boolean {
   return request === projectsSnapshotRequest;
 }
+
 
 /** Repository probes are independent per project and may race backend events. */
 export function beginRepositoryStatusRequest(projectId: string): number {
@@ -508,6 +573,7 @@ export function getRuntime(sessionId: string): SessionRuntime {
 export function patchSession(sessionId: string, patch: Partial<SessionView>) {
   invalidateProjectsSnapshotRequests();
   update((s) => ({
+    projectsAuthorityRevision: s.projectsAuthorityRevision + 1,
     projects: s.projects.map((p) => ({
       ...p,
       sessions: p.sessions.map((ses) => {
@@ -544,7 +610,6 @@ function sessionScopedState(s: AppState, alive: Set<string>): Partial<AppState> 
   const activeSessionId = s.activeSessionId && alive.has(s.activeSessionId) ? s.activeSessionId : null;
   return {
     runtime: retainSessionEntries(s.runtime, alive),
-    pinnedSessionAt: retainSessionEntries(s.pinnedSessionAt, alive),
     attachedIds: retainAttachedIds(s.attachedIds, alive),
     activeSessionId,
     termSearchOpen: activeSessionId ? s.termSearchOpen : false,
@@ -573,6 +638,7 @@ export function applyProjectsSnapshot(projects: ProjectView[]) {
     }));
     const aliveSessionIds = sessionIds(nextProjects);
     return {
+      projectsAuthorityRevision: s.projectsAuthorityRevision + 1,
       projects: nextProjects,
       archivingSessionIds: s.archivingSessionIds.filter((id) => aliveSessionIds.has(id)),
       sidebarWorktreeProjectId:

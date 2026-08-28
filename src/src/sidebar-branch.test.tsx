@@ -44,6 +44,7 @@ const project = {
   name: "Late Git",
   rootPath: "/tmp/late-git",
   gitRootPath: null,
+  pinned: false,
   sessions: [],
   worktrees: [],
 };

@@ -10,7 +10,7 @@
     "menu": {
       "copyId": "Copy Session ID",
       "exportMarkdown": "Export Markdown…",
-      "exportRawLog": "Export raw log…",
+      "exportRawLog": "Export conversation JSON…",
       "restartAndResume": "Restart and resume…",
       "resume": "Resume suspended Agent",
       "interrupt": "Interrupt (Ctrl-C)",
@@ -55,6 +55,21 @@
       "terminatedBySignal": "Terminated by signal {{signal}}.",
       "groupCleanupUnconfirmed": "Process-group cleanup could not be fully confirmed. Check Diagnostics.",
       "readOnlyHistory": "The terminal above shows read-only history. {{note}}"
+    },
+    "history": {
+      "title": "Native conversation history",
+      "nativeSource": "Content is read on demand from the agent's native log. AgentPort stores no transcript copy.",
+      "liveSource": "You reached the oldest retained terminal line. Earlier content is read on demand from the agent's native log.",
+      "returnToLive": "Return to live terminal",
+      "exportMarkdown": "Export Markdown",
+      "exportJson": "Export JSON",
+      "sources": "Native sources ({{count}})",
+      "unavailable": "Native history unavailable",
+      "ambiguous": "Found {{count}} candidate sources and could not bind one safely.",
+      "skipped": "Skipped {{count}} corrupt or oversized records while parsing.",
+      "empty": "The native log has no displayable conversation events yet.",
+      "loading": "Reading native history…",
+      "loadMore": "Load earlier history"
     },
     "disconnected": {
       "checking": "Disconnected. Checking whether the Agent is still running.",

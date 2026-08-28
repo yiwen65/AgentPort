@@ -26,6 +26,7 @@ const settings: Settings = {
   screenReaderMode: false,
   searchIndexEnabled: true,
   agentOrder: ["claude", "codex", "shell"],
+  agentHidden: [],
   telemetryEnabled: false,
 };
 
@@ -46,6 +47,18 @@ describe("Settings language preference", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+  });
+
+  it("scrolls the shared content pane to the top when changing sections", () => {
+    const { container } = render(<SettingsDialog />);
+    const content = container.querySelector<HTMLElement>(".settings-content");
+    expect(content).not.toBeNull();
+    if (!content) throw new Error("settings content missing");
+    content.scrollTop = 240;
+
+    fireEvent.click(screen.getByRole("button", { name: "通知" }));
+
+    expect(content.scrollTop).toBe(0);
   });
 
   it("switches immediately and saves independently from the settings draft", async () => {

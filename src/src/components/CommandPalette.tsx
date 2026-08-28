@@ -99,8 +99,8 @@ export default function CommandPalette() {
       act("export-md", t("palette.exportMarkdown"), () =>
         openDialog({ kind: "export", sessionId: activeSes.id, exportKind: "md" }),
       );
-      act("export-log", t("palette.exportLog"), () =>
-        openDialog({ kind: "export", sessionId: activeSes.id, exportKind: "log" }),
+      act("export-json", t("palette.exportLog"), () =>
+        openDialog({ kind: "export", sessionId: activeSes.id, exportKind: "json" }),
       );
       act("restart", t("palette.restartSession"), () => void restartSessionFlow(activeSes.id));
       if (s.runtime[activeSes.id]?.suspended) {

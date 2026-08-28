@@ -63,6 +63,7 @@
     "renameTitle": "重命名 Session",
     "newTitle": "新标题",
     "renameFailed": "重命名失败：{{detail}}",
+    "pinFailed": "置顶状态保存失败：{{detail}}",
     "addProjectFirst": "请先添加一个项目",
     "quickStarted": "Session 已启动（{{agent}} · {{access}}）",
     "terminalAccess": "终端",

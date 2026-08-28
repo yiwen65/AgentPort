@@ -31,8 +31,11 @@ export default function NewSessionDialog(props: {
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const project = s.projects.find((p) => p.id === projectId);
-  const adapterFor = (a: string) => s.adapters.find((x) => x.agentType === a);
-  const availableAgents = s.adapters;
+  const adapterFor = (a: string) => availableAgents.find((x) => x.agentType === a);
+  const availableAgents = useMemo(() => {
+    const hidden = new Set(s.settings?.agentHidden ?? []);
+    return hidden.size === 0 ? s.adapters : s.adapters.filter((x) => !hidden.has(x.agentType));
+  }, [s.adapters, s.settings?.agentHidden]);
   const selectedPreset = useMemo(
     () => presets.find((p) => p.id === presetId) ?? null,
     [presets, presetId],

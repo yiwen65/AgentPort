@@ -63,6 +63,7 @@
     "renameTitle": "Rename Session",
     "newTitle": "New title",
     "renameFailed": "Could not rename the Session: {{detail}}",
+    "pinFailed": "Could not save the pin state: {{detail}}",
     "addProjectFirst": "Add a project first",
     "quickStarted": "Session started ({{agent}} · {{access}})",
     "terminalAccess": "Terminal",

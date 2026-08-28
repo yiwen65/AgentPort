@@ -66,6 +66,9 @@ describe("Worktree branch selection Tauri contract", () => {
     await api.reconcileWorktrees("project-1");
     await api.worktreeDeletePreflight("wt-1");
     await api.projectRemovePreflight("project-1");
+    await api.deleteProjectArchivedSessions("project-1", [
+      { id: "session-1", archiveGeneration: 101 },
+    ]);
 
     expect(invokeMock).toHaveBeenNthCalledWith(1, "preview_worktree", {
       projectId: "project-1",
@@ -79,6 +82,10 @@ describe("Worktree branch selection Tauri contract", () => {
     });
     expect(invokeMock).toHaveBeenNthCalledWith(4, "project_remove_preflight", {
       id: "project-1",
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(5, "delete_project_archived_sessions", {
+      projectId: "project-1",
+      sessions: [{ id: "session-1", archiveGeneration: 101 }],
     });
   });
 });

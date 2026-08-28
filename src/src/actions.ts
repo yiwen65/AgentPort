@@ -15,11 +15,13 @@ import {
   findSession,
   flattenSessions,
   getState,
+  invalidateProjectsSnapshotRequests,
   isCurrentProjectsSnapshotRequest,
   isCurrentRepositoryStatusRequest,
   markRepositoryStatusUnavailable,
   openDialog,
   patchSession,
+  persistProjectExpansion,
   promptDialog,
   setSessionArchiving,
   setState,
@@ -40,7 +42,13 @@ import {
 } from "./terminals";
 import { agentDisplay } from "./format";
 import { i18n } from "./i18n";
-import type { LogCursorView, WorktreeDeletePreflight } from "./types";
+import type {
+  LogCursorView,
+  ProjectLayoutEntry,
+  ProjectRemovalPreflight,
+  ProjectView,
+  WorktreeDeletePreflight,
+} from "./types";
 
 export function isMac(): boolean {
   const os = getState().platform?.os;
@@ -50,7 +58,10 @@ export function isMac(): boolean {
 
 export async function copyTextWithToast(text: string, successText: string) {
   const copied = await copyText(text);
-  toast(copied ? successText : i18n.t("common:feedback.copyFailed"), copied ? "success" : "error");
+  toast(
+    copied ? successText : i18n.t("common:feedback.copyFailed"),
+    copied ? "success" : "error",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +71,23 @@ export async function copyTextWithToast(text: string, successText: string) {
 let refreshTimer: number | null = null;
 let timelineRefreshRequest = 0;
 let sessionSelectionIntent = 0;
+const ACTIVE_SESSION_STORAGE_KEY = "agentport-active-session-id";
+
+export function readLastSelectedSessionId(): string | null {
+  try {
+    return window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function rememberSelectedSessionId(sessionId: string) {
+  try {
+    window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, sessionId);
+  } catch {
+    // Selection must remain usable when WebView storage is unavailable.
+  }
+}
 
 export async function refreshProjects() {
   const request = beginProjectsSnapshotRequest();
@@ -111,7 +139,11 @@ export async function addProjectFromPickerFlow() {
         : i18n.t("shell:project.added", { name: res.name ?? path }),
       res.focusedExisting ? "info" : "success",
     );
-    if (res.id) setState({ expandedProjects: {} });
+    if (res.id) {
+      const expandedProjects = { ...getState().expandedProjects, [res.id]: true };
+      persistProjectExpansion(expandedProjects);
+      setState({ expandedProjects });
+    }
   } catch (e) {
     toast(i18n.t("shell:project.addFailed", { detail: errorText(e) }), "error");
   }
@@ -138,7 +170,10 @@ export async function refreshTimeline() {
       const detail = errorText(error);
       setState({
         timelineError: null,
-        timelineMessage: { code: "timeline_load_failed", technicalDetail: detail },
+        timelineMessage: {
+          code: "timeline_load_failed",
+          technicalDetail: detail,
+        },
       });
     }
     return false;
@@ -154,9 +189,15 @@ export function applyThemeSettings() {
   const st = s.settings;
   if (!st) return;
   const sysDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  const theme: EffectiveTheme =
-    st.theme === "system" ? (sysDark ? "dark" : "light") : st.theme;
-  const sysReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let theme: EffectiveTheme;
+  if (st.theme === "system") {
+    theme = sysDark ? "dark" : "light";
+  } else {
+    theme = st.theme;
+  }
+  const sysReduced = window.matchMedia(
+    "(prefers-reduced-motion: reduce)",
+  ).matches;
   const reduced =
     st.reducedMotion === "system" ? sysReduced : st.reducedMotion === "on";
   document.documentElement.dataset.theme = theme;
@@ -202,13 +243,7 @@ export function toggleSidebarCollapsed() {
     return;
   }
   const token = ++sidebarAnimToken;
-  if (!s.sidebarCollapsed) {
-    setState({ sidebarAnim: "out" });
-    window.setTimeout(() => {
-      if (token !== sidebarAnimToken) return;
-      setState({ sidebarCollapsed: true, sidebarAnim: null });
-    }, SIDEBAR_ANIM_MS);
-  } else {
+  if (s.sidebarCollapsed) {
     setState({ sidebarCollapsed: false, sidebarAnim: "inPrep" });
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -220,6 +255,12 @@ export function toggleSidebarCollapsed() {
         }, SIDEBAR_ANIM_MS);
       });
     });
+  } else {
+    setState({ sidebarAnim: "out" });
+    window.setTimeout(() => {
+      if (token !== sidebarAnimToken) return;
+      setState({ sidebarCollapsed: true, sidebarAnim: null });
+    }, SIDEBAR_ANIM_MS);
   }
 }
 
@@ -227,7 +268,11 @@ export function toggleSidebarCollapsed() {
 // session selection
 // ---------------------------------------------------------------------------
 
-export function selectSession(id: string, recoveryTarget: LogCursorView | null = null) {
+export function selectSession(
+  id: string,
+  recoveryTarget: LogCursorView | null = null,
+  options: { revealInSidebar?: boolean } = {},
+) {
   const intent = ++sessionSelectionIntent;
   const s = getState();
   // A newly created Session is persisted before the next project snapshot.
@@ -239,31 +284,42 @@ export function selectSession(id: string, recoveryTarget: LogCursorView | null =
         intent === sessionSelectionIntent &&
         findSession(getState().projects, id)
       ) {
-        selectSession(id, recoveryTarget);
+        selectSession(id, recoveryTarget, options);
       }
     });
     return;
   }
   const ses = findSession(s.projects, id);
+  const sessionLive = ses?.lifecycle === "creating" || ses?.lifecycle === "running";
   // Treat mounted PTY panes as an LRU. Each keeps xterm scrollback and a live
   // IPC channel. Structured JSON-RPC Sessions own a separate attachment and
   // must never acquire a hidden xterm channel. Retaining every PTY Session can
   // turn a long workday into hundreds of MiB of renderer memory.
-  const existingPtyIds = s.attachedIds.filter((sessionId) => {
-    const attachedSession = findSession(s.projects, sessionId);
-    return sessionId !== id && attachedSession?.transport === "pty";
-  });
-  const orderedIds = ses?.transport === "pty" ? [...existingPtyIds, id] : existingPtyIds;
+  const existingPtyIds =
+    ses?.transport === "pty"
+      ? s.attachedIds.filter((sessionId) => {
+          const attachedSession = findSession(s.projects, sessionId);
+          return sessionId !== id && attachedSession?.transport === "pty";
+        })
+      : [];
+  const orderedIds =
+    ses?.transport === "pty" ? [...existingPtyIds, id] : existingPtyIds;
   const attachedIds = orderedIds.slice(-MAX_PERSISTENT_TERMINALS);
   const retainedIds = new Set(attachedIds);
-  const evictedIds = s.attachedIds.filter((sessionId) => !retainedIds.has(sessionId));
+  const evictedIds = s.attachedIds.filter(
+    (sessionId) => !retainedIds.has(sessionId),
+  );
+  const revealInSidebar = options.revealInSidebar !== false;
   const proj = findProjectOf(s.projects, id);
   const expandedProjects =
-    proj && s.expandedProjects[proj.id] === false
+    revealInSidebar && proj && s.expandedProjects[proj.id] === false
       ? { ...s.expandedProjects, [proj.id]: true }
       : s.expandedProjects;
   const collapsedWorktrees = { ...s.collapsedWorktrees };
-  if (ses?.worktreeId) delete collapsedWorktrees[ses.worktreeId];
+  if (revealInSidebar && ses?.worktreeId) delete collapsedWorktrees[ses.worktreeId];
+  if (expandedProjects !== s.expandedProjects) {
+    persistProjectExpansion(expandedProjects);
+  }
   setState({
     activeSessionId: id,
     attachedIds,
@@ -271,16 +327,23 @@ export function selectSession(id: string, recoveryTarget: LogCursorView | null =
     collapsedWorktrees,
     termSearchOpen: false,
   });
+  rememberSelectedSessionId(id);
   for (const evictedId of evictedIds) void releaseTerminal(evictedId);
   clearUnreadOutputTracking(id);
-  if (recoveryTarget && ses?.transport === "pty") {
+  if (recoveryTarget && ses?.transport === "pty" && sessionLive) {
     void jumpToRecoveryOutput(id, recoveryTarget).catch((error) => {
-      toast(i18n.t("session:flow.locateRecoveryFailed", { detail: errorText(error) }), "error");
+      toast(
+        i18n.t("session:flow.locateRecoveryFailed", {
+          detail: errorText(error),
+        }),
+        "error",
+      );
     });
   }
   // Confirm the view in persistent state; merely hiding the dot for the
   // active row would make it reappear as soon as the user switches away.
-  void api.markSessionSeen(id, findSession(s.projects, id)?.status ?? null)
+  void api
+    .markSessionSeen(id, findSession(s.projects, id)?.status ?? null)
     .then(refreshProjects)
     .catch(() => undefined);
 }
@@ -288,7 +351,9 @@ export function selectSession(id: string, recoveryTarget: LogCursorView | null =
 export function switchSessionByIndex(index: number) {
   const s = getState();
   const archiving = new Set(s.archivingSessionIds);
-  const list = flattenSessions(s.projects).filter((session) => !archiving.has(session.id));
+  const list = flattenSessions(s.projects).filter(
+    (session) => !archiving.has(session.id),
+  );
   const target = list[index];
   if (target) selectSession(target.id);
 }
@@ -329,7 +394,10 @@ export async function restartSessionFlow(sessionId: string) {
     try {
       await api.stopSession(sessionId);
     } catch (e) {
-      toast(i18n.t("session:flow.stopFailed", { detail: errorText(e) }), "error");
+      toast(
+        i18n.t("session:flow.stopFailed", { detail: errorText(e) }),
+        "error",
+      );
       return;
     }
   }
@@ -339,6 +407,11 @@ export async function restartSessionFlow(sessionId: string) {
     const res = await api.restartSession(sessionId, true);
     resetForRestart(sessionId);
     await refreshProjects();
+    // Cold-start selection intentionally drops interrupted PTYs from the
+    // mounted-terminal LRU. Once restart publishes the Session as live, run
+    // selection again so the active Session gets a TerminalPane before the
+    // renderer switches away from its recovery surface.
+    if (getState().activeSessionId === sessionId) selectSession(sessionId);
     void attachHandle(sessionId);
     if (res.resumePrecision === "latest") {
       toast(i18n.t("session:flow.latestResumeNotice"), "info");
@@ -347,7 +420,10 @@ export async function restartSessionFlow(sessionId: string) {
     }
     for (const notice of localizedNotices(res)) toast(notice, "info");
   } catch (e) {
-    toast(i18n.t("session:flow.restartFailed", { detail: errorText(e) }), "error");
+    toast(
+      i18n.t("session:flow.restartFailed", { detail: errorText(e) }),
+      "error",
+    );
   }
 }
 
@@ -355,7 +431,10 @@ export async function interruptSessionFlow(sessionId: string) {
   try {
     await api.interruptSession(sessionId);
   } catch (e) {
-    toast(i18n.t("session:flow.interruptFailed", { detail: errorText(e) }), "error");
+    toast(
+      i18n.t("session:flow.interruptFailed", { detail: errorText(e) }),
+      "error",
+    );
   }
 }
 
@@ -363,7 +442,10 @@ export async function resumeSessionFlow(sessionId: string) {
   try {
     await api.resumeSession(sessionId);
   } catch (e) {
-    toast(i18n.t("session:flow.resumeFailed", { detail: errorText(e) }), "error");
+    toast(
+      i18n.t("session:flow.resumeFailed", { detail: errorText(e) }),
+      "error",
+    );
   }
 }
 
@@ -391,7 +473,10 @@ export async function archiveSessionFlow(sessionId: string) {
     void refreshProjects();
   } catch (e) {
     setSessionArchiving(sessionId, false);
-    toast(i18n.t("session:flow.archiveFailed", { detail: errorText(e) }), "error");
+    toast(
+      i18n.t("session:flow.archiveFailed", { detail: errorText(e) }),
+      "error",
+    );
   }
 }
 
@@ -414,11 +499,17 @@ export async function renameSessionFlow(sessionId: string) {
   try {
     await api.renameSession(sessionId, title.trim());
   } catch (e) {
-    toast(i18n.t("session:flow.renameFailed", { detail: errorText(e) }), "error");
+    toast(
+      i18n.t("session:flow.renameFailed", { detail: errorText(e) }),
+      "error",
+    );
   }
 }
 
-export async function renameSessionInlineFlow(sessionId: string, title: string) {
+export async function renameSessionInlineFlow(
+  sessionId: string,
+  title: string,
+) {
   const nextTitle = title.trim();
   const ses = findSession(getState().projects, sessionId);
   if (!ses || !nextTitle || nextTitle === ses.title) return;
@@ -426,7 +517,28 @@ export async function renameSessionInlineFlow(sessionId: string, title: string) 
     await api.renameSession(sessionId, nextTitle);
     await refreshProjects();
   } catch (e) {
-    toast(i18n.t("session:flow.renameFailed", { detail: errorText(e) }), "error");
+    toast(
+      i18n.t("session:flow.renameFailed", { detail: errorText(e) }),
+      "error",
+    );
+  }
+}
+
+/** Pin state is backend-owned (sessions.pinned_at); patch optimistically so
+ * the sidebar reorders immediately, then let the projects-changed snapshot
+ * reconcile the persisted timestamp. */
+export async function toggleSessionPinFlow(sessionId: string) {
+  const ses = findSession(getState().projects, sessionId);
+  if (!ses) return;
+  const pinned = ses.pinnedAt === null;
+  patchSession(sessionId, {
+    pinnedAt: pinned ? new Date().toISOString() : null,
+  });
+  try {
+    await api.setSessionPinned(sessionId, pinned);
+  } catch (e) {
+    toast(i18n.t("session:flow.pinFailed", { detail: errorText(e) }), "error");
+    await refreshProjects();
   }
 }
 
@@ -448,66 +560,163 @@ export async function renameProjectFlow(projectId: string) {
     await api.renameProject(projectId, name.trim());
     await refreshProjects();
   } catch (e) {
-    toast(i18n.t("shell:project.renameFailed", { detail: errorText(e) }), "error");
+    toast(
+      i18n.t("shell:project.renameFailed", { detail: errorText(e) }),
+      "error",
+    );
+  }
+}
+
+function projectsInLayout(
+  projects: ProjectView[],
+  entries: ProjectLayoutEntry[],
+): ProjectView[] | null {
+  if (projects.length !== entries.length) return null;
+  const byId = new Map(projects.map((project) => [project.id, project]));
+  const next: ProjectView[] = [];
+  for (const entry of entries) {
+    const project = byId.get(entry.id);
+    if (!project) return null;
+    next.push({ ...project, pinned: entry.pinned });
+    byId.delete(entry.id);
+  }
+  return byId.size === 0 ? next : null;
+}
+
+/** Persist one complete canonical Project order. Only one write may be active. */
+export async function saveProjectLayoutFlow(
+  entries: ProjectLayoutEntry[],
+): Promise<boolean> {
+  const current = getState();
+  if (current.projectLayoutSaving) return false;
+  const nextProjects = projectsInLayout(current.projects, entries);
+  if (!nextProjects) {
+    toast(i18n.t("shell:project.layoutInvalid"), "error");
+    return false;
+  }
+  const changed = nextProjects.some(
+    (project, index) =>
+      project.id !== current.projects[index]?.id ||
+      project.pinned !== current.projects[index]?.pinned,
+  );
+  if (!changed) return true;
+
+  const previousProjects = current.projects;
+  invalidateProjectsSnapshotRequests();
+  setState({ projects: nextProjects, projectLayoutSaving: true });
+  const authorityRevision = getState().projectsAuthorityRevision;
+  try {
+    const projects = await api.setProjectLayout(
+      entries,
+      current.activeSessionId,
+    );
+    invalidateProjectsSnapshotRequests();
+    if (getState().projectsAuthorityRevision === authorityRevision) {
+      applyProjectsSnapshot(projects);
+    } else {
+      const merged = projectsInLayout(getState().projects, entries);
+      if (merged) setState({ projects: merged });
+    }
+    setState({
+      projectLayoutSaving: false,
+      announcement: i18n.t("shell:project.layoutSaved"),
+    });
+    return true;
+  } catch (error) {
+    const reconcileRevision = getState().projectsAuthorityRevision;
+    const restored = await refreshProjects();
+    if (
+      !restored &&
+      getState().projectsAuthorityRevision === reconcileRevision
+    ) {
+      invalidateProjectsSnapshotRequests();
+      applyProjectsSnapshot(previousProjects);
+    }
+    const message = i18n.t("shell:project.layoutFailed", {
+      detail: errorText(error),
+    });
+    setState({ projectLayoutSaving: false, announcement: message });
+    toast(message, "error");
+    return false;
   }
 }
 
 export async function removeProjectFlow(projectId: string) {
   const proj = getState().projects.find((p) => p.id === projectId);
   if (!proj) return;
-  let preflight;
+  let preflight: ProjectRemovalPreflight;
   try {
     preflight = await api.projectRemovePreflight(projectId);
   } catch (e) {
-    toast(i18n.t("shell:project.removeFailed", { detail: errorText(e) }), "error");
+    toast(
+      i18n.t("shell:project.removeFailed", { detail: errorText(e) }),
+      "error",
+    );
     return;
   }
-  if (!preflight.canRemove) {
-    toast(i18n.t("shell:project.removeBlocked", {
-      sessions: preflight.sessionCount,
-      worktrees: preflight.worktreeCount,
-      operations: preflight.recoverableOperationCount,
-    }), "error");
-    return;
-  }
+
   const ok = await confirmDialog({
     title: i18n.t("shell:project.removeTitle", { name: proj.name }),
-    body: i18n.t("shell:project.removeBody"),
+    body: i18n.t("shell:project.removeBody", {
+      sessions: preflight.sessionCount,
+      worktrees: preflight.worktreeCount,
+      operations:
+        preflight.recoverableOperationCount +
+        preflight.pendingCommitOperationCount,
+    }),
     confirmLabel: i18n.t("common:actions.remove"),
     danger: true,
   });
   if (!ok) return;
   try {
-    await api.removeProject(projectId);
-    if (findProjectOf(getState().projects, getState().activeSessionId)?.id === projectId) {
+    const outcome = await api.removeProject(projectId);
+    if (
+      findProjectOf(getState().projects, getState().activeSessionId)?.id ===
+      projectId
+    ) {
       setState({ activeSessionId: null });
     }
     await refreshProjects();
+    const warnings = outcome.stopWarnings + outcome.cleanupWarnings;
+    if (warnings > 0) {
+      toast(i18n.t("shell:project.removePartial", { count: warnings }), "info");
+    }
   } catch (e) {
-    toast(i18n.t("shell:project.removeFailed", { detail: errorText(e) }), "error");
+    toast(
+      i18n.t("shell:project.removeFailed", { detail: errorText(e) }),
+      "error",
+    );
   }
 }
 
-function worktreeDeleteBlockerDetails(preflight: WorktreeDeletePreflight): string[] {
+function worktreeDeleteBlockerDetails(
+  preflight: WorktreeDeletePreflight,
+): string[] {
   const details: string[] = [];
   if (preflight.modified + preflight.staged + preflight.untracked > 0) {
-    details.push(i18n.t("worktree:flow.changesBlocker", {
-      modified: preflight.modified,
-      staged: preflight.staged,
-      untracked: preflight.untracked,
-    }));
+    details.push(
+      i18n.t("worktree:flow.changesBlocker", {
+        modified: preflight.modified,
+        staged: preflight.staged,
+        untracked: preflight.untracked,
+      }),
+    );
   }
   if (preflight.ignored > 0) {
-    details.push(i18n.t("worktree:flow.ignoredBlocker", {
-      count: preflight.ignored,
-      sample: preflight.ignoredSample.join(", "),
-    }));
+    details.push(
+      i18n.t("worktree:flow.ignoredBlocker", {
+        count: preflight.ignored,
+        sample: preflight.ignoredSample.join(", "),
+      }),
+    );
   }
   if (preflight.sessionCount > 0) {
-    details.push(i18n.t("worktree:flow.sessionsBlocker", {
-      count: preflight.sessionCount,
-      active: preflight.activeSessionCount,
-    }));
+    details.push(
+      i18n.t("worktree:flow.sessionsBlocker", {
+        count: preflight.sessionCount,
+        active: preflight.activeSessionCount,
+      }),
+    );
   }
   if (preflight.health === "locked") {
     details.push(i18n.t("worktree:flow.lockedBlocker"));
@@ -524,36 +733,53 @@ export async function removeWorktreeFlow(worktreeId: string) {
     try {
       preflight = await api.worktreeDeletePreflight(worktreeId);
     } catch (e) {
-      toast(i18n.t("worktree:flow.deleteFailed", { detail: errorText(e) }), "error");
+      toast(
+        i18n.t("worktree:flow.deleteFailed", { detail: errorText(e) }),
+        "error",
+      );
       return;
     }
-    const blockers = worktreeDeleteBlockerDetails(preflight);
-    if (!preflight.canRemove) {
-      toast(i18n.t("worktree:flow.deleteBlocked", {
-        detail: blockers.join(i18n.t("worktree:flow.blockerSeparator"))
-          || i18n.t("worktree:flow.unknownBlocker"),
-      }), "error");
-      return;
+    const cleanupItems = worktreeDeleteBlockerDetails(preflight);
+    let body: string;
+    if (preflight.repositoryMissing) {
+      body = i18n.t("worktree:flow.deleteOrphanedBody");
+    } else if (preflight.health === "missing") {
+      body = i18n.t("worktree:flow.deleteMissingBody");
+    } else {
+      body = i18n.t("worktree:flow.deleteBody");
     }
     const ok = await confirmDialog({
       title: i18n.t("worktree:flow.deleteTitle", { branch: preflight.branch }),
-      body: preflight.health === "missing"
-        ? i18n.t("worktree:flow.deleteMissingBody")
-        : i18n.t("worktree:flow.deleteBody"),
+      body,
       details: [
         i18n.t("worktree:flow.pathDetail", { path: preflight.path }),
-        i18n.t("worktree:flow.safeDetail"),
+        cleanupItems.length > 0
+          ? i18n.t("worktree:flow.cleanupDetail", {
+              detail: cleanupItems.join(
+                i18n.t("worktree:flow.blockerSeparator"),
+              ),
+            })
+          : i18n.t("worktree:flow.safeDetail"),
       ],
       confirmLabel: i18n.t("worktree:flow.deleteAction"),
       danger: true,
     });
     if (!ok) return;
     try {
-      await api.removeWorktree(worktreeId);
+      const outcome = await api.removeWorktree(worktreeId);
       await refreshProjects();
-      toast(i18n.t("worktree:flow.deleted"), "success");
+      const warnings = outcome.stopWarnings + outcome.cleanupWarnings;
+      toast(
+        warnings > 0
+          ? i18n.t("worktree:flow.deletedWithWarnings", { count: warnings })
+          : i18n.t("worktree:flow.deleted"),
+        warnings > 0 ? "info" : "success",
+      );
     } catch (e) {
-      toast(i18n.t("worktree:flow.deleteFailed", { detail: errorText(e) }), "error");
+      toast(
+        i18n.t("worktree:flow.deleteFailed", { detail: errorText(e) }),
+        "error",
+      );
     }
     return;
   }
@@ -563,12 +789,15 @@ export async function removeWorktreeFlow(worktreeId: string) {
 // misc flows
 // ---------------------------------------------------------------------------
 
-export function openNewSessionDialog(projectId?: string, worktreeId?: string, agent?: string) {
+export function openNewSessionDialog(
+  projectId?: string,
+  worktreeId?: string,
+  agent?: string,
+) {
   const s = getState();
   let pid = projectId;
   if (!pid) {
-    pid =
-      findProjectOf(s.projects, s.activeSessionId)?.id ?? s.projects[0]?.id;
+    pid = findProjectOf(s.projects, s.activeSessionId)?.id ?? s.projects[0]?.id;
   }
   if (!pid) {
     toast(i18n.t("session:flow.addProjectFirst"), "info");
@@ -579,7 +808,11 @@ export function openNewSessionDialog(projectId?: string, worktreeId?: string, ag
 }
 
 /** Hover shortcuts explicitly start a session in fully-authorized mode. */
-export async function quickStartSession(projectId: string, agent: string, worktreeId?: string) {
+export async function quickStartSession(
+  projectId: string,
+  agent: string,
+  worktreeId?: string,
+) {
   const shell = agent === "shell";
   const pi = agent === "pi";
   try {
@@ -610,7 +843,10 @@ export async function quickStartSession(projectId: string, agent: string, worktr
       "success",
     );
   } catch (e) {
-    toast(i18n.t("session:flow.startFailed", { detail: errorText(e) }), "error");
+    toast(
+      i18n.t("session:flow.startFailed", { detail: errorText(e) }),
+      "error",
+    );
   }
 }
 
@@ -625,13 +861,22 @@ export async function ackTimelineFlow() {
     // events arriving while the GUI is open belong to normal realtime UI, not
     // the just-acknowledged "while you were away" snapshot.
     setState({
-      timeline: { completed: 0, waiting: 0, failed: 0, entries: [], ackSnapshots: [] },
+      timeline: {
+        completed: 0,
+        waiting: 0,
+        failed: 0,
+        entries: [],
+        ackSnapshots: [],
+      },
       timelineError: null,
       timelineMessage: null,
     });
     await refreshProjects();
   } catch (e) {
-    toast(i18n.t("session:flow.operationFailed", { detail: errorText(e) }), "error");
+    toast(
+      i18n.t("session:flow.operationFailed", { detail: errorText(e) }),
+      "error",
+    );
   }
 }
 

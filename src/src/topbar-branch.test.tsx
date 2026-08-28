@@ -32,6 +32,7 @@ const session = (worktreeId: string | null): SessionView => ({
   logPath: "/tmp/session.log",
   unread: false,
   status: null,
+  pinnedAt: null,
   createdAt: "2026-07-23T00:00:00.000Z",
 });
 
@@ -40,6 +41,7 @@ const project = (currentSession: SessionView): ProjectView => ({
   name: "Apollo",
   rootPath: "/tmp/project",
   gitRootPath: "/tmp/project",
+  pinned: false,
   sessions: [currentSession],
   worktrees: [{
     id: "wt_1",

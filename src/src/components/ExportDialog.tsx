@@ -1,6 +1,4 @@
-// Export dialog for one session: Markdown (all / last N blocks) or raw log
-// (all / last 10k lines, optional ANSI strip). dest is a text input because
-// the backend registers no save-file dialog plugin.
+// Export a normalized conversation directly from the agent-owned native log.
 
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -8,11 +6,10 @@ import Modal from "./Modal";
 import { api, errorText } from "../api";
 import { copyTextWithToast } from "../actions";
 import { closeDialog, findSession, getState, toast, useStore } from "../store";
-import { currentUiLanguage } from "../i18n";
 
-function defaultDest(sessionId: string, kind: "md" | "log"): string {
+function defaultDest(sessionId: string, kind: "md" | "json"): string {
   const base = getState().exportsDir || "/tmp";
-  return `${base}/agentport-${sessionId}.${kind === "md" ? "md" : "log"}`;
+  return `${base}/agentport-${sessionId}.${kind}`;
 }
 
 export default function ExportDialog({
@@ -20,13 +17,11 @@ export default function ExportDialog({
   exportKind,
 }: {
   sessionId: string;
-  exportKind: "md" | "log";
+  exportKind: "md" | "json";
 }) {
   const { t } = useTranslation(["runtime", "common"]);
   const s = useStore();
   const ses = findSession(s.projects, sessionId);
-  const [last, setLast] = useState<string>("all");
-  const [stripAnsi, setStripAnsi] = useState(false);
   const [dest, setDest] = useState(defaultDest(sessionId, exportKind));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,8 +36,8 @@ export default function ExportDialog({
         sessionId,
         kind: exportKind,
         dest: dest.trim(),
-        last: last === "all" ? null : Number(last),
-        stripAnsi,
+        last: null,
+        stripAnsi: true,
       });
       setDonePath(p);
       toast(t("runtime:export.complete"), "success");
@@ -94,38 +89,7 @@ export default function ExportDialog({
         </div>
       ) : (
         <>
-          <div className="form-row">
-            <label htmlFor="ex-range">{t("runtime:export.range")}</label>
-            <select id="ex-range" value={last} onChange={(e) => setLast(e.target.value)}>
-              <option value="all">{t("runtime:export.all")}</option>
-              {exportKind === "md" ? (
-                <>
-                  <option value="20">{t("runtime:export.recentBlocks", { count: 20 })}</option>
-                  <option value="50">{t("runtime:export.recentBlocks", { count: 50 })}</option>
-                  <option value="100">{t("runtime:export.recentBlocks", { count: 100 })}</option>
-                </>
-              ) : (
-                <option value="10000">
-                  {t("runtime:export.recentLines", {
-                    count: 10_000,
-                    formattedCount: new Intl.NumberFormat(currentUiLanguage()).format(10_000),
-                  })}
-                </option>
-              )}
-            </select>
-          </div>
-          {exportKind === "log" ? (
-            <label className="check-row">
-              <input
-                type="checkbox"
-                checked={stripAnsi}
-                onChange={(e) => setStripAnsi(e.target.checked)}
-              />
-              <span>{t("runtime:export.stripAnsi")}</span>
-            </label>
-          ) : (
-            <p className="form-hint">{t("runtime:export.markdownHint")}</p>
-          )}
+          <p className="form-hint">{t("runtime:export.markdownHint")}</p>
           <div className="form-row">
             <label htmlFor="ex-dest">{t("runtime:export.destination")}</label>
             <div className="inline-form">
@@ -141,7 +105,7 @@ export default function ExportDialog({
                 type="button"
                 onClick={() =>
                   void api
-                    .pickSavePath(`agentport-${sessionId}.${exportKind === "md" ? "md" : "log"}`)
+                    .pickSavePath(`agentport-${sessionId}.${exportKind}`)
                     .then((p) => {
                       if (p) setDest(p);
                     })

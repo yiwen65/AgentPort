@@ -1,19 +1,23 @@
 {
   "flow": {
     "deleteTitle": "Delete Worktree “{{branch}}”?",
-    "deleteBody": "This permanently deletes the Worktree directory and removes its Git Worktree record.",
-    "deleteMissingBody": "The directory is already missing. AgentPort will clean up the stale Git and app records.",
+    "deleteBody": "This permanently deletes the Worktree directory, all files in it, related Sessions, and its Git Worktree record.",
+    "deleteMissingBody": "The directory is already missing. AgentPort will clean up stale Git, Session, and app records.",
+    "deleteOrphanedBody": "The project's Git repository no longer exists. AgentPort will directly delete the managed Worktree directory and clean up its Session and app records.",
+    "orphanedDetail": "The managed Worktree directory and all files in it will be deleted.",
     "pathDetail": "Directory: {{path}}",
-    "safeDetail": "Checked just now: no modified, staged, untracked, or ignored local files, and no Session references.",
+    "safeDetail": "No local files or Session references need additional cleanup.",
+    "cleanupDetail": "Deletion will also permanently clean up: {{detail}}.",
     "changesBlocker": "local changes exist ({{modified}} modified, {{staged}} staged, {{untracked}} untracked)",
     "ignoredBlocker": "{{count}} Git-ignored local file or directory exists ({{sample}})",
     "sessionsBlocker": "{{count}} Session still references it ({{active}} not archived)",
     "lockedBlocker": "Git has locked this Worktree",
     "unknownBlocker": "the live safety check did not pass",
     "blockerSeparator": "; ",
-    "deleteBlocked": "Deletion was blocked to protect local data: {{detail}}.",
+    "deleteBlocked": "Deletion will clean up local data: {{detail}}.",
     "deleteAction": "Delete Worktree",
     "deleted": "Worktree deleted",
+    "deletedWithWarnings": "Worktree record deleted, but {{count}} process or filesystem cleanup item(s) could not be verified. Check the logs for leftovers.",
     "deleteFailed": "Could not delete the Worktree: {{detail}}"
   }
 }

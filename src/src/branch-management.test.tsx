@@ -121,6 +121,7 @@ function sessionView(
     logPath: `/tmp/${id}.log`,
     unread: false,
     status: null,
+    pinnedAt: null,
     createdAt: "2026-07-26T00:00:00.000Z",
   };
 }
@@ -133,6 +134,7 @@ function projectState(sessions: ReturnType<typeof sessionView>[] = []) {
         name: "Demo",
         rootPath: "/repo",
         gitRootPath: "/repo",
+        pinned: false,
         sessions: sessions.filter((session) => session.projectId === "p1"),
         worktrees: [],
       },
@@ -141,6 +143,7 @@ function projectState(sessions: ReturnType<typeof sessionView>[] = []) {
         name: "Other",
         rootPath: "/other",
         gitRootPath: "/other",
+        pinned: false,
         sessions: sessions.filter((session) => session.projectId === "p2"),
         worktrees: [],
       },

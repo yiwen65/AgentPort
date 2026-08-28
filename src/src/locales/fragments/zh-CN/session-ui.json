@@ -10,7 +10,7 @@
     "menu": {
       "copyId": "复制 Session ID",
       "exportMarkdown": "导出 Markdown…",
-      "exportRawLog": "导出原始日志…",
+      "exportRawLog": "导出对话 JSON…",
       "restartAndResume": "重启并恢复…",
       "resume": "继续已挂起的 Agent",
       "interrupt": "中断（Ctrl-C）",
@@ -55,6 +55,21 @@
       "terminatedBySignal": "被信号 {{signal}} 终止。",
       "groupCleanupUnconfirmed": "进程组清理未完全确认，请检查诊断中心。",
       "readOnlyHistory": "上方终端为只读历史输出。{{note}}"
+    },
+    "history": {
+      "title": "原生会话历史",
+      "nativeSource": "内容按需读取自 Agent 原生日志；AgentPort 不保存正文副本。",
+      "liveSource": "已到实时终端的最早保留行；以下内容按需读取自 Agent 原生日志。",
+      "returnToLive": "返回实时终端",
+      "exportMarkdown": "导出 Markdown",
+      "exportJson": "导出 JSON",
+      "sources": "原生日志来源（{{count}}）",
+      "unavailable": "原生历史不可用",
+      "ambiguous": "发现 {{count}} 个候选来源，无法安全确定目标。",
+      "skipped": "解析时跳过了 {{count}} 条损坏或过大的记录。",
+      "empty": "原生日志中尚无可显示的对话事件。",
+      "loading": "正在读取原生日志…",
+      "loadMore": "加载更早记录"
     },
     "disconnected": {
       "checking": "连接已断开，正在确认 Agent 是否仍在运行。",

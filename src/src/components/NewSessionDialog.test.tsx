@@ -42,6 +42,7 @@ describe("NewSessionDialog", () => {
         name: "Demo",
         rootPath: "/tmp/demo",
         gitRootPath: null,
+        pinned: false,
         sessions: [],
         worktrees: [],
       }],

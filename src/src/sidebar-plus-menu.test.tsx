@@ -53,6 +53,7 @@ const project = {
   name: "Demo",
   rootPath: "/tmp/demo",
   gitRootPath: "/tmp/demo",
+  pinned: false,
   sessions: [],
   worktrees: [],
 };
@@ -72,6 +73,7 @@ const runningSession = {
   logPath: "/tmp/demo/session.log",
   unread: false,
   status: null,
+  pinnedAt: null,
   createdAt: "2026-07-23T00:00:00.000Z",
 };
 
@@ -87,6 +89,7 @@ const settings = {
   screenReaderMode: false,
   searchIndexEnabled: true,
   agentOrder: ["shell"],
+  agentHidden: [],
   telemetryEnabled: false,
 };
 
@@ -148,6 +151,48 @@ describe("project row plus button menu", () => {
 
   afterEach(() => cleanup());
 
+  it("lets vertical wheel scrolling escape the quick-agent strip at its edge", () => {
+    const { container } = render(<Sidebar collapsed={false} width={296} />);
+    const strip = container.querySelector<HTMLElement>(".quick-agent-strip");
+    expect(strip).not.toBeNull();
+    if (!strip) throw new Error("quick agent strip missing");
+    let scrollLeft = 200;
+    Object.defineProperties(strip, {
+      clientWidth: { configurable: true, value: 100 },
+      scrollWidth: { configurable: true, value: 300 },
+      scrollLeft: {
+        configurable: true,
+        get: () => scrollLeft,
+        set: (value: number) => {
+          scrollLeft = Math.max(0, Math.min(200, value));
+        },
+      },
+    });
+    const event = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      deltaY: 40,
+    });
+    const preventDefault = vi.spyOn(event, "preventDefault");
+
+    act(() => strip.dispatchEvent(event));
+
+    expect(scrollLeft).toBe(200);
+    expect(preventDefault).not.toHaveBeenCalled();
+
+    scrollLeft = 100;
+    const movableEvent = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      deltaY: 40,
+    });
+    const preventMovableDefault = vi.spyOn(movableEvent, "preventDefault");
+    act(() => strip.dispatchEvent(movableEvent));
+
+    expect(scrollLeft).toBe(140);
+    expect(preventMovableDefault).toHaveBeenCalledOnce();
+  });
+
   it("opens project context-menu items without 新建 Session / quick-launch agents", () => {
     render(<Sidebar collapsed={false} width={296} />);
     const plus = screen.getByRole("button", { name: "项目 Demo 的更多操作" });
@@ -161,6 +206,7 @@ describe("project row plus button menu", () => {
       "打开 Git Center",
       "新建 Worktree…",
       "管理本地分支…",
+      "置顶项目",
       "在系统文件管理器中显示",
       "重命名项目…",
       "从 AgentPort 移除（不删除目录）",

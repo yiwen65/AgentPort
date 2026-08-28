@@ -35,6 +35,10 @@
       "projectQuickActions": "Quick-launch an Agent in project {{project}}",
       "projectScope": "project {{project}}",
       "projectMoreActions": "More actions for project {{project}}",
+      "projectPinned": "Pinned",
+      "pinnedProject": "Pinned project {{project}}",
+      "projectDragStarted": "Moving project {{project}}; press Escape to cancel",
+      "projectDragCancelled": "Cancelled moving project {{project}}",
       "moreActions": "More actions…",
       "worktreesEntryLabel": "Worktrees, open management view",
       "currentCheckout": "Current checkout: {{head}}. Manage local branches",
@@ -55,6 +59,8 @@
       "projectMenu": {
         "newWorktree": "New Worktree…",
         "manageBranches": "Manage local branches…",
+        "pin": "Pin project",
+        "unpin": "Unpin project",
         "revealInFileManager": "Show in system file manager",
         "rename": "Rename project…",
         "remove": "Remove from AgentPort (keep directory)"
@@ -64,7 +70,7 @@
         "openInSystemTerminal": "Open in system terminal",
         "copyGitStatus": "Copy git status",
         "delete": "Delete Worktree…",
-        "deleteBlocked": "This Worktree has uncommitted or untracked files and cannot be deleted.\nCommit or clean them, then try again."
+        "deleteBlocked": "Local files are removed automatically after deletion is confirmed."
       },
       "toast": {
         "pathCopied": "Path copied",
@@ -118,7 +124,6 @@
       "refreshTreeTip": "Read directory contents again",
       "closeTree": "Close file tree",
       "closeTreeTip": "Hide the project file tree",
-      "selectFile": "Pick a file in the tree to view and edit it",
       "newFile": "New file",
       "newFileTip": "Create a new file under the current directory",
       "newDir": "New folder",
@@ -156,7 +161,7 @@
       "fullHistory": "Full history",
       "bufferMatch": "{{scope}}: {{snippet}}",
       "noResultsInCurrentBuffer": "No results in the current buffer",
-      "searchingPersistedLog": "Searching persisted log…",
+      "searchingPersistedLog": "Searching the agent-native log on demand…",
       "fullHistoryUnavailable": "Full history unavailable",
       "loadedHits_one": " ({{count}} result loaded)",
       "loadedHits_other": " ({{count}} results loaded)",

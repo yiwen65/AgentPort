@@ -18,6 +18,7 @@ const session = (state: SessionView["status"]): SessionView => ({
   logPath: "/tmp/status-dot.log",
   unread: false,
   status: state,
+  pinnedAt: null,
   createdAt: "2026-07-24T00:00:00.000Z",
 });
 

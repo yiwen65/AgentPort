@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { apiMock } = vi.hoisted(() => ({
   apiMock: {
     projectRemovePreflight: vi.fn(),
+    deleteProjectArchivedSessions: vi.fn(),
     removeProject: vi.fn(),
     worktreeDeletePreflight: vi.fn(),
     removeWorktree: vi.fn(),
@@ -31,25 +32,57 @@ vi.mock("./terminals", () => ({
 }));
 
 import { removeProjectFlow, removeWorktreeFlow } from "./actions";
-import { getState, setState } from "./store";
+import { getState, resolveConfirm, setState } from "./store";
 
 const project = {
   id: "prj_mock",
   name: "Mock",
   rootPath: "/mock",
   gitRootPath: "/mock",
+  pinned: false,
   sessions: [],
-  worktrees: [{
-    id: "wt_mock",
-    branch: "agent/mock",
-    baseCommit: "a".repeat(40),
-    baseRef: null,
-    path: "/mock-worktree",
-    health: "clean" as const,
-  }],
+  worktrees: [
+    {
+      id: "wt_mock",
+      branch: "agent/mock",
+      baseCommit: "a".repeat(40),
+      baseRef: null,
+      path: "/mock-worktree",
+      health: "clean" as const,
+    },
+  ],
 };
 
-describe("Git removal interaction preflights", () => {
+const projectPreflight = {
+  projectId: "prj_mock",
+  sessionCount: 2,
+  activeSessionCount: 1,
+  archivedSessionCount: 1,
+  archivedSessions: [{ id: "ses_1", archiveGeneration: 101 }],
+  worktreeCount: 1,
+  recoverableOperationCount: 1,
+  pendingCommitOperationCount: 1,
+  canRemove: true,
+};
+
+const worktreePreflight = {
+  worktreeId: "wt_mock",
+  branch: "agent/mock",
+  path: "/mock-worktree",
+  health: "dirty" as const,
+  modified: 0,
+  staged: 0,
+  untracked: 0,
+  ignored: 1,
+  ignoredSample: [".env"],
+  sessionCount: 1,
+  activeSessionCount: 1,
+  repositoryMissing: false,
+  canRemove: true,
+  blockers: ["ignored_local_files", "session_references"],
+};
+
+describe("destructive Git removal flows", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setState({
@@ -58,49 +91,96 @@ describe("Git removal interaction preflights", () => {
       confirm: null,
       toasts: [],
     });
+    apiMock.listProjects.mockResolvedValue([]);
   });
 
-  it("surfaces ignored local files and never asks the backend to delete", async () => {
+  it("confirms and deletes a dirty Worktree instead of blocking on local files or Sessions", async () => {
+    apiMock.worktreeDeletePreflight.mockResolvedValue(worktreePreflight);
+    apiMock.removeWorktree.mockResolvedValue({
+      stopWarnings: 0,
+      cleanupWarnings: 0,
+    });
+
+    const flow = removeWorktreeFlow("wt_mock");
+    await vi.waitFor(() => expect(getState().confirm).not.toBeNull());
+    expect(getState().confirm?.details?.join("\n")).toContain(".env");
+    expect(getState().confirm?.details?.join("\n")).toContain("Session");
+    resolveConfirm(true);
+    await flow;
+
+    expect(apiMock.removeWorktree).toHaveBeenCalledWith("wt_mock");
+    const toasts = getState().toasts;
+    expect(toasts[toasts.length - 1]?.text).toContain("Worktree 已删除");
+  });
+
+  it("reports incomplete cleanup without treating it as a deletion blocker", async () => {
+    apiMock.worktreeDeletePreflight.mockResolvedValue(worktreePreflight);
+    apiMock.removeWorktree.mockResolvedValue({
+      stopWarnings: 1,
+      cleanupWarnings: 1,
+    });
+
+    const flow = removeWorktreeFlow("wt_mock");
+    await vi.waitFor(() => expect(getState().confirm).not.toBeNull());
+    resolveConfirm(true);
+    await flow;
+
+    const toasts = getState().toasts;
+    expect(toasts[toasts.length - 1]?.text).toContain("2 项进程或文件清理无法确认完成");
+    expect(apiMock.removeWorktree).toHaveBeenCalledWith("wt_mock");
+  });
+
+  it("directly deletes a managed Worktree directory when the repository is gone", async () => {
     apiMock.worktreeDeletePreflight.mockResolvedValue({
-      worktreeId: "wt_mock",
-      branch: "agent/mock",
-      path: "/mock-worktree",
-      health: "dirty",
-      modified: 0,
-      staged: 0,
-      untracked: 0,
-      ignored: 1,
-      ignoredSample: [".env"],
+      ...worktreePreflight,
+      repositoryMissing: true,
+      ignored: 0,
+      ignoredSample: [],
       sessionCount: 0,
       activeSessionCount: 0,
-      canRemove: false,
-      blockers: ["ignored_local_files"],
+      blockers: [],
+    });
+    apiMock.removeWorktree.mockResolvedValue({
+      stopWarnings: 0,
+      cleanupWarnings: 0,
     });
 
-    await removeWorktreeFlow("wt_mock");
+    const flow = removeWorktreeFlow("wt_mock");
+    await vi.waitFor(() => expect(getState().confirm).not.toBeNull());
+    expect(getState().confirm?.body).toContain("直接删除托管的 Worktree 目录");
+    resolveConfirm(true);
+    await flow;
 
-    expect(apiMock.worktreeDeletePreflight).toHaveBeenCalledWith("wt_mock");
-    expect(apiMock.removeWorktree).not.toHaveBeenCalled();
-    expect(getState().confirm).toBeNull();
-    const toasts = getState().toasts;
-    expect(toasts[toasts.length - 1]?.text).toContain(".env");
+    expect(apiMock.removeWorktree).toHaveBeenCalledWith("wt_mock");
   });
 
-  it("blocks project removal before confirmation when dependencies remain", async () => {
-    apiMock.projectRemovePreflight.mockResolvedValue({
-      projectId: "prj_mock",
-      sessionCount: 2,
-      worktreeCount: 1,
-      recoverableOperationCount: 0,
-      canRemove: false,
+  it("confirms once and removes a Project with all dependencies", async () => {
+    apiMock.projectRemovePreflight.mockResolvedValue(projectPreflight);
+    apiMock.removeProject.mockResolvedValue({
+      stopWarnings: 0,
+      cleanupWarnings: 0,
     });
 
-    await removeProjectFlow("prj_mock");
+    const flow = removeProjectFlow("prj_mock");
+    await vi.waitFor(() => expect(getState().confirm).not.toBeNull());
+    expect(getState().confirm?.body).toContain("2 个 Session");
+    expect(getState().confirm?.body).toContain("1 个托管 Worktree");
+    expect(getState().confirm?.body).toContain("2 个未完成 Git 操作");
+    resolveConfirm(true);
+    await flow;
+
+    expect(apiMock.deleteProjectArchivedSessions).not.toHaveBeenCalled();
+    expect(apiMock.removeProject).toHaveBeenCalledWith("prj_mock");
+  });
+
+  it("keeps the destructive confirmation cancellable", async () => {
+    apiMock.projectRemovePreflight.mockResolvedValue(projectPreflight);
+
+    const flow = removeProjectFlow("prj_mock");
+    await vi.waitFor(() => expect(getState().confirm).not.toBeNull());
+    resolveConfirm(false);
+    await flow;
 
     expect(apiMock.removeProject).not.toHaveBeenCalled();
-    expect(getState().confirm).toBeNull();
-    const toasts = getState().toasts;
-    expect(toasts[toasts.length - 1]?.text).toContain("2 个 Session");
-    expect(toasts[toasts.length - 1]?.text).toContain("1 个 Worktree");
   });
 });

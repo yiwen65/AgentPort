@@ -1,13 +1,22 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { apiMock, jumpToRecoveryOutputMock, releaseTerminalMock } = vi.hoisted(() => ({
+const {
+  apiMock,
+  attachHandleMock,
+  jumpToRecoveryOutputMock,
+  releaseTerminalMock,
+  resetForRestartMock,
+} = vi.hoisted(() => ({
   apiMock: {
     listProjects: vi.fn(),
     markSessionSeen: vi.fn(),
+    restartSession: vi.fn(),
   },
+  attachHandleMock: vi.fn(),
   jumpToRecoveryOutputMock: vi.fn(),
   releaseTerminalMock: vi.fn(),
+  resetForRestartMock: vi.fn(),
 }));
 
 vi.mock("./api", () => ({
@@ -18,17 +27,17 @@ vi.mock("./api", () => ({
 vi.mock("./terminals", () => ({
   applyTerminalSettings: vi.fn(),
   applyXtermTheme: vi.fn(),
-  attachHandle: vi.fn(),
+  attachHandle: attachHandleMock,
   clearUnreadOutputTracking: vi.fn(),
   disposeHandle: vi.fn(),
   jumpToRecoveryOutput: jumpToRecoveryOutputMock,
-  MAX_PERSISTENT_TERMINALS: 3,
+  MAX_PERSISTENT_TERMINALS: 1,
   pruneHandles: vi.fn(),
   releaseTerminal: releaseTerminalMock,
-  resetForRestart: vi.fn(),
+  resetForRestart: resetForRestartMock,
 }));
 
-import { selectSession } from "./actions";
+import { restartSessionFlow, selectSession } from "./actions";
 import { getState, setState } from "./store";
 import type { SessionView } from "./types";
 
@@ -47,6 +56,7 @@ const oldSession = {
   logPath: "/tmp/old.log",
   unread: false,
   status: null,
+  pinnedAt: null,
   createdAt: "2026-07-23T00:00:00.000Z",
 };
 
@@ -63,6 +73,7 @@ const projectWith = (...sessions: SessionView[]) => ([{
   name: "Project",
   rootPath: "/tmp/project",
   gitRootPath: null,
+  pinned: false,
   sessions,
   worktrees: [],
 }]);
@@ -89,7 +100,26 @@ describe("selectSession", () => {
     expect(getState().activeSessionId).toBe("ses_old");
 
     await vi.waitFor(() => expect(getState().activeSessionId).toBe("ses_new"));
-    expect(getState().attachedIds).toEqual(["ses_old", "ses_new"]);
+    expect(getState().attachedIds).toEqual(["ses_new"]);
+    expect(releaseTerminalMock).toHaveBeenCalledWith("ses_old");
+  });
+
+  it("preserves a collapsed Project during automatic startup selection", () => {
+    window.localStorage.setItem(
+      "agentport-collapsed-project-ids",
+      JSON.stringify(["prj_1"]),
+    );
+    setState({ expandedProjects: { prj_1: false } });
+
+    selectSession("ses_old", null, { revealInSidebar: false });
+
+    expect(getState().activeSessionId).toBe("ses_old");
+    expect(getState().expandedProjects.prj_1).toBe(false);
+    expect(
+      JSON.parse(
+        window.localStorage.getItem("agentport-collapsed-project-ids") ?? "null",
+      ),
+    ).toEqual(["prj_1"]);
   });
 
   it("never adds a JSON-RPC Session to the persistent xterm LRU", () => {
@@ -101,8 +131,9 @@ describe("selectSession", () => {
     selectSession("ses_rpc");
 
     expect(getState().activeSessionId).toBe("ses_rpc");
-    expect(getState().attachedIds).toEqual(["ses_old"]);
+    expect(getState().attachedIds).toEqual([]);
     expect(releaseTerminalMock).toHaveBeenCalledWith("ses_rpc");
+    expect(releaseTerminalMock).toHaveBeenCalledWith("ses_old");
   });
 
   it("keeps structured recovery on the JSON-RPC renderer instead of opening xterm", () => {
@@ -131,6 +162,53 @@ describe("selectSession", () => {
     selectSession("ses_old", recoveryTarget);
 
     expect(jumpToRecoveryOutputMock).toHaveBeenCalledWith("ses_old", recoveryTarget);
+  });
+
+  it("keeps ended PTY Sessions in the single xterm renderer", () => {
+    const ended = { ...oldSession, id: "ses_ended", lifecycle: "stopped" as const };
+    const recoveryTarget = {
+      runId: "run_1",
+      runOrdinal: 1,
+      generation: 0,
+      offset: 128,
+    };
+    setState({ projects: projectWith(oldSession, ended), attachedIds: [oldSession.id] });
+
+    selectSession(ended.id, recoveryTarget);
+
+    expect(getState().activeSessionId).toBe(ended.id);
+    expect(getState().attachedIds).toEqual([ended.id]);
+    expect(releaseTerminalMock).toHaveBeenCalledWith(oldSession.id);
+    expect(jumpToRecoveryOutputMock).not.toHaveBeenCalled();
+  });
+
+  it("re-mounts an interrupted PTY after restart publishes it as running", async () => {
+    const interrupted = {
+      ...oldSession,
+      id: "ses_interrupted",
+      lifecycle: "interrupted" as const,
+    };
+    const restarted = { ...interrupted, lifecycle: "running" as const };
+    setState({
+      projects: projectWith(interrupted),
+      activeSessionId: interrupted.id,
+      attachedIds: [],
+    });
+    apiMock.restartSession.mockResolvedValue({
+      resumePrecision: "exact",
+      agentSessionId: "native-session",
+      notes: [],
+      notices: [],
+      hostPid: 4242,
+    });
+    apiMock.listProjects.mockResolvedValue(projectWith(restarted));
+
+    await restartSessionFlow(interrupted.id);
+
+    expect(resetForRestartMock).toHaveBeenCalledWith(interrupted.id);
+    expect(getState().activeSessionId).toBe(interrupted.id);
+    expect(getState().attachedIds).toEqual([interrupted.id]);
+    expect(attachHandleMock).toHaveBeenCalledWith(interrupted.id);
   });
 
   it("does not let a missing-session refresh override a newer selection intent", async () => {

@@ -34,5 +34,8 @@
     "pre_qoder_safe": "Qoder safe defaults",
     "pre_pi_safe": "Pi local-permissions defaults",
     "pre_shell_safe": "Shell safe defaults"
+  },
+  "cleanup": {
+    "nativeWarning": "Session deleted, but agent-native files for {{count}} session(s) could not be removed; see the logs"
   }
 }

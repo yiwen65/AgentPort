@@ -14,17 +14,21 @@ import type {
   AttachInfo,
   BootInfo,
   ChannelMsg,
+  ConfirmedArchivedSession,
   CreateSessionResult,
   CreateWorktreeResult,
   AutoStashRecord,
   BranchOperationResult,
   HostInfo,
   LogCursorView,
+  HistoryPage,
+  LegacyDeleteReport,
+  LegacyLogInventory,
   RecoveryLogContext,
-  LogTail,
   PermissionStr,
   Preset,
   ProbeOutcome,
+  ProjectLayoutEntry,
   ProjectView,
   ProjectRemovalPreflight,
   LocalBranchesResponse,
@@ -52,6 +56,7 @@ import type {
   CommitAiConfig,
   CommitAiLanguage,
   CommitAiProvider,
+  DestructiveRemovalOutcome,
   RestartResult,
   DocumentDirListing,
   SearchResult,
@@ -194,17 +199,43 @@ export type CreateSessionArgs = {
 
 export type ExportArgs = {
   sessionId: string;
-  kind: "log" | "md" | "zip";
+  kind: "md" | "json" | "zip";
   dest: string;
   last: number | null;
   stripAnsi: boolean;
+};
+
+export type NativeCoverageSummary = {
+  total: number;
+  captured: number;
+  missing: number;
+  ambiguous: number;
+  unsupported: number;
+};
+
+export type BackupCreateResult = {
+  path: string;
+  files: number;
+  bytes: number;
+  verified: boolean;
+  nativeCoverage: NativeCoverageSummary;
+};
+
+export type BackupVerifyResult = {
+  ok: boolean;
+  formatVersion: number;
+  createdAt: string;
+  files: number;
+  dataModelVersion: number;
+  nativeCoverage: NativeCoverageSummary;
 };
 
 export const api = {
   boot: () => invoke<BootInfo>("boot"),
   listProjects: (activeSession: string | null) =>
     invoke<ProjectView[]>("list_projects", { activeSession }),
-  probeAgents: () => invoke<ProbeOutcome[]>("probe_agents"),
+  probeAgents: (preserveSelections = false) =>
+    invoke<ProbeOutcome[]>("probe_agents", { preserveSelections }),
   probeAgent: (agent: string, path: string | null) =>
     invoke<ProbeOutcome>("probe_agent", { agent, path }),
   listSupportedAgents: () => invoke<SupportedAgent[]>("list_supported_agents"),
@@ -212,9 +243,16 @@ export const api = {
     invoke<AddProjectResult>("add_project", { path, name }),
   renameProject: (id: string, name: string) =>
     invoke<void>("rename_project", { id, name }),
-  removeProject: (id: string) => invoke<void>("remove_project", { id }),
+  setProjectLayout: (entries: ProjectLayoutEntry[], activeSession: string | null) =>
+    invoke<ProjectView[]>("set_project_layout", { entries, activeSession }),
+  removeProject: (id: string) =>
+    invoke<DestructiveRemovalOutcome>("remove_project", { id }),
   projectRemovePreflight: (id: string) =>
     invoke<ProjectRemovalPreflight>("project_remove_preflight", { id }),
+  deleteProjectArchivedSessions: (
+    projectId: string,
+    sessions: ConfirmedArchivedSession[],
+  ) => invoke<void>("delete_project_archived_sessions", { projectId, sessions }),
   listPresets: (agent: string | null) => invoke<Preset[]>("list_presets", { agent }),
   createSession: (args: CreateSessionArgs) =>
     invoke<CreateSessionResult>("create_session", args),
@@ -261,6 +299,8 @@ export const api = {
     invoke<RestartResult>("restart_session", { sessionId, riskAck }),
   renameSession: (sessionId: string, title: string) =>
     invoke<void>("rename_session", { sessionId, title }),
+  setSessionPinned: (sessionId: string, pinned: boolean) =>
+    invoke<void>("set_session_pinned", { sessionId, pinned }),
   archiveSession: (sessionId: string) => invoke<void>("archive_session", { sessionId }),
   listArchivedSessions: () => invoke<ArchivedSessionView[]>("list_archived_sessions"),
   unarchiveSession: (sessionId: string) => invoke<void>("unarchive_session", { sessionId }),
@@ -291,7 +331,8 @@ export const api = {
     }),
   listWorktrees: (projectId: string) =>
     invoke<WorktreeView[]>("list_worktrees", { projectId }),
-  removeWorktree: (worktreeId: string) => invoke<void>("remove_worktree", { worktreeId }),
+  removeWorktree: (worktreeId: string) =>
+    invoke<DestructiveRemovalOutcome>("remove_worktree", { worktreeId }),
   worktreeDeletePreflight: (worktreeId: string) =>
     invoke<WorktreeDeletePreflight>("worktree_delete_preflight", { worktreeId }),
   worktreeStatusText: (worktreeId: string) =>
@@ -500,16 +541,11 @@ export const api = {
     }),
   exportSession: (args: ExportArgs) => invoke<string>("export_session", args),
   backupCreate: (dest: string | null) =>
-    invoke<{ path: string; files: number; bytes: number; verified: boolean }>("backup_create", {
-      dest,
-    }),
+    invoke<BackupCreateResult>("backup_create", { dest }),
   backupList: () =>
     invoke<{ path: string; name: string; size: number; modifiedAt: string }[]>("backup_list"),
   backupVerify: (path: string) =>
-    invoke<{ ok: boolean; createdAt: string; files: number; dataModelVersion: number }>(
-      "backup_verify",
-      { path },
-    ),
+    invoke<BackupVerifyResult>("backup_verify", { path }),
   backupRestore: (path: string, target: string) =>
     invoke<{ restored: string; previousKeptAt: string }>("backup_restore", { path, target }),
   search: (query: string, limit: number | null) =>
@@ -517,6 +553,12 @@ export const api = {
   /** Full persisted output for one Session, including text outside xterm's scrollback. */
   searchSessionLog: (sessionId: string, query: string, limit: number | null) =>
     invoke<SearchResult>("search_session_log", { sessionId, query, limit }),
+  getNativeHistory: (sessionId: string, cursor: string | null, limit = 200) =>
+    invoke<HistoryPage>("get_native_history", { sessionId, cursor, limit }),
+  getLegacyLogInventory: () =>
+    invoke<LegacyLogInventory>("get_legacy_log_inventory"),
+  deleteLegacyLogs: (entryIds: string[], confirmed: boolean) =>
+    invoke<LegacyDeleteReport>("delete_legacy_logs", { entryIds, confirmed }),
   rebuildSearchIndex: () => invoke<void>("rebuild_search_index"),
   getTimeline: () => invoke<TimelineData>("get_timeline"),
   ackTimeline: (snapshots: TimelineAckSnapshot[]) => invoke<void>("ack_timeline", { snapshots }),
@@ -549,8 +591,6 @@ export const api = {
   secretDelete: (id: string) => invoke<void>("secret_delete", { id }),
   notifyTest: () => invoke<void>("notify_test"),
   takePendingNotificationSession: () => invoke<string | null>("take_pending_notification_session"),
-  readLogTail: (sessionId: string, bytes: number) =>
-    invoke<LogTail>("read_log_tail", { sessionId, bytes }),
   readRecoveryLogContext: (sessionId: string, cursor: LogCursorView) =>
     invoke<RecoveryLogContext>("read_recovery_log_context", { sessionId, cursor }),
   revealInFileManager: (path: string) => invoke<void>("reveal_in_file_manager", { path }),
@@ -610,6 +650,11 @@ export function onSessionAgentId(
   return listen<{ sessionId: string; agentSessionId: string }>("session-agent-id", (e) =>
     cb(e.payload),
   );
+}
+
+/** Emitted when a purge succeeded but some agent-native files could not be removed. */
+export function onNativeCleanupWarning(cb: (ev: { count: number }) => void): Promise<UnlistenFn> {
+  return listen<{ count: number }>("native-cleanup-warning", (e) => cb(e.payload));
 }
 
 export function onNotificationActivated(cb: (sessionId: string) => void): Promise<UnlistenFn> {

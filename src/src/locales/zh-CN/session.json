@@ -34,5 +34,8 @@
     "pre_qoder_safe": "Qoder 安全默认",
     "pre_pi_safe": "Pi 本地权限默认",
     "pre_shell_safe": "Shell 安全默认"
+  },
+  "cleanup": {
+    "nativeWarning": "Session 已删除，但有 {{count}} 个 Session 的 agent 原生文件未能删除，详见日志"
   }
 }

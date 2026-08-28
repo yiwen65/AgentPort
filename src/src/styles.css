@@ -74,15 +74,27 @@
      (see the data-vibrancy rules after the theme blocks). */
   --sidebar-glass: rgba(13, 13, 19, 0.65);
   --sidebar-glass-layers:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0) 22%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.01) 0%, rgba(0, 0, 0, 0.3) 100%);
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.05) 0%,
+      rgba(255, 255, 255, 0) 22%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.01) 0%,
+      rgba(0, 0, 0, 0.3) 100%
+    );
   --sidebar-border: rgba(255, 255, 255, 0.075);
   --sidebar-chip: rgba(32, 32, 39, 0.78);
   /* Frosted selection chip: inset top highlight + accent hairline ring, so
      the active row reads as glass resting on glass instead of a flat fill. */
   --sidebar-active-ring: rgba(140, 166, 255, 0.32);
   --sidebar-active-highlight: rgba(255, 255, 255, 0.13);
-  --sidebar-footer-frost: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.18) 100%);
+  --sidebar-footer-frost: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0.18) 100%
+  );
   --terminal-scroll-thumb: rgba(243, 245, 251, 0.28);
   /* Sidebar hierarchy (dark): L1 repo name > session label > L2 branch /
      context row > L3 hint/age. Icons inherit their row's tier color so
@@ -164,13 +176,25 @@
      fallback notes. */
   --sidebar-glass: rgba(250, 250, 253, 0.55);
   --sidebar-glass-layers:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.32) 0%, rgba(255, 255, 255, 0) 24%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0) 55%, rgba(196, 201, 218, 0.38) 100%);
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.32) 0%,
+      rgba(255, 255, 255, 0) 24%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0) 55%,
+      rgba(196, 201, 218, 0.38) 100%
+    );
   --sidebar-border: rgba(17, 18, 23, 0.08);
   --sidebar-chip: rgba(255, 255, 255, 0.75);
   --sidebar-active-ring: rgba(0, 122, 255, 0.26);
   --sidebar-active-highlight: rgba(255, 255, 255, 0.55);
-  --sidebar-footer-frost: linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, rgba(206, 210, 224, 0.32) 100%);
+  --sidebar-footer-frost: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(206, 210, 224, 0.32) 100%
+  );
   --terminal-scroll-thumb: rgba(17, 18, 23, 0.075);
   /* Sidebar hierarchy (light): same stepping logic as dark — L1 > session
      > L2 > L3, icons inherit the row tier, states reuse the accent family. */
@@ -547,14 +571,19 @@ button {
   box-shadow: none;
 }
 
-/* The sidebar glass is a single CSS layer: with the transparent window,
-   backdrop-filter blurs the desktop directly — no native material underlay
-   (the NSVisualEffectView stack was removed; two glass layers only read as
-   fog). Saturation stays moderate: vivid wallpaper noise behind the rows
-   costs text clarity. Only where the glass stack is enabled. */
-:root[data-vibrancy="on"] .sidebar {
-  backdrop-filter: blur(28px) saturate(1.4);
-  -webkit-backdrop-filter: blur(28px) saturate(1.4);
+/* The sidebar glass stays identical whether the pointer is inside or
+   outside: with the transparent window, backdrop-filter blurs the desktop
+   directly — no native material underlay (two glass layers only read as
+   fog). Theme-specific brightness protects text contrast while saturation
+   stays moderate so vivid wallpaper noise does not compete with rows. */
+:root[data-vibrancy="on"][data-theme="dark"] .sidebar {
+  backdrop-filter: blur(28px) saturate(1.4) brightness(0.82);
+  -webkit-backdrop-filter: blur(28px) saturate(1.4) brightness(0.82);
+}
+
+:root[data-vibrancy="on"][data-theme="light"] .sidebar {
+  backdrop-filter: blur(28px) saturate(1.4) brightness(1.08);
+  -webkit-backdrop-filter: blur(28px) saturate(1.4) brightness(1.08);
 }
 
 /* Hairline text separation from the blurred backdrop — the difference
@@ -569,9 +598,11 @@ button {
 
 /* WKWebView recomputes the backdrop blur every frame while the window
    moves, and the glass edge shimmers against the opaque workspace layer.
-   Drop the filter mid-drag (body.is-window-dragging): the smoked tint
-   alone carries the look for those few hundred milliseconds. */
-body.is-window-dragging .sidebar {
+Drop the filter mid-drag (body.is-window-dragging): the smoked tint
+alone carries the look for those few hundred milliseconds. The :root
+prefix gives this rule specificity (0,4,1), above the themed glass
+rules at (0,4,0), so source order cannot silently disable it. */
+:root[data-vibrancy="on"] body.is-window-dragging .sidebar {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
@@ -605,7 +636,9 @@ body.is-window-dragging .sidebar {
   left: 5px;
   width: 1px;
   background: transparent;
-  transition: background 0.12s ease, width 0.12s ease;
+  transition:
+    background 0.12s ease,
+    width 0.12s ease;
 }
 
 .split-handle:hover::before,
@@ -633,6 +666,37 @@ body.is-window-dragging .sidebar {
 
 .tree-project {
   margin-bottom: 6px;
+  position: relative;
+  transition: opacity 0.12s ease;
+}
+
+.tree-project.dragging {
+  z-index: 3;
+  opacity: 0.72;
+}
+
+.tree-project.dragging .tree-row.project,
+body.is-project-dragging .tree-row.project {
+  cursor: grabbing;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.project-drop-indicator {
+  position: absolute;
+  z-index: 5;
+  top: -4px;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
+  pointer-events: none;
+}
+
+:root[data-motion="reduced"] .tree-project {
+  transition: none;
 }
 
 /* Hairline between project groups: full-bleed across the glass so each repo
@@ -640,6 +704,17 @@ body.is-window-dragging .sidebar {
 .tree-project + .tree-project {
   border-top: 1px solid var(--sidebar-border);
   padding-top: 7px;
+}
+
+.tree-project + .tree-project.unpinned-start {
+  margin-top: 9px;
+  border-top-width: 2px;
+  border-top-color: color-mix(
+    in srgb,
+    var(--accent) 42%,
+    var(--sidebar-border)
+  );
+  padding-top: 9px;
 }
 
 .tree-project-header {
@@ -692,6 +767,23 @@ body.is-window-dragging .sidebar {
   font-size: 13px;
   font-weight: 500;
   color: var(--sidebar-text-strong);
+  cursor: grab;
+  touch-action: none;
+}
+
+.project-pin-indicator {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--accent);
+}
+
+.project-pin-indicator svg {
+  width: 14px;
+  height: 14px;
 }
 
 /* Row icons inherit the row's tier color, so icon tone tracks the text
@@ -760,7 +852,9 @@ body.is-window-dragging .sidebar {
   touch-action: pan-y;
 }
 
-.quick-agent-strip::-webkit-scrollbar { display: none; }
+.quick-agent-strip::-webkit-scrollbar {
+  display: none;
+}
 
 .quick-agent-strip.dragging {
   cursor: grabbing;
@@ -783,7 +877,7 @@ body.is-window-dragging .sidebar {
   width: 17px;
   height: 17px;
   object-fit: contain;
-  opacity: .92;
+  opacity: 0.92;
 }
 
 .quick-agent-mark svg {
@@ -803,14 +897,19 @@ body.is-window-dragging .sidebar {
   font-weight: 700;
 }
 
-.quick-agent-mark.shell { filter: none; opacity: 1; }
+.quick-agent-mark.shell {
+  filter: none;
+  opacity: 1;
+}
 
 :root[data-theme="light"] .quick-agent-mark {
   filter: none;
-  opacity: .96;
+  opacity: 0.96;
 }
 
-.project-agent-action:hover .quick-agent-mark { opacity: 1; }
+.project-agent-action:hover .quick-agent-mark {
+  opacity: 1;
+}
 
 .adapter-order-name {
   display: inline-flex;
@@ -2000,7 +2099,7 @@ body.is-window-dragging .sidebar {
   padding: 10px 12px 36px;
   color: var(--text-dim);
   background: color-mix(in srgb, var(--bg-term) 80%, var(--git-surface));
-  font: 11px/1.55 var(--font-mono);
+  font: 11px / 1.55 var(--font-mono);
   tab-size: 4;
   white-space: pre;
   -webkit-user-select: text;
@@ -2075,7 +2174,7 @@ body.is-window-dragging .sidebar {
   border-radius: 7px;
   background: var(--bg-active);
   color: var(--text);
-  font: 12px/1.5 var(--font-mono);
+  font: 12px / 1.5 var(--font-mono);
 }
 
 .git-commit-composer p {
@@ -2227,7 +2326,7 @@ body.is-window-dragging .sidebar {
 .git-commit-message pre {
   margin: 8px 0 0;
   white-space: pre-wrap;
-  font: 11px/1.55 var(--font-mono);
+  font: 11px / 1.55 var(--font-mono);
   -webkit-user-select: text;
   user-select: text;
 }
@@ -2335,7 +2434,7 @@ body.is-window-dragging .sidebar {
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--bg-active);
-  font: 11px/1.5 var(--font-mono);
+  font: 11px / 1.5 var(--font-mono);
   white-space: pre-wrap;
   -webkit-user-select: text;
   user-select: text;
@@ -2430,7 +2529,7 @@ body.is-window-dragging .sidebar {
   justify-content: space-between;
   gap: 12px;
   padding: 10px 12px;
-  font-size: 12px;
+  font-size: calc(12px * var(--term-font-scale, 1));
 }
 
 .pi-rpc-header > div {
@@ -2463,7 +2562,7 @@ body.is-window-dragging .sidebar {
   display: block;
   margin-bottom: 5px;
   color: var(--accent);
-  font-size: 11px;
+  font-size: calc(11px * var(--term-font-scale, 1));
   font-weight: 600;
 }
 
@@ -2471,7 +2570,7 @@ body.is-window-dragging .sidebar {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  font: 12px/1.5 var(--font-mono);
+  font: calc(12px * var(--term-font-scale, 1)) / 1.5 var(--font-mono);
   color: var(--text);
 }
 
@@ -2484,6 +2583,7 @@ body.is-window-dragging .sidebar {
   min-height: 68px;
   resize: vertical;
   box-sizing: border-box;
+  font-size: calc(13px * var(--term-font-scale, 1));
 }
 
 .pi-rpc-composer > div {
@@ -2527,33 +2627,29 @@ body.is-window-dragging .sidebar {
   flex-direction: column;
 }
 
-.doc-panel-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  color: var(--text-muted);
-  font-size: 12px;
-  padding: 20px;
-  text-align: center;
-}
-
-.doc-panel-empty-icon {
-  font-size: 26px;
-  opacity: 0.5;
-}
-
-/* VSCode-like file tree column. Lifted one surface step above the terminal
+/* VSCode-like file tree column, docked to the panel's right edge so the
+   editor sits beside the terminal. Lifted one surface step above the terminal
    page so the tree and the preview read as two distinct zones. */
 .doc-tree {
   flex: 0 0 184px;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border);
+  border-left: 1px solid var(--border);
   background: var(--bg-panel);
+}
+
+/* Tree-only mode: pin the panel to the tree's footprint (184px + 1px
+   separator). Without an explicit width the aside shrink-wraps to the tree
+   rows' max-content — row labels are nowrap — leaving a void between the
+   tree and the window edge. The tree also drops its own border-left so the
+   panel's border stays the only separator (no doubled rule line). */
+.doc-panel.tree-only {
+  width: 185px;
+}
+
+.doc-panel.tree-only .doc-tree {
+  border-left: none;
 }
 
 .doc-tree-header {
@@ -2753,6 +2849,21 @@ body.is-window-dragging .sidebar {
   border-left: none;
 }
 
+/* Expanded mode: cap the reading column and center it, zen-editor style, so
+   text does not hug the left edge of a wide window. 828px matches the
+   preview's footprint (780px + 2×24px padding), keeping Raw and Preview
+   aligned when toggling between them. */
+.doc-panel.expanded .doc-editor {
+  width: 100%;
+  max-width: 828px;
+  margin-inline: auto;
+}
+
+.doc-panel.expanded .md-preview,
+.doc-panel.expanded .doc-prose {
+  margin-inline: auto;
+}
+
 .doc-panel-resize {
   position: absolute;
   left: -3px;
@@ -2855,7 +2966,7 @@ body.is-window-dragging .sidebar {
 }
 
 .doc-unsupported-path {
-  font: 11px/1.5 var(--font-mono);
+  font: 11px / 1.5 var(--font-mono);
   color: var(--text-muted);
   opacity: 0.8;
   word-break: break-all;
@@ -2880,7 +2991,7 @@ body.is-window-dragging .sidebar {
   overflow: hidden;
   padding: 8px 8px 16px 12px;
   border-right: 1px solid var(--border);
-  font: 12px/1.55 var(--font-mono);
+  font: calc(12px * var(--doc-font-scale, 1)) / 1.55 var(--font-mono);
   color: var(--text-muted);
   text-align: right;
   user-select: none;
@@ -2902,7 +3013,7 @@ body.is-window-dragging .sidebar {
   /* Raw view shares the terminal surface; match its foreground too so raw
      and terminal text read identically. */
   color: var(--term-text);
-  font: 12px/1.55 var(--font-mono);
+  font: calc(12px * var(--doc-font-scale, 1)) / 1.55 var(--font-mono);
   padding: 8px 12px 16px;
   white-space: pre;
   overflow: auto;
@@ -2929,12 +3040,16 @@ body.is-window-dragging .sidebar {
 
 .doc-preview-host {
   min-height: 100%;
+  /* The preview is read-only but must stay copyable: opt back into text
+     selection under the global `body { user-select: none }` chrome rule. */
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .doc-prose {
   padding: 20px 24px 36px;
   max-width: 780px;
-  font-size: 13px;
+  font-size: calc(13px * var(--doc-font-scale, 1));
   line-height: 1.75;
   /* Terminal surface + terminal foreground: prose reads as One Dark / One
      Light body text, same as xterm output. */
@@ -2952,7 +3067,7 @@ body.is-window-dragging .sidebar {
 .md-preview {
   padding: 20px 24px 36px;
   max-width: 780px;
-  font-size: 13px;
+  font-size: calc(13px * var(--doc-font-scale, 1));
   line-height: 1.75;
   color: var(--term-text);
   word-break: break-word;
@@ -2971,20 +3086,25 @@ body.is-window-dragging .sidebar {
 }
 
 .md-preview h1 {
-  font-size: 21px;
+  font-size: calc(21px * var(--doc-font-scale, 1));
   font-weight: 700;
   margin: 1.2em 0 0.7em;
   padding-bottom: 0.35em;
   border-bottom: 1px solid var(--border);
 }
 
-.md-preview h2 { font-size: 17px; }
-.md-preview h3 { font-size: 15px; }
-.md-preview h4 { font-size: 13.5px; }
-
+.md-preview h2 {
+  font-size: calc(17px * var(--doc-font-scale, 1));
+}
+.md-preview h3 {
+  font-size: calc(15px * var(--doc-font-scale, 1));
+}
+.md-preview h4 {
+  font-size: calc(13.5px * var(--doc-font-scale, 1));
+}
 .md-preview h5,
 .md-preview h6 {
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--doc-font-scale, 1));
   color: var(--text-dim);
 }
 
@@ -3021,7 +3141,7 @@ body.is-window-dragging .sidebar {
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow-x: auto;
-  font: 12.5px/1.6 var(--font-mono);
+  font: calc(12.5px * var(--doc-font-scale, 1)) / 1.6 var(--font-mono);
   /* Panel sits on the terminal surface; step code blocks away from it (one
      shade darker in dark theme, one lighter in light) so they stand out. */
   background: var(--bg-active);
@@ -3058,7 +3178,7 @@ body.is-window-dragging .sidebar {
 .md-preview table {
   border-collapse: collapse;
   margin: 0.9em 0;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--doc-font-scale, 1));
 }
 
 .md-preview th,
@@ -3137,7 +3257,7 @@ body.is-window-dragging .sidebar {
 
 .flow-node-label {
   fill: var(--text);
-  font: 13px/1.5 var(--font-ui);
+  font: 13px / 1.5 var(--font-ui);
 }
 
 .flow-edge-path {
@@ -3160,7 +3280,7 @@ body.is-window-dragging .sidebar {
 
 .flow-edge-label {
   fill: var(--text-dim);
-  font: 12px/1.5 var(--font-ui);
+  font: 12px / 1.5 var(--font-ui);
   /* Panel-colored halo keeps labels readable where they cross edges. */
   paint-order: stroke;
   stroke: var(--bg-elevated);
@@ -3463,6 +3583,19 @@ body.is-window-dragging .sidebar {
   background: rgba(245, 245, 245, 0.28);
 }
 
+/* Attach/replay veil (SkeletonOverlay): fully masks the pane while retained
+   output streams through xterm — the translucent default would let the user
+   watch the terminal race through the whole replay. `--bg` is theme-aware, so
+   one declaration covers both themes; the light rule only buys specificity
+   over the translucent light override above. */
+.term-overlay.term-overlay-solid {
+  background: var(--bg);
+}
+
+:root[data-theme="light"] .term-overlay.term-overlay-solid {
+  background: var(--bg);
+}
+
 :root[data-theme="light"] .session-state-card {
   border-color: rgba(17, 18, 23, 0.1);
   box-shadow:
@@ -3571,8 +3704,13 @@ body.is-window-dragging .sidebar {
 }
 
 @keyframes terminal-bell-flash {
-  0%, 100% { box-shadow: inset 0 0 0 0 transparent; }
-  35% { box-shadow: inset 0 0 0 2px var(--accent); }
+  0%,
+  100% {
+    box-shadow: inset 0 0 0 0 transparent;
+  }
+  35% {
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
 }
 
 .term-host.terminal-bell,
@@ -3971,7 +4109,10 @@ body.is-window-dragging .sidebar {
 
 .archive-filters {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) minmax(112px, 0.42fr) minmax(120px, 0.5fr);
+  grid-template-columns: minmax(160px, 1fr) minmax(112px, 0.42fr) minmax(
+      120px,
+      0.5fr
+    );
   gap: 8px;
 }
 
@@ -4358,7 +4499,7 @@ textarea:focus {
 
 .worktree-branch-option.disabled {
   cursor: not-allowed;
-  opacity: .68;
+  opacity: 0.68;
 }
 
 .worktree-branch-option-main {
@@ -4451,7 +4592,9 @@ textarea:focus {
 }
 
 /* Local branch picker ------------------------------------------------ */
-.branch-picker-content { display: contents; }
+.branch-picker-content {
+  display: contents;
+}
 
 .branch-picker-status {
   display: flex;
@@ -4494,7 +4637,9 @@ textarea:focus {
   gap: 8px;
 }
 
-.branch-picker-toolbar input { min-width: 0; }
+.branch-picker-toolbar input {
+  min-width: 0;
+}
 
 .branch-picker-list {
   overflow-y: auto;
@@ -4513,8 +4658,12 @@ textarea:focus {
   border-bottom: 1px solid var(--border);
 }
 
-.branch-picker-row:last-child { border-bottom: 0; }
-.branch-picker-row.selected { background: var(--accent-soft); }
+.branch-picker-row:last-child {
+  border-bottom: 0;
+}
+.branch-picker-row.selected {
+  background: var(--accent-soft);
+}
 
 .branch-picker-choice {
   display: flex;
@@ -4530,11 +4679,29 @@ textarea:focus {
   text-align: left;
 }
 
-.branch-picker-choice:hover:not(:disabled) { background: var(--bg-hover); }
-.branch-picker-choice:disabled { cursor: not-allowed; opacity: .72; }
-.branch-picker-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.branch-picker-meta { margin-left: auto; color: var(--text-faint); font-size: 10px; }
-.branch-picker-state { flex: none; color: var(--text-dim); font-size: 10px; }
+.branch-picker-choice:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.branch-picker-choice:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+.branch-picker-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.branch-picker-meta {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+.branch-picker-state {
+  flex: none;
+  color: var(--text-dim);
+  font-size: 10px;
+}
 .branch-picker-path {
   max-width: 42%;
   overflow: hidden;
@@ -4543,7 +4710,9 @@ textarea:focus {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.branch-picker-worktree { flex: none; }
+.branch-picker-worktree {
+  flex: none;
+}
 .branch-picker-delete {
   flex: none;
   color: var(--red);
@@ -4552,7 +4721,9 @@ textarea:focus {
 
 .branch-picker-row:hover .branch-picker-delete,
 .branch-picker-row:focus-within .branch-picker-delete,
-.branch-picker-row.selected .branch-picker-delete { opacity: 1; }
+.branch-picker-row.selected .branch-picker-delete {
+  opacity: 1;
+}
 
 .branch-picker-delete:hover:not(:disabled) {
   background: var(--red-soft);
@@ -4591,7 +4762,12 @@ textarea:focus {
   gap: 5px;
 }
 
-.branch-picker-empty { padding: 16px; color: var(--text-dim); font-size: 12px; text-align: center; }
+.branch-picker-empty {
+  padding: 16px;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-align: center;
+}
 
 .branch-picker-create,
 .branch-picker-recovery {
@@ -4602,14 +4778,20 @@ textarea:focus {
 
 .branch-picker-create-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(120px, .55fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 0.55fr) auto auto;
   align-items: center;
   gap: 8px;
 }
 
-.branch-picker-create-grid .check-row { font-size: 11px; }
-.branch-picker-progress { border-left: 3px solid var(--amber); }
-.branch-picker-success { border-left: 3px solid var(--green); }
+.branch-picker-create-grid .check-row {
+  font-size: 11px;
+}
+.branch-picker-progress {
+  border-left: 3px solid var(--amber);
+}
+.branch-picker-success {
+  border-left: 3px solid var(--green);
+}
 
 .branch-picker-live-sessions,
 .branch-picker-recovery-actions,
@@ -4642,7 +4824,9 @@ textarea:focus {
   color: var(--text-dim);
 }
 
-.branch-picker-stash strong { color: var(--text); }
+.branch-picker-stash strong {
+  color: var(--text);
+}
 
 .branch-picker-recovery-actions code {
   padding: 1px 4px;
@@ -4654,14 +4838,26 @@ textarea:focus {
 
 @media (max-width: 620px) {
   .branch-picker-status,
-  .branch-picker-stash { flex-direction: column; }
-  .branch-picker-delete-confirm { align-items: flex-start; flex-direction: column; }
-  .branch-picker-summary { align-items: flex-start; text-align: left; }
-  .branch-picker-create-grid { grid-template-columns: 1fr; }
+  .branch-picker-stash {
+    flex-direction: column;
+  }
+  .branch-picker-delete-confirm {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .branch-picker-summary {
+    align-items: flex-start;
+    text-align: left;
+  }
+  .branch-picker-create-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (hover: none) {
-  .branch-picker-delete { opacity: 1; }
+  .branch-picker-delete {
+    opacity: 1;
+  }
 }
 
 .section-title:first-child {
@@ -4740,7 +4936,11 @@ textarea:focus {
   padding: 2px;
   border: 1px solid var(--settings-border);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--settings-row) 82%, var(--settings-sidebar));
+  background: color-mix(
+    in srgb,
+    var(--settings-row) 82%,
+    var(--settings-sidebar)
+  );
 }
 
 .theme-segment {
@@ -4800,7 +5000,9 @@ textarea:focus {
   border-radius: 0 8px 8px 0;
 }
 
-:root[data-theme="light"] .settings-grid input:not([type="checkbox"]):not([type="radio"]),
+:root[data-theme="light"]
+  .settings-grid
+  input:not([type="checkbox"]):not([type="radio"]),
 :root[data-theme="light"] .settings-grid select {
   border-color: rgba(17, 18, 23, 0.06);
   background: rgba(255, 255, 255, 0.76);
@@ -5067,7 +5269,9 @@ textarea:focus {
   border-top-color: rgba(17, 18, 23, 0.28);
   border-right-color: rgba(17, 18, 23, 0.28);
   border-bottom-color: rgba(17, 18, 23, 0.28);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.1);
+  box-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.2),
+    0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .toast.error {

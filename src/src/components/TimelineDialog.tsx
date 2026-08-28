@@ -12,8 +12,12 @@ import type { TimelineEntry } from "../types";
 function EntryRow({ entry }: { entry: TimelineEntry }) {
   const { t } = useTranslation("session");
   const s = useStore();
-  const exists = Boolean(findSession(s.projects, entry.sessionId));
-  const canLocate = Boolean(entry.logCursor) && !entry.rotatedAway;
+  const session = findSession(s.projects, entry.sessionId);
+  const exists = Boolean(session);
+  const sessionLive = session?.lifecycle === "creating" || session?.lifecycle === "running";
+  // Exact byte locations exist only in the bounded live Host tail. Ended
+  // Sessions open normalized agent-native history instead of a saved PTY log.
+  const canLocate = sessionLive && Boolean(entry.logCursor) && !entry.rotatedAway;
   const outputOnly = entry.evidence === "recovery:output-during-gui-closed";
   const hostInterrupted = entry.evidence?.startsWith("host:interrupted:") ?? false;
   const legacyReason = entry.locationUnavailableReason;

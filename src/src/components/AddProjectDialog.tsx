@@ -6,7 +6,13 @@ import { useTranslation } from "react-i18next";
 import Modal from "./Modal";
 import { api, errorText } from "../api";
 import { refreshProjects } from "../actions";
-import { closeDialog, setState, toast } from "../store";
+import {
+  closeDialog,
+  getState,
+  persistProjectExpansion,
+  setState,
+  toast,
+} from "../store";
 
 export default function AddProjectDialog() {
   const { t } = useTranslation(["shell", "common"]);
@@ -27,7 +33,11 @@ export default function AddProjectDialog() {
       } else {
         toast(t("shell:project.added", { name: res.name ?? path }), "success");
       }
-      if (res.id) setState({ expandedProjects: {} });
+      if (res.id) {
+        const expandedProjects = { ...getState().expandedProjects, [res.id]: true };
+        persistProjectExpansion(expandedProjects);
+        setState({ expandedProjects });
+      }
       closeDialog();
     } catch (e) {
       setError(t("shell:project.addFailed", { detail: errorText(e) }));

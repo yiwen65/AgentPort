@@ -17,9 +17,17 @@
     "newName": "新名称",
     "renameFailed": "重命名失败：{{detail}}",
     "removeTitle": "从 AgentPort 移除“{{name}}”？",
-    "removeBody": "仅移除 AgentPort 中的项目记录，不会删除磁盘上的项目目录。该操作只在所有 Session 与 Worktree 已单独处理后可用。",
-    "removeBlocked": "暂时无法移除：项目仍有 {{sessions}} 个 Session、{{worktrees}} 个 Worktree、{{operations}} 个待恢复分支操作。请先分别处理这些内容。",
-    "removeFailed": "移除失败：{{detail}}"
+    "removeBody": "磁盘上的项目目录本身会保留。AgentPort 将永久删除相关的 {{sessions}} 个 Session、{{worktrees}} 个托管 Worktree 目录（包括其中所有本地改动和被忽略文件），清理 {{operations}} 个未完成 Git 操作记录，然后移除项目记录。此操作不可恢复。",
+    "removeBlocked": "移除项目时会自动清理相关内容。",
+    "removeArchivedTitle": "清理“{{name}}”的归档 Session？",
+    "removeArchivedBody": "该项目有 {{count}} 个归档 Session，项目树中不会显示它们。继续将永久删除这些归档记录与 AgentPort 管理的本地会话文件，然后再次检查项目是否可移除。此操作不可恢复。",
+    "removeArchivedAction": "永久删除归档 Session",
+    "removeArchivedFailed": "无法清理项目的归档 Session：{{detail}}",
+    "removeFailed": "移除失败：{{detail}}",
+    "removePartial": "项目已移除，但有 {{count}} 项进程或文件清理无法确认完成；请查看日志检查残留。",
+    "layoutInvalid": "项目顺序已过期，请刷新后重试。",
+    "layoutSaved": "已保存项目顺序",
+    "layoutFailed": "保存项目顺序失败：{{detail}}"
   },
   "onboarding": {
     "probeFailed": "探测失败：{{detail}}",

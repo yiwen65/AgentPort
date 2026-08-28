@@ -1,19 +1,23 @@
 {
   "flow": {
     "deleteTitle": "删除 Worktree“{{branch}}”？",
-    "deleteBody": "将永久删除该 Worktree 目录，并清理 Git Worktree 记录。",
-    "deleteMissingBody": "磁盘目录已不存在；将清理失效的 Git 与 AgentPort 记录。",
+    "deleteBody": "将永久删除该 Worktree 目录及其中所有文件、关联 Session，并清理 Git Worktree 记录。",
+    "deleteMissingBody": "磁盘目录已不存在；将清理失效的 Git、Session 与 AgentPort 记录。",
+    "deleteOrphanedBody": "项目的 Git 仓库已不存在；AgentPort 将直接删除托管的 Worktree 目录，并清理关联 Session 与应用记录。",
+    "orphanedDetail": "托管的 Worktree 目录及其中所有文件都会被删除。",
     "pathDetail": "目录：{{path}}",
-    "safeDetail": "刚刚已复查：没有未提交、未跟踪或被忽略的本地文件，也没有 Session 引用。",
+    "safeDetail": "没有需要额外清理的本地文件或 Session 引用。",
+    "cleanupDetail": "删除时还将永久清理：{{detail}}。",
     "changesBlocker": "有本地改动（修改 {{modified}}、已暂存 {{staged}}、未跟踪 {{untracked}}）",
     "ignoredBlocker": "有 {{count}} 个被 Git 忽略的本地文件或目录（{{sample}}）",
     "sessionsBlocker": "仍被 {{count}} 个 Session 引用（其中 {{active}} 个未归档）",
     "lockedBlocker": "Git 已锁定该 Worktree",
     "unknownBlocker": "实时安全检查未通过",
     "blockerSeparator": "；",
-    "deleteBlocked": "为避免丢失本地数据，已阻止删除：{{detail}}。",
+    "deleteBlocked": "删除时将清理本地数据：{{detail}}。",
     "deleteAction": "删除 Worktree",
     "deleted": "Worktree 已删除",
+    "deletedWithWarnings": "Worktree 记录已删除，但有 {{count}} 项进程或文件清理无法确认完成；请查看日志检查残留。",
     "deleteFailed": "删除失败：{{detail}}"
   }
 }

@@ -35,6 +35,10 @@
       "projectQuickActions": "在项目 {{project}} 中快速启动 Agent",
       "projectScope": "项目 {{project}}",
       "projectMoreActions": "项目 {{project}} 的更多操作",
+      "projectPinned": "已置顶",
+      "pinnedProject": "已置顶项目 {{project}}",
+      "projectDragStarted": "正在移动项目 {{project}}；按 Escape 取消",
+      "projectDragCancelled": "已取消移动项目 {{project}}",
       "moreActions": "更多操作…",
       "worktreesEntryLabel": "Worktrees，进入管理视图",
       "currentCheckout": "当前 checkout：{{head}}。管理本地分支",
@@ -55,6 +59,8 @@
       "projectMenu": {
         "newWorktree": "新建 Worktree…",
         "manageBranches": "管理本地分支…",
+        "pin": "置顶项目",
+        "unpin": "取消置顶",
         "revealInFileManager": "在系统文件管理器中显示",
         "rename": "重命名项目…",
         "remove": "从 AgentPort 移除（不删除目录）"
@@ -64,7 +70,7 @@
         "openInSystemTerminal": "在系统终端中打开",
         "copyGitStatus": "复制 git status",
         "delete": "删除 Worktree…",
-        "deleteBlocked": "该 Worktree 有未提交或未跟踪文件，已阻止删除。\n请先提交或清理后重试。"
+        "deleteBlocked": "确认删除后会自动清理本地文件。"
       },
       "toast": {
         "pathCopied": "已复制路径",
@@ -118,7 +124,6 @@
       "refreshTreeTip": "重新读取目录内容",
       "closeTree": "关闭目录树",
       "closeTreeTip": "隐藏项目文件目录树",
-      "selectFile": "在左侧目录树中选择文件查看、编辑",
       "newFile": "新建文件",
       "newFileTip": "在当前目录下新建文件",
       "newDir": "新建文件夹",
@@ -156,7 +161,7 @@
       "fullHistory": "完整历史",
       "bufferMatch": "{{scope}}：{{snippet}}",
       "noResultsInCurrentBuffer": "当前缓冲中无结果",
-      "searchingPersistedLog": "正在搜索持久化日志…",
+      "searchingPersistedLog": "正在按需搜索 Agent 原生日志…",
       "fullHistoryUnavailable": "完整历史不可用",
       "loadedHits_one": "（已载入 {{count}} 条）",
       "loadedHits_other": "（已载入 {{count}} 条）",

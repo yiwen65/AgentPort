@@ -1,5 +1,5 @@
-// Global search dialog (PRD 3.6): ≥2 chars, debounced, partial-result hint,
-// hits grouped by kind; terminal hits jump into the session.
+// Global search dialog: metadata comes from SQLite; conversation matches are
+// scanned from agent-owned native logs on demand, without a body index.
 
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -58,9 +58,7 @@ export default function SearchDialog() {
         value={q}
         onChange={(e) => setQ(e.target.value)}
       />
-      {!s.settings?.searchIndexEnabled ? (
-        <div className="form-hint">{t("search.indexDisabled")}</div>
-      ) : null}
+      <div className="form-hint">{t("search.nativeOnDemand")}</div>
       {searching ? (
         <div className="dim">
           <span className="spin" aria-hidden="true" /> {t("search.searching")}

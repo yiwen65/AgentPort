@@ -22,14 +22,17 @@ import {
   selectSession,
   stopSessionFlow,
   refreshRepositoryStatus,
+  saveProjectLayoutFlow,
+  toggleSessionPinFlow,
 } from "../actions";
 import { agentDisplay, healthLabel, relativeAge } from "../format";
-import { orderAgentIds } from "../agentOrder";
+import { orderAgentIds, visibleAgentIds } from "../agentOrder";
 import {
   closeWorktreeView,
   openContextMenu,
   openDialog,
   openWorktreeView,
+  persistProjectExpansion,
   toast,
   update,
   useStore,
@@ -41,44 +44,106 @@ import type {
   WorktreeHealthStr,
   WorktreeView,
 } from "../types";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { openGitCenter } from "../gitCenter";
+import {
+  moveProjectInLayout,
+  projectDropTarget,
+  projectLayoutEntries,
+  sameProjectLayout,
+  setProjectPinnedAtFront,
+} from "../projectLayout";
 
 type SidebarT = TFunction<["session", "shell", "common", "git"]>;
 
 function IconFolder({ open = false }: { open?: boolean }) {
   return (
-    <svg className="tree-icon" width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+    <svg
+      className="tree-icon"
+      width="18"
+      height="18"
+      viewBox="0 0 20 20"
+      fill="none"
+      aria-hidden="true"
+    >
       {open ? (
-        <path d="M2.75 6.5h5l1.55 1.75h7.95l-1.15 7.1a1.5 1.5 0 0 1-1.48 1.26H4.3a1.5 1.5 0 0 1-1.48-1.26L2.75 6.5Z" fill="currentColor" opacity=".86" />
+        <path
+          d="M2.75 6.5h5l1.55 1.75h7.95l-1.15 7.1a1.5 1.5 0 0 1-1.48 1.26H4.3a1.5 1.5 0 0 1-1.48-1.26L2.75 6.5Z"
+          fill="currentColor"
+          opacity=".86"
+        />
       ) : (
-        <path d="M3.25 5.25c0-.83.67-1.5 1.5-1.5H8l1.5 1.75h5.75c.83 0 1.5.67 1.5 1.5v7.25c0 .83-.67 1.5-1.5 1.5H4.75c-.83 0-1.5-.67-1.5-1.5V5.25Z" fill="currentColor" opacity=".86" />
+        <path
+          d="M3.25 5.25c0-.83.67-1.5 1.5-1.5H8l1.5 1.75h5.75c.83 0 1.5.67 1.5 1.5v7.25c0 .83-.67 1.5-1.5 1.5H4.75c-.83 0-1.5-.67-1.5-1.5V5.25Z"
+          fill="currentColor"
+          opacity=".86"
+        />
       )}
     </svg>
   );
 }
 
 function IconSettings() {
-  return <span className="settings-glyph" aria-hidden="true">⚙︎</span>;
+  return (
+    <span className="settings-glyph" aria-hidden="true">
+      ⚙︎
+    </span>
+  );
 }
 
 function IconPlus() {
   return (
-    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-      <path d="M10 4v12M4 10h12" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 20 20"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M10 4v12M4 10h12"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
 
 function IconPin({ pinned }: { pinned: boolean }) {
   return (
-    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 20 20"
+      fill="none"
+      aria-hidden="true"
+    >
       {pinned ? (
-        <path d="m12.9 3.8 3.3 3.3-2.2 1.2-.5 3.1-2.2 2.2-2.1-2.1-3.1.5-1.2-2.2 3.3-3.3m2.1 6.2-3.5 3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+        <path
+          d="m12.9 3.8 3.3 3.3-2.2 1.2-.5 3.1-2.2 2.2-2.1-2.1-3.1.5-1.2-2.2 3.3-3.3m2.1 6.2-3.5 3.5"
+          stroke="currentColor"
+          strokeWidth="1.3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
       ) : (
-        <path d="M6 4.5h8M7 4.5l.7 6H5.5l1.6 2.25h5.8l1.6-2.25h-2.2l.7-6M10 12.75v3" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
+        <path
+          d="M6 4.5h8M7 4.5l.7 6H5.5l1.6 2.25h5.8l1.6-2.25h-2.2l.7-6M10 12.75v3"
+          stroke="currentColor"
+          strokeWidth="1.35"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
       )}
     </svg>
   );
@@ -86,19 +151,43 @@ function IconPin({ pinned }: { pinned: boolean }) {
 
 function IconArchive() {
   return (
-    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-      <path d="M3.5 7.25h13v8.25H3.5zM2.75 4.5h14.5v2.75H2.75zM7.25 10.75h5.5" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 20 20"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M3.5 7.25h13v8.25H3.5zM2.75 4.5h14.5v2.75H2.75zM7.25 10.75h5.5"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
 
 function IconBranch() {
   return (
-    <svg className="tree-icon" width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+    <svg
+      className="tree-icon"
+      width="16"
+      height="16"
+      viewBox="0 0 20 20"
+      fill="none"
+      aria-hidden="true"
+    >
       <circle cx="5" cy="5" r="2.2" stroke="currentColor" strokeWidth="1.4" />
       <circle cx="5" cy="15" r="2.2" stroke="currentColor" strokeWidth="1.4" />
       <circle cx="15" cy="5" r="2.2" stroke="currentColor" strokeWidth="1.4" />
-      <path d="M5 7.2v5.6M15 7.2a7.8 7.8 0 0 1-7.8 7.8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      <path
+        d="M5 7.2v5.6M15 7.2a7.8 7.8 0 0 1-7.8 7.8"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
@@ -107,8 +196,23 @@ function IconBranch() {
 // be confused with the git-branch glyph used for actual branch rows.
 function IconWorktree() {
   return (
-    <svg className="tree-icon" width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-      <rect x="7" y="7" width="10" height="10" rx="2" stroke="currentColor" strokeWidth="1.4" />
+    <svg
+      className="tree-icon"
+      width="16"
+      height="16"
+      viewBox="0 0 20 20"
+      fill="none"
+      aria-hidden="true"
+    >
+      <rect
+        x="7"
+        y="7"
+        width="10"
+        height="10"
+        rx="2"
+        stroke="currentColor"
+        strokeWidth="1.4"
+      />
       <path
         d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"
         stroke="currentColor"
@@ -121,13 +225,37 @@ function IconWorktree() {
 
 function IconChevron({ dir }: { dir: "left" | "right" | "down" }) {
   return (
-    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 20 20"
+      fill="none"
+      aria-hidden="true"
+    >
       {dir === "down" ? (
-        <path d="m4.5 7.5 5.5 5.5 5.5-5.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        <path
+          d="m4.5 7.5 5.5 5.5 5.5-5.5"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
       ) : dir === "right" ? (
-        <path d="m7.5 4.5 5.5 5.5-5.5 5.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        <path
+          d="m7.5 4.5 5.5 5.5-5.5 5.5"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
       ) : (
-        <path d="m12.5 4.5-5.5 5.5 5.5 5.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        <path
+          d="m12.5 4.5-5.5 5.5 5.5 5.5"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
       )}
     </svg>
   );
@@ -138,13 +266,27 @@ function QuickAgentIcon({ agent }: { agent: string }) {
   if (agent === "shell") {
     return <ShellIcon className="quick-agent-mark shell" size={17} />;
   }
-  const icon = <AgentIcon agent={agent} className={`quick-agent-mark ${agent}`} size={17} mono={theme === "light"} />;
-  return icon ?? <span className="quick-agent-fallback" aria-hidden="true">{agent.slice(0, 1).toUpperCase()}</span>;
+  const icon = (
+    <AgentIcon
+      agent={agent}
+      className={`quick-agent-mark ${agent}`}
+      size={17}
+      mono={theme === "light"}
+    />
+  );
+  return (
+    icon ?? (
+      <span className="quick-agent-fallback" aria-hidden="true">
+        {agent.slice(0, 1).toUpperCase()}
+      </span>
+    )
+  );
 }
 
 function quickAgentMode(agent: string, t: SidebarT) {
   if (agent === "shell") return t("shell:ui.sidebar.quickLaunch.terminal");
-  if (agent === "pi") return t("shell:ui.sidebar.quickLaunch.localUserPermissions");
+  if (agent === "pi")
+    return t("shell:ui.sidebar.quickLaunch.localUserPermissions");
   return t("shell:ui.sidebar.quickLaunch.bypassPermissionChecks");
 }
 
@@ -159,14 +301,23 @@ function QuickAgentStrip({
 }) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
   const agentOrder = useStore((state) => state.settings?.agentOrder);
+  const agentHidden = useStore((state) => state.settings?.agentHidden);
   const adapters = useStore((state) => state.adapters);
   const scrollerRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ pointerId: number; x: number; scrollLeft: number; moved: boolean } | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    x: number;
+    scrollLeft: number;
+    moved: boolean;
+  } | null>(null);
   const suppressClickRef = useRef(false);
   const [dragging, setDragging] = useState(false);
-  const agents = orderAgentIds(
-    agentOrder,
-    adapters.map((adapter) => adapter.agentType),
+  const agents = visibleAgentIds(
+    orderAgentIds(
+      agentOrder,
+      adapters.map((adapter) => adapter.agentType),
+    ),
+    agentHidden,
   );
 
   if (agents.length === 0) return null;
@@ -175,14 +326,20 @@ function QuickAgentStrip({
     <div
       ref={scrollerRef}
       className={`quick-agent-strip${dragging ? " dragging" : ""}`}
-      aria-label={t("shell:ui.sidebar.quickLaunch.listLabel", { scope: scopeLabel })}
+      aria-label={t("shell:ui.sidebar.quickLaunch.listLabel", {
+        scope: scopeLabel,
+      })}
       onWheel={(event) => {
         const scroller = scrollerRef.current;
         if (!scroller || scroller.scrollWidth <= scroller.clientWidth) return;
-        const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+        const delta =
+          Math.abs(event.deltaX) > Math.abs(event.deltaY)
+            ? event.deltaX
+            : event.deltaY;
         if (delta === 0) return;
+        const previousScrollLeft = scroller.scrollLeft;
         scroller.scrollLeft += delta;
-        event.preventDefault();
+        if (scroller.scrollLeft !== previousScrollLeft) event.preventDefault();
       }}
       onPointerDown={(event) => {
         if (event.button !== 0) return;
@@ -213,7 +370,8 @@ function QuickAgentStrip({
         const drag = dragRef.current;
         const scroller = scrollerRef.current;
         if (!drag || drag.pointerId !== event.pointerId) return;
-        if (scroller?.hasPointerCapture(event.pointerId)) scroller.releasePointerCapture(event.pointerId);
+        if (scroller?.hasPointerCapture(event.pointerId))
+          scroller.releasePointerCapture(event.pointerId);
         suppressClickRef.current = drag.moved;
         dragRef.current = null;
         setDragging(false);
@@ -255,11 +413,29 @@ function QuickAgentStrip({
 
 function IconCollapseProjects({ collapsed }: { collapsed: boolean }) {
   return (
-    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 20 20"
+      fill="none"
+      aria-hidden="true"
+    >
       {collapsed ? (
-        <path d="M5.5 5v4.25m-2.25-2.25L5.5 9.25 7.75 7M14.5 15v-4.25m-2.25 2.25 2.25-2.25L16.75 13" stroke="currentColor" strokeWidth="1.55" strokeLinecap="round" strokeLinejoin="round" />
+        <path
+          d="M5.5 5v4.25m-2.25-2.25L5.5 9.25 7.75 7M14.5 15v-4.25m-2.25 2.25 2.25-2.25L16.75 13"
+          stroke="currentColor"
+          strokeWidth="1.55"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
       ) : (
-        <path d="M5.5 9.25V5m-2.25 2.25L5.5 5 7.75 7.25M14.5 10.75V15m-2.25-2.25 2.25 2.25 2.25-2.25" stroke="currentColor" strokeWidth="1.55" strokeLinecap="round" strokeLinejoin="round" />
+        <path
+          d="M5.5 9.25V5m-2.25 2.25L5.5 5 7.75 7.25M14.5 10.75V15m-2.25-2.25 2.25 2.25 2.25-2.25"
+          stroke="currentColor"
+          strokeWidth="1.55"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
       )}
     </svg>
   );
@@ -274,25 +450,43 @@ function sessionMenu(
   return [
     {
       label: t("session:ui.menu.copyId"),
-      action: () => void copyTextWithToast(ses.id, t("session:ui.toast.idCopied")),
+      action: () =>
+        void copyTextWithToast(ses.id, t("session:ui.toast.idCopied")),
     },
     { label: "", separator: true },
-    { label: t("session:ui.menu.exportMarkdown"), action: () => openDialog({ kind: "export", sessionId: ses.id, exportKind: "md" }) },
-    { label: t("session:ui.menu.exportRawLog"), action: () => openDialog({ kind: "export", sessionId: ses.id, exportKind: "log" }) },
+    {
+      label: t("session:ui.menu.exportMarkdown"),
+      action: () =>
+        openDialog({ kind: "export", sessionId: ses.id, exportKind: "md" }),
+    },
+    {
+      label: t("session:ui.menu.exportRawLog"),
+      action: () =>
+        openDialog({ kind: "export", sessionId: ses.id, exportKind: "json" }),
+    },
     { label: "", separator: true },
-    { label: t("session:ui.menu.restartAndResume"), action: () => void restartSessionFlow(ses.id) },
+    {
+      label: t("session:ui.menu.restartAndResume"),
+      action: () => void restartSessionFlow(ses.id),
+    },
     ...(suspended
-      ? [{
-          label: t("session:ui.menu.resume"),
-          action: () => void resumeSessionFlow(ses.id),
-        }]
+      ? [
+          {
+            label: t("session:ui.menu.resume"),
+            action: () => void resumeSessionFlow(ses.id),
+          },
+        ]
       : []),
     {
       label: t("session:ui.menu.interrupt"),
       disabled: ses.lifecycle !== "running",
       action: () => void interruptSessionFlow(ses.id),
     },
-    { label: t("session:ui.menu.stop"), danger: true, action: () => void stopSessionFlow(ses.id) },
+    {
+      label: t("session:ui.menu.stop"),
+      danger: true,
+      action: () => void stopSessionFlow(ses.id),
+    },
     { label: "", separator: true },
     { label: t("session:ui.menu.remove"), danger: true, action: onRemove },
   ];
@@ -302,17 +496,27 @@ function projectMenu(
   p: ProjectView,
   isGitRepository: boolean,
   t: SidebarT,
-  opts?: { includeNewSession?: boolean },
+  opts?: {
+    includeNewSession?: boolean;
+    layoutSaving?: boolean;
+    onTogglePin?: () => void;
+  },
 ): MenuItem[] {
   return [
     ...(opts?.includeNewSession === false
       ? []
-      : [{ label: t("session:ui.actions.newEllipsis"), action: () => openNewSessionDialog(p.id) } as MenuItem]),
+      : [
+          {
+            label: t("session:ui.actions.newEllipsis"),
+            action: () => openNewSessionDialog(p.id),
+          } as MenuItem,
+        ]),
     {
       label: t("git:open"),
       disabled: !isGitRepository,
       tip: isGitRepository ? undefined : t("shell:ui.sidebar.notGitRepository"),
-      action: () => void openGitCenter({ kind: "projectMain", projectId: p.id }),
+      action: () =>
+        void openGitCenter({ kind: "projectMain", projectId: p.id }),
     },
     {
       label: t("shell:ui.sidebar.projectMenu.newWorktree"),
@@ -328,15 +532,34 @@ function projectMenu(
     },
     { label: "", separator: true },
     {
+      label: p.pinned
+        ? t("shell:ui.sidebar.projectMenu.unpin")
+        : t("shell:ui.sidebar.projectMenu.pin"),
+      disabled: opts?.layoutSaving,
+      action: opts?.onTogglePin,
+    },
+    {
       label: t("shell:ui.sidebar.projectMenu.revealInFileManager"),
       action: () =>
         void api
           .revealInFileManager(p.rootPath)
-          .catch((e) => toast(t("shell:ui.sidebar.openFailed", { detail: errorText(e) }), "error")),
+          .catch((e) =>
+            toast(
+              t("shell:ui.sidebar.openFailed", { detail: errorText(e) }),
+              "error",
+            ),
+          ),
     },
     { label: "", separator: true },
-    { label: t("shell:ui.sidebar.projectMenu.rename"), action: () => void renameProjectFlow(p.id) },
-    { label: t("shell:ui.sidebar.projectMenu.remove"), danger: true, action: () => void removeProjectFlow(p.id) },
+    {
+      label: t("shell:ui.sidebar.projectMenu.rename"),
+      action: () => void renameProjectFlow(p.id),
+    },
+    {
+      label: t("shell:ui.sidebar.projectMenu.remove"),
+      danger: true,
+      action: () => void removeProjectFlow(p.id),
+    },
   ];
 }
 
@@ -349,36 +572,55 @@ function worktreeMenu(
   return [
     ...(opts?.includeNewSession === false
       ? []
-      : [{ label: t("session:ui.actions.newEllipsis"), action: () => openNewSessionDialog(p.id, w.id) } as MenuItem]),
+      : [
+          {
+            label: t("session:ui.actions.newEllipsis"),
+            action: () => openNewSessionDialog(p.id, w.id),
+          } as MenuItem,
+        ]),
     {
       label: t("git:open"),
-      action: () => void openGitCenter({
-        kind: "worktree",
-        projectId: p.id,
-        worktreeId: w.id,
-      }),
+      action: () =>
+        void openGitCenter({
+          kind: "worktree",
+          projectId: p.id,
+          worktreeId: w.id,
+        }),
     },
     {
       label: t("shell:ui.sidebar.worktreeMenu.copyPath"),
-      action: () => void copyTextWithToast(w.path, t("shell:ui.sidebar.toast.pathCopied")),
+      action: () =>
+        void copyTextWithToast(w.path, t("shell:ui.sidebar.toast.pathCopied")),
     },
     {
       label: t("shell:ui.sidebar.worktreeMenu.openInSystemTerminal"),
       action: () =>
         void api
           .openInSystemTerminal(w.path)
-          .catch((e) => toast(t("shell:ui.sidebar.openFailed", { detail: errorText(e) }), "error")),
+          .catch((e) =>
+            toast(
+              t("shell:ui.sidebar.openFailed", { detail: errorText(e) }),
+              "error",
+            ),
+          ),
     },
     {
       label: t("shell:ui.sidebar.worktreeMenu.copyGitStatus"),
       action: () =>
         void api
           .worktreeStatusText(w.id)
-          .then((st) => copyTextWithToast(st.raw || "(clean)", t("shell:ui.sidebar.toast.gitStatusCopied")))
-          .catch((e) => toast(
-            t("shell:ui.sidebar.gitStatusFailed", { detail: errorText(e) }),
-            "error",
-          )),
+          .then((st) =>
+            copyTextWithToast(
+              st.raw || "(clean)",
+              t("shell:ui.sidebar.toast.gitStatusCopied"),
+            ),
+          )
+          .catch((e) =>
+            toast(
+              t("shell:ui.sidebar.gitStatusFailed", { detail: errorText(e) }),
+              "error",
+            ),
+          ),
     },
     { label: "", separator: true },
     {
@@ -392,8 +634,10 @@ function worktreeMenu(
 function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
   const active = useStore((state) => state.activeSessionId === ses.id);
-  const pinned = useStore((state) => state.pinnedSessionAt[ses.id] !== undefined);
-  const suspended = useStore((state) => state.runtime[ses.id]?.suspended === true);
+  const pinned = ses.pinnedAt !== null;
+  const suspended = useStore(
+    (state) => state.runtime[ses.id]?.suspended === true,
+  );
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(ses.title);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
@@ -411,7 +655,9 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
   if (confirmingRemove) {
     return (
       <div
-        className={"tree-row session remove-confirm" + (nested ? " nested" : "")}
+        className={
+          "tree-row session remove-confirm" + (nested ? " nested" : "")
+        }
         role="alert"
         onKeyDown={(event) => {
           if (event.key === "Escape") {
@@ -420,18 +666,26 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
           }
         }}
       >
-        <span className="remove-confirm-label">{t("session:ui.sidebar.removeConfirm")}</span>
+        <span className="remove-confirm-label">
+          {t("session:ui.sidebar.removeConfirm")}
+        </span>
         <span className="remove-confirm-actions">
           <button
             className="btn small ghost"
             autoFocus
-            onClick={(event) => { event.stopPropagation(); setConfirmingRemove(false); }}
+            onClick={(event) => {
+              event.stopPropagation();
+              setConfirmingRemove(false);
+            }}
           >
             {t("common:actions.cancel")}
           </button>
           <button
             className="btn small danger"
-            onClick={(event) => { event.stopPropagation(); void removeSessionFlow(ses.id); }}
+            onClick={(event) => {
+              event.stopPropagation();
+              void removeSessionFlow(ses.id);
+            }}
           >
             {t("common:actions.remove")}
           </button>
@@ -441,7 +695,11 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
   }
   return (
     <div
-      className={"tree-row session" + (nested ? " nested" : "") + (active ? " active" : "")}
+      className={
+        "tree-row session" +
+        (nested ? " nested" : "") +
+        (active ? " active" : "")
+      }
       onClick={() => selectSession(ses.id)}
       onDoubleClick={() => setEditing(true)}
       onContextMenu={(e) => {
@@ -488,32 +746,44 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
             }
           }}
         />
-      ) : <span className="tree-label">{ses.title}</span>}
-      <span className="session-row-actions" aria-label={t("session:ui.sidebar.actionsLabel")}>
+      ) : (
+        <span className="tree-label">{ses.title}</span>
+      )}
+      <span
+        className="session-row-actions"
+        aria-label={t("session:ui.sidebar.actionsLabel")}
+      >
         <span
           className={"session-action" + (pinned ? " pinned" : "")}
           role="button"
           tabIndex={0}
-          aria-label={pinned ? t("session:ui.sidebar.unpin") : t("session:ui.sidebar.pin")}
+          aria-label={
+            pinned ? t("session:ui.sidebar.unpin") : t("session:ui.sidebar.pin")
+          }
           onClick={(event) => {
             event.stopPropagation();
-            update((state) => {
-              const pinnedSessionAt = { ...state.pinnedSessionAt };
-              if (pinned) delete pinnedSessionAt[ses.id];
-              else pinnedSessionAt[ses.id] = Date.now();
-              return { pinnedSessionAt };
-            });
+            void toggleSessionPinFlow(ses.id);
           }}
-        ><IconPin pinned={pinned} /></span>
+        >
+          <IconPin pinned={pinned} />
+        </span>
         <span
           className="session-action"
           role="button"
           tabIndex={0}
           aria-label={t("session:ui.sidebar.archive")}
-          onClick={(event) => { event.stopPropagation(); void archiveSessionFlow(ses.id); }}
-        ><IconArchive /></span>
+          onClick={(event) => {
+            event.stopPropagation();
+            void archiveSessionFlow(ses.id);
+          }}
+        >
+          <IconArchive />
+        </span>
       </span>
-      <span className="session-age" aria-label={t("session:ui.sidebar.createdAt", { date: ses.createdAt })}>
+      <span
+        className="session-age"
+        aria-label={t("session:ui.sidebar.createdAt", { date: ses.createdAt })}
+      >
         {relativeAge(ses.createdAt)}
       </span>
       {ses.unread ? (
@@ -527,9 +797,21 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
   );
 }
 
-function WorktreeNode({ p, w, sessions, highlighted }: { p: ProjectView; w: WorktreeView; sessions: SessionView[]; highlighted: boolean }) {
+function WorktreeNode({
+  p,
+  w,
+  sessions,
+  highlighted,
+}: {
+  p: ProjectView;
+  w: WorktreeView;
+  sessions: SessionView[];
+  highlighted: boolean;
+}) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
-  const collapsed = useStore((state) => state.collapsedWorktrees[w.id] === true);
+  const collapsed = useStore(
+    (state) => state.collapsedWorktrees[w.id] === true,
+  );
   return (
     <div role="treeitem" aria-expanded={!collapsed}>
       <div className="tree-project-header">
@@ -537,7 +819,10 @@ function WorktreeNode({ p, w, sessions, highlighted }: { p: ProjectView; w: Work
           className={"tree-row worktree" + (highlighted ? " highlighted" : "")}
           onClick={() =>
             update((s) => ({
-              collapsedWorktrees: { ...s.collapsedWorktrees, [w.id]: !collapsed },
+              collapsedWorktrees: {
+                ...s.collapsedWorktrees,
+                [w.id]: !collapsed,
+              },
             }))
           }
           onContextMenu={(e) => {
@@ -559,32 +844,28 @@ function WorktreeNode({ p, w, sessions, highlighted }: { p: ProjectView; w: Work
           <span className="tree-label mono" style={{ fontSize: 12 }}>
             ⎇ {w.branch}
           </span>
-          <span className={`health-badge ${w.health}`}>{healthLabel(w.health)}</span>
+          <span className={`health-badge ${w.health}`}>
+            {healthLabel(w.health)}
+          </span>
         </button>
         <div
           className="project-quick-actions"
-          aria-label={t("shell:ui.sidebar.worktreeQuickActions", { branch: w.branch })}
+          aria-label={t("shell:ui.sidebar.worktreeQuickActions", {
+            branch: w.branch,
+          })}
         >
           <QuickAgentStrip
             projectId={p.id}
             worktreeId={w.id}
-            scopeLabel={t("shell:ui.sidebar.worktreeScope", { branch: w.branch })}
+            scopeLabel={t("shell:ui.sidebar.worktreeScope", {
+              branch: w.branch,
+            })}
           />
           <button
-            className="icon-btn tree-action git-entry-action"
-            aria-label={t("git:open")}
-            data-tip={t("git:open")}
-            onClick={() => void openGitCenter({
-              kind: "worktree",
-              projectId: p.id,
-              worktreeId: w.id,
-            })}
-          >
-            ⎇
-          </button>
-          <button
             className="icon-btn tree-action"
-            aria-label={t("shell:ui.sidebar.worktreeMoreActions", { branch: w.branch })}
+            aria-label={t("shell:ui.sidebar.worktreeMoreActions", {
+              branch: w.branch,
+            })}
             data-tip={t("shell:ui.sidebar.moreActions")}
             onClick={(e) => {
               const rect = e.currentTarget.getBoundingClientRect();
@@ -612,14 +893,18 @@ function WorktreeNode({ p, w, sessions, highlighted }: { p: ProjectView; w: Work
 }
 
 /** Sidebar session ordering: pinned first (latest pin wins), then newest. */
+export function orderSessionsForSidebar(sessions: SessionView[]): SessionView[] {
+  return [...sessions].sort((a, b) => {
+    const pinnedOrder =
+      (b.pinnedAt ? Date.parse(b.pinnedAt) : 0) -
+      (a.pinnedAt ? Date.parse(a.pinnedAt) : 0);
+    if (pinnedOrder !== 0) return pinnedOrder;
+    return Date.parse(b.createdAt) - Date.parse(a.createdAt);
+  });
+}
+
 function useSessionOrder() {
-  const pinnedSessionAt = useStore((state) => state.pinnedSessionAt);
-  return (sessions: SessionView[]) =>
-    [...sessions].sort((a, b) => {
-      const pinnedOrder = (pinnedSessionAt[b.id] ?? 0) - (pinnedSessionAt[a.id] ?? 0);
-      if (pinnedOrder !== 0) return pinnedOrder;
-      return Date.parse(b.createdAt) - Date.parse(a.createdAt);
-    });
+  return orderSessionsForSidebar;
 }
 
 /**
@@ -644,7 +929,343 @@ function WorktreesEntryRow({ p }: { p: ProjectView }) {
   );
 }
 
-function ProjectNode({ p }: { p: ProjectView }) {
+const PROJECT_DRAG_THRESHOLD_PX = 5;
+const PROJECT_AUTO_SCROLL_EDGE_PX = 36;
+const PROJECT_AUTO_SCROLL_STEP_PX = 10;
+
+interface PendingProjectDrag {
+  projectId: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  source: HTMLButtonElement;
+  origin: ProjectView[];
+  preview: ProjectView[];
+  sourceMidpoint: number;
+  active: boolean;
+}
+
+function useProjectDrag(projects: ProjectView[], layoutSaving: boolean) {
+  const { t } = useTranslation("shell");
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const headerRefs = useRef(new Map<string, HTMLDivElement>());
+  const pendingRef = useRef<PendingProjectDrag | null>(null);
+  const suppressClickProjectRef = useRef<{
+    projectId: string;
+    expiresAt: number;
+  } | null>(null);
+  const pointerYRef = useRef(0);
+  const autoScrollFrameRef = useRef<number | null>(null);
+  const [preview, setPreview] = useState<{
+    projectId: string;
+    projects: ProjectView[];
+  } | null>(null);
+
+  const registerHeader = (projectId: string, node: HTMLDivElement | null) => {
+    if (node) headerRefs.current.set(projectId, node);
+    else headerRefs.current.delete(projectId);
+  };
+
+  const updatePreviewAt = (pointerY: number) => {
+    const pending = pendingRef.current;
+    if (!pending?.active) return;
+    const midpoints = new Map<string, number>();
+    for (const project of pending.preview) {
+      if (project.id === pending.projectId) {
+        midpoints.set(project.id, pending.sourceMidpoint);
+        continue;
+      }
+      const rect = headerRefs.current.get(project.id)?.getBoundingClientRect();
+      if (rect) midpoints.set(project.id, rect.top + rect.height / 2);
+    }
+    const target = projectDropTarget(
+      pending.origin,
+      pending.projectId,
+      midpoints,
+      pointerY,
+    );
+    if (!target) return;
+    const next = moveProjectInLayout(pending.origin, pending.projectId, target);
+    if (sameProjectLayout(next, pending.preview)) return;
+    pending.preview = next;
+    setPreview({ projectId: pending.projectId, projects: next });
+  };
+
+  const stopAutoScroll = () => {
+    if (autoScrollFrameRef.current !== null) {
+      cancelAnimationFrame(autoScrollFrameRef.current);
+      autoScrollFrameRef.current = null;
+    }
+  };
+
+  const runAutoScroll = () => {
+    const scroller = scrollRef.current;
+    const pending = pendingRef.current;
+    if (!scroller || !pending?.active) {
+      autoScrollFrameRef.current = null;
+      return;
+    }
+    const bounds = scroller.getBoundingClientRect();
+    const pointerY = pointerYRef.current;
+    let delta = 0;
+    if (pointerY < bounds.top + PROJECT_AUTO_SCROLL_EDGE_PX) {
+      delta = -PROJECT_AUTO_SCROLL_STEP_PX;
+    } else if (pointerY > bounds.bottom - PROJECT_AUTO_SCROLL_EDGE_PX) {
+      delta = PROJECT_AUTO_SCROLL_STEP_PX;
+    }
+    if (delta === 0) {
+      autoScrollFrameRef.current = null;
+      return;
+    }
+    const previousScrollTop = scroller.scrollTop;
+    scroller.scrollTop += delta;
+    const scrollDelta = scroller.scrollTop - previousScrollTop;
+    if (scrollDelta === 0) {
+      autoScrollFrameRef.current = null;
+      return;
+    }
+    pending.sourceMidpoint -= scrollDelta;
+    updatePreviewAt(pointerY);
+    autoScrollFrameRef.current = requestAnimationFrame(runAutoScroll);
+  };
+
+  const scheduleAutoScroll = (pointerY: number) => {
+    pointerYRef.current = pointerY;
+    if (autoScrollFrameRef.current === null) {
+      autoScrollFrameRef.current = requestAnimationFrame(runAutoScroll);
+    }
+  };
+
+  const cleanUpDrag = (pending: PendingProjectDrag) => {
+    if (pending.source.hasPointerCapture(pending.pointerId)) {
+      pending.source.releasePointerCapture(pending.pointerId);
+    }
+    stopAutoScroll();
+    document.body.classList.remove("is-project-dragging");
+    pendingRef.current = null;
+    setPreview(null);
+  };
+
+  const cancelDrag = () => {
+    const pending = pendingRef.current;
+    if (!pending?.active) return;
+    const projectName =
+      pending.origin.find((project) => project.id === pending.projectId)
+        ?.name ?? pending.projectId;
+    suppressClickProjectRef.current = {
+      projectId: pending.projectId,
+      expiresAt: Date.now() + 1000,
+    };
+    cleanUpDrag(pending);
+    update(() => ({
+      announcement: t("ui.sidebar.projectDragCancelled", {
+        project: projectName,
+      }),
+    }));
+  };
+
+  useEffect(() => {
+    if (!preview) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      cancelDrag();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [preview]);
+
+  useEffect(
+    () => () => {
+      stopAutoScroll();
+      document.body.classList.remove("is-project-dragging");
+    },
+    [],
+  );
+
+  const onPointerDown = (
+    projectId: string,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    if (layoutSaving || event.button !== 0) return;
+    const sourceRect = event.currentTarget.getBoundingClientRect();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    pendingRef.current = {
+      projectId,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      source: event.currentTarget,
+      origin: projects,
+      preview: projects,
+      sourceMidpoint: sourceRect.top + sourceRect.height / 2,
+      active: false,
+    };
+  };
+
+  const onPointerMove = (
+    projectId: string,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    const pending = pendingRef.current;
+    if (
+      !pending ||
+      pending.projectId !== projectId ||
+      pending.pointerId !== event.pointerId
+    )
+      return;
+    if (!pending.active) {
+      const distance = Math.hypot(
+        event.clientX - pending.startX,
+        event.clientY - pending.startY,
+      );
+      if (distance <= PROJECT_DRAG_THRESHOLD_PX) return;
+      pending.active = true;
+      document.body.classList.add("is-project-dragging");
+      setPreview({ projectId, projects: pending.preview });
+      const projectName =
+        pending.origin.find((project) => project.id === projectId)?.name ??
+        projectId;
+      update(() => ({
+        announcement: t("ui.sidebar.projectDragStarted", {
+          project: projectName,
+        }),
+      }));
+    }
+    event.preventDefault();
+    updatePreviewAt(event.clientY);
+    scheduleAutoScroll(event.clientY);
+  };
+
+  const onPointerUp = (
+    projectId: string,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    const pending = pendingRef.current;
+    if (
+      !pending ||
+      pending.projectId !== projectId ||
+      pending.pointerId !== event.pointerId
+    )
+      return;
+    if (!pending.active) {
+      if (pending.source.hasPointerCapture(pending.pointerId)) {
+        pending.source.releasePointerCapture(pending.pointerId);
+      }
+      pendingRef.current = null;
+      return;
+    }
+    suppressClickProjectRef.current = {
+      projectId,
+      expiresAt: Date.now() + 1000,
+    };
+    const next = pending.preview;
+    const changed = !sameProjectLayout(pending.origin, next);
+    cleanUpDrag(pending);
+    if (changed) void saveProjectLayoutFlow(projectLayoutEntries(next));
+  };
+
+  const onPointerCancel = (
+    projectId: string,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    const pending = pendingRef.current;
+    if (
+      !pending ||
+      pending.projectId !== projectId ||
+      pending.pointerId !== event.pointerId
+    )
+      return;
+    if (pending.active) cancelDrag();
+    else {
+      if (pending.source.hasPointerCapture(pending.pointerId)) {
+        pending.source.releasePointerCapture(pending.pointerId);
+      }
+      pendingRef.current = null;
+    }
+  };
+
+  const consumeSuppressedClick = (
+    projectId: string,
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ): boolean => {
+    const suppression = suppressClickProjectRef.current;
+    if (!suppression) return false;
+    if (suppression.expiresAt < Date.now()) {
+      suppressClickProjectRef.current = null;
+      return false;
+    }
+    if (suppression.projectId !== projectId) return false;
+    suppressClickProjectRef.current = null;
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  };
+
+  const togglePin = (project: ProjectView) => {
+    if (layoutSaving) return;
+    const next = setProjectPinnedAtFront(projects, project.id, !project.pinned);
+    if (!sameProjectLayout(projects, next)) {
+      void saveProjectLayoutFlow(projectLayoutEntries(next));
+    }
+  };
+
+  return {
+    projects: preview?.projects ?? projects,
+    draggingProjectId: preview?.projectId ?? null,
+    scrollRef,
+    registerHeader,
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onPointerCancel,
+    consumeSuppressedClick,
+    togglePin,
+  };
+}
+
+interface ProjectNodeProps {
+  p: ProjectView;
+  dragging: boolean;
+  startsUnpinnedGroup: boolean;
+  layoutSaving: boolean;
+  registerHeader: (projectId: string, node: HTMLDivElement | null) => void;
+  onPointerDown: (
+    projectId: string,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => void;
+  onPointerMove: (
+    projectId: string,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => void;
+  onPointerUp: (
+    projectId: string,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => void;
+  onPointerCancel: (
+    projectId: string,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => void;
+  consumeSuppressedClick: (
+    projectId: string,
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ) => boolean;
+  onTogglePin: (project: ProjectView) => void;
+}
+
+function ProjectNode({
+  p,
+  dragging,
+  startsUnpinnedGroup,
+  layoutSaving,
+  registerHeader,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onPointerCancel,
+  consumeSuppressedClick,
+  onTogglePin,
+}: ProjectNodeProps) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
   const expanded = useStore((state) => state.expandedProjects[p.id] !== false);
   const order = useSessionOrder();
@@ -653,23 +1274,26 @@ function ProjectNode({ p }: { p: ProjectView }) {
   const visibleSessions = p.sessions.filter(
     (session) => !archivingSessionIds.has(session.id),
   );
-  const mainSessions = order(visibleSessions.filter((session) => !session.worktreeId));
+  const mainSessions = order(
+    visibleSessions.filter((session) => !session.worktreeId),
+  );
   const repositoryStatus = useStore((state) => state.repositoryStatuses[p.id]);
   // Branch management is intentionally gated by a live backend probe. The
   // persisted gitRootPath can become stale when a directory is moved or its
   // .git metadata is removed while AgentPort is closed.
   const isGitRepository = repositoryStatus?.isGitRepository === true;
-  const checkoutHead = !repositoryStatus
-    ? t("shell:ui.sidebar.readingBranch")
-    : repositoryStatus.head.kind === "detached"
+  const checkoutHead = repositoryStatus
+    ? repositoryStatus.head.kind === "detached"
       ? t("shell:ui.sidebar.detachedAt", {
-        oid: repositoryStatus.head.shortOid
-          ?? repositoryStatus.head.oid?.slice(0, 12)
-          ?? t("common:status.unknown"),
-      })
+          oid:
+            repositoryStatus.head.shortOid ??
+            repositoryStatus.head.oid?.slice(0, 12) ??
+            t("common:status.unknown"),
+        })
       : repositoryStatus.head.kind === "unborn"
         ? t("shell:ui.sidebar.unbornRepository")
-        : repositoryStatus.head.branch ?? t("shell:ui.sidebar.readingBranch");
+        : (repositoryStatus.head.branch ?? t("shell:ui.sidebar.readingBranch"))
+    : t("shell:ui.sidebar.readingBranch");
   useEffect(() => {
     const refresh = () => void refreshRepositoryStatus(p.id);
     refresh();
@@ -683,44 +1307,83 @@ function ProjectNode({ p }: { p: ProjectView }) {
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [p.id]);
+  const menuOptions = {
+    layoutSaving,
+    onTogglePin: () => onTogglePin(p),
+  };
+  const projectLabel = p.pinned
+    ? t("shell:ui.sidebar.pinnedProject", { project: p.name })
+    : p.name;
   return (
-    <div className="tree-project" role="treeitem" aria-expanded={expanded} aria-label={p.name}>
-      <div className="tree-project-header">
+    <div
+      className={`tree-project${dragging ? " dragging" : ""}${startsUnpinnedGroup ? " unpinned-start" : ""}`}
+      role="treeitem"
+      aria-expanded={expanded}
+      aria-label={projectLabel}
+      data-project-id={p.id}
+    >
+      {dragging ? (
+        <div className="project-drop-indicator" aria-hidden="true" />
+      ) : null}
+      <div
+        className="tree-project-header"
+        ref={(node) => registerHeader(p.id, node)}
+      >
         <button
+          type="button"
           className="tree-row project"
-          onClick={() =>
-            update((s) => ({ expandedProjects: { ...s.expandedProjects, [p.id]: !expanded } }))
-          }
-          onContextMenu={(e) => {
-            e.preventDefault();
-            openContextMenu(e.clientX, e.clientY, projectMenu(p, isGitRepository, t));
+          aria-grabbed={dragging}
+          onPointerDown={(event) => onPointerDown(p.id, event)}
+          onPointerMove={(event) => onPointerMove(p.id, event)}
+          onPointerUp={(event) => onPointerUp(p.id, event)}
+          onPointerCancel={(event) => onPointerCancel(p.id, event)}
+          onClick={(event) => {
+            if (consumeSuppressedClick(p.id, event)) return;
+            update((state) => {
+              const expandedProjects = {
+                ...state.expandedProjects,
+                [p.id]: !expanded,
+              };
+              persistProjectExpansion(expandedProjects);
+              return { expandedProjects };
+            });
+          }}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            openContextMenu(
+              event.clientX,
+              event.clientY,
+              projectMenu(p, isGitRepository, t, menuOptions),
+            );
           }}
         >
           <IconFolder open={expanded} />
           <span className="tree-label">{p.name}</span>
+          {p.pinned ? (
+            <span
+              className="project-pin-indicator"
+              aria-label={t("shell:ui.sidebar.projectPinned")}
+              data-tip={t("shell:ui.sidebar.projectPinned")}
+            >
+              <IconPin pinned />
+            </span>
+          ) : null}
         </button>
         <div
           className="project-quick-actions"
-          aria-label={t("shell:ui.sidebar.projectQuickActions", { project: p.name })}
+          aria-label={t("shell:ui.sidebar.projectQuickActions", {
+            project: p.name,
+          })}
         >
           <QuickAgentStrip
             projectId={p.id}
             scopeLabel={t("shell:ui.sidebar.projectScope", { project: p.name })}
           />
           <button
-            className="icon-btn tree-action git-entry-action"
-            aria-label={t("git:open")}
-            data-tip={t("git:open")}
-            disabled={!isGitRepository}
-            onClick={() =>
-              void openGitCenter({ kind: "projectMain", projectId: p.id })
-            }
-          >
-            ⎇
-          </button>
-          <button
             className="icon-btn tree-action"
-            aria-label={t("shell:ui.sidebar.projectMoreActions", { project: p.name })}
+            aria-label={t("shell:ui.sidebar.projectMoreActions", {
+              project: p.name,
+            })}
             data-tip={t("shell:ui.sidebar.moreActions")}
             onClick={(e) => {
               const rect = e.currentTarget.getBoundingClientRect();
@@ -728,7 +1391,10 @@ function ProjectNode({ p }: { p: ProjectView }) {
               openContextMenu(
                 rect.left,
                 rect.bottom + 4,
-                projectMenu(p, isGitRepository, t, { includeNewSession: false }),
+                projectMenu(p, isGitRepository, t, {
+                  ...menuOptions,
+                  includeNewSession: false,
+                }),
               );
             }}
           >
@@ -741,16 +1407,16 @@ function ProjectNode({ p }: { p: ProjectView }) {
           {isGitRepository ? (
             <button
               className="tree-row current-branch-row"
-              onClick={() => openDialog({ kind: "branchPicker", projectId: p.id })}
+              onClick={() =>
+                openDialog({ kind: "branchPicker", projectId: p.id })
+              }
               aria-current="page"
               aria-label={t("shell:ui.sidebar.currentCheckout", {
                 head: checkoutHead,
               })}
             >
               <IconBranch />
-              <span className="tree-label mono">
-                {checkoutHead}
-              </span>
+              <span className="tree-label mono">{checkoutHead}</span>
             </button>
           ) : null}
           {/* The Worktrees drill-down entry appears only after at least one
@@ -781,8 +1447,12 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
   const order = useSessionOrder();
   const canCreate = Boolean(p.gitRootPath);
   const archiving = useStore((state) => state.archivingSessionIds);
-  const highlightedWorktreeId = useStore((state) => state.highlightedWorktreeId);
-  const [liveHealth, setLiveHealth] = useState<Record<string, WorktreeHealthStr>>({});
+  const highlightedWorktreeId = useStore(
+    (state) => state.highlightedWorktreeId,
+  );
+  const [liveHealth, setLiveHealth] = useState<
+    Record<string, WorktreeHealthStr>
+  >({});
   const worktreeIds = p.worktrees.map((worktree) => worktree.id).join("\0");
   const archivingSessionIds = new Set(archiving);
   useEffect(() => {
@@ -794,9 +1464,11 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
       try {
         const worktrees = await api.listWorktrees(p.id);
         if (disposed || sequence !== requestSequence) return;
-        setLiveHealth(Object.fromEntries(
-          worktrees.map((worktree) => [worktree.id, worktree.health]),
-        ));
+        setLiveHealth(
+          Object.fromEntries(
+            worktrees.map((worktree) => [worktree.id, worktree.health]),
+          ),
+        );
       } catch {
         // Keep the last known project snapshot when a background refresh fails.
       }
@@ -833,7 +1505,9 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
         onClick={() => openDialog({ kind: "newWorktree", projectId: p.id })}
       >
         <IconPlus />
-        <span className="tree-label">{t("shell:ui.sidebar.projectMenu.newWorktree")}</span>
+        <span className="tree-label">
+          {t("shell:ui.sidebar.projectMenu.newWorktree")}
+        </span>
       </button>
       {p.worktrees.length === 0 ? (
         <div className="tree-empty">
@@ -850,11 +1524,13 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
             p={p}
             w={{ ...w, health: liveHealth[w.id] ?? w.health }}
             highlighted={highlightedWorktreeId === w.id}
-            sessions={order(p.sessions.filter(
-              (session) =>
-                session.worktreeId === w.id &&
-                !archivingSessionIds.has(session.id),
-            ))}
+            sessions={order(
+              p.sessions.filter(
+                (session) =>
+                  session.worktreeId === w.id &&
+                  !archivingSessionIds.has(session.id),
+              ),
+            )}
           />
         ))
       )}
@@ -873,18 +1549,23 @@ export default function Sidebar({
 }) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
   const projects = useStore((state) => state.projects);
+  const projectLayoutSaving = useStore((state) => state.projectLayoutSaving);
+  const projectDrag = useProjectDrag(projects, projectLayoutSaving);
   const expandedProjects = useStore((state) => state.expandedProjects);
   const collapsedWorktrees = useStore((state) => state.collapsedWorktrees);
-  const sidebarWorktreeProjectId = useStore((state) => state.sidebarWorktreeProjectId);
+  const sidebarWorktreeProjectId = useStore(
+    (state) => state.sidebarWorktreeProjectId,
+  );
   const allProjectsCollapsed =
-    projects.length > 0 && projects.every((project) => expandedProjects[project.id] === false);
+    projects.length > 0 &&
+    projects.every((project) => expandedProjects[project.id] === false);
   const allWorktreesCollapsed = projects.every((p) =>
     p.worktrees.every((w) => collapsedWorktrees[w.id] === true),
   );
   // Master toggle covers both project groups and worktree session groups.
   const allCollapsed = allProjectsCollapsed && allWorktreesCollapsed;
   const worktreeProject = sidebarWorktreeProjectId
-    ? projects.find((p) => p.id === sidebarWorktreeProjectId) ?? null
+    ? (projects.find((p) => p.id === sidebarWorktreeProjectId) ?? null)
     : null;
   return (
     <aside
@@ -894,11 +1575,16 @@ export default function Sidebar({
       style={{ "--sidebar-width": `${width}px` } as CSSProperties}
     >
       <div
+        ref={projectDrag.scrollRef}
         className="sidebar-scroll"
         role="tree"
-        aria-label={worktreeProject
-          ? t("shell:ui.sidebar.worktreeTreeLabel", { project: worktreeProject.name })
-          : t("shell:ui.sidebar.projectTreeLabel")}
+        aria-label={
+          worktreeProject
+            ? t("shell:ui.sidebar.worktreeTreeLabel", {
+                project: worktreeProject.name,
+              })
+            : t("shell:ui.sidebar.projectTreeLabel")
+        }
       >
         {projects.length === 0 ? (
           <div className="empty-state">
@@ -906,14 +1592,38 @@ export default function Sidebar({
               ⌘
             </div>
             <div>{t("shell:ui.empty.addDirectoryPrompt")}</div>
-            <button className="btn primary" onClick={() => void addProjectFromPickerFlow()}>
+            <button
+              className="btn primary"
+              onClick={() => void addProjectFromPickerFlow()}
+            >
               {t("shell:ui.actions.addProject")}
             </button>
           </div>
         ) : worktreeProject ? (
           <WorktreeSessionsView p={worktreeProject} />
         ) : (
-          projects.map((p) => <ProjectNode key={p.id} p={p} />)
+          projectDrag.projects.map((project, index) => {
+            const startsUnpinnedGroup =
+              !project.pinned &&
+              index > 0 &&
+              projectDrag.projects[index - 1]?.pinned === true;
+            return (
+              <ProjectNode
+                key={project.id}
+                p={project}
+                dragging={projectDrag.draggingProjectId === project.id}
+                startsUnpinnedGroup={startsUnpinnedGroup}
+                layoutSaving={projectLayoutSaving}
+                registerHeader={projectDrag.registerHeader}
+                onPointerDown={projectDrag.onPointerDown}
+                onPointerMove={projectDrag.onPointerMove}
+                onPointerUp={projectDrag.onPointerUp}
+                onPointerCancel={projectDrag.onPointerCancel}
+                consumeSuppressedClick={projectDrag.consumeSuppressedClick}
+                onTogglePin={projectDrag.togglePin}
+              />
+            );
+          })
         )}
       </div>
       <div className="sidebar-footer">
@@ -937,20 +1647,26 @@ export default function Sidebar({
           onClick={() =>
             update((state) => {
               const collapse = !allCollapsed;
+              const expandedProjects = Object.fromEntries(
+                state.projects.map((project) => [project.id, !collapse]),
+              );
+              persistProjectExpansion(expandedProjects);
               return {
-                expandedProjects: Object.fromEntries(
-                  state.projects.map((project) => [project.id, !collapse]),
-                ),
+                expandedProjects,
                 collapsedWorktrees: Object.fromEntries(
-                  state.projects.flatMap((p) => p.worktrees.map((w) => [w.id, collapse])),
+                  state.projects.flatMap((p) =>
+                    p.worktrees.map((w) => [w.id, collapse]),
+                  ),
                 ),
               };
             })
           }
           disabled={projects.length === 0}
-          aria-label={allCollapsed
-            ? t("shell:ui.sidebar.expandAll")
-            : t("shell:ui.sidebar.collapseAll")}
+          aria-label={
+            allCollapsed
+              ? t("shell:ui.sidebar.expandAll")
+              : t("shell:ui.sidebar.collapseAll")
+          }
         >
           <IconCollapseProjects collapsed={allCollapsed} />
         </button>

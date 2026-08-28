@@ -8,6 +8,7 @@ const { apiMock } = vi.hoisted(() => ({
     archiveSession: vi.fn(),
     getRepositoryStatus: vi.fn(),
     listProjects: vi.fn(),
+    setProjectLayout: vi.fn(),
   },
 }));
 
@@ -29,7 +30,12 @@ vi.mock("./terminals", () => ({
   resetForRestart: vi.fn(),
 }));
 
-import { archiveSessionFlow, refreshProjects, refreshRepositoryStatus } from "./actions";
+import {
+  archiveSessionFlow,
+  refreshProjects,
+  refreshRepositoryStatus,
+  saveProjectLayoutFlow,
+} from "./actions";
 import Sidebar from "./components/Sidebar";
 import {
   applyProjectsSnapshot,
@@ -79,6 +85,7 @@ const session = (overrides: Partial<SessionView> = {}): SessionView => ({
   logPath: "/tmp/session.log",
   unread: false,
   status: null,
+  pinnedAt: null,
   createdAt: "2026-07-23T00:00:00.000Z",
   ...overrides,
 });
@@ -88,6 +95,7 @@ const projects = (...sessions: SessionView[]): ProjectView[] => [{
   name: "Project",
   rootPath: "/tmp/project",
   gitRootPath: "/tmp/project",
+  pinned: false,
   sessions,
   worktrees: [],
 }];
@@ -116,6 +124,9 @@ describe("frontend state authority", () => {
       attachedIds: [],
       repositoryStatuses: {},
       runtime: {},
+      projectLayoutSaving: false,
+      announcement: "",
+      toasts: [],
     });
   });
 
@@ -170,6 +181,105 @@ describe("frontend state authority", () => {
       snapshotToken: "event",
       head: { branch: "feature/new" },
     });
+  });
+
+  it("optimistically applies one Project layout write and blocks overlap", async () => {
+    const first = projects()[0];
+    const second = { ...first, id: "prj_2", name: "Second", rootPath: "/tmp/second" };
+    const original = [first, second];
+    const authoritative = [
+      { ...second, pinned: true },
+      { ...first, pinned: false },
+    ];
+    setState({ projects: original });
+    const write = deferred<ProjectView[]>();
+    apiMock.setProjectLayout.mockReturnValueOnce(write.promise);
+
+    const pending = saveProjectLayoutFlow([
+      { id: "prj_2", pinned: true },
+      { id: "prj_1", pinned: false },
+    ]);
+
+    expect(getState().projects.map((project) => project.id)).toEqual(["prj_2", "prj_1"]);
+    expect(getState().projectLayoutSaving).toBe(true);
+    await expect(saveProjectLayoutFlow([
+      { id: "prj_1", pinned: false },
+      { id: "prj_2", pinned: false },
+    ])).resolves.toBe(false);
+    expect(apiMock.setProjectLayout).toHaveBeenCalledTimes(1);
+
+    write.resolve(authoritative);
+    await expect(pending).resolves.toBe(true);
+    expect(getState().projects).toEqual(authoritative);
+    expect(getState().projectLayoutSaving).toBe(false);
+  });
+
+  it("restores the backend Project layout after a persistence failure", async () => {
+    const first = projects()[0];
+    const second = { ...first, id: "prj_2", name: "Second", rootPath: "/tmp/second" };
+    const original = [first, second];
+    setState({ projects: original });
+    apiMock.setProjectLayout.mockRejectedValueOnce(new Error("write failed"));
+    apiMock.listProjects.mockResolvedValueOnce(original);
+
+    await expect(saveProjectLayoutFlow([
+      { id: "prj_2", pinned: true },
+      { id: "prj_1", pinned: false },
+    ])).resolves.toBe(false);
+
+    expect(getState().projects).toEqual(original);
+    expect(getState().projectLayoutSaving).toBe(false);
+    expect(getState().announcement).toContain("保存项目顺序失败");
+    expect(getState().toasts[getState().toasts.length - 1]?.text).toContain("write failed");
+  });
+
+  it("merges a successful layout onto a newer Project snapshot", async () => {
+    const first = projects(session())[0];
+    const second = { ...first, id: "prj_2", name: "Second", rootPath: "/tmp/second", sessions: [] };
+    const newerFirst = projects(session({ lifecycle: "exited" }))[0];
+    setState({ projects: [first, second] });
+    const write = deferred<ProjectView[]>();
+    apiMock.setProjectLayout.mockReturnValueOnce(write.promise);
+
+    const pending = saveProjectLayoutFlow([
+      { id: "prj_2", pinned: true },
+      { id: "prj_1", pinned: false },
+    ]);
+    applyProjectsSnapshot([newerFirst, second]);
+    write.resolve([
+      { ...second, pinned: true },
+      { ...first, pinned: false },
+    ]);
+    await pending;
+
+    expect(getState().projects.map((project) => project.id)).toEqual(["prj_2", "prj_1"]);
+    expect(getState().projects[1].sessions[0].lifecycle).toBe("exited");
+  });
+
+  it("does not restore a stale pre-write snapshot over a newer event", async () => {
+    const first = projects(session())[0];
+    const second = { ...first, id: "prj_2", name: "Second", rootPath: "/tmp/second", sessions: [] };
+    const original = [first, second];
+    const newer = [projects(session({ lifecycle: "exited" }))[0], second];
+    const write = deferred<ProjectView[]>();
+    const refresh = deferred<ProjectView[]>();
+    setState({ projects: original });
+    apiMock.setProjectLayout.mockReturnValueOnce(write.promise);
+    apiMock.listProjects.mockReturnValueOnce(refresh.promise);
+
+    const pending = saveProjectLayoutFlow([
+      { id: "prj_2", pinned: true },
+      { id: "prj_1", pinned: false },
+    ]);
+    write.reject(new Error("write failed"));
+    await vi.waitFor(() => expect(apiMock.listProjects).toHaveBeenCalledTimes(1));
+    invalidateProjectsSnapshotRequests();
+    applyProjectsSnapshot(newer);
+    refresh.resolve(original);
+    await pending;
+
+    expect(getState().projects).toEqual(newer);
+    expect(getState().projectLayoutSaving).toBe(false);
   });
 
   it("archives a running Session without opening a second confirmation dialog", async () => {

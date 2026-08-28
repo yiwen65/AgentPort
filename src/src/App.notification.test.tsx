@@ -18,6 +18,7 @@ vi.mock("./api", () => ({
   api: mocks.api,
   errorText: (error: unknown) => String(error),
   onNotificationActivated: mocks.onNotificationActivated,
+  onNativeCleanupWarning: vi.fn().mockResolvedValue(vi.fn()),
   onGitStateInvalidated: vi.fn().mockResolvedValue(vi.fn()),
   onProjectsChanged: vi.fn().mockResolvedValue(vi.fn()),
   onRepositoryStateChanged: vi.fn().mockResolvedValue(vi.fn()),
@@ -30,6 +31,7 @@ vi.mock("./actions", () => ({
   applyThemeSettings: vi.fn(),
   isMac: vi.fn().mockReturnValue(true),
   openNewSessionDialog: vi.fn(),
+  readLastSelectedSessionId: () => window.localStorage.getItem("agentport-active-session-id"),
   refreshProjectsSoon: vi.fn(),
   restartSessionFlow: vi.fn(),
   selectSession: mocks.selectSession,
@@ -73,6 +75,7 @@ const firstSession: SessionView = {
   logPath: "/tmp/first.log",
   unread: false,
   status: null,
+  pinnedAt: null,
   createdAt: "2026-07-23T00:00:00.000Z",
 };
 const targetSession = { ...firstSession, id: "ses_target", title: "target" };
@@ -97,6 +100,7 @@ const bootInfo: BootInfo = {
     screenReaderMode: false,
     searchIndexEnabled: true,
     agentOrder: ["shell"],
+    agentHidden: [],
     telemetryEnabled: false,
   },
   adapters: [],
@@ -105,6 +109,7 @@ const bootInfo: BootInfo = {
     name: "Project",
     rootPath: "/tmp/project",
     gitRootPath: null,
+    pinned: false,
     sessions: [firstSession, targetSession],
     worktrees: [],
   }],
@@ -123,6 +128,8 @@ describe("system notification navigation", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
+    mocks.api.takePendingNotificationSession.mockReset().mockResolvedValue(null);
     mocks.selectSession.mockImplementation((sessionId: string) => {
       setState({ activeSessionId: sessionId });
     });
@@ -167,6 +174,28 @@ describe("system notification navigation", () => {
     expect(mocks.selectSession).not.toHaveBeenCalledWith("ses_first");
   });
 
+  it("restores the last selected interrupted Session after a GUI cold start", async () => {
+    const interruptedTarget = {
+      ...targetSession,
+      lifecycle: "interrupted" as const,
+    };
+    window.localStorage.setItem("agentport-active-session-id", interruptedTarget.id);
+    mocks.api.boot.mockResolvedValue({
+      ...bootInfo,
+      projects: [{ ...bootInfo.projects[0], sessions: [firstSession, interruptedTarget] }],
+    });
+    mocks.api.takePendingNotificationSession.mockResolvedValue(null);
+
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.selectSession).toHaveBeenCalledWith(interruptedTarget.id, null, {
+        revealInSidebar: false,
+      }),
+    );
+    expect(mocks.selectSession).not.toHaveBeenCalledWith(firstSession.id);
+  });
+
   it("switches an already-running app when a notification is clicked", async () => {
     mocks.api.boot.mockResolvedValue(bootInfo);
     mocks.api.takePendingNotificationSession
@@ -174,7 +203,11 @@ describe("system notification navigation", () => {
       .mockResolvedValueOnce("ses_target");
 
     render(<App />);
-    await waitFor(() => expect(mocks.selectSession).toHaveBeenCalledWith("ses_first"));
+    await waitFor(() =>
+      expect(mocks.selectSession).toHaveBeenCalledWith("ses_first", null, {
+        revealInSidebar: false,
+      }),
+    );
     mocks.selectSession.mockClear();
 
     act(() => activate("ses_target"));
@@ -190,7 +223,11 @@ describe("system notification navigation", () => {
       .mockResolvedValueOnce("ses_first");
 
     render(<App />);
-    await waitFor(() => expect(mocks.selectSession).toHaveBeenCalledWith("ses_first"));
+    await waitFor(() =>
+      expect(mocks.selectSession).toHaveBeenCalledWith("ses_first", null, {
+        revealInSidebar: false,
+      }),
+    );
     mocks.selectSession.mockClear();
 
     act(() => activate("ses_target"));
@@ -205,7 +242,11 @@ describe("system notification navigation", () => {
     mocks.api.takePendingNotificationSession.mockReset().mockResolvedValue(null);
 
     render(<App />);
-    await waitFor(() => expect(mocks.selectSession).toHaveBeenCalledWith("ses_first"));
+    await waitFor(() =>
+      expect(mocks.selectSession).toHaveBeenCalledWith("ses_first", null, {
+        revealInSidebar: false,
+      }),
+    );
 
     act(() => emitState({
       sessionId: "ses_first",

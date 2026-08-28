@@ -5,18 +5,22 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { api, commitAiErrorText, errorText } from "../api";
+import {
+  api,
+  commitAiErrorText,
+  errorText,
+  type NativeCoverageSummary,
+} from "../api";
 import { applyThemeSettings, refreshProjects } from "../actions";
 import {
   agentDisplay,
   formatBytes,
   formatTime,
-  indexStateLabel,
   presetDisplayName,
   secretBackendZh,
 } from "../format";
 import { applyUiLanguage, currentUiLanguage, i18n } from "../i18n";
-import { orderAgentIds } from "../agentOrder";
+import { orderAgentIds, visibleAgentIds } from "../agentOrder";
 import { applyTerminalLanguage } from "../terminals";
 import { AgentIcon } from "./AgentIcons";
 import ShellIcon from "./ShellIcon";
@@ -27,6 +31,7 @@ import type {
   CommitAiConfig,
   CommitAiLanguage,
   CommitAiProvider,
+  LegacyLogInventory,
   Preset,
   SecretMeta,
   Settings,
@@ -463,7 +468,7 @@ function CommitAiSection() {
               >
                 {(
                   [
-                    ["zh", "中文"],
+                    ["zh", t("settings:ui.commitAi.languageZh")],
                     ["en", "English"],
                   ] as const
                 ).map(([value, label]) => (
@@ -524,17 +529,24 @@ function AdapterOrderIcon({ agent }: { agent: string }) {
 
 function AdapterSection({
   agentOrder,
+  agentHidden,
   onAgentOrderChange,
+  onAgentHiddenChange,
 }: {
   agentOrder: string[];
+  agentHidden: string[];
   onAgentOrderChange: (next: string[]) => void;
+  onAgentHiddenChange: (next: string[]) => void;
 }) {
   const { t } = useTranslation(["settings", "common"]);
   const s = useStore();
   const [busy, setBusy] = useState(false);
-  const orderedAgentIds = orderAgentIds(
-    agentOrder,
-    s.adapters.map((adapter) => adapter.agentType),
+  const orderedAgentIds = visibleAgentIds(
+    orderAgentIds(
+      agentOrder,
+      s.adapters.map((adapter) => adapter.agentType),
+    ),
+    agentHidden,
   );
   const orderedAdapters = orderedAgentIds
     .map((agent) => s.adapters.find((adapter) => adapter.agentType === agent))
@@ -549,6 +561,13 @@ function AdapterSection({
     if (from < 0 || to < 0 || to >= next.length) return;
     [next[from], next[to]] = [next[to], next[from]];
     onAgentOrderChange(next);
+  };
+  const hideAgent = (agent: string) => {
+    if (orderedAdapters.length <= 1) return;
+    onAgentHiddenChange([...agentHidden, agent]);
+  };
+  const restoreAgent = (agent: string) => {
+    onAgentHiddenChange(agentHidden.filter((id) => id !== agent));
   };
   const reprobe = async () => {
     setBusy(true);
@@ -576,7 +595,7 @@ function AdapterSection({
       <p className="dim" style={{ margin: 0 }}>
         {t("settings:ui.adapters.description")}
       </p>
-      {s.adapters.length === 0 ? (
+      {orderedAdapters.length === 0 ? (
         <p className="dim" style={{ margin: 0 }}>
           {t("settings:ui.adapters.empty")}
         </p>
@@ -587,6 +606,7 @@ function AdapterSection({
               <th>{t("settings:ui.adapters.columns.agent")}</th>
               <th>{t("settings:ui.adapters.columns.selection")}</th>
               <th>{t("settings:ui.adapters.columns.order")}</th>
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -628,11 +648,40 @@ function AdapterSection({
                     </button>
                   </span>
                 </td>
+                <td>
+                  <button
+                    type="button"
+                    className="btn small ghost"
+                    disabled={orderedAdapters.length <= 1}
+                    onClick={() => hideAgent(a.agentType)}
+                    aria-label={t("settings:ui.adapters.remove", {
+                      agent: agentDisplay(a.agentType),
+                    })}
+                  >
+                    ×
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
+      {agentHidden.length > 0 ? (
+        <div className="control" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <span className="dim">{t("settings:ui.adapters.hiddenLabel")}</span>
+          {agentHidden.map((agent) => (
+            <button
+              key={agent}
+              type="button"
+              className="btn small ghost"
+              onClick={() => restoreAgent(agent)}
+              aria-label={t("settings:ui.adapters.restore", { agent: agentDisplay(agent) })}
+            >
+              {agentDisplay(agent)} ↩
+            </button>
+          ))}
+        </div>
+      ) : null}
       <div className="control" style={{ display: "flex", gap: 8 }}>
         <button className="btn small" disabled={busy} onClick={() => void reprobe()}>
           {busy ? t("settings:ui.adapters.probing") : t("settings:ui.adapters.reprobeAll")}
@@ -661,10 +710,19 @@ function formatArchivedAt(value: string): string {
 }
 
 type BackupItem = { path: string; name: string; size: number; modifiedAt: string };
+type BackupStatus = {
+  kind: "pending" | "complete" | "incomplete" | "legacy" | "error";
+  text: string;
+};
 
-/** Backup and restore: create verified full backups, verify existing backups on
- * demand, and restore into a new directory without touching live data. */
-function BackupSection() {
+export function nativeCoverageComplete(coverage: NativeCoverageSummary): boolean {
+  return coverage.missing === 0 && coverage.ambiguous === 0;
+}
+
+/** Backup and restore: create/verify coverage-aware archives, then restore
+ * AgentPort data into a new directory while conflict-safely installing native
+ * Session artifacts into the currently configured Provider homes. */
+export function BackupSection() {
   const { t } = useTranslation(["settings", "common"]);
   const s = useStore();
   const dataRoot = s.exportsDir.replace(/\/exports$/, "");
@@ -672,7 +730,7 @@ function BackupSection() {
   const [items, setItems] = useState<BackupItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
-  const [verifyState, setVerifyState] = useState<Record<string, { ok: boolean; text: string }>>({});
+  const [verifyState, setVerifyState] = useState<Record<string, BackupStatus>>({});
   const [restoring, setRestoring] = useState(false);
   const [restored, setRestored] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -697,8 +755,29 @@ function BackupSection() {
     setError(null);
     try {
       const r = await api.backupCreate(null);
-      toast(t("settings:ui.backup.createComplete", { count: r.files }), "success");
+      const complete = nativeCoverageComplete(r.nativeCoverage);
+      toast(
+        t(
+          complete
+            ? "settings:ui.backup.createComplete"
+            : "settings:ui.backup.createIncomplete",
+          { count: r.files, ...r.nativeCoverage },
+        ),
+        complete ? "success" : "info",
+      );
       await reload();
+      setVerifyState((current) => ({
+        ...current,
+        [r.path]: {
+          kind: complete ? "complete" : "incomplete",
+          text: t(
+            complete
+              ? "settings:ui.backup.verificationV2Complete"
+              : "settings:ui.backup.verificationV2Incomplete",
+            { count: r.files, ...r.nativeCoverage },
+          ),
+        },
+      }));
     } catch (e) {
       setError(t("settings:ui.backup.createFailed", { detail: errorText(e) }));
     } finally {
@@ -709,22 +788,29 @@ function BackupSection() {
   const verify = async (path: string) => {
     setVerifyState((v) => ({
       ...v,
-      [path]: { ok: true, text: t("settings:ui.backup.verifying") },
+      [path]: { kind: "pending", text: t("settings:ui.backup.verifying") },
     }));
     try {
       const r = await api.backupVerify(path);
+      const legacy = r.formatVersion === 1;
+      const complete = !legacy && nativeCoverageComplete(r.nativeCoverage);
+      const key = legacy
+        ? "settings:ui.backup.verificationV1Legacy"
+        : complete
+          ? "settings:ui.backup.verificationV2Complete"
+          : "settings:ui.backup.verificationV2Incomplete";
       setVerifyState((v) => ({
         ...v,
         [path]: {
-          ok: true,
-          text: t("settings:ui.backup.verificationComplete", { count: r.files }),
+          kind: legacy ? "legacy" : complete ? "complete" : "incomplete",
+          text: t(key, { count: r.files, ...r.nativeCoverage }),
         },
       }));
     } catch (e) {
       setVerifyState((v) => ({
         ...v,
         [path]: {
-          ok: false,
+          kind: "error",
           text: t("settings:ui.backup.verifyFailed", { detail: errorText(e) }),
         },
       }));
@@ -762,6 +848,10 @@ function BackupSection() {
         <p className="form-hint">
           {t("settings:ui.backup.description")}
         </p>
+      </div>
+      <div className="info-box backup-data-boundary" role="note">
+        <strong>{t("settings:ui.backup.dataBoundaryTitle")}</strong>
+        <p className="form-hint">{t("settings:ui.backup.dataBoundaryBody")}</p>
       </div>
       <div className="settings-grid">
         <label>{t("settings:ui.backup.createLabel")}</label>
@@ -835,7 +925,15 @@ function BackupSection() {
                 </td>
                 <td>{formatBytes(item.size)}</td>
                 <td className="dim">{item.modifiedAt ? formatTime(item.modifiedAt) : "—"}</td>
-                <td className={verifyState[item.path]?.ok === false ? "warn-text" : "dim"}>
+                <td
+                  className={
+                    ["incomplete", "legacy", "error"].includes(
+                      verifyState[item.path]?.kind ?? "",
+                    )
+                      ? "warn-text"
+                      : "dim"
+                  }
+                >
                   {verifyState[item.path]?.text ?? t("settings:ui.backup.notVerified")}
                 </td>
                 <td>
@@ -1107,12 +1205,16 @@ export default function SettingsDialog() {
   const { t } = useTranslation(["settings", "common"]);
   const s = useStore();
   const pageRef = useRef<HTMLDivElement>(null);
+  const contentScrollRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState<Settings | null>(s.settings ? { ...s.settings } : null);
   const [busy, setBusy] = useState(false);
   const [themeBusy, setThemeBusy] = useState(false);
   const [languageBusy, setLanguageBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [section, setSection] = useState<SettingsSection>("appearance");
+  const [legacyInventory, setLegacyInventory] = useState<LegacyLogInventory | null>(null);
+  const [legacySelected, setLegacySelected] = useState<Set<string>>(new Set());
+  const [legacyBusy, setLegacyBusy] = useState(false);
   const closeBlocked = busy || themeBusy || languageBusy;
   const requestClose = () => {
     if (!closeBlocked) closeDialog();
@@ -1125,6 +1227,23 @@ export default function SettingsDialog() {
     (first ?? page)?.focus();
     return () => previous?.focus?.();
   }, []);
+
+  useEffect(() => {
+    if (contentScrollRef.current) contentScrollRef.current.scrollTop = 0;
+  }, [section]);
+
+  useEffect(() => {
+    if (section !== "search") return;
+    setLegacyBusy(true);
+    api
+      .getLegacyLogInventory()
+      .then((inventory) => {
+        setLegacyInventory(inventory);
+        setLegacySelected(new Set());
+      })
+      .catch((reason) => setError(errorText(reason)))
+      .finally(() => setLegacyBusy(false));
+  }, [section]);
 
   if (!draft) return null;
   const patch = (p: Partial<Settings>) => setDraft((d) => (d ? { ...d, ...p } : d));
@@ -1347,19 +1466,6 @@ export default function SettingsDialog() {
           </span>
         </div>
 
-        <label htmlFor="set-loglimit">{t("settings:ui.notifications.logLimitLabel")}</label>
-        <div className="control">
-          <input
-            id="set-loglimit"
-            type="number"
-            min={20}
-            max={2048}
-            value={draft.logLimitMib}
-            onChange={(e) => patch({ logLimitMib: Number(e.target.value) })}
-          />
-          <span className="form-hint">{t("settings:ui.notifications.logLimitHint")}</span>
-        </div>
-
         {s.platform?.os === "linux" ? (
           <>
             <label htmlFor="set-terminal-command">
@@ -1391,37 +1497,72 @@ export default function SettingsDialog() {
         <p className="form-hint">{t("settings:ui.search.description")}</p>
       </div>
       <div className="settings-grid">
-        <label htmlFor="set-index">{t("settings:ui.search.indexLabel")}</label>
+        <label>{t("settings:ui.search.modeLabel")}</label>
         <div className="control">
-          <label className="check-row">
-            <input
-              id="set-index"
-              type="checkbox"
-              checked={draft.searchIndexEnabled}
-              onChange={(e) => patch({ searchIndexEnabled: e.target.checked })}
-            />
-            <span>{t("settings:ui.search.indexHint")}</span>
-          </label>
+          <span>{t("settings:ui.search.nativeOnDemand")}</span>
+          <span className="form-hint">{t("settings:ui.search.nativeOnDemandHint")}</span>
         </div>
-        <label>{t("settings:ui.search.indexStatus")}</label>
+        <label>{t("settings:ui.search.legacyStorage")}</label>
         <div className="control">
-          <span>{indexStateLabel(s.indexState)}</span>
+          <span>
+            {legacyInventory
+              ? t("settings:ui.search.legacySummary", {
+                  count: legacyInventory.entries.length,
+                  size: formatBytes(legacyInventory.totalBytes),
+                })
+              : legacyBusy
+                ? t("settings:ui.search.loadingLegacy")
+                : t("settings:ui.search.legacyUnavailable")}
+          </span>
+          {legacyInventory?.entries.map((entry) => (
+            <label className="check-row" key={entry.id}>
+              <input
+                type="checkbox"
+                disabled={entry.active || legacyBusy}
+                checked={legacySelected.has(entry.id)}
+                onChange={(event) => setLegacySelected((current) => {
+                  const next = new Set(current);
+                  if (event.target.checked) next.add(entry.id);
+                  else next.delete(entry.id);
+                  return next;
+                })}
+              />
+              <span className="mono">
+                {entry.sessionId} · {formatBytes(entry.bytes)}
+                {entry.active ? ` · ${t("settings:ui.search.activeLegacy")}` : ""}
+              </span>
+            </label>
+          ))}
           <button
             className="btn small"
-            onClick={() => {
-              toast(t("settings:ui.search.rebuildStarted"), "info");
-              api
-                .rebuildSearchIndex()
-                .then(() => toast(t("settings:ui.search.rebuildComplete"), "success"))
-                .catch((e) =>
-                  toast(
-                    t("settings:ui.search.rebuildFailed", { detail: errorText(e) }),
-                    "error",
-                  ),
-                );
-            }}
+            disabled={legacySelected.size === 0 || legacyBusy}
+            onClick={() => void (async () => {
+              const ok = await confirmDialog({
+                title: t("settings:ui.search.cleanupConfirmTitle"),
+                body: t("settings:ui.search.cleanupConfirmMessage", {
+                  count: legacySelected.size,
+                }),
+                confirmLabel: t("settings:ui.search.cleanup"),
+                danger: true,
+              });
+              if (!ok) return;
+              setLegacyBusy(true);
+              try {
+                const report = await api.deleteLegacyLogs([...legacySelected], true);
+                toast(t("settings:ui.search.cleanupComplete", {
+                  size: formatBytes(report.bytesReclaimed),
+                }), "success");
+                const next = await api.getLegacyLogInventory();
+                setLegacyInventory(next);
+                setLegacySelected(new Set());
+              } catch (reason) {
+                toast(t("settings:ui.search.cleanupFailed", { detail: errorText(reason) }), "error");
+              } finally {
+                setLegacyBusy(false);
+              }
+            })()}
           >
-            {t("settings:ui.search.rebuild")}
+            {t("settings:ui.search.cleanup")}
           </button>
         </div>
         <label>{t("settings:ui.search.rendererLabel")}</label>
@@ -1443,7 +1584,7 @@ export default function SettingsDialog() {
     appearance: appearanceSection,
     notifications: notificationsSection,
     search: searchSection,
-    adapters: <AdapterSection agentOrder={draft.agentOrder} onAgentOrderChange={(agentOrder) => patch({ agentOrder })} />,
+    adapters: <AdapterSection agentOrder={draft.agentOrder} agentHidden={draft.agentHidden} onAgentOrderChange={(agentOrder) => patch({ agentOrder })} onAgentHiddenChange={(agentHidden) => patch({ agentHidden })} />,
     commitAi: <CommitAiSection />,
     secrets: <SecretSection />,
     archive: <ArchiveSection />,
@@ -1528,7 +1669,7 @@ export default function SettingsDialog() {
           </div>
         </nav>
         <section className="settings-page-panel" aria-label={t("settings:ui.contentAriaLabel")}>
-          <div className="settings-content">
+          <div ref={contentScrollRef} className="settings-content">
             {error ? <div className="error-bar" role="alert">{error}</div> : null}
             {content}
           </div>

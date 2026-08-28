@@ -16,3 +16,10 @@ export function orderAgentIds(savedOrder: readonly string[] | undefined, availab
   for (const agent of available) add(agent);
   return result;
 }
+
+/** Drop agents the user removed from pickers, preserving the given order. */
+export function visibleAgentIds(ids: readonly string[], hidden: readonly string[] | undefined) {
+  if (!hidden || hidden.length === 0) return [...ids];
+  const hiddenSet = new Set(hidden);
+  return ids.filter((id) => !hiddenSet.has(id));
+}

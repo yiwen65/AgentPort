@@ -17,9 +17,17 @@
     "newName": "New name",
     "renameFailed": "Could not rename the project: {{detail}}",
     "removeTitle": "Remove “{{name}}” from AgentPort?",
-    "removeBody": "This removes only the AgentPort project record; the project directory stays on disk. It is available only after every Session and Worktree has been handled separately.",
-    "removeBlocked": "This project still has {{sessions}} Session(s), {{worktrees}} Worktree(s), and {{operations}} recoverable branch operation(s). Handle each item before removing the project.",
-    "removeFailed": "Could not remove the project: {{detail}}"
+    "removeBody": "The project directory itself stays on disk. AgentPort will permanently delete {{sessions}} related Session(s), {{worktrees}} managed Worktree directory/directories (including all local changes and ignored files), and clean up {{operations}} unfinished Git operation record(s), then remove the project record. This cannot be undone.",
+    "removeBlocked": "Project dependencies are cleaned automatically during removal.",
+    "removeArchivedTitle": "Clean up archived Sessions for “{{name}}”?",
+    "removeArchivedBody": "This project has {{count}} archived Session(s), which are hidden from the project tree. Continuing permanently deletes their archive records and AgentPort-managed local session files, then checks the project again. This cannot be undone.",
+    "removeArchivedAction": "Permanently delete archived Sessions",
+    "removeArchivedFailed": "Could not clean up the project's archived Sessions: {{detail}}",
+    "removeFailed": "Could not remove the project: {{detail}}",
+    "removePartial": "Project removed, but {{count}} process or filesystem cleanup item(s) could not be verified. Check the logs for leftovers.",
+    "layoutInvalid": "The project order is stale. Refresh and try again.",
+    "layoutSaved": "Project order saved",
+    "layoutFailed": "Could not save the project order: {{detail}}"
   },
   "onboarding": {
     "probeFailed": "Probe failed: {{detail}}",
