@@ -380,6 +380,42 @@ describe("terminal renderer", () => {
     setState({ openDocument: null });
   });
 
+  it("links relative paths from their first segment and resolves them from the session cwd", () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.bufferLines = [
+      "src/src/components/DocumentPanel.tsx",
+      "- changed src/src/styles.css:42 and ./docs/guide.md",
+    ];
+
+    const provider = terminal.linkProviders[terminal.linkProviders.length - 1];
+    const collect = (line: number) => {
+      let found:
+        | Array<{ text: string; activate(e: unknown, t: string): void }>
+        | undefined;
+      provider.provideLinks(line, (links) => {
+        found = links;
+      });
+      return found ?? [];
+    };
+
+    expect(collect(1).map((link) => link.text)).toEqual([
+      "src/src/components/DocumentPanel.tsx",
+    ]);
+    expect(collect(2).map((link) => link.text)).toEqual([
+      "src/src/styles.css:42",
+      "./docs/guide.md",
+    ]);
+
+    const relativeLink = collect(1)[0];
+    relativeLink?.activate(new MouseEvent("click"), relativeLink.text);
+    expect(getState().openDocument).toEqual({
+      path: "/tmp/renderer/src/src/components/DocumentPanel.tsx",
+      line: null,
+    });
+    setState({ openDocument: null });
+  });
+
   it("stops plain-path links before prose punctuation", () => {
     mountTerminal("renderer-test", document.createElement("div"));
     const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];

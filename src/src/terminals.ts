@@ -28,6 +28,7 @@ import {
 import { PiStartupNoticeFilter } from "./piStartupNotice";
 import {
   announce,
+  findSession,
   getState,
   openContextMenu,
   patchRuntime,
@@ -113,13 +114,14 @@ const unreadOutputPending = new Set<string>();
 
 /**
  * Routes a clicked terminal link. Local documents (file:// OSC 8 links and
- * plain absolute paths) open in the in-app viewer; only absolute http(s)
- * URLs are handed to the OS, through the native validation command. Every
+ * plain absolute or session-relative paths) open in the in-app viewer; only
+ * absolute http(s) URLs are handed to the OS, through the native validation
+ * command. Every
  * other scheme stays inside the app and is simply rejected — terminal output
  * is untrusted, so schemes like `vscode:` or `smb:` never reach the OS.
  */
-function openTerminalLink(url: string) {
-  const documentTarget = parseDocumentLinkTarget(url);
+function openTerminalLink(url: string, sessionCwd?: string) {
+  const documentTarget = parseDocumentLinkTarget(url, sessionCwd);
   if (documentTarget) {
     openDocumentTarget(documentTarget);
     return;
@@ -134,8 +136,10 @@ function openTerminalLink(url: string) {
 }
 
 /**
- * Matches absolute POSIX paths printed as plain text, e.g.
- * `/Users/w/project/docs/report.md:12`. Paths may contain spaces when the
+ * Matches absolute and relative POSIX paths printed as plain text, e.g.
+ * `/Users/w/project/docs/report.md:12` or `src/components/App.tsx`. Relative
+ * paths are resolved against the Session cwd when activated. Paths may contain
+ * spaces when the
  * whole candidate is quoted; unquoted matches stop at whitespace. A trailing
  * `:line[:column]` suffix is included so the viewer can reveal the line.
  *
@@ -145,13 +149,13 @@ function openTerminalLink(url: string) {
  * file names, while prose punctuation right after a path is the common case.
  */
 const LOCAL_PATH_CANDIDATE =
-  /(?:["'`(]?)(\/(?:[^\s"'`()[\]{}<>\\,;!?，。；：、！？【】《》「」『』]|\\ )+(?::\d+(?::\d+)?)?)/g;
+  /(?:^|[\s"'`([{<])((?:(?:\.{1,2}\/)|\/|(?:[^\s"'`()[\]{}<>\\,;:!?，。；：、！？【】《》「」『』/]+\/))(?:[^\s"'`()[\]{}<>\\,;!?，。；：、！？【】《》「」『』]|\\ )+(?::\d+(?::\d+)?)?)/g;
 /** Scheme immediately before a `/…` match means the text is a URL, not a
  * local path (the WebLinksAddon already owns those links). Covers both
  * `https://|path` and `https:|//path` match alignments. */
 const URL_SCHEME_BEFORE_PATH = /[a-zA-Z][a-zA-Z0-9+.-]*:\/?\/?$/;
 
-function localFileLinkProvider(term: Terminal): ILinkProvider {
+function localFileLinkProvider(term: Terminal, sessionId: string): ILinkProvider {
   return {
     provideLinks(bufferLineNumber, callback) {
       const line = term.buffer.active
@@ -179,7 +183,10 @@ function localFileLinkProvider(term: Terminal): ILinkProvider {
         links.push({
           range,
           text,
-          activate: (_event, linkText) => openTerminalLink(linkText),
+          activate: (_event, linkText) => {
+            const cwd = findSession(getState().projects, sessionId)?.cwd;
+            openTerminalLink(linkText, cwd);
+          },
         });
       }
       callback(links.length ? links : undefined);
@@ -483,9 +490,9 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
   // Detect plain http(s) URLs. OSC 8 links use the handler above, so both
   // forms share the same native URL validation and browser-opening path.
   term.loadAddon(new WebLinksAddon((_event, url) => openTerminalLink(url)));
-  // Detect plain-text absolute paths so agent-printed document paths (which
-  // are not always wrapped in OSC 8 sequences) are clickable as well.
-  term.registerLinkProvider(localFileLinkProvider(term));
+  // Detect plain-text absolute and relative paths so agent-printed document
+  // paths (which are not always wrapped in OSC 8 sequences) are clickable.
+  term.registerLinkProvider(localFileLinkProvider(term, sessionId));
   const handle: TermHandle = {
     sessionId,
     term,

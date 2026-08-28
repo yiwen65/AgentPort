@@ -27,6 +27,21 @@ describe("parseDocumentLinkTarget", () => {
     });
   });
 
+  it("resolves relative paths against an absolute session cwd", () => {
+    expect(
+      parseDocumentLinkTarget("src/components/App.tsx:9", "/tmp/project"),
+    ).toEqual({
+      path: "/tmp/project/src/components/App.tsx",
+      line: 9,
+    });
+    expect(
+      parseDocumentLinkTarget("../README.md", "/tmp/project/src"),
+    ).toEqual({
+      path: "/tmp/project/README.md",
+      line: null,
+    });
+  });
+
   it("keeps colons that are not trailing digit groups", () => {
     expect(parseDocumentLinkTarget("/tmp/weird:dir/file.md")).toEqual({
       path: "/tmp/weird:dir/file.md",

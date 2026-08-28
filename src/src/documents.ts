@@ -1,6 +1,6 @@
 // Document links in terminal output (OSC 8 `file://` hyperlinks and plain
-// absolute paths) open in the in-app viewer instead of an external app, like
-// clicking a file link in VSCode's terminal.
+// absolute or session-relative paths) open in the in-app viewer instead of an
+// external app, like clicking a file link in VSCode's terminal.
 
 import { confirmDialog, findSession, getState, setState } from "./store";
 import { i18n } from "./i18n";
@@ -13,10 +13,14 @@ export interface DocumentLinkTarget {
 
 /**
  * Parses a link target into an absolute path plus an optional line number.
- * Accepts `file://` URIs and plain POSIX absolute paths. Returns null for
- * anything else (web URLs, relative paths, non-local file hosts).
+ * Accepts `file://` URIs, plain POSIX absolute paths, and relative paths when
+ * an absolute session cwd is supplied. Returns null for web URLs, unresolved
+ * relative paths, and non-local file hosts.
  */
-export function parseDocumentLinkTarget(raw: string): DocumentLinkTarget | null {
+export function parseDocumentLinkTarget(
+  raw: string,
+  sessionCwd?: string,
+): DocumentLinkTarget | null {
   let text = raw.trim();
   if (!text) return null;
 
@@ -39,7 +43,7 @@ export function parseDocumentLinkTarget(raw: string): DocumentLinkTarget | null 
     return null;
   }
 
-  if (!text.startsWith("/")) return null;
+  const relative = !text.startsWith("/");
 
   // Strip a trailing `:line` or `:line:column` suffix. Only digit groups are
   // treated as positions, so paths containing real colons survive.
@@ -52,6 +56,18 @@ export function parseDocumentLinkTarget(raw: string): DocumentLinkTarget | null 
       text = text.slice(0, position.index);
     }
   }
+  if (relative) {
+    if (!sessionCwd?.startsWith("/")) return null;
+    const segments = `${sessionCwd}/${text}`.split("/");
+    const normalized: string[] = [];
+    for (const segment of segments) {
+      if (!segment || segment === ".") continue;
+      if (segment === "..") normalized.pop();
+      else normalized.push(segment);
+    }
+    text = `/${normalized.join("/")}`;
+  }
+
   if (text.length < 2) return null;
   return { path: text, line };
 }
