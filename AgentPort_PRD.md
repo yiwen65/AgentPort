@@ -65,9 +65,9 @@ AgentPort 是一款跨平台本地 AI CLI 工作台，让开发者能够同时�
 | GUI 关闭与 Session 停止是两个不同动作 | 每个 Session 使用独立 Host 进程和 Unix Domain Socket | 侧边栏密度、主题、动效和品牌语言 |
 | 默认不增加 `--yolo`、跳过审批或沙箱绕过参数 | 官方支持 Claude Code、Codex、Kimi Code；其他命令以 Generic Shell 运行 | Agent 图标、状态颜色和完成提示音 |
 | Session 输入、输出、工作目录、环境必须严格隔离 | 工作树目录放在应用数据目录下，不污染主仓库 | 命令面板、拖拽排序、快捷启动细节 |
-| 停止 Session 必须终止完整进程组，并留下可恢复记录 | 元数据使用 SQLite，原始输出使用追加日志 | 导出 Markdown 的版式和摘要文案 |
-| 删除 Worktree 前检查未提交修改，并默认阻止危险删除 | Ubuntu LTS 使用 `.deb`；Fedora/Arch 使用社区验证流程；AppImage 标记 Beta | 各发行版安装文档的呈现形式 |
-| 密钥不得写入应用元数据、日志或诊断包；系统安全存储不可用时不得明文回退 | macOS Keychain、Linux Secret Service；日志默认每 Session 上限 200 MiB | Secret 命名、分组和删除确认文案 |
+| 停止 Session 必须终止完整进程组，并留下可恢复记录 | 元数据使用 SQLite，会话正文使用 Agent 原生日志 | 导出 Markdown 的版式和摘要文案 |
+| 删除 Worktree 前展示本地修改与关联 Session，确认后自动清理托管目录且不以 dirty/锁/引用阻止删除 | Ubuntu LTS 使用 `.deb`；Fedora/Arch 使用社区验证流程；AppImage 标记 Beta | 各发行版安装文档的呈现形式 |
+| 密钥不得写入 AgentPort 元数据、正文索引或诊断包；系统安全存储不可用时不得明文回退 | macOS Keychain、Linux Secret Service；实时尾部每 Host 上限 4 MiB | Secret 命名、分组和删除确认文案 |
 | Agent Adapter 必须做版本与能力探测，不能假定参数永远不变 | 启动时记录可执行文件绝对路径和版本 | 状态解释、恢复时间线的视觉表达 |
 | P0-P2 的搜索、诊断、恢复时间线、启动安全校验、主题和可访问性均为交付项 | 深色主题、系统字体、减少动效跟随系统 | 主题颜色、过渡动效和空状态插画 |
 
@@ -249,7 +249,7 @@ AgentPort
 |                                                                  |
 |  ❯                                                               |
 +------------------------------------------------------------------+
-| 〈中断 Ctrl-C〉 〈重启并恢复〉 〈停止 Session〉 输出已落盘：18.4MiB |
+| 〈中断 Ctrl-C〉 〈重启并恢复〉 〈停止 Session〉 实时尾部：4 MiB 上限 |
 +------------------------------------------------------------------+
 ```
 
@@ -259,10 +259,10 @@ AgentPort
 启动
   -> GUI 请求创建 Session
   -> 独立 Host 创建 PTY/进程组
-  -> Host 启动 Agent 并追加原始输出日志
+  -> Host 启动 Agent；输出进入 4 MiB 有界内存尾部
   -> GUI 通过本地 Socket attach
   -> 用户退出 GUI，Host 继续
-  -> GUI 重开，读取 Host 清单、回放日志尾部并重新 attach
+  -> GUI 重开，读取 Host 清单、回放存活 Host 内存尾部并重新 attach
 
 失败路径 A：GUI 崩溃
   -> Host 不受影响
@@ -384,9 +384,9 @@ CLI/Host 事件 -> Adapter 归一化 -> 状态机去抖 -> 写入状态历史 ->
   -> 不创建 Session
   -> 回滚仅由本次创建的空目录，保留完整 Git stderr
 
-失败路径 C：删除时存在未提交/未跟踪文件
-  -> 默认阻止删除
-  -> 提供“打开终端”和“复制 git status”，P0 不提供强制删除按钮
+删除路径 C：存在未提交/未跟踪/被忽略文件、Git 锁或 Session 引用
+  -> 在危险确认中展示待清理内容
+  -> 确认后停止并清理关联 Session，解锁并强制删除 AgentPort 托管 Worktree；这些状态不阻止删除
 ```
 
 #### c) 状态清单
@@ -432,27 +432,33 @@ CLI/Host 事件 -> Adapter 归一化 -> 状态机去抖 -> 写入状态历史 ->
 ```text
 GUI 重开
   -> 读取上次关闭时间
-  -> 合并状态事件、Host 退出和未读输出位置
+  -> 合并状态事件、Host 退出和未读事实
   -> 生成恢复时间线
   -> 用户点击事件
-  -> 打开对应 Session，并定位到事件附近输出
+  -> 运行中 Session 定位到 Host 内存尾部；已结束 Session 打开 Agent 原生历史
+  -> 原生历史首屏读取最新有界页；滚动到顶部时按不透明游标加载更早页并保持视口锚点
 
 搜索正常路径
   -> 输入至少 2 个字符
-  -> 并行搜索项目/Session 元数据与已建立索引的终端文本
+  -> 搜索项目/Session 元数据，并按需流式扫描 Agent 原生日志
   -> 按 Session 分组展示
 
-失败路径 A：某段日志已轮转，不再有原始内容
-  -> 仍显示事件元数据
-  -> 标记“对应输出已轮转”，不返回错误定位
+失败路径 A：Agent 原生日志不存在或无法唯一验证
+  -> 仍显示 Session 与状态事件元数据
+  -> 明示“原生日志不可用/来源歧义”，不猜测候选文件
 
-失败路径 B：搜索索引损坏或版本不匹配
-  -> 自动暂停索引查询并回退当前 Session 文本搜索
-  -> 后台重建索引，源日志不被修改
+升级路径 B：存在旧版正文搜索索引
+  -> 启动时清空 FTS 正文、分块与进度缓存
+  -> 后续查询只扫描原生日志，不重建正文索引
 
 失败路径 C：诊断 ZIP 脱敏规则失败
   -> 终止导出并删除临时包
   -> 显示失败字段类型，不显示原始敏感值
+
+Pi PTY 渲染路径
+  -> 能力探测必须包含 --tui-mode
+  -> launch/resume 强制 fullscreen，使 expanded-tools 重绘留在 alternate screen
+  -> 不支持该能力的旧版本阻止 PTY 启动，不静默退化为 inline 刷屏
 ```
 
 #### c) 状态清单
@@ -462,18 +468,18 @@ GUI 重开
 | 无关闭期事件 | 重开后没有新状态和输出 | “离开期间没有待处理事项” | 新事件产生 |
 | 有待处理事件 | 存在完成、等待或异常 | 顶栏数量徽标和三行摘要 | 全部查看或标记已读 |
 | 搜索中 | 查询长度达到 2 个字符 | 搜索框 Spinner | 返回、取消或失败 |
-| 部分结果 | 部分日志已轮转或索引待重建 | 黄色“结果可能不完整” | 索引恢复或查询清除 |
-| 索引重建中 | 版本迁移或校验失败 | 设置页进度和可取消状态 | 重建成功或用户取消 |
+| 部分结果 | 部分 Agent 原生日志不可用 | 黄色“结果可能不完整” | 来源恢复或查询清除 |
+| 遗留日志待清理 | 检测到旧 `output.log` | 设置页显示大小、活动状态和原生覆盖状态 | 用户显式选择并二次确认删除 |
 | 诊断导出失败 | 脱敏、磁盘或压缩失败 | 红色错误和“复制原因” | 重试或关闭 |
 
 #### d) 依赖关系
 
-读取：状态事件、Host 生命周期、日志偏移、Worktree 状态、Adapter 能力快照。写入：搜索索引、事件已读游标、恢复摘要和诊断导出清单。源日志与 SQLite 元数据是事实源，搜索索引可以随时删除重建。
+读取：状态事件、Host 生命周期、存活 Host 的有界内存游标、Agent 原生日志、Worktree 状态、Adapter 能力快照。写入：事件已读游标、原生来源元数据、恢复摘要和诊断导出清单。Agent 原生日志与 SQLite 元数据是事实源；常规运行、历史和搜索不保存会话正文或正文索引，用户明确创建的 v2 备份除外。
 
 #### e) 待决问题
 
-1. 推荐只索引去除 ANSI 后的终端文本，不索引 Secret 值和环境变量；如果脱敏不可证明，Secret 注入后的完整命令回显必须禁止进入索引。
-2. P2 搜索范围包含项目名、Session 标题、分支和终端文本；模糊语义搜索不在本次范围。
+1. Agent 原生日志格式由 Provider 版本决定；解析未知记录时跳过并计数，不得将无法验证的候选绑定到 Session。
+2. P2 搜索范围包含项目名、Session 标题、分支和规范化原生会话正文；模糊语义搜索不在本次范围。
 
 ### 第 3.7 节 敏感环境变量与启动安全校验
 
@@ -730,7 +736,7 @@ macOS / Ubuntu 启动
       "lifecycle": "running", // 必填；creating、running、interrupted、exited、stopped
       "agentSessionId": "01HZABCXYZ", // 可空；CLI 原生 Session ID，用于精确恢复
       "resumePrecision": "exact", // 必填；exact、latest 或 unavailable
-      "logPath": "/Users/lin/Library/Application Support/AgentPort/sessions/ses_01JZ9A/output.log", // 必填；原始输出追加日志
+      "logPath": "/Users/lin/Library/Application Support/AgentPort/sessions/ses_01JZ9A/output.log", // 兼容字段；新 Host 不创建或追加该文件
       "createdAt": "2026-07-19T10:05:00Z", // 必填；ISO 8601 时间
       "updatedAt": "2026-07-19T10:32:00Z" // 必填；最后状态更新时间
     }
@@ -773,13 +779,13 @@ macOS / Ubuntu 启动
     "terminalFontSize": 13, // 必填；默认值: 13，范围 10-28 px
     "reducedMotion": "system", // 必填；system、on 或 off，默认值: system
     "screenReaderMode": false, // 必填；默认值: false
-    "searchIndexEnabled": true, // 必填；默认值: true，可删除并重建
+    "searchIndexEnabled": false, // 兼容字段；正文索引已停用且启动时清空旧缓存
     "telemetryEnabled": false // 必填；硬约束，默认值和唯一允许值均为 false
   }
 }
 ```
 
-设计决策：SQLite 只保存可查询元数据和有限状态事件，终端输出保持追加文件，避免高频字节流放大数据库写入。Host PID 不是 Session 身份，必须同时验证 Socket 握手中的 Session ID 和随机启动令牌。Secret 只保存系统安全存储引用，原值不进入 SQLite、前端状态、日志或导出。搜索索引和恢复摘要都是可重建派生数据。Worktree 与 Session 分离，使一个 Worktree 可以重启或顺序运行多个 Session。
+设计决策：SQLite 只保存可查询元数据和有限状态事件；运行中终端使用 Host 内 4 MiB 有界尾部，结束后按需读取 Agent 原生日志，不另存 PTY 正文。用户明确创建 v2 备份时，可唯一绑定的原生 Session 正文会进入备份 ZIP，并由 Manifest 记录覆盖率。Host PID 不是 Session 身份，必须同时验证 Socket 握手中的 Session ID 和随机启动令牌。Secret 只保存系统安全存储引用，AgentPort 不会为备份主动读取凭据原值，原值也不进入 SQLite、前端状态、正文索引或诊断包；但若 Agent 或工具已将 Secret 输出到原生对话，它可能随用户显式创建的 v2 备份进入 ZIP。Worktree 与 Session 分离，使一个 Worktree 可以重启或顺序运行多个 Session。
 
 ## 第六章：技术架构
 
@@ -791,12 +797,12 @@ macOS / Ubuntu 启动
                                      | typed IPC
 +------------------------------------v-------------------------------------------+
 | 应用核心：Rust Core                                                           |
-| 项目/预设/SQLite、Adapter 探测、Worktree、搜索/恢复、脱敏与 Credential Broker  |
+| 项目/预设/SQLite、Adapter 探测、Worktree、原生历史/恢复、脱敏与 Credential Broker|
 +------------------------+---------------------------+---------------------------+
                          | spawn/attach              | git 参数数组 / OS 凭据 API
 +------------------------v------------------+  +-----v-----------------------------+
 | 独立 Session Host（每 Session 一个）       |  | 系统 Git CLI                      |
-| PTY、进程组、Socket、心跳、日志、退出清理  |  | worktree add/list/status/remove   |
+| PTY、进程组、Socket、心跳、4 MiB 内存尾部  |  | worktree add/list/status/remove   |
 +------------------------+------------------+  +-----------------------------------+
                          | PTY
 +------------------------v-------------------------------------------------------+
@@ -805,7 +811,8 @@ macOS / Ubuntu 启动
 +--------------------------------------------------------------------------------+
                          |
 +------------------------v-------------------------------------------------------+
-| 本地数据：SQLite + 输出/诊断日志 + 搜索索引 + Worktree + Keychain/Secret Service|
+| 本地数据：SQLite 元数据 + 诊断 + Worktree + Keychain/Secret Service             |
+| 会话正文：各 Agent 原生日志（常规按需只读；仅显式 v2 备份复制已验证来源）       |
 +--------------------------------------------------------------------------------+
 ```
 
@@ -820,13 +827,13 @@ macOS / Ubuntu 启动
 | serde | IPC 与持久化数据序列化 | Rust 类型可与协议版本绑定，减少手写解析 | 未知 |
 | tracing | 结构化诊断日志 | 可按 Session/Host 关联，不依赖云端遥测 | 未知 |
 | keyring-core + 平台 Store | macOS Keychain 与 Linux Secret Service | 只链接目标平台需要的安全存储后端；避免自建加密文件和主密钥恢复流程 | 未知 |
-| SQLite FTS5 或 Tantivy | 本地终端文本索引 | FTS5 依赖更少；若中文/大日志压测不达标再替换 Tantivy | 未知 |
+| Provider JSONL 流式解析 | 结束会话历史与搜索 | 直接使用 Agent 事实源，不产生第二份正文与索引 | 未知 |
 
 技术依据：Tauri 官方声明可由单代码库构建 Linux 与 macOS 应用，并列出了 Ubuntu/WebKitGTK 与 macOS 的前置条件：Tauri 官方站 <https://tauri.app/>、前置要求 <https://v2.tauri.app/start/prerequisites/>。xterm.js 官方定位为可连接 PTY 的终端前端，并支持 CJK、Emoji、IME 和可选 WebGL：<https://github.com/xtermjs/xterm.js/>。
 
 最大架构风险仍是“GUI、Host、Agent 三层生命周期错位”：GUI 认为 Session 已停止但子进程仍在运行，或重连到陈旧 Socket 后把输入发给错误进程。应对方式是每次启动生成随机 Host Token，Socket 握手校验 Session ID + Token；停止时先发送优雅中断，超时后终止整个进程组，再验证不存在后代进程；所有状态转换写入恢复账本。第二风险是 Linux Secret Service 和 WebKitGTK 的桌面环境差异：凭据后端不可用时禁用持久 Secret，渲染失败时降级 Canvas，不能改用明文 Secret 或跳过发行矩阵。
 
-可替换技术原则：推荐 Tauri 2 + Rust Host + xterm.js。如果现有项目已经使用 Electron，可保留 Electron UI；如果已有可靠的 Rust GUI，也可替换 Tauri。搜索默认 SQLite FTS5，不达标可替换 Tantivy；凭据层可替换具体 crate，但必须落到 macOS Keychain/Linux Secret Service。不可改变的是：GUI 不拥有 Session 生命周期、PTY Host 可独立存活、每个输入必须绑定唯一 Session、原始输出先落盘再展示、Secret 不明文持久化、生命周期逻辑在 macOS/Linux 共享。
+可替换技术原则：推荐 Tauri 2 + Rust Host + xterm.js。如果现有项目已经使用 Electron，可保留 Electron UI；如果已有可靠的 Rust GUI，也可替换 Tauri。原生日志解析器可随 Provider 格式演进，但不得以保存 PTY 副本或正文索引回退；凭据层可替换具体 crate，但必须落到 macOS Keychain/Linux Secret Service。不可改变的是：GUI 不拥有 Session 生命周期、PTY Host 可独立存活、每个输入必须绑定唯一 Session、实时输出内存有界、Secret 不明文持久化、生命周期逻辑在 macOS/Linux 共享。
 
 发布架构：macOS 构建必须在 macOS Runner 完成 Universal 合并、签名和公证；Ubuntu `.deb` 在 Ubuntu LTS Runner 构建并进入正式回归；AppImage Beta、Fedora 当前稳定版和 Arch 发布快照分别在干净 VM 验证。每个 Release 必须生成 `release-manifest.json`，记录 OS、发行版快照、架构、WebKitGTK、Agent CLI 版本和验收结果。
 
@@ -871,7 +878,7 @@ Session 菜单：
 ├─ 复制 Session ID
 ├─ 导出
 │  ├─ Markdown
-│  └─ 原始终端日志
+│  └─ JSON
 ├─ 重启并恢复…
 ├─ 停止 Session…
 └─ 归档
@@ -885,7 +892,7 @@ agent/fix-login-timeout · dirty
 ├─ 复制路径
 ├─ 在系统终端中打开
 ├─ 复制 git status
-└─ 删除 Worktree…（dirty 时禁用）
+└─ 删除 Worktree…（确认后自动清理 dirty 文件与关联 Session）
 ```
 
 ### 7.3 空状态
@@ -908,10 +915,10 @@ agent/fix-login-timeout · dirty
 | CLI 不存在或已移动 | “找不到 Kimi Code：原路径已失效。” | 重新检测或手动选择 `kimi` |
 | PTY/Host 启动失败 | “Session 未启动；没有后台进程被保留。” | 查看 stderr、重试、导出诊断 |
 | Host 心跳丢失 | “连接已中断，正在确认 Agent 是否仍在运行。” | 自动重连；确认死亡后允许恢复 |
-| Worktree Dirty 删除 | “该 Worktree 有未提交或未跟踪文件，已阻止删除。” | 打开终端、提交/清理后重试 |
-| 日志达到上限 | “历史日志已轮转；最近 200 MiB 保留。” | 修改上限或导出/归档旧日志 |
+| Worktree Dirty 删除 | “删除时将永久清理本地改动、被忽略文件与关联 Session。” | 确认删除；需保留时先提交或移出目录 |
+| 原生日志不可用 | “无法验证该 Session 的 Agent 原生日志。” | 检查 Provider 日志或导出仍可读取的来源 |
 | Secret Service/Keychain 不可用 | “系统安全存储不可用，AgentPort 不会改用明文保存。” | 解锁系统存储、使用 Shell 环境或移除引用 |
-| 搜索索引损坏 | “搜索索引需要重建，Session 和日志未受影响。” | 后台重建或暂用当前终端搜索 |
+| 遗留日志占用空间 | “检测到旧版 output.log；不会自动删除。” | 在历史与存储中选择并二次确认清理 |
 
 ### 7.5 加载状态
 
@@ -922,8 +929,7 @@ agent/fix-login-timeout · dirty
 | Session 重连 | 顶部黄色重连条 | < 100 ms | 2 秒后进入失联确认 |
 | Worktree 创建 | 3 步进度：校验/创建/启动 | < 200 ms | 60 秒允许取消；不终止未知 Git 子进程前先确认 |
 | 导出 | 行内进度和文件大小 | < 200 ms | 磁盘不足时停止并删除本次不完整临时文件 |
-| 全局搜索 | 搜索框内 Spinner | < 120 ms | 2 秒显示部分结果；索引异常时提示重建 |
-| 搜索索引重建 | 设置页确定进度条 | < 300 ms | 可取消并保留旧索引；不得锁住 Session 输入 |
+| 全局搜索 | 搜索框内 Spinner | < 120 ms | 2 秒显示部分结果；原生来源不可用时明确提示 |
 | Secret 读取 | 启动按钮内加载动画 | < 100 ms | 3 秒超时并阻止依赖该 Secret 的启动 |
 
 ## 第八章：导出与输出系统
@@ -932,11 +938,11 @@ agent/fix-login-timeout · dirty
 
 | 格式 | 使用场景 | 质量选项 | 备注 |
 |---|---|---|---|
-| `.log` | 完整保留终端原始输出，故障复现 | 全部；最近 10,000 行 | P0；可选择保留或去除 ANSI 控制序列 |
-| `.md` | 粘贴到 Issue、文档或另一 Agent | 全部；最近 20/50/100 个可见输出块 | P0；包含 Session、Agent、项目、分支和时间头 |
-| `.zip` | 提交 Bug 或迁移诊断 | 标准；脱敏诊断 | P1；默认不含环境变量值和模型凭据 |
+| `.md` | 粘贴到 Issue、文档或另一 Agent | 完整规范化对话 | P0；直接流式读取 Agent 原生日志 |
+| `.json` | 机器处理、迁移或审计 | 完整规范化事件 | P0；保留原生事件 ID、Provider、角色与时间 |
+| `.zip` | 提交 Bug 或迁移诊断 | 无正文诊断 | P1；不含会话正文、环境变量值和模型凭据 |
 
-Kimi Code 自身支持 Session ZIP 和 Markdown 导出，但 AgentPort 的 P0 导出以自身 PTY 日志为事实源，不解析或依赖 Kimi 内部文件格式。Kimi 官方导出能力仅作为后续增强参考：<https://www.kimi.com/code/docs/en/kimi-code-cli/guides/sessions.html>。
+AgentPort 不再以 PTY 副本为事实源。Claude、Codex、Pi、Kimi、Qoder 的原生日志解析器必须先验证 Provider 根目录、Session ID 与可用的 CWD 绑定；Generic Shell 不提供结束后历史。
 
 ### 8.2 输出文件结构
 
@@ -944,8 +950,6 @@ Kimi Code 自身支持 Session ZIP 和 Markdown 导出，但 AgentPort 的 P0 �
 agentport-export-2026-07-19/
 ├── manifest.json
 ├── sessions/
-│   ├── ses_01JZ9A-fix-login-timeout.md
-│   ├── ses_01JZ9A-terminal.log
 │   └── ses_01JZ9A-status-events.json
 ├── worktrees/
 │   └── main-api-fix-login-timeout-git-status.txt
@@ -960,20 +964,27 @@ agentport-export-2026-07-19/
 ### 8.3 批量处理流程
 
 ```text
-用户选择多个 Session
+用户选择多个 Session 或单个历史导出目标
         |
         v
-冻结导出清单与脱敏策略（不可并行）
+解析并验证 Agent 原生日志来源
         |
-        +-- 并行读取 Session A 日志 --+
-        +-- 并行读取 Session B 日志 --+--> 逐文件脱敏与校验
-        +-- 并行读取 Git 状态 --------+
-                                           |
-                                           v
-生成 manifest（不可并行） -> 写临时目录 -> 原子重命名/压缩 -> 显示保存位置
-                                           |
-                                           +-- 任一失败 --> 删除本次临时目录，保留源数据
+        +-- Markdown/JSON：流式规范化事件 -> 排他创建用户目标文件
+        |
+        +-- 诊断 ZIP：状态事件 + Git/平台诊断 -> manifest -> 原子发布
+                                                           |
+                                                           +-- 任一失败 --> 删除未完成产物，保留源数据
 ```
+
+### 8.4 备份与恢复合同
+
+v2 备份是用户明确触发的本地迁移产物，包含 SQLite 一致性快照、AgentPort 管理的 Session 元数据，以及能按原生 Session ID（Provider 格式支持时同时校验 CWD）唯一定位的原生 Session 文件。旧 `output.log`、Worktree、导出物、诊断物和整个 Provider home 不进入备份。
+
+原生 Session 文件可能包含完整对话、工具调用和工具输出，也可能含提示词、源码、路径与其他敏感信息。备份 ZIP 不加密，产品必须在创建入口清晰提示这一点。AgentPort 不得为备份主动读取 macOS Keychain / Linux Secret Service 中的系统凭据原值；数据库中的 Secret 引用元数据不能被描述为凭据备份。若凭据值已出现在 Agent 原生对话或工具输出中，则会按原生正文原样进入 ZIP，入口必须明确提示。
+
+每个 v2 Manifest 必须携带 `nativeCoverage`（`total/captured/missing/ambiguous/unsupported`）。`missing=0 && ambiguous=0` 才能显示“受支持 Session 覆盖完整”；否则备份虽可通过文件完整性校验，也必须显示“原生覆盖不完整”与具体计数。v1 读取兼容保留，但 UI 必须标记为不含原生正文合同的旧版备份。
+
+恢复必须先完成 ZIP/Manifest/数据库校验，再把 AgentPort 数据写入新目录，并将原生 Session 安装到恢复时当前配置的 Provider home。目标文件不存在或字节完全相同时才可继续；同路径不同内容属于冲突，必须在发布新数据目录前终止，绝不覆盖用户已有 Provider 文件。
 
 ## 第九章：开发优先级
 
@@ -985,12 +996,12 @@ agentport-export-2026-07-19/
 - Claude Code、Codex、Kimi Code 三个官方 Adapter，以及 Generic Shell 降级入口。
 - CLI 路径/版本/能力探测，GUI PATH 不一致时可手动修复。
 - 添加项目、创建/切换/重命名/停止/重启 Session。
-- 独立 Host + PTY + 原始输出日志；关闭 GUI 后 Session 继续；重开后重新连接。
+- 独立 Host + PTY + 4 MiB 有界内存尾部；关闭 GUI 后 Session 继续；重开后重新连接。
 - 原生权限为默认值；自动批准必须显式设置和警示。
 - 进程状态、退出码、Unread；官方事件可用时显示 Working/Needs input 和状态来源。
-- 最小 Worktree：从当前 HEAD 创建、进入、显示 clean/dirty、dirty 时阻止删除。
-- 原始日志与 Markdown 导出。
-- 本地数据、无账号、无遥测、日志轮转、完整进程组清理。
+- 最小 Worktree：从当前 HEAD 创建、进入、显示 clean/dirty；确认删除后自动清理 dirty 文件、锁与关联 Session，不以其阻止删除。
+- Agent 原生历史的 Markdown/JSON 导出。
+- 本地数据、无账号、无遥测、无 PTY 正文副本、完整进程组清理。
 
 ### P1 - 没有这个，用户第一次体验后不会回来。交付标准：功能完整，体验有连续性
 
@@ -1038,13 +1049,13 @@ agentport-export-2026-07-19/
 | 应用空闲 CPU | ≤ 1% 单核 | 10 个 Idle Session 下采样 5 分钟 | > 3% 单核 |
 | Session 停止清理 | 5 s 内无后代进程，100/100 次通过 | 记录进程树，停止后轮询 PID/PGID | 任意残留或 > 10 s |
 | Worktree 创建 | 20k 文件测试仓库 P95 ≤ 8 s | 从确认到 `git worktree list` 出现且目录可进入 | > 15 s |
-| 日志上限 | 默认 200 MiB/Session，误差 ≤ 5 MiB | 连续写入直到轮转并读取磁盘占用 | > 210 MiB 且未轮转 |
-| 崩溃恢复 | 30/30 次 GUI 强杀后 Host 继续且输出 SHA-256 连续 | 强杀 GUI、继续输出、重开并比对日志 | 任意任务终止或日志断裂 |
+| Host 实时尾部 | 每 Session ≤ 4 MiB，磁盘正文增长 0 | 连续写入 5 MiB，检查内存尾部、重连和应用数据目录 | 尾部 > 4 MiB 或创建 `output.log` |
+| 崩溃恢复 | 30/30 次 GUI 强杀后 Host 继续且有界重连可输入 | 强杀 GUI、继续输出、重开并核对 Host 心跳和尾部游标 | 任意任务终止或无法重连 |
 | 恢复时间线生成 | 100 个关闭期事件 P95 ≤ 300 ms | 写入固定事件后重开 GUI，记录摘要完成时间 | > 800 ms |
-| 全局搜索首批结果 | 500 MiB 已索引日志 P95 ≤ 200 ms | 固定关键词查询 30 次，记录前 20 条结果返回 | > 600 ms |
-| 搜索索引吞吐 | ≥ 20 MiB/s，索引磁盘占用 ≤ 原文本 35% | 导入 1 GiB 去 ANSI 文本并统计时间/大小 | < 8 MiB/s 或 > 50% |
-| Secret 读取与注入 | P95 ≤ 300 ms；泄漏命中 0 次 | Keychain/Secret Service 读取到 Host spawn，扫描前端/SQLite/日志/导出 | > 1 s 或任意明文泄漏 |
-| 诊断 ZIP 导出 | 200 MiB 输入 ≤ 15 s | 固定日志和状态集导出 10 次并校验 Manifest | > 30 s 或残留临时包 |
+| 全局搜索首批结果 | 500 MiB 原生日志返回首批结果且无正文缓存 | 固定关键词查询并检查结果 ID、RSS 与 SQLite/磁盘 | 创建正文索引或无界内存增长 |
+| AgentPort 正文磁盘占用 | 新 Session 为 0 | 连续运行并扫描 `sessions/` 与 SQLite FTS/分块表 | 任意新 `output.log` 或正文缓存 |
+| Secret 读取与注入 | P95 ≤ 300 ms；AgentPort 边界泄漏命中 0 次 | Keychain/Secret Service 读取到 Host spawn，扫描前端/SQLite/诊断包 | > 1 s 或 AgentPort 持久层出现明文 |
+| 诊断 ZIP 导出 | 会话正文条目为 0 | 固定状态集导出并校验 Manifest 与 ZIP 清单 | 包含 terminal/transcript 正文或残留临时包 |
 | 可访问性键盘路径 | 12 条关键路径 100% 无鼠标完成 | macOS VoiceOver、Linux Orca + 键盘人工脚本 | 任意关键路径阻断 |
 | 文本对比度 | 普通文本 ≥ 4.5:1；大文本 ≥ 3:1 | 对全部主题运行自动对比度扫描 | 任一核心状态低于阈值 |
 | 跨平台发布矩阵 | macOS、Ubuntu 正式矩阵 100%；Fedora/Arch 社区矩阵 100% 才标记通过 | 干净 VM 安装/PTY/IME/通知/卸载测试 | 正式矩阵任一失败或错误标记社区支持 |
@@ -1105,10 +1116,10 @@ agentport-export-2026-07-19/
 
 验收剧本 1：在 macOS 13+ Universal、Ubuntu 22.04/24.04 干净 VM 安装正式包，并在 Fedora 当前稳定版、Arch 发布快照验证社区/AppImage 构建；应完成启动、中文 IME、剪贴板、通知和卸载。再仅用键盘及 VoiceOver/Orca 完成添加项目、启动 Session、搜索和停止，并验证深浅主题与减少动效。用 release manifest、CI Artifact、录屏和无障碍检查报告验证。
 
-验收剧本 2：在两个项目分别启动 Claude Code、Codex 和 Kimi Code，向三者发送持续 2 分钟输出的任务，然后强制结束 GUI 进程；应看到三个 Host 和 Agent 仍在运行。重新打开 GUI 后应在 800 ms 内恢复可输入终端，输出无缺失，并收到离开期间摘要。用进程树、Host 日志、状态历史和输出 SHA-256 验证。
+验收剧本 2：在两个项目分别启动 Claude Code、Codex 和 Kimi Code，向三者发送持续 2 分钟输出的任务，然后强制结束 GUI 进程；应看到三个 Host 和 Agent 仍在运行。重新打开 GUI 后应恢复可输入终端、展示最多 4 MiB 实时尾部，并收到离开期间摘要；应用数据目录不得出现新 `output.log`。用进程树、Host 心跳、状态历史和磁盘扫描验证。
 
-验收剧本 3：分别在三个官方 Agent 完成一次 Prompt，记录捕获的原生 Session ID，停止 Host 后点击“重启并恢复”；支持精确恢复的版本必须使用同一 ID，降级版本必须明确显示恢复精度。随后搜索一个只存在于已关闭 Session 的关键词，应在 600 ms 内返回并定位；破坏索引后应自动重建且不修改源日志。用 Session 元数据、启动审计、搜索结果和日志 Hash 验证。
+验收剧本 3：分别在三个官方 Agent 完成一次 Prompt，记录捕获的原生 Session ID，停止 Host 后点击“重启并恢复”；支持精确恢复的版本必须使用同一 ID，降级版本必须明确显示恢复精度。随后搜索一个只存在于已关闭 Session 的关键词，应从 Agent 原生日志返回规范化事件 ID；SQLite 与应用数据目录不得新增正文索引。用 Session 元数据、启动审计、搜索结果和原生日志 Hash 验证。
 
 验收剧本 4：在 Git 项目从指定 Base Ref 创建 `agent/fix-login-timeout` Worktree 并启动 Codex，修改一个文件但不提交；Session 完成时应显示“结果尚未提交”，删除必须被阻止。提交或恢复文件后重试，应从 `git worktree list --porcelain` 消失，主 Checkout 文件不变。用通知截图、`git status`、Worktree 列表和文件 Hash 验证。
 
-验收剧本 5：分别将测试 Secret 写入 macOS Keychain 和 Linux Secret Service，从新建 Session 表单直接启动 Kimi Session，过程中不得显示二次风险确认弹窗；Agent 应能读取变量，但前端状态、SQLite、进程参数、日志、搜索索引和脱敏诊断 ZIP 中都不得出现原值。锁定 Secret Service 后启动必须被阻止且不写明文回退。最后停止一个含三个子进程的 Session，5 秒内全部 PID 消失，超过 210 MiB 的日志完成轮转。用系统凭据条目、全目录字节扫描、ZIP 清单、PGID/PID 树和磁盘统计验证。
+验收剧本 5：分别将测试 Secret 写入 macOS Keychain 和 Linux Secret Service，从新建 Session 表单直接启动 Kimi Session，过程中不得显示二次风险确认弹窗；Agent 应能读取变量，但 AgentPort 前端状态、SQLite、进程参数、正文索引和诊断 ZIP 中都不得出现原值。Agent 原生日志按 Provider 自身策略单独审计。锁定 Secret Service 后启动必须被阻止且不写明文回退。最后停止一个含三个子进程的 Session，5 秒内全部 PID 消失，持续大输出期间不得创建 `output.log`。用系统凭据条目、应用数据扫描、ZIP 清单、PGID/PID 树和磁盘统计验证。
