@@ -1490,32 +1490,54 @@ export default function SettingsDialog() {
     </>
   );
 
+  const deletableLegacyEntries = legacyInventory?.entries.filter((entry) => !entry.active) ?? [];
+  const allDeletableLegacySelected = deletableLegacyEntries.length > 0
+    && deletableLegacyEntries.every((entry) => legacySelected.has(entry.id));
+
   const searchSection = (
-    <>
+    <section className="legacy-cleanup">
       <div className="settings-section-heading">
         <div className="section-title">{t("settings:ui.sections.search")}</div>
         <p className="form-hint">{t("settings:ui.search.description")}</p>
       </div>
-      <div className="settings-grid">
-        <label>{t("settings:ui.search.modeLabel")}</label>
-        <div className="control">
-          <span>{t("settings:ui.search.nativeOnDemand")}</span>
-          <span className="form-hint">{t("settings:ui.search.nativeOnDemandHint")}</span>
-        </div>
-        <label>{t("settings:ui.search.legacyStorage")}</label>
-        <div className="control">
-          <span>
-            {legacyInventory
-              ? t("settings:ui.search.legacySummary", {
-                  count: legacyInventory.entries.length,
-                  size: formatBytes(legacyInventory.totalBytes),
-                })
-              : legacyBusy
-                ? t("settings:ui.search.loadingLegacy")
-                : t("settings:ui.search.legacyUnavailable")}
-          </span>
-          {legacyInventory?.entries.map((entry) => (
-            <label className="check-row" key={entry.id}>
+      <div className="legacy-cleanup-summary">
+        <strong>
+          {legacyInventory
+            ? t("settings:ui.search.legacySummary", {
+                count: legacyInventory.entries.length,
+                size: formatBytes(legacyInventory.totalBytes),
+              })
+            : legacyBusy
+              ? t("settings:ui.search.loadingLegacy")
+              : t("settings:ui.search.legacyUnavailable")}
+        </strong>
+        {legacyInventory && legacyInventory.entries.length > 0 ? (
+          <button
+            className="btn ghost small"
+            disabled={deletableLegacyEntries.length === 0 || legacyBusy}
+            onClick={() => setLegacySelected(
+              allDeletableLegacySelected
+                ? new Set()
+                : new Set(deletableLegacyEntries.map((entry) => entry.id)),
+            )}
+          >
+            {allDeletableLegacySelected
+              ? t("settings:ui.search.clearSelection")
+              : t("settings:ui.search.selectAll")}
+          </button>
+        ) : null}
+      </div>
+      {legacyInventory?.entries.length === 0 ? (
+        <p className="legacy-cleanup-empty">{t("settings:ui.search.empty")}</p>
+      ) : null}
+      {legacyInventory && legacyInventory.entries.length > 0 ? (
+        <div
+          className="legacy-log-list"
+          role="group"
+          aria-label={t("settings:ui.search.legacyStorage")}
+        >
+          {legacyInventory.entries.map((entry) => (
+            <label className="legacy-log-row" key={entry.id}>
               <input
                 type="checkbox"
                 disabled={entry.active || legacyBusy}
@@ -1527,57 +1549,53 @@ export default function SettingsDialog() {
                   return next;
                 })}
               />
-              <span className="mono">
-                {entry.sessionId} · {formatBytes(entry.bytes)}
-                {entry.active ? ` · ${t("settings:ui.search.activeLegacy")}` : ""}
+              <span className="mono legacy-log-session" title={entry.sessionId}>
+                {entry.sessionId}
               </span>
+              <span className="legacy-log-size">{formatBytes(entry.bytes)}</span>
+              {entry.active ? (
+                <span className="form-hint legacy-log-status">
+                  {t("settings:ui.search.activeLegacy")}
+                </span>
+              ) : null}
             </label>
           ))}
-          <button
-            className="btn small"
-            disabled={legacySelected.size === 0 || legacyBusy}
-            onClick={() => void (async () => {
-              const ok = await confirmDialog({
-                title: t("settings:ui.search.cleanupConfirmTitle"),
-                body: t("settings:ui.search.cleanupConfirmMessage", {
-                  count: legacySelected.size,
-                }),
-                confirmLabel: t("settings:ui.search.cleanup"),
-                danger: true,
-              });
-              if (!ok) return;
-              setLegacyBusy(true);
-              try {
-                const report = await api.deleteLegacyLogs([...legacySelected], true);
-                toast(t("settings:ui.search.cleanupComplete", {
-                  size: formatBytes(report.bytesReclaimed),
-                }), "success");
-                const next = await api.getLegacyLogInventory();
-                setLegacyInventory(next);
-                setLegacySelected(new Set());
-              } catch (reason) {
-                toast(t("settings:ui.search.cleanupFailed", { detail: errorText(reason) }), "error");
-              } finally {
-                setLegacyBusy(false);
-              }
-            })()}
-          >
-            {t("settings:ui.search.cleanup")}
-          </button>
         </div>
-        <label>{t("settings:ui.search.rendererLabel")}</label>
-        <div className="control">
-          <span>{t("settings:ui.search.stableRenderer")}</span>
-          {s.rendererFallbackReason ? (
-            <span className="form-hint">
-              {t("settings:ui.search.canvasRendererUnavailable", {
-                detail: s.rendererFallbackReason,
-              })}
-            </span>
-          ) : null}
-        </div>
+      ) : null}
+      <div className="legacy-cleanup-actions">
+        <button
+          className="btn small"
+          disabled={legacySelected.size === 0 || legacyBusy}
+          onClick={() => void (async () => {
+            const ok = await confirmDialog({
+              title: t("settings:ui.search.cleanupConfirmTitle"),
+              body: t("settings:ui.search.cleanupConfirmMessage", {
+                count: legacySelected.size,
+              }),
+              confirmLabel: t("settings:ui.search.cleanup"),
+              danger: true,
+            });
+            if (!ok) return;
+            setLegacyBusy(true);
+            try {
+              const report = await api.deleteLegacyLogs([...legacySelected], true);
+              toast(t("settings:ui.search.cleanupComplete", {
+                size: formatBytes(report.bytesReclaimed),
+              }), "success");
+              const next = await api.getLegacyLogInventory();
+              setLegacyInventory(next);
+              setLegacySelected(new Set());
+            } catch (reason) {
+              toast(t("settings:ui.search.cleanupFailed", { detail: errorText(reason) }), "error");
+            } finally {
+              setLegacyBusy(false);
+            }
+          })()}
+        >
+          {t("settings:ui.search.cleanup")}
+        </button>
       </div>
-    </>
+    </section>
   );
 
   const content = {

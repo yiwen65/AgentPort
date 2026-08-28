@@ -61,6 +61,48 @@ describe("Settings language preference", () => {
     expect(content.scrollTop).toBe(0);
   });
 
+  it("keeps storage cleanup focused and contains long legacy inventories", async () => {
+    vi.spyOn(api, "getLegacyLogInventory").mockResolvedValue({
+      entries: [
+        {
+          id: "legacy-1",
+          sessionId: "ses_very_long_legacy_session_identifier_that_must_not_expand_the_page",
+          runId: null,
+          path: "/tmp/output.log",
+          bytes: 1024,
+          active: false,
+          nativeStatus: { status: "available", sources: [] },
+        },
+        {
+          id: "legacy-2",
+          sessionId: "ses_active",
+          runId: "run-2",
+          path: "/tmp/active-output.log",
+          bytes: 2048,
+          active: true,
+          nativeStatus: { status: "unavailable", reason: "missing" },
+        },
+      ],
+      totalBytes: 3072,
+      deletableBytes: 1024,
+    });
+    const { container } = render(<SettingsDialog />);
+
+    fireEvent.click(screen.getByRole("button", { name: "存储清理" }));
+
+    const list = await screen.findByRole("group", { name: "旧版重复日志" });
+    expect(list.classList.contains("legacy-log-list")).toBe(true);
+    expect(container.querySelector(".legacy-log-session")?.textContent).toContain("ses_very_long");
+    expect(screen.queryByText("历史读取模式")).toBeNull();
+    expect(screen.queryByText("渲染模式")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "全选可清理项" }));
+    const checkboxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    expect(checkboxes[0]?.checked).toBe(true);
+    expect(checkboxes[1]?.checked).toBe(false);
+    expect(checkboxes[1]?.disabled).toBe(true);
+  });
+
   it("switches immediately and saves independently from the settings draft", async () => {
     let finishSave!: () => void;
     const pendingSave = new Promise<void>((resolve) => { finishSave = resolve; });
