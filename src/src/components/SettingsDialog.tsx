@@ -1,7 +1,6 @@
 // Settings full-page surface (PRD 3.8 / 7.x): appearance & a11y,
-// notifications & log limit, search index, renderer mode, Agent adapters,
-// archive management, and Secret management against the system credential
-// backend (never plaintext fallback).
+// notifications, Agent adapters, archive/backup management, and Secret
+// management against the system credential backend (never plaintext fallback).
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
@@ -31,7 +30,6 @@ import type {
   CommitAiConfig,
   CommitAiLanguage,
   CommitAiProvider,
-  LegacyLogInventory,
   Preset,
   SecretMeta,
   Settings,
@@ -1183,7 +1181,6 @@ function ArchiveSection() {
 type SettingsSection =
   | "appearance"
   | "notifications"
-  | "search"
   | "adapters"
   | "commitAi"
   | "secrets"
@@ -1193,7 +1190,6 @@ type SettingsSection =
 const SETTINGS_SECTIONS = [
   { id: "appearance", labelKey: "settings:ui.sections.appearance" },
   { id: "notifications", labelKey: "settings:ui.sections.notifications" },
-  { id: "search", labelKey: "settings:ui.sections.search" },
   { id: "adapters", labelKey: "settings:ui.sections.adapters" },
   { id: "commitAi", labelKey: "settings:ui.sections.commitAi" },
   { id: "secrets", labelKey: "settings:ui.sections.secrets" },
@@ -1212,9 +1208,6 @@ export default function SettingsDialog() {
   const [languageBusy, setLanguageBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [section, setSection] = useState<SettingsSection>("appearance");
-  const [legacyInventory, setLegacyInventory] = useState<LegacyLogInventory | null>(null);
-  const [legacySelected, setLegacySelected] = useState<Set<string>>(new Set());
-  const [legacyBusy, setLegacyBusy] = useState(false);
   const closeBlocked = busy || themeBusy || languageBusy;
   const requestClose = () => {
     if (!closeBlocked) closeDialog();
@@ -1230,19 +1223,6 @@ export default function SettingsDialog() {
 
   useEffect(() => {
     if (contentScrollRef.current) contentScrollRef.current.scrollTop = 0;
-  }, [section]);
-
-  useEffect(() => {
-    if (section !== "search") return;
-    setLegacyBusy(true);
-    api
-      .getLegacyLogInventory()
-      .then((inventory) => {
-        setLegacyInventory(inventory);
-        setLegacySelected(new Set());
-      })
-      .catch((reason) => setError(errorText(reason)))
-      .finally(() => setLegacyBusy(false));
   }, [section]);
 
   if (!draft) return null;
@@ -1490,118 +1470,9 @@ export default function SettingsDialog() {
     </>
   );
 
-  const deletableLegacyEntries = legacyInventory?.entries.filter((entry) => !entry.active) ?? [];
-  const allDeletableLegacySelected = deletableLegacyEntries.length > 0
-    && deletableLegacyEntries.every((entry) => legacySelected.has(entry.id));
-
-  const searchSection = (
-    <section className="legacy-cleanup">
-      <div className="settings-section-heading">
-        <div className="section-title">{t("settings:ui.sections.search")}</div>
-        <p className="form-hint">{t("settings:ui.search.description")}</p>
-      </div>
-      <div className="legacy-cleanup-summary">
-        <strong>
-          {legacyInventory
-            ? t("settings:ui.search.legacySummary", {
-                count: legacyInventory.entries.length,
-                size: formatBytes(legacyInventory.totalBytes),
-              })
-            : legacyBusy
-              ? t("settings:ui.search.loadingLegacy")
-              : t("settings:ui.search.legacyUnavailable")}
-        </strong>
-        {legacyInventory && legacyInventory.entries.length > 0 ? (
-          <button
-            className="btn ghost small"
-            disabled={deletableLegacyEntries.length === 0 || legacyBusy}
-            onClick={() => setLegacySelected(
-              allDeletableLegacySelected
-                ? new Set()
-                : new Set(deletableLegacyEntries.map((entry) => entry.id)),
-            )}
-          >
-            {allDeletableLegacySelected
-              ? t("settings:ui.search.clearSelection")
-              : t("settings:ui.search.selectAll")}
-          </button>
-        ) : null}
-      </div>
-      {legacyInventory?.entries.length === 0 ? (
-        <p className="legacy-cleanup-empty">{t("settings:ui.search.empty")}</p>
-      ) : null}
-      {legacyInventory && legacyInventory.entries.length > 0 ? (
-        <div
-          className="legacy-log-list"
-          role="group"
-          aria-label={t("settings:ui.search.legacyStorage")}
-        >
-          {legacyInventory.entries.map((entry) => (
-            <label className="legacy-log-row" key={entry.id}>
-              <input
-                type="checkbox"
-                disabled={entry.active || legacyBusy}
-                checked={legacySelected.has(entry.id)}
-                onChange={(event) => setLegacySelected((current) => {
-                  const next = new Set(current);
-                  if (event.target.checked) next.add(entry.id);
-                  else next.delete(entry.id);
-                  return next;
-                })}
-              />
-              <span className="mono legacy-log-session" title={entry.sessionId}>
-                {entry.sessionId}
-              </span>
-              <span className="legacy-log-size">{formatBytes(entry.bytes)}</span>
-              {entry.active ? (
-                <span className="form-hint legacy-log-status">
-                  {t("settings:ui.search.activeLegacy")}
-                </span>
-              ) : null}
-            </label>
-          ))}
-        </div>
-      ) : null}
-      <div className="legacy-cleanup-actions">
-        <button
-          className="btn small"
-          disabled={legacySelected.size === 0 || legacyBusy}
-          onClick={() => void (async () => {
-            const ok = await confirmDialog({
-              title: t("settings:ui.search.cleanupConfirmTitle"),
-              body: t("settings:ui.search.cleanupConfirmMessage", {
-                count: legacySelected.size,
-              }),
-              confirmLabel: t("settings:ui.search.cleanup"),
-              danger: true,
-            });
-            if (!ok) return;
-            setLegacyBusy(true);
-            try {
-              const report = await api.deleteLegacyLogs([...legacySelected], true);
-              toast(t("settings:ui.search.cleanupComplete", {
-                size: formatBytes(report.bytesReclaimed),
-              }), "success");
-              const next = await api.getLegacyLogInventory();
-              setLegacyInventory(next);
-              setLegacySelected(new Set());
-            } catch (reason) {
-              toast(t("settings:ui.search.cleanupFailed", { detail: errorText(reason) }), "error");
-            } finally {
-              setLegacyBusy(false);
-            }
-          })()}
-        >
-          {t("settings:ui.search.cleanup")}
-        </button>
-      </div>
-    </section>
-  );
-
   const content = {
     appearance: appearanceSection,
     notifications: notificationsSection,
-    search: searchSection,
     adapters: <AdapterSection agentOrder={draft.agentOrder} agentHidden={draft.agentHidden} onAgentOrderChange={(agentOrder) => patch({ agentOrder })} onAgentHiddenChange={(agentHidden) => patch({ agentHidden })} />,
     commitAi: <CommitAiSection />,
     secrets: <SecretSection />,

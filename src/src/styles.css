@@ -4899,78 +4899,6 @@ textarea:focus {
   padding: 2px 0 0;
 }
 
-.legacy-cleanup {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.legacy-cleanup-summary,
-.legacy-cleanup-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.legacy-cleanup-summary {
-  margin-bottom: 10px;
-  font-size: 13px;
-}
-
-.legacy-log-list {
-  display: flex;
-  flex-direction: column;
-  max-height: min(430px, 55vh);
-  min-width: 0;
-  overflow: auto;
-  border: 1px solid var(--settings-border);
-  border-radius: 8px;
-  background: var(--settings-row);
-}
-
-.legacy-log-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--settings-border);
-  font-size: 12px;
-}
-
-.legacy-log-row:last-child {
-  border-bottom: 0;
-}
-
-.legacy-log-row input {
-  margin: 0;
-}
-
-.legacy-log-session {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.legacy-log-size,
-.legacy-log-status {
-  white-space: nowrap;
-}
-
-.legacy-cleanup-actions {
-  justify-content: flex-end;
-  margin-top: 12px;
-}
-
-.legacy-cleanup-empty {
-  margin: 4px 0 0;
-  color: var(--text-dim);
-  font-size: 13px;
-}
-
 /* Settings grid */
 .settings-grid {
   display: grid;
@@ -5587,14 +5515,6 @@ textarea:focus {
 
   .archive-filters .archive-search {
     grid-column: 1 / -1;
-  }
-
-  .legacy-log-row {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-  }
-
-  .legacy-log-status {
-    grid-column: 2 / -1;
   }
 
   .settings-grid {
