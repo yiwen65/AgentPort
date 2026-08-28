@@ -395,6 +395,8 @@ mod tests {
             root_path: format!("/tmp/{id}"),
             git_root_path: None,
             created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
         }
     }
 
@@ -419,6 +421,7 @@ mod tests {
             permission_mode: PermissionMode::Native,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            pinned_at: None,
             archived_at: None,
         }
     }

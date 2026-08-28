@@ -8,6 +8,7 @@ use crate::models::*;
 use crate::paths::AppPaths;
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use rusqlite::{params, Connection, Row, Transaction, TransactionBehavior};
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration as StdDuration;
 
@@ -296,6 +297,34 @@ pub mod schema {
         CREATE INDEX idx_git_commit_operations_recovery
             ON git_commit_operations(repo_key,phase,created_at);
         "#,
+        // v10 -> v11: persistent Project pinning and manual sidebar order.
+        // Existing rows receive their exact former created_at/id ordering.
+        r#"
+        ALTER TABLE projects
+            ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0, 1));
+        ALTER TABLE projects
+            ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+        UPDATE projects
+        SET sort_order = (
+            SELECT COUNT(*)
+            FROM projects AS earlier
+            WHERE earlier.created_at < projects.created_at
+               OR (earlier.created_at = projects.created_at AND earlier.id < projects.id)
+        );
+        CREATE INDEX idx_projects_sidebar_order
+            ON projects(pinned DESC, sort_order ASC, created_at ASC, id ASC);
+        "#,
+        // v11 -> v12: generation-fence project-scoped archive purges.
+        r#"
+        ALTER TABLE sessions
+            ADD COLUMN archive_generation INTEGER NOT NULL DEFAULT 0;
+        "#,
+        // v12 -> v13: persistent Session pinning. NULL means unpinned; the
+        // timestamp orders pinned Sessions with the latest pin first.
+        r#"
+        ALTER TABLE sessions
+            ADD COLUMN pinned_at TEXT;
+        "#,
     ];
 }
 
@@ -316,6 +345,31 @@ fn parse_dt(s: &str) -> Result<DateTime<Utc>> {
 
 fn auto_title_pending_key(session_id: &str) -> String {
     format!("session_auto_title_pending:{session_id}")
+}
+
+fn project_removal_key(project_id: &str) -> String {
+    format!("project_removal_in_progress:{project_id}")
+}
+
+fn worktree_removal_key(worktree_id: &str) -> String {
+    format!("worktree_removal_in_progress:{worktree_id}")
+}
+
+fn session_removal_is_fenced(conn: &Connection, session_id: &str) -> Result<bool> {
+    let fenced: i64 = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1
+             FROM sessions s
+             JOIN app_meta m
+               ON m.key='project_removal_in_progress:' || s.project_id
+               OR (s.worktree_id IS NOT NULL
+                   AND m.key='worktree_removal_in_progress:' || s.worktree_id)
+             WHERE s.id=?1
+         )",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    Ok(fenced != 0)
 }
 
 const CLEANUP_RETRY_BASE_SECONDS: i64 = 5;
@@ -537,6 +591,8 @@ fn row_project(r: &Row) -> rusqlite::Result<Project> {
         created_at: DateTime::parse_from_rfc3339(&r.get::<_, String>("created_at")?)
             .map(|d| d.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
+        pinned: r.get("pinned")?,
+        sort_order: r.get("sort_order")?,
     })
 }
 
@@ -572,6 +628,13 @@ fn row_session(r: &Row) -> rusqlite::Result<Session> {
             .ok()
             .and_then(|value| agent_transport(&value).ok())
             .unwrap_or(AgentTransport::Pty),
+        // v13 added this column; read fail-soft like `transport` so partially
+        // migrated databases still load Sessions as unpinned.
+        pinned_at: r
+            .get::<_, Option<String>>("pinned_at")
+            .ok()
+            .flatten()
+            .map(&parse),
         created_at: parse(r.get("created_at")?),
         updated_at: parse(r.get("updated_at")?),
         archived_at: r.get::<_, Option<String>>("archived_at")?.map(parse),
@@ -844,6 +907,14 @@ pub struct Db {
     conn: Mutex<Connection>,
 }
 
+/// Sidebar/project-list data projected in a fixed number of SQLite queries.
+#[derive(Debug, Clone)]
+pub struct SessionProjection {
+    pub session: Session,
+    pub latest_status: Option<StatusEvent>,
+    pub unread_attention: bool,
+}
+
 /// The persisted authority lease for the currently claimed Session run.
 ///
 /// `run_id`/`run_ordinal` are absent only for sessions created by versions
@@ -1071,8 +1142,16 @@ impl Db {
         }
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO projects(id,name,root_path,git_root_path,created_at) VALUES(?1,?2,?3,?4,?5)",
-            params![p.id, p.name, p.root_path, p.git_root_path, dt_str(&p.created_at)],
+            "INSERT INTO projects(
+                id,name,root_path,git_root_path,created_at,pinned,sort_order
+             ) SELECT ?1,?2,?3,?4,?5,0,COALESCE(MAX(sort_order),-1)+1 FROM projects",
+            params![
+                p.id,
+                p.name,
+                p.root_path,
+                p.git_root_path,
+                dt_str(&p.created_at)
+            ],
         )
         .map_err(|e| match e {
             rusqlite::Error::SqliteFailure(err, _)
@@ -1113,11 +1192,79 @@ impl Db {
 
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let conn = self.conn.lock().unwrap();
-        let mut st = conn.prepare("SELECT * FROM projects ORDER BY created_at, id")?;
+        let mut st = conn.prepare(
+            "SELECT * FROM projects
+             ORDER BY pinned DESC, sort_order ASC, created_at ASC, id ASC",
+        )?;
         let rows = st.query_map([], row_project)?;
         // Fail closed: a corrupt row must surface as an error, not silently
         // hide a project (and its sessions) from the tree.
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Replace the complete Project sidebar layout atomically. The caller must
+    /// submit every current Project exactly once, with all pinned entries first.
+    pub fn set_project_layout(&self, layout: &[ProjectLayoutEntry]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        let current_ids = {
+            let mut statement = tx.prepare("SELECT id FROM projects")?;
+            let ids = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<HashSet<_>>>()?;
+            ids
+        };
+
+        let mut submitted_ids = HashSet::with_capacity(layout.len());
+        let mut saw_unpinned = false;
+        for entry in layout {
+            if !submitted_ids.insert(entry.id.clone()) {
+                return Err(CoreError::Validation(format!(
+                    "project layout contains duplicate id {}",
+                    entry.id
+                )));
+            }
+            if saw_unpinned && entry.pinned {
+                return Err(CoreError::Validation(
+                    "project layout must place pinned projects before unpinned projects".into(),
+                ));
+            }
+            saw_unpinned |= !entry.pinned;
+        }
+
+        if submitted_ids != current_ids {
+            let mut unknown = submitted_ids
+                .difference(&current_ids)
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut missing = current_ids
+                .difference(&submitted_ids)
+                .cloned()
+                .collect::<Vec<_>>();
+            unknown.sort();
+            missing.sort();
+            return Err(CoreError::Conflict(format!(
+                "project layout does not match current projects (unknown: {}; missing: {})",
+                unknown.join(", "),
+                missing.join(", ")
+            )));
+        }
+
+        for (sort_order, entry) in layout.iter().enumerate() {
+            let updated = tx.execute(
+                "UPDATE projects SET pinned=?2, sort_order=?3 WHERE id=?1",
+                params![entry.id, entry.pinned, sort_order as i64],
+            )?;
+            if updated != 1 {
+                return Err(CoreError::Conflict(format!(
+                    "project {} changed while saving the layout",
+                    entry.id
+                )));
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn rename_project(&self, id: &str, name: &str) -> Result<()> {
@@ -1134,9 +1281,35 @@ impl Db {
         Ok(())
     }
 
+    /// Persist a cross-process fence before destructive cleanup starts. New
+    /// Sessions and Worktrees reject this Project until the removal commits.
+    pub fn begin_project_removal(&self, id: &str) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let exists: i64 = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?1)",
+            params![id],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            return Err(CoreError::NotFound(format!("project {id}")));
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO app_meta(key,value) VALUES(?1,'1')",
+            params![project_removal_key(id)],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Remove a Project and every AgentPort-owned dependency in one database
+    /// transaction. The desktop command cleans Worktree and Session files
+    /// first; this cascade guarantees that stale metadata can never reject the
+    /// user's confirmed removal.
     pub fn remove_project(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let project_exists: i64 = conn.query_row(
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let project_exists: i64 = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?1)",
             params![id],
             |r| r.get(0),
@@ -1144,104 +1317,55 @@ impl Db {
         if project_exists == 0 {
             return Err(CoreError::NotFound(format!("project {id}")));
         }
-        // Block while ANY session (active or archived) references the project.
-        // Archived sessions must be restored or permanently deleted through the
-        // explicit archive flows first — silently dropping their rows here would
-        // orphan the on-disk session directories and destroy recovery evidence.
-        let live: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE project_id=?1",
-            params![id],
-            |r| r.get(0),
-        )?;
-        if live > 0 {
-            return Err(CoreError::Blocked(format!(
-                "project {id} still has {live} session(s); restore or permanently delete them first"
-            )));
-        }
-        // A Worktree is both a Git registration and a directory outside the
-        // project checkout. Dropping only its database row would make the
-        // Worktree disappear from AgentPort while leaving Git and disk state
-        // behind, so users must remove Worktrees through the dedicated safe
-        // flow before removing the project record.
-        let worktrees: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM worktrees WHERE project_id=?1",
-            params![id],
-            |r| r.get(0),
-        )?;
-        if worktrees > 0 {
-            return Err(CoreError::Blocked(format!(
-                "project {id} still has {worktrees} Worktree(s); remove them first"
-            )));
-        }
-        let pending_checkout_roots = {
-            let mut statement = conn.prepare(
-                "SELECT checkout_root FROM branch_operations
-                 WHERE project_id=?1 AND phase NOT IN ('completed','failed')",
-            )?;
-            let roots = statement
-                .query_map(params![id], |r| r.get::<_, String>(0))?
+
+        let session_ids = {
+            let mut statement =
+                tx.prepare("SELECT id FROM sessions WHERE project_id=?1 ORDER BY id")?;
+            let rows = statement
+                .query_map(params![id], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            roots
+            rows
         };
-        // A missing operation checkout makes recovery impossible. Its journal
-        // is stale metadata, so do not let it permanently trap the project in
-        // the sidebar. An operation remains protected while its own checkout
-        // exists, even if the project root has since drifted or disappeared.
-        let recoverable_operations = pending_checkout_roots
-            .iter()
-            .filter(|root| std::path::Path::new(root).exists())
-            .count();
-        if recoverable_operations > 0 {
-            return Err(CoreError::Blocked(format!(
-                "project {id} still has {recoverable_operations} recoverable branch operation(s)"
-            )));
+        let now = Utc::now();
+        for session_id in &session_ids {
+            enqueue_cleanup_job_tx(&tx, session_id, &now)?;
+            purge_session_rows(&tx, session_id)?;
         }
-        let pending_commits: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM git_commit_operations
-             WHERE project_id=?1 AND phase='started'",
-            params![id],
-            |r| r.get(0),
-        )?;
-        if pending_commits > 0 {
-            return Err(CoreError::Blocked(format!(
-                "project {id} still has {pending_commits} unresolved Git commit operation(s)"
-            )));
+        let worktree_ids = {
+            let mut statement =
+                tx.prepare("SELECT id FROM worktrees WHERE project_id=?1 ORDER BY id")?;
+            let rows = statement
+                .query_map(params![id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        for worktree_id in &worktree_ids {
+            tx.execute(
+                "DELETE FROM app_meta WHERE key=?1",
+                params![worktree_removal_key(worktree_id)],
+            )?;
         }
-        // Clean dependent rows first (FK constraints), then the project.
-        conn.execute(
-            "DELETE FROM status_events WHERE session_id IN (SELECT id FROM sessions WHERE project_id=?1)",
-            params![id],
-        )?;
-        conn.execute(
-            "DELETE FROM latest_status WHERE session_id IN (SELECT id FROM sessions WHERE project_id=?1)",
-            params![id],
-        )?;
-        conn.execute(
-            "DELETE FROM recovery_summary WHERE session_id IN (SELECT id FROM sessions WHERE project_id=?1)",
-            params![id],
-        )?;
-        conn.execute(
-            "DELETE FROM session_runs WHERE session_id IN (SELECT id FROM sessions WHERE project_id=?1)",
-            params![id],
-        )?;
-        conn.execute("DELETE FROM sessions WHERE project_id=?1", params![id])?;
-        conn.execute(
+
+        tx.execute("DELETE FROM worktrees WHERE project_id=?1", params![id])?;
+        tx.execute(
             "DELETE FROM branch_operation_steps
              WHERE operation_id IN (SELECT id FROM branch_operations WHERE project_id=?1)",
             params![id],
         )?;
-        conn.execute(
+        tx.execute(
             "DELETE FROM branch_operations WHERE project_id=?1",
             params![id],
         )?;
-        conn.execute(
+        tx.execute(
             "DELETE FROM git_commit_operations WHERE project_id=?1",
             params![id],
         )?;
-        let n = conn.execute("DELETE FROM projects WHERE id=?1", params![id])?;
-        if n == 0 {
-            return Err(CoreError::NotFound(format!("project {id}")));
-        }
+        tx.execute(
+            "DELETE FROM app_meta WHERE key=?1",
+            params![project_removal_key(id)],
+        )?;
+        tx.execute("DELETE FROM projects WHERE id=?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1459,8 +1583,20 @@ impl Db {
 
     // -- worktrees ----------------------------------------------------------
     pub fn insert_worktree(&self, w: &Worktree) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let deleting: i64 = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_meta WHERE key=?1)",
+            params![project_removal_key(&w.project_id)],
+            |row| row.get(0),
+        )?;
+        if deleting != 0 {
+            return Err(CoreError::Blocked(format!(
+                "project {} is being removed",
+                w.project_id
+            )));
+        }
+        tx.execute(
             "INSERT INTO worktrees(id,project_id,branch,base_commit,base_ref,path,health,created_at)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             params![
@@ -1482,6 +1618,7 @@ impl Db {
             }
             other => CoreError::Sqlite(other),
         })?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1503,6 +1640,13 @@ impl Db {
         let mut st =
             conn.prepare("SELECT * FROM worktrees WHERE project_id=?1 ORDER BY created_at, id")?;
         let rows = st.query_map(params![project_id], row_worktree)?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn list_all_worktrees(&self) -> Result<Vec<Worktree>> {
+        let conn = self.conn.lock().unwrap();
+        let mut st = conn.prepare("SELECT * FROM worktrees ORDER BY created_at, id")?;
+        let rows = st.query_map([], row_worktree)?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -1553,15 +1697,35 @@ impl Db {
         self.delete_worktree_after(id, || Ok(()))
     }
 
-    /// Run the filesystem/Git removal while the database mutex protects the
-    /// final "no Session references this Worktree" check. This closes the race
-    /// where a Session could otherwise be created after a preflight but before
-    /// the Worktree row is deleted.
+    /// Persist a cross-process fence before destructive cleanup starts. New
+    /// Sessions reject this Worktree until its removal commits.
+    pub fn begin_worktree_removal(&self, id: &str) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let exists: i64 = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM worktrees WHERE id=?1)",
+            params![id],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            return Err(CoreError::NotFound(format!("worktree {id}")));
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO app_meta(key,value) VALUES(?1,'1')",
+            params![worktree_removal_key(id)],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Run filesystem/Git cleanup while the database mutex prevents new
+    /// references, then purge every Session that still points at the deleted
+    /// Worktree. References are cleanup inputs, never deletion blockers.
     pub fn delete_worktree_after<F>(&self, id: &str, remove: F) -> Result<()>
     where
         F: FnOnce() -> Result<()>,
     {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
         let exists: i64 = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM worktrees WHERE id=?1)",
             params![id],
@@ -1570,21 +1734,49 @@ impl Db {
         if exists == 0 {
             return Err(CoreError::NotFound(format!("worktree {id}")));
         }
-        let references: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE worktree_id=?1",
-            params![id],
-            |r| r.get(0),
-        )?;
-        if references > 0 {
-            return Err(CoreError::Blocked(format!(
-                "worktree {id} is still used by {references} session(s); archive does not remove this dependency"
-            )));
-        }
         remove()?;
-        let n = conn.execute("DELETE FROM worktrees WHERE id=?1", params![id])?;
-        if n == 0 {
-            return Err(CoreError::NotFound(format!("worktree {id}")));
+
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (project_id, worktree_path): (String, String) = tx.query_row(
+            "SELECT project_id,path FROM worktrees WHERE id=?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let session_ids = {
+            let mut statement =
+                tx.prepare("SELECT id FROM sessions WHERE worktree_id=?1 ORDER BY id")?;
+            let rows = statement
+                .query_map(params![id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        let now = Utc::now();
+        for session_id in &session_ids {
+            enqueue_cleanup_job_tx(&tx, session_id, &now)?;
+            purge_session_rows(&tx, session_id)?;
         }
+        tx.execute(
+            "DELETE FROM branch_operation_steps
+             WHERE operation_id IN (
+                 SELECT id FROM branch_operations
+                 WHERE project_id=?1 AND checkout_root=?2
+             )",
+            params![project_id, worktree_path],
+        )?;
+        tx.execute(
+            "DELETE FROM branch_operations WHERE project_id=?1 AND checkout_root=?2",
+            params![project_id, worktree_path],
+        )?;
+        tx.execute(
+            "DELETE FROM git_commit_operations WHERE worktree_id=?1",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM app_meta WHERE key=?1",
+            params![worktree_removal_key(id)],
+        )?;
+        tx.execute("DELETE FROM worktrees WHERE id=?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1608,7 +1800,7 @@ impl Db {
         Ok((all as usize, active as usize))
     }
 
-    pub fn project_dependency_counts(&self, id: &str) -> Result<(usize, usize, usize)> {
+    pub fn project_dependency_counts(&self, id: &str) -> Result<(usize, usize, usize, usize)> {
         let conn = self.conn.lock().unwrap();
         let exists: i64 = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?1)",
@@ -1642,10 +1834,17 @@ impl Db {
             .iter()
             .filter(|root| std::path::Path::new(root).exists())
             .count();
+        let pending_commits: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM git_commit_operations
+             WHERE project_id=?1 AND phase='started'",
+            params![id],
+            |r| r.get(0),
+        )?;
         Ok((
             sessions as usize,
             worktrees as usize,
             recoverable_operations,
+            pending_commits as usize,
         ))
     }
 
@@ -1658,6 +1857,29 @@ impl Db {
         }
         let conn = self.conn.lock().unwrap();
         let tx = conn.unchecked_transaction()?;
+        let project_deleting: i64 = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_meta WHERE key=?1)",
+            params![project_removal_key(&s.project_id)],
+            |row| row.get(0),
+        )?;
+        if project_deleting != 0 {
+            return Err(CoreError::Blocked(format!(
+                "project {} is being removed",
+                s.project_id
+            )));
+        }
+        if let Some(worktree_id) = s.worktree_id.as_deref() {
+            let worktree_deleting: i64 = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM app_meta WHERE key=?1)",
+                params![worktree_removal_key(worktree_id)],
+                |row| row.get(0),
+            )?;
+            if worktree_deleting != 0 {
+                return Err(CoreError::Blocked(format!(
+                    "worktree {worktree_id} is being removed"
+                )));
+            }
+        }
         tx.execute(
             "INSERT INTO sessions(id,project_id,worktree_id,preset_id,title,cwd,host_pid,host_socket,host_token,lifecycle,agent_session_id,resume_precision,log_path,adapter_type,command_json,permission_mode,transport,created_at,updated_at,archived_at)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
@@ -1743,6 +1965,100 @@ impl Db {
         Ok(rows)
     }
 
+    /// Load every Session plus its sidebar status and unread-attention bit while
+    /// holding one read connection. The three SQL statements are independent
+    /// of Session count; correlated lookups use the status-event run index.
+    pub fn list_session_projections(
+        &self,
+        include_archived: bool,
+    ) -> Result<Vec<SessionProjection>> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        let archived = if include_archived { 1_i64 } else { 0_i64 };
+
+        let sessions = {
+            let mut st = tx.prepare(
+                "SELECT * FROM sessions
+                 WHERE ?1=1 OR archived_at IS NULL
+                 ORDER BY created_at, id",
+            )?;
+            let rows = st
+                .query_map(params![archived], row_session)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+
+        let latest_by_session: HashMap<String, StatusEvent> = {
+            let mut st = tx.prepare(
+                "SELECT e.session_id,e.run_id,e.run_ordinal,e.sequence,e.state,e.source,
+                        e.confidence,e.evidence,e.log_generation,e.log_offset,e.occurred_at
+                 FROM sessions s
+                 JOIN status_events e ON e.id=(
+                    SELECT candidate.id FROM status_events candidate
+                    WHERE candidate.session_id=s.id
+                      AND NOT (candidate.source='hook' AND candidate.evidence IS 'hook:Notification')
+                    ORDER BY candidate.run_ordinal DESC, candidate.sequence DESC
+                    LIMIT 1
+                 )
+                 WHERE ?1=1 OR s.archived_at IS NULL",
+            )?;
+            let rows = st
+                .query_map(params![archived], row_status_event)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+                .into_iter()
+                .map(|event| (event.session_id.clone(), event))
+                .collect();
+            rows
+        };
+
+        let unread_by_session: HashMap<String, bool> = {
+            let mut st = tx.prepare(
+                "SELECT s.id,
+                        CASE WHEN r.session_id IS NULL THEN 0 ELSE EXISTS(
+                          SELECT 1 FROM status_events e
+                          WHERE e.session_id=s.id AND (
+                            e.run_ordinal>r.last_seen_run_ordinal OR
+                            (e.run_ordinal=r.last_seen_run_ordinal
+                             AND e.run_id=r.last_seen_run_id
+                             AND e.sequence>r.last_seen_sequence)
+                          ) AND (
+                            (e.state='needs_input' AND (
+                              (e.source='hook' AND e.evidence='hook:PermissionRequest') OR
+                              (e.source='pty' AND e.evidence LIKE 'pty:pattern:%')
+                            )) OR
+                            (e.state='idle' AND (
+                              (e.source='hook' AND
+                               (e.evidence='hook:Stop' OR e.evidence='hook:TurnEnd')) OR
+                              (e.source='adapter' AND
+                               (e.evidence='adapter:kimi:TurnEnd' OR
+                                e.evidence='adapter:pi:TurnEnd'))
+                            ))
+                          )
+                        ) END
+                 FROM sessions s
+                 LEFT JOIN recovery_summary r ON r.session_id=s.id
+                 WHERE ?1=1 OR s.archived_at IS NULL",
+            )?;
+            let rows = st
+                .query_map(params![archived], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+                })?
+                .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+            rows
+        };
+
+        let projections = sessions
+            .into_iter()
+            .map(|session| SessionProjection {
+                latest_status: latest_by_session.get(&session.id).cloned(),
+                unread_attention: unread_by_session.get(&session.id).copied().unwrap_or(false),
+                session,
+            })
+            .collect();
+        tx.commit()?;
+        Ok(projections)
+    }
+
     pub fn update_session_lifecycle(&self, id: &str, l: Lifecycle) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let n = conn.execute(
@@ -1813,13 +2129,26 @@ impl Db {
         }
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let session_exists: i64 = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
+        let archived_at: Option<String> = match tx.query_row(
+            "SELECT archived_at FROM sessions WHERE id=?1",
             params![id],
             |r| r.get(0),
-        )?;
-        if session_exists == 0 {
-            return Err(CoreError::NotFound(format!("session {id}")));
+        ) {
+            Ok(value) => value,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return Err(CoreError::NotFound(format!("session {id}")));
+            }
+            Err(error) => return Err(CoreError::Sqlite(error)),
+        };
+        if archived_at.is_some() {
+            return Err(CoreError::Blocked(format!(
+                "archived session {id} cannot start a new run"
+            )));
+        }
+        if session_removal_is_fenced(&tx, id)? {
+            return Err(CoreError::Blocked(format!(
+                "session {id} is being removed"
+            )));
         }
         let run_exists: i64 = tx.query_row(
             "SELECT EXISTS(
@@ -1834,14 +2163,19 @@ impl Db {
                 "session {id} run {run_id}/{run_ordinal} was not reserved"
             )));
         }
-        tx.execute(
+        let claimed = tx.execute(
             "UPDATE sessions
              SET host_pid=NULL, host_socket=NULL,
                  host_run_id=?2, host_run_ordinal=?3,
                  log_path=?4, lifecycle='creating', updated_at=?5
-             WHERE id=?1",
+             WHERE id=?1 AND archived_at IS NULL",
             params![id, run_id, run_ordinal, log_path, dt_str(&Utc::now())],
         )?;
+        if claimed == 0 {
+            return Err(CoreError::Blocked(format!(
+                "archived session {id} cannot start a new run"
+            )));
+        }
         tx.commit()?;
         Ok(())
     }
@@ -1872,7 +2206,13 @@ impl Db {
             "UPDATE sessions
              SET host_pid=?4, host_socket=?5, updated_at=?6
              WHERE id=?1 AND host_run_id=?2 AND host_run_ordinal=?3
-               AND lifecycle='creating'",
+               AND lifecycle='creating' AND archived_at IS NULL
+               AND NOT EXISTS(
+                   SELECT 1 FROM app_meta
+                   WHERE key='project_removal_in_progress:' || sessions.project_id
+                      OR (sessions.worktree_id IS NOT NULL
+                          AND key='worktree_removal_in_progress:' || sessions.worktree_id)
+               )",
             params![
                 id,
                 run_id,
@@ -2208,6 +2548,22 @@ impl Db {
         Ok(())
     }
 
+    /// Pins or unpins a Session in the sidebar. Pinned Sessions carry their pin
+    /// timestamp; the renderer orders them latest-pin-first before unpinned
+    /// Sessions. Returns the persisted timestamp.
+    pub fn set_session_pinned(&self, id: &str, pinned: bool) -> Result<Option<DateTime<Utc>>> {
+        let pinned_at = pinned.then(Utc::now);
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "UPDATE sessions SET pinned_at=?2 WHERE id=?1",
+            params![id, pinned_at.map(|t| dt_str(&t))],
+        )?;
+        if n == 0 {
+            return Err(CoreError::NotFound(format!("session {id}")));
+        }
+        Ok(pinned_at)
+    }
+
     /// Marks a system-generated title as eligible for one automatic rename.
     pub fn mark_session_title_auto_generated(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -2251,22 +2607,31 @@ impl Db {
         Ok(updated == 1)
     }
 
-    pub fn archive_session(&self, id: &str) -> Result<()> {
+    pub fn archive_session(&self, id: &str) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
         let tx = conn.unchecked_transaction()?;
-        let n = tx.execute(
-            "UPDATE sessions SET archived_at=?2, updated_at=?2 WHERE id=?1",
-            params![id, dt_str(&Utc::now())],
-        )?;
-        if n == 0 {
-            return Err(CoreError::NotFound(format!("session {id}")));
-        }
+        let now = dt_str(&Utc::now());
+        let generation: i64 = match tx.query_row(
+            "UPDATE sessions
+             SET archived_at=?2, updated_at=?2,
+                 archive_generation=archive_generation+1
+             WHERE id=?1 AND archived_at IS NULL
+             RETURNING archive_generation",
+            params![id, now],
+            |row| row.get(0),
+        ) {
+            Ok(generation) => generation,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return Err(CoreError::NotFound(format!("active session {id}")));
+            }
+            Err(error) => return Err(CoreError::Sqlite(error)),
+        };
         tx.execute(
             "DELETE FROM app_meta WHERE key=?1",
             params![auto_title_pending_key(id)],
         )?;
         tx.commit()?;
-        Ok(())
+        Ok(generation)
     }
 
     /// Restores an archived Session to the active project tree.
@@ -2281,6 +2646,18 @@ impl Db {
             return Err(CoreError::NotFound(format!("archived session {id}")));
         }
         Ok(())
+    }
+
+    /// Roll back only the archive generation created by the caller. A false
+    /// result means another archive transition superseded that caller.
+    pub fn unarchive_session_if_generation(&self, id: &str, generation: i64) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            "UPDATE sessions SET archived_at=NULL, updated_at=?3
+             WHERE id=?1 AND archived_at IS NOT NULL AND archive_generation=?2",
+            params![id, generation, dt_str(&Utc::now())],
+        )?;
+        Ok(updated == 1)
     }
 
     /// Permanently removes one archived Session and all database rows that
@@ -2307,6 +2684,78 @@ impl Db {
         purge_session_rows(&tx, id)?;
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn project_archived_session_generations(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<(String, i64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn.prepare(
+            "SELECT id,archive_generation FROM sessions
+             WHERE project_id=?1 AND archived_at IS NOT NULL
+             ORDER BY id",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Permanently removes every archived Session owned by one Project and
+    /// returns their IDs so callers can clean derived files after commit.
+    pub fn purge_project_archived_sessions(
+        &self,
+        project_id: &str,
+        expected_archives: &[(String, i64)],
+    ) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        let project_exists: i64 = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?1)",
+            params![project_id],
+            |r| r.get(0),
+        )?;
+        if project_exists == 0 {
+            return Err(CoreError::NotFound(format!("project {project_id}")));
+        }
+        let current_archives = {
+            let mut statement = tx.prepare(
+                "SELECT id,archive_generation FROM sessions
+                 WHERE project_id=?1 AND archived_at IS NOT NULL
+                 ORDER BY id",
+            )?;
+            let rows = statement
+                .query_map(params![project_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        let mut confirmed_archives = expected_archives.to_vec();
+        confirmed_archives.sort_by(|left, right| left.0.cmp(&right.0));
+        if confirmed_archives
+            .windows(2)
+            .any(|pair| pair[0].0 == pair[1].0)
+        {
+            return Err(CoreError::Validation(
+                "confirmed archived Session IDs contain duplicates".into(),
+            ));
+        }
+        if current_archives != confirmed_archives {
+            return Err(CoreError::Conflict(
+                "archived Sessions changed after confirmation; review and try again".into(),
+            ));
+        }
+        let now = Utc::now();
+        let confirmed_ids = confirmed_archives
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        for id in &confirmed_ids {
+            enqueue_cleanup_job_tx(&tx, id, &now)?;
+            purge_session_rows(&tx, id)?;
+        }
+        tx.commit()?;
+        Ok(confirmed_ids)
     }
 
     /// Permanently removes all archived Sessions and returns their IDs so
@@ -2472,13 +2921,26 @@ impl Db {
 
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let session_exists: i64 = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
+        let archived_at: Option<String> = match tx.query_row(
+            "SELECT archived_at FROM sessions WHERE id=?1",
             params![session_id],
             |r| r.get(0),
-        )?;
-        if session_exists == 0 {
-            return Err(CoreError::NotFound(format!("session {session_id}")));
+        ) {
+            Ok(value) => value,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return Err(CoreError::NotFound(format!("session {session_id}")));
+            }
+            Err(error) => return Err(CoreError::Sqlite(error)),
+        };
+        if archived_at.is_some() {
+            return Err(CoreError::Blocked(format!(
+                "archived session {session_id} cannot reserve a new run"
+            )));
+        }
+        if session_removal_is_fenced(&tx, session_id)? {
+            return Err(CoreError::Blocked(format!(
+                "session {session_id} is being removed"
+            )));
         }
 
         match tx.query_row(
@@ -2688,7 +3150,7 @@ impl Db {
                     evidence,log_generation,log_offset,occurred_at
              FROM status_events
              WHERE session_id=?1
-               AND NOT (source='hook' AND evidence='hook:Notification')
+               AND NOT (source='hook' AND evidence IS 'hook:Notification')
              ORDER BY run_ordinal DESC, sequence DESC
              LIMIT 1",
             params![session_id],
@@ -2896,8 +3358,8 @@ impl Db {
     }
 
     /// Same cursor together with the time a verified Host (or durable status
-    /// event) last reported it.  This is an observation timestamp, not a
-    /// claim that terminal bytes were produced at that instant.
+    /// event) first advanced to it. Repeated idle heartbeats do not refresh
+    /// this timestamp; it is not a liveness signal or an exact output time.
     pub fn get_latest_log_cursor_observed(
         &self,
         session_id: &str,
@@ -2939,7 +3401,41 @@ impl Db {
     }
 
     pub fn set_latest_log_cursor(&self, session_id: &str, cursor: &LogCursor) -> Result<()> {
+        validate_run_identity(&cursor.run_id, cursor.run_ordinal)?;
+        if cursor.generation < 0 || cursor.offset < 0 {
+            return Err(CoreError::Validation(
+                "log generation and offset must not be negative".into(),
+            ));
+        }
+
         let mut conn = self.conn.lock().unwrap();
+        let unchanged: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM recovery_summary r
+                JOIN session_runs sr
+                  ON sr.session_id=r.session_id
+                 AND sr.run_id=r.latest_log_run_id
+                 AND sr.run_ordinal=r.latest_log_run_ordinal
+                WHERE r.session_id=?1
+                  AND r.latest_log_run_id=?2
+                  AND r.latest_log_run_ordinal=?3
+                  AND r.latest_log_generation=?4
+                  AND r.latest_log_offset=?5
+             )",
+            params![
+                session_id,
+                &cursor.run_id,
+                cursor.run_ordinal,
+                cursor.generation,
+                cursor.offset,
+            ],
+            |row| row.get(0),
+        )?;
+        if unchanged {
+            return Ok(());
+        }
+
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = Utc::now();
         ensure_session_run_tx(&tx, session_id, &cursor.run_id, cursor.run_ordinal, &now)?;
@@ -3459,6 +3955,10 @@ impl Db {
                 .get("agent_order")
                 .and_then(|v| serde_json::from_str(v).ok())
                 .unwrap_or(d.agent_order),
+            agent_hidden: map
+                .get("agent_hidden")
+                .and_then(|v| serde_json::from_str(v).ok())
+                .unwrap_or(d.agent_hidden),
             telemetry_enabled: false, // hard constraint, never read from disk
         };
         s.validate()?;
@@ -3478,7 +3978,7 @@ impl Db {
             ReducedMotion::On => "on",
             ReducedMotion::Off => "off",
         };
-        let pairs: [(String, String); 11] = [
+        let pairs: [(String, String); 12] = [
             ("log_limit_mib".into(), s.log_limit_mib.to_string()),
             (
                 "notifications_enabled".into(),
@@ -3505,6 +4005,7 @@ impl Db {
                 s.search_index_enabled.to_string(),
             ),
             ("agent_order".into(), serde_json::to_string(&s.agent_order)?),
+            ("agent_hidden".into(), serde_json::to_string(&s.agent_hidden)?),
         ];
         let tx = conn.unchecked_transaction()?;
         for (k, v) in pairs {
@@ -3666,6 +4167,8 @@ mod tests {
             root_path: format!("/tmp/{id}"),
             git_root_path: Some(format!("/tmp/{id}")),
             created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
         }
     }
 
@@ -3690,6 +4193,7 @@ mod tests {
             permission_mode: PermissionMode::Native,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            pinned_at: None,
             archived_at: None,
         }
     }
@@ -3877,6 +4381,186 @@ mod tests {
     }
 
     #[test]
+    fn v10_projects_migrate_without_changing_their_existing_order() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        for (index, migration) in schema::MIGRATIONS.iter().take(10).enumerate() {
+            let version = (index + 1) as i64;
+            let tx = conn.unchecked_transaction().unwrap();
+            tx.execute_batch(migration).unwrap();
+            if version == 7 {
+                Db::upgrade_legacy_branch_journal_schema(&tx).unwrap();
+            }
+            tx.pragma_update(None, "user_version", version).unwrap();
+            tx.commit().unwrap();
+        }
+        conn.execute_batch(
+            r#"
+            INSERT INTO projects(id,name,root_path,created_at) VALUES
+                ('prj_b','B','/tmp/b','2026-08-17T00:00:00.000Z'),
+                ('prj_a','A','/tmp/a','2026-08-17T00:00:00.000Z'),
+                ('prj_c','C','/tmp/c','2026-08-17T00:00:01.000Z');
+            "#,
+        )
+        .unwrap();
+
+        let db = Db::init(conn).unwrap();
+        let projects = db.list_projects().unwrap();
+        assert_eq!(
+            projects
+                .iter()
+                .map(|project| project.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["prj_a", "prj_b", "prj_c"]
+        );
+        assert!(projects.iter().all(|project| !project.pinned));
+        assert_eq!(
+            projects
+                .iter()
+                .map(|project| project.sort_order)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn project_layout_persists_and_new_projects_append_to_the_unpinned_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(directory.path().to_path_buf());
+        {
+            let db = Db::open(&paths).unwrap();
+            for id in ["prj_a", "prj_b", "prj_c"] {
+                db.add_project(&project(id)).unwrap();
+            }
+            db.set_project_layout(&[
+                ProjectLayoutEntry {
+                    id: "prj_c".into(),
+                    pinned: true,
+                },
+                ProjectLayoutEntry {
+                    id: "prj_b".into(),
+                    pinned: false,
+                },
+                ProjectLayoutEntry {
+                    id: "prj_a".into(),
+                    pinned: false,
+                },
+            ])
+            .unwrap();
+        }
+
+        let db = Db::open(&paths).unwrap();
+        db.add_project(&project("prj_d")).unwrap();
+        let projects = db.list_projects().unwrap();
+        assert_eq!(
+            projects
+                .iter()
+                .map(|project| (project.id.as_str(), project.pinned, project.sort_order))
+                .collect::<Vec<_>>(),
+            vec![
+                ("prj_c", true, 0),
+                ("prj_b", false, 1),
+                ("prj_a", false, 2),
+                ("prj_d", false, 3),
+            ]
+        );
+    }
+
+    #[test]
+    fn session_pin_persists_across_reopen_and_unpins() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(dir.path().to_path_buf());
+        let pinned_at;
+        {
+            let db = Db::open(&paths).unwrap();
+            db.add_project(&project("prj_a")).unwrap();
+            db.insert_session(&session("ses_a", "prj_a")).unwrap();
+            assert_eq!(db.get_session("ses_a").unwrap().pinned_at, None);
+            assert!(db.set_session_pinned("ses_a", true).unwrap().is_some());
+            pinned_at = db.get_session("ses_a").unwrap().pinned_at.unwrap();
+        }
+        // A full database reopen stands in for an app restart: the pin must
+        // come back exactly as it was persisted.
+        let db = Db::open(&paths).unwrap();
+        assert_eq!(db.get_session("ses_a").unwrap().pinned_at, Some(pinned_at));
+        assert_eq!(db.set_session_pinned("ses_a", false).unwrap(), None);
+        assert_eq!(db.get_session("ses_a").unwrap().pinned_at, None);
+        assert!(matches!(
+            db.set_session_pinned("ses_missing", true),
+            Err(CoreError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn invalid_project_layouts_roll_back_without_partial_updates() {
+        let db = db();
+        for id in ["prj_a", "prj_b", "prj_c"] {
+            db.add_project(&project(id)).unwrap();
+        }
+        let expected = || {
+            db.list_projects()
+                .unwrap()
+                .into_iter()
+                .map(|project| (project.id, project.pinned, project.sort_order))
+                .collect::<Vec<_>>()
+        };
+        let original = expected();
+        let invalid_layouts = [
+            vec![
+                ProjectLayoutEntry {
+                    id: "prj_a".into(),
+                    pinned: false,
+                },
+                ProjectLayoutEntry {
+                    id: "prj_a".into(),
+                    pinned: false,
+                },
+                ProjectLayoutEntry {
+                    id: "prj_c".into(),
+                    pinned: false,
+                },
+            ],
+            vec![
+                ProjectLayoutEntry {
+                    id: "prj_a".into(),
+                    pinned: false,
+                },
+                ProjectLayoutEntry {
+                    id: "prj_unknown".into(),
+                    pinned: false,
+                },
+                ProjectLayoutEntry {
+                    id: "prj_c".into(),
+                    pinned: false,
+                },
+            ],
+            vec![ProjectLayoutEntry {
+                id: "prj_a".into(),
+                pinned: false,
+            }],
+            vec![
+                ProjectLayoutEntry {
+                    id: "prj_a".into(),
+                    pinned: false,
+                },
+                ProjectLayoutEntry {
+                    id: "prj_b".into(),
+                    pinned: true,
+                },
+                ProjectLayoutEntry {
+                    id: "prj_c".into(),
+                    pinned: false,
+                },
+            ],
+        ];
+
+        for layout in invalid_layouts {
+            assert!(db.set_project_layout(&layout).is_err());
+            assert_eq!(expected(), original);
+        }
+    }
+
+    #[test]
     fn project_crud_and_duplicate_path_conflict() {
         let db = db();
         db.add_project(&project("prj_1")).unwrap();
@@ -3890,31 +4574,90 @@ mod tests {
     }
 
     #[test]
-    fn remove_project_blocked_by_live_sessions() {
+    fn remove_project_cascades_sessions_and_enqueues_file_cleanup() {
         let db = db();
         db.add_project(&project("prj_1")).unwrap();
         db.insert_session(&session("ses_1", "prj_1")).unwrap();
-        assert!(matches!(
-            db.remove_project("prj_1"),
-            Err(CoreError::Blocked(_))
-        ));
-        // An archived Session is still user data: removing the project must
-        // not silently drop its rows and orphan the on-disk directory.
-        db.archive_session("ses_1").unwrap();
-        assert!(matches!(
-            db.remove_project("prj_1"),
-            Err(CoreError::Blocked(_))
-        ));
-        db.purge_archived_session("ses_1").unwrap();
+
         db.remove_project("prj_1").unwrap();
         assert!(matches!(
             db.get_project("prj_1"),
             Err(CoreError::NotFound(_))
         ));
+        assert!(matches!(
+            db.get_session("ses_1"),
+            Err(CoreError::NotFound(_))
+        ));
+        assert_eq!(
+            db.list_due_cleanup_jobs(Utc::now()).unwrap()[0].session_id,
+            "ses_1"
+        );
     }
 
     #[test]
-    fn remove_project_blocks_while_worktrees_are_registered() {
+    fn project_removal_fence_rejects_new_sessions_and_worktrees() {
+        let db = db();
+        db.add_project(&project("prj_1")).unwrap();
+        db.insert_session(&session("ses_existing", "prj_1"))
+            .unwrap();
+        let reserved = db
+            .create_session_run("ses_existing", "run_before_removal")
+            .unwrap();
+        db.claim_session_run(
+            "ses_existing",
+            &reserved.run_id,
+            reserved.run_ordinal,
+            "/tmp/before-removal.log",
+        )
+        .unwrap();
+        db.begin_project_removal("prj_1").unwrap();
+
+        assert!(matches!(
+            db.create_session_run("ses_existing", "run_after_removal"),
+            Err(CoreError::Blocked(_))
+        ));
+        assert!(matches!(
+            db.claim_session_run(
+                "ses_existing",
+                &reserved.run_id,
+                reserved.run_ordinal,
+                "/tmp/removal.log"
+            ),
+            Err(CoreError::Blocked(_))
+        ));
+        assert!(!db
+            .bind_session_host_for_run(
+                "ses_existing",
+                &reserved.run_id,
+                reserved.run_ordinal,
+                123,
+                "/tmp/removal.sock"
+            )
+            .unwrap());
+        assert!(matches!(
+            db.insert_session(&session("ses_late", "prj_1")),
+            Err(CoreError::Blocked(_))
+        ));
+        let worktree = Worktree {
+            id: "wt_late".into(),
+            project_id: "prj_1".into(),
+            branch: "agent/late".into(),
+            base_commit: "abc123".into(),
+            base_ref: None,
+            path: "/tmp/wt/late".into(),
+            health: WorktreeHealth::Clean,
+            created_at: Utc::now(),
+        };
+        assert!(matches!(
+            db.insert_worktree(&worktree),
+            Err(CoreError::Blocked(_))
+        ));
+
+        db.remove_project("prj_1").unwrap();
+    }
+
+    #[test]
+    fn remove_project_cascades_registered_worktrees() {
         let db = db();
         db.add_project(&project("prj_1")).unwrap();
         let w = Worktree {
@@ -3929,18 +4672,57 @@ mod tests {
         };
         db.insert_worktree(&w).unwrap();
 
-        let error = db.remove_project("prj_1").unwrap_err();
-        assert!(matches!(error, CoreError::Blocked(_)), "{error}");
-        assert!(error.to_string().contains("1 Worktree"), "{error}");
-        assert!(db.get_project("prj_1").is_ok());
-        assert!(db.get_worktree("wt_1").is_ok());
-
-        db.delete_worktree("wt_1").unwrap();
         db.remove_project("prj_1").unwrap();
+        assert!(matches!(
+            db.get_project("prj_1"),
+            Err(CoreError::NotFound(_))
+        ));
+        assert!(matches!(
+            db.get_worktree("wt_1"),
+            Err(CoreError::NotFound(_))
+        ));
     }
 
     #[test]
-    fn remove_project_allows_stale_branch_operations_only_when_checkout_is_gone() {
+    fn project_dependency_counts_include_unfinished_commit_operations() {
+        let db = db();
+        db.add_project(&project("prj_commit")).unwrap();
+        let now = dt_str(&Utc::now());
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO git_commit_operations(
+                    id,project_id,repo_key,checkout_id,checkout_root,
+                    expected_tree_oid,index_hash,message_hash,phase,created_at,updated_at
+                 ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'started',?9,?9)",
+                params![
+                    "commit_op_1",
+                    "prj_commit",
+                    "repo",
+                    "checkout",
+                    "/tmp/prj_commit",
+                    "tree",
+                    "index",
+                    "message",
+                    now,
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(
+            db.project_dependency_counts("prj_commit").unwrap(),
+            (0, 0, 0, 1)
+        );
+        db.remove_project("prj_commit").unwrap();
+        assert!(matches!(
+            db.get_project("prj_commit"),
+            Err(CoreError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn remove_project_cleans_recoverable_and_stale_branch_operations() {
         let db = db();
         let recoverable_checkout = tempfile::tempdir().unwrap();
         let recoverable_checkout = recoverable_checkout.path().to_string_lossy().into_owned();
@@ -3962,11 +4744,12 @@ mod tests {
         );
         assert_eq!(
             db.project_dependency_counts(&live_project.id).unwrap(),
-            (0, 0, 1)
+            (0, 0, 1, 0)
         );
+        db.remove_project(&live_project.id).unwrap();
         assert!(matches!(
-            db.remove_project(&live_project.id),
-            Err(CoreError::Blocked(_))
+            db.get_project(&live_project.id),
+            Err(CoreError::NotFound(_))
         ));
 
         let missing_root = std::env::temp_dir().join(format!(
@@ -3987,7 +4770,7 @@ mod tests {
         );
         assert_eq!(
             db.project_dependency_counts(&stale_project.id).unwrap(),
-            (0, 0, 0)
+            (0, 0, 0, 0)
         );
 
         db.remove_project(&stale_project.id).unwrap();
@@ -4255,6 +5038,164 @@ mod tests {
     }
 
     #[test]
+    fn archived_sessions_cannot_reserve_or_claim_a_new_host_run() {
+        let db = db();
+        db.add_project(&project("prj_1")).unwrap();
+        db.insert_session(&session("ses_reserved", "prj_1"))
+            .unwrap();
+        let reserved = db
+            .create_session_run("ses_reserved", "run_reserved")
+            .unwrap();
+        db.archive_session("ses_reserved").unwrap();
+        assert!(matches!(
+            db.claim_session_run(
+                "ses_reserved",
+                &reserved.run_id,
+                reserved.run_ordinal,
+                "/tmp/run.log"
+            ),
+            Err(CoreError::Blocked(_))
+        ));
+
+        db.insert_session(&session("ses_archived", "prj_1"))
+            .unwrap();
+        db.archive_session("ses_archived").unwrap();
+        assert!(matches!(
+            db.create_session_run("ses_archived", "run_after_archive"),
+            Err(CoreError::Blocked(_))
+        ));
+
+        db.insert_session(&session("ses_claimed", "prj_1")).unwrap();
+        let claimed = db.create_session_run("ses_claimed", "run_claimed").unwrap();
+        db.claim_session_run(
+            "ses_claimed",
+            &claimed.run_id,
+            claimed.run_ordinal,
+            "/tmp/claimed.log",
+        )
+        .unwrap();
+        db.archive_session("ses_claimed").unwrap();
+        assert!(!db
+            .bind_session_host_for_run(
+                "ses_claimed",
+                &claimed.run_id,
+                claimed.run_ordinal,
+                123,
+                "/tmp/claimed.sock",
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn stale_archive_rollback_cannot_clear_a_newer_generation() {
+        let db = db();
+        db.add_project(&project("prj_1")).unwrap();
+        db.insert_session(&session("ses_1", "prj_1")).unwrap();
+        let first = db.archive_session("ses_1").unwrap();
+        db.unarchive_session("ses_1").unwrap();
+        let second = db.archive_session("ses_1").unwrap();
+        assert!(second > first);
+        assert!(!db.unarchive_session_if_generation("ses_1", first).unwrap());
+        assert!(db.get_session("ses_1").unwrap().archived_at.is_some());
+        assert!(db.unarchive_session_if_generation("ses_1", second).unwrap());
+    }
+
+    #[test]
+    fn project_archive_purge_is_scoped_and_preserves_active_sessions() {
+        let db = db();
+        db.add_project(&project("prj_target")).unwrap();
+        db.add_project(&project("prj_other")).unwrap();
+        db.insert_session(&session("ses_target_archived", "prj_target"))
+            .unwrap();
+        db.insert_session(&session("ses_target_live", "prj_target"))
+            .unwrap();
+        db.insert_session(&session("ses_other_archived", "prj_other"))
+            .unwrap();
+        db.archive_session("ses_target_archived").unwrap();
+        db.archive_session("ses_other_archived").unwrap();
+
+        let target_archive = db
+            .project_archived_session_generations("prj_target")
+            .unwrap()
+            .into_iter()
+            .find(|(id, _)| id == "ses_target_archived")
+            .unwrap()
+            .1;
+        assert_eq!(
+            db.purge_project_archived_sessions(
+                "prj_target",
+                &[("ses_target_archived".to_string(), target_archive)]
+            )
+            .unwrap(),
+            vec!["ses_target_archived".to_string()]
+        );
+        assert!(matches!(
+            db.get_session("ses_target_archived"),
+            Err(CoreError::NotFound(_))
+        ));
+        assert!(db.get_session("ses_target_live").is_ok());
+        assert!(db.get_session("ses_other_archived").is_ok());
+        assert_eq!(
+            db.list_due_cleanup_jobs(Utc::now()).unwrap()[0].session_id,
+            "ses_target_archived"
+        );
+    }
+
+    #[test]
+    fn project_archive_purge_rejects_a_changed_confirmation_set() {
+        let db = db();
+        db.add_project(&project("prj_target")).unwrap();
+        db.insert_session(&session("ses_confirmed", "prj_target"))
+            .unwrap();
+        db.archive_session("ses_confirmed").unwrap();
+        let confirmed = vec![(
+            "ses_confirmed".to_string(),
+            db.project_archived_session_generations("prj_target")
+                .unwrap()[0]
+                .1,
+        )];
+
+        db.insert_session(&session("ses_archived_later", "prj_target"))
+            .unwrap();
+        db.archive_session("ses_archived_later").unwrap();
+        assert!(matches!(
+            db.purge_project_archived_sessions("prj_target", &confirmed),
+            Err(CoreError::Conflict(_))
+        ));
+        assert!(db.get_session("ses_confirmed").is_ok());
+        assert!(db.get_session("ses_archived_later").is_ok());
+        assert!(db.list_due_cleanup_jobs(Utc::now()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn project_archive_purge_rejects_unarchive_rearchive_aba() {
+        let db = db();
+        db.add_project(&project("prj_target")).unwrap();
+        db.insert_session(&session("ses_target", "prj_target"))
+            .unwrap();
+        db.archive_session("ses_target").unwrap();
+        let first_archive = db
+            .project_archived_session_generations("prj_target")
+            .unwrap()[0]
+            .1;
+        db.unarchive_session("ses_target").unwrap();
+        db.archive_session("ses_target").unwrap();
+        let second_archive = db
+            .project_archived_session_generations("prj_target")
+            .unwrap()[0]
+            .1;
+        assert_ne!(first_archive, second_archive);
+        assert!(matches!(
+            db.purge_project_archived_sessions(
+                "prj_target",
+                &[("ses_target".to_string(), first_archive)]
+            ),
+            Err(CoreError::Conflict(_))
+        ));
+        assert!(db.get_session("ses_target").is_ok());
+    }
+
+    #[test]
     fn cleanup_retry_uses_bounded_exponential_backoff_without_paths() {
         let db = db();
         db.add_project(&project("prj_1")).unwrap();
@@ -4318,6 +5259,96 @@ mod tests {
                 .unwrap(),
             "kimi-2"
         );
+    }
+
+    #[test]
+    fn identical_latest_log_cursor_is_a_read_only_noop() {
+        let db = db();
+        db.add_project(&project("prj_1")).unwrap();
+        db.insert_session(&session("ses_cursor", "prj_1")).unwrap();
+        let cursor = LogCursor {
+            run_id: "run-cursor".into(),
+            run_ordinal: 1,
+            generation: 2,
+            offset: 4096,
+        };
+
+        db.set_latest_log_cursor("ses_cursor", &cursor).unwrap();
+        let changes_after_first_write = db.conn().lock().unwrap().total_changes();
+        for _ in 0..100 {
+            db.set_latest_log_cursor("ses_cursor", &cursor).unwrap();
+        }
+        assert_eq!(
+            db.conn().lock().unwrap().total_changes(),
+            changes_after_first_write,
+            "idle heartbeat retries must not acquire the SQLite writer slot",
+        );
+
+        let advanced = LogCursor {
+            offset: cursor.offset + 1,
+            ..cursor.clone()
+        };
+        db.set_latest_log_cursor("ses_cursor", &advanced).unwrap();
+        assert_eq!(
+            db.get_latest_log_cursor("ses_cursor").unwrap(),
+            Some(advanced),
+        );
+    }
+
+    #[test]
+    fn session_projection_matches_scalar_sidebar_semantics() {
+        let db = db();
+        db.add_project(&project("prj_1")).unwrap();
+        db.insert_session(&session("ses_projection", "prj_1"))
+            .unwrap();
+        let event = |sequence: i64, state: AgentState, evidence: &str| StatusEvent {
+            session_id: "ses_projection".into(),
+            run_id: LEGACY_RUN_ID.into(),
+            run_ordinal: LEGACY_RUN_ORDINAL,
+            sequence,
+            state,
+            source: StateSource::Hook,
+            confidence: Confidence::High,
+            evidence: Some(evidence.into()),
+            log_cursor: None,
+            occurred_at: Utc::now(),
+        };
+        db.record_status_event(&event(1, AgentState::NeedsInput, "hook:PermissionRequest"))
+            .unwrap();
+        db.record_status_event(&event(2, AgentState::Working, "hook:Notification"))
+            .unwrap();
+        let mut null_evidence = event(3, AgentState::Working, "unused");
+        null_evidence.evidence = None;
+        db.record_status_event(&null_evidence).unwrap();
+
+        let projection = db
+            .list_session_projections(false)
+            .unwrap()
+            .into_iter()
+            .find(|projection| projection.session.id == "ses_projection")
+            .unwrap();
+        let scalar_latest = db.latest_status("ses_projection").unwrap().unwrap();
+        assert_eq!(
+            scalar_latest.sequence, 3,
+            "hook events without evidence remain visible"
+        );
+        assert_eq!(
+            projection.latest_status.as_ref().unwrap().sequence,
+            scalar_latest.sequence
+        );
+        assert_eq!(
+            projection.latest_status.as_ref().unwrap().evidence,
+            scalar_latest.evidence,
+        );
+        assert_eq!(
+            projection.unread_attention,
+            db.has_unread_attention("ses_projection", 0).unwrap(),
+        );
+        assert!(projection.unread_attention);
+
+        db.archive_session("ses_projection").unwrap();
+        assert!(db.list_session_projections(false).unwrap().is_empty());
+        assert_eq!(db.list_session_projections(true).unwrap().len(), 1);
     }
 
     #[test]
@@ -5061,7 +6092,68 @@ mod tests {
     }
 
     #[test]
-    fn deleting_worktree_never_detaches_referencing_sessions() {
+    fn worktree_removal_fence_rejects_new_session_references() {
+        let db = db();
+        db.add_project(&project("prj_1")).unwrap();
+        let worktree = Worktree {
+            id: "wt_1".into(),
+            project_id: "prj_1".into(),
+            branch: "agent/fix-x".into(),
+            base_commit: "abc123".into(),
+            base_ref: None,
+            path: "/tmp/wt/fix-x".into(),
+            health: WorktreeHealth::Clean,
+            created_at: Utc::now(),
+        };
+        db.insert_worktree(&worktree).unwrap();
+        let mut existing = session("ses_existing", "prj_1");
+        existing.worktree_id = Some("wt_1".into());
+        db.insert_session(&existing).unwrap();
+        let reserved = db
+            .create_session_run("ses_existing", "run_before_removal")
+            .unwrap();
+        db.claim_session_run(
+            "ses_existing",
+            &reserved.run_id,
+            reserved.run_ordinal,
+            "/tmp/before-removal.log",
+        )
+        .unwrap();
+        db.begin_worktree_removal("wt_1").unwrap();
+        let mut late = session("ses_late", "prj_1");
+        late.worktree_id = Some("wt_1".into());
+
+        assert!(matches!(
+            db.create_session_run("ses_existing", "run_after_removal"),
+            Err(CoreError::Blocked(_))
+        ));
+        assert!(matches!(
+            db.claim_session_run(
+                "ses_existing",
+                &reserved.run_id,
+                reserved.run_ordinal,
+                "/tmp/removal.log"
+            ),
+            Err(CoreError::Blocked(_))
+        ));
+        assert!(!db
+            .bind_session_host_for_run(
+                "ses_existing",
+                &reserved.run_id,
+                reserved.run_ordinal,
+                123,
+                "/tmp/removal.sock"
+            )
+            .unwrap());
+        assert!(matches!(
+            db.insert_session(&late),
+            Err(CoreError::Blocked(_))
+        ));
+        db.delete_worktree("wt_1").unwrap();
+    }
+
+    #[test]
+    fn deleting_worktree_purges_referencing_sessions_and_enqueues_cleanup() {
         let db = db();
         db.add_project(&project("prj_1")).unwrap();
         let w = Worktree {
@@ -5080,22 +6172,19 @@ mod tests {
         s.cwd = w.path.clone();
         db.insert_session(&s).unwrap();
 
-        let error = db.delete_worktree("wt_1").unwrap_err();
-        assert!(matches!(error, CoreError::Blocked(_)), "{error}");
-        assert_eq!(
-            db.get_session("ses_1").unwrap().worktree_id.as_deref(),
-            Some("wt_1")
-        );
-        assert!(db.get_worktree("wt_1").is_ok());
-
-        db.archive_session("ses_1").unwrap();
-        let archived_error = db.delete_worktree("wt_1").unwrap_err();
-        assert!(
-            matches!(archived_error, CoreError::Blocked(_)),
-            "{archived_error}"
-        );
-        db.purge_archived_session("ses_1").unwrap();
         db.delete_worktree("wt_1").unwrap();
+        assert!(matches!(
+            db.get_worktree("wt_1"),
+            Err(CoreError::NotFound(_))
+        ));
+        assert!(matches!(
+            db.get_session("ses_1"),
+            Err(CoreError::NotFound(_))
+        ));
+        assert_eq!(
+            db.list_due_cleanup_jobs(Utc::now()).unwrap()[0].session_id,
+            "ses_1"
+        );
     }
 
     #[test]
@@ -5129,6 +6218,7 @@ mod tests {
         s.terminal_font_size = 18;
         s.terminal_command = "kitty".into();
         s.agent_order = vec!["pi".into(), "qoder".into(), "codex".into()];
+        s.agent_hidden = vec!["kimi".into()];
         db.save_settings(&s).unwrap();
         let back = db.load_settings().unwrap();
         assert_eq!(back.ui_language, UiLanguage::EnUs);
@@ -5136,6 +6226,7 @@ mod tests {
         assert_eq!(back.terminal_font_size, 18);
         assert_eq!(back.terminal_command, "kitty");
         assert_eq!(back.agent_order, ["pi", "qoder", "codex"]);
+        assert_eq!(back.agent_hidden, ["kimi"]);
         let mut bad = d;
         bad.telemetry_enabled = true;
         assert!(matches!(

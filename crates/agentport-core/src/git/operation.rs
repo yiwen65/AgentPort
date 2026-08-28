@@ -489,6 +489,8 @@ mod tests {
             root_path: "/tmp/journal".into(),
             git_root_path: Some("/tmp/journal".into()),
             created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
         })
         .unwrap();
         let now = Utc::now();

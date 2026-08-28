@@ -331,47 +331,6 @@ fn login_shell_path_entries() -> Vec<PathBuf> {
 
 const LOGIN_ENV_MARKER: &str = "__AGENTPORT_ENV__=";
 
-fn launch_environment_name_is_safe(name: &str) -> bool {
-    name.starts_with("LC_")
-        || matches!(
-            name,
-            "HOME"
-                | "USER"
-                | "LOGNAME"
-                | "SHELL"
-                | "TMPDIR"
-                | "LANG"
-                | "EDITOR"
-                | "VISUAL"
-                | "PAGER"
-                | "MANPAGER"
-                | "BROWSER"
-                | "SSH_AUTH_SOCK"
-                | "XDG_CONFIG_HOME"
-                | "XDG_CACHE_HOME"
-                | "XDG_DATA_HOME"
-                | "XDG_STATE_HOME"
-                | "CARGO_HOME"
-                | "RUSTUP_HOME"
-                | "GOPATH"
-                | "GOMODCACHE"
-                | "NVM_DIR"
-                | "FNM_DIR"
-                | "PNPM_HOME"
-                | "BUN_INSTALL"
-                | "VOLTA_HOME"
-                | "PYENV_ROOT"
-                | "PIPX_HOME"
-                | "CONDA_PREFIX"
-                | "CONDA_DEFAULT_ENV"
-                | "VIRTUAL_ENV"
-                | "DOCKER_HOST"
-                | "KUBECONFIG"
-                | "CLICOLOR"
-                | "CLICOLOR_FORCE"
-        )
-}
-
 fn parse_login_shell_environment(output: &str) -> Vec<(String, String)> {
     let mut values = BTreeMap::new();
     for payload in output
@@ -381,23 +340,19 @@ fn parse_login_shell_environment(output: &str) -> Vec<(String, String)> {
         let Some((name, value)) = payload.split_once('=') else {
             continue;
         };
-        if launch_environment_name_is_safe(name) {
-            values.insert(name.to_string(), value.to_string());
-        }
+        values.insert(name.to_string(), value.to_string());
     }
     values.into_iter().collect()
 }
 
-/// Non-secret terminal context sourced from the user's interactive login
-/// shell. Values that commonly carry credentials (API keys, tokens and proxy
-/// URLs) remain opt-in through preset environment names or Secret references.
+/// Full launch environment sourced from the process and the user's
+/// interactive login shell. No variable filtering: session Agents inherit
+/// the same environment a terminal would provide, including proxy variables
+/// (HTTPS_PROXY et al. — GUI apps do not read macOS system proxy settings)
+/// and any credentials the user exports in shell rc files.
 pub fn login_shell_launch_environment() -> Vec<(String, String)> {
     let mut values = BTreeMap::new();
-    for (name, value) in std::env::vars() {
-        if launch_environment_name_is_safe(&name) {
-            values.insert(name, value);
-        }
-    }
+    values.extend(std::env::vars());
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     let script =
@@ -648,6 +603,15 @@ pub fn probe_agent(t: AgentType, confirmed_path: Option<&Path>) -> ProbeOutcome 
 }
 
 pub fn probe_all() -> Vec<ProbeOutcome> {
+    probe_all_with_confirmed_paths(&[])
+}
+
+/// Probe every adapter while retaining explicit executable selections for the
+/// listed agent types. Environment discovery is shared across the batch so a
+/// startup refresh does not invoke the login shell once per adapter.
+pub fn probe_all_with_confirmed_paths(
+    confirmed_paths: &[(AgentType, PathBuf)],
+) -> Vec<ProbeOutcome> {
     let process_paths = process_path_entries();
     let login_paths = login_shell_path_entries();
     let discovery_paths = discovery_dirs();
@@ -656,9 +620,12 @@ pub fn probe_all() -> Vec<ProbeOutcome> {
         .iter()
         .copied()
         .map(|t| {
+            let confirmed_path = confirmed_paths
+                .iter()
+                .find_map(|(agent, path)| (*agent == t).then_some(path.as_path()));
             probe_agent_with_candidates(
                 t,
-                None,
+                confirmed_path,
                 find_candidates_from_paths(t, &process_paths, &login_paths, &discovery_paths),
                 &path_env,
             )
@@ -750,7 +717,7 @@ mod tests {
     const CLAUDE: &str = "/Users/w/.local/bin/claude";
 
     #[test]
-    fn login_shell_launch_env_keeps_terminal_context_without_ambient_secrets() {
+    fn login_shell_launch_env_keeps_full_shell_environment() {
         let parsed = parse_login_shell_environment(
             "__AGENTPORT_ENV__=EDITOR=nvim\n\
              __AGENTPORT_ENV__=SSH_AUTH_SOCK=/tmp/agent.sock\n\
@@ -763,8 +730,13 @@ mod tests {
         assert!(parsed
             .iter()
             .any(|(name, value)| name == "SSH_AUTH_SOCK" && value == "/tmp/agent.sock"));
-        assert!(!parsed.iter().any(|(name, _)| name == "OPENAI_API_KEY"));
-        assert!(!parsed.iter().any(|(name, _)| name == "HTTP_PROXY"));
+        // No filtering: proxy URLs and credentials from the login shell are
+        // inherited so Agents see the same environment as a terminal.
+        assert!(parsed
+            .iter()
+            .any(|(name, value)| name == "OPENAI_API_KEY" && value == "secret"));
+        assert!(parsed.iter().any(|(name, value)| name == "HTTP_PROXY"
+            && value == "http://user:password@proxy"));
     }
     const CODEX: &str = "/Users/w/.local/bin/codex";
     const KIMI: &str = "/Users/w/.kimi-code/bin/kimi";

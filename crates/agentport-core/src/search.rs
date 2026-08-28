@@ -47,6 +47,10 @@ const FOCUSED_SEARCH_MIN_OVERLAP_BYTES: usize = 1024;
 
 const STATE_OK: &str = "ok";
 const STATE_REBUILD_NEEDED: &str = "rebuild_needed";
+/// Independent app-level migration marker. This deliberately does not share
+/// search-index state: the index may be rebuilt or force-purged later without
+/// making the one-time upgrade destructive again on every boot.
+const LEGACY_TRANSCRIPT_PURGE_MARKER: &str = "migration:legacy_transcript_purge:v1";
 
 /// Kept separate from META_DDL so rebuild_all can drop + recreate only the FTS
 /// table. Trigram tokenizer requires SQLite >= 3.34; rusqlite's bundled SQLite
@@ -127,6 +131,46 @@ pub struct SearchIndex<'a> {
 }
 
 impl<'a> SearchIndex<'a> {
+    /// Run the legacy transcript-body purge once for this application database.
+    ///
+    /// The body cleanup and completion marker share one SQLite transaction, so
+    /// any failure leaves the migration unmarked and fully retryable. The
+    /// marker is checked inside that transaction before any destructive work.
+    pub fn purge_legacy_transcript_bodies_once(&self) -> Result<()> {
+        let mut conn = self.db.conn().lock().unwrap();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let completed: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_meta WHERE key=?1)",
+            params![LEGACY_TRANSCRIPT_PURGE_MARKER],
+            |row| row.get(0),
+        )?;
+        if completed {
+            tx.commit()?;
+            return Ok(());
+        }
+
+        purge_transcript_bodies_in(&tx)?;
+        // Keep this as the transaction's final write: observing the marker
+        // always implies every destructive cleanup statement committed too.
+        tx.execute(
+            "INSERT INTO app_meta(key,value) VALUES(?1,'complete')",
+            params![LEGACY_TRANSCRIPT_PURGE_MARKER],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Explicitly remove every persisted transcript body from the legacy FTS
+    /// cache. Unlike `purge_legacy_transcript_bodies_once`, this always purges;
+    /// rebuild flows rely on that force-cleaning behavior.
+    pub fn purge_transcript_bodies(&self) -> Result<()> {
+        let mut conn = self.db.conn().lock().unwrap();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        purge_transcript_bodies_in(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Create the FTS5 table (trigram tokenizer) if absent; check format
     /// version; schedule rebuild when mismatched/corrupt.
     pub fn open(&self) -> Result<()> {
@@ -494,6 +538,19 @@ impl<'a> SearchIndex<'a> {
 // ---------------------------------------------------------------------------
 // internals
 // ---------------------------------------------------------------------------
+
+fn purge_transcript_bodies_in(conn: &Connection) -> Result<()> {
+    conn.execute_batch(META_DDL)?;
+    conn.execute_batch("DROP TABLE IF EXISTS search_index")?;
+    conn.execute_batch(FTS_DDL)?;
+    conn.execute_batch(
+        "DELETE FROM search_index_chunks;
+         DELETE FROM search_index_meta;",
+    )?;
+    set_state(conn, "format_version", &INDEX_FORMAT_VERSION.to_string())?;
+    set_state(conn, "state", STATE_OK)?;
+    Ok(())
+}
 
 /// Scan a persisted terminal log in bounded windows. A terminal transcript can
 /// contain a full-screen TUI redraw as one enormous carriage-return-delimited
@@ -916,6 +973,8 @@ mod tests {
                     root_path: format!("/tmp/{id}"),
                     git_root_path: None,
                     created_at: Utc::now(),
+                    pinned: false,
+                    sort_order: 0,
                 })
                 .unwrap();
         }
@@ -944,6 +1003,7 @@ mod tests {
                     permission_mode: PermissionMode::Native,
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    pinned_at: None,
                     archived_at: None,
                 })
                 .unwrap();
@@ -1089,6 +1149,162 @@ mod tests {
             )
             .unwrap();
         assert_eq!(min_off, 0);
+    }
+
+    #[test]
+    fn purge_transcript_bodies_removes_legacy_fts_and_progress_rows() {
+        let f = fixture();
+        f.add_project("prj_1", "demo");
+        let log = f.add_session("ses_1", "prj_1", "demo session");
+        let idx = f.index();
+        idx.open().unwrap();
+        std::fs::write(&log, b"persisted transcript body\n").unwrap();
+        idx.index_session_log("ses_1", Path::new(&log), &[])
+            .unwrap();
+
+        idx.purge_transcript_bodies().unwrap();
+        let conn = f.db.conn().lock().unwrap();
+        assert!(
+            probe_index(&conn),
+            "fresh empty FTS table must be queryable"
+        );
+        let chunk_rows: i64 = conn
+            .query_row("SELECT count(*) FROM search_index_chunks", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let meta_rows: i64 = conn
+            .query_row("SELECT count(*) FROM search_index_meta", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!((chunk_rows, meta_rows), (0, 0));
+        drop(conn);
+        assert_eq!(idx.index_state().unwrap(), IndexState::Ok);
+    }
+
+    #[test]
+    fn legacy_transcript_purge_runs_once_but_force_purge_still_runs() {
+        let f = fixture();
+        f.add_project("prj_1", "demo");
+        let log = f.add_session("ses_1", "prj_1", "demo session");
+        let idx = f.index();
+        idx.open().unwrap();
+        std::fs::write(&log, b"first legacy transcript body\n").unwrap();
+        idx.index_session_log("ses_1", Path::new(&log), &[])
+            .unwrap();
+
+        idx.purge_legacy_transcript_bodies_once().unwrap();
+        let changes_after_migration = f.db.conn().lock().unwrap().total_changes();
+        idx.purge_legacy_transcript_bodies_once().unwrap();
+        assert_eq!(
+            f.db.conn().lock().unwrap().total_changes(),
+            changes_after_migration,
+            "completed migration must not perform another SQLite write",
+        );
+        {
+            let conn = f.db.conn().lock().unwrap();
+            let rows: i64 = conn
+                .query_row("SELECT count(*) FROM search_index_chunks", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            let marker: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM app_meta WHERE key=?1",
+                    params![LEGACY_TRANSCRIPT_PURGE_MARKER],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!((rows, marker), (0, 1));
+        }
+
+        // Simulate derived data created after migration. A repeated boot-time
+        // call must not destroy it once the independent marker is present.
+        idx.index_session_log("ses_1", Path::new(&log), &[])
+            .unwrap();
+        idx.purge_legacy_transcript_bodies_once().unwrap();
+        {
+            let conn = f.db.conn().lock().unwrap();
+            let rows: i64 = conn
+                .query_row("SELECT count(*) FROM search_index_chunks", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert!(rows > 0, "completed migration must be a destructive no-op");
+        }
+
+        // Rebuild callers retain an explicit force-cleaning API even after the
+        // one-time migration has completed.
+        idx.purge_transcript_bodies().unwrap();
+        let conn = f.db.conn().lock().unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM search_index_chunks", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    #[test]
+    fn legacy_transcript_purge_marker_failure_rolls_back_and_retries() {
+        let f = fixture();
+        f.add_project("prj_1", "demo");
+        let log = f.add_session("ses_1", "prj_1", "demo session");
+        let idx = f.index();
+        idx.open().unwrap();
+        std::fs::write(&log, b"retryable legacy transcript body\n").unwrap();
+        idx.index_session_log("ses_1", Path::new(&log), &[])
+            .unwrap();
+        {
+            let conn = f.db.conn().lock().unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER fail_legacy_transcript_purge_marker
+                 BEFORE INSERT ON app_meta
+                 WHEN NEW.key = 'migration:legacy_transcript_purge:v1'
+                 BEGIN
+                   SELECT RAISE(FAIL, 'injected marker failure');
+                 END;",
+            )
+            .unwrap();
+        }
+
+        assert!(idx.purge_legacy_transcript_bodies_once().is_err());
+        {
+            let conn = f.db.conn().lock().unwrap();
+            let rows: i64 = conn
+                .query_row("SELECT count(*) FROM search_index_chunks", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            let marker: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM app_meta WHERE key=?1",
+                    params![LEGACY_TRANSCRIPT_PURGE_MARKER],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(rows > 0, "cleanup must roll back with marker failure");
+            assert_eq!(marker, 0, "failed migration must remain retryable");
+            conn.execute_batch("DROP TRIGGER fail_legacy_transcript_purge_marker")
+                .unwrap();
+        }
+
+        idx.purge_legacy_transcript_bodies_once().unwrap();
+        let conn = f.db.conn().lock().unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM search_index_chunks", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let marker: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM app_meta WHERE key=?1",
+                params![LEGACY_TRANSCRIPT_PURGE_MARKER],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!((rows, marker), (0, 1));
     }
 
     // 2b. 二进制占比高的块不索引，但 high_water 照样前进

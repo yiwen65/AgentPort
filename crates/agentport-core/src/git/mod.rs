@@ -100,8 +100,16 @@ pub struct WorktreeDeletePreflight {
     pub ignored_sample: Vec<String>,
     pub session_count: usize,
     pub active_session_count: usize,
+    /// True when the project's main checkout no longer exists, so no Git fact
+    /// about this Worktree (health, dirtiness, prune) can be verified anymore.
+    pub repository_missing: bool,
     pub can_remove: bool,
     pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WorktreeRemovalOutcome {
+    pub cleanup_warnings: usize,
 }
 
 pub struct GitRepo {
@@ -225,11 +233,18 @@ impl GitRepo {
         Ok(())
     }
 
-    /// `git worktree remove <path>` — refuses internally when dirty (git itself
-    /// errors); we pre-check dirty and return CoreError::Blocked with the summary.
-    pub fn worktree_remove(&self, path: &Path) -> Result<()> {
+    /// Explicit Worktree deletion is destructive by definition: remove local
+    /// changes, untracked files, and ignored files instead of making users
+    /// clean the directory manually first.
+    pub fn worktree_remove_force(&self, path: &Path) -> Result<()> {
         let p = path.to_string_lossy().into_owned();
-        run_git(Some(&self.root), &["worktree", "remove", &p])?;
+        run_git(Some(&self.root), &["worktree", "remove", "--force", &p])?;
+        Ok(())
+    }
+
+    pub fn worktree_unlock(&self, path: &Path) -> Result<()> {
+        let p = path.to_string_lossy().into_owned();
+        run_git(Some(&self.root), &["worktree", "unlock", &p])?;
         Ok(())
     }
 
@@ -673,6 +688,17 @@ impl<'a> WorktreeManager<'a> {
         Ok(wt)
     }
 
+    /// True when the project's main checkout is gone. Every Git fact about a
+    /// Worktree (health, dirtiness, prune) is derived from that repository, so
+    /// none of it can be verified or cleaned once the checkout disappears.
+    fn repository_missing(&self, project_id: &str) -> Result<bool> {
+        let project = self.db.get_project(project_id)?;
+        Ok(match project.git_root_path.as_deref() {
+            Some(root) if !root.trim().is_empty() => !Path::new(root).is_dir(),
+            _ => false,
+        })
+    }
+
     /// Recompute clean/dirty/missing/locked and persist it.
     pub fn refresh_health(&self, worktree_id: &str) -> Result<WorktreeHealth> {
         let w = self.db.get_worktree(worktree_id)?;
@@ -699,10 +725,18 @@ impl<'a> WorktreeManager<'a> {
     /// Re-read all deletion-sensitive facts immediately before confirmation.
     /// This is intentionally richer than the sidebar's cached health badge.
     pub fn deletion_preflight(&self, worktree_id: &str) -> Result<WorktreeDeletePreflight> {
-        let health = self.refresh_health(worktree_id)?;
         let worktree = self.db.get_worktree(worktree_id)?;
-        let summary = if Path::new(&worktree.path).is_dir() {
-            self.dirty_summary(worktree_id)?
+        let repository_missing = self.repository_missing(&worktree.project_id)?;
+        let health = if repository_missing && Path::new(&worktree.path).is_dir() {
+            worktree.health
+        } else {
+            // A broken Git status probe must not turn into a deletion blocker.
+            // The destructive command removes the owned directory directly as
+            // a fallback after attempting Git's own cleanup.
+            self.refresh_health(worktree_id).unwrap_or(worktree.health)
+        };
+        let summary = if !repository_missing && Path::new(&worktree.path).is_dir() {
+            self.dirty_summary(worktree_id).unwrap_or_default()
         } else {
             DirtySummary::default()
         };
@@ -720,8 +754,9 @@ impl<'a> WorktreeManager<'a> {
         if health == WorktreeHealth::Locked {
             blockers.push("locked".into());
         }
-        let can_remove = blockers.is_empty()
-            && matches!(health, WorktreeHealth::Clean | WorktreeHealth::Missing);
+        // These are cleanup facts shown in the destructive confirmation, not
+        // reasons to reject an explicit deletion request.
+        let can_remove = true;
         Ok(WorktreeDeletePreflight {
             worktree_id: worktree.id,
             branch: worktree.branch,
@@ -734,75 +769,84 @@ impl<'a> WorktreeManager<'a> {
             ignored_sample: summary.ignored_sample,
             session_count,
             active_session_count,
+            repository_missing,
             can_remove,
             blockers,
         })
     }
 
-    /// Safe delete (PRD 3.5 failure C): dirty/missing handling — dirty BLOCKS by
-    /// default (no force button in P0/P1/P2); on success run `worktree remove`
-    /// + prune, delete the db record, and verify the main checkout is untouched.
-    pub fn remove(&self, worktree_id: &str) -> Result<()> {
-        let preflight = self.deletion_preflight(worktree_id)?;
-        let health = preflight.health;
+    /// Permanently delete an AgentPort-owned Worktree. Dirtiness, ignored
+    /// files, Git locks, and Session references are cleanup inputs rather than
+    /// blockers once the user confirms the destructive action.
+    pub fn remove(&self, worktree_id: &str) -> Result<WorktreeRemovalOutcome> {
+        self.db.begin_worktree_removal(worktree_id)?;
         let w = self.db.get_worktree(worktree_id)?;
-        if preflight.session_count > 0 {
-            return Err(CoreError::Blocked(format!(
-                "worktree is used by {} session(s), including {} active session(s); archive does not remove the dependency",
-                preflight.session_count, preflight.active_session_count
-            )));
-        }
-        let project = self.db.get_project(&w.project_id)?;
-        let git_root = project
-            .git_root_path
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .ok_or_else(|| {
-                CoreError::Validation(format!(
-                    "not a git repo: project '{}' has no git root",
-                    project.name
-                ))
-            })?;
-        // Operate from the main repo root; the worktree path is only ever a
-        // target argument, so the main checkout is never touched.
-        let repo = GitRepo::discover(Path::new(git_root))?;
-        match health {
-            WorktreeHealth::Dirty => Err(CoreError::Blocked(format!(
-                "worktree contains local data ({} modified, {} staged, {} untracked, {} ignored); \
-                     commit, move, or clean it up before removing: {}",
-                preflight.modified,
-                preflight.staged,
-                preflight.untracked,
-                preflight.ignored,
-                w.path
-            ))),
-            WorktreeHealth::Locked => Err(CoreError::Blocked(format!(
-                "worktree is locked; unlock it outside AgentPort first: {}",
-                w.path
-            ))),
-            WorktreeHealth::Missing => self
-                .db
-                .delete_worktree_after(worktree_id, || {
-                    if Path::new(&w.path).is_dir() {
-                        return Err(CoreError::Blocked(format!(
-                            "worktree path reappeared after the safety check; retry removal: {}",
-                            w.path
-                        )));
+        let path = Path::new(&w.path);
+        let owned_root = std::fs::canonicalize(self.paths.worktrees_root())
+            .unwrap_or_else(|_| self.paths.worktrees_root());
+        // Worktree paths are canonicalized when persisted. Authorize the saved
+        // path itself without following a replacement symlink, and require the
+        // exact `<root>/<project>/<task>` shape.
+        let is_owned = path
+            .strip_prefix(&owned_root)
+            .ok()
+            .is_some_and(|relative| relative.components().count() == 2);
+        let path_is_symlink = std::fs::symlink_metadata(path)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false);
+        let cleanup_path = path;
+        let mut cleanup_errors = Vec::new();
+
+        if is_owned {
+            let project = self.db.get_project(&w.project_id)?;
+            if let Some(git_root) = project
+                .git_root_path
+                .as_deref()
+                .filter(|root| !root.trim().is_empty())
+            {
+                if let Ok(repo) = GitRepo::discover(Path::new(git_root)) {
+                    if !path_is_symlink {
+                        // Unlock is idempotent for the deletion goal; Git
+                        // reports an error when the Worktree was not locked.
+                        let _ = repo.worktree_unlock(cleanup_path);
+                        if let Err(error) = repo.worktree_remove_force(cleanup_path) {
+                            cleanup_errors.push(error.to_string());
+                        }
                     }
-                    repo.worktree_prune()
-                }),
-            WorktreeHealth::Clean => self.db.delete_worktree_after(worktree_id, || {
-                let latest = repo.status(Path::new(&w.path))?;
-                if !latest.raw.trim().is_empty() || latest.ignored > 0 {
-                    return Err(CoreError::Blocked(format!(
-                        "worktree changed after the safety check ({} modified, {} staged, {} untracked, {} ignored); retry after reviewing it",
-                        latest.modified, latest.staged, latest.untracked, latest.ignored
-                    )));
+                    if let Err(error) = repo.worktree_prune() {
+                        cleanup_errors.push(error.to_string());
+                    }
                 }
-                repo.worktree_remove(Path::new(&w.path))?;
-                repo.worktree_prune()
-            }),
+            }
+
+            // Git may be unavailable or its metadata may be damaged. Remove
+            // the owned directory directly so those conditions cannot trap the
+            // record in AgentPort.
+            if cleanup_path.exists() {
+                if let Err(error) = remove_owned_path(cleanup_path) {
+                    cleanup_errors.push(error.to_string());
+                }
+            }
+        } else {
+            cleanup_errors.push(format!(
+                "refused filesystem cleanup outside AgentPort's Worktree root: {}",
+                path.display()
+            ));
         }
+
+        // Database cleanup is authoritative and also purges any Session rows
+        // that referenced this Worktree, so metadata never blocks deletion.
+        self.db.delete_worktree_after(worktree_id, || Ok(()))?;
+        if !cleanup_errors.is_empty() {
+            tracing::warn!(
+                worktree = %worktree_id,
+                errors = ?cleanup_errors,
+                "Worktree record deleted with incomplete filesystem cleanup"
+            );
+        }
+        Ok(WorktreeRemovalOutcome {
+            cleanup_warnings: cleanup_errors.len(),
+        })
     }
 
     pub fn dirty_summary(&self, worktree_id: &str) -> Result<DirtySummary> {
@@ -816,6 +860,50 @@ impl<'a> WorktreeManager<'a> {
 /// Worktree task names may be non-English. Keep letters and numbers from all
 /// scripts while retaining a conservative set of separators for Git refs and
 /// directory components.
+fn remove_owned_path(path: &Path) -> std::io::Result<()> {
+    let remove = || {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            std::fs::remove_file(path)
+        } else {
+            std::fs::remove_dir_all(path)
+        }
+    };
+    match remove() {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            make_owned_tree_writable(path);
+            remove()
+        }
+    }
+}
+
+/// Best-effort repair for read-only files inside an already validated,
+/// AgentPort-owned Worktree. Symlinks are never followed.
+fn make_owned_tree_writable(path: &Path) {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if metadata.file_type().is_symlink() {
+        return;
+    }
+    if metadata.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                make_owned_tree_writable(&entry.path());
+            }
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = metadata.permissions();
+        let owner_bits = if metadata.is_dir() { 0o700 } else { 0o600 };
+        permissions.set_mode(permissions.mode() | owner_bits);
+        let _ = std::fs::set_permissions(path, permissions);
+    }
+}
+
 fn worktree_task_slug(input: &str) -> String {
     let mut slug = String::with_capacity(input.len());
     let mut last_dash = false;
@@ -1162,6 +1250,8 @@ mod tests {
             root_path: repo_dir.to_string_lossy().into_owned(),
             git_root_path: Some(repo_dir.to_string_lossy().into_owned()),
             created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
         })
         .unwrap();
         Fixture {
@@ -1290,7 +1380,7 @@ mod tests {
     }
 
     #[test]
-    fn dirty_blocks_remove_until_clean() {
+    fn dirty_files_are_cleaned_during_remove() {
         let fx = fixture();
         let mgr = mgr(&fx);
         let repo = GitRepo::discover(&fx.repo_dir).unwrap();
@@ -1303,60 +1393,32 @@ mod tests {
             .unwrap();
         let dir = PathBuf::from(&wt.path);
         let canon = std::fs::canonicalize(&dir).unwrap();
-
-        // Unstaged modification counts as modified.
         std::fs::write(dir.join("file.txt"), "changed\n").unwrap();
-        let s = mgr.dirty_summary(&wt.id).unwrap();
-        assert_eq!((s.modified, s.staged, s.untracked), (1, 0, 0));
-
-        // Staging moves it to staged; an untracked file counts as untracked.
         git(&dir, &["add", "."]);
         std::fs::write(dir.join("untracked.txt"), "oops\n").unwrap();
-        assert_eq!(mgr.refresh_health(&wt.id).unwrap(), WorktreeHealth::Dirty);
-        let s = mgr.dirty_summary(&wt.id).unwrap();
-        assert_eq!((s.modified, s.staged, s.untracked), (0, 1, 1));
-        assert!(s.raw.contains("untracked.txt"));
 
-        // Dirty BLOCKS removal — there is no force path.
-        let err = mgr.remove(&wt.id).unwrap_err();
-        match err {
-            CoreError::Blocked(msg) => {
-                assert!(msg.contains("1 staged"), "{msg}");
-                assert!(msg.contains("1 untracked"), "{msg}");
-            }
-            other => panic!("expected Blocked, got {other}"),
-        }
-        assert!(dir.is_dir());
-        assert!(repo
-            .worktree_list()
-            .unwrap()
-            .iter()
-            .any(|i| i.path == canon));
-        assert!(fx.db.get_worktree(&wt.id).is_ok());
+        let preflight = mgr.deletion_preflight(&wt.id).unwrap();
+        assert_eq!(preflight.health, WorktreeHealth::Dirty);
+        assert!(preflight.can_remove);
+        assert!(preflight.blockers.contains(&"uncommitted_changes".into()));
 
-        // Clean up inside the worktree; removal then succeeds.
-        git(&dir, &["reset", "--hard", "HEAD"]);
-        std::fs::remove_file(dir.join("untracked.txt")).unwrap();
-        assert_eq!(mgr.refresh_health(&wt.id).unwrap(), WorktreeHealth::Clean);
         mgr.remove(&wt.id).unwrap();
         assert!(!dir.exists());
         assert!(!repo
             .worktree_list()
             .unwrap()
             .iter()
-            .any(|i| i.path == canon));
+            .any(|info| info.path == canon));
         assert!(matches!(
             fx.db.get_worktree(&wt.id),
             Err(CoreError::NotFound(_))
         ));
-
-        // Main checkout untouched: identical bytes and HEAD.
         assert_eq!(std::fs::read(&main_file).unwrap(), bytes_before);
         assert_eq!(repo.head_commit().unwrap(), head_before);
     }
 
     #[test]
-    fn ignored_local_files_block_removal_and_are_reported_by_preflight() {
+    fn ignored_local_files_are_reported_then_cleaned() {
         let fx = fixture();
         let manager = mgr(&fx);
         std::fs::write(
@@ -1377,20 +1439,18 @@ mod tests {
             preflight.ignored_sample,
             vec![".agentport-local-secret".to_string()]
         );
-        assert!(!preflight.can_remove);
+        assert!(preflight.can_remove);
         assert!(preflight
             .blockers
             .iter()
             .any(|blocker| blocker == "ignored_local_files"));
 
-        let error = manager.remove(&wt.id).unwrap_err();
-        assert!(matches!(error, CoreError::Blocked(_)), "{error}");
-        assert!(error.to_string().contains("1 ignored"), "{error}");
-        assert!(local_file.exists());
-        assert!(fx.db.get_worktree(&wt.id).is_ok());
-
-        std::fs::remove_file(local_file).unwrap();
         manager.remove(&wt.id).unwrap();
+        assert!(!local_file.exists());
+        assert!(matches!(
+            fx.db.get_worktree(&wt.id),
+            Err(CoreError::NotFound(_))
+        ));
     }
 
     #[test]
@@ -1497,8 +1557,68 @@ mod tests {
             .any(|i| i.path == Path::new(&wt.path)));
     }
 
+    /// The user deleted the whole project checkout from disk while the managed
+    /// Worktree directory still exists. Git cleanup is unavailable, so direct
+    /// owned-directory cleanup must complete the confirmed deletion.
     #[test]
-    fn locked_blocks_remove_until_unlock() {
+    fn remove_worktree_when_repository_is_gone_deletes_owned_directory() {
+        let fx = fixture();
+        let mgr = mgr(&fx);
+        let wt = mgr
+            .create(&fx.project_id, "repo gone task", None, None)
+            .unwrap();
+        let dir = PathBuf::from(&wt.path);
+        std::fs::write(dir.join(".env"), "mock-only-value\n").unwrap();
+
+        // External deletion of the main checkout, exactly like a user
+        // removing the project folder in Finder.
+        std::fs::remove_dir_all(&fx.repo_dir).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.join(".env"), std::fs::Permissions::from_mode(0o400))
+                .unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        }
+
+        let preflight = mgr.deletion_preflight(&wt.id).unwrap();
+        assert!(preflight.repository_missing);
+        assert!(preflight.can_remove, "{:?}", preflight.blockers);
+
+        mgr.remove(&wt.id).unwrap();
+        assert!(matches!(
+            fx.db.get_worktree(&wt.id),
+            Err(CoreError::NotFound(_))
+        ));
+        assert!(!dir.exists());
+    }
+
+    /// Both the Worktree directory and the main checkout are gone: removal is
+    /// a pure stale-record cleanup and must not require a Git repository.
+    #[test]
+    fn remove_missing_worktree_when_repository_is_gone() {
+        let fx = fixture();
+        let mgr = mgr(&fx);
+        let wt = mgr
+            .create(&fx.project_id, "all gone task", None, None)
+            .unwrap();
+        std::fs::remove_dir_all(&wt.path).unwrap();
+        std::fs::remove_dir_all(&fx.repo_dir).unwrap();
+
+        let preflight = mgr.deletion_preflight(&wt.id).unwrap();
+        assert!(preflight.repository_missing);
+        assert_eq!(preflight.health, WorktreeHealth::Missing);
+        assert!(preflight.can_remove, "{:?}", preflight.blockers);
+
+        mgr.remove(&wt.id).unwrap();
+        assert!(matches!(
+            fx.db.get_worktree(&wt.id),
+            Err(CoreError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn locked_worktree_is_unlocked_and_removed() {
         let fx = fixture();
         let mgr = mgr(&fx);
 
@@ -1507,16 +1627,71 @@ mod tests {
             .unwrap();
         git(&fx.repo_dir, &["worktree", "lock", &wt.path]);
         assert_eq!(mgr.refresh_health(&wt.id).unwrap(), WorktreeHealth::Locked);
+        assert!(mgr.deletion_preflight(&wt.id).unwrap().can_remove);
 
-        let err = mgr.remove(&wt.id).unwrap_err();
-        assert!(matches!(err, CoreError::Blocked(_)), "{err}");
-        assert!(Path::new(&wt.path).is_dir());
-        assert!(fx.db.get_worktree(&wt.id).is_ok());
-
-        git(&fx.repo_dir, &["worktree", "unlock", &wt.path]);
-        assert_eq!(mgr.refresh_health(&wt.id).unwrap(), WorktreeHealth::Clean);
         mgr.remove(&wt.id).unwrap();
         assert!(!Path::new(&wt.path).exists());
+        assert!(matches!(
+            fx.db.get_worktree(&wt.id),
+            Err(CoreError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn malformed_root_worktree_record_never_deletes_the_managed_root() {
+        let fx = fixture();
+        let root = fx.paths.worktrees_root();
+        std::fs::create_dir_all(root.join("keep/project-task")).unwrap();
+        let sentinel = root.join("keep/project-task/sentinel.txt");
+        std::fs::write(&sentinel, "keep\n").unwrap();
+        let worktree = Worktree {
+            id: "wt_malformed_root".into(),
+            project_id: fx.project_id.clone(),
+            branch: "agent/malformed".into(),
+            base_commit: "abc123".into(),
+            base_ref: None,
+            path: root.to_string_lossy().into_owned(),
+            health: WorktreeHealth::Dirty,
+            created_at: Utc::now(),
+        };
+        fx.db.insert_worktree(&worktree).unwrap();
+
+        mgr(&fx).remove(&worktree.id).unwrap();
+        assert!(sentinel.is_file());
+        assert!(matches!(
+            fx.db.get_worktree(&worktree.id),
+            Err(CoreError::NotFound(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_symlink_never_deletes_a_sibling_worktree() {
+        let fx = fixture();
+        let project_root = fx.paths.worktrees_root().join("main-api");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project_root = std::fs::canonicalize(project_root).unwrap();
+        let sibling = project_root.join("sibling");
+        let victim = project_root.join("victim");
+        std::fs::create_dir_all(&sibling).unwrap();
+        let sentinel = sibling.join("sentinel.txt");
+        std::fs::write(&sentinel, "keep\n").unwrap();
+        std::os::unix::fs::symlink(&sibling, &victim).unwrap();
+        let worktree = Worktree {
+            id: "wt_replaced_symlink".into(),
+            project_id: fx.project_id.clone(),
+            branch: "agent/replaced".into(),
+            base_commit: "abc123".into(),
+            base_ref: None,
+            path: victim.to_string_lossy().into_owned(),
+            health: WorktreeHealth::Dirty,
+            created_at: Utc::now(),
+        };
+        fx.db.insert_worktree(&worktree).unwrap();
+
+        mgr(&fx).remove(&worktree.id).unwrap();
+        assert!(!victim.exists());
+        assert!(sentinel.is_file());
     }
 
     #[test]

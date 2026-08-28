@@ -52,6 +52,8 @@ fn worktree_context_rejects_cross_project_association() {
         root_path: other.root().to_string_lossy().into_owned(),
         git_root_path: Some(other.root().to_string_lossy().into_owned()),
         created_at: Utc::now(),
+        pinned: false,
+        sort_order: 0,
     })
     .unwrap();
 
@@ -259,6 +261,7 @@ fn session_locator_resolves_its_exact_worktree_and_only_live_sessions_warn() {
         permission_mode: PermissionMode::Native,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        pinned_at: None,
         archived_at: None,
     };
     db.insert_session(&session(

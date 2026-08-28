@@ -7,16 +7,17 @@
 //! else gets a generic `Error` and the connection is closed (no detail about
 //! which part failed — the token's correctness is never leaked).
 
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use agentport_core::models::{AgentTransport, LogCursor};
-use agentport_core::protocol::{read_frame, write_frame, ClientFrame, HostFrame, PROTOCOL_VERSION};
+use agentport_core::protocol::{
+    encode_frame, read_frame, write_frame, ClientFrame, HostFrame, PROTOCOL_VERSION,
+};
 use chrono::Utc;
 use nix::sys::signal::Signal;
 use portable_pty::PtySize;
@@ -44,8 +45,10 @@ const CLIENT_WRITER_POLL: Duration = Duration::from_millis(100);
 /// eviction closes the socket so the reader and writer threads for that one
 /// client both wake and exit. Ordinary removal lets already-enqueued terminal
 /// replies drain in order before the channel closes.
+pub(crate) type OutboundFrame = Arc<Vec<u8>>;
+
 pub(crate) struct ClientSink {
-    pub(crate) tx: mpsc::SyncSender<HostFrame>,
+    pub(crate) tx: mpsc::SyncSender<OutboundFrame>,
     pub(crate) subscribe_output: bool,
     close_stream: UnixStream,
     closed: Arc<AtomicBool>,
@@ -186,7 +189,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
         Ok(s) => s,
         Err(_) => return,
     };
-    let (frame_tx, frame_rx) = mpsc::sync_channel::<HostFrame>(CLIENT_OUTBOUND_QUEUE_CAPACITY);
+    let (frame_tx, frame_rx) = mpsc::sync_channel::<OutboundFrame>(CLIENT_OUTBOUND_QUEUE_CAPACITY);
     let closed = Arc::new(AtomicBool::new(false));
 
     // The PTY producer holds this same lock across append + position update +
@@ -234,7 +237,10 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
             return;
         }
         for frame in initial_frames {
-            if frame_tx.try_send(frame).is_err() {
+            let Ok(encoded) = encode_frame(&frame) else {
+                return;
+            };
+            if frame_tx.try_send(Arc::new(encoded)).is_err() {
                 return;
             }
         }
@@ -429,10 +435,18 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
 fn queue_client_frame(
     shared: &Shared,
     id: u64,
-    tx: &mpsc::SyncSender<HostFrame>,
+    tx: &mpsc::SyncSender<OutboundFrame>,
     frame: HostFrame,
 ) -> bool {
-    match tx.try_send(frame) {
+    let encoded = match encode_frame(&frame) {
+        Ok(encoded) => Arc::new(encoded),
+        Err(error) => {
+            warn!(client_id = id, %error, "could not encode client frame");
+            disconnect_client(shared, id);
+            return false;
+        }
+    };
+    match tx.try_send(encoded) {
         Ok(()) => true,
         Err(mpsc::TrySendError::Full(_)) => {
             warn!(client_id = id, "dropping client: outbound queue full");
@@ -505,9 +519,13 @@ fn build_replay_frames(
     tail_bytes: u64,
     high_water: &LogCursor,
 ) -> Vec<HostFrame> {
-    let current_offset = high_water.offset.max(0) as u64;
+    let tail = shared.output_tail.lock().unwrap();
+    let current_offset = tail.retained_end();
+    let retained_start = tail.retained_start();
     let bounded_tail = tail_bytes.min(MAX_REPLAY_BYTES);
-    let tail_start = current_offset.saturating_sub(bounded_tail);
+    let tail_start = current_offset
+        .saturating_sub(bounded_tail)
+        .max(retained_start);
     let mut resync_reason = None::<String>;
 
     let mut end = current_offset;
@@ -524,8 +542,12 @@ fn build_replay_frames(
             resync_reason = Some("cursor generation is no longer retained".into());
             tail_start
         }
-        Some(cursor) if cursor.offset < 0 || cursor.offset > high_water.offset => {
-            resync_reason = Some("cursor offset is outside the retained log".into());
+        Some(cursor)
+            if cursor.offset < 0
+                || cursor.offset > high_water.offset
+                || (cursor.offset as u64) < retained_start =>
+        {
+            resync_reason = Some("cursor offset is outside the retained live tail".into());
             tail_start
         }
         Some(cursor)
@@ -543,54 +565,54 @@ fn build_replay_frames(
             const AFTER: u64 = 256 * 1024;
             let target = cursor.offset as u64;
             end = current_offset.min(target.saturating_add(AFTER));
-            target.saturating_sub(BEFORE)
+            target.saturating_sub(BEFORE).max(retained_start)
         }
         Some(cursor) => cursor.offset as u64,
     };
 
-    let path = PathBuf::from(&shared.cfg.log_path);
-    let mut data = match read_log_range(&path, start, end) {
-        Ok(data) => data,
-        Err(error) => {
+    let mut chunks = match tail.range_chunks(start, end, REPLAY_CHUNK) {
+        Some(chunks) => chunks,
+        None => {
             if (resume_from.is_some() || replay_target.is_some()) && resync_reason.is_none() {
-                resync_reason = Some(format!("requested log range is unavailable: {error}"));
+                resync_reason = Some("requested live range is no longer retained".into());
                 start = tail_start;
                 end = current_offset;
-                read_log_range(&path, start, end).unwrap_or_default()
+                tail.range_chunks(start, end, REPLAY_CHUNK)
+                    .unwrap_or_default()
             } else {
                 Vec::new()
             }
         }
     };
+    let queued_bytes: usize = chunks.iter().map(Vec::len).sum();
     // A failed tail read must never claim offsets for bytes that were not
     // queued. Reset the tail to an empty snapshot at the captured high-water.
-    if data.len() as u64 != end.saturating_sub(start) {
-        data.clear();
+    if queued_bytes as u64 != end.saturating_sub(start) {
+        chunks.clear();
         start = end;
-        resync_reason.get_or_insert_with(|| "retained log changed during replay".into());
+        resync_reason.get_or_insert_with(|| "retained live tail changed during replay".into());
     }
 
-    let mut frames = Vec::with_capacity(
-        2 + data.len().div_ceil(REPLAY_CHUNK) + usize::from(resync_reason.is_some()),
-    );
+    let mut frames = Vec::with_capacity(2 + chunks.len() + usize::from(resync_reason.is_some()));
     let partial_context = replay_target.is_some() && resync_reason.is_none();
     if let Some(reason) = resync_reason {
         let mut earliest = high_water.clone();
-        earliest.offset = 0;
+        earliest.offset = retained_start.min(i64::MAX as u64) as i64;
         frames.push(HostFrame::ResyncRequired {
             session_id: shared.cfg.session_id.clone(),
             earliest,
             reason,
         });
     }
-    for (index, chunk) in data.chunks(REPLAY_CHUNK).enumerate() {
-        let offset = start + (index * REPLAY_CHUNK) as u64;
+    let mut offset = start;
+    for chunk in chunks {
         let mut cursor = high_water.clone();
         cursor.offset = offset as i64;
+        offset = offset.saturating_add(chunk.len() as u64);
         frames.push(HostFrame::Output {
             session_id: shared.cfg.session_id.clone(),
-            data: chunk.to_vec(),
-            offset,
+            data: chunk,
+            offset: cursor.offset as u64,
             cursor,
         });
     }
@@ -606,33 +628,13 @@ fn build_replay_frames(
     frames
 }
 
-fn read_log_range(path: &PathBuf, start: u64, end: u64) -> std::io::Result<Vec<u8>> {
-    if start > end {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "replay start exceeds high-water",
-        ));
-    }
-    let mut file = std::fs::File::open(path)?;
-    if file.metadata()?.len() < end {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            "log is shorter than captured high-water",
-        ));
-    }
-    file.seek(SeekFrom::Start(start))?;
-    let mut data = Vec::with_capacity((end - start) as usize);
-    file.take(end - start).read_to_end(&mut data)?;
-    Ok(data)
-}
-
 /// Drains this client's broadcast channel onto the socket. A bounded receive
 /// timeout lets map eviction close a writer even while the reader still holds
 /// its local sender clone. Ordinary removal instead drains queued terminal
 /// replies before the channel disconnects.
 fn client_writer(
     stream: UnixStream,
-    rx: mpsc::Receiver<HostFrame>,
+    rx: mpsc::Receiver<OutboundFrame>,
     shared: Arc<Shared>,
     id: u64,
     closed: Arc<AtomicBool>,
@@ -645,7 +647,9 @@ fn client_writer(
         }
         match rx.recv_timeout(CLIENT_WRITER_POLL) {
             Ok(frame) => {
-                if closed.load(Ordering::Acquire) || write_frame(&mut w, &frame).is_err() {
+                if closed.load(Ordering::Acquire)
+                    || w.write_all(&frame).and_then(|_| w.flush()).is_err()
+                {
                     break;
                 }
             }

@@ -3608,6 +3608,8 @@ mod tests {
             root_path: root.to_string_lossy().into_owned(),
             git_root_path: Some(root.to_string_lossy().into_owned()),
             created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
         })
         .unwrap();
         Fixture {
@@ -3698,6 +3700,7 @@ mod tests {
                 permission_mode: PermissionMode::Native,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                pinned_at: None,
                 archived_at: None,
             })
             .unwrap();
@@ -4049,6 +4052,8 @@ mod tests {
             root_path: root.to_string_lossy().into_owned(),
             git_root_path: Some(root.to_string_lossy().into_owned()),
             created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
         })
         .unwrap();
         let error = BranchManager::new(&db)
@@ -4140,6 +4145,7 @@ mod tests {
                 permission_mode: PermissionMode::Native,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                pinned_at: None,
                 archived_at: None,
             })
             .unwrap();
@@ -4245,6 +4251,7 @@ mod tests {
                 permission_mode: PermissionMode::Native,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                pinned_at: None,
                 archived_at: None,
             })
             .unwrap();
@@ -4280,6 +4287,7 @@ mod tests {
                 permission_mode: PermissionMode::Native,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                pinned_at: None,
                 archived_at: None,
             })
             .unwrap();
@@ -4338,6 +4346,8 @@ mod tests {
             root_path: root.to_string_lossy().into_owned(),
             git_root_path: None,
             created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
         })
         .unwrap();
         assert!(matches!(
@@ -4364,6 +4374,8 @@ mod tests {
             root_path: child.to_string_lossy().into_owned(),
             git_root_path: None,
             created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
         })
         .unwrap();
         assert!(matches!(
@@ -4633,6 +4645,7 @@ mod tests {
                 permission_mode: PermissionMode::Native,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                pinned_at: None,
                 archived_at: None,
             })
             .unwrap();

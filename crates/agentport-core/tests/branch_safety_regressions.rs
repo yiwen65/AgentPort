@@ -63,6 +63,8 @@ fn fixture() -> Fixture {
         root_path: root.to_string_lossy().into_owned(),
         git_root_path: Some(root.to_string_lossy().into_owned()),
         created_at: Utc::now(),
+        pinned: false,
+        sort_order: 0,
     })
     .unwrap();
     Fixture {

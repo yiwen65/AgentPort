@@ -9,6 +9,7 @@ use agentport_core::git::WorktreeManager;
 use agentport_core::host_manager::{AttachInfo, HostClient, HostManager, LaunchSpec};
 use agentport_core::ids;
 use agentport_core::models::*;
+use agentport_core::native_cleanup::{execute_native_cleanup, plan_native_cleanup};
 use agentport_core::paths::{normalize_abs, AppPaths};
 use agentport_core::protocol::HostFrame;
 use agentport_core::secrets::{load_preset_secrets, CredentialBroker};
@@ -258,6 +259,8 @@ fn cmd_project(ctx: &Ctx, args: &[String]) -> Result<()> {
                 root_path: norm,
                 git_root_path: git_root,
                 created_at: Utc::now(),
+                pinned: false,
+                sort_order: 0,
             };
             ctx.db.add_project(&p)?;
             ctx.out(json!({"id": p.id, "name": p.name, "rootPath": p.root_path, "gitRootPath": p.git_root_path}));
@@ -280,8 +283,45 @@ fn cmd_project(ctx: &Ctx, args: &[String]) -> Result<()> {
             Ok(())
         }
         Some("remove") => {
-            ctx.db.remove_project(positional(args, 1)?)?;
-            ctx.out(json!({"ok": true}));
+            let id = positional(args, 1)?;
+            ctx.db.begin_project_removal(id)?;
+            let sessions = ctx.db.list_sessions(Some(id), true)?;
+            let host_manager = HostManager {
+                paths: &ctx.paths,
+                db: &ctx.db,
+            };
+            let native_plans = sessions
+                .iter()
+                .map(|session| plan_native_cleanup(&ctx.paths, session))
+                .collect::<Vec<_>>();
+            let stop_warnings = sessions
+                .iter()
+                .filter(|session| host_manager.stop(&session.id, 3_000).is_err())
+                .count();
+            let manager = WorktreeManager {
+                paths: &ctx.paths,
+                db: &ctx.db,
+            };
+            let mut cleanup_warnings = 0usize;
+            for worktree in ctx.db.list_worktrees(id)? {
+                // Filesystem/Git cleanup is best-effort by contract; the
+                // database cascade below must not be blocked by stale files.
+                cleanup_warnings += match manager.remove(&worktree.id) {
+                    Ok(outcome) => outcome.cleanup_warnings,
+                    Err(_) => 1,
+                };
+            }
+            ctx.db.remove_project(id)?;
+            for (session, native_plan) in sessions.iter().zip(&native_plans) {
+                let _ = execute_native_cleanup(native_plan);
+                let _ = std::fs::remove_dir_all(ctx.paths.session_dir(&session.id));
+                let _ = std::fs::remove_file(ctx.paths.socket_path(&session.id));
+            }
+            ctx.out(json!({
+                "ok": true,
+                "stopWarnings": stop_warnings,
+                "cleanupWarnings": cleanup_warnings,
+            }));
             Ok(())
         }
         _ => Err(CoreError::Validation(
@@ -520,6 +560,7 @@ fn launch_session(
         permission_mode: permission,
         created_at: now,
         updated_at: now,
+        pinned_at: None,
         archived_at: None,
     };
     ctx.db.insert_session(&session)?;
@@ -1164,8 +1205,36 @@ fn cmd_worktree(ctx: &Ctx, args: &[String]) -> Result<()> {
         }
         Some("remove") => {
             let id = positional(args, 1)?;
-            mgr.remove(id)?;
-            ctx.out(json!({"ok": true}));
+            ctx.db.begin_worktree_removal(id)?;
+            let sessions = ctx
+                .db
+                .list_sessions(None, true)?
+                .into_iter()
+                .filter(|session| session.worktree_id.as_deref() == Some(id))
+                .collect::<Vec<_>>();
+            let host_manager = HostManager {
+                paths: &ctx.paths,
+                db: &ctx.db,
+            };
+            let native_plans = sessions
+                .iter()
+                .map(|session| plan_native_cleanup(&ctx.paths, session))
+                .collect::<Vec<_>>();
+            let stop_warnings = sessions
+                .iter()
+                .filter(|session| host_manager.stop(&session.id, 3_000).is_err())
+                .count();
+            let outcome = mgr.remove(id)?;
+            for (session, native_plan) in sessions.iter().zip(&native_plans) {
+                let _ = execute_native_cleanup(native_plan);
+                let _ = std::fs::remove_dir_all(ctx.paths.session_dir(&session.id));
+                let _ = std::fs::remove_file(ctx.paths.socket_path(&session.id));
+            }
+            ctx.out(json!({
+                "ok": true,
+                "stopWarnings": stop_warnings,
+                "cleanupWarnings": outcome.cleanup_warnings,
+            }));
             Ok(())
         }
         _ => Err(CoreError::Validation(
@@ -1192,7 +1261,8 @@ fn worktree_json(w: &Worktree) -> Value {
 // ---------------------------------------------------------------------------
 
 use agentport_core::diag::Diagnostics;
-use agentport_core::export::{AnsiMode, Exporter, LogRange, MdBlocks};
+use agentport_core::export::Exporter;
+use agentport_core::history::NativeHistory;
 use agentport_core::notify::{test_notification, Notifier};
 use agentport_core::search::SearchIndex;
 use agentport_core::secrets::SecretValue;
@@ -1227,36 +1297,27 @@ fn cmd_export(ctx: &Ctx, args: &[String]) -> Result<()> {
     let out = flag(args, "out").ok_or_else(|| CoreError::Validation("--out required".into()))?;
     let dest = std::path::Path::new(&out);
     match args.first().map(String::as_str) {
-        Some("log") => {
-            let range = match flag(args, "last").and_then(|v| v.parse::<u32>().ok()) {
-                Some(n) => LogRange::LastLines(n),
-                None => LogRange::All,
-            };
-            let ansi = if has_flag(args, "strip-ansi") {
-                AnsiMode::Strip
+        Some("md") | Some("markdown") | Some("json") => {
+            let native_format = if args.first().map(String::as_str) == Some("json") {
+                "json"
             } else {
-                AnsiMode::Keep
+                "md"
             };
-            let p = exporter.export_log(&session, dest, range, ansi, &secrets)?;
+            let session_model = ctx.db.get_session(&session)?;
+            let p = NativeHistory::new(&ctx.paths).export(&session_model, dest, native_format)?;
             ctx.out(json!({"exported": p}));
             Ok(())
         }
-        Some("md") | Some("markdown") => {
-            let blocks = match flag(args, "last").and_then(|v| v.parse::<u32>().ok()) {
-                Some(n) => MdBlocks::Last(n),
-                None => MdBlocks::All,
-            };
-            let p = exporter.export_markdown(&session, dest, blocks, &secrets)?;
-            ctx.out(json!({"exported": p}));
-            Ok(())
-        }
+        Some("log") => Err(CoreError::Validation(
+            "raw terminal log export was removed; use export md or export json".into(),
+        )),
         Some("zip") => {
             let ids: Vec<String> = session.split(',').map(|s| s.trim().to_string()).collect();
             let p = exporter.export_diagnostics_zip(&ids, dest, &secrets)?;
             ctx.out(json!({"exported": p}));
             Ok(())
         }
-        _ => Err(CoreError::Validation("export log|md|zip".into())),
+        _ => Err(CoreError::Validation("export md|json|zip".into())),
     }
 }
 
@@ -1282,6 +1343,7 @@ fn cmd_backup(ctx: &Ctx, args: &[String]) -> Result<()> {
                 "files": report.files,
                 "bytes": report.bytes,
                 "verified": verified,
+                "nativeCoverage": report.native_coverage,
             }));
             Ok(())
         }
@@ -1294,6 +1356,7 @@ fn cmd_backup(ctx: &Ctx, args: &[String]) -> Result<()> {
                 "createdAt": manifest.created_at,
                 "dataModelVersion": manifest.data_model_version,
                 "files": manifest.files.len(),
+                "nativeCoverage": manifest.native_coverage,
             }));
             Ok(())
         }
@@ -1318,41 +1381,42 @@ fn cmd_search(ctx: &Ctx, args: &[String]) -> Result<()> {
         db: &ctx.db,
         paths: &ctx.paths,
     };
-    idx.open()?;
     if has_flag(args, "reindex") {
-        let total = ctx.db.list_sessions(None, true)?.len() as u32;
-        idx.rebuild_all(&mut move |done, _| {
-            eprintln!("reindexing {done}/{total}");
-            true
-        })?;
-        ctx.out(json!({"reindexed": true}));
+        idx.purge_transcript_bodies()?;
+        ctx.out(json!({"reindexed": false, "mode": "native_on_demand", "purgedLegacyBodies": true}));
         return Ok(());
     }
-    // Incremental index update before querying (cheap no-op when up to date).
-    for s in ctx.db.list_sessions(None, true)? {
-        let _ = idx.index_session_log(&s.id, std::path::Path::new(&s.log_path), &[]);
-    }
     let q = positional(args, 0)?;
-    let limit = flag(args, "limit")
+    let limit: usize = flag(args, "limit")
         .and_then(|v| v.parse().ok())
         .unwrap_or(20);
-    let result = idx.query(q, limit)?;
-    let hits: Vec<Value> = result
-        .hits
-        .iter()
-        .map(|h| {
-            json!({
-                "kind": format!("{:?}", h.kind).to_lowercase(),
-                "sessionId": h.session_id,
-                "projectId": h.project_id,
-                "title": h.title,
-                "snippet": h.snippet,
-                "logOffset": h.log_offset,
-                "rotatedAway": h.rotated_away,
-            })
-        })
-        .collect();
-    ctx.out(json!({"partial": result.partial, "hits": hits}));
+    let history = NativeHistory::new(&ctx.paths);
+    let mut hits = Vec::new();
+    let mut total_hits = 0usize;
+    let mut partial = limit == 0;
+    if limit > 0 {
+        for session in ctx.db.list_sessions(None, true)? {
+            let result =
+                history.search_session_bounded(&session, q, limit.saturating_sub(hits.len()))?;
+            total_hits = total_hits.saturating_add(result.total_hits);
+            for hit in result.hits {
+                hits.push(json!({
+                    "kind": "terminal",
+                    "sessionId": session.id,
+                    "projectId": session.project_id,
+                    "title": session.title,
+                    "snippet": hit.snippet,
+                    "eventId": hit.event.id,
+                    "provider": hit.event.provider,
+                }));
+            }
+            if result.partial || hits.len() == limit {
+                partial = true;
+                break;
+            }
+        }
+    }
+    ctx.out(json!({"partial": partial, "totalHits": total_hits, "hits": hits}));
     Ok(())
 }
 
@@ -1534,16 +1598,14 @@ fn cmd_settings(ctx: &Ctx, args: &[String]) -> Result<()> {
         }
         Some("set") => {
             let mut s = ctx.db.load_settings()?;
-            if let Some(v) = flag(args, "log-limit-mib") {
-                s.log_limit_mib = v
-                    .parse()
-                    .map_err(|_| CoreError::Validation("bad log-limit-mib".into()))?;
+            if flag(args, "log-limit-mib").is_some() || flag(args, "search-index").is_some() {
+                return Err(CoreError::Validation(
+                    "log-limit-mib and search-index were removed; native history is read on demand"
+                        .into(),
+                ));
             }
             if let Some(v) = flag(args, "notifications") {
                 s.notifications_enabled = v == "true" || v == "on";
-            }
-            if let Some(v) = flag(args, "search-index") {
-                s.search_index_enabled = v == "true" || v == "on";
             }
             ctx.db.save_settings(&s)?;
             ctx.out(json!({"ok": true}));

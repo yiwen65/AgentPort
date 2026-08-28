@@ -5,8 +5,9 @@
 //! - Create a PTY (portable-pty), spawn the agent command as a NEW SESSION
 //!   LEADER so the child pid == its process-group id; all signals target the
 //!   whole group (PRD: 停止必须清理完整进程组).
-//! - Append raw PTY bytes to output.log through the redacting LogWriter
-//!   (rotation at the configured limit).
+//! - Keep a redacted, bounded in-memory PTY tail for live reconnects. Agent
+//!   conversation history is read on demand from each agent's native log;
+//!   the Host never creates a duplicate output.log.
 //! - Serve the Unix socket: handshake validates session id + host token,
 //!   rejects everything else and closes. Broadcast output/state/heartbeat to
 //!   all attached clients. Input frames re-validate the session id.
@@ -26,17 +27,16 @@
 //!   between `spawn` returning and the child's `pre_exec`; `verify_pgid`
 //!   polls `getpgid(pid) == pid` for up to 2s before degrading to single-pid
 //!   signaling (`pgid_verified=false` in host-state.json + host.log).
-//! - The host owns the `Redactor` itself and hands `LogWriter` the already
-//!   redacted bytes, so every broadcast `Output` chunk is byte-identical to
-//!   what lands on disk and `WriteReceipt.offset` matches the log file
-//!   exactly (sha256 consistency, PRD ch.10).
+//! - The host owns the `Redactor` and applies it before bytes enter the live
+//!   ring or a client frame. Offsets are monotonic within one Host run and do
+//!   not claim durable storage.
 //! - The child is reaped exclusively via `nix::sys::wait::waitpid` (the
 //!   portable-pty/std Child handle is never waited), giving exact
 //!   code/signal for `Observation::ProcessExited` and the `Exit` frame.
 //! - SIGKILL is only the last resort; it cannot be intercepted by the agent
 //!   (documented behavior, PRD stop semantics).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -48,9 +48,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use agentport_core::adapters::adapter_for;
-use agentport_core::logs::LogWriter;
 use agentport_core::models::{AgentState, AgentTransport, AgentType, LogCursor, StatusEvent};
-use agentport_core::protocol::{HostConfig, HostFrame};
+use agentport_core::protocol::{encode_frame, HostConfig, HostFrame};
 use agentport_core::redact::Redactor;
 use agentport_core::state::{Observation, PtyDetector, StateMachine};
 use chrono::{DateTime, Utc};
@@ -70,6 +69,128 @@ const EXIT_OK: i32 = 0;
 const EXIT_CONFIG: i32 = 2;
 const EXIT_PTY: i32 = 3;
 const EXIT_SOCKET: i32 = 4;
+pub(crate) const LIVE_OUTPUT_TAIL_BYTES: usize = 4 * 1024 * 1024;
+
+/// Bounded live terminal bytes. `start_offset..end_offset` names the retained
+/// suffix of this Host run; bytes before `start_offset` are intentionally gone.
+pub(crate) struct OutputTail {
+    bytes: VecDeque<u8>,
+    start_offset: u64,
+    end_offset: u64,
+}
+
+impl OutputTail {
+    fn new() -> Self {
+        Self {
+            bytes: VecDeque::with_capacity(LIVE_OUTPUT_TAIL_BYTES),
+            start_offset: 0,
+            end_offset: 0,
+        }
+    }
+
+    fn append(&mut self, data: &[u8]) -> u64 {
+        let offset = self.end_offset;
+        self.end_offset = self.end_offset.saturating_add(data.len() as u64);
+        if data.len() >= LIVE_OUTPUT_TAIL_BYTES {
+            self.bytes.clear();
+            self.bytes
+                .extend(data[data.len() - LIVE_OUTPUT_TAIL_BYTES..].iter().copied());
+            self.start_offset = self.end_offset - LIVE_OUTPUT_TAIL_BYTES as u64;
+            return offset;
+        }
+        let overflow = self
+            .bytes
+            .len()
+            .saturating_add(data.len())
+            .saturating_sub(LIVE_OUTPUT_TAIL_BYTES);
+        if overflow > 0 {
+            self.bytes.drain(..overflow);
+            self.start_offset = self.start_offset.saturating_add(overflow as u64);
+        }
+        self.bytes.extend(data.iter().copied());
+        offset
+    }
+
+    pub(crate) fn retained_start(&self) -> u64 {
+        self.start_offset
+    }
+
+    pub(crate) fn retained_end(&self) -> u64 {
+        self.end_offset
+    }
+
+    pub(crate) fn range_chunks(
+        &self,
+        start: u64,
+        end: u64,
+        chunk_size: usize,
+    ) -> Option<Vec<Vec<u8>>> {
+        if chunk_size == 0 || start < self.start_offset || start > end || end > self.end_offset {
+            return None;
+        }
+        let skip = (start - self.start_offset) as usize;
+        let take = (end - start) as usize;
+        let mut source = self.bytes.iter().skip(skip).take(take);
+        let mut chunks = Vec::with_capacity(take.div_ceil(chunk_size));
+        loop {
+            let chunk: Vec<u8> = source.by_ref().take(chunk_size).copied().collect();
+            if chunk.is_empty() {
+                break;
+            }
+            chunks.push(chunk);
+        }
+        Some(chunks)
+    }
+}
+
+#[cfg(test)]
+mod output_tail_tests {
+    use super::{OutputTail, LIVE_OUTPUT_TAIL_BYTES};
+
+    #[test]
+    fn append_evicts_in_bulk_and_retains_exact_suffix() {
+        let mut tail = OutputTail::new();
+        let initial = vec![b'a'; LIVE_OUTPUT_TAIL_BYTES];
+        tail.append(&initial);
+        let replacement = (0..16 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        tail.append(&replacement);
+
+        assert_eq!(tail.retained_start(), replacement.len() as u64);
+        assert_eq!(
+            tail.retained_end(),
+            (LIVE_OUTPUT_TAIL_BYTES + replacement.len()) as u64,
+        );
+        let chunks = tail
+            .range_chunks(
+                tail.retained_end() - replacement.len() as u64,
+                tail.retained_end(),
+                1024,
+            )
+            .unwrap();
+        assert_eq!(chunks.concat(), replacement);
+    }
+
+    #[test]
+    fn oversized_append_and_chunked_ranges_preserve_offsets_and_order() {
+        let mut tail = OutputTail::new();
+        let data = (0..LIVE_OUTPUT_TAIL_BYTES + 257)
+            .map(|index| (index % 239) as u8)
+            .collect::<Vec<_>>();
+        assert_eq!(tail.append(&data), 0);
+        assert_eq!(tail.retained_start(), 257);
+        assert_eq!(tail.retained_end(), data.len() as u64);
+
+        let start = tail.retained_start() + 123;
+        let end = tail.retained_end() - 77;
+        let chunks = tail.range_chunks(start, end, 64 * 1024).unwrap();
+        assert!(chunks.iter().all(|chunk| chunk.len() <= 64 * 1024));
+        assert_eq!(chunks.concat(), data[257 + 123..data.len() - 77].to_vec(),);
+        assert!(tail.range_chunks(0, end, 1024).is_none());
+        assert!(tail.range_chunks(start, end, 0).is_none());
+    }
+}
 
 /// Messages from worker threads to the single control loop.
 pub(crate) enum HostMsg {
@@ -103,12 +224,13 @@ pub(crate) struct Shared {
     pgid_verified: bool,
     child_alive: AtomicBool,
     process_suspended: AtomicBool,
-    /// Bytes in the output log (mirrors `LogWriter::total_appended`).
+    /// Total live output bytes observed during this Host run.
     log_bytes: AtomicU64,
     /// Current generation and byte position within that generation. These are
-    /// updated only after a log append succeeds, so a cursor always names
-    /// bytes that are already durable on disk.
+    /// updated when bytes enter the bounded live ring. The cursor is valid
+    /// only while this Host remains alive.
     log_position: Mutex<(u64, u64)>,
+    pub(crate) output_tail: Mutex<OutputTail>,
     /// Serializes PTY append/position/broadcast with reconnect high-water
     /// capture and registration. This is the boundary that makes every output
     /// chunk belong either to replay or to the subsequent live queue.
@@ -124,7 +246,6 @@ pub(crate) struct Shared {
     /// an in-memory-only state transition. A subsequent successful write
     /// clears the flag and permits a new signal for a later failure.
     status_journal_faulted: AtomicBool,
-    output_log_faulted: AtomicBool,
     clients: Mutex<HashMap<u64, server::ClientSink>>,
     next_client_id: AtomicU64,
     /// Connections that completed authentication, including a connection
@@ -175,11 +296,24 @@ pub(crate) fn broadcast(shared: &Shared, frame: &HostFrame) {
         frame,
         HostFrame::Output { .. } | HostFrame::TransientOutput { .. }
     );
+    if !clients
+        .values()
+        .any(|client| !is_output || client.subscribe_output)
+    {
+        return;
+    }
+    let encoded = match encode_frame(frame) {
+        Ok(encoded) => Arc::new(encoded),
+        Err(error) => {
+            error!(%error, "could not encode Host broadcast frame");
+            return;
+        }
+    };
     for (&id, client) in clients.iter() {
         if is_output && !client.subscribe_output {
             continue;
         }
-        match client.tx.try_send(frame.clone()) {
+        match client.tx.try_send(encoded.clone()) {
             Ok(()) => {}
             Err(mpsc::TrySendError::Full(_)) => {
                 drop_ids.push((id, "outbound queue full"));
@@ -230,7 +364,6 @@ pub(crate) fn status_frame(ev: &StatusEvent) -> HostFrame {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum HostErrorCode {
     StatusJournalFailed,
-    OutputLogFailed,
     SessionIdMismatch,
     TerminalInputUnavailable,
     StructuredPromptTransportRequired,
@@ -244,7 +377,6 @@ impl HostErrorCode {
     fn as_str(self) -> &'static str {
         match self {
             Self::StatusJournalFailed => "host_status_journal_failed",
-            Self::OutputLogFailed => "host_output_log_failed",
             Self::SessionIdMismatch => "host_session_id_mismatch",
             Self::TerminalInputUnavailable => "host_terminal_input_unavailable",
             Self::StructuredPromptTransportRequired => "host_structured_prompt_transport_required",
@@ -422,20 +554,6 @@ fn run() -> i32 {
         PathBuf::from(&cfg.session_dir)
     };
 
-    // Output log. The host holds the Redactor and feeds pre-redacted bytes to
-    // the LogWriter (see module docs), so the writer needs no redactor itself.
-    let log_path = PathBuf::from(&cfg.log_path);
-    let log_writer = match LogWriter::open(&log_path, cfg.log_limit_bytes, None) {
-        Ok(w) => w,
-        Err(e) => {
-            error!("open output log {} failed: {e}", cfg.log_path);
-            return EXIT_CONFIG;
-        }
-    };
-    let initial_log_bytes = log_writer.total_appended();
-    let initial_log_generation = log_writer.generation();
-    let initial_log_offset = log_writer.current_len();
-
     // Secret values come ONLY from the host's own environment (PRD 3.7);
     // they are never logged — only the configured names are.
     let secrets: Vec<Vec<u8>> = cfg
@@ -540,11 +658,9 @@ fn run() -> i32 {
                 }
             };
             let mut command = CommandBuilder::new(&cfg.command[0]);
-            // The Host itself carries launch-only Secret values. Never let
-            // ambient GUI/Host variables leak into the Agent implicitly:
-            // the manager materializes an explicit safe login-shell baseline
-            // plus preset variables and named Secrets.
-            command.env_clear();
+            // The Agent inherits the Host's full environment (which itself
+            // carries the GUI/launchd environment); cfg.env overlays the
+            // materialized login-shell environment, and named Secrets follow.
             for arg in &cfg.command[1..] {
                 command.arg(arg);
             }
@@ -600,7 +716,6 @@ fn run() -> i32 {
         AgentTransport::JsonRpc => {
             let mut command = std::process::Command::new(&cfg.command[0]);
             command
-                .env_clear()
                 .args(&cfg.command[1..])
                 .current_dir(&cfg.cwd)
                 .stdin(std::process::Stdio::piped())
@@ -679,15 +794,15 @@ fn run() -> i32 {
         pgid_verified,
         child_alive: AtomicBool::new(true),
         process_suspended: AtomicBool::new(false),
-        log_bytes: AtomicU64::new(initial_log_bytes),
-        log_position: Mutex::new((initial_log_generation, initial_log_offset)),
+        log_bytes: AtomicU64::new(0),
+        log_position: Mutex::new((0, 0)),
+        output_tail: Mutex::new(OutputTail::new()),
         output_serial: Mutex::new(()),
         last_output_at: Mutex::new(Instant::now()),
         known_descendants: Mutex::new(vec![]),
         agent_session_id: Mutex::new(None),
         current_status: Mutex::new(None),
         status_journal_faulted: AtomicBool::new(false),
-        output_log_faulted: AtomicBool::new(false),
         clients: Mutex::new(HashMap::new()),
         next_client_id: AtomicU64::new(1),
         authenticated_client_count: AtomicUsize::new(0),
@@ -708,13 +823,9 @@ fn run() -> i32 {
 
     server::spawn_accept_loop(listener, shared.clone(), msg_tx.clone());
     match cfg.transport {
-        AgentTransport::Pty => spawn_pty_reader(
-            output_reader,
-            log_writer,
-            redactor,
-            shared.clone(),
-            msg_tx.clone(),
-        ),
+        AgentTransport::Pty => {
+            spawn_pty_reader(output_reader, redactor, shared.clone(), msg_tx.clone())
+        }
         AgentTransport::JsonRpc => {
             // Pi allocates its native ID during startup. Request state before
             // accepting user prompts and persist the reported ID via the
@@ -728,7 +839,6 @@ fn run() -> i32 {
             }
             spawn_rpc_reader(
                 output_reader,
-                log_writer,
                 structured_secret_text.clone(),
                 shared.clone(),
                 msg_tx.clone(),
@@ -1403,8 +1513,7 @@ fn set_agent_session_id(shared: &Shared, id: &str) {
     );
 }
 
-/// PTY reader thread: raw bytes -> redactor -> LogWriter -> broadcast Output
-/// with the on-disk offset; feeds the PTY detector; finishes the log on EOF.
+/// PTY reader thread: raw bytes -> redactor -> bounded live ring -> broadcast.
 const MAX_PI_STARTUP_NOTICE_BYTES: usize = 1024;
 
 struct PiPtyStartupNoticeFilter {
@@ -1489,62 +1598,30 @@ fn is_pi_initial_session_notice_line(line: &[u8], native_session_id: &str) -> bo
     .as_bytes()
 }
 
-fn append_pty_output(writer: &mut LogWriter, data: Vec<u8>, shared: &Shared) {
+fn append_live_output(data: Vec<u8>, shared: &Shared) {
     let _output_guard = shared.output_serial.lock().unwrap();
-    match writer.append(&data) {
-        Ok(receipt) => {
-            shared.output_log_faulted.store(false, Ordering::Release);
-            shared
-                .log_bytes
-                .store(writer.total_appended(), Ordering::Relaxed);
-            *shared.log_position.lock().unwrap() = (
-                receipt.generation,
-                receipt.offset.saturating_add(receipt.len),
-            );
-            if receipt.rotated {
-                info!(generation = receipt.generation, "log rotated");
-            }
-            broadcast(
-                shared,
-                &HostFrame::Output {
-                    session_id: shared.cfg.session_id.clone(),
-                    data,
-                    offset: receipt.offset,
-                    cursor: LogCursor {
-                        run_id: shared.cfg.run_id.clone(),
-                        run_ordinal: shared.cfg.run_ordinal,
-                        generation: receipt.generation.min(i64::MAX as u64) as i64,
-                        offset: receipt.offset.min(i64::MAX as u64) as i64,
-                    },
-                },
-            );
-        }
-        Err(error) => {
-            error!("log append failed; forwarding live-only output: {error}");
-            if !shared.output_log_faulted.swap(true, Ordering::AcqRel) {
-                broadcast(
-                    shared,
-                    &err_frame(
-                        Some(&shared.cfg.session_id),
-                        HostErrorCode::OutputLogFailed,
-                        "output log append failed; live output remains visible but cannot be replayed",
-                    ),
-                );
-            }
-            broadcast(
-                shared,
-                &HostFrame::TransientOutput {
-                    session_id: shared.cfg.session_id.clone(),
-                    data,
-                },
-            );
-        }
-    }
+    let offset = shared.output_tail.lock().unwrap().append(&data);
+    let end = offset.saturating_add(data.len() as u64);
+    shared.log_bytes.store(end, Ordering::Relaxed);
+    *shared.log_position.lock().unwrap() = (0, end);
+    broadcast(
+        shared,
+        &HostFrame::Output {
+            session_id: shared.cfg.session_id.clone(),
+            data,
+            offset,
+            cursor: LogCursor {
+                run_id: shared.cfg.run_id.clone(),
+                run_ordinal: shared.cfg.run_ordinal,
+                generation: 0,
+                offset: offset.min(i64::MAX as u64) as i64,
+            },
+        },
+    );
 }
 
 fn spawn_pty_reader(
     mut reader: Box<dyn Read + Send>,
-    mut writer: LogWriter,
     redactor: Option<Redactor>,
     shared: Arc<Shared>,
     tx: mpsc::Sender<HostMsg>,
@@ -1577,7 +1654,7 @@ fn spawn_pty_reader(
                         None => chunk.clone(),
                     };
                     if !data.is_empty() {
-                        append_pty_output(&mut writer, data, &shared);
+                        append_live_output(data, &shared);
                     }
                     for obs in detector.feed(&chunk) {
                         let _ = tx.send(HostMsg::Obs(obs));
@@ -1607,7 +1684,7 @@ fn spawn_pty_reader(
                     None => chunk,
                 };
                 if !data.is_empty() {
-                    append_pty_output(&mut writer, data, &shared);
+                    append_live_output(data, &shared);
                 }
             }
         }
@@ -1616,12 +1693,9 @@ fn spawn_pty_reader(
         if let Some(r) = &mut redactor {
             let tail = r.finish();
             if !tail.is_empty() {
-                append_pty_output(&mut writer, tail, &shared);
+                append_live_output(tail, &shared);
             }
             info!(redaction_hits = r.hits(), "redactor finished");
-        }
-        if let Err(e) = writer.finish() {
-            error!("log finish failed: {e}");
         }
         let terminal = match pty_fault {
             Some(message) => HostMsg::PtyFault { message },
@@ -1704,40 +1778,12 @@ fn redact_rpc_value(value: &mut serde_json::Value, secrets: &[String]) {
     }
 }
 
-fn append_rpc_log(writer: &mut LogWriter, data: &[u8], shared: &Shared) -> Result<(), String> {
-    let _output_guard = shared.output_serial.lock().unwrap();
-    let receipt = writer.append(data).map_err(|error| error.to_string())?;
-    shared
-        .log_bytes
-        .store(writer.total_appended(), Ordering::Relaxed);
-    *shared.log_position.lock().unwrap() = (
-        receipt.generation,
-        receipt.offset.saturating_add(receipt.len),
-    );
-    broadcast(
-        shared,
-        &HostFrame::Output {
-            session_id: shared.cfg.session_id.clone(),
-            data: data.to_vec(),
-            offset: receipt.offset,
-            cursor: LogCursor {
-                run_id: shared.cfg.run_id.clone(),
-                run_ordinal: shared.cfg.run_ordinal,
-                generation: receipt.generation.min(i64::MAX as u64) as i64,
-                offset: receipt.offset.min(i64::MAX as u64) as i64,
-            },
-        },
-    );
-    Ok(())
-}
-
 /// Pipe-mode reader: stdout must contain only valid Pi JSONL events or
 /// responses. A malformed line terminates the Session through the existing
 /// controlled-stop flow; the generic diagnostic is durable in host.log while
 /// the untrusted raw line is never copied into an error frame.
 fn spawn_rpc_reader(
     reader: Box<dyn Read + Send>,
-    mut writer: LogWriter,
     secrets: Vec<String>,
     shared: Arc<Shared>,
     tx: mpsc::Sender<HostMsg>,
@@ -1803,10 +1849,7 @@ fn spawn_rpc_reader(
                         }
                     };
                     logged.push(b'\n');
-                    if let Err(error) = append_rpc_log(&mut writer, &logged, &shared) {
-                        fault = Some(format!("Pi RPC log append failed: {error}"));
-                        break;
-                    }
+                    append_live_output(logged, &shared);
                     *shared.last_output_at.lock().unwrap() = Instant::now();
                     let is_agent_settled = event.get("type").and_then(serde_json::Value::as_str)
                         == Some("agent_settled");
@@ -1834,9 +1877,6 @@ fn spawn_rpc_reader(
                     break;
                 }
             }
-        }
-        if let Err(error) = writer.finish() {
-            error!("Pi RPC log finish failed: {error}");
         }
         let terminal = match fault {
             Some(message) => HostMsg::PtyFault { message },

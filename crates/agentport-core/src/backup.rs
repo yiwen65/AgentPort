@@ -6,15 +6,21 @@
 //! diagnostics. Worktrees are recoverable from Git itself and can be huge;
 //! exports/diagnostics are derived artifacts.
 //!
-//! Format v1: a zip containing `manifest.json`, `agentport.db` and
-//! `sessions/**`. The manifest lists every payload file with size + SHA-256 so
-//! `verify` and `restore` can prove integrity before touching real data.
-//! Secret VALUES never enter the backup: they live in the OS credential store
-//! and are referenced by metadata inside the DB only.
+//! Format v2: a zip containing `manifest.json`, `agentport.db`,
+//! `sessions/**`, and provider-aware `native/**` archive payloads. The
+//! manifest lists every payload file with size + SHA-256 so `verify` and
+//! `restore` can prove integrity before touching real data. Readers retain v1
+//! compatibility; absent native fields mean an empty native payload.
+//! AgentPort never reads OS credential-store values for backup; only their DB
+//! references are included. Native transcripts are copied verbatim, however,
+//! so a value already printed into a conversation or tool output can be present.
 
 use crate::db::Db;
 use crate::error::{CoreError, Result};
-use crate::models::DATA_MODEL_VERSION;
+use crate::models::{AgentType, DATA_MODEL_VERSION};
+use crate::native_backup::{
+    NativeCoverage, NativeCoverageSummary, NativeSessionBackup, NativeTargetRoot,
+};
 use crate::paths::AppPaths;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -22,7 +28,8 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-pub const BACKUP_FORMAT_VERSION: u32 = 1;
+pub const BACKUP_FORMAT_VERSION: u32 = 2;
+const MIN_READABLE_BACKUP_FORMAT_VERSION: u32 = 1;
 
 // Backups are user-selected external input during verify/restore. Keep every
 // resource dimension bounded before decompression starts. One retained Host
@@ -44,6 +51,12 @@ pub struct BackupManifest {
     pub data_model_version: i64,
     /// Payload files (manifest.json itself is not listed).
     pub files: Vec<BackupFileEntry>,
+    /// Provider-native Session payload descriptors. Missing in format v1.
+    #[serde(default)]
+    pub native_sessions: Vec<NativeSessionBackup>,
+    /// Aggregate capture coverage. Missing in format v1.
+    #[serde(default)]
+    pub native_coverage: NativeCoverageSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +70,7 @@ pub struct BackupFileEntry {
 pub struct BackupReport {
     pub files: u64,
     pub bytes: u64,
+    pub native_coverage: NativeCoverageSummary,
 }
 
 fn sha256_reader(mut r: impl Read) -> Result<(String, u64)> {
@@ -118,6 +132,212 @@ fn validate_manifest_limits(manifest: &BackupManifest) -> Result<()> {
         if total > MAX_BACKUP_TOTAL_BYTES {
             return Err(CoreError::Validation(format!(
                 "backup declares {total} bytes; total maximum is {MAX_BACKUP_TOTAL_BYTES}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn safe_relative_path(path: &str) -> bool {
+    let path = Path::new(path);
+    !path.as_os_str().is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+fn native_id_is_safe_component(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 256
+        && !id.contains('/')
+        && !id.contains('\\')
+        && id != "."
+        && id != ".."
+}
+
+fn native_target_matches_session(
+    session: &NativeSessionBackup,
+    artifact: &crate::native_backup::NativeArtifact,
+) -> bool {
+    let target = Path::new(&artifact.target_path);
+    match session.provider {
+        AgentType::Pi => target.starts_with(
+            Path::new("sessions")
+                .join(&session.agentport_session_id)
+                .join("pi"),
+        ),
+        AgentType::Claude => {
+            let project = Path::new("projects").join(crate::history::cwd_slug(&session.cwd));
+            session.native_session_ids.iter().any(|id| {
+                target == project.join(format!("{id}.jsonl"))
+                    || target.starts_with(project.join(id))
+            })
+        }
+        AgentType::Codex => {
+            target.starts_with("sessions")
+                && target.extension().and_then(|value| value.to_str()) == Some("jsonl")
+        }
+        AgentType::Kimi => session
+            .kimi_bindings
+            .iter()
+            .any(|binding| target.starts_with(&binding.session_relative_dir)),
+        AgentType::Qoder => {
+            let project = Path::new("logs/sessions").join(crate::history::cwd_slug(&session.cwd));
+            session
+                .native_session_ids
+                .iter()
+                .any(|id| target.starts_with(project.join(id)))
+        }
+        AgentType::Shell => false,
+    }
+}
+
+fn validate_native_manifest(manifest: &BackupManifest) -> Result<()> {
+    let expected_coverage = NativeCoverageSummary::from_sessions(&manifest.native_sessions);
+    if manifest.native_coverage != expected_coverage {
+        return Err(CoreError::Validation(
+            "native backup coverage does not match Session descriptors".into(),
+        ));
+    }
+
+    let files = manifest
+        .files
+        .iter()
+        .map(|entry| (entry.path.as_str(), entry))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut session_ids = std::collections::HashSet::new();
+    let mut native_files = std::collections::HashSet::new();
+    for session in &manifest.native_sessions {
+        if !session_ids.insert(session.agentport_session_id.as_str()) {
+            return Err(CoreError::Validation(format!(
+                "duplicate native Session descriptor {}",
+                session.agentport_session_id
+            )));
+        }
+        if session
+            .native_session_ids
+            .iter()
+            .any(|id| !native_id_is_safe_component(id))
+        {
+            return Err(CoreError::Validation(format!(
+                "unsafe native Session id in {}",
+                session.agentport_session_id
+            )));
+        }
+        if session.coverage != NativeCoverage::Complete && !session.artifacts.is_empty() {
+            return Err(CoreError::Validation(format!(
+                "incomplete native Session {} contains artifacts",
+                session.agentport_session_id
+            )));
+        }
+        if session.coverage == NativeCoverage::Complete && session.artifacts.is_empty() {
+            return Err(CoreError::Validation(format!(
+                "complete native Session {} contains no artifacts",
+                session.agentport_session_id
+            )));
+        }
+        if session.provider != AgentType::Kimi && !session.kimi_bindings.is_empty() {
+            return Err(CoreError::Validation(
+                "non-Kimi native Session contains a Kimi index binding".into(),
+            ));
+        }
+        if session.coverage != NativeCoverage::Complete && !session.kimi_bindings.is_empty() {
+            return Err(CoreError::Validation(
+                "incomplete native Session contains a Kimi index binding".into(),
+            ));
+        }
+        if session.provider == AgentType::Kimi
+            && session.coverage == NativeCoverage::Complete
+            && session.kimi_bindings.is_empty()
+        {
+            return Err(CoreError::Validation(
+                "complete Kimi native Session has no index binding".into(),
+            ));
+        }
+        let mut kimi_ids = std::collections::HashSet::new();
+        for binding in &session.kimi_bindings {
+            let entry_id = binding
+                .index_entry
+                .get("sessionId")
+                .and_then(serde_json::Value::as_str);
+            let entry_cwd = binding
+                .index_entry
+                .get("workDir")
+                .and_then(serde_json::Value::as_str);
+            if !kimi_ids.insert(binding.native_session_id.as_str())
+                || !session
+                    .native_session_ids
+                    .iter()
+                    .any(|id| id == &binding.native_session_id)
+                || entry_id != Some(binding.native_session_id.as_str())
+                || entry_cwd != Some(session.cwd.as_str())
+                || !safe_relative_path(&binding.session_relative_dir)
+                || !Path::new(&binding.session_relative_dir).starts_with("sessions")
+            {
+                return Err(CoreError::Validation(
+                    "unsafe or duplicate Kimi native Session binding".into(),
+                ));
+            }
+        }
+
+        let expected_root = match session.provider {
+            AgentType::Pi => NativeTargetRoot::AgentPort,
+            AgentType::Claude => NativeTargetRoot::Claude,
+            AgentType::Codex => NativeTargetRoot::Codex,
+            AgentType::Kimi => NativeTargetRoot::Kimi,
+            AgentType::Qoder => NativeTargetRoot::Qoder,
+            AgentType::Shell => {
+                if !session.artifacts.is_empty() {
+                    return Err(CoreError::Validation(
+                        "Shell native Session contains artifacts".into(),
+                    ));
+                }
+                continue;
+            }
+        };
+        let archive_prefix = format!("native/{}/", session.agentport_session_id);
+        for artifact in &session.artifacts {
+            if artifact.target_root != expected_root
+                || !safe_relative_path(&artifact.archive_path)
+                || !artifact.archive_path.starts_with(&archive_prefix)
+                || !safe_relative_path(&artifact.target_path)
+                || !native_target_matches_session(session, artifact)
+            {
+                return Err(CoreError::Validation(format!(
+                    "invalid native artifact mapping {}",
+                    artifact.archive_path
+                )));
+            }
+            if !native_files.insert(artifact.archive_path.as_str()) {
+                return Err(CoreError::Validation(format!(
+                    "duplicate native artifact {}",
+                    artifact.archive_path
+                )));
+            }
+            let Some(file) = files.get(artifact.archive_path.as_str()) else {
+                return Err(CoreError::Validation(format!(
+                    "native artifact missing from payload inventory: {}",
+                    artifact.archive_path
+                )));
+            };
+            if file.size != artifact.size || file.sha256 != artifact.sha256 {
+                return Err(CoreError::Validation(format!(
+                    "native artifact metadata differs from payload inventory: {}",
+                    artifact.archive_path
+                )));
+            }
+        }
+    }
+    for file in manifest
+        .files
+        .iter()
+        .filter(|entry| entry.path.starts_with("native/"))
+    {
+        if !native_files.contains(file.path.as_str()) {
+            return Err(CoreError::Validation(format!(
+                "unclaimed native backup payload {}",
+                file.path
             )));
         }
     }
@@ -218,8 +438,18 @@ fn collect_session_files(paths: &AppPaths, out: &mut Vec<PathBuf>) -> Result<()>
                 continue;
             }
             if ft.is_dir() {
+                if path.file_name().and_then(|name| name.to_str()) == Some("pi")
+                    && path.parent().and_then(Path::parent) == Some(paths.sessions_dir().as_path())
+                {
+                    // Pi's --session-dir is its native transcript store. It is
+                    // source data owned by Pi, not AgentPort backup payload.
+                    continue;
+                }
                 stack.push(path);
             } else if ft.is_file() {
+                if path.file_name().and_then(|name| name.to_str()) == Some("output.log") {
+                    continue;
+                }
                 out.push(path);
             }
         }
@@ -247,11 +477,28 @@ pub fn create(paths: &AppPaths, db: &Db, dest: &Path) -> Result<BackupReport> {
     let db_snapshot = staging.join("agentport.db");
     db.backup_snapshot(&db_snapshot)?;
 
-    // 2. Payload inventory with integrity digests.
+    // 2. Capture provider-native payloads after the database snapshot, then
+    // inventory every archive payload with its integrity digest.
     let mut files = vec![BackupFileEntry {
         path: "agentport.db".into(),
         ..digest_entry(&db_snapshot)?
     }];
+    let mut payload_sources = vec![db_snapshot.clone()];
+    let mut native_sessions = Vec::new();
+    for session in db.list_sessions(None, true)? {
+        let native = crate::native_backup::capture_session(paths, &session, &staging)?;
+        for artifact in &native.artifacts {
+            files.push(BackupFileEntry {
+                path: artifact.archive_path.clone(),
+                size: artifact.size,
+                sha256: artifact.sha256.clone(),
+            });
+            payload_sources.push(staging.join(&artifact.archive_path));
+        }
+        native_sessions.push(native);
+    }
+    let native_coverage = NativeCoverageSummary::from_sessions(&native_sessions);
+
     let mut session_files = Vec::new();
     collect_session_files(paths, &mut session_files)?;
     for abs in session_files {
@@ -267,6 +514,7 @@ pub fn create(paths: &AppPaths, db: &Db, dest: &Path) -> Result<BackupReport> {
             path: rel,
             ..digest_entry(&abs)?
         });
+        payload_sources.push(abs);
     }
 
     let manifest = BackupManifest {
@@ -275,8 +523,11 @@ pub fn create(paths: &AppPaths, db: &Db, dest: &Path) -> Result<BackupReport> {
         app_version: env!("CARGO_PKG_VERSION").into(),
         data_model_version: DATA_MODEL_VERSION,
         files: files.clone(),
+        native_sessions,
+        native_coverage,
     };
     validate_manifest_limits(&manifest)?;
+    validate_native_manifest(&manifest)?;
     let manifest_json = serde_json::to_vec_pretty(&manifest)?;
     if manifest_json.len() as u64 > MAX_BACKUP_MANIFEST_BYTES {
         return Err(CoreError::Validation(format!(
@@ -300,15 +551,10 @@ pub fn create(paths: &AppPaths, db: &Db, dest: &Path) -> Result<BackupReport> {
         zw.start_file("manifest.json", opts)
             .map_err(|e| CoreError::Export(format!("backup zip manifest: {e}")))?;
         zw.write_all(&manifest_json)?;
-        for entry in &files {
-            let src = if entry.path == "agentport.db" {
-                db_snapshot.clone()
-            } else {
-                paths.root().join(&entry.path)
-            };
+        for (entry, src) in files.iter().zip(&payload_sources) {
             zw.start_file(entry.path.clone(), opts)
                 .map_err(|e| CoreError::Export(format!("backup zip entry {}: {e}", entry.path)))?;
-            let mut source = std::fs::File::open(&src)?;
+            let mut source = std::fs::File::open(src)?;
             let (sha, size) =
                 copy_and_hash_bounded(&mut source, &mut zw, MAX_BACKUP_FILE_BYTES, &entry.path)?;
             // Guard against a file changing between digest and pack.
@@ -330,6 +576,7 @@ pub fn create(paths: &AppPaths, db: &Db, dest: &Path) -> Result<BackupReport> {
     Ok(BackupReport {
         files: files.len() as u64,
         bytes,
+        native_coverage,
     })
 }
 
@@ -348,7 +595,7 @@ pub fn verify(archive: &Path) -> Result<BackupManifest> {
     let mut zip = zip::ZipArchive::new(f)
         .map_err(|e| CoreError::Validation(format!("not a backup zip: {e}")))?;
     validate_payload_entry_count(zip.len().saturating_sub(1))?;
-    let manifest: BackupManifest = {
+    let mut manifest: BackupManifest = {
         let mut entry = zip
             .by_name("manifest.json")
             .map_err(|_| CoreError::Validation("backup manifest missing".into()))?;
@@ -372,11 +619,20 @@ pub fn verify(archive: &Path) -> Result<BackupManifest> {
         }
         serde_json::from_slice(&buf)?
     };
-    if manifest.format_version != BACKUP_FORMAT_VERSION {
+    if !(MIN_READABLE_BACKUP_FORMAT_VERSION..=BACKUP_FORMAT_VERSION)
+        .contains(&manifest.format_version)
+    {
         return Err(CoreError::Validation(format!(
-            "unsupported backup format v{} (this build reads v{})",
-            manifest.format_version, BACKUP_FORMAT_VERSION
+            "unsupported backup format v{} (this build reads v{}-v{})",
+            manifest.format_version, MIN_READABLE_BACKUP_FORMAT_VERSION, BACKUP_FORMAT_VERSION
         )));
+    }
+    // Format v1 had no provider-native payload contract. Ignore any forged
+    // extension fields rather than granting old-version archives v2 restore
+    // semantics; genuinely absent fields deserialize to these same defaults.
+    if manifest.format_version == 1 {
+        manifest.native_sessions.clear();
+        manifest.native_coverage = NativeCoverageSummary::default();
     }
     if manifest.data_model_version > DATA_MODEL_VERSION {
         return Err(CoreError::Conflict(format!(
@@ -400,12 +656,7 @@ pub fn verify(archive: &Path) -> Result<BackupManifest> {
             )));
         }
         // Zip-slip guard: payload paths must stay relative and segment-clean.
-        let rel = Path::new(&entry.path);
-        if rel.is_absolute()
-            || rel
-                .components()
-                .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
+        if !safe_relative_path(&entry.path) {
             return Err(CoreError::Validation(format!(
                 "unsafe backup path {}",
                 entry.path
@@ -424,6 +675,9 @@ pub fn verify(archive: &Path) -> Result<BackupManifest> {
             )));
         }
     }
+    if manifest.format_version == BACKUP_FORMAT_VERSION {
+        validate_native_manifest(&manifest)?;
+    }
     Ok(manifest)
 }
 
@@ -432,7 +686,8 @@ pub fn verify(archive: &Path) -> Result<BackupManifest> {
 /// Safety contract:
 /// - The archive is fully verified BEFORE anything is extracted.
 /// - Extraction happens into a sibling staging dir; the target is only swapped
-///   in after the DB passes `PRAGMA integrity_check`.
+///   in after the DB passes `integrity_check` and `foreign_key_check`, and all
+///   provider-native destinations pass conflict validation.
 /// - A non-empty target is renamed aside (`<name>.pre-restore-<ts>`) instead of
 ///   deleted, so a restore is always reversible by hand.
 /// - Live sessions are NOT resumed: restored sessions reconcile as interrupted
@@ -493,6 +748,16 @@ pub fn restore(archive: &Path, target_root: &Path) -> Result<PathBuf> {
                 "restored database failed integrity_check: {ok}"
             )));
         }
+        let mut foreign_keys = conn.prepare("PRAGMA foreign_key_check")?;
+        let mut violations = foreign_keys.query([])?;
+        if let Some(row) = violations.next()? {
+            let table: String = row.get(0)?;
+            let rowid: Option<i64> = row.get(1)?;
+            let parent: String = row.get(2)?;
+            return Err(CoreError::Validation(format!(
+                "restored database failed foreign_key_check: {table} row {rowid:?} references {parent}"
+            )));
+        }
         let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         let latest = crate::db::schema::MIGRATIONS.len() as i64;
         if user_version > latest {
@@ -500,6 +765,19 @@ pub fn restore(archive: &Path, target_root: &Path) -> Result<PathBuf> {
                 "restored database schema v{user_version} is newer than this build (v{latest})"
             )));
         }
+    }
+
+    // Native restore validates every destination before writing any artifact.
+    // Pi targets the not-yet-published staging root, while external providers
+    // use their configured homes. A conflict therefore leaves target_root
+    // untouched. The archive-only native copy is removed before publication.
+    crate::native_backup::materialize(&staging, &staging, &manifest.native_sessions)?;
+    let native_staging = staging.join("native");
+    match std::fs::symlink_metadata(&native_staging) {
+        Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(&native_staging)?,
+        Ok(_) => std::fs::remove_file(&native_staging)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(CoreError::Io(error)),
     }
 
     // Swap: keep the previous tree as a manual rollback point.
@@ -557,6 +835,33 @@ mod tests {
     use super::*;
     use crate::models::{AgentType, Lifecycle, PermissionMode, ResumePrecision};
     use chrono::Utc;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     struct Fx {
         dir: tempfile::TempDir,
@@ -575,6 +880,8 @@ mod tests {
             root_path: "/tmp/demo".into(),
             git_root_path: None,
             created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
         })
         .unwrap();
         db.insert_session(&crate::models::Session {
@@ -597,12 +904,41 @@ mod tests {
             permission_mode: PermissionMode::Native,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            pinned_at: None,
             archived_at: None,
         })
         .unwrap();
         std::fs::create_dir_all(paths.session_dir("ses_1")).unwrap();
         std::fs::write(paths.log_path("ses_1"), b"hello terminal\n").unwrap();
         Fx { dir, paths, db }
+    }
+
+    fn insert_session(fx: &Fx, id: &str, provider: AgentType, native_id: Option<&str>, cwd: &str) {
+        fx.db
+            .insert_session(&crate::models::Session {
+                id: id.into(),
+                project_id: "prj_1".into(),
+                worktree_id: None,
+                preset_id: "pre_test".into(),
+                title: format!("{provider:?} backup"),
+                cwd: cwd.into(),
+                host_pid: None,
+                host_socket: None,
+                host_token: "t".repeat(32),
+                lifecycle: Lifecycle::Stopped,
+                agent_session_id: native_id.map(str::to_owned),
+                resume_precision: ResumePrecision::Exact,
+                log_path: fx.paths.log_path(id).to_string_lossy().into_owned(),
+                adapter_type: provider,
+                transport: crate::models::AgentTransport::Pty,
+                command: Vec::new(),
+                permission_mode: PermissionMode::Native,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                pinned_at: None,
+                archived_at: None,
+            })
+            .unwrap();
     }
 
     fn manifest(files: Vec<BackupFileEntry>) -> BackupManifest {
@@ -612,6 +948,8 @@ mod tests {
             app_version: "test".into(),
             data_model_version: DATA_MODEL_VERSION,
             files,
+            native_sessions: Vec::new(),
+            native_coverage: NativeCoverageSummary::default(),
         }
     }
 
@@ -629,13 +967,33 @@ mod tests {
         manifest: &BackupManifest,
         payloads: &[(String, Vec<u8>)],
     ) {
+        write_custom_backup_with_method(
+            archive,
+            manifest,
+            payloads,
+            zip::CompressionMethod::Deflated,
+        );
+    }
+
+    fn write_custom_backup_with_method(
+        archive: &Path,
+        manifest: &BackupManifest,
+        payloads: &[(String, Vec<u8>)],
+        method: zip::CompressionMethod,
+    ) {
         let file = std::fs::File::create(archive).unwrap();
         let mut zip = zip::ZipWriter::new(file);
         let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated)
+            .compression_method(method)
             .unix_permissions(0o600);
         zip.start_file("manifest.json", options).unwrap();
-        zip.write_all(&serde_json::to_vec(manifest).unwrap())
+        let mut manifest_json = serde_json::to_value(manifest).unwrap();
+        if manifest.format_version == 1 {
+            let object = manifest_json.as_object_mut().unwrap();
+            object.remove("nativeSessions");
+            object.remove("nativeCoverage");
+        }
+        zip.write_all(&serde_json::to_vec(&manifest_json).unwrap())
             .unwrap();
         for (path, data) in payloads {
             zip.start_file(path, options).unwrap();
@@ -647,9 +1005,11 @@ mod tests {
     #[test]
     fn backup_verify_restore_roundtrip() {
         let fx = fx();
+        let metadata = fx.paths.session_dir("ses_1").join("status.json");
+        std::fs::write(&metadata, br#"{"state":"stopped"}"#).unwrap();
         let archive = fx.dir.path().join("backup.zip");
         let report = create(&fx.paths, &fx.db, &archive).unwrap();
-        assert!(report.files >= 2); // db + session log
+        assert!(report.files >= 2); // db + AgentPort-owned session metadata
         assert!(archive.exists());
         // Overwrite protection.
         assert!(matches!(
@@ -662,15 +1022,20 @@ mod tests {
         assert!(manifest
             .files
             .iter()
-            .any(|f| f.path == "sessions/ses_1/output.log"));
+            .any(|f| f.path == "sessions/ses_1/status.json"));
+        assert!(!manifest
+            .files
+            .iter()
+            .any(|f| f.path.ends_with("/output.log")));
 
         let target = fx.dir.path().join("restored");
         let prev = restore(&archive, &target).unwrap();
         assert!(prev.as_os_str().is_empty());
         assert_eq!(
-            std::fs::read(target.join("sessions/ses_1/output.log")).unwrap(),
-            b"hello terminal\n"
+            std::fs::read(target.join("sessions/ses_1/status.json")).unwrap(),
+            br#"{"state":"stopped"}"#
         );
+        assert!(!target.join("sessions/ses_1/output.log").exists());
         // Restored DB opens and contains the session.
         let restored_paths = AppPaths::new(target.clone());
         let restored_db = Db::open(&restored_paths).unwrap();
@@ -681,10 +1046,189 @@ mod tests {
     }
 
     #[test]
+    fn v2_roundtrip_restores_pi_and_external_native_payloads() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let fx = fx();
+        let claude_home = fx.dir.path().join("claude-home");
+        let _claude_env = EnvVarGuard::set("CLAUDE_CONFIG_DIR", &claude_home);
+
+        insert_session(&fx, "ses_pi", AgentType::Pi, Some("pi-native"), "/tmp/demo");
+        let pi_transcript = fx.paths.session_dir("ses_pi").join("pi/pi-native.jsonl");
+        std::fs::create_dir_all(pi_transcript.parent().unwrap()).unwrap();
+        std::fs::write(&pi_transcript, b"pi transcript\n").unwrap();
+
+        let claude_cwd = "/workspace/external";
+        insert_session(
+            &fx,
+            "ses_claude",
+            AgentType::Claude,
+            Some("claude-native"),
+            claude_cwd,
+        );
+        let claude_transcript = claude_home
+            .join("projects")
+            .join(crate::history::cwd_slug(claude_cwd))
+            .join("claude-native.jsonl");
+        std::fs::create_dir_all(claude_transcript.parent().unwrap()).unwrap();
+        std::fs::write(&claude_transcript, b"claude transcript\n").unwrap();
+
+        let archive = fx.dir.path().join("native-v2.zip");
+        let report = create(&fx.paths, &fx.db, &archive).unwrap();
+        assert_eq!(report.native_coverage.total, 3);
+        assert_eq!(report.native_coverage.captured, 2);
+        assert_eq!(report.native_coverage.unsupported, 1);
+
+        let manifest = verify(&archive).unwrap();
+        assert_eq!(manifest.format_version, 2);
+        assert_eq!(manifest.native_coverage, report.native_coverage);
+        assert!(manifest
+            .files
+            .iter()
+            .any(|file| file.path.contains("native/ses_pi/agentport/")));
+        assert!(manifest
+            .files
+            .iter()
+            .any(|file| file.path.contains("native/ses_claude/claude/")));
+
+        std::fs::remove_file(&claude_transcript).unwrap();
+        let target = fx.dir.path().join("native-restored");
+        restore(&archive, &target).unwrap();
+        assert_eq!(
+            std::fs::read(target.join("sessions/ses_pi/pi/pi-native.jsonl")).unwrap(),
+            b"pi transcript\n"
+        );
+        assert_eq!(
+            std::fs::read(&claude_transcript).unwrap(),
+            b"claude transcript\n"
+        );
+        assert!(
+            !target.join("native").exists(),
+            "archive-only native payload must not remain under AgentPort data"
+        );
+    }
+
+    #[test]
+    fn v2_reports_partial_native_coverage() {
+        let fx = fx();
+        insert_session(
+            &fx,
+            "ses_missing",
+            AgentType::Claude,
+            None,
+            "/workspace/missing",
+        );
+        let archive = fx.dir.path().join("partial.zip");
+        let report = create(&fx.paths, &fx.db, &archive).unwrap();
+        assert_eq!(report.native_coverage.total, 2);
+        assert_eq!(report.native_coverage.missing, 1);
+        assert_eq!(report.native_coverage.unsupported, 1);
+        assert!(!report.native_coverage.complete());
+        assert_eq!(
+            verify(&archive).unwrap().native_coverage,
+            report.native_coverage
+        );
+    }
+
+    #[test]
+    fn v1_without_native_fields_verifies_and_restores() {
+        let fx = fx();
+        let snapshot = fx.dir.path().join("legacy.db");
+        fx.db.backup_snapshot(&snapshot).unwrap();
+        let database = std::fs::read(&snapshot).unwrap();
+        let mut legacy = manifest(vec![entry("agentport.db", &database)]);
+        legacy.format_version = 1;
+        let archive = fx.dir.path().join("legacy-v1.zip");
+        write_custom_backup_with_method(
+            &archive,
+            &legacy,
+            &[("agentport.db".into(), database)],
+            zip::CompressionMethod::Stored,
+        );
+
+        let verified = verify(&archive).unwrap();
+        assert_eq!(verified.format_version, 1);
+        assert!(verified.native_sessions.is_empty());
+        assert_eq!(verified.native_coverage, NativeCoverageSummary::default());
+        let target = fx.dir.path().join("legacy-restored");
+        restore(&archive, &target).unwrap();
+        let restored = Db::open(&AppPaths::new(target)).unwrap();
+        assert_eq!(restored.get_session("ses_1").unwrap().title, "demo session");
+    }
+
+    #[test]
+    fn external_native_conflict_does_not_publish_target() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let fx = fx();
+        let claude_home = fx.dir.path().join("claude-conflict-home");
+        let _claude_env = EnvVarGuard::set("CLAUDE_CONFIG_DIR", &claude_home);
+        let cwd = "/workspace/conflict";
+        insert_session(
+            &fx,
+            "ses_claude",
+            AgentType::Claude,
+            Some("native-conflict"),
+            cwd,
+        );
+        let transcript = claude_home
+            .join("projects")
+            .join(crate::history::cwd_slug(cwd))
+            .join("native-conflict.jsonl");
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        std::fs::write(&transcript, b"backup content\n").unwrap();
+        let archive = fx.dir.path().join("conflict.zip");
+        create(&fx.paths, &fx.db, &archive).unwrap();
+
+        std::fs::write(&transcript, b"different local content\n").unwrap();
+        let target = fx.dir.path().join("must-not-publish");
+        let error = restore(&archive, &target).unwrap_err();
+        assert!(matches!(&error, CoreError::Conflict(_)), "{error}");
+        assert!(!target.exists());
+        assert_eq!(
+            std::fs::read(&transcript).unwrap(),
+            b"different local content\n"
+        );
+    }
+
+    #[test]
+    fn restore_rejects_database_foreign_key_violations() {
+        let fx = fx();
+        let snapshot = fx.dir.path().join("invalid-foreign-key.db");
+        fx.db.backup_snapshot(&snapshot).unwrap();
+        {
+            let conn = rusqlite::Connection::open(&snapshot).unwrap();
+            conn.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
+            conn.execute(
+                "UPDATE sessions SET project_id='missing_project' WHERE id='ses_1'",
+                [],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                .unwrap();
+        }
+        let database = std::fs::read(&snapshot).unwrap();
+        let archive = fx.dir.path().join("invalid-foreign-key.zip");
+        write_custom_backup_with_method(
+            &archive,
+            &manifest(vec![entry("agentport.db", &database)]),
+            &[("agentport.db".into(), database)],
+            zip::CompressionMethod::Stored,
+        );
+
+        let target = fx.dir.path().join("invalid-foreign-key-target");
+        let error = restore(&archive, &target).unwrap_err();
+        assert!(error.to_string().contains("foreign_key_check"), "{error}");
+        assert!(!target.exists());
+    }
+
+    #[test]
     fn highly_compressible_created_backup_verifies_and_restores() {
         let fx = fx();
         let payload = vec![0_u8; 1024 * 1024];
-        std::fs::write(fx.paths.log_path("ses_1"), &payload).unwrap();
+        std::fs::write(
+            fx.paths.session_dir("ses_1").join("status-payload.bin"),
+            &payload,
+        )
+        .unwrap();
 
         let archive = fx.dir.path().join("compressible.zip");
         create(&fx.paths, &fx.db, &archive).unwrap();
@@ -693,9 +1237,10 @@ mod tests {
         let target = fx.dir.path().join("restored-compressible");
         restore(&archive, &target).unwrap();
         assert_eq!(
-            std::fs::read(target.join("sessions/ses_1/output.log")).unwrap(),
+            std::fs::read(target.join("sessions/ses_1/status-payload.bin")).unwrap(),
             payload
         );
+        assert!(!target.join("sessions/ses_1/output.log").exists());
     }
 
     #[test]
@@ -721,6 +1266,75 @@ mod tests {
         raw[n / 2] ^= 0xFF;
         std::fs::write(&archive, raw).unwrap();
         assert!(verify(&archive).is_err());
+    }
+
+    #[test]
+    fn native_manifest_cannot_target_provider_configuration_files() {
+        let fx = fx();
+        let snapshot = fx.dir.path().join("provider-target.db");
+        fx.db.backup_snapshot(&snapshot).unwrap();
+        let database = std::fs::read(&snapshot).unwrap();
+        let payload = b"malicious settings".to_vec();
+        let archive_path = "native/ses_1/claude/settings.json";
+        let artifact = crate::native_backup::NativeArtifact {
+            archive_path: archive_path.into(),
+            target_root: NativeTargetRoot::Claude,
+            target_path: "settings.json".into(),
+            size: payload.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(&payload)),
+        };
+        let mut forged = manifest(vec![
+            entry("agentport.db", &database),
+            entry(archive_path, &payload),
+        ]);
+        forged.native_sessions = vec![NativeSessionBackup {
+            agentport_session_id: "ses_1".into(),
+            provider: AgentType::Claude,
+            native_session_ids: vec!["native-id".into()],
+            cwd: "/tmp/demo".into(),
+            coverage: NativeCoverage::Complete,
+            artifacts: vec![artifact],
+            kimi_bindings: Vec::new(),
+        }];
+        forged.native_coverage = NativeCoverageSummary::from_sessions(&forged.native_sessions);
+        let archive = fx.dir.path().join("provider-target.zip");
+        write_custom_backup_with_method(
+            &archive,
+            &forged,
+            &[
+                ("agentport.db".into(), database),
+                (archive_path.into(), payload),
+            ],
+            zip::CompressionMethod::Stored,
+        );
+
+        let error = verify(&archive).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("invalid native artifact mapping"));
+    }
+
+    #[test]
+    fn zip_slip_payload_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("zip-slip.zip");
+        let database = b"db".to_vec();
+        let escaped = b"escape".to_vec();
+        write_custom_backup(
+            &archive,
+            &manifest(vec![
+                entry("agentport.db", &database),
+                entry("../escaped", &escaped),
+            ]),
+            &[
+                ("agentport.db".into(), database),
+                ("../escaped".into(), escaped),
+            ],
+        );
+
+        let error = verify(&archive).unwrap_err();
+        assert!(error.to_string().contains("unsafe backup path"), "{error}");
+        assert!(!dir.path().join("escaped").exists());
     }
 
     #[test]

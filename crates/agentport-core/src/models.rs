@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level data model version (PRD ch.5 `version`). Bump when the schema
 /// changes in a way the migrator must handle; SQLite user_version tracks the same.
-pub const DATA_MODEL_VERSION: i64 = 10;
+pub const DATA_MODEL_VERSION: i64 = 13;
 pub const APP_ID: &str = "agentport.local";
 pub const DELIVERY_SCOPE: &str = "p0_p2";
 
@@ -261,6 +261,19 @@ pub struct Project {
     pub root_path: String, // normalized absolute path
     pub git_root_path: Option<String>,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub sort_order: i64,
+}
+
+/// Complete, canonical sidebar layout entry. Pinned entries must precede all
+/// unpinned entries before the database accepts the layout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectLayoutEntry {
+    pub id: String,
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -402,6 +415,9 @@ pub struct Session {
     #[serde(default)]
     pub command: Vec<String>,
     pub permission_mode: PermissionMode,
+    /// Sidebar pin timestamp; `None` means unpinned. Latest pin sorts first.
+    #[serde(default)]
+    pub pinned_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub archived_at: Option<DateTime<Utc>>,
@@ -871,6 +887,10 @@ pub struct Settings {
     /// are permitted and appended by the renderer when they are discovered.
     #[serde(default)]
     pub agent_order: Vec<String>,
+    /// Adapters the user removed from the pickers. Detection results stay in
+    /// the database; the renderer hides these agents until they are restored.
+    #[serde(default)]
+    pub agent_hidden: Vec<String>,
     /// Hard constraint: always false (PRD ch.5).
     pub telemetry_enabled: bool,
 }
@@ -887,7 +907,9 @@ impl Default for Settings {
             terminal_command: String::new(),
             reduced_motion: ReducedMotion::System,
             screen_reader_mode: false,
-            search_index_enabled: true,
+            // Compatibility-only setting retained for older databases and
+            // clients. Conversation-body indexing has been removed.
+            search_index_enabled: false,
             agent_order: vec![
                 "shell".into(),
                 "codex".into(),
@@ -896,6 +918,7 @@ impl Default for Settings {
                 "qoder".into(),
                 "pi".into(),
             ],
+            agent_hidden: Vec::new(),
             telemetry_enabled: false,
         }
     }
@@ -940,6 +963,17 @@ impl Settings {
         if unique.len() != self.agent_order.len() {
             return Err(CoreError::Validation(
                 "agent_order cannot contain duplicate adapters".into(),
+            ));
+        }
+        if self.agent_hidden.iter().any(|agent| agent.trim().is_empty()) {
+            return Err(CoreError::Validation(
+                "agent_hidden cannot contain empty adapter names".into(),
+            ));
+        }
+        let unique: std::collections::HashSet<_> = self.agent_hidden.iter().collect();
+        if unique.len() != self.agent_hidden.len() {
+            return Err(CoreError::Validation(
+                "agent_hidden cannot contain duplicate adapters".into(),
             ));
         }
         Ok(())

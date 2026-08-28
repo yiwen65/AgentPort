@@ -136,6 +136,8 @@ impl MockRepo {
             root_path: self.repo.to_string_lossy().into_owned(),
             git_root_path: Some(self.repo.to_string_lossy().into_owned()),
             created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
         })
         .expect("register mock project");
     }

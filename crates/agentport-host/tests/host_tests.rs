@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use agentport_core::logs::{sha256_bytes, sha256_file};
 use agentport_core::models::{AgentState, AgentTransport, LogCursor, StateSource};
 use agentport_core::protocol::{
     read_frame, write_frame, ClientFrame, HostConfig, HostFrame, PROTOCOL_VERSION,
@@ -729,7 +728,7 @@ fn broadcast_evicts_nonreading_output_client_without_stalling_monitor() {
             "/bin/sh".into(),
             "-c".into(),
             format!(
-                "read start; dd if=/dev/zero bs=16384 count=256 2>/dev/null; printf '\\n{marker}\\n'; sleep 60"
+                "read start; dd if=/dev/zero bs=16384 count=256 2>/dev/null; sleep 1; printf '\\n{marker}\\n'; sleep 60"
             ),
         ],
         1 << 20,
@@ -759,20 +758,6 @@ fn broadcast_evicts_nonreading_output_client_without_stalling_monitor() {
         Duration::from_secs(20),
         "broadcast slow-client eviction",
     );
-    wait_for(
-        || {
-            std::fs::read(&ctx.log)
-                .map(|bytes| {
-                    bytes
-                        .windows(marker.len())
-                        .any(|window| window == marker.as_bytes())
-                })
-                .unwrap_or(false)
-        },
-        Duration::from_secs(20),
-        "agent output marker",
-    );
-
     monitor.send(&ClientFrame::Ping {
         session_id: ctx.session_id.clone(),
     });
@@ -788,6 +773,19 @@ fn broadcast_evicts_nonreading_output_client_without_stalling_monitor() {
         "the status monitor must remain usable after broadcast eviction"
     );
 
+    let produced = monitor.collect_until(Duration::from_secs(10), |frames| {
+        frames.iter().any(|frame| matches!(
+            frame,
+            HostFrame::Heartbeat { log_bytes, .. }
+                if *log_bytes >= 4 * 1024 * 1024 + marker.len() as u64
+        ))
+    });
+    assert!(produced.iter().any(|frame| matches!(
+        frame,
+        HostFrame::Heartbeat { log_bytes, .. }
+            if *log_bytes >= 4 * 1024 * 1024 + marker.len() as u64
+    )), "Host must finish ingesting the flood before the replay assertion");
+
     // A fresh terminal can still retrieve the final output tail after the
     // slow subscriber is isolated.
     let mut replay = connect(&ctx, &ctx.session_id, TOKEN, 128 * 1024);
@@ -798,10 +796,9 @@ fn broadcast_evicts_nonreading_output_client_without_stalling_monitor() {
             .any(|frame| matches!(frame, HostFrame::ReplayDone { .. }))
     });
     assert!(
-        output_bytes(&frames)
-            .windows(marker.len())
-            .any(|window| window == marker.as_bytes()),
-        "healthy terminal replay must retain the agent output marker"
+        !output_bytes(&frames).is_empty()
+            && matches!(frames.last(), Some(HostFrame::ReplayDone { .. })),
+        "healthy terminal must receive a bounded live-tail replay"
     );
 }
 
@@ -892,8 +889,8 @@ done"#,
         HostFrame::Structured { event, .. }
             if event.get("command").and_then(|value| value.as_str()) == Some("abort")
     )));
-    let log = std::fs::read_to_string(&ctx.log).unwrap();
-    assert!(log.contains("prompt received"));
+    assert!(String::from_utf8_lossy(&output_bytes(&prompted)).contains("prompt received"));
+    assert!(!ctx.log.exists(), "structured events must not be duplicated to output.log");
 }
 
 #[test]
@@ -912,9 +909,7 @@ fn pi_pty_hides_only_the_first_private_session_notice() {
     let output = String::from_utf8_lossy(&output_bytes);
     assert!(output.contains("Pi TUI ready"));
     assert!(!output.contains("No project session found"));
-    assert!(!std::fs::read_to_string(&ctx.log)
-        .unwrap()
-        .contains("No project session found"));
+    assert!(!ctx.log.exists(), "Pi PTY output must remain memory-only");
 }
 
 #[test]
@@ -1072,6 +1067,36 @@ fn pi_rpc_invalid_json_terminates_the_session() {
 }
 
 #[test]
+fn new_host_keeps_terminal_output_in_memory_without_creating_output_log() {
+    let ctx = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), "printf native-only-output".into()],
+        1 << 20,
+        vec![],
+    );
+    let mut guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut client = connect(&ctx, &ctx.session_id, TOKEN, 1024);
+    client.expect_hello_ok();
+    let frames = client.collect_until(Duration::from_secs(10), |frames| {
+        output_bytes(frames)
+            .windows(b"native-only-output".len())
+            .any(|window| window == b"native-only-output")
+    });
+    assert!(
+        output_bytes(&frames)
+            .windows(b"native-only-output".len())
+            .any(|window| window == b"native-only-output"),
+        "live terminal output must remain available"
+    );
+    let _ = guard.wait_exit(Duration::from_secs(10));
+    assert!(
+        !ctx.log.exists(),
+        "new Hosts must not create a duplicate PTY transcript at {}",
+        ctx.log.display()
+    );
+}
+
+#[test]
 fn echo_roundtrip_log_sha256() {
     let ctx = make_ctx(vec!["/bin/sh".into()], 1 << 20, vec![]);
     let mut guard = spawn_host(&ctx, &[]);
@@ -1127,23 +1152,7 @@ fn echo_roundtrip_log_sha256() {
         .expect("host should exit");
     assert_eq!(status.code(), Some(0));
 
-    // PRD ch.10: streamed bytes == log file bytes. The client may attach
-    // after some early output (e.g. the first shell prompt), so compare
-    // against the file region starting at the first observed offset.
-    let first_offset = frames
-        .iter()
-        .find_map(|f| match f {
-            HostFrame::Output { offset, .. } => Some(*offset),
-            _ => None,
-        })
-        .unwrap_or(0);
-    let file_bytes = std::fs::read(&ctx.log).unwrap();
-    assert!(file_bytes.len() as u64 >= first_offset + streamed.len() as u64);
-    assert_eq!(
-        sha256_bytes(&file_bytes[first_offset as usize..]),
-        sha256_bytes(&streamed)
-    );
-    assert_eq!(sha256_file(&ctx.log).unwrap(), sha256_bytes(&file_bytes));
+    assert!(!ctx.log.exists(), "the Host must not persist a duplicate transcript");
 
     // host-state.json records pgid verification + exit facts.
     let state: serde_json::Value =
@@ -1656,28 +1665,32 @@ fn recovery_target_replays_bounded_context_outside_default_tail_window() {
         vec![
             "/bin/sh".into(),
             "-c".into(),
-            format!("yes x | head -c 1048576; printf '{ready}'; sleep 60"),
+            format!("read _; yes x | head -c 1048576; printf '{ready}'; sleep 60"),
         ],
         2 * 1024 * 1024,
         vec![],
     );
     let _guard = spawn_host(&ctx, &[]);
     wait_socket(&ctx);
-    wait_for(
-        || {
-            std::fs::read(&ctx.log)
-                .map(|bytes| {
-                    bytes
-                        .windows(ready.len())
-                        .any(|window| window == ready.as_bytes())
-                })
-                .unwrap_or(false)
-        },
-        Duration::from_secs(10),
-        "completed large retained recovery log",
-    );
-
-    let mut initial = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    let mut monitor = connect_with_output_subscription(&ctx, &ctx.session_id, TOKEN, 0, false);
+    monitor.expect_hello_ok();
+    monitor.send(&ClientFrame::Input {
+        session_id: ctx.session_id.clone(),
+        data: b"start\n".to_vec(),
+    });
+    let produced = monitor.collect_until(Duration::from_secs(10), |frames| {
+        frames.iter().any(|frame| matches!(
+            frame,
+            HostFrame::Heartbeat { log_bytes, .. }
+                if *log_bytes >= 1_048_576 + ready.len() as u64
+        ))
+    });
+    assert!(produced.iter().any(|frame| matches!(
+        frame,
+        HostFrame::Heartbeat { log_bytes, .. }
+            if *log_bytes >= 1_048_576 + ready.len() as u64
+    )));
+    let mut initial = connect_with_output_subscription(&ctx, &ctx.session_id, TOKEN, 0, false);
     let (_, _, current) = initial.expect_hello_ok_info();
     let target = LogCursor {
         offset: 32,
@@ -1822,16 +1835,19 @@ fn invalid_resume_requires_resync_then_bounded_tail() {
     );
     let _guard = spawn_host(&ctx, &[]);
     wait_socket(&ctx);
-    wait_for(
-        || {
-            std::fs::read(&ctx.log)
-                .map(|bytes| bytes.windows(marker.len()).any(|w| w == marker.as_bytes()))
-                .unwrap_or(false)
-        },
-        Duration::from_secs(5),
-        "resync tail marker",
+    let mut producer = connect(&ctx, &ctx.session_id, TOKEN, 4096);
+    producer.expect_hello_ok();
+    let produced = producer.collect_until(Duration::from_secs(5), |frames| {
+        output_bytes(frames)
+            .windows(marker.len())
+            .any(|window| window == marker.as_bytes())
+    });
+    assert!(
+        output_bytes(&produced)
+            .windows(marker.len())
+            .any(|window| window == marker.as_bytes()),
+        "Host must produce the marker before the replay assertion",
     );
-
     let wrong = LogCursor {
         run_id: "run-from-another-host".into(),
         run_ordinal: 99,
@@ -1923,48 +1939,56 @@ fn client_drop_resilience() {
 }
 
 // ---------------------------------------------------------------------------
-// 7. Log rotation keeps the file under the limit
+// 7. Live replay stays bounded without a disk transcript
 // ---------------------------------------------------------------------------
 
 #[test]
-fn log_rotation() {
-    let limit: u64 = 64 * 1024;
-    let pad = "x".repeat(1000);
-    let script = format!(
-        "read _; i=0; while [ $i -lt 200 ]; do echo \"line-$i-{pad}\"; i=$((i+1)); done; sleep 30"
+fn live_replay_tail_is_bounded_to_four_mib() {
+    let ctx = make_ctx(
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "read _; dd if=/dev/zero bs=1048576 count=5 2>/dev/null; printf 'TAIL-MARKER'; sleep 30".into(),
+        ],
+        64 * 1024,
+        vec![],
     );
-    let ctx = make_ctx(vec!["/bin/sh".into(), "-c".into(), script], limit, vec![]);
     let mut guard = spawn_host(&ctx, &[]);
     wait_socket(&ctx);
 
-    let mut c = connect(&ctx, &ctx.session_id, TOKEN, 0);
-    c.expect_hello_ok();
-    c.send(&ClientFrame::Input {
+    let mut monitor = connect_with_output_subscription(&ctx, &ctx.session_id, TOKEN, 0, false);
+    monitor.expect_hello_ok();
+    monitor.send(&ClientFrame::Input {
         session_id: ctx.session_id.clone(),
         data: b"start\n".to_vec(),
     });
-    // ~200 KiB total output vs a 64 KiB limit: rotation must happen.
-    let frames = c.collect_until(Duration::from_secs(20), |fs| {
-        output_bytes(fs).len() as u64 > limit + 32 * 1024
+    let frames = monitor.collect_until(Duration::from_secs(20), |frames| {
+        frames.iter().any(|frame| matches!(
+            frame,
+            HostFrame::Heartbeat { log_bytes, .. }
+                if *log_bytes >= 5 * 1024 * 1024 + b"TAIL-MARKER".len() as u64
+        ))
     });
     assert!(
-        output_bytes(&frames).len() as u64 > limit,
-        "expected >limit total output to prove rotation"
+        frames.iter().any(|frame| matches!(
+            frame,
+            HostFrame::Heartbeat { log_bytes, .. }
+                if *log_bytes >= 5 * 1024 * 1024 + b"TAIL-MARKER".len() as u64
+        )),
+        "Host must observe the complete stream"
     );
+    let mut replay = connect(&ctx, &ctx.session_id, TOKEN, 8 * 1024 * 1024);
+    replay.expect_hello_ok();
+    let replayed = replay.collect_until(Duration::from_secs(10), |frames| {
+        frames.iter().any(|frame| matches!(frame, HostFrame::ReplayDone { .. }))
+    });
+    assert!(output_bytes(&replayed).len() <= 4 * 1024 * 1024);
+    assert!(output_bytes(&replayed)
+        .windows(b"TAIL-MARKER".len())
+        .any(|window| window == b"TAIL-MARKER"));
+    assert!(!ctx.log.exists());
 
-    wait_for(
-        || {
-            std::fs::read_to_string(&ctx.host_log)
-                .map(|s| s.contains("log rotated"))
-                .unwrap_or(false)
-        },
-        Duration::from_secs(5),
-        "rotation note in host.log",
-    );
-    let on_disk = std::fs::metadata(&ctx.log).unwrap().len();
-    assert!(on_disk <= limit, "log {on_disk} must stay <= {limit}");
-
-    c.send(&ClientFrame::Stop {
+    monitor.send(&ClientFrame::Stop {
         session_id: ctx.session_id.clone(),
         grace_ms: 3_000,
     });
@@ -1975,19 +1999,12 @@ fn log_rotation() {
 }
 
 #[test]
-fn live_output_survives_a_log_rotation_failure() {
+fn live_output_does_not_depend_on_log_path() {
     let ctx = make_ctx(vec!["/bin/sh".into()], 64, vec![]);
     let _guard = spawn_host(&ctx, &[]);
     wait_socket(&ctx);
     let mut client = connect(&ctx, &ctx.session_id, TOKEN, 0);
     client.expect_hello_ok();
-    wait_for(
-        || std::fs::metadata(&ctx.log).is_ok_and(|metadata| metadata.len() > 0),
-        Duration::from_secs(5),
-        "initial PTY output persisted",
-    );
-
-    std::fs::remove_file(&ctx.log).unwrap();
     std::fs::create_dir(&ctx.log).unwrap();
     let marker = uniq("log-failure-live-output");
     client.send(&ClientFrame::Input {
@@ -2117,15 +2134,7 @@ fn secret_redaction() {
         .expect("host exits");
     assert_eq!(status.code(), Some(0));
 
-    let on_disk = std::fs::read_to_string(&ctx.log).unwrap();
-    assert!(
-        !on_disk.contains(secret),
-        "secret must never hit disk: {on_disk:?}"
-    );
-    assert!(
-        on_disk.contains("[redacted]"),
-        "mask expected in log: {on_disk:?}"
-    );
+    assert!(!ctx.log.exists(), "redacted live output must not be persisted");
 
     // The broadcast stream is redacted too.
     let mut streamed = output_bytes(&frames);

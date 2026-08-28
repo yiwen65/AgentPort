@@ -91,12 +91,25 @@ impl AgentAdapter for PiAdapter {
                     )));
                 }
             }
+        } else if !super::has_flag(install, "tui-mode") {
+            return Err(CoreError::Blocked(
+                "this version of pi has no --tui-mode flag; AgentPort requires fullscreen PTY rendering so inline redraws cannot flood terminal scrollback"
+                    .into(),
+            ));
         }
         let native_id = crate::ids::new_uuid();
         let dir = session_dir(ctx);
         let mut argv = vec![install.executable_path.clone()];
         argv.extend(managed_args(ctx.transport, &native_id, &dir));
         argv.extend(ctx.preset.args.clone());
+        if ctx.transport == AgentTransport::Pty {
+            // Pi defaults to the regular/inline renderer. Expanded tool output
+            // then redraws the entire conversation into normal scrollback on
+            // every frame. AgentPort reads durable history from Pi's native
+            // JSONL instead, so keep the interactive TUI in its alternate
+            // screen and prevent redraw frames from becoming fake history.
+            argv.extend(["--tui-mode".into(), "fullscreen".into()]);
+        }
         Ok(LaunchPlan {
             argv,
             env: vec![],
@@ -140,6 +153,11 @@ impl AgentAdapter for PiAdapter {
                     )));
                 }
             }
+        } else if !super::has_flag(install, "tui-mode") {
+            return Err(CoreError::Blocked(
+                "this version of pi has no --tui-mode flag; AgentPort requires fullscreen PTY rendering so inline redraws cannot flood terminal scrollback"
+                    .into(),
+            ));
         }
         let launch_ctx = ctx.to_launch_context();
         let dir = session_dir(&launch_ctx);
@@ -165,6 +183,9 @@ impl AgentAdapter for PiAdapter {
             ]);
         }
         argv.extend(ctx.preset.args.clone());
+        if ctx.transport == AgentTransport::Pty {
+            argv.extend(["--tui-mode".into(), "fullscreen".into()]);
+        }
         Ok(LaunchPlan {
             argv,
             env: vec![],
@@ -192,11 +213,24 @@ mod tests {
     fn pi_tui_launch_preserves_the_native_project_trust_prompt() {
         let ctx = fx::launch_ctx(
             AgentType::Pi,
-            &["session-id", "session", "session-dir", "approve"],
+            &[
+                "session-id",
+                "session",
+                "session-dir",
+                "approve",
+                "tui-mode",
+            ],
             PermissionMode::Native,
         );
         let plan = PiAdapter.build_launch(&ctx).unwrap();
         assert!(!plan.argv.iter().any(|value| value == "--mode"));
+        assert!(plan
+            .argv
+            .windows(2)
+            .any(|pair| pair == ["--tui-mode", "fullscreen"]));
+        assert!(plan
+            .argv
+            .ends_with(&["--tui-mode".to_string(), "fullscreen".to_string(),]));
         assert!(plan.argv.iter().any(|value| value == "--session-dir"));
         assert!(!plan.argv.iter().any(|value| value == "--approve"));
         assert_eq!(plan.transport, AgentTransport::Pty);
@@ -223,6 +257,7 @@ mod tests {
         let plan = PiAdapter.build_launch(&ctx).unwrap();
         assert!(plan.argv.windows(2).any(|pair| pair == ["--mode", "rpc"]));
         assert!(plan.argv.iter().any(|value| value == "--session-dir"));
+        assert!(!plan.argv.iter().any(|value| value == "--tui-mode"));
         assert!(!plan.argv.iter().any(|value| value == "--approve"));
         assert_eq!(plan.transport, AgentTransport::JsonRpc);
     }
@@ -231,7 +266,7 @@ mod tests {
     fn pi_tui_resume_reuses_native_id_before_the_first_turn_is_persisted() {
         let ctx = fx::resume_ctx(
             AgentType::Pi,
-            &["session-id", "session-dir", "approve"],
+            &["session-id", "session-dir", "approve", "tui-mode"],
             Some("pi-native-id"),
         );
         let plan = PiAdapter.build_resume_checked(&ctx).unwrap();
@@ -241,11 +276,27 @@ mod tests {
             .any(|pair| pair == ["--session-id", "pi-native-id"]));
         assert!(!plan.argv.iter().any(|value| value == "--session"));
         assert!(!plan.argv.iter().any(|value| value == "--mode"));
+        assert!(plan
+            .argv
+            .windows(2)
+            .any(|pair| pair == ["--tui-mode", "fullscreen"]));
         assert_eq!(
             plan.assigned_agent_session_id.as_deref(),
             Some("pi-native-id")
         );
         assert_eq!(plan.transport, AgentTransport::Pty);
+    }
+
+    #[test]
+    fn pi_tui_blocks_versions_that_cannot_isolate_inline_redraws() {
+        let ctx = fx::launch_ctx(
+            AgentType::Pi,
+            &["session-id", "session", "session-dir", "approve"],
+            PermissionMode::Native,
+        );
+        let error = PiAdapter.build_launch(&ctx).unwrap_err();
+        assert!(error.to_string().contains("--tui-mode"));
+        assert!(error.to_string().contains("fullscreen"));
     }
 
     #[test]

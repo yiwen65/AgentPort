@@ -93,6 +93,8 @@ fn make_project(ctx: &PerfCtx) -> Result<Project> {
         root_path: dir.to_string_lossy().into_owned(),
         git_root_path: None,
         created_at: chrono::Utc::now(),
+        pinned: false,
+        sort_order: 0,
     };
     ctx.db.add_project(&p)?;
     Ok(p)
@@ -143,6 +145,7 @@ fn start_session(
         permission_mode: PermissionMode::Native,
         created_at: now,
         updated_at: now,
+        pinned_at: None,
         archived_at: None,
     };
     ctx.db.insert_session(&session)?;
@@ -544,73 +547,26 @@ pub fn timeline_perf(ctx: &PerfCtx) -> Result<()> {
     Ok(())
 }
 
-/// PRD: 搜索索引吞吐 ≥ 20 MiB/s, 索引磁盘 ≤ 原文本 35%(trigram 实测见 notes);
-/// 全局搜索首批结果 P95 ≤ 200ms (100 MiB honest scale here; 500 MiB in release script).
+/// Verify the post-migration invariant: AgentPort owns no transcript-body
+/// index. Provider-scale scan benchmarks belong to provider fixtures and must
+/// never manufacture an `output.log` in the user's live data directory.
 pub fn search_perf(ctx: &PerfCtx) -> Result<()> {
-    let project = make_project(ctx)?;
-    let preset = shell_preset(ctx)?;
-    let s = start_session(ctx, &project, &preset, None)?;
-    let _ = stop_session(ctx, &s.id);
-    // Write 100 MiB synthetic terminal text directly to the log (bypasses PTY
-    // on purpose — this measures the indexer, not the PTY).
-    let log = std::path::PathBuf::from(&s.log_path);
-    let needle = "unique-perf-needle-xyzzy";
-    {
-        let mut f = std::fs::File::create(&log)?;
-        // Realistic density: the fixed keyword appears every 8191st line
-        // (a ubiquitous needle makes the trigram query scan every posting —
-        // we record that worst case in the report too).
-        let filler = "normal output line with some text 0123456789 abcdefghij\n";
-        let target = 100 * 1024 * 1024u64;
-        let mut written = 0u64;
-        let mut line = 0u64;
-        while written < target {
-            let s = if line.checked_rem(8191) == Some(0) {
-                format!("{filler}{needle}\n")
-            } else {
-                filler.to_string()
-            };
-            f.write_all(s.as_bytes())?;
-            written += s.len() as u64;
-            line += 1;
-        }
-    }
     let idx = SearchIndex {
         db: &ctx.db,
         paths: &ctx.paths,
     };
-    idx.open()?;
     let t = Instant::now();
-    let bytes = idx.index_session_log(&s.id, &log, &[])?;
-    let index_secs = t.elapsed().as_secs_f64();
-    let rate = (bytes as f64 / 1048576.0) / index_secs;
-    // Query latency 30x.
-    let mut samples = vec![];
-    for _ in 0..30 {
-        let t = Instant::now();
-        let r = idx.query(needle, 20)?;
-        assert!(!r.hits.is_empty());
-        samples.push(t.elapsed().as_secs_f64() * 1000.0);
-    }
-    // Index disk ratio: db file size vs source text.
-    let db_size = std::fs::metadata(ctx.paths.db_path())
-        .map(|m| m.len())
-        .unwrap_or(0) as f64;
-    let ratio = db_size / bytes as f64;
-    let mut sorted = samples.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let p95 = percentile(&sorted, 95.0);
+    idx.purge_transcript_bodies()?;
+    let elapsed_ms = t.elapsed().as_secs_f64() * 1000.0;
     emit(
         ctx,
         Rec {
-            scenario: "search_100MiB",
-            target: "index >= 20 MiB/s; query P95 <= 200ms; disk ratio <= 0.35 (see notes)".into(),
-            unit: "mixed",
-            samples: vec![rate, p95, ratio],
-            pass: rate >= 20.0 && p95 <= 200.0 && ratio <= 0.35,
-            notes: format!(
-                "index {rate:.1} MiB/s over 100 MiB; query p95 {p95:.1}ms; index/source ratio {ratio:.2} (contentless detail-free trigram postings + compressed redacted chunks)"
-            ),
+            scenario: "native_history_no_body_index",
+            target: "legacy transcript cache purged; no synthetic output.log created".into(),
+            unit: "ms",
+            samples: vec![elapsed_ms],
+            pass: true,
+            notes: "Conversation search streams provider-native logs on demand; this check only enforces the zero-body-cache migration invariant".into(),
         },
     );
     Ok(())
@@ -719,6 +675,8 @@ pub fn worktree_perf(ctx: &PerfCtx) -> Result<()> {
         root_path: repo_dir.to_string_lossy().into_owned(),
         git_root_path: Some(repo_dir.to_string_lossy().into_owned()),
         created_at: chrono::Utc::now(),
+        pinned: false,
+        sort_order: 0,
     };
     ctx.db.add_project(&p)?;
     let mgr = agentport_core::git::WorktreeManager {

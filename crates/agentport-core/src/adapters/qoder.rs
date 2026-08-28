@@ -105,7 +105,7 @@ impl AgentAdapter for QoderAdapter {
             executable_path: exe.to_string_lossy().into_owned(),
             version_text: super::normalize_version(version_out),
             capability_hash: super::capability::capability_hash(version_out, help_out),
-            exact_resume: has("session-id"),
+            exact_resume: has("session-id") && has("resume"),
             hook_status: if has("settings") {
                 HookStatus::Supported
             } else {
@@ -124,6 +124,11 @@ impl AgentAdapter for QoderAdapter {
         if !super::has_flag(install, "session-id") {
             return Err(CoreError::Blocked(
                 "this version of qodercli has no --session-id flag and cannot satisfy exact-resume requirements".into(),
+            ));
+        }
+        if !super::has_flag(install, "resume") {
+            return Err(CoreError::Blocked(
+                "this version of qodercli has no --resume flag and cannot satisfy exact-resume requirements".into(),
             ));
         }
         let mut argv = vec![install.executable_path.clone()];
@@ -155,16 +160,16 @@ impl AgentAdapter for QoderAdapter {
         let mut notices = vec![];
         let (resume_precision, helper_files, hook_status) = match &ctx.agent_session_id {
             Some(id) => {
-                if !super::has_flag(install, "session-id") {
+                if !super::has_flag(install, "resume") {
                     return Err(CoreError::Blocked(
-                        "this version of qodercli has no --session-id flag and cannot resume a Session exactly".into(),
+                        "this version of qodercli has no --resume flag and cannot resume a Session exactly".into(),
                     ));
                 }
-                // Qoder's --resume opens the chat-session picker. Supplying
-                // the native ID directly reopens an existing transcript and,
-                // when the initial turn was interrupted before persistence,
-                // returns to the interactive input instead of the picker.
-                argv.extend(["--session-id".into(), id.clone()]);
+                // `--session-id` assigns the identity of a new Session. Reusing
+                // an existing ID through that launch-only flag exits 42. Qoder's
+                // optional `--resume [id]` argument is the exact, picker-free
+                // path for an existing native transcript.
+                argv.extend(["--resume".into(), id.clone()]);
                 let launch_ctx = LaunchContext {
                     transport: AgentTransport::Pty,
                     ..ctx.to_launch_context()
@@ -259,7 +264,12 @@ mod tests {
     fn qoder_resume_reopens_native_id_without_session_picker() {
         let mut ctx = fx::resume_ctx(
             AgentType::Qoder,
-            &["session-id", "settings", "dangerously-skip-permissions"],
+            &[
+                "session-id",
+                "resume",
+                "settings",
+                "dangerously-skip-permissions",
+            ],
             Some("qoder-native-id"),
         );
         ctx.preset.permission_mode = PermissionMode::Bypass;
@@ -267,12 +277,34 @@ mod tests {
         assert!(plan
             .argv
             .windows(2)
-            .any(|pair| pair == ["--session-id", "qoder-native-id"]));
-        assert!(!plan.argv.iter().any(|value| value == "--resume"));
+            .any(|pair| pair == ["--resume", "qoder-native-id"]));
+        assert!(!plan.argv.iter().any(|value| value == "--session-id"));
         assert_eq!(
             plan.assigned_agent_session_id.as_deref(),
             Some("qoder-native-id")
         );
+    }
+
+    #[test]
+    fn qoder_exact_resume_requires_the_resume_flag() {
+        let install = fx::install(AgentType::Qoder, &["session-id", "settings"]);
+        let mut launch = fx::launch_ctx(AgentType::Qoder, &[], PermissionMode::Native);
+        launch.install = install.clone();
+        assert!(matches!(
+            QoderAdapter.build_launch(&launch),
+            Err(CoreError::Blocked(message)) if message.contains("--resume")
+        ));
+
+        let mut resume = fx::resume_ctx(
+            AgentType::Qoder,
+            &["session-id", "settings"],
+            Some("existing-native-id"),
+        );
+        resume.install = install;
+        assert!(matches!(
+            QoderAdapter.build_resume(&resume),
+            Err(CoreError::Blocked(message)) if message.contains("--resume")
+        ));
     }
 
     #[test]

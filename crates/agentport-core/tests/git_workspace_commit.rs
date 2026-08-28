@@ -529,10 +529,6 @@ fn startup_recovery_classifies_committed_and_unexecuted_journals_from_git_truth(
             .unwrap();
     };
     insert_journal("journal-not-executed");
-    assert!(matches!(
-        db.remove_project("project-a"),
-        Err(agentport_core::CoreError::Blocked(_))
-    ));
     let first = manager.reconcile_commit_operations().unwrap();
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].outcome, GitCommitOutcome::NotExecuted);
@@ -597,6 +593,8 @@ fn review_warns_when_a_rename_touches_a_path_outside_the_project_directory() {
         root_path: fixture.root().join("app").to_string_lossy().into_owned(),
         git_root_path: Some(fixture.root().to_string_lossy().into_owned()),
         created_at: Utc::now(),
+        pinned: false,
+        sort_order: 0,
     })
     .unwrap();
     let locator = GitContextLocator::ProjectMain {

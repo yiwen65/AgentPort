@@ -202,6 +202,7 @@ pub fn validate_user_args(t: AgentType, args: &[String]) -> Result<()> {
         ],
         AgentType::Pi => &[
             "--mode",
+            "--tui-mode",
             "--print",
             "-p",
             "--continue",
@@ -402,6 +403,7 @@ mod tests {
             validate_user_args(AgentType::Pi, &["--session-id".into(), "other".into()]).is_err()
         );
         assert!(validate_user_args(AgentType::Pi, &["--api-key".into(), "secret".into()]).is_err());
+        assert!(validate_user_args(AgentType::Pi, &["--tui-mode=regular".into()]).is_err());
         assert!(validate_user_args(AgentType::Pi, &["--model".into(), "custom".into()]).is_ok());
     }
 

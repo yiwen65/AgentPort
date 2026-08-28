@@ -232,6 +232,8 @@ mod tests {
             root_path: "/tmp/prj_1".into(),
             git_root_path: None,
             created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
         })
         .unwrap();
     }
@@ -257,6 +259,7 @@ mod tests {
             permission_mode: PermissionMode::Native,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            pinned_at: None,
             archived_at: None,
         };
         db.insert_session(&s).unwrap();

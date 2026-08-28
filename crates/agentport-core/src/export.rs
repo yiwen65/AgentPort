@@ -22,7 +22,6 @@ pub const DIAG_ZIP_VERSION: u32 = 1;
 /// Per-session terminal log cap inside diagnostics zips: the newest evidence
 /// lives at the tail, so only the last 2 MiB per session is packed. Keeps the
 /// zip bounded even when a session log sits at its configured rotation limit.
-const DIAG_SESSION_LOG_CAP: u64 = 2 * 1024 * 1024;
 
 /// Redaction rule string declared in manifest.json (mirrors redact.rs).
 const REDACTION_RULE: &str = "exact-byte-match:fixed-mask";
@@ -192,19 +191,6 @@ impl<'a> Exporter<'a> {
         let mut total_hits = 0u64;
 
         for s in &sessions {
-            // terminal log — tail-capped, ANSI-stripped, redacted.
-            let tail = crate::logs::tail_bytes(Path::new(&s.log_path), DIAG_SESSION_LOG_CAP)?;
-            let stripped = strip_ansi_escapes::strip(&tail);
-            let h = stage_file(
-                &staging,
-                &mut files,
-                format!("sessions/{}-terminal.log", s.id),
-                &stripped,
-                secrets,
-            )?;
-            total_hits += h;
-            self.db.record_redaction_hits(&s.id, h)?;
-
             // full status-event history as JSON (8.2).
             let events = self.db.status_history(&s.id, u32::MAX)?;
             let json = serde_json::to_vec_pretty(&events)?;
@@ -613,6 +599,8 @@ mod tests {
             root_path: format!("/tmp/{id}"),
             git_root_path: None,
             created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
         })
         .unwrap();
     }
@@ -642,6 +630,7 @@ mod tests {
             permission_mode: PermissionMode::Native,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            pinned_at: None,
             archived_at: None,
         };
         db.insert_session(&s).unwrap();
@@ -897,9 +886,7 @@ mod tests {
             .collect();
         let expected: BTreeSet<String> = [
             "manifest.json",
-            "sessions/ses_a-terminal.log",
             "sessions/ses_a-status-events.json",
-            "sessions/ses_b-terminal.log",
             "sessions/ses_b-status-events.json",
             "worktrees/main-api-agent-fix-git-status.txt",
             "diagnostics/app-version.txt",
@@ -911,7 +898,7 @@ mod tests {
         .collect();
         assert_eq!(names, expected);
 
-        // No entry contains the secret bytes; terminal logs contain no ESC.
+        // Native transcript bodies and legacy terminal logs are never staged.
         let secret_str = std::str::from_utf8(SECRET).unwrap();
         for i in 0..zip.len() {
             let mut e = zip.by_index(i).unwrap();
@@ -922,9 +909,7 @@ mod tests {
                 "secret leaked into zip entry {}",
                 e.name()
             );
-            if e.name().ends_with("-terminal.log") {
-                assert!(!buf.contains(&0x1b), "ANSI left in {}", e.name());
-            }
+            assert!(!e.name().ends_with("-terminal.log"));
         }
 
         // manifest.json: schema fields + redaction declaration.
@@ -935,7 +920,7 @@ mod tests {
         assert_eq!(m.sessions, vec!["ses_a".to_string(), "ses_b".to_string()]);
         assert!(m.redaction.applied);
         assert_eq!(m.redaction.rule, "exact-byte-match:fixed-mask");
-        assert!(m.redaction.hit_count >= 1, "hits: {mstr}");
+        assert_eq!(m.redaction.hit_count, 0, "native transcript was copied: {mstr}");
         let mut listed = m.files.clone();
         listed.push("manifest.json".to_string());
         listed.sort();
@@ -956,9 +941,7 @@ mod tests {
         assert_eq!(evs[0].sequence, 1);
         assert_eq!(evs[1].state, AgentState::NeedsInput);
 
-        // terminal log was redacted; worktree file carries the porcelain raw.
-        let term = entry_strings(&mut zip, "sessions/ses_a-terminal.log");
-        assert!(term.contains("[redacted]"), "{term}");
+        // Worktree diagnostics remain available without copying conversation bodies.
         let git = entry_strings(&mut zip, "worktrees/main-api-agent-fix-git-status.txt");
         assert!(git.contains("??"), "{git}");
 
@@ -974,7 +957,7 @@ mod tests {
         assert!(caps.is_empty());
 
         // Hits were audited; temp staging dir removed (8.3).
-        assert!(fx.db.redaction_hits_total("ses_a").unwrap() >= 1);
+        assert_eq!(fx.db.redaction_hits_total("ses_a").unwrap(), 0);
         let leftovers: Vec<_> = std::fs::read_dir(fx.paths.exports_dir())
             .map(|it| it.collect())
             .unwrap_or_default();
@@ -982,15 +965,13 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_zip_failure_cleans_temp_and_keeps_sources() {
+    fn diagnostics_zip_ignores_missing_legacy_logs_and_keeps_sources() {
         let fx = fx();
         add_project(&fx.db, "prj_1", "demo");
         let log_ok = write_log(&fx, "ok.log", b"precious source bytes\n");
         add_session(&fx.db, "ses_ok", "prj_1", &log_ok);
-        // Controlled failure injection: ses_broken's log_path points at a
-        // missing file, so the per-session log read fails deterministically
-        // AFTER ses_ok was already staged — exercising the temp-dir cleanup
-        // path of 8.3.
+        // A stale or missing legacy log path is irrelevant because diagnostics
+        // no longer copies conversation bodies.
         let missing = fx.dir.path().join("does-not-exist.log");
         add_session(&fx.db, "ses_broken", "prj_1", &missing);
 
@@ -1004,8 +985,8 @@ mod tests {
             &dest,
             &[],
         );
-        assert!(matches!(r, Err(CoreError::Io(_))), "{r:?}");
-        assert!(!dest.exists(), "no zip may be published on failure");
+        assert!(r.is_ok(), "{r:?}");
+        assert!(dest.exists());
         // temp staging dir removed
         let leftovers: Vec<_> = std::fs::read_dir(fx.paths.exports_dir())
             .map(|it| it.collect())

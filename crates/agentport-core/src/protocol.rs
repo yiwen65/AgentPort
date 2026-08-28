@@ -312,10 +312,14 @@ mod serde_bytes_b64 {
 // Framing helpers (shared by host and core client)
 // ---------------------------------------------------------------------------
 
+pub fn encode_frame<T: Serialize>(frame: &T) -> std::io::Result<Vec<u8>> {
+    let mut line = serde_json::to_vec(frame).map_err(std::io::Error::other)?;
+    line.push(b'\n');
+    Ok(line)
+}
+
 pub fn write_frame<T: Serialize>(w: &mut impl std::io::Write, frame: &T) -> std::io::Result<()> {
-    let line = serde_json::to_string(frame).map_err(std::io::Error::other)?;
-    w.write_all(line.as_bytes())?;
-    w.write_all(b"\n")?;
+    w.write_all(&encode_frame(frame)?)?;
     w.flush()
 }
 
