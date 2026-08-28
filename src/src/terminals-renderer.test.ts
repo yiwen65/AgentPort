@@ -280,7 +280,7 @@ import {
   setTerminalActive,
 } from "./terminals";
 import { applyUiLanguage } from "./i18n";
-import { getState, setState } from "./store";
+import { emptyRuntime, getState, setState } from "./store";
 
 let resizeObserverCallbacks: Array<() => void> = [];
 
@@ -2032,6 +2032,19 @@ describe("terminal renderer", () => {
 
     expect(terminal.scrollToLine).not.toHaveBeenCalled();
     expect(terminal.buffer.active.viewportY).toBe(40);
+  });
+
+  it("covers a reattach even when the previous attachment had completed replay", () => {
+    setState({
+      runtime: {
+        "renderer-test": { ...emptyRuntime(), replayDone: true },
+      },
+    });
+
+    mountTerminal("renderer-test", document.createElement("div"));
+
+    expect(getState().runtime["renderer-test"]?.attaching).toBe(true);
+    expect(getState().runtime["renderer-test"]?.replayDone).toBe(false);
   });
 
   it("marks replay complete only after its parser boundary, without waiting for later live output", async () => {

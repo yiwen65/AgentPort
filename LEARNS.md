@@ -47,12 +47,12 @@
 
 ## `xterm replay visibility` — transport completion is not parser completion
 
-- Wrong approach: Hide the replay Skeleton immediately on the Host's `replay_done` message, or only while `runtime.attaching` is true.
-- Why it failed: `attach_session` can resolve before xterm drains its asynchronous write queue; the transport marker therefore exposed Canvas while retained-history frames were still being parsed and painted, which looked like high-frequency scrolling to the tail even after tail-repair callbacks were coalesced.
-- Recognition signal: The terminal rapidly displays intermediate history after attach although application `scrollToBottom()` calls are already bounded; `replayDone` becomes true before the replay write callbacks run.
-- Correct approach: Insert a generation-fenced parser sentinel exactly when the ordered `replay_done` message arrives, keep the overlay while attached-but-not-parsed, and advance runtime completion only from that boundary callback. Later live writes must remain behind the boundary and must not delay replay completion.
-- Prevention: Test transport receipt, parser drain, later live writes, stale generations, and overlay visibility as separate boundaries; never use `onWriteParsed` as an all-writes-drained signal.
-- Verified by: The runtime regression failed with immediate `replayDone=true` and the component regression failed with no Skeleton before the fix; both pass with the parser boundary, focused terminal tests pass 59/59, and the full frontend suite passes 288/288.
+- Wrong approach: Hide the replay Skeleton immediately on the Host's `replay_done` message, only while `runtime.attaching` is true, or reuse `replayDone=true` from an earlier attachment generation.
+- Why it failed: `attach_session` can resolve before xterm drains its asynchronous write queue; the transport marker therefore exposed Canvas while retained-history frames were still being parsed and painted. On a later reattach, stale `replayDone=true` exposed an old terminal snapshot immediately even though Pi's live focus/overlay state was still behind the replay boundary, so mouse input went to a different UI state than the one on screen.
+- Recognition signal: The terminal rapidly displays intermediate history after attach, or an old Session accepts text selection/clicks but wheel/keyboard behavior matches an invisible Pi overlay; `replayDone` is already true when a new `attaching=true` generation begins.
+- Correct approach: Reset `replayDone=false` at every real attach generation, insert a generation-fenced parser sentinel exactly when the ordered `replay_done` message arrives, keep the overlay while attached-but-not-parsed, and advance runtime completion only from that boundary callback. Later live writes must remain behind the boundary and must not delay replay completion.
+- Prevention: Test reattach from a previously completed runtime, transport receipt, parser drain, later live writes, stale generations, and overlay visibility as separate boundaries; never use `onWriteParsed` as an all-writes-drained signal.
+- Verified by: The reattach regression began with `replayDone=true` and failed because attach left it true, then passed after resetting it; focused terminal tests pass 71/71 and the full frontend suite passes 355/355.
 
 ## `session env inheritance` — proxy/secret 过滤是双层机制，缺一层就会静默断网
 

@@ -2065,6 +2065,7 @@ export async function attachHandle(
   const resumeFrom = recoveryTarget ? null : handle.logCursor;
   patchRuntime(sessionId, {
     attaching: true,
+    replayDone: false,
     detached: false,
     ...(preserveErrorDuringAttach ? {} : { error: null, errorMessage: null }),
   });
