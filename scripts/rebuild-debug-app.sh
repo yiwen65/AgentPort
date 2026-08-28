@@ -2,11 +2,17 @@
 # Rebuild the workspace-local debug App with a Bundle ID unique to this
 # checkout. macOS routes notification clicks by Bundle ID, so sharing the
 # release identity can activate another running AgentPort instance.
-# Set AGENTPORT_DEBUG_SIGN_IDENTITY to a certificate hash or name to preserve
-# macOS TCC grants across rebuilds; otherwise the script uses ad-hoc signing.
+# Set AGENTPORT_DEBUG_SIGN_IDENTITY in the repository .env file or process
+# environment to preserve macOS TCC grants; otherwise use ad-hoc signing.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+if [ -f "$ROOT/.env" ] && [ -z "${AGENTPORT_DEBUG_SIGN_IDENTITY+x}" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
 APP="$ROOT/target/debug/bundle/macos/AgentPort.app"
 PLIST="$APP/Contents/Info.plist"
 RELEASE_BUNDLE_ID="com.agentport.desktop"
