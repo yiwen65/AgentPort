@@ -2,6 +2,8 @@
 # Rebuild the workspace-local debug App with a Bundle ID unique to this
 # checkout. macOS routes notification clicks by Bundle ID, so sharing the
 # release identity can activate another running AgentPort instance.
+# Set AGENTPORT_DEBUG_SIGN_IDENTITY to a certificate hash or name to preserve
+# macOS TCC grants across rebuilds; otherwise the script uses ad-hoc signing.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -11,10 +13,17 @@ RELEASE_BUNDLE_ID="com.agentport.desktop"
 DEBUG_HASH="$(printf '%s' "$ROOT" | shasum -a 256 | awk '{print substr($1, 1, 12)}')"
 DEBUG_BUNDLE_ID="com.agentport.desktop.debug.${DEBUG_HASH}"
 DEBUG_DISPLAY_NAME="AgentPort Debug - $(basename "$ROOT")"
+DEBUG_SIGN_IDENTITY="${AGENTPORT_DEBUG_SIGN_IDENTITY:--}"
 
 if [ ! -f "$PLIST" ]; then
   echo "ERROR: debug App bundle is missing: $APP" >&2
   echo "Generate it once with the Tauri debug bundler before running this script." >&2
+  exit 2
+fi
+
+if [ "$DEBUG_SIGN_IDENTITY" != "-" ] &&
+  ! security find-identity -v -p codesigning | grep -Fq "$DEBUG_SIGN_IDENTITY"; then
+  echo "ERROR: configured debug signing identity is unavailable: $DEBUG_SIGN_IDENTITY" >&2
   exit 2
 fi
 
@@ -33,7 +42,7 @@ cp "$ROOT/target/debug/agentport-host" "$APP/Contents/MacOS/agentport-host"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $DEBUG_BUNDLE_ID" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $DEBUG_DISPLAY_NAME" "$PLIST"
 
-codesign --force --deep --sign - "$APP"
+codesign --force --deep --sign "$DEBUG_SIGN_IDENTITY" "$APP"
 codesign --verify --deep --strict "$APP"
 
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
@@ -49,4 +58,5 @@ fi
 
 printf 'debug_bundle_id=%s\n' "$ACTUAL_BUNDLE_ID"
 printf 'debug_display_name=%s\n' "$DEBUG_DISPLAY_NAME"
+printf 'debug_sign_identity=%s\n' "$DEBUG_SIGN_IDENTITY"
 printf 'debug_app=%s\n' "$APP"
