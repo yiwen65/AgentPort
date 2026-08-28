@@ -5,18 +5,22 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use agentport_core::adapters::{self, capability, LaunchContext, ResumeContext};
-use agentport_core::db::Db;
+use agentport_core::db::{Db, SessionProjection};
 use agentport_core::diag::Diagnostics;
 use agentport_core::error::{CoreError, Result};
-use agentport_core::export::{AnsiMode, Exporter, LogRange, MdBlocks};
+use agentport_core::export::Exporter;
 use agentport_core::git::{
     GitRunner, RepositoryFileLock, RepositoryIdentity, WorktreeBranchSelection, WorktreeManager,
 };
+use agentport_core::history::NativeHistory;
 use agentport_core::host_manager::{
     write_private_file, AttachInfo, HostClient, HostManager, LaunchSpec,
 };
 use agentport_core::ids;
 use agentport_core::models::*;
+use agentport_core::native_cleanup::{
+    execute_native_cleanup, plan_native_cleanup, NativeCleanupPlan,
+};
 use agentport_core::notify::{
     notification_for_state_change, test_notification, Notification, NotificationDeduper, Notifier,
 };
@@ -26,10 +30,10 @@ use agentport_core::search::SearchIndex;
 use agentport_core::secrets::{load_preset_secrets, CredentialBroker, SecretValue};
 use agentport_core::timeline::{RecoveryAckSnapshot, Timeline};
 use chrono::Utc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -72,6 +76,63 @@ type HostWriter = Arc<Mutex<std::os::unix::net::UnixStream>>;
 type AttachmentMap = Arc<Mutex<HashMap<String, RendererAttachment>>>;
 
 const NOTIFICATION_QUEUE_CAPACITY: usize = 64;
+const MAX_BACKEND_BLOCKING_JOBS: usize = 4;
+static ACTIVE_BACKEND_BLOCKING_JOBS: AtomicUsize = AtomicUsize::new(0);
+
+struct BackendBlockingPermit;
+
+impl BackendBlockingPermit {
+    fn try_acquire() -> Option<Self> {
+        ACTIVE_BACKEND_BLOCKING_JOBS
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < MAX_BACKEND_BLOCKING_JOBS).then_some(active + 1)
+            })
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for BackendBlockingPermit {
+    fn drop(&mut self) {
+        ACTIVE_BACKEND_BLOCKING_JOBS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+async fn run_backend_blocking<T, F>(operation: F) -> std::result::Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> std::result::Result<T, String> + Send + 'static,
+{
+    let permit = BackendBlockingPermit::try_acquire()
+        .ok_or_else(|| "backend is busy; retry the operation".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        operation()
+    })
+    .await
+    .map_err(|error| format!("backend worker failed: {error}"))?
+}
+
+/// Startup reconciliation is ordering-critical and may wait for the bounded
+/// worker admission rather than being skipped when interactive jobs are busy.
+async fn run_required_backend_blocking<T, F>(operation: F) -> std::result::Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> std::result::Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        let permit = loop {
+            if let Some(permit) = BackendBlockingPermit::try_acquire() {
+                break permit;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let _permit = permit;
+        operation()
+    })
+    .await
+    .map_err(|error| format!("backend worker failed: {error}"))?
+}
 
 fn start_notification_worker() -> SyncSender<Notification> {
     let (tx, rx) = mpsc::sync_channel::<Notification>(NOTIFICATION_QUEUE_CAPACITY);
@@ -361,6 +422,8 @@ struct SessionView {
     log_path: String,
     unread: bool,
     status: Option<Value>,
+    /// RFC3339 pin timestamp; `None` means unpinned. Latest pin sorts first.
+    pinned_at: Option<String>,
     created_at: String,
 }
 
@@ -386,6 +449,7 @@ struct ProjectView {
     name: String,
     root_path: String,
     git_root_path: Option<String>,
+    pinned: bool,
     sessions: Vec<SessionView>,
     worktrees: Vec<WorktreeView>,
 }
@@ -438,6 +502,7 @@ fn has_unread_output(db: &Db, session_id: &str) -> bool {
                 || (latest.generation == boundary.generation && latest.offset > boundary.offset)))
 }
 
+#[cfg(test)]
 fn session_view(db: &Db, s: &Session, _active_session: Option<&str>) -> SessionView {
     let latest = db.latest_status(&s.id).ok().flatten();
     let unread = db
@@ -452,6 +517,10 @@ fn session_view(db: &Db, s: &Session, _active_session: Option<&str>) -> SessionV
                 .unwrap_or(false)
         })
         .unwrap_or(false);
+    session_view_from_parts(s, latest.as_ref(), unread)
+}
+
+fn session_view_from_parts(s: &Session, latest: Option<&StatusEvent>, unread: bool) -> SessionView {
     SessionView {
         id: s.id.clone(),
         project_id: s.project_id.clone(),
@@ -466,7 +535,8 @@ fn session_view(db: &Db, s: &Session, _active_session: Option<&str>) -> SessionV
         transport: s.transport.as_str().into(),
         log_path: s.log_path.clone(),
         unread,
-        status: latest.as_ref().map(status_value),
+        status: latest.map(status_value),
+        pinned_at: s.pinned_at.map(|t| t.to_rfc3339()),
         created_at: s.created_at.to_rfc3339(),
     }
 }
@@ -482,33 +552,46 @@ fn worktree_view(w: &Worktree) -> WorktreeView {
     }
 }
 
-fn collect_projects(db: &Db, active: Option<&str>) -> Vec<ProjectView> {
-    let mut out = vec![];
-    if let Ok(projects) = db.list_projects() {
-        for p in projects {
-            let sessions = db
-                .list_sessions(Some(&p.id), false)
-                .unwrap_or_default()
-                .iter()
-                .map(|s| session_view(db, s, active))
-                .collect();
-            let worktrees = db
-                .list_worktrees(&p.id)
-                .unwrap_or_default()
-                .iter()
-                .map(worktree_view)
-                .collect();
-            out.push(ProjectView {
-                id: p.id,
-                name: p.name,
-                root_path: p.root_path,
-                git_root_path: p.git_root_path,
-                sessions,
-                worktrees,
-            });
-        }
+fn collect_projects(db: &Db, _active: Option<&str>) -> Vec<ProjectView> {
+    let projections = db.list_session_projections(false).unwrap_or_default();
+    let mut sessions_by_project: HashMap<String, Vec<SessionView>> = HashMap::new();
+    for SessionProjection {
+        session,
+        latest_status,
+        unread_attention,
+    } in projections
+    {
+        sessions_by_project
+            .entry(session.project_id.clone())
+            .or_default()
+            .push(session_view_from_parts(
+                &session,
+                latest_status.as_ref(),
+                unread_attention,
+            ));
     }
-    out
+
+    let mut worktrees_by_project: HashMap<String, Vec<WorktreeView>> = HashMap::new();
+    for worktree in db.list_all_worktrees().unwrap_or_default() {
+        worktrees_by_project
+            .entry(worktree.project_id.clone())
+            .or_default()
+            .push(worktree_view(&worktree));
+    }
+
+    db.list_projects()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| ProjectView {
+            sessions: sessions_by_project.remove(&p.id).unwrap_or_default(),
+            worktrees: worktrees_by_project.remove(&p.id).unwrap_or_default(),
+            id: p.id,
+            name: p.name,
+            root_path: p.root_path,
+            git_root_path: p.git_root_path,
+            pinned: p.pinned,
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -583,13 +666,7 @@ fn run_due_cleanup_jobs(paths: &AppPaths, db: &Db) -> usize {
         let outcome = match cleanup_session_paths(paths, &session_id) {
             Err(reason) => Err(reason),
             Ok((session_dir, socket_path)) => {
-                let index = SearchIndex { db, paths };
-                let session_ids = vec![session_id.clone()];
-                if index.remove_sessions(&session_ids).is_err() {
-                    Err("remove_search_index_failed")
-                } else {
-                    remove_cleanup_paths(&session_dir, &socket_path)
-                }
+                remove_cleanup_paths(&session_dir, &socket_path)
             }
         };
 
@@ -655,61 +732,90 @@ fn ensure_cleanup_scheduler(state: &AppState) {
 
 #[tauri::command]
 async fn boot(state: State<'_, AppState>, app: AppHandle) -> std::result::Result<BootInfo, String> {
-    let mgr = HostManager {
-        paths: &state.paths,
-        db: &state.db,
-    };
-    let _ = mgr.reconcile_on_startup();
-    let _ = run_due_cleanup_jobs(&state.paths, &state.db);
+    let startup_paths = state.paths.clone();
+    let purge_succeeded = run_required_backend_blocking(move || {
+        let db = Db::open(&startup_paths).map_err(|error| error.to_string())?;
+        let manager = HostManager {
+            paths: &startup_paths,
+            db: &db,
+        };
+        let _ = manager.reconcile_on_startup();
+        let _ = run_due_cleanup_jobs(&startup_paths, &db);
+        Ok(SearchIndex {
+            db: &db,
+            paths: &startup_paths,
+        }
+        .purge_legacy_transcript_bodies_once()
+        .is_ok())
+    })
+    .await?;
+
     ensure_cleanup_scheduler(&state);
     ensure_live_session_monitors(&app, &state);
     if !state.branch_reconcile_started.swap(true, Ordering::AcqRel) {
         git_commands::spawn_startup_reconcile(app.clone(), state.paths.clone());
         git_workspace_commands::spawn_startup_reconcile(app.clone(), state.paths.clone());
     }
-    let idx = SearchIndex {
-        db: &state.db,
-        paths: &state.paths,
-    };
-    let _ = idx.open();
-    let index_state = idx
-        .index_state()
-        .map(|s| format!("{s:?}").to_lowercase())
-        .unwrap_or_else(|_| "unknown".into());
-    let tl = Timeline { db: &state.db };
-    let timeline = tl.build_and_acknowledge_hidden_only().map(|t| {
-        json!({
-            "completed": t.completed, "waiting": t.waiting, "failed": t.failed,
-            "entries": t.entries, "ackSnapshots": t.ack_snapshots,
+
+    let snapshot_paths = state.paths.clone();
+    let (platform, settings, adapters, projects, timeline, timeline_error, timeline_message) =
+        run_backend_blocking(move || {
+            let db = Db::open(&snapshot_paths).map_err(|error| error.to_string())?;
+            let timeline = Timeline { db: &db }
+                .build_and_acknowledge_hidden_only()
+                .map(|timeline| {
+                    json!({
+                        "completed": timeline.completed,
+                        "waiting": timeline.waiting,
+                        "failed": timeline.failed,
+                        "entries": timeline.entries,
+                        "ackSnapshots": timeline.ack_snapshots,
+                    })
+                });
+            let (timeline, timeline_error, timeline_message) = match timeline {
+                Ok(timeline) => (timeline, None, None),
+                Err(error) => (
+                    json!({"completed": 0, "waiting": 0, "failed": 0, "entries": [], "ackSnapshots": []}),
+                    Some(format!("恢复时间线读取失败：{error}")),
+                    Some(json!({
+                        "code": "timeline_load_failed",
+                        "params": {},
+                        "technicalDetail": error.to_string(),
+                        "message": format!("恢复时间线读取失败：{error}"),
+                    })),
+                ),
+            };
+            let platform = json!(Diagnostics {
+                paths: &snapshot_paths,
+                db: &db,
+            }
+            .platform_info());
+            Ok((
+                platform,
+                map_err!(db.load_settings())?,
+                map_err!(db.list_adapters())?,
+                collect_projects(&db, None),
+                timeline,
+                timeline_error,
+                timeline_message,
+            ))
         })
-    });
-    let diag = Diagnostics {
-        paths: &state.paths,
-        db: &state.db,
-    };
-    let (timeline, timeline_error, timeline_message) = match timeline {
-        Ok(timeline) => (timeline, None, None),
-        Err(error) => (
-            json!({"completed": 0, "waiting": 0, "failed": 0, "entries": [], "ackSnapshots": []}),
-            Some(format!("恢复时间线读取失败：{error}")),
-            Some(json!({
-                "code": "timeline_load_failed",
-                "params": {},
-                "technicalDetail": error.to_string(),
-                "message": format!("恢复时间线读取失败：{error}"),
-            })),
-        ),
-    };
+        .await?;
+
     Ok(BootInfo {
-        platform: json!(diag.platform_info()),
-        settings: map_err!(state.db.load_settings())?,
-        adapters: map_err!(state.db.list_adapters())?,
-        projects: collect_projects(&state.db, None),
+        platform,
+        settings,
+        adapters,
+        projects,
         timeline,
         timeline_error,
         timeline_message,
         secret_backend: format!("{:?}", CredentialBroker::backend_status()),
-        index_state,
+        index_state: if purge_succeeded {
+            "native_on_demand".into()
+        } else {
+            "native_on_demand_purge_failed".into()
+        },
         webview: "system".into(),
         exports_dir: state.paths.exports_dir().to_string_lossy().into_owned(),
     })
@@ -720,7 +826,12 @@ async fn list_projects(
     state: State<'_, AppState>,
     active_session: Option<String>,
 ) -> std::result::Result<Vec<ProjectView>, String> {
-    Ok(collect_projects(&state.db, active_session.as_deref()))
+    let paths = state.paths.clone();
+    run_backend_blocking(move || {
+        let db = Db::open(&paths).map_err(|error| error.to_string())?;
+        Ok(collect_projects(&db, active_session.as_deref()))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -752,10 +863,35 @@ async fn list_archived_sessions(
 // Agent probing
 // ---------------------------------------------------------------------------
 
+fn existing_executable(path: Option<&str>) -> Option<&std::path::Path> {
+    path.map(std::path::Path::new).filter(|path| path.is_file())
+}
+
 #[tauri::command]
-async fn probe_agents(state: State<'_, AppState>) -> std::result::Result<Vec<Value>, String> {
+async fn probe_agents(
+    state: State<'_, AppState>,
+    preserve_selections: Option<bool>,
+) -> std::result::Result<Vec<Value>, String> {
+    let preserve_selections = preserve_selections.unwrap_or(false);
+    // Startup probes refresh capability metadata, but must not turn a user's
+    // explicit executable choice back into the automatic winner. A missing
+    // selected executable is allowed to fall back to discovery.
+    let confirmed_paths = if preserve_selections {
+        state
+            .db
+            .list_adapters()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|install| {
+                existing_executable(Some(&install.executable_path))
+                    .map(|path| (install.agent_type, path.to_path_buf()))
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let mut out = vec![];
-    for o in capability::probe_all() {
+    for o in capability::probe_all_with_confirmed_paths(&confirmed_paths) {
         let t = o.agent_type;
         if let Some(i) = &o.install {
             let _ = state.db.upsert_adapter(i);
@@ -868,6 +1004,8 @@ async fn add_project(
         root_path: norm,
         git_root_path: git_root,
         created_at: Utc::now(),
+        pinned: false,
+        sort_order: 0,
     };
     map_err!(state.db.add_project(&p))?;
     Ok(json!({"id": p.id, "name": p.name, "rootPath": p.root_path, "gitRootPath": p.git_root_path}))
@@ -883,8 +1021,80 @@ async fn rename_project(
 }
 
 #[tauri::command]
-async fn remove_project(state: State<'_, AppState>, id: String) -> std::result::Result<(), String> {
-    map_err!(state.db.remove_project(&id))
+async fn set_project_layout(
+    state: State<'_, AppState>,
+    entries: Vec<ProjectLayoutEntry>,
+    active_session: Option<String>,
+) -> std::result::Result<Vec<ProjectView>, String> {
+    map_err!(state.db.set_project_layout(&entries))?;
+    Ok(collect_projects(&state.db, active_session.as_deref()))
+}
+
+#[tauri::command]
+async fn remove_project(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    id: String,
+) -> std::result::Result<Value, String> {
+    map_err!(state.db.begin_project_removal(&id))?;
+    let sessions = map_err!(state.db.list_sessions(Some(&id), true))?;
+    let session_ids = sessions
+        .iter()
+        .map(|session| session.id.clone())
+        .collect::<Vec<_>>();
+    let native_plans = sessions
+        .iter()
+        .map(|session| {
+            (
+                session.id.clone(),
+                plan_native_cleanup(&state.paths, session),
+            )
+        })
+        .collect::<Vec<_>>();
+    let stop_warnings = stop_sessions_for_destructive_cleanup(&state, &session_ids);
+
+    // Remove every managed Worktree directory before dropping the Project
+    // row. Individual cleanup failures are logged by the manager and never
+    // turn stale files or Git metadata into a deletion blocker.
+    let worktree_ids = map_err!(state.db.list_worktrees(&id))?
+        .into_iter()
+        .map(|worktree| worktree.id)
+        .collect::<Vec<_>>();
+    let manager = WorktreeManager {
+        paths: &state.paths,
+        db: &state.db,
+    };
+    let mut cleanup_warnings = 0usize;
+    for worktree_id in worktree_ids {
+        match manager.remove(&worktree_id) {
+            Ok(outcome) => cleanup_warnings += outcome.cleanup_warnings,
+            Err(error) => {
+                cleanup_warnings += 1;
+                tracing::warn!(
+                    project = %id,
+                    worktree = %worktree_id,
+                    error = %error,
+                    "Worktree cleanup failed during Project removal; continuing cascade"
+                );
+            }
+        }
+    }
+
+    map_err!(state.db.remove_project(&id))?;
+    run_native_cleanups(&app, &native_plans);
+    cleanup_purged_sessions(&state, &session_ids);
+    emit_sessions_changed(&app, &state, None);
+    Ok(json!({
+        "stopWarnings": stop_warnings,
+        "cleanupWarnings": cleanup_warnings,
+    }))
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfirmedArchivedSession {
+    id: String,
+    archive_generation: i64,
 }
 
 #[tauri::command]
@@ -892,16 +1102,35 @@ async fn project_remove_preflight(
     state: State<'_, AppState>,
     id: String,
 ) -> std::result::Result<Value, String> {
-    let (session_count, worktree_count, recoverable_operation_count) =
-        map_err!(state.db.project_dependency_counts(&id))?;
+    let (
+        session_count,
+        worktree_count,
+        recoverable_operation_count,
+        pending_commit_operation_count,
+    ) = map_err!(state.db.project_dependency_counts(&id))?;
+    let archived_sessions = map_err!(state.db.project_archived_session_generations(&id))?
+        .into_iter()
+        .map(|(id, archive_generation)| {
+            json!({
+                "id": id,
+                "archiveGeneration": archive_generation,
+            })
+        })
+        .collect::<Vec<_>>();
+    let archived_session_count = archived_sessions.len();
+    let active_session_count = session_count.saturating_sub(archived_session_count);
     Ok(json!({
         "projectId": id,
         "sessionCount": session_count,
+        "activeSessionCount": active_session_count,
+        "archivedSessionCount": archived_session_count,
+        "archivedSessions": archived_sessions,
         "worktreeCount": worktree_count,
         "recoverableOperationCount": recoverable_operation_count,
-        "canRemove": session_count == 0
-            && worktree_count == 0
-            && recoverable_operation_count == 0,
+        "pendingCommitOperationCount": pending_commit_operation_count,
+        // Dependency counts describe what the confirmed cascade will clean;
+        // they never make Project removal unavailable.
+        "canRemove": true,
     }))
 }
 
@@ -1278,6 +1507,7 @@ async fn create_session(
             .into_owned(),
         adapter_type: t,
         transport: plan.transport,
+        pinned_at: None,
         command: plan.argv.clone(),
         permission_mode: mode,
         created_at: now,
@@ -2315,6 +2545,12 @@ async fn resume_session(
     state: State<'_, AppState>,
     session_id: String,
 ) -> std::result::Result<(), String> {
+    if map_err!(state.db.get_session(&session_id))?
+        .archived_at
+        .is_some()
+    {
+        return Err("archived Sessions cannot be resumed; restore the Session first".into());
+    }
     let mgr = HostManager {
         paths: &state.paths,
         db: &state.db,
@@ -2330,6 +2566,9 @@ async fn restart_session(
     risk_ack: bool,
 ) -> std::result::Result<Value, String> {
     let initial_session = map_err!(state.db.get_session(&session_id))?;
+    if initial_session.archived_at.is_some() {
+        return Err("archived Sessions cannot be restarted; restore the Session first".into());
+    }
     let lock_cwd = initial_session.cwd.clone();
     let repository_lock = match tauri::async_runtime::spawn_blocking(move || {
         acquire_session_repository_lock(&lock_cwd)
@@ -2344,6 +2583,9 @@ async fn restart_session(
     // operation or another AgentPort process. Re-read under the common-dir
     // reservation before deciding that it is safe to relaunch.
     let session = map_err!(state.db.get_session(&session_id))?;
+    if session.archived_at.is_some() {
+        return Err("archived Sessions cannot be restarted; restore the Session first".into());
+    }
     if matches!(session.lifecycle, Lifecycle::Running | Lifecycle::Creating) {
         return Err("session is running; stop it first".into());
     }
@@ -2478,13 +2720,45 @@ async fn rename_session(
 }
 
 #[tauri::command]
+async fn set_session_pinned(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    session_id: String,
+    pinned: bool,
+) -> std::result::Result<(), String> {
+    map_err!(state.db.set_session_pinned(&session_id, pinned))?;
+    emit_sessions_changed(&app, &state, None);
+    Ok(())
+}
+
+#[tauri::command]
 async fn archive_session(
     state: State<'_, AppState>,
     app: AppHandle,
     session_id: String,
 ) -> std::result::Result<(), String> {
-    map_err!(stop_session_before_archive(&state, &session_id))?;
-    map_err!(state.db.archive_session(&session_id))?;
+    // Persist the archive fence before stopping so no concurrent restart can
+    // claim or bind a new Host in the stop/archive gap. Roll it back if the
+    // stop fails, preserving the previous user-visible contract.
+    let archive_generation = map_err!(state.db.archive_session(&session_id))?;
+    if let Err(error) = stop_session_before_archive(&state, &session_id) {
+        match state
+            .db
+            .unarchive_session_if_generation(&session_id, archive_generation)
+        {
+            Ok(true) => return Err(error.to_string()),
+            Ok(false) => {
+                return Err(format!(
+                    "{error}; the archive changed concurrently and was not rolled back"
+                ));
+            }
+            Err(rollback_error) => {
+                return Err(format!(
+                    "{error}; additionally failed to restore the Session after archive rollback: {rollback_error}"
+                ));
+            }
+        }
+    }
     emit_sessions_changed(&app, &state, None);
     Ok(())
 }
@@ -2538,6 +2812,35 @@ fn stop_archived_sessions_for_purge(state: &AppState, session_ids: &[String]) ->
     Ok(())
 }
 
+/// A confirmed Project/Worktree deletion must not be rejected because an old
+/// Host cannot complete its graceful-stop handshake. Try every stop in bounded
+/// parallel batches, detach local writers, log failures, and continue cleanup.
+fn stop_sessions_for_destructive_cleanup(state: &AppState, session_ids: &[String]) -> usize {
+    const STOP_CONCURRENCY: usize = 4;
+    let mut warning_count = 0usize;
+    for batch in session_ids.chunks(STOP_CONCURRENCY) {
+        let failures = Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            let failures = &failures;
+            for session_id in batch {
+                scope.spawn(move || {
+                    if let Err(error) = stop_session_before_archive(state, session_id) {
+                        detach_session_writer(state, session_id);
+                        tracing::warn!(
+                            session = %session_id,
+                            error = %error,
+                            "Session stop could not be verified during destructive cleanup; continuing deletion"
+                        );
+                        failures.lock().unwrap().push(session_id.clone());
+                    }
+                });
+            }
+        });
+        warning_count += failures.into_inner().unwrap().len();
+    }
+    warning_count
+}
+
 /// Trigger the durable cleanup queue after the authoritative database
 /// transaction has committed. Filesystem work is acknowledged only after it
 /// succeeds, so a crash or a temporary permission failure is retried instead
@@ -2547,6 +2850,52 @@ fn cleanup_purged_sessions(state: &AppState, session_ids: &[String]) {
         return;
     }
     let _ = run_due_cleanup_jobs(&state.paths, &state.db);
+}
+
+/// Build native-artifact cleanup plans for Sessions that are about to be
+/// purged. Plans must be built before the purge commits: the hook-events
+/// evidence lives in AgentPort's session directory and the Session rows are
+/// deleted by the purge transaction.
+fn plan_native_cleanups(state: &AppState, session_ids: &[String]) -> Vec<(String, NativeCleanupPlan)> {
+    session_ids
+        .iter()
+        .filter_map(|session_id| match state.db.get_session(session_id) {
+            Ok(session) => Some((
+                session_id.clone(),
+                plan_native_cleanup(&state.paths, &session),
+            )),
+            Err(error) => {
+                tracing::warn!(session = %session_id, error = %error, "could not plan native session cleanup");
+                None
+            }
+        })
+        .collect()
+}
+
+/// Execute native cleanup plans after the purge commits, on a best-effort
+/// basis. Failures never block the purge; they are logged and surfaced to
+/// the UI as a warning toast.
+fn run_native_cleanups(app: &AppHandle, plans: &[(String, NativeCleanupPlan)]) {
+    let mut failed_sessions = 0usize;
+    for (session_id, plan) in plans {
+        let outcome = execute_native_cleanup(plan);
+        if outcome.has_failures() {
+            failed_sessions += 1;
+            tracing::warn!(
+                session = %session_id,
+                deleted = outcome.deleted,
+                failures = outcome.failures.len(),
+                reasons = ?outcome.failures,
+                "native session artifact cleanup incomplete"
+            );
+        }
+    }
+    if failed_sessions > 0 {
+        let _ = app.emit(
+            "native-cleanup-warning",
+            json!({ "count": failed_sessions }),
+        );
+    }
 }
 
 #[tauri::command]
@@ -2571,8 +2920,48 @@ async fn delete_archived_session(
         return Err("only archived sessions can be permanently deleted".into());
     }
     map_err!(stop_session_before_archive(&state, &session_id))?;
+    let native_plan = plan_native_cleanup(&state.paths, &session);
     map_err!(state.db.purge_archived_session(&session_id))?;
+    run_native_cleanups(&app, &[(session_id.clone(), native_plan)]);
     cleanup_purged_sessions(&state, std::slice::from_ref(&session_id));
+    emit_sessions_changed(&app, &state, None);
+    Ok(())
+}
+
+#[tauri::command]
+async fn delete_project_archived_sessions(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    project_id: String,
+    sessions: Vec<ConfirmedArchivedSession>,
+) -> std::result::Result<(), String> {
+    let current_archives = map_err!(state.db.project_archived_session_generations(&project_id))?;
+    let mut confirmed_archives = sessions
+        .into_iter()
+        .map(|session| (session.id, session.archive_generation))
+        .collect::<Vec<_>>();
+    confirmed_archives.sort_by(|left, right| left.0.cmp(&right.0));
+    if confirmed_archives
+        .windows(2)
+        .any(|pair| pair[0].0 == pair[1].0)
+        || current_archives != confirmed_archives
+    {
+        return Err("archived Sessions changed after confirmation; review and try again".into());
+    }
+    // Preserve the same stop-before-purge guarantee as the archive Settings
+    // flow, while limiting the destructive action to the exact confirmed set.
+    // The database revalidates that set after stopping to close the race.
+    let confirmed_ids = confirmed_archives
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    map_err!(stop_archived_sessions_for_purge(&state, &confirmed_ids))?;
+    let native_plans = plan_native_cleanups(&state, &confirmed_ids);
+    let purged = map_err!(state
+        .db
+        .purge_project_archived_sessions(&project_id, &confirmed_archives))?;
+    run_native_cleanups(&app, &native_plans);
+    cleanup_purged_sessions(&state, &purged);
     emit_sessions_changed(&app, &state, None);
     Ok(())
 }
@@ -2582,16 +2971,29 @@ async fn delete_all_archived_sessions(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> std::result::Result<(), String> {
-    let archived_ids: Vec<String> = map_err!(state.db.list_sessions(None, true))?
+    let archived_sessions: Vec<Session> = map_err!(state.db.list_sessions(None, true))?
         .into_iter()
         .filter(|session| session.archived_at.is_some())
-        .map(|session| session.id)
+        .collect();
+    let archived_ids: Vec<String> = archived_sessions
+        .iter()
+        .map(|session| session.id.clone())
         .collect();
     // Stop first, then purge as a batch. A stop error leaves every archive
     // intact instead of only partially deleting the user's archive history.
     // Legacy archives are stopped in bounded parallel batches.
     map_err!(stop_archived_sessions_for_purge(&state, &archived_ids))?;
+    let native_plans: Vec<(String, NativeCleanupPlan)> = archived_sessions
+        .iter()
+        .map(|session| {
+            (
+                session.id.clone(),
+                plan_native_cleanup(&state.paths, session),
+            )
+        })
+        .collect();
     let purged = map_err!(state.db.purge_all_archived_sessions())?;
+    run_native_cleanups(&app, &native_plans);
     cleanup_purged_sessions(&state, &purged);
     emit_sessions_changed(&app, &state, None);
     Ok(())
@@ -2800,14 +3202,39 @@ async fn remove_worktree(
     state: State<'_, AppState>,
     app: AppHandle,
     worktree_id: String,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<Value, String> {
+    map_err!(state.db.begin_worktree_removal(&worktree_id))?;
+    let sessions = map_err!(state.db.list_sessions(None, true))?
+        .into_iter()
+        .filter(|session| session.worktree_id.as_deref() == Some(worktree_id.as_str()))
+        .collect::<Vec<_>>();
+    let session_ids = sessions
+        .iter()
+        .map(|session| session.id.clone())
+        .collect::<Vec<_>>();
+    let native_plans = sessions
+        .iter()
+        .map(|session| {
+            (
+                session.id.clone(),
+                plan_native_cleanup(&state.paths, session),
+            )
+        })
+        .collect::<Vec<_>>();
+    let stop_warnings = stop_sessions_for_destructive_cleanup(&state, &session_ids);
+
     let mgr = WorktreeManager {
         paths: &state.paths,
         db: &state.db,
     };
-    map_err!(mgr.remove(&worktree_id))?;
+    let outcome = map_err!(mgr.remove(&worktree_id))?;
+    run_native_cleanups(&app, &native_plans);
+    cleanup_purged_sessions(&state, &session_ids);
     emit_sessions_changed(&app, &state, None);
-    Ok(())
+    Ok(json!({
+        "stopWarnings": stop_warnings,
+        "cleanupWarnings": outcome.cleanup_warnings,
+    }))
 }
 
 #[tauri::command]
@@ -2866,8 +3293,8 @@ async fn export_session(
     session_id: String,
     kind: String,
     dest: String,
-    last: Option<u32>,
-    strip_ansi: bool,
+    _last: Option<u32>,
+    _strip_ansi: bool,
 ) -> std::result::Result<String, String> {
     let exporter = Exporter {
         paths: &state.paths,
@@ -2876,20 +3303,12 @@ async fn export_session(
     let secrets = load_all_secret_values(&state);
     let destp = std::path::Path::new(&dest);
     let p = match kind.as_str() {
-        "log" => {
-            let range = last.map(LogRange::LastLines).unwrap_or(LogRange::All);
-            let ansi = if strip_ansi {
-                AnsiMode::Strip
-            } else {
-                AnsiMode::Keep
-            };
-            exporter.export_log(&session_id, destp, range, ansi, &secrets)
-        }
-        "md" => {
-            let blocks = last.map(MdBlocks::Last).unwrap_or(MdBlocks::All);
-            exporter.export_markdown(&session_id, destp, blocks, &secrets)
+        "md" | "json" => {
+            let session = map_err!(state.db.get_session(&session_id))?;
+            NativeHistory::new(&state.paths).export(&session, destp, &kind)
         }
         "zip" => exporter.export_diagnostics_zip(&[session_id], destp, &secrets),
+        "log" => return Err("raw terminal log export was removed; choose md or json".into()),
         _ => return Err("unknown export kind".into()),
     };
     map_err!(p).map(|p| p.to_string_lossy().into_owned())
@@ -2925,6 +3344,7 @@ async fn backup_create(
         "files": report.files,
         "bytes": report.bytes,
         "verified": true,
+        "nativeCoverage": report.native_coverage,
     }))
 }
 
@@ -2972,12 +3392,15 @@ async fn backup_verify(path: String) -> std::result::Result<Value, String> {
         "createdAt": manifest.created_at,
         "dataModelVersion": manifest.data_model_version,
         "files": manifest.files.len(),
+        "nativeCoverage": manifest.native_coverage,
     }))
 }
 
-/// Restore into a NEW directory chosen by the user. The running app's data is
-/// never touched: swapping the live data root requires the app to be quit
-/// first, which is a deliberate manual step.
+/// Restore AgentPort data into a NEW directory chosen by the user. The live
+/// AgentPort data root is never touched; provider-native artifacts are also
+/// installed into the currently configured Provider homes under the core's
+/// validate-before-write, never-overwrite contract. Swapping the data root
+/// requires the app to be quit first, which is a deliberate manual step.
 #[tauri::command]
 async fn backup_restore(
     state: State<'_, AppState>,
@@ -3005,38 +3428,127 @@ async fn backup_restore(
     }))
 }
 
+fn search_sync(
+    paths: &AppPaths,
+    db: &Db,
+    query: String,
+    limit: Option<usize>,
+) -> std::result::Result<Value, String> {
+    let limit = limit.unwrap_or(20).min(1_000);
+    let needle = query.trim().to_lowercase();
+    if needle.chars().count() < 2 {
+        return Err("search query needs at least 2 characters".into());
+    }
+    let history = NativeHistory::new(paths);
+    let mut hits = Vec::new();
+    let mut total_hits = 0usize;
+    let projects = map_err!(db.list_projects())?;
+    for project in &projects {
+        if project.name.to_lowercase().contains(&needle)
+            || project.root_path.to_lowercase().contains(&needle)
+        {
+            total_hits = total_hits.saturating_add(1);
+            if hits.len() < limit {
+                hits.push(json!({
+                    "kind": "project",
+                    "sessionId": Value::Null,
+                    "projectId": project.id,
+                    "title": project.name,
+                    "snippet": project.root_path,
+                    "logOffset": Value::Null,
+                    "rotatedAway": false,
+                }));
+            }
+        }
+        for worktree in map_err!(db.list_worktrees(&project.id))? {
+            if worktree.branch.to_lowercase().contains(&needle)
+                || worktree.path.to_lowercase().contains(&needle)
+            {
+                total_hits = total_hits.saturating_add(1);
+                if hits.len() < limit {
+                    hits.push(json!({
+                        "kind": "branch",
+                        "sessionId": Value::Null,
+                        "projectId": project.id,
+                        "title": worktree.branch,
+                        "snippet": worktree.path,
+                        "logOffset": Value::Null,
+                        "rotatedAway": false,
+                    }));
+                }
+            }
+        }
+    }
+    let mut partial = limit == 0;
+    if hits.len() == limit {
+        partial = true;
+    } else {
+        for session in map_err!(db.list_sessions(None, false))? {
+            if session.title.to_lowercase().contains(&needle)
+                || session.cwd.to_lowercase().contains(&needle)
+                || session.adapter_type.as_str().contains(&needle)
+            {
+                total_hits = total_hits.saturating_add(1);
+                if hits.len() < limit {
+                    hits.push(json!({
+                        "kind": "session",
+                        "sessionId": session.id,
+                        "projectId": session.project_id,
+                        "title": session.title,
+                        "snippet": session.cwd,
+                        "logOffset": Value::Null,
+                        "rotatedAway": false,
+                    }));
+                }
+                if hits.len() == limit {
+                    partial = true;
+                    break;
+                }
+            }
+            let remaining = limit.saturating_sub(hits.len());
+            let result = map_err!(history.search_session_bounded(&session, &query, remaining,))?;
+            total_hits = total_hits.saturating_add(result.total_hits);
+            for hit in result.hits {
+                hits.push(json!({
+                    "kind": "terminal",
+                    "sessionId": session.id,
+                    "projectId": session.project_id,
+                    "title": session.title,
+                    "snippet": hit.snippet,
+                    "eventId": hit.event.id,
+                    "provider": hit.event.provider,
+                    "logOffset": Value::Null,
+                    "rotatedAway": false,
+                }));
+            }
+            if result.partial || hits.len() == limit {
+                partial = true;
+                break;
+            }
+        }
+    }
+    Ok(json!({
+        "partial": partial,
+        "totalHits": total_hits,
+        "hits": hits,
+    }))
+}
+
 #[tauri::command]
 async fn search(
     state: State<'_, AppState>,
     query: String,
     limit: Option<usize>,
 ) -> std::result::Result<Value, String> {
-    let idx = SearchIndex {
-        db: &state.db,
-        paths: &state.paths,
-    };
-    idx.open().map_err(|e| e.to_string())?;
-    for s in map_err!(state.db.list_sessions(None, true))? {
-        let _ = idx.index_session_log(&s.id, std::path::Path::new(&s.log_path), &[]);
-    }
-    let r = map_err!(idx.query(&query, limit.unwrap_or(20)))?;
-    Ok(json!({
-        "partial": r.partial,
-        "totalHits": r.total_hits.unwrap_or(r.hits.len()),
-        "hits": r.hits.iter().map(|h| json!({
-            "kind": format!("{:?}", h.kind).to_lowercase(),
-            "sessionId": h.session_id,
-            "projectId": h.project_id,
-            "title": h.title,
-            "snippet": h.snippet,
-            "logOffset": h.log_offset,
-            "rotatedAway": h.rotated_away,
-        })).collect::<Vec<_>>(),
-    }))
+    let paths = state.paths.clone();
+    run_backend_blocking(move || {
+        let db = Db::open(&paths).map_err(|error| error.to_string())?;
+        search_sync(&paths, &db, query, limit)
+    })
+    .await
 }
 
-/// Search the complete persisted log of one Session. Unlike xterm's in-memory
-/// scrollback this includes output that predates the attach replay tail.
+/// Search one agent-owned native transcript without a persistent body index.
 #[tauri::command]
 async fn search_session_log(
     state: State<'_, AppState>,
@@ -3044,50 +3556,108 @@ async fn search_session_log(
     query: String,
     limit: Option<usize>,
 ) -> std::result::Result<Value, String> {
-    let idx = SearchIndex {
-        db: &state.db,
-        paths: &state.paths,
-    };
-    // This is deliberately a direct, read-only scan rather than an FTS query:
-    // the focused terminal must remain searchable even while the derived
-    // global index is rebuilding or disabled.
-    // Keep enough concrete hits for keyboard navigation in a long terminal,
-    // while returning the exact total separately for histories with more.
-    let r =
-        map_err!(idx.query_session_text(&session_id, &query, limit.unwrap_or(1_000).min(1_000)))?;
-    Ok(json!({
-        "partial": r.partial,
-        "totalHits": r.total_hits.unwrap_or(r.hits.len()),
-        "hits": r.hits.iter().map(|h| json!({
-            "kind": format!("{:?}", h.kind).to_lowercase(),
-            "sessionId": h.session_id,
-            "projectId": h.project_id,
-            "title": h.title,
-            "snippet": h.snippet,
-            "logOffset": h.log_offset,
-            "rotatedAway": h.rotated_away,
-        })).collect::<Vec<_>>(),
-    }))
+    let paths = state.paths.clone();
+    run_backend_blocking(move || {
+        let db = Db::open(&paths).map_err(|error| error.to_string())?;
+        let session = map_err!(db.get_session(&session_id))?;
+        let r = map_err!(NativeHistory::new(&paths).search_session(
+            &session,
+            &query,
+            limit.unwrap_or(1_000).min(1_000),
+        ))?;
+        Ok(json!({
+            "partial": false,
+            "totalHits": r.total_hits,
+            "sourceStatus": r.source_status,
+            "hits": r.hits.iter().map(|h| json!({
+                "kind": "terminal",
+                "sessionId": h.session_id,
+                "projectId": session.project_id,
+                "title": session.title,
+                "snippet": h.snippet,
+                "eventId": h.event.id,
+                "provider": h.event.provider,
+                "logOffset": Value::Null,
+                "rotatedAway": false,
+            })).collect::<Vec<_>>(),
+        }))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_native_history(
+    state: State<'_, AppState>,
+    session_id: String,
+    cursor: Option<String>,
+    limit: Option<usize>,
+) -> std::result::Result<Value, String> {
+    let paths = state.paths.clone();
+    run_backend_blocking(move || {
+        let db = Db::open(&paths).map_err(|error| error.to_string())?;
+        let session = map_err!(db.get_session(&session_id))?;
+        let page = map_err!(NativeHistory::new(&paths).page(
+            &session,
+            cursor.as_deref(),
+            limit.unwrap_or(agentport_core::history::DEFAULT_HISTORY_PAGE_SIZE),
+        ))?;
+        map_err!(serde_json::to_value(page))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_legacy_log_inventory(
+    state: State<'_, AppState>,
+) -> std::result::Result<Value, String> {
+    let sessions = map_err!(state.db.list_sessions(None, true))?;
+    let inventory = map_err!(agentport_core::legacy_logs::inventory(&state.paths, &sessions))?;
+    map_err!(serde_json::to_value(inventory))
+}
+
+#[tauri::command]
+async fn delete_legacy_logs(
+    state: State<'_, AppState>,
+    entry_ids: Vec<String>,
+    confirmed: bool,
+) -> std::result::Result<Value, String> {
+    let sessions = map_err!(state.db.list_sessions(None, true))?;
+    let report = map_err!(agentport_core::legacy_logs::delete_selected(
+        &state.paths,
+        &sessions,
+        &entry_ids,
+        confirmed,
+    ))?;
+    map_err!(serde_json::to_value(report))
 }
 
 #[tauri::command]
 async fn rebuild_search_index(state: State<'_, AppState>) -> std::result::Result<(), String> {
-    let idx = SearchIndex {
-        db: &state.db,
-        paths: &state.paths,
-    };
-    idx.open().map_err(|e| e.to_string())?;
-    map_err!(idx.rebuild_all(&mut |_, _| true))
+    let paths = state.paths.clone();
+    run_backend_blocking(move || {
+        let db = Db::open(&paths).map_err(|error| error.to_string())?;
+        SearchIndex {
+            db: &db,
+            paths: &paths,
+        }
+        .purge_transcript_bodies()
+        .map_err(|error| error.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
 async fn get_timeline(state: State<'_, AppState>) -> std::result::Result<Value, String> {
-    let tl = Timeline { db: &state.db };
-    let t = map_err!(tl.build_and_acknowledge_hidden_only())?;
-    Ok(json!({
-        "completed": t.completed, "waiting": t.waiting, "failed": t.failed,
-        "entries": t.entries, "ackSnapshots": t.ack_snapshots,
-    }))
+    let paths = state.paths.clone();
+    run_backend_blocking(move || {
+        let db = Db::open(&paths).map_err(|error| error.to_string())?;
+        let t = map_err!(Timeline { db: &db }.build_and_acknowledge_hidden_only())?;
+        Ok(json!({
+            "completed": t.completed, "waiting": t.waiting, "failed": t.failed,
+            "entries": t.entries, "ackSnapshots": t.ack_snapshots,
+        }))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3220,27 +3790,6 @@ async fn notify_test(state: State<'_, AppState>) -> std::result::Result<(), Stri
 #[tauri::command]
 fn take_pending_notification_session() -> Option<String> {
     notifications::take_pending_session()
-}
-
-/// Read the last N bytes of a session's output log — used to render the
-/// grey "history terminal" for exited/interrupted sessions (no live host).
-#[tauri::command]
-async fn read_log_tail(
-    state: State<'_, AppState>,
-    session_id: String,
-    bytes: u64,
-) -> std::result::Result<Value, String> {
-    use base64::Engine as _;
-    let session = map_err!(state.db.get_session(&session_id))?;
-    let path = std::path::PathBuf::from(&session.log_path);
-    let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    let data =
-        agentport_core::logs::tail_bytes(&path, bytes.min(4 * 1024 * 1024)).unwrap_or_default();
-    Ok(json!({
-        "data": base64::engine::general_purpose::STANDARD.encode(&data),
-        "offset": len.saturating_sub(data.len() as u64),
-        "total": len,
-    }))
 }
 
 /// Read bounded context around an event-level recovery cursor for a terminal
@@ -3988,6 +4537,7 @@ fn main() {
             list_supported_agents,
             add_project,
             rename_project,
+            set_project_layout,
             remove_project,
             project_remove_preflight,
             list_presets,
@@ -4007,9 +4557,11 @@ fn main() {
             resume_session,
             restart_session,
             rename_session,
+            set_session_pinned,
             archive_session,
             unarchive_session,
             delete_archived_session,
+            delete_project_archived_sessions,
             delete_all_archived_sessions,
             session_history,
             preview_worktree,
@@ -4055,6 +4607,9 @@ fn main() {
             backup_restore,
             search,
             search_session_log,
+            get_native_history,
+            get_legacy_log_inventory,
+            delete_legacy_logs,
             rebuild_search_index,
             get_timeline,
             ack_timeline,
@@ -4069,7 +4624,6 @@ fn main() {
             secret_delete,
             notify_test,
             take_pending_notification_session,
-            read_log_tail,
             read_recovery_log_context,
             reveal_in_file_manager,
             open_in_system_terminal,
@@ -4111,6 +4665,16 @@ mod cleanup_tests {
     use std::sync::mpsc;
 
     #[test]
+    fn backend_blocking_gate_caps_concurrent_heavy_jobs() {
+        let permits = (0..MAX_BACKEND_BLOCKING_JOBS)
+            .map(|_| BackendBlockingPermit::try_acquire().unwrap())
+            .collect::<Vec<_>>();
+        assert!(BackendBlockingPermit::try_acquire().is_none());
+        drop(permits);
+        assert!(BackendBlockingPermit::try_acquire().is_some());
+    }
+
+    #[test]
     fn adapter_notices_use_stable_codes_and_keep_legacy_detail() {
         let launch_notices = vec![adapters::LaunchNotice::new(
             "pi_local_permissions",
@@ -4125,6 +4689,21 @@ mod cleanup_tests {
             launch_notices[0].legacy_message
         );
         assert_eq!(notices[0]["message"], launch_notices[0].legacy_message);
+    }
+
+    #[test]
+    fn startup_probe_reuses_a_selected_executable_until_it_disappears() {
+        let temp = tempfile::tempdir().unwrap();
+        let selected = temp.path().join("selected-shell");
+        std::fs::write(&selected, "#!/bin/sh\n").unwrap();
+
+        assert_eq!(
+            existing_executable(selected.to_str()),
+            Some(selected.as_path())
+        );
+
+        std::fs::remove_file(&selected).unwrap();
+        assert_eq!(existing_executable(selected.to_str()), None);
     }
 
     #[test]
@@ -4221,6 +4800,8 @@ mod cleanup_tests {
             root_path: "/mock/a".into(),
             git_root_path: Some("/mock/a".into()),
             created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
         };
         let worktree = Worktree {
             id: "worktree-b".into(),
@@ -4460,6 +5041,8 @@ mod cleanup_tests {
             root_path: paths.root().to_string_lossy().into_owned(),
             git_root_path: None,
             created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
         })
         .unwrap();
         let session_id = ids::new_id("ses_attachment");
@@ -4484,6 +5067,7 @@ mod cleanup_tests {
             permission_mode: PermissionMode::Native,
             created_at: now,
             updated_at: now,
+            pinned_at: None,
             archived_at: None,
         })
         .unwrap();
@@ -4604,6 +5188,8 @@ mod cleanup_tests {
             root_path: temp.path().to_string_lossy().into_owned(),
             git_root_path: None,
             created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
         })
         .unwrap();
         let session_id = ids::new_id("ses_cleanup");
@@ -4628,6 +5214,7 @@ mod cleanup_tests {
             permission_mode: PermissionMode::Native,
             created_at: now,
             updated_at: now,
+            pinned_at: None,
             archived_at: None,
         })
         .unwrap();
@@ -4640,6 +5227,76 @@ mod cleanup_tests {
         assert_eq!(run_due_cleanup_jobs(&paths, &db), 1);
         assert!(!session_dir.exists());
         assert!(db.list_due_cleanup_jobs(Utc::now()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn purged_session_native_artifacts_are_removed_after_commit() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let paths = AppPaths::new(temp.path().join("data"));
+        let db = Db::open(&paths).unwrap();
+        let project_id = ids::new_id("prj_native_cleanup");
+        db.add_project(&Project {
+            id: project_id.clone(),
+            name: "native cleanup test".into(),
+            root_path: temp.path().to_string_lossy().into_owned(),
+            git_root_path: None,
+            created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
+        })
+        .unwrap();
+        let session_id = ids::new_id("ses_native_cleanup");
+        let now = Utc::now();
+        let cwd = temp.path().join("workspace").to_string_lossy().into_owned();
+        db.insert_session(&Session {
+            id: session_id.clone(),
+            project_id,
+            worktree_id: None,
+            preset_id: "pre_claude_safe".into(),
+            title: "native cleanup test".into(),
+            cwd: cwd.clone(),
+            host_pid: None,
+            host_socket: None,
+            host_token: ids::new_host_token(),
+            lifecycle: Lifecycle::Stopped,
+            agent_session_id: Some("native-id-1".into()),
+            resume_precision: ResumePrecision::Exact,
+            log_path: paths.log_path(&session_id).to_string_lossy().into_owned(),
+            adapter_type: AgentType::Claude,
+            transport: AgentTransport::Pty,
+            command: vec!["claude".into()],
+            permission_mode: PermissionMode::Native,
+            created_at: now,
+            updated_at: now,
+            pinned_at: None,
+            archived_at: None,
+        })
+        .unwrap();
+        let claude_home = temp.path().join("claude");
+        let project_dir = claude_home
+            .join("projects")
+            .join(agentport_core::history::cwd_slug(&cwd));
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let native_file = project_dir.join("native-id-1.jsonl");
+        let other_file = project_dir.join("another-session.jsonl");
+        std::fs::write(&native_file, "{}\n").unwrap();
+        std::fs::write(&other_file, "{}\n").unwrap();
+
+        db.archive_session(&session_id).unwrap();
+        // Mirror the command flow: plan before purge (evidence intact),
+        // purge, then execute the native cleanup after commit.
+        let session = db.get_session(&session_id).unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", &claude_home);
+        let plan = plan_native_cleanup(&paths, &session);
+        db.purge_archived_session(&session_id).unwrap();
+        let outcome = execute_native_cleanup(&plan);
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+
+        assert_eq!(outcome.deleted, 1);
+        assert!(!outcome.has_failures());
+        assert!(!native_file.exists());
+        assert!(other_file.exists(), "another session's file must survive");
+        assert!(db.get_session(&session_id).is_err());
     }
 
     #[test]

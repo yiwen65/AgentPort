@@ -1445,6 +1445,8 @@ mod tests {
             root_path,
             git_root_path: None,
             created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
         })
         .unwrap();
         project_id
