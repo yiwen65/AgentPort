@@ -196,9 +196,6 @@ mod output_tail_tests {
 pub(crate) enum HostMsg {
     /// PTY, hook, or structured adapter observations for the state machine.
     Obs(Observation),
-    /// Authenticated user input or a process-control operation. This resets a
-    /// pending Pi idle shutdown even when the CLI has not produced output yet.
-    UserActivity,
     /// PTY reader reached a clean EOF and finished the log writer.
     PtyEof,
     /// PTY reading failed before the control loop established that the child
@@ -212,9 +209,12 @@ pub(crate) enum HostMsg {
 }
 
 const PI_IDLE_SHUTDOWN_DELAY: Duration = Duration::from_secs(15 * 60);
+const ACTIVE_DESCENDANT_REFRESH_TICKS: u64 = 3;
+const PI_IDLE_DESCENDANT_REFRESH_TICKS: u64 = 60;
 
 struct PiIdleShutdown {
     deadline: Option<Instant>,
+    armed_user_activity_generation: u64,
     delay: Duration,
 }
 
@@ -222,22 +222,28 @@ impl PiIdleShutdown {
     fn new(delay: Duration) -> Self {
         Self {
             deadline: None,
+            armed_user_activity_generation: 0,
             delay,
         }
     }
 
-    fn arm(&mut self, now: Instant) {
+    fn arm(&mut self, now: Instant, user_activity_generation: u64) {
         self.deadline = Some(now + self.delay);
+        self.armed_user_activity_generation = user_activity_generation;
     }
 
-    fn note_activity(&mut self, now: Instant) {
+    fn note_process_activity(&mut self, now: Instant) {
         if self.deadline.is_some() {
-            self.arm(now);
+            self.deadline = Some(now + self.delay);
         }
     }
 
-    fn cancel(&mut self) {
-        self.deadline = None;
+    fn cancel_if_user_activity(&mut self, generation: u64) -> bool {
+        if self.deadline.is_some() && generation != self.armed_user_activity_generation {
+            self.deadline = None;
+            return true;
+        }
+        false
     }
 
     fn deadline(&self) -> Option<Instant> {
@@ -296,6 +302,10 @@ pub(crate) struct Shared {
     /// not be global: otherwise activity in one session changes the cleanup
     /// cadence of every other Host process.
     tick_count: AtomicU64,
+    /// Monotonic input generation. Socket readers update this without queueing
+    /// one control message per keystroke; the one-second control tick observes
+    /// changes and cancels a stale idle deadline.
+    user_activity_generation: AtomicU64,
     /// Terminal bytes for PTY Sessions or UTF-8 JSONL commands for structured
     /// Pi Sessions. The socket server owns protocol-specific serialization.
     input_writer: Mutex<Box<dyn Write + Send>>,
@@ -437,6 +447,12 @@ pub(crate) fn err_frame(session_id: Option<&str>, code: HostErrorCode, message: 
         params: Some(serde_json::json!({})),
         technical_detail: Some(message.to_string()),
     }
+}
+
+pub(crate) fn note_user_activity(shared: &Shared) {
+    shared
+        .user_activity_generation
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 /// Signal the whole agent process group, or just the child pid when pgid
@@ -848,6 +864,7 @@ fn run() -> i32 {
         next_client_id: AtomicU64::new(1),
         authenticated_client_count: AtomicUsize::new(0),
         tick_count: AtomicU64::new(0),
+        user_activity_generation: AtomicU64::new(0),
         input_writer: Mutex::new(input_writer),
         master: Mutex::new(master),
     });
@@ -1080,8 +1097,20 @@ fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
 
     loop {
         let now = Instant::now();
+        let user_activity_generation = shared.user_activity_generation.load(Ordering::Relaxed);
+        if pi_idle_shutdown.cancel_if_user_activity(user_activity_generation) {
+            // Resume the active cadence immediately after input starts a new
+            // turn; do not wait for the old idle cadence to roll over.
+            shared.tick_count.store(0, Ordering::Relaxed);
+        }
         if now >= next_tick {
-            tick(shared, &mut sm, &mut status_file, &mut reaper);
+            tick(
+                shared,
+                &mut sm,
+                &mut status_file,
+                &mut reaper,
+                pi_idle_shutdown.deadline().is_some(),
+            );
             next_tick += tick_interval;
             // Avoid a burst of catch-up heartbeats if a slow state operation
             // took longer than a tick interval. Subsequent ticks resume from
@@ -1106,20 +1135,24 @@ fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
                     Observation::AdapterTurnEnd { adapter } if adapter == "pi"
                 );
                 if !pi_turn_complete {
-                    pi_idle_shutdown.note_activity(Instant::now());
+                    pi_idle_shutdown.note_process_activity(Instant::now());
                 }
                 if let Some(ev) = sm.observe(obs) {
                     emit_event(shared, &mut status_file, ev);
                 }
                 if pi_turn_complete {
-                    pi_idle_shutdown.arm(Instant::now());
+                    // Read input authority before the process-table scan. If a
+                    // new prompt arrives while `ps` runs, the next loop sees a
+                    // different generation and cancels this stale deadline.
+                    let generation_at_turn_end =
+                        shared.user_activity_generation.load(Ordering::Relaxed);
+                    // Capture the completed turn's descendants before reducing
+                    // the defensive refresh cadence during the quiet grace.
+                    *shared.known_descendants.lock().unwrap() =
+                        descendants_of(shared.child_pid);
+                    shared.tick_count.store(1, Ordering::Relaxed);
+                    pi_idle_shutdown.arm(Instant::now(), generation_at_turn_end);
                 }
-            }
-            Ok(HostMsg::UserActivity) => {
-                // Input starts or controls a new turn. Do not retire a
-                // potentially long, quiet operation on the previous turn's
-                // deadline; the next authoritative TurnEnd will arm it again.
-                pi_idle_shutdown.cancel();
             }
             Ok(HostMsg::PtyEof) => {
                 return natural_exit(shared, &mut sm, &mut status_file, &rx, &mut reaper)
@@ -1160,6 +1193,11 @@ fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
                 );
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                let generation = shared.user_activity_generation.load(Ordering::Relaxed);
+                if pi_idle_shutdown.cancel_if_user_activity(generation) {
+                    shared.tick_count.store(0, Ordering::Relaxed);
+                    continue;
+                }
                 if pi_idle_shutdown.due(Instant::now()) {
                     return stop_flow(
                         shared,
@@ -1190,12 +1228,23 @@ fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
 }
 
 /// 1s tick: heartbeat broadcast + silence detection for the state machine +
-/// descendant snapshot refresh (every 3rd tick, for tree cleanup).
+/// descendant snapshots. Active turns refresh every 3s; a completed Pi turn
+/// takes one immediate snapshot, then uses a 60s defensive cadence while idle.
+fn descendant_refresh_due(tick_count: u64, pi_idle_grace: bool) -> bool {
+    let interval = if pi_idle_grace {
+        PI_IDLE_DESCENDANT_REFRESH_TICKS
+    } else {
+        ACTIVE_DESCENDANT_REFRESH_TICKS
+    };
+    tick_count.checked_rem(interval) == Some(0)
+}
+
 fn tick(
     shared: &Shared,
     sm: &mut StateMachine,
     status_file: &mut Option<File>,
     reaper: &mut Reaper,
+    pi_idle_grace: bool,
 ) {
     broadcast(
         shared,
@@ -1231,12 +1280,10 @@ fn tick(
         }
         Some(ProcessWaitEvent::Exited) | None => {}
     }
-    if shared
-        .tick_count
-        .fetch_add(1, Ordering::Relaxed)
-        .checked_rem(3)
-        == Some(0)
-    {
+    if descendant_refresh_due(
+        shared.tick_count.fetch_add(1, Ordering::Relaxed),
+        pi_idle_grace,
+    ) {
         *shared.known_descendants.lock().unwrap() = descendants_of(shared.child_pid);
     }
     let elapsed = shared.last_output_at.lock().unwrap().elapsed();
@@ -2129,7 +2176,7 @@ mod pi_idle_shutdown_tests {
     fn becomes_due_only_after_the_full_delay() {
         let start = Instant::now();
         let mut shutdown = PiIdleShutdown::new(Duration::from_secs(15 * 60));
-        shutdown.arm(start);
+        shutdown.arm(start, 0);
 
         assert!(!shutdown.due(start + Duration::from_secs(15 * 60 - 1)));
         assert!(shutdown.due(start + Duration::from_secs(15 * 60)));
@@ -2139,8 +2186,8 @@ mod pi_idle_shutdown_tests {
     fn activity_restarts_the_full_delay() {
         let start = Instant::now();
         let mut shutdown = PiIdleShutdown::new(Duration::from_secs(15 * 60));
-        shutdown.arm(start);
-        shutdown.note_activity(start + Duration::from_secs(14 * 60));
+        shutdown.arm(start, 0);
+        shutdown.note_process_activity(start + Duration::from_secs(14 * 60));
 
         assert!(!shutdown.due(start + Duration::from_secs(15 * 60)));
         assert!(!shutdown.due(start + Duration::from_secs(29 * 60 - 1)));
@@ -2151,7 +2198,7 @@ mod pi_idle_shutdown_tests {
     fn activity_before_turn_end_does_not_arm_shutdown() {
         let start = Instant::now();
         let mut shutdown = PiIdleShutdown::new(Duration::from_secs(15 * 60));
-        shutdown.note_activity(start);
+        shutdown.note_process_activity(start);
 
         assert!(shutdown.deadline().is_none());
         assert!(!shutdown.due(start + Duration::from_secs(60 * 60)));
@@ -2161,11 +2208,23 @@ mod pi_idle_shutdown_tests {
     fn user_input_cancels_the_previous_turn_deadline() {
         let start = Instant::now();
         let mut shutdown = PiIdleShutdown::new(Duration::from_secs(15 * 60));
-        shutdown.arm(start);
-        shutdown.cancel();
+        shutdown.arm(start, 7);
+        assert!(!shutdown.cancel_if_user_activity(7));
+        assert!(shutdown.cancel_if_user_activity(8));
 
         assert!(shutdown.deadline().is_none());
         assert!(!shutdown.due(start + Duration::from_secs(60 * 60)));
+    }
+
+    #[test]
+    fn completed_pi_uses_the_reduced_descendant_refresh_cadence() {
+        assert!(descendant_refresh_due(0, false));
+        assert!(descendant_refresh_due(3, false));
+        assert!(!descendant_refresh_due(1, false));
+
+        assert!(descendant_refresh_due(0, true));
+        assert!(descendant_refresh_due(60, true));
+        assert!(!descendant_refresh_due(3, true));
     }
 }
 

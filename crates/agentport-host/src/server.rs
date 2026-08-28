@@ -24,7 +24,8 @@ use portable_pty::PtySize;
 use tracing::{info, warn};
 
 use crate::{
-    current_log_cursor, err_frame, signal_group, status_frame, HostErrorCode, HostMsg, Shared,
+    current_log_cursor, err_frame, note_user_activity, signal_group, status_frame, HostErrorCode,
+    HostMsg, Shared,
 };
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -303,7 +304,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                 // visible suspension and the GUI supplies the missing `fg`
                 // operation through SIGCONT.
                 if data.as_slice() == [0x1a] {
-                    let _ = tx.send(HostMsg::UserActivity);
+                    note_user_activity(&shared);
                     signal_group(&shared, Signal::SIGSTOP);
                     continue;
                 }
@@ -311,7 +312,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                 if w.write_all(&data).and_then(|_| w.flush()).is_err() {
                     break; // PTY gone — nothing more to do for this client
                 }
-                let _ = tx.send(HostMsg::UserActivity);
+                note_user_activity(&shared);
             }
             ClientFrame::StructuredPrompt { text, .. } => {
                 if shared.cfg.transport != AgentTransport::JsonRpc {
@@ -348,7 +349,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                 {
                     break;
                 }
-                let _ = tx.send(HostMsg::UserActivity);
+                note_user_activity(&shared);
             }
             ClientFrame::AbortStructuredTurn { .. } => {
                 if shared.cfg.transport != AgentTransport::JsonRpc {
@@ -367,7 +368,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                 if write_json_command(&shared, serde_json::json!({"type": "abort"})).is_err() {
                     break;
                 }
-                let _ = tx.send(HostMsg::UserActivity);
+                note_user_activity(&shared);
             }
             ClientFrame::Resize {
                 cols,
@@ -386,11 +387,11 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                 }
             }
             ClientFrame::Interrupt { .. } => {
-                let _ = tx.send(HostMsg::UserActivity);
+                note_user_activity(&shared);
                 signal_group(&shared, Signal::SIGINT);
             }
             ClientFrame::Continue { .. } => {
-                let _ = tx.send(HostMsg::UserActivity);
+                note_user_activity(&shared);
                 signal_group(&shared, Signal::SIGCONT);
             }
             ClientFrame::Stop { grace_ms, .. } => {

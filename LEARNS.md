@@ -233,3 +233,12 @@
 - Correct approach: On a failed collapse-state write, remove obsolete v1 terminal snapshots and retry the compact state write; Host replay remains the safe fallback for those snapshots.
 - Prevention: Test persistence under an exhausted LocalStorage quota and inspect per-prefix storage size before blaming startup selection or serialization.
 - Verified by: The packaged WebKit database contained 74 v1 entries totaling 5,063,542 bytes versus a 48-byte one-ID collapse value; the quota regression failed before retry/reclamation and passes afterward, with the full frontend suite at 333/333.
+
+## `Host binary A/B benchmarks` — rebuild the standalone executable after test-harness builds
+
+- Wrong approach: Run `cargo test -p agentport-host --bin agentport-host` and then benchmark `target/debug/agentport-host` as the candidate executable.
+- Why it failed: Cargo rebuilt the unit-test harness under `target/debug/deps`, not the standalone binary at `target/debug/agentport-host`, so the first A/B run unknowingly measured the pre-fix executable.
+- Recognition signal: Source and unit tests contain the candidate cadence, but the standalone binary hash is unchanged and its process-scan count exactly matches baseline.
+- Correct approach: Run `cargo build -p agentport-host` (or the matching `--release` build), record candidate/baseline hashes, then execute the exact hashed paths.
+- Prevention: Every Host A/B script must print and retain revision, profile, executable path, and SHA-256 before collecting samples.
+- Verified by: The stale candidate produced 4 `ps` executions in 12 seconds, identical to baseline; after an explicit build changed the binary hash, the same workload produced 1 versus 4 in all three paired runs.
