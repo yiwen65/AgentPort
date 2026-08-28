@@ -892,20 +892,12 @@ done"#,
         "Pi agent_settled was not projected as a semantic turn end: {prompted:?}"
     );
 
-    let terminal = conn.collect_until(Duration::from_secs(8), |frames| {
-        frames.iter().any(|frame| {
-            matches!(
-                frame,
-                HostFrame::Exit { reason, group_cleaned: true, .. } if reason == "turn_complete"
-            )
-        })
-    });
+    let keep_alive = conn.collect_until(Duration::from_secs(1), |_| false);
     assert!(
-        terminal.iter().any(|frame| matches!(
-            frame,
-            HostFrame::Exit { reason, group_cleaned: true, .. } if reason == "turn_complete"
-        )),
-        "settled Pi RPC turn did not stop its process group: {terminal:?}"
+        !keep_alive
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::Exit { .. })),
+        "settled Pi RPC turn was stopped before its idle grace period: {keep_alive:?}"
     );
     assert!(String::from_utf8_lossy(&output_bytes(&prompted)).contains("prompt received"));
     assert!(
@@ -934,7 +926,7 @@ fn pi_pty_hides_only_the_first_private_session_notice() {
 }
 
 #[test]
-fn pi_pty_session_jsonl_emits_only_new_semantic_turn_ends_and_stops_idle_process() {
+fn pi_pty_session_jsonl_emits_only_new_semantic_turn_ends_and_keeps_grace_period() {
     let ctx = make_pi_pty_ctx("printf 'Pi TUI ready\\r\\n'; sleep 60");
     let session_dir = ctx.dir.join("pi");
     std::fs::create_dir_all(&session_dir).unwrap();
@@ -945,9 +937,8 @@ fn pi_pty_session_jsonl_emits_only_new_semantic_turn_ends_and_stops_idle_process
     )
     .unwrap();
 
-    let mut guard = spawn_host(&ctx, &[]);
+    let _guard = spawn_host(&ctx, &[]);
     wait_socket(&ctx);
-    let agent_pid = guard.agent_pid().unwrap();
     let mut conn = connect(&ctx, &ctx.session_id, TOKEN, 0);
     conn.expect_hello_ok();
     let old = conn.collect_until(Duration::from_millis(700), |_| false);
@@ -993,36 +984,13 @@ fn pi_pty_session_jsonl_emits_only_new_semantic_turn_ends_and_stops_idle_process
             ..
         } if evidence == "adapter:pi:TurnEnd"
     )));
-    let terminal = conn.collect_until(Duration::from_secs(8), |frames| {
-        frames.iter().any(|frame| {
-            matches!(
-                frame,
-                HostFrame::Exit { reason, group_cleaned: true, .. } if reason == "turn_complete"
-            )
-        })
-    });
+    let keep_alive = conn.collect_until(Duration::from_secs(1), |_| false);
     assert!(
-        terminal.iter().any(|frame| matches!(
-            frame,
-            HostFrame::Exit { reason, group_cleaned: true, .. } if reason == "turn_complete"
-        )),
-        "completed Pi PTY turn did not stop its process group: {terminal:?}"
+        !keep_alive
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::Exit { .. })),
+        "completed Pi PTY turn was stopped before its idle grace period: {keep_alive:?}"
     );
-    assert_eq!(
-        guard
-            .wait_exit(Duration::from_secs(10))
-            .expect("host exits after Pi TurnEnd")
-            .code(),
-        Some(0)
-    );
-    assert_eq!(
-        kill(Pid::from_raw(-agent_pid), None::<Signal>),
-        Err(nix::errno::Errno::ESRCH)
-    );
-    let state: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(ctx.dir.join("host-state.json")).unwrap())
-            .unwrap();
-    assert_eq!(state["exit_reason"], serde_json::json!("turn_complete"));
 }
 
 #[test]

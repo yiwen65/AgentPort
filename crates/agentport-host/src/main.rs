@@ -196,6 +196,9 @@ mod output_tail_tests {
 pub(crate) enum HostMsg {
     /// PTY, hook, or structured adapter observations for the state machine.
     Obs(Observation),
+    /// Authenticated user input or a process-control operation. This resets a
+    /// pending Pi idle shutdown even when the CLI has not produced output yet.
+    UserActivity,
     /// PTY reader reached a clean EOF and finished the log writer.
     PtyEof,
     /// PTY reading failed before the control loop established that the child
@@ -206,6 +209,44 @@ pub(crate) enum HostMsg {
     Stop { grace_ms: u64 },
     /// The host process itself received SIGTERM/SIGINT/SIGHUP.
     HostSignal(i32),
+}
+
+const PI_IDLE_SHUTDOWN_DELAY: Duration = Duration::from_secs(15 * 60);
+
+struct PiIdleShutdown {
+    deadline: Option<Instant>,
+    delay: Duration,
+}
+
+impl PiIdleShutdown {
+    fn new(delay: Duration) -> Self {
+        Self {
+            deadline: None,
+            delay,
+        }
+    }
+
+    fn arm(&mut self, now: Instant) {
+        self.deadline = Some(now + self.delay);
+    }
+
+    fn note_activity(&mut self, now: Instant) {
+        if self.deadline.is_some() {
+            self.arm(now);
+        }
+    }
+
+    fn cancel(&mut self) {
+        self.deadline = None;
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        self.deadline.is_some_and(|deadline| now >= deadline)
+    }
 }
 
 /// State shared with the socket server and worker threads.
@@ -1035,6 +1076,7 @@ fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
     // remain wall-clock based under high-frequency PTY or hook activity.
     let tick_interval = Duration::from_secs(1);
     let mut next_tick = Instant::now() + tick_interval;
+    let mut pi_idle_shutdown = PiIdleShutdown::new(PI_IDLE_SHUTDOWN_DELAY);
 
     loop {
         let now = Instant::now();
@@ -1050,32 +1092,34 @@ fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
             continue;
         }
 
-        match rx.recv_timeout(next_tick.saturating_duration_since(now)) {
+        let wake_at = pi_idle_shutdown
+            .deadline()
+            .map_or(next_tick, |deadline| deadline.min(next_tick));
+        match rx.recv_timeout(wake_at.saturating_duration_since(now)) {
             Ok(HostMsg::Obs(obs)) => {
-                // Pi is resumed from its native transcript for every new turn,
-                // so keeping its interactive CLI alive after a definitive
-                // TurnEnd only accumulates idle Host/Node processes. Persist
-                // and broadcast the completion first, then clean the complete
-                // process group. PTY silence is intentionally insufficient:
-                // it can occur during a long-running or input-blocked turn.
+                // A definitive Pi TurnEnd starts a bounded keep-alive window.
+                // Any later process activity extends that window; heuristic
+                // PTY silence never starts it because silence can also mean a
+                // long-running or input-blocked turn.
                 let pi_turn_complete = matches!(
                     &obs,
                     Observation::AdapterTurnEnd { adapter } if adapter == "pi"
                 );
+                if !pi_turn_complete {
+                    pi_idle_shutdown.note_activity(Instant::now());
+                }
                 if let Some(ev) = sm.observe(obs) {
                     emit_event(shared, &mut status_file, ev);
                 }
                 if pi_turn_complete {
-                    return stop_flow(
-                        shared,
-                        &mut sm,
-                        &mut status_file,
-                        None,
-                        &rx,
-                        "pi_turn_complete",
-                        &mut reaper,
-                    );
+                    pi_idle_shutdown.arm(Instant::now());
                 }
+            }
+            Ok(HostMsg::UserActivity) => {
+                // Input starts or controls a new turn. Do not retire a
+                // potentially long, quiet operation on the previous turn's
+                // deadline; the next authoritative TurnEnd will arm it again.
+                pi_idle_shutdown.cancel();
             }
             Ok(HostMsg::PtyEof) => {
                 return natural_exit(shared, &mut sm, &mut status_file, &rx, &mut reaper)
@@ -1116,7 +1160,18 @@ fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
                 );
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                // The next loop iteration observes the due absolute deadline.
+                if pi_idle_shutdown.due(Instant::now()) {
+                    return stop_flow(
+                        shared,
+                        &mut sm,
+                        &mut status_file,
+                        None,
+                        &rx,
+                        "pi_turn_complete",
+                        &mut reaper,
+                    );
+                }
+                // The next loop iteration observes the due tick deadline.
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 error!("control channel disconnected");
@@ -2063,6 +2118,54 @@ fn spawn_signal_handler(tx: mpsc::Sender<HostMsg>) {
             });
         }
         Err(e) => error!("failed to register signal handlers: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod pi_idle_shutdown_tests {
+    use super::*;
+
+    #[test]
+    fn becomes_due_only_after_the_full_delay() {
+        let start = Instant::now();
+        let mut shutdown = PiIdleShutdown::new(Duration::from_secs(15 * 60));
+        shutdown.arm(start);
+
+        assert!(!shutdown.due(start + Duration::from_secs(15 * 60 - 1)));
+        assert!(shutdown.due(start + Duration::from_secs(15 * 60)));
+    }
+
+    #[test]
+    fn activity_restarts_the_full_delay() {
+        let start = Instant::now();
+        let mut shutdown = PiIdleShutdown::new(Duration::from_secs(15 * 60));
+        shutdown.arm(start);
+        shutdown.note_activity(start + Duration::from_secs(14 * 60));
+
+        assert!(!shutdown.due(start + Duration::from_secs(15 * 60)));
+        assert!(!shutdown.due(start + Duration::from_secs(29 * 60 - 1)));
+        assert!(shutdown.due(start + Duration::from_secs(29 * 60)));
+    }
+
+    #[test]
+    fn activity_before_turn_end_does_not_arm_shutdown() {
+        let start = Instant::now();
+        let mut shutdown = PiIdleShutdown::new(Duration::from_secs(15 * 60));
+        shutdown.note_activity(start);
+
+        assert!(shutdown.deadline().is_none());
+        assert!(!shutdown.due(start + Duration::from_secs(60 * 60)));
+    }
+
+    #[test]
+    fn user_input_cancels_the_previous_turn_deadline() {
+        let start = Instant::now();
+        let mut shutdown = PiIdleShutdown::new(Duration::from_secs(15 * 60));
+        shutdown.arm(start);
+        shutdown.cancel();
+
+        assert!(shutdown.deadline().is_none());
+        assert!(!shutdown.due(start + Duration::from_secs(60 * 60)));
     }
 }
 
