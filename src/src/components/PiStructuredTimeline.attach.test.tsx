@@ -65,6 +65,7 @@ const session: SessionView = {
   logPath: "/tmp/pi.log",
   unread: false,
   status: null,
+  pinnedAt: null,
   createdAt: "2026-07-23T00:00:00.000Z",
 };
 

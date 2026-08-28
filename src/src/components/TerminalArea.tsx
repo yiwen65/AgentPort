@@ -11,6 +11,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   type PointerEvent,
+  type WheelEvent,
 } from "react";
 import { api, errorText } from "../api";
 import {
@@ -26,12 +27,12 @@ import {
   fitSession,
   focusSession,
   getHandle,
-  locateTerminalBufferMatch,
-  loadHistoryTail,
+  loadOlderNativeHistory,
   mountTerminal,
-  searchTerminalBuffers,
+  noteTerminalScrollIntent,
+  scrollTerminalViewport,
   scrollToBottom,
-  type TerminalBufferMatch,
+  setTerminalActive,
 } from "../terminals";
 import {
   dropTreeEntryIntoTerminal,
@@ -49,7 +50,6 @@ import { AgentIcon } from "./AgentIcons";
 import ShellIcon from "./ShellIcon";
 import PiStructuredTimeline from "./PiStructuredTimeline";
 import DocumentPanel from "./DocumentPanel";
-import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 
 // ---------------------------------------------------------------------------
@@ -82,7 +82,13 @@ function readTerminalScrollPosition(
  * handle maps its complete travel to xterm's complete scrollback, so dragging
  * it remains fast even when a Session has a very large log.
  */
-export function TerminalScrollbar({ sessionId }: { sessionId: string }) {
+export function TerminalScrollbar({
+  sessionId,
+  active = true,
+}: {
+  sessionId: string;
+  active?: boolean;
+}) {
   const { t } = useTranslation("shell");
   const trackRef = useRef<HTMLDivElement>(null);
   const thumbRef = useRef<HTMLDivElement>(null);
@@ -120,6 +126,7 @@ export function TerminalScrollbar({ sessionId }: { sessionId: string }) {
   }, [sessionId]);
 
   useEffect(() => {
+    if (!active) return;
     let connectFrame = 0;
     let scrollDisposable: { dispose(): void } | undefined;
     let writeDisposable: { dispose(): void } | undefined;
@@ -150,7 +157,7 @@ export function TerminalScrollbar({ sessionId }: { sessionId: string }) {
       scrollDisposable?.dispose();
       writeDisposable?.dispose();
     };
-  }, [sessionId, schedulePositionSync]);
+  }, [active, sessionId, schedulePositionSync]);
 
   const scrollFromPointer = (clientY: number) => {
     const track = trackRef.current;
@@ -165,11 +172,14 @@ export function TerminalScrollbar({ sessionId }: { sessionId: string }) {
     );
     const ratio = thumbTop / travel;
     if (ratio === 0) {
-      handle.term.scrollToTop();
+      scrollTerminalViewport(sessionId, { type: "top" });
     } else if (ratio === 1) {
-      handle.term.scrollToBottom();
+      scrollTerminalViewport(sessionId, { type: "bottom" });
     } else {
-      handle.term.scrollToLine(Math.round(ratio * max));
+      scrollTerminalViewport(sessionId, {
+        type: "line",
+        line: Math.round(ratio * max),
+      });
     }
   };
 
@@ -210,26 +220,25 @@ export function TerminalScrollbar({ sessionId }: { sessionId: string }) {
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const term = getHandle(sessionId)?.term;
-    if (!term) return;
+    if (!getHandle(sessionId)) return;
     switch (event.key) {
       case "ArrowUp":
-        term.scrollLines(-3);
+        scrollTerminalViewport(sessionId, { type: "lines", amount: -3 });
         break;
       case "ArrowDown":
-        term.scrollLines(3);
+        scrollTerminalViewport(sessionId, { type: "lines", amount: 3 });
         break;
       case "PageUp":
-        term.scrollPages(-1);
+        scrollTerminalViewport(sessionId, { type: "pages", amount: -1 });
         break;
       case "PageDown":
-        term.scrollPages(1);
+        scrollTerminalViewport(sessionId, { type: "pages", amount: 1 });
         break;
       case "Home":
-        term.scrollToTop();
+        scrollTerminalViewport(sessionId, { type: "top" });
         break;
       case "End":
-        term.scrollToBottom();
+        scrollTerminalViewport(sessionId, { type: "bottom" });
         break;
       default:
         return;
@@ -268,7 +277,13 @@ export function TerminalScrollbar({ sessionId }: { sessionId: string }) {
   );
 }
 
-function TerminalPane({ sessionId, active }: { sessionId: string; active: boolean }) {
+function TerminalPane({
+  sessionId,
+  active,
+}: {
+  sessionId: string;
+  active: boolean;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
   const ses = useStore((state) => findSession(state.projects, sessionId));
   useStore((state) => state.runtime[sessionId]);
@@ -280,16 +295,13 @@ function TerminalPane({ sessionId, active }: { sessionId: string; active: boolea
   }, [sessionId]);
 
   useEffect(() => {
+    setTerminalActive(sessionId, active);
     if (active) {
       // Auto re-attach a live session that lost its channel (e.g. after a
       // transient socket error) when the user switches back to it.
       const sesNow = findSession(getState().projects, sessionId);
       if (sesNow && (sesNow.lifecycle === "running" || sesNow.lifecycle === "creating")) {
         void attachHandle(sessionId);
-      } else if (sesNow) {
-        // Ended session: make sure the read-only history terminal is filled
-        // (e.g. lifecycle flipped to interrupted while another tab was active).
-        void loadHistoryTail(sessionId);
       }
       // Do this after two frames. The first frame applies the active-pane
       // styles; the second gives xterm a non-zero, painted viewport.
@@ -323,6 +335,21 @@ function TerminalPane({ sessionId, active }: { sessionId: string; active: boolea
         (scrolledUp ? " scrolled-up" : "") +
         (dropActive ? " drop-target" : "")
       }
+      onWheelCapture={(event: WheelEvent<HTMLDivElement>) => {
+        if (!active || event.deltaY >= 0) return;
+        const buffer = getHandle(sessionId)?.term.buffer.active;
+        if (
+          ses?.adapter === "shell" ||
+          !buffer ||
+          buffer.type !== "normal" ||
+          buffer.viewportY > 0
+        ) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        void loadOlderNativeHistory(sessionId);
+      }}
       onDragOver={(event) => {
         if (!active || !hasTreeDragPayload(event.dataTransfer)) return;
         event.preventDefault();
@@ -344,7 +371,7 @@ function TerminalPane({ sessionId, active }: { sessionId: string; active: boolea
       }}
     >
       <div className="term-host" ref={hostRef} />
-      <TerminalScrollbar sessionId={sessionId} />
+      <TerminalScrollbar sessionId={sessionId} active={active} />
     </div>
   );
 }
@@ -360,18 +387,25 @@ const SEARCH_DECORATIONS = {
   activeMatchColorOverviewRuler: "#ffd840",
 };
 
-function bufferScopeLabel(hit: TerminalBufferMatch, t: TFunction<"shell">): string {
-  return hit.buffer === "normal"
-    ? t("ui.terminalSearch.currentBuffer")
-    : t("ui.terminalSearch.currentScreen");
+interface TerminalSearchPosition {
+  resultIndex: number;
+  resultCount: number;
+  buffer: "normal" | "alternate";
 }
+
+const EMPTY_TERMINAL_SEARCH_POSITION: TerminalSearchPosition = {
+  resultIndex: -1,
+  resultCount: 0,
+  buffer: "normal",
+};
 
 function TermSearchBar({ sessionId }: { sessionId: string }) {
   const { t } = useTranslation("shell");
   const inputRef = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState("");
-  const [bufferHits, setBufferHits] = useState<TerminalBufferMatch[]>([]);
-  const [bufferIndex, setBufferIndex] = useState(0);
+  const [searchPosition, setSearchPosition] = useState<TerminalSearchPosition>(
+    EMPTY_TERMINAL_SEARCH_POSITION,
+  );
   const [logResult, setLogResult] = useState<SearchResult | null>(null);
   const [logSearching, setLogSearching] = useState(false);
   const [logError, setLogError] = useState<string | null>(null);
@@ -387,34 +421,31 @@ function TermSearchBar({ sessionId }: { sessionId: string }) {
   }, [sessionId]);
 
   useEffect(() => {
-    const query = q.trim();
-    if (!query) {
-      setBufferHits([]);
-      setBufferIndex(0);
-      return;
-    }
-    const refresh = () => {
-      const hits = searchTerminalBuffers(sessionId, query);
-      setBufferHits(hits);
-      setBufferIndex((current) => Math.min(current, Math.max(0, hits.length - 1)));
+    let connectFrame = 0;
+    let resultDisposable: { dispose(): void } | undefined;
+    const connect = () => {
+      const handle = getHandle(sessionId);
+      if (!handle) {
+        connectFrame = requestAnimationFrame(connect);
+        return;
+      }
+      resultDisposable = handle.search.onDidChangeResults((result) => {
+        setSearchPosition({
+          resultIndex: result.resultIndex,
+          resultCount: result.resultCount,
+          buffer: handle.term.buffer.active.type,
+        });
+      });
     };
-    refresh();
-    // Output can arrive after the user begins searching. Coalesce write
-    // parsing so a fast stream does not scan scrollback once per chunk.
-    let timer: number | null = null;
-    const disposable = getHandle(sessionId)?.term.onWriteParsed(() => {
-      if (timer !== null) window.clearTimeout(timer);
-      timer = window.setTimeout(refresh, 120);
-    });
+    connect();
     return () => {
-      disposable?.dispose();
-      if (timer !== null) window.clearTimeout(timer);
+      cancelAnimationFrame(connectFrame);
+      resultDisposable?.dispose();
     };
-  }, [q, sessionId]);
+  }, [sessionId]);
 
-  // The persisted log also includes output that predates xterm's attach replay
-  // tail. Query it separately without loading the entire log into the
-  // interactive terminal buffer.
+  // Agent-native history can predate the bounded xterm attach tail. Query it
+  // separately without copying the transcript into the terminal buffer.
   useEffect(() => {
     if (logTimer.current !== null) window.clearTimeout(logTimer.current);
     const query = q.trim();
@@ -453,32 +484,37 @@ function TermSearchBar({ sessionId }: { sessionId: string }) {
   const find = (query: string, dir: "next" | "prev", incremental = false) => {
     const h = getHandle(sessionId);
     if (!h) return;
-    if (!query) {
+    const needle = query.trim();
+    if (!needle) {
       h.search.clearDecorations();
+      setSearchPosition(EMPTY_TERMINAL_SEARCH_POSITION);
       return;
     }
     const opts = { incremental, decorations: SEARCH_DECORATIONS };
-    if (dir === "next") h.search.findNext(query, opts);
-    else h.search.findPrevious(query, opts);
+    noteTerminalScrollIntent(sessionId, "locating");
+    if (dir === "next") h.search.findNext(needle, opts);
+    else h.search.findPrevious(needle, opts);
   };
 
   const logHits = (logResult?.hits ?? []).filter((hit) => hit.kind === "terminal");
   const totalLogHits = logResult?.totalHits ?? logHits.length;
   const selectedLogHit: SearchHit | null = logHits[logIndex] ?? null;
-  const selectedBufferHit = bufferHits[bufferIndex] ?? null;
+  const hasBufferResult = searchPosition.resultCount > 0;
+  const bufferScope =
+    searchPosition.buffer === "normal"
+      ? t("ui.terminalSearch.currentBuffer")
+      : t("ui.terminalSearch.currentScreen");
+  const bufferPosition = hasBufferResult
+    ? t("ui.terminalSearch.matchPosition", {
+        scope: bufferScope,
+        current:
+          searchPosition.resultIndex >= 0 ? searchPosition.resultIndex + 1 : "?",
+        count: searchPosition.resultCount,
+      })
+    : null;
 
   const navigate = (dir: "next" | "prev") => {
     find(q, dir);
-    if (bufferHits.length > 1) {
-      const next =
-        dir === "next"
-          ? (bufferIndex + 1) % bufferHits.length
-          : (bufferIndex - 1 + bufferHits.length) % bufferHits.length;
-      setBufferIndex(next);
-      locateTerminalBufferMatch(sessionId, bufferHits[next]);
-    } else if (selectedBufferHit) {
-      locateTerminalBufferMatch(sessionId, selectedBufferHit);
-    }
     if (logHits.length > 1) {
       setLogIndex((current) =>
         dir === "next"
@@ -504,6 +540,7 @@ function TermSearchBar({ sessionId }: { sessionId: string }) {
           value={q}
           onChange={(e) => {
             setQ(e.target.value);
+            setSearchPosition(EMPTY_TERMINAL_SEARCH_POSITION);
             find(e.target.value, "next", true);
           }}
           onKeyDown={(e) => {
@@ -518,15 +555,8 @@ function TermSearchBar({ sessionId }: { sessionId: string }) {
           }}
         />
         <span className="count" aria-live="polite">
-          {selectedBufferHit
-            ? t("ui.terminalSearch.matchPosition", {
-                scope: bufferScopeLabel(selectedBufferHit, t),
-                current: bufferIndex + 1,
-                count: bufferHits.length,
-              })
-            : q.trim()
-              ? t("ui.terminalSearch.noCurrentBufferResults")
-              : ""}
+          {bufferPosition ??
+            (q.trim() ? t("ui.terminalSearch.noCurrentBufferResults") : "")}
         </span>
         <button
           className="btn small ghost"
@@ -554,12 +584,7 @@ function TermSearchBar({ sessionId }: { sessionId: string }) {
         <div className="term-search-history" aria-live="polite">
           <span className="term-search-history-label">{t("ui.terminalSearch.fullHistory")}</span>
           <span className="term-search-buffer-status">
-            {selectedBufferHit
-              ? t("ui.terminalSearch.bufferMatch", {
-                  scope: bufferScopeLabel(selectedBufferHit, t),
-                  snippet: selectedBufferHit.snippet,
-                })
-              : t("ui.terminalSearch.noResultsInCurrentBuffer")}
+            {bufferPosition ?? t("ui.terminalSearch.noResultsInCurrentBuffer")}
           </span>
           <span className="term-search-log-status">
             {logSearching
@@ -590,7 +615,11 @@ function TermSearchBar({ sessionId }: { sessionId: string }) {
 function SkeletonOverlay() {
   const { t } = useTranslation("session");
   return (
-    <div className="term-overlay">
+    // Opaque veil: attach replay streams retained output through xterm while
+    // this overlay is up; the default translucent veil would let the terminal
+    // visibly race through history (高频刷屏). Ended-session overlays stay
+    // translucent on purpose so their read-only history remains visible.
+    <div className="term-overlay term-overlay-solid">
       <div className="overlay-card" style={{ alignItems: "stretch", textAlign: "left" }}>
         <h3>{t("ui.lifecycle.connectingHost")}</h3>
         <div className="skeleton" aria-hidden="true">
@@ -701,7 +730,12 @@ function SessionOverlay({ ses }: { ses: SessionView }) {
     );
   }
 
-  if (r.attaching && !r.replayDone) return <SkeletonOverlay />;
+  // The attach command can resolve before xterm drains the replay writes.
+  // Keep the pane covered while either side of that handoff is active; the
+  // runtime flag advances only at the parser boundary queued by replay_done.
+  if ((!r.replayDone || r.startupPending) && (r.attaching || r.attached)) {
+    return <SkeletonOverlay />;
+  }
   return null;
 }
 
@@ -806,7 +840,11 @@ export default function TerminalArea() {
           <div className={`term-body${docExpanded ? " doc-expanded" : ""}`}>
             <div className="term-stack">
               {attachedPtyIds.map((id) => (
-                  <TerminalPane key={id} sessionId={id} active={id === ses.id} />
+                  <TerminalPane
+                    key={id}
+                    sessionId={id}
+                    active={id === ses.id}
+                  />
               ))}
               <SessionOverlay ses={ses} />
             </div>

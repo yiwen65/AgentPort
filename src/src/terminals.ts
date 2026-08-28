@@ -5,9 +5,9 @@
 
 import {
   Terminal,
-  type IBuffer,
   type ILinkProvider,
   type ILink,
+  type IMarker,
   type ITheme,
 } from "@xterm/xterm";
 import { CanvasAddon } from "@xterm/addon-canvas";
@@ -42,25 +42,254 @@ import { stateLabel } from "./format";
 import { i18n } from "./i18n";
 import { openDocumentTarget, parseDocumentLinkTarget } from "./documents";
 import { runtimeMessageEnvelope, runtimeMessageText } from "./runtimeMessages";
-import type { ChannelMsg, LogCursorView, RuntimeMessageEnvelope } from "./types";
+import type {
+  ChannelMsg,
+  HistoryEvent,
+  LogCursorView,
+  RuntimeMessageEnvelope,
+} from "./types";
 
 // Keep a substantial local history window for interactive find/navigation.
 // The persisted log remains the source of truth and can be much larger, but
 // 4 MiB covers normal agent sessions (including the current 1.5 MiB repro)
 // without replaying an entire configured retained-log window every time a pane opens.
 const REPLAY_TAIL_BYTES = 4 * 1024 * 1024;
-const TERMINAL_SNAPSHOT_VERSION = 1;
+const PI_STARTUP_READY_OSC = 6973;
+const PI_STARTUP_READY_PAYLOAD = "startup-ready";
+const PI_STARTUP_READY_TIMEOUT_MS = 15_000;
+const TERMINAL_SNAPSHOT_VERSION = 2;
 const MAX_TERMINAL_SNAPSHOT_CHARS = 2 * 1024 * 1024;
-/** Keep a bounded LRU of mounted xterm instances instead of retaining every
- * Session the user has ever visited in this renderer process. */
-export const MAX_PERSISTENT_TERMINALS = 3;
+// Snapshot serialization is synchronous on the renderer's main thread. Keep a
+// useful local navigation window without serializing the full interactive
+// scrollback; older Agent-native history remains available through pagination.
+const TERMINAL_SNAPSHOT_SCROLLBACK_LINES = 1000;
+
+/** Keep only the visible xterm instance. Session output is persisted by the
+ * Host, so retaining hidden renderers spends memory without protecting data. */
+export const MAX_PERSISTENT_TERMINALS = 1;
+
+export type TerminalViewportCommand =
+  | { type: "lines"; amount: number }
+  | { type: "pages"; amount: number }
+  | { type: "top" }
+  | { type: "bottom"; focus?: boolean }
+  | { type: "line"; line: number };
+
+type TerminalViewportMode = "follow" | "reading" | "locating";
+
+/** Single authority for user and renderer viewport mutations. */
+class TerminalViewportController {
+  private intentRevision = 0;
+  private mode: TerminalViewportMode = "follow";
+
+  constructor(private readonly term: Terminal) {}
+
+  get revision(): number {
+    return this.intentRevision;
+  }
+
+  get currentMode(): TerminalViewportMode {
+    return this.mode;
+  }
+
+  noteUserIntent(mode: TerminalViewportMode = "reading"): number {
+    this.intentRevision += 1;
+    this.mode = mode;
+    return this.intentRevision;
+  }
+
+  observeViewport() {
+    const buffer = this.term.buffer.active;
+    this.mode =
+      buffer.type !== "normal" || buffer.viewportY >= buffer.baseY
+        ? "follow"
+        : "reading";
+  }
+
+  runUserCommand(command: TerminalViewportCommand) {
+    const mode = command.type === "bottom" ? "follow" : "reading";
+    this.noteUserIntent(mode);
+    switch (command.type) {
+      case "lines":
+        this.term.scrollLines(command.amount);
+        break;
+      case "pages":
+        this.term.scrollPages(command.amount);
+        break;
+      case "top":
+        this.term.scrollToTop();
+        break;
+      case "bottom":
+        this.term.scrollToBottom();
+        if (command.focus) this.term.focus();
+        break;
+      case "line":
+        this.term.scrollToLine(command.line);
+        break;
+    }
+    this.observeViewport();
+  }
+
+  restoreReadingLine(line: number, expectedRevision: number) {
+    if (this.intentRevision !== expectedRevision) return;
+    this.term.scrollToLine(line);
+    this.mode = "reading";
+  }
+
+  restorePrependedAnchor(line: number, expectedRevision: number) {
+    if (this.intentRevision !== expectedRevision) return;
+    const buffer = this.term.buffer.active;
+    const target = Math.max(0, Math.min(line, buffer.baseY));
+    this.term.scrollToLine(target);
+    const viewport =
+      this.term.element?.querySelector<HTMLElement>(".xterm-viewport");
+    if (viewport && buffer.baseY > 0) {
+      const maxScrollTop = Math.max(
+        0,
+        viewport.scrollHeight - viewport.clientHeight,
+      );
+      viewport.scrollTop = (target / buffer.baseY) * maxScrollTop;
+    }
+    this.mode = target >= buffer.baseY ? "follow" : "reading";
+  }
+
+  restoreTail(expectedRevision: number) {
+    if (this.intentRevision !== expectedRevision) return;
+    this.synchronizeTail();
+  }
+
+  restoreAfterFit(line: number) {
+    this.term.scrollToLine(line);
+    this.mode = "reading";
+  }
+
+  synchronizeTail() {
+    this.term.scrollToBottom();
+    // xterm can report buffer tail while this native viewport remains at 0.
+    // Keep the private DOM workaround isolated inside the viewport authority.
+    const viewport =
+      this.term.element?.querySelector<HTMLElement>(".xterm-viewport");
+    if (viewport) {
+      viewport.scrollTop = Math.max(
+        0,
+        viewport.scrollHeight - viewport.clientHeight,
+      );
+    }
+    this.mode = "follow";
+  }
+
+  beginLocate(): number {
+    return this.noteUserIntent("locating");
+  }
+
+  revealLine(line: number, expectedRevision: number) {
+    if (this.intentRevision !== expectedRevision) return;
+    this.term.scrollToLine(line);
+    this.mode = "locating";
+  }
+}
+
+type TerminalDrainTask =
+  | "tail-repair"
+  | "replay-complete"
+  | "startup-ready"
+  | "render-observation"
+  | "snapshot"
+  | "recovery-reveal"
+  | "native-history-rebuild";
+
+interface PendingTerminalDrain {
+  id: number;
+  generation: number;
+  targetSequence: number;
+}
+
+/**
+ * Owns xterm write ordering and parser-boundary callbacks for one Session.
+ * A named drain is coalesced while pending and is automatically fenced when
+ * the handle or attach generation changes. Direct write callbacks remain
+ * available for per-frame accounting that must also run for stale writes.
+ */
+class TerminalWriteCoordinator {
+  private writeSequence = 0;
+  private nextDrainId = 0;
+  private readonly pendingDrains = new Map<
+    TerminalDrainTask,
+    PendingTerminalDrain
+  >();
+
+  constructor(
+    private readonly term: Terminal,
+    private readonly currentHandle: () => TermHandle | null,
+  ) {}
+
+  write(
+    data: Uint8Array | string,
+    callback?: () => void,
+  ): number {
+    const sequence = ++this.writeSequence;
+    this.term.write(data, callback);
+    return sequence;
+  }
+
+  hasPendingDrain(task: TerminalDrainTask): boolean {
+    return this.pendingDrains.has(task);
+  }
+
+  drain(
+    task: TerminalDrainTask,
+    callback: (targetSequence: number) => void,
+    options: { coalesce?: boolean; onDiscard?: () => void } = {},
+  ): boolean {
+    const handle = this.currentHandle();
+    if (!handle) return false;
+    const coalesce = options.coalesce !== false;
+    if (coalesce && this.pendingDrains.has(task)) return false;
+
+    const pending: PendingTerminalDrain = {
+      id: ++this.nextDrainId,
+      generation: handle.generation,
+      targetSequence: this.writeSequence,
+    };
+    if (coalesce) this.pendingDrains.set(task, pending);
+    let completed = false;
+    this.term.write("", () => {
+      if (completed) return;
+      completed = true;
+      if (coalesce) {
+        const current = this.pendingDrains.get(task);
+        if (current?.id !== pending.id) {
+          options.onDiscard?.();
+          return;
+        }
+        this.pendingDrains.delete(task);
+      }
+      const current = this.currentHandle();
+      if (current !== handle || current.generation !== pending.generation) {
+        options.onDiscard?.();
+        return;
+      }
+      callback(pending.targetSequence);
+    });
+    return true;
+  }
+
+  reset() {
+    this.pendingDrains.clear();
+  }
+}
 
 export interface TermHandle {
   sessionId: string;
   term: Terminal;
+  writes: TerminalWriteCoordinator;
+  viewport: TerminalViewportController;
   fit: FitAddon;
   search: SearchAddon;
   serialize: SerializeAddon;
+  /** Mouse report encoding is not exposed by Terminal.modes and xterm's
+   * SerializeAddon omits it, so preserve it explicitly with crash snapshots. */
+  mouseEncoding: TerminalMouseEncoding;
   opened: boolean;
   attached: boolean;
   attaching: boolean;
@@ -71,6 +300,16 @@ export interface TermHandle {
   /** Log tail already rendered (ended sessions' read-only history). */
   historyLoaded: boolean;
   historyLoading: boolean;
+  /** Agent-native history is a prefix of this same xterm buffer. `undefined`
+   * means not requested yet; `null` means the oldest source line was reached. */
+  nativeHistoryCursor: string | null | undefined;
+  nativeHistoryEvents: HistoryEvent[];
+  nativeHistorySkippedLines: number;
+  nativeHistoryRequest: Promise<boolean> | null;
+  nativeHistoryBoundaryMarker: IMarker | null;
+  nativeHistoryTailSnapshot: string | null;
+  /** Whether output/reflow changed the terminal tail since its last snapshot. */
+  nativeHistoryTailDirty: boolean;
   /** Last contiguous byte rendered for the current Host output stream. */
   logCursor: LogCursorView | null;
   /** The retained-log boundary is useful once, but routine later rotations in
@@ -79,7 +318,10 @@ export interface TermHandle {
   /** Cursor awaiting an xterm write-queue callback before it can be reported
    * as renderer-observed to the backend. */
   pendingRenderedLogCursor: LogCursorView | null;
-  renderObservationQueued: boolean;
+  /** Output pressure observed between enqueue and xterm parser callbacks. */
+  pendingOutputBytes: number;
+  peakPendingOutputBytes: number;
+  lastOutputParseLatencyMs: number;
   /** A recovery click loaded a bounded historical window, so the next live
    * frame may legitimately begin at the Host's newer high-water offset. */
   allowRecoveryGap: boolean;
@@ -87,6 +329,11 @@ export interface TermHandle {
   recoveryTarget: LogCursorView | null;
   container: HTMLDivElement | null;
   resizeObserver: ResizeObserver | null;
+  active: boolean;
+  geometryDirty: boolean;
+  fitCount: number;
+  lastFitReason: string | null;
+  lastFitDurationMs: number;
   lastCols: number;
   lastRows: number;
   lastScrolledUp: boolean;
@@ -95,22 +342,80 @@ export interface TermHandle {
   firstInputSubmitted: boolean;
   /** ANSI input parser state. Terminal replies (notably OSC color replies)
    * travel through xterm's onData alongside real keyboard input. */
-  inputEscapeState: "none" | "esc" | "csi" | "osc" | "oscEsc" | "string" | "stringEsc";
+  inputEscapeState:
+    | "none"
+    | "esc"
+    | "csi"
+    | "osc"
+    | "oscEsc"
+    | "string"
+    | "stringEsc";
+  startupReadyTimer: number | null;
   piStartupNoticeFilter: PiStartupNoticeFilter | null;
-}
-
-/** A text hit from xterm's in-memory normal or alternate buffer. */
-export interface TerminalBufferMatch {
-  /** `normal` is the scrollback buffer; `alternate` is a full-screen TUI. */
-  buffer: "normal" | "alternate";
-  /** Zero-based xterm buffer row, usable for scrollToLine when it is active. */
-  row: number;
-  /** Compact, ANSI-free context from the matched physical line. */
-  snippet: string;
 }
 
 const handles = new Map<string, TermHandle>();
 const unreadOutputPending = new Set<string>();
+
+type TerminalMouseEncoding = "default" | "sgr" | "sgr-pixels";
+
+function mouseEncodingSequence(encoding: TerminalMouseEncoding): string {
+  switch (encoding) {
+    case "sgr":
+      return "\x1b[?1006h";
+    case "sgr-pixels":
+      return "\x1b[?1016h";
+    default:
+      return "";
+  }
+}
+
+/** Track the mouse encoding modes that SerializeAddon does not serialize.
+ * Returning false lets xterm's built-in DECSET/DECRST/RIS handlers continue
+ * to own the actual terminal state. */
+function installMouseEncodingTracking(handle: TermHandle) {
+  handle.term.parser.registerCsiHandler(
+    { prefix: "?", final: "h" },
+    (params) => {
+      for (const param of params) {
+        if (param === 1006) handle.mouseEncoding = "sgr";
+        else if (param === 1016) handle.mouseEncoding = "sgr-pixels";
+      }
+      return false;
+    },
+  );
+  handle.term.parser.registerCsiHandler(
+    { prefix: "?", final: "l" },
+    (params) => {
+      for (const param of params) {
+        if (param === 1006 || param === 1016) {
+          handle.mouseEncoding = "default";
+        }
+      }
+      return false;
+    },
+  );
+  handle.term.parser.registerEscHandler({ final: "c" }, () => {
+    handle.mouseEncoding = "default";
+    return false;
+  });
+}
+
+function resetTerminal(handle: TermHandle) {
+  handle.mouseEncoding = "default";
+  handle.term.reset();
+}
+
+/** Clear stale replay content without dropping a live application's alternate
+ * buffer and terminal modes. A bounded tail does not necessarily contain the
+ * original DECSET sequence that entered fullscreen mode. */
+function clearTerminalForTailReplay(handle: TermHandle) {
+  if (handle.term.buffer.active.type === "alternate") {
+    handle.writes.write("\x1b[2J\x1b[H");
+    return;
+  }
+  resetTerminal(handle);
+}
 
 /**
  * Routes a clicked terminal link. Local documents (file:// OSC 8 links and
@@ -128,7 +433,10 @@ function openTerminalLink(url: string, sessionCwd?: string) {
   }
   if (/^https?:\/\//i.test(url)) {
     void api.openExternalUrl(url).catch((error) => {
-      toast(i18n.t("shell:ui.sidebar.openFailed", { detail: errorText(error) }), "error");
+      toast(
+        i18n.t("shell:ui.sidebar.openFailed", { detail: errorText(error) }),
+        "error",
+      );
     });
     return;
   }
@@ -139,8 +447,7 @@ function openTerminalLink(url: string, sessionCwd?: string) {
  * Matches absolute and relative POSIX paths printed as plain text, e.g.
  * `/Users/w/project/docs/report.md:12` or `src/components/App.tsx`. Relative
  * paths are resolved against the Session cwd when activated. Paths may contain
- * spaces when the
- * whole candidate is quoted; unquoted matches stop at whitespace. A trailing
+ * spaces when the whole candidate is quoted; unquoted matches stop at whitespace. A trailing
  * `:line[:column]` suffix is included so the viewer can reveal the line.
  *
  * Sentence punctuation (`,` `;` `!` `?` and CJK punctuation like `，。：`) is
@@ -166,9 +473,7 @@ function localFileLinkProvider(term: Terminal, sessionId: string): ILinkProvider
         return;
       }
       const links: ILink[] = [];
-      LOCAL_PATH_CANDIDATE.lastIndex = 0;
-      let match: RegExpExecArray | null;
-      while ((match = LOCAL_PATH_CANDIDATE.exec(line)) !== null) {
+      for (const match of line.matchAll(LOCAL_PATH_CANDIDATE)) {
         const text = match[1];
         const startIndex = match.index + match[0].indexOf(text);
         if (URL_SCHEME_BEFORE_PATH.test(line.slice(0, startIndex))) continue;
@@ -196,7 +501,7 @@ function localFileLinkProvider(term: Terminal, sessionId: string): ILinkProvider
 
 function resetRenderObservation(handle: TermHandle) {
   handle.pendingRenderedLogCursor = null;
-  handle.renderObservationQueued = false;
+  handle.writes.reset();
 }
 
 /**
@@ -204,7 +509,10 @@ function resetRenderObservation(handle: TermHandle) {
  * xterm provides input in chunks, so this handles typing, paste and backspace
  * until Enter. ANSI escape sequences from cursor/navigation keys are ignored.
  */
-function captureFirstSubmittedInput(handle: TermHandle, data: string): string | null {
+function captureFirstSubmittedInput(
+  handle: TermHandle,
+  data: string,
+): string | null {
   if (handle.firstInputSubmitted) return null;
 
   for (const char of data) {
@@ -228,15 +536,22 @@ function captureFirstSubmittedInput(handle: TermHandle, data: string): string | 
       if (char >= "@" && char <= "~") handle.inputEscapeState = "none";
       continue;
     }
-    if (handle.inputEscapeState === "osc" || handle.inputEscapeState === "string") {
+    if (
+      handle.inputEscapeState === "osc" ||
+      handle.inputEscapeState === "string"
+    ) {
       if (char === "\x07") {
         handle.inputEscapeState = "none";
       } else if (char === "\x1b") {
-        handle.inputEscapeState = handle.inputEscapeState === "osc" ? "oscEsc" : "stringEsc";
+        handle.inputEscapeState =
+          handle.inputEscapeState === "osc" ? "oscEsc" : "stringEsc";
       }
       continue;
     }
-    if (handle.inputEscapeState === "oscEsc" || handle.inputEscapeState === "stringEsc") {
+    if (
+      handle.inputEscapeState === "oscEsc" ||
+      handle.inputEscapeState === "stringEsc"
+    ) {
       if (char === "\\") {
         handle.inputEscapeState = "none";
       } else if (char === "\x07") {
@@ -244,7 +559,8 @@ function captureFirstSubmittedInput(handle: TermHandle, data: string): string | 
       } else {
         // A non-ST character is still part of the string payload. Keep
         // ignoring it rather than leaking terminal metadata into the title.
-        handle.inputEscapeState = handle.inputEscapeState === "oscEsc" ? "osc" : "string";
+        handle.inputEscapeState =
+          handle.inputEscapeState === "oscEsc" ? "osc" : "string";
       }
       continue;
     }
@@ -261,7 +577,9 @@ function captureFirstSubmittedInput(handle: TermHandle, data: string): string | 
       continue;
     }
     if (char === "\x7f" || char === "\b") {
-      handle.firstInputBuffer = Array.from(handle.firstInputBuffer).slice(0, -1).join("");
+      handle.firstInputBuffer = Array.from(handle.firstInputBuffer)
+        .slice(0, -1)
+        .join("");
       continue;
     }
     if (char.codePointAt(0)! >= 0x20 && handle.firstInputBuffer.length < 240) {
@@ -274,11 +592,26 @@ function captureFirstSubmittedInput(handle: TermHandle, data: string): string | 
 const FALLBACK_FONT =
   "'JetBrains Mono Variable', 'SF Mono', SFMono-Regular, Menlo, 'PingFang SC', 'Hiragino Sans GB', 'Apple Color Emoji', monospace";
 const DEFAULT_TERMINAL_FONT_SIZE = 13;
+
+/** Effective xterm font size bounds for settings × font-zoom combinations. */
+const MIN_TERMINAL_FONT_SIZE = 8;
+const MAX_TERMINAL_FONT_SIZE = 40;
+
+/** Terminal font size after applying the transient Ctrl/⌘ +/- zoom scale. */
+export function scaledTerminalFontSize(base: number, scale: number): number {
+  return Math.round(
+    Math.min(MAX_TERMINAL_FONT_SIZE, Math.max(MIN_TERMINAL_FONT_SIZE, base * scale)),
+  );
+}
 const bundledTerminalFontReady =
   typeof document !== "undefined" && document.fonts
     ? Promise.all([
-        document.fonts.load(`400 ${DEFAULT_TERMINAL_FONT_SIZE}px "JetBrains Mono Variable"`),
-        document.fonts.load(`600 ${DEFAULT_TERMINAL_FONT_SIZE}px "JetBrains Mono Variable"`),
+        document.fonts.load(
+          `400 ${DEFAULT_TERMINAL_FONT_SIZE}px "JetBrains Mono Variable"`,
+        ),
+        document.fonts.load(
+          `600 ${DEFAULT_TERMINAL_FONT_SIZE}px "JetBrains Mono Variable"`,
+        ),
         document.fonts.load(
           `italic 400 ${DEFAULT_TERMINAL_FONT_SIZE}px "JetBrains Mono Variable"`,
         ),
@@ -358,7 +691,10 @@ const XTERM_THEMES: Record<EffectiveTheme, ITheme> = {
   },
 };
 
-function syncHandleTheme(handle: TermHandle, theme = getState().themeEffective) {
+function syncHandleTheme(
+  handle: TermHandle,
+  theme = getState().themeEffective,
+) {
   handle.term.options.theme = XTERM_THEMES[theme];
   // Color glyphs and truecolor contrast adjustments are cached by xterm.
   // Rebuild the Canvas atlas whenever a pane becomes visible or its theme
@@ -370,77 +706,26 @@ export function getHandle(sessionId: string): TermHandle | undefined {
   return handles.get(sessionId);
 }
 
-const BUFFER_SEARCH_LIMIT = 100;
-const BUFFER_SNIPPET_CHARS = 120;
-
-function bufferSnippet(text: string, query: string): string {
-  const lower = text.toLocaleLowerCase();
-  const at = lower.indexOf(query.toLocaleLowerCase());
-  if (at < 0) return text.slice(0, BUFFER_SNIPPET_CHARS);
-  const start = Math.max(0, at - 36);
-  const end = Math.min(text.length, at + query.length + 72);
-  return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
-}
-
-function collectBufferMatches(
-  buffer: IBuffer,
-  kind: TerminalBufferMatch["buffer"],
-  query: string,
-  out: TerminalBufferMatch[],
-) {
-  const needle = query.toLocaleLowerCase();
-  for (let row = 0; row < buffer.length && out.length < BUFFER_SEARCH_LIMIT; row += 1) {
-    const text = buffer.getLine(row)?.translateToString(true) ?? "";
-    if (text.toLocaleLowerCase().includes(needle)) {
-      out.push({ buffer: kind, row, snippet: bufferSnippet(text, query) });
-    }
-  }
-}
-
-/**
- * Search every xterm buffer that belongs to the Session. SearchAddon only
- * sees buffer.active, which becomes the one-screen alternate buffer for
- * fullscreen agent TUIs; normal retains the actual scrollback in that case.
- */
-export function searchTerminalBuffers(sessionId: string, query: string): TerminalBufferMatch[] {
-  const handle = handles.get(sessionId);
-  const needle = query.trim();
-  if (!handle || !needle) return [];
-  const matches: TerminalBufferMatch[] = [];
-  const { active, normal, alternate } = handle.term.buffer;
-  if (active.type === "normal") {
-    collectBufferMatches(normal, "normal", needle, matches);
-  } else {
-    collectBufferMatches(normal, "normal", needle, matches);
-    if (matches.length < BUFFER_SEARCH_LIMIT) {
-      collectBufferMatches(alternate, "alternate", needle, matches);
-    }
-  }
-  return matches;
-}
-
-/** Scroll to a memory-buffer hit when that buffer is currently renderable. */
-export function locateTerminalBufferMatch(sessionId: string, hit: TerminalBufferMatch): boolean {
-  const handle = handles.get(sessionId);
-  if (!handle || handle.term.buffer.active.type !== hit.buffer) return false;
-  handle.term.scrollToLine(hit.row);
-  handle.term.focus();
-  return true;
-}
-
 export function getOrCreateHandle(sessionId: string): TermHandle {
   const existing = handles.get(sessionId);
   if (existing) return existing;
   const s = getState();
   const settings = s.settings;
-  const session = s.projects.flatMap((project) => project.sessions).find((item) => item.id === sessionId);
+  const session = s.projects
+    .flatMap((project) => project.sessions)
+    .find((item) => item.id === sessionId);
   if (Terminal.strings) {
     Terminal.strings.promptLabel = i18n.t("shell:terminal.promptLabel");
     Terminal.strings.tooMuchOutput = i18n.t("shell:terminal.tooMuchOutput");
   }
   const term = new Terminal({
-    fontFamily: cssFontFamily(settings?.terminalFontFamily ?? "system-monospace"),
-    fontSize: settings?.terminalFontSize ?? DEFAULT_TERMINAL_FONT_SIZE,
+    fontFamily: cssFontFamily(
+      settings?.terminalFontFamily ?? "system-monospace",
+    ),
+    fontSize: scaledTerminalFontSize(
+      settings?.terminalFontSize ?? DEFAULT_TERMINAL_FONT_SIZE,
+      getState().termFontScale,
+    ),
     fontWeight: "400",
     fontWeightBold: "600",
     // Match JetBrains Mono's natural ~1.3em metrics: CJK fallback glyphs
@@ -461,10 +746,9 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     drawBoldTextInBrightColors: false,
     rescaleOverlappingGlyphs: false,
     cursorBlink: true,
-    // A 4 MiB replay can legitimately contain more than the old 10k lines.
-    // Preserve it so xterm search and keyboard navigation use the same
-    // history that the persisted-log search reports.
-    scrollback: 50000,
+    // Bound xterm's cell buffer independently of the persisted log. Full
+    // history remains available through persisted-log search and export.
+    scrollback: 10_000,
     screenReaderMode: settings?.screenReaderMode ?? false,
     allowProposedApi: true,
     // xterm parses OSC 8 links itself. Non-http protocols must be allowed
@@ -493,12 +777,21 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
   // Detect plain-text absolute and relative paths so agent-printed document
   // paths (which are not always wrapped in OSC 8 sequences) are clickable.
   term.registerLinkProvider(localFileLinkProvider(term, sessionId));
-  const handle: TermHandle = {
+  let handle!: TermHandle;
+  const writes = new TerminalWriteCoordinator(
+    term,
+    () => (handles.get(sessionId) === handle ? handle : null),
+  );
+  const viewport = new TerminalViewportController(term);
+  handle = {
     sessionId,
     term,
+    writes,
+    viewport,
     fit,
     search,
     serialize,
+    mouseEncoding: "default",
     opened: false,
     attached: false,
     attaching: false,
@@ -506,25 +799,50 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     attachmentId: null,
     historyLoaded: false,
     historyLoading: false,
+    nativeHistoryCursor: undefined,
+    nativeHistoryEvents: [],
+    nativeHistorySkippedLines: 0,
+    nativeHistoryRequest: null,
+    nativeHistoryBoundaryMarker: null,
+    nativeHistoryTailSnapshot: null,
+    nativeHistoryTailDirty: true,
     logCursor: null,
     rotationNoticeShown: false,
     pendingRenderedLogCursor: null,
-    renderObservationQueued: false,
+    pendingOutputBytes: 0,
+    peakPendingOutputBytes: 0,
+    lastOutputParseLatencyMs: 0,
     allowRecoveryGap: false,
     recoveryTarget: null,
     container: null,
     resizeObserver: null,
+    active: getState().activeSessionId === sessionId,
+    geometryDirty: false,
+    fitCount: 0,
+    lastFitReason: null,
+    lastFitDurationMs: 0,
     lastCols: 0,
     lastRows: 0,
     lastScrolledUp: false,
     firstInputBuffer: "",
     firstInputSubmitted: false,
     inputEscapeState: "none",
+    startupReadyTimer: null,
     piStartupNoticeFilter:
-      session?.adapter === "pi" && session.transport === "pty" && session.agentSessionId
+      session?.adapter === "pi" &&
+      session.transport === "pty" &&
+      session.agentSessionId
         ? new PiStartupNoticeFilter(session.agentSessionId)
         : null,
   };
+  installMouseEncodingTracking(handle);
+  term.parser.registerOscHandler(PI_STARTUP_READY_OSC, (data) => {
+    if (data !== PI_STARTUP_READY_PAYLOAD) return false;
+    if (getState().runtime[sessionId]?.startupPending) {
+      queuePiStartupReady(handle);
+    }
+    return true;
+  });
   term.onTitleChange((title) => {
     patchRuntime(sessionId, { terminalTitle: title.trim() || null });
   });
@@ -544,27 +862,61 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     void queueTerminalInput(sessionId, data)
       .then(() => {
         if (!firstInput) return;
-        void api.autoRenameSessionFromFirstInput(sessionId, firstInput).catch(() => {
-          // Keep the input buffered so a later Enter can retry the harmless
-          // metadata update if the database command temporarily fails.
-          handle.firstInputSubmitted = false;
-        });
+        void api
+          .autoRenameSessionFromFirstInput(sessionId, firstInput)
+          .catch(() => {
+            // Keep the input buffered so a later Enter can retry the harmless
+            // metadata update if the database command temporarily fails.
+            handle.firstInputSubmitted = false;
+          });
       })
       .catch((e) => {
         if (firstInput) handle.firstInputSubmitted = false;
         patchRuntime(sessionId, { error: errorText(e), errorMessage: null });
       });
   });
-  term.onScroll(() => updateScrolledUp(handle));
+  term.onScroll(() => {
+    handle.viewport.observeViewport();
+    updateScrolledUp(handle);
+  });
   handles.set(sessionId, handle);
-  const snapshot = readTerminalSnapshot(sessionId);
+  if (getState().runtime[sessionId]?.startupPending) {
+    armPiStartupReadyTimeout(handle);
+  }
+  const sessionLive =
+    session?.lifecycle === "creating" || session?.lifecycle === "running";
+  const fullscreenPi =
+    sessionLive && session?.adapter === "pi" && session.transport === "pty";
+  let snapshot = sessionLive ? readTerminalSnapshot(sessionId) : null;
+  if (fullscreenPi && snapshot && !snapshot.content.includes("\x1b[?1049h")) {
+    // A prior renderer may have snapshotted Pi after losing its alternate
+    // buffer. Reusing that normal-buffer image makes every later reconnect
+    // preserve the corruption, so discard it and rebuild from the Host tail.
+    clearTerminalSnapshot(sessionId);
+    snapshot = null;
+  }
   if (snapshot) {
     handle.logCursor = snapshot.cursor;
     if (snapshot.cols > 0 && snapshot.rows > 0) {
       term.resize(snapshot.cols, snapshot.rows);
     }
-    term.write(snapshot.content);
+    // SerializeAddon restores mouse tracking but omits its report encoding.
+    // Reapply the captured encoding before resuming after the snapshot cursor.
+    // Legacy/migrated Pi snapshots recorded `default`, but fullscreen Pi asks
+    // for SGR once at process start; repair those snapshots at restore time.
+    const restoredMouseEncoding =
+      fullscreenPi && snapshot.mouseEncoding === "default"
+        ? "sgr"
+        : snapshot.mouseEncoding;
+    handle.writes.write(
+      snapshot.content + mouseEncodingSequence(restoredMouseEncoding),
+    );
     handle.historyLoaded = true;
+  } else if (fullscreenPi) {
+    // A bounded live tail normally omits Pi's process-start DECSET sequences.
+    // Restore both the alternate buffer and SGR encoding so xterm's serialized
+    // mouse-tracking mode sends reports in the format Pi still expects.
+    handle.writes.write("\x1b[?1049h\x1b[?1006h");
   }
   return handle;
 }
@@ -574,27 +926,123 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
  * user is reading scrollback, a write must never move their viewport — but
  * renderer quirks or a buffer reflow can still snap it to the bottom (or the
  * top) mid-write. Capture the reading row before the write and restore it
- * once the bytes have drained through xterm's parser. Plain writes already
- * keep the viewport steady inside xterm, so the restore only fires when
- * something actually moved it; it never pushes the viewport further down
- * than the row the user was reading, and it never fights xterm's own
- * trim-compensation (which lowers viewportY to keep the text stable).
+ * once the bytes have drained through xterm's parser.
+ *
+ * The restore only fires on extreme snaps. A tail-following write that lands
+ * at row 0 is reconciled back to the tail; a scrollback reader is restored
+ * only after a snap to the top or bottom. Any mid-scrollback position can be
+ * the user's own wheel/drag gesture, so every callback is fenced by a
+ * user-authored viewport revision. This avoids ratcheting downward gestures
+ * back up while still repairing renderer jumps during unattended output.
  */
-function writePreservingViewport(handle: TermHandle, data: Uint8Array | string) {
+function writePreservingViewport(
+  handle: TermHandle,
+  data: Uint8Array | string,
+) {
   const before = handle.term.buffer.active;
-  const atBottom = before.type !== "normal" || before.viewportY >= before.baseY;
+  const bufferTypeBeforeWrite = before.type;
+  const atBottom =
+    bufferTypeBeforeWrite !== "normal" || before.viewportY >= before.baseY;
   const readingRow = before.viewportY;
   const generation = handle.generation;
-  handle.term.write(data, () => {
-    if (atBottom) return;
-    if (handles.get(handle.sessionId) !== handle || handle.generation !== generation) return;
+  const viewportIntentRevision = handle.viewport.revision;
+  const byteLength =
+    typeof data === "string" ? new TextEncoder().encode(data).byteLength : data.byteLength;
+  const queuedAt = performance.now();
+  if (handle.nativeHistoryBoundaryMarker !== null) {
+    handle.nativeHistoryTailDirty = true;
+  }
+  handle.pendingOutputBytes += byteLength;
+  handle.peakPendingOutputBytes = Math.max(
+    handle.peakPendingOutputBytes,
+    handle.pendingOutputBytes,
+  );
+  handle.writes.write(data, () => {
+    handle.pendingOutputBytes = Math.max(0, handle.pendingOutputBytes - byteLength);
+    handle.lastOutputParseLatencyMs = Math.max(0, performance.now() - queuedAt);
+    if (
+      handles.get(handle.sessionId) !== handle ||
+      handle.generation !== generation ||
+      handle.viewport.revision !== viewportIntentRevision
+    )
+      return;
     const after = handle.term.buffer.active;
     if (after.type !== "normal") return;
+    if (atBottom) {
+      if (
+        bufferTypeBeforeWrite === "normal" &&
+        after.baseY > 0 &&
+        after.viewportY === 0
+      ) {
+        queueTailViewportRepair(handle, viewportIntentRevision);
+      }
+      return;
+    }
     const target = Math.min(readingRow, after.baseY);
-    if (after.viewportY > target || (after.viewportY === 0 && target > 0)) {
-      handle.term.scrollToLine(target);
+    const snappedToBottom =
+      after.baseY > target && after.viewportY >= after.baseY;
+    const snappedToTop = after.viewportY === 0 && target > 0;
+    if (snappedToBottom || snappedToTop) {
+      handle.viewport.restoreReadingLine(target, viewportIntentRevision);
     }
   });
+}
+
+function queueTailViewportRepair(
+  handle: TermHandle,
+  viewportIntentRevision: number,
+) {
+  // A retained-history replay can queue many writes before xterm drains any
+  // callback. Repairing row 0 from each callback visibly races through every
+  // intermediate tail. The coordinator inserts one generation-fenced parser
+  // boundary behind the complete queued burst.
+  handle.writes.drain("tail-repair", () => {
+    if (handle.viewport.revision !== viewportIntentRevision) return;
+    const after = handle.term.buffer.active;
+    if (after.type === "normal" && after.baseY > 0 && after.viewportY === 0) {
+      handle.viewport.restoreTail(viewportIntentRevision);
+    }
+  });
+}
+
+function queueReplayParsed(handle: TermHandle) {
+  // replay_done is a transport marker. This named drain is inserted at that
+  // exact channel boundary, behind all replay bytes but ahead of later live
+  // output, so runtime.replayDone means parser-drained rather than delivered.
+  handle.writes.drain("replay-complete", () => {
+    patchRuntime(handle.sessionId, { replayDone: true });
+    updateScrolledUp(handle);
+  });
+}
+
+function clearPiStartupReadyTimer(handle: TermHandle) {
+  if (handle.startupReadyTimer === null) return;
+  window.clearTimeout(handle.startupReadyTimer);
+  handle.startupReadyTimer = null;
+}
+
+function queuePiStartupReady(handle: TermHandle) {
+  clearPiStartupReadyTimer(handle);
+  handle.writes.drain("startup-ready", () => {
+    patchRuntime(handle.sessionId, { startupPending: false });
+    updateScrolledUp(handle);
+  });
+}
+
+function armPiStartupReadyTimeout(handle: TermHandle) {
+  clearPiStartupReadyTimer(handle);
+  const generation = handle.generation;
+  handle.startupReadyTimer = window.setTimeout(() => {
+    handle.startupReadyTimer = null;
+    if (
+      handles.get(handle.sessionId) !== handle ||
+      handle.generation !== generation
+    )
+      return;
+    // Compatibility escape hatch for an older Pi that does not emit the
+    // semantic marker. The paired custom Pi takes the marker path instead.
+    queuePiStartupReady(handle);
+  }, PI_STARTUP_READY_TIMEOUT_MS);
 }
 
 function writeTerminalOutput(handle: TermHandle, bytes: Uint8Array) {
@@ -607,6 +1055,41 @@ function finishTerminalStartupFilter(handle: TermHandle) {
   if (visible?.length) writePreservingViewport(handle, visible);
 }
 
+/**
+ * Queue the recovery marker now and return a finalizer that reveals it after
+ * all surrounding context writes have drained through xterm. IMarker tracks
+ * the row while later output appends or trims scrollback.
+ */
+function queueRecoveryLocationMarker(handle: TermHandle): () => void {
+  const generation = handle.generation;
+  const viewportIntentRevision = handle.viewport.beginLocate();
+  let marker: IMarker | undefined;
+  handle.writes.write(
+    `\r\n\x1b[2m── ${i18n.t("session:terminal.recoveryLocation")} ──\x1b[0m\r\n`,
+    () => {
+      if (
+        handles.get(handle.sessionId) !== handle ||
+        handle.generation !== generation
+      )
+        return;
+      marker = handle.term.registerMarker(-1);
+    },
+  );
+  return () => {
+    handle.writes.drain(
+      "recovery-reveal",
+      () => {
+        const line = marker?.line ?? -1;
+        if (line >= 0 && handle.term.buffer.active.type === "normal") {
+          handle.viewport.revealLine(line, viewportIntentRevision);
+        }
+        marker?.dispose();
+      },
+      { onDiscard: () => marker?.dispose() },
+    );
+  };
+}
+
 const MAX_INPUT_FRAME_BYTES = 256 * 1024;
 const terminalInputQueues = new Map<string, Promise<void>>();
 const snapshotTimers = new Map<string, number>();
@@ -617,32 +1100,63 @@ interface TerminalSnapshot {
   cols: number;
   rows: number;
   content: string;
+  mouseEncoding: TerminalMouseEncoding;
 }
 
 function snapshotKey(sessionId: string) {
   return `agentport:terminal-snapshot:v${TERMINAL_SNAPSHOT_VERSION}:${sessionId}`;
 }
 
+function legacySnapshotKey(sessionId: string) {
+  return `agentport:terminal-snapshot:v1:${sessionId}`;
+}
+
 function readTerminalSnapshot(sessionId: string): TerminalSnapshot | null {
   try {
-    const raw = localStorage.getItem(snapshotKey(sessionId));
+    const currentKey = snapshotKey(sessionId);
+    const legacyKey = legacySnapshotKey(sessionId);
+    const currentRaw = localStorage.getItem(currentKey);
+    const raw = currentRaw ?? localStorage.getItem(legacyKey);
     if (!raw || raw.length > MAX_TERMINAL_SNAPSHOT_CHARS + 4096) return null;
-    const parsed = JSON.parse(raw) as Partial<TerminalSnapshot>;
+    const parsed = JSON.parse(raw) as Omit<
+      Partial<TerminalSnapshot>,
+      "version" | "mouseEncoding"
+    > & {
+      version?: number;
+      mouseEncoding?: TerminalMouseEncoding;
+    };
+    const legacy = currentRaw === null && parsed.version === 1;
     if (
-      parsed.version !== TERMINAL_SNAPSHOT_VERSION
-      || typeof parsed.content !== "string"
-      || parsed.content.length > MAX_TERMINAL_SNAPSHOT_CHARS
-      || typeof parsed.cols !== "number"
-      || typeof parsed.rows !== "number"
-      || !parsed.cursor
-      || typeof parsed.cursor.runId !== "string"
-      || typeof parsed.cursor.runOrdinal !== "number"
-      || typeof parsed.cursor.generation !== "number"
-      || typeof parsed.cursor.offset !== "number"
+      (!legacy && parsed.version !== TERMINAL_SNAPSHOT_VERSION) ||
+      typeof parsed.content !== "string" ||
+      parsed.content.length > MAX_TERMINAL_SNAPSHOT_CHARS ||
+      typeof parsed.cols !== "number" ||
+      typeof parsed.rows !== "number" ||
+      (!legacy &&
+        parsed.mouseEncoding !== "default" &&
+        parsed.mouseEncoding !== "sgr" &&
+        parsed.mouseEncoding !== "sgr-pixels") ||
+      !parsed.cursor ||
+      typeof parsed.cursor.runId !== "string" ||
+      typeof parsed.cursor.runOrdinal !== "number" ||
+      typeof parsed.cursor.generation !== "number" ||
+      typeof parsed.cursor.offset !== "number"
     ) {
       return null;
     }
-    return parsed as TerminalSnapshot;
+    const snapshot: TerminalSnapshot = {
+      version: TERMINAL_SNAPSHOT_VERSION,
+      cursor: parsed.cursor,
+      cols: parsed.cols,
+      rows: parsed.rows,
+      content: parsed.content,
+      mouseEncoding: legacy ? "default" : parsed.mouseEncoding!,
+    };
+    if (legacy) {
+      localStorage.setItem(currentKey, JSON.stringify(snapshot));
+      localStorage.removeItem(legacyKey);
+    }
+    return snapshot;
   } catch {
     return null;
   }
@@ -665,37 +1179,46 @@ function scheduleTerminalSnapshot(handle: TermHandle) {
       snapshotTimers.delete(handle.sessionId);
       if (handles.get(handle.sessionId) !== handle || !handle.logCursor) return;
       const cursor = { ...handle.logCursor };
-      const generation = handle.generation;
       // Serialize only after every write covered by `cursor` has passed
-      // xterm's parser. Later writes remain queued behind this sentinel, so
-      // screen state and replay cursor form one consistent checkpoint.
-      handle.term.write("", () => {
-        if (handles.get(handle.sessionId) !== handle || handle.generation !== generation) return;
-        try {
-          const content = handle.serialize.serialize({ scrollback: 5000 });
-          if (content.length > MAX_TERMINAL_SNAPSHOT_CHARS) {
-            clearTerminalSnapshot(handle.sessionId);
-            return;
+      // xterm's parser. Later writes remain queued behind this coordinator
+      // boundary, so screen state and replay cursor form one consistent checkpoint.
+      handle.writes.drain(
+        "snapshot",
+        () => {
+          try {
+            const content = handle.serialize.serialize({
+              scrollback: TERMINAL_SNAPSHOT_SCROLLBACK_LINES,
+            });
+            if (content.length > MAX_TERMINAL_SNAPSHOT_CHARS) {
+              clearTerminalSnapshot(handle.sessionId);
+              return;
+            }
+            const snapshot: TerminalSnapshot = {
+              version: TERMINAL_SNAPSHOT_VERSION,
+              cursor,
+              cols: handle.term.cols,
+              rows: handle.term.rows,
+              content,
+              mouseEncoding: handle.mouseEncoding,
+            };
+            const encoded = JSON.stringify(snapshot);
+            localStorage.setItem(snapshotKey(handle.sessionId), encoded);
+          } catch {
+            // Quota/private-mode failures must never interrupt terminal output.
           }
-          const snapshot: TerminalSnapshot = {
-            version: TERMINAL_SNAPSHOT_VERSION,
-            cursor,
-            cols: handle.term.cols,
-            rows: handle.term.rows,
-            content,
-          };
-          localStorage.setItem(snapshotKey(handle.sessionId), JSON.stringify(snapshot));
-        } catch {
-          // Quota/private-mode failures must never interrupt terminal output.
-        }
-      });
+        },
+        { coalesce: false },
+      );
     }, 1000),
   );
 }
 
 /** Preserve byte ordering while splitting a large paste into bounded IPC
  * frames. The backend applies the same limit before forwarding to the Host. */
-async function sendTerminalInput(sessionId: string, data: string): Promise<void> {
+async function sendTerminalInput(
+  sessionId: string,
+  data: string,
+): Promise<void> {
   const bytes = new TextEncoder().encode(data);
   for (let start = 0; start < bytes.length; start += MAX_INPUT_FRAME_BYTES) {
     await api.sendInput(
@@ -710,7 +1233,9 @@ async function sendTerminalInput(sessionId: string, data: string): Promise<void>
  * those chunks and corrupt the byte stream observed by the PTY. */
 function queueTerminalInput(sessionId: string, data: string): Promise<void> {
   const previous = terminalInputQueues.get(sessionId) ?? Promise.resolve();
-  const next = previous.catch(() => undefined).then(() => sendTerminalInput(sessionId, data));
+  const next = previous
+    .catch(() => undefined)
+    .then(() => sendTerminalInput(sessionId, data));
   terminalInputQueues.set(sessionId, next);
   const cleanup = () => {
     if (terminalInputQueues.get(sessionId) === next) {
@@ -748,7 +1273,10 @@ function repeatableInput(e: KeyboardEvent): string | null {
 
 const IME_KEYDOWN_WINDOW_MS = 1000;
 
-function installInputCompatibility(term: Terminal, container: HTMLElement): () => void {
+function installInputCompatibility(
+  term: Terminal,
+  container: HTMLElement,
+): () => void {
   if (!term.textarea) return () => {};
   let delayTimer: number | undefined;
   let intervalTimer: number | undefined;
@@ -790,15 +1318,21 @@ function installInputCompatibility(term: Terminal, container: HTMLElement): () =
   const onKeyDown = (event: KeyboardEvent) => {
     if (
       event.target === term.textarea &&
-      event.key === "Tab" && event.shiftKey &&
-      !event.altKey && !event.ctrlKey && !event.metaKey
+      event.key === "Tab" &&
+      event.shiftKey &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey
     ) {
       // Keep reverse-tab inside the terminal. Do not stop propagation: xterm
       // must still translate it to ESC [ Z for the active Agent.
       event.preventDefault();
     }
     const generationAtKeyDown = forwardedGeneration;
-    pendingKeyDown = { generation: generationAtKeyDown, timeStamp: event.timeStamp };
+    pendingKeyDown = {
+      generation: generationAtKeyDown,
+      timeStamp: event.timeStamp,
+    };
     const data = repeatableInput(event);
     if (event.repeat) {
       stopRepeat();
@@ -814,7 +1348,10 @@ function installInputCompatibility(term: Terminal, container: HTMLElement): () =
     activeCode = event.code;
     delayTimer = window.setTimeout(() => {
       delayTimer = undefined;
-      intervalTimer = window.setInterval(() => term.input(data), REPEAT_INTERVAL_MS);
+      intervalTimer = window.setInterval(
+        () => term.input(data),
+        REPEAT_INTERVAL_MS,
+      );
     }, REPEAT_DELAY_MS);
   };
 
@@ -824,12 +1361,14 @@ function installInputCompatibility(term: Terminal, container: HTMLElement): () =
 
   const onInput = (event: Event) => {
     if (!(event instanceof InputEvent)) return;
-    if (!event.data || event.inputType !== "insertText" || event.isComposing) return;
+    if (!event.data || event.inputType !== "insertText" || event.isComposing)
+      return;
     const data = event.data;
     const generationAtInput = forwardedGeneration;
     const keyDown = pendingKeyDown;
     pendingKeyDown = null;
-    const followsKeyDown = keyDown !== null &&
+    const followsKeyDown =
+      keyDown !== null &&
       event.timeStamp >= keyDown.timeStamp &&
       event.timeStamp - keyDown.timeStamp <= IME_KEYDOWN_WINDOW_MS;
     if (followsKeyDown && generationAtInput !== keyDown.generation) return;
@@ -859,7 +1398,10 @@ function installInputCompatibility(term: Terminal, container: HTMLElement): () =
   };
 }
 
-function installClipboardCompatibility(term: Terminal, container: HTMLElement): () => void {
+function installClipboardCompatibility(
+  term: Terminal,
+  container: HTMLElement,
+): () => void {
   const onCopy = (event: ClipboardEvent) => {
     const selection = term.getSelection();
     if (!selection) return;
@@ -875,9 +1417,13 @@ function installClipboardCompatibility(term: Terminal, container: HTMLElement): 
   const onPaste = (event: ClipboardEvent) => {
     const clipboard = event.clipboardData;
     if (!clipboard) return;
-    const hasImage = Array.from(clipboard.items).some(
-      (item) => item.kind === "file" && item.type.startsWith("image/"),
-    ) || Array.from(clipboard.files).some((file) => file.type.startsWith("image/"));
+    const hasImage =
+      Array.from(clipboard.items).some(
+        (item) => item.kind === "file" && item.type.startsWith("image/"),
+      ) ||
+      Array.from(clipboard.files).some((file) =>
+        file.type.startsWith("image/"),
+      );
     if (!hasImage) return;
 
     // xterm only reads text/plain from ClipboardEvent, so an image paste would
@@ -932,8 +1478,20 @@ function installClipboardCompatibility(term: Terminal, container: HTMLElement): 
   };
 }
 
+function installViewportIntentTracking(
+  handle: TermHandle,
+  container: HTMLDivElement,
+): () => void {
+  const onWheel = () => {
+    handle.viewport.noteUserIntent();
+  };
+  container.addEventListener("wheel", onWheel, { capture: true, passive: true });
+  return () => container.removeEventListener("wheel", onWheel, true);
+}
+
 const inputCompatibilityDisposers = new Map<string, () => void>();
 const clipboardCompatibilityDisposers = new Map<string, () => void>();
+const viewportIntentDisposers = new Map<string, () => void>();
 
 function bindTerminalContainer(handle: TermHandle, container: HTMLDivElement) {
   handle.container = container;
@@ -947,8 +1505,19 @@ function bindTerminalContainer(handle: TermHandle, container: HTMLDivElement) {
     handle.sessionId,
     installClipboardCompatibility(handle.term, container),
   );
+  viewportIntentDisposers.get(handle.sessionId)?.();
+  viewportIntentDisposers.set(
+    handle.sessionId,
+    installViewportIntentTracking(handle, container),
+  );
   handle.resizeObserver?.disconnect();
-  handle.resizeObserver = new ResizeObserver(() => scheduleFitHandle(handle));
+  handle.resizeObserver = new ResizeObserver(() => {
+    if (!handle.active) {
+      handle.geometryDirty = true;
+      return;
+    }
+    scheduleFitHandle(handle);
+  });
   handle.resizeObserver.observe(container);
 }
 
@@ -956,11 +1525,18 @@ function openTerminalWithCompatibleFontMeasurement(
   term: Terminal,
   container: HTMLDivElement,
 ) {
-  const offscreenCanvas = Object.getOwnPropertyDescriptor(globalThis, "OffscreenCanvas");
-  const canTemporarilyHideOffscreenCanvas = offscreenCanvas
-    && "value" in offscreenCanvas
-    && (offscreenCanvas.configurable || offscreenCanvas.writable);
-  if (getState().platform?.os !== "linux" || !canTemporarilyHideOffscreenCanvas) {
+  const offscreenCanvas = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "OffscreenCanvas",
+  );
+  const canTemporarilyHideOffscreenCanvas =
+    offscreenCanvas &&
+    "value" in offscreenCanvas &&
+    (offscreenCanvas.configurable || offscreenCanvas.writable);
+  if (
+    getState().platform?.os !== "linux" ||
+    !canTemporarilyHideOffscreenCanvas
+  ) {
     term.open(container);
     return;
   }
@@ -1000,7 +1576,7 @@ export function mountTerminal(sessionId: string, container: HTMLDivElement) {
       });
     }
     syncHandleTheme(handle);
-    fitHandle(handle);
+    fitHandle(handle, false, false, "mount");
     // A self-hosted webfont can finish loading after xterm's first canvas
     // measurement. Force one same-family option change so xterm remeasures
     // cells and repaints any fallback glyphs.
@@ -1010,7 +1586,7 @@ export function mountTerminal(sessionId: string, container: HTMLDivElement) {
       handle.term.options.fontFamily = `${family}, monospace`;
       handle.term.options.fontFamily = family;
       handle.term.clearTextureAtlas();
-      fitHandle(handle, true, true);
+      fitHandle(handle, true, true, "font-ready");
     });
   } else if (handle.container !== container) {
     // Structured Session views replace the terminal stack in the React tree.
@@ -1023,12 +1599,12 @@ export function mountTerminal(sessionId: string, container: HTMLDivElement) {
     bindTerminalContainer(handle, container);
     requestAnimationFrame(() => {
       if (handles.get(sessionId) === handle && handle.container === container) {
-        fitHandle(handle, true, true);
+        fitHandle(handle, true, true, "container-rebind");
       }
     });
   }
-  // Ended sessions have no live host: render the log tail as a read-only
-  // grey history terminal (PRD 3.3.c) instead of a futile socket attach.
+  // A PTY Session always owns this same xterm. Ended/interrupted Sessions do
+  // not have a Host to attach; seed their buffer from the agent-native log.
   const ses = getState()
     .projects.flatMap((p) => p.sessions)
     .find((x) => x.id === sessionId);
@@ -1037,61 +1613,235 @@ export function mountTerminal(sessionId: string, container: HTMLDivElement) {
     (ses.lifecycle === "exited" ||
       ses.lifecycle === "stopped" ||
       ses.lifecycle === "interrupted");
-  if (ended) void loadHistoryTail(sessionId);
+  if (ended) void loadOlderNativeHistory(sessionId);
   else void attachHandle(sessionId);
 }
 
-const HISTORY_TAIL_BYTES = 262144;
+const NATIVE_HISTORY_PAGE_SIZE = 200;
 
-/** Write the session log tail into the terminal once (read-only history). */
-export async function loadHistoryTail(sessionId: string): Promise<void> {
-  const handle = getOrCreateHandle(sessionId);
-  if (handle.historyLoaded || handle.historyLoading) return;
-  handle.historyLoading = true;
-  const generation = handle.generation;
-  patchRuntime(sessionId, { historyNote: null, historyMessage: null });
-  try {
-    const res = await api.readLogTail(sessionId, HISTORY_TAIL_BYTES);
-    if (handles.get(sessionId) !== handle || handle.generation !== generation) return;
-    if (res.data) {
-      writeTerminalOutput(handle, b64ToBytes(res.data));
-      if (res.offset > 0) {
-        const historyMessage: RuntimeMessageEnvelope = {
-          code: "terminal_history_tail",
-          params: { shown: res.total - res.offset, total: res.total },
-        };
-        patchRuntime(sessionId, {
-          historyNote: runtimeMessageText(historyMessage),
-          historyMessage,
+function resetNativeHistory(handle: TermHandle) {
+  handle.nativeHistoryBoundaryMarker?.dispose();
+  handle.nativeHistoryCursor = undefined;
+  handle.nativeHistoryEvents = [];
+  handle.nativeHistorySkippedLines = 0;
+  handle.nativeHistoryRequest = null;
+  handle.nativeHistoryBoundaryMarker = null;
+  handle.nativeHistoryTailSnapshot = null;
+  handle.nativeHistoryTailDirty = true;
+}
+
+/** Native log text is untrusted terminal input. Preserve readable whitespace,
+ * but turn every control byte into inert text before adding our own ANSI. */
+function sanitizeNativeHistoryText(text: string): string {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .replace(/\x1b/g, "␛")
+    .replace(/[\x00-\x08\x0b-\x1a\x1c-\x1f\x7f]/g, "�");
+}
+
+function nativeHistoryPrefix(
+  events: HistoryEvent[],
+  skippedLines: number,
+): string {
+  const blocks = events.map((event) => {
+    const label = sanitizeNativeHistoryText(event.role ?? event.kind).toUpperCase();
+    const timestamp = event.timestamp
+      ? ` · ${sanitizeNativeHistoryText(event.timestamp)}`
+      : "";
+    const text = sanitizeNativeHistoryText(event.text).replace(/\n/g, "\r\n");
+    return `\x1b[2m[${label}${timestamp}]\x1b[0m\r\n${text}\r\n`;
+  });
+  const skipped = skippedLines > 0
+    ? `\x1b[33m${sanitizeNativeHistoryText(i18n.t("session:ui.history.skipped", { count: skippedLines }))}\x1b[0m\r\n`
+    : "";
+  return (
+    `\x1b[2m── ${sanitizeNativeHistoryText(i18n.t("session:ui.history.title"))} ──\x1b[0m\r\n` +
+    skipped +
+    blocks.join("\r\n")
+  );
+}
+
+function estimateWrappedRows(text: string, cols: number): number {
+  const width = Math.max(1, cols);
+  return text.split(/\r?\n/).reduce(
+    (rows, line) => rows + Math.max(1, Math.ceil(Array.from(line).length / width)),
+    0,
+  );
+}
+
+function serializeTailAfterNativePrefix(handle: TermHandle): string {
+  if (
+    handle.nativeHistoryTailSnapshot !== null &&
+    !handle.nativeHistoryTailDirty
+  ) {
+    return handle.nativeHistoryTailSnapshot;
+  }
+  const markerLine = handle.nativeHistoryBoundaryMarker?.line ?? -1;
+  const buffer = handle.term.buffer.active;
+  if (markerLine >= 0 && buffer.type === "normal") {
+    const start = markerLine + 1;
+    const end = buffer.length - 1;
+    return start <= end
+      ? handle.serialize.serialize({ range: { start, end } })
+      : "";
+  }
+  return handle.nativeHistoryTailSnapshot ?? handle.serialize.serialize();
+}
+
+function rebuildWithNativeHistory(handle: TermHandle): Promise<void> {
+  return new Promise((resolve) => {
+    const queued = handle.writes.drain(
+      "native-history-rebuild",
+      () => {
+        const before = handle.term.buffer.active;
+        if (before.type !== "normal") {
+          resolve();
+          return;
+        }
+        const beforeBaseY = before.baseY;
+        const beforeViewportY = before.viewportY;
+        const wasAtBottom = beforeViewportY >= beforeBaseY;
+        const previousBoundaryLine =
+          handle.nativeHistoryBoundaryMarker?.line ?? -1;
+        const rowsAboveBoundary = previousBoundaryLine >= 0
+          ? previousBoundaryLine - beforeViewportY
+          : null;
+        const viewportRevision = handle.viewport.revision;
+        const mouseEncoding = handle.mouseEncoding;
+        const session = getState()
+          .projects.flatMap((project) => project.sessions)
+          .find((item) => item.id === handle.sessionId);
+        const hasTerminalTail =
+          handle.nativeHistoryBoundaryMarker !== null ||
+          session?.lifecycle === "creating" ||
+          session?.lifecycle === "running" ||
+          before.baseY > 0 ||
+          before.cursorY > 0 ||
+          handle.logCursor !== null;
+        const tailSnapshot = hasTerminalTail
+          ? serializeTailAfterNativePrefix(handle)
+          : "";
+        handle.nativeHistoryTailSnapshot = tailSnapshot;
+        handle.nativeHistoryTailDirty = false;
+        handle.nativeHistoryBoundaryMarker?.dispose();
+        handle.nativeHistoryBoundaryMarker = null;
+
+        const prefix = nativeHistoryPrefix(
+          handle.nativeHistoryEvents,
+          handle.nativeHistorySkippedLines,
+        );
+        const boundary = hasTerminalTail
+          ? `\r\n\x1b[2m── ${sanitizeNativeHistoryText(i18n.t("session:ui.history.returnToLive"))} ──\x1b[0m\r\n`
+          : "";
+        const requiredScrollback =
+          before.baseY +
+          handle.term.rows +
+          estimateWrappedRows(prefix, handle.term.cols) +
+          32;
+        const currentScrollback = Number(handle.term.options.scrollback ?? 0);
+        if (requiredScrollback > currentScrollback) {
+          // Grow only as the user asks for older pages. This avoids paying the
+          // memory cost for untouched history while preventing xterm from
+          // trimming the newly prepended page immediately.
+          handle.term.options.scrollback = requiredScrollback;
+        }
+
+        resetTerminal(handle);
+        handle.writes.write(prefix + boundary, () => {
+          if (handles.get(handle.sessionId) !== handle) return;
+          handle.nativeHistoryBoundaryMarker =
+            handle.term.registerMarker(-1) ?? null;
         });
+        if (tailSnapshot || mouseEncoding !== "default") {
+          handle.writes.write(
+            tailSnapshot + mouseEncodingSequence(mouseEncoding),
+          );
+        }
+        handle.writes.drain(
+          "native-history-rebuild",
+          () => {
+            const after = handle.term.buffer.active;
+            if (after.type === "normal") {
+              if (wasAtBottom) {
+                handle.viewport.restoreTail(viewportRevision);
+              } else {
+                const nextBoundaryLine =
+                  handle.nativeHistoryBoundaryMarker?.line ?? -1;
+                const anchoredLine = nextBoundaryLine >= 0
+                  ? rowsAboveBoundary === null
+                    ? nextBoundaryLine + 1 + beforeViewportY
+                    : nextBoundaryLine - rowsAboveBoundary
+                  : beforeViewportY + Math.max(0, after.baseY - beforeBaseY);
+                handle.viewport.restorePrependedAnchor(
+                  anchoredLine,
+                  viewportRevision,
+                );
+              }
+            }
+            updateScrolledUp(handle);
+            resolve();
+          },
+          { coalesce: false, onDiscard: resolve },
+        );
+      },
+      { coalesce: false, onDiscard: resolve },
+    );
+    if (!queued) resolve();
+  });
+}
+
+/** Load one older agent-native page directly into this xterm's scrollback.
+ * Concurrent boundary gestures share one request; a generation fence keeps a
+ * late page from rebuilding a restarted or evicted Session. */
+export function loadOlderNativeHistory(sessionId: string): Promise<boolean> {
+  const handle = getOrCreateHandle(sessionId);
+  if (handle.nativeHistoryRequest) return handle.nativeHistoryRequest;
+  if (handle.nativeHistoryCursor === null) return Promise.resolve(false);
+  const generation = handle.generation;
+  const cursor = handle.nativeHistoryCursor ?? null;
+  let request!: Promise<boolean>;
+  request = (async () => {
+    try {
+      const page = await api.getNativeHistory(
+        sessionId,
+        cursor,
+        NATIVE_HISTORY_PAGE_SIZE,
+      );
+      if (
+        handles.get(sessionId) !== handle ||
+        handle.generation !== generation
+      ) {
+        return false;
+      }
+      handle.nativeHistoryCursor = page.nextCursor;
+      handle.nativeHistorySkippedLines += page.skippedLines;
+      if (page.sourceStatus.status !== "available") return false;
+      if (page.events.length === 0) return page.nextCursor !== null;
+      handle.nativeHistoryEvents = [
+        ...page.events,
+        ...handle.nativeHistoryEvents,
+      ];
+      await rebuildWithNativeHistory(handle);
+      return true;
+    } catch (error) {
+      if (
+        handles.get(sessionId) === handle &&
+        handle.generation === generation
+      ) {
+        toast(errorText(error), "error");
+      }
+      return false;
+    } finally {
+      if (handle.nativeHistoryRequest === request) {
+        handle.nativeHistoryRequest = null;
       }
     }
-    finishTerminalStartupFilter(handle);
-    handle.historyLoaded = true;
-    patchRuntime(sessionId, { replayDone: true });
-  } catch (e) {
-    if (handles.get(sessionId) === handle && handle.generation === generation) {
-      // A transient tail-read failure is retryable; never mark history loaded
-      // before the bytes have actually reached this generation's xterm.
-      const historyMessage: RuntimeMessageEnvelope = {
-        code: "terminal_log_read_failed",
-        technicalDetail: errorText(e),
-      };
-      patchRuntime(sessionId, {
-        replayDone: true,
-        historyNote: runtimeMessageText(historyMessage),
-        historyMessage,
-      });
-    }
-  } finally {
-    if (handles.get(sessionId) === handle && handle.generation === generation) {
-      handle.historyLoading = false;
-    }
-  }
+  })();
+  handle.nativeHistoryRequest = request;
+  return request;
 }
 
 const resizeTimers = new Map<string, number>();
-
 const fitTimers = new Map<string, number>();
 
 function scheduleFitHandle(handle: TermHandle) {
@@ -1109,14 +1859,27 @@ function scheduleFitHandle(handle: TermHandle) {
     window.setTimeout(() => {
       fitTimers.delete(handle.sessionId);
       if (handles.get(handle.sessionId) !== handle) return;
-      fitHandle(handle);
+      fitHandle(handle, false, false, "resize-observer");
     }, 90),
   );
 }
 
-export function fitHandle(handle: TermHandle, forceRedraw = false, forceResize = false) {
+export function fitHandle(
+  handle: TermHandle,
+  forceRedraw = false,
+  forceResize = false,
+  reason = "direct",
+): boolean {
+  if (!handle.active) {
+    handle.geometryDirty = true;
+    return false;
+  }
   const el = handle.container;
-  if (!el || el.clientWidth === 0 || el.clientHeight === 0) return;
+  if (!el || el.clientWidth === 0 || el.clientHeight === 0) {
+    handle.geometryDirty = true;
+    return false;
+  }
+  const fitStartedAt = performance.now();
   const bufferBeforeFit = handle.term.buffer.active;
   const bufferTypeBeforeFit = bufferBeforeFit.type;
   const viewportBeforeFit = bufferBeforeFit.viewportY;
@@ -1127,8 +1890,12 @@ export function fitHandle(handle: TermHandle, forceRedraw = false, forceResize =
   try {
     handle.fit.fit();
   } catch {
-    return;
+    return false;
   }
+  handle.fitCount += 1;
+  handle.lastFitReason = reason;
+  handle.lastFitDurationMs = Math.max(0, performance.now() - fitStartedAt);
+  handle.geometryDirty = false;
   const bufferAfterFit = handle.term.buffer.active;
   if (
     wasReadingScrollback &&
@@ -1138,7 +1905,9 @@ export function fitHandle(handle: TermHandle, forceRedraw = false, forceResize =
   ) {
     // A column reflow can occasionally drop xterm's viewport to the oldest
     // row. That is never the user's intent during a passive pane/window fit.
-    handle.term.scrollToLine(Math.min(viewportBeforeFit, bufferAfterFit.baseY));
+    handle.viewport.restoreAfterFit(
+      Math.min(viewportBeforeFit, bufferAfterFit.baseY),
+    );
   }
   const { cols, rows } = handle.term;
   if (forceRedraw && rows > 0) {
@@ -1151,6 +1920,9 @@ export function fitHandle(handle: TermHandle, forceRedraw = false, forceResize =
   }
   const sizeChanged = cols !== handle.lastCols || rows !== handle.lastRows;
   if (sizeChanged) {
+    if (handle.nativeHistoryBoundaryMarker !== null) {
+      handle.nativeHistoryTailDirty = true;
+    }
     handle.lastCols = cols;
     handle.lastRows = rows;
   }
@@ -1165,17 +1937,28 @@ export function fitHandle(handle: TermHandle, forceRedraw = false, forceResize =
       handle.sessionId,
       window.setTimeout(() => {
         resizeTimers.delete(handle.sessionId);
-        if (handles.get(handle.sessionId) !== handle || handle.generation !== resizeGeneration) return;
+        if (
+          handles.get(handle.sessionId) !== handle ||
+          handle.generation !== resizeGeneration
+        )
+          return;
         const rect = handle.container?.getBoundingClientRect();
         const scale = window.devicePixelRatio || 1;
-        const pixelWidth = Math.min(65535, Math.max(0, Math.round((rect?.width ?? 0) * scale)));
-        const pixelHeight = Math.min(65535, Math.max(0, Math.round((rect?.height ?? 0) * scale)));
+        const pixelWidth = Math.min(
+          65535,
+          Math.max(0, Math.round((rect?.width ?? 0) * scale)),
+        );
+        const pixelHeight = Math.min(
+          65535,
+          Math.max(0, Math.round((rect?.height ?? 0) * scale)),
+        );
         api
           .resizePty(handle.sessionId, cols, rows, pixelWidth, pixelHeight)
           .catch(() => undefined);
       }, 100),
     );
   }
+  return true;
 }
 
 /**
@@ -1183,12 +1966,38 @@ export function fitHandle(handle: TermHandle, forceRedraw = false, forceResize =
  * matching PTY resize here as well: a terminal can have acquired its visual
  * dimensions while it was inactive, before its attach channel became ready.
  */
+export function setTerminalActive(sessionId: string, active: boolean) {
+  const handle = handles.get(sessionId);
+  if (handle) handle.active = active;
+}
+
 export function fitSession(sessionId: string, forceResize = false) {
   const handle = handles.get(sessionId);
-  if (handle) {
-    syncHandleTheme(handle);
-    fitHandle(handle, true, forceResize);
-    if (handle.logCursor) queueRenderedLogObservation(handle, handle.logCursor);
+  if (!handle) {
+    return;
+  }
+  const bufferBeforeFit = handle.term.buffer.active;
+  const wasFollowingTail =
+    bufferBeforeFit.type === "normal" &&
+    bufferBeforeFit.viewportY >= bufferBeforeFit.baseY;
+  syncHandleTheme(handle);
+  const fitted = fitHandle(handle, true, forceResize, "activate");
+  const bufferAfterFit = handle.term.buffer.active;
+  if (
+    fitted &&
+    wasFollowingTail &&
+    bufferAfterFit.type === "normal" &&
+    bufferAfterFit.baseY > 0
+  ) {
+    // fit() can leave xterm's buffer at the tail while its native viewport is
+    // still at scrollTop=0. The first wheel event then maps that stale DOM
+    // position back into the buffer and jumps to the oldest output. Reconcile
+    // both layers synchronously before Session activation returns; unlike a
+    // deferred repair, this cannot overwrite the user's subsequent scroll.
+    handle.viewport.synchronizeTail();
+  }
+  if (handle.logCursor) {
+    queueRenderedLogObservation(handle, handle.logCursor);
   }
 }
 
@@ -1197,7 +2006,10 @@ export function fitSession(sessionId: string, forceResize = false) {
  * dragged file reference from the project tree. Returns false when the
  * session has no live terminal to receive input.
  */
-export function insertTextIntoTerminal(sessionId: string, text: string): boolean {
+export function insertTextIntoTerminal(
+  sessionId: string,
+  text: string,
+): boolean {
   const handle = handles.get(sessionId);
   if (!handle || !handle.attached) return false;
   try {
@@ -1216,11 +2028,22 @@ export function focusSession(sessionId: string) {
   handles.get(sessionId)?.term.focus();
 }
 
+export function noteTerminalScrollIntent(
+  sessionId: string,
+  mode: TerminalViewportMode = "reading",
+) {
+  handles.get(sessionId)?.viewport.noteUserIntent(mode);
+}
+
+export function scrollTerminalViewport(
+  sessionId: string,
+  command: TerminalViewportCommand,
+) {
+  handles.get(sessionId)?.viewport.runUserCommand(command);
+}
+
 export function scrollToBottom(sessionId: string) {
-  const handle = handles.get(sessionId);
-  if (!handle) return;
-  handle.term.scrollToBottom();
-  handle.term.focus();
+  scrollTerminalViewport(sessionId, { type: "bottom", focus: true });
 }
 
 /** Allow the next hidden-pane output to establish a fresh unread marker. */
@@ -1247,7 +2070,8 @@ export async function attachHandle(
   });
   const channel = new Channel<ChannelMsg>();
   channel.onmessage = (msg) => {
-    if (handles.get(sessionId) !== handle || generation !== handle.generation) return;
+    if (handles.get(sessionId) !== handle || generation !== handle.generation)
+      return;
     onChannelMsg(handle, msg);
   };
   try {
@@ -1261,7 +2085,9 @@ export async function attachHandle(
     if (handles.get(sessionId) !== handle || generation !== handle.generation) {
       // The backend may have completed after this renderer was evicted or
       // reattached. Its capability can remove only that late attachment.
-      void api.detachSession(sessionId, info.attachmentId).catch(() => undefined);
+      void api
+        .detachSession(sessionId, info.attachmentId)
+        .catch(() => undefined);
       return;
     }
     // A Host can exit between its handshake and the invoke reply. The channel
@@ -1270,8 +2096,14 @@ export async function attachHandle(
     const runtime = getState().runtime[sessionId];
     if (runtime?.exit || runtime?.detached || !info.childAlive) {
       handle.attached = false;
-      void api.detachSession(sessionId, info.attachmentId).catch(() => undefined);
-      patchRuntime(sessionId, { attaching: false, attached: false, detached: !info.childAlive });
+      void api
+        .detachSession(sessionId, info.attachmentId)
+        .catch(() => undefined);
+      patchRuntime(sessionId, {
+        attaching: false,
+        attached: false,
+        detached: !info.childAlive,
+      });
       return;
     }
     handle.attachmentId = info.attachmentId;
@@ -1298,9 +2130,10 @@ export async function attachHandle(
     }
     // PTY size may have changed while detached. Force the first resize even
     // if the browser measured the same dimensions before attach completed.
-    fitHandle(handle, true, true);
+    fitHandle(handle, true, true, "attach");
   } catch (e) {
-    if (handles.get(sessionId) !== handle || generation !== handle.generation) return;
+    if (handles.get(sessionId) !== handle || generation !== handle.generation)
+      return;
     const errorMessage = runtimeMessageEnvelope(e);
     patchRuntime(sessionId, {
       attaching: false,
@@ -1321,42 +2154,54 @@ function sameRun(a: LogCursorView, b: LogCursorView): boolean {
 }
 
 function isLaterRun(incoming: LogCursorView, current: LogCursorView): boolean {
-  return incoming.runOrdinal > current.runOrdinal ||
-    (incoming.runOrdinal === current.runOrdinal && incoming.runId !== current.runId);
+  return (
+    incoming.runOrdinal > current.runOrdinal ||
+    (incoming.runOrdinal === current.runOrdinal &&
+      incoming.runId !== current.runId)
+  );
 }
 
-function renderedCursorIsNotOlder(candidate: LogCursorView, current: LogCursorView): boolean {
-  return candidate.runOrdinal > current.runOrdinal ||
+function renderedCursorIsNotOlder(
+  candidate: LogCursorView,
+  current: LogCursorView,
+): boolean {
+  return (
+    candidate.runOrdinal > current.runOrdinal ||
     (candidate.runOrdinal === current.runOrdinal &&
       candidate.runId === current.runId &&
       (candidate.generation > current.generation ||
-        (candidate.generation === current.generation && candidate.offset >= current.offset)));
+        (candidate.generation === current.generation &&
+          candidate.offset >= current.offset)))
+  );
 }
 
 /** Report only a cursor whose preceding writes have drained through xterm's
  * parser queue. If output arrives behind the queued sentinel, it schedules a
  * second sentinel instead of being acknowledged by the earlier callback. */
-function queueRenderedLogObservation(handle: TermHandle, cursor: LogCursorView) {
+function queueRenderedLogObservation(
+  handle: TermHandle,
+  cursor: LogCursorView,
+) {
   if (
     handle.pendingRenderedLogCursor === null ||
     renderedCursorIsNotOlder(cursor, handle.pendingRenderedLogCursor)
   ) {
     handle.pendingRenderedLogCursor = { ...cursor };
   }
-  if (handle.renderObservationQueued) return;
+  if (handle.writes.hasPendingDrain("render-observation")) return;
 
   const observed = handle.pendingRenderedLogCursor;
   if (!observed) return;
   handle.pendingRenderedLogCursor = null;
-  handle.renderObservationQueued = true;
-  const generation = handle.generation;
-  // The empty write is an ordering sentinel: its callback runs only after all
-  // terminal writes queued before this observation have been parsed.
-  handle.term.write("", () => {
-    if (handles.get(handle.sessionId) !== handle || handle.generation !== generation) return;
-    handle.renderObservationQueued = false;
+  // The coordinator boundary runs only after terminal writes queued before
+  // this observation have parsed. Output queued behind it remains pending and
+  // receives a second observation boundary.
+  handle.writes.drain("render-observation", () => {
     const attachmentId = handle.attachmentId;
-    if (attachmentId !== null && getState().activeSessionId === handle.sessionId) {
+    if (
+      attachmentId !== null &&
+      getState().activeSessionId === handle.sessionId
+    ) {
       void api
         .markSessionLogRendered(handle.sessionId, attachmentId, observed)
         .catch(() => undefined);
@@ -1369,7 +2214,10 @@ function queueRenderedLogObservation(handle: TermHandle, cursor: LogCursorView) 
 }
 
 /** Render only the missing contiguous suffix of a Host output frame. */
-function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "output" }>) {
+function applyOutputFrame(
+  handle: TermHandle,
+  msg: Extract<ChannelMsg, { t: "output" }>,
+) {
   const sessionId = handle.sessionId;
   const incoming = msg.cursor;
   const original = b64ToBytes(msg.data);
@@ -1381,7 +2229,8 @@ function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "out
       if (!isLaterRun(incoming, current)) return;
       // A legitimate external restart must not append its cursor space to the
       // old terminal. The next frames belong to a distinct Host run.
-      handle.term.reset();
+      resetNativeHistory(handle);
+      resetTerminal(handle);
       handle.logCursor = null;
       handle.rotationNoticeShown = false;
     } else if (incoming.generation < current.generation) {
@@ -1390,7 +2239,9 @@ function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "out
       const end = incoming.offset + original.length;
       if (end <= current.offset) return; // complete replay duplicate
       if (incoming.offset > current.offset && handle.allowRecoveryGap) {
-        handle.term.write(`\r\n\x1b[2m── ${i18n.t("session:terminal.returnedToLatest")} ──\x1b[0m\r\n`);
+        handle.writes.write(
+          `\r\n\x1b[2m── ${i18n.t("session:terminal.returnedToLatest")} ──\x1b[0m\r\n`,
+        );
         handle.logCursor = { ...incoming, offset: incoming.offset };
         handle.allowRecoveryGap = false;
       } else if (incoming.offset > current.offset) {
@@ -1402,9 +2253,12 @@ function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "out
         handle.attached = false;
         handle.attaching = false;
         handle.attachmentId = null;
-        handle.term.reset();
+        resetNativeHistory(handle);
+        clearTerminalForTailReplay(handle);
         handle.logCursor = null;
-        const errorMessage: RuntimeMessageEnvelope = { code: "terminal_output_gap" };
+        const errorMessage: RuntimeMessageEnvelope = {
+          code: "terminal_output_gap",
+        };
         patchRuntime(sessionId, {
           attached: false,
           detached: true,
@@ -1412,7 +2266,9 @@ function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "out
           errorMessage,
         });
         if (attachmentId !== null) {
-          void api.detachSession(sessionId, attachmentId).catch(() => undefined);
+          void api
+            .detachSession(sessionId, attachmentId)
+            .catch(() => undefined);
         }
         void attachHandle(sessionId, null, true);
         return;
@@ -1421,7 +2277,9 @@ function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "out
         bytes = original.slice(current.offset - incoming.offset);
       }
     } else if (!handle.rotationNoticeShown) {
-      handle.term.write(`\r\n\x1b[2m── ${i18n.t("session:terminal.outputRotated")} ──\x1b[0m\r\n`);
+      handle.writes.write(
+        `\r\n\x1b[2m── ${i18n.t("session:terminal.outputRotated")} ──\x1b[0m\r\n`,
+      );
       handle.rotationNoticeShown = true;
     }
   }
@@ -1429,16 +2287,21 @@ function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "out
   if (bytes.length === 0) return;
   const target = handle.recoveryTarget;
   if (
-    target
-    && sameRun(target, incoming)
-    && target.generation === incoming.generation
-    && target.offset >= incoming.offset
-    && target.offset <= incoming.offset + original.length
+    target &&
+    sameRun(target, incoming) &&
+    target.generation === incoming.generation &&
+    target.offset >= incoming.offset &&
+    target.offset <= incoming.offset + original.length
   ) {
-    const markerAt = Math.max(0, Math.min(bytes.length, target.offset - incoming.offset));
+    const markerAt = Math.max(
+      0,
+      Math.min(bytes.length, target.offset - incoming.offset),
+    );
     if (markerAt > 0) writeTerminalOutput(handle, bytes.slice(0, markerAt));
-    handle.term.write(`\r\n\x1b[2m── ${i18n.t("session:terminal.recoveryLocation")} ──\x1b[0m\r\n`);
-    if (markerAt < bytes.length) writeTerminalOutput(handle, bytes.slice(markerAt));
+    const revealMarker = queueRecoveryLocationMarker(handle);
+    if (markerAt < bytes.length)
+      writeTerminalOutput(handle, bytes.slice(markerAt));
+    revealMarker();
     handle.recoveryTarget = null;
   } else {
     writeTerminalOutput(handle, bytes);
@@ -1449,11 +2312,16 @@ function applyOutputFrame(handle: TermHandle, msg: Extract<ChannelMsg, { t: "out
   };
   queueRenderedLogObservation(handle, handle.logCursor);
   updateScrolledUp(handle);
-  if (getState().activeSessionId !== sessionId && !unreadOutputPending.has(sessionId)) {
+  if (
+    getState().activeSessionId !== sessionId &&
+    !unreadOutputPending.has(sessionId)
+  ) {
     unreadOutputPending.add(sessionId);
-    void api.markSessionOutputUnread(sessionId, msg.offset, incoming).catch(() => {
-      unreadOutputPending.delete(sessionId);
-    });
+    void api
+      .markSessionOutputUnread(sessionId, msg.offset, incoming)
+      .catch(() => {
+        unreadOutputPending.delete(sessionId);
+      });
   }
 }
 
@@ -1479,18 +2347,19 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
         queueRenderedLogObservation(handle, msg.cursor);
       }
       handle.allowRecoveryGap = msg.partialContext === true;
-      // This marks only the replay/live boundary. A newly launched Pi can
-      // print its first-session notice just after an empty replay completes,
-      // so keep the first-line filter active until output actually arrives.
-      patchRuntime(sessionId, { replayDone: true });
-      updateScrolledUp(handle);
+      // This marks only the replay/live transport boundary. A newly launched
+      // Pi can print its first-session notice just after an empty replay, so
+      // keep the first-line filter active until output actually arrives. The
+      // loading state advances only when this exact parser boundary drains.
+      queueReplayParsed(handle);
       break;
     }
     case "resync_required": {
       // The Host has explicitly told us that our cursor no longer maps to
       // retained bytes. Clear before its following tail replay so unrelated
       // generations can never be stitched together in xterm.
-      handle.term.reset();
+      resetNativeHistory(handle);
+      clearTerminalForTailReplay(handle);
       handle.logCursor = null;
       handle.historyLoaded = false;
       clearTerminalSnapshot(sessionId);
@@ -1512,15 +2381,20 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
         const ses = getState()
           .projects.flatMap((p) => p.sessions)
           .find((x) => x.id === sessionId);
-        announce(i18n.t("session:terminal.stateAnnouncement", {
-          title: ses?.title ?? sessionId,
-          state: stateLabel(msg.event.state),
-        }));
+        announce(
+          i18n.t("session:terminal.stateAnnouncement", {
+            title: ses?.title ?? sessionId,
+            state: stateLabel(msg.event.state),
+          }),
+        );
       }
       break;
     }
     case "agent_session": {
-      patchSession(sessionId, { agentSessionId: msg.id, resumePrecision: "exact" });
+      patchSession(sessionId, {
+        agentSessionId: msg.id,
+        resumePrecision: "exact",
+      });
       break;
     }
     case "heartbeat": {
@@ -1533,9 +2407,15 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       handle.attachmentId = null;
       patchRuntime(sessionId, {
         attached: false,
-        exit: { code: msg.code, signal: msg.signal, groupCleaned: msg.groupCleaned },
+        exit: {
+          code: msg.code,
+          signal: msg.signal,
+          groupCleaned: msg.groupCleaned,
+        },
       });
-      patchSession(sessionId, { lifecycle: msg.reason === "user_stop" ? "stopped" : "exited" });
+      patchSession(sessionId, {
+        lifecycle: msg.reason === "user_stop" ? "stopped" : "exited",
+      });
       break;
     }
     case "error": {
@@ -1545,9 +2425,10 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       break;
     }
     case "detached": {
-      const detail = msg.code || msg.message || msg.technicalDetail
-        ? runtimeMessageText(msg)
-        : null;
+      const detail =
+        msg.code || msg.message || msg.technicalDetail
+          ? runtimeMessageText(msg)
+          : null;
       handle.attached = false;
       handle.attachmentId = null;
       patchRuntime(sessionId, {
@@ -1564,11 +2445,15 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
 /** Write a local separator line (used around restarts). */
 export function writeMarker(sessionId: string, text: string) {
   const handle = handles.get(sessionId);
-  if (handle) handle.term.write(`\r\n\x1b[2m── ${text} ──\x1b[0m\r\n`);
+  if (handle) handle.writes.write(`\r\n\x1b[2m── ${text} ──\x1b[0m\r\n`);
 }
 
 export function resetForRestart(sessionId: string) {
   clearTerminalSnapshot(sessionId);
+  const session = getState()
+    .projects.flatMap((project) => project.sessions)
+    .find((item) => item.id === sessionId);
+  const startupPending = session?.adapter === "pi";
   const handle = handles.get(sessionId);
   if (handle) {
     handle.attached = false;
@@ -1577,13 +2462,16 @@ export function resetForRestart(sessionId: string) {
     resetRenderObservation(handle);
     // Clear the buffer: the re-attach replays the same log tail and would
     // otherwise duplicate it under the old content / loaded history.
-    handle.term.reset();
+    resetNativeHistory(handle);
+    resetTerminal(handle);
     handle.logCursor = null;
     handle.rotationNoticeShown = false;
     handle.allowRecoveryGap = false;
     handle.recoveryTarget = null;
     handle.historyLoaded = false;
     handle.historyLoading = false;
+    if (startupPending) armPiStartupReadyTimeout(handle);
+    else clearPiStartupReadyTimer(handle);
   }
   patchRuntime(sessionId, {
     attached: false,
@@ -1592,6 +2480,7 @@ export function resetForRestart(sessionId: string) {
     error: null,
     errorMessage: null,
     replayDone: false,
+    startupPending,
     historyNote: null,
     historyMessage: null,
   });
@@ -1607,8 +2496,8 @@ export async function jumpToRecoveryOutput(
   sessionId: string,
   cursor: LogCursorView,
 ): Promise<void> {
-  const session = getState().projects
-    .flatMap((project) => project.sessions)
+  const session = getState()
+    .projects.flatMap((project) => project.sessions)
     .find((item) => item.id === sessionId);
   if (!session) throw new Error(i18n.t("session:terminal.sessionMissing"));
   const handle = getOrCreateHandle(sessionId);
@@ -1618,7 +2507,8 @@ export async function jumpToRecoveryOutput(
   handle.attachmentId = null;
   handle.attached = false;
   handle.attaching = false;
-  handle.term.reset();
+  resetNativeHistory(handle);
+  resetTerminal(handle);
   clearTerminalSnapshot(sessionId);
   handle.logCursor = null;
   handle.allowRecoveryGap = false;
@@ -1626,23 +2516,35 @@ export async function jumpToRecoveryOutput(
   handle.historyLoaded = false;
   handle.historyLoading = false;
   if (previousAttachment !== null) {
-    void api.detachSession(sessionId, previousAttachment).catch(() => undefined);
+    void api
+      .detachSession(sessionId, previousAttachment)
+      .catch(() => undefined);
   }
-  const ended = session.lifecycle === "exited" || session.lifecycle === "stopped" || session.lifecycle === "interrupted";
+  const ended =
+    session.lifecycle === "exited" ||
+    session.lifecycle === "stopped" ||
+    session.lifecycle === "interrupted";
   if (ended) {
     const generation = handle.generation;
     try {
       const context = await api.readRecoveryLogContext(sessionId, cursor);
-      if (handles.get(sessionId) !== handle || handle.generation !== generation) return;
+      if (handles.get(sessionId) !== handle || handle.generation !== generation)
+        return;
       const bytes = b64ToBytes(context.data);
-      const markerAt = Math.max(0, Math.min(bytes.length, cursor.offset - context.offset));
+      const markerAt = Math.max(
+        0,
+        Math.min(bytes.length, cursor.offset - context.offset),
+      );
       if (markerAt > 0) writeTerminalOutput(handle, bytes.slice(0, markerAt));
-      handle.term.write(`\r\n\x1b[2m── ${i18n.t("session:terminal.recoveryLocation")} ──\x1b[0m\r\n`);
-      if (markerAt < bytes.length) writeTerminalOutput(handle, bytes.slice(markerAt));
+      const revealMarker = queueRecoveryLocationMarker(handle);
+      if (markerAt < bytes.length)
+        writeTerminalOutput(handle, bytes.slice(markerAt));
       handle.recoveryTarget = null;
       finishTerminalStartupFilter(handle);
+      revealMarker();
       handle.historyLoaded = true;
       handle.logCursor = { ...cursor, offset: context.offset + bytes.length };
+      queueReplayParsed(handle);
       const historyMessage: RuntimeMessageEnvelope = {
         code: "terminal_located_recovery",
         params: { total: context.total },
@@ -1653,7 +2555,10 @@ export async function jumpToRecoveryOutput(
         historyMessage,
       });
     } catch (error) {
-      if (handles.get(sessionId) === handle && handle.generation === generation) {
+      if (
+        handles.get(sessionId) === handle &&
+        handle.generation === generation
+      ) {
         const historyMessage = runtimeMessageEnvelope(error) ?? {
           code: "terminal_locate_recovery_failed",
           technicalDetail: errorText(error),
@@ -1678,9 +2583,12 @@ export function applyTerminalSettings() {
   const family = cssFontFamily(s.settings.terminalFontFamily);
   for (const h of handles.values()) {
     h.term.options.fontFamily = family;
-    h.term.options.fontSize = s.settings.terminalFontSize;
+    h.term.options.fontSize = scaledTerminalFontSize(
+      s.settings.terminalFontSize,
+      s.termFontScale,
+    );
     h.term.options.screenReaderMode = s.settings.screenReaderMode;
-    fitHandle(h);
+    fitHandle(h, false, false, "settings");
   }
 }
 
@@ -1706,7 +2614,9 @@ export function applyTerminalLanguage() {
         historyNote: value.historyMessage
           ? runtimeMessageText(value.historyMessage)
           : value.historyNote,
-        error: value.errorMessage ? runtimeMessageText(value.errorMessage) : value.error,
+        error: value.errorMessage
+          ? runtimeMessageText(value.errorMessage)
+          : value.error,
       },
     ]),
   );
@@ -1728,11 +2638,14 @@ export function disposeHandle(sessionId: string) {
   if (!handle) return;
   handle.generation += 1;
   resetRenderObservation(handle);
+  resetNativeHistory(handle);
   handle.attachmentId = null;
   inputCompatibilityDisposers.get(sessionId)?.();
   inputCompatibilityDisposers.delete(sessionId);
   clipboardCompatibilityDisposers.get(sessionId)?.();
   clipboardCompatibilityDisposers.delete(sessionId);
+  viewportIntentDisposers.get(sessionId)?.();
+  viewportIntentDisposers.delete(sessionId);
   const resizeTimer = resizeTimers.get(sessionId);
   if (resizeTimer !== undefined) {
     window.clearTimeout(resizeTimer);
@@ -1744,6 +2657,7 @@ export function disposeHandle(sessionId: string) {
     snapshotTimers.delete(sessionId);
   }
   handle.resizeObserver?.disconnect();
+  clearPiStartupReadyTimer(handle);
   try {
     handle.term.dispose();
   } catch {
@@ -1777,9 +2691,16 @@ export async function releaseTerminal(sessionId: string): Promise<void> {
   }
   // A rapid reselect can have attached the same handle while detach was in
   // flight. Dispose only the object/generation this release actually owned.
-  if (handles.get(sessionId) === handle && handle.generation === releaseGeneration) {
+  if (
+    handles.get(sessionId) === handle &&
+    handle.generation === releaseGeneration
+  ) {
     disposeHandle(sessionId);
-    patchRuntime(sessionId, { attached: false, attaching: false, detached: true });
+    patchRuntime(sessionId, {
+      attached: false,
+      attaching: false,
+      detached: true,
+    });
   }
 }
 
