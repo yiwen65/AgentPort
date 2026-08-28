@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { readMock, writeMock, revealMock, openUrlMock, openDefaultMock, insertMock } =
+const { readMock, writeMock, revealMock, openUrlMock, openDefaultMock, insertMock, listMock, createMock } =
   vi.hoisted(() => ({
     readMock: vi.fn(),
     writeMock: vi.fn(),
@@ -10,6 +10,8 @@ const { readMock, writeMock, revealMock, openUrlMock, openDefaultMock, insertMoc
     openUrlMock: vi.fn(),
     openDefaultMock: vi.fn(),
     insertMock: vi.fn().mockReturnValue(true),
+    listMock: vi.fn(),
+    createMock: vi.fn(),
   }));
 
 vi.mock("../api", () => ({
@@ -19,6 +21,8 @@ vi.mock("../api", () => ({
     revealInFileManager: revealMock,
     openExternalUrl: openUrlMock,
     openWithDefaultApp: openDefaultMock,
+    listDocumentDirectory: listMock,
+    createDocumentEntry: createMock,
   },
   errorText: (error: unknown) =>
     typeof error === "object" && error !== null && "message" in error
@@ -54,6 +58,7 @@ describe("DocumentPanel", () => {
         name: "Quote",
         rootPath: "/tmp/demo",
         gitRootPath: null,
+        pinned: false,
         worktrees: [],
         sessions: [{
           id: "ses_quote",
@@ -70,6 +75,7 @@ describe("DocumentPanel", () => {
           logPath: "/tmp/demo.log",
           unread: false,
           status: null,
+          pinnedAt: null,
           createdAt: "2026-07-24T00:00:00Z",
         }],
       }],
@@ -78,7 +84,7 @@ describe("DocumentPanel", () => {
 
   afterEach(() => {
     cleanup();
-    setState({ openDocument: null, docPanelExpanded: false });
+    setState({ openDocument: null, docPanelExpanded: false, explorerOpen: false });
   });
 
   async function findRawEditor() {
@@ -106,6 +112,67 @@ describe("DocumentPanel", () => {
       expect(getState().toasts.some((item) => item.text === "文档已保存")).toBe(true);
     });
     void saveButton;
+  });
+
+  it("shows only the tree when the explorer opens without a file", async () => {
+    listMock.mockResolvedValue({ path: "/tmp/demo", truncated: false, entries: [] });
+    setState({ openDocument: null, explorerOpen: true, explorerRoot: "/tmp/demo" });
+    const { container } = render(<DocumentPanel />);
+    await waitFor(() => expect(listMock).toHaveBeenCalled());
+    // Tree-only: no editor column, no resize handle, natural tree width.
+    expect(container.querySelector(".doc-tree")).not.toBeNull();
+    expect(container.querySelector(".doc-editor-column")).toBeNull();
+    expect(container.querySelector(".doc-panel-resize")).toBeNull();
+    expect(container.querySelector(".doc-panel")?.className).toContain("tree-only");
+    expect(container.querySelector(".doc-panel")?.getAttribute("style") ?? "").not.toContain("width");
+
+    // Picking a file brings the editor area back alongside the tree.
+    act(() => setState({ openDocument: { path: DEMO_DOC.path, line: null } }));
+    await waitFor(() => {
+      expect(container.querySelector(".doc-editor-column")).not.toBeNull();
+    });
+    expect(container.querySelector(".doc-tree")).not.toBeNull();
+    expect(container.querySelector(".doc-panel")?.className).not.toContain("tree-only");
+  });
+
+  it("does not jump back to a path:line target after saving", async () => {
+    setState({
+      openDocument: { path: DEMO_DOC.path, line: 1 },
+    });
+    render(<DocumentPanel />);
+    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+    editor.scrollTop = 140;
+    fireEvent.scroll(editor);
+    fireEvent.change(editor, {
+      target: { value: "# 标题\n\n正文\n新增一行\n" },
+    });
+
+    fireEvent.keyDown(editor, { key: "s", metaKey: true });
+    await waitFor(() => {
+      expect(writeMock).toHaveBeenCalled();
+      expect(screen.queryByText("保存")).toBeNull();
+    });
+    await act(async () => undefined);
+
+    expect(editor.scrollTop).toBe(140);
+  });
+
+  it("reveals the same path:line again for a new open request", async () => {
+    setState({
+      openDocument: { path: DEMO_DOC.path, line: 3 },
+    });
+    render(<DocumentPanel />);
+    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+    editor.scrollTop = 140;
+
+    act(() => {
+      setState({
+        openDocument: { path: DEMO_DOC.path, line: 3 },
+      });
+    });
+
+    await waitFor(() => expect(editor.scrollTop).not.toBe(140));
+    expect(editor.selectionStart).toBe(DEMO_DOC.content.indexOf("正文"));
   });
 
   it("preserves CRLF line endings when saving", async () => {

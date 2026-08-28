@@ -106,6 +106,8 @@ export default function DocumentPanel() {
   const [saving, setSaving] = useState(false);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
+  const loadedRequestPathRef = useRef<string | null>(null);
+  const revealedTargetRef = useRef<object | null>(null);
   const dragStart = useRef<{ x: number; width: number } | null>(null);
 
   const markdown = target ? isMarkdownPath(target.path) : false;
@@ -128,6 +130,8 @@ export default function DocumentPanel() {
 
   useEffect(() => {
     if (!targetPath) {
+      loadedRequestPathRef.current = null;
+      revealedTargetRef.current = null;
       setDoc(null);
       setError(null);
       setErrorCode(null);
@@ -146,6 +150,7 @@ export default function DocumentPanel() {
         try {
           const result = await api.readSessionDocument(candidate);
           if (!stale) {
+            loadedRequestPathRef.current = targetPath;
             setDoc(result);
             setDraft(result.content);
           }
@@ -172,7 +177,15 @@ export default function DocumentPanel() {
   // Reveal the `path:line` target in the raw editor once content is in:
   // place the caret at the line start and scroll it into view.
   useEffect(() => {
-    if (mode !== "raw" || !targetLine || !doc) return;
+    if (
+      mode !== "raw" ||
+      !target ||
+      !targetLine ||
+      !doc ||
+      loadedRequestPathRef.current !== targetPath ||
+      revealedTargetRef.current === target
+    )
+      return;
     const textarea = editorRef.current;
     if (!textarea) return;
     let offset = 0;
@@ -183,6 +196,7 @@ export default function DocumentPanel() {
       offset = next + 1;
       line += 1;
     }
+    revealedTargetRef.current = target;
     textarea.focus();
     textarea.setSelectionRange(offset, offset);
     const lineHeight = Number.parseFloat(getComputedStyle(textarea).lineHeight) || 18;
@@ -190,7 +204,7 @@ export default function DocumentPanel() {
       0,
       (targetLine - 1) * lineHeight - textarea.clientHeight / 2,
     );
-  }, [mode, targetLine, doc]);
+  }, [mode, target, targetPath, targetLine, doc]);
 
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
@@ -301,13 +315,17 @@ export default function DocumentPanel() {
   // Prefer the backend-canonical path (also reflects a fallback hit).
   const effectivePath = doc?.path ?? target?.path ?? "";
 
+  // Tree-only mode (explorer open, no file picked yet): show just the tree
+  // column at its natural width — the editor area appears once a file opens.
+  const treeOnly = !target;
+
   return (
     <aside
-      className={`doc-panel${expanded ? " expanded" : ""}`}
-      style={expanded ? undefined : { width }}
+      className={`doc-panel${expanded ? " expanded" : ""}${treeOnly ? " tree-only" : ""}`}
+      style={!treeOnly && !expanded ? { width } : undefined}
       aria-label={t("ui.document.label")}
     >
-      {expanded ? null : (
+      {expanded || treeOnly ? null : (
         <div
           className="doc-panel-resize"
           role="separator"
@@ -321,10 +339,9 @@ export default function DocumentPanel() {
           }}
         />
       )}
-      {explorerOpen ? <DocumentTree /> : null}
+      {target ? (
       <div className="doc-editor-column">
-        {target ? (
-          <>
+        <>
             <div className="doc-panel-header">
         <span className="doc-panel-name" data-tip={effectivePath}>
           {fileName(effectivePath)}
@@ -493,15 +510,9 @@ export default function DocumentPanel() {
             ) : null}
           </div>
           </>
-        ) : (
-          <div className="doc-panel-empty">
-            <div className="doc-panel-empty-icon" aria-hidden="true">
-              ⧉
-            </div>
-            <div>{t("ui.document.selectFile")}</div>
-          </div>
-        )}
       </div>
+      ) : null}
+      {explorerOpen ? <DocumentTree /> : null}
     </aside>
   );
 }

@@ -7,6 +7,7 @@ import {
   api,
   errorText,
   onNotificationActivated,
+  onNativeCleanupWarning,
   onProjectsChanged,
   onRepositoryStateChanged,
   onGitStateInvalidated,
@@ -18,6 +19,7 @@ import {
   applyThemeSettings,
   isMac,
   openNewSessionDialog,
+  readLastSelectedSessionId,
   refreshProjectsSoon,
   restartSessionFlow,
   toggleSidebarCollapsed,
@@ -38,9 +40,15 @@ import {
   openDialog,
   patchSession,
   setState,
+  toast,
   useStore,
 } from "./store";
-import { applyTerminalLanguage, pruneHandles, scrollToBottom } from "./terminals";
+import {
+  applyTerminalLanguage,
+  pruneHandles,
+  scrollToBottom,
+} from "./terminals";
+import { handleFontZoomKey, initFontZoom } from "./fontZoom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import TopBar from "./components/TopBar";
 import Sidebar from "./components/Sidebar";
@@ -48,7 +56,7 @@ import TooltipHost from "./components/Tooltip";
 import Toasts from "./components/Toasts";
 import ContextMenuHost from "./components/ContextMenu";
 import { ConfirmDialogHost, PromptDialogHost } from "./components/Dialogs";
-import { applyUiLanguage } from "./i18n";
+import { applyUiLanguage, i18n } from "./i18n";
 
 const TerminalArea = lazy(() => import("./components/TerminalArea"));
 const NewSessionDialog = lazy(() => import("./components/NewSessionDialog"));
@@ -150,6 +158,11 @@ function useBoot() {
               notificationActivationPending = false;
             });
           }),
+          onNativeCleanupWarning(({ count }) => {
+            applyWhenBooted(() => {
+              toast(i18n.t("session:cleanup.nativeWarning", { count }), "info");
+            });
+          }),
         ]);
         const listeners = listenerResults.flatMap((result) =>
           result.status === "fulfilled" ? [result.value] : [],
@@ -194,19 +207,38 @@ function useBoot() {
         for (const applyEvent of pendingEvents.splice(0)) applyEvent();
         const first = flattenSessions(getState().projects)[0];
         const notificationSession = findSession(getState().projects, notificationSessionId);
+        const rememberedSession = findSession(
+          getState().projects,
+          readLastSelectedSessionId(),
+        );
         if (notificationSession) selectSession(notificationSession.id);
         else if (!notificationActivationPending && !getState().activeSessionId && first) {
-          selectSession(first.id);
+          selectSession(rememberedSession?.id ?? first.id, null, {
+            revealInSidebar: false,
+          });
         }
         if (info.adapters.length > 0) {
           void api
-            .probeAgents()
+            // Refresh metadata without replacing an executable path the user
+            // explicitly selected in onboarding. A full manual re-probe still
+            // auto-selects candidates via probeAgents() with the default flag.
+            .probeAgents(true)
             .then((outcomes) => {
               if (cancelled) return;
               const installs = outcomes.flatMap((outcome) =>
                 outcome.install ? [outcome.install] : [],
               );
-              if (installs.length > 0) setState({ adapters: installs });
+              if (installs.length > 0) {
+                const refreshed = new Map(installs.map((install) => [install.agentType, install]));
+                const current = getState().adapters;
+                const currentAgents = new Set(current.map((adapter) => adapter.agentType));
+                setState({
+                  adapters: [
+                    ...current.map((adapter) => refreshed.get(adapter.agentType) ?? adapter),
+                    ...installs.filter((install) => !currentAgents.has(install.agentType)),
+                  ],
+                });
+              }
             })
             .catch(() => undefined);
         }
@@ -257,6 +289,14 @@ function useHotkeys() {
       }
 
       if (anyModal || s.showOnboarding) return;
+
+      // Font zoom: Ctrl/⌘ + =/- (0 resets), applied to whichever surface
+      // last had focus — terminal area or document viewer — independently.
+      if (handleFontZoomKey(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
 
       const sidebarCombo = mac
         ? e.metaKey && !e.shiftKey && !e.ctrlKey && !e.altKey && key === "b"
@@ -328,7 +368,11 @@ function useHotkeys() {
       // Plain Ctrl+C/D/Z, Esc, IME keys: always passed through to the PTY.
     };
     window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    const disposeFontZoom = initFontZoom();
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      disposeFontZoom();
+    };
   }, []);
 }
 
