@@ -91,6 +91,40 @@ describe("font zoom key handling", () => {
     ).toBe("0.9");
   });
 
+  it("treats a preview click as document focus (non-focusable surface)", () => {
+    const workspace = document.createElement("div");
+    workspace.className = "workspace";
+    const panel = document.createElement("aside");
+    panel.className = "doc-panel";
+    const preview = document.createElement("div");
+    preview.className = "doc-preview-host";
+    panel.appendChild(preview);
+    workspace.appendChild(panel);
+    document.body.appendChild(workspace);
+
+    // Preview divs never fire focusin; the pointerdown must classify them.
+    setState({ openDocument: { path: "/tmp/a.md", line: null } });
+    preview.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    expect(handleFontZoomKey(zoomKey("="))).toBe(true);
+    expect(getState().docFontScale).toBe(1.1);
+    expect(getState().termFontScale).toBe(1);
+  });
+
+  it("treats a workspace click as terminal focus", () => {
+    const workspace = document.createElement("div");
+    workspace.className = "workspace";
+    const timeline = document.createElement("div");
+    timeline.className = "pi-rpc-workspace";
+    workspace.appendChild(timeline);
+    document.body.appendChild(workspace);
+
+    setState({ openDocument: { path: "/tmp/a.md", line: null } });
+    timeline.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    adjustFontZoom(0.1);
+    expect(getState().termFontScale).toBe(1.1);
+    expect(getState().docFontScale).toBe(1);
+  });
+
   it("falls back to the terminal when the document viewer is closed", () => {
     const panel = document.createElement("div");
     panel.className = "doc-panel";

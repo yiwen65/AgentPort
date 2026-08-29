@@ -73,24 +73,36 @@ export function handleFontZoomKey(event: KeyboardEvent): boolean {
   return true;
 }
 
+/** Classify the interaction target into a zoom area. */
+function classifyTarget(el: HTMLElement | null): void {
+  if (!el || typeof el.closest !== "function") return;
+  if (el.closest(".doc-panel")) {
+    lastArea = "doc";
+  } else if (el.closest(".workspace")) {
+    // Covers xterm (.term-body) and pi timeline (.pi-rpc-workspace) — the
+    // timeline replaces .term-body for json_rpc sessions.
+    lastArea = "terminal";
+  }
+}
+
 /** Track the focus area once; the keydown side lives in App's hotkey hook. */
 export function initFontZoom(): () => void {
   if (initialized) return () => {};
   initialized = true;
-  const onFocusIn = (event: FocusEvent) => {
-    const el = event.target as HTMLElement | null;
-    if (!el || typeof el.closest !== "function") return;
-    if (el.closest(".doc-panel")) {
-      lastArea = "doc";
-    } else if (el.closest(".workspace")) {
-      // Covers xterm (.term-body) and pi timeline (.pi-rpc-workspace) — the
-      // timeline replaces .term-body for json_rpc sessions.
-      lastArea = "terminal";
-    }
-  };
+  // focusin covers keyboard navigation and the focusable raw-editor textarea,
+  // but NOT the preview: plain divs never receive focus, so clicking the
+  // preview used to leave the area stuck on "terminal". pointerdown closes
+  // that gap — clicking anywhere in a surface (preview, header, tree) marks
+  // it as the active zoom target.
+  const onFocusIn = (event: FocusEvent) =>
+    classifyTarget(event.target as HTMLElement | null);
+  const onPointerDown = (event: PointerEvent) =>
+    classifyTarget(event.target as HTMLElement | null);
   window.addEventListener("focusin", onFocusIn, true);
+  window.addEventListener("pointerdown", onPointerDown, true);
   return () => {
     window.removeEventListener("focusin", onFocusIn, true);
+    window.removeEventListener("pointerdown", onPointerDown, true);
     initialized = false;
   };
 }
