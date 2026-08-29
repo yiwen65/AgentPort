@@ -3,7 +3,7 @@
 // editor with a line-number gutter (⌘S saves back to disk), while the
 // preview view renders Markdown or wrapped prose read-only.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { api, errorText } from "../api";
 import {
@@ -22,6 +22,11 @@ import DocumentTree from "./DocumentTree";
 
 const MIN_DOC_PANEL_WIDTH = 320;
 const MAX_DOC_PANEL_RATIO = 0.6;
+const MIN_DOC_TREE_WIDTH = 160;
+const MAX_DOC_TREE_WIDTH = 420;
+/* In dual mode the editor column never gets squeezed below this by a wide
+   tree. */
+const MIN_DOC_EDITOR_WIDTH = 280;
 
 function fileName(path: string): string {
   return path.split("/").pop() ?? path;
@@ -89,6 +94,7 @@ export default function DocumentPanel() {
   const { t } = useTranslation("shell");
   const target = useStore((state) => state.openDocument);
   const width = useStore((state) => state.docPanelWidth);
+  const treeWidth = useStore((state) => state.docTreeWidth);
   const expanded = useStore((state) => state.docPanelExpanded);
   const explorerOpen = useStore((state) => state.explorerOpen);
   const [doc, setDoc] = useState<SessionDocument | null>(null);
@@ -108,7 +114,7 @@ export default function DocumentPanel() {
   const gutterRef = useRef<HTMLDivElement>(null);
   const loadedRequestPathRef = useRef<string | null>(null);
   const revealedTargetRef = useRef<object | null>(null);
-  const dragStart = useRef<{ x: number; width: number } | null>(null);
+  const dragStart = useRef<{ x: number; width: number; tree: boolean } | null>(null);
 
   const markdown = target ? isMarkdownPath(target.path) : false;
   const targetPath = target?.path ?? null;
@@ -210,8 +216,16 @@ export default function DocumentPanel() {
     const onMove = (event: PointerEvent) => {
       const start = dragStart.current;
       if (!start) return;
-      const viewportMax = Math.floor(window.innerWidth * MAX_DOC_PANEL_RATIO);
       const next = start.width + (start.x - event.clientX);
+      if (start.tree) {
+        setState({
+          docTreeWidth: Math.round(
+            Math.min(MAX_DOC_TREE_WIDTH, Math.max(MIN_DOC_TREE_WIDTH, next)),
+          ),
+        });
+        return;
+      }
+      const viewportMax = Math.floor(window.innerWidth * MAX_DOC_PANEL_RATIO);
       setState({
         docPanelWidth: Math.round(
           Math.min(viewportMax, Math.max(MIN_DOC_PANEL_WIDTH, next)),
@@ -316,16 +330,25 @@ export default function DocumentPanel() {
   const effectivePath = doc?.path ?? target?.path ?? "";
 
   // Tree-only mode (explorer open, no file picked yet): show just the tree
-  // column at its natural width — the editor area appears once a file opens.
+  // column — the editor area appears once a file opens.
   const treeOnly = !target;
+  // Tree column width: user-draggable via the sash; in dual mode the editor
+  // keeps at least MIN_DOC_EDITOR_WIDTH regardless of the stored tree width.
+  const treeBasis = treeOnly
+    ? treeWidth
+    : Math.min(treeWidth, Math.max(MIN_DOC_TREE_WIDTH, width - MIN_DOC_EDITOR_WIDTH));
+  const panelStyle = {
+    "--doc-tree-width": `${treeBasis}px`,
+    ...(treeOnly ? { width: treeBasis + 1 } : expanded ? {} : { width }),
+  } as CSSProperties;
 
   return (
     <aside
       className={`doc-panel${expanded ? " expanded" : ""}${treeOnly ? " tree-only" : ""}`}
-      style={!treeOnly && !expanded ? { width } : undefined}
+      style={panelStyle}
       aria-label={t("ui.document.label")}
     >
-      {expanded || treeOnly ? null : (
+      {expanded ? null : (
         <div
           className="doc-panel-resize"
           role="separator"
@@ -334,7 +357,11 @@ export default function DocumentPanel() {
           onPointerDown={(event) => {
             if (event.button !== 0) return;
             event.preventDefault();
-            dragStart.current = { x: event.clientX, width };
+            dragStart.current = {
+              x: event.clientX,
+              width: treeOnly ? treeWidth : width,
+              tree: treeOnly,
+            };
             document.body.classList.add("is-resizing-split");
           }}
         />

@@ -84,7 +84,7 @@ describe("DocumentPanel", () => {
 
   afterEach(() => {
     cleanup();
-    setState({ openDocument: null, docPanelExpanded: false, explorerOpen: false });
+    setState({ openDocument: null, docPanelExpanded: false, explorerOpen: false, docTreeWidth: 184 });
   });
 
   async function findRawEditor() {
@@ -119,12 +119,15 @@ describe("DocumentPanel", () => {
     setState({ openDocument: null, explorerOpen: true, explorerRoot: "/tmp/demo" });
     const { container } = render(<DocumentPanel />);
     await waitFor(() => expect(listMock).toHaveBeenCalled());
-    // Tree-only: no editor column, no resize handle, natural tree width.
+    // Tree-only: no editor column, sash visible for tree-width dragging,
+    // panel hugs the default 184px tree + 1px separator.
     expect(container.querySelector(".doc-tree")).not.toBeNull();
     expect(container.querySelector(".doc-editor-column")).toBeNull();
-    expect(container.querySelector(".doc-panel-resize")).toBeNull();
+    expect(container.querySelector(".doc-panel-resize")).not.toBeNull();
     expect(container.querySelector(".doc-panel")?.className).toContain("tree-only");
-    expect(container.querySelector(".doc-panel")?.getAttribute("style") ?? "").not.toContain("width");
+    const panelStyle = container.querySelector(".doc-panel")?.getAttribute("style") ?? "";
+    expect(panelStyle).toContain("width: 185px");
+    expect(panelStyle).toContain("--doc-tree-width: 184px");
 
     // Picking a file brings the editor area back alongside the tree.
     act(() => setState({ openDocument: { path: DEMO_DOC.path, line: null } }));
@@ -133,6 +136,37 @@ describe("DocumentPanel", () => {
     });
     expect(container.querySelector(".doc-tree")).not.toBeNull();
     expect(container.querySelector(".doc-panel")?.className).not.toContain("tree-only");
+  });
+
+  it("drags the sash to resize the tree in tree-only mode", async () => {
+    listMock.mockResolvedValue({ path: "/tmp/demo", truncated: false, entries: [] });
+    setState({ openDocument: null, explorerOpen: true, explorerRoot: "/tmp/demo", docTreeWidth: 184 });
+    const { container } = render(<DocumentPanel />);
+    const sash = container.querySelector(".doc-panel-resize");
+    expect(sash).not.toBeNull();
+    // jsdom lacks PointerEvent; a MouseEvent with a pointer* type drives the
+    // same handlers (window-level move listener + React onPointerDown).
+    act(() => {
+      (sash as Element).dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 500 }),
+      );
+    });
+    // Dragging the left-edge sash leftward widens the tree, clamped at 420.
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 440 }));
+    });
+    expect(getState().docTreeWidth).toBe(244);
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 0 }));
+    });
+    expect(getState().docTreeWidth).toBe(420);
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 900 }));
+    });
+    expect(getState().docTreeWidth).toBe(160);
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+    });
   });
 
   it("does not jump back to a path:line target after saving", async () => {

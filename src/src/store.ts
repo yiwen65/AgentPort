@@ -255,6 +255,8 @@ export interface AppState {
   explorerRoot: string | null;
   /** Ephemeral width of the document viewer split in CSS pixels. */
   docPanelWidth: number;
+  /** Ephemeral width of the file tree column in CSS pixels (sash-draggable). */
+  docTreeWidth: number;
   /** Whether the document viewer is expanded over the whole terminal page. */
   docPanelExpanded: boolean;
   /** Transient font zoom of the terminal area (xterm fontSize multiplier and
@@ -370,6 +372,7 @@ const initialState: AppState = {
   explorerOpen: false,
   explorerRoot: null,
   docPanelWidth: 480,
+  docTreeWidth: 184,
   docPanelExpanded: false,
   termFontScale: 1,
   docFontScale: 1,
