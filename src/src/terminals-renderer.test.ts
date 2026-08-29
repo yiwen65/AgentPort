@@ -279,6 +279,7 @@ import {
   resetForRestart,
   scrollTerminalViewport,
   setTerminalActive,
+  writeMarker,
 } from "./terminals";
 import { applyUiLanguage } from "./i18n";
 import { emptyRuntime, getState, setState } from "./store";
@@ -2194,6 +2195,461 @@ describe("terminal renderer", () => {
     expect(getState().runtime["renderer-test"]?.replayDone).toBe(false);
   });
 
+  it("coalesces a DEC 2026 redraw split across Channel output frames", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const channel = rendererMocks.channels[0];
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.write.mockClear();
+    const first = "\x1b[?2026h\x1b[2Jpartial redraw";
+    const second = "\r\ninput box\r\nstatus\x1b[?2026l";
+
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(first),
+      offset: 0,
+      cursor: { runId: "run_sync", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+
+    // Neither partial content nor its rendered-cursor drain may overtake the
+    // still-open application frame.
+    expect(terminal.write).not.toHaveBeenCalled();
+    expect(rendererMocks.apiMock.markSessionLogRendered).not.toHaveBeenCalled();
+
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(second),
+      offset: first.length,
+      cursor: {
+        runId: "run_sync",
+        runOrdinal: 1,
+        generation: 0,
+        offset: first.length,
+      },
+    });
+
+    expect(terminal.write.mock.calls.map(([data]) => data === "" ? "drain" : "content"))
+      .toEqual(["content", "drain"]);
+    const contentWrite = terminal.write.mock.calls[0];
+    expect(new TextDecoder().decode(contentWrite?.[0] as Uint8Array)).toBe(
+      first + second,
+    );
+    invokeWriteCallback(contentWrite);
+    expect(rendererMocks.apiMock.markSessionLogRendered).not.toHaveBeenCalled();
+    invokeWriteCallback(terminal.write.mock.calls[1]);
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.markSessionLogRendered).toHaveBeenCalledWith(
+        "renderer-test",
+        1,
+        {
+          runId: "run_sync",
+          runOrdinal: 1,
+          generation: 0,
+          offset: first.length,
+        },
+      ),
+    );
+  });
+
+  it("recognizes both DEC 2026 markers at every Channel chunk split", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const channel = rendererMocks.channels[0];
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.write.mockClear();
+    const begin = "\x1b[?2026h";
+    const end = "\x1b[?2026l";
+    const expected: string[] = [];
+    let offset = 0;
+    const send = (data: string) => {
+      channel.onmessage?.({
+        t: "output",
+        data: btoa(data),
+        offset,
+        cursor: {
+          runId: "run_splits",
+          runOrdinal: 1,
+          generation: 0,
+          offset,
+        },
+      });
+      offset += data.length;
+    };
+
+    for (let split = 1; split < begin.length; split += 1) {
+      const block = `${begin}begin-${split}${end}`;
+      send(begin.slice(0, split));
+      send(begin.slice(split) + `begin-${split}${end}`);
+      expected.push(block);
+    }
+    for (let split = 1; split < end.length; split += 1) {
+      const block = `${begin}end-${split}${end}`;
+      send(`${begin}end-${split}${end.slice(0, split)}`);
+      send(end.slice(split));
+      expected.push(block);
+    }
+
+    const rendered = terminal.write.mock.calls
+      .filter(([data]) => data instanceof Uint8Array)
+      .map(([data]) => new TextDecoder().decode(data as Uint8Array));
+    expect(rendered).toEqual(expected);
+  });
+
+  it("keeps ordinary bytes immediate and ordered around multiple DEC 2026 blocks", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const channel = rendererMocks.channels[0];
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.write.mockClear();
+    const begin = "\x1b[?2026h";
+    const end = "\x1b[?2026l";
+    const output = `prefix${begin}first${end}middle${begin}second${end}suffix`;
+
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(output),
+      offset: 0,
+      cursor: { runId: "run_order", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+
+    const rendered = terminal.write.mock.calls
+      .filter(([data]) => data instanceof Uint8Array)
+      .map(([data]) => new TextDecoder().decode(data as Uint8Array));
+    expect(rendered).toEqual([
+      "prefix",
+      `${begin}first${end}`,
+      "middle",
+      `${begin}second${end}`,
+      "suffix",
+    ]);
+  });
+
+  it("holds replay completion behind an open DEC 2026 frame", async () => {
+    setState({ runtime: {} });
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const channel = rendererMocks.channels[0];
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.write.mockClear();
+    const first = "\x1b[?2026hpartial";
+    const second = "complete\x1b[?2026l";
+    const replayCursor = {
+      runId: "run_replay_sync",
+      runOrdinal: 1,
+      generation: 0,
+      offset: first.length,
+    };
+
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(first),
+      offset: 0,
+      cursor: { ...replayCursor, offset: 0 },
+    });
+    channel.onmessage?.({
+      t: "replay_done",
+      offset: first.length,
+      cursor: replayCursor,
+      partialContext: false,
+    });
+
+    expect(terminal.write).not.toHaveBeenCalled();
+    expect(getState().runtime["renderer-test"]?.replayDone).toBe(false);
+
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(second),
+      offset: first.length,
+      cursor: replayCursor,
+    });
+    const callsAtClose = [...terminal.write.mock.calls];
+    expect(callsAtClose.map(([data]) => data === "" ? "drain" : "content"))
+      .toEqual(["content", "drain", "drain"]);
+    invokeWriteCallback(callsAtClose[0]);
+    invokeWriteCallback(callsAtClose[1]);
+    expect(getState().runtime["renderer-test"]?.replayDone).toBe(false);
+    invokeWriteCallback(callsAtClose[2]);
+    expect(getState().runtime["renderer-test"]?.replayDone).toBe(true);
+  });
+
+  it("starts the frame timeout after a split DEC 2026 begin marker completes", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    vi.useFakeTimers();
+    const channel = rendererMocks.channels[0];
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.write.mockClear();
+    const first = "\x1b";
+    const second = "[?2026hpartial";
+
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(first),
+      offset: 0,
+      cursor: { runId: "run_delayed", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+    await vi.advanceTimersByTimeAsync(900);
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(second),
+      offset: first.length,
+      cursor: {
+        runId: "run_delayed",
+        runOrdinal: 1,
+        generation: 0,
+        offset: first.length,
+      },
+    });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(terminal.write).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+
+    const contentWrite = terminal.write.mock.calls.find(
+      ([data]) => data instanceof Uint8Array,
+    );
+    expect(new TextDecoder().decode(contentWrite?.[0] as Uint8Array)).toBe(
+      first + second,
+    );
+  });
+
+  it("releases an unterminated DEC 2026 frame after the safety timeout", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    vi.useFakeTimers();
+    const channel = rendererMocks.channels[0];
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.write.mockClear();
+    const first = "\x1b[?2026hunterminated";
+    const end = "\x1b[?2026l";
+
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(first),
+      offset: 0,
+      cursor: { runId: "run_timeout", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(terminal.write).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+
+    let contentWrites = terminal.write.mock.calls.filter(
+      ([data]) => data instanceof Uint8Array,
+    );
+    expect(contentWrites).toHaveLength(1);
+    expect(new TextDecoder().decode(contentWrites[0]?.[0] as Uint8Array)).toBe(
+      first,
+    );
+
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(end),
+      offset: first.length,
+      cursor: {
+        runId: "run_timeout",
+        runOrdinal: 1,
+        generation: 0,
+        offset: first.length,
+      },
+    });
+    contentWrites = terminal.write.mock.calls.filter(
+      ([data]) => data instanceof Uint8Array,
+    );
+    expect(contentWrites).toHaveLength(2);
+    expect(new TextDecoder().decode(contentWrites[1]?.[0] as Uint8Array)).toBe(
+      end,
+    );
+  });
+
+  it("bounds an unterminated DEC 2026 frame without dropping its bytes", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const channel = rendererMocks.channels[0];
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.write.mockClear();
+    const output = "\x1b[?2026h" + "x".repeat(1024 * 1024);
+
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(output),
+      offset: 0,
+      cursor: { runId: "run_bound", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+
+    const contentWrites = terminal.write.mock.calls.filter(
+      ([data]) => data instanceof Uint8Array,
+    );
+    expect(contentWrites).toHaveLength(1);
+    expect(
+      new TextDecoder().decode(contentWrites[0]?.[0] as Uint8Array),
+    ).toBe(output);
+  });
+
+  it("releases a false DEC 2026 begin prefix at its original Channel boundary", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const channel = rendererMocks.channels[0];
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.write.mockClear();
+    const first = "\x1b[?20";
+    const second = "xplain";
+
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(first),
+      offset: 0,
+      cursor: { runId: "run_false", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+    expect(terminal.write).not.toHaveBeenCalled();
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(second),
+      offset: first.length,
+      cursor: {
+        runId: "run_false",
+        runOrdinal: 1,
+        generation: 0,
+        offset: first.length,
+      },
+    });
+
+    expect(terminal.write.mock.calls.map(([data]) => data === "" ? "drain" : "content"))
+      .toEqual(["content", "drain", "content"]);
+    expect(
+      terminal.write.mock.calls
+        .filter(([data]) => data instanceof Uint8Array)
+        .map(([data]) => new TextDecoder().decode(data as Uint8Array)),
+    ).toEqual([first, second]);
+  });
+
+  it("queues local terminal writes behind an open DEC 2026 frame", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const channel = rendererMocks.channels[0];
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.write.mockClear();
+    const first = "\x1b[?2026hpartial";
+    const second = "complete\x1b[?2026l";
+
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(first),
+      offset: 0,
+      cursor: { runId: "run_local", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+    writeMarker("renderer-test", "queued local write");
+    expect(terminal.write).not.toHaveBeenCalled();
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(second),
+      offset: first.length,
+      cursor: {
+        runId: "run_local",
+        runOrdinal: 1,
+        generation: 0,
+        offset: first.length,
+      },
+    });
+
+    expect(terminal.write.mock.calls.map(([data]) =>
+      data === "" ? "drain" : typeof data === "string" ? "local" : "content"
+    )).toEqual(["content", "drain", "local"]);
+    expect(String(terminal.write.mock.calls[2]?.[0])).toContain(
+      "queued local write",
+    );
+  });
+
+  it("discards deferred DEC 2026 output on a restart generation reset", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    vi.useFakeTimers();
+    const channel = rendererMocks.channels[0];
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.write.mockClear();
+    const stale = "\x1b[?2026hstale restart frame";
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(stale),
+      offset: 0,
+      cursor: { runId: "run_reset", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+
+    resetForRestart("renderer-test");
+    await vi.advanceTimersByTimeAsync(1_001);
+
+    expect(
+      terminal.write.mock.calls.some(
+        ([data]) =>
+          data instanceof Uint8Array &&
+          new TextDecoder().decode(data).includes("stale restart frame"),
+      ),
+    ).toBe(false);
+    expect(rendererMocks.apiMock.markSessionLogRendered).not.toHaveBeenCalled();
+  });
+
+  it("cancels deferred DEC 2026 output when its terminal handle is disposed", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    vi.useFakeTimers();
+    const oldChannel = rendererMocks.channels[0];
+    const oldTerminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    oldTerminal.write.mockClear();
+    const stale = "\x1b[?2026hstale frame";
+    oldChannel.onmessage?.({
+      t: "output",
+      data: btoa(stale),
+      offset: 0,
+      cursor: { runId: "run_stale", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+
+    disposeHandle("renderer-test");
+    mountTerminal("renderer-test", document.createElement("div"));
+    const newTerminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    await vi.advanceTimersByTimeAsync(1_001);
+
+    expect(oldTerminal.write).not.toHaveBeenCalled();
+    expect(
+      newTerminal.write.mock.calls.some(
+        ([data]) =>
+          data instanceof Uint8Array &&
+          new TextDecoder().decode(data).includes("stale frame"),
+      ),
+    ).toBe(false);
+  });
+
   it("acknowledges output only after xterm drains the renderer write queue", async () => {
     mountTerminal("renderer-test", document.createElement("div"));
     await vi.waitFor(() =>
@@ -2553,6 +3009,75 @@ describe("terminal renderer", () => {
       cursor?: { offset?: number };
     } | null;
     expect(snapshot?.cursor?.offset).toBe(1);
+    localStorage.removeItem(key);
+  });
+
+  it("does not snapshot a cursor whose drain was promoted past a DEC 2026 frame", async () => {
+    const key = "agentport:terminal-snapshot:v2:renderer-test";
+    localStorage.removeItem(key);
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const channel = rendererMocks.channels[0];
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const handle = getHandle("renderer-test")!;
+    vi.mocked(handle.serialize.serialize).mockClear();
+
+    channel.onmessage?.({
+      t: "output",
+      data: "QQ==",
+      offset: 0,
+      cursor: { runId: "run_snapshot_sync", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+    const initialContent = terminal.write.mock.calls.find(
+      ([data]) => data instanceof Uint8Array,
+    );
+    const initialRenderedBoundary = terminal.write.mock.calls.find(
+      ([data, callback]) => data === "" && typeof callback === "function",
+    );
+    invokeWriteCallback(initialContent);
+    vi.useFakeTimers();
+    invokeWriteCallback(initialRenderedBoundary);
+    vi.advanceTimersByTime(500);
+
+    const first = "\x1b[?2026hpartial";
+    const second = "complete\x1b[?2026l";
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(first),
+      offset: 1,
+      cursor: {
+        runId: "run_snapshot_sync",
+        runOrdinal: 1,
+        generation: 0,
+        offset: 1,
+      },
+    });
+    vi.advanceTimersByTime(500);
+    const callsBeforeClose = terminal.write.mock.calls.length;
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(second),
+      offset: 1 + first.length,
+      cursor: {
+        runId: "run_snapshot_sync",
+        runOrdinal: 1,
+        generation: 0,
+        offset: 1 + first.length,
+      },
+    });
+
+    const closeCalls = terminal.write.mock.calls.slice(callsBeforeClose);
+    expect(closeCalls.map(([data]) => data === "" ? "drain" : "content"))
+      .toEqual(["content", "drain", "drain"]);
+    invokeWriteCallback(closeCalls[0]);
+    invokeWriteCallback(closeCalls[1]);
+    invokeWriteCallback(closeCalls[2]);
+
+    expect(handle.serialize.serialize).not.toHaveBeenCalled();
+    expect(localStorage.getItem(key)).toBeNull();
     localStorage.removeItem(key);
   });
 

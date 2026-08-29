@@ -58,6 +58,19 @@ const REPLAY_TAIL_BYTES = 4 * 1024 * 1024;
 const PI_STARTUP_READY_OSC = 6973;
 const PI_STARTUP_READY_PAYLOAD = "startup-ready";
 const PI_STARTUP_READY_TIMEOUT_MS = 15_000;
+// xterm 5.5 does not implement DEC mode 2026. Hold one application-authored
+// synchronized redraw until its reset marker arrives so xterm cannot paint the
+// clear/partial rows exposed by PTY and Channel chunk boundaries. xterm 6 uses
+// the same one-second safety timeout, but upgrading would remove CanvasAddon.
+const SYNCHRONIZED_OUTPUT_BEGIN = Uint8Array.of(
+  0x1b, 0x5b, 0x3f, 0x32, 0x30, 0x32, 0x36, 0x68,
+);
+const SYNCHRONIZED_OUTPUT_END = Uint8Array.of(
+  0x1b, 0x5b, 0x3f, 0x32, 0x30, 0x32, 0x36, 0x6c,
+);
+const SYNCHRONIZED_OUTPUT_TIMEOUT_MS = 1_000;
+const MAX_UNTERMINATED_SYNCHRONIZED_OUTPUT_BYTES = 1024 * 1024;
+const MAX_UNTERMINATED_SYNCHRONIZED_OUTPUT_PARTS = 1024;
 const TERMINAL_SNAPSHOT_VERSION = 2;
 const MAX_TERMINAL_SNAPSHOT_CHARS = 2 * 1024 * 1024;
 // Snapshot serialization is synchronous on the renderer's main thread. Keep a
@@ -201,15 +214,104 @@ type TerminalDrainTask =
 
 interface PendingTerminalDrain {
   id: number;
+  task: TerminalDrainTask;
+  handle: TermHandle;
   generation: number;
   targetSequence: number;
+  callback: (targetSequence: number, promoted: boolean) => void;
+  onDiscard?: () => void;
+  coalesce: boolean;
+  promoted: boolean;
+  completed: boolean;
+}
+
+interface DeferredTerminalWrite {
+  kind: "write";
+  data: Uint8Array | string;
+  callback?: () => void;
+}
+
+interface DeferredTerminalDrain {
+  kind: "drain";
+  pending: PendingTerminalDrain;
+}
+
+type DeferredTerminalAction = DeferredTerminalWrite | DeferredTerminalDrain;
+
+type SynchronizedOutputCandidateItem =
+  | { kind: "output"; data: Uint8Array }
+  | DeferredTerminalAction;
+
+interface SynchronizedOutputCandidate {
+  kind: "candidate";
+  bytes: Uint8Array;
+  items: SynchronizedOutputCandidateItem[];
+}
+
+interface SynchronizedOutputFrame {
+  kind: "frame";
+  chunks: Uint8Array[];
+  byteLength: number;
+  endMatchLength: number;
+  actions: DeferredTerminalAction[];
+}
+
+type DeferredSynchronizedOutput =
+  | SynchronizedOutputCandidate
+  | SynchronizedOutputFrame;
+
+function findByteSequence(data: Uint8Array, sequence: Uint8Array): number {
+  if (sequence.length === 0 || data.length < sequence.length) return -1;
+  const lastStart = data.length - sequence.length;
+  for (let start = 0; start <= lastStart; start += 1) {
+    if (data[start] !== sequence[0]) continue;
+    let index = 1;
+    while (index < sequence.length && data[start + index] === sequence[index]) {
+      index += 1;
+    }
+    if (index === sequence.length) return start;
+  }
+  return -1;
+}
+
+function trailingSequencePrefixLength(
+  data: Uint8Array,
+  sequence: Uint8Array,
+): number {
+  const maxLength = Math.min(data.length, sequence.length - 1);
+  for (let length = maxLength; length > 0; length -= 1) {
+    const start = data.length - length;
+    let matches = true;
+    for (let index = 0; index < length; index += 1) {
+      if (data[start + index] !== sequence[index]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return length;
+  }
+  return 0;
+}
+
+function concatByteChunks(chunks: Uint8Array[], byteLength: number): Uint8Array {
+  if (chunks.length === 1 && chunks[0]?.byteLength === byteLength) {
+    return chunks[0];
+  }
+  const combined = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return combined;
 }
 
 /**
  * Owns xterm write ordering and parser-boundary callbacks for one Session.
  * A named drain is coalesced while pending and is automatically fenced when
- * the handle or attach generation changes. Direct write callbacks remain
- * available for per-frame accounting that must also run for stale writes.
+ * the handle or attach generation changes. DEC 2026 frames are also joined at
+ * this boundary: xterm 5.5 must receive a complete synchronized redraw in one
+ * write, and no parser drain may overtake bytes held for that redraw.
  */
 class TerminalWriteCoordinator {
   private writeSequence = 0;
@@ -218,19 +320,262 @@ class TerminalWriteCoordinator {
     TerminalDrainTask,
     PendingTerminalDrain
   >();
+  private readonly allDrains = new Set<PendingTerminalDrain>();
+  private deferredOutput: DeferredSynchronizedOutput | null = null;
+  private deferredOutputTimer: number | null = null;
+  private deferredOutputEpoch = 0;
 
   constructor(
     private readonly term: Terminal,
     private readonly currentHandle: () => TermHandle | null,
+    private readonly outputSink: (data: Uint8Array) => void,
   ) {}
 
-  write(
-    data: Uint8Array | string,
-    callback?: () => void,
-  ): number {
+  write(data: Uint8Array | string, callback?: () => void): number {
     const sequence = ++this.writeSequence;
-    this.term.write(data, callback);
+    if (this.deferredOutput) {
+      this.deferAction({ kind: "write", data, callback });
+    } else {
+      this.term.write(data, callback);
+    }
     return sequence;
+  }
+
+  /** Feed raw PTY bytes while preserving DEC 2026 markers byte-for-byte. */
+  writeOutput(data: Uint8Array) {
+    let remaining = data;
+    while (remaining.length > 0) {
+      const deferred = this.deferredOutput;
+      if (deferred?.kind === "candidate") {
+        const needed = SYNCHRONIZED_OUTPUT_BEGIN.length - deferred.bytes.length;
+        const compared = Math.min(needed, remaining.length);
+        let matches = true;
+        for (let index = 0; index < compared; index += 1) {
+          if (
+            remaining[index] !==
+            SYNCHRONIZED_OUTPUT_BEGIN[deferred.bytes.length + index]
+          ) {
+            matches = false;
+            break;
+          }
+        }
+        if (!matches) {
+          this.releaseCandidate();
+          continue;
+        }
+        if (remaining.length < needed) {
+          const fragment = remaining.slice();
+          const bytes = new Uint8Array(deferred.bytes.length + fragment.length);
+          bytes.set(deferred.bytes);
+          bytes.set(fragment, deferred.bytes.length);
+          deferred.bytes = bytes;
+          deferred.items.push({ kind: "output", data: fragment });
+          this.enforceDeferredOutputBounds();
+          return;
+        }
+
+        const markerSuffix = remaining.subarray(0, needed);
+        const chunks = deferred.items
+          .filter(
+            (item): item is Extract<
+              SynchronizedOutputCandidateItem,
+              { kind: "output" }
+            > => item.kind === "output",
+          )
+          .map((item) => item.data);
+        chunks.push(markerSuffix);
+        const actions = deferred.items.filter(
+          (item): item is DeferredTerminalAction => item.kind !== "output",
+        );
+        for (const action of actions) {
+          if (action.kind === "drain") action.pending.promoted = true;
+        }
+        this.deferredOutput = {
+          kind: "frame",
+          chunks,
+          byteLength: SYNCHRONIZED_OUTPUT_BEGIN.length,
+          endMatchLength: 0,
+          actions,
+        };
+        // A possible marker has its own bounded wait. Once DECSET is fully
+        // recognized, give the application frame the complete safety window.
+        this.clearDeferredOutputTimeout();
+        this.armDeferredOutputTimeout();
+        remaining = remaining.subarray(needed);
+        continue;
+      }
+
+      if (deferred?.kind === "frame") {
+        const suffix = this.appendSynchronizedOutput(remaining);
+        if (suffix === null) return;
+        remaining = suffix;
+        continue;
+      }
+
+      const begin = findByteSequence(remaining, SYNCHRONIZED_OUTPUT_BEGIN);
+      if (begin >= 0) {
+        if (begin > 0) this.outputSink(remaining.subarray(0, begin));
+        this.deferredOutput = {
+          kind: "frame",
+          chunks: [
+            remaining.subarray(
+              begin,
+              begin + SYNCHRONIZED_OUTPUT_BEGIN.length,
+            ),
+          ],
+          byteLength: SYNCHRONIZED_OUTPUT_BEGIN.length,
+          endMatchLength: 0,
+          actions: [],
+        };
+        this.armDeferredOutputTimeout();
+        remaining = remaining.subarray(
+          begin + SYNCHRONIZED_OUTPUT_BEGIN.length,
+        );
+        continue;
+      }
+
+      const candidateLength = trailingSequencePrefixLength(
+        remaining,
+        SYNCHRONIZED_OUTPUT_BEGIN,
+      );
+      const immediateLength = remaining.length - candidateLength;
+      if (immediateLength > 0) {
+        this.outputSink(remaining.subarray(0, immediateLength));
+      }
+      if (candidateLength > 0) {
+        const candidate = remaining.slice(immediateLength);
+        this.deferredOutput = {
+          kind: "candidate",
+          bytes: candidate,
+          items: [{ kind: "output", data: candidate }],
+        };
+        this.armDeferredOutputTimeout();
+      }
+      return;
+    }
+  }
+
+  private appendSynchronizedOutput(data: Uint8Array): Uint8Array | null {
+    const frame = this.deferredOutput;
+    if (frame?.kind !== "frame") return data;
+    let matchLength = frame.endMatchLength;
+    for (let index = 0; index < data.length; index += 1) {
+      const byte = data[index];
+      if (byte === SYNCHRONIZED_OUTPUT_END[matchLength]) {
+        matchLength += 1;
+      } else {
+        matchLength = byte === SYNCHRONIZED_OUTPUT_END[0] ? 1 : 0;
+      }
+      if (matchLength === SYNCHRONIZED_OUTPUT_END.length) {
+        this.appendFrameChunk(frame, data.subarray(0, index + 1));
+        const suffix = data.subarray(index + 1);
+        this.releaseFrame();
+        return suffix;
+      }
+    }
+    frame.endMatchLength = matchLength;
+    this.appendFrameChunk(frame, data);
+    this.enforceDeferredOutputBounds();
+    return null;
+  }
+
+  private appendFrameChunk(frame: SynchronizedOutputFrame, data: Uint8Array) {
+    if (data.length === 0) return;
+    frame.chunks.push(data);
+    frame.byteLength += data.byteLength;
+  }
+
+  private deferAction(action: DeferredTerminalAction) {
+    const deferred = this.deferredOutput;
+    if (!deferred) {
+      this.runDeferredAction(action);
+      return;
+    }
+    if (deferred.kind === "candidate") {
+      deferred.items.push(action);
+    } else {
+      if (action.kind === "drain") action.pending.promoted = true;
+      deferred.actions.push(action);
+    }
+    this.enforceDeferredOutputBounds();
+  }
+
+  private runDeferredAction(action: DeferredTerminalAction) {
+    if (action.kind === "write") {
+      this.term.write(action.data, action.callback);
+    } else {
+      this.scheduleDrain(action.pending);
+    }
+  }
+
+  private releaseCandidate() {
+    const candidate = this.deferredOutput;
+    if (candidate?.kind !== "candidate") return;
+    this.deferredOutput = null;
+    this.clearDeferredOutputTimeout();
+    for (const item of candidate.items) {
+      if (item.kind === "output") this.outputSink(item.data);
+      else this.runDeferredAction(item);
+    }
+  }
+
+  private releaseFrame() {
+    const frame = this.deferredOutput;
+    if (frame?.kind !== "frame") return;
+    this.deferredOutput = null;
+    this.clearDeferredOutputTimeout();
+    this.outputSink(concatByteChunks(frame.chunks, frame.byteLength));
+    for (const action of frame.actions) this.runDeferredAction(action);
+  }
+
+  private armDeferredOutputTimeout() {
+    if (this.deferredOutputTimer !== null) return;
+    const handle = this.currentHandle();
+    if (!handle) return;
+    const generation = handle.generation;
+    const epoch = ++this.deferredOutputEpoch;
+    this.deferredOutputTimer = window.setTimeout(() => {
+      if (epoch !== this.deferredOutputEpoch) return;
+      this.deferredOutputTimer = null;
+      const current = this.currentHandle();
+      if (current !== handle || current.generation !== generation) {
+        this.discardDeferredOutput();
+        return;
+      }
+      if (this.deferredOutput?.kind === "candidate") this.releaseCandidate();
+      else this.releaseFrame();
+    }, SYNCHRONIZED_OUTPUT_TIMEOUT_MS);
+  }
+
+  private clearDeferredOutputTimeout() {
+    this.deferredOutputEpoch += 1;
+    if (this.deferredOutputTimer === null) return;
+    window.clearTimeout(this.deferredOutputTimer);
+    this.deferredOutputTimer = null;
+  }
+
+  private enforceDeferredOutputBounds() {
+    const deferred = this.deferredOutput;
+    if (!deferred) return;
+    const byteLength =
+      deferred.kind === "candidate" ? deferred.bytes.length : deferred.byteLength;
+    const partCount =
+      deferred.kind === "candidate"
+        ? deferred.items.length
+        : deferred.chunks.length + deferred.actions.length;
+    if (
+      byteLength <= MAX_UNTERMINATED_SYNCHRONIZED_OUTPUT_BYTES &&
+      partCount <= MAX_UNTERMINATED_SYNCHRONIZED_OUTPUT_PARTS
+    ) {
+      return;
+    }
+    if (deferred.kind === "candidate") this.releaseCandidate();
+    else this.releaseFrame();
+  }
+
+  private discardDeferredOutput() {
+    this.deferredOutput = null;
+    this.clearDeferredOutputTimeout();
   }
 
   hasPendingDrain(task: TerminalDrainTask): boolean {
@@ -239,7 +584,7 @@ class TerminalWriteCoordinator {
 
   drain(
     task: TerminalDrainTask,
-    callback: (targetSequence: number) => void,
+    callback: (targetSequence: number, promoted: boolean) => void,
     options: { coalesce?: boolean; onDiscard?: () => void } = {},
   ): boolean {
     const handle = this.currentHandle();
@@ -249,33 +594,67 @@ class TerminalWriteCoordinator {
 
     const pending: PendingTerminalDrain = {
       id: ++this.nextDrainId,
+      task,
+      handle,
       generation: handle.generation,
       targetSequence: this.writeSequence,
+      callback,
+      onDiscard: options.onDiscard,
+      coalesce,
+      promoted: false,
+      completed: false,
     };
     if (coalesce) this.pendingDrains.set(task, pending);
-    let completed = false;
-    this.term.write("", () => {
-      if (completed) return;
-      completed = true;
-      if (coalesce) {
-        const current = this.pendingDrains.get(task);
-        if (current?.id !== pending.id) {
-          options.onDiscard?.();
-          return;
-        }
-        this.pendingDrains.delete(task);
-      }
-      const current = this.currentHandle();
-      if (current !== handle || current.generation !== pending.generation) {
-        options.onDiscard?.();
-        return;
-      }
-      callback(pending.targetSequence);
-    });
+    this.allDrains.add(pending);
+    if (this.deferredOutput) {
+      this.deferAction({ kind: "drain", pending });
+    } else {
+      this.scheduleDrain(pending);
+    }
     return true;
   }
 
+  private scheduleDrain(pending: PendingTerminalDrain) {
+    if (pending.completed) return;
+    this.term.write("", () => this.completeDrain(pending));
+  }
+
+  private completeDrain(pending: PendingTerminalDrain) {
+    if (pending.completed) return;
+    if (
+      pending.coalesce &&
+      this.pendingDrains.get(pending.task)?.id !== pending.id
+    ) {
+      this.discardDrain(pending);
+      return;
+    }
+    const current = this.currentHandle();
+    if (
+      current !== pending.handle ||
+      current.generation !== pending.generation
+    ) {
+      this.discardDrain(pending);
+      return;
+    }
+    pending.completed = true;
+    this.allDrains.delete(pending);
+    if (pending.coalesce) this.pendingDrains.delete(pending.task);
+    pending.callback(pending.targetSequence, pending.promoted);
+  }
+
+  private discardDrain(pending: PendingTerminalDrain) {
+    if (pending.completed) return;
+    pending.completed = true;
+    this.allDrains.delete(pending);
+    if (this.pendingDrains.get(pending.task)?.id === pending.id) {
+      this.pendingDrains.delete(pending.task);
+    }
+    pending.onDiscard?.();
+  }
+
   reset() {
+    this.discardDeferredOutput();
+    for (const pending of [...this.allDrains]) this.discardDrain(pending);
     this.pendingDrains.clear();
   }
 }
@@ -735,6 +1114,7 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
   const writes = new TerminalWriteCoordinator(
     term,
     () => (handles.get(sessionId) === handle ? handle : null),
+    (data) => writePreservingViewport(handle, data),
   );
   const viewport = new TerminalViewportController(term);
   handle = {
@@ -1009,12 +1389,12 @@ function armPiStartupReadyTimeout(handle: TermHandle) {
 
 function writeTerminalOutput(handle: TermHandle, bytes: Uint8Array) {
   const visible = handle.piStartupNoticeFilter?.feed(bytes) ?? bytes;
-  if (visible.length) writePreservingViewport(handle, visible);
+  if (visible.length) handle.writes.writeOutput(visible);
 }
 
 function finishTerminalStartupFilter(handle: TermHandle) {
   const visible = handle.piStartupNoticeFilter?.finish();
-  if (visible?.length) writePreservingViewport(handle, visible);
+  if (visible?.length) handle.writes.writeOutput(visible);
 }
 
 /**
@@ -1146,7 +1526,14 @@ function scheduleTerminalSnapshot(handle: TermHandle) {
       // boundary, so screen state and replay cursor form one consistent checkpoint.
       handle.writes.drain(
         "snapshot",
-        () => {
+        (_targetSequence, promoted) => {
+          // A drain requested mid-DEC-2026 frame is deliberately moved behind
+          // the complete frame. Its old cursor no longer describes that newer
+          // screen, so debounce a fresh checkpoint instead of pairing them.
+          if (promoted) {
+            scheduleTerminalSnapshot(handle);
+            return;
+          }
           try {
             const content = handle.serialize.serialize({
               scrollback: TERMINAL_SNAPSHOT_SCROLLBACK_LINES,
@@ -2192,6 +2579,7 @@ function applyOutputFrame(
       if (!isLaterRun(incoming, current)) return;
       // A legitimate external restart must not append its cursor space to the
       // old terminal. The next frames belong to a distinct Host run.
+      resetRenderObservation(handle);
       resetNativeHistory(handle);
       resetTerminal(handle);
       handle.logCursor = null;
@@ -2321,6 +2709,7 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       // The Host has explicitly told us that our cursor no longer maps to
       // retained bytes. Clear before its following tail replay so unrelated
       // generations can never be stitched together in xterm.
+      resetRenderObservation(handle);
       resetNativeHistory(handle);
       clearTerminalForTailReplay(handle);
       handle.logCursor = null;

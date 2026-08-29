@@ -63,6 +63,15 @@
 - Prevention: Test reattach from a previously completed runtime, transport receipt, parser drain, later live writes, stale generations, and overlay visibility as separate boundaries; never use `onWriteParsed` as an all-writes-drained signal.
 - Verified by: The reattach regression began with `replayDone=true` and failed because attach left it true, then passed after resetting it; focused terminal tests pass 71/71 and the full frontend suite passes 355/355.
 
+## `xterm synchronized output` — inspect buffer state before blaming Canvas
+
+- Wrong approach: Treat a one-frame fullscreen-TUI blank as a Canvas/resize repaint failure and add another `refresh()` after `fit()`.
+- Why it failed: The bad frame's xterm buffer already had empty bottom rows. Pi brackets each redraw with DEC mode 2026, but xterm 5.5 does not support it; PTY/Channel chunking let xterm parse and paint the clear/partial redraw before the closing marker arrived.
+- Recognition signal: Output above the prompt and the cursor remain visible while the input/status rows disappear for one frame; a per-frame buffer probe reports an all-empty tail, and captured PTY bytes contain `ESC[?2026h` / `ESC[?2026l` pairs.
+- Correct approach: At the renderer write coordinator, preserve raw bytes but coalesce each complete mode-2026 block into one xterm write. Defer every parser-boundary drain and local write behind an open block, and bound unmatched blocks by timeout, bytes, parts, and generation-safe reset/dispose.
+- Prevention: Regress marker splits at every byte, ordinary prefix/suffix ordering, replay/render drains, false prefixes, timeout/cap release, snapshots, and stale handles; use a buffer-state oracle during real resize stress rather than judging Canvas pixels alone.
+- Verified by: Explorer resize stress produced three all-empty-tail frames in 18 seconds before the fix; after coalescing, a 60-second/120-toggle run reported `BAD=0`. The focused terminal suite passes 86/86 and the full frontend suite passes 388/388.
+
 ## `session env inheritance` — proxy/secret 过滤是双层机制，缺一层就会静默断网
 
 - Wrong approach: 只检查 GUI 或 Host 其中一层是否传环境变量，看到父进程有 `HTTPS_PROXY` 就断定 Agent 能继承。
