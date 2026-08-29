@@ -30,6 +30,13 @@ export type ResumePrecisionStr = "exact" | "latest" | "unavailable";
 export type WorktreeHealthStr = "clean" | "dirty" | "missing" | "locked";
 export type WorktreeBranchMode = "auto" | "new" | "existing";
 export type ThemeSetting = "system" | "dark" | "light";
+export type TerminalThemeId =
+  | "one"
+  | "cupertino"
+  | "graphite"
+  | "aurora"
+  | "ember"
+  | "sakura";
 export type ReducedMotionSetting = "system" | "on" | "off";
 export type UiLanguage = "zh-CN" | "en-US";
 
@@ -123,6 +130,7 @@ export interface Settings {
   notificationsEnabled: boolean;
   uiLanguage: UiLanguage;
   theme: ThemeSetting;
+  terminalTheme: TerminalThemeId;
   terminalFontFamily: string;
   terminalFontSize: number;
   /** Optional Linux terminal emulator executable; no arguments are parsed. */

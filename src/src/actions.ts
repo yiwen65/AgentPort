@@ -42,6 +42,7 @@ import {
 } from "./terminals";
 import { agentDisplay } from "./format";
 import { i18n } from "./i18n";
+import { applyTerminalThemeCss } from "./terminalThemes";
 import type {
   LogCursorView,
   ProjectLayoutEntry,
@@ -201,6 +202,7 @@ export function applyThemeSettings() {
   const reduced =
     st.reducedMotion === "system" ? sysReduced : st.reducedMotion === "on";
   document.documentElement.dataset.theme = theme;
+  applyTerminalThemeCss(document.documentElement, st.terminalTheme, theme);
   delete document.documentElement.dataset.prepaintTheme;
   document.documentElement.dataset.motion = reduced ? "reduced" : "full";
   // Keep the native window (and with it the sidebar's vibrancy material) on
@@ -221,7 +223,7 @@ export function applyThemeSettings() {
     // Theme application must not depend on optional WebView storage.
   }
   setState({ themeEffective: theme, reducedMotion: reduced });
-  applyXtermTheme(theme);
+  applyXtermTheme(theme, st.terminalTheme);
   applyTerminalSettings();
 }
 

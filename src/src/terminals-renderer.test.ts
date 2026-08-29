@@ -268,6 +268,7 @@ vi.mock("./api", () => ({
 
 import {
   applyTerminalLanguage,
+  applyXtermTheme,
   disposeHandle,
   fitHandle,
   fitSession,
@@ -281,6 +282,7 @@ import {
 } from "./terminals";
 import { applyUiLanguage } from "./i18n";
 import { emptyRuntime, getState, setState } from "./store";
+import type { Settings } from "./types";
 
 let resizeObserverCallbacks: Array<() => void> = [];
 
@@ -362,6 +364,39 @@ describe("terminal renderer", () => {
     const terminal =
       rendererMocks.terminals[rendererMocks.terminals.length - 1];
     expect(terminal.options.scrollback).toBe(10_000);
+  });
+
+  it("uses the selected family for new terminals and repaints existing handles in place", () => {
+    const settings: Settings = {
+      logLimitMib: 200,
+      notificationsEnabled: true,
+      uiLanguage: "zh-CN",
+      theme: "dark",
+      terminalTheme: "aurora",
+      terminalFontFamily: "system-monospace",
+      terminalFontSize: 13,
+      terminalCommand: "",
+      reducedMotion: "system",
+      screenReaderMode: false,
+      searchIndexEnabled: false,
+      agentOrder: ["shell"],
+      agentHidden: [],
+      telemetryEnabled: false,
+    };
+    setState({ settings, themeEffective: "dark" });
+    mountTerminal("renderer-test", document.createElement("div"));
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+
+    expect((terminal.options.theme as { background: string }).background).toBe("#0d1321");
+    const terminalCount = rendererMocks.terminals.length;
+    terminal.clearTextureAtlas.mockClear();
+    terminal.refresh.mockClear();
+    applyXtermTheme("light", "graphite");
+
+    expect(rendererMocks.terminals).toHaveLength(terminalCount);
+    expect((terminal.options.theme as { background: string }).background).toBe("#ffffff");
+    expect(terminal.clearTextureAtlas).toHaveBeenCalledTimes(1);
+    expect(terminal.refresh).toHaveBeenCalledWith(0, terminal.rows - 1);
   });
 
   it("renders an ended PTY exclusively from the agent-native log", async () => {
@@ -546,6 +581,7 @@ describe("terminal renderer", () => {
 
   afterEach(() => {
     disposeHandle("renderer-test");
+    setState({ settings: null });
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });

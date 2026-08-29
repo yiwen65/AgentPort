@@ -82,6 +82,7 @@ const settings = {
   notificationsEnabled: true,
   uiLanguage: "zh-CN" as const,
   theme: "system" as const,
+  terminalTheme: "one" as const,
   terminalFontFamily: "system-monospace",
   terminalFontSize: 13,
   terminalCommand: "",

@@ -93,6 +93,7 @@ const bootInfo: BootInfo = {
     notificationsEnabled: true,
     uiLanguage: "zh-CN",
     theme: "system",
+    terminalTheme: "one",
     terminalFontFamily: "system-monospace",
     terminalFontSize: 13,
     terminalCommand: "",

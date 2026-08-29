@@ -3926,6 +3926,10 @@ impl Db {
                 Some("high_contrast") => Theme::Dark,
                 _ => Theme::System,
             },
+            terminal_theme: map
+                .get("terminal_theme")
+                .and_then(|value| TerminalTheme::from_code(value))
+                .unwrap_or(d.terminal_theme),
             terminal_font_family: map
                 .get("terminal_font_family")
                 .cloned()
@@ -3978,7 +3982,7 @@ impl Db {
             ReducedMotion::On => "on",
             ReducedMotion::Off => "off",
         };
-        let pairs: [(String, String); 12] = [
+        let pairs: [(String, String); 13] = [
             ("log_limit_mib".into(), s.log_limit_mib.to_string()),
             (
                 "notifications_enabled".into(),
@@ -3986,6 +3990,7 @@ impl Db {
             ),
             ("ui_language".into(), s.ui_language.as_str().into()),
             ("theme".into(), theme.into()),
+            ("terminal_theme".into(), s.terminal_theme.as_str().into()),
             (
                 "terminal_font_family".into(),
                 s.terminal_font_family.clone(),
@@ -6211,10 +6216,12 @@ mod tests {
         assert_eq!(d.log_limit_mib, DEFAULT_LOG_LIMIT_MIB);
         assert_eq!(d.terminal_font_size, 13);
         assert_eq!(d.ui_language, UiLanguage::ZhCn);
+        assert_eq!(d.terminal_theme, TerminalTheme::One);
         assert!(!d.telemetry_enabled);
         let mut s = d.clone();
         s.ui_language = UiLanguage::EnUs;
         s.theme = Theme::Dark;
+        s.terminal_theme = TerminalTheme::Aurora;
         s.terminal_font_size = 18;
         s.terminal_command = "kitty".into();
         s.agent_order = vec!["pi".into(), "qoder".into(), "codex".into()];
@@ -6223,6 +6230,7 @@ mod tests {
         let back = db.load_settings().unwrap();
         assert_eq!(back.ui_language, UiLanguage::EnUs);
         assert_eq!(back.theme, Theme::Dark);
+        assert_eq!(back.terminal_theme, TerminalTheme::Aurora);
         assert_eq!(back.terminal_font_size, 18);
         assert_eq!(back.terminal_command, "kitty");
         assert_eq!(back.agent_order, ["pi", "qoder", "codex"]);
@@ -6247,6 +6255,41 @@ mod tests {
             )
             .unwrap();
         assert_eq!(db.load_settings().unwrap().theme, Theme::Dark);
+    }
+
+    #[test]
+    fn terminal_theme_roundtrips_every_supported_value() {
+        let db = db();
+        for terminal_theme in [
+            TerminalTheme::One,
+            TerminalTheme::Cupertino,
+            TerminalTheme::Graphite,
+            TerminalTheme::Aurora,
+            TerminalTheme::Ember,
+            TerminalTheme::Sakura,
+        ] {
+            let mut settings = db.load_settings().unwrap();
+            settings.terminal_theme = terminal_theme;
+            db.save_settings(&settings).unwrap();
+            assert_eq!(db.load_settings().unwrap().terminal_theme, terminal_theme);
+        }
+    }
+
+    #[test]
+    fn unknown_terminal_theme_falls_back_to_one() {
+        let db = db();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO settings(key,value) VALUES('terminal_theme','unsupported')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            db.load_settings().unwrap().terminal_theme,
+            TerminalTheme::One
+        );
     }
 
     #[test]

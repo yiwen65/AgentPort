@@ -20,17 +20,51 @@
       "backup": "备份与恢复"
     },
     "appearance": {
-      "description": "主题、语言、终端字体、动效与辅助功能",
+      "description": "应用主题、终端配色、语言、字体、动效与辅助功能",
       "language": "界面语言",
       "languageHint": "切换后立即生效，并自动保存。",
       "languageSaveFailed": "语言设置保存失败：{{detail}}",
       "theme": {
-        "label": "主题",
+        "label": "应用主题",
         "system": "系统",
         "light": "浅色",
         "dark": "深色",
         "effective": "当前生效：{{theme}}",
         "switchFailed": "主题切换失败：{{detail}}"
+      },
+      "terminalTheme": {
+        "label": "终端配色",
+        "hint": "每套配色均针对浅色与深色外观精心调校；切换立即应用并自动保存。",
+        "effective": "当前预览：{{mode}}",
+        "selected": "已选择",
+        "current": "当前终端配色：{{theme}}",
+        "switchFailed": "终端配色切换失败：{{detail}}",
+        "options": {
+          "one": {
+            "name": "One",
+            "description": "熟悉、均衡的编辑器经典"
+          },
+          "cupertino": {
+            "name": "Cupertino",
+            "description": "通透冷灰与系统蓝，克制清晰"
+          },
+          "graphite": {
+            "name": "Graphite",
+            "description": "纯粹黑白层级，专注而锋利"
+          },
+          "aurora": {
+            "name": "Aurora",
+            "description": "深海靛青与极光青紫"
+          },
+          "ember": {
+            "name": "Ember",
+            "description": "暖炭、琥珀与柔和珊瑚"
+          },
+          "sakura": {
+            "name": "Sakura",
+            "description": "墨紫、樱粉与低饱和柔光"
+          }
+        }
       },
       "font": {
         "label": "终端字体族",

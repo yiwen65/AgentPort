@@ -754,6 +754,43 @@ pub enum Theme {
     Light,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalTheme {
+    #[default]
+    One,
+    Cupertino,
+    Graphite,
+    Aurora,
+    Ember,
+    Sakura,
+}
+
+impl TerminalTheme {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TerminalTheme::One => "one",
+            TerminalTheme::Cupertino => "cupertino",
+            TerminalTheme::Graphite => "graphite",
+            TerminalTheme::Aurora => "aurora",
+            TerminalTheme::Ember => "ember",
+            TerminalTheme::Sakura => "sakura",
+        }
+    }
+
+    pub fn from_code(value: &str) -> Option<Self> {
+        match value {
+            "one" => Some(TerminalTheme::One),
+            "cupertino" => Some(TerminalTheme::Cupertino),
+            "graphite" => Some(TerminalTheme::Graphite),
+            "aurora" => Some(TerminalTheme::Aurora),
+            "ember" => Some(TerminalTheme::Ember),
+            "sakura" => Some(TerminalTheme::Sakura),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReducedMotion {
@@ -874,6 +911,8 @@ pub struct Settings {
     #[serde(default)]
     pub ui_language: UiLanguage,
     pub theme: Theme,
+    #[serde(default)]
+    pub terminal_theme: TerminalTheme,
     pub terminal_font_family: String,
     pub terminal_font_size: u32,
     /// Optional terminal emulator executable for Linux. Arguments are
@@ -902,6 +941,7 @@ impl Default for Settings {
             notifications_enabled: true,
             ui_language: UiLanguage::default(),
             theme: Theme::System,
+            terminal_theme: TerminalTheme::default(),
             terminal_font_family: "system-monospace".into(),
             terminal_font_size: 13,
             terminal_command: String::new(),
@@ -1008,6 +1048,13 @@ mod tests {
                 sequence: 7,
             }
         );
+    }
+
+    #[test]
+    fn settings_serialize_terminal_theme_as_camel_case_contract() {
+        let value = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(value["terminalTheme"], "one");
+        assert!(value.get("terminal_theme").is_none());
     }
 
     #[test]

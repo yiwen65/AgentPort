@@ -20,17 +20,51 @@
       "backup": "Backup & Restore"
     },
     "appearance": {
-      "description": "Theme, language, terminal typography, motion, and assistive features",
+      "description": "App theme, terminal colors, language, typography, motion, and assistive features",
       "language": "Display language",
       "languageHint": "Changes take effect immediately and are saved automatically.",
       "languageSaveFailed": "Could not save the language setting: {{detail}}",
       "theme": {
-        "label": "Theme",
+        "label": "App theme",
         "system": "System",
         "light": "Light",
         "dark": "Dark",
         "effective": "Currently active: {{theme}}",
         "switchFailed": "Could not switch themes: {{detail}}"
+      },
+      "terminalTheme": {
+        "label": "Terminal colors",
+        "hint": "Every palette is tuned for both Light and Dark. Changes apply immediately and save automatically.",
+        "effective": "Previewing: {{mode}}",
+        "selected": "Selected",
+        "current": "Current terminal colors: {{theme}}",
+        "switchFailed": "Could not switch terminal colors: {{detail}}",
+        "options": {
+          "one": {
+            "name": "One",
+            "description": "A balanced, familiar editor classic"
+          },
+          "cupertino": {
+            "name": "Cupertino",
+            "description": "Cool clarity with a precise system blue"
+          },
+          "graphite": {
+            "name": "Graphite",
+            "description": "Focused monochrome with crisp hierarchy"
+          },
+          "aurora": {
+            "name": "Aurora",
+            "description": "Deep indigo lit by cyan and violet"
+          },
+          "ember": {
+            "name": "Ember",
+            "description": "Warm charcoal, amber, and soft coral"
+          },
+          "sakura": {
+            "name": "Sakura",
+            "description": "Muted ink, plum, and rose light"
+          }
+        }
       },
       "font": {
         "label": "Terminal font family",

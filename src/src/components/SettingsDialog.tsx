@@ -21,6 +21,7 @@ import {
 import { applyUiLanguage, currentUiLanguage, i18n } from "../i18n";
 import { orderAgentIds, visibleAgentIds } from "../agentOrder";
 import { applyTerminalLanguage } from "../terminals";
+import { getTerminalPalette, TERMINAL_THEME_IDS } from "../terminalThemes";
 import { AgentIcon } from "./AgentIcons";
 import ShellIcon from "./ShellIcon";
 import { closeDialog, confirmDialog, setState, toast, useStore } from "../store";
@@ -33,6 +34,7 @@ import type {
   Preset,
   SecretMeta,
   Settings,
+  TerminalThemeId,
 } from "../types";
 
 const FOCUSABLE =
@@ -1256,7 +1258,7 @@ export default function SettingsDialog() {
   };
 
   const switchTheme = async (theme: Settings["theme"]) => {
-    if (themeBusy || !s.settings || s.settings.theme === theme) return;
+    if (themeBusy || languageBusy || !s.settings || s.settings.theme === theme) return;
     const previousSettings = s.settings;
     const nextSettings = { ...previousSettings, theme, telemetryEnabled: false };
     setThemeBusy(true);
@@ -1276,6 +1278,42 @@ export default function SettingsDialog() {
       );
       applyThemeSettings();
       setError(t("settings:ui.appearance.theme.switchFailed", { detail: errorText(e) }));
+    } finally {
+      setThemeBusy(false);
+    }
+  };
+
+  const switchTerminalTheme = async (terminalTheme: TerminalThemeId) => {
+    if (
+      themeBusy ||
+      languageBusy ||
+      !s.settings ||
+      s.settings.terminalTheme === terminalTheme
+    ) {
+      return;
+    }
+    const previousSettings = s.settings;
+    const nextSettings = { ...previousSettings, terminalTheme, telemetryEnabled: false };
+    setThemeBusy(true);
+    setError(null);
+    setDraft((current) => (current ? { ...current, terminalTheme } : current));
+    setState({ settings: nextSettings });
+    applyThemeSettings();
+    try {
+      await api.saveSettings(nextSettings);
+    } catch (e) {
+      setState({ settings: previousSettings });
+      setDraft((current) =>
+        current
+          ? { ...current, terminalTheme: previousSettings.terminalTheme }
+          : current,
+      );
+      applyThemeSettings();
+      setError(
+        t("settings:ui.appearance.terminalTheme.switchFailed", {
+          detail: errorText(e),
+        }),
+      );
     } finally {
       setThemeBusy(false);
     }
@@ -1355,6 +1393,125 @@ export default function SettingsDialog() {
             })}
           </span>
         </div>
+
+        <section
+          className="terminal-theme-setting"
+          aria-labelledby="set-terminal-theme-label"
+        >
+          <div className="terminal-theme-heading">
+            <div>
+              <label id="set-terminal-theme-label">
+                {t("settings:ui.appearance.terminalTheme.label")}
+              </label>
+              <span className="form-hint">
+                {t("settings:ui.appearance.terminalTheme.hint")}
+              </span>
+            </div>
+            <span className="terminal-theme-mode">
+              {t("settings:ui.appearance.terminalTheme.effective", {
+                mode: t(
+                  s.themeEffective === "dark"
+                    ? "settings:ui.appearance.theme.dark"
+                    : "settings:ui.appearance.theme.light",
+                ),
+              })}
+            </span>
+          </div>
+          <div
+            className="terminal-theme-grid"
+            role="radiogroup"
+            aria-labelledby="set-terminal-theme-label"
+          >
+            {TERMINAL_THEME_IDS.map((terminalTheme) => {
+              const themePalette = getTerminalPalette(
+                terminalTheme,
+                s.themeEffective,
+              ).xterm;
+              const selected = draft.terminalTheme === terminalTheme;
+              const descriptionId = `terminal-theme-${terminalTheme}-description`;
+              return (
+                <label
+                  className={`terminal-theme-card${selected ? " selected" : ""}`}
+                  key={terminalTheme}
+                >
+                  <input
+                    className="sr-only"
+                    type="radio"
+                    name="terminal-theme"
+                    value={terminalTheme}
+                    checked={selected}
+                    disabled={busy || themeBusy || languageBusy}
+                    aria-describedby={descriptionId}
+                    onChange={() => void switchTerminalTheme(terminalTheme)}
+                  />
+                  <span
+                    className="terminal-theme-preview"
+                    style={{
+                      background: themePalette.background,
+                      color: themePalette.foreground,
+                    }}
+                    aria-hidden="true"
+                  >
+                    <span className="terminal-theme-preview-bar">
+                      <span style={{ background: themePalette.red }} />
+                      <span style={{ background: themePalette.yellow }} />
+                      <span style={{ background: themePalette.green }} />
+                    </span>
+                    <span className="terminal-theme-preview-line">
+                      <span style={{ color: themePalette.green }}>~/AgentPort</span>
+                      <span style={{ color: themePalette.brightBlack }}> git:</span>
+                      <span style={{ color: themePalette.magenta }}>main</span>
+                    </span>
+                    <span className="terminal-theme-preview-line">
+                      <span style={{ color: themePalette.blue }}>❯</span>
+                      <span> agentport</span>
+                      <span style={{ color: themePalette.cyan }}> ready</span>
+                    </span>
+                    <span className="terminal-theme-swatches">
+                      {[
+                        themePalette.red,
+                        themePalette.yellow,
+                        themePalette.green,
+                        themePalette.cyan,
+                        themePalette.blue,
+                        themePalette.magenta,
+                      ].map((color, index) => (
+                        <span key={`${terminalTheme}-${index}`} style={{ background: color }} />
+                      ))}
+                    </span>
+                  </span>
+                  <span className="terminal-theme-card-copy">
+                    <span>
+                      <strong>
+                        {t(`settings:ui.appearance.terminalTheme.options.${terminalTheme}.name`)}
+                      </strong>
+                      <small id={descriptionId}>
+                        {t(
+                          `settings:ui.appearance.terminalTheme.options.${terminalTheme}.description`,
+                        )}
+                      </small>
+                    </span>
+                    <span className="terminal-theme-check" aria-hidden="true">
+                      {selected ? "✓" : ""}
+                    </span>
+                    {selected ? (
+                      <span className="sr-only">
+                        {t("settings:ui.appearance.terminalTheme.selected")}
+                      </span>
+                    ) : null}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          <span className="sr-only" aria-live="polite">
+            {t("settings:ui.appearance.terminalTheme.current", {
+              theme: t(
+                `settings:ui.appearance.terminalTheme.options.${draft.terminalTheme}.name`,
+              ),
+            })}
+          </span>
+        </section>
 
         <label htmlFor="set-font">{t("settings:ui.appearance.font.label")}</label>
         <div className="control">

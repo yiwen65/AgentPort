@@ -1,7 +1,5 @@
-// Custom SVG renderer for parsed flowcharts. Unlike the mermaid engine, every
-// visual here is styled with the app's own theme tokens through CSS classes,
-// so diagrams look native in both One Dark Pro and One Light Pro and follow
-// theme switches with no re-render pass.
+// Custom SVG renderer for parsed flowcharts. Every visual uses terminal-theme
+// CSS tokens, so diagrams follow the selected family without a layout pass.
 
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";

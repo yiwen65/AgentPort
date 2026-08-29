@@ -18,6 +18,15 @@
 - Prevention: Confirm both process path and window owner, activate before capture, and never classify the UI as blank from an inactive transparent-window screenshot alone.
 - Verified by: The inactive capture was black; after activating PID 92957, ScreenCaptureKit captured the fully rendered sidebar and Session view.
 
+## `scoped Rust formatting` — `cargo fmt -- <paths>` does not select files
+
+- Wrong approach: Running `cargo fmt -- crates/agentport-core/src/models.rs crates/agentport-core/src/db/mod.rs` to format only the two task files.
+- Why it failed: Arguments after `--` are rustfmt options, while `cargo fmt` formats all bin and lib targets in the selected crate/workspace; unrelated Rust files were changed.
+- Recognition signal: `git status` suddenly lists Rust files outside the task scope immediately after a supposedly file-scoped format command.
+- Correct approach: For a bounded read-only check, run `rustfmt --edition 2021 --check <path>...`; use `cargo fmt --check -p <package>` only when package-wide formatting is intended and baseline-compatible.
+- Prevention: Inspect `git status` before and after formatting, and never pass source paths after `cargo fmt --` as selectors.
+- Verified by: The command changed six unrelated workspace files; restoring those files and pre-existing formatting in the two task files returned the diff to terminal-theme-only hunks.
+
 ## `xterm viewport restoration` — reconcile both buffer and DOM on Session activation
 
 - Wrong approach: Restoring tail-following inside generic `fitHandle()`, or deferring an activation-only repair while checking only `buffer.viewportY`.

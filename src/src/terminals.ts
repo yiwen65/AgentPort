@@ -8,7 +8,6 @@ import {
   type ILinkProvider,
   type ILink,
   type IMarker,
-  type ITheme,
 } from "@xterm/xterm";
 import { CanvasAddon } from "@xterm/addon-canvas";
 import { FitAddon } from "@xterm/addon-fit";
@@ -42,11 +41,13 @@ import { stateLabel } from "./format";
 import { i18n } from "./i18n";
 import { openDocumentTarget, parseDocumentLinkTarget } from "./documents";
 import { runtimeMessageEnvelope, runtimeMessageText } from "./runtimeMessages";
+import { getTerminalPalette } from "./terminalThemes";
 import type {
   ChannelMsg,
   HistoryEvent,
   LogCursorView,
   RuntimeMessageEnvelope,
+  TerminalThemeId,
 } from "./types";
 
 // Keep a substantial local history window for interactive find/navigation.
@@ -643,76 +644,12 @@ export function cssFontFamily(setting: string): string {
   return `'${setting.replace(/'/g, "")}', ${FALLBACK_FONT}`;
 }
 
-// Terminal reading palette. The dark theme mirrors the VSCode One Dark Pro
-// extension (editor/terminal colors from its published theme.json) so agent
-// output reads exactly like the editor terminal. Keep `background` and the
-// `.xterm` DOM-renderer fallback color in sync with styles.css `--bg-term`
-// and `--term-text`.
-const XTERM_THEMES: Record<EffectiveTheme, ITheme> = {
-  dark: {
-    background: "#282c34",
-    foreground: "#abb2bf",
-    cursor: "#abb2bf",
-    cursorAccent: "#282c34",
-    selectionBackground: "#abb2bf30",
-    black: "#3f4451",
-    red: "#e05561",
-    green: "#8cc265",
-    yellow: "#d18f52",
-    blue: "#4aa5f0",
-    magenta: "#c162de",
-    cyan: "#42b3c2",
-    white: "#d7dae0",
-    brightBlack: "#4f5666",
-    brightRed: "#ff616e",
-    brightGreen: "#a5e075",
-    brightYellow: "#f0a45d",
-    brightBlue: "#4dc4ff",
-    brightMagenta: "#de73ff",
-    brightCyan: "#4cd1e0",
-    brightWhite: "#e6e6e6",
-  },
-  light: {
-    // Atom One Light, paired with the dark side's One Dark Pro: surface and
-    // body text follow the VSCode port (#FAFAFA / #383A42), normal ANSI
-    // slots use the darker one-light-syntax hues, and bright slots use the
-    // lighter One Dark hues (the One Half Light terminal mapping) so bright
-    // keeps a visible emphasis step on a light surface. Keep `background`
-    // identical to styles.css `--bg-term`/`--workspace-live` so pane edges
-    // never show a mismatched seam.
-    background: "#fafafa",
-    foreground: "#383a42",
-    cursor: "#383a42",
-    cursorAccent: "#fafafa",
-    selectionBackground: "#e5e5e6",
-    black: "#383a42",
-    red: "#e45649",
-    green: "#50a14f",
-    yellow: "#986801",
-    blue: "#4078f2",
-    magenta: "#a626a4",
-    cyan: "#0184bc",
-    // CLI TUIs commonly emit ANSI white explicitly for body copy. On a light
-    // terminal that slot must stay dark (native One Light maps white near
-    // the background), otherwise a clean launch renders the transcript
-    // almost white-on-white until another repaint changes it.
-    white: "#52525b",
-    brightBlack: "#4f525e",
-    brightRed: "#e06c75",
-    brightGreen: "#98c379",
-    brightYellow: "#e5c07b",
-    brightBlue: "#61afef",
-    brightMagenta: "#c678dd",
-    brightCyan: "#56b6c2",
-    brightWhite: "#26262c",
-  },
-};
-
 function syncHandleTheme(
   handle: TermHandle,
   theme = getState().themeEffective,
+  terminalTheme: TerminalThemeId = getState().settings?.terminalTheme ?? "one",
 ) {
-  handle.term.options.theme = XTERM_THEMES[theme];
+  handle.term.options.theme = getTerminalPalette(terminalTheme, theme).xterm;
   // Color glyphs and truecolor contrast adjustments are cached by xterm.
   // Rebuild the Canvas atlas whenever a pane becomes visible or its theme
   // changes so a handle can never retain the prepaint/default dark palette.
@@ -778,7 +715,7 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     },
     macOptionIsMeta: true,
     allowTransparency: false,
-    theme: XTERM_THEMES[s.themeEffective],
+    theme: getTerminalPalette(settings?.terminalTheme ?? "one", s.themeEffective).xterm,
   });
   const fit = new FitAddon();
   const search = new SearchAddon();
@@ -2649,9 +2586,12 @@ export function applyTerminalLanguage() {
   setState({ runtime: localizedRuntime });
 }
 
-export function applyXtermTheme(theme: EffectiveTheme) {
+export function applyXtermTheme(
+  theme: EffectiveTheme,
+  terminalTheme: TerminalThemeId = getState().settings?.terminalTheme ?? "one",
+) {
   for (const h of handles.values()) {
-    syncHandleTheme(h, theme);
+    syncHandleTheme(h, theme, terminalTheme);
     // xterm updates the option immediately, but an already painted canvas can
     // retain its old fill until the next PTY write. Repaint now so the terminal
     // never leaves a darker rectangle below the unified workspace header.

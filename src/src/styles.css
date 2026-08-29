@@ -21,16 +21,25 @@
   --bg-elevated: #2f2f34;
   --bg-hover: #35363a;
   --bg-active: #1f1f23;
-  /* One Dark Pro terminal surface (matches the VSCode extension's
-     `terminal.background`); mirrors `XTERM_THEMES.dark.background`
-     in terminals.ts. */
+  /* One is the pre-Settings fallback. applyTerminalThemeCss replaces this
+     complete terminal token group from the selected family at runtime. */
   --bg-term: #282c34;
   --border: #34343a;
   --border-strong: #47474f;
   --text: #f3f5fb;
-  /* Terminal body text for the xterm DOM-renderer fallback; mirrors
-     `XTERM_THEMES.dark.foreground` (One Dark Pro) in terminals.ts. */
+  /* Terminal body text for the xterm DOM-renderer fallback. */
   --term-text: #abb2bf;
+  --term-surface-raised: #303640;
+  --term-code-bg: #21252b;
+  --term-border: #414754;
+  --term-muted: #8f96a3;
+  --term-heading: #e5e9f0;
+  --term-accent: #4aa5f0;
+  --term-red: #e05561;
+  --term-green: #8cc265;
+  --term-yellow: #d18f52;
+  --term-magenta: #c162de;
+  --term-cyan: #42b3c2;
   --text-dim: rgba(243, 245, 251, 0.66);
   /* Mid-tier de-emphasis between dim and faint (tree icons, captions,
      blockquote bodies); referenced across the document panel. */
@@ -133,15 +142,24 @@
   --bg-elevated: #ffffff;
   --bg-hover: #e7e7e7;
   --bg-active: #ffffff;
-  /* One Light terminal surface (pairs with the dark side's One Dark Pro);
-     mirrors `XTERM_THEMES.light.background` in terminals.ts. */
+  /* One Light is the pre-Settings terminal fallback. */
   --bg-term: #fafafa;
   --border: rgba(17, 18, 23, 0.1);
   --border-strong: rgba(17, 18, 23, 0.16);
   --text: #111217;
-  /* Terminal body text for the xterm DOM-renderer fallback; mirrors
-     `XTERM_THEMES.light.foreground` (One Light) in terminals.ts. */
+  /* Terminal body text for the xterm DOM-renderer fallback. */
   --term-text: #383a42;
+  --term-surface-raised: #ffffff;
+  --term-code-bg: #f0f1f3;
+  --term-border: #d9dce1;
+  --term-muted: #5f626b;
+  --term-heading: #20222a;
+  --term-accent: #4078f2;
+  --term-red: #e45649;
+  --term-green: #50a14f;
+  --term-yellow: #986801;
+  --term-magenta: #a626a4;
+  --term-cyan: #0184bc;
   --text-dim: rgba(17, 18, 23, 0.6);
   --text-muted: rgba(17, 18, 23, 0.55);
   --text-faint: rgba(17, 18, 23, 0.52);
@@ -1524,7 +1542,12 @@ body.is-project-dragging .tree-row.project {
 }
 
 .git-surface {
+  --git-surface: color-mix(in srgb, var(--bg-panel) 94%, var(--bg));
+  --git-surface-raised: color-mix(in srgb, var(--bg-elevated) 92%, var(--bg));
   z-index: 2;
+  /* Paint the full underlapped titlebar region with app chrome. Otherwise
+     the hidden terminal's selected palette leaks above Git Center. */
+  background: var(--git-surface);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1532,8 +1555,6 @@ body.is-project-dragging .tree-row.project {
 /* ------------------------------------------------------------------ */
 
 .git-center {
-  --git-surface: color-mix(in srgb, var(--bg-panel) 94%, var(--bg));
-  --git-surface-raised: color-mix(in srgb, var(--bg-elevated) 92%, var(--bg));
   background: var(--git-surface);
   color: var(--text);
   overflow: hidden;
@@ -2098,7 +2119,7 @@ body.is-project-dragging .tree-row.project {
   margin: 0;
   padding: 10px 12px 36px;
   color: var(--text-dim);
-  background: color-mix(in srgb, var(--bg-term) 80%, var(--git-surface));
+  background: color-mix(in srgb, var(--bg-active) 80%, var(--git-surface));
   font: 11px / 1.55 var(--font-mono);
   tab-size: 4;
   white-space: pre;
@@ -2642,8 +2663,9 @@ body.is-project-dragging .tree-row.project {
 .pi-rpc-header,
 .pi-rpc-composer,
 .pi-rpc-event {
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
+  border: 1px solid var(--term-border);
+  background: var(--term-surface-raised);
+  color: var(--term-text);
   border-radius: 8px;
 }
 
@@ -2664,7 +2686,7 @@ body.is-project-dragging .tree-row.project {
 
 .pi-rpc-header span,
 .pi-rpc-permission {
-  color: var(--text-muted);
+  color: var(--term-muted);
 }
 
 .pi-rpc-timeline {
@@ -2685,7 +2707,7 @@ body.is-project-dragging .tree-row.project {
 .pi-rpc-event > span {
   display: block;
   margin-bottom: 5px;
-  color: var(--accent);
+  color: var(--term-accent);
   font-size: calc(11px * var(--term-font-scale, 1));
   font-weight: 600;
 }
@@ -2695,7 +2717,7 @@ body.is-project-dragging .tree-row.project {
   white-space: pre-wrap;
   word-break: break-word;
   font: calc(12px * var(--term-font-scale, 1)) / 1.5 var(--font-mono);
-  color: var(--text);
+  color: var(--term-text);
 }
 
 .pi-rpc-composer {
@@ -2707,6 +2729,9 @@ body.is-project-dragging .tree-row.project {
   min-height: 68px;
   resize: vertical;
   box-sizing: border-box;
+  border-color: var(--term-border);
+  background: var(--term-code-bg);
+  color: var(--term-text);
   font-size: calc(13px * var(--term-font-scale, 1));
 }
 
@@ -2738,9 +2763,8 @@ body.is-project-dragging .tree-row.project {
   flex: 0 0 auto;
   min-width: 0;
   display: flex;
-  border-left: 1px solid var(--border);
-  /* Share the terminal page surface (One Dark Pro / One Light Pro) instead of
-     the elevated chrome tone, so the viewer reads as part of the terminal. */
+  border-left: 1px solid var(--term-border);
+  /* Share the selected terminal surface instead of the app chrome tone. */
   background: var(--workspace-current);
 }
 
@@ -3003,7 +3027,7 @@ body.is-project-dragging .tree-row.project {
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--term-border);
   flex: 0 0 auto;
 }
 
@@ -3012,7 +3036,7 @@ body.is-project-dragging .tree-row.project {
   min-width: 0;
   font-size: 12px;
   font-weight: 600;
-  color: var(--text);
+  color: var(--term-heading);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3020,7 +3044,7 @@ body.is-project-dragging .tree-row.project {
 
 .doc-panel-modes {
   display: inline-flex;
-  border: 1px solid var(--border);
+  border: 1px solid var(--term-border);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -3029,15 +3053,15 @@ body.is-project-dragging .tree-row.project {
   appearance: none;
   border: none;
   background: transparent;
-  color: var(--text-muted);
+  color: var(--term-muted);
   font-size: 11px;
   padding: 3px 10px;
   cursor: pointer;
 }
 
 .doc-mode.active {
-  background: var(--accent-soft);
-  color: var(--accent-text);
+  background: color-mix(in srgb, var(--term-accent) 14%, transparent);
+  color: var(--term-heading);
 }
 
 .doc-panel-header .spacer {
@@ -3054,11 +3078,11 @@ body.is-project-dragging .tree-row.project {
 .doc-panel-status {
   padding: 18px 14px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--term-muted);
 }
 
 .doc-panel-status.error {
-  color: var(--warn, #d19a66);
+  color: var(--term-red);
 }
 
 /* Friendly empty state for files the viewer cannot display. */
@@ -3079,19 +3103,19 @@ body.is-project-dragging .tree-row.project {
 .doc-unsupported-title {
   font-size: 13px;
   font-weight: 600;
-  color: var(--text);
+  color: var(--term-heading);
 }
 
 .doc-unsupported-body {
   font-size: 12px;
   line-height: 1.7;
-  color: var(--text-muted);
+  color: var(--term-muted);
   max-width: 42em;
 }
 
 .doc-unsupported-path {
   font: 11px / 1.5 var(--font-mono);
-  color: var(--text-muted);
+  color: var(--term-muted);
   opacity: 0.8;
   word-break: break-all;
   user-select: text;
@@ -3114,9 +3138,9 @@ body.is-project-dragging .tree-row.project {
   flex: 0 0 auto;
   overflow: hidden;
   padding: 8px 8px 16px 12px;
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--term-border);
   font: calc(12px * var(--doc-font-scale, 1)) / 1.55 var(--font-mono);
-  color: var(--text-muted);
+  color: var(--term-muted);
   text-align: right;
   user-select: none;
   opacity: 0.7;
@@ -3149,7 +3173,7 @@ body.is-project-dragging .tree-row.project {
   height: 7px;
   margin-left: 6px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--term-accent);
   vertical-align: middle;
 }
 
@@ -3175,19 +3199,15 @@ body.is-project-dragging .tree-row.project {
   max-width: 780px;
   font-size: calc(13px * var(--doc-font-scale, 1));
   line-height: 1.75;
-  /* Terminal surface + terminal foreground: prose reads as One Dark / One
-     Light body text, same as xterm output. */
+  /* Body text shares the selected xterm foreground. */
   color: var(--term-text);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-/* Markdown preview typography, driven by theme tokens so dark and light
-   palettes both stay readable. Scale: h1 21 > h2 17 > h3 15 > h4 13.5 >
-   h5/h6 12.5 against 13px body, with weight doing the rest of the
-   separation; body line-height 1.75 keeps long documents scannable. Body
-   text mirrors the terminal foreground (One Dark / One Light) on the shared
-   terminal surface; headings keep the brighter --text for hierarchy. */
+/* Markdown preview typography follows the selected terminal palette. Scale:
+   h1 21 > h2 17 > h3 15 > h4 13.5 > h5/h6 12.5 against 13px body, with
+   weight doing the rest of the separation. */
 .md-preview {
   padding: 20px 24px 36px;
   max-width: 780px;
@@ -3206,7 +3226,7 @@ body.is-project-dragging .tree-row.project {
   margin: 1.5em 0 0.6em;
   line-height: 1.35;
   font-weight: 600;
-  color: var(--text);
+  color: var(--term-heading);
 }
 
 .md-preview h1 {
@@ -3214,7 +3234,7 @@ body.is-project-dragging .tree-row.project {
   font-weight: 700;
   margin: 1.2em 0 0.7em;
   padding-bottom: 0.35em;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--term-border);
 }
 
 .md-preview h2 {
@@ -3229,7 +3249,7 @@ body.is-project-dragging .tree-row.project {
 .md-preview h5,
 .md-preview h6 {
   font-size: calc(12.5px * var(--doc-font-scale, 1));
-  color: var(--text-dim);
+  color: var(--term-muted);
 }
 
 .md-preview h1:first-child,
@@ -3246,7 +3266,7 @@ body.is-project-dragging .tree-row.project {
 }
 
 .md-preview a.md-link {
-  color: var(--accent-text);
+  color: var(--term-accent);
   text-decoration: underline;
   cursor: pointer;
 }
@@ -3254,7 +3274,7 @@ body.is-project-dragging .tree-row.project {
 .md-preview code {
   font-family: var(--font-mono);
   font-size: 0.9em;
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--term-accent) 12%, var(--term-code-bg));
   border-radius: 4px;
   padding: 1.5px 5px;
 }
@@ -3262,13 +3282,12 @@ body.is-project-dragging .tree-row.project {
 .md-preview pre {
   margin: 0.9em 0;
   padding: 12px 14px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--term-border);
   border-radius: 8px;
   overflow-x: auto;
   font: calc(12.5px * var(--doc-font-scale, 1)) / 1.6 var(--font-mono);
-  /* Panel sits on the terminal surface; step code blocks away from it (one
-     shade darker in dark theme, one lighter in light) so they stand out. */
-  background: var(--bg-active);
+  /* Recess code one semantic step from the terminal page in every family. */
+  background: var(--term-code-bg);
 }
 
 .md-preview pre code {
@@ -3280,8 +3299,8 @@ body.is-project-dragging .tree-row.project {
 .md-preview blockquote {
   margin: 0.9em 0;
   padding: 4px 14px;
-  border-left: 3px solid var(--accent);
-  color: var(--text-muted);
+  border-left: 3px solid var(--term-accent);
+  color: var(--term-muted);
 }
 
 .md-preview ul,
@@ -3307,19 +3326,19 @@ body.is-project-dragging .tree-row.project {
 
 .md-preview th,
 .md-preview td {
-  border: 1px solid var(--border);
+  border: 1px solid var(--term-border);
   padding: 5px 12px;
   text-align: left;
 }
 
 .md-preview th {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--term-accent) 10%, var(--term-surface-raised));
   font-weight: 600;
 }
 
 .md-preview hr {
   border: none;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--term-border);
   margin: 1.5em 0;
 }
 
@@ -3327,9 +3346,9 @@ body.is-project-dragging .tree-row.project {
 .md-mermaid {
   margin: 0.7em 0;
   padding: 10px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--term-border);
   border-radius: 8px;
-  background: var(--bg-elevated);
+  background: var(--term-surface-raised);
   overflow-x: auto;
   text-align: center;
 }
@@ -3342,7 +3361,7 @@ body.is-project-dragging .tree-row.project {
 .md-mermaid-status {
   padding: 12px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--term-muted);
   text-align: center;
 }
 
@@ -3351,9 +3370,9 @@ body.is-project-dragging .tree-row.project {
 .flow-graph {
   margin: 0.7em 0;
   padding: 14px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--term-border);
   border-radius: 8px;
-  background: var(--bg-elevated);
+  background: var(--term-surface-raised);
   overflow-x: auto;
   text-align: center;
 }
@@ -3364,14 +3383,14 @@ body.is-project-dragging .tree-row.project {
 }
 
 .flow-node-shape {
-  fill: var(--accent-soft);
-  stroke: var(--accent);
+  fill: color-mix(in srgb, var(--term-accent) 13%, var(--term-surface-raised));
+  stroke: var(--term-accent);
   stroke-width: 1.5;
 }
 
 .flow-shape-decision {
-  fill: var(--amber-soft);
-  stroke: var(--amber);
+  fill: color-mix(in srgb, var(--term-yellow) 13%, var(--term-surface-raised));
+  stroke: var(--term-yellow);
 }
 
 .flow-sub-line {
@@ -3380,13 +3399,13 @@ body.is-project-dragging .tree-row.project {
 }
 
 .flow-node-label {
-  fill: var(--text);
+  fill: var(--term-heading);
   font: 13px / 1.5 var(--font-ui);
 }
 
 .flow-edge-path {
   fill: none;
-  stroke: var(--text-dim);
+  stroke: var(--term-muted);
   stroke-width: 1.6;
 }
 
@@ -3399,15 +3418,15 @@ body.is-project-dragging .tree-row.project {
 }
 
 .flow-arrow {
-  fill: var(--text-dim);
+  fill: var(--term-muted);
 }
 
 .flow-edge-label {
-  fill: var(--text-dim);
+  fill: var(--term-muted);
   font: 12px / 1.5 var(--font-ui);
   /* Panel-colored halo keeps labels readable where they cross edges. */
   paint-order: stroke;
-  stroke: var(--bg-elevated);
+  stroke: var(--term-surface-raised);
   stroke-width: 4px;
   stroke-linejoin: round;
 }
@@ -5135,6 +5154,266 @@ textarea:focus {
 :root[data-theme="light"] .theme-segmented {
   border-color: rgba(17, 18, 23, 0.06);
   background: #dcdcdc;
+}
+
+/* Terminal palette gallery: the previews use each real xterm palette while
+   the card chrome stays within the app theme. This separation lets users
+   compare colors without the selected terminal palette recoloring Settings. */
+.terminal-theme-setting {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: 4px 0 8px;
+  padding: 14px;
+  border: 1px solid var(--settings-border);
+  border-radius: 13px;
+  background: color-mix(
+    in srgb,
+    var(--settings-row) 54%,
+    var(--settings-surface)
+  );
+}
+
+.terminal-theme-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 11px;
+}
+
+.terminal-theme-heading > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.terminal-theme-heading label {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.terminal-theme-mode {
+  flex: none;
+  margin-top: 1px;
+  padding: 3px 7px;
+  border: 1px solid var(--settings-border);
+  border-radius: 999px;
+  background: var(--settings-control);
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.terminal-theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(184px, 1fr));
+  gap: 9px;
+}
+
+.terminal-theme-card {
+  position: relative;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+  border-radius: 11px;
+  background: color-mix(
+    in srgb,
+    var(--settings-control) 88%,
+    var(--settings-surface)
+  );
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.025) inset;
+  cursor: pointer;
+  transition:
+    transform 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    background 140ms ease;
+}
+
+.terminal-theme-card:hover {
+  border-color: color-mix(in srgb, var(--text) 20%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--settings-control) 72%,
+    var(--settings-hover)
+  );
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.14);
+  transform: translateY(-1px);
+}
+
+.terminal-theme-card.selected {
+  border-color: color-mix(in srgb, var(--accent) 78%, var(--text));
+  background: color-mix(in srgb, var(--accent-soft) 58%, var(--settings-control));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent),
+    0 9px 24px rgba(0, 0, 0, 0.16);
+}
+
+.settings-page .terminal-theme-card input.sr-only {
+  min-height: 0;
+  border: 0;
+  background: transparent;
+}
+
+.terminal-theme-card input:focus-visible + .terminal-theme-preview {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
+.terminal-theme-card:has(input:disabled) {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.terminal-theme-card:has(input:disabled):hover {
+  box-shadow: none;
+  transform: none;
+}
+
+.terminal-theme-preview {
+  position: relative;
+  display: flex;
+  height: 82px;
+  min-width: 0;
+  box-sizing: border-box;
+  flex-direction: column;
+  gap: 5px;
+  overflow: hidden;
+  padding: 9px 10px 8px;
+  border-radius: 7px;
+  box-shadow:
+    0 0 0 1px rgba(127, 127, 127, 0.18) inset,
+    0 6px 14px rgba(0, 0, 0, 0.14);
+  font: 9.5px / 1.25 var(--font-mono);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.terminal-theme-preview::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.055),
+    transparent 42%
+  );
+  pointer-events: none;
+}
+
+.terminal-theme-preview-bar {
+  display: flex;
+  gap: 4px;
+  height: 8px;
+  margin-bottom: 1px;
+}
+
+.terminal-theme-preview-bar > span {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+}
+
+.terminal-theme-preview-line {
+  display: block;
+  overflow: hidden;
+  text-overflow: clip;
+}
+
+.terminal-theme-swatches {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 3px;
+  height: 4px;
+  margin-top: auto;
+}
+
+.terminal-theme-swatches > span {
+  min-width: 0;
+  border-radius: 999px;
+  opacity: 0.92;
+}
+
+.terminal-theme-card-copy {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 4px 3px;
+}
+
+.terminal-theme-card-copy > span:first-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.terminal-theme-card-copy strong {
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.terminal-theme-card-copy small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 9.5px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.terminal-theme-check {
+  display: grid;
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+  border-radius: 999px;
+  color: transparent;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.terminal-theme-card.selected .terminal-theme-check {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+  box-shadow: 0 2px 7px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+:root[data-theme="light"] .terminal-theme-setting {
+  background: color-mix(in srgb, var(--settings-row) 72%, #ffffff);
+}
+
+:root[data-theme="light"] .terminal-theme-card {
+  border-color: rgba(17, 18, 23, 0.09);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.85) inset,
+    0 2px 7px rgba(17, 18, 23, 0.045);
+}
+
+:root[data-theme="light"] .terminal-theme-card:hover {
+  border-color: rgba(17, 18, 23, 0.18);
+  box-shadow: 0 8px 22px rgba(17, 18, 23, 0.1);
+}
+
+:root[data-theme="light"] .terminal-theme-card.selected {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 15%, transparent),
+    0 8px 20px rgba(17, 18, 23, 0.09);
 }
 
 /* Tables (diag hosts, secrets, timeline) */

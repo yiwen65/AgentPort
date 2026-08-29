@@ -5,82 +5,59 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useStore } from "../store";
+import { useStore, type EffectiveTheme } from "../store";
 import { parseFlowchart } from "../flowchart";
+import { getTerminalPalette } from "../terminalThemes";
+import type { TerminalThemeId } from "../types";
 import FlowGraph from "./FlowGraph";
 
 let renderSeq = 0;
 
-/**
- * Mermaid's built-in "dark" theme is near-black fills with black arrows —
- * unreadable on our surface. Instead, drive the "base" theme from the same
- * One Dark Pro / One Light Pro accent palette the terminal page uses:
- * translucent accent fills, accent borders, readable edge and text colors.
- */
-function themeVariablesFor(theme: "dark" | "light"): Record<string, string> {
-  if (theme === "light") {
-    return {
-      background: "transparent",
-      primaryColor: "rgba(0, 122, 255, 0.08)",
-      primaryBorderColor: "#007aff",
-      primaryTextColor: "#111217",
-      lineColor: "#5b6472",
-      secondaryColor: "rgba(52, 199, 89, 0.1)",
-      secondaryBorderColor: "#248a3d",
-      secondaryTextColor: "#111217",
-      tertiaryColor: "rgba(255, 149, 0, 0.12)",
-      tertiaryBorderColor: "#c93400",
-      tertiaryTextColor: "#111217",
-      edgeLabelBackground: "#fafafa",
-      clusterBkg: "rgba(0, 122, 255, 0.05)",
-      clusterBorder: "rgba(17, 18, 23, 0.2)",
-      titleColor: "#111217",
-      noteBkgColor: "rgba(255, 149, 0, 0.14)",
-      noteBorderColor: "#c93400",
-      noteTextColor: "#111217",
-      actorBkg: "rgba(0, 122, 255, 0.08)",
-      actorBorder: "#007aff",
-      actorTextColor: "#111217",
-      actorLineColor: "#5b6472",
-      signalColor: "#5b6472",
-      signalTextColor: "#111217",
-      labelBoxBkgColor: "rgba(0, 122, 255, 0.08)",
-      labelBoxBorderColor: "#007aff",
-      labelTextColor: "#111217",
-      loopTextColor: "#111217",
-      fontFamily: "inherit",
-      fontSize: "13px",
-    };
-  }
+/** Mermaid's built-in dark theme can produce black arrows on dark fills.
+ * Drive its base theme from the same selected palette as xterm instead. */
+function withAlpha(color: string, alpha: number): string {
+  if (!/^#[0-9a-f]{6}$/i.test(color)) return color;
+  const alphaHex = Math.round(alpha * 255)
+    .toString(16)
+    .padStart(2, "0");
+  return `${color}${alphaHex}`;
+}
+
+function themeVariablesFor(
+  terminalTheme: TerminalThemeId,
+  mode: EffectiveTheme,
+): Record<string, string> {
+  const { xterm, workspace } = getTerminalPalette(terminalTheme, mode);
+  const text = workspace.headingForeground;
   return {
     background: "transparent",
-    primaryColor: "rgba(107, 140, 255, 0.16)",
-    primaryBorderColor: "#6b8cff",
-    primaryTextColor: "#e8ecf4",
-    lineColor: "#8a97b8",
-    secondaryColor: "rgba(97, 218, 178, 0.13)",
-    secondaryBorderColor: "#61dab2",
-    secondaryTextColor: "#e8ecf4",
-    tertiaryColor: "rgba(229, 192, 123, 0.15)",
-    tertiaryBorderColor: "#e5c07b",
-    tertiaryTextColor: "#e8ecf4",
-    edgeLabelBackground: "#282c34",
-    clusterBkg: "rgba(107, 140, 255, 0.06)",
-    clusterBorder: "#4a5165",
-    titleColor: "#e8ecf4",
-    noteBkgColor: "rgba(229, 192, 123, 0.16)",
-    noteBorderColor: "#e5c07b",
-    noteTextColor: "#e8ecf4",
-    actorBkg: "rgba(107, 140, 255, 0.16)",
-    actorBorder: "#6b8cff",
-    actorTextColor: "#e8ecf4",
-    actorLineColor: "#8a97b8",
-    signalColor: "#8a97b8",
-    signalTextColor: "#e8ecf4",
-    labelBoxBkgColor: "rgba(107, 140, 255, 0.16)",
-    labelBoxBorderColor: "#6b8cff",
-    labelTextColor: "#e8ecf4",
-    loopTextColor: "#e8ecf4",
+    primaryColor: withAlpha(xterm.blue, 0.14),
+    primaryBorderColor: xterm.blue,
+    primaryTextColor: text,
+    lineColor: workspace.mutedForeground,
+    secondaryColor: withAlpha(xterm.green, 0.13),
+    secondaryBorderColor: xterm.green,
+    secondaryTextColor: text,
+    tertiaryColor: withAlpha(xterm.yellow, 0.14),
+    tertiaryBorderColor: xterm.yellow,
+    tertiaryTextColor: text,
+    edgeLabelBackground: xterm.background,
+    clusterBkg: withAlpha(xterm.blue, 0.06),
+    clusterBorder: workspace.border,
+    titleColor: text,
+    noteBkgColor: withAlpha(xterm.yellow, 0.15),
+    noteBorderColor: xterm.yellow,
+    noteTextColor: text,
+    actorBkg: withAlpha(xterm.blue, 0.14),
+    actorBorder: xterm.blue,
+    actorTextColor: text,
+    actorLineColor: workspace.mutedForeground,
+    signalColor: workspace.mutedForeground,
+    signalTextColor: text,
+    labelBoxBkgColor: withAlpha(xterm.blue, 0.14),
+    labelBoxBorderColor: xterm.blue,
+    labelTextColor: text,
+    loopTextColor: text,
     fontFamily: "inherit",
     fontSize: "13px",
   };
@@ -89,6 +66,9 @@ function themeVariablesFor(theme: "dark" | "light"): Record<string, string> {
 export default function MermaidBlock({ source }: { source: string }) {
   const { t } = useTranslation("shell");
   const theme = useStore((state) => state.themeEffective);
+  const terminalTheme = useStore(
+    (state) => state.settings?.terminalTheme ?? "one",
+  );
   const [svg, setSvg] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
@@ -108,7 +88,7 @@ export default function MermaidBlock({ source }: { source: string }) {
         mermaid.initialize({
           startOnLoad: false,
           theme: "base",
-          themeVariables: themeVariablesFor(theme),
+          themeVariables: themeVariablesFor(terminalTheme, theme),
           flowchart: { curve: "basis" },
           // Never render raw HTML from labels — documents are untrusted.
           securityLevel: "strict",
@@ -125,7 +105,7 @@ export default function MermaidBlock({ source }: { source: string }) {
     return () => {
       stale = true;
     };
-  }, [source, theme, flowGraph]);
+  }, [source, theme, terminalTheme, flowGraph]);
 
   if (flowGraph) {
     return <FlowGraph graph={flowGraph} />;
