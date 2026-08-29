@@ -169,6 +169,14 @@ describe("DocumentPanel", () => {
     });
   });
 
+  it("keeps an accessible name and tooltip on the icon-only preview tab", async () => {
+    render(<DocumentPanel />);
+    await screen.findByText("原始文本");
+    const tab = screen.getByRole("tab", { name: "预览" });
+    expect(tab.getAttribute("data-tip")).toBe("预览");
+    expect(tab.querySelector("svg")).not.toBeNull();
+  });
+
   it("does not jump back to a path:line target after saving", async () => {
     setState({
       openDocument: { path: DEMO_DOC.path, line: 1 },

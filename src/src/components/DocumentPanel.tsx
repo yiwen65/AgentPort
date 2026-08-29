@@ -32,6 +32,23 @@ function fileName(path: string): string {
   return path.split("/").pop() ?? path;
 }
 
+/* Compact preview-mode glyph: the mode tab strip shares the header with the
+   file name and action buttons, so the wide "Preview" label truncated on
+   narrow panels. The eye reads as "rendered view" at any width. */
+function IconEye() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M1.7 8s1.9-3.9 6.3-3.9S14.3 8 14.3 8 12.4 11.9 8 11.9 1.7 8 1.7 8Z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+      />
+      <circle cx="8" cy="8" r="1.9" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
 /** Friendly empty state for files the viewer cannot display. Binary files
  * (PDF, images, archives, …) get an explanation plus actions to open the
  * file with the system default app or reveal it in the file manager. */
@@ -386,10 +403,12 @@ export default function DocumentPanel() {
           <button
             role="tab"
             aria-selected={mode === "preview"}
-            className={`doc-mode ${mode === "preview" ? "active" : ""}`}
+            className={`doc-mode doc-mode-icon ${mode === "preview" ? "active" : ""}`}
+            data-tip={t("ui.document.preview")}
+            aria-label={t("ui.document.preview")}
             onClick={() => setMode("preview")}
           >
-            {t("ui.document.preview")}
+            <IconEye />
           </button>
         </div>
         <span className="spacer" />

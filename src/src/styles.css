@@ -3087,6 +3087,19 @@ body.is-resizing-split .doc-panel-resize::after {
   color: var(--term-heading);
 }
 
+/* Icon variant of the mode tab (preview eye): square-ish padding, same
+   height as the text tab, never truncates on narrow panels. */
+.doc-mode-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 7px;
+}
+
+.doc-mode-icon svg {
+  display: block;
+}
+
 .doc-panel-header .spacer {
   flex: 1;
 }
