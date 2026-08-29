@@ -314,7 +314,7 @@ describe("DocumentPanel", () => {
 
     expect(insertMock).toHaveBeenCalledWith(
       "ses_quote",
-      `@${DEMO_DOC.path}#3\n正文\n`,
+      `${DEMO_DOC.path}:3 `,
     );
   });
 });

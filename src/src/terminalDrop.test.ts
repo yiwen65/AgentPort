@@ -97,49 +97,41 @@ describe("computeLineRange", () => {
 });
 
 describe("formatSelectionReference", () => {
-  it("emits an @path:Lx locator plus the selected text for agents", () => {
+  it("emits a path:line locator without pasting the selected text", () => {
     expect(
       formatSelectionReference({
         path: "/Users/w/docs/报告.md",
         startLine: 3,
         endLine: 3,
-        text: "  第三章内容  ",
-        adapter: "codex",
       }),
-    ).toBe("@/Users/w/docs/报告.md#3\n第三章内容\n");
+    ).toBe("/Users/w/docs/报告.md:3 ");
   });
 
-  it("collapses ranges and missing line info", () => {
+  it("uses start-end for ranges and collapses single-line ranges", () => {
     expect(
       formatSelectionReference({
         path: "/a/b.md",
         startLine: 2,
         endLine: 5,
-        text: "片段",
-        adapter: "claude",
       }),
-    ).toBe("@/a/b.md#2-5\n片段\n");
+    ).toBe("/a/b.md:2-5 ");
+    expect(
+      formatSelectionReference({
+        path: "/a/b.md",
+        startLine: 2,
+        endLine: 2,
+      }),
+    ).toBe("/a/b.md:2 ");
+  });
+
+  it("falls back to the bare path when line info is missing (preview)", () => {
     expect(
       formatSelectionReference({
         path: "/a/b.md",
         startLine: null,
         endLine: null,
-        text: "片段",
-        adapter: "claude",
       }),
-    ).toBe("@/a/b.md\n片段\n");
-  });
-
-  it("keeps shell sessions to a single-line locator", () => {
-    expect(
-      formatSelectionReference({
-        path: "/a/b.md",
-        startLine: 2,
-        endLine: 3,
-        text: "多行\n文本",
-        adapter: "shell",
-      }),
-    ).toBe("@/a/b.md#2-3 ");
+    ).toBe("/a/b.md ");
   });
 
 });

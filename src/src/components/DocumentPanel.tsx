@@ -331,8 +331,6 @@ export default function DocumentPanel() {
       path: doc?.path ?? target?.path ?? "",
       startLine: selection.startLine,
       endLine: selection.endLine,
-      text: selection.text,
-      adapter: activeSession.adapter,
     });
     if (!insertTextIntoTerminal(activeSession.id, text)) {
       toast(t("ui.document.dropFailed"), "error");

@@ -146,16 +146,14 @@ export function formatSelectionReference(opts: {
   path: string;
   startLine: number | null;
   endLine: number | null;
-  text: string;
-  adapter: string;
 }): string {
+  // Reference-only: the agent opens the file itself, so quoting never pastes
+  // the selected text. `path:10-12` for a range, `path:10` for one line,
+  // bare `path` when the selection has no line info (preview).
   const location = opts.startLine
-    ? `#${opts.startLine}${
+    ? `:${opts.startLine}${
         opts.endLine && opts.endLine !== opts.startLine ? `-${opts.endLine}` : ""
       }`
     : "";
-  const reference = `@${opts.path}${location}`;
-  if (opts.adapter === "shell") return `${reference} `;
-  const body = opts.text.replace(/^\s+/, "").replace(/\s+$/, "");
-  return body ? `${reference}\n${body}\n` : `${reference} `;
+  return `${opts.path}${location} `;
 }
