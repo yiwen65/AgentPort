@@ -552,6 +552,7 @@ export interface GitCheckoutDescriptor {
   ongoingOperation: string | null;
   hasRemote: boolean;
   remote: string | null;
+  remoteUrl: string | null;
   upstream: string | null;
   ahead: number;
   behind: number;

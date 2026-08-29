@@ -192,7 +192,18 @@
     "otherParent": "Parent {{count}}",
     "allFiles": "Full commit diff",
     "files": "Files ({{count}})",
-    "message": "Full commit message"
+    "message": "Full commit message",
+    "preview": {
+      "filesChanged_one": "{{count}} file changed",
+      "filesChanged_other": "{{count}} files changed",
+      "insertions": "{{count}} insertions(+)",
+      "deletions": "{{count}} deletions(-)",
+      "copyOid": "Copy commit ID",
+      "copied": "Copied",
+      "openRemote": "Open on {{host}}",
+      "statsLoading": "Loading commit stats…",
+      "statsUnavailable": "Commit stats unavailable"
+    }
   },
   "commit": {
     "title": "Commit",

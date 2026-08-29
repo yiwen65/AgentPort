@@ -2265,6 +2265,130 @@ body.is-project-dragging .tree-row.project {
   margin-top: 8px;
 }
 
+.git-commit-hover-anchor {
+  position: fixed;
+  /* Below modal backdrops (1100) but above context menus and panels. */
+  z-index: 1000;
+}
+
+.git-commit-hover-card {
+  width: 360px;
+  max-width: calc(100vw - 24px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--git-surface-raised, var(--bg-hover));
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.38);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.git-commit-hover-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.git-commit-hover-avatar {
+  display: inline-flex;
+  color: var(--text-dim);
+}
+
+.git-commit-hover-author {
+  color: var(--accent-text);
+  white-space: nowrap;
+}
+
+.git-commit-hover-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-commit-hover-subject {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.git-commit-hover-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  color: var(--text-dim);
+}
+
+.git-commit-hover-stats .git-stat-add {
+  color: var(--green);
+}
+
+.git-commit-hover-stats .git-stat-del {
+  color: var(--red);
+}
+
+.git-commit-hover-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.git-commit-hover-oid {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent-text);
+}
+
+.git-commit-hover-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.git-commit-hover-icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.git-commit-hover-divider {
+  width: 1px;
+  height: 12px;
+  background: var(--border);
+}
+
+.git-commit-hover-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.git-commit-hover-link:hover {
+  text-decoration: underline;
+}
+
+.git-commit-hover-link svg {
+  color: var(--text);
+}
+
 .git-commit-detail-panel {
   padding-bottom: 32px;
 }

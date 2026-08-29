@@ -35,6 +35,7 @@ const context: GitCheckoutDescriptor = {
   ongoingOperation: null,
   hasRemote: true,
   remote: "origin",
+  remoteUrl: "git@github.com:mock/project.git",
   upstream: "origin/feature/mock",
   ahead: 2,
   behind: 0,

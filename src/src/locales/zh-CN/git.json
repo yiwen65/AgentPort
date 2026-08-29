@@ -192,7 +192,18 @@
     "otherParent": "第 {{count}} 父提交",
     "allFiles": "完整提交 Diff",
     "files": "文件（{{count}}）",
-    "message": "完整提交信息"
+    "message": "完整提交信息",
+    "preview": {
+      "filesChanged_one": "{{count}} 个文件变更",
+      "filesChanged_other": "{{count}} 个文件变更",
+      "insertions": "{{count}} 行新增(+)",
+      "deletions": "{{count}} 行删除(-)",
+      "copyOid": "复制提交 ID",
+      "copied": "已复制",
+      "openRemote": "在 {{host}} 上打开",
+      "statsLoading": "正在读取提交统计…",
+      "statsUnavailable": "无法读取提交统计"
+    }
   },
   "commit": {
     "title": "提交",

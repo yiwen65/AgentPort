@@ -60,6 +60,7 @@ pub struct GitCheckoutDescriptor {
     pub ongoing_operation: Option<String>,
     pub has_remote: bool,
     pub remote: Option<String>,
+    pub remote_url: Option<String>,
     pub upstream: Option<String>,
     pub ahead: usize,
     pub behind: usize,
@@ -411,6 +412,7 @@ impl<'a> GitWorkspaceManager<'a> {
                 .flatten(),
             has_remote: remote.has_remote,
             remote: remote.remote,
+            remote_url: remote.remote_url,
             upstream: remote.upstream,
             ahead: remote.ahead,
             behind: remote.behind,
@@ -448,6 +450,7 @@ impl<'a> GitWorkspaceManager<'a> {
 struct RemoteState {
     has_remote: bool,
     remote: Option<String>,
+    remote_url: Option<String>,
     upstream: Option<String>,
     ahead: usize,
     behind: usize,
@@ -516,6 +519,14 @@ fn remote_state(runner: &GitRunner, checkout: &Path, branch: Option<&str>) -> Re
                 .cloned()
         })
         .or_else(|| remotes.first().cloned());
+    let remote_url = remote.as_deref().and_then(|name| {
+        runner
+            .run_read_only(Some(checkout), ["remote", "get-url", name])
+            .ok()
+            .filter(|output| output.success())
+            .map(|output| output.stdout_lossy().trim().to_owned())
+            .filter(|value| !value.is_empty())
+    });
     let upstream = branch.and_then(|branch| {
         runner
             .run_read_only(
@@ -559,6 +570,7 @@ fn remote_state(runner: &GitRunner, checkout: &Path, branch: Option<&str>) -> Re
     RemoteState {
         has_remote,
         remote,
+        remote_url,
         upstream,
         ahead,
         behind,

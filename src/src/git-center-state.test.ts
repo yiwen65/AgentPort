@@ -74,6 +74,7 @@ function context(id: string, projectId = "project-1"): GitCheckoutDescriptor {
     ongoingOperation: null,
     hasRemote: true,
     remote: "origin",
+    remoteUrl: null,
     upstream: "origin/main",
     ahead: 0,
     behind: 0,

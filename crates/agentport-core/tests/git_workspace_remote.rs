@@ -23,6 +23,32 @@ fn git(cwd: &std::path::Path, args: &[&str]) -> String {
 }
 
 #[test]
+fn descriptor_exposes_the_configured_remote_url() {
+    let fixture = MockRepo::new();
+    fixture.git(
+        fixture.root(),
+        &["remote", "add", "origin", "git@github.com:owner/repo.git"],
+    );
+
+    let db = Db::open_memory().unwrap();
+    fixture.add_project(&db, "project-a");
+    let locator = GitContextLocator::ProjectMain {
+        project_id: "project-a".into(),
+    };
+    let manager = GitWorkspaceManager::new(&db);
+
+    let context = manager.resolve(&locator).unwrap();
+    assert_eq!(
+        context.remote_url.as_deref(),
+        Some("git@github.com:owner/repo.git")
+    );
+
+    fixture.git(fixture.root(), &["remote", "remove", "origin"]);
+    let without_remote = manager.resolve(&locator).unwrap();
+    assert_eq!(without_remote.remote_url, None);
+}
+
+#[test]
 fn remote_status_tracks_ahead_and_push_updates_the_upstream() {
     let fixture = MockRepo::new();
     let bare = fixture.workspace().join("origin.git");
