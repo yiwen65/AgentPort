@@ -10,11 +10,10 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use agentport_core::models::AgentTransport;
 use agentport_core::protocol::HostConfig;
-use agentport_core::state::Observation;
 use serde_json::Value;
 use tracing::warn;
 
@@ -24,18 +23,25 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_JSONL_RECORD_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SNAPSHOT_TAIL_BYTES: usize = MAX_JSONL_RECORD_BYTES + 64 * 1024;
 const MAX_RECORDS_PER_POLL: usize = 256;
+const MAX_BYTES_PER_POLL: usize = MAX_JSONL_RECORD_BYTES + 1;
+
+#[derive(Clone, Default)]
+struct JsonlCursor {
+    offset: u64,
+    draining_oversized: bool,
+}
 
 #[derive(Clone)]
 struct FileCursor {
     path: PathBuf,
-    offset: u64,
+    cursor: JsonlCursor,
 }
 
 enum Source {
     Disabled,
     Pi {
         directory: PathBuf,
-        offsets: HashMap<PathBuf, u64>,
+        offsets: HashMap<PathBuf, JsonlCursor>,
     },
     Kimi {
         home: PathBuf,
@@ -46,7 +52,7 @@ enum Source {
 
 pub(crate) struct Snapshot {
     source: Source,
-    inherited_pi_turn_complete: bool,
+    inherited_turn_complete: bool,
 }
 
 impl Snapshot {
@@ -55,35 +61,55 @@ impl Snapshot {
     /// exact resumed Pi transcript is retained only as an idle-timer hint; it
     /// is not replayed as a new status event.
     pub(crate) fn capture(cfg: &HostConfig) -> Self {
-        let mut inherited_pi_turn_complete = false;
+        let mut inherited_turn_complete = false;
         let source = match (cfg.adapter_type.as_str(), cfg.transport) {
-            ("pi", AgentTransport::Pty) => {
+            ("pi", transport) => {
                 let directory = PathBuf::from(&cfg.session_dir).join("pi");
                 let offsets = jsonl_offsets(&directory);
-                inherited_pi_turn_complete = cfg
+                inherited_turn_complete = cfg
                     .agent_session_id_hint
                     .as_deref()
                     .is_some_and(|id| pi_transcript_has_completed_turn(&directory, id));
-                Source::Pi { directory, offsets }
+                if transport == AgentTransport::Pty {
+                    Source::Pi { directory, offsets }
+                } else {
+                    Source::Disabled
+                }
+            }
+            ("codex", AgentTransport::Pty) => {
+                inherited_turn_complete = cfg.agent_session_id_hint.as_deref().is_some_and(|id| {
+                    codex_home(cfg).is_some_and(|home| {
+                        codex_transcript_has_completed_turn(&home.join("sessions"), id, &cfg.cwd)
+                    })
+                });
+                Source::Disabled
             }
             ("kimi", AgentTransport::Pty) => match kimi_home(cfg) {
-                Some(home) => Source::Kimi {
-                    initial_sessions: kimi_sessions(&home, &cfg.cwd),
-                    home,
-                    cwd: cfg.cwd.clone(),
-                },
+                Some(home) => {
+                    let initial_sessions = kimi_sessions(&home, &cfg.cwd);
+                    inherited_turn_complete = cfg
+                        .agent_session_id_hint
+                        .as_deref()
+                        .and_then(|id| initial_sessions.get(id))
+                        .is_some_and(|cursor| latest_kimi_wire_event_is_turn_end(&cursor.path));
+                    Source::Kimi {
+                        initial_sessions,
+                        home,
+                        cwd: cfg.cwd.clone(),
+                    }
+                }
                 None => Source::Disabled,
             },
             _ => Source::Disabled,
         };
         Self {
             source,
-            inherited_pi_turn_complete,
+            inherited_turn_complete,
         }
     }
 
-    pub(crate) fn inherited_pi_turn_complete(&self) -> bool {
-        self.inherited_pi_turn_complete
+    pub(crate) fn inherited_turn_complete(&self) -> bool {
+        self.inherited_turn_complete
     }
 }
 
@@ -105,7 +131,7 @@ pub(crate) fn spawn(snapshot: Snapshot, shared: Arc<Shared>, tx: mpsc::Sender<Ho
 
 fn follow_pi(
     directory: PathBuf,
-    mut offsets: HashMap<PathBuf, u64>,
+    mut offsets: HashMap<PathBuf, JsonlCursor>,
     shared: Arc<Shared>,
     tx: mpsc::Sender<HostMsg>,
 ) {
@@ -119,12 +145,17 @@ fn follow_pi(
             if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
                 continue;
             }
-            let offset = offsets.entry(path.clone()).or_insert(0);
-            follow_jsonl(&path, offset, |event| {
+            let cursor = offsets.entry(path.clone()).or_default();
+            follow_jsonl(&path, cursor, |event, completion_input_boundary| {
                 if is_pi_turn_end(event) {
-                    let _ = tx.send(HostMsg::Obs(Observation::AdapterTurnEnd {
+                    let _ = tx.send(HostMsg::SemanticCompletion {
                         adapter: "pi".into(),
-                    }));
+                        completion_input_boundary,
+                    });
+                } else if is_pi_turn_start(event) {
+                    let _ = tx.send(HostMsg::SemanticActivity {
+                        adapter: "pi".into(),
+                    });
                 }
             });
         }
@@ -158,16 +189,30 @@ fn follow_kimi(
         }
 
         if let Some(cursor) = &mut cursor {
-            follow_jsonl(&cursor.path, &mut cursor.offset, |event| {
-                if is_kimi_turn_end(event) {
-                    let _ = tx.send(HostMsg::Obs(Observation::AdapterTurnEnd {
-                        adapter: "kimi".into(),
-                    }));
-                }
-            });
+            follow_jsonl(
+                &cursor.path,
+                &mut cursor.cursor,
+                |event, completion_input_boundary| {
+                    if is_kimi_turn_end(event) {
+                        let _ = tx.send(HostMsg::SemanticCompletion {
+                            adapter: "kimi".into(),
+                            completion_input_boundary,
+                        });
+                    } else if is_kimi_turn_start(event) {
+                        let _ = tx.send(HostMsg::SemanticActivity {
+                            adapter: "kimi".into(),
+                        });
+                    }
+                },
+            );
         }
         std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+fn is_pi_turn_start(event: &Value) -> bool {
+    event.get("type").and_then(Value::as_str) == Some("message")
+        && event.pointer("/message/role").and_then(Value::as_str) == Some("user")
 }
 
 fn is_pi_turn_end(event: &Value) -> bool {
@@ -176,44 +221,127 @@ fn is_pi_turn_end(event: &Value) -> bool {
         && event.pointer("/message/stopReason").and_then(Value::as_str) == Some("stop")
 }
 
+fn is_kimi_turn_start(event: &Value) -> bool {
+    event.get("type").and_then(Value::as_str) == Some("context.append_loop_event")
+        && event.pointer("/event/type").and_then(Value::as_str) == Some("step.begin")
+}
+
 fn is_kimi_turn_end(event: &Value) -> bool {
     event.get("type").and_then(Value::as_str) == Some("context.append_loop_event")
         && event.pointer("/event/type").and_then(Value::as_str) == Some("step.end")
         && event.pointer("/event/finishReason").and_then(Value::as_str) == Some("end_turn")
 }
 
-fn follow_jsonl(path: &Path, offset: &mut u64, mut on_event: impl FnMut(&Value)) {
+struct BoundedRecordRead {
+    consumed: usize,
+    complete: bool,
+    oversized: bool,
+}
+
+fn read_bounded_jsonl_record<R: BufRead>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+    already_oversized: bool,
+    byte_budget: usize,
+) -> std::io::Result<Option<BoundedRecordRead>> {
+    line.clear();
+    let mut consumed = 0usize;
+    let mut oversized = already_oversized;
+    while consumed < byte_budget {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            break;
+        }
+        let remaining_budget = byte_budget - consumed;
+        let available = &available[..available.len().min(remaining_budget)];
+        let take = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if !oversized {
+            let remaining = MAX_JSONL_RECORD_BYTES.saturating_sub(line.len());
+            let retained = take.min(remaining);
+            line.extend_from_slice(&available[..retained]);
+            oversized = retained < take;
+        }
+        let complete = available[..take].last() == Some(&b'\n');
+        reader.consume(take);
+        consumed = consumed.saturating_add(take);
+        if complete {
+            return Ok(Some(BoundedRecordRead {
+                consumed,
+                complete: true,
+                oversized,
+            }));
+        }
+    }
+    Ok((consumed > 0).then_some(BoundedRecordRead {
+        consumed,
+        complete: false,
+        oversized,
+    }))
+}
+
+fn follow_jsonl(
+    path: &Path,
+    cursor: &mut JsonlCursor,
+    mut on_event: impl FnMut(&Value, Option<SystemTime>),
+) {
     let Ok(metadata) = fs::metadata(path) else {
         return;
     };
-    if metadata.len() < *offset {
-        *offset = 0;
+    if metadata.len() < cursor.offset {
+        *cursor = JsonlCursor::default();
     }
-    if metadata.len() == *offset {
+    if metadata.len() == cursor.offset {
         return;
     }
     let Ok(mut file) = File::open(path) else {
         return;
     };
-    if file.seek(SeekFrom::Start(*offset)).is_err() {
+    if file.seek(SeekFrom::Start(cursor.offset)).is_err() {
         return;
     }
-    let mut reader = BufReader::new(file);
+    let observed_at = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    // Freeze this poll at the metadata boundary so a later append cannot make
+    // an older completion look newer than intervening user input.
+    let mut reader = BufReader::new(file).take(metadata.len() - cursor.offset);
+    let mut line = Vec::new();
+    let mut remaining_budget = MAX_BYTES_PER_POLL;
     for _ in 0..MAX_RECORDS_PER_POLL {
-        let mut line = Vec::new();
-        let Ok(read) = reader.read_until(b'\n', &mut line) else {
-            return;
-        };
-        if read == 0 || !line.ends_with(b"\n") {
+        if remaining_budget == 0 {
             return;
         }
-        *offset = offset.saturating_add(read as u64);
-        if line.len() > MAX_JSONL_RECORD_BYTES {
-            warn!(path = %path.display(), bytes = line.len(), "semantic JSONL record exceeds parse limit");
+        let Ok(record) = read_bounded_jsonl_record(
+            &mut reader,
+            &mut line,
+            cursor.draining_oversized,
+            remaining_budget,
+        ) else {
+            return;
+        };
+        let Some(record) = record else {
+            return;
+        };
+        remaining_budget = remaining_budget.saturating_sub(record.consumed);
+        if !record.complete {
+            if record.oversized {
+                cursor.offset = cursor.offset.saturating_add(record.consumed as u64);
+                cursor.draining_oversized = true;
+            }
+            return;
+        }
+
+        cursor.offset = cursor.offset.saturating_add(record.consumed as u64);
+        cursor.draining_oversized = false;
+        if record.oversized {
+            warn!(path = %path.display(), bytes = record.consumed, "semantic JSONL record exceeds parse limit");
             continue;
         }
         if let Ok(event) = serde_json::from_slice::<Value>(&line) {
-            on_event(&event);
+            let completion_input_boundary =
+                (cursor.offset == metadata.len()).then_some(observed_at);
+            on_event(&event, completion_input_boundary);
         }
     }
 }
@@ -225,12 +353,16 @@ fn pi_transcript_has_completed_turn(directory: &Path, session_id: &str) -> bool 
     let Ok(entries) = fs::read_dir(directory) else {
         return false;
     };
-    entries.flatten().any(|entry| {
+    let mut matches = entries.flatten().filter_map(|entry| {
         let path = entry.path();
-        path.extension().and_then(|value| value.to_str()) == Some("jsonl")
-            && pi_transcript_session_id(&path).as_deref() == Some(session_id)
-            && latest_pi_message_is_turn_end(&path)
-    })
+        (path.extension().and_then(|value| value.to_str()) == Some("jsonl")
+            && pi_transcript_session_id(&path).as_deref() == Some(session_id))
+        .then_some(path)
+    });
+    let Some(path) = matches.next() else {
+        return false;
+    };
+    matches.next().is_none() && latest_pi_message_is_turn_end(&path)
 }
 
 fn pi_transcript_session_id(path: &Path) -> Option<String> {
@@ -249,49 +381,155 @@ fn pi_transcript_session_id(path: &Path) -> Option<String> {
 }
 
 fn latest_pi_message_is_turn_end(path: &Path) -> bool {
+    latest_bounded_event(path, |event| {
+        event.get("type").and_then(Value::as_str) == Some("message")
+    })
+    .is_some_and(|event| is_pi_turn_end(&event))
+}
+
+fn latest_kimi_wire_event_is_turn_end(path: &Path) -> bool {
+    latest_bounded_event(path, |event| {
+        event.get("type").and_then(Value::as_str) == Some("context.append_loop_event")
+    })
+    .is_some_and(|event| is_kimi_turn_end(&event))
+}
+
+fn latest_bounded_event(path: &Path, mut relevant: impl FnMut(&Value) -> bool) -> Option<Value> {
     let Ok(mut file) = File::open(path) else {
-        return false;
+        return None;
     };
     let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
-        return false;
+        return None;
     };
     let start = length.saturating_sub(MAX_SNAPSHOT_TAIL_BYTES as u64);
     if file.seek(SeekFrom::Start(start)).is_err() {
-        return false;
+        return None;
     }
     let mut tail = Vec::with_capacity((length - start) as usize);
     if file.read_to_end(&mut tail).is_err() {
-        return false;
+        return None;
     }
     if start > 0 {
-        let Some(first_newline) = tail.iter().position(|byte| *byte == b'\n') else {
-            return false;
-        };
+        let first_newline = tail.iter().position(|byte| *byte == b'\n')?;
         tail.drain(..=first_newline);
     }
-    // Any partial or malformed newer record makes the inherited state
-    // uncertain. Never arm cleanup from an older completed turn in that case.
+    // Any partial or malformed newer record makes inherited state uncertain.
     if !tail.ends_with(b"\n") {
-        return false;
+        return None;
     }
     for line in tail.split(|byte| *byte == b'\n').rev() {
         if line.is_empty() {
             continue;
         }
         if line.len() > MAX_JSONL_RECORD_BYTES {
-            return false;
+            return None;
         }
-        let Ok(event) = serde_json::from_slice::<Value>(line) else {
+        let event = serde_json::from_slice::<Value>(line).ok()?;
+        if relevant(&event) {
+            return Some(event);
+        }
+    }
+    None
+}
+
+fn codex_home(cfg: &HostConfig) -> Option<PathBuf> {
+    cfg.env
+        .iter()
+        .rev()
+        .find_map(|(name, value)| (name == "CODEX_HOME").then_some(PathBuf::from(value)))
+        .or_else(|| std::env::var_os("CODEX_HOME").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
+}
+
+fn codex_transcript_has_completed_turn(root: &Path, id: &str, cwd: &str) -> bool {
+    let mut candidates = Vec::new();
+    let mut visited = 0;
+    collect_codex_candidates(root, id, 6, &mut visited, &mut candidates);
+    let matches = candidates
+        .into_iter()
+        .filter(|path| codex_transcript_matches(path, id, cwd))
+        .collect::<Vec<_>>();
+    matches.len() == 1 && latest_codex_event_is_turn_complete(&matches[0])
+}
+
+fn collect_codex_candidates(
+    root: &Path,
+    id: &str,
+    depth: usize,
+    visited: &mut usize,
+    output: &mut Vec<PathBuf>,
+) {
+    const MAX_VISITED: usize = 20_000;
+    if depth == 0 || *visited >= MAX_VISITED {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if *visited >= MAX_VISITED {
+            return;
+        }
+        *visited += 1;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_codex_candidates(&path, id, depth - 1, visited, output);
+        } else if path.extension().and_then(|value| value.to_str()) == Some("jsonl")
+            && path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.contains(id))
+        {
+            output.push(path);
+        }
+    }
+}
+
+fn codex_transcript_matches(path: &Path, id: &str, cwd: &str) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    let mut reader = BufReader::new(file);
+    for _ in 0..32 {
+        let mut line = Vec::new();
+        let Ok(read) = reader
+            .by_ref()
+            .take((MAX_JSONL_RECORD_BYTES + 1) as u64)
+            .read_until(b'\n', &mut line)
+        else {
             return false;
         };
-        if event.get("type").and_then(Value::as_str) == Some("message") {
-            return is_pi_turn_end(&event);
+        if read == 0 || !line.ends_with(b"\n") || line.len() > MAX_JSONL_RECORD_BYTES {
+            return false;
+        }
+        let Ok(event) = serde_json::from_slice::<Value>(&line) else {
+            continue;
+        };
+        if event.get("type").and_then(Value::as_str) == Some("session_meta") {
+            return event.pointer("/payload/id").and_then(Value::as_str) == Some(id)
+                && event
+                    .pointer("/payload/cwd")
+                    .and_then(Value::as_str)
+                    .is_none_or(|recorded| recorded == cwd);
         }
     }
     false
 }
 
-fn jsonl_offsets(directory: &Path) -> HashMap<PathBuf, u64> {
+fn latest_codex_event_is_turn_complete(path: &Path) -> bool {
+    latest_bounded_event(path, |event| {
+        event.get("type").and_then(Value::as_str) == Some("event_msg")
+            && matches!(
+                event.pointer("/payload/type").and_then(Value::as_str),
+                Some("task_started" | "task_complete" | "turn_aborted")
+            )
+    })
+    .is_some_and(|event| {
+        event.pointer("/payload/type").and_then(Value::as_str) == Some("task_complete")
+    })
+}
+
+fn jsonl_offsets(directory: &Path) -> HashMap<PathBuf, JsonlCursor> {
     let mut offsets = HashMap::new();
     let Ok(entries) = fs::read_dir(directory) else {
         return offsets;
@@ -300,7 +538,13 @@ fn jsonl_offsets(directory: &Path) -> HashMap<PathBuf, u64> {
         let path = entry.path();
         if path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
             if let Ok(metadata) = entry.metadata() {
-                offsets.insert(path, metadata.len());
+                offsets.insert(
+                    path,
+                    JsonlCursor {
+                        offset: metadata.len(),
+                        draining_oversized: false,
+                    },
+                );
             }
         }
     }
@@ -345,7 +589,16 @@ fn kimi_sessions(home: &Path, cwd: &str) -> HashMap<String, FileCursor> {
         let offset = fs::metadata(&path)
             .map(|metadata| metadata.len())
             .unwrap_or(0);
-        sessions.insert(id.to_string(), FileCursor { path, offset });
+        sessions.insert(
+            id.to_string(),
+            FileCursor {
+                path,
+                cursor: JsonlCursor {
+                    offset,
+                    draining_oversized: false,
+                },
+            },
+        );
     }
     sessions
 }
@@ -363,7 +616,13 @@ fn kimi_session(home: &Path, cwd: &str, id: &str, offset: u64) -> Option<FileCur
             continue;
         }
         let path = validated_kimi_wire_path(home, &entry)?;
-        return Some(FileCursor { path, offset });
+        return Some(FileCursor {
+            path,
+            cursor: JsonlCursor {
+                offset,
+                draining_oversized: false,
+            },
+        });
     }
     None
 }
@@ -399,6 +658,11 @@ mod tests {
         assert!(pi_transcript_has_completed_turn(dir.path(), "native-id"));
         assert!(!pi_transcript_has_completed_turn(dir.path(), "other-id"));
 
+        let duplicate = dir.path().join("duplicate.jsonl");
+        fs::copy(&path, &duplicate).unwrap();
+        assert!(!pi_transcript_has_completed_turn(dir.path(), "native-id"));
+        fs::remove_file(duplicate).unwrap();
+
         use std::io::Write;
         let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
         file.write_all(b"{\"type\":\"message\",\"message\":{\"role\":\"user\"}}\n")
@@ -421,6 +685,61 @@ mod tests {
     }
 
     #[test]
+    fn resumed_codex_transcript_inherits_only_an_exact_completed_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("sessions/2026/08/29");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("rollout-native-id.jsonl");
+        fs::write(
+            &path,
+            b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"native-id\",\"cwd\":\"/work\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}\n",
+        )
+        .unwrap();
+        assert!(codex_transcript_has_completed_turn(
+            &dir.path().join("sessions"),
+            "native-id",
+            "/work"
+        ));
+        assert!(!codex_transcript_has_completed_turn(
+            &dir.path().join("sessions"),
+            "other-id",
+            "/work"
+        ));
+
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n")
+            .unwrap();
+        file.flush().unwrap();
+        assert!(!codex_transcript_has_completed_turn(
+            &dir.path().join("sessions"),
+            "native-id",
+            "/work"
+        ));
+    }
+
+    #[test]
+    fn resumed_kimi_wire_inherits_only_a_completed_latest_loop_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wire.jsonl");
+        fs::write(
+            &path,
+            b"{\"type\":\"context.append_loop_event\",\"event\":{\"type\":\"step.end\",\"finishReason\":\"end_turn\"}}\n{\"type\":\"metadata\"}\n",
+        )
+        .unwrap();
+        assert!(latest_kimi_wire_event_is_turn_end(&path));
+
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(
+            b"{\"type\":\"context.append_loop_event\",\"event\":{\"type\":\"step.begin\"}}\n",
+        )
+        .unwrap();
+        file.flush().unwrap();
+        assert!(!latest_kimi_wire_event_is_turn_end(&path));
+    }
+
+    #[test]
     fn recognizes_only_final_pi_assistant_messages() {
         let complete = serde_json::json!({
             "type": "message",
@@ -437,6 +756,8 @@ mod tests {
         assert!(is_pi_turn_end(&complete));
         assert!(!is_pi_turn_end(&tool_use));
         assert!(!is_pi_turn_end(&user));
+        assert!(is_pi_turn_start(&user));
+        assert!(!is_pi_turn_start(&complete));
     }
 
     #[test]
@@ -449,8 +770,14 @@ mod tests {
             "type": "context.append_loop_event",
             "event": {"type": "step.end", "finishReason": "tool_calls"}
         });
+        let start = serde_json::json!({
+            "type": "context.append_loop_event",
+            "event": {"type": "step.begin"}
+        });
         assert!(is_kimi_turn_end(&complete));
         assert!(!is_kimi_turn_end(&tool_call));
+        assert!(is_kimi_turn_start(&start));
+        assert!(!is_kimi_turn_start(&complete));
     }
 
     #[test]
@@ -458,21 +785,47 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
         fs::write(&path, b"{\"type\":\"old\"}\n").unwrap();
-        let mut offset = fs::metadata(&path).unwrap().len();
+        let mut cursor = JsonlCursor {
+            offset: fs::metadata(&path).unwrap().len(),
+            draining_oversized: false,
+        };
         let mut seen = Vec::new();
-        follow_jsonl(&path, &mut offset, |event| seen.push(event.clone()));
+        follow_jsonl(&path, &mut cursor, |event, _| seen.push(event.clone()));
         assert!(seen.is_empty());
 
         use std::io::Write;
         let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
         file.write_all(b"{\"type\":\"partial\"}").unwrap();
         file.flush().unwrap();
-        follow_jsonl(&path, &mut offset, |event| seen.push(event.clone()));
+        follow_jsonl(&path, &mut cursor, |event, _| seen.push(event.clone()));
         assert!(seen.is_empty());
         file.write_all(b"\n").unwrap();
         file.flush().unwrap();
-        follow_jsonl(&path, &mut offset, |event| seen.push(event.clone()));
+        follow_jsonl(&path, &mut cursor, |event, _| seen.push(event.clone()));
         assert_eq!(seen[0]["type"], "partial");
+    }
+
+    #[test]
+    fn oversized_record_is_drained_across_bounded_polls_before_the_next_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let mut input = Vec::with_capacity(MAX_JSONL_RECORD_BYTES + 128);
+        input.extend(std::iter::repeat_n(b'x', MAX_JSONL_RECORD_BYTES + 64));
+        input.extend_from_slice(b"\n{\"type\":\"next\"}\n");
+        fs::write(&path, input).unwrap();
+
+        let mut cursor = JsonlCursor::default();
+        let mut seen = Vec::new();
+        follow_jsonl(&path, &mut cursor, |event, _| seen.push(event.clone()));
+        assert!(seen.is_empty());
+        assert_eq!(cursor.offset, MAX_BYTES_PER_POLL as u64);
+        assert!(cursor.draining_oversized);
+
+        follow_jsonl(&path, &mut cursor, |event, _| seen.push(event.clone()));
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["type"], "next");
+        assert_eq!(cursor.offset, fs::metadata(&path).unwrap().len());
+        assert!(!cursor.draining_oversized);
     }
 
     #[test]

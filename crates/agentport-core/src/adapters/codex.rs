@@ -37,12 +37,14 @@ native_id=$(
   printf '%s\n' "$3" |
     sed -n 's/.*"thread-id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
 )
+observed_at_unix=$(date +%s)
 if [ "${#native_id}" -eq 36 ] &&
    ! printf '%s' "$native_id" | grep -q '[^0-9a-fA-F-]'; then
-  printf '{"event":"%s","agentport_session_id":"%s","data":{"session_id":"%s"}}\n' \
-    "$event" "$1" "$native_id" >> "$2"
+  printf '{"event":"%s","agentport_session_id":"%s","observed_at_unix":%s,"data":{"session_id":"%s"}}\n' \
+    "$event" "$1" "$observed_at_unix" "$native_id" >> "$2"
 else
-  printf '{"event":"%s","agentport_session_id":"%s"}\n' "$event" "$1" >> "$2"
+  printf '{"event":"%s","agentport_session_id":"%s","observed_at_unix":%s}\n' \
+    "$event" "$1" "$observed_at_unix" >> "$2"
 fi
 "#
     .into()
@@ -369,22 +371,18 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
             .collect::<Vec<_>>();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["event"], "Stop");
+        assert_eq!(events[0]["agentport_session_id"], "ses_abc");
         assert_eq!(
-            events,
-            vec![
-                serde_json::json!({
-                "event": "Stop",
-                "agentport_session_id": "ses_abc",
-                "data": {
-                    "session_id": "019f779d-efd0-76a2-a39e-eb95459089a0"
-                }
-                }),
-                serde_json::json!({
-                    "event": "PermissionRequest",
-                    "agentport_session_id": "ses_abc"
-                }),
-            ]
+            events[0]["data"]["session_id"],
+            "019f779d-efd0-76a2-a39e-eb95459089a0"
         );
+        assert_eq!(events[1]["event"], "PermissionRequest");
+        assert_eq!(events[1]["agentport_session_id"], "ses_abc");
+        assert!(events
+            .iter()
+            .all(|event| event["observed_at_unix"].as_u64().is_some()));
         assert!(!line.contains("discard-me"));
     }
 

@@ -75,7 +75,7 @@ AgentPort 是 macOS/Linux 上的本地 AI CLI 工作台：用一个界面同时�
 状态 Hook 的支持现状（详见"状态与置信度"）：
 
 - Claude Code：通过按调用注入的 `--settings` 文件接入官方 Hook（该版本提供 `--settings` 时）；绝不修改你的全局 `~/.claude/settings.json`。
-- Codex 0.144.5：未找到可验证的 Hook 注入机制，降级为 PTY 启发式；绝不修改 `~/.codex/config.toml`。
+- Codex 0.144.5：通过每次调用的 `-c notify=...` 接入官方完成/审批通知；仅写入当前 Session 的中继脚本，绝不修改 `~/.codex/config.toml`。
 - Kimi Code 0.27.0：没有会话级 Hook 机制（唯一的全局配置 `~/.kimi-code/config.toml` 不会被 AgentPort 修改），降级为 PTY 启发式。
 - Generic Shell：无 Hook，状态来自 PTY 启发式与进程事实。
 
@@ -109,7 +109,7 @@ AgentPort 绝不会默认添加 `--yolo` 类的跳过审批参数。
 |---|---|
 | Working | 当前 Turn 正在执行 |
 | Needs input | 等待你输入或确认权限 |
-| Idle | Turn 完成或输出静默；通常进程仍在。Pi 的高置信度 TurnEnd 后若持续 15 分钟无操作、无输入，空闲进程会自动停止；精确恢复到已完成 Turn 的新 Host 会继承该空闲计时，下次输入通过“重启并恢复”继续原生会话 |
+| Idle | Turn 完成或输出静默；通常进程仍在。Claude、Codex、Kimi、Pi、Qoder 经官方 Hook/Adapter 确认主 Turn 完成后，若持续 15 分钟无输入且无新的高置信度工作事件，空闲进程会自动停止；可安全验证已完成 Turn 的精确恢复会继承计时，下次输入通过“重启并恢复”继续原生会话。Shell 不依据 PTY 静默自动停止 |
 | Exited | 进程已退出（显示退出码） |
 | Unknown | Adapter 无法解释当前状态（附原因） |
 | Unread | Session 出现单轮完成或请求批准，选择或再次点击后标记已读 |

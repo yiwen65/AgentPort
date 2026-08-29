@@ -774,17 +774,22 @@ fn broadcast_evicts_nonreading_output_client_without_stalling_monitor() {
     );
 
     let produced = monitor.collect_until(Duration::from_secs(10), |frames| {
-        frames.iter().any(|frame| matches!(
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::Heartbeat { log_bytes, .. }
+                    if *log_bytes >= 4 * 1024 * 1024 + marker.len() as u64
+            )
+        })
+    });
+    assert!(
+        produced.iter().any(|frame| matches!(
             frame,
             HostFrame::Heartbeat { log_bytes, .. }
                 if *log_bytes >= 4 * 1024 * 1024 + marker.len() as u64
-        ))
-    });
-    assert!(produced.iter().any(|frame| matches!(
-        frame,
-        HostFrame::Heartbeat { log_bytes, .. }
-            if *log_bytes >= 4 * 1024 * 1024 + marker.len() as u64
-    )), "Host must finish ingesting the flood before the replay assertion");
+        )),
+        "Host must finish ingesting the flood before the replay assertion"
+    );
 
     // A fresh terminal can still retrieve the final output tail after the
     // slow subscriber is isolated.
@@ -817,8 +822,23 @@ fn pi_rpc_pipe_accepts_prompt_abort_and_persists_structured_events() {
   esac
 done"#,
     );
+    let pi_dir = ctx.dir.join("pi");
+    std::fs::create_dir_all(&pi_dir).unwrap();
+    std::fs::write(
+        pi_dir.join("rpc-session.jsonl"),
+        b"{\"type\":\"session\",\"id\":\"pi-native-test-id\"}\n{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\"}}\n",
+    )
+    .unwrap();
     let _guard = spawn_host(&ctx, &[]);
     wait_socket(&ctx);
+    wait_for(
+        || {
+            std::fs::read_to_string(&ctx.host_log)
+                .is_ok_and(|log| log.contains("resumed completed turn; idle shutdown armed"))
+        },
+        Duration::from_secs(3),
+        "Pi RPC resume to inherit completed-turn cleanup",
+    );
     let mut conn = connect(&ctx, &ctx.session_id, TOKEN, 64 * 1024);
     conn.expect_hello_ok();
 
@@ -942,7 +962,7 @@ fn pi_pty_session_jsonl_inherits_completed_resume_and_emits_only_new_turn_ends()
     wait_for(
         || {
             std::fs::read_to_string(&ctx.host_log)
-                .is_ok_and(|log| log.contains("resumed completed Pi turn; idle shutdown armed"))
+                .is_ok_and(|log| log.contains("resumed completed turn; idle shutdown armed"))
         },
         Duration::from_secs(3),
         "a resumed completed Pi transcript to inherit the idle timer",
@@ -1066,6 +1086,14 @@ fn kimi_wire_end_turn_emits_semantic_completion_after_native_id_capture() {
         )),
         "Kimi wire end_turn was not projected: {completed:?}"
     );
+    wait_for(
+        || {
+            std::fs::read_to_string(&ctx.host_log)
+                .is_ok_and(|log| log.contains("semantic turn complete; idle shutdown armed"))
+        },
+        Duration::from_secs(3),
+        "Kimi end_turn to arm idle shutdown",
+    );
 }
 
 #[test]
@@ -1097,7 +1125,11 @@ fn pi_rpc_invalid_json_terminates_the_session() {
 #[test]
 fn new_host_keeps_terminal_output_in_memory_without_creating_output_log() {
     let ctx = make_ctx(
-        vec!["/bin/sh".into(), "-c".into(), "printf native-only-output".into()],
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "printf native-only-output".into(),
+        ],
         1 << 20,
         vec![],
     );
@@ -1180,7 +1212,10 @@ fn echo_roundtrip_log_sha256() {
         .expect("host should exit");
     assert_eq!(status.code(), Some(0));
 
-    assert!(!ctx.log.exists(), "the Host must not persist a duplicate transcript");
+    assert!(
+        !ctx.log.exists(),
+        "the Host must not persist a duplicate transcript"
+    );
 
     // host-state.json records pgid verification + exit facts.
     let state: serde_json::Value =
@@ -1528,6 +1563,204 @@ fn hook_poller_updates_a_hint_when_claude_starts_a_new_native_session() {
     );
 }
 
+#[test]
+fn hook_semantic_agents_arm_idle_shutdown_on_stop() {
+    for adapter in ["claude", "codex", "qoder"] {
+        let ctx = make_ctx(
+            vec!["/bin/sh".into(), "-c".into(), "sleep 60".into()],
+            1 << 20,
+            vec![],
+        );
+        let mut cfg: HostConfig =
+            serde_json::from_str(&std::fs::read_to_string(&ctx.cfg_path).unwrap()).unwrap();
+        cfg.adapter_type = adapter.into();
+        std::fs::write(&ctx.cfg_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+
+        let _guard = spawn_host(&ctx, &[]);
+        wait_socket(&ctx);
+        let mut client = connect(&ctx, &ctx.session_id, TOKEN, 0);
+        client.expect_hello_ok();
+        let mut hook = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(ctx.dir.join("events.jsonl"))
+            .unwrap();
+        writeln!(hook, "{{\"event\":\"Stop\"}}").unwrap();
+        hook.flush().unwrap();
+
+        let frames = client.collect_until(Duration::from_secs(3), |frames| {
+            frames.iter().any(|frame| {
+                matches!(
+                    frame,
+                    HostFrame::State {
+                        state: AgentState::Idle,
+                        source: StateSource::Hook,
+                        evidence: Some(evidence),
+                        ..
+                    } if evidence == "hook:Stop"
+                )
+            })
+        });
+        assert!(
+            frames.iter().any(|frame| matches!(
+                frame,
+                HostFrame::State {
+                    state: AgentState::Idle,
+                    source: StateSource::Hook,
+                    evidence: Some(evidence),
+                    ..
+                } if evidence == "hook:Stop"
+            )),
+            "{adapter} Stop hook was not projected: {frames:?}"
+        );
+        wait_for(
+            || {
+                std::fs::read_to_string(&ctx.host_log)
+                    .is_ok_and(|log| log.contains("semantic turn complete; idle shutdown armed"))
+            },
+            Duration::from_secs(3),
+            &format!("{adapter} Stop hook to arm idle shutdown"),
+        );
+    }
+}
+
+#[test]
+fn timestamped_stop_arms_cleanup_when_a_benign_hook_follows_in_the_same_batch() {
+    let ctx = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), "sleep 60".into()],
+        1 << 20,
+        vec![],
+    );
+    let mut cfg: HostConfig =
+        serde_json::from_str(&std::fs::read_to_string(&ctx.cfg_path).unwrap()).unwrap();
+    cfg.adapter_type = "codex".into();
+    std::fs::write(&ctx.cfg_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(
+        ctx.dir.join("events.jsonl"),
+        format!(
+            "{{\"event\":\"Stop\",\"observed_at_unix\":{observed_at}}}\n{{\"event\":\"Notification\",\"observed_at_unix\":{observed_at}}}\n"
+        ),
+    )
+    .unwrap();
+    wait_for(
+        || {
+            std::fs::read_to_string(&ctx.host_log)
+                .is_ok_and(|log| log.contains("semantic turn complete; idle shutdown armed"))
+        },
+        Duration::from_secs(3),
+        "timestamped Stop before a benign hook to arm cleanup",
+    );
+}
+
+#[test]
+fn hook_poller_drains_an_oversized_record_before_a_valid_stop() {
+    let ctx = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), "sleep 60".into()],
+        1 << 20,
+        vec![],
+    );
+    let mut cfg: HostConfig =
+        serde_json::from_str(&std::fs::read_to_string(&ctx.cfg_path).unwrap()).unwrap();
+    cfg.adapter_type = "codex".into();
+    std::fs::write(&ctx.cfg_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut events = vec![b'x'; 4 * 1024 * 1024 + 1];
+    events.extend_from_slice(
+        format!("\n{{\"event\":\"Stop\",\"observed_at_unix\":{observed_at}}}\n").as_bytes(),
+    );
+    std::fs::write(ctx.dir.join("events.jsonl"), events).unwrap();
+
+    wait_for(
+        || {
+            std::fs::read_to_string(&ctx.host_log)
+                .is_ok_and(|log| log.contains("semantic turn complete; idle shutdown armed"))
+        },
+        Duration::from_secs(5),
+        "valid Stop following an oversized hook record to arm cleanup",
+    );
+}
+
+#[test]
+fn codex_stop_written_before_new_input_cannot_arm_a_stale_deadline() {
+    let ctx = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), "sleep 60".into()],
+        1 << 20,
+        vec![],
+    );
+    let mut cfg: HostConfig =
+        serde_json::from_str(&std::fs::read_to_string(&ctx.cfg_path).unwrap()).unwrap();
+    cfg.adapter_type = "codex".into();
+    std::fs::write(&ctx.cfg_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut client = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    client.expect_hello_ok();
+    let mut hook = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(ctx.dir.join("events.jsonl"))
+        .unwrap();
+    let stale_observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .saturating_sub(1);
+    write!(
+        hook,
+        "{{\"event\":\"Stop\",\"observed_at_unix\":{stale_observed_at}}}"
+    )
+    .unwrap();
+    hook.flush().unwrap();
+    client.send(&ClientFrame::Input {
+        session_id: ctx.session_id.clone(),
+        data: b"next prompt".to_vec(),
+    });
+    hook.write_all(b"\n{\"event\":\"Notification\"}\n").unwrap();
+    hook.flush().unwrap();
+
+    let frames = client.collect_until(Duration::from_secs(3), |frames| {
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::State {
+                    source: StateSource::Hook,
+                    evidence: Some(evidence),
+                    ..
+                } if evidence == "hook:Stop"
+            )
+        })
+    });
+    assert!(frames.iter().any(|frame| matches!(
+        frame,
+        HostFrame::State {
+            source: StateSource::Hook,
+            evidence: Some(evidence),
+            ..
+        } if evidence == "hook:Stop"
+    )));
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(
+        !std::fs::read_to_string(&ctx.host_log)
+            .unwrap()
+            .contains("semantic turn complete; idle shutdown armed"),
+        "a delayed Stop from the previous turn armed cleanup after new input"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 4b. Job-control escapees: interactive shells put background jobs into their
 // own process groups — Stop must still kill them (PRD: 所有后代进程).
@@ -1707,11 +1940,13 @@ fn recovery_target_replays_bounded_context_outside_default_tail_window() {
         data: b"start\n".to_vec(),
     });
     let produced = monitor.collect_until(Duration::from_secs(10), |frames| {
-        frames.iter().any(|frame| matches!(
-            frame,
-            HostFrame::Heartbeat { log_bytes, .. }
-                if *log_bytes >= 1_048_576 + ready.len() as u64
-        ))
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::Heartbeat { log_bytes, .. }
+                    if *log_bytes >= 1_048_576 + ready.len() as u64
+            )
+        })
     });
     assert!(produced.iter().any(|frame| matches!(
         frame,
@@ -1991,11 +2226,13 @@ fn live_replay_tail_is_bounded_to_four_mib() {
         data: b"start\n".to_vec(),
     });
     let frames = monitor.collect_until(Duration::from_secs(20), |frames| {
-        frames.iter().any(|frame| matches!(
-            frame,
-            HostFrame::Heartbeat { log_bytes, .. }
-                if *log_bytes >= 5 * 1024 * 1024 + b"TAIL-MARKER".len() as u64
-        ))
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::Heartbeat { log_bytes, .. }
+                    if *log_bytes >= 5 * 1024 * 1024 + b"TAIL-MARKER".len() as u64
+            )
+        })
     });
     assert!(
         frames.iter().any(|frame| matches!(
@@ -2008,7 +2245,9 @@ fn live_replay_tail_is_bounded_to_four_mib() {
     let mut replay = connect(&ctx, &ctx.session_id, TOKEN, 8 * 1024 * 1024);
     replay.expect_hello_ok();
     let replayed = replay.collect_until(Duration::from_secs(10), |frames| {
-        frames.iter().any(|frame| matches!(frame, HostFrame::ReplayDone { .. }))
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::ReplayDone { .. }))
     });
     assert!(output_bytes(&replayed).len() <= 4 * 1024 * 1024);
     assert!(output_bytes(&replayed)
@@ -2162,7 +2401,10 @@ fn secret_redaction() {
         .expect("host exits");
     assert_eq!(status.code(), Some(0));
 
-    assert!(!ctx.log.exists(), "redacted live output must not be persisted");
+    assert!(
+        !ctx.log.exists(),
+        "redacted live output must not be persisted"
+    );
 
     // The broadcast stream is redacted too.
     let mut streamed = output_bytes(&frames);

@@ -29,7 +29,9 @@ fn shell_quote(value: &str) -> String {
 fn relay_script() -> String {
     r#"#!/bin/sh
 cat >/dev/null
-printf '{"event":"%s","agentport_session_id":"%s"}\n' "$1" "$2" >> "$3"
+observed_at_unix=$(date +%s)
+printf '{"event":"%s","agentport_session_id":"%s","observed_at_unix":%s}\n' \
+  "$1" "$2" "$observed_at_unix" >> "$3"
 "#
     .into()
 }

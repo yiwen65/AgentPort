@@ -45,7 +45,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use agentport_core::adapters::adapter_for;
 use agentport_core::models::{AgentState, AgentTransport, AgentType, LogCursor, StatusEvent};
@@ -194,8 +194,22 @@ mod output_tail_tests {
 
 /// Messages from worker threads to the single control loop.
 pub(crate) enum HostMsg {
-    /// PTY, hook, or structured adapter observations for the state machine.
+    /// PTY or structured adapter observations for the state machine.
     Obs(Observation),
+    /// Official hook observation with the hook file's write time. This fences
+    /// a delayed completion against user input that already started a new turn.
+    HookObs {
+        name: String,
+        completion_input_boundary: Option<SystemTime>,
+    },
+    /// Ordered native-log evidence that a main adapter turn completed. The
+    /// final-record write boundary fences delayed completion against new input.
+    SemanticCompletion {
+        adapter: String,
+        completion_input_boundary: Option<SystemTime>,
+    },
+    /// Ordered native-log evidence that a new adapter turn has started.
+    SemanticActivity { adapter: String },
     /// PTY reader reached a clean EOF and finished the log writer.
     PtyEof,
     /// PTY reading failed before the control loop established that the child
@@ -208,17 +222,17 @@ pub(crate) enum HostMsg {
     HostSignal(i32),
 }
 
-const PI_IDLE_SHUTDOWN_DELAY: Duration = Duration::from_secs(15 * 60);
+const SEMANTIC_IDLE_SHUTDOWN_DELAY: Duration = Duration::from_secs(15 * 60);
 const ACTIVE_DESCENDANT_REFRESH_TICKS: u64 = 3;
-const PI_IDLE_DESCENDANT_REFRESH_TICKS: u64 = 60;
+const IDLE_DESCENDANT_REFRESH_TICKS: u64 = 60;
 
-struct PiIdleShutdown {
+struct SemanticIdleShutdown {
     deadline: Option<Instant>,
     armed_user_activity_generation: u64,
     delay: Duration,
 }
 
-impl PiIdleShutdown {
+impl SemanticIdleShutdown {
     fn new(delay: Duration) -> Self {
         Self {
             deadline: None,
@@ -245,16 +259,13 @@ impl PiIdleShutdown {
         self.armed_user_activity_generation = user_activity_generation;
     }
 
-    fn note_process_activity(&mut self, now: Instant) {
-        if self.deadline.is_some() {
-            self.deadline = Some(now + self.delay);
-        }
+    fn cancel(&mut self) -> bool {
+        self.deadline.take().is_some()
     }
 
     fn cancel_if_user_activity(&mut self, generation: u64) -> bool {
         if self.deadline.is_some() && generation != self.armed_user_activity_generation {
-            self.deadline = None;
-            return true;
+            return self.cancel();
         }
         false
     }
@@ -319,6 +330,9 @@ pub(crate) struct Shared {
     /// one control message per keystroke; the one-second control tick observes
     /// changes and cancels a stale idle deadline.
     user_activity_generation: AtomicU64,
+    /// Wall-clock input boundary compared with official hook-file mtimes. The
+    /// comparison rejects a completion written before the next prompt.
+    last_user_activity_at: Mutex<SystemTime>,
     /// Terminal bytes for PTY Sessions or UTF-8 JSONL commands for structured
     /// Pi Sessions. The socket server owns protocol-specific serialization.
     input_writer: Mutex<Box<dyn Write + Send>>,
@@ -463,6 +477,10 @@ pub(crate) fn err_frame(session_id: Option<&str>, code: HostErrorCode, message: 
 }
 
 pub(crate) fn note_user_activity(shared: &Shared) {
+    let mut last_user_activity_at = shared.last_user_activity_at.lock().unwrap();
+    *last_user_activity_at = SystemTime::now();
+    // Keep timestamp and generation under one lock so completion can capture
+    // a generation that belongs to the exact timestamp comparison it made.
     shared
         .user_activity_generation
         .fetch_add(1, Ordering::Relaxed);
@@ -679,9 +697,10 @@ fn run() -> i32 {
     // Adapter hooks append to a Session-stable file. Snapshot its length
     // before the new child can write so this run consumes only its own new
     // events; a later truncation is still handled by the poller.
-    let hook_start_offset = hook_snapshot_offset(&cfg.hook_events_path);
+    let hook_snapshot = HookSnapshot::capture(&cfg);
     let semantic_snapshot = semantic_events::Snapshot::capture(&cfg);
-    let inherited_pi_turn_complete = semantic_snapshot.inherited_pi_turn_complete();
+    let inherited_turn_complete =
+        hook_snapshot.inherited_turn_complete || semantic_snapshot.inherited_turn_complete();
 
     // PTY remains the compatibility transport. Pi's structured RPC mode uses
     // ordinary pipes exclusively so terminal control bytes and TUI prompts
@@ -879,6 +898,7 @@ fn run() -> i32 {
         authenticated_client_count: AtomicUsize::new(0),
         tick_count: AtomicU64::new(0),
         user_activity_generation: AtomicU64::new(0),
+        last_user_activity_at: Mutex::new(SystemTime::UNIX_EPOCH),
         input_writer: Mutex::new(input_writer),
         master: Mutex::new(master),
     });
@@ -923,7 +943,7 @@ fn run() -> i32 {
             }
         }
     }
-    spawn_hook_poller(shared.clone(), msg_tx.clone(), hook_start_offset);
+    spawn_hook_poller(shared.clone(), msg_tx.clone(), hook_snapshot.offset);
     spawn_signal_handler(msg_tx.clone());
 
     // Keep the handle alive; reaping is done exclusively via waitpid (Reaper).
@@ -933,7 +953,7 @@ fn run() -> i32 {
     control_loop(
         &shared,
         msg_rx,
-        inherited_pi_turn_complete,
+        inherited_turn_complete,
         startup_user_activity_generation,
     )
 }
@@ -1095,11 +1115,85 @@ fn wait_dead(shared: &Shared, reaper: &mut Reaper, budget: Duration) -> bool {
     }
 }
 
+fn semantic_idle_cleanup_supported(adapter: &str) -> bool {
+    matches!(adapter, "claude" | "codex" | "kimi" | "pi" | "qoder")
+}
+
+fn is_semantic_turn_complete(obs: &Observation, adapter: &str) -> bool {
+    if !semantic_idle_cleanup_supported(adapter) {
+        return false;
+    }
+    match obs {
+        Observation::AdapterTurnEnd { adapter: observed } => observed == adapter,
+        Observation::Hook(name) => {
+            name == "Stop" && matches!(adapter, "claude" | "codex" | "qoder")
+        }
+        _ => false,
+    }
+}
+
+/// A high-confidence working hook supersedes a previously completed turn.
+/// PTY activity is intentionally excluded: idle TUIs may repaint periodically,
+/// and user input has its own generation fence.
+fn is_semantic_turn_activity(obs: &Observation, adapter: &str) -> bool {
+    semantic_idle_cleanup_supported(adapter)
+        && matches!(
+            obs,
+            Observation::Hook(name)
+                if matches!(
+                    name.as_str(),
+                    "UserPromptSubmit"
+                        | "PreToolUse"
+                        | "PostToolUse"
+                        | "PermissionRequest"
+                        | "AskUserQuestion"
+                        | "BeforeTool"
+                )
+        )
+}
+
+fn handle_observation(
+    shared: &Shared,
+    sm: &mut StateMachine,
+    status_file: &mut Option<File>,
+    idle_shutdown: &mut SemanticIdleShutdown,
+    obs: Observation,
+    completion_user_activity_generation: Option<u64>,
+) {
+    let semantic_turn_complete = completion_user_activity_generation
+        .filter(|_| is_semantic_turn_complete(&obs, &shared.cfg.adapter_type));
+    if is_semantic_turn_activity(&obs, &shared.cfg.adapter_type) && idle_shutdown.cancel() {
+        shared.tick_count.store(0, Ordering::Relaxed);
+    }
+    if let Some(ev) = sm.observe(obs) {
+        emit_event(shared, status_file, ev);
+    }
+    if let Some(generation_at_turn_end) = semantic_turn_complete {
+        // The generation was captured atomically with the producer-time
+        // comparison. If input arrives while `ps` runs, the next loop cancels
+        // this stale deadline before it can become due.
+        *shared.known_descendants.lock().unwrap() = descendants_of(shared.child_pid);
+        shared.tick_count.store(1, Ordering::Relaxed);
+        idle_shutdown.arm(Instant::now(), generation_at_turn_end);
+        info!(adapter = %shared.cfg.adapter_type, "semantic turn complete; idle shutdown armed");
+    }
+}
+
+fn completion_generation_at_boundary(
+    shared: &Shared,
+    completion_input_boundary: Option<SystemTime>,
+) -> Option<u64> {
+    let observed_at = completion_input_boundary?;
+    let last_user_activity_at = shared.last_user_activity_at.lock().unwrap();
+    (*last_user_activity_at < observed_at)
+        .then(|| shared.user_activity_generation.load(Ordering::Relaxed))
+}
+
 /// The single state-machine owner: observations in, status events out.
 fn control_loop(
     shared: &Arc<Shared>,
     rx: mpsc::Receiver<HostMsg>,
-    inherited_pi_turn_complete: bool,
+    inherited_turn_complete: bool,
     startup_user_activity_generation: u64,
 ) -> i32 {
     let mut sm = StateMachine::for_run(
@@ -1120,20 +1214,20 @@ fn control_loop(
     // remain wall-clock based under high-frequency PTY or hook activity.
     let tick_interval = Duration::from_secs(1);
     let mut next_tick = Instant::now() + tick_interval;
-    let mut pi_idle_shutdown = PiIdleShutdown::at_host_start(
-        PI_IDLE_SHUTDOWN_DELAY,
+    let mut idle_shutdown = SemanticIdleShutdown::at_host_start(
+        SEMANTIC_IDLE_SHUTDOWN_DELAY,
         Instant::now(),
         startup_user_activity_generation,
-        inherited_pi_turn_complete,
+        inherited_turn_complete,
     );
-    if inherited_pi_turn_complete {
-        info!("resumed completed Pi turn; idle shutdown armed");
+    if inherited_turn_complete {
+        info!(adapter = %shared.cfg.adapter_type, "resumed completed turn; idle shutdown armed");
     }
 
     loop {
         let now = Instant::now();
         let user_activity_generation = shared.user_activity_generation.load(Ordering::Relaxed);
-        if pi_idle_shutdown.cancel_if_user_activity(user_activity_generation) {
+        if idle_shutdown.cancel_if_user_activity(user_activity_generation) {
             // Resume the active cadence immediately after input starts a new
             // turn; do not wait for the old idle cadence to roll over.
             shared.tick_count.store(0, Ordering::Relaxed);
@@ -1144,7 +1238,7 @@ fn control_loop(
                 &mut sm,
                 &mut status_file,
                 &mut reaper,
-                pi_idle_shutdown.deadline().is_some(),
+                idle_shutdown.deadline().is_some(),
             );
             next_tick += tick_interval;
             // Avoid a burst of catch-up heartbeats if a slow state operation
@@ -1156,36 +1250,58 @@ fn control_loop(
             continue;
         }
 
-        let wake_at = pi_idle_shutdown
+        let wake_at = idle_shutdown
             .deadline()
             .map_or(next_tick, |deadline| deadline.min(next_tick));
         match rx.recv_timeout(wake_at.saturating_duration_since(now)) {
             Ok(HostMsg::Obs(obs)) => {
-                // A definitive Pi TurnEnd starts a bounded keep-alive window.
-                // Any later process activity extends that window; heuristic
-                // PTY silence never starts it because silence can also mean a
-                // long-running or input-blocked turn.
-                let pi_turn_complete = matches!(
-                    &obs,
-                    Observation::AdapterTurnEnd { adapter } if adapter == "pi"
+                let completion_generation = matches!(
+                    obs,
+                    Observation::AdapterTurnEnd { ref adapter } if adapter == "pi"
+                )
+                .then(|| shared.user_activity_generation.load(Ordering::Relaxed));
+                handle_observation(
+                    shared,
+                    &mut sm,
+                    &mut status_file,
+                    &mut idle_shutdown,
+                    obs,
+                    completion_generation,
+                )
+            }
+            Ok(HostMsg::HookObs {
+                name,
+                completion_input_boundary,
+            }) => {
+                let completion_generation =
+                    completion_generation_at_boundary(shared, completion_input_boundary);
+                handle_observation(
+                    shared,
+                    &mut sm,
+                    &mut status_file,
+                    &mut idle_shutdown,
+                    Observation::Hook(name),
+                    completion_generation,
                 );
-                if !pi_turn_complete {
-                    pi_idle_shutdown.note_process_activity(Instant::now());
-                }
-                if let Some(ev) = sm.observe(obs) {
-                    emit_event(shared, &mut status_file, ev);
-                }
-                if pi_turn_complete {
-                    // Read input authority before the process-table scan. If a
-                    // new prompt arrives while `ps` runs, the next loop sees a
-                    // different generation and cancels this stale deadline.
-                    let generation_at_turn_end =
-                        shared.user_activity_generation.load(Ordering::Relaxed);
-                    // Capture the completed turn's descendants before reducing
-                    // the defensive refresh cadence during the quiet grace.
-                    *shared.known_descendants.lock().unwrap() = descendants_of(shared.child_pid);
-                    shared.tick_count.store(1, Ordering::Relaxed);
-                    pi_idle_shutdown.arm(Instant::now(), generation_at_turn_end);
+            }
+            Ok(HostMsg::SemanticCompletion {
+                adapter,
+                completion_input_boundary,
+            }) => {
+                let completion_generation =
+                    completion_generation_at_boundary(shared, completion_input_boundary);
+                handle_observation(
+                    shared,
+                    &mut sm,
+                    &mut status_file,
+                    &mut idle_shutdown,
+                    Observation::AdapterTurnEnd { adapter },
+                    completion_generation,
+                );
+            }
+            Ok(HostMsg::SemanticActivity { adapter }) => {
+                if adapter == shared.cfg.adapter_type && idle_shutdown.cancel() {
+                    shared.tick_count.store(0, Ordering::Relaxed);
                 }
             }
             Ok(HostMsg::PtyEof) => {
@@ -1228,18 +1344,18 @@ fn control_loop(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let generation = shared.user_activity_generation.load(Ordering::Relaxed);
-                if pi_idle_shutdown.cancel_if_user_activity(generation) {
+                if idle_shutdown.cancel_if_user_activity(generation) {
                     shared.tick_count.store(0, Ordering::Relaxed);
                     continue;
                 }
-                if pi_idle_shutdown.due(Instant::now()) {
+                if idle_shutdown.due(Instant::now()) {
                     return stop_flow(
                         shared,
                         &mut sm,
                         &mut status_file,
                         None,
                         &rx,
-                        "pi_turn_complete",
+                        "semantic_turn_complete",
                         &mut reaper,
                     );
                 }
@@ -1262,11 +1378,12 @@ fn control_loop(
 }
 
 /// 1s tick: heartbeat broadcast + silence detection for the state machine +
-/// descendant snapshots. Active turns refresh every 3s; a completed Pi turn
-/// takes one immediate snapshot, then uses a 60s defensive cadence while idle.
-fn descendant_refresh_due(tick_count: u64, pi_idle_grace: bool) -> bool {
-    let interval = if pi_idle_grace {
-        PI_IDLE_DESCENDANT_REFRESH_TICKS
+/// descendant snapshots. Active turns refresh every 3s; a semantically
+/// completed turn takes one immediate snapshot, then uses a 60s defensive
+/// cadence while idle.
+fn descendant_refresh_due(tick_count: u64, idle_grace: bool) -> bool {
+    let interval = if idle_grace {
+        IDLE_DESCENDANT_REFRESH_TICKS
     } else {
         ACTIVE_DESCENDANT_REFRESH_TICKS
     };
@@ -1278,7 +1395,7 @@ fn tick(
     sm: &mut StateMachine,
     status_file: &mut Option<File>,
     reaper: &mut Reaper,
-    pi_idle_grace: bool,
+    idle_grace: bool,
 ) {
     broadcast(
         shared,
@@ -1316,7 +1433,7 @@ fn tick(
     }
     if descendant_refresh_due(
         shared.tick_count.fetch_add(1, Ordering::Relaxed),
-        pi_idle_grace,
+        idle_grace,
     ) {
         *shared.known_descendants.lock().unwrap() = descendants_of(shared.child_pid);
     }
@@ -1418,10 +1535,10 @@ fn stop_flow(
     let (code, signal) = reaper.reap_timeout(Duration::from_secs(5));
     shared.child_alive.store(false, Ordering::Relaxed);
     let group_cleaned = shared.pgid_verified && group_gone(shared) && tree_gone(shared);
-    // A semantic Pi TurnEnd is already the authoritative completed state.
-    // Do not replace it with the signal used to retire the now-idle CLI: that
+    // A semantic TurnEnd is already the authoritative completed state. Do not
+    // replace it with the signal used to retire the now-idle CLI: that
     // would misclassify a successful turn as a failed process exit.
-    if reason != "pi_turn_complete" {
+    if reason != "semantic_turn_complete" {
         if let Some(ev) = sm.observe(Observation::ProcessExited { code, signal }) {
             emit_event(shared, status_file, ev);
         }
@@ -1429,7 +1546,7 @@ fn stop_flow(
     let exit_reason = match reason {
         "client_stop" => "user_stop",
         "host_signal" => "host_signal",
-        "pi_turn_complete" => "turn_complete",
+        "semantic_turn_complete" => "turn_complete",
         _ => "fault",
     };
     broadcast(
@@ -2106,8 +2223,157 @@ fn spawn_rpc_stderr_reader(
 /// Hook-event poller: every 250ms consume new JSON lines from
 /// `hook_events_path` ("event"/"hook_event_name"/"type" -> Hook observation;
 /// nested "data.session_id" or raw "session_id" -> native session id capture).
-fn hook_snapshot_offset(path: &str) -> u64 {
-    std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+const MAX_HOOK_SNAPSHOT_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_HOOK_RECORD_BYTES: usize = 4 * 1024 * 1024;
+const MAX_HOOK_RECORDS_PER_POLL: usize = 256;
+const MAX_HOOK_BYTES_PER_POLL: usize = MAX_HOOK_RECORD_BYTES + 1;
+
+struct HookSnapshot {
+    offset: u64,
+    inherited_turn_complete: bool,
+}
+
+impl HookSnapshot {
+    fn capture(cfg: &HostConfig) -> Self {
+        let path = Path::new(&cfg.hook_events_path);
+        let offset = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+        let inherited_turn_complete =
+            cfg.agent_session_id_hint
+                .as_deref()
+                .is_some_and(|native_id| {
+                    matches!(cfg.adapter_type.as_str(), "claude" | "qoder")
+                        && latest_hook_turn_is_complete(
+                            path,
+                            offset,
+                            &cfg.adapter_type,
+                            &cfg.session_id,
+                            native_id,
+                        )
+                });
+        Self {
+            offset,
+            inherited_turn_complete,
+        }
+    }
+}
+
+fn latest_hook_turn_is_complete(
+    path: &Path,
+    length: u64,
+    adapter: &str,
+    session_id: &str,
+    native_id: &str,
+) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let start = length.saturating_sub(MAX_HOOK_SNAPSHOT_BYTES);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return false;
+    }
+    let mut tail = Vec::with_capacity((length - start) as usize);
+    if file.read_to_end(&mut tail).is_err() {
+        return false;
+    }
+    if start > 0 {
+        let Some(first_newline) = tail.iter().position(|byte| *byte == b'\n') else {
+            return false;
+        };
+        tail.drain(..=first_newline);
+    }
+    if !tail.ends_with(b"\n") {
+        return false;
+    }
+    for line in tail.split(|byte| *byte == b'\n').rev() {
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(event) = serde_json::from_slice::<serde_json::Value>(line) else {
+            return false;
+        };
+        let name = ["event", "hook_event_name", "type"]
+            .iter()
+            .find_map(|key| event.get(*key))
+            .and_then(|value| value.as_str());
+        match name {
+            Some("Stop") => {
+                let belongs_to_session = match adapter {
+                    "claude" => {
+                        event.get("session_id").and_then(serde_json::Value::as_str)
+                            == Some(session_id)
+                            && event
+                                .pointer("/data/session_id")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(native_id)
+                    }
+                    "qoder" => {
+                        event
+                            .get("agentport_session_id")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(session_id)
+                    }
+                    _ => false,
+                };
+                return belongs_to_session;
+            }
+            // SessionStart can belong to a cleared/rolled-over native session;
+            // never inherit completion across that identity boundary.
+            Some("SessionStart") => return false,
+            Some("SessionEnd" | "Notification") => continue,
+            Some(_) | None => return false,
+        }
+    }
+    false
+}
+
+struct BoundedHookRecordRead {
+    consumed: usize,
+    complete: bool,
+    oversized: bool,
+}
+
+fn read_bounded_hook_record<R: BufRead>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+    already_oversized: bool,
+    byte_budget: usize,
+) -> std::io::Result<Option<BoundedHookRecordRead>> {
+    line.clear();
+    let mut consumed = 0usize;
+    let mut oversized = already_oversized;
+    while consumed < byte_budget {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            break;
+        }
+        let remaining_budget = byte_budget - consumed;
+        let available = &available[..available.len().min(remaining_budget)];
+        let take = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if !oversized {
+            let remaining = MAX_HOOK_RECORD_BYTES.saturating_sub(line.len());
+            let retained = take.min(remaining);
+            line.extend_from_slice(&available[..retained]);
+            oversized = retained < take;
+        }
+        let complete = available[..take].last() == Some(&b'\n');
+        reader.consume(take);
+        consumed = consumed.saturating_add(take);
+        if complete {
+            return Ok(Some(BoundedHookRecordRead {
+                consumed,
+                complete: true,
+                oversized,
+            }));
+        }
+    }
+    Ok((consumed > 0).then_some(BoundedHookRecordRead {
+        consumed,
+        complete: false,
+        oversized,
+    }))
 }
 
 fn spawn_hook_poller(shared: Arc<Shared>, tx: mpsc::Sender<HostMsg>, initial_offset: u64) {
@@ -2116,6 +2382,7 @@ fn spawn_hook_poller(shared: Arc<Shared>, tx: mpsc::Sender<HostMsg>, initial_off
         // The snapshot was captured before child spawn. Starting here avoids
         // feeding prior-run hook events into a new run's state machine.
         let mut offset = initial_offset;
+        let mut draining_oversized = false;
         loop {
             std::thread::sleep(Duration::from_millis(250));
             let meta = match std::fs::metadata(&path) {
@@ -2124,10 +2391,12 @@ fn spawn_hook_poller(shared: Arc<Shared>, tx: mpsc::Sender<HostMsg>, initial_off
             };
             if meta.len() < offset {
                 offset = 0; // truncated: start over
+                draining_oversized = false;
             }
             if meta.len() == offset {
                 continue;
             }
+            let observed_at = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             let mut f = match File::open(&path) {
                 Ok(f) => f,
                 Err(_) => continue,
@@ -2135,26 +2404,60 @@ fn spawn_hook_poller(shared: Arc<Shared>, tx: mpsc::Sender<HostMsg>, initial_off
             if f.seek(SeekFrom::Start(offset)).is_err() {
                 continue;
             }
-            let mut buf = String::new();
-            if f.read_to_string(&mut buf).is_err() {
-                continue;
-            }
-            let mut consumed: u64 = 0;
-            for line in buf.split_inclusive('\n') {
-                if !line.ends_with('\n') {
-                    break; // keep partial line for the next poll
+            // Freeze this poll at the metadata boundary; later appends remain
+            // for the next poll and cannot change this batch's ordering facts.
+            let mut reader = BufReader::new(f).take(meta.len() - offset);
+            let mut line = Vec::new();
+            let mut remaining_budget = MAX_HOOK_BYTES_PER_POLL;
+            for _ in 0..MAX_HOOK_RECORDS_PER_POLL {
+                if remaining_budget == 0 {
+                    break;
                 }
-                consumed += line.len() as u64;
-                let v: serde_json::Value = match serde_json::from_str(line.trim()) {
+                let Ok(record) = read_bounded_hook_record(
+                    &mut reader,
+                    &mut line,
+                    draining_oversized,
+                    remaining_budget,
+                ) else {
+                    break;
+                };
+                let Some(record) = record else {
+                    break;
+                };
+                remaining_budget = remaining_budget.saturating_sub(record.consumed);
+                if !record.complete {
+                    if record.oversized {
+                        offset = offset.saturating_add(record.consumed as u64);
+                        draining_oversized = true;
+                    }
+                    break;
+                }
+
+                offset = offset.saturating_add(record.consumed as u64);
+                draining_oversized = false;
+                if record.oversized {
+                    warn!(path = %path.display(), bytes = record.consumed, "hook record exceeds parse limit");
+                    continue;
+                }
+                let v: serde_json::Value = match serde_json::from_slice(&line) {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
                 let event_name = ["event", "hook_event_name", "type"]
                     .iter()
-                    .find_map(|k| v.get(*k))
-                    .and_then(|x| x.as_str());
+                    .find_map(|key| v.get(*key))
+                    .and_then(|value| value.as_str());
                 if let Some(name) = event_name {
-                    let _ = tx.send(HostMsg::Obs(Observation::Hook(name.to_string())));
+                    let producer_observed_at = v
+                        .get("observed_at_unix")
+                        .and_then(serde_json::Value::as_u64)
+                        .map(|seconds| SystemTime::UNIX_EPOCH + Duration::from_secs(seconds));
+                    let completion_input_boundary = producer_observed_at
+                        .or_else(|| (offset == meta.len()).then_some(observed_at));
+                    let _ = tx.send(HostMsg::HookObs {
+                        name: name.to_string(),
+                        completion_input_boundary,
+                    });
                 }
 
                 // A launch hint proves the initial identity, but Claude may
@@ -2182,7 +2485,6 @@ fn spawn_hook_poller(shared: Arc<Shared>, tx: mpsc::Sender<HostMsg>, initial_off
                     }
                 }
             }
-            offset += consumed;
         }
     });
 }
@@ -2203,13 +2505,13 @@ fn spawn_signal_handler(tx: mpsc::Sender<HostMsg>) {
 }
 
 #[cfg(test)]
-mod pi_idle_shutdown_tests {
+mod idle_shutdown_tests {
     use super::*;
 
     #[test]
     fn becomes_due_only_after_the_full_delay() {
         let start = Instant::now();
-        let mut shutdown = PiIdleShutdown::new(Duration::from_secs(15 * 60));
+        let mut shutdown = SemanticIdleShutdown::new(Duration::from_secs(15 * 60));
         shutdown.arm(start, 0);
 
         assert!(!shutdown.due(start + Duration::from_secs(15 * 60 - 1)));
@@ -2220,43 +2522,139 @@ mod pi_idle_shutdown_tests {
     fn completed_turn_inherited_by_a_resumed_host_arms_the_full_delay() {
         let start = Instant::now();
         let mut shutdown =
-            PiIdleShutdown::at_host_start(Duration::from_secs(15 * 60), start, 7, true);
+            SemanticIdleShutdown::at_host_start(Duration::from_secs(15 * 60), start, 7, true);
         assert_eq!(
             shutdown.deadline(),
             Some(start + Duration::from_secs(15 * 60))
         );
         assert!(shutdown.cancel_if_user_activity(8));
 
-        let fresh = PiIdleShutdown::at_host_start(Duration::from_secs(15 * 60), start, 7, false);
+        let fresh =
+            SemanticIdleShutdown::at_host_start(Duration::from_secs(15 * 60), start, 7, false);
         assert!(fresh.deadline().is_none());
     }
 
     #[test]
-    fn activity_restarts_the_full_delay() {
-        let start = Instant::now();
-        let mut shutdown = PiIdleShutdown::new(Duration::from_secs(15 * 60));
-        shutdown.arm(start, 0);
-        shutdown.note_process_activity(start + Duration::from_secs(14 * 60));
-
-        assert!(!shutdown.due(start + Duration::from_secs(15 * 60)));
-        assert!(!shutdown.due(start + Duration::from_secs(29 * 60 - 1)));
-        assert!(shutdown.due(start + Duration::from_secs(29 * 60)));
+    fn only_supported_main_turn_completion_signals_arm_cleanup() {
+        for adapter in ["pi", "kimi"] {
+            assert!(is_semantic_turn_complete(
+                &Observation::AdapterTurnEnd {
+                    adapter: adapter.into()
+                },
+                adapter
+            ));
+        }
+        for adapter in ["claude", "codex", "qoder"] {
+            assert!(is_semantic_turn_complete(
+                &Observation::Hook("Stop".into()),
+                adapter
+            ));
+        }
+        assert!(!is_semantic_turn_complete(
+            &Observation::Hook("SubagentStop".into()),
+            "claude"
+        ));
+        assert!(!is_semantic_turn_complete(
+            &Observation::Hook("Stop".into()),
+            "shell"
+        ));
     }
 
     #[test]
-    fn activity_before_turn_end_does_not_arm_shutdown() {
-        let start = Instant::now();
-        let mut shutdown = PiIdleShutdown::new(Duration::from_secs(15 * 60));
-        shutdown.note_process_activity(start);
+    fn semantic_work_cancels_cleanup_but_idle_pty_repaints_do_not() {
+        assert!(is_semantic_turn_activity(
+            &Observation::Hook("PreToolUse".into()),
+            "qoder"
+        ));
+        assert!(!is_semantic_turn_activity(
+            &Observation::PtyActivity,
+            "qoder"
+        ));
+        assert!(!is_semantic_turn_activity(
+            &Observation::PtySilence { ms: 60_000 },
+            "qoder"
+        ));
 
-        assert!(shutdown.deadline().is_none());
+        let start = Instant::now();
+        let mut shutdown = SemanticIdleShutdown::new(Duration::from_secs(15 * 60));
+        shutdown.arm(start, 0);
+        assert!(shutdown.cancel());
         assert!(!shutdown.due(start + Duration::from_secs(60 * 60)));
+    }
+
+    #[test]
+    fn hook_snapshot_inherits_only_a_completed_exact_claude_or_qoder_turn() {
+        const SESSION_ID: &str = "ses_exact";
+        const NATIVE_ID: &str = "3322eb77-e4d5-421c-92a1-aff429b700cf";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"event\":\"Stop\",\"agentport_session_id\":\"{SESSION_ID}\"}}\n{{\"event\":\"SessionEnd\"}}\n"
+            ),
+        )
+        .unwrap();
+        let length = std::fs::metadata(&path).unwrap().len();
+        assert!(latest_hook_turn_is_complete(
+            &path, length, "qoder", SESSION_ID, NATIVE_ID
+        ));
+        assert!(!latest_hook_turn_is_complete(
+            &path,
+            length,
+            "qoder",
+            "ses_other",
+            NATIVE_ID
+        ));
+
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"{\"event\":\"SessionStart\"}\n").unwrap();
+        file.flush().unwrap();
+        let length = std::fs::metadata(&path).unwrap().len();
+        assert!(!latest_hook_turn_is_complete(
+            &path, length, "qoder", SESSION_ID, NATIVE_ID
+        ));
+
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"event\":\"Stop\",\"session_id\":\"{SESSION_ID}\",\"data\":{{\"session_id\":\"{NATIVE_ID}\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        let length = std::fs::metadata(&path).unwrap().len();
+        assert!(latest_hook_turn_is_complete(
+            &path, length, "claude", SESSION_ID, NATIVE_ID
+        ));
+        assert!(!latest_hook_turn_is_complete(
+            &path,
+            length,
+            "claude",
+            SESSION_ID,
+            "755bfca0-6dac-48ac-9bf9-1b3ccc46acfc"
+        ));
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"{\"event\":\"UserPromptSubmit\"}\n")
+            .unwrap();
+        file.flush().unwrap();
+        let length = std::fs::metadata(&path).unwrap().len();
+        assert!(!latest_hook_turn_is_complete(
+            &path, length, "claude", SESSION_ID, NATIVE_ID
+        ));
     }
 
     #[test]
     fn user_input_cancels_the_previous_turn_deadline() {
         let start = Instant::now();
-        let mut shutdown = PiIdleShutdown::new(Duration::from_secs(15 * 60));
+        let mut shutdown = SemanticIdleShutdown::new(Duration::from_secs(15 * 60));
         shutdown.arm(start, 7);
         assert!(!shutdown.cancel_if_user_activity(7));
         assert!(shutdown.cancel_if_user_activity(8));
@@ -2266,7 +2664,7 @@ mod pi_idle_shutdown_tests {
     }
 
     #[test]
-    fn completed_pi_uses_the_reduced_descendant_refresh_cadence() {
+    fn completed_semantic_turn_uses_the_reduced_descendant_refresh_cadence() {
         assert!(descendant_refresh_due(0, false));
         assert!(descendant_refresh_due(3, false));
         assert!(!descendant_refresh_due(1, false));

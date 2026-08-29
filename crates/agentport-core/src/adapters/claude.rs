@@ -49,7 +49,7 @@ fn shell_dq_escape(s: &str) -> String {
 /// except truncated JSON, which the events reader must tolerate per line.
 fn hook_command(event: &str, session_id: &str, events_path: &str) -> String {
     format!(
-        "sh -c 'IFS= read -r l; printf \"%s\\n\" \"{{\\\"event\\\":\\\"{event}\\\",\\\"session_id\\\":\\\"{sid}\\\",\\\"data\\\":$l}}\" >> \"{path}\"'",
+        "sh -c 'IFS= read -r l; t=$(date +%s); printf \"%s\\n\" \"{{\\\"event\\\":\\\"{event}\\\",\\\"session_id\\\":\\\"{sid}\\\",\\\"observed_at_unix\\\":$t,\\\"data\\\":$l}}\" >> \"{path}\"'",
         sid = shell_dq_escape(session_id),
         path = shell_dq_escape(events_path),
     )

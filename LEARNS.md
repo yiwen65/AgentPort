@@ -131,9 +131,9 @@
 - Wrong approach: Read a complete JSONL record with `read_until('\n')`, then reject it when `line.len()` exceeds the configured maximum.
 - Why it failed: The limit was checked only after the complete record had already been allocated, so one malformed or adversarial native-log line could cause an unbounded transient memory spike.
 - Recognition signal: A parser advertises a maximum line size but calls `read_line`, `.lines()`, or `read_until` into a growing buffer before comparing the resulting length.
-- Correct approach: Use `BufRead::fill_buf()` and `consume()` to retain at most the limit, drain an oversized record through its newline, and advance the opaque cursor by every consumed byte so the next page stays on a record boundary.
-- Prevention: Keep an oversized-record regression that asserts the buffer is empty after rejection and the immediately following valid JSONL record is still readable; cache bounded Provider discovery metadata once per request instead of rescanning roots for every Session.
-- Verified by: `oversized_jsonl_record_is_drained_without_losing_the_next_boundary` passes with an 8 MiB-plus record, and all six native-history tests pass after Codex ID/CWD verification and per-request Codex/Kimi discovery caching.
+- Correct approach: Use `BufRead::fill_buf()` and `consume()` to retain at most the limit, drain an oversized record through its newline, and advance the opaque cursor by every consumed byte so the next page stays on a record boundary. Polling followers must also cap bytes per poll and persist an “oversized drain” state; a bounded buffer alone still permits unbounded work or repeated rereads of the same newline-free prefix.
+- Prevention: Keep oversized-record regressions that assert the immediately following valid JSONL record is still readable and a newline-free prefix advances by only the per-poll budget; cache bounded Provider discovery metadata once per request instead of rescanning roots for every Session.
+- Verified by: Native-history oversized coverage passes with an 8 MiB-plus record; Host semantic followers additionally pass `oversized_record_is_drained_across_bounded_polls_before_the_next_event` and `hook_poller_drains_an_oversized_record_before_a_valid_stop`.
 
 ## `Pi PTY rendering` — keep full-screen redraws out of durable scrollback
 
