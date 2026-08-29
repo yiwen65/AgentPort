@@ -5,10 +5,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useStore, type EffectiveTheme } from "../store";
+import { useStore } from "../store";
 import { parseFlowchart } from "../flowchart";
-import { getTerminalPalette } from "../terminalThemes";
-import type { TerminalThemeId } from "../types";
+import { getTerminalPalette, type TerminalPalette } from "../terminalThemes";
 import FlowGraph from "./FlowGraph";
 
 let renderSeq = 0;
@@ -23,11 +22,10 @@ function withAlpha(color: string, alpha: number): string {
   return `${color}${alphaHex}`;
 }
 
-function themeVariablesFor(
-  terminalTheme: TerminalThemeId,
-  mode: EffectiveTheme,
-): Record<string, string> {
-  const { xterm, workspace } = getTerminalPalette(terminalTheme, mode);
+function themeVariablesFor({
+  xterm,
+  workspace,
+}: TerminalPalette): Record<string, string> {
   const text = workspace.headingForeground;
   return {
     background: "transparent",
@@ -65,12 +63,20 @@ function themeVariablesFor(
 
 export default function MermaidBlock({ source }: { source: string }) {
   const { t } = useTranslation("shell");
-  const theme = useStore((state) => state.themeEffective);
-  const terminalTheme = useStore(
-    (state) => state.settings?.terminalTheme ?? "one",
+  // Palette objects are module-level and stable, so returning null while the
+  // opaque Settings page is open also prevents hidden blocks from re-rendering
+  // on every theme click—not only from rerunning the Mermaid engine.
+  const terminalPalette = useStore((state) =>
+    state.dialog?.kind === "settings"
+      ? null
+      : getTerminalPalette(
+          state.settings?.terminalTheme ?? "one",
+          state.themeEffective,
+        ),
   );
   const [svg, setSvg] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const renderedSourceRef = useRef<string | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
 
   // Flowcharts render with the custom token-styled renderer; every other
@@ -79,8 +85,16 @@ export default function MermaidBlock({ source }: { source: string }) {
 
   useEffect(() => {
     if (flowGraph) return; // custom renderer owns this block
+    // Settings is an opaque full-window page while the terminal/document tree
+    // stays mounted behind it. Theme exploration can otherwise launch one
+    // non-cancellable Mermaid parse/layout per hidden block and per click.
+    // Keep the last SVG while covered, then render only the final palette when
+    // Settings closes.
+    if (!terminalPalette) return;
     let stale = false;
-    setSvg(null);
+    // Preserve a successfully rendered diagram while only its palette refreshes;
+    // clearing it here would expose a loading-state flash as Settings closes.
+    if (renderedSourceRef.current !== source) setSvg(null);
     setFailed(false);
     (async () => {
       try {
@@ -88,24 +102,31 @@ export default function MermaidBlock({ source }: { source: string }) {
         mermaid.initialize({
           startOnLoad: false,
           theme: "base",
-          themeVariables: themeVariablesFor(terminalTheme, theme),
+          themeVariables: themeVariablesFor(terminalPalette),
           flowchart: { curve: "basis" },
           // Never render raw HTML from labels — documents are untrusted.
           securityLevel: "strict",
         });
         const id = `md-mermaid-${++renderSeq}`;
         const { svg } = await mermaid.render(id, source);
-        if (!stale) setSvg(svg);
+        if (!stale) {
+          renderedSourceRef.current = source;
+          setSvg(svg);
+        }
       } catch {
         // Parse/layout errors fall back to the raw code block; mermaid also
         // leaves an error element in the DOM that we never attach.
-        if (!stale) setFailed(true);
+        if (!stale) {
+          renderedSourceRef.current = null;
+          setSvg(null);
+          setFailed(true);
+        }
       }
     })();
     return () => {
       stale = true;
     };
-  }, [source, theme, terminalTheme, flowGraph]);
+  }, [source, terminalPalette, flowGraph]);
 
   if (flowGraph) {
     return <FlowGraph graph={flowGraph} />;
