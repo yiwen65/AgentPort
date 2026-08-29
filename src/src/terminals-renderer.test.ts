@@ -2255,7 +2255,7 @@ describe("terminal renderer", () => {
     const terminal =
       rendererMocks.terminals[rendererMocks.terminals.length - 1];
     expect(terminal.write).toHaveBeenCalledWith(
-      "\x1b[?1049h\x1b[?1006h",
+      "\x1b[?1049h\x1b[?1002h\x1b[?1006h",
       undefined,
     );
     expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledWith(
@@ -2301,7 +2301,7 @@ describe("terminal renderer", () => {
     const terminal =
       rendererMocks.terminals[rendererMocks.terminals.length - 1];
     expect(terminal.write).toHaveBeenCalledWith(
-      "\x1b[?1049hserialized-screen\x1b[?1006h",
+      "\x1b[?1049hserialized-screen\x1b[?1002h\x1b[?1006h",
       undefined,
     );
     expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledWith(
@@ -2318,6 +2318,90 @@ describe("terminal renderer", () => {
       content: "\x1b[?1049hserialized-screen",
     });
     localStorage.removeItem(currentKey);
+  });
+
+  it("repairs a fullscreen Pi v2 snapshot captured without mouse tracking", () => {
+    setState({
+      projects: getState().projects.map((project) => ({
+        ...project,
+        sessions: project.sessions.map((session) => ({
+          ...session,
+          adapter: "pi",
+          agentSessionId: "pi-session",
+        })),
+      })),
+    });
+    const key = "agentport:terminal-snapshot:v2:renderer-test";
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        version: 2,
+        cursor: {
+          runId: "run_1",
+          runOrdinal: 1,
+          generation: 0,
+          offset: 1,
+        },
+        cols: 80,
+        rows: 24,
+        content: "\x1b[?1049hserialized-screen",
+        mouseEncoding: "sgr",
+      }),
+    );
+
+    mountTerminal("renderer-test", document.createElement("div"));
+
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    expect(terminal.write).toHaveBeenCalledWith(
+      "\x1b[?1049hserialized-screen\x1b[?1002h\x1b[?1006h",
+      undefined,
+    );
+    localStorage.removeItem(key);
+  });
+
+  it("preserves mouse tracking serialized by a fullscreen Pi snapshot", () => {
+    setState({
+      projects: getState().projects.map((project) => ({
+        ...project,
+        sessions: project.sessions.map((session) => ({
+          ...session,
+          adapter: "pi",
+          agentSessionId: "pi-session",
+        })),
+      })),
+    });
+    const key = "agentport:terminal-snapshot:v2:renderer-test";
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        version: 2,
+        cursor: {
+          runId: "run_1",
+          runOrdinal: 1,
+          generation: 0,
+          offset: 1,
+        },
+        cols: 80,
+        rows: 24,
+        content: "\x1b[?1049hserialized-screen\x1b[?1003h",
+        mouseEncoding: "sgr",
+      }),
+    );
+
+    mountTerminal("renderer-test", document.createElement("div"));
+
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    expect(terminal.write).toHaveBeenCalledWith(
+      "\x1b[?1049hserialized-screen\x1b[?1003h\x1b[?1006h",
+      undefined,
+    );
+    expect(terminal.write).not.toHaveBeenCalledWith(
+      expect.stringContaining("\x1b[?1003h\x1b[?1002h"),
+      undefined,
+    );
+    localStorage.removeItem(key);
   });
 
   it("restores the SGR mouse encoding that xterm's serializer omits", () => {

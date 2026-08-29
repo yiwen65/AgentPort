@@ -180,14 +180,14 @@
 - Prevention: Every new document/log/output renderer must have a regression asserting its body explicitly opts into selection when global selection is disabled.
 - Verified by: The native-history regression failed with `selectable=false`, passed after the one-line opt-in, all 305 frontend tests passed, and the rebuilt Debug App visibly formed a text selection in native history.
 
-## `xterm terminal snapshots` — persist mouse report encoding separately
+## `xterm terminal snapshots` — restore mouse tracking and report encoding independently
 
-- Wrong approach: Resume a live fullscreen TUI from `SerializeAddon.serialize()` plus its Host log cursor and assume the snapshot restores every terminal mode; also restoring SGR only when a new-format snapshot explicitly recorded it leaves cold attaches and migrated snapshots broken.
-- Why it failed: xterm serializes mouse tracking such as `DECSET 1003`, but omits the SGR/SGR-pixels report encoding (`DECSET 1006/1016`); Pi emits `1006h` only once at process start, so a bounded tail, missing snapshot, or legacy snapshot can omit it and make the renderer send default mouse reports while Pi still expects SGR, breaking wheel and drag selection together.
-- Recognition signal: The Host output contains alternate-screen, mouse tracking, and SGR enable sequences, but a GUI restart leaves the fullscreen screen visible while both wheel and drag stop working; a serialized xterm probe has `1003h` but no `1006h`.
-- Correct approach: Observe supported mouse-encoding DECSET/DECRST sequences alongside xterm parsing, store that mode in the versioned terminal snapshot, restore it before continuing from the saved log cursor, and reset the tracked mode on terminal reset/RIS. For fullscreen Pi, also restore SGR on a cold attach and repair legacy/default snapshots because their one-time launch sequence is behind the replay boundary.
-- Prevention: When a snapshot resumes after an output cursor, audit every non-content parser mode that the serializer omits; regression-test explicit snapshots, migrated snapshots, and no-snapshot bounded tails rather than relying only on visible screen equality.
-- Verified by: The active Pi stream contained one launch-time `1006h`; both cold-attach and legacy-snapshot regressions failed before the fallback and passed afterward, terminal renderer tests pass 69/69, and the frontend suite passes 333/333.
+- Wrong approach: Resume a live fullscreen TUI from `SerializeAddon.serialize()` plus its Host log cursor and assume every mouse mode is present; restoring only alternate screen (`1049h`) and SGR encoding (`1006h`) on a cold attach also looks complete but leaves tracking disabled.
+- Why it failed: Mouse tracking (`9/1000/1002/1003`) and report encoding (`1006/1016`) are independent xterm states. SerializeAddon saves active tracking but omits encoding, while bounded tails and snapshots produced after a tracking-less cold fallback can omit tracking too; enabling SGR alone leaves `mouseTrackingMode: "none"`, so wheel events never reach Pi.
+- Recognition signal: The Host output contains launch-time alternate-screen, tracking, and SGR sequences, but after a GUI restart the fullscreen screen remains visible while wheel and drag stop; replaying `1049h+1006h` in xterm yields the alternate buffer with tracking `none`.
+- Correct approach: Track and persist the omitted report encoding separately. When restoring fullscreen Pi, preserve an explicit tracking DECSET serialized at the end of a valid snapshot; otherwise append Pi's common button-motion fallback (`1002h`), then restore SGR. Reset tracked encoding on terminal reset/RIS.
+- Prevention: Regression-test no-snapshot cold attach, legacy and current snapshots missing tracking, snapshots with explicit tracking, and encoding restoration. Validate the resulting xterm mode state, not only visible screen equality.
+- Verified by: Before the fix, three renderer regressions omitted `1002h`; afterward 73/73 focused and 360/360 frontend tests passed. A real xterm 5.5 probe changed the fallback from tracking `none` to `drag`, and the rebuilt Debug App visibly scrolled the live Pi transcript from 87% to 2%.
 
 ## `Qoder exact resume` — do not reuse the launch-only Session ID flag
 

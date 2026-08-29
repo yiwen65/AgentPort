@@ -370,6 +370,23 @@ function mouseEncodingSequence(encoding: TerminalMouseEncoding): string {
   }
 }
 
+const SERIALIZED_MOUSE_TRACKING_SUFFIX =
+  /\x1b\[\?(?:9|1000|1002|1003)h$/;
+
+/** Restore the two independent parts of Pi's mouse protocol. SerializeAddon
+ * writes an active tracking mode as its final mode sequence, so preserve that
+ * choice; cold attaches and snapshots captured from the broken fallback need
+ * the button-motion mode that Pi enables in every fullscreen environment. */
+function fullscreenPiMouseProtocolSuffix(
+  serializedContent: string,
+  encoding: TerminalMouseEncoding,
+): string {
+  const tracking = SERIALIZED_MOUSE_TRACKING_SUFFIX.test(serializedContent)
+    ? ""
+    : "\x1b[?1002h";
+  return tracking + mouseEncodingSequence(encoding);
+}
+
 /** Track the mouse encoding modes that SerializeAddon does not serialize.
  * Returning false lets xterm's built-in DECSET/DECRST/RIS handlers continue
  * to own the actual terminal state. */
@@ -909,14 +926,22 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
         ? "sgr"
         : snapshot.mouseEncoding;
     handle.writes.write(
-      snapshot.content + mouseEncodingSequence(restoredMouseEncoding),
+      snapshot.content +
+        (fullscreenPi
+          ? fullscreenPiMouseProtocolSuffix(
+              snapshot.content,
+              restoredMouseEncoding,
+            )
+          : mouseEncodingSequence(restoredMouseEncoding)),
     );
     handle.historyLoaded = true;
   } else if (fullscreenPi) {
     // A bounded live tail normally omits Pi's process-start DECSET sequences.
-    // Restore both the alternate buffer and SGR encoding so xterm's serialized
-    // mouse-tracking mode sends reports in the format Pi still expects.
-    handle.writes.write("\x1b[?1049h\x1b[?1006h");
+    // Restore the alternate buffer, mouse tracking, and SGR report encoding.
+    const alternateScreen = "\x1b[?1049h";
+    handle.writes.write(
+      alternateScreen + fullscreenPiMouseProtocolSuffix(alternateScreen, "sgr"),
+    );
   }
   return handle;
 }
