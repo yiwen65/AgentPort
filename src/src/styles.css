@@ -3067,6 +3067,9 @@ body.is-resizing-split .doc-panel-resize::after {
 
 .doc-panel-modes {
   display: inline-flex;
+  /* Never shrink-clip the tabs: on tight headers the file name truncates
+     first, otherwise the icon tab gets cut by the strip's own overflow. */
+  flex: 0 0 auto;
   border: 1px solid var(--term-border);
   border-radius: 6px;
   overflow: hidden;
