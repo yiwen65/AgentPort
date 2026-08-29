@@ -2776,15 +2776,17 @@ body.is-project-dragging .tree-row.project {
 }
 
 /* VSCode-like file tree column, docked to the panel's right edge so the
-   editor sits beside the terminal. Lifted one surface step above the terminal
-   page so the tree and the preview read as two distinct zones. */
+   editor sits beside the terminal. Shares the sidebar's glass surface,
+   hairline border and row treatment so both navigation columns read as one
+   design family across themes and vibrancy modes. */
 .doc-tree {
   flex: 0 0 184px;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--border);
-  background: var(--bg-panel);
+  border-left: 1px solid var(--sidebar-border);
+  background-color: var(--sidebar-glass);
+  background-image: var(--sidebar-glass-layers, none);
 }
 
 /* Tree-only mode: pin the panel to the tree's footprint (184px + 1px
@@ -2805,7 +2807,7 @@ body.is-project-dragging .tree-row.project {
   align-items: center;
   gap: 4px;
   padding: 7px 10px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--sidebar-border);
   flex: 0 0 auto;
 }
 
@@ -2814,7 +2816,7 @@ body.is-project-dragging .tree-row.project {
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--sidebar-text-faint);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2841,7 +2843,8 @@ body.is-project-dragging .tree-row.project {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 6px 0 12px;
+  /* Side insets let rows render as pills, matching sidebar rows. */
+  padding: 6px 8px 12px;
 }
 
 .doc-tree-row {
@@ -2850,8 +2853,9 @@ body.is-project-dragging .tree-row.project {
   gap: 5px;
   width: 100%;
   border: none;
+  border-radius: 6px;
   background: transparent;
-  color: var(--text);
+  color: var(--sidebar-text);
   font-size: 12px;
   line-height: 1.35;
   padding: 4px 8px;
@@ -2867,15 +2871,21 @@ body.is-project-dragging .tree-row.project {
 }
 
 .doc-tree-row:hover {
-  background: var(--accent-soft);
+  background: var(--sidebar-row-hover);
 }
 
-/* Selected file: accent fill + a 2px leading bar so the open document stays
-   visible even when the tree column is scrolled. */
+/* Selected file: the sidebar's frosted accent chip (soft fill + hairline
+   ring + top light catch), so both navigation columns mark selection the
+   same way. */
 .doc-tree-row.selected {
-  background: var(--accent-soft);
-  color: var(--accent-text);
-  box-shadow: inset 2px 0 0 var(--accent);
+  background: var(--sidebar-row-active);
+  color: var(--sidebar-text-strong);
+  font-weight: 500;
+  box-shadow:
+    inset 0 0 0 1px var(--sidebar-active-ring),
+    inset 0 1px 0 var(--sidebar-active-highlight);
+  backdrop-filter: saturate(1.3);
+  -webkit-backdrop-filter: saturate(1.3);
 }
 
 .doc-tree-icon {
@@ -2883,7 +2893,7 @@ body.is-project-dragging .tree-row.project {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-muted);
+  color: var(--sidebar-text-faint);
 }
 
 .doc-tree-chevron {
@@ -2895,8 +2905,8 @@ body.is-project-dragging .tree-row.project {
   transform: rotate(90deg);
 }
 
-/* Entry-kind glyph: folders take the amber family, files stay one tier below
-   the label color so the name remains the strongest element on the row. */
+/* Entry-kind glyph: quiet neutral icons like the sidebar's; folders sit one
+   tier above files so the hierarchy scans without a loud accent color. */
 .doc-tree-kind {
   flex: 0 0 14px;
   display: flex;
@@ -2905,15 +2915,15 @@ body.is-project-dragging .tree-row.project {
 }
 
 .doc-tree-kind.dir {
-  color: var(--amber);
+  color: var(--sidebar-icon);
 }
 
 .doc-tree-kind.file {
-  color: var(--text-dim);
+  color: var(--sidebar-text-faint);
 }
 
-.doc-tree-row.selected .doc-tree-kind.file {
-  color: var(--accent-text);
+.doc-tree-row.selected .doc-tree-kind {
+  color: var(--sidebar-text-strong);
 }
 
 .doc-tree-name {
@@ -2935,7 +2945,7 @@ body.is-project-dragging .tree-row.project {
   bottom: 0;
   left: var(--guide-x, 11px);
   width: 1px;
-  background: var(--border);
+  background: var(--sidebar-border);
 }
 
 .doc-tree-note {
