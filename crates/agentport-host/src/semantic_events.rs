@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
@@ -22,6 +22,7 @@ use super::{HostMsg, Shared};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_JSONL_RECORD_BYTES: usize = 4 * 1024 * 1024;
+const MAX_SNAPSHOT_TAIL_BYTES: usize = MAX_JSONL_RECORD_BYTES + 64 * 1024;
 const MAX_RECORDS_PER_POLL: usize = 256;
 
 #[derive(Clone)]
@@ -45,16 +46,24 @@ enum Source {
 
 pub(crate) struct Snapshot {
     source: Source,
+    inherited_pi_turn_complete: bool,
 }
 
 impl Snapshot {
     /// Capture pre-spawn offsets so a resumed Session never replays old turns
-    /// as fresh completion notifications.
+    /// as fresh completion notifications. A completed turn belonging to the
+    /// exact resumed Pi transcript is retained only as an idle-timer hint; it
+    /// is not replayed as a new status event.
     pub(crate) fn capture(cfg: &HostConfig) -> Self {
+        let mut inherited_pi_turn_complete = false;
         let source = match (cfg.adapter_type.as_str(), cfg.transport) {
             ("pi", AgentTransport::Pty) => {
                 let directory = PathBuf::from(&cfg.session_dir).join("pi");
                 let offsets = jsonl_offsets(&directory);
+                inherited_pi_turn_complete = cfg
+                    .agent_session_id_hint
+                    .as_deref()
+                    .is_some_and(|id| pi_transcript_has_completed_turn(&directory, id));
                 Source::Pi { directory, offsets }
             }
             ("kimi", AgentTransport::Pty) => match kimi_home(cfg) {
@@ -67,7 +76,14 @@ impl Snapshot {
             },
             _ => Source::Disabled,
         };
-        Self { source }
+        Self {
+            source,
+            inherited_pi_turn_complete,
+        }
+    }
+
+    pub(crate) fn inherited_pi_turn_complete(&self) -> bool {
+        self.inherited_pi_turn_complete
     }
 }
 
@@ -202,6 +218,79 @@ fn follow_jsonl(path: &Path, offset: &mut u64, mut on_event: impl FnMut(&Value))
     }
 }
 
+/// Return true only when the exact resumed Pi transcript's latest message is
+/// an authoritative completed assistant turn. Reads are bounded to the header
+/// and a tail window so a large transcript cannot delay Host startup.
+fn pi_transcript_has_completed_turn(directory: &Path, session_id: &str) -> bool {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        path.extension().and_then(|value| value.to_str()) == Some("jsonl")
+            && pi_transcript_session_id(&path).as_deref() == Some(session_id)
+            && latest_pi_message_is_turn_end(&path)
+    })
+}
+
+fn pi_transcript_session_id(path: &Path) -> Option<String> {
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    let mut bounded = reader.take((MAX_JSONL_RECORD_BYTES + 1) as u64);
+    let mut line = Vec::new();
+    let read = bounded.read_until(b'\n', &mut line).ok()?;
+    if read == 0 || !line.ends_with(b"\n") || line.len() > MAX_JSONL_RECORD_BYTES {
+        return None;
+    }
+    let event = serde_json::from_slice::<Value>(&line).ok()?;
+    (event.get("type").and_then(Value::as_str) == Some("session"))
+        .then(|| event.get("id").and_then(Value::as_str).map(str::to_owned))
+        .flatten()
+}
+
+fn latest_pi_message_is_turn_end(path: &Path) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+        return false;
+    };
+    let start = length.saturating_sub(MAX_SNAPSHOT_TAIL_BYTES as u64);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return false;
+    }
+    let mut tail = Vec::with_capacity((length - start) as usize);
+    if file.read_to_end(&mut tail).is_err() {
+        return false;
+    }
+    if start > 0 {
+        let Some(first_newline) = tail.iter().position(|byte| *byte == b'\n') else {
+            return false;
+        };
+        tail.drain(..=first_newline);
+    }
+    // Any partial or malformed newer record makes the inherited state
+    // uncertain. Never arm cleanup from an older completed turn in that case.
+    if !tail.ends_with(b"\n") {
+        return false;
+    }
+    for line in tail.split(|byte| *byte == b'\n').rev() {
+        if line.is_empty() {
+            continue;
+        }
+        if line.len() > MAX_JSONL_RECORD_BYTES {
+            return false;
+        }
+        let Ok(event) = serde_json::from_slice::<Value>(line) else {
+            return false;
+        };
+        if event.get("type").and_then(Value::as_str) == Some("message") {
+            return is_pi_turn_end(&event);
+        }
+    }
+    false
+}
+
 fn jsonl_offsets(directory: &Path) -> HashMap<PathBuf, u64> {
     let mut offsets = HashMap::new();
     let Ok(entries) = fs::read_dir(directory) else {
@@ -296,6 +385,40 @@ fn validated_kimi_wire_path(home: &Path, entry: &Value) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resumed_pi_transcript_inherits_only_a_completed_latest_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pi-session.jsonl");
+        fs::write(
+            &path,
+            b"{\"type\":\"session\",\"id\":\"native-id\"}\n{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\"}}\n{\"type\":\"model_change\"}\n",
+        )
+        .unwrap();
+
+        assert!(pi_transcript_has_completed_turn(dir.path(), "native-id"));
+        assert!(!pi_transcript_has_completed_turn(dir.path(), "other-id"));
+
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{\"type\":\"message\",\"message\":{\"role\":\"user\"}}\n")
+            .unwrap();
+        file.flush().unwrap();
+        assert!(!pi_transcript_has_completed_turn(dir.path(), "native-id"));
+    }
+
+    #[test]
+    fn incomplete_pi_snapshot_record_makes_inherited_state_uncertain() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pi-session.jsonl");
+        fs::write(
+            &path,
+            b"{\"type\":\"session\",\"id\":\"native-id\"}\n{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\"}}\n{\"type\":\"message\"",
+        )
+        .unwrap();
+
+        assert!(!pi_transcript_has_completed_turn(dir.path(), "native-id"));
+    }
 
     #[test]
     fn recognizes_only_final_pi_assistant_messages() {

@@ -926,19 +926,27 @@ fn pi_pty_hides_only_the_first_private_session_notice() {
 }
 
 #[test]
-fn pi_pty_session_jsonl_emits_only_new_semantic_turn_ends_and_keeps_grace_period() {
+fn pi_pty_session_jsonl_inherits_completed_resume_and_emits_only_new_turn_ends() {
     let ctx = make_pi_pty_ctx("printf 'Pi TUI ready\\r\\n'; sleep 60");
     let session_dir = ctx.dir.join("pi");
     std::fs::create_dir_all(&session_dir).unwrap();
     let session_file = session_dir.join("pi-session.jsonl");
     std::fs::write(
         &session_file,
-        b"{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\"}}\n",
+        b"{\"type\":\"session\",\"id\":\"pi-native-test-id\"}\n{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\"}}\n",
     )
     .unwrap();
 
     let _guard = spawn_host(&ctx, &[]);
     wait_socket(&ctx);
+    wait_for(
+        || {
+            std::fs::read_to_string(&ctx.host_log)
+                .is_ok_and(|log| log.contains("resumed completed Pi turn; idle shutdown armed"))
+        },
+        Duration::from_secs(3),
+        "a resumed completed Pi transcript to inherit the idle timer",
+    );
     let mut conn = connect(&ctx, &ctx.session_id, TOKEN, 0);
     conn.expect_hello_ok();
     let old = conn.collect_until(Duration::from_millis(700), |_| false);

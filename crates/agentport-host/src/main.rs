@@ -227,6 +227,19 @@ impl PiIdleShutdown {
         }
     }
 
+    fn at_host_start(
+        delay: Duration,
+        now: Instant,
+        user_activity_generation: u64,
+        inherited_turn_complete: bool,
+    ) -> Self {
+        let mut shutdown = Self::new(delay);
+        if inherited_turn_complete {
+            shutdown.arm(now, user_activity_generation);
+        }
+        shutdown
+    }
+
     fn arm(&mut self, now: Instant, user_activity_generation: u64) {
         self.deadline = Some(now + self.delay);
         self.armed_user_activity_generation = user_activity_generation;
@@ -668,6 +681,7 @@ fn run() -> i32 {
     // events; a later truncation is still handled by the poller.
     let hook_start_offset = hook_snapshot_offset(&cfg.hook_events_path);
     let semantic_snapshot = semantic_events::Snapshot::capture(&cfg);
+    let inherited_pi_turn_complete = semantic_snapshot.inherited_pi_turn_complete();
 
     // PTY remains the compatibility transport. Pi's structured RPC mode uses
     // ordinary pipes exclusively so terminal control bytes and TUI prompts
@@ -870,6 +884,9 @@ fn run() -> i32 {
     });
 
     write_host_state(&shared, None);
+    // Capture before the socket accept loop starts. Input that races Host
+    // startup must differ from this generation and cancel inherited idle state.
+    let startup_user_activity_generation = shared.user_activity_generation.load(Ordering::Relaxed);
 
     // Native agent session id: launch hint wins over hook payloads (PRD 3.5).
     if let Some(hint) = cfg.agent_session_id_hint.clone() {
@@ -913,7 +930,12 @@ fn run() -> i32 {
     let _child_handle = agent_child;
     _child_handle.retain_until_host_exit();
 
-    control_loop(&shared, msg_rx)
+    control_loop(
+        &shared,
+        msg_rx,
+        inherited_pi_turn_complete,
+        startup_user_activity_generation,
+    )
 }
 
 /// Minimal host-side validation. Deliberately does NOT enforce
@@ -1074,7 +1096,12 @@ fn wait_dead(shared: &Shared, reaper: &mut Reaper, budget: Duration) -> bool {
 }
 
 /// The single state-machine owner: observations in, status events out.
-fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
+fn control_loop(
+    shared: &Arc<Shared>,
+    rx: mpsc::Receiver<HostMsg>,
+    inherited_pi_turn_complete: bool,
+    startup_user_activity_generation: u64,
+) -> i32 {
     let mut sm = StateMachine::for_run(
         &shared.cfg.session_id,
         &shared.cfg.run_id,
@@ -1093,7 +1120,15 @@ fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
     // remain wall-clock based under high-frequency PTY or hook activity.
     let tick_interval = Duration::from_secs(1);
     let mut next_tick = Instant::now() + tick_interval;
-    let mut pi_idle_shutdown = PiIdleShutdown::new(PI_IDLE_SHUTDOWN_DELAY);
+    let mut pi_idle_shutdown = PiIdleShutdown::at_host_start(
+        PI_IDLE_SHUTDOWN_DELAY,
+        Instant::now(),
+        startup_user_activity_generation,
+        inherited_pi_turn_complete,
+    );
+    if inherited_pi_turn_complete {
+        info!("resumed completed Pi turn; idle shutdown armed");
+    }
 
     loop {
         let now = Instant::now();
@@ -1148,8 +1183,7 @@ fn control_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<HostMsg>) -> i32 {
                         shared.user_activity_generation.load(Ordering::Relaxed);
                     // Capture the completed turn's descendants before reducing
                     // the defensive refresh cadence during the quiet grace.
-                    *shared.known_descendants.lock().unwrap() =
-                        descendants_of(shared.child_pid);
+                    *shared.known_descendants.lock().unwrap() = descendants_of(shared.child_pid);
                     shared.tick_count.store(1, Ordering::Relaxed);
                     pi_idle_shutdown.arm(Instant::now(), generation_at_turn_end);
                 }
@@ -2180,6 +2214,21 @@ mod pi_idle_shutdown_tests {
 
         assert!(!shutdown.due(start + Duration::from_secs(15 * 60 - 1)));
         assert!(shutdown.due(start + Duration::from_secs(15 * 60)));
+    }
+
+    #[test]
+    fn completed_turn_inherited_by_a_resumed_host_arms_the_full_delay() {
+        let start = Instant::now();
+        let mut shutdown =
+            PiIdleShutdown::at_host_start(Duration::from_secs(15 * 60), start, 7, true);
+        assert_eq!(
+            shutdown.deadline(),
+            Some(start + Duration::from_secs(15 * 60))
+        );
+        assert!(shutdown.cancel_if_user_activity(8));
+
+        let fresh = PiIdleShutdown::at_host_start(Duration::from_secs(15 * 60), start, 7, false);
+        assert!(fresh.deadline().is_none());
     }
 
     #[test]

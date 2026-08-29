@@ -242,3 +242,12 @@
 - Correct approach: Run `cargo build -p agentport-host` (or the matching `--release` build), record candidate/baseline hashes, then execute the exact hashed paths.
 - Prevention: Every Host A/B script must print and retain revision, profile, executable path, and SHA-256 before collecting samples.
 - Verified by: The stale candidate produced 4 `ps` executions in 12 seconds, identical to baseline; after an explicit build changed the binary hash, the same workload produced 1 versus 4 in all three paired runs.
+
+## `Pi idle cleanup` — exact resume must inherit completed-turn authority
+
+- Wrong approach: Start every semantic follower at transcript EOF and arm idle cleanup only from a new `AdapterTurnEnd` observed in that Host run.
+- Why it failed: Exact resume of an already completed Pi transcript emits no new TurnEnd until another prompt finishes, so a quiet resumed process can remain alive indefinitely.
+- Recognition signal: The current run has only PTY activity/silence events, while its exact native transcript ends with a high-confidence assistant `stop` from the prior run.
+- Correct approach: At startup, boundedly verify the hinted Pi transcript and use its latest committed message only as an inherited idle-timer hint; do not replay it as a new status event.
+- Prevention: Resume regressions must separately assert timer inheritance, no duplicate TurnEnd event, mismatched native IDs, incomplete records, and later user activity cancellation.
+- Verified by: Session `ses_01M1182N3M0YMGTB` remained idle for over 15 hours with no run-local TurnEnd although its exact transcript ended in assistant `stop`; the integration regression confirms a resumed completed transcript arms the timer without replaying old state.
