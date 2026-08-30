@@ -37,7 +37,22 @@ vi.mock("./terminals", () => ({
   resetForRestart: resetForRestartMock,
 }));
 
-import { restartSessionFlow, selectSession } from "./actions";
+import {
+  canSplitPaneSize,
+  canSplitSessionPane,
+  openSplitSessionDialog,
+  removeSessionPane,
+  restartSessionFlow,
+  selectSession,
+  setPaneSplitRatio,
+  splitSessionIntoPane,
+  toggleSessionPaneMaximized,
+} from "./actions";
+import {
+  orderedLayoutSessionIds,
+  singletonPaneLayout,
+  splitPane,
+} from "./paneLayout";
 import { getState, setState } from "./store";
 import type { SessionView } from "./types";
 
@@ -81,6 +96,7 @@ const projectWith = (...sessions: SessionView[]) => ([{
 describe("selectSession", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    document.body.innerHTML = "";
     // Selection persistence refreshes projects after completion. Keep that
     // unrelated background request pending so each test owns every snapshot
     // it resolves and cannot leak work into the next case.
@@ -89,7 +105,10 @@ describe("selectSession", () => {
     setState({
       projects: projectWith(oldSession),
       activeSessionId: "ses_old",
+      terminalLayout: singletonPaneLayout("ses_old"),
+      maximizedSessionId: null,
       attachedIds: ["ses_old"],
+      dialog: null,
     });
   });
 
@@ -225,5 +244,161 @@ describe("selectSession", () => {
     await vi.waitFor(() => expect(apiMock.listProjects).toHaveBeenCalledTimes(1));
     await Promise.resolve();
     expect(getState().activeSessionId).toBe("ses_rpc");
+  });
+
+  it("focuses a Session already in the layout and retains every layout PTY", () => {
+    let terminalLayout = splitPane(
+      singletonPaneLayout(oldSession.id),
+      oldSession.id,
+      newSession.id,
+      "right",
+      "outer",
+    );
+    terminalLayout = splitPane(
+      terminalLayout,
+      newSession.id,
+      rpcSession.id,
+      "down",
+      "inner",
+    );
+    setState({
+      projects: projectWith(oldSession, newSession, rpcSession),
+      terminalLayout,
+      activeSessionId: oldSession.id,
+      attachedIds: [oldSession.id, newSession.id],
+    });
+
+    selectSession(newSession.id);
+
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
+      oldSession.id,
+      newSession.id,
+      rpcSession.id,
+    ]);
+    expect(getState().activeSessionId).toBe(newSession.id);
+    expect(getState().attachedIds).toEqual([oldSession.id, newSession.id]);
+    expect(releaseTerminalMock).not.toHaveBeenCalled();
+  });
+
+  it("turns an out-of-layout selection into a singleton and releases old panes", () => {
+    const terminalLayout = splitPane(
+      singletonPaneLayout(oldSession.id),
+      oldSession.id,
+      newSession.id,
+      "right",
+      "outer",
+    );
+    setState({
+      projects: projectWith(oldSession, newSession, rpcSession),
+      terminalLayout,
+      activeSessionId: newSession.id,
+      attachedIds: [oldSession.id, newSession.id],
+    });
+
+    selectSession(rpcSession.id);
+
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
+      rpcSession.id,
+    ]);
+    expect(getState().attachedIds).toEqual([]);
+    expect(releaseTerminalMock).toHaveBeenCalledWith(oldSession.id);
+    expect(releaseTerminalMock).toHaveBeenCalledWith(newSession.id);
+  });
+
+  it("splits, moves, maximizes, resizes, and removes panes without duplication", () => {
+    setState({ projects: projectWith(oldSession, newSession, rpcSession) });
+
+    expect(splitSessionIntoPane(oldSession.id, newSession.id, "right")).toBe(true);
+    expect(splitSessionIntoPane(oldSession.id, rpcSession.id, "down")).toBe(true);
+    expect(splitSessionIntoPane(rpcSession.id, newSession.id, "down")).toBe(true);
+    const ids = orderedLayoutSessionIds(getState().terminalLayout);
+    expect(ids).toEqual([oldSession.id, rpcSession.id, newSession.id]);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(getState().activeSessionId).toBe(newSession.id);
+    expect(getState().attachedIds).toEqual([oldSession.id, newSession.id]);
+
+    expect(toggleSessionPaneMaximized(newSession.id)).toBe(true);
+    expect(getState().maximizedSessionId).toBe(newSession.id);
+    expect(toggleSessionPaneMaximized(rpcSession.id)).toBe(true);
+    expect(getState().maximizedSessionId).toBe(rpcSession.id);
+    expect(toggleSessionPaneMaximized(rpcSession.id)).toBe(true);
+    expect(getState().maximizedSessionId).toBeNull();
+
+    const root = getState().terminalLayout.root;
+    if (root?.type !== "split") throw new Error("expected split root");
+    expect(setPaneSplitRatio(root.id, 0.63)).toBe(true);
+    expect(getState().terminalLayout.root).toMatchObject({ ratio: 0.63 });
+
+    expect(removeSessionPane(rpcSession.id)).toBe(true);
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
+      oldSession.id,
+      newSession.id,
+    ]);
+    expect(getState().attachedIds).toEqual([oldSession.id, newSession.id]);
+  });
+
+  it("enforces the confirmed split minimum and opens a typed split dialog", () => {
+    expect(canSplitPaneSize("right", 646, 180)).toBe(true);
+    expect(canSplitPaneSize("right", 645, 500)).toBe(false);
+    expect(canSplitPaneSize("right", 646, 179)).toBe(false);
+    expect(canSplitPaneSize("down", 320, 366)).toBe(true);
+    expect(canSplitPaneSize("down", 800, 365)).toBe(false);
+    expect(canSplitPaneSize("down", 319, 366)).toBe(false);
+
+    expect(openSplitSessionDialog(oldSession.id, "down")).toBe(true);
+    expect(getState().dialog).toMatchObject({
+      kind: "newSession",
+      projectId: oldSession.projectId,
+      splitTargetSessionId: oldSession.id,
+      splitDirection: "down",
+    });
+  });
+
+  it("rejects a late split when the pane no longer has the minimum size", () => {
+    setState({ projects: projectWith(oldSession, newSession) });
+    const layoutElement = document.createElement("div");
+    layoutElement.className = "pane-layout";
+    Object.defineProperty(layoutElement, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ width: 645, height: 500 }),
+    });
+    document.body.append(layoutElement);
+
+    expect(splitSessionIntoPane(oldSession.id, newSession.id, "right")).toBe(false);
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([oldSession.id]);
+  });
+
+  it("checks a maximized pane against its restored layout size", () => {
+    const terminalLayout = splitPane(
+      singletonPaneLayout(oldSession.id),
+      oldSession.id,
+      newSession.id,
+      "right",
+      "outer",
+    );
+    setState({
+      projects: projectWith(oldSession, newSession),
+      terminalLayout,
+      activeSessionId: oldSession.id,
+      maximizedSessionId: oldSession.id,
+    });
+    const layoutElement = document.createElement("div");
+    layoutElement.className = "pane-layout";
+    Object.defineProperty(layoutElement, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ width: 1_000, height: 800 }),
+    });
+    const paneElement = document.createElement("div");
+    paneElement.dataset.paneSessionId = oldSession.id;
+    Object.defineProperty(paneElement, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ width: 1_000, height: 800 }),
+    });
+    document.body.append(layoutElement, paneElement);
+
+    // The maximized DOM surface is wide enough, but after restore each leaf
+    // gets only 497px, so another right split must be rejected.
+    expect(canSplitSessionPane(oldSession.id, "right")).toBe(false);
+    expect(canSplitSessionPane(oldSession.id, "down")).toBe(true);
   });
 });

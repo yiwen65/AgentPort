@@ -2,14 +2,17 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { createSessionMock, listPresetsMock } = vi.hoisted(() => ({
+const { createSessionMock, listPresetsMock, selectSessionMock, splitSessionMock } = vi.hoisted(() => ({
   createSessionMock: vi.fn(),
   listPresetsMock: vi.fn(),
+  selectSessionMock: vi.fn(),
+  splitSessionMock: vi.fn(),
 }));
 
 vi.mock("../actions", () => ({
   refreshProjects: vi.fn().mockResolvedValue(undefined),
-  selectSession: vi.fn(),
+  selectSession: selectSessionMock,
+  splitSessionIntoPane: splitSessionMock,
 }));
 
 vi.mock("../api", () => ({
@@ -27,6 +30,7 @@ describe("NewSessionDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     listPresetsMock.mockResolvedValue([]);
+    splitSessionMock.mockReturnValue(true);
     createSessionMock.mockResolvedValue({
       id: "session-1",
       attach: { hostPid: 42, childAlive: true },
@@ -80,6 +84,44 @@ describe("NewSessionDialog", () => {
     await waitFor(() => expect(createSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({ extraArgs: null }),
     ));
+  });
+
+  it("inserts a created Session into its typed split target", async () => {
+    render(
+      <NewSessionDialog
+        projectId="project-1"
+        agent="shell"
+        splitTargetSessionId="session-target"
+        splitDirection="down"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "启动" }));
+
+    await waitFor(() =>
+      expect(splitSessionMock).toHaveBeenCalledWith(
+        "session-target",
+        "session-1",
+        "down",
+      ),
+    );
+    expect(selectSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a standalone Session if the split target disappeared", async () => {
+    splitSessionMock.mockReturnValue(false);
+    render(
+      <NewSessionDialog
+        projectId="project-1"
+        agent="shell"
+        splitTargetSessionId="session-target"
+        splitDirection="right"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "启动" }));
+
+    await waitFor(() => expect(selectSessionMock).toHaveBeenCalledWith("session-1"));
   });
 
   it("restores native permission when switching away from a bypass preset", async () => {

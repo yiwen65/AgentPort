@@ -54,6 +54,18 @@ describe("terminal attach/replay veil", () => {
     );
   });
 
+  it("keeps the pane-local overlay reset stronger than the later base rule", () => {
+    const paneSelector = ".pane-terminal-renderer > :is(.term-overlay)";
+    const pane = ruleBody(
+      /\.pane-terminal-renderer > :is\(\.term-overlay\)\s*\{([^}]*)\}/,
+    );
+    expect(pane).toContain("top: 0");
+    expect(pane).toContain("padding-top: 0");
+    expect(classSpecificity(paneSelector)).toBeGreaterThan(
+      classSpecificity(".term-overlay"),
+    );
+  });
+
   it("keeps ended/interrupted overlays translucent (history stays visible)", () => {
     const base = ruleBody(/\.term-overlay\s*\{([^}]*)\}/);
     expect(base).toContain("rgba(");

@@ -19,12 +19,14 @@ import {
   applyThemeSettings,
   isMac,
   openNewSessionDialog,
+  openSplitSessionDialog,
   readLastSelectedSessionId,
   refreshProjectsSoon,
   restartSessionFlow,
   toggleSidebarCollapsed,
   selectSession,
   switchSessionByIndex,
+  toggleSessionPaneMaximized,
 } from "./actions";
 import {
   handleGitStateInvalidation,
@@ -57,6 +59,8 @@ import Toasts from "./components/Toasts";
 import ContextMenuHost from "./components/ContextMenu";
 import { ConfirmDialogHost, PromptDialogHost } from "./components/Dialogs";
 import { applyUiLanguage, i18n } from "./i18n";
+import { TERMINAL_LAYOUT_STORAGE_KEY } from "./paneLayout";
+import { paneShortcutAction } from "./paneShortcuts";
 
 const TerminalArea = lazy(() => import("./components/TerminalArea"));
 const NewSessionDialog = lazy(() => import("./components/NewSessionDialog"));
@@ -71,6 +75,14 @@ const CommandPalette = lazy(() => import("./components/CommandPalette"));
 const BranchPickerDialog = lazy(() => import("./components/BranchPickerDialog"));
 const Onboarding = lazy(() => import("./components/Onboarding"));
 const GitCenter = lazy(() => import("./components/GitCenter"));
+
+function hasPersistedTerminalLayout(): boolean {
+  try {
+    return window.localStorage.getItem(TERMINAL_LAYOUT_STORAGE_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
 
 // While the window is dragged, WKWebView recomputes the sidebar's backdrop
 // blur every frame and the glass edge shimmers. Track tauri://move with a
@@ -212,7 +224,12 @@ function useBoot() {
           readLastSelectedSessionId(),
         );
         if (notificationSession) selectSession(notificationSession.id);
-        else if (!notificationActivationPending && !getState().activeSessionId && first) {
+        else if (
+          !notificationActivationPending &&
+          !getState().activeSessionId &&
+          first &&
+          !hasPersistedTerminalLayout()
+        ) {
           selectSession(rememberedSession?.id ?? first.id, null, {
             revealInSidebar: false,
           });
@@ -295,6 +312,23 @@ function useHotkeys() {
       if (handleFontZoomKey(e)) {
         e.preventDefault();
         e.stopPropagation();
+        return;
+      }
+
+      const paneShortcut = paneShortcutAction(e, mac);
+      if (paneShortcut) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (s.activeSessionId) {
+          if (paneShortcut === "toggle-maximize") {
+            toggleSessionPaneMaximized(s.activeSessionId);
+          } else {
+            openSplitSessionDialog(
+              s.activeSessionId,
+              paneShortcut === "split-right" ? "right" : "down",
+            );
+          }
+        }
         return;
       }
 
@@ -386,6 +420,8 @@ function DialogRouter() {
           projectId={d.projectId}
           worktreeId={d.worktreeId}
           agent={d.agent}
+          splitTargetSessionId={d.splitTargetSessionId}
+          splitDirection={d.splitDirection}
         />
       );
     case "newWorktree":

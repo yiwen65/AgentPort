@@ -3,6 +3,15 @@
 // imperative, non-serializable and must survive tab switches).
 
 import { useSyncExternalStore } from "react";
+import {
+  layoutContains,
+  orderedLayoutSessionIds,
+  persistTerminalLayout,
+  prunePaneLayout,
+  readPersistedTerminalLayout,
+  singletonPaneLayout,
+} from "./paneLayout";
+import type { PaneLayout, PaneSplitDirection } from "./paneLayout";
 import type {
   AdapterInstall,
   PlatformInfo,
@@ -186,7 +195,14 @@ export function emptyGitCenterState(): GitCenterState {
 }
 
 export type DialogState =
-  | { kind: "newSession"; projectId?: string; worktreeId?: string; agent?: string }
+  | {
+      kind: "newSession";
+      projectId?: string;
+      worktreeId?: string;
+      agent?: string;
+      splitTargetSessionId?: string;
+      splitDirection?: PaneSplitDirection;
+    }
   | { kind: "newWorktree"; projectId: string }
   | { kind: "branchPicker"; projectId: string }
   | { kind: "settings" }
@@ -214,6 +230,10 @@ export interface AppState {
   indexState: string;
   exportsDir: string;
   activeSessionId: string | null;
+  /** Persisted recursive terminal workspace and its focused leaf. */
+  terminalLayout: PaneLayout;
+  /** Workspace-only maximize state; intentionally excluded from persistence. */
+  maximizedSessionId: string | null;
   /** UI-only archive intents; authoritative membership remains in projects. */
   archivingSessionIds: string[];
   /** Sessions with a live terminal pane (kept mounted, display:none toggling). */
@@ -332,6 +352,8 @@ export function persistProjectExpansion(expandedProjects: Record<string, boolean
   }
 }
 
+const persistedTerminalLayout = readPersistedTerminalLayout();
+
 const initialState: AppState = {
   ready: false,
   bootError: null,
@@ -345,7 +367,9 @@ const initialState: AppState = {
   secretBackend: "unknown",
   indexState: "unknown",
   exportsDir: "",
-  activeSessionId: null,
+  activeSessionId: persistedTerminalLayout.focusedSessionId,
+  terminalLayout: persistedTerminalLayout,
+  maximizedSessionId: null,
   archivingSessionIds: [],
   attachedIds: [],
   runtime: {},
@@ -596,6 +620,12 @@ function sessionIds(projects: ProjectView[]): Set<string> {
   return new Set(projects.flatMap((project) => project.sessions.map((session) => session.id)));
 }
 
+function sessionsById(projects: ProjectView[]): Map<string, SessionView> {
+  return new Map(
+    projects.flatMap((project) => project.sessions.map((session) => [session.id, session] as const)),
+  );
+}
+
 function retainSessionEntries<T>(entries: Record<string, T>, alive: Set<string>): Record<string, T> {
   const removed = Object.keys(entries).filter((sessionId) => !alive.has(sessionId));
   if (removed.length === 0) return entries;
@@ -604,18 +634,55 @@ function retainSessionEntries<T>(entries: Record<string, T>, alive: Set<string>)
   return next;
 }
 
-function retainAttachedIds(ids: string[], alive: Set<string>): string[] {
-  const next = ids.filter((sessionId) => alive.has(sessionId));
-  return next.length === ids.length ? ids : next;
+function sameIds(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 
-function sessionScopedState(s: AppState, alive: Set<string>): Partial<AppState> {
-  const activeSessionId = s.activeSessionId && alive.has(s.activeSessionId) ? s.activeSessionId : null;
+function sessionScopedState(
+  s: AppState,
+  projects: ProjectView[],
+  alive: Set<string>,
+): Partial<AppState> {
+  let terminalLayout = prunePaneLayout(s.terminalLayout, alive);
+  const legacyActiveSessionId =
+    s.activeSessionId && alive.has(s.activeSessionId) ? s.activeSessionId : null;
+
+  // Before pane actions existed, selection was represented only by
+  // activeSessionId. Preserve that singleton contract while making a restored
+  // pane tree authoritative whenever the active Session belongs to it.
+  if (legacyActiveSessionId && !layoutContains(terminalLayout, legacyActiveSessionId)) {
+    terminalLayout = singletonPaneLayout(legacyActiveSessionId);
+  } else if (
+    legacyActiveSessionId &&
+    terminalLayout.focusedSessionId !== legacyActiveSessionId
+  ) {
+    terminalLayout = { ...terminalLayout, focusedSessionId: legacyActiveSessionId };
+  }
+
+  const activeSessionId = terminalLayout.focusedSessionId;
+  const sessions = sessionsById(projects);
+  const nextAttachedIds = orderedLayoutSessionIds(terminalLayout).filter(
+    (sessionId) => alive.has(sessionId) && sessions.get(sessionId)?.transport === "pty",
+  );
+  const attachedIds = sameIds(s.attachedIds, nextAttachedIds)
+    ? s.attachedIds
+    : nextAttachedIds;
+  const maximizedSessionId =
+    s.maximizedSessionId && layoutContains(terminalLayout, s.maximizedSessionId)
+      ? s.maximizedSessionId
+      : null;
+
+  if (terminalLayout !== s.terminalLayout) persistTerminalLayout(terminalLayout);
   return {
     runtime: retainSessionEntries(s.runtime, alive),
-    attachedIds: retainAttachedIds(s.attachedIds, alive),
+    terminalLayout,
+    maximizedSessionId,
+    attachedIds,
     activeSessionId,
-    termSearchOpen: activeSessionId ? s.termSearchOpen : false,
+    termSearchOpen:
+      activeSessionId && activeSessionId === s.activeSessionId
+        ? s.termSearchOpen
+        : false,
   };
 }
 
@@ -652,7 +719,7 @@ export function applyProjectsSnapshot(projects: ProjectView[]) {
       collapsedWorktrees: Object.fromEntries(
         Object.entries(s.collapsedWorktrees).filter(([id]) => worktreeIds.has(id)),
       ),
-      ...sessionScopedState(s, aliveSessionIds),
+      ...sessionScopedState(s, nextProjects, aliveSessionIds),
     };
   });
 }
@@ -678,7 +745,7 @@ export function clearSessionScopedState(sessionId: string) {
   update((s) => {
     const alive = sessionIds(s.projects);
     alive.delete(sessionId);
-    return sessionScopedState(s, alive);
+    return sessionScopedState(s, s.projects, alive);
   });
 }
 

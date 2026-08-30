@@ -5,16 +5,23 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Modal from "./Modal";
 import { api, errorText, type CreateSessionArgs } from "../api";
-import { refreshProjects, selectSession } from "../actions";
+import {
+  refreshProjects,
+  selectSession,
+  splitSessionIntoPane,
+} from "../actions";
 import { agentDisplay, permissionLabel, presetDisplayName } from "../format";
 import { closeDialog, toast, useStore } from "../store";
 import { localizedNotices } from "../runtimeMessages";
+import type { PaneSplitDirection } from "../paneLayout";
 import type { AgentTransportStr, PermissionStr, Preset } from "../types";
 
 export default function NewSessionDialog(props: {
   projectId?: string;
   worktreeId?: string;
   agent?: string;
+  splitTargetSessionId?: string;
+  splitDirection?: PaneSplitDirection;
 }) {
   const { t } = useTranslation(["session", "common"]);
   const s = useStore();
@@ -97,7 +104,15 @@ export default function NewSessionDialog(props: {
       // stale until refreshed. Select only after React can resolve the Session
       // and mount its xterm pane.
       await refreshProjects();
-      selectSession(res.id);
+      const inserted =
+        props.splitTargetSessionId && props.splitDirection
+          ? splitSessionIntoPane(
+              props.splitTargetSessionId,
+              res.id,
+              props.splitDirection,
+            )
+          : false;
+      if (!inserted) selectSession(res.id);
       for (const notice of localizedNotices(res)) toast(notice, "info");
       toast(t("session:new.started", { agent: agentDisplay(agent) }), "success");
     } catch (e) {

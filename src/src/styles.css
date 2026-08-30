@@ -2765,6 +2765,289 @@ body.is-project-dragging .tree-row.project {
   position: relative;
 }
 
+/* Recursive Session pane workspace. Every leaf stays mounted while another
+   pane is maximized; CSS visibility, not React lifetime, controls painting. */
+.pane-layout {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--workspace-current);
+}
+
+.pane-split,
+.pane-split-child,
+.session-pane-leaf,
+.pane-session-surface,
+.pane-terminal-renderer {
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane-split {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  overflow: hidden;
+}
+
+.pane-split.right {
+  flex-direction: row;
+}
+
+.pane-split.down {
+  flex-direction: column;
+}
+
+.pane-split-child {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.pane-split-child.second {
+  flex: 1 1 0;
+}
+
+.pane-split-child.max-hidden,
+.session-pane-leaf.max-hidden {
+  display: none !important;
+}
+
+.pane-split.maximized-path > .pane-split-child:not(.max-hidden) {
+  flex: 1 1 auto !important;
+  flex-basis: auto !important;
+}
+
+.pane-split.maximized-path > .pane-divider {
+  display: none;
+}
+
+.session-pane-leaf {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--workspace-current);
+  box-shadow: inset 0 0 0 1px transparent;
+}
+
+.session-pane-leaf.focused {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 72%, transparent);
+}
+
+.pane-header {
+  z-index: 10;
+  flex: 0 0 31px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 9px;
+  border-bottom: 1px solid var(--term-border);
+  background: color-mix(in srgb, var(--term-surface-raised) 88%, var(--workspace-current));
+  color: var(--term-muted);
+  font-size: 11px;
+  user-select: none;
+}
+
+.session-pane-leaf.focused > .pane-header {
+  color: var(--term-text);
+  background: color-mix(in srgb, var(--term-accent) 7%, var(--term-surface-raised));
+}
+
+.pane-agent-icon {
+  flex: none;
+  display: block;
+}
+
+.pane-agent-icon svg {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.pane-header .dot {
+  flex: none;
+}
+
+.pane-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.pane-focused-label {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: 9px;
+}
+
+.pane-header-spacer {
+  flex: 1;
+}
+
+.pane-header-action {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: 14px/1 var(--font-ui);
+}
+
+.pane-header-action:hover,
+.pane-header-action:focus-visible {
+  background: var(--bg-hover);
+  color: var(--term-text);
+}
+
+.pane-session-surface {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pane-session-surface > .pi-rpc-workspace {
+  width: 100%;
+}
+
+.pane-terminal-renderer {
+  position: relative;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.pane-terminal-renderer > :is(.term-overlay) {
+  top: 0;
+  padding-top: 0;
+}
+
+.pane-divider {
+  position: relative;
+  z-index: 12;
+  flex: none;
+  touch-action: none;
+  outline: none;
+}
+
+.pane-divider.right {
+  width: 6px;
+  cursor: col-resize;
+}
+
+.pane-divider.down {
+  height: 6px;
+  cursor: row-resize;
+}
+
+.pane-divider::after {
+  content: "";
+  position: absolute;
+  background: var(--term-border);
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.pane-divider.right::after {
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
+}
+
+.pane-divider.down::after {
+  right: 0;
+  bottom: 2px;
+  left: 0;
+  height: 1px;
+}
+
+.pane-divider:hover::after,
+.pane-divider:focus-visible::after,
+body.is-resizing-pane .pane-divider::after {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+body.is-resizing-pane {
+  user-select: none;
+}
+
+.pane-drop-overlay {
+  position: absolute;
+  z-index: 30;
+  inset: 31px 0 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--workspace-current) 68%, transparent);
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+}
+
+.session-pane-leaf:not(:has(> .pane-header)) > .pane-drop-overlay {
+  top: 0;
+}
+
+.pane-drop-zone {
+  display: grid;
+  place-items: center;
+  border: 1px dashed color-mix(in srgb, var(--accent) 70%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  color: var(--accent-text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.pane-drop-zone.right {
+  border-left-style: solid;
+}
+
+.pane-drop-zone.down {
+  border-bottom-style: solid;
+}
+
+.pane-drop-zone.disabled {
+  border-color: var(--term-border);
+  background: color-mix(in srgb, var(--term-surface-raised) 72%, transparent);
+  color: var(--term-muted);
+  opacity: 0.58;
+}
+
+/* Secondary sidebar state for Sessions visible in a non-focused pane. */
+.tree-row.session.in-pane-layout {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 44%, transparent);
+}
+
+.tree-row.session.dragging-pane-session {
+  opacity: 0.58;
+}
+
+.pane-layout-indicator {
+  flex: none;
+  color: var(--accent-text);
+  font-size: 11px;
+  line-height: 1;
+}
+
 /* Document viewer split (opened from terminal document links). */
 .doc-panel {
   position: relative;

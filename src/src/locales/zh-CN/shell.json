@@ -14,5 +14,23 @@
     "paste": "粘贴",
     "selectAll": "全选",
     "search": "查找…"
+  },
+  "pane": {
+    "workspaceLabel": "终端分屏工作区",
+    "headerLabel": "“{{title}}”的分屏操作",
+    "splitRight": "向右分屏",
+    "splitDown": "向下分屏",
+    "maximize": "最大化分屏",
+    "restore": "恢复分屏布局",
+    "remove": "从分屏移除",
+    "inLayout": "已在分屏中",
+    "dragLabel": "拖动 Session“{{title}}”",
+    "dropRight": "放到右侧",
+    "dropDown": "放到下方",
+    "tooSmall": "当前空间太小，无法继续分屏",
+    "resizeVertical": "调整垂直分隔线",
+    "resizeHorizontal": "调整水平分隔线",
+    "resizeHint": "拖动调整分屏大小；使用方向键微调",
+    "focused": "当前聚焦分屏"
   }
 }

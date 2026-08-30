@@ -55,6 +55,8 @@ import {
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { openGitCenter } from "../gitCenter";
+import { layoutContains } from "../paneLayout";
+import { writeSessionPaneDragPayload } from "../paneSessionDrag";
 import {
   moveProjectInLayout,
   projectDropTarget,
@@ -634,11 +636,15 @@ function worktreeMenu(
 function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
   const active = useStore((state) => state.activeSessionId === ses.id);
+  const inPaneLayout = useStore((state) =>
+    layoutContains(state.terminalLayout, ses.id),
+  );
   const pinned = ses.pinnedAt !== null;
   const suspended = useStore(
     (state) => state.runtime[ses.id]?.suspended === true,
   );
   const [editing, setEditing] = useState(false);
+  const [draggingPaneSession, setDraggingPaneSession] = useState(false);
   const [draftTitle, setDraftTitle] = useState(ses.title);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -698,8 +704,21 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
       className={
         "tree-row session" +
         (nested ? " nested" : "") +
-        (active ? " active" : "")
+        (active ? " active" : "") +
+        (inPaneLayout && !active ? " in-pane-layout" : "") +
+        (draggingPaneSession ? " dragging-pane-session" : "")
       }
+      draggable={!editing}
+      data-pane-drag-label={t("shell:pane.dragLabel", { title: ses.title })}
+      onDragStart={(event) => {
+        if (editing) {
+          event.preventDefault();
+          return;
+        }
+        writeSessionPaneDragPayload(event.dataTransfer, ses.id);
+        setDraggingPaneSession(true);
+      }}
+      onDragEnd={() => setDraggingPaneSession(false)}
       onClick={() => selectSession(ses.id)}
       onDoubleClick={() => setEditing(true)}
       onContextMenu={(e) => {
@@ -780,6 +799,15 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
           <IconArchive />
         </span>
       </span>
+      {inPaneLayout && !active ? (
+        <span
+          className="pane-layout-indicator"
+          aria-label={t("shell:pane.inLayout")}
+          data-tip={t("shell:pane.inLayout")}
+        >
+          ▦
+        </span>
+      ) : null}
       <span
         className="session-age"
         aria-label={t("session:ui.sidebar.createdAt", { date: ses.createdAt })}

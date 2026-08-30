@@ -35,7 +35,6 @@ import {
   clearUnreadOutputTracking,
   disposeHandle,
   jumpToRecoveryOutput,
-  MAX_PERSISTENT_TERMINALS,
   pruneHandles,
   releaseTerminal,
   resetForRestart,
@@ -43,6 +42,24 @@ import {
 import { agentDisplay } from "./format";
 import { i18n } from "./i18n";
 import { applyTerminalThemeCss } from "./terminalThemes";
+import {
+  focusPane,
+  layoutContains,
+  movePane,
+  orderedLayoutSessionIds,
+  paneLayoutFitsSize,
+  paneSessionSize,
+  persistTerminalLayout,
+  removePane,
+  samePaneLayout,
+  singletonPaneLayout,
+  splitPane,
+  updateSplitRatio,
+  MIN_PANE_HEIGHT,
+  MIN_PANE_WIDTH,
+  type PaneLayout,
+  type PaneSplitDirection,
+} from "./paneLayout";
 import type {
   LogCursorView,
   ProjectLayoutEntry,
@@ -270,6 +287,125 @@ export function toggleSidebarCollapsed() {
 // session selection
 // ---------------------------------------------------------------------------
 
+export const PANE_SEPARATOR_SIZE = 6;
+
+export function canSplitPaneSize(
+  direction: PaneSplitDirection,
+  width: number,
+  height: number,
+): boolean {
+  if (width < MIN_PANE_WIDTH || height < MIN_PANE_HEIGHT) return false;
+  return direction === "right"
+    ? width >= MIN_PANE_WIDTH * 2 + PANE_SEPARATOR_SIZE
+    : height >= MIN_PANE_HEIGHT * 2 + PANE_SEPARATOR_SIZE;
+}
+
+function paneElement(sessionId: string): HTMLElement | null {
+  if (typeof document === "undefined") return null;
+  return Array.from(
+    document.querySelectorAll<HTMLElement>("[data-pane-session-id]"),
+  ).find((element) => element.dataset.paneSessionId === sessionId) ?? null;
+}
+
+function paneWorkspaceRect(): DOMRect | null {
+  if (typeof document === "undefined") return null;
+  return document.querySelector<HTMLElement>(".pane-layout")
+    ?.getBoundingClientRect() ?? null;
+}
+
+export function canSplitSessionPane(
+  sessionId: string,
+  direction: PaneSplitDirection,
+): boolean {
+  const state = getState();
+  const workspaceRect = paneWorkspaceRect();
+  if (state.terminalLayout.root && workspaceRect) {
+    const logicalSize = paneSessionSize(
+      state.terminalLayout.root,
+      sessionId,
+      workspaceRect.width,
+      workspaceRect.height,
+      PANE_SEPARATOR_SIZE,
+    );
+    if (logicalSize) {
+      return canSplitPaneSize(direction, logicalSize.width, logicalSize.height);
+    }
+  }
+  const element = paneElement(sessionId);
+  if (!element) return true;
+  const rect = element.getBoundingClientRect();
+  return canSplitPaneSize(direction, rect.width, rect.height);
+}
+
+function paneLayoutFitsWorkspace(layout: PaneLayout): boolean {
+  if (!layout.root) return true;
+  const workspaceRect = paneWorkspaceRect();
+  return !workspaceRect || paneLayoutFitsSize(
+    layout.root,
+    workspaceRect.width,
+    workspaceRect.height,
+    PANE_SEPARATOR_SIZE,
+  );
+}
+
+function attachedPtyIdsForLayout(
+  layout: PaneLayout,
+  projects = getState().projects,
+): string[] {
+  return orderedLayoutSessionIds(layout).filter(
+    (sessionId) => findSession(projects, sessionId)?.transport === "pty",
+  );
+}
+
+function releaseIdsOutside(previousIds: string[], nextIds: string[]) {
+  const retained = new Set(nextIds);
+  for (const sessionId of previousIds) {
+    if (!retained.has(sessionId)) void releaseTerminal(sessionId);
+  }
+}
+
+function acknowledgeSession(id: string) {
+  rememberSelectedSessionId(id);
+  clearUnreadOutputTracking(id);
+  const session = findSession(getState().projects, id);
+  void api
+    .markSessionSeen(id, session?.status ?? null)
+    .then(refreshProjects)
+    .catch(() => undefined);
+}
+
+function commitPaneLayout(
+  terminalLayout: PaneLayout,
+  options: {
+    maximizedSessionId?: string | null;
+    acknowledgeFocused?: boolean;
+  } = {},
+) {
+  const current = getState();
+  const activeSessionId = terminalLayout.focusedSessionId;
+  const attachedIds = attachedPtyIdsForLayout(terminalLayout, current.projects);
+  const maximizedSessionId =
+    options.maximizedSessionId !== undefined
+      ? options.maximizedSessionId
+      : current.maximizedSessionId &&
+          layoutContains(terminalLayout, current.maximizedSessionId)
+        ? current.maximizedSessionId
+        : null;
+  setState({
+    terminalLayout,
+    activeSessionId,
+    attachedIds,
+    maximizedSessionId,
+    termSearchOpen:
+      activeSessionId && activeSessionId === current.activeSessionId
+        ? current.termSearchOpen
+        : false,
+  });
+  persistTerminalLayout(terminalLayout);
+  releaseIdsOutside(current.attachedIds, attachedIds);
+  if (options.acknowledgeFocused && activeSessionId) acknowledgeSession(activeSessionId);
+}
+
 export function selectSession(
   id: string,
   recoveryTarget: LogCursorView | null = null,
@@ -293,24 +429,13 @@ export function selectSession(
   }
   const ses = findSession(s.projects, id);
   const sessionLive = ses?.lifecycle === "creating" || ses?.lifecycle === "running";
-  // Treat mounted PTY panes as an LRU. Each keeps xterm scrollback and a live
-  // IPC channel. Structured JSON-RPC Sessions own a separate attachment and
-  // must never acquire a hidden xterm channel. Retaining every PTY Session can
-  // turn a long workday into hundreds of MiB of renderer memory.
-  const existingPtyIds =
-    ses?.transport === "pty"
-      ? s.attachedIds.filter((sessionId) => {
-          const attachedSession = findSession(s.projects, sessionId);
-          return sessionId !== id && attachedSession?.transport === "pty";
-        })
-      : [];
-  const orderedIds =
-    ses?.transport === "pty" ? [...existingPtyIds, id] : existingPtyIds;
-  const attachedIds = orderedIds.slice(-MAX_PERSISTENT_TERMINALS);
-  const retainedIds = new Set(attachedIds);
-  const evictedIds = s.attachedIds.filter(
-    (sessionId) => !retainedIds.has(sessionId),
-  );
+  const wasInLayout = layoutContains(s.terminalLayout, id);
+  const terminalLayout = wasInLayout
+    ? focusPane(s.terminalLayout, id)
+    : singletonPaneLayout(id);
+  const attachedIds = attachedPtyIdsForLayout(terminalLayout, s.projects);
+  const maximizedSessionId =
+    wasInLayout && s.maximizedSessionId ? id : null;
   const revealInSidebar = options.revealInSidebar !== false;
   const proj = findProjectOf(s.projects, id);
   const expandedProjects =
@@ -324,14 +449,16 @@ export function selectSession(
   }
   setState({
     activeSessionId: id,
+    terminalLayout,
+    maximizedSessionId,
     attachedIds,
     expandedProjects,
     collapsedWorktrees,
     termSearchOpen: false,
   });
-  rememberSelectedSessionId(id);
-  for (const evictedId of evictedIds) void releaseTerminal(evictedId);
-  clearUnreadOutputTracking(id);
+  persistTerminalLayout(terminalLayout);
+  releaseIdsOutside(s.attachedIds, attachedIds);
+  acknowledgeSession(id);
   if (recoveryTarget && ses?.transport === "pty" && sessionLive) {
     void jumpToRecoveryOutput(id, recoveryTarget).catch((error) => {
       toast(
@@ -342,12 +469,112 @@ export function selectSession(
       );
     });
   }
-  // Confirm the view in persistent state; merely hiding the dot for the
-  // active row would make it reappear as soon as the user switches away.
-  void api
-    .markSessionSeen(id, findSession(s.projects, id)?.status ?? null)
-    .then(refreshProjects)
-    .catch(() => undefined);
+}
+
+export function openSplitSessionDialog(
+  targetSessionId: string,
+  direction: PaneSplitDirection,
+): boolean {
+  const state = getState();
+  const target = findSession(state.projects, targetSessionId);
+  if (!target || !layoutContains(state.terminalLayout, targetSessionId)) return false;
+  if (!canSplitSessionPane(targetSessionId, direction)) {
+    toast(i18n.t("shell:pane.tooSmall"), "info");
+    return false;
+  }
+  selectSession(targetSessionId);
+  openDialog({
+    kind: "newSession",
+    projectId: target.projectId,
+    worktreeId: target.worktreeId ?? undefined,
+    splitTargetSessionId: targetSessionId,
+    splitDirection: direction,
+  });
+  return true;
+}
+
+export function splitSessionIntoPane(
+  targetSessionId: string,
+  sessionId: string,
+  direction: PaneSplitDirection,
+): boolean {
+  const state = getState();
+  if (
+    targetSessionId === sessionId ||
+    !findSession(state.projects, targetSessionId) ||
+    !findSession(state.projects, sessionId) ||
+    !layoutContains(state.terminalLayout, targetSessionId)
+  ) {
+    return false;
+  }
+  const terminalLayout = layoutContains(state.terminalLayout, sessionId)
+    ? movePane(state.terminalLayout, sessionId, targetSessionId, direction)
+    : splitPane(state.terminalLayout, targetSessionId, sessionId, direction);
+  if (!layoutContains(terminalLayout, sessionId)) return false;
+  if (!samePaneLayout(terminalLayout, state.terminalLayout)) {
+    if (!paneLayoutFitsWorkspace(terminalLayout)) {
+      toast(i18n.t("shell:pane.tooSmall"), "info");
+      return false;
+    }
+    commitPaneLayout(terminalLayout, {
+      maximizedSessionId: null,
+      acknowledgeFocused: true,
+    });
+  } else if (terminalLayout.focusedSessionId === sessionId) {
+    acknowledgeSession(sessionId);
+  }
+  return true;
+}
+
+export function removeSessionPane(sessionId: string): boolean {
+  const state = getState();
+  if (!layoutContains(state.terminalLayout, sessionId)) return false;
+  const terminalLayout = removePane(state.terminalLayout, sessionId);
+  if (samePaneLayout(terminalLayout, state.terminalLayout)) return false;
+  commitPaneLayout(terminalLayout, {
+    maximizedSessionId:
+      state.maximizedSessionId === sessionId ? null : state.maximizedSessionId,
+    acknowledgeFocused:
+      terminalLayout.focusedSessionId !== null &&
+      terminalLayout.focusedSessionId !== state.activeSessionId,
+  });
+  return true;
+}
+
+export function toggleSessionPaneMaximized(sessionId: string): boolean {
+  const state = getState();
+  if (!layoutContains(state.terminalLayout, sessionId)) return false;
+  if (orderedLayoutSessionIds(state.terminalLayout).length <= 1) return false;
+  const maximizedSessionId =
+    state.maximizedSessionId === sessionId ? null : sessionId;
+  const terminalLayout = focusPane(state.terminalLayout, sessionId);
+  setState({
+    terminalLayout,
+    activeSessionId: sessionId,
+    maximizedSessionId,
+    termSearchOpen:
+      state.activeSessionId === sessionId ? state.termSearchOpen : false,
+  });
+  persistTerminalLayout(terminalLayout);
+  if (state.activeSessionId !== sessionId) acknowledgeSession(sessionId);
+  return true;
+}
+
+export function setPaneSplitRatio(
+  splitId: string,
+  ratio: number,
+  persist = true,
+): boolean {
+  const state = getState();
+  const terminalLayout = updateSplitRatio(state.terminalLayout, splitId, ratio);
+  if (terminalLayout === state.terminalLayout) return false;
+  setState({ terminalLayout });
+  if (persist) persistTerminalLayout(terminalLayout);
+  return true;
+}
+
+export function persistCurrentPaneLayout() {
+  persistTerminalLayout(getState().terminalLayout);
 }
 
 export function switchSessionByIndex(index: number) {

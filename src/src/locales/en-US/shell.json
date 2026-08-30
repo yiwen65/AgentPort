@@ -14,5 +14,23 @@
     "paste": "Paste",
     "selectAll": "Select All",
     "search": "Find…"
+  },
+  "pane": {
+    "workspaceLabel": "Terminal split workspace",
+    "headerLabel": "Split pane controls for “{{title}}”",
+    "splitRight": "Split right",
+    "splitDown": "Split down",
+    "maximize": "Maximize pane",
+    "restore": "Restore split layout",
+    "remove": "Remove from split",
+    "inLayout": "In split layout",
+    "dragLabel": "Drag Session “{{title}}”",
+    "dropRight": "Drop to the right",
+    "dropDown": "Drop below",
+    "tooSmall": "This area is too small to split",
+    "resizeVertical": "Resize the vertical divider",
+    "resizeHorizontal": "Resize the horizontal divider",
+    "resizeHint": "Drag to resize panes; use the arrow keys for fine adjustments",
+    "focused": "Focused pane"
   }
 }
