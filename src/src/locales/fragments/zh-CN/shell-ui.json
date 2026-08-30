@@ -122,8 +122,6 @@
       "treeNoRoot": "选择一个 Session 后浏览其项目目录",
       "refreshTree": "刷新目录树",
       "refreshTreeTip": "重新读取目录内容",
-      "closeTree": "关闭目录树",
-      "closeTreeTip": "隐藏项目文件目录树",
       "newFile": "新建文件",
       "newFileTip": "在当前目录下新建文件",
       "newDir": "新建文件夹",

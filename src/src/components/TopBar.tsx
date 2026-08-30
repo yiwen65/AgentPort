@@ -184,7 +184,6 @@ export default function TopBar() {
         >
           <IconSidebarToggle collapsed={sidebarCollapsed} />
         </button>
-        <ExplorerToggleButton />
         <button
           className="window-control sidebar-toggle"
           onClick={() => {
@@ -209,17 +208,20 @@ export default function TopBar() {
           </>
         ) : null}
       </div>
-      <button
-        className="window-control terminal-menu"
-        onClick={(e) => openSurfaceMenu(e.currentTarget)}
-        aria-label={t("shell:ui.topBar.workspaceMenu")}
-        aria-haspopup="menu"
-        data-tauri-drag-region="false"
-      >
-        <IconTerminal />
-        <span className="window-control-divider" aria-hidden="true" />
-        <IconChevron />
-      </button>
+      <div className="topbar-trailing" data-tauri-drag-region="false">
+        <ExplorerToggleButton />
+        <button
+          className="window-control terminal-menu"
+          onClick={(e) => openSurfaceMenu(e.currentTarget)}
+          aria-label={t("shell:ui.topBar.workspaceMenu")}
+          aria-haspopup="menu"
+          data-tauri-drag-region="false"
+        >
+          <IconTerminal />
+          <span className="window-control-divider" aria-hidden="true" />
+          <IconChevron />
+        </button>
+      </div>
     </header>
   );
 }

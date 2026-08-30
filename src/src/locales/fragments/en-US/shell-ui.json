@@ -122,8 +122,6 @@
       "treeNoRoot": "Select a session to browse its project directory",
       "refreshTree": "Refresh file tree",
       "refreshTreeTip": "Read directory contents again",
-      "closeTree": "Close file tree",
-      "closeTreeTip": "Hide the project file tree",
       "newFile": "New file",
       "newFileTip": "Create a new file under the current directory",
       "newDir": "New folder",

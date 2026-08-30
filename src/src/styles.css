@@ -408,6 +408,14 @@ button {
   margin-top: 4px;
 }
 
+/* Right-side controls: the file-area toggle lives here next to the panel it
+   controls, one icon for the whole open/close operation. */
+.topbar-trailing {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .window-control {
   display: flex;
   align-items: center;

@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api, errorText } from "../api";
-import { closeExplorer, openDocumentTarget } from "../documents";
+import { openDocumentTarget } from "../documents";
 import { writeDragPayload } from "../terminalDrop";
 import { useStore } from "../store";
 import type { DocumentDirEntry } from "../types";
@@ -303,14 +303,6 @@ export default function DocumentTree() {
           onClick={() => setRefreshToken((token) => token + 1)}
         >
           ⟳
-        </button>
-        <button
-          className="btn small ghost"
-          data-tip={t("ui.document.closeTreeTip")}
-          aria-label={t("ui.document.closeTree")}
-          onClick={() => closeExplorer()}
-        >
-          ✕
         </button>
       </div>
       <div className="doc-tree-body" role="tree">
