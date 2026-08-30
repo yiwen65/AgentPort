@@ -104,7 +104,7 @@ describe("formatSelectionReference", () => {
         startLine: 3,
         endLine: 3,
       }),
-    ).toBe("/Users/w/docs/报告.md:3 ");
+    ).toBe("@/Users/w/docs/报告.md:3 ");
   });
 
   it("uses start-end for ranges and collapses single-line ranges", () => {
@@ -114,14 +114,14 @@ describe("formatSelectionReference", () => {
         startLine: 2,
         endLine: 5,
       }),
-    ).toBe("/a/b.md:2-5 ");
+    ).toBe("@/a/b.md:2-5 ");
     expect(
       formatSelectionReference({
         path: "/a/b.md",
         startLine: 2,
         endLine: 2,
       }),
-    ).toBe("/a/b.md:2 ");
+    ).toBe("@/a/b.md:2 ");
   });
 
   it("falls back to the bare path when line info is missing (preview)", () => {
@@ -131,7 +131,7 @@ describe("formatSelectionReference", () => {
         startLine: null,
         endLine: null,
       }),
-    ).toBe("/a/b.md ");
+    ).toBe("@/a/b.md ");
   });
 
 });

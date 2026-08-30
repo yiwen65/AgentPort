@@ -314,7 +314,7 @@ describe("DocumentPanel", () => {
 
     expect(insertMock).toHaveBeenCalledWith(
       "ses_quote",
-      `${DEMO_DOC.path}:3 `,
+      `@${DEMO_DOC.path}:3 `,
     );
   });
 });

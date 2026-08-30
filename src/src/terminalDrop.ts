@@ -148,12 +148,12 @@ export function formatSelectionReference(opts: {
   endLine: number | null;
 }): string {
   // Reference-only: the agent opens the file itself, so quoting never pastes
-  // the selected text. `path:10-12` for a range, `path:10` for one line,
-  // bare `path` when the selection has no line info (preview).
+  // the selected text. `@path:10-12` for a range, `@path:10` for one line,
+  // bare `@path` when the selection has no line info (preview).
   const location = opts.startLine
     ? `:${opts.startLine}${
         opts.endLine && opts.endLine !== opts.startLine ? `-${opts.endLine}` : ""
       }`
     : "";
-  return `${opts.path}${location} `;
+  return `@${opts.path}${location} `;
 }
