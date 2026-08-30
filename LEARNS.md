@@ -269,3 +269,12 @@
 - Correct approach: At startup, boundedly verify the hinted Pi transcript and use its latest committed message only as an inherited idle-timer hint; do not replay it as a new status event.
 - Prevention: Resume regressions must separately assert timer inheritance, no duplicate TurnEnd event, mismatched native IDs, incomplete records, and later user activity cancellation.
 - Verified by: Session `ses_01M1182N3M0YMGTB` remained idle for over 15 hours with no run-local TurnEnd although its exact transcript ended in assistant `stop`; the integration regression confirms a resumed completed transcript arms the timer without replaying old state.
+
+## `xterm remote input` — a committed InputEvent ends synthetic key hold
+
+- Wrong approach: Arm an unbounded local key-repeat timer on every printable `keydown` and rely on a matching `keyup`, blur, or later keydown to cancel it even when a remote/mobile keyboard also commits text through `InputEvent`.
+- Why it failed: The committed input could take the “xterm already forwarded this keydown” de-duplication return without stopping the timer; if the remote path omitted the matching keyup, the interval then sent the final character every 40 ms indefinitely.
+- Recognition signal: Typing through remote control works initially, then the last character repeats after the 500 ms hold delay until another cancellation event occurs.
+- Correct approach: For a non-composing `insertText` commit with data, stop synthetic repeat before any forwarding/de-duplication branch; leave keydown-only local holds on the existing repeat path.
+- Prevention: Keep regressions for both xterm-forwarded and fallback-forwarded remote commits with no keyup, plus a neighboring local keydown-only hold that still repeats until keyup.
+- Verified by: Both remote event-sequence tests repeated after 550 ms before the fix and passed afterward; the complete terminal renderer suite passes 89/89 and the packaged Debug App renders normally.

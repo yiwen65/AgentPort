@@ -1712,6 +1712,12 @@ function installInputCompatibility(
     if (!(event instanceof InputEvent)) return;
     if (!event.data || event.inputType !== "insertText" || event.isComposing)
       return;
+    // Remote/mobile keyboards can commit text without a matching keyup. Treat
+    // that commit as the end of the logical keystroke so our local hold
+    // fallback cannot repeat the final character indefinitely. Do this before
+    // the de-duplication return below, because xterm may already have forwarded
+    // the keydown that corresponds to this input event.
+    stopRepeat();
     const data = event.data;
     const generationAtInput = forwardedGeneration;
     const keyDown = pendingKeyDown;

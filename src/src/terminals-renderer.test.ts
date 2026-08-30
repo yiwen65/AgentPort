@@ -1419,6 +1419,115 @@ describe("terminal renderer", () => {
     });
   });
 
+  it("stops synthetic repeat when remote text commits after xterm handled its keydown", async () => {
+    const container = document.createElement("div");
+    mountTerminal("renderer-test", container);
+    await vi.waitFor(() =>
+      expect(getState().runtime["renderer-test"]?.attached).toBe(true),
+    );
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.textarea?.addEventListener("keydown", () =>
+      terminal.emitData("a"),
+    );
+    vi.useFakeTimers();
+
+    terminal.textarea?.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "a",
+        code: "KeyA",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    terminal.textarea?.dispatchEvent(
+      new InputEvent("input", {
+        data: "a",
+        inputType: "insertText",
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      }),
+    );
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(550);
+
+    expect(terminal.input).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.sendInput).toHaveBeenCalledOnce(),
+    );
+  });
+
+  it("forwards remote committed text once without repeating after a missing keyup", async () => {
+    const container = document.createElement("div");
+    mountTerminal("renderer-test", container);
+    await vi.waitFor(() =>
+      expect(getState().runtime["renderer-test"]?.attached).toBe(true),
+    );
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    vi.useFakeTimers();
+
+    terminal.textarea?.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "d",
+        code: "KeyD",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    terminal.textarea?.dispatchEvent(
+      new InputEvent("input", {
+        data: "d",
+        inputType: "insertText",
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      }),
+    );
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(550);
+
+    expect(terminal.input).toHaveBeenCalledOnce();
+    expect(terminal.input).toHaveBeenCalledWith("d");
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.sendInput).toHaveBeenCalledOnce(),
+    );
+  });
+
+  it("keeps synthetic repeat for a local held key until its keyup", async () => {
+    const container = document.createElement("div");
+    mountTerminal("renderer-test", container);
+    await vi.waitFor(() =>
+      expect(getState().runtime["renderer-test"]?.attached).toBe(true),
+    );
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    vi.useFakeTimers();
+
+    terminal.textarea?.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "s",
+        code: "KeyS",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(541);
+
+    expect(terminal.input).toHaveBeenCalledOnce();
+    terminal.textarea?.dispatchEvent(
+      new KeyboardEvent("keyup", {
+        key: "s",
+        code: "KeyS",
+        bubbles: true,
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(terminal.input).toHaveBeenCalledOnce();
+  });
+
   it("does not use terminal-generated OSC color replies for the automatic title", async () => {
     mountTerminal("renderer-test", document.createElement("div"));
     await vi.waitFor(() =>
