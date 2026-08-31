@@ -935,15 +935,6 @@ function paneContextItems(
         },
       },
       { label: "", separator: true },
-      {
-        label: t("shell:terminal.selectAll"),
-        action: () => getHandle(ses.id)?.term.selectAll(),
-      },
-      {
-        label: t("shell:terminal.search"),
-        action: () => setState({ termSearchOpen: true }),
-      },
-      { label: "", separator: true },
     );
   }
   items.push(

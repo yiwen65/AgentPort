@@ -273,7 +273,7 @@ describe("TerminalArea recursive panes", () => {
     expect(view.container.querySelectorAll(".pane-split.maximized-path")).toHaveLength(2);
   });
 
-  it("extends the PTY context menu without losing clipboard and search commands", () => {
+  it("keeps clipboard, pane, and stop actions in the PTY context menu", () => {
     const { container } = render(<TerminalArea />);
     const pane = container.querySelector<HTMLElement>(
       `[data-pane-session-id="${ptyA.id}"]`,
@@ -292,14 +292,14 @@ describe("TerminalArea recursive panes", () => {
     expect(labels).toEqual(expect.arrayContaining([
       "复制",
       "粘贴",
-      "全选",
-      "查找…",
       "向右分屏",
       "向下分屏",
       "最大化分屏",
       "从分屏移除",
       "停止 Session…",
     ]));
+    expect(labels).not.toContain("全选");
+    expect(labels).not.toContain("查找…");
 
     getState().contextMenu?.items.find((item) => item.label === "向右分屏")?.action?.();
     expect(openSplitAgentPickerMock).toHaveBeenCalledWith(ptyA.id, "right");
