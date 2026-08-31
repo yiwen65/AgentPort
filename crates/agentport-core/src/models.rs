@@ -113,9 +113,9 @@ impl AgentType {
         PermissionMode::Native
     }
 
-    /// Generic shells have no approval protocol. Keep `Native` as the stored
-    /// sentinel for compatibility, but never expose or enforce a permission
-    /// mode for them.
+    /// Pi and Generic Shell have no permission-mode protocol. Keep `Native`
+    /// as the stored sentinel for compatibility, but never expose or enforce
+    /// a permission mode for them.
     pub fn effective_permission_mode(&self, requested: PermissionMode) -> PermissionMode {
         match self {
             AgentType::Shell | AgentType::Pi => PermissionMode::Native,

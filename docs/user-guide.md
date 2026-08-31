@@ -81,12 +81,12 @@ AgentPort 是 macOS/Linux 上的本地 AI CLI 工作台：用一个界面同时�
 
 ## 权限模型
 
-三种权限模式，**默认是 native（沿用各 CLI 原生审批）**：
+支持权限审批的 CLI 提供三种模式，**默认是 native（沿用 CLI 原生审批）**：
 
 - **native**：不加任何跳过审批的参数，Agent 的每次确认都由该 CLI 自己的界面完成。
 - **auto / bypass**：在新建 Session 的高级设置或预设中显式选择。创建和恢复时直接使用所选模式，不再弹出二次风险确认；Session 存续期间标题栏常驻 ⚠ 警示徽标。
 
-AgentPort 绝不会默认添加 `--yolo` 类的跳过审批参数。
+Pi 与 Generic Shell 不使用 Agent 权限模式。启动 Pi 时不会添加权限参数；数据库中的 `native` 仅是兼容字段。AgentPort 绝不会默认添加 `--yolo` 类的跳过审批参数。
 
 ## Git Worktree 隔离
 

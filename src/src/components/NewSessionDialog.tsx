@@ -280,13 +280,13 @@ export default function NewSessionDialog(props: {
                   >
                     <option value="">
                       {isPi
-                          ? t("session:new.defaultLocalPermissions")
-                          : t("session:new.defaultSafe")}
+                        ? t("session:new.defaultPi")
+                        : t("session:new.defaultSafe")}
                     </option>
                     {presets.map((p) => (
                       <option key={p.id} value={p.id}>
                         {presetDisplayName(p)}
-                        {p.permissionMode !== "native"
+                        {!isShell && !isPi && p.permissionMode !== "native"
                           ? t("session:new.permissionSuffix", {
                               permission: permissionLabel(p.permissionMode),
                             })

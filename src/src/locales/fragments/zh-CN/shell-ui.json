@@ -11,6 +11,7 @@
       "descriptionDown": "选择一个 Agent，在“{{title}}”下方快速打开。",
       "listLabel": "为新分屏选择 Agent",
       "launchLabel": "启动 {{agent}}（{{mode}}）",
+      "launchPlainLabel": "启动 {{agent}}",
       "empty": "没有可用的 Agent，请先在设置中启用。"
     },
     "topBar": {
@@ -59,11 +60,12 @@
       "collapseAll": "折叠所有项目与 Session",
       "quickLaunch": {
         "terminal": "终端",
-        "localUserPermissions": "本地用户权限",
         "bypassPermissionChecks": "绕过权限检查",
         "listLabel": "在{{scope}}快速启动 Agent；拖动查看全部",
         "launchLabel": "在{{scope}}启动 {{agent}}（{{mode}}）",
-        "launchTip": "启动 {{agent}}（{{mode}}）"
+        "launchPlainLabel": "在{{scope}}启动 {{agent}}",
+        "launchTip": "启动 {{agent}}（{{mode}}）",
+        "launchPlainTip": "启动 {{agent}}"
       },
       "projectMenu": {
         "newWorktree": "新建 Worktree…",

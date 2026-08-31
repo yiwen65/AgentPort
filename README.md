@@ -66,7 +66,7 @@ agentport-cli timeline                            # 离开期间恢复时间线
 ## 硬约束（实现即如此）
 
 - GUI 关闭 ≠ Session 停止；每个 Session 独立 Host/PTY/Socket/日志/输入通道。
-- 默认沿用各 CLI 原生权限审批；选择自动批准或绕过权限后直接启动，不再弹出二次风险确认。
+- 支持权限审批的 CLI 默认沿用原生审批；Pi 与 Generic Shell 不使用权限模式，Pi 启动时不附加权限参数。
 - Secret 只存 macOS Keychain / Linux Secret Service；绝不落 SQLite/日志/索引/导出/进程参数；后端不可用则禁用、无明文回退。
 - 停止 Session 清理完整进程组（含 job control 逃逸的后台任务）。
 - 不静默修改用户 CLI 全局配置；状态必须带来源/置信度/时间/证据。

@@ -1179,8 +1179,8 @@ export async function quickStartSession(
       title: null,
       presetId: null,
       worktreeId: worktreeId ?? null,
-      // Generic Shell has no permission protocol; native is a compatibility
-      // sentinel only. Agent shortcuts retain their explicit bypass behavior.
+      // Pi and Generic Shell have no permission mode; native is only the API's
+      // persisted compatibility sentinel. Other shortcuts explicitly bypass.
       permission: shell || pi ? "native" : "bypass",
       transport: "pty",
       riskAck: true,
@@ -1203,14 +1203,16 @@ export async function quickStartSession(
       : false;
     if (!inserted) selectSession(res.id);
     toast(
-      i18n.t("session:flow.quickStarted", {
-        agent: agentDisplay(agent),
-        access: shell
-          ? i18n.t("session:flow.terminalAccess")
-          : pi
-            ? i18n.t("session:flow.localUserAccess")
-            : i18n.t("session:flow.fullAccess"),
-      }),
+      pi
+        ? i18n.t("session:flow.quickStartedPlain", {
+            agent: agentDisplay(agent),
+          })
+        : i18n.t("session:flow.quickStarted", {
+            agent: agentDisplay(agent),
+            access: shell
+              ? i18n.t("session:flow.terminalAccess")
+              : i18n.t("session:flow.fullAccess"),
+          }),
       "success",
     );
   } catch (e) {

@@ -59,8 +59,8 @@ export default function SplitAgentPicker({
   if (!target) return null;
 
   const modeFor = (agent: string) => {
+    if (agent === "pi") return null;
     if (agent === "shell") return t("ui.sidebar.quickLaunch.terminal");
-    if (agent === "pi") return t("ui.sidebar.quickLaunch.localUserPermissions");
     return t("ui.sidebar.quickLaunch.bypassPermissionChecks");
   };
   const title = t(
@@ -98,10 +98,16 @@ export default function SplitAgentPicker({
                 type="button"
                 className="split-agent-picker-option"
                 data-agent={agent}
-                aria-label={t("ui.panePicker.launchLabel", {
-                  agent: agentDisplay(agent),
-                  mode,
-                })}
+                aria-label={
+                  mode
+                    ? t("ui.panePicker.launchLabel", {
+                        agent: agentDisplay(agent),
+                        mode,
+                      })
+                    : t("ui.panePicker.launchPlainLabel", {
+                        agent: agentDisplay(agent),
+                      })
+                }
                 onClick={() => {
                   closeDialog();
                   void quickStartSession(
@@ -118,7 +124,9 @@ export default function SplitAgentPicker({
                 <span className="split-agent-picker-name">
                   {agentDisplay(agent)}
                 </span>
-                <span className="split-agent-picker-mode">{mode}</span>
+                {mode ? (
+                  <span className="split-agent-picker-mode">{mode}</span>
+                ) : null}
               </button>
             );
           })}

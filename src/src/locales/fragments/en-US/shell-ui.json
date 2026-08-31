@@ -11,6 +11,7 @@
       "descriptionDown": "Choose an Agent to open below “{{title}}”.",
       "listLabel": "Choose an Agent for the new pane",
       "launchLabel": "Start {{agent}} ({{mode}})",
+      "launchPlainLabel": "Start {{agent}}",
       "empty": "No available Agents. Enable one in Settings."
     },
     "topBar": {
@@ -59,11 +60,12 @@
       "collapseAll": "Collapse all projects and Sessions",
       "quickLaunch": {
         "terminal": "Terminal",
-        "localUserPermissions": "Local user permissions",
         "bypassPermissionChecks": "Bypass permission checks",
         "listLabel": "Quick-launch an Agent in {{scope}}; drag to see all",
         "launchLabel": "Launch {{agent}} in {{scope}} ({{mode}})",
-        "launchTip": "Launch {{agent}} ({{mode}})"
+        "launchPlainLabel": "Launch {{agent}} in {{scope}}",
+        "launchTip": "Launch {{agent}} ({{mode}})",
+        "launchPlainTip": "Launch {{agent}}"
       },
       "projectMenu": {
         "newWorktree": "New Worktree…",

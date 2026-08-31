@@ -1202,7 +1202,7 @@ fn preset_for(
                 agent_type: t,
                 name: match t {
                     AgentType::Qoder => "Qoder 安全默认".into(),
-                    AgentType::Pi => "Pi 本地权限默认".into(),
+                    AgentType::Pi => "Pi 默认".into(),
                     _ => format!("{} 安全默认", t.display_name()),
                 },
                 executable_path: String::new(),

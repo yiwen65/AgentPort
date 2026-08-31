@@ -108,6 +108,14 @@ const shellAdapter = {
   flags: [],
 };
 
+const piAdapter = {
+  ...shellAdapter,
+  agentType: "pi" as const,
+  executablePath: "/usr/local/bin/pi",
+  versionText: "pi",
+  capabilityHash: "sha256:pi",
+};
+
 let capturedPointerTarget: HTMLElement | null = null;
 
 function dispatchPointer(target: HTMLElement, type: "pointerdown" | "pointerup") {
@@ -151,6 +159,15 @@ describe("project row plus button menu", () => {
   });
 
   afterEach(() => cleanup());
+
+  it("shows Pi quick launch without a permission suffix", () => {
+    setState({ adapters: [shellAdapter, piAdapter] });
+    render(<Sidebar collapsed={false} width={296} />);
+
+    const piButton = screen.getByRole("button", { name: /Pi/ });
+    expect(piButton.getAttribute("aria-label")).not.toMatch(/permission|权限/i);
+    expect(piButton.getAttribute("data-tip")).toMatch(/^启动 Pi$|^Launch Pi$/);
+  });
 
   it("lets vertical wheel scrolling escape the quick-agent strip at its edge", () => {
     const { container } = render(<Sidebar collapsed={false} width={296} />);

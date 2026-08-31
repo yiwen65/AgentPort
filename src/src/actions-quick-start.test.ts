@@ -162,7 +162,7 @@ describe("quickStartSession split intent", () => {
     expect(getState().activeSessionId).toBe(createdSession.id);
   });
 
-  it("describes Pi quick-start permission accurately", async () => {
+  it("quick-starts Pi without presenting a permission mode", async () => {
     await quickStartSession(
       targetSession.projectId,
       "pi",
@@ -171,10 +171,13 @@ describe("quickStartSession split intent", () => {
 
     expect(apiMock.createSession).toHaveBeenCalledWith(expect.objectContaining({
       agent: "pi",
+      // The backend keeps this compatibility sentinel, but Pi itself has no
+      // permission mode and receives no permission argument.
       permission: "native",
     }));
     const successToast = getState().toasts.find((toast) => toast.kind === "success");
-    expect(successToast?.text).toMatch(/Local user permissions|本地用户权限/);
+    expect(successToast?.text).toMatch(/Session started \(Pi\)|Session 已启动（Pi）/);
+    expect(successToast?.text).not.toMatch(/permission|权限/i);
   });
 
   it("does not change the pane layout when creation fails", async () => {

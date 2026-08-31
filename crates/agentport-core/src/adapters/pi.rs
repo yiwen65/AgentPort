@@ -3,7 +3,7 @@
 //! Pi has no tool-by-tool approval protocol. AgentPort owns its native Session
 //! ID and private storage while preserving Pi's native project-trust prompt.
 
-use super::{AgentAdapter, LaunchContext, LaunchNotice, LaunchPlan, ResumeContext};
+use super::{AgentAdapter, LaunchContext, LaunchPlan, ResumeContext};
 use crate::error::{CoreError, Result};
 use crate::models::*;
 use std::path::Path;
@@ -118,10 +118,7 @@ impl AgentAdapter for PiAdapter {
             hook_status: HookStatus::Unavailable,
             transport: ctx.transport,
             helper_files: vec![],
-            notices: vec![LaunchNotice::new(
-                "pi_local_permissions",
-                "Pi 不提供逐项权限确认，将以本地用户权限执行",
-            )],
+            notices: vec![],
         })
     }
 
@@ -196,10 +193,7 @@ impl AgentAdapter for PiAdapter {
             hook_status: HookStatus::Unavailable,
             transport: ctx.transport,
             helper_files: vec![],
-            notices: vec![LaunchNotice::new(
-                "pi_local_permissions",
-                "Pi 不提供逐项权限确认，将以本地用户权限执行",
-            )],
+            notices: vec![],
         })
     }
 }
@@ -233,6 +227,7 @@ mod tests {
             .ends_with(&["--tui-mode".to_string(), "fullscreen".to_string(),]));
         assert!(plan.argv.iter().any(|value| value == "--session-dir"));
         assert!(!plan.argv.iter().any(|value| value == "--approve"));
+        assert!(plan.notices.is_empty());
         assert_eq!(plan.transport, AgentTransport::Pty);
     }
 

@@ -289,9 +289,8 @@ function QuickAgentIcon({ agent }: { agent: string }) {
 }
 
 function quickAgentMode(agent: string, t: SidebarT) {
+  if (agent === "pi") return null;
   if (agent === "shell") return t("shell:ui.sidebar.quickLaunch.terminal");
-  if (agent === "pi")
-    return t("shell:ui.sidebar.quickLaunch.localUserPermissions");
   return t("shell:ui.sidebar.quickLaunch.bypassPermissionChecks");
 }
 
@@ -393,24 +392,40 @@ function QuickAgentStrip({
       }}
     >
       <div className="quick-agent-strip-track">
-        {agents.map((agent) => (
-          <button
-            key={agent}
-            className="project-agent-action"
-            aria-label={t("shell:ui.sidebar.quickLaunch.launchLabel", {
-              scope: scopeLabel,
-              agent: agentDisplay(agent),
-              mode: quickAgentMode(agent, t),
-            })}
-            data-tip={t("shell:ui.sidebar.quickLaunch.launchTip", {
-              agent: agentDisplay(agent),
-              mode: quickAgentMode(agent, t),
-            })}
-            onClick={() => void quickStartSession(projectId, agent, worktreeId)}
-          >
-            <QuickAgentIcon agent={agent} />
-          </button>
-        ))}
+        {agents.map((agent) => {
+          const mode = quickAgentMode(agent, t);
+          return (
+            <button
+              key={agent}
+              className="project-agent-action"
+              aria-label={
+                mode
+                  ? t("shell:ui.sidebar.quickLaunch.launchLabel", {
+                      scope: scopeLabel,
+                      agent: agentDisplay(agent),
+                      mode,
+                    })
+                  : t("shell:ui.sidebar.quickLaunch.launchPlainLabel", {
+                      scope: scopeLabel,
+                      agent: agentDisplay(agent),
+                    })
+              }
+              data-tip={
+                mode
+                  ? t("shell:ui.sidebar.quickLaunch.launchTip", {
+                      agent: agentDisplay(agent),
+                      mode,
+                    })
+                  : t("shell:ui.sidebar.quickLaunch.launchPlainTip", {
+                      agent: agentDisplay(agent),
+                    })
+              }
+              onClick={() => void quickStartSession(projectId, agent, worktreeId)}
+            >
+              <QuickAgentIcon agent={agent} />
+            </button>
+          );
+        })}
       </div>
     </div>
   );

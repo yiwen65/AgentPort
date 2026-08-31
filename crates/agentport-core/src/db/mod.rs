@@ -1499,7 +1499,7 @@ impl Db {
             ("pre_codex_safe", AgentType::Codex, "Codex 安全默认"),
             ("pre_kimi_safe", AgentType::Kimi, "Kimi 安全默认"),
             ("pre_qoder_safe", AgentType::Qoder, "Qoder 安全默认"),
-            ("pre_pi_safe", AgentType::Pi, "Pi 本地权限默认"),
+            ("pre_pi_safe", AgentType::Pi, "Pi 默认"),
             ("pre_shell_safe", AgentType::Shell, "Shell 安全默认"),
         ] {
             let p = Preset {
@@ -1527,6 +1527,14 @@ impl Db {
             "UPDATE presets
              SET name='Qoder 安全默认', permission_mode='native'
              WHERE id='pre_qoder_safe' AND built_in=1",
+            [],
+        )?;
+        // Pi has no permission modes. Keep Native only as the persisted
+        // compatibility sentinel and avoid presenting it as a Pi mode.
+        self.conn.lock().unwrap().execute(
+            "UPDATE presets
+             SET name='Pi 默认', permission_mode='native'
+             WHERE id='pre_pi_safe' AND built_in=1",
             [],
         )?;
         Ok(())
@@ -4802,6 +4810,7 @@ mod tests {
                 .map(|preset| preset.permission_mode),
             Some(PermissionMode::Native)
         );
+        assert_eq!(db.get_preset("pre_pi_safe").unwrap().name, "Pi 默认");
         assert!(matches!(
             db.delete_preset("pre_kimi_safe"),
             Err(CoreError::Blocked(_))

@@ -124,6 +124,53 @@ describe("NewSessionDialog", () => {
     await waitFor(() => expect(selectSessionMock).toHaveBeenCalledWith("session-1"));
   });
 
+  it("presents Pi as having no permission mode", async () => {
+    setState({
+      adapters: [{
+        agentType: "pi",
+        executablePath: "/usr/local/bin/pi",
+        versionText: "pi",
+        capabilityHash: "sha256:pi",
+        exactResume: true,
+        hookStatus: "unavailable",
+        approvalModel: "no_builtin_prompts",
+        defaultTransport: "pty",
+        probedAt: "2026-07-23T00:00:00.000Z",
+        candidates: [],
+        flags: [],
+      }],
+    });
+    listPresetsMock.mockResolvedValue([{
+      id: "legacy-pi-bypass",
+      agentType: "pi",
+      name: "Legacy Pi",
+      executablePath: "/usr/local/bin/pi",
+      args: [],
+      permissionMode: "bypass",
+      envNames: [],
+      secretRefIds: [],
+      builtIn: false,
+    }]);
+
+    render(<NewSessionDialog projectId="project-1" agent="pi" />);
+    await waitFor(() =>
+      expect(screen.getByText(/Pi 不使用权限模式|Pi does not use permission modes/)).toBeTruthy()
+    );
+    expect(screen.queryByText(/本地用户权限|local user permissions/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "高级设置 展开" }));
+    const presetSelect = screen.getByLabelText("预设");
+    expect(presetSelect.textContent).toMatch(/Pi 默认|Pi defaults/);
+    expect(presetSelect.textContent).toContain("Legacy Pi");
+    expect(presetSelect.textContent).not.toMatch(/绕过权限|Bypass permission/i);
+    expect(screen.queryByLabelText("权限")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "启动" }));
+    await waitFor(() => expect(createSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: "pi", permission: "native" }),
+    ));
+  });
+
   it("restores native permission when switching away from a bypass preset", async () => {
     setState({
       adapters: [{

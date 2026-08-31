@@ -111,6 +111,20 @@ describe("SplitAgentPicker", () => {
     expect(screen.queryByText("Pi")).toBeNull();
   });
 
+  it("shows Pi without a permission-mode suffix", () => {
+    setState({ settings: { ...getState().settings!, agentHidden: [] } });
+    render(
+      <SplitAgentPicker
+        targetSessionId={targetSession.id}
+        direction="right"
+      />,
+    );
+
+    const piButton = screen.getByRole("button", { name: /Pi/ });
+    expect(piButton.getAttribute("aria-label")).not.toMatch(/permission|权限/i);
+    expect(within(piButton).queryByText(/permission|权限/i)).toBeNull();
+  });
+
   it("closes immediately and quick-starts in the target Worktree and direction", () => {
     render(
       <SplitAgentPicker

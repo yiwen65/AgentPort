@@ -32,7 +32,7 @@
     "pre_codex_safe": "Codex 安全默认",
     "pre_kimi_safe": "Kimi 安全默认",
     "pre_qoder_safe": "Qoder 安全默认",
-    "pre_pi_safe": "Pi 本地权限默认",
+    "pre_pi_safe": "Pi 默认",
     "pre_shell_safe": "Shell 安全默认"
   },
   "cleanup": {
