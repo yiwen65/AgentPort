@@ -4,6 +4,15 @@
       "addProject": "Add project",
       "settings": "Settings"
     },
+    "panePicker": {
+      "titleRight": "Split right",
+      "titleDown": "Split down",
+      "descriptionRight": "Choose an Agent to open to the right of “{{title}}”.",
+      "descriptionDown": "Choose an Agent to open below “{{title}}”.",
+      "listLabel": "Choose an Agent for the new pane",
+      "launchLabel": "Start {{agent}} ({{mode}})",
+      "empty": "No available Agents. Enable one in Settings."
+    },
     "topBar": {
       "commandPalette": "Command Palette",
       "recoveryTimeline": "Recovery Timeline",

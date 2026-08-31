@@ -67,6 +67,7 @@
     "addProjectFirst": "请先添加一个项目",
     "quickStarted": "Session 已启动（{{agent}} · {{access}}）",
     "terminalAccess": "终端",
+    "localUserAccess": "本地用户权限",
     "fullAccess": "完全权限",
     "startFailed": "启动失败：{{detail}}",
     "operationFailed": "操作失败：{{detail}}"

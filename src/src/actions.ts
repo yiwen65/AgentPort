@@ -503,6 +503,27 @@ export function openSplitSessionDialog(
   return true;
 }
 
+/** Open the lightweight Agent chooser used by pane context-menu splits. */
+export function openSplitAgentPicker(
+  targetSessionId: string,
+  direction: PaneSplitDirection,
+): boolean {
+  const state = getState();
+  const target = findSession(state.projects, targetSessionId);
+  const displayLayout = visiblePaneLayout(
+    state.terminalLayout,
+    state.activeSessionId,
+  );
+  if (!target || !layoutContains(displayLayout, targetSessionId)) return false;
+  if (!canSplitSessionPane(targetSessionId, direction)) {
+    toast(i18n.t("shell:pane.tooSmall"), "info");
+    return false;
+  }
+  selectSession(targetSessionId);
+  openDialog({ kind: "splitAgentPicker", targetSessionId, direction });
+  return true;
+}
+
 export function splitSessionIntoPane(
   targetSessionId: string,
   sessionId: string,
@@ -1061,11 +1082,17 @@ export function openNewSessionDialog(
   openDialog({ kind: "newSession", projectId: pid, worktreeId, agent });
 }
 
-/** Hover shortcuts explicitly start a session in fully-authorized mode. */
+export interface QuickStartSplitIntent {
+  targetSessionId: string;
+  direction: PaneSplitDirection;
+}
+
+/** Icon shortcuts start immediately, optionally inserting into a target pane. */
 export async function quickStartSession(
   projectId: string,
   agent: string,
   worktreeId?: string,
+  splitIntent?: QuickStartSplitIntent,
 ) {
   const shell = agent === "shell";
   const pi = agent === "pi";
@@ -1086,13 +1113,27 @@ export async function quickStartSession(
       extraArgs: null,
     });
     await refreshProjects();
-    selectSession(res.id);
+    // A transient/superseded snapshot must not silently discard the requested
+    // split. Retry once before falling back to the normal standalone selector.
+    if (splitIntent && !findSession(getState().projects, res.id)) {
+      await refreshProjects();
+    }
+    const inserted = splitIntent
+      ? splitSessionIntoPane(
+          splitIntent.targetSessionId,
+          res.id,
+          splitIntent.direction,
+        )
+      : false;
+    if (!inserted) selectSession(res.id);
     toast(
       i18n.t("session:flow.quickStarted", {
         agent: agentDisplay(agent),
         access: shell
           ? i18n.t("session:flow.terminalAccess")
-          : i18n.t("session:flow.fullAccess"),
+          : pi
+            ? i18n.t("session:flow.localUserAccess")
+            : i18n.t("session:flow.fullAccess"),
       }),
       "success",
     );

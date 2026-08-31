@@ -64,6 +64,7 @@ import { paneShortcutAction } from "./paneShortcuts";
 
 const TerminalArea = lazy(() => import("./components/TerminalArea"));
 const NewSessionDialog = lazy(() => import("./components/NewSessionDialog"));
+const SplitAgentPicker = lazy(() => import("./components/SplitAgentPicker"));
 const NewWorktreeDialog = lazy(() => import("./components/NewWorktreeDialog"));
 const SettingsDialog = lazy(() => import("./components/SettingsDialog"));
 const DiagnosticsDialog = lazy(() => import("./components/DiagnosticsDialog"));
@@ -422,6 +423,13 @@ function DialogRouter() {
           agent={d.agent}
           splitTargetSessionId={d.splitTargetSessionId}
           splitDirection={d.splitDirection}
+        />
+      );
+    case "splitAgentPicker":
+      return (
+        <SplitAgentPicker
+          targetSessionId={d.targetSessionId}
+          direction={d.direction}
         />
       );
     case "newWorktree":

@@ -51,7 +51,7 @@ import {
   canSplitSessionPane,
   PANE_SEPARATOR_SIZE,
   openNewSessionDialog,
-  openSplitSessionDialog,
+  openSplitAgentPicker,
   persistCurrentPaneLayout,
   removeSessionPane,
   resumeSessionFlow,
@@ -949,12 +949,12 @@ function paneContextItems(
     {
       label: t("shell:pane.splitRight"),
       disabled: !canSplitSessionPane(ses.id, "right"),
-      action: () => openSplitSessionDialog(ses.id, "right"),
+      action: () => openSplitAgentPicker(ses.id, "right"),
     },
     {
       label: t("shell:pane.splitDown"),
       disabled: !canSplitSessionPane(ses.id, "down"),
-      action: () => openSplitSessionDialog(ses.id, "down"),
+      action: () => openSplitAgentPicker(ses.id, "down"),
     },
     { label: "", separator: true },
     {

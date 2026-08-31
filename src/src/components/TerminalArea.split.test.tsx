@@ -7,6 +7,7 @@ const {
   focusSessionMock,
   getHandleMock,
   mountTerminalMock,
+  openSplitAgentPickerMock,
   openSplitSessionDialogMock,
   persistLayoutMock,
   removePaneMock,
@@ -20,6 +21,7 @@ const {
   focusSessionMock: vi.fn(),
   getHandleMock: vi.fn(),
   mountTerminalMock: vi.fn(),
+  openSplitAgentPickerMock: vi.fn(),
   openSplitSessionDialogMock: vi.fn(),
   persistLayoutMock: vi.fn(),
   removePaneMock: vi.fn(),
@@ -34,6 +36,7 @@ vi.mock("../actions", () => ({
   PANE_SEPARATOR_SIZE: 6,
   canSplitSessionPane: vi.fn(() => true),
   openNewSessionDialog: vi.fn(),
+  openSplitAgentPicker: openSplitAgentPickerMock,
   openSplitSessionDialog: openSplitSessionDialogMock,
   persistCurrentPaneLayout: persistLayoutMock,
   removeSessionPane: removePaneMock,
@@ -292,6 +295,10 @@ describe("TerminalArea recursive panes", () => {
       "最大化分屏",
       "从分屏移除",
     ]));
+
+    getState().contextMenu?.items.find((item) => item.label === "向右分屏")?.action?.();
+    expect(openSplitAgentPickerMock).toHaveBeenCalledWith(ptyA.id, "right");
+    expect(openSplitSessionDialogMock).not.toHaveBeenCalled();
   });
 
   it("shows two Session drop zones and routes the chosen direction", () => {

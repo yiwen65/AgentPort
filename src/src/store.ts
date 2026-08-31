@@ -204,6 +204,11 @@ export type DialogState =
       splitTargetSessionId?: string;
       splitDirection?: PaneSplitDirection;
     }
+  | {
+      kind: "splitAgentPicker";
+      targetSessionId: string;
+      direction: PaneSplitDirection;
+    }
   | { kind: "newWorktree"; projectId: string }
   | { kind: "branchPicker"; projectId: string }
   | { kind: "settings" }

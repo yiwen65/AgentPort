@@ -13,6 +13,7 @@ export default function Modal(props: {
   footer?: ReactNode;
   wide?: boolean;
   workspaceCentered?: boolean;
+  className?: string;
 }) {
   const { t } = useTranslation("common");
   const ref = useRef<HTMLDivElement>(null);
@@ -62,7 +63,7 @@ export default function Modal(props: {
       }}
     >
       <div
-        className={props.wide ? "modal wide" : "modal"}
+        className={`modal${props.wide ? " wide" : ""}${props.className ? ` ${props.className}` : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label={props.title}

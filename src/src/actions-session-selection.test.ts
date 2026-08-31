@@ -40,6 +40,7 @@ vi.mock("./terminals", () => ({
 import {
   canSplitPaneSize,
   canSplitSessionPane,
+  openSplitAgentPicker,
   openSplitSessionDialog,
   removeSessionPane,
   restartSessionFlow,
@@ -426,6 +427,15 @@ describe("selectSession", () => {
       projectId: oldSession.projectId,
       splitTargetSessionId: oldSession.id,
       splitDirection: "down",
+    });
+  });
+
+  it("opens the lightweight Agent picker for a context-menu split", () => {
+    expect(openSplitAgentPicker(oldSession.id, "right")).toBe(true);
+    expect(getState().dialog).toEqual({
+      kind: "splitAgentPicker",
+      targetSessionId: oldSession.id,
+      direction: "right",
     });
   });
 

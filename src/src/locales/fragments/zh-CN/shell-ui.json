@@ -4,6 +4,15 @@
       "addProject": "添加项目",
       "settings": "设置"
     },
+    "panePicker": {
+      "titleRight": "选择 Agent 向右分屏",
+      "titleDown": "选择 Agent 向下分屏",
+      "descriptionRight": "选择一个 Agent，在“{{title}}”右侧快速打开。",
+      "descriptionDown": "选择一个 Agent，在“{{title}}”下方快速打开。",
+      "listLabel": "为新分屏选择 Agent",
+      "launchLabel": "启动 {{agent}}（{{mode}}）",
+      "empty": "没有可用的 Agent，请先在设置中启用。"
+    },
     "topBar": {
       "commandPalette": "命令面板",
       "recoveryTimeline": "恢复时间线",

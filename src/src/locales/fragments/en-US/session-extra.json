@@ -67,6 +67,7 @@
     "addProjectFirst": "Add a project first",
     "quickStarted": "Session started ({{agent}} · {{access}})",
     "terminalAccess": "Terminal",
+    "localUserAccess": "Local user permissions",
     "fullAccess": "Full access",
     "startFailed": "Could not start the Session: {{detail}}",
     "operationFailed": "Operation failed: {{detail}}"
