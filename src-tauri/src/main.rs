@@ -415,6 +415,7 @@ struct SessionView {
     adapter: String,
     cwd: String,
     lifecycle: String,
+    host_alive: bool,
     agent_session_id: Option<String>,
     resume_precision: String,
     permission_mode: String,
@@ -529,6 +530,9 @@ fn session_view_from_parts(s: &Session, latest: Option<&StatusEvent>, unread: bo
         adapter: s.adapter_type.as_str().into(),
         cwd: s.cwd.clone(),
         lifecycle: s.lifecycle.as_str().into(),
+        host_alive: matches!(s.lifecycle, Lifecycle::Creating | Lifecycle::Running)
+            && s.host_pid
+                .is_some_and(|pid| pid > 0 && pid <= i64::from(i32::MAX)),
         agent_session_id: s.agent_session_id.clone(),
         resume_precision: s.resume_precision.as_str().into(),
         permission_mode: s.permission_mode.as_str().into(),
@@ -1660,10 +1664,38 @@ fn project_monitor_status(app: &AppHandle, db: &Db, event: &StatusEvent, notify:
     }
 }
 
+/// Reconcile transport loss against durable Host evidence. Database errors are
+/// not proof of death, so they preserve the monitor's existing retry behavior.
+fn reconcile_monitor_liveness(
+    app: &AppHandle,
+    paths: &AppPaths,
+    db: &Db,
+    session_id: &str,
+) -> bool {
+    let manager = HostManager { paths, db };
+    match manager.reconcile_session_liveness(session_id) {
+        Ok(true) => true,
+        Ok(false) => {
+            let _ = app.emit("projects-changed", collect_projects(db, None));
+            false
+        }
+        Err(error) => {
+            tracing::warn!(session = %session_id, error = %error, "session monitor liveness reconciliation failed; retaining retry behavior");
+            true
+        }
+    }
+}
+
+fn session_monitor_retry_delay(attempt: u32) -> Duration {
+    Duration::from_millis(250 * (1_u64 << attempt.min(3)))
+}
+
 /// Keep status truth alive independently of the renderer LRU. Each monitor
-/// requests no output bytes, owns one verified socket, and retries boundedly
-/// after an unexpected EOF. The Host journal remains the source of truth when
-/// the GUI itself is closed.
+/// requests no output bytes, owns one verified socket, and reconnects with a
+/// capped backoff after transport loss. It remains present until the exact
+/// Session binding terminates, so a disconnected Host cannot later die without
+/// publishing a fresh Project snapshot. The Host journal remains the source of
+/// truth when the GUI itself is closed.
 fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) {
     if !live_session(session.lifecycle) {
         return;
@@ -1689,18 +1721,15 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
                 return;
             }
         };
-        const RETRIES: usize = 5;
         let mut terminal = false;
-        for attempt in 0..=RETRIES {
+        let mut retry_attempt = 0_u32;
+        loop {
             if !monitor_is_current(&monitors, &session_id, monitor_id) {
                 return;
             }
             let session = match db.get_session(&session_id) {
                 Ok(session) if live_session(session.lifecycle) => session,
-                _ => {
-                    terminal = true;
-                    break;
-                }
+                _ => break,
             };
             let connection = match (&session.host_socket, session.host_token.is_empty()) {
                 (Some(socket), false) if !socket.is_empty() => HostClient::connect_with_resume(
@@ -1714,11 +1743,12 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
                 _ => Err(CoreError::Host("no host socket/token recorded".into())),
             };
             let Ok((mut client, info)) = connection else {
-                if attempt < RETRIES {
-                    std::thread::sleep(Duration::from_millis(250 * (1_u64 << attempt)));
-                    continue;
+                if !reconcile_monitor_liveness(&app, &paths, &db, &session_id) {
+                    break;
                 }
-                break;
+                std::thread::sleep(session_monitor_retry_delay(retry_attempt));
+                retry_attempt = retry_attempt.saturating_add(1);
+                continue;
             };
             let host = HostIdentity::from_attach(&info);
             if !host_identity_is_current(&db, &session_id, &host) {
@@ -1726,11 +1756,9 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
                 // monitor was connecting. Do not project the old connection;
                 // retry against the durable Session row instead.
                 tracing::debug!(session = %session_id, host_pid = host.host_pid, "monitor handshake belongs to a superseded Host");
-                if attempt < RETRIES {
-                    std::thread::sleep(Duration::from_millis(250 * (1_u64 << attempt)));
-                    continue;
-                }
-                break;
+                std::thread::sleep(session_monitor_retry_delay(retry_attempt));
+                retry_attempt = retry_attempt.saturating_add(1);
+                continue;
             }
             if let Err(error) = db.set_latest_log_cursor(&session_id, &info.log_cursor) {
                 tracing::warn!(session = %session_id, error = %error, "monitor could not persist Host log cursor");
@@ -1742,19 +1770,21 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
                     project_monitor_status(&app, &db, event, false);
                 } else {
                     tracing::warn!(session = %session_id, host_pid = host.host_pid, "monitor hello snapshot has the wrong run identity");
-                    if attempt < RETRIES {
-                        std::thread::sleep(Duration::from_millis(250 * (1_u64 << attempt)));
-                        continue;
-                    }
-                    break;
+                    std::thread::sleep(session_monitor_retry_delay(retry_attempt));
+                    retry_attempt = retry_attempt.saturating_add(1);
+                    continue;
                 }
             } else if info.protocol == agentport_core::protocol::LEGACY_PROTOCOL_VERSION {
                 let _ = client.request_status();
             }
+            let mut stream_ended = false;
             loop {
                 let frame = match client.read_frame() {
                     Ok(Some(frame)) => frame,
-                    Ok(None) | Err(_) => break,
+                    Ok(None) | Err(_) => {
+                        stream_ended = true;
+                        break;
+                    }
                 };
                 match frame {
                     HostFrame::State {
@@ -1847,15 +1877,11 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
             if terminal {
                 break;
             }
-            if attempt < RETRIES {
-                std::thread::sleep(Duration::from_millis(250 * (1_u64 << attempt)));
+            if stream_ended && !reconcile_monitor_liveness(&app, &paths, &db, &session_id) {
+                break;
             }
-        }
-        if !terminal && monitor_is_current(&monitors, &session_id, monitor_id) {
-            // A lost status-only socket is transport evidence only. The Host
-            // reaper/reconciliation owns `Interrupted`; guessing here would
-            // turn a transient GUI-side outage into a false terminal state.
-            tracing::warn!(session = %session_id, retries = RETRIES, "session monitor retry budget exhausted; lifecycle left unchanged");
+            std::thread::sleep(session_monitor_retry_delay(retry_attempt));
+            retry_attempt = retry_attempt.saturating_add(1);
         }
         finish_session_monitor(&monitors, &session_id, monitor_id);
     });
@@ -4675,6 +4701,15 @@ mod cleanup_tests {
     }
 
     #[test]
+    fn session_monitor_retry_delay_caps_at_two_seconds() {
+        assert_eq!(session_monitor_retry_delay(0), Duration::from_millis(250));
+        assert_eq!(session_monitor_retry_delay(1), Duration::from_millis(500));
+        assert_eq!(session_monitor_retry_delay(2), Duration::from_secs(1));
+        assert_eq!(session_monitor_retry_delay(3), Duration::from_secs(2));
+        assert_eq!(session_monitor_retry_delay(30), Duration::from_secs(2));
+    }
+
+    #[test]
     fn adapter_notices_use_stable_codes_and_keep_legacy_detail() {
         let launch_notices = vec![adapters::LaunchNotice::new(
             "pi_local_permissions",
@@ -5099,6 +5134,34 @@ mod cleanup_tests {
             run_id: run.run_id,
             run_ordinal: run.run_ordinal,
         }
+    }
+
+    #[test]
+    fn session_view_exposes_only_bound_live_hosts_as_alive() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("agentport"));
+        let db = Db::open(&paths).unwrap();
+        let session_id = insert_attachment_test_session(&paths, &db);
+
+        let unbound = db.get_session(&session_id).unwrap();
+        let unbound_value = serde_json::to_value(session_view(&db, &unbound, None)).unwrap();
+        assert_eq!(unbound_value["hostAlive"], false);
+
+        db.update_session_host(
+            &session_id,
+            Some(std::process::id() as i64),
+            Some("/tmp/session-view-live.sock"),
+        )
+        .unwrap();
+        let bound = db.get_session(&session_id).unwrap();
+        let bound_value = serde_json::to_value(session_view(&db, &bound, None)).unwrap();
+        assert_eq!(bound_value["hostAlive"], true);
+
+        db.update_session_lifecycle(&session_id, Lifecycle::Stopped)
+            .unwrap();
+        let stopped = db.get_session(&session_id).unwrap();
+        let stopped_value = serde_json::to_value(session_view(&db, &stopped, None)).unwrap();
+        assert_eq!(stopped_value["hostAlive"], false);
     }
 
     #[test]

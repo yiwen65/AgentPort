@@ -610,6 +610,36 @@ impl<'a> HostManager<'a> {
         client.resume()
     }
 
+    /// Reconcile the currently recorded Host after a transport failure.
+    /// Returns true only when the same live PID/run binding remains current;
+    /// a failed socket operation alone is never treated as proof of death.
+    pub fn reconcile_session_liveness(&self, session_id: &str) -> Result<bool> {
+        let session = self.db.get_session(session_id)?;
+        if !matches!(session.lifecycle, Lifecycle::Creating | Lifecycle::Running) {
+            return Ok(false);
+        }
+        let binding = self.db.session_host_binding(session_id)?;
+        let Some(host_pid) = binding
+            .host_pid
+            .filter(|pid| *pid > 0 && *pid <= i64::from(i32::MAX))
+        else {
+            return Ok(false);
+        };
+
+        self.reconcile_unreachable_binding(session_id, &binding)?;
+
+        let current = self.db.get_session(session_id)?;
+        if !matches!(current.lifecycle, Lifecycle::Creating | Lifecycle::Running)
+            || current.host_pid != Some(host_pid)
+        {
+            return Ok(false);
+        }
+        let current_binding = self.db.session_host_binding(session_id)?;
+        Ok(current_binding.host_pid == Some(host_pid)
+            && current_binding.run_id == binding.run_id
+            && current_binding.run_ordinal == binding.run_ordinal)
+    }
+
     /// Apply an offline-host classification only if the binding observed
     /// before the failed socket operation is still current. New sessions have
     /// a run claim even before a PID exists; pre-v5 rows fall back to the
@@ -1813,6 +1843,55 @@ mod tests {
 
         assert!(matches!(error, CoreError::Host(_)), "got {error:?}");
         assert_eq!(db.get_session(&sid).unwrap().lifecycle, Lifecycle::Running);
+    }
+
+    #[test]
+    fn liveness_reconciliation_retains_an_unreachable_live_host_pid() {
+        let (_dir, paths, db) = fixture();
+        add_project(&db, "prj_liveness_live");
+        let sid = ids::new_id("ses");
+        let socket = paths.socket_path(&sid);
+        let mut running = session(&sid, "prj_liveness_live", Lifecycle::Running);
+        running.host_socket = Some(socket.to_string_lossy().into_owned());
+        db.insert_session(&running).unwrap();
+        db.update_session_host(
+            &sid,
+            Some(std::process::id() as i64),
+            Some(&socket.to_string_lossy()),
+        )
+        .unwrap();
+
+        let manager = HostManager {
+            paths: &paths,
+            db: &db,
+        };
+
+        assert!(manager.reconcile_session_liveness(&sid).unwrap());
+        assert_eq!(db.get_session(&sid).unwrap().lifecycle, Lifecycle::Running);
+    }
+
+    #[test]
+    fn liveness_reconciliation_marks_a_dead_host_interrupted() {
+        let (_dir, paths, db) = fixture();
+        add_project(&db, "prj_liveness_dead");
+        let sid = ids::new_id("ses");
+        let socket = paths.socket_path(&sid);
+        let mut running = session(&sid, "prj_liveness_dead", Lifecycle::Running);
+        running.host_socket = Some(socket.to_string_lossy().into_owned());
+        db.insert_session(&running).unwrap();
+        db.update_session_host(&sid, Some(999_999), Some(&socket.to_string_lossy()))
+            .unwrap();
+
+        let manager = HostManager {
+            paths: &paths,
+            db: &db,
+        };
+
+        assert!(!manager.reconcile_session_liveness(&sid).unwrap());
+        assert_eq!(
+            db.get_session(&sid).unwrap().lifecycle,
+            Lifecycle::Interrupted
+        );
     }
 
     #[test]

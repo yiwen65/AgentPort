@@ -157,6 +157,7 @@ function useBoot() {
             applyWhenBooted(() => {
               patchSession(sessionId, {
                 lifecycle: reason === "user_stop" ? "stopped" : "exited",
+                hostAlive: false,
               });
               refreshProjectsSoon();
             });

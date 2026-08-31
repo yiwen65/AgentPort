@@ -11,7 +11,7 @@ import {
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { toggleSidebarCollapsed } from "../actions";
+import { toggleActiveAgentsView, toggleSidebarCollapsed } from "../actions";
 import { toggleExplorer } from "../documents";
 import { closeGitCenter, openGitCenter } from "../gitCenter";
 
@@ -95,6 +95,15 @@ function IconGitCenter() {
   );
 }
 
+function IconBell() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <path d="M5.25 8.25a4.75 4.75 0 0 1 9.5 0c0 4 1.5 4.75 1.5 4.75H3.75s1.5-.75 1.5-4.75Z" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8.25 15.25a2 2 0 0 0 3.5 0" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export default function TopBar() {
   const { t } = useTranslation(["shell", "common", "git"]);
   const activeSession = useStore((state) =>
@@ -129,9 +138,17 @@ export default function TopBar() {
   const projectBranch = worktreeBranch ?? mainBranch;
   const pending = useStore((state) => state.timeline.entries.length);
   const sidebarCollapsed = useStore((state) => state.sidebarCollapsed);
+  const sidebarViewMode = useStore((state) => state.sidebarViewMode);
   const gitCenterOpen = useStore((state) => state.gitCenter.open);
   const sidebarShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘B" : "Ctrl+B";
   const gitCenterToggleLabel = t(gitCenterOpen ? "git:close" : "git:open");
+  const activeAgentsOpen = sidebarViewMode === "activeAgents";
+  const activeAgentsToggleLabel = t(activeAgentsOpen
+    ? "shell:ui.topBar.showProjects"
+    : "shell:ui.topBar.showActiveAgents");
+  const activeAgentsToggleTip = t(activeAgentsOpen
+    ? "shell:ui.topBar.showProjectsTip"
+    : "shell:ui.topBar.showActiveAgentsTip");
 
   // WebKit does not consistently forward `data-tauri-drag-region` through
   // translucent compositing layers on macOS. Start the native drag explicitly
@@ -197,6 +214,16 @@ export default function TopBar() {
           data-tauri-drag-region="false"
         >
           <IconGitCenter />
+        </button>
+        <button
+          className="window-control sidebar-toggle"
+          onClick={toggleActiveAgentsView}
+          aria-label={activeAgentsToggleLabel}
+          aria-pressed={activeAgentsOpen}
+          data-tip={activeAgentsToggleTip}
+          data-tauri-drag-region="false"
+        >
+          <IconBell />
         </button>
       </div>
       <div className="window-title">

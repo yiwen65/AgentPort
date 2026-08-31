@@ -687,7 +687,15 @@ const SESSION_ROW_ACTIVE = 1;
 const SESSION_ROW_IN_PANE_LAYOUT = 2;
 const SESSION_ROW_SUSPENDED = 4;
 
-function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
+function SessionRow({
+  ses,
+  nested,
+  sourceLabel,
+}: {
+  ses: SessionView;
+  nested?: boolean;
+  sourceLabel?: string;
+}) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
   const rowState = useStore((state) =>
     (state.activeSessionId === ses.id ? SESSION_ROW_ACTIVE : 0) |
@@ -761,6 +769,7 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
       className={
         "tree-row session" +
         (nested ? " nested" : "") +
+        (sourceLabel ? " active-agent-session" : "") +
         (active ? " active" : "") +
         (inPaneLayout && !active ? " in-pane-layout" : "") +
         (draggingPaneSession ? " dragging-pane-session" : "")
@@ -795,36 +804,49 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
       role="button"
       tabIndex={0}
       aria-current={active ? "true" : undefined}
-      aria-label={t("session:ui.sidebar.rowLabel", {
-        title: ses.title,
-        agent: agentDisplay(ses.adapter),
-      })}
+      aria-label={
+        sourceLabel
+          ? t("session:ui.sidebar.activeRowLabel", {
+              title: ses.title,
+              agent: agentDisplay(ses.adapter),
+              source: sourceLabel,
+            })
+          : t("session:ui.sidebar.rowLabel", {
+              title: ses.title,
+              agent: agentDisplay(ses.adapter),
+            })
+      }
     >
       <StatusDot session={ses} />
-      {editing ? (
-        <input
-          className="session-title-input"
-          value={draftTitle}
-          autoFocus
-          ref={titleInputRef}
-          aria-label={t("session:ui.sidebar.titleLabel")}
-          onClick={(event) => event.stopPropagation()}
-          onChange={(event) => setDraftTitle(event.target.value)}
-          onBlur={saveTitle}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              saveTitle();
-            } else if (event.key === "Escape") {
-              event.preventDefault();
-              setDraftTitle(ses.title);
-              setEditing(false);
-            }
-          }}
-        />
-      ) : (
-        <span className="tree-label">{ses.title}</span>
-      )}
+      <span className="session-copy">
+        {editing ? (
+          <input
+            className="session-title-input"
+            value={draftTitle}
+            autoFocus
+            ref={titleInputRef}
+            aria-label={t("session:ui.sidebar.titleLabel")}
+            onClick={(event) => event.stopPropagation()}
+            onChange={(event) => setDraftTitle(event.target.value)}
+            onBlur={saveTitle}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                saveTitle();
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                setDraftTitle(ses.title);
+                setEditing(false);
+              }
+            }}
+          />
+        ) : (
+          <span className="tree-label">{ses.title}</span>
+        )}
+        {sourceLabel ? (
+          <span className="active-session-source">{sourceLabel}</span>
+        ) : null}
+      </span>
       <span
         className="session-row-actions"
         aria-label={t("session:ui.sidebar.actionsLabel")}
@@ -981,6 +1003,147 @@ export function orderSessionsForSidebar(sessions: SessionView[]): SessionView[] 
 
 function useSessionOrder() {
   return orderSessionsForSidebar;
+}
+
+function sessionTime(value: string | null | undefined): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function activeSessionPriority(
+  session: SessionView,
+  suspendedSessionIds: ReadonlySet<string>,
+): number {
+  if (
+    suspendedSessionIds.has(session.id) ||
+    session.unread ||
+    session.status?.state === "needs_input"
+  ) {
+    return 0;
+  }
+  if (
+    session.lifecycle === "creating" ||
+    session.status?.state === "working"
+  ) {
+    return 1;
+  }
+  if (session.status?.state === "idle") return 2;
+  return 3;
+}
+
+/** Flat active-Agent ordering: attention, working, idle, then unknown. */
+export function orderActiveAgentSessionsForSidebar(
+  sessions: SessionView[],
+  suspendedSessionIds: ReadonlySet<string> = new Set(),
+): SessionView[] {
+  return [...sessions].sort((a, b) => {
+    const priority =
+      activeSessionPriority(a, suspendedSessionIds) -
+      activeSessionPriority(b, suspendedSessionIds);
+    if (priority !== 0) return priority;
+
+    const pinned = Number(b.pinnedAt !== null) - Number(a.pinnedAt !== null);
+    if (pinned !== 0) return pinned;
+
+    const recent =
+      sessionTime(b.status?.occurredAt ?? b.createdAt) -
+      sessionTime(a.status?.occurredAt ?? a.createdAt);
+    if (recent !== 0) return recent;
+    return a.id.localeCompare(b.id);
+  });
+}
+
+function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
+  const { t } = useTranslation(["session", "shell", "common", "git"]);
+  const archivingSessionIds = useStore((state) => state.archivingSessionIds);
+  const repositoryStatuses = useStore((state) => state.repositoryStatuses);
+  // A primitive key stays referentially stable while unrelated runtime fields
+  // (log bytes, terminal title, scroll state) update at high frequency.
+  const suspendedSessionKey = useStore((state) =>
+    Object.entries(state.runtime)
+      .filter(([, runtime]) => runtime.suspended)
+      .map(([sessionId]) => sessionId)
+      .sort()
+      .join("\0"),
+  );
+  const projectKey = projects.map((project) => project.id).join("\0");
+
+  useEffect(() => {
+    const projectIds = projectKey ? projectKey.split("\0") : [];
+    const refresh = () => {
+      for (const projectId of projectIds) {
+        void refreshRepositoryStatus(projectId);
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [projectKey]);
+
+  const archiving = new Set(archivingSessionIds);
+  const suspended = new Set(
+    suspendedSessionKey ? suspendedSessionKey.split("\0") : [],
+  );
+  const projectBySession = new Map<string, ProjectView>();
+  const sessions: SessionView[] = [];
+  for (const project of projects) {
+    for (const session of project.sessions) {
+      if (
+        session.hostAlive &&
+        session.adapter !== "shell" &&
+        !archiving.has(session.id)
+      ) {
+        projectBySession.set(session.id, project);
+        sessions.push(session);
+      }
+    }
+  }
+  const ordered = orderActiveAgentSessionsForSidebar(sessions, suspended);
+
+  if (ordered.length === 0) {
+    return (
+      <div className="active-agent-empty" role="status">
+        {t("shell:ui.sidebar.activeAgentsEmpty")}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="active-agent-session-list"
+      role="list"
+      aria-label={t("shell:ui.sidebar.activeAgentListLabel")}
+    >
+      {ordered.map((session) => {
+        const project = projectBySession.get(session.id);
+        if (!project) return null;
+        const branch = session.worktreeId
+          ? project.worktrees.find(
+              (worktree) => worktree.id === session.worktreeId,
+            )?.branch
+          : repositoryStatuses[project.id]?.isGitRepository &&
+              repositoryStatuses[project.id]?.head.kind === "branch"
+            ? repositoryStatuses[project.id]?.head.branch
+            : null;
+        const sourceLabel = branch
+          ? `${project.name} · ${branch}`
+          : project.name;
+        return (
+          <div key={session.id} role="listitem">
+            <SessionRow ses={session} sourceLabel={sourceLabel} />
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 /**
@@ -1625,6 +1788,8 @@ export default function Sidebar({
 }) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
   const projects = useStore((state) => state.projects);
+  const sidebarViewMode = useStore((state) => state.sidebarViewMode);
+  const activeAgentsView = sidebarViewMode === "activeAgents";
   const projectLayoutSaving = useStore((state) => state.projectLayoutSaving);
   const projectDrag = useProjectDrag(projects, projectLayoutSaving);
   const expandedProjects = useStore((state) => state.expandedProjects);
@@ -1646,23 +1811,31 @@ export default function Sidebar({
   return (
     <aside
       className={`sidebar${collapsed ? " collapsed" : ""}${anim ? ` anim-${anim}` : ""}`}
-      aria-label={t("shell:ui.sidebar.label")}
+      aria-label={t(
+        activeAgentsView
+          ? "shell:ui.sidebar.activeAgentSidebarLabel"
+          : "shell:ui.sidebar.label",
+      )}
       aria-hidden={collapsed}
       style={{ "--sidebar-width": `${width}px` } as CSSProperties}
     >
       <div
         ref={projectDrag.scrollRef}
         className="sidebar-scroll"
-        role="tree"
+        role={activeAgentsView ? "region" : "tree"}
         aria-label={
-          worktreeProject
-            ? t("shell:ui.sidebar.worktreeTreeLabel", {
-                project: worktreeProject.name,
-              })
-            : t("shell:ui.sidebar.projectTreeLabel")
+          activeAgentsView
+            ? t("shell:ui.sidebar.activeAgentListLabel")
+            : worktreeProject
+              ? t("shell:ui.sidebar.worktreeTreeLabel", {
+                  project: worktreeProject.name,
+                })
+              : t("shell:ui.sidebar.projectTreeLabel")
         }
       >
-        {projects.length === 0 ? (
+        {activeAgentsView ? (
+          <ActiveAgentSessionsView projects={projects} />
+        ) : projects.length === 0 ? (
           <div className="empty-state">
             <div className="empty-icon" aria-hidden="true">
               ⌘
@@ -1718,34 +1891,36 @@ export default function Sidebar({
           <IconPlus />
         </button>
         <span className="sidebar-footer-spacer" />
-        <button
-          className="sidebar-footer-action collapse-projects"
-          onClick={() =>
-            update((state) => {
-              const collapse = !allCollapsed;
-              const expandedProjects = Object.fromEntries(
-                state.projects.map((project) => [project.id, !collapse]),
-              );
-              persistProjectExpansion(expandedProjects);
-              return {
-                expandedProjects,
-                collapsedWorktrees: Object.fromEntries(
-                  state.projects.flatMap((p) =>
-                    p.worktrees.map((w) => [w.id, collapse]),
+        {activeAgentsView ? null : (
+          <button
+            className="sidebar-footer-action collapse-projects"
+            onClick={() =>
+              update((state) => {
+                const collapse = !allCollapsed;
+                const expandedProjects = Object.fromEntries(
+                  state.projects.map((project) => [project.id, !collapse]),
+                );
+                persistProjectExpansion(expandedProjects);
+                return {
+                  expandedProjects,
+                  collapsedWorktrees: Object.fromEntries(
+                    state.projects.flatMap((p) =>
+                      p.worktrees.map((w) => [w.id, collapse]),
+                    ),
                   ),
-                ),
-              };
-            })
-          }
-          disabled={projects.length === 0}
-          aria-label={
-            allCollapsed
-              ? t("shell:ui.sidebar.expandAll")
-              : t("shell:ui.sidebar.collapseAll")
-          }
-        >
-          <IconCollapseProjects collapsed={allCollapsed} />
-        </button>
+                };
+              })
+            }
+            disabled={projects.length === 0}
+            aria-label={
+              allCollapsed
+                ? t("shell:ui.sidebar.expandAll")
+                : t("shell:ui.sidebar.collapseAll")
+            }
+          >
+            <IconCollapseProjects collapsed={allCollapsed} />
+          </button>
+        )}
       </div>
     </aside>
   );

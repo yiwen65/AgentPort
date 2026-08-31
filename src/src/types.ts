@@ -77,6 +77,8 @@ export interface SessionView {
   adapter: string;
   cwd: string;
   lifecycle: LifecycleStr;
+  /** Backend-verified Host liveness; absent legacy/test payloads fail closed. */
+  hostAlive?: boolean;
   agentSessionId: string | null;
   resumePrecision: ResumePrecisionStr;
   permissionMode: PermissionStr;

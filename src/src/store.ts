@@ -227,6 +227,7 @@ export type DialogState =
   | null;
 
 export type EffectiveTheme = "dark" | "light";
+export type SidebarViewMode = "projects" | "activeAgents";
 
 export interface AppState {
   ready: boolean;
@@ -267,6 +268,8 @@ export interface AppState {
   announcement: string;
   themeEffective: EffectiveTheme;
   reducedMotion: boolean;
+  /** Ephemeral content shown in the sidebar; intentionally not persisted. */
+  sidebarViewMode: SidebarViewMode;
   /** Whether the project/session sidebar is hidden for terminal focus. */
   sidebarCollapsed: boolean;
   /** Slide choreography phase for the sidebar toggle. "out" plays the
@@ -402,6 +405,7 @@ const initialState: AppState = {
   announcement: "",
   themeEffective: "dark",
   reducedMotion: false,
+  sidebarViewMode: "projects",
   sidebarCollapsed: false,
   sidebarAnim: null,
   sidebarWidth: 296,

@@ -23,6 +23,7 @@
     "sidebar": {
       "removeConfirm": "Remove from the list?",
       "rowLabel": "{{title}}, {{agent}}",
+      "activeRowLabel": "{{title}}, {{agent}}, from {{source}}",
       "titleLabel": "Session title",
       "actionsLabel": "Session actions",
       "unpin": "Unpin",

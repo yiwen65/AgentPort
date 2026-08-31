@@ -23,6 +23,7 @@
     "sidebar": {
       "removeConfirm": "从列表移除？",
       "rowLabel": "{{title}}，{{agent}}",
+      "activeRowLabel": "{{title}}，{{agent}}，来源 {{source}}",
       "titleLabel": "Session 标题",
       "actionsLabel": "Session 操作",
       "unpin": "取消置顶",

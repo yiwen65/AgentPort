@@ -256,34 +256,57 @@ export function applyThemeSettings() {
 const SIDEBAR_ANIM_MS = 180;
 let sidebarAnimToken = 0;
 
+function showSidebar() {
+  const s = getState();
+  if (!s.sidebarCollapsed && s.sidebarAnim !== "out") return;
+  const token = ++sidebarAnimToken;
+  if (s.reducedMotion) {
+    setState({ sidebarCollapsed: false, sidebarAnim: null });
+    return;
+  }
+  setState({ sidebarCollapsed: false, sidebarAnim: "inPrep" });
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (token !== sidebarAnimToken) return;
+      setState({ sidebarAnim: "in" });
+      window.setTimeout(() => {
+        if (token !== sidebarAnimToken) return;
+        setState({ sidebarAnim: null });
+      }, SIDEBAR_ANIM_MS);
+    });
+  });
+}
+
 export function toggleSidebarCollapsed() {
   const s = getState();
   if (s.sidebarAnim) return; // let the in-flight slide finish
+  if (s.sidebarCollapsed) {
+    showSidebar();
+    return;
+  }
   if (s.reducedMotion) {
     // No slide under reduced motion — commit immediately instead.
-    setState({ sidebarCollapsed: !s.sidebarCollapsed });
+    setState({ sidebarCollapsed: true });
     return;
   }
   const token = ++sidebarAnimToken;
-  if (s.sidebarCollapsed) {
-    setState({ sidebarCollapsed: false, sidebarAnim: "inPrep" });
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (token !== sidebarAnimToken) return;
-        setState({ sidebarAnim: "in" });
-        window.setTimeout(() => {
-          if (token !== sidebarAnimToken) return;
-          setState({ sidebarAnim: null });
-        }, SIDEBAR_ANIM_MS);
-      });
-    });
-  } else {
-    setState({ sidebarAnim: "out" });
-    window.setTimeout(() => {
-      if (token !== sidebarAnimToken) return;
-      setState({ sidebarCollapsed: true, sidebarAnim: null });
-    }, SIDEBAR_ANIM_MS);
+  setState({ sidebarAnim: "out" });
+  window.setTimeout(() => {
+    if (token !== sidebarAnimToken) return;
+    setState({ sidebarCollapsed: true, sidebarAnim: null });
+  }, SIDEBAR_ANIM_MS);
+}
+
+/** Toggle the global active-Agent sidebar without disturbing its project context. */
+export function toggleActiveAgentsView() {
+  const s = getState();
+  if (s.sidebarViewMode === "activeAgents") {
+    setState({ sidebarViewMode: "projects" });
+    return;
   }
+
+  setState({ sidebarViewMode: "activeAgents" });
+  if (s.sidebarCollapsed || s.sidebarAnim === "out") showSidebar();
 }
 
 // ---------------------------------------------------------------------------
