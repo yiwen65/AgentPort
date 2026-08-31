@@ -55,6 +55,7 @@ import {
   singletonPaneLayout,
   splitPane,
   updateSplitRatio,
+  visiblePaneLayout,
   MIN_PANE_HEIGHT,
   MIN_PANE_WIDTH,
   type PaneLayout,
@@ -318,10 +319,11 @@ export function canSplitSessionPane(
   direction: PaneSplitDirection,
 ): boolean {
   const state = getState();
+  const layout = visiblePaneLayout(state.terminalLayout, state.activeSessionId);
   const workspaceRect = paneWorkspaceRect();
-  if (state.terminalLayout.root && workspaceRect) {
+  if (layout.root && workspaceRect) {
     const logicalSize = paneSessionSize(
-      state.terminalLayout.root,
+      layout.root,
       sessionId,
       workspaceRect.width,
       workspaceRect.height,
@@ -430,10 +432,14 @@ export function selectSession(
   const ses = findSession(s.projects, id);
   const sessionLive = ses?.lifecycle === "creating" || ses?.lifecycle === "running";
   const wasInLayout = layoutContains(s.terminalLayout, id);
+  const hasRememberedSplit = orderedLayoutSessionIds(s.terminalLayout).length > 1;
   const terminalLayout = wasInLayout
     ? focusPane(s.terminalLayout, id)
-    : singletonPaneLayout(id);
-  const attachedIds = attachedPtyIdsForLayout(terminalLayout, s.projects);
+    : hasRememberedSplit
+      ? s.terminalLayout
+      : singletonPaneLayout(id);
+  const displayLayout = visiblePaneLayout(terminalLayout, id);
+  const attachedIds = attachedPtyIdsForLayout(displayLayout, s.projects);
   const maximizedSessionId =
     wasInLayout && s.maximizedSessionId ? id : null;
   const revealInSidebar = options.revealInSidebar !== false;
@@ -477,7 +483,11 @@ export function openSplitSessionDialog(
 ): boolean {
   const state = getState();
   const target = findSession(state.projects, targetSessionId);
-  if (!target || !layoutContains(state.terminalLayout, targetSessionId)) return false;
+  const displayLayout = visiblePaneLayout(
+    state.terminalLayout,
+    state.activeSessionId,
+  );
+  if (!target || !layoutContains(displayLayout, targetSessionId)) return false;
   if (!canSplitSessionPane(targetSessionId, direction)) {
     toast(i18n.t("shell:pane.tooSmall"), "info");
     return false;
@@ -499,19 +509,23 @@ export function splitSessionIntoPane(
   direction: PaneSplitDirection,
 ): boolean {
   const state = getState();
+  const displayLayout = visiblePaneLayout(
+    state.terminalLayout,
+    state.activeSessionId,
+  );
   if (
     targetSessionId === sessionId ||
     !findSession(state.projects, targetSessionId) ||
     !findSession(state.projects, sessionId) ||
-    !layoutContains(state.terminalLayout, targetSessionId)
+    !layoutContains(displayLayout, targetSessionId)
   ) {
     return false;
   }
-  const terminalLayout = layoutContains(state.terminalLayout, sessionId)
-    ? movePane(state.terminalLayout, sessionId, targetSessionId, direction)
-    : splitPane(state.terminalLayout, targetSessionId, sessionId, direction);
+  const terminalLayout = layoutContains(displayLayout, sessionId)
+    ? movePane(displayLayout, sessionId, targetSessionId, direction)
+    : splitPane(displayLayout, targetSessionId, sessionId, direction);
   if (!layoutContains(terminalLayout, sessionId)) return false;
-  if (!samePaneLayout(terminalLayout, state.terminalLayout)) {
+  if (!samePaneLayout(terminalLayout, displayLayout)) {
     if (!paneLayoutFitsWorkspace(terminalLayout)) {
       toast(i18n.t("shell:pane.tooSmall"), "info");
       return false;
@@ -528,9 +542,20 @@ export function splitSessionIntoPane(
 
 export function removeSessionPane(sessionId: string): boolean {
   const state = getState();
-  if (!layoutContains(state.terminalLayout, sessionId)) return false;
-  const terminalLayout = removePane(state.terminalLayout, sessionId);
-  if (samePaneLayout(terminalLayout, state.terminalLayout)) return false;
+  const displayLayout = visiblePaneLayout(
+    state.terminalLayout,
+    state.activeSessionId,
+  );
+  if (!layoutContains(displayLayout, sessionId)) return false;
+  if (!samePaneLayout(displayLayout, state.terminalLayout)) {
+    commitPaneLayout(state.terminalLayout, {
+      maximizedSessionId: null,
+      acknowledgeFocused: state.terminalLayout.focusedSessionId !== null,
+    });
+    return true;
+  }
+  const terminalLayout = removePane(displayLayout, sessionId);
+  if (samePaneLayout(terminalLayout, displayLayout)) return false;
   commitPaneLayout(terminalLayout, {
     maximizedSessionId:
       state.maximizedSessionId === sessionId ? null : state.maximizedSessionId,

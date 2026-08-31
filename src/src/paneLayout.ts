@@ -88,6 +88,20 @@ export function singletonPaneLayout(sessionId: string): PaneLayout {
   return { root: paneLeaf(sessionId), focusedSessionId: sessionId };
 }
 
+/**
+ * Layout currently shown in the workspace. A Session outside a remembered
+ * split is a temporary singleton view; the persisted split remains intact.
+ */
+export function visiblePaneLayout(
+  rememberedLayout: PaneLayout,
+  activeSessionId: string | null,
+): PaneLayout {
+  if (!activeSessionId || layoutContains(rememberedLayout, activeSessionId)) {
+    return rememberedLayout;
+  }
+  return singletonPaneLayout(activeSessionId);
+}
+
 /** True when a Session has exactly one leaf in the layout. */
 export function layoutContains(source: LayoutSource, sessionId: string): boolean {
   if (!sessionId) return false;

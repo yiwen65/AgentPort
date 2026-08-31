@@ -10,6 +10,7 @@ import {
   prunePaneLayout,
   readPersistedTerminalLayout,
   singletonPaneLayout,
+  visiblePaneLayout,
 } from "./paneLayout";
 import type { PaneLayout, PaneSplitDirection } from "./paneLayout";
 import type {
@@ -647,28 +648,39 @@ function sessionScopedState(
   const legacyActiveSessionId =
     s.activeSessionId && alive.has(s.activeSessionId) ? s.activeSessionId : null;
 
-  // Before pane actions existed, selection was represented only by
-  // activeSessionId. Preserve that singleton contract while making a restored
-  // pane tree authoritative whenever the active Session belongs to it.
-  if (legacyActiveSessionId && !layoutContains(terminalLayout, legacyActiveSessionId)) {
+  // An active Session outside a multi-pane tree is a temporary singleton
+  // view. Keep the split intact so selecting one of its members restores it.
+  // A one-pane legacy layout has nothing to remember and still follows the
+  // active Session as before pane workspaces existed.
+  const hasRememberedSplit = orderedLayoutSessionIds(terminalLayout).length > 1;
+  if (
+    legacyActiveSessionId &&
+    !layoutContains(terminalLayout, legacyActiveSessionId) &&
+    !hasRememberedSplit
+  ) {
     terminalLayout = singletonPaneLayout(legacyActiveSessionId);
   } else if (
     legacyActiveSessionId &&
+    layoutContains(terminalLayout, legacyActiveSessionId) &&
     terminalLayout.focusedSessionId !== legacyActiveSessionId
   ) {
     terminalLayout = { ...terminalLayout, focusedSessionId: legacyActiveSessionId };
   }
 
-  const activeSessionId = terminalLayout.focusedSessionId;
+  const activeSessionId = legacyActiveSessionId ?? terminalLayout.focusedSessionId;
+  const displayLayout = visiblePaneLayout(terminalLayout, activeSessionId);
   const sessions = sessionsById(projects);
-  const nextAttachedIds = orderedLayoutSessionIds(terminalLayout).filter(
+  const nextAttachedIds = orderedLayoutSessionIds(displayLayout).filter(
     (sessionId) => alive.has(sessionId) && sessions.get(sessionId)?.transport === "pty",
   );
   const attachedIds = sameIds(s.attachedIds, nextAttachedIds)
     ? s.attachedIds
     : nextAttachedIds;
   const maximizedSessionId =
-    s.maximizedSessionId && layoutContains(terminalLayout, s.maximizedSessionId)
+    activeSessionId &&
+    layoutContains(terminalLayout, activeSessionId) &&
+    s.maximizedSessionId &&
+    layoutContains(terminalLayout, s.maximizedSessionId)
       ? s.maximizedSessionId
       : null;
 

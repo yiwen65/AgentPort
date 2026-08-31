@@ -109,6 +109,7 @@ const ptyA: SessionView = {
   createdAt: "2026-08-30T00:00:00.000Z",
 };
 const ptyB: SessionView = { ...ptyA, id: "pty-b", title: "PTY B" };
+const ptyOutside: SessionView = { ...ptyA, id: "pty-outside", title: "PTY Outside" };
 const rpc: SessionView = {
   ...ptyA,
   id: "rpc-c",
@@ -172,7 +173,7 @@ function installLayout() {
       rootPath: "/tmp/project",
       gitRootPath: null,
       pinned: false,
-      sessions: [ptyA, ptyB, rpc],
+      sessions: [ptyA, ptyB, rpc, ptyOutside],
       worktrees: [],
     }],
     activeSessionId: ptyB.id,
@@ -228,6 +229,30 @@ describe("TerminalArea recursive panes", () => {
     fireEvent.focus(button);
 
     expect(selectSessionMock).toHaveBeenCalledWith(ptyA.id);
+  });
+
+  it("temporarily renders an outside Session alone without forgetting the split", () => {
+    const view = render(<TerminalArea />);
+
+    act(() => setState({
+      activeSessionId: ptyOutside.id,
+      attachedIds: [ptyOutside.id],
+    }));
+    view.rerender(<TerminalArea />);
+
+    expect(view.container.querySelectorAll(".session-pane-leaf")).toHaveLength(1);
+    expect(view.container.querySelector(
+      `[data-pane-session-id="${ptyOutside.id}"]`,
+    )).not.toBeNull();
+    expect(view.container.querySelector(".pane-header")).toBeNull();
+
+    act(() => setState({ activeSessionId: ptyA.id }));
+    view.rerender(<TerminalArea />);
+
+    expect(view.container.querySelectorAll(".session-pane-leaf")).toHaveLength(3);
+    expect(view.container.querySelector(
+      `[data-pane-session-id="${ptyOutside.id}"]`,
+    )).toBeNull();
   });
 
   it("keeps every pane mounted while maximizing and hides only non-target branches", () => {

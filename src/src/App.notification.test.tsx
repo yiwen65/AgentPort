@@ -57,7 +57,13 @@ vi.mock("./components/Dialogs", () => ({
 }));
 
 import App from "./App";
-import { setState } from "./store";
+import {
+  emptyPaneLayout,
+  persistTerminalLayout,
+  singletonPaneLayout,
+  splitPane,
+} from "./paneLayout";
+import { getState, setState } from "./store";
 import type { BootInfo, SessionView, StatusEventView } from "./types";
 
 const firstSession: SessionView = {
@@ -79,6 +85,7 @@ const firstSession: SessionView = {
   createdAt: "2026-07-23T00:00:00.000Z",
 };
 const targetSession = { ...firstSession, id: "ses_target", title: "target" };
+const outsideSession = { ...firstSession, id: "ses_outside", title: "outside" };
 
 const bootInfo: BootInfo = {
   platform: {
@@ -152,6 +159,8 @@ describe("system notification navigation", () => {
       bootError: null,
       projects: [],
       activeSessionId: null,
+      terminalLayout: emptyPaneLayout(),
+      maximizedSessionId: null,
       attachedIds: [],
       showOnboarding: false,
     });
@@ -195,6 +204,41 @@ describe("system notification navigation", () => {
       }),
     );
     expect(mocks.selectSession).not.toHaveBeenCalledWith(firstSession.id);
+  });
+
+  it("restores a remembered split instead of a temporary outside selection", async () => {
+    const terminalLayout = splitPane(
+      singletonPaneLayout(firstSession.id),
+      firstSession.id,
+      targetSession.id,
+      "right",
+      "remembered",
+    );
+    expect(persistTerminalLayout(terminalLayout)).toBe(true);
+    window.localStorage.setItem("agentport-active-session-id", "ses_outside");
+    setState({
+      terminalLayout,
+      activeSessionId: targetSession.id,
+    });
+    mocks.api.boot.mockResolvedValue({
+      ...bootInfo,
+      projects: [{
+        ...bootInfo.projects[0],
+        sessions: [firstSession, targetSession, outsideSession],
+      }],
+    });
+    mocks.api.takePendingNotificationSession.mockResolvedValue(null);
+
+    render(<App />);
+
+    await waitFor(() => expect(getState().ready).toBe(true));
+    expect(getState().activeSessionId).toBe(targetSession.id);
+    expect(mocks.selectSession).not.toHaveBeenCalledWith("ses_outside", null, {
+      revealInSidebar: false,
+    });
+    expect(mocks.selectSession).not.toHaveBeenCalledWith(firstSession.id, null, {
+      revealInSidebar: false,
+    });
   });
 
   it("switches an already-running app when a notification is clicked", async () => {

@@ -25,6 +25,7 @@ import {
   singletonPaneLayout,
   splitPane,
   updateSplitRatio,
+  visiblePaneLayout,
 } from "./paneLayout";
 import type { PaneLayout, PaneLayoutNode, PaneSplit } from "./paneLayout";
 import type { ProjectView, SessionView } from "./types";
@@ -492,6 +493,37 @@ describe("pane layout store reconciliation", () => {
       "rpc-b",
       "pty-c",
     ]);
+  });
+
+  it("keeps a remembered split while an outside Session is temporarily active", async () => {
+    vi.resetModules();
+    const store = await import("./store");
+    const a = session("a");
+    const b = session("b");
+    const outside = session("outside");
+    const terminalLayout = splitPane(
+      singletonPaneLayout(a.id),
+      a.id,
+      b.id,
+      "right",
+      "remembered",
+    );
+    store.setState({
+      projects: projectWith(a, b, outside),
+      activeSessionId: outside.id,
+      terminalLayout,
+      attachedIds: [outside.id],
+    });
+
+    store.applyProjectsSnapshot(projectWith(a, b, outside));
+
+    expect(orderedLayoutSessionIds(store.getState().terminalLayout)).toEqual([a.id, b.id]);
+    expect(store.getState().activeSessionId).toBe(outside.id);
+    expect(store.getState().attachedIds).toEqual([outside.id]);
+    expect(orderedLayoutSessionIds(visiblePaneLayout(
+      store.getState().terminalLayout,
+      store.getState().activeSessionId,
+    ))).toEqual([outside.id]);
   });
 
   it("upgrades a valid legacy active Session to a singleton layout", async () => {

@@ -50,8 +50,10 @@ import {
 } from "./actions";
 import {
   orderedLayoutSessionIds,
+  readPersistedTerminalLayout,
   singletonPaneLayout,
   splitPane,
+  visiblePaneLayout,
 } from "./paneLayout";
 import { getState, setState } from "./store";
 import type { SessionView } from "./types";
@@ -280,7 +282,7 @@ describe("selectSession", () => {
     expect(releaseTerminalMock).not.toHaveBeenCalled();
   });
 
-  it("turns an out-of-layout selection into a singleton and releases old panes", () => {
+  it("shows an out-of-layout Session temporarily and restores the remembered split", () => {
     const terminalLayout = splitPane(
       singletonPaneLayout(oldSession.id),
       oldSession.id,
@@ -298,11 +300,84 @@ describe("selectSession", () => {
     selectSession(rpcSession.id);
 
     expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
-      rpcSession.id,
+      oldSession.id,
+      newSession.id,
     ]);
+    expect(orderedLayoutSessionIds(
+      visiblePaneLayout(getState().terminalLayout, getState().activeSessionId),
+    )).toEqual([rpcSession.id]);
+    expect(orderedLayoutSessionIds(readPersistedTerminalLayout())).toEqual([
+      oldSession.id,
+      newSession.id,
+    ]);
+    expect(getState().activeSessionId).toBe(rpcSession.id);
     expect(getState().attachedIds).toEqual([]);
     expect(releaseTerminalMock).toHaveBeenCalledWith(oldSession.id);
     expect(releaseTerminalMock).toHaveBeenCalledWith(newSession.id);
+
+    releaseTerminalMock.mockClear();
+    selectSession(oldSession.id);
+
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
+      oldSession.id,
+      newSession.id,
+    ]);
+    expect(getState().activeSessionId).toBe(oldSession.id);
+    expect(getState().attachedIds).toEqual([oldSession.id, newSession.id]);
+    expect(releaseTerminalMock).not.toHaveBeenCalled();
+  });
+
+  it("restores the remembered split when the temporary singleton is removed", () => {
+    const terminalLayout = splitPane(
+      singletonPaneLayout(oldSession.id),
+      oldSession.id,
+      newSession.id,
+      "right",
+      "outer",
+    );
+    setState({
+      projects: projectWith(oldSession, newSession, rpcSession),
+      terminalLayout,
+      activeSessionId: newSession.id,
+      attachedIds: [oldSession.id, newSession.id],
+    });
+    selectSession(rpcSession.id);
+
+    expect(removeSessionPane(rpcSession.id)).toBe(true);
+
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
+      oldSession.id,
+      newSession.id,
+    ]);
+    expect(getState().activeSessionId).toBe(newSession.id);
+    expect(getState().attachedIds).toEqual([oldSession.id, newSession.id]);
+  });
+
+  it("can start a replacement split from the temporary singleton", () => {
+    const rememberedLayout = splitPane(
+      singletonPaneLayout(oldSession.id),
+      oldSession.id,
+      newSession.id,
+      "right",
+      "remembered",
+    );
+    setState({
+      projects: projectWith(oldSession, newSession, rpcSession),
+      terminalLayout: rememberedLayout,
+      activeSessionId: newSession.id,
+      attachedIds: [oldSession.id, newSession.id],
+    });
+    selectSession(rpcSession.id);
+
+    expect(openSplitSessionDialog(rpcSession.id, "down")).toBe(true);
+    expect(splitSessionIntoPane(rpcSession.id, oldSession.id, "down")).toBe(true);
+
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
+      rpcSession.id,
+      oldSession.id,
+    ]);
+    expect(getState().activeSessionId).toBe(oldSession.id);
+    expect(getState().attachedIds).toEqual([oldSession.id]);
   });
 
   it("splits, moves, maximizes, resizes, and removes panes without duplication", () => {

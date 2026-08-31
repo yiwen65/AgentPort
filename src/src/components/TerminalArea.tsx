@@ -65,7 +65,7 @@ import {
   clampPaneSplitRatio,
   layoutContains,
   orderedLayoutSessionIds,
-  singletonPaneLayout,
+  visiblePaneLayout,
   type PaneLayoutNode,
   type PaneSplit,
   type PaneSplitDirection,
@@ -1311,13 +1311,13 @@ export default function TerminalArea() {
   const docExpanded = useStore(
     (state) => state.docPanelExpanded && state.openDocument !== null,
   );
-  // Older tests and pre-layout state can still present activeSessionId alone;
-  // normalize it at the rendering boundary without persisting hidden state.
-  const layout = terminalLayout.root
-    ? terminalLayout
-    : activeSession
-      ? singletonPaneLayout(activeSession.id)
-      : terminalLayout;
+  // A Session outside the remembered split is shown as a temporary singleton.
+  // The stored tree remains intact and reappears when one of its leaves is
+  // selected (or when the App restarts).
+  const layout = visiblePaneLayout(
+    terminalLayout,
+    activeSession?.id ?? null,
+  );
   const paneIds = orderedLayoutSessionIds(layout);
   const multiPane = paneIds.length > 1;
   const effectiveMaximizedSessionId =
