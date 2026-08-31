@@ -181,6 +181,7 @@ function installLayout() {
     }],
     activeSessionId: ptyB.id,
     terminalLayout,
+    terminalLayoutGroups: [terminalLayout],
     maximizedSessionId: null,
     attachedIds: [ptyA.id, ptyB.id],
     runtime: {

@@ -100,6 +100,7 @@ describe("quickStartSession split intent", () => {
       projects: projectWith(targetSession),
       activeSessionId: targetSession.id,
       terminalLayout: singletonPaneLayout(targetSession.id),
+      terminalLayoutGroups: [],
       maximizedSessionId: null,
       attachedIds: [targetSession.id],
       dialog: null,

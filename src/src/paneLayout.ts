@@ -2,7 +2,7 @@ export const MIN_PANE_WIDTH = 320;
 export const MIN_PANE_HEIGHT = 180;
 export const DEFAULT_SPLIT_RATIO = 0.5;
 export const MAX_PANE_LAYOUT_DEPTH = 32;
-export const TERMINAL_LAYOUT_VERSION = 1;
+export const TERMINAL_LAYOUT_VERSION = 2;
 export const TERMINAL_LAYOUT_STORAGE_KEY = "agentport-terminal-layout";
 
 export type PaneSplitDirection = "right" | "down";
@@ -27,6 +27,13 @@ export type PaneLayoutNode = PaneLeaf | PaneSplit;
 export interface PaneLayout {
   root: PaneLayoutNode | null;
   focusedSessionId: string | null;
+}
+
+export interface PaneLayoutWorkspace {
+  /** Disjoint remembered layouts that contain at least two panes. */
+  groups: PaneLayout[];
+  /** Persisted startup layout; may differ from a temporary singleton view. */
+  activeLayout: PaneLayout;
 }
 
 export interface PaneSize {
@@ -742,6 +749,25 @@ export function samePaneLayout(a: PaneLayout, b: PaneLayout): boolean {
   return a.focusedSessionId === b.focusedSessionId && sameNode(a.root, b.root);
 }
 
+export function paneLayoutHasSplit(layout: PaneLayout): boolean {
+  return orderedLayoutSessionIds(layout).length > 1;
+}
+
+export function paneLayoutGroupContaining(
+  groups: readonly PaneLayout[],
+  sessionId: string,
+): PaneLayout | null {
+  return groups.find((layout) => layoutContains(layout, sessionId)) ?? null;
+}
+
+export function samePaneLayouts(
+  first: readonly PaneLayout[],
+  second: readonly PaneLayout[],
+): boolean {
+  return first.length === second.length &&
+    first.every((layout, index) => samePaneLayout(layout, second[index]));
+}
+
 /**
  * Validate an unknown tree, discard duplicate/invalid leaves, repair split
  * metadata, and collapse every split that has only one surviving child.
@@ -785,10 +811,38 @@ export function prunePaneLayout(
   return samePaneLayout(layout, next) ? layout : next;
 }
 
+/** Sanitize a disjoint ordered layout collection; the first owner wins. */
+export function sanitizePaneLayouts(
+  value: unknown,
+  validSessionIds?: ValidSessionIds,
+): PaneLayout[] {
+  if (!Array.isArray(value)) return [];
+  const valid = validSessionSet(validSessionIds);
+  const claimed = new Set<string>();
+  const layouts: PaneLayout[] = [];
+  for (const candidate of value) {
+    let layout = sanitizePaneLayout(candidate, valid ?? undefined);
+    for (const sessionId of orderedLayoutSessionIds(layout)) {
+      if (claimed.has(sessionId)) layout = removePane(layout, sessionId);
+    }
+    const ids = orderedLayoutSessionIds(layout);
+    if (ids.length === 0) continue;
+    for (const sessionId of ids) claimed.add(sessionId);
+    layouts.push(layout);
+  }
+  return layouts;
+}
+
 interface PersistedTerminalLayoutV1 {
-  version: typeof TERMINAL_LAYOUT_VERSION;
+  version: 1;
   root: PaneLayoutNode | null;
   focusedSessionId: string | null;
+}
+
+interface PersistedTerminalLayoutV2 {
+  version: typeof TERMINAL_LAYOUT_VERSION;
+  groups: PaneLayout[];
+  activeLayout: PaneLayout;
 }
 
 function browserStorage(): Storage | null {
@@ -799,10 +853,11 @@ function browserStorage(): Storage | null {
   }
 }
 
-export function readPersistedTerminalLayout(
+export function readPersistedTerminalWorkspace(
   storage: Storage | null = browserStorage(),
-): PaneLayout {
-  if (!storage) return emptyPaneLayout();
+): PaneLayoutWorkspace {
+  const empty = { groups: [], activeLayout: emptyPaneLayout() };
+  if (!storage) return empty;
   const discardInvalidValue = () => {
     try {
       storage.removeItem(TERMINAL_LAYOUT_STORAGE_KEY);
@@ -812,32 +867,112 @@ export function readPersistedTerminalLayout(
   };
   try {
     const encoded = storage.getItem(TERMINAL_LAYOUT_STORAGE_KEY);
-    if (!encoded) return emptyPaneLayout();
+    if (!encoded) return empty;
     const parsed: unknown = JSON.parse(encoded);
-    if (!isRecord(parsed) || parsed.version !== TERMINAL_LAYOUT_VERSION) {
+    if (!isRecord(parsed)) {
       discardInvalidValue();
-      return emptyPaneLayout();
+      return empty;
     }
-    const sanitized = sanitizePaneLayout(parsed);
-    const explicitEmpty = parsed.root === null && parsed.focusedSessionId === null;
-    if (!explicitEmpty && !sanitized.root) discardInvalidValue();
-    return sanitized;
+
+    if (parsed.version === 1) {
+      const activeLayout = sanitizePaneLayout(parsed as unknown as PersistedTerminalLayoutV1);
+      const explicitEmpty = parsed.root === null && parsed.focusedSessionId === null;
+      if (!explicitEmpty && !activeLayout.root) discardInvalidValue();
+      return {
+        groups: paneLayoutHasSplit(activeLayout) ? [activeLayout] : [],
+        activeLayout,
+      };
+    }
+
+    if (
+      parsed.version !== TERMINAL_LAYOUT_VERSION ||
+      !Array.isArray(parsed.groups) ||
+      !("activeLayout" in parsed)
+    ) {
+      discardInvalidValue();
+      return empty;
+    }
+    let groups = sanitizePaneLayouts(parsed.groups).filter(paneLayoutHasSplit);
+    let activeLayout = sanitizePaneLayout(parsed.activeLayout);
+    if (paneLayoutHasSplit(activeLayout)) {
+      const matching = activeLayout.focusedSessionId
+        ? paneLayoutGroupContaining(groups, activeLayout.focusedSessionId)
+        : null;
+      if (matching) {
+        activeLayout = focusPane(
+          matching,
+          activeLayout.focusedSessionId ?? matching.focusedSessionId ?? "",
+        );
+        groups = [
+          activeLayout,
+          ...groups.filter((group) => group !== matching),
+        ];
+      } else {
+        groups = sanitizePaneLayouts([activeLayout, ...groups]).filter(paneLayoutHasSplit);
+        activeLayout = groups[0] ?? emptyPaneLayout();
+      }
+    }
+    const explicitEmpty =
+      parsed.groups.length === 0 &&
+      isRecord(parsed.activeLayout) &&
+      parsed.activeLayout.root === null &&
+      parsed.activeLayout.focusedSessionId === null;
+    if (!explicitEmpty && groups.length === 0 && !activeLayout.root) {
+      discardInvalidValue();
+      return empty;
+    }
+    return { groups, activeLayout };
   } catch {
     discardInvalidValue();
-    return emptyPaneLayout();
+    return empty;
   }
 }
 
-export function persistTerminalLayout(
-  layout: PaneLayout,
+export function readPersistedTerminalLayouts(
+  storage: Storage | null = browserStorage(),
+): PaneLayout[] {
+  return readPersistedTerminalWorkspace(storage).groups;
+}
+
+export function readPersistedTerminalLayout(
+  storage: Storage | null = browserStorage(),
+): PaneLayout {
+  return readPersistedTerminalWorkspace(storage).activeLayout;
+}
+
+export function persistTerminalLayouts(
+  groups: readonly PaneLayout[],
+  activeLayout: PaneLayout,
   storage: Storage | null = browserStorage(),
 ): boolean {
   if (!storage) return false;
-  const sanitized = sanitizePaneLayout(layout);
-  const value: PersistedTerminalLayoutV1 = {
+  let sanitizedGroups = sanitizePaneLayouts(groups).filter(paneLayoutHasSplit);
+  let sanitizedActive = sanitizePaneLayout(activeLayout);
+  if (paneLayoutHasSplit(sanitizedActive)) {
+    const matching = sanitizedActive.focusedSessionId
+      ? paneLayoutGroupContaining(sanitizedGroups, sanitizedActive.focusedSessionId)
+      : null;
+    if (matching) {
+      sanitizedActive = focusPane(
+        matching,
+        sanitizedActive.focusedSessionId ?? matching.focusedSessionId ?? "",
+      );
+      sanitizedGroups = [
+        sanitizedActive,
+        ...sanitizedGroups.filter((group) => group !== matching),
+      ];
+    } else {
+      sanitizedGroups = sanitizePaneLayouts([
+        sanitizedActive,
+        ...sanitizedGroups,
+      ]).filter(paneLayoutHasSplit);
+      sanitizedActive = sanitizedGroups[0] ?? emptyPaneLayout();
+    }
+  }
+  const value: PersistedTerminalLayoutV2 = {
     version: TERMINAL_LAYOUT_VERSION,
-    root: sanitized.root,
-    focusedSessionId: sanitized.focusedSessionId,
+    groups: sanitizedGroups,
+    activeLayout: sanitizedActive,
   };
   try {
     storage.setItem(TERMINAL_LAYOUT_STORAGE_KEY, JSON.stringify(value));
@@ -846,4 +981,15 @@ export function persistTerminalLayout(
     // Pane operations remain usable when WebView storage is unavailable.
     return false;
   }
+}
+
+export function persistTerminalLayout(
+  layout: PaneLayout,
+  storage: Storage | null = browserStorage(),
+): boolean {
+  return persistTerminalLayouts(
+    paneLayoutHasSplit(layout) ? [layout] : [],
+    layout,
+    storage,
+  );
 }

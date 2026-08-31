@@ -52,9 +52,9 @@ import {
 import {
   orderedLayoutSessionIds,
   readPersistedTerminalLayout,
+  readPersistedTerminalWorkspace,
   singletonPaneLayout,
   splitPane,
-  visiblePaneLayout,
 } from "./paneLayout";
 import { getState, setState } from "./store";
 import type { SessionView } from "./types";
@@ -79,6 +79,7 @@ const oldSession = {
 };
 
 const newSession = { ...oldSession, id: "ses_new", title: "new" };
+const fourthSession = { ...oldSession, id: "ses_fourth", title: "fourth" };
 const rpcSession = {
   ...oldSession,
   id: "ses_rpc",
@@ -109,6 +110,7 @@ describe("selectSession", () => {
       projects: projectWith(oldSession),
       activeSessionId: "ses_old",
       terminalLayout: singletonPaneLayout("ses_old"),
+      terminalLayoutGroups: [],
       maximizedSessionId: null,
       attachedIds: ["ses_old"],
       dialog: null,
@@ -301,12 +303,11 @@ describe("selectSession", () => {
     selectSession(rpcSession.id);
 
     expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
-      oldSession.id,
-      newSession.id,
+      rpcSession.id,
     ]);
-    expect(orderedLayoutSessionIds(
-      visiblePaneLayout(getState().terminalLayout, getState().activeSessionId),
-    )).toEqual([rpcSession.id]);
+    expect(getState().terminalLayoutGroups.map(orderedLayoutSessionIds)).toEqual([
+      [oldSession.id, newSession.id],
+    ]);
     expect(orderedLayoutSessionIds(readPersistedTerminalLayout())).toEqual([
       oldSession.id,
       newSession.id,
@@ -379,6 +380,99 @@ describe("selectSession", () => {
     ]);
     expect(getState().activeSessionId).toBe(oldSession.id);
     expect(getState().attachedIds).toEqual([oldSession.id]);
+  });
+
+  it("restores each split group after creating another independent split", () => {
+    const firstGroup = splitPane(
+      singletonPaneLayout(oldSession.id),
+      oldSession.id,
+      newSession.id,
+      "right",
+      "first-group",
+    );
+    setState({
+      projects: projectWith(oldSession, newSession, rpcSession, fourthSession),
+      terminalLayout: firstGroup,
+      activeSessionId: newSession.id,
+      attachedIds: [oldSession.id, newSession.id],
+    });
+
+    selectSession(rpcSession.id);
+    expect(splitSessionIntoPane(rpcSession.id, fourthSession.id, "down")).toBe(true);
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
+      rpcSession.id,
+      fourthSession.id,
+    ]);
+
+    selectSession(oldSession.id);
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
+      oldSession.id,
+      newSession.id,
+    ]);
+
+    selectSession(rpcSession.id);
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
+      rpcSession.id,
+      fourthSession.id,
+    ]);
+    expect(getState().terminalLayoutGroups.map(orderedLayoutSessionIds)).toEqual([
+      [rpcSession.id, fourthSession.id],
+      [oldSession.id, newSession.id],
+    ]);
+    expect(readPersistedTerminalWorkspace().groups.map(orderedLayoutSessionIds)).toEqual([
+      [rpcSession.id, fourthSession.id],
+      [oldSession.id, newSession.id],
+    ]);
+  });
+
+  it("moves a Session between groups without discarding either remaining group", () => {
+    const fifthSession = { ...oldSession, id: "ses_fifth", title: "fifth" };
+    const firstGroup = splitPane(
+      singletonPaneLayout(oldSession.id),
+      oldSession.id,
+      newSession.id,
+      "right",
+      "first-group",
+    );
+    let secondGroup = splitPane(
+      singletonPaneLayout(rpcSession.id),
+      rpcSession.id,
+      fourthSession.id,
+      "down",
+      "second-group",
+    );
+    secondGroup = splitPane(
+      secondGroup,
+      fourthSession.id,
+      fifthSession.id,
+      "right",
+      "second-group-nested",
+    );
+    setState({
+      projects: projectWith(
+        oldSession,
+        newSession,
+        rpcSession,
+        fourthSession,
+        fifthSession,
+      ),
+      terminalLayout: firstGroup,
+      terminalLayoutGroups: [firstGroup, secondGroup],
+      activeSessionId: newSession.id,
+      attachedIds: [oldSession.id, newSession.id],
+    });
+
+    expect(splitSessionIntoPane(oldSession.id, rpcSession.id, "down")).toBe(true);
+
+    expect(getState().terminalLayoutGroups.map(orderedLayoutSessionIds)).toEqual([
+      [oldSession.id, rpcSession.id, newSession.id],
+      [fourthSession.id, fifthSession.id],
+    ]);
+    selectSession(fourthSession.id);
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
+      fourthSession.id,
+      fifthSession.id,
+    ]);
   });
 
   it("splits, moves, maximizes, resizes, and removes panes without duplication", () => {

@@ -637,7 +637,8 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
   const active = useStore((state) => state.activeSessionId === ses.id);
   const inPaneLayout = useStore((state) =>
-    layoutContains(state.terminalLayout, ses.id),
+    layoutContains(state.terminalLayout, ses.id) ||
+    state.terminalLayoutGroups.some((group) => layoutContains(group, ses.id)),
   );
   const pinned = ses.pinnedAt !== null;
   const suspended = useStore(

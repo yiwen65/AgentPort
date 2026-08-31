@@ -4,13 +4,19 @@
 
 import { useSyncExternalStore } from "react";
 import {
+  emptyPaneLayout,
+  focusPane,
   layoutContains,
   orderedLayoutSessionIds,
-  persistTerminalLayout,
+  paneLayoutGroupContaining,
+  paneLayoutHasSplit,
+  persistTerminalLayouts,
   prunePaneLayout,
-  readPersistedTerminalLayout,
+  readPersistedTerminalWorkspace,
+  samePaneLayout,
+  samePaneLayouts,
+  sanitizePaneLayouts,
   singletonPaneLayout,
-  visiblePaneLayout,
 } from "./paneLayout";
 import type { PaneLayout, PaneSplitDirection } from "./paneLayout";
 import type {
@@ -236,8 +242,10 @@ export interface AppState {
   indexState: string;
   exportsDir: string;
   activeSessionId: string | null;
-  /** Persisted recursive terminal workspace and its focused leaf. */
+  /** Recursive layout currently shown in the terminal workspace. */
   terminalLayout: PaneLayout;
+  /** Persisted, disjoint multi-pane groups ordered by most recent activation. */
+  terminalLayoutGroups: PaneLayout[];
   /** Workspace-only maximize state; intentionally excluded from persistence. */
   maximizedSessionId: string | null;
   /** UI-only archive intents; authoritative membership remains in projects. */
@@ -358,7 +366,8 @@ export function persistProjectExpansion(expandedProjects: Record<string, boolean
   }
 }
 
-const persistedTerminalLayout = readPersistedTerminalLayout();
+const persistedTerminalWorkspace = readPersistedTerminalWorkspace();
+const persistedTerminalLayout = persistedTerminalWorkspace.activeLayout;
 
 const initialState: AppState = {
   ready: false,
@@ -375,6 +384,7 @@ const initialState: AppState = {
   exportsDir: "",
   activeSessionId: persistedTerminalLayout.focusedSessionId,
   terminalLayout: persistedTerminalLayout,
+  terminalLayoutGroups: persistedTerminalWorkspace.groups,
   maximizedSessionId: null,
   archivingSessionIds: [],
   attachedIds: [],
@@ -649,33 +659,54 @@ function sessionScopedState(
   projects: ProjectView[],
   alive: Set<string>,
 ): Partial<AppState> {
-  let terminalLayout = prunePaneLayout(s.terminalLayout, alive);
-  const legacyActiveSessionId =
+  const prunedCurrent = prunePaneLayout(s.terminalLayout, alive);
+  const remembered = paneLayoutHasSplit(s.terminalLayout)
+    ? [s.terminalLayout, ...s.terminalLayoutGroups]
+    : s.terminalLayoutGroups;
+  let terminalLayoutGroups = sanitizePaneLayouts(remembered, alive)
+    .filter(paneLayoutHasSplit);
+  const survivingActiveSessionId =
     s.activeSessionId && alive.has(s.activeSessionId) ? s.activeSessionId : null;
 
-  // An active Session outside a multi-pane tree is a temporary singleton
-  // view. Keep the split intact so selecting one of its members restores it.
-  // A one-pane legacy layout has nothing to remember and still follows the
-  // active Session as before pane workspaces existed.
-  const hasRememberedSplit = orderedLayoutSessionIds(terminalLayout).length > 1;
-  if (
-    legacyActiveSessionId &&
-    !layoutContains(terminalLayout, legacyActiveSessionId) &&
-    !hasRememberedSplit
-  ) {
-    terminalLayout = singletonPaneLayout(legacyActiveSessionId);
-  } else if (
-    legacyActiveSessionId &&
-    layoutContains(terminalLayout, legacyActiveSessionId) &&
-    terminalLayout.focusedSessionId !== legacyActiveSessionId
-  ) {
-    terminalLayout = { ...terminalLayout, focusedSessionId: legacyActiveSessionId };
+  let terminalLayout = emptyPaneLayout();
+  let activeSessionId: string | null = null;
+  if (survivingActiveSessionId) {
+    const group = paneLayoutGroupContaining(
+      terminalLayoutGroups,
+      survivingActiveSessionId,
+    );
+    if (group) {
+      terminalLayout = focusPane(group, survivingActiveSessionId);
+      terminalLayoutGroups = [
+        terminalLayout,
+        ...terminalLayoutGroups.filter((candidate) => candidate !== group),
+      ];
+    } else {
+      terminalLayout = singletonPaneLayout(survivingActiveSessionId);
+    }
+    activeSessionId = survivingActiveSessionId;
+  } else if (prunedCurrent.root) {
+    terminalLayout = prunedCurrent;
+    activeSessionId = prunedCurrent.focusedSessionId;
+    if (paneLayoutHasSplit(prunedCurrent)) {
+      const group = activeSessionId
+        ? paneLayoutGroupContaining(terminalLayoutGroups, activeSessionId)
+        : null;
+      if (group) {
+        terminalLayout = focusPane(group, activeSessionId ?? "");
+        terminalLayoutGroups = [
+          terminalLayout,
+          ...terminalLayoutGroups.filter((candidate) => candidate !== group),
+        ];
+      }
+    }
+  } else if (terminalLayoutGroups[0]) {
+    terminalLayout = terminalLayoutGroups[0];
+    activeSessionId = terminalLayout.focusedSessionId;
   }
 
-  const activeSessionId = legacyActiveSessionId ?? terminalLayout.focusedSessionId;
-  const displayLayout = visiblePaneLayout(terminalLayout, activeSessionId);
   const sessions = sessionsById(projects);
-  const nextAttachedIds = orderedLayoutSessionIds(displayLayout).filter(
+  const nextAttachedIds = orderedLayoutSessionIds(terminalLayout).filter(
     (sessionId) => alive.has(sessionId) && sessions.get(sessionId)?.transport === "pty",
   );
   const attachedIds = sameIds(s.attachedIds, nextAttachedIds)
@@ -689,10 +720,21 @@ function sessionScopedState(
       ? s.maximizedSessionId
       : null;
 
-  if (terminalLayout !== s.terminalLayout) persistTerminalLayout(terminalLayout);
+  if (
+    !samePaneLayout(terminalLayout, s.terminalLayout) ||
+    !samePaneLayouts(terminalLayoutGroups, s.terminalLayoutGroups)
+  ) {
+    // Preserve the most recently activated split as the cold-start target;
+    // a current singleton remains a temporary view while any group survives.
+    persistTerminalLayouts(
+      terminalLayoutGroups,
+      terminalLayoutGroups[0] ?? terminalLayout,
+    );
+  }
   return {
     runtime: retainSessionEntries(s.runtime, alive),
     terminalLayout,
+    terminalLayoutGroups,
     maximizedSessionId,
     attachedIds,
     activeSessionId,

@@ -160,6 +160,7 @@ describe("system notification navigation", () => {
       projects: [],
       activeSessionId: null,
       terminalLayout: emptyPaneLayout(),
+      terminalLayoutGroups: [],
       maximizedSessionId: null,
       attachedIds: [],
       showOnboarding: false,

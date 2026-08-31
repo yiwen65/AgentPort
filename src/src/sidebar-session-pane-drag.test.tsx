@@ -64,6 +64,8 @@ const first: SessionView = {
 };
 const second: SessionView = { ...first, id: "ses_second", title: "Second" };
 const third: SessionView = { ...first, id: "ses_third", title: "Third" };
+const fourth: SessionView = { ...first, id: "ses_fourth", title: "Fourth" };
+const fifth: SessionView = { ...first, id: "ses_fifth", title: "Fifth" };
 
 const settings = {
   logLimitMib: 200,
@@ -104,6 +106,13 @@ describe("sidebar Session pane drag", () => {
       "right",
       "split",
     );
+    const rememberedLayout = splitPane(
+      singletonPaneLayout(third.id),
+      third.id,
+      fourth.id,
+      "down",
+      "remembered-split",
+    );
     setState({
       projects: [{
         id: "p1",
@@ -111,7 +120,7 @@ describe("sidebar Session pane drag", () => {
         rootPath: "/tmp/demo",
         gitRootPath: null,
         pinned: false,
-        sessions: [first, second, third],
+        sessions: [first, second, third, fourth, fifth],
         worktrees: [],
       }],
       settings,
@@ -122,6 +131,7 @@ describe("sidebar Session pane drag", () => {
       highlightedWorktreeId: null,
       activeSessionId: first.id,
       terminalLayout,
+      terminalLayoutGroups: [terminalLayout, rememberedLayout],
       contextMenu: null,
     });
   });
@@ -133,13 +143,15 @@ describe("sidebar Session pane drag", () => {
     const rows = [...container.querySelectorAll<HTMLElement>(".tree-row.session")];
     const active = rows.find((row) => row.textContent?.includes("First"));
     const member = rows.find((row) => row.textContent?.includes("Second"));
-    const outside = rows.find((row) => row.textContent?.includes("Third"));
+    const rememberedMember = rows.find((row) => row.textContent?.includes("Third"));
+    const outside = rows.find((row) => row.textContent?.includes("Fifth"));
 
     expect(active?.classList.contains("active")).toBe(true);
     expect(active?.querySelector(".pane-layout-indicator")).toBeNull();
     expect(member?.classList.contains("in-pane-layout")).toBe(true);
     expect(member?.querySelector(".pane-layout-indicator")?.getAttribute("aria-label"))
       .toBe("已在分屏中");
+    expect(rememberedMember?.classList.contains("in-pane-layout")).toBe(true);
     expect(outside?.classList.contains("in-pane-layout")).toBe(false);
   });
 

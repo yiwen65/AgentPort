@@ -18,14 +18,15 @@ import {
   paneMinimumSize,
   paneSessionSize,
   persistTerminalLayout,
+  persistTerminalLayouts,
   prunePaneLayout,
   readPersistedTerminalLayout,
+  readPersistedTerminalWorkspace,
   removePane,
   sanitizePaneLayout,
   singletonPaneLayout,
   splitPane,
   updateSplitRatio,
-  visiblePaneLayout,
 } from "./paneLayout";
 import type { PaneLayout, PaneLayoutNode, PaneSplit } from "./paneLayout";
 import type { ProjectView, SessionView } from "./types";
@@ -429,18 +430,68 @@ describe("pane layout persistence", () => {
       TERMINAL_LAYOUT_STORAGE_KEY,
       JSON.stringify({
         version: TERMINAL_LAYOUT_VERSION,
-        root: {
-          type: "split",
-          id: "corrupt",
-          direction: "unknown",
-          ratio: -1,
-          first: { type: "leaf", sessionId: "a" },
-          second: { type: "leaf", sessionId: "a" },
+        groups: [],
+        activeLayout: {
+          root: {
+            type: "split",
+            id: "corrupt",
+            direction: "unknown",
+            ratio: -1,
+            first: { type: "leaf", sessionId: "a" },
+            second: { type: "leaf", sessionId: "a" },
+          },
+          focusedSessionId: "missing",
         },
-        focusedSessionId: "missing",
       }),
     );
     expect(readPersistedTerminalLayout()).toEqual(singletonPaneLayout("a"));
+  });
+
+  it("round-trips multiple disjoint split groups in activation order", () => {
+    const first = splitPane(
+      singletonPaneLayout("a"),
+      "a",
+      "b",
+      "right",
+      "first",
+    );
+    const second = splitPane(
+      singletonPaneLayout("c"),
+      "c",
+      "d",
+      "down",
+      "second",
+    );
+
+    expect(persistTerminalLayouts([second, first], second)).toBe(true);
+    const restored = readPersistedTerminalWorkspace();
+    expect(restored.groups.map(orderedLayoutSessionIds)).toEqual([
+      ["c", "d"],
+      ["a", "b"],
+    ]);
+    expect(restored.activeLayout).toEqual(second);
+  });
+
+  it("migrates the previous single-layout persistence format", () => {
+    window.localStorage.setItem(
+      TERMINAL_LAYOUT_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        root: {
+          type: "split",
+          id: "legacy",
+          direction: "right",
+          ratio: 0.5,
+          first: { type: "leaf", sessionId: "a" },
+          second: { type: "leaf", sessionId: "b" },
+        },
+        focusedSessionId: "b",
+      }),
+    );
+
+    const restored = readPersistedTerminalWorkspace();
+    expect(restored.groups.map(orderedLayoutSessionIds)).toEqual([["a", "b"]]);
+    expect(orderedLayoutSessionIds(restored.activeLayout)).toEqual(["a", "b"]);
   });
 
   it("preserves a deliberately empty persisted workspace", () => {
@@ -451,6 +502,41 @@ describe("pane layout persistence", () => {
 });
 
 describe("pane layout store reconciliation", () => {
+  it("restores every persisted split group when the store initializes", async () => {
+    const a = session("a");
+    const b = session("b");
+    const c = session("c");
+    const d = session("d");
+    const first = splitPane(
+      singletonPaneLayout(a.id),
+      a.id,
+      b.id,
+      "right",
+      "first",
+    );
+    const second = splitPane(
+      singletonPaneLayout(c.id),
+      c.id,
+      d.id,
+      "down",
+      "second",
+    );
+    expect(persistTerminalLayouts([second, first], second)).toBe(true);
+    vi.resetModules();
+
+    const store = await import("./store");
+    store.applyProjectsSnapshot(projectWith(a, b, c, d));
+
+    expect(orderedLayoutSessionIds(store.getState().terminalLayout)).toEqual([
+      c.id,
+      d.id,
+    ]);
+    expect(store.getState().terminalLayoutGroups.map(orderedLayoutSessionIds)).toEqual([
+      [c.id, d.id],
+      [a.id, b.id],
+    ]);
+  });
+
   it("restores focused active state and every layout PTY but no JSON-RPC Session", async () => {
     let persisted = splitPane(
       singletonPaneLayout("pty-a"),
@@ -517,13 +603,53 @@ describe("pane layout store reconciliation", () => {
 
     store.applyProjectsSnapshot(projectWith(a, b, outside));
 
-    expect(orderedLayoutSessionIds(store.getState().terminalLayout)).toEqual([a.id, b.id]);
+    expect(orderedLayoutSessionIds(store.getState().terminalLayout)).toEqual([
+      outside.id,
+    ]);
+    expect(store.getState().terminalLayoutGroups.map(orderedLayoutSessionIds)).toEqual([
+      [a.id, b.id],
+    ]);
     expect(store.getState().activeSessionId).toBe(outside.id);
     expect(store.getState().attachedIds).toEqual([outside.id]);
-    expect(orderedLayoutSessionIds(visiblePaneLayout(
-      store.getState().terminalLayout,
-      store.getState().activeSessionId,
-    ))).toEqual([outside.id]);
+  });
+
+  it("prunes remembered groups independently without dropping the others", async () => {
+    vi.resetModules();
+    const store = await import("./store");
+    const a = session("a");
+    const b = session("b");
+    const c = session("c");
+    const d = session("d");
+    const first = splitPane(
+      singletonPaneLayout(a.id),
+      a.id,
+      b.id,
+      "right",
+      "first",
+    );
+    const second = splitPane(
+      singletonPaneLayout(c.id),
+      c.id,
+      d.id,
+      "down",
+      "second",
+    );
+    store.setState({
+      projects: projectWith(a, b, c, d),
+      activeSessionId: a.id,
+      terminalLayout: first,
+      terminalLayoutGroups: [first, second],
+      attachedIds: [a.id, b.id],
+    });
+
+    store.applyProjectsSnapshot(projectWith(a, c, d));
+
+    expect(orderedLayoutSessionIds(store.getState().terminalLayout)).toEqual([a.id]);
+    expect(store.getState().terminalLayoutGroups.map(orderedLayoutSessionIds)).toEqual([
+      [c.id, d.id],
+    ]);
+    expect(store.getState().activeSessionId).toBe(a.id);
+    expect(store.getState().attachedIds).toEqual([a.id]);
   });
 
   it("upgrades a valid legacy active Session to a singleton layout", async () => {

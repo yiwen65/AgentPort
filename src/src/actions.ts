@@ -48,8 +48,10 @@ import {
   movePane,
   orderedLayoutSessionIds,
   paneLayoutFitsSize,
+  paneLayoutGroupContaining,
+  paneLayoutHasSplit,
   paneSessionSize,
-  persistTerminalLayout,
+  persistTerminalLayouts,
   removePane,
   samePaneLayout,
   singletonPaneLayout,
@@ -376,14 +378,65 @@ function acknowledgeSession(id: string) {
     .catch(() => undefined);
 }
 
+function layoutOverlapsIds(layout: PaneLayout, ids: ReadonlySet<string>): boolean {
+  return orderedLayoutSessionIds(layout).some((sessionId) => ids.has(sessionId));
+}
+
+function rememberedPaneGroups(state = getState()): PaneLayout[] {
+  if (!paneLayoutHasSplit(state.terminalLayout)) return state.terminalLayoutGroups;
+  const activeIds = new Set(orderedLayoutSessionIds(state.terminalLayout));
+  return [
+    state.terminalLayout,
+    ...state.terminalLayoutGroups.filter(
+      (group) => !layoutOverlapsIds(group, activeIds),
+    ),
+  ];
+}
+
+function paneGroupsAfterLayoutChange(
+  groups: readonly PaneLayout[],
+  previousLayout: PaneLayout,
+  nextLayout: PaneLayout,
+  movingSessionId?: string,
+): PaneLayout[] {
+  const previousIds = paneLayoutHasSplit(previousLayout)
+    ? new Set(orderedLayoutSessionIds(previousLayout))
+    : new Set<string>();
+  const nextIds = new Set(orderedLayoutSessionIds(nextLayout));
+  const remaining: PaneLayout[] = [];
+  for (const group of groups) {
+    if (previousIds.size > 0 && layoutOverlapsIds(group, previousIds)) continue;
+    const candidate = movingSessionId && layoutContains(group, movingSessionId)
+      ? removePane(group, movingSessionId)
+      : group;
+    if (!paneLayoutHasSplit(candidate) || layoutOverlapsIds(candidate, nextIds)) continue;
+    remaining.push(candidate);
+  }
+  return paneLayoutHasSplit(nextLayout) ? [nextLayout, ...remaining] : remaining;
+}
+
+function persistPaneGroups(groups: readonly PaneLayout[], fallbackLayout: PaneLayout) {
+  // Singleton views are temporary while any remembered split survives; cold
+  // starts restore the most recently activated split instead.
+  persistTerminalLayouts(groups, groups[0] ?? fallbackLayout);
+}
+
 function commitPaneLayout(
   terminalLayout: PaneLayout,
   options: {
     maximizedSessionId?: string | null;
     acknowledgeFocused?: boolean;
+    previousLayout?: PaneLayout;
+    movingSessionId?: string;
   } = {},
 ) {
   const current = getState();
+  const groups = paneGroupsAfterLayoutChange(
+    rememberedPaneGroups(current),
+    options.previousLayout ?? current.terminalLayout,
+    terminalLayout,
+    options.movingSessionId,
+  );
   const activeSessionId = terminalLayout.focusedSessionId;
   const attachedIds = attachedPtyIdsForLayout(terminalLayout, current.projects);
   const maximizedSessionId =
@@ -395,6 +448,7 @@ function commitPaneLayout(
         : null;
   setState({
     terminalLayout,
+    terminalLayoutGroups: groups,
     activeSessionId,
     attachedIds,
     maximizedSessionId,
@@ -403,7 +457,7 @@ function commitPaneLayout(
         ? current.termSearchOpen
         : false,
   });
-  persistTerminalLayout(terminalLayout);
+  persistPaneGroups(groups, terminalLayout);
   releaseIdsOutside(current.attachedIds, attachedIds);
   if (options.acknowledgeFocused && activeSessionId) acknowledgeSession(activeSessionId);
 }
@@ -431,17 +485,20 @@ export function selectSession(
   }
   const ses = findSession(s.projects, id);
   const sessionLive = ses?.lifecycle === "creating" || ses?.lifecycle === "running";
-  const wasInLayout = layoutContains(s.terminalLayout, id);
-  const hasRememberedSplit = orderedLayoutSessionIds(s.terminalLayout).length > 1;
-  const terminalLayout = wasInLayout
-    ? focusPane(s.terminalLayout, id)
-    : hasRememberedSplit
-      ? s.terminalLayout
-      : singletonPaneLayout(id);
-  const displayLayout = visiblePaneLayout(terminalLayout, id);
-  const attachedIds = attachedPtyIdsForLayout(displayLayout, s.projects);
+  const currentGroups = rememberedPaneGroups(s);
+  const rememberedGroup = paneLayoutGroupContaining(currentGroups, id);
+  const terminalLayout = rememberedGroup
+    ? focusPane(rememberedGroup, id)
+    : singletonPaneLayout(id);
+  const terminalLayoutGroups = rememberedGroup
+    ? [
+        terminalLayout,
+        ...currentGroups.filter((group) => group !== rememberedGroup),
+      ]
+    : currentGroups;
+  const attachedIds = attachedPtyIdsForLayout(terminalLayout, s.projects);
   const maximizedSessionId =
-    wasInLayout && s.maximizedSessionId ? id : null;
+    layoutContains(s.terminalLayout, id) && s.maximizedSessionId ? id : null;
   const revealInSidebar = options.revealInSidebar !== false;
   const proj = findProjectOf(s.projects, id);
   const expandedProjects =
@@ -456,13 +513,14 @@ export function selectSession(
   setState({
     activeSessionId: id,
     terminalLayout,
+    terminalLayoutGroups,
     maximizedSessionId,
     attachedIds,
     expandedProjects,
     collapsedWorktrees,
     termSearchOpen: false,
   });
-  persistTerminalLayout(terminalLayout);
+  persistPaneGroups(terminalLayoutGroups, terminalLayout);
   releaseIdsOutside(s.attachedIds, attachedIds);
   acknowledgeSession(id);
   if (recoveryTarget && ses?.transport === "pty" && sessionLive) {
@@ -554,6 +612,8 @@ export function splitSessionIntoPane(
     commitPaneLayout(terminalLayout, {
       maximizedSessionId: null,
       acknowledgeFocused: true,
+      previousLayout: displayLayout,
+      movingSessionId: sessionId,
     });
   } else if (terminalLayout.focusedSessionId === sessionId) {
     acknowledgeSession(sessionId);
@@ -568,10 +628,13 @@ export function removeSessionPane(sessionId: string): boolean {
     state.activeSessionId,
   );
   if (!layoutContains(displayLayout, sessionId)) return false;
-  if (!samePaneLayout(displayLayout, state.terminalLayout)) {
-    commitPaneLayout(state.terminalLayout, {
+  const groups = rememberedPaneGroups(state);
+  if (!paneLayoutHasSplit(displayLayout) && groups[0]) {
+    const restored = groups[0];
+    commitPaneLayout(restored, {
       maximizedSessionId: null,
-      acknowledgeFocused: state.terminalLayout.focusedSessionId !== null,
+      acknowledgeFocused: restored.focusedSessionId !== null,
+      previousLayout: displayLayout,
     });
     return true;
   }
@@ -583,6 +646,7 @@ export function removeSessionPane(sessionId: string): boolean {
     acknowledgeFocused:
       terminalLayout.focusedSessionId !== null &&
       terminalLayout.focusedSessionId !== state.activeSessionId,
+    previousLayout: displayLayout,
   });
   return true;
 }
@@ -594,14 +658,20 @@ export function toggleSessionPaneMaximized(sessionId: string): boolean {
   const maximizedSessionId =
     state.maximizedSessionId === sessionId ? null : sessionId;
   const terminalLayout = focusPane(state.terminalLayout, sessionId);
+  const terminalLayoutGroups = paneGroupsAfterLayoutChange(
+    rememberedPaneGroups(state),
+    state.terminalLayout,
+    terminalLayout,
+  );
   setState({
     terminalLayout,
+    terminalLayoutGroups,
     activeSessionId: sessionId,
     maximizedSessionId,
     termSearchOpen:
       state.activeSessionId === sessionId ? state.termSearchOpen : false,
   });
-  persistTerminalLayout(terminalLayout);
+  persistPaneGroups(terminalLayoutGroups, terminalLayout);
   if (state.activeSessionId !== sessionId) acknowledgeSession(sessionId);
   return true;
 }
@@ -614,13 +684,19 @@ export function setPaneSplitRatio(
   const state = getState();
   const terminalLayout = updateSplitRatio(state.terminalLayout, splitId, ratio);
   if (terminalLayout === state.terminalLayout) return false;
-  setState({ terminalLayout });
-  if (persist) persistTerminalLayout(terminalLayout);
+  const terminalLayoutGroups = paneGroupsAfterLayoutChange(
+    rememberedPaneGroups(state),
+    state.terminalLayout,
+    terminalLayout,
+  );
+  setState({ terminalLayout, terminalLayoutGroups });
+  if (persist) persistPaneGroups(terminalLayoutGroups, terminalLayout);
   return true;
 }
 
 export function persistCurrentPaneLayout() {
-  persistTerminalLayout(getState().terminalLayout);
+  const state = getState();
+  persistPaneGroups(rememberedPaneGroups(state), state.terminalLayout);
 }
 
 export function switchSessionByIndex(index: number) {
