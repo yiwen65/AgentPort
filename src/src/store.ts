@@ -254,6 +254,8 @@ export interface AppState {
   /** Sessions with a live terminal pane (kept mounted, display:none toggling). */
   attachedIds: string[];
   runtime: Record<string, SessionRuntime>;
+  /** Aggregate suspension index; replaced only when suspended membership changes. */
+  suspendedSessionIds: ReadonlySet<string>;
   rendererMode: "canvas" | "dom";
   rendererFallbackReason: string | null;
   dialog: DialogState;
@@ -392,6 +394,7 @@ const initialState: AppState = {
   archivingSessionIds: [],
   attachedIds: [],
   runtime: {},
+  suspendedSessionIds: new Set(),
   rendererMode: "canvas",
   rendererFallbackReason: null,
   dialog: null,
@@ -439,8 +442,29 @@ export function getState(): AppState {
   return state;
 }
 
+function collectSuspendedSessionIds(
+  runtime: Record<string, SessionRuntime>,
+): ReadonlySet<string> {
+  const suspended = new Set<string>();
+  for (const sessionId in runtime) {
+    if (runtime[sessionId]?.suspended) suspended.add(sessionId);
+  }
+  return suspended;
+}
+
 export function setState(partial: Partial<AppState>) {
-  state = { ...state, ...partial };
+  // Direct runtime replacement is rare (boot/localization/tests), but it must
+  // keep the aggregate index authoritative. High-frequency patchRuntime calls
+  // provide the already-synchronized Set and avoid this full scan.
+  const synchronized = partial.runtime && !("suspendedSessionIds" in partial)
+    ? {
+        ...partial,
+        suspendedSessionIds: partial.runtime === state.runtime
+          ? state.suspendedSessionIds
+          : collectSuspendedSessionIds(partial.runtime),
+      }
+    : partial;
+  state = { ...state, ...synchronized };
   emit();
 }
 
@@ -599,15 +623,24 @@ export function patchRuntime(sessionId: string, patch: Partial<SessionRuntime>) 
   update((s) => {
     const runtime = { ...emptyRuntime(), ...s.runtime[sessionId] };
     const status = latestStatus(runtime.status, patch.status);
+    const nextRuntime = {
+      ...runtime,
+      ...patch,
+      ...(status === undefined ? {} : { status }),
+    };
+    let suspendedSessionIds = s.suspendedSessionIds;
+    if (nextRuntime.suspended !== runtime.suspended) {
+      const nextSuspendedSessionIds = new Set(suspendedSessionIds);
+      if (nextRuntime.suspended) nextSuspendedSessionIds.add(sessionId);
+      else nextSuspendedSessionIds.delete(sessionId);
+      suspendedSessionIds = nextSuspendedSessionIds;
+    }
     return {
       runtime: {
         ...s.runtime,
-        [sessionId]: {
-          ...runtime,
-          ...patch,
-          ...(status === undefined ? {} : { status }),
-        },
+        [sessionId]: nextRuntime,
       },
+      suspendedSessionIds,
     };
   });
 }

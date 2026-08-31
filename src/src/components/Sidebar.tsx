@@ -45,7 +45,9 @@ import type {
   WorktreeView,
 } from "../types";
 import {
+  memo,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -1054,20 +1056,62 @@ export function orderActiveAgentSessionsForSidebar(
   });
 }
 
+interface ActiveAgentSessionEntry {
+  session: SessionView;
+  project: ProjectView;
+}
+
+const ActiveAgentSessionItem = memo(function ActiveAgentSessionItem({
+  entry,
+  sourceLabel,
+}: {
+  entry: ActiveAgentSessionEntry;
+  sourceLabel: string;
+}) {
+  return (
+    <div role="listitem">
+      <SessionRow ses={entry.session} sourceLabel={sourceLabel} />
+    </div>
+  );
+});
+
 function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
   const archivingSessionIds = useStore((state) => state.archivingSessionIds);
+  const suspendedSessionIds = useStore((state) => state.suspendedSessionIds);
   const repositoryStatuses = useStore((state) => state.repositoryStatuses);
-  // A primitive key stays referentially stable while unrelated runtime fields
-  // (log bytes, terminal title, scroll state) update at high frequency.
-  const suspendedSessionKey = useStore((state) =>
-    Object.entries(state.runtime)
-      .filter(([, runtime]) => runtime.suspended)
-      .map(([sessionId]) => sessionId)
-      .sort()
-      .join("\0"),
-  );
-  const projectKey = projects.map((project) => project.id).join("\0");
+  const { entries, projectKey } = useMemo(() => {
+    const archiving = new Set(archivingSessionIds);
+    const projectBySession = new Map<string, ProjectView>();
+    const sessions: SessionView[] = [];
+    const activeProjectIds: string[] = [];
+
+    for (const project of projects) {
+      let projectHasActiveAgent = false;
+      for (const session of project.sessions) {
+        if (
+          session.hostAlive &&
+          session.adapter !== "shell" &&
+          !archiving.has(session.id)
+        ) {
+          projectBySession.set(session.id, project);
+          sessions.push(session);
+          projectHasActiveAgent = true;
+        }
+      }
+      if (projectHasActiveAgent) activeProjectIds.push(project.id);
+    }
+
+    const entries: ActiveAgentSessionEntry[] = [];
+    for (const session of orderActiveAgentSessionsForSidebar(
+      sessions,
+      suspendedSessionIds,
+    )) {
+      const project = projectBySession.get(session.id);
+      if (project) entries.push({ session, project });
+    }
+    return { entries, projectKey: activeProjectIds.join("\0") };
+  }, [archivingSessionIds, projects, suspendedSessionIds]);
 
   useEffect(() => {
     const projectIds = projectKey ? projectKey.split("\0") : [];
@@ -1088,27 +1132,7 @@ function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
     };
   }, [projectKey]);
 
-  const archiving = new Set(archivingSessionIds);
-  const suspended = new Set(
-    suspendedSessionKey ? suspendedSessionKey.split("\0") : [],
-  );
-  const projectBySession = new Map<string, ProjectView>();
-  const sessions: SessionView[] = [];
-  for (const project of projects) {
-    for (const session of project.sessions) {
-      if (
-        session.hostAlive &&
-        session.adapter !== "shell" &&
-        !archiving.has(session.id)
-      ) {
-        projectBySession.set(session.id, project);
-        sessions.push(session);
-      }
-    }
-  }
-  const ordered = orderActiveAgentSessionsForSidebar(sessions, suspended);
-
-  if (ordered.length === 0) {
+  if (entries.length === 0) {
     return (
       <div className="active-agent-empty" role="status">
         {t("shell:ui.sidebar.activeAgentsEmpty")}
@@ -1122,9 +1146,8 @@ function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
       role="list"
       aria-label={t("shell:ui.sidebar.activeAgentListLabel")}
     >
-      {ordered.map((session) => {
-        const project = projectBySession.get(session.id);
-        if (!project) return null;
+      {entries.map((entry) => {
+        const { session, project } = entry;
         const branch = session.worktreeId
           ? project.worktrees.find(
               (worktree) => worktree.id === session.worktreeId,
@@ -1137,9 +1160,11 @@ function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
           ? `${project.name} · ${branch}`
           : project.name;
         return (
-          <div key={session.id} role="listitem">
-            <SessionRow ses={session} sourceLabel={sourceLabel} />
-          </div>
+          <ActiveAgentSessionItem
+            key={session.id}
+            entry={entry}
+            sourceLabel={sourceLabel}
+          />
         );
       })}
     </div>

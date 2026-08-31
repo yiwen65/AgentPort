@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -160,6 +160,21 @@ function projects(): ProjectView[] {
         }),
       ],
     },
+    {
+      id: "prj_inactive",
+      name: "Inactive",
+      rootPath: "/tmp/inactive",
+      gitRootPath: "/tmp/inactive",
+      pinned: false,
+      worktrees: [],
+      sessions: [
+        session("Inactive shell", "working", {
+          projectId: "prj_inactive",
+          adapter: "shell",
+          cwd: "/tmp/inactive",
+        }),
+      ],
+    },
   ];
 }
 
@@ -249,6 +264,17 @@ describe("active Agent sidebar", () => {
     expect(screen.getByRole("button", { name: "添加项目" })).toBeTruthy();
     expect(refreshRepositoryStatusMock).toHaveBeenCalledWith("prj_apollo");
     expect(refreshRepositoryStatusMock).toHaveBeenCalledWith("prj_notes");
+    expect(refreshRepositoryStatusMock).not.toHaveBeenCalledWith("prj_inactive");
+
+    refreshRepositoryStatusMock.mockClear();
+    act(() => setState({ archivingSessionIds: ["Unknown agent"] }));
+    expect(refreshRepositoryStatusMock).toHaveBeenCalledTimes(1);
+    expect(refreshRepositoryStatusMock).toHaveBeenCalledWith("prj_apollo");
+
+    refreshRepositoryStatusMock.mockClear();
+    window.dispatchEvent(new Event("focus"));
+    expect(refreshRepositoryStatusMock).toHaveBeenCalledTimes(1);
+    expect(refreshRepositoryStatusMock).toHaveBeenCalledWith("prj_apollo");
   });
 
   it("keeps the active view selected when a Session row is activated", () => {

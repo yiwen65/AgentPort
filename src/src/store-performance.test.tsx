@@ -2,7 +2,13 @@
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 
-import { setState, useStore } from "./store";
+import {
+  emptyRuntime,
+  getState,
+  patchRuntime,
+  setState,
+  useStore,
+} from "./store";
 
 afterEach(cleanup);
 
@@ -21,4 +27,30 @@ it("does not re-render a selected slice for unrelated store updates", () => {
   }
 
   expect(renders).toBe(1);
+});
+
+it("reuses the aggregate suspension index for unrelated runtime patches", () => {
+  setState({
+    runtime: {
+      active: { ...emptyRuntime(), suspended: false },
+      suspended: { ...emptyRuntime(), suspended: true },
+    },
+  });
+
+  const initial = getState().suspendedSessionIds;
+  expect([...initial]).toEqual(["suspended"]);
+
+  patchRuntime("active", { logBytes: 42 });
+  expect(getState().suspendedSessionIds).toBe(initial);
+
+  patchRuntime("active", { suspended: true });
+  const promoted = getState().suspendedSessionIds;
+  expect(promoted).not.toBe(initial);
+  expect([...promoted].sort()).toEqual(["active", "suspended"]);
+
+  patchRuntime("active", { logBytes: 43, suspended: true });
+  expect(getState().suspendedSessionIds).toBe(promoted);
+
+  patchRuntime("suspended", { suspended: false });
+  expect([...getState().suspendedSessionIds]).toEqual(["active"]);
 });
