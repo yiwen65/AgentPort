@@ -20,6 +20,7 @@ const rendererMocks = vi.hoisted(() => {
     markSessionLogRendered: vi.fn().mockResolvedValue(undefined),
     markSessionOutputUnread: vi.fn().mockResolvedValue(undefined),
     autoRenameSessionFromFirstInput: vi.fn().mockResolvedValue(true),
+    clipboardHasImage: vi.fn().mockResolvedValue(false),
     copyText: vi.fn().mockResolvedValue(true),
     getNativeHistory: vi.fn(),
     openExternalUrl: vi.fn().mockResolvedValue(undefined),
@@ -262,6 +263,7 @@ vi.mock("./api", () => ({
     Uint8Array.from(atob(value), (char) => char.charCodeAt(0)),
   ),
   bytesToB64: vi.fn(() => "encoded-input"),
+  clipboardHasImage: rendererMocks.apiMock.clipboardHasImage,
   copyText: rendererMocks.apiMock.copyText,
   errorText: (error: unknown) => String(error),
 }));
@@ -315,6 +317,7 @@ describe("terminal renderer", () => {
     rendererMocks.offscreenCanvasDuringCanvasLoad.length = 0;
     rendererMocks.offscreenCanvasDuringOpen.length = 0;
     vi.clearAllMocks();
+    rendererMocks.apiMock.clipboardHasImage.mockResolvedValue(false);
     setState({
       activeSessionId: "renderer-test",
       platform: null,
@@ -1065,6 +1068,55 @@ describe("terminal renderer", () => {
         "encoded-input",
       );
     });
+  });
+
+  it("probes the native clipboard when WebKit omits image paste metadata", async () => {
+    rendererMocks.apiMock.clipboardHasImage.mockResolvedValue(true);
+    const container = document.createElement("div");
+    mountTerminal("renderer-test", container);
+    await vi.waitFor(() =>
+      expect(getState().runtime["renderer-test"]?.attached).toBe(true),
+    );
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        items: [],
+        files: [],
+        types: [],
+        getData: () => "",
+      },
+    });
+
+    terminal.textarea?.dispatchEvent(paste);
+
+    await vi.waitFor(() => {
+      expect(rendererMocks.apiMock.clipboardHasImage).toHaveBeenCalledOnce();
+      expect(terminal.input).toHaveBeenCalledWith("\x16");
+    });
+  });
+
+  it("leaves plain-text paste on xterm's native path", async () => {
+    const container = document.createElement("div");
+    mountTerminal("renderer-test", container);
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        items: [{ kind: "string", type: "text/plain" }],
+        files: [],
+        types: ["text/plain"],
+        getData: () => "plain text",
+      },
+    });
+
+    terminal.textarea?.dispatchEvent(paste);
+
+    expect(paste.defaultPrevented).toBe(false);
+    expect(rendererMocks.apiMock.clipboardHasImage).not.toHaveBeenCalled();
+    expect(terminal.input).not.toHaveBeenCalled();
   });
 
   it("serializes independent terminal input events behind an in-flight send", async () => {

@@ -2,19 +2,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const clipboardMocks = vi.hoisted(() => ({
+  nativeReadImage: vi.fn(),
   nativeWriteText: vi.fn(),
   webWriteText: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
+  readImage: clipboardMocks.nativeReadImage,
   writeText: clipboardMocks.nativeWriteText,
 }));
 
-import { copyText } from "./api";
+import { clipboardHasImage, copyText } from "./api";
 
 describe("clipboard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clipboardMocks.nativeReadImage.mockRejectedValue(new Error("No image"));
     clipboardMocks.nativeWriteText.mockResolvedValue(undefined);
     clipboardMocks.webWriteText.mockResolvedValue(undefined);
     vi.stubGlobal("navigator", {
@@ -41,5 +44,18 @@ describe("clipboard", () => {
     await expect(copyText("fallback")).resolves.toBe(true);
 
     expect(clipboardMocks.webWriteText).toHaveBeenCalledWith("fallback");
+  });
+
+  it("detects and closes a native clipboard image", async () => {
+    const close = vi.fn().mockResolvedValue(undefined);
+    clipboardMocks.nativeReadImage.mockResolvedValueOnce({ close });
+
+    await expect(clipboardHasImage()).resolves.toBe(true);
+
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("reports an unavailable native clipboard image", async () => {
+    await expect(clipboardHasImage()).resolves.toBe(false);
   });
 });

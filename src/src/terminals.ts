@@ -20,6 +20,7 @@ import {
   api,
   b64ToBytes,
   bytesToB64,
+  clipboardHasImage,
   copyText,
   errorText,
   readClipboardText,
@@ -1757,6 +1758,7 @@ function installClipboardCompatibility(
   term: Terminal,
   container: HTMLElement,
 ): () => void {
+  let disposed = false;
   const onCopy = (event: ClipboardEvent) => {
     const selection = term.getSelection();
     if (!selection) return;
@@ -1769,26 +1771,43 @@ function installClipboardCompatibility(
     event.preventDefault();
     event.stopImmediatePropagation();
   };
+  const forwardImagePaste = () => {
+    // Ctrl+V is the image-paste shortcut understood by interactive Agent TUIs;
+    // they retain ownership of reading, encoding and attaching the clipboard.
+    term.input("\x16");
+    term.focus();
+  };
   const onPaste = (event: ClipboardEvent) => {
     const clipboard = event.clipboardData;
     if (!clipboard) return;
     const hasImage =
-      Array.from(clipboard.items).some(
-        (item) => item.kind === "file" && item.type.startsWith("image/"),
+      Array.from(clipboard.items).some((item) =>
+        item.type.startsWith("image/"),
       ) ||
       Array.from(clipboard.files).some((file) =>
         file.type.startsWith("image/"),
       );
-    if (!hasImage) return;
+    if (hasImage) {
+      // xterm only reads text/plain from ClipboardEvent, so an image paste
+      // would otherwise send an empty string.
+      forwardImagePaste();
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
 
-    // xterm only reads text/plain from ClipboardEvent, so an image paste would
-    // otherwise send an empty string. Ctrl+V is the image-paste shortcut
-    // understood by interactive Agent TUIs such as Codex and Claude Code; they
-    // retain ownership of reading, encoding and attaching the native clipboard.
-    term.input("\x16");
-    term.focus();
-    event.preventDefault();
-    event.stopImmediatePropagation();
+    const hasText =
+      Array.from(clipboard.types).some((type) =>
+        type.toLowerCase().startsWith("text/plain"),
+      ) || clipboard.getData("text/plain").length > 0;
+    if (hasText) return;
+
+    // WKWebView can expose a pure image paste with empty items/files/types.
+    // Probe the native pasteboard only for that opaque event so normal text
+    // paste remains on xterm's synchronous path.
+    void clipboardHasImage().then((nativeHasImage) => {
+      if (nativeHasImage && !disposed) forwardImagePaste();
+    });
   };
   const onContextMenu = (event: MouseEvent) => {
     event.preventDefault();
@@ -1827,6 +1846,7 @@ function installClipboardCompatibility(
   container.addEventListener("paste", onPaste, true);
   container.addEventListener("contextmenu", onContextMenu, true);
   return () => {
+    disposed = true;
     container.removeEventListener("copy", onCopy, true);
     container.removeEventListener("paste", onPaste, true);
     container.removeEventListener("contextmenu", onContextMenu, true);

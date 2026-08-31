@@ -5,6 +5,7 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
+  readImage as readNativeClipboardImage,
   readText as readNativeClipboardText,
   writeText as writeNativeClipboardText,
 } from "@tauri-apps/plugin-clipboard-manager";
@@ -724,5 +725,16 @@ export async function readClipboardText(): Promise<string> {
     return await readNativeClipboardText();
   } catch {
     return navigator.clipboard.readText();
+  }
+}
+
+/** Native fallback for WebKit paste events that omit image file metadata. */
+export async function clipboardHasImage(): Promise<boolean> {
+  try {
+    const image = await readNativeClipboardImage();
+    await image.close().catch(() => undefined);
+    return true;
+  } catch {
+    return false;
   }
 }
