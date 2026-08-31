@@ -3,25 +3,34 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const clipboardMocks = vi.hoisted(() => ({
   nativeReadImage: vi.fn(),
+  nativeReadText: vi.fn(),
   nativeWriteText: vi.fn(),
+  webReadText: vi.fn(),
   webWriteText: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   readImage: clipboardMocks.nativeReadImage,
+  readText: clipboardMocks.nativeReadText,
   writeText: clipboardMocks.nativeWriteText,
 }));
 
-import { clipboardHasImage, copyText } from "./api";
+import capabilities from "../../src-tauri/capabilities/default.json";
+import { clipboardHasImage, copyText, readClipboardText } from "./api";
 
 describe("clipboard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     clipboardMocks.nativeReadImage.mockRejectedValue(new Error("No image"));
+    clipboardMocks.nativeReadText.mockResolvedValue("native text");
     clipboardMocks.nativeWriteText.mockResolvedValue(undefined);
+    clipboardMocks.webReadText.mockResolvedValue("web text");
     clipboardMocks.webWriteText.mockResolvedValue(undefined);
     vi.stubGlobal("navigator", {
-      clipboard: { writeText: clipboardMocks.webWriteText },
+      clipboard: {
+        readText: clipboardMocks.webReadText,
+        writeText: clipboardMocks.webWriteText,
+      },
     });
   });
 
@@ -44,6 +53,19 @@ describe("clipboard", () => {
     await expect(copyText("fallback")).resolves.toBe(true);
 
     expect(clipboardMocks.webWriteText).toHaveBeenCalledWith("fallback");
+  });
+
+  it("reads text natively without opening WebKit's paste permission prompt", async () => {
+    await expect(readClipboardText()).resolves.toBe("native text");
+
+    expect(clipboardMocks.nativeReadText).toHaveBeenCalledOnce();
+    expect(clipboardMocks.webReadText).not.toHaveBeenCalled();
+  });
+
+  it("grants the desktop window native clipboard text-read access", () => {
+    expect(capabilities.permissions).toContain(
+      "clipboard-manager:allow-read-text",
+    );
   });
 
   it("detects and closes a native clipboard image", async () => {
