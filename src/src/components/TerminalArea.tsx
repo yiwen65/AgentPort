@@ -59,6 +59,7 @@ import {
   selectSession,
   setPaneSplitRatio,
   splitSessionIntoPane,
+  stopSessionFlow,
   toggleSessionPaneMaximized,
 } from "../actions";
 import {
@@ -965,6 +966,12 @@ function paneContextItems(
     {
       label: t("shell:pane.remove"),
       action: () => removeSessionPane(ses.id),
+    },
+    { label: "", separator: true },
+    {
+      label: t("session:ui.menu.stop"),
+      danger: true,
+      action: () => void stopSessionFlow(ses.id),
     },
   );
   return items;

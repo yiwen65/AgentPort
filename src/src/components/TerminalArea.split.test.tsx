@@ -15,6 +15,7 @@ const {
   setPaneSplitRatioMock,
   setTerminalActiveMock,
   splitSessionIntoPaneMock,
+  stopSessionFlowMock,
   toggleMaximizedMock,
 } = vi.hoisted(() => ({
   fitSessionMock: vi.fn(),
@@ -29,6 +30,7 @@ const {
   setPaneSplitRatioMock: vi.fn().mockReturnValue(true),
   setTerminalActiveMock: vi.fn(),
   splitSessionIntoPaneMock: vi.fn(),
+  stopSessionFlowMock: vi.fn(),
   toggleMaximizedMock: vi.fn(),
 }));
 
@@ -45,6 +47,7 @@ vi.mock("../actions", () => ({
   selectSession: selectSessionMock,
   setPaneSplitRatio: setPaneSplitRatioMock,
   splitSessionIntoPane: splitSessionIntoPaneMock,
+  stopSessionFlow: stopSessionFlowMock,
   toggleSessionPaneMaximized: toggleMaximizedMock,
 }));
 
@@ -295,11 +298,19 @@ describe("TerminalArea recursive panes", () => {
       "向下分屏",
       "最大化分屏",
       "从分屏移除",
+      "停止 Session…",
     ]));
 
     getState().contextMenu?.items.find((item) => item.label === "向右分屏")?.action?.();
     expect(openSplitAgentPickerMock).toHaveBeenCalledWith(ptyA.id, "right");
     expect(openSplitSessionDialogMock).not.toHaveBeenCalled();
+
+    const stopItem = getState().contextMenu?.items.find(
+      (item) => item.label === "停止 Session…",
+    );
+    expect(stopItem?.danger).toBe(true);
+    stopItem?.action?.();
+    expect(stopSessionFlowMock).toHaveBeenCalledWith(ptyA.id);
   });
 
   it("shows two Session drop zones and routes the chosen direction", () => {
