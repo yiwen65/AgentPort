@@ -47,10 +47,12 @@ import {
 } from "./store";
 import {
   applyTerminalLanguage,
+  getHandle,
   pruneHandles,
   scrollToBottom,
 } from "./terminals";
 import { handleFontZoomKey, initFontZoom } from "./fontZoom";
+import { piTerminalShortcutSequence } from "./piTerminalShortcuts";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import TopBar from "./components/TopBar";
 import Sidebar from "./components/Sidebar";
@@ -307,6 +309,23 @@ function useHotkeys() {
       }
 
       if (anyModal || s.showOnboarding) return;
+
+      const activeSession = findSession(s.projects, s.activeSessionId);
+      const terminalTarget =
+        e.target instanceof Element && e.target.closest(".term-body") !== null;
+      const piShortcut =
+        activeSession?.adapter === "pi" && terminalTarget
+          ? piTerminalShortcutSequence(e)
+          : null;
+      if (piShortcut && s.activeSessionId) {
+        const activeTerminal = getHandle(s.activeSessionId);
+        if (activeTerminal) {
+          e.preventDefault();
+          e.stopPropagation();
+          activeTerminal.term.input(piShortcut);
+          return;
+        }
+      }
 
       // Font zoom: Ctrl/⌘ + =/- (0 resets), applied to whichever surface
       // last had focus — terminal area or document viewer — independently.
