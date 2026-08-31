@@ -2634,6 +2634,46 @@ describe("terminal renderer", () => {
     );
   });
 
+  it("still arms an open-frame timeout when flushing earlier output throws", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    vi.useFakeTimers();
+    const channel = rendererMocks.channels[0];
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.write.mockClear();
+    terminal.write.mockImplementationOnce(() => {
+      throw new Error("output sink failed");
+    });
+    const prefix = "plain prefix";
+    const openFrame = "\x1b[?2026hpartial";
+
+    expect(() =>
+      channel.onmessage?.({
+        t: "output",
+        data: btoa(prefix + openFrame),
+        offset: 0,
+        cursor: {
+          runId: "run_throwing_sink",
+          runOrdinal: 1,
+          generation: 0,
+          offset: 0,
+        },
+      }),
+    ).toThrow("output sink failed");
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    const contentWrites = terminal.write.mock.calls.filter(
+      ([data]) => data instanceof Uint8Array,
+    );
+    expect(contentWrites).toHaveLength(2);
+    expect(
+      new TextDecoder().decode(contentWrites[1]?.[0] as Uint8Array),
+    ).toBe(openFrame);
+  });
+
   it("releases an unterminated DEC 2026 frame after the safety timeout", async () => {
     mountTerminal("renderer-test", document.createElement("div"));
     await vi.waitFor(() =>
@@ -3301,6 +3341,7 @@ describe("terminal renderer", () => {
     expect(synchronizedRedraw.length).toBe(64);
     const hostFrame = synchronizedRedraw.repeat(1024);
     const data = btoa(hostFrame);
+    const timeoutSpy = vi.spyOn(window, "setTimeout");
 
     for (let index = 0; index < 64; index += 1) {
       const offset = index * hostFrame.length;
@@ -3317,11 +3358,20 @@ describe("terminal renderer", () => {
       });
     }
 
+    const timeoutCalls = timeoutSpy.mock.calls.length;
+    timeoutSpy.mockRestore();
     const contentWrites = terminal.write.mock.calls.filter(
       ([written, callback]) =>
         written instanceof Uint8Array && typeof callback === "function",
     );
+    expect(timeoutCalls).toBe(0);
     expect(contentWrites).toHaveLength(64);
+    expect(
+      contentWrites.every(
+        ([written]) =>
+          new TextDecoder().decode(written as Uint8Array) === hostFrame,
+      ),
+    ).toBe(true);
     expect(getHandle("renderer-test")?.pendingOutputBytes).toBe(4 * 1024 * 1024);
   });
 

@@ -333,6 +333,7 @@ class TerminalWriteCoordinator {
   private outputBatch: Uint8Array[] | null = null;
   private outputBatchBytes = 0;
   private flushingOutputBatch = false;
+  private processingOutput = false;
 
   constructor(
     private readonly term: Terminal,
@@ -356,12 +357,18 @@ class TerminalWriteCoordinator {
     // separated by a deferred parser action is flushed before that action.
     this.outputBatch = [];
     this.outputBatchBytes = 0;
+    this.processingOutput = true;
     try {
       this.processOutput(data);
     } finally {
-      this.flushOutputBatch();
-      this.outputBatch = null;
-      this.outputBatchBytes = 0;
+      try {
+        this.flushOutputBatch();
+      } finally {
+        this.outputBatch = null;
+        this.outputBatchBytes = 0;
+        this.processingOutput = false;
+        if (this.deferredOutput) this.armDeferredOutputTimeout();
+      }
     }
   }
 
@@ -533,6 +540,19 @@ class TerminalWriteCoordinator {
     this.outputBatchBytes += data.byteLength;
   }
 
+  private emitOutputChunks(chunks: Uint8Array[], byteLength: number) {
+    const batch = this.outputBatch;
+    if (batch && batch.length >= MAX_SYNCHRONIZED_WRITES_PER_OUTPUT) {
+      // This frame necessarily crosses the collapse threshold. Keep its
+      // existing views and copy them only once when the Host frame flushes,
+      // instead of allocating and copying one buffer per TUI redraw first.
+      for (const chunk of chunks) batch.push(chunk);
+      this.outputBatchBytes += byteLength;
+      return;
+    }
+    this.emitOutput(concatByteChunks(chunks, byteLength));
+  }
+
   private flushOutputBatch() {
     const batch = this.outputBatch;
     if (!batch?.length) return;
@@ -578,12 +598,14 @@ class TerminalWriteCoordinator {
     if (frame?.kind !== "frame") return;
     this.deferredOutput = null;
     this.clearDeferredOutputTimeout();
-    this.emitOutput(concatByteChunks(frame.chunks, frame.byteLength));
+    this.emitOutputChunks(frame.chunks, frame.byteLength);
     for (const action of frame.actions) this.runDeferredAction(action);
   }
 
   private armDeferredOutputTimeout() {
-    if (this.deferredOutputTimer !== null) return;
+    // A timer cannot fire until this synchronous Channel delivery returns.
+    // Arm only for the candidate/frame that remains open at that boundary.
+    if (this.processingOutput || this.deferredOutputTimer !== null) return;
     const handle = this.currentHandle();
     if (!handle) return;
     const generation = handle.generation;
