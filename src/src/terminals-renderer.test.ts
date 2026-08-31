@@ -2415,6 +2415,52 @@ describe("terminal renderer", () => {
     );
   });
 
+  it("keeps a plain prefix ahead of a DEC 2026 redraw split across Channel frames", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const channel = rendererMocks.channels[0];
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.write.mockClear();
+    const prefix = "plain prefix";
+    const first = `${prefix}\x1b[?2026hpartial`;
+    const second = " redraw\x1b[?2026l";
+
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(first),
+      offset: 0,
+      cursor: { runId: "run_prefix", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+
+    expect(terminal.write).toHaveBeenCalledOnce();
+    expect(
+      new TextDecoder().decode(terminal.write.mock.calls[0]?.[0] as Uint8Array),
+    ).toBe(prefix);
+
+    channel.onmessage?.({
+      t: "output",
+      data: btoa(second),
+      offset: first.length,
+      cursor: {
+        runId: "run_prefix",
+        runOrdinal: 1,
+        generation: 0,
+        offset: first.length,
+      },
+    });
+
+    const rendered = terminal.write.mock.calls
+      .filter(([data]) => data instanceof Uint8Array)
+      .map(([data]) => new TextDecoder().decode(data as Uint8Array));
+    expect(rendered).toEqual([
+      prefix,
+      "\x1b[?2026hpartial redraw\x1b[?2026l",
+    ]);
+  });
+
   it("recognizes both DEC 2026 markers at every Channel chunk split", async () => {
     mountTerminal("renderer-test", document.createElement("div"));
     await vi.waitFor(() =>
@@ -3240,6 +3286,43 @@ describe("terminal renderer", () => {
     expect(handle.serialize.serialize).not.toHaveBeenCalled();
     expect(localStorage.getItem(key)).toBeNull();
     localStorage.removeItem(key);
+  });
+
+  it("queues replaying synchronized TUI output by Host frame instead of redraw frame", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const channel = rendererMocks.channels[0];
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const synchronizedRedraw =
+      "\x1b[?2026h" + "W".repeat(48) + "\x1b[?2026l";
+    expect(synchronizedRedraw.length).toBe(64);
+    const hostFrame = synchronizedRedraw.repeat(1024);
+    const data = btoa(hostFrame);
+
+    for (let index = 0; index < 64; index += 1) {
+      const offset = index * hostFrame.length;
+      channel.onmessage?.({
+        t: "output",
+        data,
+        offset,
+        cursor: {
+          runId: "run_synchronized_replay",
+          runOrdinal: 1,
+          generation: 0,
+          offset,
+        },
+      });
+    }
+
+    const contentWrites = terminal.write.mock.calls.filter(
+      ([written, callback]) =>
+        written instanceof Uint8Array && typeof callback === "function",
+    );
+    expect(contentWrites).toHaveLength(64);
+    expect(getHandle("renderer-test")?.pendingOutputBytes).toBe(4 * 1024 * 1024);
   });
 
   it("keeps measured parser pressure below the backpressure threshold when 4 MiB drains frame-by-frame", async () => {

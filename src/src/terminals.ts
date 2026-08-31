@@ -72,6 +72,11 @@ const SYNCHRONIZED_OUTPUT_END = Uint8Array.of(
 const SYNCHRONIZED_OUTPUT_TIMEOUT_MS = 1_000;
 const MAX_UNTERMINATED_SYNCHRONIZED_OUTPUT_BYTES = 1024 * 1024;
 const MAX_UNTERMINATED_SYNCHRONIZED_OUTPUT_PARTS = 1024;
+// A retained TUI tail can contain tens of thousands of complete DEC 2026
+// redraws inside the Host's 64 KiB frames. Keep small redraws individually
+// observable, but collapse a pathological single-frame burst into one xterm
+// write so parser scheduling stays bounded by transport frames.
+const MAX_SYNCHRONIZED_WRITES_PER_OUTPUT = 64;
 const TERMINAL_SNAPSHOT_VERSION = 2;
 const MAX_TERMINAL_SNAPSHOT_CHARS = 2 * 1024 * 1024;
 // Snapshot serialization is synchronous on the renderer's main thread. Keep a
@@ -325,6 +330,9 @@ class TerminalWriteCoordinator {
   private deferredOutput: DeferredSynchronizedOutput | null = null;
   private deferredOutputTimer: number | null = null;
   private deferredOutputEpoch = 0;
+  private outputBatch: Uint8Array[] | null = null;
+  private outputBatchBytes = 0;
+  private flushingOutputBatch = false;
 
   constructor(
     private readonly term: Terminal,
@@ -334,7 +342,7 @@ class TerminalWriteCoordinator {
 
   write(data: Uint8Array | string, callback?: () => void): number {
     const sequence = ++this.writeSequence;
-    if (this.deferredOutput) {
+    if (this.deferredOutput && !this.flushingOutputBatch) {
       this.deferAction({ kind: "write", data, callback });
     } else {
       this.term.write(data, callback);
@@ -344,6 +352,20 @@ class TerminalWriteCoordinator {
 
   /** Feed raw PTY bytes while preserving DEC 2026 markers byte-for-byte. */
   writeOutput(data: Uint8Array) {
+    // Channel delivery is synchronous, so one call owns this batch. Output
+    // separated by a deferred parser action is flushed before that action.
+    this.outputBatch = [];
+    this.outputBatchBytes = 0;
+    try {
+      this.processOutput(data);
+    } finally {
+      this.flushOutputBatch();
+      this.outputBatch = null;
+      this.outputBatchBytes = 0;
+    }
+  }
+
+  private processOutput(data: Uint8Array) {
     let remaining = data;
     while (remaining.length > 0) {
       const deferred = this.deferredOutput;
@@ -415,7 +437,7 @@ class TerminalWriteCoordinator {
 
       const begin = findByteSequence(remaining, SYNCHRONIZED_OUTPUT_BEGIN);
       if (begin >= 0) {
-        if (begin > 0) this.outputSink(remaining.subarray(0, begin));
+        if (begin > 0) this.emitOutput(remaining.subarray(0, begin));
         this.deferredOutput = {
           kind: "frame",
           chunks: [
@@ -441,7 +463,7 @@ class TerminalWriteCoordinator {
       );
       const immediateLength = remaining.length - candidateLength;
       if (immediateLength > 0) {
-        this.outputSink(remaining.subarray(0, immediateLength));
+        this.emitOutput(remaining.subarray(0, immediateLength));
       }
       if (candidateLength > 0) {
         const candidate = remaining.slice(immediateLength);
@@ -501,7 +523,38 @@ class TerminalWriteCoordinator {
     this.enforceDeferredOutputBounds();
   }
 
+  private emitOutput(data: Uint8Array) {
+    if (data.length === 0) return;
+    if (this.outputBatch === null) {
+      this.outputSink(data);
+      return;
+    }
+    this.outputBatch.push(data);
+    this.outputBatchBytes += data.byteLength;
+  }
+
+  private flushOutputBatch() {
+    const batch = this.outputBatch;
+    if (!batch?.length) return;
+    const previousFlush = this.flushingOutputBatch;
+    this.flushingOutputBatch = true;
+    try {
+      if (batch.length > MAX_SYNCHRONIZED_WRITES_PER_OUTPUT) {
+        this.outputSink(concatByteChunks(batch, this.outputBatchBytes));
+      } else {
+        for (const chunk of batch) this.outputSink(chunk);
+      }
+    } finally {
+      this.flushingOutputBatch = previousFlush;
+      batch.length = 0;
+      this.outputBatchBytes = 0;
+    }
+  }
+
   private runDeferredAction(action: DeferredTerminalAction) {
+    // A parser drain/local write queued between PTY chunks must not overtake
+    // output that this call has only batched locally.
+    this.flushOutputBatch();
     if (action.kind === "write") {
       this.term.write(action.data, action.callback);
     } else {
@@ -515,7 +568,7 @@ class TerminalWriteCoordinator {
     this.deferredOutput = null;
     this.clearDeferredOutputTimeout();
     for (const item of candidate.items) {
-      if (item.kind === "output") this.outputSink(item.data);
+      if (item.kind === "output") this.emitOutput(item.data);
       else this.runDeferredAction(item);
     }
   }
@@ -525,7 +578,7 @@ class TerminalWriteCoordinator {
     if (frame?.kind !== "frame") return;
     this.deferredOutput = null;
     this.clearDeferredOutputTimeout();
-    this.outputSink(concatByteChunks(frame.chunks, frame.byteLength));
+    this.emitOutput(concatByteChunks(frame.chunks, frame.byteLength));
     for (const action of frame.actions) this.runDeferredAction(action);
   }
 
