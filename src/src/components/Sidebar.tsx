@@ -55,7 +55,10 @@ import {
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { openGitCenter } from "../gitCenter";
-import { layoutContains } from "../paneLayout";
+import {
+  orderedLayoutSessionIds,
+  type PaneLayout,
+} from "../paneLayout";
 import { writeSessionPaneDragPayload } from "../paneSessionDrag";
 import {
   moveProjectInLayout,
@@ -633,17 +636,55 @@ function worktreeMenu(
   ];
 }
 
+let cachedPaneLayout: PaneLayout | null = null;
+let cachedPaneLayoutGroups: PaneLayout[] | null = null;
+let cachedPaneSessionIds: ReadonlySet<string> = new Set();
+
+/**
+ * Session rows share this reference-keyed cache. Production pane transforms
+ * replace layout references, so unrelated store updates only pay Set lookups.
+ */
+function paneSessionIds(
+  terminalLayout: PaneLayout,
+  terminalLayoutGroups: PaneLayout[],
+): ReadonlySet<string> {
+  if (
+    terminalLayout === cachedPaneLayout &&
+    terminalLayoutGroups === cachedPaneLayoutGroups
+  ) {
+    return cachedPaneSessionIds;
+  }
+
+  const sessionIds = new Set(orderedLayoutSessionIds(terminalLayout));
+  for (const group of terminalLayoutGroups) {
+    if (group === terminalLayout) continue;
+    for (const sessionId of orderedLayoutSessionIds(group)) {
+      sessionIds.add(sessionId);
+    }
+  }
+  cachedPaneLayout = terminalLayout;
+  cachedPaneLayoutGroups = terminalLayoutGroups;
+  cachedPaneSessionIds = sessionIds;
+  return sessionIds;
+}
+
+const SESSION_ROW_ACTIVE = 1;
+const SESSION_ROW_IN_PANE_LAYOUT = 2;
+const SESSION_ROW_SUSPENDED = 4;
+
 function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
-  const active = useStore((state) => state.activeSessionId === ses.id);
-  const inPaneLayout = useStore((state) =>
-    layoutContains(state.terminalLayout, ses.id) ||
-    state.terminalLayoutGroups.some((group) => layoutContains(group, ses.id)),
+  const rowState = useStore((state) =>
+    (state.activeSessionId === ses.id ? SESSION_ROW_ACTIVE : 0) |
+    (paneSessionIds(state.terminalLayout, state.terminalLayoutGroups).has(ses.id)
+      ? SESSION_ROW_IN_PANE_LAYOUT
+      : 0) |
+    (state.runtime[ses.id]?.suspended === true ? SESSION_ROW_SUSPENDED : 0),
   );
+  const active = (rowState & SESSION_ROW_ACTIVE) !== 0;
+  const inPaneLayout = (rowState & SESSION_ROW_IN_PANE_LAYOUT) !== 0;
   const pinned = ses.pinnedAt !== null;
-  const suspended = useStore(
-    (state) => state.runtime[ses.id]?.suspended === true,
-  );
+  const suspended = (rowState & SESSION_ROW_SUSPENDED) !== 0;
   const [editing, setEditing] = useState(false);
   const [draggingPaneSession, setDraggingPaneSession] = useState(false);
   const [draftTitle, setDraftTitle] = useState(ses.title);

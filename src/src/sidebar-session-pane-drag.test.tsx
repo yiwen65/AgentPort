@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { selectSessionMock } = vi.hoisted(() => ({
@@ -38,10 +38,22 @@ vi.mock("./api", () => ({
   errorText: (error: unknown) => String(error),
 }));
 
+vi.mock("./paneLayout", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./paneLayout")>();
+  return {
+    ...actual,
+    orderedLayoutSessionIds: vi.fn(actual.orderedLayoutSessionIds),
+  };
+});
+
 import Sidebar from "./components/Sidebar";
 import { SESSION_PANE_DND_MIME } from "./paneSessionDrag";
-import { singletonPaneLayout, splitPane } from "./paneLayout";
-import { setState } from "./store";
+import {
+  orderedLayoutSessionIds,
+  singletonPaneLayout,
+  splitPane,
+} from "./paneLayout";
+import { getState, setState } from "./store";
 import type { SessionView } from "./types";
 
 const first: SessionView = {
@@ -151,6 +163,41 @@ describe("sidebar Session pane drag", () => {
     expect(rememberedMember?.classList.contains("in-pane-layout")).toBe(true);
     expect(outside?.classList.contains("in-pane-layout")).toBe(false);
     expect(container.querySelector(".pane-layout-indicator")).toBeNull();
+  });
+
+  it("shares pane membership across rows and invalidates it with new layouts", () => {
+    const { container } = render(<Sidebar collapsed={false} width={296} />);
+    const traversalCount = vi.mocked(orderedLayoutSessionIds).mock.calls.length;
+    expect(traversalCount).toBe(2);
+
+    act(() => setState({ announcement: "runtime tick" }));
+    expect(vi.mocked(orderedLayoutSessionIds)).toHaveBeenCalledTimes(
+      traversalCount,
+    );
+
+    const replacement = splitPane(
+      singletonPaneLayout(fourth.id),
+      fourth.id,
+      fifth.id,
+      "right",
+      "replacement-split",
+    );
+    act(() => {
+      setState({
+        terminalLayout: singletonPaneLayout(first.id),
+        terminalLayoutGroups: [replacement],
+      });
+    });
+
+    const rows = [...container.querySelectorAll<HTMLElement>(".tree-row.session")];
+    const secondRow = rows.find((row) => row.textContent?.includes("Second"));
+    const fifthRow = rows.find((row) => row.textContent?.includes("Fifth"));
+    expect(secondRow?.classList.contains("in-pane-layout")).toBe(false);
+    expect(fifthRow?.classList.contains("in-pane-layout")).toBe(true);
+    expect(vi.mocked(orderedLayoutSessionIds)).toHaveBeenCalledTimes(
+      traversalCount + 2,
+    );
+    expect(getState().terminalLayoutGroups).toEqual([replacement]);
   });
 
   it("writes the dedicated Session MIME while preserving ordinary click", () => {
