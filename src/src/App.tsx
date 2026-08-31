@@ -19,7 +19,7 @@ import {
   applyThemeSettings,
   isMac,
   openNewSessionDialog,
-  openSplitSessionDialog,
+  openSplitAgentPicker,
   readLastSelectedSessionId,
   refreshProjectsSoon,
   restartSessionFlow,
@@ -324,7 +324,7 @@ function useHotkeys() {
           if (paneShortcut === "toggle-maximize") {
             toggleSessionPaneMaximized(s.activeSessionId);
           } else {
-            openSplitSessionDialog(
+            openSplitAgentPicker(
               s.activeSessionId,
               paneShortcut === "split-right" ? "right" : "down",
             );

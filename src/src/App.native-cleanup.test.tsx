@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
     takePendingNotificationSession: vi.fn().mockResolvedValue(null),
   },
   onNativeCleanupWarning: vi.fn(),
+  openSplitAgentPicker: vi.fn(),
+  openSplitSessionDialog: vi.fn(),
 }));
 
 vi.mock("./api", () => ({
@@ -29,11 +31,14 @@ vi.mock("./actions", () => ({
   applyThemeSettings: vi.fn(),
   isMac: vi.fn().mockReturnValue(true),
   openNewSessionDialog: vi.fn(),
+  openSplitAgentPicker: mocks.openSplitAgentPicker,
+  openSplitSessionDialog: mocks.openSplitSessionDialog,
   readLastSelectedSessionId: () => window.localStorage.getItem("agentport-active-session-id"),
   refreshProjectsSoon: vi.fn(),
   restartSessionFlow: vi.fn(),
   selectSession: vi.fn(),
   switchSessionByIndex: vi.fn(),
+  toggleSessionPaneMaximized: vi.fn(),
 }));
 
 vi.mock("./terminals", () => ({
@@ -118,6 +123,9 @@ describe("native cleanup warning", () => {
       projects: [],
       activeSessionId: null,
       attachedIds: [],
+      dialog: null,
+      confirm: null,
+      prompt: null,
       showOnboarding: false,
       toasts: [],
     });
@@ -138,5 +146,29 @@ describe("native cleanup warning", () => {
       expect(toasts[0].text).toContain("2");
       expect(toasts[0].text).toContain("原生文件");
     });
+  });
+
+  it("opens the lightweight Agent picker for pane split shortcuts", async () => {
+    render(<App />);
+    await waitFor(() => expect(getState().ready).toBe(true));
+    act(() => setState({
+      activeSessionId: "session-active",
+      showOnboarding: false,
+    }));
+
+    fireEvent.keyDown(window, { key: "d", metaKey: true });
+    fireEvent.keyDown(window, { key: "D", metaKey: true, shiftKey: true });
+
+    expect(mocks.openSplitAgentPicker).toHaveBeenNthCalledWith(
+      1,
+      "session-active",
+      "right",
+    );
+    expect(mocks.openSplitAgentPicker).toHaveBeenNthCalledWith(
+      2,
+      "session-active",
+      "down",
+    );
+    expect(mocks.openSplitSessionDialog).not.toHaveBeenCalled();
   });
 });
