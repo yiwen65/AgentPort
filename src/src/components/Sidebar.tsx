@@ -800,15 +800,6 @@ function SessionRow({ ses, nested }: { ses: SessionView; nested?: boolean }) {
           <IconArchive />
         </span>
       </span>
-      {inPaneLayout && !active ? (
-        <span
-          className="pane-layout-indicator"
-          aria-label={t("shell:pane.inLayout")}
-          data-tip={t("shell:pane.inLayout")}
-        >
-          ▦
-        </span>
-      ) : null}
       <span
         className="session-age"
         aria-label={t("session:ui.sidebar.createdAt", { date: ses.createdAt })}

@@ -138,7 +138,7 @@ describe("sidebar Session pane drag", () => {
 
   afterEach(cleanup);
 
-  it("keeps one active row and marks only the other in-layout Session", () => {
+  it("marks remembered pane rows without rendering a trailing badge", () => {
     const { container } = render(<Sidebar collapsed={false} width={296} />);
     const rows = [...container.querySelectorAll<HTMLElement>(".tree-row.session")];
     const active = rows.find((row) => row.textContent?.includes("First"));
@@ -147,12 +147,10 @@ describe("sidebar Session pane drag", () => {
     const outside = rows.find((row) => row.textContent?.includes("Fifth"));
 
     expect(active?.classList.contains("active")).toBe(true);
-    expect(active?.querySelector(".pane-layout-indicator")).toBeNull();
     expect(member?.classList.contains("in-pane-layout")).toBe(true);
-    expect(member?.querySelector(".pane-layout-indicator")?.getAttribute("aria-label"))
-      .toBe("已在分屏中");
     expect(rememberedMember?.classList.contains("in-pane-layout")).toBe(true);
     expect(outside?.classList.contains("in-pane-layout")).toBe(false);
+    expect(container.querySelector(".pane-layout-indicator")).toBeNull();
   });
 
   it("writes the dedicated Session MIME while preserving ordinary click", () => {

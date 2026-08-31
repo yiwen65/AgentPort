@@ -3036,13 +3036,6 @@ body.is-resizing-pane {
   opacity: 0.58;
 }
 
-.pane-layout-indicator {
-  flex: none;
-  color: var(--accent-text);
-  font-size: 11px;
-  line-height: 1;
-}
-
 /* Document viewer split (opened from terminal document links). */
 .doc-panel {
   position: relative;
