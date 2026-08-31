@@ -2833,11 +2833,6 @@ body.is-project-dragging .tree-row.project {
   flex-direction: column;
   overflow: hidden;
   background: var(--workspace-current);
-  box-shadow: inset 0 0 0 1px transparent;
-}
-
-.session-pane-leaf.focused {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 72%, transparent);
 }
 
 .pane-header {
