@@ -6,6 +6,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -35,6 +36,8 @@ import {
   fitSession,
   focusSession,
   getHandle,
+  hasWarmTerminalPreview,
+  isTerminalPreviewRendered,
   loadOlderNativeHistory,
   mountTerminal,
   noteTerminalScrollIntent,
@@ -83,6 +86,7 @@ import PiStructuredTimeline from "./PiStructuredTimeline";
 import DocumentPanel from "./DocumentPanel";
 import StatusDot from "./StatusDot";
 import { useTranslation } from "react-i18next";
+import { shouldShowTerminalAttachOverlay } from "../terminalAttachVisibility";
 
 // ---------------------------------------------------------------------------
 // persistent pane
@@ -324,7 +328,7 @@ function TerminalPane({
   const scrolledUp = getRuntime(sessionId).scrolledUp;
   const [dropActive, setDropActive] = useState(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (hostRef.current) mountTerminal(sessionId, hostRef.current);
   }, [sessionId]);
 
@@ -759,10 +763,24 @@ function SessionOverlay({ ses }: { ses: SessionView }) {
     );
   }
 
-  // The attach command can resolve before xterm drains the replay writes.
-  // Keep the pane covered while either side of that handoff is active; the
-  // runtime flag advances only at the parser boundary queued by replay_done.
-  if ((!r.replayDone || r.startupPending) && (r.attaching || r.attached)) {
+  // Cold attach/restart still needs the solid veil because xterm paints each
+  // intermediate replay state. A normal switch restores its persisted
+  // checkpoint behind a silent solid veil, then reveals it on xterm's first
+  // actual render while suffix replay/attach continue in the background.
+  const warmPreview = hasWarmTerminalPreview(ses.id);
+  const attachActive = r.attaching || r.attached;
+  if (
+    attachActive &&
+    warmPreview &&
+    !r.startupPending &&
+    !isTerminalPreviewRendered(ses.id)
+  ) {
+    return <div className="term-overlay term-overlay-solid" aria-hidden />;
+  }
+  if (shouldShowTerminalAttachOverlay(r, warmPreview)) {
+    return <SkeletonOverlay />;
+  }
+  if (attachActive && !isTerminalPreviewRendered(ses.id)) {
     return <SkeletonOverlay />;
   }
   return null;

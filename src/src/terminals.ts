@@ -215,6 +215,7 @@ type TerminalDrainTask =
   | "startup-ready"
   | "render-observation"
   | "snapshot"
+  | "release-snapshot"
   | "recovery-reveal"
   | "native-history-rebuild";
 
@@ -339,10 +340,14 @@ class TerminalWriteCoordinator {
     private readonly term: Terminal,
     private readonly currentHandle: () => TermHandle | null,
     private readonly outputSink: (data: Uint8Array) => void,
+    private readonly onMutation: () => void,
   ) {}
 
   write(data: Uint8Array | string, callback?: () => void): number {
     const sequence = ++this.writeSequence;
+    if (typeof data === "string" ? data.length > 0 : data.byteLength > 0) {
+      this.onMutation();
+    }
     if (this.deferredOutput && !this.flushingOutputBatch) {
       this.deferAction({ kind: "write", data, callback });
     } else {
@@ -532,6 +537,7 @@ class TerminalWriteCoordinator {
 
   private emitOutput(data: Uint8Array) {
     if (data.length === 0) return;
+    this.onMutation();
     if (this.outputBatch === null) {
       this.outputSink(data);
       return;
@@ -728,6 +734,14 @@ class TerminalWriteCoordinator {
     pending.onDiscard?.();
   }
 
+  /** Materialize bytes already accepted from the Channel before a renderer
+   * release. The durable cursor already covers these bytes, so discarding an
+   * open synchronized-output frame would create a snapshot/cursor gap. */
+  flushPendingOutput() {
+    if (this.deferredOutput?.kind === "candidate") this.releaseCandidate();
+    else this.releaseFrame();
+  }
+
   reset() {
     this.discardDeferredOutput();
     for (const pending of [...this.allDrains]) this.discardDrain(pending);
@@ -753,6 +767,15 @@ export interface TermHandle {
   generation: number;
   /** Backend-issued capability; only this renderer may detach it. */
   attachmentId: number | null;
+  /** A checkpoint or completed replay has drained through xterm and can be
+   * shown immediately while a warm background attach catches up. */
+  displayReady: boolean;
+  /** Parser-ready content is waiting for xterm's next actual render event. */
+  displayRenderPending: boolean;
+  /** Monotonic screen-mutation fence for matching a cached snapshot to the
+   * exact xterm state, including cursorless transient and local writes. */
+  terminalSnapshotRevision: number;
+  persistedTerminalSnapshotRevision: number;
   /** Log tail already rendered (ended sessions' read-only history). */
   historyLoaded: boolean;
   historyLoading: boolean;
@@ -876,6 +899,7 @@ function installMouseEncodingTracking(handle: TermHandle) {
 
 function resetTerminal(handle: TermHandle) {
   handle.mouseEncoding = "default";
+  handle.terminalSnapshotRevision += 1;
   handle.term.reset();
 }
 
@@ -883,6 +907,8 @@ function resetTerminal(handle: TermHandle) {
  * buffer and terminal modes. A bounded tail does not necessarily contain the
  * original DECSET sequence that entered fullscreen mode. */
 function clearTerminalForTailReplay(handle: TermHandle) {
+  handle.displayReady = false;
+  handle.displayRenderPending = false;
   if (handle.term.buffer.active.type === "alternate") {
     handle.writes.write("\x1b[2J\x1b[H");
     return;
@@ -1191,6 +1217,9 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     term,
     () => (handles.get(sessionId) === handle ? handle : null),
     (data) => writePreservingViewport(handle, data),
+    () => {
+      handle.terminalSnapshotRevision += 1;
+    },
   );
   const viewport = new TerminalViewportController(term);
   handle = {
@@ -1207,6 +1236,10 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     attaching: false,
     generation: 0,
     attachmentId: null,
+    displayReady: false,
+    displayRenderPending: false,
+    terminalSnapshotRevision: 0,
+    persistedTerminalSnapshotRevision: -1,
     historyLoaded: false,
     historyLoading: false,
     nativeHistoryCursor: undefined,
@@ -1264,6 +1297,14 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     void target.offsetWidth;
     target.classList.add("terminal-bell");
     window.setTimeout(() => target.classList.remove("terminal-bell"), 240);
+  });
+  term.onRender(() => {
+    if (!handle.displayRenderPending || handles.get(sessionId) !== handle) return;
+    handle.displayRenderPending = false;
+    handle.displayReady = true;
+    const revision =
+      (getState().runtime[sessionId]?.terminalPreviewRevision ?? 0) + 1;
+    patchRuntime(sessionId, { terminalPreviewRevision: revision });
   });
   term.onData((data) => {
     // Input is only writable once attached — writers register at attach time.
@@ -1326,7 +1367,14 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
               restoredMouseEncoding,
             )
           : mouseEncodingSequence(restoredMouseEncoding)),
+      () => {
+        if (handles.get(sessionId) !== handle) return;
+        handle.displayRenderPending = true;
+        handle.term.refresh(0, Math.max(0, handle.term.rows - 1));
+      },
     );
+    handle.persistedTerminalSnapshotRevision =
+      handle.terminalSnapshotRevision;
     handle.historyLoaded = true;
   } else if (fullscreenPi) {
     // A bounded live tail normally omits Pi's process-start DECSET sequences.
@@ -1428,7 +1476,12 @@ function queueReplayParsed(handle: TermHandle) {
   // exact channel boundary, behind all replay bytes but ahead of later live
   // output, so runtime.replayDone means parser-drained rather than delivered.
   handle.writes.drain("replay-complete", () => {
+    handle.displayRenderPending = true;
     patchRuntime(handle.sessionId, { replayDone: true });
+    // Parsing and Canvas painting are separately scheduled in xterm 5.5. Keep
+    // cold/restart coverage (and the silent warm veil) until onRender proves
+    // that the parser-ready checkpoint reached the renderer.
+    handle.term.refresh(0, Math.max(0, handle.term.rows - 1));
     updateScrolledUp(handle);
   });
 }
@@ -1511,6 +1564,24 @@ function queueRecoveryLocationMarker(handle: TermHandle): () => void {
 const MAX_INPUT_FRAME_BYTES = 256 * 1024;
 const terminalInputQueues = new Map<string, Promise<void>>();
 const snapshotTimers = new Map<string, number>();
+const terminalSnapshotCache = new Map<
+  string,
+  { raw: string; snapshot: TerminalSnapshot }
+>();
+
+function cacheTerminalSnapshot(
+  sessionId: string,
+  raw: string,
+  snapshot: TerminalSnapshot,
+) {
+  terminalSnapshotCache.delete(sessionId);
+  terminalSnapshotCache.set(sessionId, { raw, snapshot });
+  while (terminalSnapshotCache.size > MAX_PERSISTENT_TERMINALS) {
+    const oldest = terminalSnapshotCache.keys().next().value;
+    if (oldest === undefined) break;
+    terminalSnapshotCache.delete(oldest);
+  }
+}
 
 interface TerminalSnapshot {
   version: typeof TERMINAL_SNAPSHOT_VERSION;
@@ -1536,6 +1607,8 @@ function readTerminalSnapshot(sessionId: string): TerminalSnapshot | null {
     const currentRaw = localStorage.getItem(currentKey);
     const raw = currentRaw ?? localStorage.getItem(legacyKey);
     if (!raw || raw.length > MAX_TERMINAL_SNAPSHOT_CHARS + 4096) return null;
+    const cached = terminalSnapshotCache.get(sessionId);
+    if (cached?.raw === raw) return cached.snapshot;
     const parsed = JSON.parse(raw) as Omit<
       Partial<TerminalSnapshot>,
       "version" | "mouseEncoding"
@@ -1571,8 +1644,12 @@ function readTerminalSnapshot(sessionId: string): TerminalSnapshot | null {
       mouseEncoding: legacy ? "default" : parsed.mouseEncoding!,
     };
     if (legacy) {
-      localStorage.setItem(currentKey, JSON.stringify(snapshot));
+      const encoded = JSON.stringify(snapshot);
+      localStorage.setItem(currentKey, encoded);
       localStorage.removeItem(legacyKey);
+      cacheTerminalSnapshot(sessionId, encoded, snapshot);
+    } else {
+      cacheTerminalSnapshot(sessionId, raw, snapshot);
     }
     return snapshot;
   } catch {
@@ -1581,11 +1658,104 @@ function readTerminalSnapshot(sessionId: string): TerminalSnapshot | null {
 }
 
 function clearTerminalSnapshot(sessionId: string) {
+  terminalSnapshotCache.delete(sessionId);
   try {
     localStorage.removeItem(snapshotKey(sessionId));
   } catch {
     // A disabled Web storage backend only degrades crash-time restoration.
   }
+}
+
+export function isTerminalPreviewRendered(sessionId: string): boolean {
+  return handles.get(sessionId)?.displayReady === true;
+}
+
+export function hasWarmTerminalPreview(sessionId: string): boolean {
+  if (isTerminalPreviewRendered(sessionId)) return true;
+  const session = findSession(getState().projects, sessionId);
+  if (
+    session?.transport !== "pty" ||
+    (session.lifecycle !== "creating" && session.lifecycle !== "running")
+  ) {
+    return false;
+  }
+  const snapshot = readTerminalSnapshot(sessionId);
+  if (!snapshot) return false;
+  return !(
+    session.adapter === "pi" &&
+    !snapshot.content.includes("\x1b[?1049h")
+  );
+}
+
+function storeTerminalSnapshot(
+  handle: TermHandle,
+  cursor: LogCursorView,
+  snapshotRevision: number,
+): boolean {
+  try {
+    const content = handle.serialize.serialize({
+      scrollback: TERMINAL_SNAPSHOT_SCROLLBACK_LINES,
+    });
+    if (content.length > MAX_TERMINAL_SNAPSHOT_CHARS) {
+      clearTerminalSnapshot(handle.sessionId);
+      return false;
+    }
+    const snapshot: TerminalSnapshot = {
+      version: TERMINAL_SNAPSHOT_VERSION,
+      cursor,
+      cols: handle.term.cols,
+      rows: handle.term.rows,
+      content,
+      mouseEncoding: handle.mouseEncoding,
+    };
+    const encoded = JSON.stringify(snapshot);
+    localStorage.setItem(snapshotKey(handle.sessionId), encoded);
+    cacheTerminalSnapshot(handle.sessionId, encoded, snapshot);
+    if (handle.terminalSnapshotRevision === snapshotRevision) {
+      handle.persistedTerminalSnapshotRevision = snapshotRevision;
+    }
+    return true;
+  } catch {
+    // Quota/private-mode failures must never interrupt terminal output.
+    return false;
+  }
+}
+
+function persistTerminalSnapshotBeforeRelease(
+  handle: TermHandle,
+): Promise<boolean> {
+  const timer = snapshotTimers.get(handle.sessionId);
+  if (timer !== undefined) {
+    window.clearTimeout(timer);
+    snapshotTimers.delete(handle.sessionId);
+  }
+  if (!handle.logCursor || !handle.displayReady) return Promise.resolve(false);
+  const cursor = { ...handle.logCursor };
+  const snapshotRevision = handle.terminalSnapshotRevision;
+  const cached = readTerminalSnapshot(handle.sessionId);
+  if (
+    cached &&
+    handle.persistedTerminalSnapshotRevision === snapshotRevision &&
+    cached.cursor.runId === cursor.runId &&
+    cached.cursor.runOrdinal === cursor.runOrdinal &&
+    cached.cursor.generation === cursor.generation &&
+    cached.cursor.offset === cursor.offset
+  ) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    const queued = handle.writes.drain(
+      "release-snapshot",
+      (_targetSequence, promoted) => {
+        resolve(
+          !promoted &&
+            storeTerminalSnapshot(handle, cursor, snapshotRevision),
+        );
+      },
+      { coalesce: false, onDiscard: () => resolve(false) },
+    );
+    if (!queued) resolve(false);
+  });
 }
 
 function scheduleTerminalSnapshot(handle: TermHandle) {
@@ -1597,6 +1767,7 @@ function scheduleTerminalSnapshot(handle: TermHandle) {
       snapshotTimers.delete(handle.sessionId);
       if (handles.get(handle.sessionId) !== handle || !handle.logCursor) return;
       const cursor = { ...handle.logCursor };
+      const snapshotRevision = handle.terminalSnapshotRevision;
       // Serialize only after every write covered by `cursor` has passed
       // xterm's parser. Later writes remain queued behind this coordinator
       // boundary, so screen state and replay cursor form one consistent checkpoint.
@@ -1610,27 +1781,7 @@ function scheduleTerminalSnapshot(handle: TermHandle) {
             scheduleTerminalSnapshot(handle);
             return;
           }
-          try {
-            const content = handle.serialize.serialize({
-              scrollback: TERMINAL_SNAPSHOT_SCROLLBACK_LINES,
-            });
-            if (content.length > MAX_TERMINAL_SNAPSHOT_CHARS) {
-              clearTerminalSnapshot(handle.sessionId);
-              return;
-            }
-            const snapshot: TerminalSnapshot = {
-              version: TERMINAL_SNAPSHOT_VERSION,
-              cursor,
-              cols: handle.term.cols,
-              rows: handle.term.rows,
-              content,
-              mouseEncoding: handle.mouseEncoding,
-            };
-            const encoded = JSON.stringify(snapshot);
-            localStorage.setItem(snapshotKey(handle.sessionId), encoded);
-          } catch {
-            // Quota/private-mode failures must never interrupt terminal output.
-          }
+          storeTerminalSnapshot(handle, cursor, snapshotRevision);
         },
         { coalesce: false },
       );
@@ -2683,6 +2834,9 @@ function applyOutputFrame(
       resetRenderObservation(handle);
       resetNativeHistory(handle);
       resetTerminal(handle);
+      handle.displayReady = false;
+      handle.displayRenderPending = false;
+      clearTerminalSnapshot(sessionId);
       handle.logCursor = null;
       handle.rotationNoticeShown = false;
     } else if (incoming.generation < current.generation) {
@@ -2707,6 +2861,7 @@ function applyOutputFrame(
         handle.attachmentId = null;
         resetNativeHistory(handle);
         clearTerminalForTailReplay(handle);
+        clearTerminalSnapshot(sessionId);
         handle.logCursor = null;
         const errorMessage: RuntimeMessageEnvelope = {
           code: "terminal_output_gap",
@@ -2917,6 +3072,8 @@ export function resetForRestart(sessionId: string) {
     // otherwise duplicate it under the old content / loaded history.
     resetNativeHistory(handle);
     resetTerminal(handle);
+    handle.displayReady = false;
+    handle.displayRenderPending = false;
     handle.logCursor = null;
     handle.rotationNoticeShown = false;
     handle.allowRecoveryGap = false;
@@ -2962,6 +3119,8 @@ export async function jumpToRecoveryOutput(
   handle.attaching = false;
   resetNativeHistory(handle);
   resetTerminal(handle);
+  handle.displayReady = false;
+  handle.displayRenderPending = false;
   clearTerminalSnapshot(sessionId);
   handle.logCursor = null;
   handle.allowRecoveryGap = false;
@@ -3131,6 +3290,10 @@ export function disposeHandle(sessionId: string) {
 export async function releaseTerminal(sessionId: string): Promise<void> {
   const handle = handles.get(sessionId);
   if (!handle) return;
+  // The durable cursor advances when Channel bytes enter the coordinator. Flush
+  // any open DEC-2026 candidate/frame before fencing that Channel so the saved
+  // checkpoint cannot claim bytes that were discarded before xterm parsed them.
+  handle.writes.flushPendingOutput();
   // Reject messages already queued on the old Channel before disposing xterm.
   const releaseGeneration = ++handle.generation;
   resetRenderObservation(handle);
@@ -3138,6 +3301,10 @@ export async function releaseTerminal(sessionId: string): Promise<void> {
   handle.attachmentId = null;
   handle.attached = false;
   handle.attaching = false;
+  // Materialize the current parser-drained checkpoint before disposing the
+  // sole xterm instance. The next Session switch can paint this snapshot
+  // immediately while its Host attachment catches up in the background.
+  await persistTerminalSnapshotBeforeRelease(handle);
   if (attachmentId !== null) {
     try {
       await api.detachSession(sessionId, attachmentId);

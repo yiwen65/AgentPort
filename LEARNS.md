@@ -54,14 +54,14 @@
 - Prevention: Regression-test ownership and queueing: user movement wins before either callback, scrollback extremes restore their reading row, and several queued bottom-to-row-0 writes produce zero intermediate repairs plus exactly one final repair.
 - Verified by: The three-write burst reproduced three immediate `scrollToBottom` calls before the fix and one deferred call after it; delayed-wheel cancellation passes, focused terminal tests pass 56/56, and the full frontend suite passes 285/285.
 
-## `xterm replay visibility` — transport completion is not parser completion
+## `xterm replay visibility` — transport, parser, and renderer completion are distinct
 
-- Wrong approach: Hide the replay Skeleton immediately on the Host's `replay_done` message, only while `runtime.attaching` is true, or reuse `replayDone=true` from an earlier attachment generation.
-- Why it failed: `attach_session` can resolve before xterm drains its asynchronous write queue; the transport marker therefore exposed Canvas while retained-history frames were still being parsed and painted. On a later reattach, stale `replayDone=true` exposed an old terminal snapshot immediately even though Pi's live focus/overlay state was still behind the replay boundary, so mouse input went to a different UI state than the one on screen.
-- Recognition signal: The terminal rapidly displays intermediate history after attach, or an old Session accepts text selection/clicks but wheel/keyboard behavior matches an invisible Pi overlay; `replayDone` is already true when a new `attaching=true` generation begins.
-- Correct approach: Reset `replayDone=false` at every real attach generation, insert a generation-fenced parser sentinel exactly when the ordered `replay_done` message arrives, keep the overlay while attached-but-not-parsed, and advance runtime completion only from that boundary callback. Later live writes must remain behind the boundary and must not delay replay completion.
-- Prevention: Test reattach from a previously completed runtime, transport receipt, parser drain, later live writes, stale generations, and overlay visibility as separate boundaries; never use `onWriteParsed` as an all-writes-drained signal.
-- Verified by: The reattach regression began with `replayDone=true` and failed because attach left it true, then passed after resetting it; focused terminal tests pass 71/71 and the full frontend suite passes 355/355.
+- Wrong approach: Hide the replay Skeleton immediately on the Host's `replay_done` message, only while `runtime.attaching` is true, reuse `replayDone=true` from an earlier attachment generation, or treat xterm's write callback as proof that Canvas already painted.
+- Why it failed: `attach_session` can resolve before xterm drains its asynchronous write queue; after parsing, xterm 5.5 separately schedules Canvas rendering on `requestAnimationFrame`. Exposing at either earlier boundary can show intermediate replay, a blank/stale frame, or an old Pi screen whose input state is already newer.
+- Recognition signal: The terminal rapidly displays intermediate history, briefly blanks after a warm switch, or accepts input whose behavior matches an invisible newer Pi state; `replayDone` may already be true while no matching `onRender` has fired.
+- Correct approach: Reset `replayDone=false` at every real attach generation, insert a generation-fenced parser sentinel at the ordered `replay_done` marker, then require the following xterm `onRender` before revealing cold content. A persisted warm checkpoint may avoid the Connecting card, but stays behind a silent solid veil until that render; later live writes must not delay parser completion.
+- Prevention: Test reattach from a completed runtime, transport receipt, parser drain, the next render event, later live writes, stale generations, and warm/cold overlay visibility as separate boundaries; never use `onWriteParsed` as an all-writes-drained or painted signal.
+- Verified by: The parser-vs-render regression keeps the veil after `replayDone=true` and removes it only after `emitRender()`; focused terminal tests pass 130/130, the full frontend suite passes 506/506, and two-direction Debug App capture sequences showed no Connecting card or blank frame.
 
 ## `xterm synchronized output` — preserve redraw atomicity without exploding parser writes
 

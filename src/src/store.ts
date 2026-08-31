@@ -45,6 +45,9 @@ export interface SessionRuntime {
   attached: boolean;
   attaching: boolean;
   replayDone: boolean;
+  /** Monotonic notification that a parser-ready terminal checkpoint reached
+   * xterm's renderer; used only to refresh warm-switch visibility. */
+  terminalPreviewRevision: number;
   /** Restarted Pi is still constructing its first stable terminal frame. */
   startupPending: boolean;
   detached: boolean;
@@ -71,6 +74,7 @@ export function emptyRuntime(): SessionRuntime {
     attached: false,
     attaching: false,
     replayDone: false,
+    terminalPreviewRevision: 0,
     startupPending: false,
     detached: false,
     status: null,

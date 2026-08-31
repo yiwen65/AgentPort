@@ -63,6 +63,8 @@ vi.mock("../terminals", () => ({
   fitSession: fitSessionMock,
   focusSession: focusSessionMock,
   getHandle: getHandleMock,
+  hasWarmTerminalPreview: vi.fn(() => false),
+  isTerminalPreviewRendered: vi.fn(() => true),
   loadOlderNativeHistory: vi.fn().mockResolvedValue(false),
   mountTerminal: mountTerminalMock,
   noteTerminalScrollIntent: vi.fn(),

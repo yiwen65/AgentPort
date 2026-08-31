@@ -18,7 +18,14 @@ function ruleBody(selector: RegExp): string | undefined {
 // `.term-overlay` (designed so ended sessions keep history visible) let the
 // user watch the whole retained tail race by (高频刷屏).
 describe("terminal attach/replay veil", () => {
-  it("renders SkeletonOverlay with the solid veil modifier", () => {
+  it("keeps warm restore silent until xterm renders, while cold attach uses the skeleton", () => {
+    expect(terminalArea).toContain(
+      "shouldShowTerminalAttachOverlay(r, warmPreview)",
+    );
+    expect(terminalArea).toContain("!isTerminalPreviewRendered(ses.id)");
+    expect(terminalArea).toContain(
+      '<div className="term-overlay term-overlay-solid" aria-hidden />',
+    );
     const skeleton = terminalArea.match(
       /function SkeletonOverlay[\s\S]*?<div className="([^"]+)">/,
     )?.[1];

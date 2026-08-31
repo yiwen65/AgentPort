@@ -34,6 +34,7 @@ const rendererMocks = vi.hoisted(() => {
     private readonly dataListeners = new Set<(data: string) => void>();
     private readonly titleListeners = new Set<(title: string) => void>();
     private readonly bellListeners = new Set<() => void>();
+    private readonly renderListeners = new Set<() => void>();
     private readonly oscHandlers = new Map<
       number,
       (data: string) => boolean | Promise<boolean>
@@ -151,6 +152,13 @@ const rendererMocks = vi.hoisted(() => {
       this.bellListeners.add(listener);
       return { dispose: () => this.bellListeners.delete(listener) };
     });
+    onRender = vi.fn((listener: () => void) => {
+      this.renderListeners.add(listener);
+      return { dispose: () => this.renderListeners.delete(listener) };
+    });
+    emitRender() {
+      for (const listener of this.renderListeners) listener();
+    }
     open(container: HTMLDivElement) {
       offscreenCanvasDuringOpen.push(globalThis.OffscreenCanvas);
       if (config.openShouldFail) throw new Error("Terminal open failed");
@@ -275,9 +283,12 @@ import {
   fitHandle,
   fitSession,
   getHandle,
+  hasWarmTerminalPreview,
+  isTerminalPreviewRendered,
   jumpToRecoveryOutput,
   loadOlderNativeHistory,
   mountTerminal,
+  releaseTerminal,
   resetForRestart,
   scrollTerminalViewport,
   setTerminalActive,
@@ -2280,6 +2291,9 @@ describe("terminal renderer", () => {
     invokeWriteCallback(replayBoundary);
 
     expect(getState().runtime["renderer-test"]?.replayDone).toBe(true);
+    expect(isTerminalPreviewRendered("renderer-test")).toBe(false);
+    terminal.emitRender();
+    expect(isTerminalPreviewRendered("renderer-test")).toBe(true);
     const liveWrite = terminal.write.mock.calls.find(
       ([data]) =>
         data instanceof Uint8Array && new TextDecoder().decode(data) === "B",
@@ -3041,7 +3055,7 @@ describe("terminal renderer", () => {
       rendererMocks.terminals[rendererMocks.terminals.length - 1];
     expect(terminal.write).toHaveBeenCalledWith(
       "\x1b[?1049hserialized-screen\x1b[?1002h\x1b[?1006h",
-      undefined,
+      expect.any(Function),
     );
     expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledWith(
       "renderer-test",
@@ -3094,7 +3108,7 @@ describe("terminal renderer", () => {
       rendererMocks.terminals[rendererMocks.terminals.length - 1];
     expect(terminal.write).toHaveBeenCalledWith(
       "\x1b[?1049hserialized-screen\x1b[?1002h\x1b[?1006h",
-      undefined,
+      expect.any(Function),
     );
     localStorage.removeItem(key);
   });
@@ -3134,7 +3148,7 @@ describe("terminal renderer", () => {
       rendererMocks.terminals[rendererMocks.terminals.length - 1];
     expect(terminal.write).toHaveBeenCalledWith(
       "\x1b[?1049hserialized-screen\x1b[?1003h\x1b[?1006h",
-      undefined,
+      expect.any(Function),
     );
     expect(terminal.write).not.toHaveBeenCalledWith(
       expect.stringContaining("\x1b[?1003h\x1b[?1002h"),
@@ -3162,13 +3176,14 @@ describe("terminal renderer", () => {
       }),
     );
 
+    expect(hasWarmTerminalPreview("renderer-test")).toBe(true);
     mountTerminal("renderer-test", document.createElement("div"));
 
     const terminal =
       rendererMocks.terminals[rendererMocks.terminals.length - 1];
     expect(terminal.write).toHaveBeenCalledWith(
       "serialized-screen\x1b[?1006h",
-      undefined,
+      expect.any(Function),
     );
     expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledWith(
       "renderer-test",
@@ -3178,6 +3193,202 @@ describe("terminal renderer", () => {
       null,
     );
     localStorage.removeItem(key);
+  });
+
+  it("persists a parser-drained checkpoint before releasing the sole renderer", async () => {
+    const key = "agentport:terminal-snapshot:v2:renderer-test";
+    localStorage.removeItem(key);
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const handle = getHandle("renderer-test")!;
+    handle.logCursor = {
+      runId: "run_release",
+      runOrdinal: 1,
+      generation: 0,
+      offset: 42,
+    };
+    handle.displayReady = true;
+    handle.attached = true;
+    handle.attachmentId = 1;
+    vi.mocked(handle.serialize.serialize).mockReturnValue("release checkpoint");
+
+    const released = releaseTerminal("renderer-test");
+    const releaseBoundary = terminal.write.mock.calls[terminal.write.mock.calls.length - 1];
+    invokeWriteCallback(releaseBoundary);
+    await released;
+
+    const snapshot = JSON.parse(localStorage.getItem(key) ?? "null") as {
+      content?: string;
+      cursor?: { offset?: number };
+    } | null;
+    expect(snapshot?.content).toBe("release checkpoint");
+    expect(snapshot?.cursor?.offset).toBe(42);
+    localStorage.removeItem(key);
+  });
+
+  it("flushes an open synchronized-output frame before release snapshots its cursor", async () => {
+    const key = "agentport:terminal-snapshot:v2:renderer-test";
+    localStorage.removeItem(key);
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const handle = getHandle("renderer-test")!;
+    const frame = "\x1b[?2026hpartial redraw";
+    rendererMocks.channels[0].onmessage?.({
+      t: "output",
+      data: btoa(frame),
+      offset: 0,
+      cursor: {
+        runId: "run_release_sync",
+        runOrdinal: 1,
+        generation: 0,
+        offset: 0,
+      },
+    });
+    handle.displayReady = true;
+    handle.attached = true;
+    handle.attachmentId = 1;
+    vi.mocked(handle.serialize.serialize).mockReturnValue("release checkpoint");
+
+    const released = releaseTerminal("renderer-test");
+    const contentWrite = terminal.write.mock.calls.find(
+      ([data]) => data instanceof Uint8Array,
+    );
+    expect(new TextDecoder().decode(contentWrite?.[0] as Uint8Array)).toBe(frame);
+    invokeWriteCallback(contentWrite);
+    const releaseBoundary = terminal.write.mock.calls[terminal.write.mock.calls.length - 1];
+    invokeWriteCallback(releaseBoundary);
+    await released;
+
+    const snapshot = JSON.parse(localStorage.getItem(key) ?? "null") as {
+      cursor?: { offset?: number };
+    } | null;
+    expect(snapshot?.cursor?.offset).toBe(frame.length);
+    localStorage.removeItem(key);
+  });
+
+  it("reserializes cursorless transient output before release", async () => {
+    const key = "agentport:terminal-snapshot:v2:renderer-test";
+    const snapshot = JSON.stringify({
+      version: 2,
+      cursor: {
+        runId: "run_transient",
+        runOrdinal: 1,
+        generation: 0,
+        offset: 42,
+      },
+      cols: 80,
+      rows: 24,
+      content: "cached screen",
+      mouseEncoding: "default",
+    });
+    localStorage.setItem(key, snapshot);
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const handle = getHandle("renderer-test")!;
+    invokeWriteCallback(terminal.write.mock.calls[0]);
+    terminal.emitRender();
+    rendererMocks.channels[0].onmessage?.({
+      t: "transient_output",
+      data: btoa("cursorless update"),
+    });
+    handle.attached = true;
+    handle.attachmentId = 1;
+    vi.mocked(handle.serialize.serialize).mockReturnValue("updated screen");
+
+    const released = releaseTerminal("renderer-test");
+    const releaseBoundary = terminal.write.mock.calls[terminal.write.mock.calls.length - 1];
+    invokeWriteCallback(releaseBoundary);
+    await released;
+
+    expect(handle.serialize.serialize).toHaveBeenCalledWith({ scrollback: 1000 });
+    expect(JSON.parse(localStorage.getItem(key) ?? "null").content).toBe(
+      "updated screen",
+    );
+    localStorage.removeItem(key);
+  });
+
+  it("bounds parsed snapshot caching to the renderer retention limit", () => {
+    const baseSession = getState().projects[0].sessions[0];
+    const makeSnapshot = (runId: string) => JSON.stringify({
+      version: 2,
+      cursor: { runId, runOrdinal: 1, generation: 0, offset: 1 },
+      cols: 80,
+      rows: 24,
+      content: `screen ${runId}`,
+      mouseEncoding: "default",
+    });
+    const ids = ["snapshot-cache-a", "snapshot-cache-b"];
+    setState({
+      projects: [{
+        ...getState().projects[0],
+        sessions: ids.map((id) => ({ ...baseSession, id })),
+      }],
+    });
+    ids.forEach((id) =>
+      localStorage.setItem(
+        `agentport:terminal-snapshot:v2:${id}`,
+        makeSnapshot(id),
+      ),
+    );
+    const parse = vi.spyOn(JSON, "parse");
+
+    expect(hasWarmTerminalPreview(ids[0])).toBe(true);
+    expect(hasWarmTerminalPreview(ids[1])).toBe(true);
+    expect(hasWarmTerminalPreview(ids[0])).toBe(true);
+
+    expect(parse).toHaveBeenCalledTimes(3);
+    parse.mockRestore();
+    ids.forEach((id) =>
+      localStorage.removeItem(`agentport:terminal-snapshot:v2:${id}`),
+    );
+  });
+
+  it("clears a stale warm snapshot before recovering an output gap", async () => {
+    const key = "agentport:terminal-snapshot:v2:renderer-test";
+    localStorage.setItem(key, JSON.stringify({
+      version: 2,
+      cursor: {
+        runId: "run_gap",
+        runOrdinal: 1,
+        generation: 0,
+        offset: 1,
+      },
+      cols: 80,
+      rows: 24,
+      content: "old screen",
+      mouseEncoding: "default",
+    }));
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    invokeWriteCallback(terminal.write.mock.calls[0]);
+    expect(hasWarmTerminalPreview("renderer-test")).toBe(true);
+
+    rendererMocks.channels[0].onmessage?.({
+      t: "output",
+      data: "QQ==",
+      offset: 10,
+      cursor: {
+        runId: "run_gap",
+        runOrdinal: 1,
+        generation: 0,
+        offset: 10,
+      },
+    });
+
+    expect(localStorage.getItem(key)).toBeNull();
+    expect(hasWarmTerminalPreview("renderer-test")).toBe(false);
   });
 
   it("records the active SGR mouse encoding beside a terminal snapshot", async () => {

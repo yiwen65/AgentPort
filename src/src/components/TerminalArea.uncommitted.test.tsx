@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   getHandleMock,
+  hasWarmTerminalPreviewMock,
+  isTerminalPreviewRenderedMock,
   loadOlderNativeHistoryMock,
   locateTerminalBufferMatchMock,
   noteTerminalScrollIntentMock,
@@ -11,6 +13,8 @@ const {
   searchTerminalBuffersMock,
 } = vi.hoisted(() => ({
   getHandleMock: vi.fn(),
+  hasWarmTerminalPreviewMock: vi.fn(() => false),
+  isTerminalPreviewRenderedMock: vi.fn(() => false),
   loadOlderNativeHistoryMock: vi.fn().mockResolvedValue(false),
   locateTerminalBufferMatchMock: vi.fn(),
   noteTerminalScrollIntentMock: vi.fn(),
@@ -31,6 +35,8 @@ vi.mock("../terminals", () => ({
   fitSession: vi.fn(),
   focusSession: vi.fn(),
   getHandle: getHandleMock,
+  hasWarmTerminalPreview: hasWarmTerminalPreviewMock,
+  isTerminalPreviewRendered: isTerminalPreviewRenderedMock,
   loadOlderNativeHistory: loadOlderNativeHistoryMock,
   locateTerminalBufferMatch: locateTerminalBufferMatchMock,
   mountTerminal: vi.fn(),
@@ -107,6 +113,8 @@ describe("terminal replay visibility", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getHandleMock.mockReturnValue(undefined);
+    hasWarmTerminalPreviewMock.mockReturnValue(false);
+    isTerminalPreviewRenderedMock.mockReturnValue(false);
     setState({
       activeSessionId: session.id,
       attachedIds: [session.id],
@@ -125,7 +133,7 @@ describe("terminal replay visibility", () => {
 
   afterEach(cleanup);
 
-  it("keeps replay covered after attach until the xterm parser boundary drains", () => {
+  it("keeps replay covered until the parser-ready checkpoint renders", () => {
     patchRuntime(session.id, {
       attached: true,
       attaching: false,
@@ -137,7 +145,25 @@ describe("terminal replay visibility", () => {
 
     act(() => patchRuntime(session.id, { replayDone: true }));
     rerender(<TerminalArea />);
+    expect(container.querySelector(".term-overlay .skeleton")).not.toBeNull();
+
+    isTerminalPreviewRenderedMock.mockReturnValue(true);
+    rerender(<TerminalArea />);
     expect(container.querySelector(".term-overlay .skeleton")).toBeNull();
+  });
+
+  it("shows a warm checkpoint immediately while attach completes in the background", () => {
+    hasWarmTerminalPreviewMock.mockReturnValue(true);
+    patchRuntime(session.id, {
+      attached: false,
+      attaching: true,
+      replayDone: false,
+      startupPending: false,
+    });
+
+    render(<TerminalArea />);
+
+    expect(screen.queryByText("Connecting to Session Host")).toBeNull();
   });
 
   it("keeps Restart covered after replay until Pi reports a stable startup frame", () => {
@@ -151,6 +177,7 @@ describe("terminal replay visibility", () => {
 
     expect(container.querySelector(".term-overlay .skeleton")).not.toBeNull();
 
+    isTerminalPreviewRenderedMock.mockReturnValue(true);
     act(() => patchRuntime(session.id, { startupPending: false }));
     rerender(<TerminalArea />);
     expect(container.querySelector(".term-overlay .skeleton")).toBeNull();
