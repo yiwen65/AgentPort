@@ -9,15 +9,20 @@ function ruleBody(selector: string): string | undefined {
   return styles.match(new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\n\\}`))?.[1];
 }
 
-describe("expanded document panel centering", () => {
-  it("caps and centers the raw editor column", () => {
+describe("expanded document panel layout", () => {
+  it("keeps the raw editor full-bleed with no centered column cap", () => {
+    // Long lines must use the whole window before scrolling; a fixed
+    // max-width column wastes the expanded surface and truncates early.
     const rule = ruleBody(".doc-panel.expanded .doc-editor");
-    expect(rule).toContain("max-width: 828px");
-    expect(rule).toContain("margin-inline: auto");
+    expect(rule ?? "").not.toContain("max-width");
   });
 
-  it("centers the preview/prose reading column", () => {
+  it("widens the preview/prose reading column with the window", () => {
+    // The preview keeps a readable measure, but it follows the window up to
+    // a generous cap instead of the docked panel's fixed 780px column.
     const rule = ruleBody(".doc-panel.expanded .doc-prose");
+    expect(rule).toContain("max-width: 1120px");
     expect(rule).toContain("margin-inline: auto");
+    expect(rule).toContain("padding-inline: clamp(24px, 5vw, 64px)");
   });
 });

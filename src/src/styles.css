@@ -3314,19 +3314,15 @@ body.is-resizing-pane {
   border-left: none;
 }
 
-/* Expanded mode: cap the reading column and center it, zen-editor style, so
-   text does not hug the left edge of a wide window. 828px matches the
-   preview's footprint (780px + 2×24px padding), keeping Raw and Preview
-   aligned when toggling between them. */
-.doc-panel.expanded .doc-editor {
-  width: 100%;
-  max-width: 828px;
-  margin-inline: auto;
-}
-
+/* Expanded mode: the raw editor is a full-bleed code surface — no centered
+   column cap — so long lines use the whole window before scrolling, like a
+   real editor. Only the preview keeps a (widened, window-following) reading
+   measure, centered so ultrawide windows stay readable. */
 .doc-panel.expanded .md-preview,
 .doc-panel.expanded .doc-prose {
+  max-width: 1120px;
   margin-inline: auto;
+  padding-inline: clamp(24px, 5vw, 64px);
 }
 
 .doc-panel-resize {
@@ -3422,7 +3418,15 @@ body.is-resizing-split .doc-panel-resize::after {
 .doc-panel-body {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  /* Column flex with clipped overflow: the raw editor resolves to exactly
+     the visible height, so the textarea scrolls internally on both axes and
+     its horizontal scrollbar stays pinned to the bottom of the viewport
+     (instead of sitting past the last line of the file, unreachable without
+     scrolling the whole document first). The preview host below owns its
+     own scrolling the same way. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   position: relative;
 }
 
@@ -3538,7 +3542,10 @@ body.is-resizing-split .doc-panel-resize::after {
 }
 
 .doc-preview-host {
-  min-height: 100%;
+  flex: 1;
+  min-height: 0;
+  /* The host is the preview's scroll container; the body above clips. */
+  overflow: auto;
   /* The preview is read-only but must stay copyable: opt back into text
      selection under the global `body { user-select: none }` chrome rule. */
   -webkit-user-select: text;
