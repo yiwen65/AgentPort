@@ -263,11 +263,27 @@ impl SemanticIdleShutdown {
         self.deadline.take().is_some()
     }
 
-    fn cancel_if_user_activity(&mut self, generation: u64) -> bool {
-        if self.deadline.is_some() && generation != self.armed_user_activity_generation {
-            return self.cancel();
+    fn observe_user_activity(
+        &mut self,
+        generation: u64,
+        now: Instant,
+        requires_input_turn_fence: bool,
+    ) -> bool {
+        if self.deadline.is_none() || generation == self.armed_user_activity_generation {
+            return false;
         }
-        false
+        if requires_input_turn_fence {
+            // Without guaranteed native live turn-start evidence, input must
+            // fence cleanup for the whole new turn.
+            self.cancel();
+        } else {
+            // Raw PTY input is not proof that a new turn started: xterm also
+            // forwards terminal capability replies through the input stream.
+            // Postpone the deadline; an authoritative semantic work event will
+            // cancel it if this input really starts work.
+            self.arm(now, generation);
+        }
+        true
     }
 
     fn deadline(&self) -> Option<Instant> {
@@ -1179,6 +1195,10 @@ fn handle_observation(
     }
 }
 
+fn input_requires_turn_fence(adapter: &str, transport: AgentTransport) -> bool {
+    transport == AgentTransport::JsonRpc || !matches!(adapter, "pi" | "kimi")
+}
+
 fn completion_generation_at_boundary(
     shared: &Shared,
     completion_input_boundary: Option<SystemTime>,
@@ -1227,9 +1247,11 @@ fn control_loop(
     loop {
         let now = Instant::now();
         let user_activity_generation = shared.user_activity_generation.load(Ordering::Relaxed);
-        if idle_shutdown.cancel_if_user_activity(user_activity_generation) {
-            // Resume the active cadence immediately after input starts a new
-            // turn; do not wait for the old idle cadence to roll over.
+        if idle_shutdown.observe_user_activity(
+            user_activity_generation,
+            now,
+            input_requires_turn_fence(&shared.cfg.adapter_type, shared.cfg.transport),
+        ) {
             shared.tick_count.store(0, Ordering::Relaxed);
         }
         if now >= next_tick {
@@ -1344,11 +1366,16 @@ fn control_loop(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let generation = shared.user_activity_generation.load(Ordering::Relaxed);
-                if idle_shutdown.cancel_if_user_activity(generation) {
+                let now = Instant::now();
+                if idle_shutdown.observe_user_activity(
+                    generation,
+                    now,
+                    input_requires_turn_fence(&shared.cfg.adapter_type, shared.cfg.transport),
+                ) {
                     shared.tick_count.store(0, Ordering::Relaxed);
                     continue;
                 }
-                if idle_shutdown.due(Instant::now()) {
+                if idle_shutdown.due(now) {
                     return stop_flow(
                         shared,
                         &mut sm,
@@ -2527,7 +2554,12 @@ mod idle_shutdown_tests {
             shutdown.deadline(),
             Some(start + Duration::from_secs(15 * 60))
         );
-        assert!(shutdown.cancel_if_user_activity(8));
+        let input_at = start + Duration::from_secs(1);
+        assert!(shutdown.observe_user_activity(8, input_at, false));
+        assert_eq!(
+            shutdown.deadline(),
+            Some(input_at + Duration::from_secs(15 * 60))
+        );
 
         let fresh =
             SemanticIdleShutdown::at_host_start(Duration::from_secs(15 * 60), start, 7, false);
@@ -2652,15 +2684,32 @@ mod idle_shutdown_tests {
     }
 
     #[test]
-    fn user_input_cancels_the_previous_turn_deadline() {
+    fn user_input_postpones_the_completed_turn_deadline() {
+        assert!(!input_requires_turn_fence("pi", AgentTransport::Pty));
+        assert!(!input_requires_turn_fence("kimi", AgentTransport::Pty));
+        assert!(input_requires_turn_fence("claude", AgentTransport::Pty));
+        assert!(input_requires_turn_fence("codex", AgentTransport::Pty));
+        assert!(input_requires_turn_fence("qoder", AgentTransport::Pty));
+        assert!(input_requires_turn_fence("pi", AgentTransport::JsonRpc));
+
         let start = Instant::now();
+        let input_at = start + Duration::from_secs(14 * 60);
         let mut shutdown = SemanticIdleShutdown::new(Duration::from_secs(15 * 60));
         shutdown.arm(start, 7);
-        assert!(!shutdown.cancel_if_user_activity(7));
-        assert!(shutdown.cancel_if_user_activity(8));
+        assert!(!shutdown.observe_user_activity(7, input_at, false));
+        assert!(shutdown.observe_user_activity(8, input_at, false));
 
-        assert!(shutdown.deadline().is_none());
-        assert!(!shutdown.due(start + Duration::from_secs(60 * 60)));
+        assert_eq!(
+            shutdown.deadline(),
+            Some(input_at + Duration::from_secs(15 * 60))
+        );
+        assert!(!shutdown.due(input_at + Duration::from_secs(15 * 60 - 1)));
+        assert!(shutdown.due(input_at + Duration::from_secs(15 * 60)));
+
+        let mut no_live_turn_start = SemanticIdleShutdown::new(Duration::from_secs(15 * 60));
+        no_live_turn_start.arm(start, 7);
+        assert!(no_live_turn_start.observe_user_activity(8, input_at, true));
+        assert!(no_live_turn_start.deadline().is_none());
     }
 
     #[test]
