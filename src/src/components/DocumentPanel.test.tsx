@@ -317,4 +317,73 @@ describe("DocumentPanel", () => {
       `@${DEMO_DOC.path}:3 `,
     );
   });
+
+  function mockEditorRect(editor: HTMLTextAreaElement) {
+    // jsdom has no layout: give the editor a 400×200 box at the origin.
+    vi.spyOn(editor, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 400,
+      bottom: 200,
+      width: 400,
+      height: 200,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+  }
+
+  it("auto-scrolls while drag-selecting past the edge and stops on release", async () => {
+    render(<DocumentPanel />);
+    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+    mockEditorRect(editor);
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.mouseDown(editor, { button: 0 });
+      // Pointer pushed 20px past the right edge with the button held.
+      fireEvent.mouseMove(window, { clientX: 420, clientY: 100, buttons: 1 });
+      act(() => {
+        vi.advanceTimersByTime(100);
+      });
+      expect(editor.scrollLeft).toBeGreaterThan(0);
+
+      // Back inside the editor: scrolling halts, tracking continues.
+      const stoppedAt = editor.scrollLeft;
+      fireEvent.mouseMove(window, { clientX: 200, clientY: 100, buttons: 1 });
+      act(() => {
+        vi.advanceTimersByTime(100);
+      });
+      expect(editor.scrollLeft).toBe(stoppedAt);
+
+      // After mouseup the listeners are gone for good.
+      fireEvent.mouseUp(window);
+      fireEvent.mouseMove(window, { clientX: 420, clientY: 100, buttons: 1 });
+      act(() => {
+        vi.advanceTimersByTime(100);
+      });
+      expect(editor.scrollLeft).toBe(stoppedAt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores pointer drags that did not start in the editor", async () => {
+    render(<DocumentPanel />);
+    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+    mockEditorRect(editor);
+
+    vi.useFakeTimers();
+    try {
+      // No mousedown on the textarea (e.g. the panel sash is being dragged):
+      // a held-button move past the edge must not scroll the document.
+      fireEvent.mouseMove(window, { clientX: 420, clientY: 100, buttons: 1 });
+      act(() => {
+        vi.advanceTimersByTime(100);
+      });
+      expect(editor.scrollLeft).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

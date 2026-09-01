@@ -32,6 +32,46 @@ function fileName(path: string): string {
   return path.split("/").pop() ?? path;
 }
 
+/* Drag-select auto-scroll constants: the pointer is treated as "pushing the
+   edge" from EDGE px inside the editor (the panel sits flush with the
+   window's right edge, so the pointer often cannot travel past it), and the
+   scroll timer ticks at roughly display rate. */
+const SELECT_DRAG_EDGE_PX = 24;
+const SELECT_DRAG_TICK_MS = 16;
+
+/** Scroll speed per tick grows with how far the pointer pushes past the
+ * edge, clamped so a far-flung pointer does not teleport the view. */
+function selectDragSpeed(overshoot: number): number {
+  return Math.min(28, Math.max(3, overshoot * 0.5));
+}
+
+/* Monospace advance width via a shared canvas, measured once per font — the
+   raw editor is monospace, so caret columns map linearly to pixels. */
+let monoMeasureContext: CanvasRenderingContext2D | null | undefined;
+
+function monoCharWidth(fontSize: string, fontFamily: string): number {
+  if (monoMeasureContext === undefined) {
+    monoMeasureContext = document.createElement("canvas").getContext("2d");
+  }
+  if (!monoMeasureContext) return 0;
+  monoMeasureContext.font = `${fontSize} ${fontFamily}`;
+  return monoMeasureContext.measureText("0").width;
+}
+
+/** Text offset of (row, col), walking newlines without allocating a
+ * lines array — this runs on every auto-scroll tick on large files. */
+function caretOffsetAt(text: string, row: number, col: number): number {
+  let offset = 0;
+  for (let line = 0; line < row; line += 1) {
+    const next = text.indexOf("\n", offset);
+    if (next === -1) return text.length;
+    offset = next + 1;
+  }
+  const newline = text.indexOf("\n", offset);
+  const lineEnd = newline === -1 ? text.length : newline;
+  return Math.min(offset + col, lineEnd);
+}
+
 /* Compact preview-mode glyph: the mode tab strip shares the header with the
    file name and action buttons, so the wide "Preview" label truncated on
    narrow panels. The eye reads as "rendered view" at any width. */
@@ -271,6 +311,141 @@ export default function DocumentPanel() {
     },
     [t],
   );
+
+  const syncEditorSelection = useCallback((el: HTMLTextAreaElement) => {
+    const text = el.value.slice(el.selectionStart, el.selectionEnd);
+    setSelection(
+      text
+        ? { text, ...computeLineRange(el.value, el.selectionStart, el.selectionEnd) }
+        : null,
+    );
+  }, []);
+
+  /* Drag-select auto-scroll. WKWebView never autoscrolls the raw editor
+     while a selection drag leaves its bounds — and the panel sits flush
+     with the window's right edge, so the pointer often cannot even travel
+     past it. While the pointer pushes an edge we scroll on a timer and
+     extend the selection to the caret under the pointer, like a native
+     editor. Listeners attach on editor mousedown and detach on mouseup, so
+     idle cost is zero; style metrics and the drag anchor are cached once
+     per drag, and each tick is allocation-free. */
+  const selectDragCleanupRef = useRef<(() => void) | null>(null);
+
+  const armSelectDrag = useCallback(
+    (event: React.MouseEvent<HTMLTextAreaElement>) => {
+      if (event.button !== 0) return;
+      selectDragCleanupRef.current?.();
+      const el = event.currentTarget;
+      const drag = {
+        x: 0,
+        y: 0,
+        dx: 0,
+        dy: 0,
+        anchor: 0,
+        timer: null as number | null,
+        metrics: null as {
+          charWidth: number;
+          lineHeight: number;
+          padLeft: number;
+          padTop: number;
+        } | null,
+      };
+
+      const measure = () => {
+        const style = getComputedStyle(el);
+        drag.metrics = {
+          charWidth: monoCharWidth(style.fontSize, style.fontFamily),
+          lineHeight: Number.parseFloat(style.lineHeight),
+          padLeft: Number.parseFloat(style.paddingLeft) || 0,
+          padTop: Number.parseFloat(style.paddingTop) || 0,
+        };
+        // The fixed end of the in-progress selection drag.
+        drag.anchor =
+          el.selectionDirection === "backward" ? el.selectionEnd : el.selectionStart;
+      };
+
+      const extendSelection = () => {
+        const m = drag.metrics;
+        if (!m || !(m.charWidth > 0) || !(m.lineHeight > 0)) return;
+        const rect = el.getBoundingClientRect();
+        const col = Math.max(
+          0,
+          Math.round((drag.x - rect.left - m.padLeft + el.scrollLeft) / m.charWidth),
+        );
+        const row = Math.max(
+          0,
+          Math.floor((drag.y - rect.top - m.padTop + el.scrollTop) / m.lineHeight),
+        );
+        const offset = caretOffsetAt(el.value, row, col);
+        if (offset < drag.anchor) {
+          el.setSelectionRange(offset, drag.anchor, "backward");
+        } else {
+          el.setSelectionRange(drag.anchor, offset, "forward");
+        }
+        // Programmatic selection changes fire no `select` event; keep the
+        // quote-selection state in sync ourselves.
+        syncEditorSelection(el);
+      };
+
+      const tick = () => {
+        if (drag.dx === 0 && drag.dy === 0) return;
+        el.scrollLeft += drag.dx;
+        el.scrollTop += drag.dy;
+        extendSelection();
+      };
+
+      const cleanup = () => {
+        if (drag.timer != null) window.clearInterval(drag.timer);
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", cleanup);
+        window.removeEventListener("blur", cleanup);
+        if (selectDragCleanupRef.current === cleanup) {
+          selectDragCleanupRef.current = null;
+        }
+      };
+
+      const onMove = (move: MouseEvent) => {
+        if (!(move.buttons & 1)) {
+          cleanup();
+          return;
+        }
+        const rect = el.getBoundingClientRect();
+        const overRight = move.clientX - (rect.right - SELECT_DRAG_EDGE_PX);
+        const overLeft = rect.left + SELECT_DRAG_EDGE_PX - move.clientX;
+        const overBottom = move.clientY - (rect.bottom - SELECT_DRAG_EDGE_PX);
+        const overTop = rect.top + SELECT_DRAG_EDGE_PX - move.clientY;
+        drag.dx =
+          overRight > 0
+            ? selectDragSpeed(overRight)
+            : overLeft > 0
+              ? -selectDragSpeed(overLeft)
+              : 0;
+        drag.dy =
+          overBottom > 0
+            ? selectDragSpeed(overBottom)
+            : overTop > 0
+              ? -selectDragSpeed(overTop)
+              : 0;
+        drag.x = move.clientX;
+        drag.y = move.clientY;
+        if (drag.dx === 0 && drag.dy === 0) return;
+        if (drag.metrics == null) measure();
+        if (drag.timer == null) {
+          drag.timer = window.setInterval(tick, SELECT_DRAG_TICK_MS);
+        }
+      };
+
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", cleanup);
+      window.addEventListener("blur", cleanup);
+      selectDragCleanupRef.current = cleanup;
+    },
+    [syncEditorSelection],
+  );
+
+  // Switching files or modes unmounts the textarea mid-drag; drop the
+  // tracking listeners with it.
+  useEffect(() => () => selectDragCleanupRef.current?.(), [mode, targetPath]);
 
   const dirty = doc !== null && draft !== doc.content;
   // Report unsaved edits so a document-link click can ask before replacing
@@ -517,18 +692,8 @@ export default function DocumentPanel() {
                     autoCorrect="off"
                     aria-label={t("ui.document.editorLabel")}
                     onChange={(event) => setDraft(event.target.value)}
-                    onSelect={(event) => {
-                      const el = event.currentTarget;
-                      const text = el.value.slice(el.selectionStart, el.selectionEnd);
-                      setSelection(
-                        text
-                          ? {
-                              text,
-                              ...computeLineRange(el.value, el.selectionStart, el.selectionEnd),
-                            }
-                          : null,
-                      );
-                    }}
+                    onMouseDown={armSelectDrag}
+                    onSelect={(event) => syncEditorSelection(event.currentTarget)}
                     onScroll={(event) => {
                       if (gutterRef.current) {
                         gutterRef.current.scrollTop = event.currentTarget.scrollTop;
