@@ -44,6 +44,7 @@ import { openDocumentTarget, parseDocumentLinkTarget } from "./documents";
 import { runtimeMessageEnvelope, runtimeMessageText } from "./runtimeMessages";
 import { getTerminalPalette } from "./terminalThemes";
 import type {
+  AttachInfo,
   ChannelMsg,
   HistoryEvent,
   LogCursorView,
@@ -816,6 +817,9 @@ export interface TermHandle {
   lastCols: number;
   lastRows: number;
   lastScrolledUp: boolean;
+  /** Input accepted after mount but before the backend publishes its writable
+   * attachment capability. It is flushed in order ahead of later keystrokes. */
+  pendingAttachInput: string[];
   /** First user input for one-shot generated Session title replacement. */
   firstInputBuffer: string;
   firstInputSubmitted: boolean;
@@ -1267,6 +1271,7 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     lastCols: 0,
     lastRows: 0,
     lastScrolledUp: false,
+    pendingAttachInput: [],
     firstInputBuffer: "",
     firstInputSubmitted: false,
     inputEscapeState: "none",
@@ -1307,24 +1312,14 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     patchRuntime(sessionId, { terminalPreviewRevision: revision });
   });
   term.onData((data) => {
-    // Input is only writable once attached — writers register at attach time.
-    if (!handle.attached) return;
-    const firstInput = captureFirstSubmittedInput(handle, data);
-    void queueTerminalInput(sessionId, data)
-      .then(() => {
-        if (!firstInput) return;
-        void api
-          .autoRenameSessionFromFirstInput(sessionId, firstInput)
-          .catch(() => {
-            // Keep the input buffered so a later Enter can retry the harmless
-            // metadata update if the database command temporarily fails.
-            handle.firstInputSubmitted = false;
-          });
-      })
-      .catch((e) => {
-        if (firstInput) handle.firstInputSubmitted = false;
-        patchRuntime(sessionId, { error: errorText(e), errorMessage: null });
-      });
+    if (!handle.attached) {
+      // A warm checkpoint can accept focus before attach replay starts. Keep
+      // those first keystrokes instead of dropping them while the backend
+      // publishes the writable attachment capability ahead of replay output.
+      if (handle.attaching) handle.pendingAttachInput.push(data);
+      return;
+    }
+    submitTerminalInput(handle, data);
   });
   term.onScroll(() => {
     handle.viewport.observeViewport();
@@ -1820,6 +1815,34 @@ function queueTerminalInput(sessionId: string, data: string): Promise<void> {
   };
   next.then(cleanup, cleanup);
   return next;
+}
+
+function submitTerminalInput(handle: TermHandle, data: string) {
+  const firstInput = captureFirstSubmittedInput(handle, data);
+  void queueTerminalInput(handle.sessionId, data)
+    .then(() => {
+      if (!firstInput) return;
+      void api
+        .autoRenameSessionFromFirstInput(handle.sessionId, firstInput)
+        .catch(() => {
+          // Keep the input buffered so a later Enter can retry the harmless
+          // metadata update if the database command temporarily fails.
+          handle.firstInputSubmitted = false;
+        });
+    })
+    .catch((error) => {
+      if (firstInput) handle.firstInputSubmitted = false;
+      patchRuntime(handle.sessionId, {
+        error: errorText(error),
+        errorMessage: null,
+      });
+    });
+}
+
+function flushPendingAttachInput(handle: TermHandle) {
+  const pending = handle.pendingAttachInput;
+  handle.pendingAttachInput = [];
+  for (const data of pending) submitTerminalInput(handle, data);
 }
 
 function updateScrolledUp(handle: TermHandle) {
@@ -2652,6 +2675,62 @@ export function clearUnreadOutputTracking(sessionId: string) {
   unreadOutputPending.delete(sessionId);
 }
 
+function activateAttachment(handle: TermHandle, info: AttachInfo): boolean {
+  const sessionId = handle.sessionId;
+  // A Host can exit between its handshake and either readiness delivery. The
+  // channel remains authoritative for this attach generation.
+  const runtime = getState().runtime[sessionId];
+  if (runtime?.exit || runtime?.detached || !info.childAlive) {
+    handle.attached = false;
+    handle.pendingAttachInput = [];
+    void api
+      .detachSession(sessionId, info.attachmentId)
+      .catch(() => undefined);
+    patchRuntime(sessionId, {
+      attaching: false,
+      attached: false,
+      detached: !info.childAlive,
+    });
+    return false;
+  }
+
+  const newlyWritable =
+    !handle.attached || handle.attachmentId !== info.attachmentId;
+  handle.attachmentId = info.attachmentId;
+  handle.attached = true;
+  handle.attaching = false;
+  if (handle.logCursor) queueRenderedLogObservation(handle, handle.logCursor);
+  // Content now arrives via replay/live stream — never tail-load on top.
+  handle.historyLoaded = true;
+  patchRuntime(sessionId, {
+    attached: true,
+    attaching: false,
+    detached: false,
+    hostPid: info.hostPid,
+    logBytes: info.logBytes,
+    error: null,
+    errorMessage: null,
+    exit: null,
+  });
+  if (info.status) {
+    patchRuntime(sessionId, { status: info.status });
+    patchSession(sessionId, { status: info.status });
+  }
+  if (info.agentSessionId) {
+    patchSession(sessionId, { agentSessionId: info.agentSessionId });
+  }
+  if (newlyWritable) {
+    // The backend registers this capability before it starts flooding replay
+    // frames, so input can bypass replay/render latency without overtaking the
+    // Host attachment itself.
+    flushPendingAttachInput(handle);
+    // PTY size may have changed while detached. Force the first resize even
+    // if the browser measured the same dimensions before attach completed.
+    fitHandle(handle, true, true, "attach");
+  }
+  return true;
+}
+
 /** Attach (or re-attach) the backend channel and replay the log tail. */
 export async function attachHandle(
   sessionId: string,
@@ -2661,6 +2740,7 @@ export async function attachHandle(
   const handle = getOrCreateHandle(sessionId);
   if (handle.attached || handle.attaching) return;
   handle.attaching = true;
+  handle.pendingAttachInput = [];
   const generation = ++handle.generation;
   resetRenderObservation(handle);
   const resumeFrom = recoveryTarget ? null : handle.logCursor;
@@ -2692,50 +2772,14 @@ export async function attachHandle(
         .catch(() => undefined);
       return;
     }
-    // A Host can exit between its handshake and the invoke reply. The channel
-    // event is authoritative for this attach generation and must not be
-    // overwritten by a late success response.
-    const runtime = getState().runtime[sessionId];
-    if (runtime?.exit || runtime?.detached || !info.childAlive) {
-      handle.attached = false;
-      void api
-        .detachSession(sessionId, info.attachmentId)
-        .catch(() => undefined);
-      patchRuntime(sessionId, {
-        attaching: false,
-        attached: false,
-        detached: !info.childAlive,
-      });
-      return;
-    }
-    handle.attachmentId = info.attachmentId;
-    handle.attached = true;
-    if (handle.logCursor) queueRenderedLogObservation(handle, handle.logCursor);
-    // Content now arrives via replay/live stream — never tail-load on top.
-    handle.historyLoaded = true;
-    patchRuntime(sessionId, {
-      attached: true,
-      attaching: false,
-      detached: false,
-      hostPid: info.hostPid,
-      logBytes: info.logBytes,
-      error: null,
-      errorMessage: null,
-      exit: null,
-    });
-    if (info.status) {
-      patchRuntime(sessionId, { status: info.status });
-      patchSession(sessionId, { status: info.status });
-    }
-    if (info.agentSessionId) {
-      patchSession(sessionId, { agentSessionId: info.agentSessionId });
-    }
-    // PTY size may have changed while detached. Force the first resize even
-    // if the browser measured the same dimensions before attach completed.
-    fitHandle(handle, true, true, "attach");
+    activateAttachment(handle, info);
   } catch (e) {
     if (handles.get(sessionId) !== handle || generation !== handle.generation)
       return;
+    // The ordered channel readiness event proves the backend installed the
+    // writer even if a later invoke response cannot be decoded or delivered.
+    if (handle.attached && handle.attachmentId !== null) return;
+    handle.pendingAttachInput = [];
     const errorMessage = runtimeMessageEnvelope(e);
     patchRuntime(sessionId, {
       attaching: false,
@@ -2935,6 +2979,10 @@ function applyOutputFrame(
 function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
   const sessionId = handle.sessionId;
   switch (msg.t) {
+    case "attached": {
+      activateAttachment(handle, msg.info);
+      break;
+    }
     case "output": {
       applyOutputFrame(handle, msg);
       break;
@@ -3011,6 +3059,7 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
     }
     case "exit": {
       finishTerminalStartupFilter(handle);
+      handle.pendingAttachInput = [];
       handle.attached = false;
       handle.attachmentId = null;
       patchRuntime(sessionId, {
@@ -3033,6 +3082,7 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       break;
     }
     case "detached": {
+      handle.pendingAttachInput = [];
       const detail =
         msg.code || msg.message || msg.technicalDetail
           ? runtimeMessageText(msg)
@@ -3066,6 +3116,7 @@ export function resetForRestart(sessionId: string) {
   if (handle) {
     handle.attached = false;
     handle.attaching = false;
+    handle.pendingAttachInput = [];
     handle.generation += 1; // drop messages from the pre-restart channel
     resetRenderObservation(handle);
     // Clear the buffer: the re-attach replays the same log tail and would
@@ -3117,6 +3168,7 @@ export async function jumpToRecoveryOutput(
   handle.attachmentId = null;
   handle.attached = false;
   handle.attaching = false;
+  handle.pendingAttachInput = [];
   resetNativeHistory(handle);
   resetTerminal(handle);
   handle.displayReady = false;
@@ -3301,6 +3353,7 @@ export async function releaseTerminal(sessionId: string): Promise<void> {
   handle.attachmentId = null;
   handle.attached = false;
   handle.attaching = false;
+  handle.pendingAttachInput = [];
   // Materialize the current parser-drained checkpoint before disposing the
   // sole xterm instance. The next Session switch can paint this snapshot
   // immediately while its Host attachment catches up in the background.

@@ -294,9 +294,10 @@ import {
   setTerminalActive,
   writeMarker,
 } from "./terminals";
+import { bytesToB64 } from "./api";
 import { applyUiLanguage } from "./i18n";
 import { emptyRuntime, getState, setState } from "./store";
-import type { Settings } from "./types";
+import type { AttachInfo, Settings } from "./types";
 
 let resizeObserverCallbacks: Array<() => void> = [];
 
@@ -328,6 +329,7 @@ describe("terminal renderer", () => {
     rendererMocks.offscreenCanvasDuringCanvasLoad.length = 0;
     rendererMocks.offscreenCanvasDuringOpen.length = 0;
     vi.clearAllMocks();
+    vi.mocked(bytesToB64).mockReturnValue("encoded-input");
     rendererMocks.apiMock.clipboardHasImage.mockResolvedValue(false);
     setState({
       activeSessionId: "renderer-test",
@@ -1155,6 +1157,61 @@ describe("terminal renderer", () => {
     await vi.waitFor(() =>
       expect(rendererMocks.apiMock.sendInput).toHaveBeenCalledTimes(2),
     );
+  });
+
+  it("accepts input when the attach channel becomes writable before the invoke reply", async () => {
+    let resolveAttach: ((info: AttachInfo) => void) | undefined;
+    rendererMocks.apiMock.attachSession.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveAttach = resolve;
+        }),
+    );
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const info: AttachInfo = {
+      attachmentId: 41,
+      childAlive: true,
+      hostPid: 42,
+      logBytes: 0,
+      protocol: 2,
+      agentSessionId: null,
+      runId: "run_1",
+      runOrdinal: 1,
+      status: null,
+      logCursor: {
+        runId: "run_1",
+        runOrdinal: 1,
+        generation: 0,
+        offset: 0,
+      },
+    };
+
+    vi.mocked(bytesToB64).mockImplementation((bytes) =>
+      new TextDecoder().decode(bytes),
+    );
+    terminal.emitData("first");
+    terminal.emitData("second");
+    expect(rendererMocks.apiMock.sendInput).not.toHaveBeenCalled();
+
+    rendererMocks.channels[0].onmessage?.({ t: "attached", info });
+    terminal.emitData("third");
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.sendInput.mock.calls).toEqual([
+        ["renderer-test", "first"],
+        ["renderer-test", "second"],
+        ["renderer-test", "third"],
+      ]),
+    );
+    // The invoke reply is deliberately still pending: replay delivery cannot
+    // keep a warm terminal's first keystroke behind this response anymore.
+    resolveAttach?.(info);
+    await Promise.resolve();
+    expect(rendererMocks.apiMock.sendInput).toHaveBeenCalledTimes(3);
   });
 
   it("uses the DOM renderer only when CanvasAddon fails to initialize", () => {

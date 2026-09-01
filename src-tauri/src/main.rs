@@ -1982,6 +1982,25 @@ async fn attach_session(
         }
         shutdown_attachment(&previous);
     }
+    let attach_info = json!({
+        "attachmentId": attachment_id,
+        "hostPid": info.host_pid,
+        "protocol": info.protocol,
+        "childAlive": info.child_alive,
+        "logBytes": info.log_bytes,
+        "agentSessionId": info.agent_session_id,
+        "runId": info.run_id,
+        "runOrdinal": info.run_ordinal,
+        "status": info.current_status.as_ref().map(status_value),
+        "logCursor": info.log_cursor,
+    });
+    // Publish the writable capability before the watch thread can flood the
+    // WebView with retained replay frames. Warm previews can receive focus
+    // immediately, and their first input must not wait behind replay delivery
+    // or the invoke response queued after it.
+    if info.child_alive {
+        let _ = channel.send(json!({"t": "attached", "info": attach_info.clone()}));
+    }
     let paths = state.paths.clone();
     let writers = state.writers.clone();
     let sid = session_id.clone();
@@ -2018,18 +2037,7 @@ async fn attach_session(
             writer,
         );
     });
-    Ok(json!({
-        "attachmentId": attachment_id,
-        "hostPid": info.host_pid,
-        "protocol": info.protocol,
-        "childAlive": info.child_alive,
-        "logBytes": info.log_bytes,
-        "agentSessionId": info.agent_session_id,
-        "runId": info.run_id,
-        "runOrdinal": info.run_ordinal,
-        "status": info.current_status.as_ref().map(status_value),
-        "logCursor": info.log_cursor,
-    }))
+    Ok(attach_info)
 }
 
 #[allow(clippy::too_many_arguments)]
