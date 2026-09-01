@@ -57,6 +57,7 @@ import {
   openSplitAgentPicker,
   persistCurrentPaneLayout,
   removeSessionPane,
+  renameSessionFlow,
   resumeSessionFlow,
   restartSessionFlow,
   selectSession,
@@ -977,6 +978,10 @@ function paneContextItems(
       action: () => removeSessionPane(ses.id),
     },
     { label: "", separator: true },
+    {
+      label: t("common:actions.rename"),
+      action: () => void renameSessionFlow(ses.id),
+    },
     {
       label: t("session:ui.menu.stop"),
       danger: true,

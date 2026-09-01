@@ -11,6 +11,7 @@ const {
   openSplitSessionDialogMock,
   persistLayoutMock,
   removePaneMock,
+  renameSessionFlowMock,
   selectSessionMock,
   setPaneSplitRatioMock,
   setTerminalActiveMock,
@@ -26,6 +27,7 @@ const {
   openSplitSessionDialogMock: vi.fn(),
   persistLayoutMock: vi.fn(),
   removePaneMock: vi.fn(),
+  renameSessionFlowMock: vi.fn(),
   selectSessionMock: vi.fn(),
   setPaneSplitRatioMock: vi.fn().mockReturnValue(true),
   setTerminalActiveMock: vi.fn(),
@@ -42,6 +44,7 @@ vi.mock("../actions", () => ({
   openSplitSessionDialog: openSplitSessionDialogMock,
   persistCurrentPaneLayout: persistLayoutMock,
   removeSessionPane: removePaneMock,
+  renameSessionFlow: renameSessionFlowMock,
   resumeSessionFlow: vi.fn(),
   restartSessionFlow: vi.fn(),
   selectSession: selectSessionMock,
@@ -275,7 +278,7 @@ describe("TerminalArea recursive panes", () => {
     expect(view.container.querySelectorAll(".pane-split.maximized-path")).toHaveLength(2);
   });
 
-  it("keeps clipboard, pane, and stop actions in the PTY context menu", () => {
+  it("keeps clipboard, pane, rename, and stop actions in the PTY context menu", () => {
     const { container } = render(<TerminalArea />);
     const pane = container.querySelector<HTMLElement>(
       `[data-pane-session-id="${ptyA.id}"]`,
@@ -298,6 +301,7 @@ describe("TerminalArea recursive panes", () => {
       "向下分屏",
       "最大化分屏",
       "从分屏移除",
+      "重命名",
       "停止 Session…",
     ]));
     expect(labels).not.toContain("全选");
@@ -306,6 +310,9 @@ describe("TerminalArea recursive panes", () => {
     getState().contextMenu?.items.find((item) => item.label === "向右分屏")?.action?.();
     expect(openSplitAgentPickerMock).toHaveBeenCalledWith(ptyA.id, "right");
     expect(openSplitSessionDialogMock).not.toHaveBeenCalled();
+
+    getState().contextMenu?.items.find((item) => item.label === "重命名")?.action?.();
+    expect(renameSessionFlowMock).toHaveBeenCalledWith(ptyA.id);
 
     const stopItem = getState().contextMenu?.items.find(
       (item) => item.label === "停止 Session…",
