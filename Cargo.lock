@@ -37,17 +37,10 @@ name = "agentport-cli"
 version = "0.1.0"
 dependencies = [
  "agentport-core",
- "base64 0.22.1",
  "chrono",
  "libc",
- "nix 0.29.0",
- "serde",
  "serde_json",
- "sha2",
  "tempfile",
- "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
@@ -80,20 +73,15 @@ name = "agentport-host"
 version = "0.1.0"
 dependencies = [
  "agentport-core",
- "base64 0.22.1",
  "chrono",
  "libc",
  "nix 0.29.0",
  "portable-pty",
- "regex",
- "serde",
  "serde_json",
- "sha2",
  "signal-hook",
  "tempfile",
  "tracing",
  "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]

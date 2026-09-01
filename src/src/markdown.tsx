@@ -185,11 +185,6 @@ function parseBlocks(source: string): Block[] {
   return blocks;
 }
 
-export interface MarkdownOptions {
-  /** Called when a rendered link is clicked. Only http(s) links render. */
-  onLinkClick?: (href: string) => void;
-}
-
 function renderBlocks(blocks: Block[]): ReactNode[] {
   return blocks.map((block, index) => {
     const key = `b${index}`;

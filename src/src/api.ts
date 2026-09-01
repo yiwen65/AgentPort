@@ -81,10 +81,6 @@ import { runtimeMessageEnvelope, runtimeMessageText } from "./runtimeMessages";
 // base64 helpers (send_input / channel output are base64 payloads)
 // ---------------------------------------------------------------------------
 
-export function strToB64(s: string): string {
-  return bytesToB64(new TextEncoder().encode(s));
-}
-
 export function bytesToB64(bytes: Uint8Array): string {
   let bin = "";
   const CHUNK = 0x8000;

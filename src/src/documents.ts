@@ -72,11 +72,6 @@ export function parseDocumentLinkTarget(
   return { path: text, line };
 }
 
-/** True when a terminal link target should open in the in-app viewer. */
-export function isDocumentLinkTarget(raw: string): boolean {
-  return parseDocumentLinkTarget(raw) !== null;
-}
-
 /** Lets the document panel report unsaved edits so a link click that would
  * replace the current document can ask before discarding them. */
 let dirtyChecker: (() => boolean) | null = null;
@@ -120,10 +115,6 @@ export function toggleExplorer(): void {
     explorerOpen: true,
     explorerRoot: session?.cwd ?? state.explorerRoot,
   });
-}
-
-export function closeExplorer(): void {
-  setState({ explorerOpen: false });
 }
 
 /**

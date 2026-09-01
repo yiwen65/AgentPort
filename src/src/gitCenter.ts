@@ -20,7 +20,6 @@ import {
 import type {
   GitChangeEntry,
   GitChangesSnapshot,
-  GitCommitPatch,
   GitContextLocator,
   GitDiffSide,
   GitIgnoreTarget,
@@ -1257,11 +1256,4 @@ export function resetGitCenterStateForTests() {
   for (const timer of invalidationTimers.values()) window.clearTimeout(timer);
   invalidationTimers.clear();
   setState({ gitCenter: emptyGitCenterState() });
-}
-
-export function commitPatchForPath(
-  patch: GitCommitPatch | null,
-  pathToken: string | null,
-): boolean {
-  return patch?.pathToken === pathToken;
 }

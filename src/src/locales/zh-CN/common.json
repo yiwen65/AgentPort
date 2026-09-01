@@ -50,11 +50,6 @@
     "wellKnownDirectory": "常用安装目录",
     "manual": "手动指定"
   },
-  "indexState": {
-    "ready": "就绪",
-    "rebuildNeeded": "需要重建",
-    "unknown": "未知"
-  },
   "language": {
     "zhCN": "简体中文",
     "enUS": "English"

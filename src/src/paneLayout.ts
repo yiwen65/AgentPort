@@ -41,8 +41,6 @@ export interface PaneSize {
   height: number;
 }
 
-export type TerminalLayout = PaneLayout;
-
 type LayoutSource = PaneLayout | PaneLayoutNode | null;
 type ValidSessionIds = ReadonlySet<string> | readonly string[];
 
@@ -926,12 +924,6 @@ export function readPersistedTerminalWorkspace(
     discardInvalidValue();
     return empty;
   }
-}
-
-export function readPersistedTerminalLayouts(
-  storage: Storage | null = browserStorage(),
-): PaneLayout[] {
-  return readPersistedTerminalWorkspace(storage).groups;
 }
 
 export function readPersistedTerminalLayout(

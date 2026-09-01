@@ -50,11 +50,6 @@
     "wellKnownDirectory": "Common install directory",
     "manual": "Manually selected"
   },
-  "indexState": {
-    "ready": "Ready",
-    "rebuildNeeded": "Rebuild required",
-    "unknown": "Unknown"
-  },
   "language": {
     "zhCN": "简体中文",
     "enUS": "English"

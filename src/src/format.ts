@@ -153,18 +153,6 @@ export function probeSourceLabel(source: string): string {
   }
 }
 
-export function indexStateLabel(state: string): string {
-  switch (state) {
-    case "ok":
-      return i18n.t("common:indexState.ready");
-    case "rebuildneeded":
-    case "rebuild_needed":
-      return i18n.t("common:indexState.rebuildNeeded");
-    default:
-      return i18n.t("common:indexState.unknown");
-  }
-}
-
 export function branchOperationPhaseLabel(phase: string): string {
   switch (phase) {
     case "started":
@@ -346,15 +334,4 @@ export function relativeAge(iso: string, now = Date.now()): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
-}
-
-/** Turn a task name into a branch-safe slug: "Fix Login!" -> "fix-login". */
-export function slugify(input: string): string {
-  return input
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9一-鿿]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/-{2,}/g, "-")
-    .slice(0, 48);
 }

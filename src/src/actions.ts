@@ -1275,9 +1275,3 @@ export async function ackTimelineFlow() {
     );
   }
 }
-
-/** Update a session's status locally (channel already does) and refresh tree. */
-export function noteSessionExit(sessionId: string) {
-  patchSession(sessionId, { lifecycle: "exited" });
-  refreshProjectsSoon();
-}
