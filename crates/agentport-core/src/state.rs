@@ -238,10 +238,14 @@ impl PtyDetector {
             let drop = self.tail.len() - self.max_tail;
             self.tail.drain(..drop);
         }
+        // The tail exists so patterns split across reads still match. A prompt
+        // wholly before this boundary is historical output, not evidence that
+        // an unrelated TUI repaint (for example, mouse hover) needs approval.
+        let new_output_start = self.tail.len().saturating_sub(stripped.len());
         let mut out = vec![Observation::PtyActivity];
         let text = String::from_utf8_lossy(&self.tail);
         for r in &self.needs_input {
-            if let Some(m) = r.find(&text) {
+            if let Some(m) = r.find_iter(&text).find(|m| m.end() > new_output_start) {
                 out.push(Observation::PtyNeedsInputPattern(
                     text[m.start()..m.end().min(m.start() + 40)].replace('\n', " "),
                 ));
@@ -249,7 +253,7 @@ impl PtyDetector {
             }
         }
         for r in &self.working {
-            if let Some(m) = r.find(&text) {
+            if let Some(m) = r.find_iter(&text).find(|m| m.end() > new_output_start) {
                 out.push(Observation::PtyWorkingPattern(
                     text[m.start()..m.end().min(m.start() + 40)].replace('\n', " "),
                 ));
@@ -339,6 +343,26 @@ mod tests {
             .any(|o| matches!(o, Observation::PtyWorkingPattern(_))));
         let obs = d.feed(b"\nDo you want to proceed? (y/n)");
         assert!(obs
+            .iter()
+            .any(|o| matches!(o, Observation::PtyNeedsInputPattern(_))));
+    }
+
+    #[test]
+    fn detector_does_not_reemit_a_stale_prompt_on_unrelated_output() {
+        let mut d = PtyDetector::new(&[], &[]);
+        let prompt = d.feed(b"Press enter to confirm");
+        assert!(prompt
+            .iter()
+            .any(|o| matches!(o, Observation::PtyNeedsInputPattern(_))));
+
+        let repaint = d.feed(b"\x1b[1;1H");
+        assert_eq!(repaint.len(), 1);
+        assert!(matches!(repaint[0], Observation::PtyActivity));
+
+        let mut split = PtyDetector::new(&[], &[]);
+        assert_eq!(split.feed(b"Press enter to ").len(), 1);
+        assert!(split
+            .feed(b"confirm")
             .iter()
             .any(|o| matches!(o, Observation::PtyNeedsInputPattern(_))));
     }
