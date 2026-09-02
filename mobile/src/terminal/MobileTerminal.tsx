@@ -124,11 +124,11 @@ export function MobileTerminal({
       fontSize,
       screenReaderMode: true,
       theme: {
-        background: "#18181e",
-        foreground: "#d8d8de",
-        cursor: "#f4f4f7",
-        cursorAccent: "#18181e",
-        selectionBackground: "#4f5f9a80",
+        background: "#0b0b0d",
+        foreground: "#f2f2f7",
+        cursor: "#ffffff",
+        cursorAccent: "#0b0b0d",
+        selectionBackground: "#0a84ff66",
       },
     });
     const fit = new FitAddon();

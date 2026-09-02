@@ -52,7 +52,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   const [notice, setNotice] = useState("");
   const [otherClientInput, setOtherClientInput] = useState(false);
   const [attachEpoch, setAttachEpoch] = useState(0);
-  const [fontSize, setFontSize] = useState(14);
+  const [fontSize, setFontSize] = useState(15);
   const [branchName, setBranchName] = useState<string>();
   const [confirmStop, setConfirmStop] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
