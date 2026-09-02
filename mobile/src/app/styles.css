@@ -176,12 +176,14 @@ textarea { resize: vertical; overflow-wrap: anywhere; }
 .recent-sheet > header { margin-bottom: 8px; }
 .recent-sheet > header h2 { margin: 0; }
 .recent-sheet > header button, .terminal-actions-sheet > header button { width: 44px; height: 44px; border: 0; border-radius: 12px; background: transparent; color: var(--muted); font-size: 24px; }
-.session-workspace-header { display: grid; grid-template-columns: 52px minmax(0, 1fr) 52px; min-height: 62px; align-items: center; gap: 8px; border-bottom: 1px solid var(--line-soft); background: var(--nav-glass); backdrop-filter: blur(24px) saturate(1.16); -webkit-backdrop-filter: blur(24px) saturate(1.16); }
-.session-workspace-header button { border: 0; background: var(--fill); }
-.terminal-back-button, .terminal-more-button { width: 48px; height: 48px; border-radius: 50% !important; color: var(--text); }
-.terminal-back-button { padding: 0 0 3px; font-size: 28px; line-height: 1; }
-.terminal-more-button { color: var(--muted); font-size: 16px; letter-spacing: -2px; }
-.terminal-back-button:active, .terminal-more-button:active { background: var(--fill-strong); }
+.session-workspace-header { display: grid; grid-template-columns: 48px minmax(0, 1fr) 48px; min-height: 62px; align-items: center; gap: 6px; border-bottom: 0; background: var(--terminal-bg); backdrop-filter: none; -webkit-backdrop-filter: none; }
+.session-workspace-header button { position: relative; isolation: isolate; border: 0; background: transparent; box-shadow: none; transition: transform 140ms cubic-bezier(.2, .8, .2, 1); -webkit-tap-highlight-color: transparent; }
+.session-workspace-header button::before { content: ""; position: absolute; z-index: -1; inset: 3px; border: 1px solid rgba(255, 255, 255, .1); border-radius: 50%; background: linear-gradient(145deg, rgba(255, 255, 255, .075), rgba(255, 255, 255, .018) 68%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 7px 18px rgba(0, 0, 0, .16); backdrop-filter: blur(18px) saturate(1.18); -webkit-backdrop-filter: blur(18px) saturate(1.18); transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease; }
+.terminal-back-button, .terminal-more-button { width: 44px; height: 44px; border-radius: 50% !important; color: var(--text); }
+.terminal-back-button { padding: 0 0 2px; font-size: 24px; line-height: 1; }
+.terminal-more-button { color: var(--muted); font-size: 14px; letter-spacing: -2px; }
+.terminal-back-button:active, .terminal-more-button:active { transform: scale(.95); }
+.terminal-back-button:active::before, .terminal-more-button:active::before { border-color: rgba(255, 255, 255, .2); background: rgba(255, 255, 255, .105); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16), 0 3px 10px rgba(0, 0, 0, .12); }
 .session-workspace-identity { min-width: 0; text-align: center; }
 .session-workspace-header h1, .session-workspace-header p { margin: 0; }
 .session-workspace-header h1 { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
@@ -194,9 +196,9 @@ textarea { resize: vertical; overflow-wrap: anywhere; }
 .session-connection-state.failed, .session-connection-state.ended { color: var(--danger); }
 .session-connection-state.failed > span, .session-connection-state.ended > span { background: var(--danger); }
 .session-connection-state.attaching > span, .session-connection-state.adapting > span, .session-connection-state.reconnecting > span { border: 1px solid var(--accent); border-top-color: transparent; background: transparent; animation: status-spin 1.1s linear infinite; }
-.terminal-status-stack { border-bottom: 1px solid var(--line-soft); background: var(--panel); }
+.terminal-status-stack { border-bottom: 0; background: var(--terminal-bg); }
 .terminal-status-line { min-height: 40px; display: flex; align-items: center; padding: 8px max(16px, env(safe-area-inset-right)) 8px max(16px, env(safe-area-inset-left)); color: var(--muted); font-size: 13px; line-height: 1.4; }
-.terminal-status-line + .terminal-status-line { border-top: 1px solid var(--line-soft); }
+.terminal-status-line + .terminal-status-line { border-top: 0; }
 .terminal-status-line.inline-error { color: var(--danger); }
 .restore-phone-size-button { position: absolute; z-index: 5; top: calc(max(8px, env(safe-area-inset-top)) + 66px); right: max(14px, env(safe-area-inset-right)); width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: var(--nav-glass); color: var(--text); box-shadow: 0 8px 24px rgba(0, 0, 0, .28); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
 .restore-phone-size-button:active { background: var(--fill-strong); }
