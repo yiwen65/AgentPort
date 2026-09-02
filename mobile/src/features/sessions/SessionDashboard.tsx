@@ -22,11 +22,18 @@ interface DeviceSnapshot {
 interface PersistedWorkspace {
   layout: SessionLayout;
   expandedProjects: string[];
+  projectExpansionInitialized: boolean;
   recentOpen: boolean;
   scrollTop: number;
 }
 
-const emptyWorkspace = (): PersistedWorkspace => ({ layout: "projects", expandedProjects: [], recentOpen: false, scrollTop: 0 });
+const emptyWorkspace = (): PersistedWorkspace => ({
+  layout: "projects",
+  expandedProjects: [],
+  projectExpansionInitialized: false,
+  recentOpen: false,
+  scrollTop: 0,
+});
 
 function workspaceKey(deviceId: string) {
   return `${WORKSPACE_PREFIX}${deviceId}`;
@@ -35,9 +42,13 @@ function workspaceKey(deviceId: string) {
 function readWorkspace(deviceId: string): PersistedWorkspace {
   try {
     const value = JSON.parse(localStorage.getItem(workspaceKey(deviceId)) ?? "null") as Partial<PersistedWorkspace> | null;
+    const expandedProjects = Array.isArray(value?.expandedProjects)
+      ? value.expandedProjects.filter((item): item is string => typeof item === "string")
+      : [];
     return {
       layout: value?.layout === "active" ? "active" : "projects",
-      expandedProjects: Array.isArray(value?.expandedProjects) ? value.expandedProjects.filter((item): item is string => typeof item === "string") : [],
+      expandedProjects,
+      projectExpansionInitialized: value?.projectExpansionInitialized === true || expandedProjects.length > 0,
       recentOpen: value?.recentOpen === true,
       scrollTop: typeof value?.scrollTop === "number" && value.scrollTop >= 0 ? value.scrollTop : 0,
     };
@@ -316,9 +327,11 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices }: {
   };
 
   const toggleProject = (projectId: string) => {
-    const expanded = new Set(workspace.expandedProjects);
+    const expanded = new Set(workspace.projectExpansionInitialized
+      ? workspace.expandedProjects
+      : projects.map((project) => project.id));
     if (expanded.has(projectId)) expanded.delete(projectId); else expanded.add(projectId);
-    updateWorkspace({ ...workspace, expandedProjects: [...expanded] });
+    updateWorkspace({ ...workspace, expandedProjects: [...expanded], projectExpansionInitialized: true });
   };
 
   return (
@@ -367,7 +380,9 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices }: {
       {workspace.layout === "projects" ? <div className="project-session-list dense-project-tree">
         {projects.map((project) => {
           const projectSessions = sessions.filter((session) => session.projectId === project.id).sort((a, b) => sessionTime(b) - sessionTime(a));
-          const expanded = workspace.expandedProjects.includes(project.id) || workspace.expandedProjects.length === 0;
+          const expanded = workspace.projectExpansionInitialized
+            ? workspace.expandedProjects.includes(project.id)
+            : true;
           return <section className="project-group" key={project.id}>
             <header>
               <button type="button" className="project-toggle" aria-expanded={expanded} onClick={() => toggleProject(project.id)}><Icon name="chevron" /><Icon name="folder" /><strong>{project.name}</strong></button>

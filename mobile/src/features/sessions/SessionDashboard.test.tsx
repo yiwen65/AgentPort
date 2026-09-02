@@ -62,4 +62,20 @@ describe("V2 Session workspace", () => {
       projectId: "project-1", agent: "claude", permission: "bypass", transport: "pty", riskAck: true,
     })));
   });
+
+  it("can collapse the last expanded project without treating it as the default state", async () => {
+    render(<SessionDashboard client={client()} onOpenSession={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: /Approval task/ })).toBeInTheDocument();
+
+    const projectToggle = screen.getByRole("button", { name: "AgentPort" });
+    expect(projectToggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(projectToggle);
+
+    expect(projectToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: /Approval task/ })).not.toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("agentport-mobile-v2:workspace:host-1") ?? "null")).toMatchObject({
+      expandedProjects: [],
+      projectExpansionInitialized: true,
+    });
+  });
 });
