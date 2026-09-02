@@ -66,6 +66,12 @@ export const resources = {
       },
       dashboard: {
         title: "Session",
+        projects: "项目",
+        activity: "活跃 Session",
+        recent: "最近使用",
+        showActivity: "显示活跃 Session",
+        showProjects: "显示项目",
+        noActivity: "当前设备没有活跃 Agent Session。",
         summary: "{{online}} 台主机在线 · {{sessions}} 个 Session",
         refresh: "刷新",
         quickFilters: "快速筛选",
@@ -77,6 +83,7 @@ export const resources = {
       },
       session: {
         back: "返回 Session 列表", facts: "Session 状态详情", openSessions: "已打开的 Session", closeTab: "关闭 {{title}} 标签",
+        actions: "Session 操作",
         view: "Session 视图", conversation: "对话", terminal: "终端", fullTerminal: "完整终端", terminalDescription: "实时 PTY；触摸选择、粘贴或使用特殊键栏。",
         search: "在当前输出中搜索", history: "原生历史", moreHistory: "加载更多历史", waitingForOutput: "正在等待输出…", message: "发送文本", send: "发送",
         openTerminal: "在完整终端中处理", terminalFallback: "该原生 TUI 无法可靠识别；请切换完整终端，未生成任何猜测选项。", resynced: "保留游标已失效；已清空旧画面并加载有界尾部。",
@@ -165,6 +172,12 @@ export const resources = {
       },
       dashboard: {
         title: "Sessions",
+        projects: "Projects",
+        activity: "Active Sessions",
+        recent: "Recent sessions",
+        showActivity: "Show active sessions",
+        showProjects: "Show projects",
+        noActivity: "No active Agent sessions on this device.",
         summary: "{{online}} hosts online · {{sessions}} sessions",
         refresh: "Refresh",
         quickFilters: "Quick filters",
@@ -176,6 +189,7 @@ export const resources = {
       },
       session: {
         back: "Back to sessions", facts: "Session status details", openSessions: "Open sessions", closeTab: "Close {{title}} tab",
+        actions: "Session actions",
         view: "Session view", conversation: "Conversation", terminal: "Terminal", fullTerminal: "Full terminal", terminalDescription: "Live PTY; touch-select, paste, or use the special-key row.",
         search: "Search current output", history: "Native history", moreHistory: "Load more history", waitingForOutput: "Waiting for output…", message: "Send text", send: "Send",
         openTerminal: "Handle in full terminal", terminalFallback: "This native TUI was not recognized reliably. Open the full terminal; no options were guessed.", resynced: "The retained cursor expired. Old output was cleared before loading a bounded tail.",

@@ -175,7 +175,7 @@ Mobile 所需能力按远端 AgentPort 现有接口投影，不建立 Mobile 专
 
 ### 6.2 Session 的两种布局
 
-当前设备工作空间内提供与桌面端语义一致的两种布局，用户可从 Sessions 顶部切换：
+当前设备工作空间内提供与桌面端语义一致的两种布局。顶部工具栏只保留一个铃铛按钮作为布局切换器：Project 视图点击铃铛进入活跃 Session，活跃视图再次点击返回 Project；不再同时占用页面高度显示分段控件。
 
 1. **项目与 Session（Projects and Sessions）**
    - 按 `Project → Session` 层级显示当前设备的数据。
@@ -206,10 +206,11 @@ Mobile 所需能力按远端 AgentPort 现有接口投影，不建立 Mobile 专
 
 进入 Session 后隐藏一级导航，使用沉浸式终端界面：
 
-- 顶部：返回当前设备的 Session 列表、标题、设备与 Project、连接状态、Recent 和更多操作。
+- 顶部：紧凑显示返回当前设备 Session 列表、标题、设备与 Project、连接状态和更多操作。
 - 主体：唯一终端渲染区域。
-- 底部：移动文本输入、特殊键栏，以及随生命周期变化的状态操作区。
+- 底部：移动文本输入和可横向滚动的特殊键栏；低频生命周期操作收纳进更多操作 Sheet，不持续挤压终端。
 - 临时层：Recent Sheet、Session 信息 Sheet、Session 操作 Sheet。
+- 列表与已选择终端同时保持挂载：点击 Session 或在列表向左滑进入全屏终端，在终端向右滑回列表；返回按钮和 Session 行点击始终作为等价路径。滑回列表不得 Detach、清空终端或丢失 xterm 视口。
 
 ## 7. 关键用户流程
 
@@ -231,7 +232,8 @@ V2 不要求 App 内生成密钥、跳板机、主机配置导入导出或 Mosh 
 3. 每条 Session 显示标题、Project、Agent、状态和更新时间；设备身份由当前工作空间表达，不在每行重复。
 4. 用户点击 Session 后立即进入该 Session 的终端。
 5. 终端在完成安全 Attach、首次 Mobile resize 和必要回放/重绘后才标记为可输入。
-6. 返回列表时恢复该设备、布局、Project 展开状态、筛选和滚动位置。
+6. 用户可通过返回按钮或向右滑回列表，再点击 Session 或向左滑回同一个全屏终端；切换只改变可见页面，不 Detach Agent。
+7. 返回列表时恢复该设备、布局、Project 展开状态、筛选和滚动位置。
 
 ### 7.3 Mobile 尺寸适配与桌面恢复
 
@@ -339,6 +341,8 @@ V2 不要求 App 内生成密钥、跳板机、主机配置导入导出或 Mosh 
 | LIST-08 | 提供 Pinned、Needs attention、Unread、Running 和 Failed 快捷筛选，以及标题、Project 和 Agent 搜索。 |
 | LIST-09 | 返回列表后恢复当前设备的布局、筛选、Project 展开状态、滚动位置和选择上下文。 |
 | LIST-10 | Recent Sheet 只显示当前设备的最近 Session，并支持从终端中快速切换。 |
+| LIST-11 | 顶部铃铛是 Project/活跃 Session 的单一布局切换器，并通过 `aria-pressed` 和可读名称同步表达当前状态。 |
+| LIST-12 | Session 点击进入全屏终端；列表向左滑、终端向右滑可在两者间切换，且点击/返回键提供等价路径。切换不得 Detach 或重建已选择终端。 |
 
 ### 8.4 设备工作空间隔离
 

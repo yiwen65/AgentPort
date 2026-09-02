@@ -65,6 +65,39 @@ function stateLabel(session: SessionSummary): string {
   return session.latestStatus?.state ?? session.lifecycle;
 }
 
+function relativeTime(value: string): string {
+  const elapsed = Math.max(0, Date.now() - Date.parse(value));
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 100) return `${days}d`;
+  return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function Icon({ name }: { name: "computer" | "bell" | "refresh" | "clock" | "folder" | "chevron" }) {
+  const paths = {
+    computer: <><rect x="3" y="4" width="18" height="14" rx="2" /><path d="M8 21h8M12 18v3" /></>,
+    bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></>,
+    refresh: <><path d="M20 6v5h-5" /><path d="M4 18v-5h5" /><path d="M18.5 10a7 7 0 0 0-12-3L4 9M5.5 14a7 7 0 0 0 12 3l2.5-2" /></>,
+    clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
+    folder: <path d="M3 6.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
+    chevron: <path d="m9 6 6 6-6 6" />,
+  } as const;
+  return <svg className={`ui-icon ui-icon-${name}`} aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
+}
+
+function agentGlyph(agent: string): string {
+  if (agent === "shell") return ">_";
+  if (agent === "claude") return "✳";
+  if (agent === "codex") return "◎";
+  if (agent === "pi") return "P";
+  if (agent === "kimi") return "K";
+  return agent.slice(0, 1).toUpperCase();
+}
+
 function SessionRow({ session, host, onOpen }: {
   session: SessionSummary;
   host: HostProfileSummary;
@@ -74,16 +107,20 @@ function SessionRow({ session, host, onOpen }: {
   return (
     <li className="v2-session-row">
       <span className={`session-status-dot ${statusClass(session)}`} role="img" aria-label={stateLabel(session)} />
-      <button type="button" disabled={disabled} onClick={onOpen} aria-label={`${session.title}, ${stateLabel(session)}`}>
-        <span><strong>{session.title}</strong><small>{session.adapterType} · {stateLabel(session)}</small></span>
-        <time dateTime={session.updatedAt}>{new Date(session.updatedAt).toLocaleDateString()}</time>
+      <button type="button" data-session-id={session.id} disabled={disabled} onClick={onOpen} aria-label={`${session.title}, ${stateLabel(session)}`}>
+        <span><strong>{session.title}</strong><small>{session.adapterType}</small></span>
+        <time dateTime={session.updatedAt}>{relativeTime(session.updatedAt)}</time>
       </button>
       {session.unreadAttention ? <span className="attention-mark" aria-label="unread attention">•</span> : null}
     </li>
   );
 }
 
-export function SessionDashboard({ client, onOpenSession }: { client: RemoteClient; onOpenSession: (session: OpenSession) => void }) {
+export function SessionDashboard({ client, onOpenSession, onManageDevices }: {
+  client: RemoteClient;
+  onOpenSession: (session: OpenSession) => void;
+  onManageDevices?: () => void;
+}) {
   const { t } = useTranslation();
   const [hosts, setHosts] = useState<HostProfileSummary[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState(() => {
@@ -280,10 +317,14 @@ export function SessionDashboard({ client, onOpenSession }: { client: RemoteClie
   };
 
   return (
-    <section className="session-dashboard v2-workspace" aria-labelledby="dashboard-title">
-      <header className="v2-workspace-header">
-        <label className="device-picker">
-          <span>Device</span>
+    <section className="session-dashboard mobile-session-sidebar" aria-labelledby="dashboard-title">
+      <h1 className="visually-hidden" id="dashboard-title">{t("dashboard.title")}</h1>
+      <header className="mobile-sidebar-toolbar">
+        <button type="button" className="toolbar-icon-button" onClick={onManageDevices} aria-label={t("hosts.manage")} aria-haspopup="dialog">
+          <Icon name="computer" />
+        </button>
+        <label className="compact-device-picker">
+          <span className={`device-state ${selectedHost?.connectionState ?? "disconnected"}`} aria-hidden="true" />
           <select value={selectedDeviceId} onChange={(event) => {
             if (selectedDeviceId) persistWorkspace(selectedDeviceId, { ...workspaceRef.current, recentOpen: false, scrollTop: window.scrollY });
             setSelectedDeviceId(event.target.value);
@@ -291,17 +332,24 @@ export function SessionDashboard({ client, onOpenSession }: { client: RemoteClie
             {hosts.map((host) => <option key={host.id} value={host.id}>{host.name}</option>)}
           </select>
         </label>
-        <button type="button" className="icon-button" disabled={!selectedDeviceId} onClick={() => void refreshDevice(selectedDeviceId)} aria-label={t("dashboard.refresh")}>↻</button>
+        <span className="toolbar-spacer" />
+        <button type="button" className="toolbar-icon-button" disabled={!selectedHost} onClick={() => updateWorkspace({ ...workspace, recentOpen: true })} aria-label={t("dashboard.recent")}><Icon name="clock" /></button>
+        <button type="button" className="toolbar-icon-button" disabled={!selectedDeviceId} onClick={() => void refreshDevice(selectedDeviceId)} aria-label={t("dashboard.refresh")}><Icon name="refresh" /></button>
+        <button
+          type="button"
+          className={`toolbar-icon-button activity-toggle${workspace.layout === "active" ? " is-active" : ""}`}
+          aria-label={workspace.layout === "projects" ? t("dashboard.showActivity") : t("dashboard.showProjects")}
+          aria-pressed={workspace.layout === "active"}
+          onClick={() => updateWorkspace({ ...workspace, layout: workspace.layout === "projects" ? "active" : "projects" })}
+        >
+          <Icon name="bell" />
+          {active.some((session) => session.unreadAttention) ? <span className="toolbar-attention" aria-hidden="true" /> : null}
+        </button>
       </header>
 
-      <div className="workspace-title-row">
-        <div><h1 id="dashboard-title">{t("dashboard.title")}</h1><p>{selectedHost ? `${selectedHost.name} · ${sessions.length}` : t("dashboard.noHosts")}</p></div>
-        <button type="button" onClick={() => updateWorkspace({ ...workspace, recentOpen: true })}>Recent</button>
-      </div>
-
-      <div className="layout-toggle" role="group" aria-label="Session layout">
-        <button type="button" className={workspace.layout === "projects" ? "active" : ""} aria-pressed={workspace.layout === "projects"} onClick={() => updateWorkspace({ ...workspace, layout: "projects" })}>Projects</button>
-        <button type="button" className={workspace.layout === "active" ? "active" : ""} aria-pressed={workspace.layout === "active"} onClick={() => updateWorkspace({ ...workspace, layout: "active" })}>Active</button>
+      <div className="mobile-workspace-caption" aria-live="polite">
+        <strong>{workspace.layout === "projects" ? t("dashboard.projects") : t("dashboard.activity")}</strong>
+        <span>{workspace.layout === "projects" ? sessions.length : active.length}</span>
       </div>
 
       {loading ? <div className="state-card" role="status">{t("dashboard.loading")}</div> : null}
@@ -311,24 +359,24 @@ export function SessionDashboard({ client, onOpenSession }: { client: RemoteClie
       {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
       {notificationError ? <p className="state-note" role="status">{notificationError}</p> : null}
 
-      {workspace.layout === "projects" ? <div className="project-session-list">
+      {workspace.layout === "projects" ? <div className="project-session-list dense-project-tree">
         {projects.map((project) => {
           const projectSessions = sessions.filter((session) => session.projectId === project.id).sort((a, b) => sessionTime(b) - sessionTime(a));
           const expanded = workspace.expandedProjects.includes(project.id) || workspace.expandedProjects.length === 0;
           return <section className="project-group" key={project.id}>
             <header>
-              <button type="button" className="project-toggle" aria-expanded={expanded} onClick={() => toggleProject(project.id)}><span aria-hidden="true">▸</span><strong>{project.name}</strong></button>
-              <div className="agent-launch-strip" aria-label={`Start agent in ${project.name}`}>
+              <button type="button" className="project-toggle" aria-expanded={expanded} onClick={() => toggleProject(project.id)}><Icon name="chevron" /><Icon name="folder" /><strong>{project.name}</strong></button>
+              <div className="agent-launch-strip" data-horizontal-scroll aria-label={`Start agent in ${project.name}`}>
                 {agents.map((agent) => {
                   const key = `${project.id}:${agent.agent}`;
-                  return <button type="button" key={agent.agent} disabled={Boolean(launching) || selectedHost?.connectionState !== "connected"} aria-label={`Start ${agent.displayName} in ${project.name}`} title={agent.displayName} onClick={() => void quickLaunch(project.id, agent.agent)}>{launching === key ? "…" : agent.displayName.slice(0, 1)}</button>;
+                  return <button type="button" key={agent.agent} data-agent={agent.agent} disabled={Boolean(launching) || selectedHost?.connectionState !== "connected"} aria-label={`Start ${agent.displayName} in ${project.name}`} title={agent.displayName} onClick={() => void quickLaunch(project.id, agent.agent)}>{launching === key ? "…" : agentGlyph(agent.agent)}</button>;
                 })}
               </div>
             </header>
             {expanded ? <ul className="v2-session-list">{projectSessions.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} onOpen={() => open(session)} />)}</ul> : null}
           </section>;
         })}
-      </div> : <ul className="v2-session-list active-agent-list">{active.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} onOpen={() => open(session)} />)}</ul>}
+      </div> : <div className="activity-session-view"><ul className="v2-session-list active-agent-list">{active.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} onOpen={() => open(session)} />)}</ul>{snapshot && active.length === 0 ? <div className="compact-empty" role="status">{t("dashboard.noActivity")}</div> : null}</div>}
 
       {snapshot && sessions.length === 0 ? <div className="state-card" role="status">{t("dashboard.noSessions")}</div> : null}
 

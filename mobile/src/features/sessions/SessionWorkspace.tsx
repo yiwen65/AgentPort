@@ -63,6 +63,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   const [attachEpoch, setAttachEpoch] = useState(0);
   const [fontSize, setFontSize] = useState(14);
   const [confirmStop, setConfirmStop] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [busyAction, setBusyAction] = useState("");
   const [terminalGeometry, setTerminalGeometry] = useState<TerminalGeometry>();
   const [inputReady, setInputReady] = useState(false);
@@ -326,16 +327,18 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   return (
     <article className="session-workspace" aria-labelledby="session-title">
       <header className="session-workspace-header">
-        <button type="button" onClick={onClose} aria-label={t("session.back")}>‹</button>
+        <button className="terminal-back-button" type="button" onClick={onClose} aria-label={t("session.back")}>‹</button>
         <div><h1 id="session-title">{open.session.title}</h1><p>{open.hostName} · {open.session.projectId} · {open.session.adapterType}</p></div>
-        <span className={`live-pill ${connectionLabel}`}>{t(`session.connection.${connectionLabel}`)}</span>
+        <div className="terminal-header-actions">
+          <span className={`live-pill ${connectionLabel}`}>{t(`session.connection.${connectionLabel}`)}</span>
+          <button className="terminal-more-button" type="button" aria-label={t("session.actions")} aria-haspopup="dialog" onClick={() => setActionsOpen(true)}>•••</button>
+        </div>
       </header>
-      <div className="session-facts" aria-label={t("session.facts")}><span>{open.session.lifecycle}</span><span>{open.session.latestStatus?.state ?? "—"}</span><span>{open.session.latestStatus?.source ?? "recorded"} / {open.session.latestStatus?.confidence ?? "recorded"}</span><span>{open.session.resumePrecision}</span><span>{open.session.permissionMode}</span></div>
       {otherClientInput ? <div className="ephemeral-notice" role="status">{t("session.otherClientTyping")}</div> : null}
       {notice ? <div className="ephemeral-notice" role="status">{notice}</div> : null}
       {error ? <div className="inline-error" role="alert">{error}</div> : null}
       {terminalGeometry?.sourceKind === "desktop" ? <div className="geometry-notice" role="status"><span>桌面端已恢复 {terminalGeometry.cols}×{terminalGeometry.rows}</span><button type="button" onClick={readaptForPhone}>重新适配手机</button></div> : null}
-      {terminalGeometry?.sourceKind === "mobile" ? <div className="geometry-owner" aria-label="Phone terminal size">手机尺寸 {terminalGeometry.cols}×{terminalGeometry.rows}</div> : null}
+      {terminalGeometry?.sourceKind === "mobile" ? <span className="visually-hidden" aria-label="Phone terminal size">手机尺寸 {terminalGeometry.cols}×{terminalGeometry.rows}</span> : null}
 
       <MobileTerminal
         outputChunks={outputChunks}
@@ -349,7 +352,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
         showHeading={false}
       />
 
-      <div className="session-controls"><button type="button" onClick={() => void control("interrupt")}>{t("session.interrupt")}</button><button type="button" onClick={() => setFontSize((value) => Math.max(11, value - 1))}>A−</button><button type="button" onClick={() => setFontSize((value) => Math.min(24, value + 1))}>A+</button><button type="button" disabled={Boolean(busyAction)} onClick={() => void action("restart")}>{t("session.restart")}</button><button type="button" disabled={Boolean(busyAction)} onClick={() => void action("pin")}>{open.session.pinnedAt ? t("session.unpin") : t("session.pin")}</button><button type="button" disabled={Boolean(busyAction)} onClick={() => { const title = window.prompt(t("session.renamePrompt"), open.session.title); if (title?.trim()) void action("rename", title.trim()); }}>{t("session.rename")}</button><button type="button" disabled={Boolean(busyAction)} onClick={() => void action("archive")}>{t("session.archive")}</button><button className="danger-text" type="button" onClick={() => setConfirmStop(true)}>{t("session.stop")}</button></div>
+      {actionsOpen ? <div className="modal-backdrop terminal-actions-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setActionsOpen(false); }}><section className="modal-sheet terminal-actions-sheet" role="dialog" aria-modal="true" aria-labelledby="terminal-actions-title"><header><div><h2 id="terminal-actions-title">{open.session.title}</h2><p>{open.session.lifecycle} · {open.session.permissionMode}</p></div><button type="button" aria-label={t("common.close")} onClick={() => setActionsOpen(false)}>×</button></header><div className="terminal-action-grid"><button type="button" onClick={() => void control("interrupt")}>{t("session.interrupt")}</button><button type="button" onClick={() => setFontSize((value) => Math.max(11, value - 1))}>A−</button><button type="button" onClick={() => setFontSize((value) => Math.min(24, value + 1))}>A+</button><button type="button" disabled={Boolean(busyAction)} onClick={() => void action("restart")}>{t("session.restart")}</button><button type="button" disabled={Boolean(busyAction)} onClick={() => void action("pin")}>{open.session.pinnedAt ? t("session.unpin") : t("session.pin")}</button><button type="button" disabled={Boolean(busyAction)} onClick={() => { const title = window.prompt(t("session.renamePrompt"), open.session.title); if (title?.trim()) void action("rename", title.trim()); }}>{t("session.rename")}</button><button type="button" disabled={Boolean(busyAction)} onClick={() => void action("archive")}>{t("session.archive")}</button><button className="danger-text" type="button" onClick={() => { setActionsOpen(false); setConfirmStop(true); }}>{t("session.stop")}</button></div></section></div> : null}
 
       {confirmStop ? <div className="modal-backdrop"><section className="modal-sheet compact" role="dialog" aria-modal="true" aria-labelledby="stop-title"><h2 id="stop-title">{t("session.stopTitle")}</h2><p>{t("session.stopBody")}</p><div className="modal-actions"><button type="button" onClick={() => setConfirmStop(false)}>{t("common.cancel")}</button><button className="danger-button" type="button" disabled={busyAction === "stop"} onClick={() => void stop()}>{t("session.stop")}</button></div></section></div> : null}
     </article>

@@ -51,12 +51,12 @@ describe("V2 Session workspace", () => {
     const remote = client();
     render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
     expect(await screen.findByRole("button", { name: /Approval task/ })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Active" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show active sessions" }));
     expect(screen.getByRole("button", { name: /Approval task/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Shell,/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Dead agent/ })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show projects" }));
     fireEvent.click(screen.getByRole("button", { name: "Start Claude in AgentPort" }));
     await waitFor(() => expect(remote.request).toHaveBeenCalledWith("host-1", "session.create", expect.objectContaining({
       projectId: "project-1", agent: "claude", permission: "bypass", transport: "pty", riskAck: true,

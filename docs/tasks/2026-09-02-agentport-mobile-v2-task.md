@@ -83,7 +83,7 @@ Non-goals:
 <!-- task-doc-section:dependencies-batches -->
 ## Dependencies and parallel batches
 
-- Dependency graph: `T-001 → T-002`; `T-002 → {T-003, T-004}`; `T-003 → {T-005, T-006}`; `T-004 → {T-005, T-006, T-007}`; `{T-005, T-006, T-007} → T-008`.
+- Dependency graph: `T-001 → T-002`; `T-002 → {T-003, T-004}`; `T-003 → {T-005, T-006}`; `T-004 → {T-005, T-006, T-007}`; `{T-005, T-006, T-007} → T-008`; `T-008 → T-009`.
 - Parallel batches: Batch 0 audit (`T-001`); Batch 1 contract freeze (`T-002`); Batch 2 Mobile shell cleanup (`T-003`) in parallel with backend runtime (`T-004`); Batch 3 Mobile workspace/semantics (`T-005`), terminal-only/resize (`T-006`) and desktop restore UX (`T-007`) on disjoint ownership; Batch 4 integration, runtime verification and commit (`T-008`).
 - Serialization constraints: `App.tsx`/`SessionDashboard.tsx` cleanup and final workspace implementation share ownership and must serialize; protocol/service geometry contract must land before Mobile/Desktop resize consumers; desktop terminal resize work must preserve synchronous viewport restoration invariants documented in `LEARNS.md`; only the coordinator edits this task document and performs final path-scoped commit.
 
@@ -282,6 +282,32 @@ Non-goals:
 - Blocker: None for the implemented V2 scope. Android 10/API 29 runtime, iOS 16 runtime, physical-device notification/background behavior, real phone rotation/soft-keyboard behavior, and a live two-device concurrent smoke were unavailable in this environment and remain release/platform gates rather than claimed passes. Mobile's production JS chunk is 541.42 kB and currently emits Vite's >500 kB warning. Rejected Host geometry ACK detail is flattened by Bridge to generic `request_not_executed`; clients still recover authoritative geometry via broadcast/reattach.
 - Unblock condition: Run the remaining platform gates on the documented API 29, iOS 16 and physical-device fixtures before release qualification; preserving them as explicit release evidence does not reopen the completed V2 implementation task.
 
+### [x] T-009 — Refactor the Mobile roster and full-screen terminal navigation
+
+- Status: done
+- Owner: coordinator
+- Objective: Rebuild the Mobile UI from the supplied desktop roster reference while preserving V2 device, status, launch, terminal and resize semantics.
+- Inputs and prerequisites: User reference image and interaction contract; T-008 completed V2 runtime.
+- Scope or files: `mobile/src/app`, `mobile/src/features/sessions`, `mobile/src/terminal`, Mobile i18n/tests and V2 PRD.
+- Expected output: Compact dark Project tree, bell-driven Project/Active switch, full-screen terminal, and persistent horizontal list/terminal navigation.
+- Dependencies: T-008.
+- Execution steps:
+  1. Replace the large Mobile header, title and segmented layout control with a compact safe-area toolbar and dense desktop-semantic roster.
+  2. Make the bell the single Project/Active toggle while retaining device selection, refresh, Recent and device management.
+  3. Keep the selected terminal mounted behind a sliding full-screen stage; support left/right swipe plus accessible click/back equivalents.
+  4. Collapse low-frequency Session controls into a modal action sheet so PTY output remains the dominant full-screen surface.
+  5. Verify unit behavior, production build and an installed iOS simulator render.
+- Acceptance criteria:
+  - Project and Session rows match the compact hierarchy and state emphasis of the supplied reference without copying desktop window decoration.
+  - Bell state is visually and semantically selected in Active mode; no segmented Project/Active control remains.
+  - Clicking a Session opens its raw terminal full screen; swiping right returns to the still-mounted list and swiping left returns to the same terminal without detach.
+  - Horizontal Agent/special-key strips are excluded from page swipe capture, and buttons/back remain equivalent non-gesture paths.
+- Verification method:
+  - Mobile full Vitest and production build; iOS simulator build/install/launch and nonblank screenshot; source/diff checks.
+- Validation evidence: Done 2026-09-02. Mobile full suite passed 7 files/22 tests, including bell mode switching and persistent bidirectional swipe navigation; production build passed. iOS 26.5 arm64 simulator build/install/launch passed and the rendered dark toolbar/list shell respected Dynamic Island and bottom safe areas without blank content. The Session terminal remains mounted while hidden, and xterm resize/attach logic was not duplicated.
+- Blocker: None for source/UI completion. Populated-list visual QA, VoiceOver/TalkBack, Android runtime touch coordinates and physical-device gesture/IME coexistence remain release-device checks.
+- Unblock condition: Run the documented assistive-technology and physical-device matrix before release qualification; those checks do not reopen the implemented UI refactor.
+
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
 
@@ -334,10 +360,11 @@ Non-goals:
 - 2026-09-02: T-004 supplied the compiled geometry JSON contract. Mobile now sends expectedRevision/sourceKind/mobile device/orientation, consumes ACK geometry, pauses after a desktop geometry event and exposes explicit re-adapt; soft-keyboard/layout fits no longer publish remote resize. Started T-007 desktop frontend ownership in parallel.
 - 2026-09-02: T-004 completed with authoritative Session projection, global attention polling, Host run-local geometry CAS/broadcast and desktop Tauri bindings. T-005/T-006 integrated those contracts; added least-privilege native notification plugin permissions. T-007 desktop overlay/restore flow completed. Started T-008 full validation and delivery.
 - 2026-09-02: T-008 completed. Full Mobile/Desktop/Rust gates passed, iOS simulator and exact desktop debug bundle both launched nonblank, the real geometry event contract mismatch was fixed with a regression, and only explicitly listed platform/release gates remain.
+- 2026-09-02: T-009 completed after the supplied UI reference: compact dark roster, bell-only Project/Active switching, persistent full-screen terminal stage, bidirectional swipe and action-sheet controls implemented; 22 tests, production build and installed iOS simulator render passed. The workspace Debug App was rebuilt, re-signed, launched from the exact checkout path as PID 70896, and visually confirmed nonblank.
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: passed
-- Evidence: T-008 records the final automated suites, production builds, iOS 26.5 simulator launch, exact desktop debug process and nonblank screenshots; final task validation and diff checks passed before the scoped feature commit.
+- Evidence: T-008 records the V2 runtime suites and desktop package evidence; T-009 records the subsequent roster/full-screen refactor, 22 Mobile tests, production build and installed iOS 26.5 simulator render. Final task validation and diff checks passed before each scoped feature commit.
 - Limitations: Android API 29 runtime, iOS 16 runtime, physical-device notification/background and rotation/soft-keyboard behavior, and live multi-device concurrency still require the documented release fixtures. The 541.42 kB Mobile JS chunk warning and generic Bridge geometry-rejection error are known follow-up quality issues, not hidden passes.

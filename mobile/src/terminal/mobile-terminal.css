@@ -3,7 +3,7 @@
   flex: 1 1 auto;
   min-height: 0;
   flex-direction: column;
-  gap: 12px;
+  gap: 6px;
 }
 
 .mobile-terminal-heading h2,
@@ -20,9 +20,9 @@
   flex: 1 1 auto;
   height: min(44vh, 420px);
   min-height: 260px;
-  padding: 10px;
+  padding: 7px;
   overflow: hidden;
-  border-radius: 16px;
+  border-radius: 7px;
   background: #11151f;
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 10%);
   touch-action: pan-y;
@@ -33,19 +33,21 @@
 .mobile-terminal-keys {
   flex: 0 0 auto;
   display: flex;
-  gap: 8px;
+  gap: 5px;
   overflow-x: auto;
-  padding-bottom: 4px;
+  padding: 0 1px 2px;
+  scrollbar-width: none;
 }
+.mobile-terminal-keys::-webkit-scrollbar { display: none; }
 
 .mobile-terminal-keys button {
   flex: 0 0 auto;
-  min-width: 48px;
-  min-height: 48px;
-  padding: 0 12px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 10px;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--panel);
+  border-radius: 8px;
+  background: var(--panel-strong);
   color: var(--text);
   font: inherit;
   font-weight: 650;
@@ -58,8 +60,8 @@
 
 /* A Session is an immersive terminal, not a card inside the dashboard. */
 .session-workspace.session-workspace {
-  position: fixed;
-  z-index: 9;
+  position: absolute;
+  z-index: 1;
   inset: 0;
   display: flex;
   width: 100%;
@@ -73,14 +75,13 @@
   flex-direction: column;
   gap: 8px;
   overflow: hidden;
-  background: var(--bg);
+  background: #17171e;
 }
 
 .session-workspace .session-workspace-header,
-.session-workspace .session-facts,
 .session-workspace .ephemeral-notice,
 .session-workspace .inline-error,
-.session-workspace .session-controls {
+.session-workspace .geometry-notice {
   flex: 0 0 auto;
 }
 
@@ -92,12 +93,7 @@
   height: auto;
   min-height: 0;
   padding: 8px;
-  border-radius: 10px;
-}
-
-.session-workspace .session-controls {
-  margin: 0;
-  padding: 0 0 2px;
+  border-radius: 5px;
 }
 
 .session-workspace .modal-backdrop {
@@ -109,10 +105,6 @@
     padding-top: max(5px, env(safe-area-inset-top));
     padding-bottom: max(5px, env(safe-area-inset-bottom));
     gap: 5px;
-  }
-
-  .session-workspace .session-facts {
-    display: none;
   }
 
   .session-workspace .session-workspace-header h1 {

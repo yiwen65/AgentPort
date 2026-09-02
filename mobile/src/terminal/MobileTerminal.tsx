@@ -165,7 +165,7 @@ export function MobileTerminal({
     <section className="mobile-terminal-spike" aria-label={title}>
       {showHeading ? <div className="mobile-terminal-heading"><h2>{title}</h2>{description ? <p>{description}</p> : null}</div> : null}
       <div ref={containerRef} className="mobile-terminal-surface" role="application" aria-label={title} />
-      <div className="mobile-terminal-keys" aria-label="Terminal special keys">
+      <div className="mobile-terminal-keys" data-horizontal-scroll aria-label="Terminal special keys">
         {specialKeys.map(([label, data]) => <button key={label} type="button" onClick={() => send(data)}>{label}</button>)}
         <button type="button" onClick={() => { terminalRef.current?.selectAll(); terminalRef.current?.focus(); }}>Select all</button>
         <button type="button" onClick={() => navigator.clipboard?.writeText(terminalRef.current?.getSelection() ?? "")}>Copy</button>
