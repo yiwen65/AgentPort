@@ -145,4 +145,18 @@ describe("SessionWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
     await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.input", expect.objectContaining({ dataBase64: "5L2g5aW9DQ==" })));
   });
+
+  it("requests a bounded tail for every fresh terminal renderer instead of resuming from a stale persisted cursor", async () => {
+    localStorage.setItem("agentport-mobile-session-cursor-v1:host-1:ses-1", JSON.stringify({
+      runId: "run", runOrdinal: 1, generation: 0, offset: 4096, statusSequence: 3,
+    }));
+    const { client, request } = setupClient();
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await screen.findByText("Live");
+    expect(request).toHaveBeenCalledWith("host-1", "session.attach", expect.objectContaining({
+      replayTailBytes: 512 * 1024,
+      resumeFrom: undefined,
+      subscribeOutput: true,
+    }));
+  });
 });

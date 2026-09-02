@@ -5,10 +5,11 @@ import { MobileTerminal } from "./MobileTerminal";
 const terminalHarness = vi.hoisted(() => ({
   helper: undefined as HTMLTextAreaElement | undefined,
   selection: "selected output",
+  fitCalls: 0,
 }));
 
 vi.mock("@xterm/addon-fit", () => ({
-  FitAddon: class { fit() { /* deterministic no-op */ } },
+  FitAddon: class { fit() { terminalHarness.fitCalls += 1; } },
 }));
 
 vi.mock("@xterm/xterm", () => ({
@@ -35,6 +36,7 @@ vi.mock("@xterm/xterm", () => ({
 describe("MobileTerminal input accessory", () => {
   beforeEach(() => {
     terminalHarness.helper = undefined;
+    terminalHarness.fitCalls = 0;
     vi.stubGlobal("ResizeObserver", class {
       observe() { /* deterministic no-op */ }
       disconnect() { /* deterministic no-op */ }
@@ -66,5 +68,47 @@ describe("MobileTerminal input accessory", () => {
 
     screen.getByRole("button", { name: "Outside" }).focus();
     await waitFor(() => expect(toolbar).not.toBeVisible());
+  });
+
+  it("dispatches a touch shortcut before WebKit can drop terminal focus", async () => {
+    const onInput = vi.fn();
+    render(<MobileTerminal onInput={onInput} showHeading={false} />);
+    const toolbar = screen.getByLabelText("Terminal special keys");
+    terminalHarness.helper!.focus();
+    await waitFor(() => expect(toolbar).toBeVisible());
+
+    const slash = within(toolbar).getByRole("button", { name: "Slash" });
+    expect(fireEvent.touchStart(slash)).toBe(false);
+    expect(onInput).toHaveBeenCalledTimes(1);
+    expect(onInput).toHaveBeenLastCalledWith("/");
+    expect(document.activeElement).toBe(terminalHarness.helper);
+
+    fireEvent.click(slash, { detail: 1 });
+    expect(onInput).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the keyboard viewport and refits after the shortcut row enters layout", async () => {
+    // WKWebView can shrink innerHeight together with visualViewport, so the
+    // stable device window height is the keyboard-open comparison baseline.
+    vi.stubGlobal("innerHeight", 500);
+    vi.stubGlobal("screen", { height: 844 });
+    vi.stubGlobal("visualViewport", {
+      height: 500,
+      offsetTop: 0,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    const onResize = vi.fn();
+    const { container } = render(<article className="session-workspace"><MobileTerminal onResize={onResize} showHeading={false} /></article>);
+    const workspace = container.querySelector<HTMLElement>(".session-workspace")!;
+    await waitFor(() => expect(terminalHarness.fitCalls).toBeGreaterThan(1));
+    expect(workspace).toHaveAttribute("data-keyboard-visible", "true");
+
+    const settledFits = terminalHarness.fitCalls;
+    onResize.mockClear();
+    terminalHarness.helper!.focus();
+    await waitFor(() => expect(screen.getByLabelText("Terminal special keys")).toBeVisible());
+    await waitFor(() => expect(terminalHarness.fitCalls).toBeGreaterThan(settledFits));
+    expect(onResize).toHaveBeenCalledWith(80, 24);
   });
 });

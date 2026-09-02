@@ -25,15 +25,6 @@ function cursorKey(open: OpenSession) {
   return `${CURSOR_PREFIX}${open.hostProfileId}:${open.session.id}`;
 }
 
-function readCursor(open: OpenSession): RunCursor | undefined {
-  try {
-    const raw = localStorage.getItem(cursorKey(open));
-    return raw ? JSON.parse(raw) as RunCursor : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function appendBounded(current: string[], value: string): string[] {
   const next = [...current, value];
   let total = next.reduce((sum, chunk) => sum + chunk.length, 0);
@@ -66,7 +57,10 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [busyAction, setBusyAction] = useState("");
   const [terminalGeometry, setTerminalGeometry] = useState<TerminalGeometry>();
-  const cursor = useRef<RunCursor | undefined>(readCursor(open));
+  // A fresh xterm has no retained screen to pair with a persisted tail cursor,
+  // so it must request a bounded replay. This ref still advances and resumes
+  // efficiently for reconnects during this renderer's lifetime.
+  const cursor = useRef<RunCursor>();
   const ownBatches = useRef(new Set<string>());
   const attachmentRef = useRef<string>();
   const inputQueue = useRef(Promise.resolve());

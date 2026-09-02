@@ -147,6 +147,12 @@
     5px;
 }
 
+/* visualViewport already ends at the keyboard. Reapplying the device bottom
+   safe-area here creates a false gap and steals rows from the TUI input. */
+.session-workspace.session-workspace[data-keyboard-visible="true"] {
+  padding-bottom: 3px;
+}
+
 .session-workspace .modal-backdrop {
   z-index: 20;
 }
