@@ -4,6 +4,8 @@ import { MobileTerminal } from "./MobileTerminal";
 
 const terminalHarness = vi.hoisted(() => ({
   helper: undefined as HTMLTextAreaElement | undefined,
+  screen: undefined as HTMLDivElement | undefined,
+  screenHeight: 240,
   selection: "selected output",
   fitCalls: 0,
 }));
@@ -16,12 +18,20 @@ vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
     rows = 24;
+    buffer = { active: { cursorY: 20 } };
     options: { fontSize?: number } = {};
     loadAddon() { /* deterministic no-op */ }
     open(container: HTMLElement) {
+      terminalHarness.screen = document.createElement("div");
+      terminalHarness.screen.className = "xterm-screen";
+      terminalHarness.screen.getBoundingClientRect = () => ({
+        x: 0, y: 0, top: 0, right: 320, bottom: terminalHarness.screenHeight, left: 0,
+        width: 320, height: terminalHarness.screenHeight, toJSON: () => ({}),
+      });
       terminalHarness.helper = document.createElement("textarea");
       terminalHarness.helper.className = "xterm-helper-textarea";
-      container.append(terminalHarness.helper);
+      terminalHarness.screen.append(terminalHarness.helper);
+      container.append(terminalHarness.screen);
     }
     onData() { return { dispose() { /* deterministic no-op */ } }; }
     focus() { terminalHarness.helper?.focus(); }
@@ -36,6 +46,8 @@ vi.mock("@xterm/xterm", () => ({
 describe("MobileTerminal input accessory", () => {
   beforeEach(() => {
     terminalHarness.helper = undefined;
+    terminalHarness.screen = undefined;
+    terminalHarness.screenHeight = 240;
     terminalHarness.fitCalls = 0;
     vi.stubGlobal("ResizeObserver", class {
       observe() { /* deterministic no-op */ }
@@ -85,6 +97,28 @@ describe("MobileTerminal input accessory", () => {
 
     fireEvent.click(slash, { detail: 1 });
     expect(onInput).toHaveBeenCalledTimes(1);
+  });
+
+  it("dismisses terminal input when tapping output but keeps the current input rows active", async () => {
+    render(<MobileTerminal showHeading={false} />);
+    const toolbar = screen.getByLabelText("Terminal special keys");
+    terminalHarness.helper!.focus();
+    await waitFor(() => expect(toolbar).toBeVisible());
+
+    fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientY: 40 }] });
+    fireEvent.click(terminalHarness.screen!, { clientY: 40 });
+    await waitFor(() => expect(toolbar).not.toBeVisible());
+    expect(document.activeElement).not.toBe(terminalHarness.helper);
+
+    terminalHarness.helper!.focus();
+    await waitFor(() => expect(toolbar).toBeVisible());
+    fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientY: 205 }] });
+    // The software keyboard can resize the viewport before WebKit emits click.
+    terminalHarness.screenHeight = 120;
+    fireEvent.click(terminalHarness.screen!, { clientY: 205 });
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    expect(document.activeElement).toBe(terminalHarness.helper);
+    expect(toolbar).toBeVisible();
   });
 
   it("uses the keyboard viewport and refits after the shortcut row enters layout", async () => {

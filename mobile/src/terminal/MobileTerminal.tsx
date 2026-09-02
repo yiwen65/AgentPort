@@ -187,6 +187,55 @@ export function MobileTerminal({
     section.addEventListener("focusin", focusIn);
     section.addEventListener("focusout", focusOut);
     const keys = keysRef.current;
+    let dismissFrame: number | undefined;
+    let gestureStartedInInput: boolean | undefined;
+    const tapIsOnCurrentInputRows = (clientY: number) => {
+      const screen = container.querySelector<HTMLElement>(".xterm-screen");
+      if (!screen || terminal.rows <= 0) return false;
+      const rect = screen.getBoundingClientRect();
+      if (rect.height <= 0) return false;
+      const rowHeight = rect.height / terminal.rows;
+      const cursorRow = Math.max(0, Math.min(terminal.rows - 1, terminal.buffer.active.cursorY));
+      // Agent TUIs commonly reserve one row around the cursor for borders or
+      // wrapped input. Keep that compact input band interactive.
+      const inputTop = rect.top + Math.max(0, cursorRow - 1) * rowHeight;
+      const inputBottom = rect.top + Math.min(terminal.rows, cursorRow + 2) * rowHeight;
+      return clientY >= inputTop && clientY <= inputBottom;
+    };
+    const recordInputGestureAt = (target: Node | null, clientY: number) => {
+      gestureStartedInInput = Boolean(target && (
+        keys?.contains(target)
+        || (container.contains(target) && tapIsOnCurrentInputRows(clientY))
+      ));
+    };
+    const recordPointerGesture = (event: PointerEvent) => {
+      recordInputGestureAt(event.target instanceof Node ? event.target : null, event.clientY);
+    };
+    const recordTouchGesture = (event: TouchEvent) => {
+      const touch = event.touches[0] ?? event.changedTouches[0];
+      if (touch) recordInputGestureAt(event.target instanceof Node ? event.target : null, touch.clientY);
+    };
+    const dismissTerminalInput = (event: MouseEvent) => {
+      const target = event.target instanceof Node ? event.target : null;
+      if (!target || keys?.contains(target)) return;
+      // Use the pre-keyboard geometry captured at pointerdown. WKWebView can
+      // resize the visual viewport before emitting the final click.
+      const preserveInput = gestureStartedInInput
+        ?? (container.contains(target) && tapIsOnCurrentInputRows(event.clientY));
+      gestureStartedInInput = undefined;
+      if (preserveInput) return;
+      if (dismissFrame !== undefined) window.cancelAnimationFrame(dismissFrame);
+      // xterm may focus its helper textarea during the target phase. Blur on
+      // the following frame so a completed tap outside the input rows wins.
+      dismissFrame = window.requestAnimationFrame(() => {
+        dismissFrame = undefined;
+        const helper = container.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
+        if (helper && document.activeElement === helper) helper.blur();
+      });
+    };
+    document.addEventListener("pointerdown", recordPointerGesture, true);
+    document.addEventListener("touchstart", recordTouchGesture, { capture: true, passive: true });
+    document.addEventListener("click", dismissTerminalInput, true);
     const touchShortcut = (event: TouchEvent) => {
       const target = event.target instanceof Element
         ? event.target.closest<HTMLButtonElement>("button[data-terminal-shortcut]")
@@ -221,11 +270,15 @@ export function MobileTerminal({
       consumedChunks.current = 0;
       window.clearTimeout(orientationTimerRef.current);
       if (resizeFrameRef.current !== undefined) window.cancelAnimationFrame(resizeFrameRef.current);
+      if (dismissFrame !== undefined) window.cancelAnimationFrame(dismissFrame);
       viewport?.removeEventListener("resize", viewportChanged);
       viewport?.removeEventListener("scroll", viewportChanged);
       window.removeEventListener("orientationchange", orientationChanged);
       section.removeEventListener("focusin", focusIn);
       section.removeEventListener("focusout", focusOut);
+      document.removeEventListener("pointerdown", recordPointerGesture, true);
+      document.removeEventListener("touchstart", recordTouchGesture, true);
+      document.removeEventListener("click", dismissTerminalInput, true);
       keys?.removeEventListener("touchstart", touchShortcut);
       workspace?.style.removeProperty("--terminal-viewport-height");
       workspace?.style.removeProperty("--terminal-viewport-top");

@@ -36,6 +36,7 @@ function setupClient({ rejectResize = false }: { rejectResize?: boolean } = {}) 
   let listener: ((event: RemoteEvent<SessionEventPayload>) => void) | undefined;
   const request = vi.fn().mockImplementation((_profileId, method, params) => {
     if (method === "session.attach") return Promise.resolve({ attachmentId: "att-1", sessionId: "ses-1", childAlive: true, cursor: null, features: ["input_batch_v1", "terminal.geometry_v1"], runId: "run", runOrdinal: 1, terminalGeometry: null });
+    if (method === "git.context.resolve") return Promise.resolve({ actualBranch: "main", expectedBranch: "main" });
     if (method === "session.input") return Promise.resolve({ batchId: "batch", serverSequence: 1, phase: "completed" });
     if (method === "session.control" && params.control === "resize") {
       if (rejectResize) return Promise.reject(new Error("request failed on the remote host"));
@@ -58,7 +59,7 @@ describe("SessionWorkspace", () => {
   it("attaches with cursor semantics and keeps interaction on the raw terminal path", async () => {
     const { client, request, emit } = setupClient();
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
-    expect(await screen.findByText("Live")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     expect(screen.getByText("AgentSessions")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
     await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.input", expect.objectContaining({ attachmentId: "att-1", dataBase64: "5L2g5aW9DQ==" })));
@@ -75,7 +76,7 @@ describe("SessionWorkspace", () => {
   it("consumes the Host terminal_geometry_changed event contract", async () => {
     const { client, request, emit } = setupClient();
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
-    await screen.findByText("Live");
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     fireEvent.click(screen.getByRole("button", { name: "Resize terminal" }));
     await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.control", expect.objectContaining({ control: "resize", expectedRevision: 0 })));
 
@@ -113,7 +114,7 @@ describe("SessionWorkspace", () => {
   it("ignores structured envelopes and coalesces resize signals onto session.control", async () => {
     const { client, request, emit } = setupClient();
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
-    await screen.findByText("Live");
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     await act(async () => emit({ subscriptionId: "sub", eventType: "structured", cursor: {}, payload: { sessionId: "ses-1", event: { type: "tui", text: "Approve? [y/N]" } } }));
     expect(screen.queryByText("Approval requested")).not.toBeInTheDocument();
     expect(request).not.toHaveBeenCalledWith("host-1", "session.structured_input", expect.anything());
@@ -135,7 +136,7 @@ describe("SessionWorkspace", () => {
   it("keeps the live terminal clean and interactive when phone resize fails", async () => {
     const { client, request } = setupClient({ rejectResize: true });
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
-    expect(await screen.findByText("Live")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
 
     fireEvent.click(screen.getByRole("button", { name: "Resize terminal" }));
     await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.control", expect.objectContaining({ control: "resize" })));
@@ -152,11 +153,26 @@ describe("SessionWorkspace", () => {
     }));
     const { client, request } = setupClient();
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
-    await screen.findByText("Live");
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     expect(request).toHaveBeenCalledWith("host-1", "session.attach", expect.objectContaining({
       replayTailBytes: 512 * 1024,
       resumeFrom: undefined,
       subscribeOutput: true,
     }));
+  });
+
+  it("shows only the project and resolved branch below the session title", async () => {
+    const { client, request } = setupClient();
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+
+    const subtitle = await screen.findByTestId("session-project-branch");
+    await waitFor(() => expect(subtitle).toHaveAttribute("title", "AgentSessions · main"));
+    expect(subtitle).toHaveTextContent("AgentSessions");
+    expect(subtitle).toHaveTextContent("main");
+    expect(subtitle).not.toHaveTextContent("Live");
+    expect(subtitle).not.toHaveTextContent("pi");
+    expect(request).toHaveBeenCalledWith("host-1", "git.context.resolve", {
+      locator: { kind: "session", sessionId: "ses-1" },
+    });
   });
 });

@@ -53,6 +53,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   const [otherClientInput, setOtherClientInput] = useState(false);
   const [attachEpoch, setAttachEpoch] = useState(0);
   const [fontSize, setFontSize] = useState(14);
+  const [branchName, setBranchName] = useState<string>();
   const [confirmStop, setConfirmStop] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [busyAction, setBusyAction] = useState("");
@@ -74,6 +75,17 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   const geometryRef = useRef<TerminalGeometry>();
   const resizeOwnershipEnabled = useRef(true);
   const sourceDeviceId = useRef(mobileDeviceId());
+
+  useEffect(() => {
+    let cancelled = false;
+    setBranchName(undefined);
+    void client.request<{ actualBranch?: string; expectedBranch?: string }>(open.hostProfileId, "git.context.resolve", {
+      locator: { kind: "session", sessionId: open.session.id },
+    }).then((context) => {
+      if (!cancelled) setBranchName(context.actualBranch ?? context.expectedBranch);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [client, open.hostProfileId, open.session.id]);
 
   const handleEvent = useCallback((event: RemoteEvent<SessionEventPayload>) => {
     const payload = event.payload;
@@ -311,20 +323,14 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   };
 
   return (
-    <article className="session-workspace" aria-labelledby="session-title">
+    <article className="session-workspace" aria-labelledby="session-title" data-connection-state={connectionLabel}>
       <header className="session-workspace-header">
         <button className="terminal-back-button" type="button" onClick={onClose} aria-label={t("session.back")}>‹</button>
         <div className="session-workspace-identity">
           <h1 id="session-title">{open.session.title}</h1>
-          <p title={`${open.hostName} · ${open.projectName ?? open.session.projectId} · ${open.session.adapterType}`}>
-            <span className={`session-connection-state ${connectionLabel}`} role="status">
-              <span aria-hidden="true" />
-              {t(`session.connection.${connectionLabel}`)}
-            </span>
-            <span aria-hidden="true">·</span>
+          <p data-testid="session-project-branch" title={[open.projectName ?? open.session.projectId, branchName].filter(Boolean).join(" · ")}>
             <span>{open.projectName ?? open.session.projectId}</span>
-            <span aria-hidden="true">·</span>
-            <span>{open.session.adapterType}</span>
+            {branchName ? <><span aria-hidden="true">·</span><span>{branchName}</span></> : null}
           </p>
         </div>
         <button className="terminal-more-button" type="button" aria-label={t("session.actions")} aria-haspopup="dialog" onClick={() => setActionsOpen(true)}>•••</button>
