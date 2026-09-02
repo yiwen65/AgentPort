@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Runtime, State};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{oneshot, Mutex as AsyncMutex};
 use zeroize::{Zeroize, Zeroizing};
@@ -16,6 +16,18 @@ use zeroize::{Zeroize, Zeroizing};
 const MAX_ONLINE_HOSTS: usize = 5;
 const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
 const BRIDGE_COMMAND: &str = "agentport-remote-bridge serve --stdio";
+const CONNECTION_STATE_EVENT: &str = "agentport-mobile://connection-state";
+
+fn emit_connection_state<R: Runtime>(
+    app: &AppHandle<R>,
+    profile_id: &str,
+    state: &'static str,
+) -> tauri::Result<()> {
+    app.emit(
+        CONNECTION_STATE_EVENT,
+        json!({"profileId": profile_id, "state": state}),
+    )
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -573,7 +585,10 @@ pub async fn mobile_connect_host(
     {
         let connections = state.inner.connections.lock().await;
         if let Some(connection) = connections.get(&profile_id) {
-            return Ok(connection.snapshot.clone());
+            let snapshot = connection.snapshot.clone();
+            drop(connections);
+            let _ = emit_connection_state(&app, &profile_id, "connected");
+            return Ok(snapshot);
         }
         let mut connecting = state
             .inner
@@ -644,18 +659,20 @@ pub async fn mobile_connect_host(
         },
     );
     tauri::async_runtime::spawn(reader_loop(
-        app,
+        app.clone(),
         state.inner().clone(),
-        profile_id,
+        profile_id.clone(),
         generation,
         reader,
         pending,
     ));
+    let _ = emit_connection_state(&app, &profile_id, "connected");
     Ok(snapshot)
 }
 
 #[tauri::command]
 pub async fn mobile_disconnect_host(
+    app: AppHandle,
     state: State<'_, RemoteConnections>,
     profile_id: String,
 ) -> Result<(), String> {
@@ -676,6 +693,7 @@ pub async fn mobile_disconnect_host(
                 .await;
         }
     }
+    let _ = emit_connection_state(&app, &profile_id, "disconnected");
     Ok(())
 }
 
@@ -791,6 +809,32 @@ pub fn mobile_unsubscribe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use tauri::Listener;
+
+    #[test]
+    fn explicit_connect_and_disconnect_states_are_broadcast_to_all_consumers() {
+        let app = tauri::test::mock_app();
+        let received = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let captured = Arc::clone(&received);
+        app.listen(CONNECTION_STATE_EVENT, move |event| {
+            captured
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+
+        emit_connection_state(app.handle(), "host_local", "connected").unwrap();
+        emit_connection_state(app.handle(), "host_local", "disconnected").unwrap();
+
+        assert_eq!(
+            *received.lock().unwrap(),
+            vec![
+                json!({"profileId": "host_local", "state": "connected"}),
+                json!({"profileId": "host_local", "state": "disconnected"}),
+            ]
+        );
+    }
 
     #[test]
     fn disconnect_never_replays_writes_and_preserves_read_retry_classification() {
