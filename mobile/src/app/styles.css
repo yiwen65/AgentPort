@@ -18,13 +18,15 @@
 * { box-sizing: border-box; }
 html, body, #root { min-height: 100%; margin: 0; }
 body { min-width: 320px; overflow-x: hidden; background: var(--bg); }
+html.terminal-visible, body.terminal-visible { height: 100%; overflow: hidden; overscroll-behavior: none; }
+body.terminal-visible #root { height: 100%; overflow: hidden; }
 button { font: inherit; color: inherit; }
 button:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 3px; }
 
 .app-shell { min-height: 100dvh; background: var(--panel); touch-action: pan-y; }
 .device-manager-close { width: 44px; height: 44px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); }
 .main-content { width: min(100%, 560px); min-height: 100dvh; margin: 0 auto; padding: 0; background: var(--panel); }
-.session-stage { position: fixed; z-index: 8; inset: 0; transform: translate3d(100%, 0, 0); visibility: hidden; pointer-events: none; transition: transform 220ms cubic-bezier(.2, .8, .2, 1), visibility 0s linear 220ms; }
+.session-stage { position: fixed; z-index: 8; inset: 0; overflow: hidden; overscroll-behavior: none; transform: translate3d(100%, 0, 0); visibility: hidden; pointer-events: none; background: #18181e; transition: transform 220ms cubic-bezier(.2, .8, .2, 1), visibility 0s linear 220ms; }
 .session-stage.is-visible { transform: translate3d(0, 0, 0); visibility: visible; pointer-events: auto; transition-delay: 0s; }
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
 .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
@@ -169,8 +171,9 @@ textarea { resize: vertical; overflow-wrap: anywhere; }
 .terminal-status-line { min-height: 36px; display: flex; align-items: center; padding: 6px max(16px, env(safe-area-inset-right)) 6px max(16px, env(safe-area-inset-left)); color: #a0a0aa; font-size: 11px; line-height: 1.35; }
 .terminal-status-line + .terminal-status-line { border-top: 1px solid rgba(255, 255, 255, .055); }
 .terminal-status-line.inline-error { color: #e97782; }
-.geometry-notice { min-height: 52px; justify-content: space-between; gap: 12px; }
-.geometry-notice button { min-height: 44px; flex: 0 0 auto; border: 0; border-radius: 9px; padding: 0 12px; background: rgba(255, 255, 255, .055); color: #d6d6dc; }
+.restore-phone-size-button { position: absolute; z-index: 5; top: calc(max(8px, env(safe-area-inset-top)) + 78px); right: max(14px, env(safe-area-inset-right)); width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid rgba(255, 255, 255, .11); border-radius: 50%; background: rgba(37, 37, 46, .9); color: #d6d6dc; box-shadow: 0 8px 24px rgba(0, 0, 0, .24); backdrop-filter: blur(14px); }
+.restore-phone-size-button:active { background: rgba(255, 255, 255, .1); color: #fff; }
+.restore-phone-size-button svg { width: 20px; height: 20px; }
 .terminal-actions-sheet > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .terminal-actions-sheet > header h2, .terminal-actions-sheet > header p { margin: 0; }
 .terminal-actions-sheet > header h2 { font-size: 16px; }

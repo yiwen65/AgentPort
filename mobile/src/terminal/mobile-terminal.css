@@ -1,9 +1,12 @@
 .mobile-terminal-spike {
+  position: relative;
   display: flex;
   flex: 1 1 auto;
+  height: 100%;
   min-height: 0;
   flex-direction: column;
   gap: 0;
+  overflow: hidden;
   background: #18181e;
 }
 
@@ -23,6 +26,7 @@
   min-height: 260px;
   padding: 10px 14px;
   overflow: hidden;
+  overscroll-behavior: contain;
   background: #18181e;
   touch-action: pan-y;
   -webkit-user-select: text;
@@ -32,40 +36,45 @@
 .mobile-terminal-keys {
   flex: 0 0 auto;
   display: flex;
-  min-height: 45px;
-  align-items: flex-start;
-  gap: 0;
+  min-height: 54px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
   overflow-x: auto;
-  padding: 0 10px;
-  border-top: 1px solid rgba(255, 255, 255, .075);
-  background: #18181e;
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: 28px;
+  background: rgba(45, 45, 55, .94);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .28);
   overscroll-behavior-x: contain;
   scrollbar-width: none;
 }
+.mobile-terminal-keys[hidden] { display: none; }
 .mobile-terminal-keys::-webkit-scrollbar { display: none; }
 
 .mobile-terminal-keys button {
   flex: 0 0 auto;
-  min-width: 44px;
-  min-height: 44px;
-  padding: 0 12px;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
   border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: #a8a8b1;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .055);
+  color: #d5d5dc;
   font: inherit;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 22px;
+  font-weight: 520;
 }
 
-.mobile-terminal-keys button + button {
-  border-left: 1px solid rgba(255, 255, 255, .055);
-}
-
-.mobile-terminal-keys button:active {
-  background: rgba(255, 255, 255, .06);
+.mobile-terminal-keys button:active,
+.mobile-terminal-keys button.is-active {
+  background: rgba(109, 133, 237, .28);
   color: #f1f1f4;
 }
+
+.mobile-terminal-keys button svg { width: 22px; height: 22px; }
 
 .mobile-terminal-surface .xterm,
 .mobile-terminal-surface .xterm-viewport {
@@ -73,14 +82,27 @@
   background: #18181e !important;
 }
 
+.mobile-terminal-surface .xterm-viewport {
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.mobile-terminal-surface .xterm-viewport::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 /* A Session is an immersive terminal, not a card inside the dashboard. */
 .session-workspace.session-workspace {
   position: absolute;
   z-index: 1;
-  inset: 0;
+  inset: auto 0 auto;
+  top: var(--terminal-viewport-top, 0px);
   display: flex;
   width: 100%;
-  height: 100dvh;
+  height: var(--terminal-viewport-height, 100%);
+  max-height: 100%;
   min-height: 0;
   padding:
     max(8px, env(safe-area-inset-top))
@@ -89,6 +111,7 @@
   flex-direction: column;
   gap: 0;
   overflow: hidden;
+  overscroll-behavior: none;
   background: #18181e;
 }
 
@@ -118,17 +141,10 @@
 }
 
 .session-workspace .mobile-terminal-keys {
+  margin: 0 max(8px, env(safe-area-inset-right)) 2px max(8px, env(safe-area-inset-left));
   padding-inline:
-    max(10px, env(safe-area-inset-left))
-    max(10px, env(safe-area-inset-right));
-}
-
-/* WKWebView can show the iOS input assistant without shrinking visualViewport.
-   Reserve its height only while xterm owns text focus so terminal keys remain tappable. */
-@supports selector(.mobile-terminal-spike:has(.xterm-helper-textarea:focus)) {
-  .session-workspace .mobile-terminal-spike:has(.xterm-helper-textarea:focus) .mobile-terminal-keys {
-    padding-bottom: 58px;
-  }
+    5px
+    5px;
 }
 
 .session-workspace .modal-backdrop {

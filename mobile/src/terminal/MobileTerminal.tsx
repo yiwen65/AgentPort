@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -17,17 +17,9 @@ export interface MobileTerminalProps {
   showHeading?: boolean;
 }
 
-const specialKeys = [
-  ["Esc", "\u001b"],
-  ["Tab", "\t"],
-  ["Ctrl-C", "\u0003"],
-  ["Ctrl-D", "\u0004"],
-  ["Ctrl-Z", "\u001a"],
-  ["↑", "\u001b[A"],
-  ["↓", "\u001b[B"],
-  ["←", "\u001b[D"],
-  ["→", "\u001b[C"],
-] as const;
+function PasteIcon() {
+  return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="7" y="5" width="12" height="16" rx="2" /><path d="M9 5V3h6v4H9zM5 17H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1" /></svg>;
+}
 
 export function MobileTerminal({
   onInput,
@@ -40,6 +32,7 @@ export function MobileTerminal({
   description = "Local input probe; it does not execute commands.",
   showHeading = true,
 }: MobileTerminalProps) {
+  const sectionRef = useRef<HTMLElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -52,12 +45,69 @@ export function MobileTerminal({
   const lastReportedSize = useRef<{ cols: number; rows: number }>();
   const pendingRemoteReport = useRef(false);
   const scheduleFitRef = useRef<(reportRemote?: boolean) => void>(() => undefined);
+  const inputHandlerRef = useRef<(data: string) => void>(() => undefined);
+  const shiftRef = useRef(false);
+  const commandRef = useRef(false);
+  const [inputActive, setInputActive] = useState(false);
+  const [shiftActive, setShiftActive] = useState(false);
+  const [commandActive, setCommandActive] = useState(false);
   inputRef.current = onInput;
   resizeRef.current = onResize;
 
+  const setShift = (active: boolean) => {
+    shiftRef.current = active;
+    setShiftActive(active);
+  };
+
+  const setCommand = (active: boolean) => {
+    commandRef.current = active;
+    setCommandActive(active);
+  };
+
+  const clearModifiers = () => {
+    setShift(false);
+    setCommand(false);
+  };
+
+  const writeInput = (data: string) => {
+    const terminal = terminalRef.current;
+    if (inputRef.current) inputRef.current(data);
+    else terminal?.write(data === "\r" ? "\r\n$ " : data);
+  };
+
+  const paste = () => {
+    clearModifiers();
+    terminalRef.current?.focus();
+    void navigator.clipboard?.readText().then(writeInput).catch(() => undefined);
+  };
+
+  const copySelection = () => {
+    const selection = terminalRef.current?.getSelection() ?? "";
+    if (selection) void navigator.clipboard?.writeText(selection).catch(() => undefined);
+  };
+
+  inputHandlerRef.current = (data: string) => {
+    if (commandRef.current) {
+      setCommand(false);
+      const command = data.toLocaleLowerCase();
+      if (command === "v") paste();
+      else if (command === "c") copySelection();
+      else if (command === "a") terminalRef.current?.selectAll();
+      return;
+    }
+    let next = data;
+    if (shiftRef.current) {
+      setShift(false);
+      if (data === "\t") next = "\u001b[Z";
+      else if (data.length === 1) next = data.toLocaleUpperCase();
+    }
+    writeInput(next);
+  };
+
   useEffect(() => {
     const container = containerRef.current;
-    if (!container) return;
+    const section = sectionRef.current;
+    if (!container || !section) return;
     const terminal = new Terminal({
       cursorBlink: true,
       convertEol: true,
@@ -99,22 +149,39 @@ export function MobileTerminal({
       terminal.write("Touch, select, type with IME, or use the special-key row.\r\n$ ");
     }
     const input = terminal.onData((data) => {
-      if (inputRef.current) inputRef.current(data);
-      else terminal.write(data === "\r" ? "\r\n$ " : data);
+      inputHandlerRef.current(data);
     });
     // Ordinary layout and visual-viewport changes (notably the soft keyboard)
     // fit only the local renderer. They must not steal PTY geometry ownership.
     const resize = new ResizeObserver(() => scheduleFit(false));
     resize.observe(container);
     const viewport = window.visualViewport;
-    const viewportChanged = () => scheduleFit(false);
+    const workspace = section.closest<HTMLElement>(".session-workspace");
+    const viewportChanged = () => {
+      workspace?.style.setProperty("--terminal-viewport-height", `${Math.round(viewport?.height ?? window.innerHeight)}px`);
+      workspace?.style.setProperty("--terminal-viewport-top", `${Math.round(viewport?.offsetTop ?? 0)}px`);
+      scheduleFit(false);
+    };
     viewport?.addEventListener("resize", viewportChanged);
+    viewport?.addEventListener("scroll", viewportChanged);
+    viewportChanged();
+    const focusIn = () => setInputActive(true);
+    const focusOut = (event: FocusEvent) => {
+      if (event.relatedTarget instanceof Node && section.contains(event.relatedTarget)) return;
+      setInputActive(false);
+      clearModifiers();
+    };
+    section.addEventListener("focusin", focusIn);
+    section.addEventListener("focusout", focusOut);
     const orientationChanged = () => {
       window.clearTimeout(orientationTimerRef.current);
       // Orientation events can arrive before safe-area and visual viewport
       // dimensions settle. The observer handles intermediate layout, while
       // this trailing fit publishes the stable portrait/landscape geometry.
-      orientationTimerRef.current = window.setTimeout(() => scheduleFit(true), 120);
+      orientationTimerRef.current = window.setTimeout(() => {
+        viewportChanged();
+        scheduleFit(true);
+      }, 120);
     };
     window.addEventListener("orientationchange", orientationChanged);
     terminalRef.current = terminal;
@@ -128,7 +195,12 @@ export function MobileTerminal({
       window.clearTimeout(orientationTimerRef.current);
       if (resizeFrameRef.current !== undefined) window.cancelAnimationFrame(resizeFrameRef.current);
       viewport?.removeEventListener("resize", viewportChanged);
+      viewport?.removeEventListener("scroll", viewportChanged);
       window.removeEventListener("orientationchange", orientationChanged);
+      section.removeEventListener("focusin", focusIn);
+      section.removeEventListener("focusout", focusOut);
+      workspace?.style.removeProperty("--terminal-viewport-height");
+      workspace?.style.removeProperty("--terminal-viewport-top");
       resize.disconnect();
       input.dispose();
       terminal.dispose();
@@ -161,21 +233,22 @@ export function MobileTerminal({
   }, [outputChunks, resetVersion]);
 
   const send = (data: string) => {
-    const terminal = terminalRef.current;
-    terminal?.focus();
-    if (inputRef.current) inputRef.current(data);
-    else terminal?.write(data === "\r" ? "\r\n$ " : data);
+    terminalRef.current?.focus();
+    inputHandlerRef.current(data);
   };
 
   return (
-    <section className="mobile-terminal-spike" aria-label={title}>
+    <section ref={sectionRef} className="mobile-terminal-spike" data-input-active={inputActive} aria-label={title}>
       {showHeading ? <div className="mobile-terminal-heading"><h2>{title}</h2>{description ? <p>{description}</p> : null}</div> : null}
       <div ref={containerRef} className="mobile-terminal-surface" role="application" aria-label={title} />
-      <div className="mobile-terminal-keys" data-horizontal-scroll aria-label="Terminal special keys">
-        {specialKeys.map(([label, data]) => <button key={label} type="button" onClick={() => send(data)}>{label}</button>)}
-        <button type="button" onClick={() => { terminalRef.current?.selectAll(); terminalRef.current?.focus(); }}>Select all</button>
-        <button type="button" onClick={() => navigator.clipboard?.writeText(terminalRef.current?.getSelection() ?? "")}>Copy</button>
-        <button type="button" onClick={() => navigator.clipboard?.readText().then(send).catch(() => undefined)}>Paste</button>
+      <div className="mobile-terminal-keys" data-horizontal-scroll aria-label="Terminal special keys" hidden={!inputActive}>
+        <button type="button" aria-label="Paste" onPointerDown={(event) => event.preventDefault()} onClick={paste}><PasteIcon /></button>
+        <button type="button" aria-label="Escape" onPointerDown={(event) => event.preventDefault()} onClick={() => send("\u001b")}><span aria-hidden="true">⎋</span></button>
+        <button type="button" aria-label="Tab" onPointerDown={(event) => event.preventDefault()} onClick={() => send("\t")}><span aria-hidden="true">⇥</span></button>
+        <button className={shiftActive ? "is-active" : ""} type="button" aria-label="Shift" aria-pressed={shiftActive} onPointerDown={(event) => event.preventDefault()} onClick={() => { terminalRef.current?.focus(); setShift(!shiftRef.current); }}><span aria-hidden="true">⇧</span></button>
+        <button type="button" aria-label="Slash" onPointerDown={(event) => event.preventDefault()} onClick={() => send("/")}><span aria-hidden="true">/</span></button>
+        <button type="button" aria-label="At sign" onPointerDown={(event) => event.preventDefault()} onClick={() => send("@")}><span aria-hidden="true">@</span></button>
+        <button className={commandActive ? "is-active" : ""} type="button" aria-label="Command" aria-pressed={commandActive} onPointerDown={(event) => event.preventDefault()} onClick={() => { terminalRef.current?.focus(); setCommand(!commandRef.current); }}><span aria-hidden="true">⌘</span></button>
       </div>
     </section>
   );

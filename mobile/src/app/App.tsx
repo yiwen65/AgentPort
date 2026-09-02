@@ -70,6 +70,15 @@ export function App({ client, hostAuthClient }: AppProps) {
     return () => window.cancelAnimationFrame(frame);
   }, [selectedSession, terminalVisible]);
 
+  useEffect(() => {
+    document.documentElement.classList.toggle("terminal-visible", terminalVisible);
+    document.body.classList.toggle("terminal-visible", terminalVisible);
+    return () => {
+      document.documentElement.classList.remove("terminal-visible");
+      document.body.classList.remove("terminal-visible");
+    };
+  }, [terminalVisible]);
+
   return (
     <div className="app-shell" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
       <main className="main-content" id="main-content" aria-hidden={terminalVisible}>

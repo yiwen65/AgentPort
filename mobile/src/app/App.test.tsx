@@ -94,14 +94,17 @@ describe("AgentPort Mobile V2 shell", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Agent task/ }));
     const stage = container.querySelector(".session-stage")!;
     expect(stage).toHaveClass("is-visible");
+    await waitFor(() => expect(document.body).toHaveClass("terminal-visible"));
 
     const shell = container.querySelector(".app-shell")!;
     fireEvent.touchStart(shell, { touches: [{ clientX: 40, clientY: 220 }] });
     fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 160, clientY: 224 }] });
     expect(stage).not.toHaveClass("is-visible");
+    await waitFor(() => expect(document.body).not.toHaveClass("terminal-visible"));
 
     fireEvent.touchStart(shell, { touches: [{ clientX: 180, clientY: 220 }] });
     fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 70, clientY: 224 }] });
     expect(stage).toHaveClass("is-visible");
+    await waitFor(() => expect(document.body).toHaveClass("terminal-visible"));
   });
 });

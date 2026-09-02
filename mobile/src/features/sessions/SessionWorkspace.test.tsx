@@ -32,12 +32,15 @@ const open: OpenSession = {
   },
 };
 
-function setupClient() {
+function setupClient({ rejectResize = false }: { rejectResize?: boolean } = {}) {
   let listener: ((event: RemoteEvent<SessionEventPayload>) => void) | undefined;
   const request = vi.fn().mockImplementation((_profileId, method, params) => {
     if (method === "session.attach") return Promise.resolve({ attachmentId: "att-1", sessionId: "ses-1", childAlive: true, cursor: null, features: ["input_batch_v1", "terminal.geometry_v1"], runId: "run", runOrdinal: 1, terminalGeometry: null });
     if (method === "session.input") return Promise.resolve({ batchId: "batch", serverSequence: 1, phase: "completed" });
-    if (method === "session.control" && params.control === "resize") return Promise.resolve({ accepted: true, terminalGeometry: { runId: "run", runOrdinal: 1, cols: params.cols, rows: params.rows, sourceKind: "mobile", sourceDeviceId: params.sourceDeviceId, attachmentId: "att-1", orientation: params.orientation, revision: 1, updatedAt: "2026-09-02T00:00:00Z" } });
+    if (method === "session.control" && params.control === "resize") {
+      if (rejectResize) return Promise.reject(new Error("request failed on the remote host"));
+      return Promise.resolve({ accepted: true, terminalGeometry: { runId: "run", runOrdinal: 1, cols: params.cols, rows: params.rows, sourceKind: "mobile", sourceDeviceId: params.sourceDeviceId, attachmentId: "att-1", orientation: params.orientation, revision: 1, updatedAt: "2026-09-02T00:00:00Z" } });
+    }
     return Promise.resolve({});
   });
   const client: RemoteClient = {
@@ -55,24 +58,26 @@ describe("SessionWorkspace", () => {
   it("attaches with cursor semantics and keeps interaction on the raw terminal path", async () => {
     const { client, request, emit } = setupClient();
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
-    expect(await screen.findByText("Adapting for phone")).toBeInTheDocument();
-    expect(screen.getByText("AgentSessions")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Resize terminal" }));
     expect(await screen.findByText("Live")).toBeInTheDocument();
+    expect(screen.getByText("AgentSessions")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.input", expect.objectContaining({ attachmentId: "att-1", dataBase64: "5L2g5aW9DQ==" })));
+    expect(screen.queryByText("终端仍在适配手机尺寸")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Resize terminal" }));
     await act(async () => emit({ subscriptionId: "sub", eventType: "output", cursor: { runId: "run", runOrdinal: 1, generation: 0, offset: 5, statusSequence: 0 }, payload: { session_id: "ses-1", dataBase64: btoa("hello") } }));
     expect(screen.getByTestId("raw-terminal-output")).toHaveTextContent("hello");
     expect(terminalHarness.props?.showHeading).toBe(false);
     expect(screen.queryByRole("button", { name: "Conversation" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Send text")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
-    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.input", expect.objectContaining({ attachmentId: "att-1", dataBase64: "5L2g5aW9DQ==" })));
     expect(JSON.parse(localStorage.getItem("agentport-mobile-session-cursor-v1:host-1:ses-1")!)).toEqual(expect.objectContaining({ offset: 5 }));
   });
 
   it("consumes the Host terminal_geometry_changed event contract", async () => {
-    const { client, emit } = setupClient();
+    const { client, request, emit } = setupClient();
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
-    await screen.findByText("Adapting for phone");
+    await screen.findByText("Live");
+    fireEvent.click(screen.getByRole("button", { name: "Resize terminal" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.control", expect.objectContaining({ control: "resize", expectedRevision: 0 })));
 
     await act(async () => emit({
       subscriptionId: "att-1",
@@ -93,14 +98,22 @@ describe("SessionWorkspace", () => {
       },
     }));
 
-    expect(await screen.findByText("桌面端已恢复 120×36")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "重新适配手机" })).toBeInTheDocument();
+    expect(screen.queryByText("桌面端已恢复 120×36")).not.toBeInTheDocument();
+    const restore = await screen.findByRole("button", { name: "Restore phone size" });
+    fireEvent.click(restore);
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.control", expect.objectContaining({
+      control: "resize",
+      cols: 52,
+      rows: 32,
+      expectedRevision: 2,
+      sourceKind: "mobile",
+    })));
   });
 
   it("ignores structured envelopes and coalesces resize signals onto session.control", async () => {
     const { client, request, emit } = setupClient();
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
-    await screen.findByText("Adapting for phone");
+    await screen.findByText("Live");
     await act(async () => emit({ subscriptionId: "sub", eventType: "structured", cursor: {}, payload: { sessionId: "ses-1", event: { type: "tui", text: "Approve? [y/N]" } } }));
     expect(screen.queryByText("Approval requested")).not.toBeInTheDocument();
     expect(request).not.toHaveBeenCalledWith("host-1", "session.structured_input", expect.anything());
@@ -117,5 +130,19 @@ describe("SessionWorkspace", () => {
       orientation: "portrait",
     })));
     expect(request.mock.calls.filter(([, method, params]) => method === "session.control" && params.control === "resize")).toHaveLength(1);
+  });
+
+  it("keeps the live terminal clean and interactive when phone resize fails", async () => {
+    const { client, request } = setupClient({ rejectResize: true });
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    expect(await screen.findByText("Live")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Resize terminal" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.control", expect.objectContaining({ control: "resize" })));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.input", expect.objectContaining({ dataBase64: "5L2g5aW9DQ==" })));
   });
 });

@@ -66,7 +66,6 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [busyAction, setBusyAction] = useState("");
   const [terminalGeometry, setTerminalGeometry] = useState<TerminalGeometry>();
-  const [inputReady, setInputReady] = useState(false);
   const cursor = useRef<RunCursor | undefined>(readCursor(open));
   const ownBatches = useRef(new Set<string>());
   const attachmentRef = useRef<string>();
@@ -100,9 +99,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
       setTerminalGeometry(payload.geometry);
       if (payload.geometry.sourceKind === "desktop") {
         resizeOwnershipEnabled.current = false;
-        setInputReady(false);
       } else if (payload.geometry.sourceDeviceId === sourceDeviceId.current) {
-        setInputReady(true);
         setConnectionLabel("live");
       }
     }
@@ -144,7 +141,6 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
     let unsubscribeConnection: (() => Promise<void>) | undefined;
     let attached: string | undefined;
     setConnectionLabel("attaching");
-    setInputReady(false);
     setError("");
     void client.subscribe<SessionEventPayload>(open.hostProfileId, [], handleEvent).then(async (unsubscribe) => {
       if (cancelled) return unsubscribe();
@@ -164,11 +160,11 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
         attachmentRef.current = attached;
         geometryRef.current = result.terminalGeometry;
         setTerminalGeometry(result.terminalGeometry);
-        // Opening a Session from Mobile is an explicit request to adapt it for
-        // the phone, even when desktop owned the previous revision.
+        // Opening from Mobile requests phone geometry, but PTY input remains
+        // available while that independent resize request is in flight.
         resizeOwnershipEnabled.current = true;
         setAttachmentId(attached);
-        setConnectionLabel(result.childAlive ? "adapting" : "ended");
+        setConnectionLabel(result.childAlive ? "live" : "ended");
       } catch (requestError) {
         if (!cancelled) {
           setConnectionLabel("failed");
@@ -211,10 +207,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   }, []);
 
   const sendInput = useCallback((data: string) => {
-    if (!attachmentId || !inputReady) {
-      setError("终端仍在适配手机尺寸");
-      return;
-    }
+    if (!attachmentId) return;
     const batchId = sessionBatchId();
     ownBatches.current.add(batchId);
     inputQueue.current = inputQueue.current.then(async () => {
@@ -226,7 +219,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
         setError(errorText(requestError));
       }
     });
-  }, [attachmentId, client, inputReady, open.hostProfileId, t]);
+  }, [attachmentId, client, open.hostProfileId, t]);
 
   const control = async (controlName: "interrupt" | "continue") => {
     if (!attachmentId) return;
@@ -255,11 +248,11 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
     }).then((result) => {
       geometryRef.current = result.terminalGeometry;
       setTerminalGeometry(result.terminalGeometry);
-      setInputReady(true);
       setConnectionLabel("live");
-    }).catch((requestError) => {
+    }).catch(() => {
+      // Geometry adaptation is best-effort. A resize failure must not obscure
+      // or disable the already-attached PTY; the next xterm resize may retry.
       lastResize.current = undefined;
-      setError(errorText(requestError));
     });
   }, [attachmentId, client, open.hostProfileId]);
 
@@ -272,8 +265,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
 
   const readaptForPhone = useCallback(() => {
     resizeOwnershipEnabled.current = true;
-    setInputReady(false);
-    setConnectionLabel("adapting");
+    setError("");
     lastResize.current = undefined;
     if (pendingResize.current) requestTerminalResize(pendingResize.current.cols, pendingResize.current.rows);
   }, [requestTerminalResize]);
@@ -343,13 +335,13 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
         </div>
         <button className="terminal-more-button" type="button" aria-label={t("session.actions")} aria-haspopup="dialog" onClick={() => setActionsOpen(true)}>•••</button>
       </header>
-      {otherClientInput || notice || error || terminalGeometry?.sourceKind === "desktop" ? <div className="terminal-status-stack">
+      {otherClientInput || notice || error ? <div className="terminal-status-stack">
         {otherClientInput ? <div className="terminal-status-line ephemeral-notice" role="status">{t("session.otherClientTyping")}</div> : null}
         {notice ? <div className="terminal-status-line ephemeral-notice" role="status">{notice}</div> : null}
         {error ? <div className="terminal-status-line inline-error" role="alert">{error}</div> : null}
-        {terminalGeometry?.sourceKind === "desktop" ? <div className="terminal-status-line geometry-notice" role="status"><span>桌面端已恢复 {terminalGeometry.cols}×{terminalGeometry.rows}</span><button type="button" onClick={readaptForPhone}>重新适配手机</button></div> : null}
       </div> : null}
-      {terminalGeometry?.sourceKind === "mobile" ? <span className="visually-hidden" aria-label="Phone terminal size">手机尺寸 {terminalGeometry.cols}×{terminalGeometry.rows}</span> : null}
+
+      {terminalGeometry?.sourceKind === "desktop" ? <button className="restore-phone-size-button" type="button" onClick={readaptForPhone} aria-label={t("session.restorePhoneSize")} title={t("session.restorePhoneSize")}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="7" y="2.5" width="10" height="19" rx="2" /><path d="M10.5 5h3M11 18.5h2" /></svg></button> : null}
 
       <MobileTerminal
         outputChunks={outputChunks}

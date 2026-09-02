@@ -17,7 +17,8 @@
         "height": 844,
         "minWidth": 320,
         "minHeight": 568,
-        "resizable": true
+        "resizable": true,
+        "disableInputAccessoryView": true
       }
     ],
     "security": {

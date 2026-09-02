@@ -313,10 +313,10 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices }: {
     setLaunching(key);
     setActionError("");
     try {
-      const created = await client.request<{ id: string }>(selectedHost.id, "session.create", quickStartParams(projectId, agent));
+      const created = await client.request<{ sessionId: string }>(selectedHost.id, "session.create", quickStartParams(projectId, agent));
       const latest = await client.request<SessionSummary[]>(selectedHost.id, "session.list", { includeArchived: false });
       setSnapshot((current) => current ? { ...current, sessions: latest, cached: false, error: undefined } : current);
-      const session = latest.find((candidate) => candidate.id === created.id);
+      const session = latest.find((candidate) => candidate.id === created.sessionId);
       if (session) open(session);
       else setActionError(t("session.createMissing"));
     } catch (error) {

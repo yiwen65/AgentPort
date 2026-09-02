@@ -23,7 +23,7 @@ function client(): RemoteClient {
       if (method === "project.list") return Promise.resolve([{ id: profileId === "host-1" ? "project-1" : "project-2", name: profileId === "host-1" ? "AgentPort" : "Laptop Project", rootPath: "/repo", pinned: false, sortOrder: 0 }]);
       if (method === "agent.supported") return Promise.resolve([{ agent: "claude", displayName: "Claude", install: {} }, { agent: "shell", displayName: "Shell", install: null }]);
       if (method === "agent.preferences") return Promise.resolve({ revision: 1, agentOrder: ["claude", "shell"], agentHidden: [] });
-      if (method === "session.create") return Promise.resolve({ id: "attention" });
+      if (method === "session.create") return Promise.resolve({ sessionId: "attention" });
       return Promise.resolve(undefined);
     }),
     subscribe: vi.fn(), onConnectionState: vi.fn().mockResolvedValue(async () => undefined),
@@ -49,7 +49,8 @@ describe("V2 Session workspace", () => {
 
   it("matches Active Agent filtering and desktop quick-start parameters", async () => {
     const remote = client();
-    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    const onOpenSession = vi.fn();
+    render(<SessionDashboard client={remote} onOpenSession={onOpenSession} />);
     expect(await screen.findByRole("button", { name: /Approval task/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Show active sessions" }));
     expect(screen.getByRole("button", { name: /Approval task/ })).toBeInTheDocument();
@@ -61,6 +62,10 @@ describe("V2 Session workspace", () => {
     await waitFor(() => expect(remote.request).toHaveBeenCalledWith("host-1", "session.create", expect.objectContaining({
       projectId: "project-1", agent: "claude", permission: "bypass", transport: "pty", riskAck: true,
     })));
+    await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith(expect.objectContaining({
+      session: expect.objectContaining({ id: "attention" }),
+    })));
+    expect(screen.queryByText("The Session was created, but its latest summary could not be loaded.")).not.toBeInTheDocument();
   });
 
   it("can collapse the last expanded project without treating it as the default state", async () => {
