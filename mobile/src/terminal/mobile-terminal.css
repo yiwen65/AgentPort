@@ -3,7 +3,8 @@
   flex: 1 1 auto;
   min-height: 0;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
+  background: #18181e;
 }
 
 .mobile-terminal-heading h2,
@@ -20,11 +21,9 @@
   flex: 1 1 auto;
   height: min(44vh, 420px);
   min-height: 260px;
-  padding: 7px;
+  padding: 10px 14px;
   overflow: hidden;
-  border-radius: 7px;
-  background: #11151f;
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 10%);
+  background: #18181e;
   touch-action: pan-y;
   -webkit-user-select: text;
   user-select: text;
@@ -33,9 +32,14 @@
 .mobile-terminal-keys {
   flex: 0 0 auto;
   display: flex;
-  gap: 5px;
+  min-height: 45px;
+  align-items: flex-start;
+  gap: 0;
   overflow-x: auto;
-  padding: 0 1px 2px;
+  padding: 0 10px;
+  border-top: 1px solid rgba(255, 255, 255, .075);
+  background: #18181e;
+  overscroll-behavior-x: contain;
   scrollbar-width: none;
 }
 .mobile-terminal-keys::-webkit-scrollbar { display: none; }
@@ -44,18 +48,29 @@
   flex: 0 0 auto;
   min-width: 44px;
   min-height: 44px;
-  padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel-strong);
-  color: var(--text);
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #a8a8b1;
   font: inherit;
-  font-weight: 650;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mobile-terminal-keys button + button {
+  border-left: 1px solid rgba(255, 255, 255, .055);
+}
+
+.mobile-terminal-keys button:active {
+  background: rgba(255, 255, 255, .06);
+  color: #f1f1f4;
 }
 
 .mobile-terminal-surface .xterm,
 .mobile-terminal-surface .xterm-viewport {
   height: 100%;
+  background: #18181e !important;
 }
 
 /* A Session is an immersive terminal, not a card inside the dashboard. */
@@ -68,21 +83,24 @@
   height: 100dvh;
   min-height: 0;
   padding:
-    max(10px, env(safe-area-inset-top))
-    max(10px, env(safe-area-inset-right))
-    max(8px, env(safe-area-inset-bottom))
-    max(10px, env(safe-area-inset-left));
+    max(8px, env(safe-area-inset-top))
+    0
+    max(6px, env(safe-area-inset-bottom));
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
   overflow: hidden;
-  background: #17171e;
+  background: #18181e;
 }
 
 .session-workspace .session-workspace-header,
-.session-workspace .ephemeral-notice,
-.session-workspace .inline-error,
-.session-workspace .geometry-notice {
+.session-workspace .terminal-status-stack {
   flex: 0 0 auto;
+}
+
+.session-workspace .session-workspace-header {
+  padding-inline:
+    max(12px, env(safe-area-inset-left))
+    max(12px, env(safe-area-inset-right));
 }
 
 .session-workspace .mobile-terminal-spike {
@@ -92,8 +110,25 @@
 .session-workspace .mobile-terminal-surface {
   height: auto;
   min-height: 0;
-  padding: 8px;
-  border-radius: 5px;
+  padding:
+    12px
+    max(16px, env(safe-area-inset-right))
+    8px
+    max(16px, env(safe-area-inset-left));
+}
+
+.session-workspace .mobile-terminal-keys {
+  padding-inline:
+    max(10px, env(safe-area-inset-left))
+    max(10px, env(safe-area-inset-right));
+}
+
+/* WKWebView can show the iOS input assistant without shrinking visualViewport.
+   Reserve its height only while xterm owns text focus so terminal keys remain tappable. */
+@supports selector(.mobile-terminal-spike:has(.xterm-helper-textarea:focus)) {
+  .session-workspace .mobile-terminal-spike:has(.xterm-helper-textarea:focus) .mobile-terminal-keys {
+    padding-bottom: 58px;
+  }
 }
 
 .session-workspace .modal-backdrop {
@@ -104,16 +139,25 @@
   .session-workspace.session-workspace {
     padding-top: max(5px, env(safe-area-inset-top));
     padding-bottom: max(5px, env(safe-area-inset-bottom));
-    gap: 5px;
+  }
+
+  .session-workspace .session-workspace-header {
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+    min-height: 54px;
+  }
+
+  .session-workspace .terminal-back-button,
+  .session-workspace .terminal-more-button {
+    width: 44px;
+    height: 44px;
   }
 
   .session-workspace .session-workspace-header h1 {
-    font-size: 18px;
+    font-size: 14px;
   }
 
   .session-workspace .session-workspace-header p {
     margin-top: 1px;
-    font-size: 11px;
+    font-size: 9px;
   }
-
 }

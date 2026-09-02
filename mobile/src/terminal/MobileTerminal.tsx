@@ -64,7 +64,13 @@ export function MobileTerminal({
       scrollback: 10_000,
       fontSize,
       screenReaderMode: true,
-      theme: { background: "#11151f", foreground: "#f4f6fb" },
+      theme: {
+        background: "#18181e",
+        foreground: "#d8d8de",
+        cursor: "#f4f4f7",
+        cursorAccent: "#18181e",
+        selectionBackground: "#4f5f9a80",
+      },
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);

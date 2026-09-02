@@ -287,7 +287,12 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices }: {
 
   const open = (session: SessionSummary) => {
     if (!selectedHost) return;
-    onOpenSession({ hostProfileId: selectedHost.id, hostName: selectedHost.name, session });
+    onOpenSession({
+      hostProfileId: selectedHost.id,
+      hostName: selectedHost.name,
+      projectName: projects.find((project) => project.id === session.projectId)?.name,
+      session,
+    });
   };
 
   const quickLaunch = async (projectId: string, agent: string) => {

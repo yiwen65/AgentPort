@@ -150,5 +150,6 @@ export interface SessionEventPayload {
 export interface OpenSession {
   hostProfileId: string;
   hostName: string;
+  projectName?: string;
   session: SessionSummary;
 }

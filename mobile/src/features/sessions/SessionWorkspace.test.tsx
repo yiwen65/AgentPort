@@ -26,6 +26,7 @@ vi.mock("../../terminal/MobileTerminal", () => ({
 const open: OpenSession = {
   hostProfileId: "host-1",
   hostName: "Studio",
+  projectName: "AgentSessions",
   session: {
     id: "ses-1", projectId: "prj-1", presetId: "pre-1", title: "Agent task", cwd: "/tmp", lifecycle: "running", resumePrecision: "exact", adapterType: "pi", transport: "json_rpc", permissionMode: "native", createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:01:00Z",
   },
@@ -55,6 +56,7 @@ describe("SessionWorkspace", () => {
     const { client, request, emit } = setupClient();
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     expect(await screen.findByText("Adapting for phone")).toBeInTheDocument();
+    expect(screen.getByText("AgentSessions")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Resize terminal" }));
     expect(await screen.findByText("Live")).toBeInTheDocument();
     await act(async () => emit({ subscriptionId: "sub", eventType: "output", cursor: { runId: "run", runOrdinal: 1, generation: 0, offset: 5, statusSequence: 0 }, payload: { session_id: "ses-1", dataBase64: btoa("hello") } }));

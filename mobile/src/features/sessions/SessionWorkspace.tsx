@@ -328,16 +328,27 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
     <article className="session-workspace" aria-labelledby="session-title">
       <header className="session-workspace-header">
         <button className="terminal-back-button" type="button" onClick={onClose} aria-label={t("session.back")}>‹</button>
-        <div><h1 id="session-title">{open.session.title}</h1><p>{open.hostName} · {open.session.projectId} · {open.session.adapterType}</p></div>
-        <div className="terminal-header-actions">
-          <span className={`live-pill ${connectionLabel}`}>{t(`session.connection.${connectionLabel}`)}</span>
-          <button className="terminal-more-button" type="button" aria-label={t("session.actions")} aria-haspopup="dialog" onClick={() => setActionsOpen(true)}>•••</button>
+        <div className="session-workspace-identity">
+          <h1 id="session-title">{open.session.title}</h1>
+          <p title={`${open.hostName} · ${open.projectName ?? open.session.projectId} · ${open.session.adapterType}`}>
+            <span className={`session-connection-state ${connectionLabel}`} role="status">
+              <span aria-hidden="true" />
+              {t(`session.connection.${connectionLabel}`)}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span>{open.projectName ?? open.session.projectId}</span>
+            <span aria-hidden="true">·</span>
+            <span>{open.session.adapterType}</span>
+          </p>
         </div>
+        <button className="terminal-more-button" type="button" aria-label={t("session.actions")} aria-haspopup="dialog" onClick={() => setActionsOpen(true)}>•••</button>
       </header>
-      {otherClientInput ? <div className="ephemeral-notice" role="status">{t("session.otherClientTyping")}</div> : null}
-      {notice ? <div className="ephemeral-notice" role="status">{notice}</div> : null}
-      {error ? <div className="inline-error" role="alert">{error}</div> : null}
-      {terminalGeometry?.sourceKind === "desktop" ? <div className="geometry-notice" role="status"><span>桌面端已恢复 {terminalGeometry.cols}×{terminalGeometry.rows}</span><button type="button" onClick={readaptForPhone}>重新适配手机</button></div> : null}
+      {otherClientInput || notice || error || terminalGeometry?.sourceKind === "desktop" ? <div className="terminal-status-stack">
+        {otherClientInput ? <div className="terminal-status-line ephemeral-notice" role="status">{t("session.otherClientTyping")}</div> : null}
+        {notice ? <div className="terminal-status-line ephemeral-notice" role="status">{notice}</div> : null}
+        {error ? <div className="terminal-status-line inline-error" role="alert">{error}</div> : null}
+        {terminalGeometry?.sourceKind === "desktop" ? <div className="terminal-status-line geometry-notice" role="status"><span>桌面端已恢复 {terminalGeometry.cols}×{terminalGeometry.rows}</span><button type="button" onClick={readaptForPhone}>重新适配手机</button></div> : null}
+      </div> : null}
       {terminalGeometry?.sourceKind === "mobile" ? <span className="visually-hidden" aria-label="Phone terminal size">手机尺寸 {terminalGeometry.cols}×{terminalGeometry.rows}</span> : null}
 
       <MobileTerminal
