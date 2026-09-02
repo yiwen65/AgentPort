@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build AgentPort for macOS (official tier: macOS 13+).
-# Default: current-arch .app + .dmg with the agentport-host sidecar embedded.
+# Default: current-arch .app + .dmg with Host and Remote Bridge sidecars embedded.
 # Universal (arm64+x86_64): requires rustup with both targets installed —
 #   rustup target add aarch64-apple-darwin x86_64-apple-darwin
 #   scripts/build-macos.sh --universal
@@ -18,13 +18,15 @@ echo "== frontend test gate =="
 (cd src && npm test)
 
 echo "== release build =="
-cargo build --release -p agentport-host -p agentport-cli
+cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-cli
 
 TRIPLE=$(rustc -vV | awk '/^host:/ {print $2}')
 mkdir -p src-tauri/binaries
-cp target/release/agentport-host "src-tauri/binaries/agentport-host-${TRIPLE}"
-chmod +x "src-tauri/binaries/agentport-host-${TRIPLE}"
-echo "sidecar: src-tauri/binaries/agentport-host-${TRIPLE}"
+for binary in agentport-host agentport-remote-bridge agentport-mosh-attach; do
+  cp "target/release/$binary" "src-tauri/binaries/$binary-${TRIPLE}"
+  chmod +x "src-tauri/binaries/$binary-${TRIPLE}"
+  echo "sidecar: src-tauri/binaries/$binary-${TRIPLE}"
+done
 
 if [ "$UNIVERSAL" = 1 ]; then
   if ! command -v rustup >/dev/null; then
@@ -33,12 +35,14 @@ if [ "$UNIVERSAL" = 1 ]; then
     exit 2
   fi
   rustup target add aarch64-apple-darwin x86_64-apple-darwin
-  cargo build --release -p agentport-host --target aarch64-apple-darwin
-  cargo build --release -p agentport-host --target x86_64-apple-darwin
-  lipo -create \
-    target/aarch64-apple-darwin/release/agentport-host \
-    target/x86_64-apple-darwin/release/agentport-host \
-    -output src-tauri/binaries/agentport-host-universal-apple-darwin
+  cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach --target aarch64-apple-darwin
+  cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach --target x86_64-apple-darwin
+  for binary in agentport-host agentport-remote-bridge agentport-mosh-attach; do
+    lipo -create \
+      "target/aarch64-apple-darwin/release/$binary" \
+      "target/x86_64-apple-darwin/release/$binary" \
+      -output "src-tauri/binaries/$binary-universal-apple-darwin"
+  done
   (cd src-tauri && ../src/node_modules/.bin/tauri build --ci --target universal-apple-darwin)
 else
   (cd src-tauri && ../src/node_modules/.bin/tauri build --ci)

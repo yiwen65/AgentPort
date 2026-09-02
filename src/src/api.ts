@@ -202,6 +202,13 @@ export type ExportArgs = {
   stripAnsi: boolean;
 };
 
+export type ResizePtyAuthority = {
+  expectedRevision: number;
+  sourceKind: "desktop" | "mobile";
+  sourceDeviceId?: string | null;
+  orientation?: string | null;
+};
+
 export type NativeCoverageSummary = {
   total: number;
   captured: number;
@@ -242,8 +249,8 @@ export const api = {
     invoke<void>("rename_project", { id, name }),
   setProjectLayout: (entries: ProjectLayoutEntry[], activeSession: string | null) =>
     invoke<ProjectView[]>("set_project_layout", { entries, activeSession }),
-  removeProject: (id: string) =>
-    invoke<DestructiveRemovalOutcome>("remove_project", { id }),
+  removeProject: (preflight: ProjectRemovalPreflight) =>
+    invoke<DestructiveRemovalOutcome>("remove_project", { preflight }),
   projectRemovePreflight: (id: string) =>
     invoke<ProjectRemovalPreflight>("project_remove_preflight", { id }),
   deleteProjectArchivedSessions: (
@@ -288,7 +295,18 @@ export const api = {
     rows: number,
     pixelWidth: number,
     pixelHeight: number,
-  ) => invoke<void>("resize_pty", { sessionId, cols, rows, pixelWidth, pixelHeight }),
+    authority?: ResizePtyAuthority,
+  ) => invoke<void>("resize_pty", {
+    sessionId,
+    cols,
+    rows,
+    pixelWidth,
+    pixelHeight,
+    expectedRevision: authority?.expectedRevision ?? null,
+    sourceKind: authority?.sourceKind ?? null,
+    sourceDeviceId: authority?.sourceDeviceId ?? null,
+    orientation: authority?.orientation ?? null,
+  }),
   stopSession: (sessionId: string) => invoke<void>("stop_session", { sessionId }),
   interruptSession: (sessionId: string) => invoke<void>("interrupt_session", { sessionId }),
   resumeSession: (sessionId: string) => invoke<void>("resume_session", { sessionId }),

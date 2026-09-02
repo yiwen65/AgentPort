@@ -1,4 +1,4 @@
-use crate::db::Db;
+use crate::db::{ensure_project_not_removing_conn, Db};
 use crate::error::{CoreError, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
@@ -162,6 +162,7 @@ impl<'a> OperationJournal<'a> {
     pub fn insert(&self, operation: &BranchOperation) -> Result<()> {
         let mut conn = self.db.conn().lock().unwrap();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_project_not_removing_conn(&tx, &operation.project_id)?;
         tx.execute(
             "INSERT INTO branch_operations(
                 id,kind,project_id,repo_key,checkout_root,source_branch,source_commit,target_branch,
@@ -529,6 +530,22 @@ mod tests {
                  END;",
             )
             .unwrap();
+    }
+
+    #[test]
+    fn insert_rejects_a_project_with_an_active_removal_fence() {
+        let (db, operation) = fixture();
+        db.begin_project_removal(&operation.project_id).unwrap();
+        let journal = OperationJournal::new(&db);
+
+        assert!(matches!(
+            journal.insert(&operation),
+            Err(CoreError::Conflict(_))
+        ));
+        assert!(matches!(
+            journal.get(&operation.id),
+            Err(CoreError::NotFound(_))
+        ));
     }
 
     #[test]

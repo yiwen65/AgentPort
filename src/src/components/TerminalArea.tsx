@@ -44,6 +44,7 @@ import {
   scrollTerminalViewport,
   scrollToBottom,
   setTerminalActive,
+  restoreDesktopTerminalSize,
 } from "../terminals";
 import {
   dropTreeEntryIntoTerminal,
@@ -88,6 +89,11 @@ import DocumentPanel from "./DocumentPanel";
 import StatusDot from "./StatusDot";
 import { useTranslation } from "react-i18next";
 import { shouldShowTerminalAttachOverlay } from "../terminalAttachVisibility";
+import {
+  dismissGeometryRevision,
+  readDismissedGeometryRevision,
+  terminalGeometryPromptState,
+} from "../terminalGeometryPrompt";
 
 // ---------------------------------------------------------------------------
 // persistent pane
@@ -830,6 +836,74 @@ function SuspendedBanner({ ses }: { ses: SessionView }) {
   );
 }
 
+function PhoneGeometryBanner({ ses }: { ses: SessionView }) {
+  const { t } = useTranslation("session");
+  const geometry = useStore(
+    (state) => state.runtime[ses.id]?.terminalGeometry ?? null,
+  );
+  const [dismissedKey, setDismissedKey] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const currentKey = geometry
+    ? `${geometry.runId}:${geometry.revision}`
+    : null;
+  const dismissedRevision =
+    dismissedKey === currentKey
+      ? geometry?.revision ?? null
+      : readDismissedGeometryRevision(ses.id, geometry);
+  const prompt = terminalGeometryPromptState(geometry, dismissedRevision);
+  if (!prompt.visible || !geometry || prompt.revision === null) return null;
+
+  const source = geometry.sourceDeviceId
+    ? t("ui.phoneGeometry.sourceDevice", { device: geometry.sourceDeviceId })
+    : t("ui.phoneGeometry.sourcePhone");
+
+  return (
+    <div className="banner info phone-geometry-banner" role="status">
+      <span className="phone-geometry-icon" aria-hidden="true">▯</span>
+      <strong>{t("ui.phoneGeometry.title")}</strong>
+      <span>
+        {t("ui.phoneGeometry.detail", {
+          cols: geometry.cols,
+          rows: geometry.rows,
+          source,
+        })}
+      </span>
+      <span className="spacer" />
+      <button
+        type="button"
+        className="btn small primary"
+        disabled={restoring}
+        onClick={() => {
+          setRestoring(true);
+          void restoreDesktopTerminalSize(ses.id, geometry.revision)
+            .catch((error) => {
+              toast(
+                t("ui.phoneGeometry.restoreFailed", { detail: errorText(error) }),
+                "error",
+              );
+            })
+            .finally(() => setRestoring(false));
+        }}
+      >
+        {restoring
+          ? t("ui.phoneGeometry.restoring")
+          : t("ui.phoneGeometry.restore")}
+      </button>
+      <button
+        type="button"
+        className="btn small ghost phone-geometry-dismiss"
+        aria-label={t("ui.phoneGeometry.dismiss")}
+        onClick={() => {
+          dismissGeometryRevision(ses.id, geometry);
+          setDismissedKey(currentKey);
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // session status affordance
 // ---------------------------------------------------------------------------
@@ -1108,6 +1182,7 @@ function SessionPaneLeaf({
         ) : (
           <>
             <div className="workspace-banners">
+              <PhoneGeometryBanner ses={ses} />
               <ReconnectBanner ses={ses} />
               <SuspendedBanner ses={ses} />
             </div>

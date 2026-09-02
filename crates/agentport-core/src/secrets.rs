@@ -115,6 +115,29 @@ impl CredentialBroker {
         let text = std::str::from_utf8(value)
             .map_err(|_| CoreError::Validation("secret value must be valid UTF-8".into()))?;
         let account = format!("{preset_id}:{env_name}");
+        self.store_account(env_name, account, text)
+    }
+
+    /// Write to a unique account first so a failed SQLite/preset transaction
+    /// can be compensated without overwriting an already-active credential.
+    pub fn store_staged(&self, env_name: &str, preset_id: &str, value: &[u8]) -> Result<SecretRef> {
+        if !is_valid_env_name(env_name) {
+            return Err(CoreError::Validation(
+                "invalid environment variable name".into(),
+            ));
+        }
+        if value.len() < redact::MIN_SECRET_LEN {
+            return Err(CoreError::Validation(
+                "secret is too short for redaction".into(),
+            ));
+        }
+        let text = std::str::from_utf8(value)
+            .map_err(|_| CoreError::Validation("secret value must be valid UTF-8".into()))?;
+        let account = format!("{preset_id}:{env_name}:{}", ids::new_uuid());
+        self.store_account(env_name, account, text)
+    }
+
+    fn store_account(&self, env_name: &str, account: String, text: &str) -> Result<SecretRef> {
         let entry =
             keyring::Entry::new(SERVICE_NAME, &account).map_err(|e| store_err("entry", e))?;
         entry

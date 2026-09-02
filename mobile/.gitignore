@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+src-tauri/target/
+src-tauri/gen/apple/DerivedData/
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/app/src/main/jniLibs/*/libagentport_mosh.so
+src-tauri/gen/android/app/src/main/jniLibs/*/libc++_shared.so
+native/mosh/build/
+native/mosh/downloads/
+native/mosh/sources/
+*.keystore
+*.jks
+signing/*.local

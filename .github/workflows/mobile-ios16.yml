@@ -1,0 +1,62 @@
+name: Mobile iOS 16 simulator gate
+
+on:
+  workflow_dispatch:
+
+# Apple no longer offers iOS 16 runtimes through the current Xcode catalog.
+# This gate intentionally targets a maintained self-hosted runner with an
+# already-installed official iOS 16 runtime; latest-runtime runners must not
+# be relabeled to bypass the minimum-version acceptance criterion.
+jobs:
+  ios16-simulator:
+    runs-on: [self-hosted, macOS, agentport-ios16]
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prove official iOS 16 runtime is installed
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun simctl list runtimes available
+          xcrun simctl list runtimes available | grep -E 'iOS 16\.[0-9]+'
+      - name: Install JavaScript and Rust targets
+        run: |
+          set -euo pipefail
+          npm ci
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+          command -v xcodegen pod idevicesyslog
+      - name: Unit and web build
+        run: |
+          npm test
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Build unsigned simulator bundle
+        run: npm run tauri -- ios build --debug --target aarch64-sim --no-sign --ci
+      - name: Boot iOS 16, install, launch, and capture
+        run: |
+          set -euo pipefail
+          RUNTIME=$(xcrun simctl list runtimes available -j | python3 -c '
+          import json,sys
+          runtimes=json.load(sys.stdin)["runtimes"]
+          print(next(r["identifier"] for r in runtimes if r.get("isAvailable") and r["name"].startswith("iOS 16.")))')
+          DEVICE_TYPE=$(xcrun simctl list devicetypes -j | python3 -c '
+          import json,sys
+          types=json.load(sys.stdin)["devicetypes"]
+          print(next(d["identifier"] for d in types if d["name"] == "iPhone 14"))')
+          UDID=$(xcrun simctl create AgentPort-iOS16 "$DEVICE_TYPE" "$RUNTIME")
+          trap 'xcrun simctl shutdown "$UDID" 2>/dev/null || true; xcrun simctl delete "$UDID" 2>/dev/null || true' EXIT
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          APP='src-tauri/gen/apple/build/arm64-sim/AgentPort Mobile.app'
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl launch "$UDID" com.agentport.mobile
+          sleep 3
+          xcrun simctl io "$UDID" screenshot agentport-mobile-ios16.png
+          test -s agentport-mobile-ios16.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentport-mobile-ios16-smoke
+          path: mobile/agentport-mobile-ios16.png

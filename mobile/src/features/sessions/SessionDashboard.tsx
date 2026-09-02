@@ -1,0 +1,343 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { ConnectionState, HostProfileSummary, RemoteClient } from "../../protocol/remoteClient";
+import { deliverAttentionNotifications, SystemNotificationSink } from "./attentionNotifications";
+import { activeAgentSessions, orderedVisibleAgents, quickStartParams, statusClass, type SessionLayout } from "./sessionModel";
+import type { AgentPreferences, AttentionCursor, AttentionPollResult, OpenSession, ProjectSummary, SessionSummary, SupportedAgent } from "./types";
+
+const DEVICE_KEY = "agentport-mobile-v2:selected-device";
+const WORKSPACE_PREFIX = "agentport-mobile-v2:workspace:";
+const ATTENTION_CURSOR_PREFIX = "agentport-mobile-v2:attention-cursor:";
+const ATTENTION_SEEDED_PREFIX = "agentport-mobile-v2:attention-seeded:";
+
+interface DeviceSnapshot {
+  sessions: SessionSummary[];
+  projects: ProjectSummary[];
+  agents: SupportedAgent[];
+  preferences?: AgentPreferences;
+  cached: boolean;
+  error?: string;
+}
+
+interface PersistedWorkspace {
+  layout: SessionLayout;
+  expandedProjects: string[];
+  recentOpen: boolean;
+  scrollTop: number;
+}
+
+const emptyWorkspace = (): PersistedWorkspace => ({ layout: "projects", expandedProjects: [], recentOpen: false, scrollTop: 0 });
+
+function workspaceKey(deviceId: string) {
+  return `${WORKSPACE_PREFIX}${deviceId}`;
+}
+
+function readWorkspace(deviceId: string): PersistedWorkspace {
+  try {
+    const value = JSON.parse(localStorage.getItem(workspaceKey(deviceId)) ?? "null") as Partial<PersistedWorkspace> | null;
+    return {
+      layout: value?.layout === "active" ? "active" : "projects",
+      expandedProjects: Array.isArray(value?.expandedProjects) ? value.expandedProjects.filter((item): item is string => typeof item === "string") : [],
+      recentOpen: value?.recentOpen === true,
+      scrollTop: typeof value?.scrollTop === "number" && value.scrollTop >= 0 ? value.scrollTop : 0,
+    };
+  } catch {
+    return emptyWorkspace();
+  }
+}
+
+function persistWorkspace(deviceId: string, value: PersistedWorkspace) {
+  try { localStorage.setItem(workspaceKey(deviceId), JSON.stringify(value)); } catch { /* device UI state is best effort */ }
+}
+
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object" && "message" in error) return String((error as { message: unknown }).message);
+  return String(error);
+}
+
+function sessionTime(session: SessionSummary): number {
+  const parsed = Date.parse(session.latestStatus?.occurredAt ?? session.updatedAt ?? session.createdAt);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function stateLabel(session: SessionSummary): string {
+  return session.latestStatus?.state ?? session.lifecycle;
+}
+
+function SessionRow({ session, host, onOpen }: {
+  session: SessionSummary;
+  host: HostProfileSummary;
+  onOpen: () => void;
+}) {
+  const disabled = Boolean(session.archivedAt) || host.connectionState !== "connected";
+  return (
+    <li className="v2-session-row">
+      <span className={`session-status-dot ${statusClass(session)}`} role="img" aria-label={stateLabel(session)} />
+      <button type="button" disabled={disabled} onClick={onOpen} aria-label={`${session.title}, ${stateLabel(session)}`}>
+        <span><strong>{session.title}</strong><small>{session.adapterType} · {stateLabel(session)}</small></span>
+        <time dateTime={session.updatedAt}>{new Date(session.updatedAt).toLocaleDateString()}</time>
+      </button>
+      {session.unreadAttention ? <span className="attention-mark" aria-label="unread attention">•</span> : null}
+    </li>
+  );
+}
+
+export function SessionDashboard({ client, onOpenSession }: { client: RemoteClient; onOpenSession: (session: OpenSession) => void }) {
+  const { t } = useTranslation();
+  const [hosts, setHosts] = useState<HostProfileSummary[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState(() => {
+    try { return localStorage.getItem(DEVICE_KEY) ?? ""; } catch { return ""; }
+  });
+  const [snapshot, setSnapshot] = useState<DeviceSnapshot>();
+  const [workspace, setWorkspace] = useState<PersistedWorkspace>(emptyWorkspace);
+  const [loading, setLoading] = useState(true);
+  const [launching, setLaunching] = useState<string>();
+  const [actionError, setActionError] = useState("");
+  const [notificationError, setNotificationError] = useState("");
+  const mounted = useRef(true);
+  const attentionCursor = useRef<AttentionCursor>();
+  const attentionSeeded = useRef(false);
+  const deliveredAttention = useRef(new Set<string>());
+  const notificationSink = useRef(new SystemNotificationSink());
+  const snapshotRef = useRef<DeviceSnapshot>();
+  const workspaceRef = useRef(workspace);
+  snapshotRef.current = snapshot;
+  workspaceRef.current = workspace;
+
+  const selectedHost = hosts.find((host) => host.id === selectedDeviceId);
+
+  const refreshDevice = useCallback(async (deviceId: string) => {
+    if (!deviceId) return;
+    try {
+      const [sessions, projects, agents, preferences] = await Promise.all([
+        client.request<SessionSummary[]>(deviceId, "session.list", { includeArchived: false }),
+        client.request<ProjectSummary[]>(deviceId, "project.list", {}),
+        client.request<SupportedAgent[]>(deviceId, "agent.supported", {}),
+        client.request<AgentPreferences>(deviceId, "agent.preferences", {}),
+      ]);
+      if (!mounted.current || deviceId !== selectedDeviceId) return;
+      setSnapshot({ sessions, projects, agents, preferences, cached: false });
+    } catch (error) {
+      if (!mounted.current || deviceId !== selectedDeviceId) return;
+      setSnapshot((current) => ({
+        sessions: current?.sessions ?? [],
+        projects: current?.projects ?? [],
+        agents: current?.agents ?? [],
+        preferences: current?.preferences,
+        cached: true,
+        error: errorText(error),
+      }));
+    }
+  }, [client, selectedDeviceId]);
+
+  useEffect(() => {
+    mounted.current = true;
+    let unsubscribe: (() => Promise<void>) | undefined;
+    void client.listHostProfiles().then((profiles) => {
+      if (!mounted.current) return;
+      setHosts(profiles);
+      setSelectedDeviceId((current) => profiles.some((profile) => profile.id === current) ? current : profiles[0]?.id ?? "");
+    }).catch((error) => setActionError(errorText(error))).finally(() => mounted.current && setLoading(false));
+    void client.onConnectionState((event) => {
+      setHosts((current) => current.map((host) => host.id === event.profileId ? { ...host, connectionState: event.state } : host));
+      if (event.profileId === selectedDeviceId && event.state === "connected") void refreshDevice(event.profileId);
+      if (event.profileId === selectedDeviceId && event.state !== "connected") setSnapshot((current) => current ? { ...current, cached: true } : current);
+    }).then((value) => { if (!mounted.current) void value(); else unsubscribe = value; });
+    return () => {
+      mounted.current = false;
+      if (unsubscribe) void unsubscribe();
+    };
+  }, [client, refreshDevice, selectedDeviceId]);
+
+  useEffect(() => {
+    if (!selectedDeviceId) {
+      setSnapshot(undefined);
+      setWorkspace(emptyWorkspace());
+      return;
+    }
+    try { localStorage.setItem(DEVICE_KEY, selectedDeviceId); } catch { /* selection persistence is best effort */ }
+    const restored = readWorkspace(selectedDeviceId);
+    setWorkspace(restored);
+    if (restored.scrollTop > 0) window.requestAnimationFrame(() => window.scrollTo({ top: restored.scrollTop, behavior: "auto" }));
+    setSnapshot(undefined);
+    const host = hosts.find((candidate) => candidate.id === selectedDeviceId);
+    if (host?.connectionState === "connected") void refreshDevice(selectedDeviceId);
+  }, [hosts, refreshDevice, selectedDeviceId]);
+
+  useEffect(() => () => {
+    if (selectedDeviceId) persistWorkspace(selectedDeviceId, { ...workspaceRef.current, recentOpen: false, scrollTop: window.scrollY });
+  }, [selectedDeviceId]);
+
+  useEffect(() => {
+    attentionCursor.current = undefined;
+    attentionSeeded.current = false;
+    deliveredAttention.current.clear();
+    if (!selectedDeviceId) return;
+    try {
+      const stored = localStorage.getItem(`${ATTENTION_CURSOR_PREFIX}${selectedDeviceId}`);
+      if (stored) {
+        attentionCursor.current = JSON.parse(stored) as AttentionCursor;
+        attentionSeeded.current = true;
+      } else attentionSeeded.current = localStorage.getItem(`${ATTENTION_SEEDED_PREFIX}${selectedDeviceId}`) === "1";
+    } catch { /* invalid cursor safely starts a silent baseline scan */ }
+  }, [selectedDeviceId]);
+
+  useEffect(() => {
+    if (!selectedDeviceId || selectedHost?.connectionState !== "connected") return;
+    let busy = false;
+    const poll = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const result = await client.request<AttentionPollResult>(selectedDeviceId, "attention.poll", { cursor: attentionCursor.current ?? null, limit: 256 });
+        const wasSeeded = attentionSeeded.current;
+        if (wasSeeded && result.events.length) {
+          const titles = new Map((snapshotRef.current?.sessions ?? []).map((session) => [session.id, session.title]));
+          await deliverAttentionNotifications(result.events.map((event) => ({
+            sessionId: event.sessionId,
+            sessionTitle: titles.get(event.sessionId),
+            kind: event.kind,
+            runId: event.runId,
+            runOrdinal: event.cursor.runOrdinal,
+            sequence: event.cursor.sequence,
+            occurredAt: event.cursor.occurredAt,
+          })), deliveredAttention.current, notificationSink.current).catch((error) => setNotificationError(errorText(error)));
+        }
+        if (result.nextCursor) {
+          attentionCursor.current = result.nextCursor;
+          try { localStorage.setItem(`${ATTENTION_CURSOR_PREFIX}${selectedDeviceId}`, JSON.stringify(result.nextCursor)); } catch { /* cursor persistence is best effort */ }
+        }
+        // A new install drains old attention silently in bounded pages. Only
+        // after reaching the tail can later events become system notifications.
+        if (!wasSeeded && result.events.length < 256) {
+          attentionSeeded.current = true;
+          try { localStorage.setItem(`${ATTENTION_SEEDED_PREFIX}${selectedDeviceId}`, "1"); } catch { /* best effort */ }
+        }
+      } catch {
+        // Session status refresh remains useful when notification polling is unavailable.
+      } finally {
+        busy = false;
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 5_000);
+    return () => window.clearInterval(timer);
+  }, [client, selectedDeviceId, selectedHost?.connectionState]);
+
+  useEffect(() => {
+    if (!selectedDeviceId || selectedHost?.connectionState !== "connected") return;
+    const timer = window.setInterval(() => void refreshDevice(selectedDeviceId), 5_000);
+    return () => window.clearInterval(timer);
+  }, [refreshDevice, selectedDeviceId, selectedHost?.connectionState]);
+
+  const updateWorkspace = (next: PersistedWorkspace) => {
+    setWorkspace(next);
+    if (selectedDeviceId) persistWorkspace(selectedDeviceId, next);
+  };
+
+  const sessions = snapshot?.sessions.filter((session) => !session.archivedAt) ?? [];
+  const active = useMemo(() => activeAgentSessions(sessions), [sessions]);
+  const agents = useMemo(() => orderedVisibleAgents(snapshot?.agents ?? [], snapshot?.preferences), [snapshot?.agents, snapshot?.preferences]);
+  const projects = useMemo(() => {
+    const known = new Map((snapshot?.projects ?? []).map((project) => [project.id, project]));
+    for (const session of sessions) {
+      if (!known.has(session.projectId)) known.set(session.projectId, { id: session.projectId, name: session.projectId, rootPath: session.cwd, pinned: false, sortOrder: Number.MAX_SAFE_INTEGER });
+    }
+    return [...known.values()].sort((a, b) => Number(b.pinned) - Number(a.pinned) || a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+  }, [sessions, snapshot?.projects]);
+  const recent = useMemo(() => [...sessions].sort((a, b) => sessionTime(b) - sessionTime(a)).slice(0, 12), [sessions]);
+
+  const open = (session: SessionSummary) => {
+    if (!selectedHost) return;
+    onOpenSession({ hostProfileId: selectedHost.id, hostName: selectedHost.name, session });
+  };
+
+  const quickLaunch = async (projectId: string, agent: string) => {
+    if (!selectedHost || selectedHost.connectionState !== "connected") return;
+    const key = `${projectId}:${agent}`;
+    if (launching) return;
+    setLaunching(key);
+    setActionError("");
+    try {
+      const created = await client.request<{ id: string }>(selectedHost.id, "session.create", quickStartParams(projectId, agent));
+      const latest = await client.request<SessionSummary[]>(selectedHost.id, "session.list", { includeArchived: false });
+      setSnapshot((current) => current ? { ...current, sessions: latest, cached: false, error: undefined } : current);
+      const session = latest.find((candidate) => candidate.id === created.id);
+      if (session) open(session);
+      else setActionError(t("session.createMissing"));
+    } catch (error) {
+      setActionError(errorText(error));
+    } finally {
+      setLaunching(undefined);
+    }
+  };
+
+  const toggleProject = (projectId: string) => {
+    const expanded = new Set(workspace.expandedProjects);
+    if (expanded.has(projectId)) expanded.delete(projectId); else expanded.add(projectId);
+    updateWorkspace({ ...workspace, expandedProjects: [...expanded] });
+  };
+
+  return (
+    <section className="session-dashboard v2-workspace" aria-labelledby="dashboard-title">
+      <header className="v2-workspace-header">
+        <label className="device-picker">
+          <span>Device</span>
+          <select value={selectedDeviceId} onChange={(event) => {
+            if (selectedDeviceId) persistWorkspace(selectedDeviceId, { ...workspaceRef.current, recentOpen: false, scrollTop: window.scrollY });
+            setSelectedDeviceId(event.target.value);
+          }} aria-label="Current device">
+            {hosts.map((host) => <option key={host.id} value={host.id}>{host.name}</option>)}
+          </select>
+        </label>
+        <button type="button" className="icon-button" disabled={!selectedDeviceId} onClick={() => void refreshDevice(selectedDeviceId)} aria-label={t("dashboard.refresh")}>↻</button>
+      </header>
+
+      <div className="workspace-title-row">
+        <div><h1 id="dashboard-title">{t("dashboard.title")}</h1><p>{selectedHost ? `${selectedHost.name} · ${sessions.length}` : t("dashboard.noHosts")}</p></div>
+        <button type="button" onClick={() => updateWorkspace({ ...workspace, recentOpen: true })}>Recent</button>
+      </div>
+
+      <div className="layout-toggle" role="group" aria-label="Session layout">
+        <button type="button" className={workspace.layout === "projects" ? "active" : ""} aria-pressed={workspace.layout === "projects"} onClick={() => updateWorkspace({ ...workspace, layout: "projects" })}>Projects</button>
+        <button type="button" className={workspace.layout === "active" ? "active" : ""} aria-pressed={workspace.layout === "active"} onClick={() => updateWorkspace({ ...workspace, layout: "active" })}>Active</button>
+      </div>
+
+      {loading ? <div className="state-card" role="status">{t("dashboard.loading")}</div> : null}
+      {!loading && hosts.length === 0 ? <div className="state-card" role="status">{t("dashboard.noHosts")}</div> : null}
+      {selectedHost && selectedHost.connectionState !== "connected" ? <div className="state-note" role="status">{t(`status.${selectedHost.connectionState as ConnectionState}`)} — {t("dashboard.cached")}</div> : null}
+      {snapshot?.error ? <p className="inline-error" role="alert">{snapshot.error}</p> : null}
+      {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
+      {notificationError ? <p className="state-note" role="status">{notificationError}</p> : null}
+
+      {workspace.layout === "projects" ? <div className="project-session-list">
+        {projects.map((project) => {
+          const projectSessions = sessions.filter((session) => session.projectId === project.id).sort((a, b) => sessionTime(b) - sessionTime(a));
+          const expanded = workspace.expandedProjects.includes(project.id) || workspace.expandedProjects.length === 0;
+          return <section className="project-group" key={project.id}>
+            <header>
+              <button type="button" className="project-toggle" aria-expanded={expanded} onClick={() => toggleProject(project.id)}><span aria-hidden="true">▸</span><strong>{project.name}</strong></button>
+              <div className="agent-launch-strip" aria-label={`Start agent in ${project.name}`}>
+                {agents.map((agent) => {
+                  const key = `${project.id}:${agent.agent}`;
+                  return <button type="button" key={agent.agent} disabled={Boolean(launching) || selectedHost?.connectionState !== "connected"} aria-label={`Start ${agent.displayName} in ${project.name}`} title={agent.displayName} onClick={() => void quickLaunch(project.id, agent.agent)}>{launching === key ? "…" : agent.displayName.slice(0, 1)}</button>;
+                })}
+              </div>
+            </header>
+            {expanded ? <ul className="v2-session-list">{projectSessions.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} onOpen={() => open(session)} />)}</ul> : null}
+          </section>;
+        })}
+      </div> : <ul className="v2-session-list active-agent-list">{active.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} onOpen={() => open(session)} />)}</ul>}
+
+      {snapshot && sessions.length === 0 ? <div className="state-card" role="status">{t("dashboard.noSessions")}</div> : null}
+
+      {workspace.recentOpen ? <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) updateWorkspace({ ...workspace, recentOpen: false }); }}>
+        <section className="modal-sheet recent-sheet" role="dialog" aria-modal="true" aria-labelledby="recent-title">
+          <header><h2 id="recent-title">Recent</h2><button type="button" aria-label={t("common.close")} onClick={() => updateWorkspace({ ...workspace, recentOpen: false })}>×</button></header>
+          <ul className="v2-session-list">{recent.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} onOpen={() => open(session)} />)}</ul>
+        </section>
+      </div> : null}
+    </section>
+  );
+}

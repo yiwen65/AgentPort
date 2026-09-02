@@ -12,7 +12,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agentport_core::models::{AgentState, AgentTransport, LogCursor, StateSource};
 use agentport_core::protocol::{
-    read_frame, write_frame, ClientFrame, HostConfig, HostFrame, PROTOCOL_VERSION,
+    read_frame, write_frame, ClientFrame, HostConfig, HostFrame, InputBatchAckPhase,
+    HOST_FEATURE_INPUT_BATCH_V1, HOST_FEATURE_TERMINAL_GEOMETRY_V1, PROTOCOL_VERSION,
 };
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
@@ -25,6 +26,113 @@ fn uniq(prefix: &str) -> String {
         .unwrap()
         .as_nanos();
     format!("{prefix}-{n:x}")
+}
+
+#[test]
+fn terminal_geometry_is_run_scoped_revisioned_and_rejects_stale_or_implicit_steals() {
+    let ctx = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), "sleep 60".into()],
+        1 << 20,
+        vec![],
+    );
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+
+    let mut mobile = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    match mobile.read1(Duration::from_secs(5)) {
+        Read1::Frame(HostFrame::HelloOk {
+            features,
+            terminal_geometry: Some(geometry),
+            ..
+        }) => {
+            assert!(features
+                .iter()
+                .any(|feature| feature == HOST_FEATURE_TERMINAL_GEOMETRY_V1));
+            assert_eq!(
+                (geometry.cols, geometry.rows, geometry.revision),
+                (120, 32, 0)
+            );
+            assert_eq!(geometry.source_kind, "desktop");
+        }
+        other => panic!("expected geometry hello, got {}", read1_desc(other)),
+    }
+    let mut desktop = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    desktop.expect_hello_ok();
+
+    mobile.send(&ClientFrame::Resize {
+        session_id: ctx.session_id.clone(),
+        cols: 48,
+        rows: 40,
+        pixel_width: 0,
+        pixel_height: 0,
+        expected_revision: Some(0),
+        source_kind: Some("mobile".into()),
+        source_device_id: Some("phone-1".into()),
+        attachment_id: Some("att-mobile".into()),
+        orientation: Some("portrait".into()),
+    });
+    let mobile_frames = mobile.collect_until(Duration::from_secs(3), |frames| {
+        frames.iter().any(|frame| {
+            matches!(frame, HostFrame::ResizeAck { accepted: true, geometry, .. } if geometry.revision == 1)
+        })
+    });
+    assert!(mobile_frames.iter().any(|frame| {
+        matches!(frame, HostFrame::ResizeAck { accepted: true, geometry, .. }
+            if geometry.revision == 1 && geometry.source_kind == "mobile")
+    }));
+    let desktop_frames = desktop.collect_until(Duration::from_secs(3), |frames| {
+        frames.iter().any(|frame| {
+            matches!(frame, HostFrame::TerminalGeometryChanged { geometry, .. } if geometry.revision == 1)
+        })
+    });
+    assert!(desktop_frames.iter().any(|frame| {
+        matches!(frame, HostFrame::TerminalGeometryChanged { geometry, .. }
+            if geometry.revision == 1 && geometry.source_device_id.as_deref() == Some("phone-1"))
+    }));
+
+    desktop.send(&ClientFrame::Resize {
+        session_id: ctx.session_id.clone(),
+        cols: 120,
+        rows: 32,
+        pixel_width: 0,
+        pixel_height: 0,
+        expected_revision: Some(0),
+        source_kind: Some("desktop".into()),
+        source_device_id: None,
+        attachment_id: Some("att-desktop".into()),
+        orientation: None,
+    });
+    let stale = desktop.collect_until(Duration::from_secs(3), |frames| {
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::ResizeAck { .. }))
+    });
+    assert!(stale.iter().any(|frame| {
+        matches!(frame, HostFrame::ResizeAck { accepted: false, geometry, reason: Some(reason), .. }
+            if geometry.revision == 1 && reason == "stale_revision")
+    }));
+
+    desktop.send(&ClientFrame::Resize {
+        session_id: ctx.session_id.clone(),
+        cols: 120,
+        rows: 32,
+        pixel_width: 0,
+        pixel_height: 0,
+        expected_revision: None,
+        source_kind: None,
+        source_device_id: None,
+        attachment_id: None,
+        orientation: None,
+    });
+    let implicit = desktop.collect_until(Duration::from_secs(3), |frames| {
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::ResizeAck { .. }))
+    });
+    assert!(implicit.iter().any(|frame| {
+        matches!(frame, HostFrame::ResizeAck { accepted: false, reason: Some(reason), .. }
+            if reason == "mobile_owner_requires_explicit_restore")
+    }));
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +431,7 @@ impl Conn {
                 run_id,
                 run_ordinal,
                 log_cursor,
+                features,
                 ..
             }) => {
                 assert_eq!(protocol, PROTOCOL_VERSION);
@@ -330,6 +439,12 @@ impl Conn {
                 assert!(run_ordinal >= 1, "test Hosts use a non-legacy run");
                 assert_eq!(log_cursor.run_id, run_id);
                 assert_eq!(log_cursor.run_ordinal, run_ordinal);
+                assert!(
+                    features
+                        .iter()
+                        .any(|feature| feature == HOST_FEATURE_INPUT_BATCH_V1),
+                    "current Host must advertise atomic input batches"
+                );
                 (host_pid, child_alive, log_cursor)
             }
             other => panic!("expected hello_ok, got {}", read1_desc(other)),
@@ -663,6 +778,142 @@ fn authenticated_connection_limit_rejects_excess_client() {
         std::thread::sleep(Duration::from_millis(50));
     };
     drop(replacement);
+}
+
+#[test]
+fn input_batches_from_two_clients_share_one_atomic_fifo() {
+    let ctx = make_ctx(
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "stty -echo; while IFS= read -r line; do printf '[[%s]]\\n' \"$line\"; done".into(),
+        ],
+        1 << 20,
+        vec![],
+    );
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+
+    let mut first = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    first.expect_hello_ok();
+    let mut second = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    second.expect_hello_ok();
+
+    let session_a = ctx.session_id.clone();
+    let session_b = ctx.session_id.clone();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            first.send(&ClientFrame::InputBatch {
+                session_id: session_a,
+                batch_id: "batch-a".into(),
+                data: b"alpha\n".to_vec(),
+            });
+        });
+        scope.spawn(|| {
+            second.send(&ClientFrame::InputBatch {
+                session_id: session_b,
+                batch_id: "batch-b".into(),
+                data: b"bravo\n".to_vec(),
+            });
+        });
+    });
+
+    let mut first_frames = first.collect_until(Duration::from_secs(5), |frames| {
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::InputBatchAck {
+                    batch_id,
+                    phase: InputBatchAckPhase::Completed,
+                    ..
+                } if batch_id == "batch-a"
+            )
+        })
+    });
+    let second_frames = second.collect_until(Duration::from_secs(5), |frames| {
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::InputBatchAck {
+                    batch_id,
+                    phase: InputBatchAckPhase::Completed,
+                    ..
+                } if batch_id == "batch-b"
+            )
+        })
+    });
+
+    fn ack_sequence(frames: &[HostFrame], batch: &str, phase: InputBatchAckPhase) -> u64 {
+        frames
+            .iter()
+            .find_map(|frame| match frame {
+                HostFrame::InputBatchAck {
+                    batch_id,
+                    server_sequence,
+                    phase: actual,
+                    ..
+                } if batch_id == batch && *actual == phase => Some(*server_sequence),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing {phase:?} ack for {batch}: {frames:?}"))
+    }
+
+    let a_accepted = ack_sequence(&first_frames, "batch-a", InputBatchAckPhase::Accepted);
+    let a_completed = ack_sequence(&first_frames, "batch-a", InputBatchAckPhase::Completed);
+    let b_accepted = ack_sequence(&second_frames, "batch-b", InputBatchAckPhase::Accepted);
+    let b_completed = ack_sequence(&second_frames, "batch-b", InputBatchAckPhase::Completed);
+    assert_eq!(a_accepted, a_completed);
+    assert_eq!(b_accepted, b_completed);
+    assert_ne!(a_completed, b_completed);
+
+    first_frames.extend(first.collect_until(Duration::from_secs(5), |frames| {
+        let bytes = output_bytes(frames);
+        let output = String::from_utf8_lossy(&bytes);
+        output.contains("[[alpha]]") && output.contains("[[bravo]]")
+    }));
+    let output_bytes = output_bytes(&first_frames);
+    let output = String::from_utf8_lossy(&output_bytes);
+    let alpha = output.find("[[alpha]]").expect("alpha output");
+    let bravo = output.find("[[bravo]]").expect("bravo output");
+    assert_eq!(
+        a_completed < b_completed,
+        alpha < bravo,
+        "PTY output order must match Host server_sequence: {output:?}"
+    );
+
+    first.send(&ClientFrame::InputBatch {
+        session_id: ctx.session_id.clone(),
+        batch_id: "invalid-empty".into(),
+        data: Vec::new(),
+    });
+    let rejected = first.collect_until(Duration::from_secs(3), |frames| {
+        frames.iter().any(|frame| {
+            matches!(
+                frame,
+                HostFrame::InputBatchAck {
+                    batch_id,
+                    phase: InputBatchAckPhase::NotExecuted,
+                    ..
+                } if batch_id == "invalid-empty"
+            )
+        })
+    });
+    assert!(rejected.iter().any(|frame| matches!(
+        frame,
+        HostFrame::InputBatchAck {
+            batch_id,
+            phase: InputBatchAckPhase::NotExecuted,
+            ..
+        } if batch_id == "invalid-empty"
+    )));
+    assert!(!rejected.iter().any(|frame| matches!(
+        frame,
+        HostFrame::InputBatchAck {
+            batch_id,
+            phase: InputBatchAckPhase::Accepted | InputBatchAckPhase::Completed,
+            ..
+        } if batch_id == "invalid-empty"
+    )));
 }
 
 #[test]

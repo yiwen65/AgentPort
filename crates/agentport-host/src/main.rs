@@ -49,7 +49,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use agentport_core::adapters::adapter_for;
 use agentport_core::models::{AgentState, AgentTransport, AgentType, LogCursor, StatusEvent};
-use agentport_core::protocol::{encode_frame, HostConfig, HostFrame};
+use agentport_core::protocol::{encode_frame, HostConfig, HostFrame, TerminalGeometry};
 use agentport_core::redact::Redactor;
 use agentport_core::state::{Observation, PtyDetector, StateMachine};
 use chrono::{DateTime, Utc};
@@ -349,12 +349,25 @@ pub(crate) struct Shared {
     /// Wall-clock input boundary compared with official hook-file mtimes. The
     /// comparison rejects a completion written before the next prompt.
     last_user_activity_at: Mutex<SystemTime>,
+    /// Serializes admission from independent authenticated socket readers and
+    /// therefore defines the only server receive order for terminal input.
+    input_admission: Mutex<()>,
+    next_input_sequence: AtomicU64,
+    /// Bounded queue consumed by exactly one terminal writer thread.
+    input_queue: mpsc::SyncSender<server::InputMutation>,
+    /// A partial/failed PTY write makes the effect unknown. Fail closed for the
+    /// remainder of this run rather than append later bytes to a torn command.
+    input_failed: AtomicBool,
     /// Terminal bytes for PTY Sessions or UTF-8 JSONL commands for structured
     /// Pi Sessions. The socket server owns protocol-specific serialization.
     input_writer: Mutex<Box<dyn Write + Send>>,
     /// Only PTY Sessions support resize. Keeping this optional makes the pipe
     /// path structurally incapable of allocating a PTY.
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
+    /// Run-local geometry authority shared by every authenticated attachment.
+    /// It intentionally dies with the Host so a later run cannot inherit an
+    /// old phone's ownership or revision.
+    terminal_geometry: Mutex<TerminalGeometry>,
 }
 
 /// Keep the process handle in scope while the Host controls/reaps it through
@@ -504,12 +517,12 @@ pub(crate) fn note_user_activity(shared: &Shared) {
 
 /// Signal the whole agent process group, or just the child pid when pgid
 /// verification failed at startup (degraded mode, PRD fallback).
-pub(crate) fn signal_group(shared: &Shared, sig: Signal) {
-    if shared.pgid_verified {
-        let _ = killpg(Pid::from_raw(shared.pgid), sig);
+pub(crate) fn signal_group(shared: &Shared, sig: Signal) -> bool {
+    let primary_delivered = if shared.pgid_verified {
+        killpg(Pid::from_raw(shared.pgid), sig).is_ok()
     } else {
-        let _ = kill(Pid::from_raw(shared.child_pid), sig);
-    }
+        kill(Pid::from_raw(shared.child_pid), sig).is_ok()
+    };
     // Job-control escapees: interactive shells put background jobs into their
     // own process groups. They stay descendants, so signal the whole tree.
     // (PRD: 停止必须清理完整进程组和所有后代进程.)
@@ -518,6 +531,7 @@ pub(crate) fn signal_group(shared: &Shared, sig: Signal) {
             let _ = kill(Pid::from_raw(pid), sig);
         }
     }
+    primary_delivered
 }
 
 /// Union of the live ppid tree below the child and the last-known descendant
@@ -890,6 +904,8 @@ fn run() -> i32 {
     }
 
     let (msg_tx, msg_rx) = mpsc::channel::<HostMsg>();
+    let (input_tx, input_rx) =
+        mpsc::sync_channel::<server::InputMutation>(server::INPUT_QUEUE_CAPACITY);
     let shared = Arc::new(Shared {
         cfg: cfg.clone(),
         session_dir,
@@ -915,8 +931,24 @@ fn run() -> i32 {
         tick_count: AtomicU64::new(0),
         user_activity_generation: AtomicU64::new(0),
         last_user_activity_at: Mutex::new(SystemTime::UNIX_EPOCH),
+        input_admission: Mutex::new(()),
+        next_input_sequence: AtomicU64::new(1),
+        input_queue: input_tx,
+        input_failed: AtomicBool::new(false),
         input_writer: Mutex::new(input_writer),
         master: Mutex::new(master),
+        terminal_geometry: Mutex::new(TerminalGeometry {
+            run_id: cfg.run_id.clone(),
+            run_ordinal: cfg.run_ordinal,
+            cols: cfg.cols,
+            rows: cfg.rows,
+            source_kind: "desktop".into(),
+            source_device_id: None,
+            attachment_id: None,
+            orientation: None,
+            revision: 0,
+            updated_at: Utc::now(),
+        }),
     });
 
     write_host_state(&shared, None);
@@ -932,6 +964,7 @@ fn run() -> i32 {
 
     semantic_events::spawn(semantic_snapshot, shared.clone(), msg_tx.clone());
 
+    server::spawn_input_worker(shared.clone(), input_rx);
     server::spawn_accept_loop(listener, shared.clone(), msg_tx.clone());
     match cfg.transport {
         AgentTransport::Pty => {
@@ -1553,7 +1586,7 @@ fn stop_flow(
             if sig == Signal::SIGKILL {
                 warn!("process group still alive; escalating to SIGKILL (last resort)");
             }
-            signal_group(shared, sig);
+            let _ = signal_group(shared, sig);
             if wait_dead(shared, reaper, Duration::from_millis(budget_ms)) {
                 break;
             }

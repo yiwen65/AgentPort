@@ -1,0 +1,6 @@
+// Copy outside version control and fill with your Apple development team.
+// Never commit real signing identities or provisioning profile identifiers.
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+CODE_SIGN_STYLE = Automatic
+PRODUCT_BUNDLE_IDENTIFIER = com.agentport.mobile
+IPHONEOS_DEPLOYMENT_TARGET = 16.0

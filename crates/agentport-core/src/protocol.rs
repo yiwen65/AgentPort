@@ -18,6 +18,31 @@ use serde::{Deserialize, Serialize};
 /// its bounded legacy handshake fallback.
 pub const PROTOCOL_VERSION: u32 = 2;
 pub const LEGACY_PROTOCOL_VERSION: u32 = 1;
+/// Additive v2 capability advertised by new Hosts. Clients must not send
+/// `InputBatch` to a Host that omitted this value from `HelloOk`.
+pub const HOST_FEATURE_INPUT_BATCH_V1: &str = "input_batch_v1";
+/// Run-scoped, revisioned terminal geometry. Clients must not send geometry
+/// metadata or wait for resize acknowledgements unless the Host advertises
+/// this feature in `HelloOk`.
+pub const HOST_FEATURE_TERMINAL_GEOMETRY_V1: &str = "terminal_geometry_v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalGeometry {
+    pub run_id: String,
+    pub run_ordinal: i64,
+    pub cols: u16,
+    pub rows: u16,
+    pub source_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orientation: Option<String>,
+    pub revision: u64,
+    pub updated_at: DateTime<Utc>,
+}
 
 fn b64e(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(data)
@@ -62,6 +87,15 @@ pub enum ClientFrame {
         #[serde(with = "serde_bytes_b64")]
         data: Vec<u8>,
     },
+    /// Atomic terminal input unit for multi-client writers. The Host assigns a
+    /// single receive sequence and reports accepted/completed/terminal failure
+    /// without ever persisting or logging `data`.
+    InputBatch {
+        session_id: String,
+        batch_id: String,
+        #[serde(with = "serde_bytes_b64")]
+        data: Vec<u8>,
+    },
     /// Submit one prompt through the agent's structured JSON-RPC transport.
     /// This is intentionally distinct from terminal input: it cannot be sent
     /// to a PTY Session by accident.
@@ -81,6 +115,17 @@ pub enum ClientFrame {
         pixel_width: u16,
         #[serde(default)]
         pixel_height: u16,
+        /// Present only for clients that negotiated terminal_geometry_v1.
+        #[serde(default)]
+        expected_revision: Option<u64>,
+        #[serde(default)]
+        source_kind: Option<String>,
+        #[serde(default)]
+        source_device_id: Option<String>,
+        #[serde(default)]
+        attachment_id: Option<String>,
+        #[serde(default)]
+        orientation: Option<String>,
     },
     /// Graceful interrupt of the foreground process group (Ctrl-C semantics).
     Interrupt {
@@ -134,6 +179,34 @@ pub enum HostFrame {
         current_status: Option<StatusEvent>,
         #[serde(default)]
         log_cursor: LogCursor,
+        /// Additive capabilities understood on this authenticated connection.
+        /// Old v1/v2 Hosts omit the field and therefore safely disable them.
+        #[serde(default)]
+        features: Vec<String>,
+        #[serde(default)]
+        terminal_geometry: Option<TerminalGeometry>,
+    },
+    ResizeAck {
+        session_id: String,
+        accepted: bool,
+        geometry: TerminalGeometry,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    TerminalGeometryChanged {
+        session_id: String,
+        geometry: TerminalGeometry,
+    },
+    /// Directed acknowledgement for `InputBatch`. Legacy `Input` never emits
+    /// this frame, preserving compatibility with clients whose HostFrame enum
+    /// predates batch acknowledgements.
+    InputBatchAck {
+        session_id: String,
+        batch_id: String,
+        server_sequence: u64,
+        phase: InputBatchAckPhase,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
     },
     Output {
         session_id: String,
@@ -252,6 +325,19 @@ pub enum HostFrame {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputBatchAckPhase {
+    /// Dequeued by the single Host input executor; PTY write has not started.
+    Accepted,
+    /// The complete batch was written and flushed as one executor operation.
+    Completed,
+    /// Validation, backpressure, or a prior failed writer proves no bytes ran.
+    NotExecuted,
+    /// A write failed after starting and the exact effect cannot be known.
+    Unknown,
+}
+
 /// Translate the offset-only output state used by protocol v1 into the
 /// run-aware cursor shape consumed by current clients. Negotiated v1 frames
 /// are authoritative only for their legacy byte offsets, so any cursor fields
@@ -324,24 +410,60 @@ pub fn write_frame<T: Serialize>(w: &mut impl std::io::Write, frame: &T) -> std:
 }
 
 /// Read one NDJSON frame. Returns Ok(None) on clean EOF.
+/// Hard ceiling for every Host NDJSON frame, enforced while reading rather
+/// than after JSON/base64 allocation. Normal output chunks are 16 KiB and
+/// terminal batches are 256 KiB, so 1 MiB leaves encoding headroom without
+/// letting an authenticated peer grow Host memory without bound.
+pub const MAX_NDJSON_FRAME_BYTES: usize = 1024 * 1024;
+
 pub fn read_frame<T: for<'de> Deserialize<'de>>(
     r: &mut impl std::io::BufRead,
 ) -> std::io::Result<Option<T>> {
-    let mut line = String::new();
+    let mut line = Vec::new();
     loop {
-        line.clear();
-        let n = r.read_line(&mut line)?;
-        if n == 0 {
-            return Ok(None);
+        let available = r.fill_buf()?;
+        if available.is_empty() {
+            let trimmed = trim_ascii_whitespace(&line);
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            return parse_frame_line(trimmed).map(Some);
         }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let take = newline.map_or(available.len(), |index| index + 1);
+        if line.len().saturating_add(take) > MAX_NDJSON_FRAME_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "host protocol frame exceeds size limit",
+            ));
+        }
+        line.extend_from_slice(&available[..take]);
+        r.consume(take);
+        if newline.is_none() {
             continue;
         }
-        let v = serde_json::from_str(trimmed)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        return Ok(Some(v));
+        let trimmed = trim_ascii_whitespace(&line);
+        if trimmed.is_empty() {
+            line.clear();
+            continue;
+        }
+        return parse_frame_line(trimmed).map(Some);
     }
+}
+
+fn trim_ascii_whitespace(mut bytes: &[u8]) -> &[u8] {
+    while bytes.first().is_some_and(u8::is_ascii_whitespace) {
+        bytes = &bytes[1..];
+    }
+    while bytes.last().is_some_and(u8::is_ascii_whitespace) {
+        bytes = &bytes[..bytes.len() - 1];
+    }
+    bytes
+}
+
+fn parse_frame_line<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> std::io::Result<T> {
+    serde_json::from_slice(trim_ascii_whitespace(bytes))
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
 /// Host launch configuration. Written to `<session>/host.json` (mode 0600) by
@@ -456,6 +578,55 @@ mod tests {
     }
 
     #[test]
+    fn input_batch_and_ack_roundtrip_without_plaintext_debug_contract() {
+        let batch = ClientFrame::InputBatch {
+            session_id: "ses_1".into(),
+            batch_id: "batch-1".into(),
+            data: b"secret-ish terminal bytes".to_vec(),
+        };
+        let encoded = encode_frame(&batch).unwrap();
+        let mut reader = std::io::BufReader::new(encoded.as_slice());
+        assert!(matches!(
+            read_frame::<ClientFrame>(&mut reader).unwrap(),
+            Some(ClientFrame::InputBatch { batch_id, data, .. })
+                if batch_id == "batch-1" && data == b"secret-ish terminal bytes"
+        ));
+
+        let ack = HostFrame::InputBatchAck {
+            session_id: "ses_1".into(),
+            batch_id: "batch-1".into(),
+            server_sequence: 7,
+            phase: InputBatchAckPhase::Completed,
+            message: None,
+        };
+        let encoded = encode_frame(&ack).unwrap();
+        assert!(!String::from_utf8_lossy(&encoded).contains("secret-ish"));
+        let mut reader = std::io::BufReader::new(encoded.as_slice());
+        assert!(matches!(
+            read_frame::<HostFrame>(&mut reader).unwrap(),
+            Some(HostFrame::InputBatchAck {
+                server_sequence: 7,
+                phase: InputBatchAckPhase::Completed,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn frame_reader_rejects_oversized_unterminated_input_without_growing_past_limit() {
+        let oversized = vec![b'x'; MAX_NDJSON_FRAME_BYTES + 1];
+        let mut reader = std::io::BufReader::with_capacity(4096, oversized.as_slice());
+        let error = read_frame::<ClientFrame>(&mut reader).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("size limit"));
+
+        let mut whitespace = std::io::BufReader::new(b"  \n\t".as_slice());
+        assert!(read_frame::<ClientFrame>(&mut whitespace)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
     fn host_frame_roundtrip() {
         let f = HostFrame::Exit {
             session_id: "ses_1".into(),
@@ -493,6 +664,15 @@ mod tests {
                 technical_detail: None,
                 ..
             }
+        ));
+
+        let old_v2_hello: HostFrame = serde_json::from_str(
+            r#"{"type":"hello_ok","protocol":2,"session_id":"ses_1","host_pid":7,"child_alive":true,"log_bytes":0}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            old_v2_hello,
+            HostFrame::HelloOk { features, .. } if features.is_empty()
         ));
 
         let current = HostFrame::Error {

@@ -43,6 +43,7 @@ import { i18n } from "./i18n";
 import { openDocumentTarget, parseDocumentLinkTarget } from "./documents";
 import { runtimeMessageEnvelope, runtimeMessageText } from "./runtimeMessages";
 import { getTerminalPalette } from "./terminalThemes";
+import { shouldPublishAutomaticDesktopResize } from "./terminalGeometryPrompt";
 import type {
   AttachInfo,
   ChannelMsg,
@@ -2550,7 +2551,15 @@ export function fitHandle(
     handle.lastCols = cols;
     handle.lastRows = rows;
   }
-  if ((sizeChanged || forceResize) && cols > 0 && rows > 0 && handle.attached) {
+  if (
+    (sizeChanged || forceResize) &&
+    cols > 0 &&
+    rows > 0 &&
+    handle.attached &&
+    shouldPublishAutomaticDesktopResize(
+      getState().runtime[handle.sessionId]?.terminalGeometry,
+    )
+  ) {
     // Debounce resize IPC during window drags. The first resize after attach
     // is forced even when fit() already recorded the same dimensions before
     // the PTY channel became writable; full-screen TUIs need this redraw.
@@ -2623,6 +2632,40 @@ export function fitSession(sessionId: string, forceResize = false) {
   if (handle.logCursor) {
     queueRenderedLogObservation(handle, handle.logCursor);
   }
+}
+
+/**
+ * Return a mobile-owned PTY to this desktop renderer's measured geometry.
+ * The revision fence prevents a stale prompt from overriding a newer phone
+ * rotation or attachment update.
+ */
+export async function restoreDesktopTerminalSize(
+  sessionId: string,
+  expectedRevision: number,
+): Promise<void> {
+  const handle = handles.get(sessionId);
+  if (!handle?.attached || !handle.container) {
+    throw new Error(i18n.t("session:ui.phoneGeometry.restoreUnavailable"));
+  }
+  fitHandle(handle, true, false, "desktop-restore");
+  const { cols, rows } = handle.term;
+  if (cols <= 0 || rows <= 0) {
+    throw new Error(i18n.t("session:ui.phoneGeometry.restoreUnavailable"));
+  }
+  const rect = handle.container.getBoundingClientRect();
+  const scale = window.devicePixelRatio || 1;
+  const pixelWidth = Math.min(
+    65535,
+    Math.max(0, Math.round(rect.width * scale)),
+  );
+  const pixelHeight = Math.min(
+    65535,
+    Math.max(0, Math.round(rect.height * scale)),
+  );
+  await api.resizePty(sessionId, cols, rows, pixelWidth, pixelHeight, {
+    expectedRevision,
+    sourceKind: "desktop",
+  });
 }
 
 /**
@@ -2711,6 +2754,7 @@ function activateAttachment(handle: TermHandle, info: AttachInfo): boolean {
     error: null,
     errorMessage: null,
     exit: null,
+    terminalGeometry: info.terminalGeometry ?? null,
   });
   if (info.status) {
     patchRuntime(sessionId, { status: info.status });
@@ -3057,6 +3101,20 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       patchRuntime(sessionId, { logBytes: msg.logBytes });
       break;
     }
+    case "resize_ack": {
+      if (msg.payload.accepted) {
+        patchRuntime(sessionId, {
+          terminalGeometry: msg.payload.geometry,
+        });
+      }
+      break;
+    }
+    case "terminal_geometry_changed": {
+      patchRuntime(sessionId, {
+        terminalGeometry: msg.payload.geometry,
+      });
+      break;
+    }
     case "exit": {
       finishTerminalStartupFilter(handle);
       handle.pendingAttachInput = [];
@@ -3064,6 +3122,7 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       handle.attachmentId = null;
       patchRuntime(sessionId, {
         attached: false,
+        terminalGeometry: null,
         exit: {
           code: msg.code,
           signal: msg.signal,
@@ -3092,6 +3151,7 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       patchRuntime(sessionId, {
         attached: false,
         detached: true,
+        terminalGeometry: null,
         error: detail,
         errorMessage: detail ? msg : null,
       });

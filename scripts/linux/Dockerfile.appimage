@@ -14,10 +14,12 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --pr
 ENV PATH=/root/.cargo/bin:$PATH
 WORKDIR /src
 COPY . .
-RUN cargo build --release -p agentport-host -p agentport-cli
+RUN cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-cli
 RUN mkdir -p src-tauri/binaries \
- && cp target/release/agentport-host "src-tauri/binaries/agentport-host-$(uname -m)-unknown-linux-gnu" \
- && chmod +x "src-tauri/binaries/agentport-host-$(uname -m)-unknown-linux-gnu"
+ && for binary in agentport-host agentport-remote-bridge agentport-mosh-attach; do \
+      cp "target/release/$binary" "src-tauri/binaries/$binary-$(uname -m)-unknown-linux-gnu"; \
+      chmod +x "src-tauri/binaries/$binary-$(uname -m)-unknown-linux-gnu"; \
+    done
 RUN cd src && npm ci && npm run build
 RUN cd src-tauri && ../src/node_modules/.bin/tauri build --bundles appimage
 RUN mkdir -p /out && cp target/release/bundle/appimage/*.AppImage /out/ 2>/dev/null || true

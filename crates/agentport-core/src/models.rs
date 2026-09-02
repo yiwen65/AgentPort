@@ -276,6 +276,30 @@ pub struct ProjectLayoutEntry {
     pub pinned: bool,
 }
 
+/// One exact Session dependency in a confirmed Project cascade. Active and
+/// archived rows both carry their persisted archive generation so an
+/// archive/unarchive race changes the preflight revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRemovalSession {
+    pub id: String,
+    pub archive_generation: i64,
+    pub archived: bool,
+}
+
+/// Complete destructive Project preflight. Callers must echo all fields; Core
+/// re-reads and compares them before publishing the cross-process fence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRemovalSnapshot {
+    pub project_id: String,
+    pub revision: u64,
+    pub sessions: Vec<ProjectRemovalSession>,
+    pub worktree_ids: Vec<String>,
+    pub recoverable_operation_ids: Vec<String>,
+    pub pending_commit_operation_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionMode {
@@ -669,6 +693,17 @@ pub enum AttentionKind {
     TurnCompleted,
 }
 
+/// Stable total-order cursor for bounded cross-Session attention polling.
+/// It names semantic metadata only and never terminal output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttentionCursor {
+    pub occurred_at: DateTime<Utc>,
+    pub session_id: String,
+    pub run_ordinal: i64,
+    pub sequence: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SummaryState {
@@ -934,6 +969,14 @@ pub struct Settings {
     pub telemetry_enabled: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPreferencesSnapshot {
+    pub revision: u64,
+    pub agent_order: Vec<String>,
+    pub agent_hidden: Vec<String>,
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Settings {
@@ -1005,7 +1048,11 @@ impl Settings {
                 "agent_order cannot contain duplicate adapters".into(),
             ));
         }
-        if self.agent_hidden.iter().any(|agent| agent.trim().is_empty()) {
+        if self
+            .agent_hidden
+            .iter()
+            .any(|agent| agent.trim().is_empty())
+        {
             return Err(CoreError::Validation(
                 "agent_hidden cannot contain empty adapter names".into(),
             ));

@@ -7,7 +7,8 @@ use crate::error::{CoreError, Result};
 use crate::models::*;
 use crate::paths::AppPaths;
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
-use rusqlite::{params, Connection, Row, Transaction, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration as StdDuration;
@@ -351,8 +352,24 @@ fn project_removal_key(project_id: &str) -> String {
     format!("project_removal_in_progress:{project_id}")
 }
 
+const AGENT_PREFERENCES_REVISION_KEY: &str = "agent_preferences_revision";
+
 fn worktree_removal_key(worktree_id: &str) -> String {
     format!("worktree_removal_in_progress:{worktree_id}")
+}
+
+pub(crate) fn ensure_project_not_removing_conn(conn: &Connection, project_id: &str) -> Result<()> {
+    let fenced: i64 = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM app_meta WHERE key=?1)",
+        params![project_removal_key(project_id)],
+        |row| row.get(0),
+    )?;
+    if fenced != 0 {
+        return Err(CoreError::Conflict(format!(
+            "Project {project_id} is being removed"
+        )));
+    }
+    Ok(())
 }
 
 fn session_removal_is_fenced(conn: &Connection, session_id: &str) -> Result<bool> {
@@ -1281,6 +1298,107 @@ impl Db {
         Ok(())
     }
 
+    fn project_removal_snapshot_conn(
+        conn: &Connection,
+        id: &str,
+    ) -> Result<ProjectRemovalSnapshot> {
+        let exists: i64 = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?1)",
+            params![id],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            return Err(CoreError::NotFound(format!("project {id}")));
+        }
+        let sessions = {
+            let mut statement = conn.prepare(
+                "SELECT id,archive_generation,archived_at IS NOT NULL AS archived
+                 FROM sessions WHERE project_id=?1 ORDER BY id",
+            )?;
+            let rows = statement
+                .query_map(params![id], |row| {
+                    Ok(ProjectRemovalSession {
+                        id: row.get(0)?,
+                        archive_generation: row.get(1)?,
+                        archived: row.get(2)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        let worktree_ids = {
+            let mut statement =
+                conn.prepare("SELECT id FROM worktrees WHERE project_id=?1 ORDER BY id")?;
+            let rows = statement
+                .query_map(params![id], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            rows
+        };
+        let recoverable_operation_ids = {
+            let mut statement = conn.prepare(
+                "SELECT id FROM branch_operations
+                 WHERE project_id=?1 AND phase NOT IN ('completed','failed')
+                 ORDER BY id",
+            )?;
+            let rows = statement
+                .query_map(params![id], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            rows
+        };
+        let pending_commit_operation_ids = {
+            let mut statement = conn.prepare(
+                "SELECT id FROM git_commit_operations
+                 WHERE project_id=?1 AND phase='started' ORDER BY id",
+            )?;
+            let rows = statement
+                .query_map(params![id], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            rows
+        };
+        let canonical = serde_json::to_vec(&(
+            id,
+            &sessions,
+            &worktree_ids,
+            &recoverable_operation_ids,
+            &pending_commit_operation_ids,
+        ))?;
+        let digest = Sha256::digest(canonical);
+        let revision = u64::from_be_bytes(digest[..8].try_into().unwrap());
+        Ok(ProjectRemovalSnapshot {
+            project_id: id.to_string(),
+            revision,
+            sessions,
+            worktree_ids,
+            recoverable_operation_ids,
+            pending_commit_operation_ids,
+        })
+    }
+
+    pub fn project_removal_snapshot(&self, id: &str) -> Result<ProjectRemovalSnapshot> {
+        let conn = self.conn.lock().unwrap();
+        Self::project_removal_snapshot_conn(&conn, id)
+    }
+
+    /// Atomically validates the complete versioned destructive preflight and
+    /// publishes the cross-process fence before any process/filesystem cleanup.
+    pub fn begin_project_removal_confirmed(&self, expected: &ProjectRemovalSnapshot) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = Self::project_removal_snapshot_conn(&tx, &expected.project_id)?;
+        if &current != expected {
+            return Err(CoreError::Conflict(
+                "Project dependencies changed after confirmation; review and try again".into(),
+            ));
+        }
+        ensure_project_not_removing_conn(&tx, &expected.project_id)?;
+        tx.execute(
+            "INSERT INTO app_meta(key,value) VALUES(?1,'1')",
+            params![project_removal_key(&expected.project_id)],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Persist a cross-process fence before destructive cleanup starts. New
     /// Sessions and Worktrees reject this Project until the removal commits.
     pub fn begin_project_removal(&self, id: &str) -> Result<()> {
@@ -1294,11 +1412,24 @@ impl Db {
         if exists == 0 {
             return Err(CoreError::NotFound(format!("project {id}")));
         }
+        ensure_project_not_removing_conn(&tx, id)?;
         tx.execute(
-            "INSERT OR REPLACE INTO app_meta(key,value) VALUES(?1,'1')",
+            "INSERT INTO app_meta(key,value) VALUES(?1,'1')",
             params![project_removal_key(id)],
         )?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Roll back this process's removal fence after a fail-closed pre-commit
+    /// cleanup error. Concurrent removals cannot own the same fence because
+    /// `begin_project_removal*` rejects an existing key atomically.
+    pub fn cancel_project_removal(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM app_meta WHERE key=?1",
+            params![project_removal_key(id)],
+        )?;
         Ok(())
     }
 
@@ -1560,6 +1691,48 @@ impl Db {
         Ok(())
     }
 
+    /// Atomically publish Secret metadata and link it to exactly one preset.
+    /// The credential value is already staged in the system store and never
+    /// enters this transaction or any SQLite field.
+    pub fn add_secret_ref_to_preset(&self, preset_id: &str, secret: &SecretRef) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let refs_json: String = tx
+            .query_row(
+                "SELECT secret_ref_ids_json FROM presets WHERE id=?1",
+                params![preset_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    CoreError::NotFound(format!("preset {preset_id}"))
+                }
+                other => CoreError::Sqlite(other),
+            })?;
+        let mut refs: Vec<String> = serde_json::from_str(&refs_json)?;
+        if !refs.contains(&secret.id) {
+            refs.push(secret.id.clone());
+        }
+        tx.execute(
+            "INSERT INTO secret_refs(id,env_name,backend,service,account,updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6)",
+            params![
+                secret.id,
+                secret.env_name,
+                secret.backend.as_str(),
+                secret.service,
+                secret.account,
+                dt_str(&secret.updated_at)
+            ],
+        )?;
+        tx.execute(
+            "UPDATE presets SET secret_ref_ids_json=?2 WHERE id=?1",
+            params![preset_id, serde_json::to_string(&refs)?],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn get_secret_ref(&self, id: &str) -> Result<SecretRef> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
@@ -1586,6 +1759,50 @@ impl Db {
         if n == 0 {
             return Err(CoreError::NotFound(format!("secret ref {id}")));
         }
+        Ok(())
+    }
+
+    /// Atomically removes Secret metadata from every database owner. The
+    /// system credential is deleted by the caller first; no value enters this
+    /// transaction and no dangling preset/Commit-AI reference can survive.
+    pub fn delete_secret_ref_everywhere(&self, id: &str) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let exists: i64 = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM secret_refs WHERE id=?1)",
+            params![id],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            return Err(CoreError::NotFound(format!("secret ref {id}")));
+        }
+        let presets = {
+            let mut statement = tx.prepare("SELECT id,secret_ref_ids_json FROM presets")?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        for (preset_id, refs_json) in presets {
+            let mut refs: Vec<String> = serde_json::from_str(&refs_json)?;
+            let original_len = refs.len();
+            refs.retain(|candidate| candidate != id);
+            if refs.len() != original_len {
+                tx.execute(
+                    "UPDATE presets SET secret_ref_ids_json=?2 WHERE id=?1",
+                    params![preset_id, serde_json::to_string(&refs)?],
+                )?;
+            }
+        }
+        tx.execute(
+            "DELETE FROM settings
+             WHERE key='commit_ai_api_key_secret_ref_id' AND value=?1",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM secret_refs WHERE id=?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1718,11 +1935,30 @@ impl Db {
         if exists == 0 {
             return Err(CoreError::NotFound(format!("worktree {id}")));
         }
+        let removing: i64 = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_meta WHERE key=?1)",
+            params![worktree_removal_key(id)],
+            |row| row.get(0),
+        )?;
+        if removing != 0 {
+            return Err(CoreError::Conflict(format!(
+                "worktree {id} removal is already in progress"
+            )));
+        }
         tx.execute(
-            "INSERT OR REPLACE INTO app_meta(key,value) VALUES(?1,'1')",
+            "INSERT INTO app_meta(key,value) VALUES(?1,'1')",
             params![worktree_removal_key(id)],
         )?;
         tx.commit()?;
+        Ok(())
+    }
+
+    pub fn cancel_worktree_removal(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM app_meta WHERE key=?1",
+            params![worktree_removal_key(id)],
+        )?;
         Ok(())
     }
 
@@ -2154,9 +2390,7 @@ impl Db {
             )));
         }
         if session_removal_is_fenced(&tx, id)? {
-            return Err(CoreError::Blocked(format!(
-                "session {id} is being removed"
-            )));
+            return Err(CoreError::Blocked(format!("session {id} is being removed")));
         }
         let run_exists: i64 = tx.query_row(
             "SELECT EXISTS(
@@ -3170,6 +3404,61 @@ impl Db {
         }
     }
 
+    /// Poll only user-actionable semantic events in a stable global order.
+    /// The same exact evidence predicate is used by unread/sidebar semantics.
+    pub fn poll_attention_events(
+        &self,
+        after: Option<&AttentionCursor>,
+        limit: u16,
+    ) -> Result<Vec<StatusEvent>> {
+        let conn = self.conn.lock().unwrap();
+        let mut st = conn.prepare(
+            "SELECT session_id,run_id,run_ordinal,sequence,state,source,confidence,evidence,
+                    log_generation,log_offset,occurred_at
+             FROM status_events e
+             WHERE (
+               (e.state='needs_input' AND (
+                 (e.source='hook' AND e.evidence='hook:PermissionRequest') OR
+                 (e.source='pty' AND e.evidence LIKE 'pty:pattern:%')
+               )) OR
+               (e.state='idle' AND (
+                 (e.source='hook' AND (e.evidence='hook:Stop' OR e.evidence='hook:TurnEnd')) OR
+                 (e.source='adapter' AND
+                   (e.evidence='adapter:kimi:TurnEnd' OR e.evidence='adapter:pi:TurnEnd'))
+               ))
+             ) AND (
+               ?1=0 OR e.occurred_at>?2 OR
+               (e.occurred_at=?2 AND e.session_id>?3) OR
+               (e.occurred_at=?2 AND e.session_id=?3 AND e.run_ordinal>?4) OR
+               (e.occurred_at=?2 AND e.session_id=?3 AND e.run_ordinal=?4 AND e.sequence>?5)
+             )
+             ORDER BY e.occurred_at,e.session_id,e.run_ordinal,e.sequence
+             LIMIT ?6",
+        )?;
+        let (has_after, occurred_at, session_id, run_ordinal, sequence) = match after {
+            Some(cursor) => (
+                1_i64,
+                dt_str(&cursor.occurred_at),
+                cursor.session_id.as_str(),
+                cursor.run_ordinal,
+                cursor.sequence,
+            ),
+            None => (0_i64, String::new(), "", 0, 0),
+        };
+        let rows = st.query_map(
+            params![
+                has_after,
+                occurred_at,
+                session_id,
+                run_ordinal,
+                sequence,
+                i64::from(limit.clamp(1, 256))
+            ],
+            row_status_event,
+        )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn status_history(&self, session_id: &str, limit: u32) -> Result<Vec<StatusEvent>> {
         let conn = self.conn.lock().unwrap();
         let mut st = conn.prepare(
@@ -3905,6 +4194,102 @@ impl Db {
     }
 
     // -- settings / meta ------------------------------------------------------
+    pub fn load_agent_preferences(&self) -> Result<AgentPreferencesSnapshot> {
+        let conn = self.conn.lock().unwrap();
+        let read = |key: &str| -> Result<Option<String>> {
+            match conn.query_row(
+                "SELECT value FROM settings WHERE key=?1",
+                params![key],
+                |row| row.get(0),
+            ) {
+                Ok(value) => Ok(Some(value)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(error) => Err(CoreError::Sqlite(error)),
+            }
+        };
+        let defaults = Settings::default();
+        let agent_order = read("agent_order")?
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or(defaults.agent_order);
+        let agent_hidden = read("agent_hidden")?
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or(defaults.agent_hidden);
+        let revision = match conn
+            .query_row(
+                "SELECT value FROM app_meta WHERE key=?1",
+                params![AGENT_PREFERENCES_REVISION_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            Some(value) => value
+                .parse::<u64>()
+                .map_err(|_| CoreError::Internal("invalid agent preferences revision".into()))?,
+            None => 0,
+        };
+        Ok(AgentPreferencesSnapshot {
+            revision,
+            agent_order,
+            agent_hidden,
+        })
+    }
+
+    pub fn replace_agent_preferences(
+        &self,
+        expected_revision: u64,
+        agent_order: &[String],
+        agent_hidden: &[String],
+    ) -> Result<AgentPreferencesSnapshot> {
+        let mut candidate = Settings::default();
+        candidate.agent_order = agent_order.to_vec();
+        candidate.agent_hidden = agent_hidden.to_vec();
+        candidate.validate()?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = match tx
+            .query_row(
+                "SELECT value FROM app_meta WHERE key=?1",
+                params![AGENT_PREFERENCES_REVISION_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            Some(value) => value
+                .parse::<u64>()
+                .map_err(|_| CoreError::Internal("invalid agent preferences revision".into()))?,
+            None => 0,
+        };
+        if current != expected_revision {
+            return Err(CoreError::Conflict(format!(
+                "agent preferences revision changed from {expected_revision} to {current}"
+            )));
+        }
+        let revision = current
+            .checked_add(1)
+            .ok_or_else(|| CoreError::Conflict("agent preferences revision exhausted".into()))?;
+        for (key, value) in [
+            ("agent_order", serde_json::to_string(agent_order)?),
+            ("agent_hidden", serde_json::to_string(agent_hidden)?),
+        ] {
+            tx.execute(
+                "INSERT INTO settings(key,value) VALUES(?1,?2)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![key, value],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO app_meta(key,value) VALUES(?1,?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![AGENT_PREFERENCES_REVISION_KEY, revision.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(AgentPreferencesSnapshot {
+            revision,
+            agent_order: agent_order.to_vec(),
+            agent_hidden: agent_hidden.to_vec(),
+        })
+    }
+
     pub fn load_settings(&self) -> Result<Settings> {
         let conn = self.conn.lock().unwrap();
         let mut st = conn.prepare("SELECT key,value FROM settings")?;
@@ -4018,14 +4403,58 @@ impl Db {
                 s.search_index_enabled.to_string(),
             ),
             ("agent_order".into(), serde_json::to_string(&s.agent_order)?),
-            ("agent_hidden".into(), serde_json::to_string(&s.agent_hidden)?),
+            (
+                "agent_hidden".into(),
+                serde_json::to_string(&s.agent_hidden)?,
+            ),
         ];
         let tx = conn.unchecked_transaction()?;
+        let persisted_order = tx
+            .query_row(
+                "SELECT value FROM settings WHERE key='agent_order'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let persisted_hidden = tx
+            .query_row(
+                "SELECT value FROM settings WHERE key='agent_hidden'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let preferences_changed = persisted_order.as_deref()
+            != Some(serde_json::to_string(&s.agent_order)?.as_str())
+            || persisted_hidden.as_deref()
+                != Some(serde_json::to_string(&s.agent_hidden)?.as_str());
         for (k, v) in pairs {
             tx.execute(
                 "INSERT INTO settings(key,value) VALUES(?1,?2)
                  ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 params![k, v],
+            )?;
+        }
+        if preferences_changed {
+            let current = match tx
+                .query_row(
+                    "SELECT value FROM app_meta WHERE key=?1",
+                    params![AGENT_PREFERENCES_REVISION_KEY],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+            {
+                Some(value) => value.parse::<u64>().map_err(|_| {
+                    CoreError::Internal("invalid agent preferences revision".into())
+                })?,
+                None => 0,
+            };
+            let revision = current.checked_add(1).ok_or_else(|| {
+                CoreError::Conflict("agent preferences revision exhausted".into())
+            })?;
+            tx.execute(
+                "INSERT INTO app_meta(key,value) VALUES(?1,?2)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![AGENT_PREFERENCES_REVISION_KEY, revision.to_string()],
             )?;
         }
         tx.commit()?;
@@ -4070,6 +4499,19 @@ impl Db {
     }
 
     pub fn save_commit_ai_settings(&self, settings: &CommitAiSettings) -> Result<()> {
+        self.publish_commit_ai_settings(settings, None, None)
+    }
+
+    /// Atomically publishes Commit-AI settings with optional staged credential
+    /// metadata. The credential value remains exclusively in the system store.
+    /// Replaced metadata is removed in the same transaction so settings never
+    /// reference a missing or partially published row.
+    pub fn publish_commit_ai_settings(
+        &self,
+        settings: &CommitAiSettings,
+        staged_secret: Option<&SecretRef>,
+        replaced_secret_id: Option<&str>,
+    ) -> Result<()> {
         settings.validate()?;
         let provider = match settings.provider {
             CommitAiProvider::OpenAi => "openai",
@@ -4090,13 +4532,32 @@ impl Db {
             ("commit_ai_language", language.to_owned()),
         ];
         let mut conn = self.conn.lock().unwrap();
-        let transaction = conn.transaction()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(secret) = staged_secret {
+            transaction.execute(
+                "INSERT INTO secret_refs(id,env_name,backend,service,account,updated_at)
+                 VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    secret.id,
+                    secret.env_name,
+                    secret.backend.as_str(),
+                    secret.service,
+                    secret.account,
+                    dt_str(&secret.updated_at)
+                ],
+            )?;
+        }
         for (key, value) in pairs {
             transaction.execute(
                 "INSERT INTO settings(key,value) VALUES(?1,?2)
                  ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 params![key, value],
             )?;
+        }
+        if let Some(secret_id) = replaced_secret_id
+            .filter(|secret_id| settings.api_key_secret_ref_id.as_deref() != Some(*secret_id))
+        {
+            transaction.execute("DELETE FROM secret_refs WHERE id=?1", params![secret_id])?;
         }
         transaction.commit()?;
         Ok(())
@@ -5454,6 +5915,49 @@ mod tests {
     }
 
     #[test]
+    fn global_attention_poll_is_semantic_bounded_and_cursor_resumable() {
+        let db = db();
+        db.add_project(&project("prj_poll")).unwrap();
+        db.insert_session(&session("ses_poll", "prj_poll")).unwrap();
+        let base = Utc::now();
+        let event = |sequence: i64, state: AgentState, evidence: &str| StatusEvent {
+            session_id: "ses_poll".into(),
+            run_id: LEGACY_RUN_ID.into(),
+            run_ordinal: LEGACY_RUN_ORDINAL,
+            sequence,
+            state,
+            source: StateSource::Hook,
+            confidence: Confidence::High,
+            evidence: Some(evidence.into()),
+            log_cursor: None,
+            occurred_at: base + chrono::Duration::milliseconds(sequence),
+        };
+        db.record_status_event(&event(1, AgentState::Working, "hook:PreToolUse"))
+            .unwrap();
+        db.record_status_event(&event(2, AgentState::NeedsInput, "hook:PermissionRequest"))
+            .unwrap();
+        db.record_status_event(&event(3, AgentState::Idle, "hook:TurnEnd"))
+            .unwrap();
+
+        let first = db.poll_attention_events(None, 1).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].sequence, 2);
+        let cursor = AttentionCursor {
+            occurred_at: first[0].occurred_at,
+            session_id: first[0].session_id.clone(),
+            run_ordinal: first[0].run_ordinal,
+            sequence: first[0].sequence,
+        };
+        let second = db.poll_attention_events(Some(&cursor), 64).unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].sequence, 3);
+        assert_eq!(
+            second[0].attention_kind(),
+            Some(AttentionKind::TurnCompleted)
+        );
+    }
+
+    #[test]
     fn unread_attention_sql_matches_the_shared_semantic_classifier() {
         let db = db();
         db.add_project(&project("prj_attention")).unwrap();
@@ -6163,6 +6667,13 @@ mod tests {
             db.insert_session(&late),
             Err(CoreError::Blocked(_))
         ));
+        assert!(matches!(
+            db.begin_worktree_removal("wt_1"),
+            Err(CoreError::Conflict(_))
+        ));
+        db.cancel_worktree_removal("wt_1").unwrap();
+        db.begin_worktree_removal("wt_1").unwrap();
+
         db.delete_worktree("wt_1").unwrap();
     }
 
@@ -6216,6 +6727,29 @@ mod tests {
         assert_eq!(db.list_secret_refs().unwrap().len(), 1);
         db.delete_secret_ref("sec_1").unwrap();
         assert!(db.list_secret_refs().unwrap().is_empty());
+
+        db.seed_builtin_presets().unwrap();
+        let mut staged = s.clone();
+        staged.id = "sec_staged".into();
+        staged.account = "pre_shell_safe:KIMI_API_KEY:unique".into();
+        db.add_secret_ref_to_preset("pre_shell_safe", &staged)
+            .unwrap();
+        assert!(db
+            .get_preset("pre_shell_safe")
+            .unwrap()
+            .secret_ref_ids
+            .contains(&staged.id));
+
+        let mut orphan = staged.clone();
+        orphan.id = "sec_orphan".into();
+        assert!(matches!(
+            db.add_secret_ref_to_preset("missing-preset", &orphan),
+            Err(CoreError::NotFound(_))
+        ));
+        assert!(matches!(
+            db.get_secret_ref("sec_orphan"),
+            Err(CoreError::NotFound(_))
+        ));
     }
 
     #[test]
@@ -6250,6 +6784,175 @@ mod tests {
             db.save_settings(&bad),
             Err(CoreError::Validation(_))
         ));
+    }
+
+    #[test]
+    fn agent_preferences_replace_requires_the_exact_revision() {
+        let db = db();
+        let initial = db.load_agent_preferences().unwrap();
+        let replaced = db
+            .replace_agent_preferences(
+                initial.revision,
+                &["claude".into(), "shell".into()],
+                &["pi".into()],
+            )
+            .unwrap();
+        assert_eq!(replaced.revision, initial.revision + 1);
+        assert_eq!(replaced.agent_order, ["claude", "shell"]);
+        assert_eq!(replaced.agent_hidden, ["pi"]);
+        assert!(matches!(
+            db.replace_agent_preferences(initial.revision, &["shell".into()], &[]),
+            Err(CoreError::Conflict(_))
+        ));
+        let loaded = db.load_agent_preferences().unwrap();
+        assert_eq!(loaded, replaced);
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE app_meta SET value='corrupt' WHERE key=?1",
+                params![AGENT_PREFERENCES_REVISION_KEY],
+            )
+            .unwrap();
+        assert!(matches!(
+            db.load_agent_preferences(),
+            Err(CoreError::Internal(_))
+        ));
+    }
+
+    #[test]
+    fn project_removal_confirmation_rejects_any_dependency_change() {
+        let db = db();
+        db.add_project(&project("prj_confirmed")).unwrap();
+        db.insert_session(&session("ses_before", "prj_confirmed"))
+            .unwrap();
+        let snapshot = db.project_removal_snapshot("prj_confirmed").unwrap();
+        db.insert_session(&session("ses_after", "prj_confirmed"))
+            .unwrap();
+        assert!(matches!(
+            db.begin_project_removal_confirmed(&snapshot),
+            Err(CoreError::Conflict(_))
+        ));
+        let current = db.project_removal_snapshot("prj_confirmed").unwrap();
+        assert_ne!(current.revision, snapshot.revision);
+        db.begin_project_removal_confirmed(&current).unwrap();
+        assert!(matches!(
+            db.insert_session(&session("ses_late", "prj_confirmed")),
+            Err(CoreError::Blocked(_))
+        ));
+    }
+
+    #[test]
+    fn project_removal_fence_has_one_owner_and_can_be_cancelled_after_abort() {
+        let db = db();
+        db.add_project(&project("prj_fence_owner")).unwrap();
+        let snapshot = db.project_removal_snapshot("prj_fence_owner").unwrap();
+        db.begin_project_removal_confirmed(&snapshot).unwrap();
+
+        assert!(matches!(
+            db.begin_project_removal_confirmed(&snapshot),
+            Err(CoreError::Conflict(_))
+        ));
+        db.cancel_project_removal("prj_fence_owner").unwrap();
+        db.begin_project_removal_confirmed(&snapshot).unwrap();
+    }
+
+    #[test]
+    fn secret_metadata_delete_clears_every_reference_atomically() {
+        let db = db();
+        db.seed_builtin_presets().unwrap();
+        let secret = SecretRef {
+            id: "sec_everywhere".into(),
+            env_name: "TOKEN".into(),
+            backend: SecretBackend::MacosKeychain,
+            service: "agentport".into(),
+            account: "staged-account".into(),
+            updated_at: Utc::now(),
+        };
+        db.add_secret_ref_to_preset("pre_shell_safe", &secret)
+            .unwrap();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO settings(key,value) VALUES('commit_ai_api_key_secret_ref_id',?1)",
+                params![secret.id],
+            )
+            .unwrap();
+        db.delete_secret_ref_everywhere(&secret.id).unwrap();
+        assert!(db.list_secret_refs().unwrap().is_empty());
+        assert!(db
+            .get_preset("pre_shell_safe")
+            .unwrap()
+            .secret_ref_ids
+            .is_empty());
+        assert!(db
+            .load_commit_ai_settings()
+            .unwrap()
+            .api_key_secret_ref_id
+            .is_none());
+    }
+
+    #[test]
+    fn commit_ai_secret_metadata_and_settings_publish_atomically() {
+        let db = db();
+        let old = SecretRef {
+            id: "sec_commit_old".into(),
+            env_name: "AGENTPORT_COMMIT_AI_API_KEY".into(),
+            backend: SecretBackend::MacosKeychain,
+            service: "agentport".into(),
+            account: "commit-ai:old".into(),
+            updated_at: Utc::now(),
+        };
+        let mut settings = CommitAiSettings {
+            provider: CommitAiProvider::OpenAi,
+            base_url: "https://example.invalid/v1".into(),
+            model: "old-model".into(),
+            api_key_secret_ref_id: Some(old.id.clone()),
+            language: CommitAiLanguage::En,
+        };
+        db.publish_commit_ai_settings(&settings, Some(&old), None)
+            .unwrap();
+
+        let conflicting = SecretRef {
+            account: "commit-ai:conflict".into(),
+            ..old.clone()
+        };
+        settings.model = "must-rollback".into();
+        assert!(db
+            .publish_commit_ai_settings(&settings, Some(&conflicting), None)
+            .is_err());
+        assert_eq!(db.load_commit_ai_settings().unwrap().model, "old-model");
+        assert_eq!(db.get_secret_ref(&old.id).unwrap().account, old.account);
+
+        let next = SecretRef {
+            id: "sec_commit_next".into(),
+            account: "commit-ai:next".into(),
+            ..old.clone()
+        };
+        settings.model = "next-model".into();
+        settings.api_key_secret_ref_id = Some(next.id.clone());
+        db.publish_commit_ai_settings(&settings, Some(&next), Some(&old.id))
+            .unwrap();
+        assert!(matches!(
+            db.get_secret_ref(&old.id),
+            Err(CoreError::NotFound(_))
+        ));
+        assert_eq!(db.get_secret_ref(&next.id).unwrap().account, next.account);
+        assert_eq!(
+            db.load_commit_ai_settings().unwrap().api_key_secret_ref_id,
+            Some(next.id.clone())
+        );
+
+        settings.api_key_secret_ref_id = None;
+        db.publish_commit_ai_settings(&settings, None, Some(&next.id))
+            .unwrap();
+        assert!(db.list_secret_refs().unwrap().is_empty());
+        assert!(db
+            .load_commit_ai_settings()
+            .unwrap()
+            .api_key_secret_ref_id
+            .is_none());
     }
 
     #[test]

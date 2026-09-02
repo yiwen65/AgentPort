@@ -1043,7 +1043,7 @@ export async function removeProjectFlow(projectId: string) {
   });
   if (!ok) return;
   try {
-    const outcome = await api.removeProject(projectId);
+    const outcome = await api.removeProject(preflight);
     if (
       findProjectOf(getState().projects, getState().activeSessionId)?.id ===
       projectId

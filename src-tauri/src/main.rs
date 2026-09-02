@@ -4,18 +4,18 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use agentport_core::adapters::{self, capability, LaunchContext, ResumeContext};
+#[cfg(test)]
+use agentport_core::adapters;
+use agentport_core::adapters::capability;
 use agentport_core::db::{Db, SessionProjection};
 use agentport_core::diag::Diagnostics;
 use agentport_core::error::{CoreError, Result};
 use agentport_core::export::Exporter;
-use agentport_core::git::{
-    GitRunner, RepositoryFileLock, RepositoryIdentity, WorktreeBranchSelection, WorktreeManager,
-};
+#[cfg(test)]
+use agentport_core::git::{GitRunner, RepositoryFileLock, RepositoryIdentity};
+use agentport_core::git::{WorktreeBranchSelection, WorktreeManager};
 use agentport_core::history::NativeHistory;
-use agentport_core::host_manager::{
-    write_private_file, AttachInfo, HostClient, HostManager, LaunchSpec,
-};
+use agentport_core::host_manager::{AttachInfo, HostClient, HostManager};
 use agentport_core::ids;
 use agentport_core::models::*;
 use agentport_core::native_cleanup::{
@@ -27,8 +27,10 @@ use agentport_core::notify::{
 use agentport_core::paths::{normalize_abs, AppPaths};
 use agentport_core::protocol::{normalize_host_frame, HostFrame};
 use agentport_core::search::SearchIndex;
-use agentport_core::secrets::{load_preset_secrets, CredentialBroker, SecretValue};
+use agentport_core::secrets::CredentialBroker;
 use agentport_core::timeline::{RecoveryAckSnapshot, Timeline};
+use agentport_remote_protocol::{RemoteAgentType, SessionCreateParams, SessionRestartParams};
+use agentport_service::{CoreService, RemoteService, ServiceError};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -669,9 +671,7 @@ fn run_due_cleanup_jobs(paths: &AppPaths, db: &Db) -> usize {
         let session_id = job.session_id;
         let outcome = match cleanup_session_paths(paths, &session_id) {
             Err(reason) => Err(reason),
-            Ok((session_dir, socket_path)) => {
-                remove_cleanup_paths(&session_dir, &socket_path)
-            }
+            Ok((session_dir, socket_path)) => remove_cleanup_paths(&session_dir, &socket_path),
         };
 
         match outcome {
@@ -866,6 +866,10 @@ async fn list_archived_sessions(
 // ---------------------------------------------------------------------------
 // Agent probing
 // ---------------------------------------------------------------------------
+// Desktop keeps these AppState-bound commands rather than constructing the
+// shared service per invoke: renderer compatibility requires its legacy
+// reason-message shape and startup selection behavior. agentport-service uses
+// the same Core registry/probe/Db APIs; same-fixture parity is covered there.
 
 fn existing_executable(path: Option<&str>) -> Option<&std::path::Path> {
     path.map(std::path::Path::new).filter(|path| path.is_file())
@@ -965,23 +969,13 @@ fn probe_outcome_json(t: AgentType, o: &capability::ProbeOutcome) -> Value {
     })
 }
 
-fn launch_notice_values(agent: AgentType, notices: &[adapters::LaunchNotice]) -> Vec<Value> {
-    notices
-        .iter()
-        .map(|notice| {
-            json!({
-                "code": notice.code,
-                "params": {"agent": agent.display_name()},
-                "technicalDetail": notice.legacy_message,
-                "message": notice.legacy_message,
-            })
-        })
-        .collect()
-}
-
 // ---------------------------------------------------------------------------
 // Projects / presets
 // ---------------------------------------------------------------------------
+// These desktop commands retain AppHandle emissions, writer detachment, and
+// native-cleanup warning UX that a Tauri-free service cannot own. The remote
+// facade delegates to the same Core preflight/fence/cascade APIs and tests the
+// confirmed dependency snapshot against the same in-memory Db fixtures.
 
 #[tauri::command]
 async fn add_project(
@@ -1034,15 +1028,59 @@ async fn set_project_layout(
     Ok(collect_projects(&state.db, active_session.as_deref()))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfirmedProjectRemovalPreflight {
+    project_id: String,
+    revision: String,
+    sessions: Vec<ProjectRemovalSession>,
+    worktree_ids: Vec<String>,
+    recoverable_operation_ids: Vec<String>,
+    pending_commit_operation_ids: Vec<String>,
+}
+
+impl TryFrom<ConfirmedProjectRemovalPreflight> for ProjectRemovalSnapshot {
+    type Error = String;
+
+    fn try_from(value: ConfirmedProjectRemovalPreflight) -> std::result::Result<Self, Self::Error> {
+        let revision = value
+            .revision
+            .parse::<u64>()
+            .map_err(|_| "Project removal revision is invalid".to_string())?;
+        Ok(Self {
+            project_id: value.project_id,
+            revision,
+            sessions: value.sessions,
+            worktree_ids: value.worktree_ids,
+            recoverable_operation_ids: value.recoverable_operation_ids,
+            pending_commit_operation_ids: value.pending_commit_operation_ids,
+        })
+    }
+}
+
 #[tauri::command]
 async fn remove_project(
     state: State<'_, AppState>,
     app: AppHandle,
-    id: String,
+    preflight: ConfirmedProjectRemovalPreflight,
 ) -> std::result::Result<Value, String> {
-    map_err!(state.db.begin_project_removal(&id))?;
-    let sessions = map_err!(state.db.list_sessions(Some(&id), true))?;
-    let session_ids = sessions
+    let preflight = ProjectRemovalSnapshot::try_from(preflight)?;
+    let id = preflight.project_id.clone();
+    map_err!(state.db.begin_project_removal_confirmed(&preflight))?;
+    let sessions = match preflight
+        .sessions
+        .iter()
+        .map(|session| state.db.get_session(&session.id))
+        .collect::<agentport_core::Result<Vec<_>>>()
+    {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            let _ = state.db.cancel_project_removal(&id);
+            return Err(error.to_string());
+        }
+    };
+    let session_ids = preflight
+        .sessions
         .iter()
         .map(|session| session.id.clone())
         .collect::<Vec<_>>();
@@ -1055,15 +1093,15 @@ async fn remove_project(
             )
         })
         .collect::<Vec<_>>();
-    let stop_warnings = stop_sessions_for_destructive_cleanup(&state, &session_ids);
+    if let Err(error) = stop_sessions_for_project_removal(&state, &session_ids) {
+        let _ = state.db.cancel_project_removal(&id);
+        return Err(error);
+    }
 
     // Remove every managed Worktree directory before dropping the Project
     // row. Individual cleanup failures are logged by the manager and never
     // turn stale files or Git metadata into a deletion blocker.
-    let worktree_ids = map_err!(state.db.list_worktrees(&id))?
-        .into_iter()
-        .map(|worktree| worktree.id)
-        .collect::<Vec<_>>();
+    let worktree_ids = preflight.worktree_ids;
     let manager = WorktreeManager {
         paths: &state.paths,
         db: &state.db,
@@ -1089,7 +1127,7 @@ async fn remove_project(
     cleanup_purged_sessions(&state, &session_ids);
     emit_sessions_changed(&app, &state, None);
     Ok(json!({
-        "stopWarnings": stop_warnings,
+        "stopWarnings": 0,
         "cleanupWarnings": cleanup_warnings,
     }))
 }
@@ -1106,25 +1144,31 @@ async fn project_remove_preflight(
     state: State<'_, AppState>,
     id: String,
 ) -> std::result::Result<Value, String> {
-    let (
-        session_count,
-        worktree_count,
-        recoverable_operation_count,
-        pending_commit_operation_count,
-    ) = map_err!(state.db.project_dependency_counts(&id))?;
-    let archived_sessions = map_err!(state.db.project_archived_session_generations(&id))?
-        .into_iter()
-        .map(|(id, archive_generation)| {
+    let snapshot = map_err!(state.db.project_removal_snapshot(&id))?;
+    let archived_sessions = snapshot
+        .sessions
+        .iter()
+        .filter(|session| session.archived)
+        .map(|session| {
             json!({
-                "id": id,
-                "archiveGeneration": archive_generation,
+                "id": session.id,
+                "archiveGeneration": session.archive_generation,
             })
         })
         .collect::<Vec<_>>();
+    let session_count = snapshot.sessions.len();
     let archived_session_count = archived_sessions.len();
     let active_session_count = session_count.saturating_sub(archived_session_count);
+    let worktree_count = snapshot.worktree_ids.len();
+    let recoverable_operation_count = snapshot.recoverable_operation_ids.len();
+    let pending_commit_operation_count = snapshot.pending_commit_operation_ids.len();
     Ok(json!({
-        "projectId": id,
+        "projectId": snapshot.project_id,
+        "revision": snapshot.revision.to_string(),
+        "sessions": snapshot.sessions,
+        "worktreeIds": snapshot.worktree_ids,
+        "recoverableOperationIds": snapshot.recoverable_operation_ids,
+        "pendingCommitOperationIds": snapshot.pending_commit_operation_ids,
         "sessionCount": session_count,
         "activeSessionCount": active_session_count,
         "archivedSessionCount": archived_session_count,
@@ -1132,8 +1176,8 @@ async fn project_remove_preflight(
         "worktreeCount": worktree_count,
         "recoverableOperationCount": recoverable_operation_count,
         "pendingCommitOperationCount": pending_commit_operation_count,
-        // Dependency counts describe what the confirmed cascade will clean;
-        // they never make Project removal unavailable.
+        // The complete snapshot is echoed back to execution and compared
+        // atomically before the removal fence is published.
         "canRemove": true,
     }))
 }
@@ -1154,206 +1198,33 @@ async fn list_presets(
 // Sessions
 // ---------------------------------------------------------------------------
 
-fn install_for(state: &AppState, t: AgentType) -> Result<AdapterInstall> {
-    if let Some(i) = state.db.get_adapter(t)? {
-        // Cached path may be stale (e.g. Homebrew removed the versioned
-        // Caskroom dir after an upgrade). Re-probe instead of spawning a
-        // missing binary.
-        if !std::path::Path::new(&i.executable_path).exists() {
-            let o = capability::probe_agent(t, None);
-            return match o.install {
-                Some(fresh) => {
-                    state.db.upsert_adapter(&fresh)?;
-                    Ok(fresh)
-                }
-                None => Err(CoreError::Adapter(format!(
-                    "{} executable is no longer valid ({}), and re-probing found no replacement: {}",
-                    t.display_name(),
-                    i.executable_path,
-                    o.reason.unwrap_or_else(|| "not found".into())
-                ))),
-            };
-        }
-        return Ok(i);
-    }
-    let o = capability::probe_agent(t, None);
-    match o.install {
-        Some(i) => {
-            state.db.upsert_adapter(&i)?;
-            Ok(i)
-        }
-        None => Err(CoreError::Adapter(format!(
-            "{} not available: {}",
-            t.display_name(),
-            o.reason.unwrap_or_else(|| "not found".into())
-        ))),
+fn desktop_service_error(error: ServiceError) -> String {
+    match error {
+        ServiceError::Core(error) | ServiceError::NotExecutedCore(error) => error.to_string(),
+        ServiceError::RiskAcknowledgementRequired => "NEEDS_RISK_ACK".into(),
+        other => other.to_string(),
     }
 }
 
-fn preset_for(
-    state: &AppState,
-    t: AgentType,
-    preset_id: Option<String>,
-    install: &AdapterInstall,
-) -> Result<Preset> {
-    let mut p = match preset_id {
-        Some(id) => state.db.get_preset(&id)?,
-        None => state
-            .db
-            .get_preset(&format!("pre_{}_safe", t.as_str()))
-            .unwrap_or(Preset {
-                id: format!("pre_{}_safe", t.as_str()),
-                agent_type: t,
-                name: match t {
-                    AgentType::Qoder => "Qoder 安全默认".into(),
-                    AgentType::Pi => "Pi 默认".into(),
-                    _ => format!("{} 安全默认", t.display_name()),
-                },
-                executable_path: String::new(),
-                args: vec![],
-                permission_mode: t.default_permission_mode(),
-                env_names: vec![],
-                secret_ref_ids: vec![],
-                built_in: true,
-            }),
-    };
-    if p.agent_type != t {
-        return Err(CoreError::Validation(format!(
-            "preset {} is for {}",
-            p.id,
-            p.agent_type.as_str()
-        )));
-    }
-    if p.executable_path.is_empty() {
-        p.executable_path = install.executable_path.clone();
-    }
-    Ok(p)
-}
-
-/// Materialize the launch environment before creating any persistent Session
-/// state.  A credential-store failure must not leave a `Creating` row or
-/// helper file behind; create and restart intentionally share this exact
-/// path so their environment semantics cannot drift.
-type MaterializedLaunchEnvironment = (Vec<(String, String)>, Vec<(String, SecretValue)>);
-
-fn materialize_launch_environment(
-    state: &AppState,
-    preset: &Preset,
-    plan_env: &[(String, String)],
-) -> Result<MaterializedLaunchEnvironment> {
-    let mut env = capability::login_shell_launch_environment();
-    env.extend_from_slice(plan_env);
-    for name in &preset.env_names {
-        if let Ok(value) = std::env::var(name) {
-            env.push((name.clone(), value));
-        }
-    }
-    capability::merge_effective_path_env(&mut env)?;
-
-    let refs: Vec<SecretRef> = preset
-        .secret_ref_ids
-        .iter()
-        .map(|id| state.db.get_secret_ref(id))
-        .collect::<Result<Vec<_>>>()?;
-    let secrets = if refs.is_empty() {
-        Vec::new()
-    } else {
-        let broker = CredentialBroker::detect()?;
-        load_preset_secrets(&broker, &refs)?
-    };
-    Ok((env, secrets))
-}
-
-/// Write session-private adapter helpers as an all-or-nothing pre-launch
-/// operation.  The paths originate from the adapter plan and are scoped to
-/// the new Session directory; on a partial failure, remove only helpers we
-/// wrote during this attempt.
-fn write_launch_helpers(helper_files: &[(String, String)]) -> Result<()> {
-    let mut written = Vec::with_capacity(helper_files.len());
-    for (path, contents) in helper_files {
-        if let Err(error) = write_private_file(path, contents) {
-            for written_path in written {
-                let _ = std::fs::remove_file(written_path);
-            }
-            return Err(error);
-        }
-        written.push(path.as_str());
-    }
-    Ok(())
-}
-
-fn remove_launch_helpers(helper_files: &[(String, String)]) {
-    for (path, _) in helper_files {
-        let _ = std::fs::remove_file(path);
-    }
-}
-
-/// Build the LaunchPlan for a (not yet created) session — used both by the
-/// preflight panel and by actual creation.
-#[allow(clippy::too_many_arguments)]
-fn build_launch_plan(
-    state: &AppState,
-    project_id: &str,
+#[cfg(test)]
+fn launch_notice_values(
     agent: AgentType,
-    preset_id: Option<String>,
-    worktree_id: Option<String>,
-    permission: PermissionMode,
-    transport: AgentTransport,
-    extra_args: Option<Vec<String>>,
-) -> Result<(adapters::LaunchPlan, Preset, String, Option<String>)> {
-    if transport != AgentTransport::Pty {
-        return Err(CoreError::Validation(format!(
-            "{} Session creation supports only the native PTY transport",
-            agent.display_name()
-        )));
-    }
-    let project = state.db.get_project(project_id)?;
-    let install = install_for(state, agent)?;
-    let mut preset = preset_for(state, agent, preset_id, &install)?;
-    // The creation form is the authoritative permission choice. Do not let a
-    // historical built-in preset silently reintroduce a bypass flag when the
-    // user selected native approvals.
-    preset.permission_mode = permission;
-    adapters::validate_user_args(agent, &preset.args)?;
-    let cwd = match &worktree_id {
-        Some(w) => {
-            let worktree = state.db.get_worktree(w)?;
-            validate_worktree_project(&project, &worktree)?;
-            worktree.path
-        }
-        None => project.root_path,
-    };
-    let session_id = ids::new_id("ses");
-    let session_dir = state.paths.session_dir(&session_id);
-    std::fs::create_dir_all(&session_dir)?;
-    let ctx = LaunchContext {
-        install,
-        preset: preset.clone(),
-        cwd: cwd.clone(),
-        session_id: session_id.clone(),
-        hook_events_path: state
-            .paths
-            .hook_events_path(&session_id)
-            .to_string_lossy()
-            .into_owned(),
-        session_dir: session_dir.to_string_lossy().into_owned(),
-        transport,
-    };
-    let mut plan = adapters::adapter_for(agent).build_launch(&ctx)?;
-    // Ad-hoc CLI args from the UI (PRD 3.2 参数框): appended as argv array
-    // items only — never shell-concatenated.
-    if let Some(extra) = extra_args {
-        for a in &extra {
-            if a.is_empty() {
-                return Err(CoreError::Validation("empty extra arg".into()));
-            }
-        }
-        adapters::validate_user_args(agent, &extra)?;
-        plan.argv.extend(extra);
-    }
-    Ok((plan, preset, cwd, Some(session_id)))
+    notices: &[agentport_core::adapters::LaunchNotice],
+) -> Vec<Value> {
+    notices
+        .iter()
+        .map(|notice| {
+            json!({
+                "code": notice.code,
+                "params": {"agent": agent.display_name()},
+                "technicalDetail": notice.legacy_message,
+                "message": notice.legacy_message,
+            })
+        })
+        .collect()
 }
 
+#[cfg(test)]
 fn validate_worktree_project(project: &Project, worktree: &Worktree) -> Result<()> {
     if worktree.project_id != project.id {
         return Err(CoreError::Conflict(format!(
@@ -1364,23 +1235,7 @@ fn validate_worktree_project(project: &Project, worktree: &Worktree) -> Result<(
     Ok(())
 }
 
-fn parse_permission(s: &str) -> Result<PermissionMode> {
-    match s {
-        "native" => Ok(PermissionMode::Native),
-        "auto" => Ok(PermissionMode::Auto),
-        "bypass" => Ok(PermissionMode::Bypass),
-        other => Err(CoreError::Validation(format!("bad permission {other}"))),
-    }
-}
-
-fn parse_transport(s: &str) -> Result<AgentTransport> {
-    s.parse()
-}
-
-fn permission_requires_risk_ack(_agent: AgentType, mode: PermissionMode) -> bool {
-    mode != PermissionMode::Native
-}
-
+#[cfg(test)]
 fn acquire_session_repository_lock(cwd: &str) -> Result<Option<RepositoryFileLock>> {
     match RepositoryIdentity::discover(std::path::Path::new(cwd), &GitRunner::default()) {
         Ok(identity) => RepositoryFileLock::acquire(&identity.common_dir).map(Some),
@@ -1406,178 +1261,62 @@ async fn create_session(
     rows: Option<u16>,
     extra_args: Option<Vec<String>>,
 ) -> std::result::Result<Value, String> {
-    let t: AgentType = map_err!(agent.parse::<AgentType>())?;
-    let mode = t.effective_permission_mode(map_err!(parse_permission(&permission))?);
-    if permission_requires_risk_ack(t, mode) && !risk_ack {
-        return Err("NEEDS_RISK_ACK".into());
-    }
-    let transport = match transport {
-        Some(value) => map_err!(parse_transport(&value))?,
-        None => t.default_transport(),
-    };
-    let project = map_err!(state.db.get_project(&project_id))?;
-    let (plan, preset, cwd, session_id) = map_err!(build_launch_plan(
-        &state,
-        &project_id,
-        t,
-        preset_id,
-        worktree_id.clone(),
-        mode,
-        transport,
-        extra_args
-    ))?;
-    let session_id = session_id.unwrap();
-    // Reserve the checkout as soon as launch planning has resolved its cwd.
-    // Branch mutation takes the same common-dir lock and rechecks Creating /
-    // Running rows immediately before switch, so the user's create request
-    // cannot silently cross a concurrent branch transition while secrets or
-    // helper files are being prepared.
-    let lock_cwd = cwd.clone();
-    let repository_lock = match tauri::async_runtime::spawn_blocking(move || {
-        acquire_session_repository_lock(&lock_cwd)
+    let remote_agent: RemoteAgentType =
+        serde_json::from_value(Value::String(agent.clone())).map_err(|error| error.to_string())?;
+    let display_agent = agent
+        .parse::<AgentType>()
+        .map_err(|error| error.to_string())?;
+    let paths = state.paths.clone();
+    let outcome = run_backend_blocking(move || {
+        let service = CoreService::open(paths).map_err(|error| error.to_string())?;
+        service
+            .create_session(SessionCreateParams {
+                project_id,
+                agent: remote_agent,
+                title,
+                preset_id,
+                worktree_id,
+                permission,
+                transport,
+                risk_ack,
+                cols,
+                rows,
+                extra_args,
+            })
+            .map_err(desktop_service_error)
     })
-    .await
-    {
-        Ok(Ok(lock)) => lock,
-        Ok(Err(error)) => {
-            let _ = std::fs::remove_dir_all(state.paths.session_dir(&session_id));
-            return Err(error.to_string());
-        }
-        Err(error) => {
-            let _ = std::fs::remove_dir_all(state.paths.session_dir(&session_id));
-            return Err(format!("repository lock worker failed: {error}"));
-        }
-    };
-    // Materialize every dependency that can fail before inserting a Session
-    // row or writing adapter helpers.  The launch plan creates a private
-    // directory for its paths, so clean that empty directory on a pre-launch
-    // failure as well.
-    let (env, secrets) = match materialize_launch_environment(&state, &preset, &plan.env) {
-        Ok(materialized) => materialized,
-        Err(error) => {
-            let _ = std::fs::remove_dir_all(state.paths.session_dir(&session_id));
-            return Err(error.to_string());
-        }
-    };
-    let settings = match state.db.load_settings() {
-        Ok(settings) => settings,
-        Err(error) => {
-            let _ = std::fs::remove_dir_all(state.paths.session_dir(&session_id));
-            return Err(error.to_string());
-        }
-    };
-    let (title, auto_title_pending) = match title.map(|value| value.trim().to_string()) {
-        Some(value) if !value.is_empty() => (value, false),
-        _ => match state.db.next_default_session_title(&project.id, t) {
-            Ok(title) => (title, true),
-            Err(error) => {
-                let _ = std::fs::remove_dir_all(state.paths.session_dir(&session_id));
-                return Err(error.to_string());
-            }
-        },
-    };
-    if let Err(error) = write_launch_helpers(&plan.helper_files) {
-        let _ = std::fs::remove_dir_all(state.paths.session_dir(&session_id));
-        return Err(error.to_string());
-    }
-    let now = Utc::now();
-    let session = Session {
-        id: session_id.clone(),
-        project_id: project.id.clone(),
-        worktree_id: worktree_id.clone(),
-        preset_id: preset.id.clone(),
-        title,
-        cwd: cwd.clone(),
-        host_pid: None,
-        host_socket: Some(
-            state
-                .paths
-                .socket_path(&session_id)
-                .to_string_lossy()
-                .into_owned(),
-        ),
-        host_token: ids::new_host_token(),
-        lifecycle: Lifecycle::Creating,
-        agent_session_id: plan.assigned_agent_session_id.clone(),
-        resume_precision: if plan.assigned_agent_session_id.is_some() {
-            ResumePrecision::Exact
-        } else {
-            plan.resume_precision
-        },
-        log_path: state
-            .paths
-            .log_path(&session_id)
-            .to_string_lossy()
-            .into_owned(),
-        adapter_type: t,
-        transport: plan.transport,
-        pinned_at: None,
-        command: plan.argv.clone(),
-        permission_mode: mode,
-        created_at: now,
-        updated_at: now,
-        archived_at: None,
-    };
-    // Inserting Creating while still holding the checkout reservation makes
-    // the Session row and branch manager's final live-session check atomic.
-    if let Err(error) = state.db.insert_session(&session) {
-        remove_launch_helpers(&plan.helper_files);
-        let _ = std::fs::remove_dir_all(state.paths.session_dir(&session_id));
-        return Err(error.to_string());
-    }
-    drop(repository_lock);
-    // Keep the marker separate from the Session schema. It is consumed only
-    // after the first successfully submitted terminal input, so a custom
-    // title supplied at creation is never overwritten.  It is created only
-    // after the Session row exists, avoiding an orphan app_meta key.
-    if auto_title_pending {
-        if let Err(error) = state.db.mark_session_title_auto_generated(&session_id) {
-            let _ = state
-                .db
-                .update_session_lifecycle(&session_id, Lifecycle::Exited);
-            remove_launch_helpers(&plan.helper_files);
-            return Err(error.to_string());
-        }
-    }
-    let mgr = HostManager {
-        paths: &state.paths,
-        db: &state.db,
-    };
-    let info = match mgr.launch(LaunchSpec {
-        session: session.clone(),
-        command: plan.argv.clone(),
-        env,
-        secrets,
-        log_limit_bytes: settings.log_limit_mib * 1024 * 1024,
-        agent_session_id_hint: plan.assigned_agent_session_id.clone(),
-        cols: cols.unwrap_or(120),
-        rows: rows.unwrap_or(32),
-    }) {
-        Ok(info) => info,
-        Err(error) => {
-            remove_launch_helpers(&plan.helper_files);
-            return Err(error.to_string());
-        }
-    };
+    .await?;
+    let session = map_err!(state.db.get_session(&outcome.session_id))?;
     ensure_session_monitor(&app, &state, &session);
-    emit_sessions_changed(&app, &state, Some(&session_id));
-    let notices = launch_notice_values(t, &plan.notices);
-    let notes = plan
+    emit_sessions_changed(&app, &state, Some(&outcome.session_id));
+    let notes = outcome
         .notices
         .iter()
-        .map(|notice| notice.legacy_message.as_str())
+        .map(|notice| notice.message.as_str())
+        .collect::<Vec<_>>();
+    let notices = outcome
+        .notices
+        .iter()
+        .map(|notice| {
+            json!({
+                "code": notice.code,
+                "params": {"agent": display_agent.display_name()},
+                "technicalDetail": notice.message,
+                "message": notice.message,
+            })
+        })
         .collect::<Vec<_>>();
     Ok(json!({
-        "id": session_id,
+        "id": outcome.session_id,
         "attach": {
-            "hostPid": info.host_pid,
-            "childAlive": info.child_alive,
+            "hostPid": outcome.host_pid,
+            "childAlive": outcome.child_alive,
         },
-        "resumePrecision": session.resume_precision.as_str(),
-        "agentSessionId": session.agent_session_id,
+        "resumePrecision": outcome.resume_precision,
+        "agentSessionId": outcome.agent_session_id,
         "notes": notes,
         "notices": notices,
-        "command": plan.argv,
+        "command": outcome.command,
     }))
 }
 
@@ -1993,6 +1732,7 @@ async fn attach_session(
         "runOrdinal": info.run_ordinal,
         "status": info.current_status.as_ref().map(status_value),
         "logCursor": info.log_cursor,
+        "terminalGeometry": info.terminal_geometry,
     });
     // Publish the writable capability before the watch thread can flood the
     // WebView with retained replay frames. Warm previews can receive focus
@@ -2103,6 +1843,42 @@ fn watch_loop(
                             break;
                         }
                         let _ = channel.send(json!({"t": "structured", "event": event}));
+                    }
+                    HostFrame::ResizeAck {
+                        accepted,
+                        geometry,
+                        reason,
+                        ..
+                    } => {
+                        if !host.matches_run(&geometry.run_id, geometry.run_ordinal) {
+                            tracing::warn!(session = %session_id, attachment_id, "dropping geometry ACK from a stale Host run");
+                            break;
+                        }
+                        let payload = json!({
+                            "sessionId": session_id,
+                            "attachmentId": attachment_id,
+                            "accepted": accepted,
+                            "geometry": geometry,
+                            "reason": reason,
+                        });
+                        let _ =
+                            channel.send(json!({"t": "resize_ack", "payload": payload.clone()}));
+                        let _ = app.emit("terminal-geometry-resize-ack", payload);
+                    }
+                    HostFrame::TerminalGeometryChanged { geometry, .. } => {
+                        if !host.matches_run(&geometry.run_id, geometry.run_ordinal) {
+                            tracing::warn!(session = %session_id, attachment_id, "dropping geometry update from a stale Host run");
+                            break;
+                        }
+                        let payload = json!({
+                            "sessionId": session_id,
+                            "attachmentId": attachment_id,
+                            "geometry": geometry,
+                        });
+                        let _ = channel.send(
+                            json!({"t": "terminal_geometry_changed", "payload": payload.clone()}),
+                        );
+                        let _ = app.emit("terminal-geometry-changed", payload);
                     }
                     HostFrame::ReplayDone {
                         offset,
@@ -2280,6 +2056,9 @@ fn watch_loop(
                     }
                     HostFrame::Pong { .. } => {}
                     HostFrame::HelloOk { .. } => {}
+                    // The GUI never sends InputBatch frames, so no ack can
+                    // arrive; ignore it like Pong/HelloOk.
+                    HostFrame::InputBatchAck { .. } => {}
                     HostFrame::Error {
                         message,
                         code,
@@ -2523,15 +2302,22 @@ async fn resize_pty(
     rows: u16,
     pixel_width: u16,
     pixel_height: u16,
+    expected_revision: Option<u64>,
+    source_kind: Option<String>,
+    source_device_id: Option<String>,
+    orientation: Option<String>,
 ) -> std::result::Result<(), String> {
     use agentport_core::protocol::{write_frame, ClientFrame};
-    let writer = {
+    let attachment = {
         let writers = state.writers.lock().unwrap();
-        writers
-            .get(&session_id)
-            .map(|attachment| attachment.writer.clone())
+        writers.get(&session_id).map(|attachment| {
+            (
+                attachment.writer.clone(),
+                format!("desktop:{}", attachment.id),
+            )
+        })
     };
-    let Some(w) = writer else {
+    let Some((w, geometry_attachment_id)) = attachment else {
         return Ok(()); // not attached (e.g. interrupted) — resize is best effort
     };
     let mut w = w.lock().unwrap();
@@ -2543,6 +2329,11 @@ async fn resize_pty(
             rows,
             pixel_width,
             pixel_height,
+            expected_revision,
+            source_kind,
+            source_device_id,
+            attachment_id: Some(geometry_attachment_id),
+            orientation,
         }
     ))
 }
@@ -2599,145 +2390,45 @@ async fn restart_session(
     session_id: String,
     risk_ack: bool,
 ) -> std::result::Result<Value, String> {
-    let initial_session = map_err!(state.db.get_session(&session_id))?;
-    if initial_session.archived_at.is_some() {
-        return Err("archived Sessions cannot be restarted; restore the Session first".into());
-    }
-    let lock_cwd = initial_session.cwd.clone();
-    let repository_lock = match tauri::async_runtime::spawn_blocking(move || {
-        acquire_session_repository_lock(&lock_cwd)
+    let adapter = map_err!(state.db.get_session(&session_id))?.adapter_type;
+    let paths = state.paths.clone();
+    let requested_session_id = session_id.clone();
+    let outcome = run_backend_blocking(move || {
+        let service = CoreService::open(paths).map_err(|error| error.to_string())?;
+        service
+            .restart_session(SessionRestartParams {
+                session_id: requested_session_id,
+                risk_ack,
+            })
+            .map_err(desktop_service_error)
     })
-    .await
-    {
-        Ok(Ok(lock)) => lock,
-        Ok(Err(error)) => return Err(error.to_string()),
-        Err(error) => return Err(format!("repository lock worker failed: {error}")),
-    };
-    // The Session may have changed while this restart waited behind a branch
-    // operation or another AgentPort process. Re-read under the common-dir
-    // reservation before deciding that it is safe to relaunch.
+    .await?;
     let session = map_err!(state.db.get_session(&session_id))?;
-    if session.archived_at.is_some() {
-        return Err("archived Sessions cannot be restarted; restore the Session first".into());
-    }
-    if matches!(session.lifecycle, Lifecycle::Running | Lifecycle::Creating) {
-        return Err("session is running; stop it first".into());
-    }
-    let permission_mode = session
-        .adapter_type
-        .effective_permission_mode(session.permission_mode);
-    if permission_requires_risk_ack(session.adapter_type, permission_mode) && !risk_ack {
-        return Err("NEEDS_RISK_ACK".into());
-    }
-    let install = map_err!(install_for(&state, session.adapter_type))?;
-    let preset = map_err!(preset_for(
-        &state,
-        session.adapter_type,
-        Some(session.preset_id.clone()),
-        &install
-    ))?;
-    map_err!(adapters::validate_user_args(
-        session.adapter_type,
-        &preset.args
-    ))?;
-    let plan = map_err!(
-        adapters::adapter_for(session.adapter_type).build_resume_checked(&ResumeContext {
-            install,
-            preset: preset.clone(),
-            permission_mode: session.permission_mode,
-            cwd: session.cwd.clone(),
-            agent_session_id: session.agent_session_id.clone(),
-            session_id: session.id.clone(),
-            hook_events_path: state
-                .paths
-                .hook_events_path(&session.id)
-                .to_string_lossy()
-                .into_owned(),
-            session_dir: state
-                .paths
-                .session_dir(&session.id)
-                .to_string_lossy()
-                .into_owned(),
-            transport: session.transport,
-        })
-    )?;
-    // Restart must use exactly the same preset environment and secret
-    // materialization as create.  Do it before rotating the Host token or
-    // moving the persisted lifecycle back to Creating.
-    let (env, secrets) = map_err!(materialize_launch_environment(&state, &preset, &plan.env))?;
-    let settings = map_err!(state.db.load_settings())?;
-    if let Err(error) = write_launch_helpers(&plan.helper_files) {
-        return Err(error.to_string());
-    }
-    let new_token = ids::new_host_token();
-    if let Err(error) = state.db.set_session_token(&session_id, &new_token) {
-        remove_launch_helpers(&plan.helper_files);
-        return Err(error.to_string());
-    }
-    let mut renewed = map_err!(state.db.get_session(&session_id))?;
-    renewed.host_socket = Some(
-        state
-            .paths
-            .socket_path(&session_id)
-            .to_string_lossy()
-            .into_owned(),
-    );
-    renewed.lifecycle = Lifecycle::Creating;
-    // HostManager claims the new run atomically before it publishes Creating.
-    // Writing the lifecycle without that run fence would let a delayed terminal
-    // observation from the previous Host race this restart.
-    let mgr = HostManager {
-        paths: &state.paths,
-        db: &state.db,
-    };
-    let info = match mgr.launch(LaunchSpec {
-        session: renewed,
-        command: plan.argv.clone(),
-        env,
-        secrets,
-        log_limit_bytes: settings.log_limit_mib * 1024 * 1024,
-        agent_session_id_hint: plan.assigned_agent_session_id.clone(),
-        cols: 120,
-        rows: 32,
-    }) {
-        Ok(info) => info,
-        Err(error) => {
-            remove_launch_helpers(&plan.helper_files);
-            return Err(error.to_string());
-        }
-    };
-    drop(repository_lock);
-    let launched = map_err!(state.db.get_session(&session_id))?;
-    // A resume whose recorded conversation is gone falls back to a fresh
-    // conversation with a newly assigned native id (claude adapter). Persist
-    // it so the next restart resumes the conversation that actually exists.
-    if let Some(native) = &plan.assigned_agent_session_id {
-        if session.agent_session_id.as_deref() != Some(native.as_str()) {
-            map_err!(state
-                .db
-                .update_session_agent_id(&session_id, native, plan.resume_precision,))?;
-        }
-    }
-    ensure_session_monitor(&app, &state, &launched);
-    // `HostManager::launch` has already moved this exact host/run to Running
-    // through its lifecycle CAS. A second unguarded write here could revive a
-    // terminal state if the Host exited in the small window above.
+    ensure_session_monitor(&app, &state, &session);
     emit_sessions_changed(&app, &state, Some(&session_id));
-    let notices = launch_notice_values(session.adapter_type, &plan.notices);
-    let notes = plan
+    let notes = outcome
         .notices
         .iter()
-        .map(|notice| notice.legacy_message.as_str())
+        .map(|notice| notice.message.as_str())
+        .collect::<Vec<_>>();
+    let notices = outcome
+        .notices
+        .iter()
+        .map(|notice| {
+            json!({
+                "code": notice.code,
+                "params": {"agent": adapter.display_name()},
+                "technicalDetail": notice.message,
+                "message": notice.message,
+            })
+        })
         .collect::<Vec<_>>();
     Ok(json!({
-        "resumePrecision": plan.resume_precision.as_str(),
-        "agentSessionId": plan
-            .assigned_agent_session_id
-            .as_deref()
-            .or(session.agent_session_id.as_deref()),
+        "resumePrecision": outcome.resume_precision,
+        "agentSessionId": outcome.agent_session_id,
         "notes": notes,
         "notices": notices,
-        "hostPid": info.host_pid,
+        "hostPid": outcome.host_pid,
     }))
 }
 
@@ -2849,9 +2540,11 @@ fn stop_archived_sessions_for_purge(state: &AppState, session_ids: &[String]) ->
 /// A confirmed Project/Worktree deletion must not be rejected because an old
 /// Host cannot complete its graceful-stop handshake. Try every stop in bounded
 /// parallel batches, detach local writers, log failures, and continue cleanup.
-fn stop_sessions_for_destructive_cleanup(state: &AppState, session_ids: &[String]) -> usize {
+fn stop_sessions_for_project_removal(
+    state: &AppState,
+    session_ids: &[String],
+) -> std::result::Result<(), String> {
     const STOP_CONCURRENCY: usize = 4;
-    let mut warning_count = 0usize;
     for batch in session_ids.chunks(STOP_CONCURRENCY) {
         let failures = Mutex::new(Vec::new());
         std::thread::scope(|scope| {
@@ -2859,20 +2552,34 @@ fn stop_sessions_for_destructive_cleanup(state: &AppState, session_ids: &[String
             for session_id in batch {
                 scope.spawn(move || {
                     if let Err(error) = stop_session_before_archive(state, session_id) {
-                        detach_session_writer(state, session_id);
-                        tracing::warn!(
-                            session = %session_id,
-                            error = %error,
-                            "Session stop could not be verified during destructive cleanup; continuing deletion"
-                        );
-                        failures.lock().unwrap().push(session_id.clone());
+                        failures
+                            .lock()
+                            .unwrap()
+                            .push((session_id.clone(), error.to_string()));
                     }
                 });
             }
         });
-        warning_count += failures.into_inner().unwrap().len();
+        let failures = failures.into_inner().unwrap();
+        if !failures.is_empty() {
+            let sessions = failures
+                .iter()
+                .map(|(session_id, _)| session_id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            for (session_id, error) in &failures {
+                tracing::warn!(
+                    session = %session_id,
+                    error = %error,
+                    "Session stop could not be authoritatively verified; Project removal aborted"
+                );
+            }
+            return Err(format!(
+                "Project removal aborted because process-group cleanup was not proven for: {sessions}"
+            ));
+        }
     }
-    warning_count
+    Ok(())
 }
 
 /// Trigger the durable cleanup queue after the authoritative database
@@ -2890,7 +2597,10 @@ fn cleanup_purged_sessions(state: &AppState, session_ids: &[String]) {
 /// purged. Plans must be built before the purge commits: the hook-events
 /// evidence lives in AgentPort's session directory and the Session rows are
 /// deleted by the purge transaction.
-fn plan_native_cleanups(state: &AppState, session_ids: &[String]) -> Vec<(String, NativeCleanupPlan)> {
+fn plan_native_cleanups(
+    state: &AppState,
+    session_ids: &[String],
+) -> Vec<(String, NativeCleanupPlan)> {
     session_ids
         .iter()
         .filter_map(|session_id| match state.db.get_session(session_id) {
@@ -3255,18 +2965,21 @@ async fn remove_worktree(
             )
         })
         .collect::<Vec<_>>();
-    let stop_warnings = stop_sessions_for_destructive_cleanup(&state, &session_ids);
+    if let Err(error) = stop_sessions_for_project_removal(&state, &session_ids) {
+        map_err!(state.db.cancel_worktree_removal(&worktree_id))?;
+        return Err(error);
+    }
 
     let mgr = WorktreeManager {
         paths: &state.paths,
         db: &state.db,
     };
-    let outcome = map_err!(mgr.remove(&worktree_id))?;
+    let outcome = map_err!(mgr.remove_after_fence(&worktree_id))?;
     run_native_cleanups(&app, &native_plans);
     cleanup_purged_sessions(&state, &session_ids);
     emit_sessions_changed(&app, &state, None);
     Ok(json!({
-        "stopWarnings": stop_warnings,
+        "stopWarnings": 0,
         "cleanupWarnings": outcome.cleanup_warnings,
     }))
 }
@@ -3645,7 +3358,10 @@ async fn get_legacy_log_inventory(
     state: State<'_, AppState>,
 ) -> std::result::Result<Value, String> {
     let sessions = map_err!(state.db.list_sessions(None, true))?;
-    let inventory = map_err!(agentport_core::legacy_logs::inventory(&state.paths, &sessions))?;
+    let inventory = map_err!(agentport_core::legacy_logs::inventory(
+        &state.paths,
+        &sessions
+    ))?;
     map_err!(serde_json::to_value(inventory))
 }
 
@@ -3753,6 +3469,9 @@ async fn diag_capabilities(state: State<'_, AppState>) -> std::result::Result<St
     map_err!(diag.adapter_capabilities_json())
 }
 
+// Desktop preserves the legacy scalar/status and invoke signatures. The
+// shared service owns the typed metadata-only facade and the staged,
+// compensating secret publication path; both delegate storage to Core.
 #[tauri::command]
 async fn secret_status() -> String {
     format!("{:?}", CredentialBroker::backend_status())

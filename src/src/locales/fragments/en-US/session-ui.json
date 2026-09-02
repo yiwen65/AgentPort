@@ -79,6 +79,17 @@
     "suspended": {
       "message": "Agent suspended by Ctrl-Z.",
       "resume": "Resume"
+    },
+    "phoneGeometry": {
+      "title": "Resized for phone",
+      "detail": "Terminal is {{cols}}×{{rows}} ({{source}})",
+      "sourceDevice": "device {{device}}",
+      "sourcePhone": "phone",
+      "restore": "Restore desktop size",
+      "restoring": "Restoring…",
+      "dismiss": "Dismiss this size notice",
+      "restoreUnavailable": "The desktop terminal is not connected yet",
+      "restoreFailed": "Could not restore desktop size: {{detail}}"
     }
   }
 }

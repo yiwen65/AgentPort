@@ -1,0 +1,52 @@
+diff --git a/src/frontend/iosclient.cc b/src/frontend/iosclient.cc
+index 9a7ef44..0a029a4 100644
+--- a/src/frontend/iosclient.cc
++++ b/src/frontend/iosclient.cc
+@@ -514,7 +514,9 @@ bool iOSClient::main( const std::string encoded_state )
+   sel.add_signal( SIGHUP );
+   sel.add_signal( SIGPIPE );
+   sel.add_signal( SIGCONT );
++#ifdef SIGINFO
+   sel.add_signal( SIGINFO );
++#endif
+   main_init( encoded_state );
+
+   /* Drop unnecessary privileges */
+@@ -598,6 +600,7 @@ bool iOSClient::main( const std::string encoded_state )
+         }
+       }
+
++#ifdef SIGINFO
+       if ( sel.signal( SIGINFO ) ) {
+         uint64_t now = timestamp();
+
+@@ -642,6 +645,7 @@ bool iOSClient::main( const std::string encoded_state )
+         clean_shutdown = true;
+         break;
+       }
++#endif
+
+       /* quit if our shutdown has been acknowledged */
+       if ( network->shutdown_in_progress() && network->shutdown_acknowledged() ) {
+diff --git a/src/util/locale_utils.cc b/src/util/locale_utils.cc
+index 50d6e19..099ca28 100644
+--- a/src/util/locale_utils.cc
++++ b/src/util/locale_utils.cc
+@@ -68,6 +68,9 @@ const LocaleVar get_ctype( void )
+
+ const char* locale_charset( void )
+ {
++#ifdef __ANDROID__
++  return "UTF-8";
++#else
+   static const char ASCII_name[] = "US-ASCII";
+
+   /* Produce more pleasant name of US-ASCII */
+@@ -78,6 +81,7 @@ const char* locale_charset( void )
+   }
+
+   return ret;
++#endif
+ }
+
+ bool is_utf8_locale( void )

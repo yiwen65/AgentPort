@@ -32,7 +32,7 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon-runtime-8bit.png", "icons/icon.icns"],
-    "externalBin": ["binaries/agentport-host"],
+    "externalBin": ["binaries/agentport-host", "binaries/agentport-remote-bridge", "binaries/agentport-mosh-attach"],
     "resources": [],
     "macOS": {
       "minimumSystemVersion": "13.0",

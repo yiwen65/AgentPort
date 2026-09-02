@@ -39,6 +39,7 @@ import type {
   GitDiffSide,
   GitFileDiff,
   GitHistoryPage,
+  TerminalGeometry,
 } from "./types";
 
 export interface SessionRuntime {
@@ -62,6 +63,8 @@ export interface SessionRuntime {
   suspended: boolean;
   /** Latest OSC 0/2 title emitted by the terminal application. */
   terminalTitle: string | null;
+  /** Current run-local PTY geometry owner; never restored from project storage. */
+  terminalGeometry: TerminalGeometry | null;
   scrolledUp: boolean;
   /** Set when the read-only history terminal shows a truncated log tail. */
   historyNote: string | null;
@@ -85,6 +88,7 @@ export function emptyRuntime(): SessionRuntime {
     hostPid: null,
     suspended: false,
     terminalTitle: null,
+    terminalGeometry: null,
     scrolledUp: false,
     historyNote: null,
     historyMessage: null,

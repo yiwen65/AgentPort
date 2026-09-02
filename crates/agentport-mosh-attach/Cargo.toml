@@ -1,0 +1,17 @@
+[package]
+name = "agentport-mosh-attach"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+agentport-service = { path = "../agentport-service" }
+agentport-remote-protocol = { path = "../agentport-remote-protocol" }
+base64.workspace = true
+libc.workspace = true
+serde_json.workspace = true
+signal-hook.workspace = true
+zeroize = "1"

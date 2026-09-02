@@ -780,6 +780,12 @@ impl<'a> WorktreeManager<'a> {
     /// blockers once the user confirms the destructive action.
     pub fn remove(&self, worktree_id: &str) -> Result<WorktreeRemovalOutcome> {
         self.db.begin_worktree_removal(worktree_id)?;
+        self.remove_after_fence(worktree_id)
+    }
+
+    /// Complete a removal whose cross-process fence was already acquired by
+    /// the caller before authoritative Session shutdown.
+    pub fn remove_after_fence(&self, worktree_id: &str) -> Result<WorktreeRemovalOutcome> {
         let w = self.db.get_worktree(worktree_id)?;
         let path = Path::new(&w.path);
         let owned_root = std::fs::canonicalize(self.paths.worktrees_root())

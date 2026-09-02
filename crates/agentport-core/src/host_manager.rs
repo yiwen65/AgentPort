@@ -164,6 +164,35 @@ fn pid_alive(pid: i32) -> bool {
     }
 }
 
+fn stopped_run_is_group_cleaned(
+    paths: &AppPaths,
+    session_id: &str,
+    expected_host_pid: i64,
+    expected_run: Option<(&str, i64)>,
+) -> bool {
+    let path = paths.session_dir(session_id).join("host-state.json");
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    if value.get("session_id").and_then(|value| value.as_str()) != Some(session_id)
+        || value.get("host_pid").and_then(|value| value.as_i64()) != Some(expected_host_pid)
+        || value.get("exit_reason").and_then(|value| value.as_str()) != Some("user_stop")
+        || value.get("group_cleaned").and_then(|value| value.as_bool()) != Some(true)
+    {
+        return false;
+    }
+    match expected_run {
+        None => true,
+        Some((run_id, run_ordinal)) => {
+            value.get("run_id").and_then(|value| value.as_str()) == Some(run_id)
+                && value.get("run_ordinal").and_then(|value| value.as_i64()) == Some(run_ordinal)
+        }
+    }
+}
+
 fn stop_is_complete(lifecycle: Lifecycle) -> bool {
     matches!(
         lifecycle,
@@ -212,6 +241,9 @@ pub struct AttachInfo {
     pub run_ordinal: i64,
     pub current_status: Option<StatusEvent>,
     pub log_cursor: LogCursor,
+    /// Additive Host features negotiated by presence in `HelloOk`.
+    pub features: Vec<String>,
+    pub terminal_geometry: Option<TerminalGeometry>,
 }
 
 pub struct HostManager<'a> {
@@ -453,6 +485,16 @@ impl<'a> HostManager<'a> {
         &self,
         session_id: &str,
     ) -> Result<(HostClient, AttachInfo, SessionHostBinding)> {
+        self.connect_bound_host_with_resume(session_id, 0, None, true)
+    }
+
+    fn connect_bound_host_with_resume(
+        &self,
+        session_id: &str,
+        replay_tail_bytes: u64,
+        resume_from: Option<LogCursor>,
+        subscribe_output: bool,
+    ) -> Result<(HostClient, AttachInfo, SessionHostBinding)> {
         let session = self.db.get_session(session_id)?;
         let binding = self.db.session_host_binding(session_id)?;
         let expected_pid = binding.host_pid.ok_or_else(|| {
@@ -465,7 +507,14 @@ impl<'a> HostManager<'a> {
         if session.host_token.is_empty() {
             return Err(CoreError::Host("no host token recorded".into()));
         }
-        let (client, info) = HostClient::connect(&socket, session_id, &session.host_token, 0)?;
+        let (client, info) = HostClient::connect_with_resume(
+            &socket,
+            session_id,
+            &session.host_token,
+            replay_tail_bytes,
+            resume_from,
+            subscribe_output,
+        )?;
         if info.host_pid as i64 != expected_pid {
             return Err(CoreError::Protocol(format!(
                 "host pid mismatch: database={expected_pid} handshake={}",
@@ -491,11 +540,29 @@ impl<'a> HostManager<'a> {
     /// do not unlink the stable socket path here, because a concurrently
     /// claimed replacement Host may already have rebound it.
     pub fn attach(&self, session_id: &str) -> Result<(HostClient, AttachInfo)> {
+        self.attach_with_resume(session_id, 0, None, true)
+    }
+
+    /// Verified attach with an explicit run-scoped replay cursor. Host token,
+    /// socket path, PID binding and run checks remain inside Core; callers get
+    /// only the authenticated client and public handshake facts.
+    pub fn attach_with_resume(
+        &self,
+        session_id: &str,
+        replay_tail_bytes: u64,
+        resume_from: Option<LogCursor>,
+        subscribe_output: bool,
+    ) -> Result<(HostClient, AttachInfo)> {
         // Retain the observation made before the socket operation. Re-reading
         // after an I/O failure could instead capture a replacement Host and
         // incorrectly mark that newer run interrupted.
         let observed_binding = self.db.session_host_binding(session_id).ok();
-        match self.connect_bound_host(session_id) {
+        match self.connect_bound_host_with_resume(
+            session_id,
+            replay_tail_bytes,
+            resume_from,
+            subscribe_output,
+        ) {
             Ok((client, info, _binding)) => Ok((client, info)),
             Err(CoreError::Host(_)) => {
                 if let Some(binding) = observed_binding {
@@ -543,12 +610,43 @@ impl<'a> HostManager<'a> {
                         "stop sent but host pid was not available for verification".into(),
                     ));
                 }
+                let _ = client
+                    .reader
+                    .get_ref()
+                    .set_read_timeout(Some(Duration::from_millis(grace_ms.saturating_add(3_000))));
+                let mut exit_group_cleaned = false;
+                loop {
+                    match client.read_frame() {
+                        Ok(Some(HostFrame::Exit {
+                            session_id: exit_session,
+                            group_cleaned,
+                            ..
+                        })) if exit_session == session_id => {
+                            exit_group_cleaned = group_cleaned;
+                            break;
+                        }
+                        Ok(Some(_)) => continue,
+                        Ok(None) | Err(_) => break,
+                    }
+                }
                 if !wait_pid_gone(
                     info.host_pid as i32,
                     Duration::from_millis(grace_ms.saturating_add(3_000)),
                 ) {
                     return Err(CoreError::Host(
                         "host did not stop within the verified grace period".into(),
+                    ));
+                }
+                if !exit_group_cleaned
+                    && !stopped_run_is_group_cleaned(
+                        self.paths,
+                        session_id,
+                        info.host_pid as i64,
+                        binding.run_identity(),
+                    )
+                {
+                    return Err(CoreError::Host(
+                        "host stopped but full process-group cleanup was not proven".into(),
                     ));
                 }
                 if !self.db.update_session_lifecycle_if_host(
@@ -934,13 +1032,25 @@ fn spawn_host_reaper(
 }
 
 /// A verified connection to a host. All frames carry the session id.
-#[derive(Debug)]
 pub struct HostClient {
     pub reader: BufReader<UnixStream>,
     pub writer: UnixStream,
     pub session_id: String,
     pub protocol: u32,
+    features: Vec<String>,
     token: String,
+}
+
+impl std::fmt::Debug for HostClient {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HostClient")
+            .field("session_id", &self.session_id)
+            .field("protocol", &self.protocol)
+            .field("features", &self.features)
+            .field("token", &"[redacted]")
+            .finish_non_exhaustive()
+    }
 }
 
 struct ProtocolConnectOptions {
@@ -1097,6 +1207,8 @@ impl HostClient {
                 run_ordinal,
                 current_status,
                 log_cursor,
+                features,
+                terminal_geometry,
             } => {
                 if protocol != requested_protocol {
                     return Err(CoreError::Protocol(format!(
@@ -1119,6 +1231,8 @@ impl HostClient {
                     run_ordinal,
                     current_status,
                     log_cursor,
+                    features,
+                    terminal_geometry,
                 }
             }
             HostFrame::Error {
@@ -1158,6 +1272,7 @@ impl HostClient {
             writer,
             session_id: session_id.to_string(),
             protocol: requested_protocol,
+            features: info.features.clone(),
             token: token.to_string(),
         };
         Ok((client, info))
@@ -1173,6 +1288,41 @@ impl HostClient {
             data: data.to_vec(),
         })
     }
+
+    pub fn supports_input_batches(&self) -> bool {
+        self.features
+            .iter()
+            .any(|feature| feature == HOST_FEATURE_INPUT_BATCH_V1)
+    }
+
+    /// Submit one atomic terminal input unit. Callers must retain `batch_id`
+    /// until they observe a terminal acknowledgement; an EOF before then is an
+    /// unknown write and must never trigger automatic replay.
+    pub fn send_input_batch(&mut self, batch_id: &str, data: &[u8]) -> Result<()> {
+        if !self.supports_input_batches() {
+            return Err(CoreError::Protocol(
+                "host does not support atomic input batches".into(),
+            ));
+        }
+        self.write(&ClientFrame::InputBatch {
+            session_id: self.session_id.clone(),
+            batch_id: batch_id.to_string(),
+            data: data.to_vec(),
+        })
+    }
+    pub fn send_structured_prompt(&mut self, text: &str) -> Result<()> {
+        self.write(&ClientFrame::StructuredPrompt {
+            session_id: self.session_id.clone(),
+            text: text.to_string(),
+        })
+    }
+
+    pub fn abort_structured_turn(&mut self) -> Result<()> {
+        self.write(&ClientFrame::AbortStructuredTurn {
+            session_id: self.session_id.clone(),
+        })
+    }
+
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
         self.write(&ClientFrame::Resize {
             session_id: self.session_id.clone(),
@@ -1180,6 +1330,47 @@ impl HostClient {
             rows,
             pixel_width: 0,
             pixel_height: 0,
+            expected_revision: None,
+            source_kind: None,
+            source_device_id: None,
+            attachment_id: None,
+            orientation: None,
+        })
+    }
+
+    pub fn supports_terminal_geometry(&self) -> bool {
+        self.features
+            .iter()
+            .any(|feature| feature == HOST_FEATURE_TERMINAL_GEOMETRY_V1)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn resize_with_geometry(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        expected_revision: u64,
+        source_kind: &str,
+        source_device_id: Option<&str>,
+        attachment_id: &str,
+        orientation: Option<&str>,
+    ) -> Result<()> {
+        if !self.supports_terminal_geometry() {
+            return Err(CoreError::Protocol(
+                "host does not support revisioned terminal geometry".into(),
+            ));
+        }
+        self.write(&ClientFrame::Resize {
+            session_id: self.session_id.clone(),
+            cols,
+            rows,
+            pixel_width: 0,
+            pixel_height: 0,
+            expected_revision: Some(expected_revision),
+            source_kind: Some(source_kind.to_string()),
+            source_device_id: source_device_id.map(str::to_owned),
+            attachment_id: Some(attachment_id.to_string()),
+            orientation: orientation.map(str::to_owned),
         })
     }
     pub fn interrupt(&mut self) -> Result<()> {
@@ -1202,6 +1393,11 @@ impl HostClient {
     }
     pub fn ping(&mut self) -> Result<()> {
         self.write(&ClientFrame::Ping {
+            session_id: self.session_id.clone(),
+        })
+    }
+    pub fn detach(&mut self) -> Result<()> {
+        self.write(&ClientFrame::Detach {
             session_id: self.session_id.clone(),
         })
     }
@@ -1472,6 +1668,8 @@ mod tests {
                 run_ordinal: LEGACY_RUN_ORDINAL,
                 current_status: None,
                 log_cursor: LogCursor::default(),
+                features: vec![HOST_FEATURE_INPUT_BATCH_V1.into()],
+                terminal_geometry: None,
             },
         )
         .is_err()

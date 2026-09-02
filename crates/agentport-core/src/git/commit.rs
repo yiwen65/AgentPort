@@ -4,9 +4,10 @@ use super::repository::{repository_lock, RepositoryFileLock};
 use super::status::{
     bytes_to_path, decode_path_token, encode_path_token, parse_numstat_z, GitChangesSnapshot,
 };
+use crate::db::ensure_project_not_removing_conn;
 use crate::error::{CoreError, Result};
 use chrono::{SecondsFormat, Utc};
-use rusqlite::params;
+use rusqlite::{params, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
@@ -706,7 +707,10 @@ impl<'a> GitWorkspaceManager<'a> {
         phase: &str,
     ) -> Result<()> {
         let now = now_string();
-        self.db.conn().lock().unwrap().execute(
+        let mut conn = self.db.conn().lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_project_not_removing_conn(&tx, &review.context.target.project_id)?;
+        tx.execute(
             "INSERT INTO git_commit_operations(
                 id,project_id,worktree_id,repo_key,checkout_id,checkout_root,before_head,
                 expected_tree_oid,index_hash,message_hash,phase,created_at,updated_at
@@ -726,6 +730,7 @@ impl<'a> GitWorkspaceManager<'a> {
                 now,
             ],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1360,6 +1365,69 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    #[test]
+    fn commit_journal_rejects_a_project_with_an_active_removal_fence() {
+        let db = Db::open_memory().unwrap();
+        db.add_project(&Project {
+            id: "project-removing".into(),
+            name: "project-removing".into(),
+            root_path: "/tmp/project-removing".into(),
+            git_root_path: Some("/tmp/project-removing".into()),
+            created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
+        })
+        .unwrap();
+        db.begin_project_removal("project-removing").unwrap();
+        let review = GitCommitReview {
+            context: super::super::context::GitCheckoutDescriptor {
+                target: super::super::context::GitCheckoutTarget {
+                    project_id: "project-removing".into(),
+                    kind: super::super::context::GitCheckoutKind::Main,
+                    worktree_id: None,
+                },
+                checkout_id: "checkout".into(),
+                repo_key: "repo".into(),
+                project_name: "project-removing".into(),
+                project_root: "/tmp/project-removing".into(),
+                checkout_root: "/tmp/project-removing".into(),
+                expected_branch: Some("main".into()),
+                actual_branch: Some("main".into()),
+                head_oid: None,
+                detached: false,
+                unborn: true,
+                ongoing_operation: None,
+                has_remote: false,
+                remote: None,
+                remote_url: None,
+                upstream: None,
+                ahead: 0,
+                behind: 0,
+                worktree_health: None,
+                live_session_ids: Vec::new(),
+                writable: true,
+                blockers: Vec::new(),
+                warnings: Vec::new(),
+            },
+            commit_token: "token".into(),
+            message: "message".into(),
+            message_hash: "message-hash".into(),
+            before_head: None,
+            index_hash: "index-hash".into(),
+            expected_tree_oid: "tree".into(),
+            files: Vec::new(),
+            outside_project_paths: Vec::new(),
+            subject_over_72: false,
+            warnings: Vec::new(),
+        };
+        let manager = GitWorkspaceManager::new(&db);
+
+        assert!(matches!(
+            manager.insert_commit_journal("commit-op", &review, "tree", "started"),
+            Err(CoreError::Conflict(_))
+        ));
     }
 
     #[test]

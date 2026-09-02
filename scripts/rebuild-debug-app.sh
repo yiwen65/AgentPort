@@ -34,7 +34,7 @@ if [ "$DEBUG_SIGN_IDENTITY" != "-" ] &&
 fi
 
 (cd "$ROOT/src" && npm run build)
-(cd "$ROOT" && cargo build -p agentport-host)
+(cd "$ROOT" && cargo build -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach)
 (cd "$ROOT" && TAURI_CONFIG="{\"identifier\":\"$DEBUG_BUNDLE_ID\"}" \
   cargo build -p agentport --features tauri/custom-protocol)
 
@@ -45,6 +45,8 @@ fi
 
 cp "$ROOT/target/debug/agentport" "$APP/Contents/MacOS/agentport"
 cp "$ROOT/target/debug/agentport-host" "$APP/Contents/MacOS/agentport-host"
+cp "$ROOT/target/debug/agentport-remote-bridge" "$APP/Contents/MacOS/agentport-remote-bridge"
+cp "$ROOT/target/debug/agentport-mosh-attach" "$APP/Contents/MacOS/agentport-mosh-attach"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $DEBUG_BUNDLE_ID" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $DEBUG_DISPLAY_NAME" "$PLIST"
 

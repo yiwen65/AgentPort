@@ -4188,6 +4188,24 @@ body.is-resizing-split .doc-panel-resize::after {
   flex: 1;
 }
 
+.phone-geometry-banner {
+  /* Overlay the renderer instead of consuming layout height: xterm keeps the
+     desktop viewport measurement while the Host remains phone-sized. */
+  min-height: 38px;
+}
+
+.phone-geometry-icon {
+  color: var(--accent);
+  font-size: 17px;
+  line-height: 1;
+  transform: rotate(180deg);
+}
+
+.phone-geometry-dismiss {
+  width: 28px;
+  padding-inline: 0;
+}
+
 /* Status line above the global status bar (PRD ch.2) */
 .term-statusline {
   position: absolute;

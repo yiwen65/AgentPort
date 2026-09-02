@@ -11,11 +11,37 @@ rm -rf "$AGENTPORT_DATA_DIR"
 
 echo "== install =="
 apt-get update -qq
-apt-get install -y -qq "$DEB" xvfb xauth >/dev/null
-command -v agentport
-dpkg -L agent-port | grep -q "agentport-host" && echo "sidecar embedded: OK"
+apt-get install -y -qq "$DEB" xvfb xauth python3 >/dev/null
+GUI=$(command -v agentport)
+HOST=$(dpkg -L agent-port | awk '/\/agentport-host$/ { print; exit }')
+if [ -z "$HOST" ] || [ ! -f "$HOST" ] || [ ! -x "$HOST" ]; then
+  echo "Host sidecar embedded and executable: FAIL" >&2
+  exit 1
+fi
+echo "Host sidecar embedded and executable: OK"
+BRIDGE=$(dpkg -L agent-port | awk '/\/agentport-remote-bridge$/ { print; exit }')
+if [ -z "$BRIDGE" ] || [ ! -x "$BRIDGE" ]; then
+  echo "Remote Bridge sidecar embedded: FAIL" >&2
+  exit 1
+fi
+echo "Remote Bridge sidecar embedded: OK"
+MOSH_ATTACH=$(dpkg -L agent-port | awk '/\/agentport-mosh-attach$/ { print; exit }')
+if [ -z "$MOSH_ATTACH" ] || [ ! -x "$MOSH_ATTACH" ]; then
+  echo "Mosh attach sidecar embedded: FAIL" >&2
+  exit 1
+fi
+echo "Mosh attach sidecar embedded: OK"
 CLI=/artifacts/agentport-cli
-chmod +x /artifacts/agentport-cli /artifacts/agentport-host 2>/dev/null || true
+chmod +x /artifacts/agentport-cli /artifacts/agentport-host /artifacts/agentport-remote-bridge /artifacts/agentport-mosh-attach 2>/dev/null || true
+
+echo "== installed Remote Bridge harness self-tests =="
+python3 "$(dirname "$0")/../verify-installed-remote-bridge.py" --self-test
+
+echo "== installed Remote Bridge GUI-off smoke =="
+python3 "$(dirname "$0")/../verify-installed-remote-bridge.py" \
+  --bridge "$BRIDGE" \
+  --gui "$GUI" \
+  --host "$HOST"
 
 echo "== headless functional E2E (agentport-cli on real Linux) =="
 PROBE_JSON=$($CLI probe shell --path /bin/bash --json)

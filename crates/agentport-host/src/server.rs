@@ -16,7 +16,9 @@ use std::time::Duration;
 
 use agentport_core::models::{AgentTransport, LogCursor};
 use agentport_core::protocol::{
-    encode_frame, read_frame, write_frame, ClientFrame, HostFrame, PROTOCOL_VERSION,
+    encode_frame, read_frame, write_frame, ClientFrame, HostFrame, InputBatchAckPhase,
+    TerminalGeometry, HOST_FEATURE_INPUT_BATCH_V1, HOST_FEATURE_TERMINAL_GEOMETRY_V1,
+    PROTOCOL_VERSION,
 };
 use chrono::Utc;
 use nix::sys::signal::Signal;
@@ -41,6 +43,26 @@ const CLIENT_OUTBOUND_QUEUE_CAPACITY: usize = 128;
 /// from retaining that thread forever when its kernel socket buffer is full.
 const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const CLIENT_WRITER_POLL: Duration = Duration::from_millis(100);
+/// A single batch is intentionally smaller than the outer socket framing
+/// ceiling so one remote paste cannot monopolize the Host input executor.
+const MAX_INPUT_BATCH_BYTES: usize = 256 * 1024;
+pub(crate) const INPUT_QUEUE_CAPACITY: usize = 128;
+
+/// Metadata needed for a directed batch acknowledgement. No input bytes are
+/// retained here or in the Host's logs.
+struct InputAckTarget {
+    client_id: u64,
+    batch_id: String,
+    tx: mpsc::SyncSender<OutboundFrame>,
+}
+
+/// One atomic write owned by the Host-wide input executor. All authenticated
+/// socket readers, including legacy clients, use this queue.
+pub(crate) struct InputMutation {
+    server_sequence: u64,
+    data: Vec<u8>,
+    ack: Option<InputAckTarget>,
+}
 
 /// One entry in the Host broadcast table. The sender is bounded; an explicit
 /// eviction closes the socket so the reader and writer threads for that one
@@ -210,6 +232,11 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
             run_ordinal: shared.cfg.run_ordinal,
             current_status: shared.current_status.lock().unwrap().clone(),
             log_cursor: high_water.clone(),
+            features: vec![
+                HOST_FEATURE_INPUT_BATCH_V1.to_string(),
+                HOST_FEATURE_TERMINAL_GEOMETRY_V1.to_string(),
+            ],
+            terminal_geometry: Some(shared.terminal_geometry.lock().unwrap().clone()),
         }];
         if shared.process_suspended.load(Ordering::Acquire) {
             initial_frames.push(HostFrame::ProcessStatus {
@@ -298,21 +325,47 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                     );
                     continue;
                 }
-                // xterm delivers Ctrl-Z as a byte. The direct Agent process
-                // group is orphaned from a job-control shell, so POSIX permits
-                // SIGTSTP to be discarded. SIGSTOP gives the user the same
-                // visible suspension and the GUI supplies the missing `fg`
-                // operation through SIGCONT.
-                if data.as_slice() == [0x1a] {
-                    note_user_activity(&shared);
-                    signal_group(&shared, Signal::SIGSTOP);
+                // Legacy clients receive no new frame type, but their bytes
+                // still share the exact same FIFO as batch-aware clients.
+                if data.is_empty()
+                    || data.len() > MAX_INPUT_BATCH_BYTES
+                    || !enqueue_input(&shared, data, None)
+                {
+                    let _ = queue_client_frame(
+                        &shared,
+                        id,
+                        &frame_tx,
+                        err_frame(
+                            Some(&shared.cfg.session_id),
+                            HostErrorCode::TerminalInputUnavailable,
+                            "terminal input was not accepted",
+                        ),
+                    );
+                }
+            }
+            ClientFrame::InputBatch { batch_id, data, .. } => {
+                let invalid = shared.cfg.transport != AgentTransport::Pty
+                    || batch_id.is_empty()
+                    || batch_id.len() > 128
+                    || data.is_empty()
+                    || data.len() > MAX_INPUT_BATCH_BYTES;
+                let ack = InputAckTarget {
+                    client_id: id,
+                    batch_id,
+                    tx: frame_tx.clone(),
+                };
+                if invalid {
+                    let sequence = next_input_sequence(&shared);
+                    send_input_ack(
+                        &shared,
+                        &ack,
+                        sequence,
+                        InputBatchAckPhase::NotExecuted,
+                        Some("input batch validation failed"),
+                    );
                     continue;
                 }
-                let mut w = shared.input_writer.lock().unwrap();
-                if w.write_all(&data).and_then(|_| w.flush()).is_err() {
-                    break; // PTY gone — nothing more to do for this client
-                }
-                note_user_activity(&shared);
+                let _ = enqueue_input(&shared, data, Some(ack));
             }
             ClientFrame::StructuredPrompt { text, .. } => {
                 if shared.cfg.transport != AgentTransport::JsonRpc {
@@ -375,24 +428,55 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                 rows,
                 pixel_width,
                 pixel_height,
+                expected_revision,
+                source_kind,
+                source_device_id,
+                attachment_id,
+                orientation,
                 ..
             } => {
-                if let Some(master) = shared.master.lock().unwrap().as_mut() {
-                    let _ = master.resize(PtySize {
-                        rows,
-                        cols,
-                        pixel_width,
-                        pixel_height,
-                    });
+                let (accepted, geometry, reason, changed) = apply_terminal_resize(
+                    &shared,
+                    cols,
+                    rows,
+                    pixel_width,
+                    pixel_height,
+                    expected_revision,
+                    source_kind,
+                    source_device_id,
+                    attachment_id,
+                    orientation,
+                );
+                if !queue_client_frame(
+                    &shared,
+                    id,
+                    &frame_tx,
+                    HostFrame::ResizeAck {
+                        session_id: shared.cfg.session_id.clone(),
+                        accepted,
+                        geometry: geometry.clone(),
+                        reason,
+                    },
+                ) {
+                    break;
+                }
+                if changed {
+                    crate::broadcast(
+                        &shared,
+                        &HostFrame::TerminalGeometryChanged {
+                            session_id: shared.cfg.session_id.clone(),
+                            geometry,
+                        },
+                    );
                 }
             }
             ClientFrame::Interrupt { .. } => {
                 note_user_activity(&shared);
-                signal_group(&shared, Signal::SIGINT);
+                let _ = signal_group(&shared, Signal::SIGINT);
             }
             ClientFrame::Continue { .. } => {
                 note_user_activity(&shared);
-                signal_group(&shared, Signal::SIGCONT);
+                let _ = signal_group(&shared, Signal::SIGCONT);
             }
             ClientFrame::Stop { grace_ms, .. } => {
                 let _ = tx.send(HostMsg::Stop { grace_ms });
@@ -439,6 +523,91 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
     }
     remove_client(&shared, id);
     info!(client_id = id, "client detached");
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_terminal_resize(
+    shared: &Shared,
+    cols: u16,
+    rows: u16,
+    pixel_width: u16,
+    pixel_height: u16,
+    expected_revision: Option<u64>,
+    source_kind: Option<String>,
+    source_device_id: Option<String>,
+    attachment_id: Option<String>,
+    orientation: Option<String>,
+) -> (bool, TerminalGeometry, Option<String>, bool) {
+    let mut current = shared.terminal_geometry.lock().unwrap();
+    let reject = |reason: &str, geometry: &TerminalGeometry| {
+        (false, geometry.clone(), Some(reason.to_string()), false)
+    };
+    if cols == 0 || rows == 0 {
+        return reject("invalid_dimensions", &current);
+    }
+
+    let legacy_context = source_kind.is_none() && expected_revision.is_none();
+    let (source_kind, expected_revision) = match (source_kind, expected_revision) {
+        (Some(source), Some(revision)) if attachment_id.is_some() => (source, revision),
+        (None, None) if current.source_kind != "mobile" => {
+            ("desktop".to_string(), current.revision)
+        }
+        (None, None) => return reject("mobile_owner_requires_explicit_restore", &current),
+        _ => return reject("incomplete_geometry_context", &current),
+    };
+    if !matches!(source_kind.as_str(), "mobile" | "desktop") {
+        return reject("invalid_source_kind", &current);
+    }
+    if !legacy_context
+        && (attachment_id.as_deref().map_or(true, str::is_empty)
+            || (source_kind == "mobile"
+                && (source_device_id.as_deref().map_or(true, str::is_empty)
+                    || !matches!(orientation.as_deref(), Some("portrait" | "landscape")))))
+    {
+        return reject("invalid_source_context", &current);
+    }
+    if expected_revision != current.revision {
+        return reject("stale_revision", &current);
+    }
+    let unchanged = current.cols == cols
+        && current.rows == rows
+        && current.source_kind == source_kind
+        && current.source_device_id == source_device_id
+        && current.attachment_id == attachment_id
+        && current.orientation == orientation;
+    if unchanged {
+        return (true, current.clone(), None, false);
+    }
+
+    let resize_result = shared
+        .master
+        .lock()
+        .unwrap()
+        .as_mut()
+        .ok_or("resize_not_supported")
+        .and_then(|master| {
+            master
+                .resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width,
+                    pixel_height,
+                })
+                .map_err(|_| "resize_failed")
+        });
+    if let Err(reason) = resize_result {
+        return reject(reason, &current);
+    }
+
+    current.cols = cols;
+    current.rows = rows;
+    current.source_kind = source_kind;
+    current.source_device_id = source_device_id;
+    current.attachment_id = attachment_id;
+    current.orientation = orientation;
+    current.revision = current.revision.saturating_add(1);
+    current.updated_at = Utc::now();
+    (true, current.clone(), None, true)
 }
 
 /// Queue a client-specific reply without ever blocking the connection reader.
@@ -495,6 +664,7 @@ fn frame_session_id(f: &ClientFrame) -> &str {
     match f {
         ClientFrame::Hello { session_id, .. }
         | ClientFrame::Input { session_id, .. }
+        | ClientFrame::InputBatch { session_id, .. }
         | ClientFrame::StructuredPrompt { session_id, .. }
         | ClientFrame::AbortStructuredTurn { session_id }
         | ClientFrame::Resize { session_id, .. }
@@ -505,6 +675,174 @@ fn frame_session_id(f: &ClientFrame) -> &str {
         | ClientFrame::Ping { session_id }
         | ClientFrame::Detach { session_id } => session_id,
     }
+}
+
+fn next_input_sequence(shared: &Shared) -> u64 {
+    shared.next_input_sequence.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Admit input under one mutex so the assigned sequence is the Host's sole
+/// definition of receive order across independent Unix socket reader threads.
+fn enqueue_input(shared: &Shared, data: Vec<u8>, ack: Option<InputAckTarget>) -> bool {
+    let _admission = shared.input_admission.lock().unwrap();
+    let sequence = next_input_sequence(shared);
+    if shared.input_failed.load(Ordering::Acquire) {
+        if let Some(ack) = ack.as_ref() {
+            send_input_ack(
+                shared,
+                ack,
+                sequence,
+                InputBatchAckPhase::NotExecuted,
+                Some("input executor is unavailable"),
+            );
+        }
+        return false;
+    }
+    let mutation = InputMutation {
+        server_sequence: sequence,
+        data,
+        ack,
+    };
+    match shared.input_queue.try_send(mutation) {
+        Ok(()) => true,
+        Err(mpsc::TrySendError::Full(mutation)) => {
+            if let Some(ack) = mutation.ack.as_ref() {
+                send_input_ack(
+                    shared,
+                    ack,
+                    sequence,
+                    InputBatchAckPhase::NotExecuted,
+                    Some("input queue is full"),
+                );
+            }
+            false
+        }
+        Err(mpsc::TrySendError::Disconnected(mutation)) => {
+            shared.input_failed.store(true, Ordering::Release);
+            if let Some(ack) = mutation.ack.as_ref() {
+                send_input_ack(
+                    shared,
+                    ack,
+                    sequence,
+                    InputBatchAckPhase::NotExecuted,
+                    Some("input executor is unavailable"),
+                );
+            }
+            false
+        }
+    }
+}
+
+fn send_input_ack(
+    shared: &Shared,
+    target: &InputAckTarget,
+    server_sequence: u64,
+    phase: InputBatchAckPhase,
+    message: Option<&str>,
+) {
+    let _ = queue_client_frame(
+        shared,
+        target.client_id,
+        &target.tx,
+        HostFrame::InputBatchAck {
+            session_id: shared.cfg.session_id.clone(),
+            batch_id: target.batch_id.clone(),
+            server_sequence,
+            phase,
+            message: message.map(str::to_string),
+        },
+    );
+}
+
+/// Start the one owner of terminal writes. It emits `accepted` before touching
+/// the PTY and `completed` only after a full write+flush. A write error is
+/// conservatively `unknown` because `Write::write_all` may have made partial
+/// progress; the run then fails closed and every queued/future batch is known
+/// not to execute.
+pub(crate) fn spawn_input_worker(shared: Arc<Shared>, rx: mpsc::Receiver<InputMutation>) {
+    std::thread::spawn(move || {
+        while let Ok(mutation) = rx.recv() {
+            if shared.input_failed.load(Ordering::Acquire) {
+                if let Some(ack) = mutation.ack.as_ref() {
+                    send_input_ack(
+                        &shared,
+                        ack,
+                        mutation.server_sequence,
+                        InputBatchAckPhase::NotExecuted,
+                        Some("input executor is unavailable"),
+                    );
+                }
+                continue;
+            }
+            if let Some(ack) = mutation.ack.as_ref() {
+                send_input_ack(
+                    &shared,
+                    ack,
+                    mutation.server_sequence,
+                    InputBatchAckPhase::Accepted,
+                    None,
+                );
+            }
+
+            // xterm delivers Ctrl-Z as a byte. The direct Agent process group
+            // is orphaned from a job-control shell, so SIGSTOP supplies the
+            // visible suspension and remains ordered with surrounding input.
+            if mutation.data.as_slice() == [0x1a] {
+                let delivered = signal_group(&shared, Signal::SIGSTOP);
+                if delivered {
+                    note_user_activity(&shared);
+                }
+                if let Some(ack) = mutation.ack.as_ref() {
+                    send_input_ack(
+                        &shared,
+                        ack,
+                        mutation.server_sequence,
+                        if delivered {
+                            InputBatchAckPhase::Completed
+                        } else {
+                            InputBatchAckPhase::NotExecuted
+                        },
+                        (!delivered).then_some("agent process group is unavailable"),
+                    );
+                }
+                continue;
+            }
+
+            let result = {
+                let mut writer = shared.input_writer.lock().unwrap();
+                writer
+                    .write_all(&mutation.data)
+                    .and_then(|_| writer.flush())
+            };
+            match result {
+                Ok(()) => {
+                    note_user_activity(&shared);
+                    if let Some(ack) = mutation.ack.as_ref() {
+                        send_input_ack(
+                            &shared,
+                            ack,
+                            mutation.server_sequence,
+                            InputBatchAckPhase::Completed,
+                            None,
+                        );
+                    }
+                }
+                Err(error) => {
+                    shared.input_failed.store(true, Ordering::Release);
+                    warn!(%error, "terminal input writer failed; disabling input for this run");
+                    if let Some(ack) = mutation.ack.as_ref() {
+                        send_input_ack(
+                            &shared,
+                            ack,
+                            mutation.server_sequence,
+                            InputBatchAckPhase::Unknown,
+                            Some("terminal input completion is unknown"),
+                        );
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// One JSON command per line is the only data written to a structured Pi

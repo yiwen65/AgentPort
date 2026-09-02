@@ -282,6 +282,31 @@ export interface RuntimeMessageEnvelope {
   message?: string;
 }
 
+/** Run-local PTY geometry authority reported by the Session Host. */
+export interface TerminalGeometry {
+  runId: string;
+  runOrdinal: number;
+  cols: number;
+  rows: number;
+  sourceKind: "desktop" | "mobile";
+  sourceDeviceId?: string | null;
+  attachmentId?: number | null;
+  orientation?: string | null;
+  revision: number;
+  updatedAt: string;
+}
+
+export interface TerminalGeometryEvent {
+  sessionId: string;
+  attachmentId: number;
+  geometry: TerminalGeometry;
+}
+
+export interface TerminalResizeAck extends TerminalGeometryEvent {
+  accepted: boolean;
+  reason: string | null;
+}
+
 export interface AttachInfo {
   /** Server-issued capability for this renderer attachment. */
   attachmentId: number;
@@ -294,6 +319,8 @@ export interface AttachInfo {
   runOrdinal: number;
   status: StatusEventView | null;
   logCursor: LogCursorView;
+  /** Missing when attaching to an already-running pre-geometry Host. */
+  terminalGeometry?: TerminalGeometry | null;
 }
 
 /** Messages pushed by the backend over the attach Channel (watch_loop). */
@@ -313,6 +340,8 @@ export type ChannelMsg =
   | { t: "state"; event: StatusEventView }
   | { t: "agent_session"; id: string }
   | { t: "heartbeat"; logBytes: number; logCursor: LogCursorView }
+  | { t: "resize_ack"; payload: TerminalResizeAck }
+  | { t: "terminal_geometry_changed"; payload: TerminalGeometryEvent }
   | {
       t: "exit";
       code: number | null;
@@ -372,8 +401,19 @@ export interface DestructiveRemovalOutcome {
   cleanupWarnings: number;
 }
 
+export interface ConfirmedProjectRemovalSession {
+  id: string;
+  archiveGeneration: number;
+  archived: boolean;
+}
+
 export interface ProjectRemovalPreflight {
   projectId: string;
+  revision: string;
+  sessions: ConfirmedProjectRemovalSession[];
+  worktreeIds: string[];
+  recoverableOperationIds: string[];
+  pendingCommitOperationIds: string[];
   sessionCount: number;
   activeSessionCount: number;
   archivedSessionCount: number;

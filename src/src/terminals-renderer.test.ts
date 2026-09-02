@@ -290,6 +290,7 @@ import {
   mountTerminal,
   releaseTerminal,
   resetForRestart,
+  restoreDesktopTerminalSize,
   scrollTerminalViewport,
   setTerminalActive,
   writeMarker,
@@ -674,6 +675,72 @@ describe("terminal renderer", () => {
     expect(handle.fitCount).toBe(1);
     expect(handle.lastFitReason).toBe("activate");
     expect(handle.lastFitDurationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("fits xterm without publishing a passive PTY resize while mobile owns geometry", () => {
+    vi.useFakeTimers();
+    const container = document.createElement("div");
+    Object.defineProperties(container, {
+      clientWidth: { configurable: true, value: 800 },
+      clientHeight: { configurable: true, value: 600 },
+    });
+    mountTerminal("renderer-test", container);
+    const handle = getHandle("renderer-test")!;
+    handle.attached = true;
+    handle.lastCols = handle.term.cols - 1;
+    setState({
+      runtime: {
+        ...getState().runtime,
+        "renderer-test": {
+          ...emptyRuntime(),
+          attached: true,
+          terminalGeometry: {
+            runId: "run-mobile",
+            runOrdinal: 2,
+            cols: 48,
+            rows: 40,
+            sourceKind: "mobile",
+            sourceDeviceId: "phone-1",
+            attachmentId: 9,
+            orientation: "portrait",
+            revision: 4,
+            updatedAt: "2026-09-02T10:00:00Z",
+          },
+        },
+      },
+    });
+    rendererMocks.apiMock.resizePty.mockClear();
+
+    fitHandle(handle, true, true, "desktop-window-resize");
+    vi.runAllTimers();
+
+    expect(handle.fit.fit).toHaveBeenCalled();
+    expect(rendererMocks.apiMock.resizePty).not.toHaveBeenCalled();
+  });
+
+  it("restores desktop geometry with the mobile revision fence", async () => {
+    const container = document.createElement("div");
+    Object.defineProperties(container, {
+      clientWidth: { configurable: true, value: 800 },
+      clientHeight: { configurable: true, value: 600 },
+    });
+    container.getBoundingClientRect = () =>
+      ({ width: 800, height: 600 }) as DOMRect;
+    mountTerminal("renderer-test", container);
+    const handle = getHandle("renderer-test")!;
+    handle.attached = true;
+    rendererMocks.apiMock.resizePty.mockClear();
+
+    await restoreDesktopTerminalSize("renderer-test", 12);
+
+    expect(rendererMocks.apiMock.resizePty).toHaveBeenCalledWith(
+      "renderer-test",
+      handle.term.cols,
+      handle.term.rows,
+      800,
+      600,
+      { expectedRevision: 12, sourceKind: "desktop" },
+    );
   });
 
   it("preserves a user's scrollback position when fitting reflows the viewport", () => {

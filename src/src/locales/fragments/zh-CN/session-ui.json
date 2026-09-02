@@ -79,6 +79,17 @@
     "suspended": {
       "message": "Agent 已被 Ctrl-Z 挂起。",
       "resume": "继续运行"
+    },
+    "phoneGeometry": {
+      "title": "已为手机调整",
+      "detail": "终端当前为 {{cols}}×{{rows}}（{{source}}）",
+      "sourceDevice": "设备 {{device}}",
+      "sourcePhone": "手机端",
+      "restore": "恢复桌面尺寸",
+      "restoring": "正在恢复…",
+      "dismiss": "关闭当前尺寸提示",
+      "restoreUnavailable": "桌面终端尚未连接，无法恢复尺寸",
+      "restoreFailed": "恢复桌面尺寸失败：{{detail}}"
     }
   }
 }

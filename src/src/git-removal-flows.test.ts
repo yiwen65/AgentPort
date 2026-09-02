@@ -55,6 +55,14 @@ const project = {
 
 const projectPreflight = {
   projectId: "prj_mock",
+  revision: "42",
+  sessions: [
+    { id: "ses_1", archiveGeneration: 101, archived: true },
+    { id: "ses_2", archiveGeneration: 0, archived: false },
+  ],
+  worktreeIds: ["wt_mock"],
+  recoverableOperationIds: ["op_branch"],
+  pendingCommitOperationIds: ["op_commit"],
   sessionCount: 2,
   activeSessionCount: 1,
   archivedSessionCount: 1,
@@ -170,7 +178,7 @@ describe("destructive Git removal flows", () => {
     await flow;
 
     expect(apiMock.deleteProjectArchivedSessions).not.toHaveBeenCalled();
-    expect(apiMock.removeProject).toHaveBeenCalledWith("prj_mock");
+    expect(apiMock.removeProject).toHaveBeenCalledWith(projectPreflight);
   });
 
   it("keeps the destructive confirmation cancellable", async () => {
