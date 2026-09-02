@@ -163,6 +163,7 @@ fn make_ctx(command: Vec<String>, log_limit: u64, secret_env_names: Vec<String>)
         cwd: d.to_string_lossy().into_owned(),
         env: vec![],
         adapter_type: "shell".into(),
+        detect_pty_needs_input: false,
         transport: AgentTransport::Pty,
         socket_path: d.join("h.sock").to_string_lossy().into_owned(),
         session_dir: d.to_string_lossy().into_owned(),

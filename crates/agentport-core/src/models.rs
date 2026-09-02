@@ -122,6 +122,14 @@ impl AgentType {
             _ => requested,
         }
     }
+
+    /// PTY text is only a valid approval signal when this adapter can actually
+    /// present native approval prompts and they have not been disabled by the
+    /// selected permission mode.
+    pub fn detects_pty_approval(&self, permission_mode: PermissionMode) -> bool {
+        self.approval_model() == ApprovalModel::NativePrompts
+            && permission_mode == PermissionMode::Native
+    }
 }
 
 impl std::str::FromStr for AgentType {
@@ -661,6 +669,20 @@ impl StatusEvent {
         !(self.source == StateSource::Hook && self.evidence.as_deref() == Some("hook:Notification"))
     }
 
+    /// Apply the Session's adapter and permission contract before projecting a
+    /// heuristic PTY approval. This also protects a new GUI attached to an
+    /// older Host that still emits semantically impossible prompt matches.
+    pub fn changes_session_state_for(
+        &self,
+        agent_type: AgentType,
+        permission_mode: PermissionMode,
+    ) -> bool {
+        self.changes_session_state()
+            && !(self.state == AgentState::NeedsInput
+                && self.source == StateSource::Pty
+                && !agent_type.detects_pty_approval(permission_mode))
+    }
+
     /// User-actionable semantic events shared by system notifications, unread
     /// badges and recovery surfaces. Keep this exact: generic hook
     /// notifications and process lifecycle facts are not user messages.
@@ -1107,5 +1129,34 @@ mod tests {
     #[test]
     fn pi_defaults_to_native_pty_transport() {
         assert_eq!(AgentType::Pi.default_transport(), AgentTransport::Pty);
+    }
+
+    #[test]
+    fn pty_approval_detection_follows_adapter_and_permission_contracts() {
+        assert!(!AgentType::Pi.detects_pty_approval(PermissionMode::Native));
+        assert!(!AgentType::Shell.detects_pty_approval(PermissionMode::Native));
+        assert!(AgentType::Codex.detects_pty_approval(PermissionMode::Native));
+        assert!(!AgentType::Codex.detects_pty_approval(PermissionMode::Auto));
+        assert!(!AgentType::Claude.detects_pty_approval(PermissionMode::Bypass));
+    }
+
+    #[test]
+    fn impossible_pty_approvals_do_not_change_session_state() {
+        let event = StatusEvent {
+            session_id: "ses_pi".into(),
+            run_id: "run_pi".into(),
+            run_ordinal: 1,
+            sequence: 1,
+            state: AgentState::NeedsInput,
+            source: StateSource::Pty,
+            confidence: Confidence::Medium,
+            evidence: Some("pty:pattern:Allow once".into()),
+            log_cursor: None,
+            occurred_at: chrono::Utc::now(),
+        };
+
+        assert!(!event.changes_session_state_for(AgentType::Pi, PermissionMode::Native));
+        assert!(!event.changes_session_state_for(AgentType::Codex, PermissionMode::Bypass));
+        assert!(event.changes_session_state_for(AgentType::Codex, PermissionMode::Native));
     }
 }

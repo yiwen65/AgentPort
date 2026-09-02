@@ -486,6 +486,10 @@ pub struct HostConfig {
     #[serde(default)]
     pub env: Vec<(String, String)>,
     pub adapter_type: String,
+    /// Older Host configs enabled generic PTY approval heuristics. New writers
+    /// disable them when the adapter/permission contract cannot prompt.
+    #[serde(default = "default_true")]
+    pub detect_pty_needs_input: bool,
     /// PTY is the compatibility default for configs written by older builds.
     #[serde(default = "default_agent_transport")]
     pub transport: AgentTransport,
@@ -520,6 +524,9 @@ pub struct HostConfig {
     pub rows: u16,
 }
 
+fn default_true() -> bool {
+    true
+}
 fn default_sigint_grace_ms() -> u64 {
     1_500
 }

@@ -215,6 +215,14 @@ pub const DEFAULT_WORKING: &[&str] = &[
 
 impl PtyDetector {
     pub fn new(extra_needs_input: &[String], extra_working: &[String]) -> Self {
+        Self::with_needs_input(true, extra_needs_input, extra_working)
+    }
+
+    pub fn with_needs_input(
+        enabled: bool,
+        extra_needs_input: &[String],
+        extra_working: &[String],
+    ) -> Self {
         let compile = |pats: &[&str], extra: &[String]| -> Vec<Regex> {
             pats.iter()
                 .map(|p| p.to_string())
@@ -225,7 +233,9 @@ impl PtyDetector {
         PtyDetector {
             tail: Vec::with_capacity(8192),
             max_tail: 8192,
-            needs_input: compile(DEFAULT_NEEDS_INPUT, extra_needs_input),
+            needs_input: enabled
+                .then(|| compile(DEFAULT_NEEDS_INPUT, extra_needs_input))
+                .unwrap_or_default(),
             working: compile(DEFAULT_WORKING, extra_working),
         }
     }
@@ -345,6 +355,14 @@ mod tests {
         assert!(obs
             .iter()
             .any(|o| matches!(o, Observation::PtyNeedsInputPattern(_))));
+    }
+
+    #[test]
+    fn detector_can_disable_semantically_impossible_approval_matches() {
+        let mut d = PtyDetector::with_needs_input(false, &[], &[]);
+        let observations = d.feed(b"Allow once\nPress enter to confirm");
+        assert_eq!(observations.len(), 1);
+        assert!(matches!(observations[0], Observation::PtyActivity));
     }
 
     #[test]

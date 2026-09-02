@@ -1967,7 +1967,8 @@ fn spawn_pty_reader(
     tx: mpsc::Sender<HostMsg>,
 ) {
     std::thread::spawn(move || {
-        let mut detector = PtyDetector::new(&[], &[]);
+        let mut detector =
+            PtyDetector::with_needs_input(shared.cfg.detect_pty_needs_input, &[], &[]);
         let adapter = (shared.cfg.adapter_type == "kimi").then(|| adapter_for(AgentType::Kimi));
         let mut redactor = redactor;
         let mut pi_startup_notice_filter = (shared.cfg.adapter_type == "pi")

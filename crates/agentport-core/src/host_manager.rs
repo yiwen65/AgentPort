@@ -298,6 +298,9 @@ impl<'a> HostManager<'a> {
                 cwd: session.cwd.clone(),
                 env: spec.env.clone(),
                 adapter_type: session.adapter_type.as_str().to_string(),
+                detect_pty_needs_input: session
+                    .adapter_type
+                    .detects_pty_approval(session.permission_mode),
                 transport: session.transport,
                 socket_path: socket_str.clone(),
                 session_dir: self.paths.session_dir(&id).to_string_lossy().into_owned(),

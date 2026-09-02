@@ -153,7 +153,26 @@ fn start_notification_worker() -> SyncSender<Notification> {
     tx
 }
 
+fn changes_session_state_for_session(db: &Db, event: &StatusEvent) -> bool {
+    if !event.changes_session_state() {
+        return false;
+    }
+    if event.state != AgentState::NeedsInput || event.source != StateSource::Pty {
+        return true;
+    }
+    db.get_session(&event.session_id)
+        .map(|session| {
+            event.changes_session_state_for(session.adapter_type, session.permission_mode)
+        })
+        // A missing Session is a separate consistency fault; preserve legacy
+        // behavior instead of silently discarding potentially useful evidence.
+        .unwrap_or(true)
+}
+
 fn notify_status_once(app: &AppHandle, db: &Db, event: &StatusEvent) {
+    if !changes_session_state_for_session(db, event) {
+        return;
+    }
     let state = app.state::<AppState>();
     if !state
         .notification_deduper
@@ -1391,7 +1410,7 @@ fn capture_gui_exit_recovery_boundaries(state: &AppState) {
 }
 
 fn project_monitor_status(app: &AppHandle, db: &Db, event: &StatusEvent, notify: bool) {
-    if !event.changes_session_state() {
+    if !changes_session_state_for_session(db, event) {
         return;
     }
     if let Err(error) = db.record_status_event(event) {
@@ -1933,7 +1952,7 @@ fn watch_loop(
                             log_cursor,
                             occurred_at,
                         };
-                        if !ev.changes_session_state() {
+                        if !changes_session_state_for_session(&db, &ev) {
                             continue;
                         }
                         if let Err(error) = db.record_status_event(&ev) {
@@ -4503,6 +4522,28 @@ mod cleanup_tests {
 
         assert!(!event("hook:Notification").changes_session_state());
         assert!(event("hook:PermissionRequest").changes_session_state());
+    }
+
+    #[test]
+    fn legacy_host_pty_approval_is_filtered_by_the_session_contract() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().to_path_buf());
+        let db = Db::open(&paths).unwrap();
+        let session_id = insert_attachment_test_session(&paths, &db);
+        let event = StatusEvent {
+            session_id,
+            run_id: "run_legacy_host".into(),
+            run_ordinal: 1,
+            sequence: 1,
+            state: AgentState::NeedsInput,
+            source: StateSource::Pty,
+            confidence: Confidence::Medium,
+            evidence: Some("pty:pattern:Allow once".into()),
+            log_cursor: None,
+            occurred_at: Utc::now(),
+        };
+
+        assert!(!changes_session_state_for_session(&db, &event));
     }
 
     #[test]
