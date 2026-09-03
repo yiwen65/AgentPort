@@ -8,8 +8,9 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { FitAddon } from "@xterm/addon-fit";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { MOBILE_TERMINAL_THEMES } from "./terminalThemes";
 import "./mobile-terminal.css";
 
 export interface MobileTerminalProps {
@@ -18,6 +19,7 @@ export interface MobileTerminalProps {
   /** Forces a fresh size report after the remote attachment/owner changes. */
   resizeEpoch?: unknown;
   fontSize?: number;
+  theme?: ITheme;
   title?: string;
   description?: string;
   showHeading?: boolean;
@@ -38,6 +40,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   onResize,
   resizeEpoch,
   fontSize = 14,
+  theme = MOBILE_TERMINAL_THEMES.one.dark.xterm,
   title = "Terminal interaction test",
   description = "Local input probe; it does not execute commands.",
   showHeading = true,
@@ -138,14 +141,9 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       convertEol: true,
       scrollback: 10_000,
       fontSize,
+      minimumContrastRatio: 4.5,
       screenReaderMode: true,
-      theme: {
-        background: "#0b0b0d",
-        foreground: "#f2f2f7",
-        cursor: "#ffffff",
-        cursorAccent: "#0b0b0d",
-        selectionBackground: "#0a84ff66",
-      },
+      theme,
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
@@ -318,6 +316,11 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     lastReportedSize.current = undefined;
     scheduleFitRef.current(true);
   }, [fontSize]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (terminal) terminal.options.theme = theme;
+  }, [theme]);
 
   useEffect(() => {
     lastReportedSize.current = undefined;

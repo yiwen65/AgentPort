@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { i18n } from "../../i18n";
 import type { RemoteClient, RemoteEvent } from "../../protocol/remoteClient";
@@ -10,6 +10,7 @@ const terminalHarness = vi.hoisted(() => ({
     onInput?: (data: string) => void;
     onResize?: (cols: number, rows: number) => void;
     showHeading?: boolean;
+    theme?: { background?: string; foreground?: string };
   } | undefined,
   writes: [] as string[],
   resets: 0,
@@ -236,6 +237,87 @@ describe("SessionWorkspace", () => {
       resumeFrom: undefined,
       subscribeOutput: true,
     }));
+  });
+
+  it("switches terminal colors and mode immediately, persists them, and restores them without touching the app theme", async () => {
+    const first = setupClient();
+    const firstRender = render(<SessionWorkspace open={open} client={first.client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+
+    const workspace = screen.getByRole("article");
+    expect(workspace).toHaveAttribute("data-terminal-theme", "one");
+    expect(workspace).toHaveAttribute("data-terminal-theme-mode", "dark");
+    expect(workspace).toHaveStyle({ colorScheme: "dark" });
+    expect(workspace.style.getPropertyValue("--terminal-bg")).toBe("#282c34");
+    expect(terminalHarness.props?.theme?.background).toBe("#282c34");
+
+    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("radiogroup", { name: "Appearance mode" })).toBeInTheDocument();
+    const colorThemes = within(dialog).getByRole("radiogroup", { name: "Color theme" });
+    expect(within(colorThemes).getAllByRole("radio")).toHaveLength(6);
+    expect(within(dialog).getByRole("radio", { name: "Dark" })).toBeChecked();
+    expect(within(dialog).getByRole("radio", { name: "One" })).toBeChecked();
+
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Light" }));
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Aurora" }));
+
+    expect(workspace).toHaveAttribute("data-terminal-theme", "aurora");
+    expect(workspace).toHaveAttribute("data-terminal-theme-mode", "light");
+    expect(workspace).toHaveStyle({ colorScheme: "light" });
+    expect(workspace.style.getPropertyValue("--terminal-bg")).toBe("#f7f9ff");
+    expect(workspace.style.getPropertyValue("--terminal-panel")).toBe("#ffffff");
+    expect(terminalHarness.props?.theme?.background).toBe("#f7f9ff");
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("agentport-mobile-v2:terminal-appearance")!)).toEqual({
+      theme: "aurora",
+      mode: "light",
+    }));
+    expect(document.documentElement).not.toHaveAttribute("data-terminal-theme");
+    expect(document.documentElement.style.getPropertyValue("--terminal-bg")).toBe("");
+
+    firstRender.unmount();
+    const second = setupClient();
+    render(<SessionWorkspace open={open} client={second.client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    expect(screen.getByRole("article")).toHaveAttribute("data-terminal-theme", "aurora");
+    expect(screen.getByRole("article")).toHaveAttribute("data-terminal-theme-mode", "light");
+    expect(terminalHarness.props?.theme?.background).toBe("#f7f9ff");
+  });
+
+  it("moves keyboard focus into the actions sheet, traps Tab, and restores the trigger on Escape", async () => {
+    const { client } = setupClient();
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+
+    const trigger = screen.getByRole("button", { name: "Session actions" });
+    fireEvent.click(trigger);
+    const dialog = screen.getByRole("dialog");
+    const close = within(dialog).getByRole("button", { name: "Close" });
+    const stop = within(dialog).getByRole("button", { name: "Stop" });
+    expect(close).toHaveFocus();
+
+    fireEvent.keyDown(close, { key: "Tab", shiftKey: true });
+    expect(stop).toHaveFocus();
+    fireEvent.keyDown(stop, { key: "Tab" });
+    expect(close).toHaveFocus();
+
+    fireEvent.keyDown(close, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("exposes localized terminal appearance controls", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const { client } = setupClient();
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    fireEvent.click(screen.getByRole("button", { name: "Session 操作" }));
+
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("终端外观")).toBeInTheDocument();
+    expect(within(dialog).getByRole("radiogroup", { name: "深浅模式" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("radio", { name: "浅色" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("radiogroup", { name: "主题色" })).toBeInTheDocument();
   });
 
   it("shows only the project and resolved branch below the session title", async () => {

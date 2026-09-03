@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MobileTerminal, type MobileTerminalHandle } from "./MobileTerminal";
+import { MOBILE_TERMINAL_THEMES } from "./terminalThemes";
 
 const terminalHarness = vi.hoisted(() => ({
   helper: undefined as HTMLTextAreaElement | undefined,
@@ -11,6 +12,8 @@ const terminalHarness = vi.hoisted(() => ({
   fitCalls: 0,
   writes: [] as string[],
   resets: 0,
+  instances: 0,
+  options: undefined as { fontSize?: number; minimumContrastRatio?: number; theme?: unknown } | undefined,
 }));
 
 vi.mock("@xterm/addon-fit", () => ({
@@ -22,7 +25,12 @@ vi.mock("@xterm/xterm", () => ({
     cols = 80;
     rows = 24;
     buffer = { active: { cursorY: 20 } };
-    options: { fontSize?: number } = {};
+    options: { fontSize?: number; minimumContrastRatio?: number; theme?: unknown };
+    constructor(options: { fontSize?: number; minimumContrastRatio?: number; theme?: unknown } = {}) {
+      this.options = { ...options };
+      terminalHarness.options = this.options;
+      terminalHarness.instances += 1;
+    }
     loadAddon() { /* deterministic no-op */ }
     open(container: HTMLElement) {
       terminalHarness.screen = document.createElement("div");
@@ -57,6 +65,8 @@ describe("MobileTerminal input accessory", () => {
     terminalHarness.fitCalls = 0;
     terminalHarness.writes = [];
     terminalHarness.resets = 0;
+    terminalHarness.instances = 0;
+    terminalHarness.options = undefined;
     vi.stubGlobal("ResizeObserver", class {
       observe() { /* deterministic no-op */ }
       disconnect() { /* deterministic no-op */ }
@@ -78,6 +88,34 @@ describe("MobileTerminal input accessory", () => {
 
     expect(terminalHarness.writes).toEqual(["first", "second"]);
     expect(terminalHarness.resets).toBe(1);
+  });
+
+  it("updates its xterm palette in place without replacing the live renderer", () => {
+    const ref = createRef<MobileTerminalHandle>();
+    const { rerender } = render(
+      <MobileTerminal
+        ref={ref}
+        theme={MOBILE_TERMINAL_THEMES.one.dark.xterm}
+        showHeading={false}
+        showProbeOutput={false}
+      />,
+    );
+
+    ref.current?.write("retained output");
+    rerender(
+      <MobileTerminal
+        ref={ref}
+        theme={MOBILE_TERMINAL_THEMES.aurora.light.xterm}
+        showHeading={false}
+        showProbeOutput={false}
+      />,
+    );
+
+    expect(terminalHarness.instances).toBe(1);
+    expect(terminalHarness.options?.minimumContrastRatio).toBe(4.5);
+    expect(terminalHarness.options?.theme).toBe(MOBILE_TERMINAL_THEMES.aurora.light.xterm);
+    expect(terminalHarness.writes).toEqual(["retained output"]);
+    expect(terminalHarness.resets).toBe(0);
   });
 
   it("shows the requested icon row only while terminal input owns focus", async () => {

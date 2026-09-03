@@ -1,7 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import type { RemoteClient, RemoteEvent } from "../../protocol/remoteClient";
 import { MobileTerminal, type MobileTerminalHandle } from "../../terminal/MobileTerminal";
+import {
+  getMobileTerminalPalette,
+  getMobileTerminalWorkspaceVariables,
+  loadMobileTerminalAppearance,
+  MOBILE_TERMINAL_THEME_IDS,
+  MOBILE_TERMINAL_THEME_MODES,
+  saveMobileTerminalAppearance,
+} from "../../terminal/terminalThemes";
 import { decodeBase64Utf8, encodeBase64Utf8, outputBase64Of, sessionBatchId, sessionIdOf } from "./sessionProtocol";
 import type { OpenSession, RunCursor, SessionAttachResult, SessionEventPayload, TerminalGeometry } from "./types";
 
@@ -43,11 +51,13 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   const [otherClientInput, setOtherClientInput] = useState(false);
   const [attachEpoch, setAttachEpoch] = useState(0);
   const [fontSize, setFontSize] = useState(15);
+  const [terminalAppearance, setTerminalAppearance] = useState(loadMobileTerminalAppearance);
   const [branchName, setBranchName] = useState<string>();
   const [confirmStop, setConfirmStop] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [busyAction, setBusyAction] = useState("");
   const [terminalGeometry, setTerminalGeometry] = useState<TerminalGeometry>();
+  const actionsTrigger = useRef<HTMLButtonElement>(null);
   // A fresh xterm has no retained screen to pair with a persisted tail cursor,
   // so it must request a bounded replay. This ref still advances and resumes
   // efficiently for reconnects during this renderer's lifetime.
@@ -66,6 +76,15 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   const geometryRef = useRef<TerminalGeometry>();
   const resizeOwnershipEnabled = useRef(true);
   const sourceDeviceId = useRef(mobileDeviceId());
+  const terminalPalette = getMobileTerminalPalette(terminalAppearance.theme, terminalAppearance.mode);
+  const terminalWorkspaceStyle = {
+    ...getMobileTerminalWorkspaceVariables(terminalAppearance.theme, terminalAppearance.mode),
+    colorScheme: terminalAppearance.mode,
+  } as CSSProperties;
+
+  useEffect(() => {
+    saveMobileTerminalAppearance(terminalAppearance);
+  }, [terminalAppearance]);
 
   useEffect(() => {
     let cancelled = false;
@@ -314,6 +333,34 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
     }
   };
 
+  const closeActions = () => {
+    setActionsOpen(false);
+    window.requestAnimationFrame(() => actionsTrigger.current?.focus());
+  };
+
+  const handleActionsKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeActions();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusableSelector =
+      "button:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex='-1'])";
+    const focusable = [...event.currentTarget.querySelectorAll<HTMLElement>("*")]
+      .filter((element) => element.matches(focusableSelector));
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) return;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
   const stop = async () => {
     setBusyAction("stop");
     try {
@@ -328,7 +375,14 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   };
 
   return (
-    <article className="session-workspace" aria-labelledby="session-title" data-connection-state={connectionLabel}>
+    <article
+      className="session-workspace"
+      aria-labelledby="session-title"
+      data-connection-state={connectionLabel}
+      data-terminal-theme={terminalAppearance.theme}
+      data-terminal-theme-mode={terminalAppearance.mode}
+      style={terminalWorkspaceStyle}
+    >
       <header className="session-workspace-header">
         <button className="terminal-back-button" type="button" onClick={onClose} aria-label={t("session.back")}>‹</button>
         <div className="session-workspace-identity">
@@ -338,7 +392,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
             {branchName ? <><span aria-hidden="true">·</span><span>{branchName}</span></> : null}
           </p>
         </div>
-        <button className="terminal-more-button" type="button" aria-label={t("session.actions")} aria-haspopup="dialog" onClick={() => setActionsOpen(true)}>•••</button>
+        <button ref={actionsTrigger} className="terminal-more-button" type="button" aria-label={t("session.actions")} aria-haspopup="dialog" onClick={() => setActionsOpen(true)}>•••</button>
       </header>
       {otherClientInput || notice || error ? <div className="terminal-status-stack">
         {otherClientInput ? <div className="terminal-status-line ephemeral-notice" role="status">{t("session.otherClientTyping")}</div> : null}
@@ -354,13 +408,88 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
         onInput={sendInput}
         onResize={requestTerminalResize}
         fontSize={fontSize}
+        theme={terminalPalette.xterm}
         title={t("session.fullTerminal")}
         description={t("session.terminalDescription")}
         showHeading={false}
         showProbeOutput={false}
       />
 
-      {actionsOpen ? <div className="modal-backdrop terminal-actions-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setActionsOpen(false); }}><section className="modal-sheet terminal-actions-sheet" role="dialog" aria-modal="true" aria-labelledby="terminal-actions-title"><header><div><h2 id="terminal-actions-title">{open.session.title}</h2><p>{open.session.lifecycle} · {open.session.permissionMode}</p></div><button type="button" aria-label={t("common.close")} onClick={() => setActionsOpen(false)}>×</button></header><div className="terminal-action-grid"><button type="button" onClick={() => void control("interrupt")}>{t("session.interrupt")}</button><button type="button" onClick={() => setFontSize((value) => Math.max(11, value - 1))}>A−</button><button type="button" onClick={() => setFontSize((value) => Math.min(24, value + 1))}>A+</button><button type="button" disabled={Boolean(busyAction)} onClick={() => void action("restart")}>{t("session.restart")}</button><button type="button" disabled={Boolean(busyAction)} onClick={() => void action("pin")}>{open.session.pinnedAt ? t("session.unpin") : t("session.pin")}</button><button type="button" disabled={Boolean(busyAction)} onClick={() => { const title = window.prompt(t("session.renamePrompt"), open.session.title); if (title?.trim()) void action("rename", title.trim()); }}>{t("session.rename")}</button><button type="button" disabled={Boolean(busyAction)} onClick={() => void action("archive")}>{t("session.archive")}</button><button className="danger-text" type="button" onClick={() => { setActionsOpen(false); setConfirmStop(true); }}>{t("session.stop")}</button></div></section></div> : null}
+      {actionsOpen ? <div className="modal-backdrop terminal-actions-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeActions(); }}>
+        <section className="modal-sheet terminal-actions-sheet" role="dialog" aria-modal="true" aria-labelledby="terminal-actions-title" onKeyDown={handleActionsKeyDown}>
+          <header>
+            <div><h2 id="terminal-actions-title">{open.session.title}</h2><p>{open.session.lifecycle} · {open.session.permissionMode}</p></div>
+            <button type="button" aria-label={t("common.close")} autoFocus onClick={closeActions}>×</button>
+          </header>
+
+          <fieldset className="terminal-appearance-settings" aria-describedby="terminal-appearance-hint">
+            <legend>{t("session.appearance.title")}</legend>
+            <p id="terminal-appearance-hint">{t("session.appearance.hint")}</p>
+
+            <span className="terminal-appearance-label" id="terminal-mode-label">{t("session.appearance.mode")}</span>
+            <div className="terminal-mode-options" role="radiogroup" aria-labelledby="terminal-mode-label">
+              {MOBILE_TERMINAL_THEME_MODES.map((mode) => (
+                <label key={mode}>
+                  <input
+                    className="visually-hidden"
+                    type="radio"
+                    name="mobile-terminal-mode"
+                    value={mode}
+                    checked={terminalAppearance.mode === mode}
+                    onChange={() => setTerminalAppearance((current) => ({ ...current, mode }))}
+                  />
+                  <span>{t(`session.appearance.modes.${mode}`)}</span>
+                </label>
+              ))}
+            </div>
+
+            <span className="terminal-appearance-label" id="terminal-colors-label">{t("session.appearance.colors")}</span>
+            <div className="mobile-terminal-theme-grid" role="radiogroup" aria-labelledby="terminal-colors-label">
+              {MOBILE_TERMINAL_THEME_IDS.map((theme) => {
+                const preview = getMobileTerminalPalette(theme, terminalAppearance.mode).xterm;
+                const descriptionId = `mobile-terminal-theme-${theme}-description`;
+                return <Fragment key={theme}>
+                  <label className="mobile-terminal-theme-choice">
+                    <input
+                      className="visually-hidden"
+                      type="radio"
+                      name="mobile-terminal-theme"
+                      value={theme}
+                      checked={terminalAppearance.theme === theme}
+                      aria-describedby={descriptionId}
+                      onChange={() => setTerminalAppearance((current) => ({ ...current, theme }))}
+                    />
+                    <span className="mobile-terminal-theme-choice-body">
+                      <span className="mobile-terminal-theme-preview" style={{ background: preview.background }} aria-hidden="true">
+                        {[preview.red, preview.yellow, preview.green, preview.cyan, preview.blue, preview.magenta].map((color, index) => (
+                          <span key={`${theme}-${index}`} style={{ background: color }} />
+                        ))}
+                      </span>
+                      <span className="mobile-terminal-theme-copy">
+                        <strong>{t(`session.appearance.themes.${theme}.name`)}</strong>
+                        <span aria-hidden="true">{terminalAppearance.theme === theme ? "✓" : ""}</span>
+                      </span>
+                    </span>
+                  </label>
+                  <span className="visually-hidden" id={descriptionId}>{t(`session.appearance.themes.${theme}.description`)}</span>
+                </Fragment>;
+              })}
+            </div>
+          </fieldset>
+
+          <h3 className="terminal-session-actions-title">{t("session.actions")}</h3>
+          <div className="terminal-action-grid">
+            <button type="button" onClick={() => void control("interrupt")}>{t("session.interrupt")}</button>
+            <button type="button" onClick={() => setFontSize((value) => Math.max(11, value - 1))}>A−</button>
+            <button type="button" onClick={() => setFontSize((value) => Math.min(24, value + 1))}>A+</button>
+            <button type="button" disabled={Boolean(busyAction)} onClick={() => void action("restart")}>{t("session.restart")}</button>
+            <button type="button" disabled={Boolean(busyAction)} onClick={() => void action("pin")}>{open.session.pinnedAt ? t("session.unpin") : t("session.pin")}</button>
+            <button type="button" disabled={Boolean(busyAction)} onClick={() => { const title = window.prompt(t("session.renamePrompt"), open.session.title); if (title?.trim()) void action("rename", title.trim()); }}>{t("session.rename")}</button>
+            <button type="button" disabled={Boolean(busyAction)} onClick={() => void action("archive")}>{t("session.archive")}</button>
+            <button className="danger-text" type="button" onClick={() => { setActionsOpen(false); setConfirmStop(true); }}>{t("session.stop")}</button>
+          </div>
+        </section>
+      </div> : null}
 
       {confirmStop ? <div className="modal-backdrop"><section className="modal-sheet compact" role="dialog" aria-modal="true" aria-labelledby="stop-title"><h2 id="stop-title">{t("session.stopTitle")}</h2><p>{t("session.stopBody")}</p><div className="modal-actions"><button type="button" onClick={() => setConfirmStop(false)}>{t("common.cancel")}</button><button className="danger-button" type="button" disabled={busyAction === "stop"} onClick={() => void stop()}>{t("session.stop")}</button></div></section></div> : null}
     </article>

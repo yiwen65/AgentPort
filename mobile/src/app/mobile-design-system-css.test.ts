@@ -27,7 +27,7 @@ describe("mobile semantic design system", () => {
     expect(styles).toMatch(/\.session-workspace-header button \{[^}]*background: transparent;[^}]*transition: transform 140ms/s);
     expect(styles).toMatch(/\.session-workspace-header button::before \{[^}]*inset: 3px;[^}]*background: linear-gradient\([^}]*backdrop-filter: blur\(18px\) saturate\(1\.18\);/s);
     expect(styles).toMatch(/\.terminal-back-button:active, \.terminal-more-button:active \{[^}]*transform: scale\(\.95\);/s);
-    expect(styles).toMatch(/\.terminal-back-button:active::before, \.terminal-more-button:active::before \{[^}]*background: rgba\(255, 255, 255, \.105\);/s);
+    expect(styles).toMatch(/\.terminal-back-button:active::before, \.terminal-more-button:active::before \{[^}]*background: var\(--terminal-control-active-bg, rgba\(255, 255, 255, \.105\)\);/s);
     expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[^}]*transition: none !important;/s);
   });
 
@@ -49,7 +49,13 @@ describe("mobile semantic design system", () => {
     expect(styles).toMatch(/\.session-workspace-header \{[^}]*border-bottom: 0;[^}]*background: var\(--terminal-bg\);[^}]*backdrop-filter: none;/s);
     expect(styles).toMatch(/\.terminal-status-stack \{ border-bottom: 0; background: var\(--terminal-bg\); \}/);
     expect(styles).toMatch(/\.terminal-back-button, \.terminal-more-button \{ width: 44px; height: 44px;/);
+    expect(styles).toMatch(/\.terminal-mode-options label > span \{ min-height: 44px;/);
+    expect(styles).toMatch(/\.mobile-terminal-theme-choice-body \{ min-height: 78px;/);
+    expect(styles).toContain("outline: 3px solid var(--terminal-accent)");
+    expect(styles).toMatch(/\.mobile-terminal-theme-copy strong \{[^}]*overflow-wrap: anywhere;/s);
+    expect(styles).toContain("--terminal-bg: #282c34");
     expect(terminalStyles).toMatch(/\.mobile-terminal-spike \{[^}]*background: var\(--terminal-bg\);/s);
+    expect(terminalStyles).toContain("background: var(--terminal-panel, rgba(44, 44, 46, .94));");
     expect(workspace).toContain("useState(15)");
   });
 });

@@ -44,8 +44,8 @@
   padding: 5px 10px;
   border: 1px solid var(--line);
   border-radius: 28px;
-  background: rgba(44, 44, 46, .94);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, .34);
+  background: var(--terminal-panel, rgba(44, 44, 46, .94));
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .24);
   overscroll-behavior-x: contain;
   scrollbar-width: none;
 }
@@ -70,8 +70,8 @@
 
 .mobile-terminal-keys button:active,
 .mobile-terminal-keys button.is-active {
-  background: rgba(10, 132, 255, .3);
-  color: #ffffff;
+  background: var(--terminal-selection, rgba(10, 132, 255, .3));
+  color: var(--terminal-heading, #ffffff);
 }
 
 .mobile-terminal-keys button svg { width: 22px; height: 22px; }
@@ -113,6 +113,7 @@
   overflow: hidden;
   overscroll-behavior: none;
   background: var(--terminal-bg);
+  color: var(--text);
 }
 
 .session-workspace .session-workspace-header,
