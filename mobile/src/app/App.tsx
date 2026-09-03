@@ -1,11 +1,14 @@
-import { useEffect, useRef, useState, type TouchEvent } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type TouchEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { HostManager } from "../features/hosts-auth/HostManager";
 import type { HostAuthClient } from "../features/hosts-auth/types";
 import { SessionDashboard } from "../features/sessions/SessionDashboard";
-import { SessionWorkspace } from "../features/sessions/SessionWorkspace";
 import type { OpenSession } from "../features/sessions/types";
 import type { RemoteClient } from "../protocol/remoteClient";
+
+const SessionWorkspace = lazy(() => import("../features/sessions/SessionWorkspace").then((module) => ({
+  default: module.SessionWorkspace,
+})));
 
 interface AppProps {
   client: RemoteClient;
@@ -63,10 +66,20 @@ export function App({ client, hostAuthClient }: AppProps) {
 
   useEffect(() => {
     if (!selectedSession) return;
-    const frame = window.requestAnimationFrame(() => {
-      if (terminalVisible) document.querySelector<HTMLElement>(".session-stage .terminal-back-button")?.focus();
-      else [...document.querySelectorAll<HTMLElement>("[data-session-id]")].find((element) => element.dataset.sessionId === selectedSession.session.id)?.focus();
-    });
+    let frame: number;
+    let attempts = 0;
+    const restoreFocus = () => {
+      const target = terminalVisible
+        ? document.querySelector<HTMLElement>(".session-stage .terminal-back-button")
+        : [...document.querySelectorAll<HTMLElement>("[data-session-id]")].find((element) => element.dataset.sessionId === selectedSession.session.id);
+      if (target) {
+        target.focus();
+      } else if (attempts < 60) {
+        attempts += 1;
+        frame = window.requestAnimationFrame(restoreFocus);
+      }
+    };
+    frame = window.requestAnimationFrame(restoreFocus);
     return () => window.cancelAnimationFrame(frame);
   }, [selectedSession, terminalVisible]);
 
@@ -91,13 +104,15 @@ export function App({ client, hostAuthClient }: AppProps) {
 
       {selectedSession ? (
         <div className={`session-stage${terminalVisible ? " is-visible" : ""}`} aria-hidden={!terminalVisible}>
-          <SessionWorkspace
-            key={`${selectedSession.hostProfileId}:${selectedSession.session.id}`}
-            open={selectedSession}
-            client={client}
-            onClose={() => setTerminalVisible(false)}
-            onSessionChanged={handleSessionChanged}
-          />
+          <Suspense fallback={<div className="state-card" role="status">{t("dashboard.loading")}</div>}>
+            <SessionWorkspace
+              key={`${selectedSession.hostProfileId}:${selectedSession.session.id}`}
+              open={selectedSession}
+              client={client}
+              onClose={() => setTerminalVisible(false)}
+              onSessionChanged={handleSessionChanged}
+            />
+          </Suspense>
         </div>
       ) : null}
 

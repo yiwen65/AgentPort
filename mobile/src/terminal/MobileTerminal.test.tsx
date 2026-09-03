@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MobileTerminal } from "./MobileTerminal";
+import { MobileTerminal, type MobileTerminalHandle } from "./MobileTerminal";
 
 const terminalHarness = vi.hoisted(() => ({
   helper: undefined as HTMLTextAreaElement | undefined,
@@ -8,6 +9,8 @@ const terminalHarness = vi.hoisted(() => ({
   screenHeight: 240,
   selection: "selected output",
   fitCalls: 0,
+  writes: [] as string[],
+  resets: 0,
 }));
 
 vi.mock("@xterm/addon-fit", () => ({
@@ -35,8 +38,11 @@ vi.mock("@xterm/xterm", () => ({
     }
     onData() { return { dispose() { /* deterministic no-op */ } }; }
     focus() { terminalHarness.helper?.focus(); }
-    write() { /* deterministic no-op */ }
-    reset() { /* deterministic no-op */ }
+    write(data: string, callback?: () => void) {
+      if (data) terminalHarness.writes.push(data);
+      callback?.();
+    }
+    reset() { terminalHarness.resets += 1; }
     dispose() { /* deterministic no-op */ }
     selectAll() { /* deterministic no-op */ }
     getSelection() { return terminalHarness.selection; }
@@ -49,6 +55,8 @@ describe("MobileTerminal input accessory", () => {
     terminalHarness.screen = undefined;
     terminalHarness.screenHeight = 240;
     terminalHarness.fitCalls = 0;
+    terminalHarness.writes = [];
+    terminalHarness.resets = 0;
     vi.stubGlobal("ResizeObserver", class {
       observe() { /* deterministic no-op */ }
       disconnect() { /* deterministic no-op */ }
@@ -59,6 +67,18 @@ describe("MobileTerminal input accessory", () => {
     });
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+  it("exposes direct write and reset operations without React output state", () => {
+    const ref = createRef<MobileTerminalHandle>();
+    render(<MobileTerminal ref={ref} showHeading={false} showProbeOutput={false} />);
+
+    ref.current?.write("first");
+    ref.current?.write("second");
+    ref.current?.reset();
+
+    expect(terminalHarness.writes).toEqual(["first", "second"]);
+    expect(terminalHarness.resets).toBe(1);
+  });
 
   it("shows the requested icon row only while terminal input owns focus", async () => {
     const onInput = vi.fn();

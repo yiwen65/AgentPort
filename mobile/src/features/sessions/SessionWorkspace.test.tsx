@@ -5,23 +5,34 @@ import type { RemoteClient, RemoteEvent } from "../../protocol/remoteClient";
 import type { OpenSession, SessionEventPayload } from "./types";
 import { SessionWorkspace } from "./SessionWorkspace";
 
-const terminalHarness = vi.hoisted(() => ({ props: undefined as {
-  outputChunks?: string[];
-  onInput?: (data: string) => void;
-  onResize?: (cols: number, rows: number) => void;
-  showHeading?: boolean;
-} | undefined }));
-
-vi.mock("../../terminal/MobileTerminal", () => ({
-  MobileTerminal: (props: NonNullable<typeof terminalHarness.props>) => {
-    terminalHarness.props = props;
-    return <section aria-label="Raw terminal">
-      <pre data-testid="raw-terminal-output">{props.outputChunks?.join("")}</pre>
-      <button type="button" onClick={() => props.onInput?.("你好\r")}>Type terminal input</button>
-      <button type="button" onClick={() => { props.onResize?.(48, 40); props.onResize?.(52, 32); }}>Resize terminal</button>
-    </section>;
-  },
+const terminalHarness = vi.hoisted(() => ({
+  props: undefined as {
+    onInput?: (data: string) => void;
+    onResize?: (cols: number, rows: number) => void;
+    showHeading?: boolean;
+  } | undefined,
+  writes: [] as string[],
+  resets: 0,
+  renders: 0,
 }));
+
+vi.mock("../../terminal/MobileTerminal", async () => {
+  const { forwardRef, useImperativeHandle } = await vi.importActual<typeof import("react")>("react");
+  return {
+    MobileTerminal: forwardRef((props: NonNullable<typeof terminalHarness.props>, ref) => {
+      terminalHarness.props = props;
+      terminalHarness.renders += 1;
+      useImperativeHandle(ref, () => ({
+        write: (data: string) => terminalHarness.writes.push(data),
+        reset: () => { terminalHarness.resets += 1; },
+      }), []);
+      return <section aria-label="Raw terminal">
+        <button type="button" onClick={() => props.onInput?.("你好\r")}>Type terminal input</button>
+        <button type="button" onClick={() => { props.onResize?.(48, 40); props.onResize?.(52, 32); }}>Resize terminal</button>
+      </section>;
+    }),
+  };
+});
 
 const open: OpenSession = {
   hostProfileId: "host-1",
@@ -53,7 +64,14 @@ function setupClient({ rejectResize = false }: { rejectResize?: boolean } = {}) 
 }
 
 describe("SessionWorkspace", () => {
-  beforeEach(async () => { localStorage.clear(); terminalHarness.props = undefined; await i18n.changeLanguage("en-US"); });
+  beforeEach(async () => {
+    localStorage.clear();
+    terminalHarness.props = undefined;
+    terminalHarness.writes = [];
+    terminalHarness.resets = 0;
+    terminalHarness.renders = 0;
+    await i18n.changeLanguage("en-US");
+  });
   afterEach(() => cleanup());
 
   it("attaches with cursor semantics and keeps interaction on the raw terminal path", async () => {
@@ -66,11 +84,33 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByText("终端仍在适配手机尺寸")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Resize terminal" }));
     await act(async () => emit({ subscriptionId: "sub", eventType: "output", cursor: { runId: "run", runOrdinal: 1, generation: 0, offset: 5, statusSequence: 0 }, payload: { session_id: "ses-1", dataBase64: btoa("hello") } }));
-    expect(screen.getByTestId("raw-terminal-output")).toHaveTextContent("hello");
+    expect(terminalHarness.writes).toEqual(["hello"]);
     expect(terminalHarness.props?.showHeading).toBe(false);
     expect(screen.queryByRole("button", { name: "Conversation" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Send text")).not.toBeInTheDocument();
     expect(JSON.parse(localStorage.getItem("agentport-mobile-session-cursor-v1:host-1:ses-1")!)).toEqual(expect.objectContaining({ offset: 5 }));
+  });
+
+  it("streams output without retaining chunks or rerendering the workspace", async () => {
+    const { client, emit } = setupClient();
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    const settledRenders = terminalHarness.renders;
+
+    await act(async () => {
+      for (let index = 0; index < 200; index += 1) {
+        emit({
+          subscriptionId: "sub",
+          eventType: "output",
+          cursor: null,
+          payload: { session_id: "ses-1", dataBase64: btoa("x".repeat(256)) },
+        });
+      }
+    });
+
+    expect(terminalHarness.writes).toHaveLength(200);
+    expect(terminalHarness.writes.every((chunk) => chunk.length === 256)).toBe(true);
+    expect(terminalHarness.renders).toBe(settledRenders);
   });
 
   it("consumes the Host terminal_geometry_changed event contract", async () => {

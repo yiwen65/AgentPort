@@ -5,9 +5,12 @@ import { i18n } from "../i18n";
 import type { RemoteClient } from "../protocol/remoteClient";
 import { App } from "./App";
 
-vi.mock("../terminal/MobileTerminal", () => ({
-  MobileTerminal: () => <div role="application" aria-label="Full terminal" />,
-}));
+vi.mock("../terminal/MobileTerminal", async () => {
+  const { forwardRef } = await vi.importActual<typeof import("react")>("react");
+  return {
+    MobileTerminal: forwardRef(() => <div role="application" aria-label="Full terminal" />),
+  };
+});
 
 const hostAuthClient: HostAuthClient = {
   getProfile: vi.fn(),
@@ -91,16 +94,19 @@ describe("AgentPort Mobile V2 shell", () => {
       subscribe: vi.fn().mockResolvedValue(async () => undefined),
     });
     const { container } = render(<App client={remote} hostAuthClient={hostAuthClient} />);
-    fireEvent.click(await screen.findByRole("button", { name: /Agent task/ }));
+    const sessionButton = await screen.findByRole("button", { name: /Agent task/ });
+    fireEvent.click(sessionButton);
     const stage = container.querySelector(".session-stage")!;
     expect(stage).toHaveClass("is-visible");
     await waitFor(() => expect(document.body).toHaveClass("terminal-visible"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to sessions" })).toHaveFocus());
 
     const shell = container.querySelector(".app-shell")!;
     fireEvent.touchStart(shell, { touches: [{ clientX: 40, clientY: 220 }] });
     fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 160, clientY: 224 }] });
     expect(stage).not.toHaveClass("is-visible");
     await waitFor(() => expect(document.body).not.toHaveClass("terminal-visible"));
+    await waitFor(() => expect(sessionButton).toHaveFocus());
 
     fireEvent.touchStart(shell, { touches: [{ clientX: 180, clientY: 220 }] });
     fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 70, clientY: 224 }] });

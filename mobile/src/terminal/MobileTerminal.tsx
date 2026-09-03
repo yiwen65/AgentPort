@@ -1,5 +1,7 @@
 import {
+  forwardRef,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useRef,
   useState,
@@ -13,38 +15,39 @@ import "./mobile-terminal.css";
 export interface MobileTerminalProps {
   onInput?: (data: string) => void;
   onResize?: (cols: number, rows: number) => void;
-  outputChunks?: string[];
-  resetVersion?: number;
   /** Forces a fresh size report after the remote attachment/owner changes. */
   resizeEpoch?: unknown;
   fontSize?: number;
   title?: string;
   description?: string;
   showHeading?: boolean;
+  showProbeOutput?: boolean;
+}
+
+export interface MobileTerminalHandle {
+  write(data: string): void;
+  reset(): void;
 }
 
 function PasteIcon() {
   return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="7" y="5" width="12" height="16" rx="2" /><path d="M9 5V3h6v4H9zM5 17H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1" /></svg>;
 }
 
-export function MobileTerminal({
+export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalProps>(function MobileTerminal({
   onInput,
   onResize,
-  outputChunks,
-  resetVersion = 0,
   resizeEpoch,
   fontSize = 14,
   title = "Terminal interaction test",
   description = "Local input probe; it does not execute commands.",
   showHeading = true,
-}: MobileTerminalProps) {
+  showProbeOutput = true,
+}: MobileTerminalProps, ref) {
   const sectionRef = useRef<HTMLElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const keysRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  const consumedChunks = useRef(0);
-  const lastReset = useRef(resetVersion);
   const inputRef = useRef(onInput);
   const resizeRef = useRef(onResize);
   const resizeFrameRef = useRef<number>();
@@ -62,6 +65,19 @@ export function MobileTerminal({
   const [commandActive, setCommandActive] = useState(false);
   inputRef.current = onInput;
   resizeRef.current = onResize;
+
+  useImperativeHandle(ref, () => ({
+    write(data: string) {
+      terminalRef.current?.write(data);
+    },
+    reset() {
+      const terminal = terminalRef.current;
+      if (!terminal) return;
+      // Fence the reset behind writes already queued in xterm, while writes
+      // received after this call remain behind the reset sentinel.
+      terminal.write("", () => terminal.reset());
+    },
+  }), []);
 
   const setShift = (active: boolean) => {
     shiftRef.current = active;
@@ -153,7 +169,7 @@ export function MobileTerminal({
     };
     scheduleFitRef.current = scheduleFit;
     fitTerminal(true);
-    if (!outputChunks) {
+    if (showProbeOutput) {
       terminal.write("\u001b[1;36mAgentPort transport spike\u001b[0m\r\n");
       terminal.write("Touch, select, type with IME, or use the special-key row.\r\n$ ");
     }
@@ -267,7 +283,6 @@ export function MobileTerminal({
       fitRef.current = null;
       scheduleFitRef.current = () => undefined;
       pendingRemoteReport.current = false;
-      consumedChunks.current = 0;
       window.clearTimeout(orientationTimerRef.current);
       if (resizeFrameRef.current !== undefined) window.cancelAnimationFrame(resizeFrameRef.current);
       if (dismissFrame !== undefined) window.cancelAnimationFrame(dismissFrame);
@@ -308,18 +323,6 @@ export function MobileTerminal({
     lastReportedSize.current = undefined;
     scheduleFitRef.current(true);
   }, [resizeEpoch]);
-
-  useEffect(() => {
-    const terminal = terminalRef.current;
-    if (!terminal || !outputChunks) return;
-    if (lastReset.current !== resetVersion || outputChunks.length < consumedChunks.current) {
-      terminal.reset();
-      consumedChunks.current = 0;
-      lastReset.current = resetVersion;
-    }
-    for (const chunk of outputChunks.slice(consumedChunks.current)) terminal.write(chunk);
-    consumedChunks.current = outputChunks.length;
-  }, [outputChunks, resetVersion]);
 
   const send = (data: string) => {
     terminalRef.current?.focus();
@@ -366,4 +369,4 @@ export function MobileTerminal({
       </div>
     </section>
   );
-}
+});

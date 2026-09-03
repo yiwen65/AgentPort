@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { RemoteClient, RemoteEvent } from "../../protocol/remoteClient";
-import { MobileTerminal } from "../../terminal/MobileTerminal";
+import { MobileTerminal, type MobileTerminalHandle } from "../../terminal/MobileTerminal";
 import { decodeBase64Utf8, encodeBase64Utf8, outputBase64Of, sessionBatchId, sessionIdOf } from "./sessionProtocol";
 import type { OpenSession, RunCursor, SessionAttachResult, SessionEventPayload, TerminalGeometry } from "./types";
 
 const CURSOR_PREFIX = "agentport-mobile-session-cursor-v1:";
-const MAX_RENDERED_CHARS = 4 * 1024 * 1024;
 const MOBILE_DEVICE_ID_KEY = "agentport-mobile-v2:device-id";
 
 function mobileDeviceId(): string {
@@ -25,13 +24,6 @@ function cursorKey(open: OpenSession) {
   return `${CURSOR_PREFIX}${open.hostProfileId}:${open.session.id}`;
 }
 
-function appendBounded(current: string[], value: string): string[] {
-  const next = [...current, value];
-  let total = next.reduce((sum, chunk) => sum + chunk.length, 0);
-  while (next.length > 1 && total > MAX_RENDERED_CHARS) total -= next.shift()!.length;
-  return next;
-}
-
 function errorText(error: unknown): string {
   if (error && typeof error === "object" && "message" in error) return String((error as { message: unknown }).message);
   return String(error);
@@ -46,8 +38,6 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   const { t } = useTranslation();
   const [attachmentId, setAttachmentId] = useState<string>();
   const [connectionLabel, setConnectionLabel] = useState("attaching");
-  const [outputChunks, setOutputChunks] = useState<string[]>([]);
-  const [resetVersion, setResetVersion] = useState(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [otherClientInput, setOtherClientInput] = useState(false);
@@ -61,6 +51,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   // A fresh xterm has no retained screen to pair with a persisted tail cursor,
   // so it must request a bounded replay. This ref still advances and resumes
   // efficiently for reconnects during this renderer's lifetime.
+  const terminal = useRef<MobileTerminalHandle>(null);
   const cursor = useRef<RunCursor>();
   const ownBatches = useRef(new Set<string>());
   const attachmentRef = useRef<string>();
@@ -120,12 +111,13 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
     }
     const outputBase64 = outputBase64Of(payload);
     if ((event.eventType === "output" || event.eventType === "transient_output") && outputBase64) {
-      setOutputChunks((current) => appendBounded(current, decodeBase64Utf8(outputBase64)));
+      // xterm already owns the bounded scrollback. Stream directly into it so
+      // every output event does not clone retained output and rerender React.
+      terminal.current?.write(decodeBase64Utf8(outputBase64));
     } else if (event.eventType === "resync_required") {
       cursor.current = undefined;
       try { localStorage.removeItem(cursorKey(open)); } catch { /* persistence is best effort */ }
-      setOutputChunks([]);
-      setResetVersion((current) => current + 1);
+      terminal.current?.reset();
       setNotice(t("session.resynced"));
       setAttachEpoch((current) => current + 1);
     } else if (event.eventType === "exit") {
@@ -344,8 +336,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
       {terminalGeometry?.sourceKind === "desktop" ? <button className="restore-phone-size-button" type="button" onClick={readaptForPhone} aria-label={t("session.restorePhoneSize")} title={t("session.restorePhoneSize")}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="7" y="2.5" width="10" height="19" rx="2" /><path d="M10.5 5h3M11 18.5h2" /></svg></button> : null}
 
       <MobileTerminal
-        outputChunks={outputChunks}
-        resetVersion={resetVersion}
+        ref={terminal}
         resizeEpoch={attachmentId}
         onInput={sendInput}
         onResize={requestTerminalResize}
@@ -353,6 +344,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
         title={t("session.fullTerminal")}
         description={t("session.terminalDescription")}
         showHeading={false}
+        showProbeOutput={false}
       />
 
       {actionsOpen ? <div className="modal-backdrop terminal-actions-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setActionsOpen(false); }}><section className="modal-sheet terminal-actions-sheet" role="dialog" aria-modal="true" aria-labelledby="terminal-actions-title"><header><div><h2 id="terminal-actions-title">{open.session.title}</h2><p>{open.session.lifecycle} · {open.session.permissionMode}</p></div><button type="button" aria-label={t("common.close")} onClick={() => setActionsOpen(false)}>×</button></header><div className="terminal-action-grid"><button type="button" onClick={() => void control("interrupt")}>{t("session.interrupt")}</button><button type="button" onClick={() => setFontSize((value) => Math.max(11, value - 1))}>A−</button><button type="button" onClick={() => setFontSize((value) => Math.min(24, value + 1))}>A+</button><button type="button" disabled={Boolean(busyAction)} onClick={() => void action("restart")}>{t("session.restart")}</button><button type="button" disabled={Boolean(busyAction)} onClick={() => void action("pin")}>{open.session.pinnedAt ? t("session.unpin") : t("session.pin")}</button><button type="button" disabled={Boolean(busyAction)} onClick={() => { const title = window.prompt(t("session.renamePrompt"), open.session.title); if (title?.trim()) void action("rename", title.trim()); }}>{t("session.rename")}</button><button type="button" disabled={Boolean(busyAction)} onClick={() => void action("archive")}>{t("session.archive")}</button><button className="danger-text" type="button" onClick={() => { setActionsOpen(false); setConfirmStop(true); }}>{t("session.stop")}</button></div></section></div> : null}
