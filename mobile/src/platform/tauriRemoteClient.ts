@@ -10,7 +10,7 @@ import type {
   Unsubscribe,
 } from "../protocol/remoteClient";
 
-interface RequestCommand<T> {
+interface RequestCommand {
   profileId: string;
   method: string;
   params: unknown;
@@ -48,7 +48,7 @@ export class TauriRemoteClient implements RemoteClient {
   }
 
   private async submitInput<T>(
-    command: RequestCommand<T>,
+    command: RequestCommand,
     options: RemoteRequestOptions,
   ): Promise<T> {
     await this.ensureInputListener();
@@ -101,7 +101,7 @@ export class TauriRemoteClient implements RemoteClient {
     if (options.signal?.aborted) {
       return Promise.reject(new DOMException("Aborted", "AbortError"));
     }
-    const command: RequestCommand<T> = {
+    const command: RequestCommand = {
       profileId,
       method,
       params,

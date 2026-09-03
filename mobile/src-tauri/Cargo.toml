@@ -23,7 +23,6 @@ russh = "=0.62.7"
 russh-sftp = "=2.4.0"
 agentport-remote-protocol = { path = "../../crates/agentport-remote-protocol" }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
-async-trait = "0.1"
 base64 = "0.22"
 sha2 = "0.10"
 zeroize = { version = "1", features = ["derive", "serde"] }

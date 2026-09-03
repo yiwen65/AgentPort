@@ -1,9 +1,3 @@
-export interface StatusCursor {
-  runId: string;
-  runOrdinal: number;
-  sequence: number;
-}
-
 export interface RunCursor {
   runId: string;
   runOrdinal: number;
