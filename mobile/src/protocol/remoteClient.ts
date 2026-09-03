@@ -50,6 +50,8 @@ export interface RemoteEvent<T = unknown> {
 export interface RemoteRequestOptions {
   precondition?: { revision?: number | string; cursor?: unknown };
   signal?: AbortSignal;
+  /** Called after an ordered input batch reaches the local transport writer. */
+  onSubmitted?: () => void;
 }
 
 export type Unsubscribe = () => Promise<void>;

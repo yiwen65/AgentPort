@@ -17,6 +17,8 @@ const MAX_ONLINE_HOSTS: usize = 5;
 const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
 const BRIDGE_COMMAND: &str = "agentport-remote-bridge serve --stdio";
 const CONNECTION_STATE_EVENT: &str = "agentport-mobile://connection-state";
+const INPUT_RESULT_EVENT: &str = "agentport-mobile://input-result";
+const MAX_PENDING_INPUTS: usize = 256;
 
 fn emit_connection_state<R: Runtime>(
     app: &AppHandle<R>,
@@ -51,7 +53,7 @@ pub struct ConnectError {
     host_key_hop: Option<&'static str>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteCommandError {
     code: String,
@@ -74,6 +76,16 @@ struct PendingRequest {
     accepted: bool,
     is_read: bool,
     response: oneshot::Sender<Result<Value, RemoteCommandError>>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InputResultEvent {
+    batch_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<RemoteCommandError>,
 }
 
 struct Connection {
@@ -364,6 +376,14 @@ fn zeroize_value(value: &mut Value) {
     }
 }
 
+fn remote_error_status(status: &str) -> &'static str {
+    match status {
+        "unknown" => "unknown",
+        "not_executed" => "not_executed",
+        _ => "failed",
+    }
+}
+
 fn fail_pending(pending: &Arc<Mutex<HashMap<String, PendingRequest>>>) {
     if let Ok(mut requests) = pending.lock() {
         for (_, request) in requests.drain() {
@@ -430,11 +450,7 @@ async fn reader_loop(
                                         .and_then(Value::as_str)
                                         .unwrap_or("Remote request failed")
                                         .into(),
-                                    status: if status == "unknown" {
-                                        "unknown"
-                                    } else {
-                                        "failed"
-                                    },
+                                    status: remote_error_status(status),
                                 })
                             };
                             let _ = request.response.send(response);
@@ -698,6 +714,110 @@ pub async fn mobile_disconnect_host(
 }
 
 #[tauri::command]
+pub async fn mobile_remote_submit_input(
+    app: AppHandle,
+    state: State<'_, RemoteConnections>,
+    command: RemoteRequestCommand,
+) -> Result<(), RemoteCommandError> {
+    if command.method != "session.input" {
+        return Err(RemoteCommandError {
+            code: "invalid_input_request".into(),
+            message: "Only session input can use the ordered submit path".into(),
+            status: "not_executed",
+        });
+    }
+    let batch_id = command
+        .params
+        .get("batchId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| RemoteCommandError {
+            code: "invalid_input_request".into(),
+            message: "Input batch ID is required".into(),
+            status: "not_executed",
+        })?
+        .to_string();
+    let request_id = format!("request_{}", uuid::Uuid::new_v4().simple());
+    let (sender, receiver) = oneshot::channel();
+    let (writer, pending) = {
+        let connections = state.inner.connections.lock().await;
+        let connection =
+            connections
+                .get(&command.profile_id)
+                .ok_or_else(|| RemoteCommandError {
+                    code: "host_not_connected".into(),
+                    message: "Host is not connected".into(),
+                    status: "not_executed",
+                })?;
+        (
+            Arc::clone(&connection.writer),
+            Arc::clone(&connection.pending),
+        )
+    };
+    {
+        let mut requests = pending.lock().map_err(|_| RemoteCommandError {
+            code: "connection_state_unavailable".into(),
+            message: "Connection state is unavailable".into(),
+            status: "not_executed",
+        })?;
+        if requests.len() >= MAX_PENDING_INPUTS {
+            return Err(RemoteCommandError {
+                code: "input_queue_full".into(),
+                message: "Too many input batches are awaiting results".into(),
+                status: "not_executed",
+            });
+        }
+        requests.insert(
+            request_id.clone(),
+            PendingRequest {
+                accepted: false,
+                is_read: false,
+                response: sender,
+            },
+        );
+    }
+    let mut frame = json!({"type": "request", "requestId": request_id.clone(), "method": command.method, "params": command.params, "precondition": command.precondition});
+    let write_failed = write_frame(writer.lock().await.as_mut(), &frame)
+        .await
+        .is_err();
+    zeroize_value(&mut frame);
+    if write_failed {
+        pending
+            .lock()
+            .ok()
+            .and_then(|mut requests| requests.remove(&request_id));
+        return Err(RemoteCommandError {
+            code: "connection_unknown".into(),
+            message: "The input could not be submitted and was not replayed".into(),
+            status: "unknown",
+        });
+    }
+    tauri::async_runtime::spawn(async move {
+        let outcome = receiver.await.unwrap_or_else(|_| {
+            Err(RemoteCommandError {
+                code: "connection_unknown".into(),
+                message: "The connection ended before the input result was known".into(),
+                status: "unknown",
+            })
+        });
+        let payload = match outcome {
+            Ok(value) => InputResultEvent {
+                batch_id,
+                value: Some(value),
+                error: None,
+            },
+            Err(error) => InputResultEvent {
+                batch_id,
+                value: None,
+                error: Some(error),
+            },
+        };
+        let _ = app.emit(INPUT_RESULT_EVENT, payload);
+    });
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn mobile_remote_request(
     state: State<'_, RemoteConnections>,
     command: RemoteRequestCommand,
@@ -872,6 +992,14 @@ mod tests {
     #[test]
     fn online_limit_is_product_bounded() {
         assert_eq!(MAX_ONLINE_HOSTS, 5);
+        assert_eq!(MAX_PENDING_INPUTS, 256);
+    }
+
+    #[test]
+    fn remote_result_status_preserves_not_executed_and_unknown() {
+        assert_eq!(remote_error_status("not_executed"), "not_executed");
+        assert_eq!(remote_error_status("unknown"), "unknown");
+        assert_eq!(remote_error_status("failed"), "failed");
     }
 
     #[test]

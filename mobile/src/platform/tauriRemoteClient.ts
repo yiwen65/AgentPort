@@ -17,7 +17,62 @@ interface RequestCommand<T> {
   precondition: RemoteRequestOptions["precondition"];
 }
 
+interface InputResultEvent<T> {
+  batchId: string;
+  value?: T;
+  error?: { code: string; message: string; status: string };
+}
+
 export class TauriRemoteClient implements RemoteClient {
+  private readonly inputResults = new Map<string, {
+    resolve: (value: unknown) => void;
+    reject: (error: unknown) => void;
+  }>();
+  private inputListener?: Promise<UnlistenFn>;
+
+  private ensureInputListener(): Promise<UnlistenFn> {
+    this.inputListener ??= listen<InputResultEvent<unknown>>(
+      "agentport-mobile://input-result",
+      ({ payload }) => {
+        const pending = this.inputResults.get(payload.batchId);
+        if (!pending) return;
+        this.inputResults.delete(payload.batchId);
+        if (payload.error) {
+          pending.reject(Object.assign(new Error(payload.error.message), payload.error));
+        } else {
+          pending.resolve(payload.value);
+        }
+      },
+    );
+    return this.inputListener;
+  }
+
+  private async submitInput<T>(
+    command: RequestCommand<T>,
+    options: RemoteRequestOptions,
+  ): Promise<T> {
+    await this.ensureInputListener();
+    const batchId = command.params && typeof command.params === "object" && "batchId" in command.params
+      ? String(command.params.batchId)
+      : "";
+    if (!batchId || this.inputResults.has(batchId)) {
+      throw new Error("Input batch ID must be unique");
+    }
+    return new Promise<T>((resolve, reject) => {
+      this.inputResults.set(batchId, {
+        resolve: (value) => resolve(value as T),
+        reject,
+      });
+      void invoke("mobile_remote_submit_input", { command }).then(() => {
+        options.onSubmitted?.();
+      }).catch((error) => {
+        this.inputResults.delete(batchId);
+        options.onSubmitted?.();
+        reject(error);
+      });
+    });
+  }
+
   listHostProfiles(): Promise<HostProfileSummary[]> {
     return invoke("mobile_list_host_profiles");
   }
@@ -52,6 +107,7 @@ export class TauriRemoteClient implements RemoteClient {
       params,
       precondition: options.precondition,
     };
+    if (method === "session.input") return this.submitInput(command, options);
     return invoke("mobile_remote_request", { command });
   }
 

@@ -80,7 +80,12 @@ describe("SessionWorkspace", () => {
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     expect(screen.getByText("AgentSessions")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
-    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.input", expect.objectContaining({ attachmentId: "att-1", dataBase64: "5L2g5aW9DQ==" })));
+    await waitFor(() => expect(request).toHaveBeenCalledWith(
+      "host-1",
+      "session.input",
+      expect.objectContaining({ attachmentId: "att-1", dataBase64: "5L2g5aW9DQ==" }),
+      expect.objectContaining({ onSubmitted: expect.any(Function) }),
+    ));
     expect(screen.queryByText("终端仍在适配手机尺寸")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Resize terminal" }));
     await act(async () => emit({ subscriptionId: "sub", eventType: "output", cursor: { runId: "run", runOrdinal: 1, generation: 0, offset: 5, statusSequence: 0 }, payload: { session_id: "ses-1", dataBase64: btoa("hello") } }));
@@ -89,6 +94,33 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByRole("button", { name: "Conversation" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Send text")).not.toBeInTheDocument();
     expect(JSON.parse(localStorage.getItem("agentport-mobile-session-cursor-v1:host-1:ses-1")!)).toEqual(expect.objectContaining({ offset: 5 }));
+  });
+
+  it("dispatches ordered input batches without waiting for earlier remote results", async () => {
+    const { client, request } = setupClient();
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+
+    let resolveInputs!: (value: { phase: string }) => void;
+    const pendingInput = new Promise<{ phase: string }>((resolve) => { resolveInputs = resolve; });
+    request.mockImplementation((_profileId, method, _params, options) => {
+      if (method !== "session.input") return Promise.resolve({});
+      options?.onSubmitted?.();
+      return pendingInput;
+    });
+    request.mockClear();
+
+    terminalHarness.props?.onInput?.("a");
+    terminalHarness.props?.onInput?.("b");
+    terminalHarness.props?.onInput?.("c");
+    await act(async () => { await Promise.resolve(); });
+
+    const inputCalls = request.mock.calls.filter(([, method]) => method === "session.input");
+    expect(inputCalls).toHaveLength(3);
+    expect(inputCalls.map(([, , params]) => atob(params.dataBase64))).toEqual(["a", "b", "c"]);
+
+    resolveInputs({ phase: "completed" });
+    await act(async () => { await pendingInput; });
   });
 
   it("streams output without retaining chunks or rerendering the workspace", async () => {
@@ -184,7 +216,12 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
-    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.input", expect.objectContaining({ dataBase64: "5L2g5aW9DQ==" })));
+    await waitFor(() => expect(request).toHaveBeenCalledWith(
+      "host-1",
+      "session.input",
+      expect.objectContaining({ dataBase64: "5L2g5aW9DQ==" }),
+      expect.objectContaining({ onSubmitted: expect.any(Function) }),
+    ));
   });
 
   it("requests a bounded tail for every fresh terminal renderer instead of resuming from a stale persisted cursor", async () => {

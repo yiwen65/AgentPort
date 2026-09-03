@@ -55,7 +55,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   const cursor = useRef<RunCursor>();
   const ownBatches = useRef(new Set<string>());
   const attachmentRef = useRef<string>();
-  const inputQueue = useRef(Promise.resolve());
+  const inputDispatchQueue = useRef(Promise.resolve());
   const otherInputTimer = useRef<number>();
   const seenTimer = useRef<number>();
   const latestStatusCursor = useRef<{ runId: string; runOrdinal: number; sequence: number }>();
@@ -208,15 +208,28 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
     if (!attachmentId) return;
     const batchId = sessionBatchId();
     ownBatches.current.add(batchId);
-    inputQueue.current = inputQueue.current.then(async () => {
-      try {
-        const result = await client.request<{ phase: string }>(open.hostProfileId, "session.input", { attachmentId, batchId, dataBase64: encodeBase64Utf8(data) });
+    // Serialize only through the local transport write, not the remote result.
+    // Bridge frames therefore retain input order without adding network RTT to
+    // every later keystroke.
+    inputDispatchQueue.current = inputDispatchQueue.current.then(() => new Promise<void>((submitted) => {
+      let submissionReleased = false;
+      const releaseSubmission = () => {
+        if (submissionReleased) return;
+        submissionReleased = true;
+        submitted();
+      };
+      void client.request<{ phase: string }>(open.hostProfileId, "session.input", {
+        attachmentId,
+        batchId,
+        dataBase64: encodeBase64Utf8(data),
+      }, { onSubmitted: releaseSubmission }).then((result) => {
+        ownBatches.current.delete(batchId);
         if (result.phase === "unknown") setError(t("session.inputUnknown"));
-      } catch (requestError) {
+      }).catch((requestError) => {
         ownBatches.current.delete(batchId);
         setError(errorText(requestError));
-      }
-    });
+      }).finally(releaseSubmission);
+    }));
   }, [attachmentId, client, open.hostProfileId, t]);
 
   const control = async (controlName: "interrupt" | "continue") => {
