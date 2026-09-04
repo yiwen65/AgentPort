@@ -7,7 +7,7 @@ use agentport_core::db::Db;
 use agentport_core::error::CoreError;
 use agentport_core::git::{
     AutoStash, BranchManager, BranchOperation, BranchOperationPhase, BranchSnapshot, CheckoutState,
-    GitRunner, RepositoryIdentity, RestoreStrategy,
+    GitRunner, RepositoryIdentity, RestoreStrategy, UNMERGED_DELETE_BLOCK_MARKER,
 };
 use agentport_core::models::Lifecycle;
 use agentport_core::paths::AppPaths;
@@ -342,7 +342,9 @@ pub async fn delete_local_branch(
     app: AppHandle,
     project_id: String,
     branch: String,
+    force: Option<bool>,
 ) -> CommandResult<BranchOperationResult> {
+    let force = force.unwrap_or(false);
     let operation_id = wrapper_operation_id("delete_branch");
     emit_progress(
         &app,
@@ -352,7 +354,11 @@ pub async fn delete_local_branch(
             project_id: Some(project_id.clone()),
             branch: Some(branch.clone()),
             phase: "started".into(),
-            message: "deleting merged local branch".into(),
+            message: if force {
+                "force-deleting local branch".into()
+            } else {
+                "deleting merged local branch".into()
+            },
             core_operation_id: None,
             recoverable: false,
             occurred_at: now_string(),
@@ -366,7 +372,11 @@ pub async fn delete_local_branch(
         "delete_local_branch",
         "delete",
         move |db, manager| {
-            let deleted = manager.delete(&project_id, &branch)?;
+            let deleted = if force {
+                manager.delete_forced(&project_id, &branch)?
+            } else {
+                manager.delete(&project_id, &branch)?
+            };
             let response = repository_response(db, manager, &project_id)?;
             Ok(BranchOperationResult {
                 operation_id: deleted.operation_id,
@@ -395,7 +405,25 @@ pub async fn delete_local_branch(
             );
             Ok(result)
         }
-        Err(error) => {
+        Err(mut error) => {
+            // A merged-only rejection is the one blocked delete the user can
+            // legitimately override. Tag it so the UI can offer an explicit
+            // force-delete retry instead of a dead end.
+            if !force
+                && error.code == "blocked"
+                && error.message.contains(UNMERGED_DELETE_BLOCK_MARKER)
+                && !error
+                    .recovery_action_codes
+                    .iter()
+                    .any(|code| code == "force_delete_branch")
+            {
+                error
+                    .recovery_action_codes
+                    .push("force_delete_branch".into());
+                error.recovery_actions.push(
+                    "Force delete the branch to discard its unmerged commits.".into(),
+                );
+            }
             emit_error_progress(
                 &app,
                 "delete_local_branch",

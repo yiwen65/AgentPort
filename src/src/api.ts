@@ -378,8 +378,8 @@ export const api = {
     }),
   switchLocalBranch: (projectId: string, branch: string) =>
     invoke<BranchOperationResult>("switch_local_branch", { projectId, branch }),
-  deleteLocalBranch: (projectId: string, branch: string) =>
-    invoke<BranchOperationResult>("delete_local_branch", { projectId, branch }),
+  deleteLocalBranch: (projectId: string, branch: string, force = false) =>
+    invoke<BranchOperationResult>("delete_local_branch", { projectId, branch, force }),
   listAutoStashes: (projectId: string | null) =>
     invoke<AutoStashRecord[]>("list_auto_stashes", { projectId }),
   restoreAutoStash: (operationId: string, strategy: "target" | "source") =>

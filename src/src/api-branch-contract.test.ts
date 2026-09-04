@@ -34,6 +34,7 @@ describe("local branch Tauri contract", () => {
     await api.createAndSwitchLocalBranch("p1", "feature/ready", "main");
     await api.switchLocalBranch("p1", "feature/new");
     await api.deleteLocalBranch("p1", "feature/old");
+    await api.deleteLocalBranch("p1", "backup/abandoned", true);
     await api.restoreAutoStash("op-1", "target");
     await api.cleanupAutoStash("op-1");
 
@@ -54,12 +55,18 @@ describe("local branch Tauri contract", () => {
     expect(invokeMock).toHaveBeenNthCalledWith(4, "delete_local_branch", {
       projectId: "p1",
       branch: "feature/old",
+      force: false,
     });
-    expect(invokeMock).toHaveBeenNthCalledWith(5, "restore_auto_stash", {
+    expect(invokeMock).toHaveBeenNthCalledWith(5, "delete_local_branch", {
+      projectId: "p1",
+      branch: "backup/abandoned",
+      force: true,
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(6, "restore_auto_stash", {
       operationId: "op-1",
       strategy: "target",
     });
-    expect(invokeMock).toHaveBeenNthCalledWith(6, "cleanup_auto_stash", {
+    expect(invokeMock).toHaveBeenNthCalledWith(7, "cleanup_auto_stash", {
       operationId: "op-1",
     });
   });

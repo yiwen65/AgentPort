@@ -15,6 +15,18 @@ use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+/// Stable marker inside the blocked error raised when the merged-only delete
+/// gate rejects a branch. Command layers use it to recognize that an explicit
+/// force-delete retry (`delete_forced`) would succeed where `delete` refused;
+/// keep the `ensure_merged_for_delete` message and this marker in sync.
+pub const UNMERGED_DELETE_BLOCK_MARKER: &str = "is not merged into";
+
+/// True when `error` is exactly the merged-only delete gate rejection, i.e.
+/// the failure an explicit force delete is designed to override.
+pub fn is_unmerged_delete_block(error: &CoreError) -> bool {
+    matches!(error, CoreError::Blocked(message) if message.contains(UNMERGED_DELETE_BLOCK_MARKER))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
 pub enum CheckoutState {
@@ -489,6 +501,27 @@ impl<'a> BranchManager<'a> {
     /// semantics without the ref-read/ref-delete race in that porcelain
     /// command; this method never performs an unconditional/forced ref write.
     pub fn delete(&self, project_id: &str, name: &str) -> Result<DeleteBranchOutcome> {
+        self.delete_with_mode(project_id, name, false)
+    }
+
+    /// Delete one exact local branch ref regardless of merge state.
+    ///
+    /// This is the `branch -D` counterpart of `delete`: it skips only the
+    /// merged-ancestry gate so abandoned (e.g. backup) branches can be
+    /// removed. Every other guard still applies — the branch must not be the
+    /// current checkout, must not occupy a worktree, must not be referenced
+    /// by an unfinished operation, and deletion remains a journaled
+    /// expected-OID compare-and-swap.
+    pub fn delete_forced(&self, project_id: &str, name: &str) -> Result<DeleteBranchOutcome> {
+        self.delete_with_mode(project_id, name, true)
+    }
+
+    fn delete_with_mode(
+        &self,
+        project_id: &str,
+        name: &str,
+        force: bool,
+    ) -> Result<DeleteBranchOutcome> {
         let identity = self.identity(project_id)?;
         let lock = repository_lock(&identity.repo_key);
         let _guard = lock.lock().unwrap();
@@ -695,50 +728,55 @@ impl<'a> BranchManager<'a> {
             return Err(error);
         }
 
-        let merge_target_oid = match self.delete_merge_target_oid(&refreshed_identity, name) {
-            Ok(oid) => oid,
-            Err(CoreError::NotFound(_))
-                if matches!(
-                    self.observe_exact_ref(&refreshed_identity, name),
-                    ExactRefObservation::Absent
-                ) =>
-            {
-                self.finish_missing_delete_ref(
-                    &refreshed_identity,
-                    &journal,
-                    &operation_id,
-                    name,
-                    &target.oid,
-                    &snapshot,
-                )?;
-                return Ok(DeleteBranchOutcome {
-                    operation_id,
-                    branch_name: name.to_owned(),
-                    deleted_oid: target.oid,
-                });
-            }
-            Err(error) => {
+        if !force {
+            let merge_target_oid = match self.delete_merge_target_oid(&refreshed_identity, name) {
+                Ok(oid) => oid,
+                Err(CoreError::NotFound(_))
+                    if matches!(
+                        self.observe_exact_ref(&refreshed_identity, name),
+                        ExactRefObservation::Absent
+                    ) =>
+                {
+                    self.finish_missing_delete_ref(
+                        &refreshed_identity,
+                        &journal,
+                        &operation_id,
+                        name,
+                        &target.oid,
+                        &snapshot,
+                    )?;
+                    return Ok(DeleteBranchOutcome {
+                        operation_id,
+                        branch_name: name.to_owned(),
+                        deleted_oid: target.oid,
+                    });
+                }
+                Err(error) => {
+                    journal.update(
+                        &operation_id,
+                        BranchOperationPhase::Failed,
+                        None,
+                        Some(&error.to_string()),
+                        Some("could not resolve immutable delete merge target"),
+                    )?;
+                    return Err(error);
+                }
+            };
+            if let Err(error) = self.ensure_merged_for_delete(
+                &refreshed_identity,
+                name,
+                &target.oid,
+                &merge_target_oid,
+            ) {
                 journal.update(
                     &operation_id,
                     BranchOperationPhase::Failed,
                     None,
                     Some(&error.to_string()),
-                    Some("could not resolve immutable delete merge target"),
+                    Some("merged-only ancestry check rejected local branch deletion"),
                 )?;
                 return Err(error);
             }
-        };
-        if let Err(error) =
-            self.ensure_merged_for_delete(&refreshed_identity, name, &target.oid, &merge_target_oid)
-        {
-            journal.update(
-                &operation_id,
-                BranchOperationPhase::Failed,
-                None,
-                Some(&error.to_string()),
-                Some("merged-only ancestry check rejected local branch deletion"),
-            )?;
-            return Err(error);
         }
 
         let full_ref = format!("refs/heads/{name}");
@@ -2131,7 +2169,7 @@ impl<'a> BranchManager<'a> {
         }
         if !output.timed_out && output.exit_code() == Some(1) {
             return Err(CoreError::Blocked(format!(
-                "cannot delete branch {branch}; commit {branch_oid} is not merged into {merge_target_oid}"
+                "cannot delete branch {branch}; commit {branch_oid} {UNMERGED_DELETE_BLOCK_MARKER} {merge_target_oid}"
             )));
         }
         output.require_success().map(|_| ())

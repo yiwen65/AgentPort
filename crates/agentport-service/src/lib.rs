@@ -925,6 +925,15 @@ struct BranchTargetParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BranchDeleteParams {
+    project_id: String,
+    branch: String,
+    #[serde(default)]
+    force: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BranchOperationParams {
     operation_id: String,
 }
@@ -1640,9 +1649,14 @@ impl RemoteService for CoreService {
                 serialize_extended(manager.switch(&params.project_id, &params.branch)?)?
             }
             "branch.delete" => {
-                let params: BranchTargetParams = parse_extended(params)?;
+                let params: BranchDeleteParams = parse_extended(params)?;
                 let manager = BranchManager::new(&self.db);
-                serialize_extended(manager.delete(&params.project_id, &params.branch)?)?
+                let outcome = if params.force {
+                    manager.delete_forced(&params.project_id, &params.branch)?
+                } else {
+                    manager.delete(&params.project_id, &params.branch)?
+                };
+                serialize_extended(outcome)?
             }
             "branch.autostash.list" => {
                 let params: BranchAutoStashListParams = parse_extended(params)?;

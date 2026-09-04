@@ -1,5 +1,8 @@
 use agentport_core::db::Db;
-use agentport_core::git::{BranchManager, BranchOperationKind, BranchOperationPhase};
+use agentport_core::git::{
+    is_unmerged_delete_block, BranchManager, BranchOperationKind, BranchOperationPhase,
+    UNMERGED_DELETE_BLOCK_MARKER,
+};
 use agentport_core::models::Project;
 use agentport_core::CoreError;
 use chrono::Utc;
@@ -244,11 +247,94 @@ fn git_merged_only_rule_rejects_unmerged_branch_without_losing_ref() {
         .delete(&fixture.project_id, "unmerged/feature")
         .unwrap_err();
     assert!(matches!(error, CoreError::Blocked(_)), "{error}");
+    // The command layer relies on this exact signal to offer a force retry.
+    assert!(is_unmerged_delete_block(&error), "{error}");
     assert_eq!(
         git(&fixture.root, &["rev-parse", "refs/heads/unmerged/feature"]).trim(),
         feature_oid
     );
 }
+
+#[test]
+fn force_delete_removes_an_unmerged_branch() {
+    let fixture = fixture();
+    git(&fixture.root, &["switch", "-c", "abandoned/backup"]);
+    std::fs::write(fixture.root.join("backup.txt"), "abandoned work\n").unwrap();
+    git(&fixture.root, &["add", "--", "backup.txt"]);
+    git(
+        &fixture.root,
+        &["-c", "commit.gpgsign=false", "commit", "-m", "abandoned work"],
+    );
+    let backup_oid = git(&fixture.root, &["rev-parse", "HEAD"]).trim().to_owned();
+    git(&fixture.root, &["switch", "main"]);
+    let manager = BranchManager::new(&fixture.db);
+
+    let deleted = manager
+        .delete_forced(&fixture.project_id, "abandoned/backup")
+        .unwrap();
+
+    assert_eq!(deleted.branch_name, "abandoned/backup");
+    assert_eq!(deleted.deleted_oid, backup_oid);
+    assert!(!branch_exists(
+        &manager,
+        &fixture.project_id,
+        "abandoned/backup"
+    ));
+    let operation = manager.operation(&deleted.operation_id).unwrap();
+    assert_eq!(operation.kind, BranchOperationKind::Delete);
+    assert_eq!(operation.phase, BranchOperationPhase::Completed);
+}
+
+#[test]
+fn force_delete_keeps_checkout_worktree_and_input_guards() {
+    let fixture = fixture();
+    let manager = BranchManager::new(&fixture.db);
+
+    let current_error = manager.delete_forced(&fixture.project_id, "main").unwrap_err();
+    assert!(matches!(current_error, CoreError::Blocked(_)));
+    assert!(branch_exists(&manager, &fixture.project_id, "main"));
+
+    git(&fixture.root, &["branch", "occupied/force"]);
+    let linked = fixture._temp.path().join("force linked checkout ü");
+    git(
+        &fixture.root,
+        &[
+            "worktree",
+            "add",
+            linked.to_str().unwrap(),
+            "occupied/force",
+        ],
+    );
+    let occupied_error = manager
+        .delete_forced(&fixture.project_id, "occupied/force")
+        .unwrap_err();
+    assert!(matches!(occupied_error, CoreError::Blocked(_)));
+    assert!(branch_exists(&manager, &fixture.project_id, "occupied/force"));
+
+    for malicious in ["--force", "safe;touch injected", " safe"] {
+        let error = manager
+            .delete_forced(&fixture.project_id, malicious)
+            .unwrap_err();
+        assert!(matches!(error, CoreError::Validation(_)), "{error}");
+    }
+    assert!(!fixture.root.join("injected").exists());
+}
+
+#[test]
+fn unmerged_delete_block_marker_matches_only_the_merged_gate() {
+    // Other blocked delete failures must not be misread as force-deletable.
+    let occupied = CoreError::Blocked(
+        "cannot delete branch occupied/feature; it is checked out in worktree /tmp/x".to_owned(),
+    );
+    assert!(!is_unmerged_delete_block(&occupied));
+    let unmerged = CoreError::Blocked(format!(
+        "cannot delete branch backup/old; commit abc123 {UNMERGED_DELETE_BLOCK_MARKER} def456"
+    ));
+    assert!(is_unmerged_delete_block(&unmerged));
+    let conflict = CoreError::Conflict(format!("commit abc123 {UNMERGED_DELETE_BLOCK_MARKER}"));
+    assert!(!is_unmerged_delete_block(&conflict));
+}
+
 
 #[test]
 fn rejects_option_like_and_invalid_branch_input_as_argv_data() {

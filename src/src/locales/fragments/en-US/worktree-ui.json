@@ -49,7 +49,7 @@
       },
       "delete": {
         "question": "Delete <branch>{{branch}}</branch>?",
-        "mergedOnlyWarning": "Only merged local branches can be deleted. The remote is not affected. This cannot be undone.",
+        "mergedOnlyWarning": "The remote is not affected and this cannot be undone. If the branch is not fully merged, you can still choose Force delete after the block is reported.",
         "blocked": "Cannot delete yet: {{reason}}",
         "confirmGroupAria": "Confirm deletion of branch {{branch}}",
         "confirm": "Delete branch"
@@ -98,7 +98,7 @@
           "createCompleted": "Local branch created",
           "createAndSwitchStarted": "Creating and switching local branch",
           "createAndSwitchCompleted": "Local branch created and switched",
-          "deleteStarted": "Deleting merged local branch",
+          "deleteStarted": "Deleting local branch",
           "deleteCompleted": "Local branch deleted",
           "switchStarted": "Switching local branch",
           "switchPendingRestore": "Uncommitted changes were stashed automatically and must be restored",
@@ -157,8 +157,11 @@
           "refreshRepositoryBeforeRetry": "Refresh repository status before retrying.",
           "inspectDiagnosticsIfGitUnavailable": "Check the app diagnostics log if Git remains unavailable.",
           "refreshRepositoryAndRetry": "Refresh repository status and retry.",
-          "retryAfterCheckingDiagnostics": "Check the app diagnostics log, then retry."
-        }
+          "retryAfterCheckingDiagnostics": "Check the app diagnostics log, then retry.",
+          "forceDeleteBranch": "Force delete the branch to discard its unmerged commits."
+        },
+        "forceDeleteHint": "Force delete {{branch}} and discard its commits that are not merged into the current checkout. This cannot be undone.",
+        "forceDeleteBranch": "Force delete branch"
       },
       "search": {
         "placeholder": "Search local branches (↑ ↓ to select, Enter to checkout)",

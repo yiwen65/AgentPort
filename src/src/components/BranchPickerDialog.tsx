@@ -46,6 +46,8 @@ interface BranchFailure {
   message: string;
   liveSessionIds: string[];
   recoveryActions: string[];
+  /** Branch the backend said could be force-deleted after a merged-only block. */
+  forceDeleteBranch: string | null;
 }
 
 type CheckoutChangingOperation =
@@ -81,6 +83,19 @@ function sameCheckoutIdentity(left: RepositoryStatus, right: RepositoryStatus): 
     && (left.head?.oid ?? null) === (right.head?.oid ?? null);
 }
 
+/** True when the backend tagged this failure as an unmerged-branch block that an explicit force delete may override. */
+function forceDeleteOffered(error: unknown): boolean {
+  const wrapped = asRecord(error)?.error;
+  const structured = isStructuredGitError(error)
+    ? error
+    : isStructuredGitError(wrapped)
+      ? wrapped
+      : null;
+  return structured
+    ? stringIds(structured.recoveryActionCodes).includes("force_delete_branch")
+    : false;
+}
+
 function operationFailure(error: unknown): BranchFailure {
   if (isStructuredGitError(error)) {
     return {
@@ -89,6 +104,7 @@ function operationFailure(error: unknown): BranchFailure {
       recoveryActions: stringIds(error.recoveryActionCodes).length
         ? stringIds(error.recoveryActionCodes)
         : stringIds(error.recoveryActions),
+      forceDeleteBranch: null,
     };
   }
   // Some adapters wrap the structured payload in an `error` field. Inspect
@@ -102,9 +118,10 @@ function operationFailure(error: unknown): BranchFailure {
       recoveryActions: stringIds(wrapped.recoveryActionCodes).length
         ? stringIds(wrapped.recoveryActionCodes)
         : stringIds(wrapped.recoveryActions),
+      forceDeleteBranch: null,
     };
   }
-  return { message: errorText(error), liveSessionIds: [], recoveryActions: [] };
+  return { message: errorText(error), liveSessionIds: [], recoveryActions: [], forceDeleteBranch: null };
 }
 
 function lifecycleLabel(
@@ -473,7 +490,7 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
     applyRepositoryStatusSnapshot(response.status);
   };
 
-  const setOperationFailure = (error: unknown) => {
+  const setOperationFailure = (error: unknown, forceDeleteBranch: string | null = null) => {
     const nextFailure = operationFailure(error);
     if (nextFailure.liveSessionIds.length > 0) {
       setFailure(null);
@@ -482,7 +499,10 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
         affectedSessionIds: nextFailure.liveSessionIds,
       });
     } else {
-      setFailure(nextFailure);
+      setFailure({
+        ...nextFailure,
+        forceDeleteBranch: forceDeleteOffered(error) ? forceDeleteBranch : null,
+      });
     }
   };
 
@@ -519,7 +539,10 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
       return true;
     } catch (error) {
       await refresh();
-      setOperationFailure(error);
+      setOperationFailure(
+        error,
+        pending.command === "delete_local_branch" ? (pending.branch ?? null) : null,
+      );
       return false;
     }
   };
@@ -673,18 +696,18 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
     setConfirmingDelete(null);
   };
 
-  const deleteBranch = (branch: LocalBranch) => {
+  const deleteBranch = (branchName: string, force = false) => {
     void (async () => {
       const deleted = await complete(
-        t("worktree:ui.branchPicker.operation.deletedLocalBranch", { branch: branch.name }),
+        t("worktree:ui.branchPicker.operation.deletedLocalBranch", { branch: branchName }),
         async () => {
-          const result = await api.deleteLocalBranch(projectId, branch.name);
+          const result = await api.deleteLocalBranch(projectId, branchName, force);
           setData((previous) => (previous ? { ...previous, status: result.status } : previous));
         },
         {
           command: "delete_local_branch",
-          branch: branch.name,
-          message: t("worktree:ui.branchPicker.operation.deletingLocalBranch", { branch: branch.name }),
+          branch: branchName,
+          message: t("worktree:ui.branchPicker.operation.deletingLocalBranch", { branch: branchName }),
         },
       );
       if (deleted) {
@@ -695,6 +718,13 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
         confirmDeleteRef.current?.focus();
       }
     })();
+  };
+
+  // Explicit `branch -D` retry after the backend reported the merged-only
+  // block: still journaled and guarded, but discards unmerged commits.
+  const forceDelete = (branchName: string) => {
+    if (localBusyRef.current || eventBusyRef.current) return;
+    deleteBranch(branchName, true);
   };
 
   const create = () => {
@@ -946,6 +976,23 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
               ))}
             </div>
           ) : null}
+          {failure.forceDeleteBranch ? (
+            <div className="branch-picker-force-delete">
+              <span>
+                {t("worktree:ui.branchPicker.error.forceDeleteHint", { branch: failure.forceDeleteBranch })}
+              </span>
+              <button
+                className="btn small danger"
+                disabled={controlsBusy}
+                onClick={() => {
+                  const branch = failure.forceDeleteBranch;
+                  if (branch) forceDelete(branch);
+                }}
+              >
+                {t("worktree:ui.branchPicker.error.forceDeleteBranch")}
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -999,7 +1046,7 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
               confirmingDelete={confirmingDelete === branch.name}
               onChoose={chooseBranch}
               onRequestDelete={requestDelete}
-              onConfirmDelete={deleteBranch}
+              onConfirmDelete={(item) => deleteBranch(item.name)}
               onCancelDelete={(item) => cancelDelete(item.name)}
               onOpenWorktree={(worktreeId) => { closeDialog(); openWorktreeView(projectId, worktreeId); }}
               deleteButtonRef={(element) => {

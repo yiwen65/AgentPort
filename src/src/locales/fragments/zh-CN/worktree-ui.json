@@ -49,7 +49,7 @@
       },
       "delete": {
         "question": "删除 <branch>{{branch}}</branch>？",
-        "mergedOnlyWarning": "仅删除已合并的本地分支，不影响远端。此操作不可撤销。",
+        "mergedOnlyWarning": "不影响远端，且不可撤销。若分支尚未完全合并，收到阻止提示后仍可选择强制删除。",
         "blocked": "暂不能删除：{{reason}}",
         "confirmGroupAria": "确认删除分支 {{branch}}",
         "confirm": "确认删除"
@@ -98,7 +98,7 @@
           "createCompleted": "本地分支已创建",
           "createAndSwitchStarted": "正在创建并切换本地分支",
           "createAndSwitchCompleted": "本地分支已创建并切换",
-          "deleteStarted": "正在删除已合并的本地分支",
+          "deleteStarted": "正在删除本地分支",
           "deleteCompleted": "本地分支已删除",
           "switchStarted": "正在切换本地分支",
           "switchPendingRestore": "未提交修改已自动暂存，需要恢复",
@@ -157,8 +157,11 @@
           "refreshRepositoryBeforeRetry": "重试前刷新仓库状态。",
           "inspectDiagnosticsIfGitUnavailable": "如果 Git 仍不可用，请查看应用诊断日志。",
           "refreshRepositoryAndRetry": "刷新仓库状态后重试。",
-          "retryAfterCheckingDiagnostics": "查看应用诊断日志后重试。"
-        }
+          "retryAfterCheckingDiagnostics": "查看应用诊断日志后重试。",
+          "forceDeleteBranch": "强制删除该分支，丢弃未合并的提交。"
+        },
+        "forceDeleteHint": "强制删除 {{branch}}，丢弃其中未合并到当前 checkout 的提交。此操作不可撤销。",
+        "forceDeleteBranch": "强制删除分支"
       },
       "search": {
         "placeholder": "搜索本地分支（↑ ↓ 选择，Enter 切换）",

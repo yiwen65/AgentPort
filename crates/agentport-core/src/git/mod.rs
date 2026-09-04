@@ -28,8 +28,9 @@ mod token;
 pub mod worktree;
 
 pub use branch::{
-    BranchInfo, BranchManager, BranchSnapshot, CheckoutState, CreateBranchOutcome,
-    DeleteBranchOutcome, RepoStatus, SwitchOutcome,
+    is_unmerged_delete_block, BranchInfo, BranchManager, BranchSnapshot, CheckoutState,
+    CreateBranchOutcome, DeleteBranchOutcome, RepoStatus, SwitchOutcome,
+    UNMERGED_DELETE_BLOCK_MARKER,
 };
 pub use command::{GitOutput, GitRunOptions, GitRunner};
 pub use commit::{

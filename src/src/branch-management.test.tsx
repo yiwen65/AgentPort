@@ -572,7 +572,8 @@ describe("local branch management", () => {
     await user.click(deleteButton);
     const warning = screen.getByRole("alert");
     expect(warning.textContent).toContain("删除 feature/ui？");
-    expect(warning.textContent).toContain("仅删除已合并的本地分支，不影响远端");
+    expect(warning.textContent).toContain("不影响远端，且不可撤销");
+    expect(warning.textContent).toContain("仍可选择强制删除");
     const confirm = screen.getByRole("button", { name: "确认删除" });
     expect(document.activeElement).toBe(confirm);
     expect(screen.getByRole("group", { name: "确认删除分支 feature/ui" })).toBeTruthy();
@@ -628,7 +629,7 @@ describe("local branch management", () => {
     await user.click(await screen.findByRole("button", { name: "删除分支 feature/ui" }));
     await user.click(screen.getByRole("button", { name: "确认删除" }));
 
-    await waitFor(() => expect(apiMock.deleteLocalBranch).toHaveBeenCalledWith("p1", "feature/ui"));
+    await waitFor(() => expect(apiMock.deleteLocalBranch).toHaveBeenCalledWith("p1", "feature/ui", false));
     await waitFor(() => expect(screen.queryByText("feature/ui")).toBeNull());
     expect(await screen.findByText(/完成：已删除本地分支 feature\/ui/)).toBeTruthy();
     expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "搜索本地分支" }));
@@ -675,6 +676,80 @@ describe("local branch management", () => {
     expect(screen.getByRole("button", { name: "确认删除" })).toBeTruthy();
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "确认删除" }));
     expect(screen.getByText("merge_or_choose_another_branch")).toBeTruthy();
+  });
+
+  it("offers force delete only after an unmerged block and retries with force", async () => {
+    const user = userEvent.setup();
+    apiMock.listLocalBranches
+      .mockReset()
+      .mockResolvedValue({ status: safeDeleteStatus, branches, autoStashes: [] });
+    apiMock.deleteLocalBranch.mockReset();
+    apiMock.deleteLocalBranch.mockRejectedValueOnce({
+      code: "blocked",
+      message:
+        "blocked: cannot delete branch feature/ui; commit f4780d300c32 is not merged into 875f86e45865",
+      phase: "delete",
+      operationId: "delete-1",
+      recoverable: true,
+      currentStatus: status,
+      recoveryActions: [
+        "Resolve active sessions, dirty submodules, merge/rebase state, or index conflicts, then retry.",
+        "Force delete the branch to discard its unmerged commits.",
+      ],
+      recoveryActionCodes: ["resolve_repository_blockers", "force_delete_branch"],
+      diagnostics: { command: "delete_local_branch" },
+      liveSessionIds: [],
+    });
+    apiMock.deleteLocalBranch.mockResolvedValueOnce({
+      operationId: "delete-2",
+      status: { ...safeDeleteStatus, snapshotToken: "after-force-delete" },
+    });
+    render(<BranchPickerDialog projectId="p1" />);
+
+    // No force affordance before the backend reports the merged-only block.
+    expect(screen.queryByRole("button", { name: "强制删除分支" })).toBeNull();
+
+    await user.click(await screen.findByRole("button", { name: "删除分支 feature/ui" }));
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+
+    expect(await screen.findByText(/is not merged into/)).toBeTruthy();
+    expect(screen.getByText("处理正在运行的 Session、脏 submodule、merge/rebase 状态或索引冲突后重试。")).toBeTruthy();
+    expect(screen.getByText("强制删除该分支，丢弃未合并的提交。")).toBeTruthy();
+
+    apiMock.listLocalBranches.mockResolvedValueOnce({
+      status: { ...safeDeleteStatus, snapshotToken: "after-force-delete" },
+      branches: [branches[0], branches[2]],
+      autoStashes: [],
+    });
+    await user.click(screen.getByRole("button", { name: "强制删除分支" }));
+
+    await waitFor(() => expect(apiMock.deleteLocalBranch).toHaveBeenNthCalledWith(2, "p1", "feature/ui", true));
+    await waitFor(() => expect(screen.queryByText("feature/ui")).toBeNull());
+    expect(await screen.findByText(/完成：已删除本地分支 feature\/ui/)).toBeTruthy();
+  });
+
+  it("does not offer force delete for other blocked deletion failures", async () => {
+    const user = userEvent.setup();
+    useSafeDeleteResponse();
+    apiMock.deleteLocalBranch.mockRejectedValueOnce({
+      code: "blocked",
+      message: "blocked: cannot delete branch feature/ui; it became checked out in a worktree",
+      phase: "delete",
+      operationId: "delete-1",
+      recoverable: true,
+      currentStatus: status,
+      recoveryActions: ["Resolve active sessions, dirty submodules, merge/rebase state, or index conflicts, then retry."],
+      recoveryActionCodes: ["resolve_repository_blockers"],
+      diagnostics: { command: "delete_local_branch" },
+      liveSessionIds: [],
+    });
+    render(<BranchPickerDialog projectId="p1" />);
+
+    await user.click(await screen.findByRole("button", { name: "删除分支 feature/ui" }));
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+
+    expect(await screen.findByText(/became checked out in a worktree/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "强制删除分支" })).toBeNull();
   });
 
   it("unregisters listeners even when registration resolves after unmount", async () => {

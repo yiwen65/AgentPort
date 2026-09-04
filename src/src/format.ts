@@ -250,6 +250,7 @@ export function recoveryActionLabel(action: string): string {
     inspect_diagnostics_if_git_unavailable: "worktree:ui.branchPicker.error.recoveryAction.inspectDiagnosticsIfGitUnavailable",
     refresh_repository_and_retry: "worktree:ui.branchPicker.error.recoveryAction.refreshRepositoryAndRetry",
     retry_after_checking_diagnostics: "worktree:ui.branchPicker.error.recoveryAction.retryAfterCheckingDiagnostics",
+    force_delete_branch: "worktree:ui.branchPicker.error.recoveryAction.forceDeleteBranch",
   } as const;
   const stableAction = action as keyof typeof known;
   const key = known[stableAction];
