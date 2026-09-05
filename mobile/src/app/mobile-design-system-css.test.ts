@@ -7,15 +7,42 @@ const modalStyles = readFileSync("src/components/modal.css", "utf8");
 const terminalStyles = readFileSync("src/terminal/mobile-terminal.css", "utf8");
 const workspace = readFileSync("src/features/sessions/SessionWorkspace.tsx", "utf8");
 
+function contrast(first: string, second: string) {
+  const luminance = (hex: string) => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
+    .map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4)
+    .reduce((sum, v, i) => sum + v * [.2126, .7152, .0722][i], 0);
+  const values = [luminance(first), luminance(second)].sort((a, b) => a - b);
+  return (values[1] + .05) / (values[0] + .05);
+}
+
 describe("mobile semantic design system", () => {
-  it("uses light, warm-gray semantic color roles", () => {
-    expect(styles).toContain("--bg: #f3f2ef");
+  it("uses cool light and midnight dark semantic color roles", () => {
+    expect(styles).toContain("--bg: #edf3f9");
     expect(styles).toContain("--panel: #ffffff");
-    expect(styles).toContain("--panel-strong: #eeefef");
-    expect(styles).toContain("--accent: #285f9e");
-    expect(styles).toContain("--success: #237548");
-    expect(styles).toContain("--warning: #945a00");
-    expect(styles).toContain("--danger: #b42332");
+    expect(styles).toContain("--panel-strong: #e9f0f7");
+    expect(styles).toContain("--accent: #096a99");
+    expect(styles).toContain("--success: #167053");
+    expect(styles).toContain("--warning: #835600");
+    expect(styles).toContain("--danger: #b32d4a");
+    expect(styles).toContain(':root[data-app-theme="dark"]');
+    expect(styles).toContain("--bg: #080f1d");
+    expect(styles).toContain("--mark-cyan: #36d8f4");
+    expect(styles).toContain("--mark-cyan: #007b9c");
+    expect(dashboardStyles).toContain("grid-template-rows: 0fr");
+    expect(dashboardStyles).toContain("grid-template-rows: 1fr");
+    expect(dashboardStyles).toContain("prefers-reduced-motion: reduce");
+  });
+
+  it("keeps opaque text/status roles above 4.5:1 and logo stops above 3:1 in both themes", () => {
+    const tokens = (block: string) => Object.fromEntries([...block.matchAll(/(--[\w-]+): (#[\da-f]{6})/g)].map(m => [m[1], m[2]]));
+    const light = tokens(styles.match(/^:root \{([\s\S]*?)\n\}/)![1]);
+    const dark = { ...light, ...tokens(styles.match(/:root\[data-app-theme="dark"\] \{([\s\S]*?)\n\}/)![1]) };
+    for (const palette of [light, dark]) {
+      for (const [fg, bg] of [["--text", "--panel"], ["--muted", "--bg"], ["--tertiary-text", "--panel"], ["--accent", "--content-active"], ["--warning", "--status-waiting-bg"], ["--danger", "--status-error-bg"], ["--success", "--fill"], ["--primary-fg", "--accent"]]) {
+        expect(contrast(palette[fg], palette[bg]), `${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+      }
+      for (const fg of ["--mark-cyan", "--mark-blue", "--mark-violet", "--mark-dot"]) expect(contrast(palette[fg], palette["--fill"])).toBeGreaterThanOrEqual(3);
+    }
   });
 
   it("keeps glass on navigation while presenting list content as grouped material", () => {
@@ -63,5 +90,10 @@ describe("mobile semantic design system", () => {
     expect(modalStyles).toContain("prefers-reduced-transparency: reduce");
     expect(styles).not.toContain(".agent-launch-strip");
     expect(styles).not.toContain(".mobile-workspace-caption");
+    // Row layout has one owner; importing global styles after dashboard CSS
+    // must not resurrect the old 10px status column around the whole button.
+    expect(styles).toMatch(/\.v2-session-row \{ display: block;/);
+    expect(styles).not.toContain("grid-template-columns: 10px minmax(0, 1fr) auto");
+    expect(dashboardStyles).not.toMatch(/\.v2-session-row \{/);
   });
 });

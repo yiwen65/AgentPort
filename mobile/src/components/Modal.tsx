@@ -14,14 +14,45 @@ export function Modal({ title, onClose, children, className = "" }: {
   const titleId = useId();
   const [portal] = useState(() => document.createElement("div"));
   const sheet = useRef<HTMLElement>(null);
+  const animations = useRef<Animation[]>([]);
+  const exiting = useRef(false);
   const close = useRef(onClose);
   close.current = onClose;
+
+  const requestClose = () => {
+    if (exiting.current) return;
+    const node = sheet.current;
+    if (!node?.animate || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      close.current(); return;
+    }
+    exiting.current = true;
+    // Sample the presentation state so closing during entry never snaps.
+    const transform = getComputedStyle(node).transform;
+    const opacity = getComputedStyle(node).opacity;
+    const backdrop = node.parentElement!;
+    const backdropOpacity = getComputedStyle(backdrop).opacity;
+    animations.current.forEach((animation) => animation.cancel());
+    const fade = backdrop.animate([{ opacity: backdropOpacity }, { opacity: 0 }], { duration: 130, fill: "forwards" });
+    const exit = node.animate([{ transform, opacity }, { transform: "translateY(8px) scale(.97)", opacity: 0 }], { duration: 130, easing: "ease-in", fill: "forwards" });
+    animations.current = [fade, exit];
+    exit.onfinish = () => close.current();
+  };
+  const dismiss = useRef(requestClose);
+  dismiss.current = requestClose;
 
   useLayoutEffect(() => {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const overflow = document.body.style.overflow;
     portal.className = "mobile-modal-portal";
     document.body.append(portal);
+    exiting.current = false;
+    const node = sheet.current;
+    if (node?.animate && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      animations.current = [
+        node.parentElement!.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 180, easing: "ease-out" }),
+        node.animate([{ transform: "translateY(8px) scale(.97)", opacity: 0 }, { transform: "none", opacity: 1 }], { duration: 220, easing: "cubic-bezier(.2,.8,.2,1)" }),
+      ];
+    }
     const backgrounds = [...document.body.children].filter((node) => node !== portal);
     const previous = backgrounds.map((node) => [node, node.getAttribute("inert")] as const);
     backgrounds.forEach((node) => node.setAttribute("inert", ""));
@@ -34,7 +65,7 @@ export function Modal({ title, onClose, children, className = "" }: {
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
-        close.current();
+        dismiss.current();
       } else if (event.key === "Tab") {
         const nodes = focusables();
         const first = nodes[0];
@@ -50,6 +81,8 @@ export function Modal({ title, onClose, children, className = "" }: {
     document.addEventListener("keydown", keydown, true);
     return () => {
       document.removeEventListener("keydown", keydown, true);
+      animations.current.forEach((animation) => { animation.onfinish = null; animation.cancel(); });
+      animations.current = [];
       previous.forEach(([node, value]) => value === null ? node.removeAttribute("inert") : node.setAttribute("inert", value));
       document.body.style.overflow = overflow;
       portal.remove();
@@ -59,12 +92,12 @@ export function Modal({ title, onClose, children, className = "" }: {
 
   return createPortal(
     <div className="centered-modal-backdrop" onClick={(event) => {
-      if (event.target === event.currentTarget) onClose();
+      if (event.target === event.currentTarget) requestClose();
     }}>
       <section ref={sheet} className={`centered-modal ${className}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <header className="centered-modal-header">
           <h2 id={titleId}>{title}</h2>
-          <button type="button" className="modal-close-button" aria-label={t("common.close")} onClick={onClose}>
+          <button type="button" className="modal-close-button" aria-label={t("common.close")} onClick={requestClose}>
             <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m6 6 12 12M18 6 6 18" /></svg>
           </button>
         </header>

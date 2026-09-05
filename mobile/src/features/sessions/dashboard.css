@@ -1,27 +1,39 @@
-/* Scoped above legacy sidebar rules so import order cannot shrink touch targets. */
-.session-dashboard .mobile-sidebar-toolbar { flex-wrap: wrap; align-items: center; gap: 2px; padding-inline: 8px; box-shadow: none; }
-.session-dashboard .toolbar-icon-button { min-width: 44px; min-height: 44px; }
+.session-dashboard { background: radial-gradient(ellipse at 100% 0, var(--ambient), transparent 55%), var(--bg); }
+.session-dashboard .mobile-sidebar-toolbar { flex-wrap: wrap; align-items: center; gap: 2px; padding-inline: 8px; box-shadow: 0 1px 0 var(--content-highlight); }
+.session-dashboard .toolbar-icon-button { min-width: 44px; min-height: 44px; transition: transform 120ms ease, background-color 160ms ease, color 160ms ease; }
+.session-dashboard .toolbar-icon-button:active { transform: scale(.92); }
 .session-dashboard .compact-device-picker { min-width: 64px; flex: 1 1 64px; }
 .session-dashboard .compact-device-picker select { min-height: 44px; width: 100%; min-width: 0; }
 .session-dashboard .toolbar-spacer { display: none; }
-.session-dashboard .dense-project-tree { padding-top: 8px; }
-.session-dashboard .project-group { margin: 0 8px 8px; border-radius: 10px; box-shadow: none; }
-.session-dashboard .project-group > header { min-height: 48px; gap: 4px; padding: 2px 4px; }
-.session-dashboard .project-toggle { min-height: 44px; gap: 6px; padding-inline: 4px; }
-.session-dashboard .project-toggle strong { font-size: 17px; }
-.session-dashboard .project-toggle .ui-icon { flex-shrink: 0; width: 18px; }
-.session-dashboard .project-launch-button { min-height: 44px; min-width: 44px; max-width: 45%; flex-shrink: 0; padding: 6px 10px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--fill); color: var(--text); font-size: 14px; overflow-wrap: anywhere; }
+.session-dashboard .dense-project-tree { padding-top: 12px; }
+.session-dashboard .project-group { margin: 0 12px 12px; border-radius: 16px; box-shadow: inset 0 1px 0 var(--content-highlight), 0 4px 16px rgba(8, 28, 52, .04); }
+.session-dashboard .project-group > header { min-height: 58px; gap: 8px; padding: 5px 8px; }
+.session-dashboard .project-toggle { min-height: 46px; gap: 8px; padding-inline: 4px; }
+.session-dashboard .project-toggle .ui-icon { flex-shrink: 0; }
+.session-dashboard .project-launch-button { display: grid; place-items: center; width: 46px; height: 46px; flex: 0 0 46px; padding: 7px; border: 1px solid var(--line); border-radius: 14px; background: linear-gradient(145deg, var(--content-highlight), transparent), var(--fill); transition: transform 120ms ease, background-color 180ms ease, border-color 180ms ease; }
+.agentport-mark { width: 30px; height: 30px; overflow: visible; }
+.agentport-mark .mark-cyan { stop-color: var(--mark-cyan); }
+.agentport-mark .mark-blue { stop-color: var(--mark-blue); }
+.agentport-mark .mark-violet { stop-color: var(--mark-violet); }
+.agentport-mark .mark-satellite { fill: var(--mark-dot); }
+.project-launch-button:active .agentport-mark { transform: rotate(-14deg); }
+.agentport-mark { transition: transform 180ms ease; }
+.project-content { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 220ms cubic-bezier(.2,.8,.2,1), opacity 160ms ease; }
+.project-content.is-expanded { grid-template-rows: 1fr; opacity: 1; }
+.project-content > div { min-height: 0; overflow: hidden; }
+.project-content[aria-hidden="true"] { pointer-events: none; }
 .centered-modal.agent-picker { width: min(100%, 420px); }
-.agent-picker-project { margin: 0 0 12px; color: var(--muted); overflow-wrap: anywhere; }
+.agent-picker-project { margin: 0 0 16px; color: var(--muted); overflow-wrap: anywhere; font-size: 14px; }
 .agent-picker-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; list-style: none; margin: 0; padding: 0; }
-.agent-picker-list button { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 12px; width: 100%; min-height: 104px; padding: 16px 12px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--fill); color: var(--text); text-align: center; font-size: 16px; font-weight: 550; }
+.agent-picker-list button { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 12px; width: 100%; min-height: 100px; padding: 16px 12px; border: 1px solid var(--line-soft); border-radius: 14px; background: var(--fill); color: var(--text); text-align: center; font-size: 16px; font-weight: 550; transition: transform 120ms ease, background-color 160ms ease; }
 .agent-picker-list .agent-picker-name { min-width: 0; overflow-wrap: anywhere; }
 .agent-picker-list button:disabled { opacity: .5; }
 .agent-picker-glyph { width: 30px; height: 30px; color: var(--accent); flex-shrink: 0; }
-.agent-picker .inline-error { overflow-wrap: anywhere; }
-.session-dashboard button:focus-visible, .agent-picker button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
-
-.agent-picker-list button:active:not(:disabled), .project-launch-button:active { background: var(--fill-strong); transform: scale(.97); }
-@media (prefers-reduced-motion: reduce) { .agent-picker-list button:active:not(:disabled), .project-launch-button:active { transform: none; } }
-
 .agent-picker-glyph > svg { width: 100%; height: 100%; display: block; }
+.agent-picker .inline-error { overflow-wrap: anywhere; }
+.session-dashboard button:focus-visible, .agent-picker button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.agent-picker-list button:active:not(:disabled), .project-launch-button:active { background: var(--fill-strong); transform: scale(.94); }
+@media (prefers-reduced-motion: reduce) {
+  .project-content, .agentport-mark, .session-dashboard button, .agent-picker-list button { transition: none; }
+  .session-dashboard button:active, .agent-picker-list button:active:not(:disabled), .project-launch-button:active .agentport-mark { transform: none; }
+}

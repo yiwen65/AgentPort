@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useId, useRef, useState } from "react";
+import { AgentPortMark } from "../../components/AgentPortMark";
+import { SessionStateBadge } from "./SessionStateBadge";
 import { AgentIcon } from "../../components/AgentIcons";
 import { Modal } from "../../components/Modal";
 import "./dashboard.css";
 import { useTranslation } from "react-i18next";
 import type { ConnectionState, HostProfileSummary, RemoteClient } from "../../protocol/remoteClient";
 import { deliverAttentionNotifications, SystemNotificationSink } from "./attentionNotifications";
-import { activeAgentSessions, orderedVisibleAgents, quickStartParams, statusClass, type SessionLayout } from "./sessionModel";
+import { activeAgentSessions, orderedVisibleAgents, quickStartParams, type SessionLayout } from "./sessionModel";
 import type { AgentPreferences, AttentionCursor, AttentionPollResult, OpenSession, ProjectSummary, SessionSummary, SupportedAgent } from "./types";
 
 const DEVICE_KEY = "agentport-mobile-v2:selected-device";
@@ -75,10 +77,6 @@ function sessionTime(session: SessionSummary): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-function stateLabel(session: SessionSummary): string {
-  return session.latestStatus?.state ?? session.lifecycle;
-}
-
 function relativeTime(value: string): string {
   const elapsed = Math.max(0, Date.now() - Date.parse(value));
   const minutes = Math.floor(elapsed / 60_000);
@@ -113,20 +111,28 @@ function AgentGlyph({ agent }: { agent: string }) {
   </svg>;
 }
 
-function SessionRow({ session, host, onOpen }: {
+function SessionRow({ session, host, stale, onOpen }: {
   session: SessionSummary;
   host: HostProfileSummary;
+  stale?: boolean;
   onOpen: () => void;
 }) {
+  const { t } = useTranslation();
+  const id = useId();
   const disabled = Boolean(session.archivedAt) || host.connectionState !== "connected";
   return (
-    <li className="v2-session-row">
-      <span className={`session-status-dot ${statusClass(session)}`} role="img" aria-label={stateLabel(session)} />
-      <button type="button" data-session-id={session.id} disabled={disabled} onClick={onOpen} aria-label={`${session.title}, ${stateLabel(session)}`}>
-        <span><strong>{session.title}</strong><small>{session.adapterType}</small></span>
+    <li className={`v2-session-row${session.unreadAttention ? " has-unread" : ""}`}>
+      <button type="button" data-session-id={session.id} disabled={disabled} onClick={onOpen} aria-labelledby={`${id}-title`} aria-describedby={`${id}-status`}>
+        <span className="session-row-copy">
+          <strong id={`${id}-title`}>{session.title}</strong>
+          <span className="session-row-meta" id={`${id}-status`}>
+            <small>{session.adapterType}</small>
+            <SessionStateBadge session={session} stale={stale || host.connectionState !== "connected"} />
+            {session.unreadAttention ? <span className="session-unread"><span aria-hidden="true" />{t("dashboard.unread")}</span> : null}
+          </span>
+        </span>
         <time dateTime={session.updatedAt}>{relativeTime(session.updatedAt)}</time>
       </button>
-      {session.unreadAttention ? <span className="attention-mark" aria-label="unread attention">•</span> : null}
     </li>
   );
 }
@@ -427,12 +433,12 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
                 setPicker(target);
                 setLaunchError("");
                 setCreatedSessionId(undefined);
-              }}>{t("dashboard.launch", { defaultValue: "Start agent" })}</button>
+              }}><AgentPortMark /></button>
             </header>
-            {expanded ? <ul className="v2-session-list">{projectSessions.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} onOpen={() => open(session)} />)}</ul> : null}
+            <div className={`project-content${expanded ? " is-expanded" : ""}`} aria-hidden={!expanded} {...(expanded ? {} : { inert: "" })}><div><ul className="v2-session-list">{projectSessions.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} stale={snapshot?.cached} onOpen={() => open(session)} />)}</ul></div></div>
           </section>;
         })}
-      </div> : <div className="activity-session-view"><ul className="v2-session-list active-agent-list">{active.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} onOpen={() => open(session)} />)}</ul>{snapshot && active.length === 0 ? <div className="compact-empty" role="status">{t("dashboard.noActivity")}</div> : null}</div>}
+      </div> : <div className="activity-session-view"><ul className="v2-session-list active-agent-list">{active.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} stale={snapshot?.cached} onOpen={() => open(session)} />)}</ul>{snapshot && active.length === 0 ? <div className="compact-empty" role="status">{t("dashboard.noActivity")}</div> : null}</div>}
 
       {snapshot && sessions.length === 0 ? <div className="state-card" role="status">{t("dashboard.noSessions")}</div> : null}
 
@@ -450,7 +456,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
       {workspace.recentOpen ? <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) updateWorkspace({ ...workspace, recentOpen: false }); }}>
         <section className="modal-sheet recent-sheet" role="dialog" aria-modal="true" aria-labelledby="recent-title">
           <header><h2 id="recent-title">{t("dashboard.recent")}</h2><button type="button" aria-label={t("common.close")} onClick={() => updateWorkspace({ ...workspace, recentOpen: false })}>×</button></header>
-          <ul className="v2-session-list">{recent.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} onOpen={() => open(session)} />)}</ul>
+          <ul className="v2-session-list">{recent.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} stale={snapshot?.cached} onOpen={() => open(session)} />)}</ul>
         </section>
       </div> : null}
     </section>

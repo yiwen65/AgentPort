@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState, type TouchEvent } from "re
 import { useTranslation } from "react-i18next";
 import { HostManager } from "../features/hosts-auth/HostManager";
 import type { HostAuthClient } from "../features/hosts-auth/types";
+import { useApplyAppAppearance } from "./appAppearance";
 import { SettingsDialog } from "../features/settings/SettingsDialog";
 import { SessionDashboard } from "../features/sessions/SessionDashboard";
 import type { OpenSession } from "../features/sessions/types";
@@ -17,6 +18,7 @@ interface AppProps {
 }
 
 export function App({ client, hostAuthClient }: AppProps) {
+  useApplyAppAppearance();
   const { t } = useTranslation();
   const [selectedSession, setSelectedSession] = useState<OpenSession>();
   const [terminalVisible, setTerminalVisible] = useState(false);

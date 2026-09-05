@@ -88,6 +88,9 @@ describe("V2 Session workspace", () => {
     const onOpenSettings = vi.fn();
     const { container } = render(<SessionDashboard client={client()} onOpenSession={vi.fn()} onOpenSettings={onOpenSettings} />);
     await screen.findByRole("button", { name: "Start agent in AgentPort" });
+    const launch = screen.getByRole("button", { name: "Start agent in AgentPort" });
+    expect(launch.textContent).toBe("");
+    expect(launch.querySelector(".agentport-mark")).toHaveAttribute("aria-hidden", "true");
     expect(container.querySelector(".mobile-workspace-caption")).toBeNull();
     expect(screen.getByText("Projects").closest(".visually-hidden")).not.toBeNull();
     expect(screen.queryByRole("button", { name: "Start Claude in AgentPort" })).not.toBeInTheDocument();

@@ -127,6 +127,10 @@ describe("AgentPort Mobile V2 shell", () => {
     fireEvent.touchStart(shell, { touches: [{ clientX: 180, clientY: 220 }] });
     fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 70, clientY: 224 }] });
     expect(stage).not.toHaveClass("is-visible");
+    const terminalThemeBefore = renderer?.getAttribute("data-terminal-theme");
+    fireEvent.click(screen.getByRole("radio", { name: "Dark interface" }));
+    expect(document.documentElement).toHaveAttribute("data-app-theme", "dark");
+    expect(renderer).toHaveAttribute("data-terminal-theme", terminalThemeBefore);
     fireEvent.click(screen.getByRole("radio", { name: "Light" }));
     fireEvent.click(screen.getByRole("radio", { name: "Aurora" }));
     expect(renderer).toHaveAttribute("data-terminal-theme", "aurora");

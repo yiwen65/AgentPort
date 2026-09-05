@@ -1,0 +1,10 @@
+.session-state { --state-color: var(--muted); display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 3px 7px 3px 5px; border-radius: 6px; background: var(--fill); color: var(--state-color); font-size: 12px; font-weight: 550; line-height: 1.35; overflow-wrap: anywhere; }
+.session-state.state-working, .session-state.state-creating { --state-color: var(--accent); }
+.session-state.state-needs_input { --state-color: var(--warning); background: var(--status-waiting-bg); }
+.session-state.state-idle { --state-color: var(--success); }
+.session-state.state-interrupted { --state-color: var(--danger); background: var(--status-error-bg); }
+.session-state.is-cached { --state-color: var(--muted); background: var(--fill); }
+.session-state-glyph { width: 16px; height: 16px; flex: 0 0 16px; }
+.session-state-glyph.is-moving { animation: status-spin 2.4s linear infinite; }
+.project-content[aria-hidden="true"] .session-state-glyph, main[aria-hidden="true"] .session-state-glyph, [inert] .session-state-glyph { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) { .session-state-glyph.is-moving { animation: none; } }

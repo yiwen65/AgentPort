@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { i18n } from "../i18n";
 import { Modal } from "./Modal";
 
@@ -9,7 +9,12 @@ function Example() {
   return <><button onClick={() => setOpen(true)}>Open</button>{open ? <Modal title="Choices" onClose={() => setOpen(false)}><button>First</button><button>Last</button></Modal> : null}</>;
 }
 
-afterEach(cleanup);
+const originalAnimate = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "animate");
+afterEach(() => {
+  cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals();
+  if (originalAnimate) Object.defineProperty(HTMLElement.prototype, "animate", originalAnimate);
+  else Reflect.deleteProperty(HTMLElement.prototype, "animate");
+});
 
 beforeEach(async () => { await i18n.changeLanguage("en-US"); });
 
@@ -58,4 +63,39 @@ describe("Modal", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
+  it("reverses entry on close and releases focus only when the bounded exit finishes", () => {
+    const animations: { cancel: ReturnType<typeof vi.fn>; onfinish: (() => void) | null }[] = [];
+    vi.stubGlobal("matchMedia", () => ({ matches: false }));
+    Object.defineProperty(HTMLElement.prototype, "animate", { configurable: true, value: () => undefined, writable: true });
+    const animate = vi.spyOn(HTMLElement.prototype, "animate").mockImplementation(() => {
+      const animation = { cancel: vi.fn(), onfinish: null };
+      animations.push(animation);
+      return animation as unknown as Animation;
+    });
+    render(<Example />);
+    const trigger = screen.getByRole("button", { name: "Open" });
+    trigger.focus(); fireEvent.click(trigger);
+    expect(animate).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(animations[0].cancel).toHaveBeenCalledOnce();
+    expect(animate).toHaveBeenCalledTimes(4);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(animate).toHaveBeenCalledTimes(4);
+    act(() => animations[3].onfinish?.());
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("skips movement and delayed dismissal when reduced motion is requested", () => {
+    vi.stubGlobal("matchMedia", () => ({ matches: true }));
+    Object.defineProperty(HTMLElement.prototype, "animate", { configurable: true, value: () => undefined, writable: true });
+    const animate = vi.spyOn(HTMLElement.prototype, "animate").mockImplementation(() => { throw new Error("must not animate"); });
+    render(<Example />);
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(animate).not.toHaveBeenCalled();
+  });
+
 });

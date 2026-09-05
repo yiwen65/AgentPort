@@ -64,8 +64,9 @@ export const resources = {
           credentialRequired: "请先安全保存密码、导入私钥或生成密钥。",
         },
       },
-      settings: {"title": "设置"},
+      settings: { title: "设置", appearance: { title: "主界面外观", hint: "仅调整界面风格，终端外观单独设置。", option: "{{mode}}界面", modes: { light: "浅色", dark: "深色", system: "跟随系统" } } },
       dashboard: {
+        states: { creating: "启动中", working: "运行中", needs_input: "等待输入", idle: "空闲", exited: "已结束", interrupted: "已中断", stopped: "已停止", unknown: "状态未知", cached: "上次状态" },
         currentDevice: "当前设备",
         launchIn: "在 {{project}} 中启动 Agent",
         launch: "启动 Agent",
@@ -198,8 +199,9 @@ export const resources = {
           credentialRequired: "Store a password, import a private key, or generate a key first.",
         },
       },
-      settings: {"title": "Settings"},
+      settings: { title: "Settings", appearance: { title: "Interface appearance", hint: "App chrome only. Terminal appearance stays independent.", option: "{{mode}} interface", modes: { light: "Light", dark: "Dark", system: "System" } } },
       dashboard: {
+        states: { creating: "Starting", working: "Working", needs_input: "Needs input", idle: "Idle", exited: "Ended", interrupted: "Interrupted", stopped: "Stopped", unknown: "Unknown", cached: "Last known" },
         currentDevice: "Current device",
         launchIn: "Start agent in {{project}}",
         launch: "Start agent",
