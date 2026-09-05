@@ -5,129 +5,141 @@ import QRCode from "qrcode";
 import "./pairing.css";
 
 interface Invitation { id: string; expiresAt: number }
-interface Candidate { requestId: string; deviceName: string; fingerprint: string; verificationCode: string }
-interface Status { id: string; state: "waiting" | "pending" | "approved" | "denied" | "expired" | "closed"; candidate?: Candidate }
-interface Device { id: string; name: string; fingerprint: string }
+interface Peer { name: string; relayUrl: string; publicKey: string; hostId: string }
+interface Candidate { requestId: string; name: string; publicKey: string; verificationCode: string }
+interface PairStatus { invitationId: string; expiresAt: number; phase: "waiting" | "pending" | "approved" | "denied" | "expired"; candidate?: Candidate | null }
+interface Device { name: string; publicKey: string }
+interface Status { phase: "unconfigured" | "connecting" | "connected" | "reconnecting" | "authentication_failed" | "storage_failed" | "stopped"; peer?: Peer | null; pairing?: PairStatus | null; devices: Device[]; activeChannels: number }
+type Reply = { kind: "ok" } | { kind: "invitation"; invitation: Invitation };
+const control = (request: Record<string, unknown>) => invoke<Reply>("desktop_relay_control", { request });
+const message = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
 
 export function PairingSection() {
   const { t } = useTranslation(["settings", "common"]);
-  const [address, setAddress] = useState("");
-  const [username, setUsername] = useState("");
-  const [invitation, setInvitation] = useState<Invitation>();
+  const [url, setUrl] = useState("");
+  const [name, setName] = useState("AgentPort");
+  const [token, setToken] = useState("");
+  const [status, setStatus] = useState<Status | null>(null);
   const [image, setImage] = useState("");
-  const [status, setStatus] = useState<Status>();
-  const [devices, setDevices] = useState<Device[]>([]);
   const [revoke, setRevoke] = useState<Device>();
+  const [stopConfirm, setStopConfirm] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const current = useRef<Invitation>();
   const alive = useRef(false);
   const operating = useRef(false);
+  const hydrated = useRef(false);
+  const epoch = useRef(0);
+  const refresh = async () => {
+    const version = ++epoch.current;
+    const value = await invoke<Status | null>("desktop_relay_status");
+    if (!alive.current || epoch.current !== version) return;
+    setStatus(value);
+    if (!hydrated.current && value?.peer) { setUrl(value.peer.relayUrl); setName(value.peer.name); hydrated.current = true; }
+    const pair = value?.pairing;
+    const remaining = Math.max(0, Math.ceil((pair?.expiresAt ?? 0) - Date.now() / 1000));
+    setSeconds(remaining);
+    if (!pair || pair.invitationId !== current.current?.id || pair.phase !== "waiting" || remaining <= 0) setImage("");
+  };
   const close = async () => {
     const previous = current.current; current.current = undefined;
-    setInvitation(undefined); setImage(""); setStatus(undefined);
-    if (previous) await invoke("desktop_pairing_close", { invitationId: previous.id });
+    if (alive.current) setImage("");
+    if (previous) await control({ kind: "close_invitation", invitation_id: previous.id });
   };
   useEffect(() => {
     alive.current = true;
     let disposed = false;
-    void Promise.all([
-      invoke<{ address: string; username: string }>("desktop_pairing_defaults"),
-      invoke<Device[]>("desktop_pairing_devices"),
-    ]).then(([defaults, values]) => {
-      if (disposed) return;
-      setAddress(defaults.address); setUsername(defaults.username); setDevices(values);
-    }).catch(cause => { if (!disposed) setError(String(cause)); });
-    return () => {
-      disposed = true; alive.current = false;
-      const previous = current.current; current.current = undefined;
-      if (previous) void invoke("desktop_pairing_close", { invitationId: previous.id }).catch(() => undefined);
-    };
-  }, []);
-  useEffect(() => {
-    if (!invitation) return;
-    let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
-      setSeconds(Math.max(0, Math.ceil(invitation.expiresAt - Date.now() / 1000)));
-      try {
-        const value = await invoke<Status | null>("desktop_pairing_status");
-        if (disposed) return;
-        if (value?.id === invitation.id) {
-          setStatus(value);
-          if (value.state !== "waiting" && value.state !== "pending") setImage("");
-          if (value.state === "approved") setDevices(await invoke<Device[]>("desktop_pairing_devices"));
-        }
-      } catch (cause) { if (!disposed) setError(String(cause)); }
+      try { await refresh(); } catch (cause) { if (!disposed) setError(message(cause)); }
       if (!disposed) timer = setTimeout(() => void poll(), 1000);
     };
     void poll();
-    return () => { disposed = true; clearTimeout(timer); };
-  }, [invitation]);
+    return () => {
+      disposed = true; alive.current = false; epoch.current++; clearTimeout(timer);
+      const previous = current.current; current.current = undefined;
+      // Closing settings cancels only its invitation, never the background process.
+      if (previous) void control({ kind: "close_invitation", invitation_id: previous.id }).catch(() => undefined);
+    };
+  }, []);
   const run = async (work: () => Promise<void>) => {
     if (operating.current) return;
-    operating.current = true; setBusy(true); setError("");
-    try { await work(); } catch (cause) {
-      if (alive.current) {
-        setError(String(cause));
-        // A filesystem durability failure can follow an authorization write.
-        // Refresh marked keys so the user can see/revoke an uncertain result.
-        try { const values = await invoke<Device[]>("desktop_pairing_devices"); if (alive.current) setDevices(values); } catch { /* retain original failure */ }
-      }
+    operating.current = true; epoch.current++; setBusy(true); setError("");
+    try { await work(); }
+    catch (cause) { if (alive.current) setError(message(cause)); }
+    finally {
+      // Even unknown mutation outcomes are refreshed, never automatically replayed.
+      try { await refresh(); } catch { /* keep original error */ }
+      operating.current = false; if (alive.current) setBusy(false);
     }
-    finally { operating.current = false; if (alive.current) setBusy(false); }
   };
-  const start = () => run(async () => {
+  const configure = () => run(async () => {
     await close();
-    const value = await invoke<Invitation>("desktop_pairing_start", { address: address.trim(), username });
-    // The native value also includes the secret. Never persist or log it.
-    if (!alive.current) { await invoke("desktop_pairing_close", { invitationId: value.id }); return; }
-    const handle = { id: value.id, expiresAt: value.expiresAt };
-    current.current = handle;
+    await invoke("desktop_relay_start");
+    if (!alive.current) return;
+    const secret = token; setToken(""); hydrated.current = true;
+    await control({ kind: "configure", relay_url: url.trim(), name: name.trim(), token: secret });
+  });
+  const generate = () => run(async () => {
+    await close();
+    const reply = await control({ kind: "invite" });
+    if (reply.kind !== "invitation") throw new Error(t("settings:ui.pairing.invalidReply"));
+    const value = reply.invitation; // Contains ephemeral QR secret; never persist/log.
+    if (!alive.current) { await control({ kind: "close_invitation", invitation_id: value.id }); return; }
+    current.current = { id: value.id, expiresAt: value.expiresAt };
     try {
       const data = await QRCode.toDataURL(JSON.stringify(value), { errorCorrectionLevel: "M", width: 360, margin: 4 });
-      if (!alive.current || current.current?.id !== value.id) return;
-      setImage(data); setInvitation(handle);
+      if (alive.current && current.current?.id === value.id) setImage(data);
     } catch (cause) { await close(); throw cause; }
   });
+  const pair = status?.pairing;
   const decide = (approve: boolean) => run(async () => {
-    if (!invitation || !status?.candidate) return;
-    await invoke("desktop_pairing_decide", { invitationId: invitation.id, requestId: status.candidate.requestId, approve });
-    const value = await invoke<Status>("desktop_pairing_status");
-    if (!alive.current) return;
-    setStatus(value); setImage(""); setDevices(await invoke<Device[]>("desktop_pairing_devices"));
+    if (!pair?.candidate) return;
+    await control({ kind: "decide", invitation_id: pair.invitationId, candidate: pair.candidate, approve });
+    if (alive.current) setImage("");
   });
   return <section className="pairing-section">
     <p>{t("settings:ui.pairing.description")}</p>
     <p className="form-hint">{t("settings:ui.pairing.requirements")}</p>
+    <p role="status">{t(`settings:ui.pairing.background.${status?.phase ?? "stopped"}`)}</p>
     <div className="form-grid">
-      <label htmlFor="pairing-address">{t("settings:ui.pairing.address")}</label>
-      <div className="control"><input id="pairing-address" value={address} disabled={Boolean(invitation) || busy} onChange={event => setAddress(event.target.value)} /></div>
-      <label>{t("settings:ui.pairing.username")}</label><div className="control"><code>{username}</code></div>
+      <label htmlFor="pairing-url">{t("settings:ui.pairing.relayUrl")}</label>
+      <div className="control"><input id="pairing-url" type="url" autoComplete="off" spellCheck={false} value={url} disabled={busy} onChange={event => { hydrated.current = true; setUrl(event.target.value); }} /></div>
+      <label htmlFor="pairing-name">{t("settings:ui.pairing.computerName")}</label>
+      <div className="control"><input id="pairing-name" maxLength={80} value={name} disabled={busy} onChange={event => { hydrated.current = true; setName(event.target.value); }} /></div>
+      <label htmlFor="pairing-token">{t("settings:ui.pairing.registrationToken")}</label>
+      <div className="control"><input id="pairing-token" type="password" autoComplete="new-password" value={token} disabled={busy} onChange={event => setToken(event.target.value)} aria-describedby="pairing-token-hint" /></div>
     </div>
-    <div className="pairing-buttons"><button className="btn btn-primary" disabled={busy || !address || !username} onClick={() => void start()}>{t("settings:ui.pairing.generate")}</button>
-      {invitation ? <button className="btn" disabled={busy} onClick={() => void run(close)}>{t("settings:ui.pairing.close")}</button> : null}</div>
+    <p id="pairing-token-hint" className="form-hint">{t("settings:ui.pairing.tokenHint")}</p>
+    <div className="pairing-buttons">
+      <button className="btn" disabled={busy || !url.trim() || !name.trim() || token.length < 16} onClick={() => void configure()}>{t("settings:ui.pairing.configure")}</button>
+      {!status || status.phase === "stopped" ? <button className="btn" disabled={busy} onClick={() => void run(async () => { await invoke("desktop_relay_start"); })}>{t("settings:ui.pairing.startBackground")}</button> : <button className="btn" disabled={busy} onClick={() => setStopConfirm(true)}>{t("settings:ui.pairing.stopBackground")}</button>}
+      <button className="btn btn-primary" disabled={busy || status?.phase !== "connected" || url.trim() !== status.peer?.relayUrl || name.trim() !== status.peer?.name} onClick={() => void generate()}>{t("settings:ui.pairing.generate")}</button>
+      {current.current ? <button className="btn" disabled={busy} onClick={() => void run(close)}>{t("settings:ui.pairing.close")}</button> : null}
+    </div>
+    {stopConfirm ? <div role="alert"><p>{t("settings:ui.pairing.stopConfirm")}</p><div className="pairing-buttons">
+      <button className="btn" onClick={() => setStopConfirm(false)} disabled={busy}>{t("common:actions.cancel")}</button>
+      <button className="btn btn-danger" disabled={busy} onClick={() => void run(async () => { await close(); await control({ kind: "stop" }); if (alive.current) setStopConfirm(false); })}>{t("settings:ui.pairing.confirmStop")}</button>
+    </div></div> : null}
     {image && seconds > 0 ? <img className="pairing-qr" src={image} alt={t("settings:ui.pairing.qrAlt")} /> : null}
-    {invitation ? <p role="status">{t(`settings:ui.pairing.states.${status?.state ?? "waiting"}`)} · {t("settings:ui.pairing.expires", { seconds })}</p> : null}
-    {status?.candidate ? <div className="pairing-candidate">
-      <strong>{status.candidate.deviceName}</strong>
-      <code className="pairing-fingerprint">{status.candidate.fingerprint}</code>
-      <strong className="pairing-verification">{status.candidate.verificationCode}</strong>
-      {status.state === "pending" ? <><p>{t("settings:ui.pairing.compare")}</p><div className="pairing-buttons">
+    {pair ? <p role="status">{t(`settings:ui.pairing.states.${pair.phase}`)} · {t("settings:ui.pairing.expires", { seconds })}</p> : null}
+    {pair?.candidate ? <div className="pairing-candidate">
+      <strong>{pair.candidate.name}</strong><code className="pairing-fingerprint">{pair.candidate.publicKey}</code>
+      <strong className="pairing-verification">{pair.candidate.verificationCode}</strong>
+      {pair.phase === "pending" ? <><p>{t("settings:ui.pairing.compare")}</p><div className="pairing-buttons">
         <button className="btn" disabled={busy || seconds <= 0} onClick={() => void decide(false)}>{t("settings:ui.pairing.deny")}</button>
         <button className="btn btn-primary" disabled={busy || seconds <= 0} onClick={() => void decide(true)}>{t("settings:ui.pairing.approve")}</button>
       </div></> : null}
     </div> : null}
     {error ? <p role="alert" className="form-error">{error}</p> : null}
-    <h3>{t("settings:ui.pairing.devices")}</h3>
-    <p className="form-hint">{t("settings:ui.pairing.revokeHint")}</p>
-    {devices.length === 0 ? <p>{t("settings:ui.pairing.empty")}</p> : <ul className="pairing-devices">{devices.map(device => <li key={device.id}>
-      <strong>{device.name}</strong><code className="pairing-fingerprint">{device.fingerprint}</code>
-      {revoke?.id === device.id ? <><p>{t("settings:ui.pairing.revokeConfirm", { name: device.name })}</p><div className="pairing-buttons"><button className="btn" disabled={busy} onClick={() => setRevoke(undefined)}>{t("common:actions.cancel")}</button><button className="btn btn-danger" disabled={busy} onClick={() => void run(async () => {
-        await invoke("desktop_pairing_revoke", { id: device.id, fingerprint: device.fingerprint });
-        if (alive.current) { setRevoke(undefined); setDevices(await invoke<Device[]>("desktop_pairing_devices")); }
-      })}>{t("settings:ui.pairing.revoke")}</button></div></> : <button className="btn" disabled={busy} onClick={() => setRevoke(device)}>{t("settings:ui.pairing.revoke")}</button>}
+    <h3>{t("settings:ui.pairing.devices")}</h3><p className="form-hint">{t("settings:ui.pairing.revokeHint")}</p>
+    {!status?.devices.length ? <p>{t("settings:ui.pairing.empty")}</p> : <ul className="pairing-devices">{status.devices.map(device => <li key={device.publicKey}>
+      <strong>{device.name}</strong><code className="pairing-fingerprint">{device.publicKey}</code>
+      {revoke?.publicKey === device.publicKey ? <><p>{t("settings:ui.pairing.revokeConfirm", { name: device.name })}</p><div className="pairing-buttons">
+        <button className="btn" disabled={busy} onClick={() => setRevoke(undefined)}>{t("common:actions.cancel")}</button>
+        <button className="btn btn-danger" disabled={busy} onClick={() => void run(async () => { await control({ kind: "revoke", public_key: device.publicKey }); if (alive.current) setRevoke(undefined); })}>{t("settings:ui.pairing.revoke")}</button>
+      </div></> : <button className="btn" disabled={busy} onClick={() => setRevoke(device)}>{t("settings:ui.pairing.revoke")}</button>}
     </li>)}</ul>}
   </section>;
 }

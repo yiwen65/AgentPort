@@ -26,6 +26,10 @@ export class TauriHostAuthClient implements HostAuthClient {
     } });
   }
 
+  reconcileRelayProfile(profileId: string): Promise<HostProfileDetails> {
+    return invoke("mobile_relay_pairing_reconcile", { profileId });
+  }
+
   copyProfile(profileId: string): Promise<HostProfileDetails> {
     return invoke("mobile_copy_host_profile", { profileId });
   }

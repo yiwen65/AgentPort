@@ -37,6 +37,7 @@ export interface CredentialResult {
 export interface HostAuthClient {
   getProfile(profileId: string): Promise<HostProfileDetails>;
   saveProfile(profile: HostProfileDraft): Promise<HostProfileDetails>;
+  reconcileRelayProfile(profileId: string): Promise<HostProfileDetails>;
   copyProfile(profileId: string): Promise<HostProfileDetails>;
   deleteProfile(profileId: string, deleteCredential: boolean, deleteTrust: boolean): Promise<void>;
   storePassword(password: string): Promise<CredentialResult>;

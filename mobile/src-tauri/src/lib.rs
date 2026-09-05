@@ -1,5 +1,4 @@
 mod appearance;
-mod pairing;
 mod relay_pairing;
 mod credentials;
 mod hosts;
@@ -52,9 +51,6 @@ pub fn run() {
             relay_pairing::mobile_relay_pairing_wait,
             relay_pairing::mobile_relay_pairing_cancel,
             relay_pairing::mobile_relay_pairing_reconcile,
-            pairing::mobile_pairing_preview,
-            pairing::mobile_pairing_prepare,
-            pairing::mobile_pairing_exchange,
             appearance::mobile_set_terminal_immersive,
             hosts::mobile_list_host_profiles,
             hosts::mobile_get_host_profile,

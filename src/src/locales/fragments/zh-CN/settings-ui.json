@@ -281,10 +281,8 @@
       "revealRestoredFailed": "无法显示恢复目录：{{detail}}"
     },
     "pairing": {
-      "description": "使用短时二维码，将手机与这台 Mac 首次配对。",
-      "requirements": "两端需可互相访问，macOS 远程登录已允许当前账号通过 SSH 22 端口登录。AgentPort 不会自动启用 SSH 或修改防火墙。只扫描你自己电脑显示的二维码，切勿分享。",
-      "address": "手机可访问的电脑地址",
-      "username": "本机 SSH 账号",
+      "description": "通过端到端加密的 Relay 配对手机并访问终端会话。",
+      "requirements": "填写自部署 Relay 地址（wss://host/v1/relay）。两端均主动连接中转，无需 SSH 或手机直连电脑。关闭 App 后后台连接仍保留；不会安装登录自启动。只扫描自己电脑上的二维码。",
       "generate": "生成配对码",
       "close": "关闭配对",
       "qrAlt": "AgentPort 短时配对二维码",
@@ -293,10 +291,10 @@
       "approve": "验证码一致 · 授权",
       "deny": "拒绝",
       "devices": "已授权手机",
-      "revokeHint": "撤销会阻止该密钥发起新的 SSH 认证，已认证连接可能继续运行。不会影响其他 SSH 密钥。",
+      "revokeHint": "撤销会拒绝新连接，并关闭该手机已有 Relay 通道；不影响其他手机，也不停止 Session Host。既有手动 SSH 访问保持不变。",
       "empty": "还没有通过 AgentPort 授权的手机。",
       "revoke": "撤销授权",
-      "revokeConfirm": "撤销 {{name}} 的新连接权限？",
+      "revokeConfirm": "撤销 {{name}} 的访问并关闭其 Relay 通道？",
       "states": {
         "waiting": "等待手机扫码",
         "pending": "等待你确认",
@@ -304,6 +302,25 @@
         "denied": "已拒绝请求",
         "expired": "配对码已过期",
         "closed": "配对已关闭"
+      },
+      "relayUrl": "Relay 地址",
+      "computerName": "电脑名称",
+      "registrationToken": "Relay 注册凭据",
+      "tokenHint": "保存在 Keychain，不写入二维码或发给手机；请向 Relay 管理者获取。保存配置会关闭现有 Relay 通道，Session Host 继续运行。部署说明：crates/agentport-relay/README.md。",
+      "configure": "保存并连接",
+      "startBackground": "启动后台连接",
+      "stopBackground": "停止后台连接",
+      "stopConfirm": "关闭所有 Relay 通道并停止后台连接？Session Host 将继续运行。",
+      "confirmStop": "确认停止",
+      "invalidReply": "Relay 后台响应异常",
+      "background": {
+        "unconfigured": "后台已启动 · 请配置 Relay",
+        "connecting": "正在连接 Relay…",
+        "connected": "后台已连接 Relay",
+        "reconnecting": "Relay 暂不可用 · 正在重连…",
+        "authentication_failed": "注册或 Keychain 访问失败 · 请检查凭据",
+        "storage_failed": "私有存储失败 · 已禁用新访问",
+        "stopped": "后台连接已停止"
       }
     }
   }

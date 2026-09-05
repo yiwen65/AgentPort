@@ -1,62 +1,35 @@
-import { describe, expect, it, vi } from "vitest";
-import { finishPairing, preparePairing, type PairingClient } from "./pairingClient";
-import type { HostAuthClient } from "./types";
-const ssh = { name: "Mac", hostname: "192.0.2.1", port: 22, username: "test", fingerprint: "SHA256:test" };
-function fixture() {
-  const auth = {
-    generatePrivateKey: vi.fn().mockResolvedValue({ credentialId: "new-key", publicKey: "public-key" }),
-    saveProfile: vi.fn().mockImplementation(async profile => ({ ...profile, id: "pending-host" })),
-    trustHostKey: vi.fn().mockResolvedValue(undefined),
-    deleteCredential: vi.fn().mockResolvedValue(undefined),
-  } as unknown as HostAuthClient;
-  const client: PairingClient = {
-    preview: vi.fn().mockResolvedValue({ ssh, expiresAt: Date.now() / 1000 + 120 }),
-    prepare: vi.fn().mockResolvedValue({ request: { requestId: "request", publicKey: "public-key", deviceName: "Phone" }, verificationCode: "1234-ABCD" }),
-    exchange: vi.fn(),
-  };
-  return { auth, client, controller: new AbortController() };
+import { expect, it, vi } from "vitest";
+import { pairViaRelay, type PairingClient, type PreparedPairing } from "./pairingClient";
+import type { HostProfileDetails } from "./types";
+const peer = { name: "Mac", relayUrl: "wss://relay.example/v1/relay", publicKey: "computer-key", hostId: "computer-route" };
+export const prepared: PreparedPairing = { attemptId: "opaque-attempt", profileId: "pending-host", peer, expiresAt: Date.now() / 1000 + 120 };
+export const profile: HostProfileDetails = { id: "pending-host", name: "Mac", hostname: peer.relayUrl, port: 443, username: "", preferredTransport: "relay", authentication: "private_key", credentialId: "opaque-credential", relay: { peer, devicePublicKey: "phone-key", approved: true }, enabled: true, sortOrder: 0 };
+function fixture(): PairingClient {
+  return { preview: vi.fn(), prepare: vi.fn().mockResolvedValue(prepared), begin: vi.fn().mockResolvedValue({ requestId: "candidate", verificationCode: "1234-ABCD" }), wait: vi.fn().mockResolvedValue(profile), cancel: vi.fn().mockResolvedValue(undefined) };
 }
-describe("first-time pairing custody", () => {
-  it("rejects invalid QR before generating credentials", async () => {
-    const { auth, client, controller } = fixture();
-    vi.mocked(client.preview).mockRejectedValue(new Error("expired"));
-    await expect(preparePairing("code", "Phone", auth, client, controller.signal)).rejects.toThrow("expired");
-    expect(auth.generatePrivateKey).not.toHaveBeenCalled();
-  });
-  it("saves only a disabled new-key reference before network authorization; enables only exact approval", async () => {
-    const { auth, client, controller } = fixture();
-    const attempt = await preparePairing("ephemeral-secret", "Phone", auth, client, controller.signal);
-    expect(attempt.profile.enabled).toBe(false);
-    expect(auth.saveProfile).toHaveBeenCalledWith(expect.objectContaining({ credentialId: "new-key", enabled: false }));
-    expect(JSON.stringify(vi.mocked(auth.saveProfile).mock.calls)).not.toContain("ephemeral-secret");
-    expect(client.exchange).not.toHaveBeenCalled();
-    await finishPairing({ requestId: "request", state: "approved", ssh }, attempt, auth, controller.signal);
-    expect(auth.trustHostKey).toHaveBeenCalledWith("pending-host", ssh.fingerprint);
-    expect(auth.saveProfile).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: true }));
-    expect(vi.mocked(auth.trustHostKey).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(auth.saveProfile).mock.invocationCallOrder[1]);
-  });
-  it("retains pending key/profile and refuses late approval after cancellation", async () => {
-    const { auth, client, controller } = fixture();
-    const attempt = await preparePairing("code", "Phone", auth, client, controller.signal);
-    controller.abort();
-    await expect(finishPairing({ requestId: "request", state: "approved", ssh }, attempt, auth, controller.signal)).rejects.toThrow();
-    expect(auth.trustHostKey).not.toHaveBeenCalled();
-    expect(auth.saveProfile).toHaveBeenCalledTimes(1);
-    expect(auth.deleteCredential).not.toHaveBeenCalled();
-  });
-  it.each(["denied", "mismatched-key", "mismatched-request"])("fails closed for %s", async kind => {
-    const { auth, client, controller } = fixture();
-    const attempt = await preparePairing("code", "Phone", auth, client, controller.signal);
-    await expect(finishPairing({ state: kind === "denied" ? "denied" : "approved", requestId: kind === "mismatched-request" ? "other" : "request", ssh: { ...ssh, fingerprint: kind === "mismatched-key" ? "other" : ssh.fingerprint } }, attempt, auth, controller.signal)).rejects.toThrow("identity mismatch");
-    expect(auth.trustHostKey).not.toHaveBeenCalled();
-    expect(auth.saveProfile).toHaveBeenCalledTimes(1);
-  });
-  it("does not enable if trust persistence fails and does not delete a possibly persisted credential", async () => {
-    const { auth, client, controller } = fixture();
-    const attempt = await preparePairing("code", "Phone", auth, client, controller.signal);
-    vi.mocked(auth.trustHostKey).mockRejectedValue(new Error("storage unavailable"));
-    await expect(finishPairing({ requestId: "request", state: "approved", ssh }, attempt, auth, controller.signal)).rejects.toThrow();
-    expect(auth.saveProfile).toHaveBeenCalledTimes(1);
-    expect(auth.deleteCredential).not.toHaveBeenCalled();
-  });
+it("uses native custody, begins only after prepare and reports success only after native approval", async () => {
+  const client = fixture(); const compare = vi.fn();
+  await expect(pairViaRelay("QR-secret", "Phone", client, new AbortController().signal, compare)).resolves.toBe("pending-host");
+  expect(client.prepare).toHaveBeenCalledWith("QR-secret", "Phone");
+  expect(client.begin).toHaveBeenCalledWith("opaque-attempt"); expect(client.wait).toHaveBeenCalledWith("opaque-attempt");
+  expect(vi.mocked(client.prepare).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(client.begin).mock.invocationCallOrder[0]);
+  expect(compare).toHaveBeenCalledWith("1234-ABCD"); expect(client.cancel).toHaveBeenCalledWith("opaque-attempt");
+});
+it("cancels a late native prepare without beginning or discarding the retained credential", async () => {
+  const client = fixture(); const abort = new AbortController();
+  let resolve!: (value: PreparedPairing) => void;
+  vi.mocked(client.prepare).mockReturnValue(new Promise(done => { resolve = done; }));
+  const result = pairViaRelay("code", "Phone", client, abort.signal, vi.fn());
+  const rejected = expect(result).rejects.toThrow(); abort.abort(); resolve(prepared); await rejected;
+  expect(client.begin).not.toHaveBeenCalled(); expect(client.cancel).toHaveBeenCalledWith("opaque-attempt");
+});
+it("does not retry an unknown exchange or claim success after UI cancellation", async () => {
+  const client = fixture(); vi.mocked(client.wait).mockRejectedValue(new Error("unknown"));
+  await expect(pairViaRelay("code", "Phone", client, new AbortController().signal, vi.fn())).rejects.toThrow("unknown");
+  expect(client.prepare).toHaveBeenCalledTimes(1); expect(client.begin).toHaveBeenCalledTimes(1); expect(client.wait).toHaveBeenCalledTimes(1);
+});
+it.each(["profile", "computer", "unapproved"])("rejects mismatched native %s confirmation", async mode => {
+  const client = fixture();
+  vi.mocked(client.wait).mockResolvedValue({ ...profile, id: mode === "profile" ? "other" : profile.id, relay: { ...profile.relay!, approved: mode !== "unapproved", peer: { ...peer, publicKey: mode === "computer" ? "other" : peer.publicKey } } });
+  await expect(pairViaRelay("code", "Phone", client, new AbortController().signal, vi.fn())).rejects.toThrow("identity mismatch");
 });

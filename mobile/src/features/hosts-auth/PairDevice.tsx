@@ -2,16 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cancel, checkPermissions, Format, requestPermissions, scan } from "@tauri-apps/plugin-barcode-scanner";
 import { Modal } from "../../components/Modal";
-import { finishPairing, pairingClient, preparePairing, type PairingClient, type PairingPreview } from "./pairingClient";
-import type { HostAuthClient } from "./types";
+import { pairViaRelay, pairingClient, type PairingClient, type PairingPreview } from "./pairingClient";
 
 function pairingError(cause: unknown): string {
   if (cause && typeof cause === "object" && "message" in cause && typeof cause.message === "string") return cause.message;
   return String(cause);
 }
 
-export function PairDevice({ auth, onClose, onPaired, client = pairingClient }: {
-  auth: HostAuthClient; onClose: () => void; onPaired: (profileId: string) => void; client?: PairingClient;
+export function PairDevice({ onClose, onPaired, client = pairingClient }: {
+  onClose: () => void; onPaired: (profileId: string) => void; client?: PairingClient;
 }) {
   const { t } = useTranslation();
   const [code, setCode] = useState("");
@@ -57,26 +56,11 @@ export function PairDevice({ auth, onClose, onPaired, client = pairingClient }: 
     const signal = lifetime.current!.signal;
     active.current = true; setError(""); setPhase("preparing");
     try {
-      const attempt = await preparePairing(code, name.trim(), auth, client, signal);
-      setVerification(attempt.prepared.verificationCode); setPhase("pending");
-      while (!signal.aborted && Date.now() < attempt.preview.expiresAt * 1000) {
-        // The same request/key polls idempotently; no second credential on retry.
-        let reply;
-        try { reply = await client.exchange(code, attempt.prepared.request); }
-        catch (cause) { if (!signal.aborted) setError(pairingError(cause)); }
-        signal.throwIfAborted();
-        if (reply?.state === "approved") {
-          setPhase("finishing");
-          const profile = await finishPairing(reply, attempt, auth, signal);
-          setCode("");
-          if (!signal.aborted) onPaired(profile.id);
-          return;
-        }
-        if (reply?.state === "denied" || reply?.state === "busy") throw new Error(t(`pairing.${reply.state}`));
-        if (reply) setError("");
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-      throw new Error(t("pairing.expired"));
+      const profileId = await pairViaRelay(code, name.trim(), client, signal, value => {
+        setVerification(value); setPhase("pending"); setCode("");
+      });
+      if (!signal.aborted) { setCode(""); onPaired(profileId); }
+
     } catch (cause) {
       if (!signal.aborted) { setCode(""); setPhase("failed"); setError(pairingError(cause)); }
     } finally { active.current = false; }
@@ -90,7 +74,7 @@ export function PairDevice({ auth, onClose, onPaired, client = pairingClient }: 
         <label>{t("pairing.code")}<textarea rows={3} autoComplete="off" spellCheck={false} value={code} onChange={event => { setCode(event.target.value); setPreview(undefined); setPhase("idle"); }} /></label>
         <button type="button" disabled={!code} onClick={() => { setError(""); void readCode(code).catch(cause => setError(pairingError(cause))); }}>{t("pairing.validate")}</button>
       </details>
-      {preview ? <><p className="fingerprint">{preview.ssh.username}@{preview.ssh.hostname}:{preview.ssh.port}<br />{preview.ssh.fingerprint}</p>
+      {preview ? <><p className="fingerprint">{preview.peer.name}<br />{preview.peer.relayUrl}<br />{preview.peer.publicKey}</p>
         <label>{t("pairing.deviceName")}<input maxLength={80} value={name} onChange={event => setName(event.target.value)} /></label>
         <button type="button" className="primary-button wide" disabled={!name.trim()} onClick={() => void begin()}>{t("pairing.request")}</button></> : null}
     </> : null}
@@ -99,5 +83,6 @@ export function PairDevice({ auth, onClose, onPaired, client = pairingClient }: 
     {verification ? <><strong className="pairing-verification">{verification}</strong><p>{t("pairing.compare")}</p></> : null}
     {error ? <p role="alert" className="inline-error">{error}</p> : null}
     {phase === "failed" || verification ? <p>{t("pairing.retained")}</p> : null}
+    {phase === "failed" ? <button type="button" onClick={() => { setPreview(undefined); setVerification(""); setError(""); setPhase("idle"); }}>{t("pairing.scanAgain")}</button> : null}
   </Modal>;
 }

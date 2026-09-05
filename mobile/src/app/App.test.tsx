@@ -15,6 +15,7 @@ vi.mock("../terminal/MobileTerminal", async () => {
 const hostAuthClient: HostAuthClient = {
   getProfile: vi.fn(),
   saveProfile: vi.fn(),
+  reconcileRelayProfile: vi.fn(),
   copyProfile: vi.fn(),
   deleteProfile: vi.fn(),
   storePassword: vi.fn(),

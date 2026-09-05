@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { i18n } from "../../i18n";
 import type { RemoteClient } from "../../protocol/remoteClient";
 import type { HostAuthClient, HostProfileDetails } from "./types";
@@ -30,6 +30,7 @@ function clients() {
   const auth: HostAuthClient = {
     getProfile: vi.fn().mockResolvedValue(profile),
     saveProfile: vi.fn().mockResolvedValue(profile),
+    reconcileRelayProfile: vi.fn(),
     copyProfile: vi.fn().mockResolvedValue(profile),
     deleteProfile: vi.fn().mockResolvedValue(undefined),
     storePassword: vi.fn().mockResolvedValue({ credentialId: "cred_new" }),
@@ -44,6 +45,7 @@ function clients() {
 }
 
 describe("host authentication manager", () => {
+  afterEach(cleanup);
   beforeEach(async () => {
     await i18n.changeLanguage("en-US");
   });
@@ -86,4 +88,31 @@ describe("host authentication manager", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("host key changed");
     expect(screen.queryByRole("button", { name: "Trust and connect" })).not.toBeInTheDocument();
   });
+  it("edits Relay metadata without SSH fields and reconciles only through native authorization", async () => {
+    const { remote, auth } = clients();
+    const relayProfile: HostProfileDetails = { ...profile, name: "Relay fixture", preferredTransport: "relay", hostname: "wss://relay.example/v1/relay", username: "", enabled: false,
+      relay: { peer: { name: "Mac", relayUrl: "wss://relay.example/v1/relay", publicKey: "computer-pin", hostId: "route" }, devicePublicKey: "phone", approved: false } };
+    vi.mocked(remote.listHostProfiles).mockResolvedValue([{ ...relayProfile, connectionState: "disconnected", lastConnectedAt: null, lastError: null }]);
+    vi.mocked(auth.getProfile).mockResolvedValue(relayProfile);
+    vi.mocked(auth.reconcileRelayProfile).mockResolvedValue({ ...relayProfile, enabled: true, relay: { ...relayProfile.relay!, approved: true } });
+    render(<HostManager remoteClient={remote} authClient={auth} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Relay fixture.*Disconnected/ }));
+    await screen.findByText(/computer-pin/);
+    expect(screen.queryByLabelText("Username")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Check existing authorization" }));
+    await waitFor(() => expect(auth.reconcileRelayProfile).toHaveBeenCalledWith("host_1"));
+    await screen.findByText(/Relay identity is pinned/);
+    expect(auth.saveProfile).not.toHaveBeenCalled(); expect(auth.trustHostKey).not.toHaveBeenCalled();
+  });
+
+  it("offers Disconnect when an authoritative initial snapshot is already connected", async () => {
+    const { remote, auth } = clients();
+    vi.mocked(remote.listHostProfiles).mockResolvedValue([{ ...profile, connectionState: "connected", lastConnectedAt: null, lastError: null }]);
+    render(<HostManager remoteClient={remote} authClient={auth} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+    await waitFor(() => expect(remote.disconnect).toHaveBeenCalledWith("host_1"));
+    expect(remote.connect).not.toHaveBeenCalled();
+  });
+
 });

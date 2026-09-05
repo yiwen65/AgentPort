@@ -281,10 +281,8 @@
       "revealRestoredFailed": "Could not show the restored directory: {{detail}}"
     },
     "pairing": {
-      "description": "Pair a phone with this Mac using a short-lived QR code.",
-      "requirements": "Devices must be mutually reachable. macOS Remote Login must already allow your account on SSH port 22. AgentPort does not enable SSH or change your firewall. Scan only a code shown on your own computer; never share it.",
-      "address": "Address reachable from the phone",
-      "username": "Local SSH account",
+      "description": "Pair a phone and use terminal sessions through an end-to-end encrypted Relay.",
+      "requirements": "Use your self-hosted Relay endpoint (wss://host/v1/relay). Both devices connect outbound; no SSH or direct phone-to-computer access is required. The background connector survives closing the app; no login autostart is installed. Scan only a code from your own computer.",
       "generate": "Generate pairing code",
       "close": "Close pairing",
       "qrAlt": "Short-lived AgentPort pairing QR code",
@@ -293,10 +291,10 @@
       "approve": "Codes match · Authorize",
       "deny": "Deny",
       "devices": "Authorized phones",
-      "revokeHint": "Revocation blocks new SSH authentication with this key. Already authenticated connections may remain active. Unrelated SSH keys are preserved.",
+      "revokeHint": "Revocation blocks new connections and closes this phone’s current Relay channels. Other phones and Session Hosts are not stopped. Existing manual SSH access is unchanged.",
       "empty": "No phones authorized by AgentPort.",
       "revoke": "Revoke access",
-      "revokeConfirm": "Revoke new connections from {{name}}?",
+      "revokeConfirm": "Revoke access and close Relay channels from {{name}}?",
       "states": {
         "waiting": "Waiting for a phone",
         "pending": "Approval required",
@@ -304,6 +302,25 @@
         "denied": "Request denied",
         "expired": "Code expired",
         "closed": "Pairing closed"
+      },
+      "relayUrl": "Relay endpoint",
+      "computerName": "Computer name",
+      "registrationToken": "Relay registration token",
+      "tokenHint": "Stored in Keychain, never included in the QR or sent to the phone. Obtain it from your Relay operator. Saving configuration closes existing Relay channels; Session Hosts keep running. Deployment guide: crates/agentport-relay/README.md.",
+      "configure": "Save and connect",
+      "startBackground": "Start background connector",
+      "stopBackground": "Stop background connector",
+      "stopConfirm": "Close all Relay channels and stop the background connector? Session Hosts will keep running.",
+      "confirmStop": "Confirm stop",
+      "invalidReply": "Unexpected Relay connector response",
+      "background": {
+        "unconfigured": "Background running · configuration required",
+        "connecting": "Connecting to Relay…",
+        "connected": "Background connected to Relay",
+        "reconnecting": "Relay unavailable · reconnecting…",
+        "authentication_failed": "Registration or Keychain access failed · check credentials",
+        "storage_failed": "Private storage failed · new access disabled",
+        "stopped": "Background connector is stopped"
       }
     }
   }

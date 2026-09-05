@@ -1,3 +1,5 @@
+> Historical SSH QR implementation. The active UI now uses full Relay; see `crates/agentport-relay/README.md` and T-007–T-010 in the reliability task document. Existing SSH authorizations are not migrated or removed.
+
 # First-time phone pairing: security and operation
 
 Scope: iOS Mobile + macOS desktop; implemented for the confirmed U7 contract in

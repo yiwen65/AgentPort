@@ -85,7 +85,6 @@ name = "agentport-mobile"
 version = "0.1.0"
 dependencies = [
  "aes-gcm 0.11.1",
- "agentport-pairing",
  "agentport-relay",
  "agentport-remote-protocol",
  "argon2 0.5.3",
@@ -105,20 +104,6 @@ dependencies = [
  "tauri-plugin-notification",
  "tokio",
  "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "agentport-pairing"
-version = "0.1.0"
-dependencies = [
- "aes-gcm 0.10.3",
- "base64 0.22.1",
- "getrandom 0.2.17",
- "libc",
- "serde",
- "serde_json",
- "sha2 0.10.9",
  "zeroize",
 ]
 

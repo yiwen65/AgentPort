@@ -48,7 +48,6 @@ name = "agentport"
 version = "0.1.0"
 dependencies = [
  "agentport-core",
- "agentport-pairing",
  "agentport-relay",
  "agentport-remote-protocol",
  "agentport-service",

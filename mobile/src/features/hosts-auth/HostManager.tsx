@@ -58,7 +58,6 @@ export function HostManager({ remoteClient, authClient }: HostManagerProps) {
   const [password, setPassword] = useState("");
   const [privateKey, setPrivateKey] = useState("");
   const [passphrase, setPassphrase] = useState("");
-  const [connected, setConnected] = useState<Set<string>>(new Set());
   const [connectionStates, setConnectionStates] = useState<Map<string, ConnectionState>>(new Map());
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [trustPrompt, setTrustPrompt] = useState<TrustPrompt | null>(null);
@@ -80,15 +79,6 @@ export function HostManager({ remoteClient, authClient }: HostManagerProps) {
     let unsubscribe: (() => Promise<void>) | undefined;
     void remoteClient.onConnectionState((event) => {
       setConnectionStates((current) => new Map(current).set(event.profileId, event.state));
-      if (event.state === "connected") {
-        setConnected((current) => new Set(current).add(event.profileId));
-      } else if (event.state === "failed" || event.state === "disconnected") {
-        setConnected((current) => {
-          const next = new Set(current);
-          next.delete(event.profileId);
-          return next;
-        });
-      }
     }).then((value) => {
       if (disposed) void value();
       else unsubscribe = value;
@@ -172,7 +162,6 @@ export function HostManager({ remoteClient, authClient }: HostManagerProps) {
     setFormError("");
     try {
       await remoteClient.connect(profileId);
-      setConnected((current) => new Set(current).add(profileId));
       setConnectionStates((current) => new Map(current).set(profileId, "connected"));
     } catch (error) {
       const detail = error as NativeConnectError;
@@ -222,11 +211,6 @@ export function HostManager({ remoteClient, authClient }: HostManagerProps) {
     setConnectingId(null);
     try {
       await remoteClient.disconnect(profileId);
-      setConnected((current) => {
-        const next = new Set(current);
-        next.delete(profileId);
-        return next;
-      });
       setConnectionStates((current) => new Map(current).set(profileId, "disconnected"));
     } catch (error) {
       setFormError(errorMessage(error));
@@ -235,11 +219,20 @@ export function HostManager({ remoteClient, authClient }: HostManagerProps) {
     }
   };
 
+  const reconcileRelay = async () => {
+    if (!editing?.id) return;
+    setBusy(true); setFormError("");
+    try { const verified = await authClient.reconcileRelayProfile(editing.id); setEditing(verified); setPaired(true); await load(); }
+    catch (error) { setFormError(errorMessage(error)); }
+    finally { setBusy(false); }
+  };
+
   const remove = async () => {
     if (!deleteTarget) return;
     setBusy(true);
     setFormError("");
     try {
+      await remoteClient.disconnect(deleteTarget.id);
       await authClient.deleteProfile(deleteTarget.id, deleteCredential, deleteTrust);
       setDeleteTarget(null);
       await load();
@@ -251,7 +244,7 @@ export function HostManager({ remoteClient, authClient }: HostManagerProps) {
   };
 
   return <>
-    {pairing ? <PairDevice auth={authClient} onClose={() => { setPairing(false); void load(); }} onPaired={() => { setPairing(false); setPaired(true); void load(); }} /> : null}
+    {pairing ? <PairDevice onClose={() => { setPairing(false); void load(); }} onPaired={() => { setPairing(false); setPaired(true); void load(); }} /> : null}
     <section className="section-heading" aria-labelledby="hosts-title">
       <div>
         <h1 id="hosts-title">{t("hosts.title")}</h1>
@@ -279,14 +272,15 @@ export function HostManager({ remoteClient, authClient }: HostManagerProps) {
     {state.kind === "ready" && state.hosts.length > 0 ? <ul className="host-list" aria-label={t("hosts.title")}>
       {state.hosts.map((host) => {
         const displayedState = connectionStates.get(host.id) ?? host.connectionState;
+        const isConnected = displayedState === "connected";
         return <li key={host.id} className="host-row">
-        <button type="button" className="host-card" disabled={connected.has(host.id) || connectingId === host.id} onClick={() => void openEdit(host.id)}>
+        <button type="button" className="host-card" disabled={isConnected || connectingId === host.id} onClick={() => void openEdit(host.id)}>
           <span className={`status-dot ${displayedState}`} aria-hidden="true" />
-          <span className="host-copy"><strong>{host.name}</strong><span>{host.username}@{host.hostname}:{host.port}</span></span>
+          <span className="host-copy"><strong>{host.name}</strong><span>{host.preferredTransport === "relay" ? host.hostname : `${host.username}@${host.hostname}:${host.port}`}</span></span>
           <span className="host-state">{t(`status.${displayedState}`)}</span>
         </button>
         <div className="host-actions" aria-label={t("hosts.actions", { name: host.name })}>
-          <button type="button" disabled={busy && connectingId !== host.id} onClick={() => connected.has(host.id) || connectingId === host.id ? void disconnect(host.id) : void connect(host.id)}>{connectingId === host.id ? t("hosts.cancelConnect") : connected.has(host.id) ? t("hosts.disconnect") : t("hosts.connect")}</button>
+          <button type="button" disabled={busy && connectingId !== host.id} onClick={() => isConnected || connectingId === host.id ? void disconnect(host.id) : void connect(host.id)}>{connectingId === host.id ? t("hosts.cancelConnect") : isConnected ? t("hosts.disconnect") : t("hosts.connect")}</button>
           <button className="danger-text" type="button" disabled={busy} onClick={() => setDeleteTarget(host)}>{t("common.delete")}</button>
         </div>
       </li>;
@@ -299,19 +293,23 @@ export function HostManager({ remoteClient, authClient }: HostManagerProps) {
           <header><h2 id="host-form-title">{editing.id ? t("hosts.form.editTitle") : t("hosts.form.addTitle")}</h2><button type="button" onClick={closeEditor} aria-label={t("common.close")}>×</button></header>
           <div className="form-grid">
             <label>{t("hosts.form.name")}<input required maxLength={128} value={editing.name} onChange={(event) => patch("name", event.target.value)} /></label>
+            {editing.relay ? <p className="fingerprint">{editing.relay.peer.relayUrl}<br />{editing.relay.peer.publicKey}</p> : <>
             <label>{t("hosts.form.hostname")}<input required maxLength={253} value={editing.hostname} onChange={(event) => patch("hostname", event.target.value)} /></label>
             <label>{t("hosts.form.port")}<input required type="number" min="1" max="65535" value={editing.port} onChange={(event) => patch("port", Number(event.target.value))} /></label>
             <label>{t("hosts.form.username")}<input required maxLength={128} value={editing.username} onChange={(event) => patch("username", event.target.value)} /></label>
             <label>{t("hosts.form.authentication")}<select value={editing.authentication} onChange={(event) => setEditing((current) => current ? { ...current, authentication: event.target.value as "password" | "private_key", credentialId: "" } : current)}><option value="password">{t("hosts.form.password")}</option><option value="private_key">{t("hosts.form.privateKey")}</option></select></label>
+            </>}
           </div>
-          <fieldset className="credential-panel"><legend>{t("hosts.form.credential")}</legend>
+          {editing.relay ? <div><p>{t(editing.relay.approved ? "pairing.relayManaged" : "pairing.retained")}</p>
+            {!editing.relay.approved && editing.credentialId ? <button type="button" disabled={busy} onClick={() => void reconcileRelay()}>{t("pairing.reconcile")}</button> : null}
+          </div> : <fieldset className="credential-panel"><legend>{t("hosts.form.credential")}</legend>
             {editing.credentialId ? <p className="credential-ready">{t("hosts.form.credentialReady")}</p> : null}
             {editing.authentication === "password" ? <label>{t("hosts.form.password")}<input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} /><button type="button" disabled={busy || !password} onClick={() => void createCredential("password")}>{t("hosts.form.storePassword")}</button></label> : <>
               <label>{t("hosts.form.privateKey")}<textarea rows={5} value={privateKey} onChange={(event) => setPrivateKey(event.target.value)} /></label>
               <label>{t("hosts.form.passphrase")}<input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} /></label>
               <div className="button-row"><button type="button" disabled={busy || !privateKey} onClick={() => void createCredential("import")}>{t("hosts.form.importKey")}</button></div>
             </>}
-          </fieldset>
+          </fieldset>}
           {formError ? <p className="inline-error" role="alert">{formError}</p> : null}
           <div className="modal-actions"><button type="button" onClick={closeEditor}>{t("common.cancel")}</button><button className="primary-button" type="submit" disabled={busy}>{busy ? t("common.saving") : t("common.save")}</button></div>
         </form>
@@ -327,9 +325,9 @@ export function HostManager({ remoteClient, authClient }: HostManagerProps) {
 
     {deleteTarget ? <div className="modal-backdrop"><section className="modal-sheet compact" role="dialog" aria-modal="true" aria-labelledby="delete-host-title">
       <h2 id="delete-host-title">{t("hosts.deleteTitle", { name: deleteTarget.name })}</h2>
-      <p>{t("hosts.deleteBody")}</p>
+      <p>{t(deleteTarget.preferredTransport === "relay" ? "pairing.deleteRelay" : "hosts.deleteBody")}</p>
       <label className="check-row"><input type="checkbox" checked={deleteCredential} onChange={(event) => setDeleteCredential(event.target.checked)} />{t("hosts.deleteCredential")}</label>
-      <label className="check-row"><input type="checkbox" checked={deleteTrust} onChange={(event) => setDeleteTrust(event.target.checked)} />{t("hosts.deleteTrust")}</label>
+      {deleteTarget.preferredTransport !== "relay" ? <label className="check-row"><input type="checkbox" checked={deleteTrust} onChange={(event) => setDeleteTrust(event.target.checked)} />{t("hosts.deleteTrust")}</label> : null}
       {formError ? <p className="inline-error" role="alert">{formError}</p> : null}
       <div className="modal-actions"><button type="button" onClick={() => setDeleteTarget(null)}>{t("common.cancel")}</button><button className="danger-button" type="button" disabled={busy} onClick={() => void remove()}>{t("common.delete")}</button></div>
     </section></div> : null}

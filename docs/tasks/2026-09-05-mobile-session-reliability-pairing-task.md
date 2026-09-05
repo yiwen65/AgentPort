@@ -141,8 +141,8 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Acceptance criteria: U1-U8；不以模拟器替代真机摄像头验收，不隐藏任何阻塞。
 - Verification method: Mobile/desktop Vitest、相关Rust测试、构建、simctl、ps、截图。
 - Validation evidence: Mobile 19 files / 112 tests; desktop 5 files / 25 tests; shared pairing 8 tests; native remote 7 tests pass. Both frontend builds, final iOS simulator bundle and signed custom-protocol macOS debug bundle pass. Runtime evidence below includes controlled transport recovery, touch/scroll behavior, lifecycle mutations on a dedicated fixture, native pairing error states and screenshots.
-- Blocker: Revised Relay implementation awaits T-007 through T-010. Physical camera/soft-keyboard/real network-switch acceptance remains unavailable in simulator; system SSH is no longer a prerequisite.
-- Unblock condition: Complete/integrate T-007 through T-010, then verify isolated Relay end-to-end including GUI exit and revocation; record or complete remaining authorized physical-iPhone checks without changing existing credentials.
+- Blocker: T-007 through T-010 and available isolated Relay integration gates are complete. Physical camera/soft-keyboard/real network-switch acceptance remains unavailable in simulator; system SSH is no longer a prerequisite.
+- Unblock condition: Complete remaining physical-iPhone camera/keyboard/gesture/network-switch acceptance on an authorized device; no existing credentials or Sessions may be changed for testing.
 
 ### [x] T-007 — Relay 协议、加密通道与可自部署服务
 - Status: done
@@ -189,8 +189,8 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-010 — 两端扫码 Relay UI 与旧入口替换
-- Status: pending
+### [x] T-010 — 两端扫码 Relay UI 与旧入口替换
+- Status: done
 - Owner: coordinator
 - Objective: Phone Pairing/Scan to pair 改用 Relay，并说明后台与自部署配置。
 - Inputs and prerequisites: T-008/T-009 原生接口。
@@ -200,7 +200,7 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Execution steps: 沿用界面接线；移除被替代的扫码入口；状态/取消/误配/失败测试；两端构建。
 - Acceptance criteria: U7/U9；扫码不再要求 SSH；配置安全落盘前不显示成功；手动 SSH 保留。
 - Verification method: 两端 Vitest/构建及最终 T-006 原生验收。
-- Validation evidence: Not run.
+- Validation evidence: Mobile 20 files / 115 tests and desktop PairingSection 5 tests pass; both frontends build. Native Mobile 27 tests and desktop cargo check pass after removal of legacy native SSH pairing commands/dependencies. Latest signed custom-protocol macOS and iOS simulator bundles rebuilt/installed; nonblank screenshots inspected (/tmp/relay-mobile-final.png, /tmp/relay-desktop-final.png). Full i18n check reports only the three pre-existing stale allowlist entries. Runtime-found Connected/Connect disagreement reproduced in a failing regression and fixed by deriving both row status and action from the authoritative snapshot/event state; all 5 HostManager tests pass with explicit cleanup. Actual native Relay acceptance recorded below.
 - Blocker: None.
 - Unblock condition: None.
 
@@ -214,6 +214,8 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
+
+- 2026-09-06: T-010 started. Reuse existing pairing layout/scanner/modal; replace SSH QR controls with Relay endpoint/background state, keep explicit approval/revoke and reachable cancellation, add pending-profile reconciliation. No visual redesign or SSH credential migration.
 
 - 2026-09-06: T-009 done: backward-compatible Relay profiles, native opaque pairing attempts with durable disabled-profile/key custody before network authorization, authenticated approval/reconciliation, immutable identity fields, metadata-only import requiring new pairing, and transport-specific cancellation sharing existing Bridge protocol. Profile writes are serialized; adapter saves omit read-only fields while retaining Relay metadata. 27 native + 113 frontend tests pass, iOS build/install/nonblank capture completed. SSH profiles/credentials preserved; UI still uses historical pairing until T-010. LEARNS.md left untouched under protected-file rule; build retry evidence is recorded here instead.
 
@@ -252,8 +254,19 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 - Result: partial
-- Evidence: Historical T-001 through T-005 implementation is committed. Revised Relay T-007/T-008 foundations are independently verified and committed (6188263/2b45fe6); T-009 native Mobile integration is verified; T-010 QR UI replacement remains pending. Historical SSH verification does not validate the new architecture.
-- Limitations: Relay server and background/native control foundations are verified in isolation; Mobile transport is implemented; QR UI replacement is not yet implemented. Full configured GUI-exit/Keychain/device runtime acceptance remains T-006. The historical SSH port22 prerequisite is superseded; the simulator still has no camera. No physical camera, physical keyboard/gesture, Android, Wi-Fi/cellular switch or full first-time SSH pairing/revocation-login claim. Full desktop i18n checker still reports only the three documented pre-existing stale Rust allowlist entries.
+- Evidence: Historical T-001 through T-005 implementation is committed. Revised Relay T-007/T-008 foundations are independently verified and committed (6188263/2b45fe6); T-009 native Mobile integration is committed (21044a7); T-010 Relay UI replacement and available isolated native integration gates pass. Historical SSH verification does not validate the new architecture.
+- Limitations: Relay server, native Keychain pairing, configured GUI-exit survival, terminal data and revocation are verified on loopback. Approval was exercised through exact private IPC and Mobile native commands; physical QR scanning is not verified. The final Connected/Disconnect fix has regression coverage and is installed, but was not rerun against a new native Relay fixture after cleanup. Public TLS deployment is not tested or performed. The historical SSH port22 prerequisite is superseded; the simulator still has no camera. No physical camera, physical keyboard/gesture, Android, Wi-Fi/cellular switch or full first-time SSH pairing/revocation-login claim. Full desktop i18n checker still reports only the three documented pre-existing stale Rust allowlist entries.
+
+### Relay native isolated runtime evidence (2026-09-06)
+
+- Real loopback server at ws://127.0.0.1:50323/v1/relay; dedicated data/socket/source root /private/tmp/agentport-relay-acceptance-16debvqa. No SSH in this path, no public deployment/autostart/system changes.
+- Actual desktop Connector Keychain storage + Mobile native Keychain prepare/begin/wait. First expired invitation rejected; fresh invitation comparison codes matched and exact candidate approval enabled the phone profile. No registration token or identity private key entered diagnostic output/QR/JS.
+- Mobile → encrypted Relay → Connector → real Bridge handshake, project.add and dedicated shell Session ses_01M1SKCDEJXS88C7 succeeded. One input batch completed (serverSequence 1); native pushed output decoded to RELAY_FIXTURE_OK and replay_done. No existing Session received input.
+- Closed only isolated GUI PID 28365 after exact executable and isolated DB ownership verification. Configured Connector PID 43978 became PPID 1; fixture Host PID 61567 remained alive; new Session attachment and output replay succeeded through the existing Mobile Relay connection.
+- Exact selected-device revoke persisted an empty allowlist, closed the live channel and triggered recovery; subsequent Mobile connect returned relay_authentication_failed. Fixture Host PID 61567 remained alive until explicit fixture cleanup.
+- Cleanup used fresh project.remove.preflight revision and exact dependencies; project.remove succeeded with zero warnings and stopped/deleted only the dedicated Session. Source sentinel remained. Both fixture-only Mobile profiles/credentials deleted; original SSH profile was semantically identical (only optional relay:null serialization added). Stopped fixture Connector and Relay; deleted exactly two fixture Connector Keychain accounts and the temporary token file. No user Host, release GUI, or external debug GUI was terminated.
+- Diagnostic corrections, not product defects: project.add has nested project result (no write replay); pushed attachments use native subscription events rather than session.poll; malformed revoke field was rejected before dispatch and corrected to public_key. No unknown mutation was automatically replayed.
+- Latest builds: /tmp/relay-ui-ios-final.log and /tmp/relay-ui-macos-final.log. Latest Mobile suite/build: /tmp/relay-ui-mobile-tests-final.log and /tmp/relay-ui-mobile-build-final.log; desktop pairing tests: /tmp/relay-ui-desktop-tests-final.log. Normal-data debug GUI PID 5960 exact workspace executable verified; nonblank desktop and simulator screenshots inspected. External GUI left alone.
 
 ### Historical SSH-era runtime evidence (iOS 26.5 / iPhone 17 Pro simulator, macOS debug app)
 
