@@ -151,8 +151,9 @@ function SessionRow({ session, host, stale, onOpen, onActions }: {
   );
 }
 
-export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpenSettings, openedSession }: {
+export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpenSettings, openedSession, hostProfilesEpoch = 0 }: {
   client: RemoteClient;
+  hostProfilesEpoch?: number;
   onOpenSession: (session: OpenSession) => void;
   onManageDevices?: () => void;
   onOpenSettings?: () => void;
@@ -233,7 +234,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
       setSelectedDeviceId(current => profiles.some(profile => profile.id === current) ? current : profiles[0]?.id ?? "");
     }).catch(error => { if (!cancelled) setActionError(errorText(error)); }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; mounted.current = false; if (unsubscribe) void unsubscribe(); };
-  }, [client]);
+  }, [client, hostProfilesEpoch]);
 
   useEffect(() => {
     if (!selectedDeviceId) {

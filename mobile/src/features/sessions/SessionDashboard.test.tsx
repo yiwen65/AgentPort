@@ -34,6 +34,17 @@ describe("V2 Session workspace", () => {
   beforeEach(async () => { localStorage.clear(); await i18n.changeLanguage("en-US"); });
   afterEach(() => cleanup());
 
+  it("reloads device profiles after host management closes without remounting the dashboard", async () => {
+    const remote = client();
+    vi.mocked(remote.listHostProfiles).mockResolvedValue([hosts[0]]);
+    const view = render(<SessionDashboard client={remote} onOpenSession={vi.fn()} hostProfilesEpoch={0} />);
+    await screen.findByRole("button", { name: "Approval task" });
+    vi.mocked(remote.listHostProfiles).mockResolvedValue(hosts);
+    view.rerender(<SessionDashboard client={remote} onOpenSession={vi.fn()} hostProfilesEpoch={1} />);
+    await waitFor(() => expect(remote.listHostProfiles).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "Approval task" })).toBeInTheDocument();
+  });
+
   it("shows only pending completion/input attention in Recent and puts the dot on its icon", async () => {
     const remote = client();
     const request = remote.request;

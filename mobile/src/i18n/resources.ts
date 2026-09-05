@@ -1,6 +1,28 @@
 export const resources = {
   "zh-CN": {
     translation: {
+      pairing: {
+        "title": "与电脑配对",
+        "instructions": "在电脑 AgentPort → 设置 → 手机配对中生成二维码，再扫描。",
+        "requirements": "需已启用电脑 SSH，且两端网络可达。二维码只用于短时授权，不包含 SSH 密码或私钥。",
+        "scan": "扫码配对",
+        "manual": "无法使用相机？粘贴配对码",
+        "code": "二维码原始内容（不保存）",
+        "validate": "验证配对码",
+        "deviceName": "这台手机的名称",
+        "request": "请求电脑授权",
+        "cameraDenied": "相机不可用或权限被拒绝。请在系统设置中允许相机，或粘贴配对码。",
+        "scanning": "正在扫描…",
+        "preparing": "正在生成本机密钥和停用的待配对主机…",
+        "pending": "等待电脑确认授权…",
+        "finishing": "正在保存已验证的主机信任…",
+        "compare": "请与电脑核对验证码和手机名称，确认一致后在电脑授权。",
+        "denied": "电脑拒绝了配对请求。",
+        "busy": "这个配对码已被另一台设备使用，请生成新码。",
+        "expired": "配对码已过期。请关闭后重新生成并扫码。",
+        "retained": "取消、失败或结果未知时，待配对主机保持停用并保留密钥。请先在电脑检查并撤销可能已授予的权限，再在主机管理中删除待配对主机及其凭据。",
+        "paired": "配对成功。请选择新主机的“连接”；如 SSH 不可用，可稍后重试。"
+},
       appName: "AgentPort",
       mobile: "移动端",
       hosts: {
@@ -137,6 +159,28 @@ export const resources = {
   },
   "en-US": {
     translation: {
+      pairing: {
+        "title": "Pair with a computer",
+        "instructions": "On the computer, open AgentPort → Settings → Phone Pairing and generate a code.",
+        "requirements": "SSH must already be enabled and both devices reachable. The short-lived code contains no SSH password or private key.",
+        "scan": "Scan to pair",
+        "manual": "No camera? Paste pairing code",
+        "code": "Raw QR content (not saved)",
+        "validate": "Validate code",
+        "deviceName": "Name of this phone",
+        "request": "Request authorization",
+        "cameraDenied": "Camera unavailable or denied. Allow camera access in system Settings, or paste the pairing code.",
+        "scanning": "Scanning…",
+        "preparing": "Creating a local key and disabled pending host…",
+        "pending": "Waiting for approval on the computer…",
+        "finishing": "Saving verified host trust…",
+        "compare": "Compare this code and phone name with the computer, then authorize there only if they match.",
+        "denied": "The computer denied this pairing request.",
+        "busy": "Another device claimed this code. Generate a new code.",
+        "expired": "Pairing code expired. Close this dialog and scan a new code.",
+        "retained": "If cancelled, failed or delivery is unknown, the disabled pending host and key are retained. Check and revoke any authorization on the computer before deleting the pending host and its credential in host management.",
+        "paired": "Paired. Choose Connect on the new host; if SSH is unavailable you can retry later."
+},
       appName: "AgentPort",
       mobile: "Mobile",
       hosts: {

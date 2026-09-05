@@ -50,6 +50,12 @@ cp "$ROOT/target/debug/agentport-mosh-attach" "$APP/Contents/MacOS/agentport-mos
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $DEBUG_BUNDLE_ID" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $DEBUG_DISPLAY_NAME" "$PLIST"
 
+# This script reuses the generated bundle; carry the pairing usage description
+# from the source plist as well as the binary's embedded front-end resources.
+PAIRING_USAGE="$(/usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$ROOT/src-tauri/Info.plist")"
+/usr/libexec/PlistBuddy -c "Set :NSLocalNetworkUsageDescription $PAIRING_USAGE" "$PLIST" 2>/dev/null ||
+  /usr/libexec/PlistBuddy -c "Add :NSLocalNetworkUsageDescription string $PAIRING_USAGE" "$PLIST"
+
 codesign --force --deep --sign "$DEBUG_SIGN_IDENTITY" "$APP"
 codesign --verify --deep --strict "$APP"
 

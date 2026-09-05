@@ -1,4 +1,5 @@
 mod appearance;
+mod pairing;
 mod credentials;
 mod hosts;
 mod mosh;
@@ -38,9 +39,14 @@ pub fn run() {
         )
         .manage(remote::RemoteConnections::default())
         .manage(mosh::MoshSessions::default());
+    #[cfg(mobile)]
+    let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
     builder
         .invoke_handler(tauri::generate_handler![
             mobile_scaffold_status,
+            pairing::mobile_pairing_preview,
+            pairing::mobile_pairing_prepare,
+            pairing::mobile_pairing_exchange,
             appearance::mobile_set_terminal_immersive,
             hosts::mobile_list_host_profiles,
             hosts::mobile_get_host_profile,

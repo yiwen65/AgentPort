@@ -1,0 +1,17 @@
+{
+  "identifier": "pairing-scanner",
+  "description": "Camera scanning for explicit first-time device pairing",
+  "windows": [
+    "main"
+  ],
+  "platforms": [
+    "iOS",
+    "android"
+  ],
+  "permissions": [
+    "barcode-scanner:allow-scan",
+    "barcode-scanner:allow-cancel",
+    "barcode-scanner:allow-check-permissions",
+    "barcode-scanner:allow-request-permissions"
+  ]
+}

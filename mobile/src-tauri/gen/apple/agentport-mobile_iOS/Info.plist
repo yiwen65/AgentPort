@@ -40,5 +40,9 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Scan the short-lived AgentPort pairing code on your computer.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Pair with and connect securely to your AgentPort computer.</string>
 </dict>
 </plist>

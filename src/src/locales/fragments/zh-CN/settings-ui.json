@@ -17,7 +17,8 @@
       "commitAi": "AI 提供商",
       "secrets": "Secret 管理",
       "archive": "归档 Session",
-      "backup": "备份与恢复"
+      "backup": "备份与恢复",
+      "pairing": "手机配对"
     },
     "appearance": {
       "description": "应用主题、终端配色、语言、字体、动效与辅助功能",
@@ -278,6 +279,32 @@
       "restoreFailed": "无法恢复备份：{{detail}}",
       "openDirectoryFailed": "无法打开备份目录：{{detail}}",
       "revealRestoredFailed": "无法显示恢复目录：{{detail}}"
+    },
+    "pairing": {
+      "description": "使用短时二维码，将手机与这台 Mac 首次配对。",
+      "requirements": "两端需可互相访问，macOS 远程登录已允许当前账号通过 SSH 22 端口登录。AgentPort 不会自动启用 SSH 或修改防火墙。只扫描你自己电脑显示的二维码，切勿分享。",
+      "address": "手机可访问的电脑地址",
+      "username": "本机 SSH 账号",
+      "generate": "生成配对码",
+      "close": "关闭配对",
+      "qrAlt": "AgentPort 短时配对二维码",
+      "expires": "剩余 {{seconds}} 秒",
+      "compare": "与手机核对验证码和设备名称，仅在一致时授权。授权后，手机可通过 Remote Bridge 管理 AgentPort 会话。",
+      "approve": "验证码一致 · 授权",
+      "deny": "拒绝",
+      "devices": "已授权手机",
+      "revokeHint": "撤销会阻止该密钥发起新的 SSH 认证，已认证连接可能继续运行。不会影响其他 SSH 密钥。",
+      "empty": "还没有通过 AgentPort 授权的手机。",
+      "revoke": "撤销授权",
+      "revokeConfirm": "撤销 {{name}} 的新连接权限？",
+      "states": {
+        "waiting": "等待手机扫码",
+        "pending": "等待你确认",
+        "approved": "手机已授权 · 请在手机完成连接",
+        "denied": "已拒绝请求",
+        "expired": "配对码已过期",
+        "closed": "配对已关闭"
+      }
     }
   }
 }

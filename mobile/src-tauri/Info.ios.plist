@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict/>
+<dict>
+  <key>NSCameraUsageDescription</key>
+  <string>Scan the short-lived AgentPort pairing code on your computer.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Pair with and connect securely to your AgentPort computer.</string>
+</dict>
 </plist>

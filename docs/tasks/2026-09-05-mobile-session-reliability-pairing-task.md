@@ -111,8 +111,8 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-005 — 首次安全扫码配对
-- Status: in_progress
+### [x] T-005 — 首次安全扫码配对
+- Status: completed
 - Owner: coordinator
 - Objective: 实现可撤销的二维码公钥配对及两端独立 UI/原生组件。
 - Inputs and prerequisites: U7，SSH 可用，不修改现有用户凭据进行验证。
@@ -122,12 +122,12 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Execution steps: 基于官方能力选择最小原生扫码与加密方案；实施短时信任与明确授权；临时目录/loopback测试；报告入口接线。
 - Acceptance criteria: U7；私钥不外传；授权只追加本应用标记的公钥、撤销不影响其他授权；不自动修改系统SSH或公网配置。
 - Verification method: 安全协议/临时 authorized_keys 回归、两端构建、最终可行的扫码模拟验证。
-- Validation evidence: Not run.
+- Validation evidence: 8 shared Rust security tests, 11 Mobile pairing tests, 3 desktop pairing tests and 7 native remote tests pass. Both frontends, iOS simulator bundle and signed macOS debug bundle build. Integration entries are wired. See 2026-09-05-pairing-security-notes.md. Physical camera/system-SSH onboarding remain unverified under T-006; local port22 is unavailable.
 - Blocker: None.
 - Unblock condition: None.
 
 ### [ ] T-006 — 集成、审查与运行验收
-- Status: pending
+- Status: in_progress
 - Owner: coordinator
 - Objective: 集成模块、补齐协议/入口并逐项验证交付。
 - Inputs and prerequisites: T-001 至 T-005 的实际结果。
@@ -151,6 +151,8 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
+
+- 2026-09-06: T-005 implemented and build/test verified. Secure temporary pairing, explicit desktop authorization, key custody, scanner cancellation and revocation are integrated. System SSH port22 is unavailable; no service configuration was changed. T-006 native runtime acceptance started.
 
 - 2026-09-05: T-004 completed: both ended lifecycles use Stoped label/color, exit code remains separate diagnostic detail. Context menu and command palette have concise action names and no Interrupt entry. 22 tests and desktop build pass; i18n baseline allowlist issue documented, not silently fixed. T-005 started.
 

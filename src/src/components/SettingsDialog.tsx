@@ -24,6 +24,7 @@ import { applyTerminalLanguage } from "../terminals";
 import { getTerminalPalette, TERMINAL_THEME_IDS } from "../terminalThemes";
 import { AgentIcon } from "./AgentIcons";
 import ShellIcon from "./ShellIcon";
+import { PairingSection } from "./PairingSection";
 import { closeDialog, confirmDialog, setState, toast, useStore } from "../store";
 import type {
   AdapterInstall,
@@ -1187,7 +1188,8 @@ type SettingsSection =
   | "commitAi"
   | "secrets"
   | "archive"
-  | "backup";
+  | "backup"
+  | "pairing";
 
 const SETTINGS_SECTIONS = [
   { id: "appearance", labelKey: "settings:ui.sections.appearance" },
@@ -1197,6 +1199,7 @@ const SETTINGS_SECTIONS = [
   { id: "secrets", labelKey: "settings:ui.sections.secrets" },
   { id: "archive", labelKey: "settings:ui.sections.archive" },
   { id: "backup", labelKey: "settings:ui.sections.backup" },
+  { id: "pairing", labelKey: "settings:ui.sections.pairing" },
 ] as const satisfies ReadonlyArray<{ id: SettingsSection; labelKey: string }>;
 
 export default function SettingsDialog() {
@@ -1635,6 +1638,7 @@ export default function SettingsDialog() {
     secrets: <SecretSection />,
     archive: <ArchiveSection />,
     backup: <BackupSection />,
+    pairing: <PairingSection />,
   }[section];
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {

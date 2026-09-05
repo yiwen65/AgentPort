@@ -41,6 +41,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
+mod pairing;
 mod commit_ai;
 mod git_commands;
 mod git_workspace_commands;
@@ -4300,7 +4301,15 @@ fn main() {
             Ok(())
         })
         .manage(state)
+        .manage(pairing::DesktopPairing::default())
         .invoke_handler(tauri::generate_handler![
+            pairing::desktop_pairing_defaults,
+            pairing::desktop_pairing_start,
+            pairing::desktop_pairing_status,
+            pairing::desktop_pairing_decide,
+            pairing::desktop_pairing_close,
+            pairing::desktop_pairing_devices,
+            pairing::desktop_pairing_revoke,
             boot,
             list_projects,
             list_archived_sessions,

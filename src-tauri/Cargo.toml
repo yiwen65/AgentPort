@@ -13,6 +13,7 @@ sha2 = { workspace = true }
 tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
+agentport-pairing = { path = "../crates/agentport-pairing" }
 agentport-core = { path = "../crates/agentport-core" }
 agentport-service = { path = "../crates/agentport-service" }
 agentport-remote-protocol = { path = "../crates/agentport-remote-protocol" }

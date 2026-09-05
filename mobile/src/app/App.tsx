@@ -28,6 +28,8 @@ export function App({ client, hostAuthClient }: AppProps) {
   useTerminalImmersion(terminalVisible);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deviceManagerOpen, setDeviceManagerOpen] = useState(false);
+  const [hostProfilesEpoch, setHostProfilesEpoch] = useState(0);
+  const closeDeviceManager = useCallback(() => { setDeviceManagerOpen(false); setHostProfilesEpoch(value => value + 1); }, []);
   const swipeStart = useRef<{ x: number; y: number; at: number }>();
 
   const openSession = (session: OpenSession) => {
@@ -67,11 +69,11 @@ export function App({ client, hostAuthClient }: AppProps) {
   useEffect(() => {
     if (!deviceManagerOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setDeviceManagerOpen(false);
+      if (event.key === "Escape") closeDeviceManager();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [deviceManagerOpen]);
+  }, [deviceManagerOpen, closeDeviceManager]);
 
   useEffect(() => {
     if (!selectedSession) return;
@@ -110,6 +112,7 @@ export function App({ client, hostAuthClient }: AppProps) {
           client={client}
           onOpenSession={openSession}
           openedSession={openedSession}
+          hostProfilesEpoch={hostProfilesEpoch}
           onManageDevices={() => setDeviceManagerOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
         />
@@ -135,10 +138,10 @@ export function App({ client, hostAuthClient }: AppProps) {
 
       {deviceManagerOpen ? (
         <div className="modal-backdrop device-manager-backdrop" onMouseDown={(event) => {
-          if (event.target === event.currentTarget) setDeviceManagerOpen(false);
+          if (event.target === event.currentTarget) closeDeviceManager();
         }}>
           <section className="modal-sheet device-manager-sheet" role="dialog" aria-modal="true" aria-label={t("hosts.title")}>
-            <button className="device-manager-close" type="button" onClick={() => setDeviceManagerOpen(false)} aria-label={t("common.close")}>×</button>
+            <button className="device-manager-close" type="button" onClick={closeDeviceManager} aria-label={t("common.close")}>×</button>
             <HostManager remoteClient={client} authClient={hostAuthClient} />
           </section>
         </div>

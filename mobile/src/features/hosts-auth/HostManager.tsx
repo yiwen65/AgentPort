@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import type { ConnectionState, HostProfileSummary, RemoteClient } from "../../protocol/remoteClient";
 import type { HostAuthClient, HostProfileDraft } from "./types";
 
+import { PairDevice } from "./PairDevice";
+
 type LoadState =
   | { kind: "loading" }
   | { kind: "ready"; hosts: HostProfileSummary[] }
@@ -46,6 +48,8 @@ function errorMessage(error: unknown): string {
 
 export function HostManager({ remoteClient, authClient }: HostManagerProps) {
   const { t } = useTranslation();
+  const [pairing, setPairing] = useState(false);
+  const [paired, setPaired] = useState(false);
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [editing, setEditing] = useState<HostProfileDraft | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<HostProfileSummary | null>(null);
@@ -247,16 +251,19 @@ export function HostManager({ remoteClient, authClient }: HostManagerProps) {
   };
 
   return <>
+    {pairing ? <PairDevice auth={authClient} onClose={() => { setPairing(false); void load(); }} onPaired={() => { setPairing(false); setPaired(true); void load(); }} /> : null}
     <section className="section-heading" aria-labelledby="hosts-title">
       <div>
         <h1 id="hosts-title">{t("hosts.title")}</h1>
         <p>{t("hosts.subtitle")}</p>
       </div>
       <div className="heading-actions">
+        <button type="button" onClick={() => setPairing(true)}>{t("pairing.scan")}</button>
         <button className="primary-button" type="button" onClick={openNew}><span aria-hidden="true">＋</span>{t("hosts.add")}</button>
       </div>
     </section>
 
+    {paired ? <p role="status">{t("pairing.paired")}</p> : null}
     {formError && !editing ? <div className="inline-error" role="alert">{formError}</div> : null}
     {state.kind === "loading" ? <div className="state-card" role="status">{t("hosts.loading")}</div> : null}
     {state.kind === "failed" ? <div className="state-card" role="alert">
