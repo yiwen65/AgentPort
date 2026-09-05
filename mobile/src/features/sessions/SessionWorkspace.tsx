@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { Modal } from "../../components/Modal";
 import { useTranslation } from "react-i18next";
 import type { RemoteClient, RemoteEvent } from "../../protocol/remoteClient";
 import { MobileTerminal, type MobileTerminalHandle } from "../../terminal/MobileTerminal";
@@ -34,9 +35,10 @@ function errorText(error: unknown): string {
   return String(error);
 }
 
-export function SessionWorkspace({ open, client, active = true, onClose, onSessionChanged }: {
+export function SessionWorkspace({ open, client, active = true, onClose, onSessionChanged, onOpened }: {
   open: OpenSession;
   active?: boolean;
+  onOpened?: (session: OpenSession) => void;
   client: RemoteClient;
   onClose: () => void;
   onSessionChanged: (next?: OpenSession) => void;
@@ -53,6 +55,16 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   const [chromeVisible, setChromeVisible] = useState(false);
   const chromeReveal = useRef<HTMLButtonElement>(null);
   const [confirmStop, setConfirmStop] = useState(false);
+  const [branchName, setBranchName] = useState<string>();
+  const [restartRequested, setRestartRequested] = useState(false);
+  const actionBusy = useRef(false);
+  const stopped = ["stopped", "exited", "interrupted"].includes(open.session.lifecycle) || open.session.hostAlive === false;
+  const shouldAttach = !stopped || restartRequested;
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const openedRef = useRef("");
+  const onOpenedRef = useRef(onOpened);
+  onOpenedRef.current = onOpened;
   const [actionsOpen, setActionsOpen] = useState(false);
   const [busyAction, setBusyAction] = useState("");
   const [terminalGeometry, setTerminalGeometry] = useState<TerminalGeometry>();
@@ -67,7 +79,6 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   const inputDispatchQueue = useRef(Promise.resolve());
   const otherInputTimer = useRef<number>();
   const seenTimer = useRef<number>();
-  const latestStatusCursor = useRef<{ runId: string; runOrdinal: number; sequence: number }>();
   const needsReattach = useRef(false);
   const pendingResize = useRef<{ cols: number; rows: number }>();
   const lastResize = useRef<{ attachmentId: string; cols: number; rows: number }>();
@@ -87,6 +98,23 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     setConfirmStop(false);
   }, [active]);
 
+  useEffect(() => {
+    if (!active) { openedRef.current = ""; return; }
+    if (!["live", "ended"].includes(connectionLabel)) return;
+    const key = JSON.stringify([open.hostProfileId, open.session.id, open.session.latestStatus?.runOrdinal, open.session.latestStatus?.sequence]);
+    if (openedRef.current === key) return;
+    openedRef.current = key;
+    onOpenedRef.current?.(open);
+  }, [active, connectionLabel, open]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setBranchName(undefined);
+    void client.request<{ actualBranch?: string; expectedBranch?: string }>(open.hostProfileId, "git.context.resolve", { locator: { kind: "session", sessionId: open.session.id } })
+      .then(value => { if (!cancelled) setBranchName(value?.actualBranch ?? value?.expectedBranch); }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [client, open.hostProfileId, open.session.id]);
+
   const hideChrome = () => {
     setChromeVisible(false);
     // Keep keyboard focus reachable without focusing xterm's input/keyboard.
@@ -101,11 +129,6 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       cursor.current = event.cursor as RunCursor;
       try { localStorage.setItem(cursorKey(open), JSON.stringify(cursor.current)); } catch { /* persistence is best effort */ }
     }
-    const runId = payload.runId ?? payload.run_id;
-    const runOrdinal = payload.runOrdinal ?? payload.run_ordinal;
-    if (event.eventType === "state" && runId && Number.isInteger(runOrdinal) && Number.isInteger(payload.sequence)) {
-      latestStatusCursor.current = { runId, runOrdinal: runOrdinal!, sequence: payload.sequence! };
-    }
     if (event.eventType === "terminal_geometry_changed" && payload.geometry) {
       geometryRef.current = payload.geometry;
       setTerminalGeometry(payload.geometry);
@@ -115,12 +138,12 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         setConnectionLabel("live");
       }
     }
-    if (["output", "replay_done", "state"].includes(event.eventType)) {
+    if (activeRef.current && ["output", "replay_done", "state"].includes(event.eventType)) {
       window.clearTimeout(seenTimer.current);
       seenTimer.current = window.setTimeout(() => {
         const requests: Promise<unknown>[] = [];
+        if (!activeRef.current) return;
         if (cursor.current) requests.push(client.request(open.hostProfileId, "session.output.unread.mark", { sessionId: open.session.id, cursor: cursor.current }));
-        if (latestStatusCursor.current) requests.push(client.request(open.hostProfileId, "session.seen.mark", { sessionId: open.session.id, cursor: latestStatusCursor.current }));
         void Promise.allSettled(requests);
       }, 500);
     }
@@ -146,16 +169,19 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         otherInputTimer.current = window.setTimeout(() => setOtherClientInput(false), 1_500);
       }
     }
-  }, [client, open, t]);
+  }, [client, open.hostProfileId, open.session.id, t]);
 
   useEffect(() => {
+    if (!shouldAttach) { setConnectionLabel("ended"); setError(""); return; }
     let cancelled = false;
     let unsubscribeEvents: (() => Promise<void>) | undefined;
     let unsubscribeConnection: (() => Promise<void>) | undefined;
     let attached: string | undefined;
+    attachmentRef.current = undefined;
+    setAttachmentId(undefined);
     setConnectionLabel("attaching");
     setError("");
-    void client.subscribe<SessionEventPayload>(open.hostProfileId, [], handleEvent).then(async (unsubscribe) => {
+    void client.subscribe<SessionEventPayload>(open.hostProfileId, [], event => { if (!cancelled) handleEvent(event); }).then(async (unsubscribe) => {
       if (cancelled) return unsubscribe();
       unsubscribeEvents = unsubscribe;
       try {
@@ -191,9 +217,11 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       }
     });
     void client.onConnectionState((event) => {
-      if (event.profileId !== open.hostProfileId) return;
+      if (cancelled || event.profileId !== open.hostProfileId) return;
       if (event.state === "reconnecting" || event.state === "disconnected" || event.state === "failed") {
         needsReattach.current = true;
+        attachmentRef.current = undefined;
+        setAttachmentId(undefined);
         setConnectionLabel("reconnecting");
       }
       if (event.state === "connected" && needsReattach.current) {
@@ -212,7 +240,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       if (unsubscribeEvents) void unsubscribeEvents();
       if (unsubscribeConnection) void unsubscribeConnection();
     };
-  }, [attachEpoch, client, handleEvent, open.hostProfileId, open.session.id]);
+  }, [attachEpoch, client, handleEvent, open.hostProfileId, open.session.id, shouldAttach]);
 
   useEffect(() => () => {
     window.clearTimeout(otherInputTimer.current);
@@ -220,13 +248,14 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   }, []);
 
   const sendInput = useCallback((data: string) => {
-    if (!attachmentId) return;
+    if (!attachmentId || attachmentRef.current !== attachmentId || connectionLabel !== "live") return;
     const batchId = sessionBatchId();
     ownBatches.current.add(batchId);
     // Serialize only through the local transport write, not the remote result.
     // Bridge frames therefore retain input order without adding network RTT to
     // every later keystroke.
     inputDispatchQueue.current = inputDispatchQueue.current.then(() => new Promise<void>((submitted) => {
+      if (attachmentRef.current !== attachmentId) { ownBatches.current.delete(batchId); submitted(); return; }
       let submissionReleased = false;
       const releaseSubmission = () => {
         if (submissionReleased) return;
@@ -245,12 +274,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         setError(errorText(requestError));
       }).finally(releaseSubmission);
     }));
-  }, [attachmentId, client, open.hostProfileId, t]);
-
-  const control = async (controlName: "interrupt" | "continue") => {
-    if (!attachmentId) return;
-    await client.request(open.hostProfileId, "session.control", { attachmentId, control: controlName }).catch((requestError) => setError(errorText(requestError)));
-  };
+  }, [attachmentId, client, open.hostProfileId, t, connectionLabel]);
 
   // This is the single mobile -> Bridge resize seam. Host-side CAS ownership
   // keeps xterm/viewport observation separate from cross-client authority.
@@ -305,26 +329,29 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     if (resizeFrame.current !== undefined) window.cancelAnimationFrame(resizeFrame.current);
   }, []);
 
-  const action = async (name: "restart" | "pin" | "archive" | "rename", value?: string) => {
+  const action = async (name: "restart" | "pin" | "rename", value?: string) => {
+    if (actionBusy.current) return;
+    actionBusy.current = true;
     setBusyAction(name);
     setError("");
     try {
-      if (name === "restart") await client.request(open.hostProfileId, "session.restart", { sessionId: open.session.id, riskAck: false });
-      if (name === "pin") await client.request(open.hostProfileId, "session.pin", { sessionId: open.session.id, pinned: !open.session.pinnedAt });
-      if (name === "archive") await client.request(open.hostProfileId, "session.archive", { sessionId: open.session.id });
-      if (name === "rename" && value) await client.request(open.hostProfileId, "session.rename", { sessionId: open.session.id, title: value });
-      if (name === "archive") {
-        onSessionChanged();
-        onClose();
-      } else {
-        const sessions = await client.request<OpenSession["session"][]>(open.hostProfileId, "session.list", { includeArchived: false });
-        const updated = sessions.find((session) => session.id === open.session.id);
-        if (updated) onSessionChanged({ ...open, session: updated });
-        if (name === "restart") setAttachEpoch((current) => current + 1);
+      if (name === "restart") {
+        await client.request(open.hostProfileId, "session.restart", { sessionId: open.session.id, riskAck: false });
+        cursor.current = undefined;
+        terminal.current?.reset();
+        setNotice("");
+        setRestartRequested(true);
+        setAttachEpoch(current => current + 1);
       }
+      if (name === "pin") await client.request(open.hostProfileId, "session.pin", { sessionId: open.session.id, pinned: !open.session.pinnedAt });
+      if (name === "rename" && value) await client.request(open.hostProfileId, "session.rename", { sessionId: open.session.id, title: value });
+      const sessions = await client.request<OpenSession["session"][]>(open.hostProfileId, "session.list", { includeArchived: false });
+      const updated = sessions.find(session => session.id === open.session.id);
+      if (updated) onSessionChanged({ ...open, session: updated });
     } catch (requestError) {
       setError(errorText(requestError));
     } finally {
+      actionBusy.current = false;
       setBusyAction("");
     }
   };
@@ -334,38 +361,21 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     window.requestAnimationFrame(() => actionsTrigger.current?.focus());
   };
 
-  const handleActionsKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeActions();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const focusableSelector =
-      "button:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex='-1'])";
-    const focusable = [...event.currentTarget.querySelectorAll<HTMLElement>("*")]
-      .filter((element) => element.matches(focusableSelector));
-    const first = focusable[0];
-    const last = focusable.at(-1);
-    if (!first || !last) return;
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
-
   const stop = async () => {
+    if (actionBusy.current) return;
+    actionBusy.current = true;
     setBusyAction("stop");
     try {
       const result = await client.request<{ groupCleaned: boolean }>(open.hostProfileId, "session.stop", { sessionId: open.session.id, graceMs: 1_500 });
       setNotice(result.groupCleaned ? t("session.stopped") : t("session.cleanupUnverified"));
       setConfirmStop(false);
+      attachmentRef.current = undefined;
+      setAttachmentId(undefined);
+      setConnectionLabel("ended");
     } catch (requestError) {
       setError(errorText(requestError));
     } finally {
+      actionBusy.current = false;
       setBusyAction("");
     }
   };
@@ -377,7 +387,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       tabIndex={-1}
       data-chrome-visible={chromeVisible}
       onPointerDownCapture={(event) => {
-        if (!(event.target as Element).closest(".session-workspace-header, .terminal-chrome-reveal, .modal-backdrop")) setChromeVisible(false);
+        if (!(event.target as Element).closest(".session-workspace-header, .terminal-chrome-reveal, .modal-backdrop, .mobile-modal-portal")) setChromeVisible(false);
       }}
       data-connection-state={connectionLabel}
       data-terminal-theme={terminalAppearance.theme}
@@ -402,7 +412,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       />
       <header id="session-chrome" className="session-workspace-header" hidden={!chromeVisible}
         onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); hideChrome(); } }}>
-        <h1 id="session-title" title={open.session.title}>{open.session.title}</h1>
+        <h1 id="session-title" title={open.session.title}><button className="terminal-title-back" type="button" aria-label={t("session.back")} onClick={onClose}>{open.session.title}</button></h1>
         <button ref={actionsTrigger} className="terminal-more-button" type="button" aria-label={t("session.actions")} aria-haspopup="dialog" onClick={() => setActionsOpen(true)}>•••</button>
       </header>
       {otherClientInput || notice || error ? <div className="terminal-status-stack">
@@ -413,7 +423,10 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
 
       {terminalGeometry?.sourceKind === "desktop" ? <button className="restore-phone-size-button" type="button" onClick={readaptForPhone} aria-label={t("session.restorePhoneSize")} title={t("session.restorePhoneSize")}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="7" y="2.5" width="10" height="19" rx="2" /><path d="M10.5 5h3M11 18.5h2" /></svg></button> : null}
 
-      <MobileTerminal
+      {connectionLabel === "ended" ? <div className="terminal-ended" role="status"><p>{t("session.restartAvailable")}</p><button className="primary-button" type="button" disabled={Boolean(busyAction)} onClick={() => void action("restart")}>{t("session.restart")}</button></div> : null}
+      {connectionLabel === "reconnecting" ? <p className="terminal-status-line" role="status">{t("status.reconnecting")}</p> : null}
+      {connectionLabel === "failed" ? <button type="button" onClick={() => setAttachEpoch(value => value + 1)}>{t("session.retryAttach")}</button> : null}
+      {shouldAttach ? <MobileTerminal
         ref={terminal}
         resizeEpoch={attachmentId}
         onInput={sendInput}
@@ -424,29 +437,20 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         description={t("session.terminalDescription")}
         showHeading={false}
         showProbeOutput={false}
-      />
+      /> : null}
 
-      {actionsOpen ? <div className="modal-backdrop terminal-actions-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeActions(); }}>
-        <section className="modal-sheet terminal-actions-sheet" role="dialog" aria-modal="true" aria-labelledby="terminal-actions-title" onKeyDown={handleActionsKeyDown}>
-          <header>
-            <div><h2 id="terminal-actions-title">{open.session.title}</h2><p>{open.session.lifecycle} · {open.session.permissionMode}</p></div>
-            <button type="button" aria-label={t("common.close")} autoFocus onClick={closeActions}>×</button>
-          </header>
-
+      {actionsOpen ? <Modal title={open.session.title} onClose={closeActions} className="terminal-actions-sheet">
+          <p className="terminal-project-branch">{[open.projectName ?? open.session.projectId, branchName].filter(Boolean).join(" · ")}</p>
           <h3 className="terminal-session-actions-title">{t("session.actions")}</h3>
           <div className="terminal-action-grid">
-            <button type="button" onClick={() => { setActionsOpen(false); onClose(); }}>{t("session.back")}</button>
-            <button type="button" onClick={() => void control("interrupt")}>{t("session.interrupt")}</button>
-            <button type="button" onClick={() => setFontSize((value) => Math.max(11, value - 1))}>A−</button>
-            <button type="button" onClick={() => setFontSize((value) => Math.min(24, value + 1))}>A+</button>
-            <button type="button" disabled={Boolean(busyAction)} onClick={() => void action("restart")}>{t("session.restart")}</button>
-            <button type="button" disabled={Boolean(busyAction)} onClick={() => void action("pin")}>{open.session.pinnedAt ? t("session.unpin") : t("session.pin")}</button>
             <button type="button" disabled={Boolean(busyAction)} onClick={() => { const title = window.prompt(t("session.renamePrompt"), open.session.title); if (title?.trim()) void action("rename", title.trim()); }}>{t("session.rename")}</button>
-            <button type="button" disabled={Boolean(busyAction)} onClick={() => void action("archive")}>{t("session.archive")}</button>
+            <button type="button" disabled={Boolean(busyAction)} onClick={() => void action("pin")}>{open.session.pinnedAt ? t("session.unpin") : t("session.pin")}</button>
+            <button type="button" disabled={Boolean(busyAction)} onClick={() => void action("restart")}>{t("session.restart")}</button>
             <button className="danger-text" type="button" onClick={() => { setActionsOpen(false); setConfirmStop(true); }}>{t("session.stop")}</button>
+            <button type="button" onClick={() => setFontSize(value => Math.max(11, value - 1))}>A−</button>
+            <button type="button" onClick={() => setFontSize(value => Math.min(24, value + 1))}>A+</button>
           </div>
-        </section>
-      </div> : null}
+      </Modal> : null}
 
       {confirmStop ? <div className="modal-backdrop"><section className="modal-sheet compact" role="dialog" aria-modal="true" aria-labelledby="stop-title"><h2 id="stop-title">{t("session.stopTitle")}</h2><p>{t("session.stopBody")}</p><div className="modal-actions"><button type="button" onClick={() => setConfirmStop(false)}>{t("common.cancel")}</button><button className="danger-button" type="button" disabled={busyAction === "stop"} onClick={() => void stop()}>{t("session.stop")}</button></div></section></div> : null}
     </article>

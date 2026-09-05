@@ -34,6 +34,78 @@ describe("V2 Session workspace", () => {
   beforeEach(async () => { localStorage.clear(); await i18n.changeLanguage("en-US"); });
   afterEach(() => cleanup());
 
+  it("shows only pending completion/input attention in Recent and puts the dot on its icon", async () => {
+    const remote = client();
+    const request = remote.request;
+    remote.request = vi.fn(async (host, method, params) => {
+      const value = await request(host, method, params);
+      if (method === "session.list") return (value as any[]).map(session => session.id === "attention" ? { ...session, latestAttentionKind: "approval_requested" } : session);
+      return value;
+    }) as RemoteClient["request"];
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await screen.findByRole("button", { name: "Approval task" });
+    const recent = screen.getByRole("button", { name: "Recent sessions" });
+    expect(recent.querySelector(".toolbar-attention")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Show active sessions" }).querySelector(".toolbar-attention")).toBeNull();
+    fireEvent.click(recent);
+    const dialog = screen.getByRole("dialog", { name: "Recent sessions" });
+    expect(within(dialog).getByRole("button", { name: "Approval task" })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Shell" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Dead agent" })).not.toBeInTheDocument();
+  });
+
+  it("clears Recent only after successful opening, survives stale snapshots, and admits newer attention", async () => {
+    const remote = client();
+    const base = remote.request;
+    let sequence = 1;
+    remote.request = vi.fn(async (host, method, params) => {
+      const value = await base(host, method, params);
+      if (method === "session.list") return (value as any[]).map(session => session.id === "attention" ? { ...session, latestAttentionKind: "approval_requested", latestStatus: { runId: "run", runOrdinal: 1, sequence, state: "needs_input", occurredAt: session.updatedAt } } : session);
+      return value;
+    }) as RemoteClient["request"];
+    const onOpenSession = vi.fn();
+    const { rerender } = render(<SessionDashboard client={remote} onOpenSession={onOpenSession} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Approval task" }));
+    expect(screen.getByRole("button", { name: "Recent sessions" }).querySelector(".toolbar-attention")).not.toBeNull();
+    const open = onOpenSession.mock.calls[0][0];
+    rerender(<SessionDashboard client={remote} onOpenSession={onOpenSession} openedSession={{ open, token: 1 }} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Recent sessions" }).querySelector(".toolbar-attention")).toBeNull());
+    expect(remote.request).toHaveBeenCalledWith("host-1", "session.seen.mark", { sessionId: "attention", cursor: { runId: "run", runOrdinal: 1, sequence: 1 } });
+    sequence = 2;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Recent sessions" }).querySelector(".toolbar-attention")).not.toBeNull());
+  });
+
+  it("offers the row action menu via keyboard without opening the terminal", async () => {
+    const onOpenSession = vi.fn();
+    render(<SessionDashboard client={client()} onOpenSession={onOpenSession} />);
+    const row = await screen.findByRole("button", { name: "Approval task" });
+    fireEvent.keyDown(row, { key: "F10", shiftKey: true });
+    const dialog = screen.getByRole("dialog", { name: "Approval task" });
+    expect([...dialog.querySelectorAll(".terminal-action-grid button")].map(button => button.textContent)).toEqual(["Rename", "Pin", "Stop", "Archive", "Remove"]);
+    expect(onOpenSession).not.toHaveBeenCalled();
+  });
+
+  it("opens actions on long press, suppresses its trailing click, and cancels when scrolling", async () => {
+    const onOpenSession = vi.fn();
+    render(<SessionDashboard client={client()} onOpenSession={onOpenSession} />);
+    const row = await screen.findByRole("button", { name: "Approval task" });
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    vi.useFakeTimers();
+    try {
+      fireEvent.pointerDown(row, { button: 0, clientX: 10, clientY: 10 });
+      fireEvent.pointerMove(row, { clientX: 10, clientY: 30 });
+      act(() => vi.advanceTimersByTime(501));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      fireEvent.pointerDown(row, { button: 0, clientX: 10, clientY: 10 });
+      act(() => vi.advanceTimersByTime(501));
+      expect(screen.getByRole("dialog", { name: "Approval task" })).toBeInTheDocument();
+      fireEvent.pointerUp(row);
+      fireEvent.click(row);
+      expect(onOpenSession).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); vi.unstubAllGlobals(); }
+  });
+
   it("loads only the selected device and keeps device state separate", async () => {
     const remote = client();
     render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);

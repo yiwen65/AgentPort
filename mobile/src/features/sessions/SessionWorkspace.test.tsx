@@ -79,6 +79,32 @@ describe("SessionWorkspace", () => {
   });
   afterEach(() => cleanup());
 
+  it("offers Restart for an ended host instead of attempting an impossible attachment", async () => {
+    const { client, request } = setupClient();
+    render(<SessionWorkspace open={{ ...open, session: { ...open.session, lifecycle: "exited", hostAlive: false } }} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: "Restart" })).toBeInTheDocument();
+    expect(request.mock.calls.some(([, method]) => method === "session.attach")).toBe(false);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("recovers the retained terminal with a resume cursor and disables input while disconnected", async () => {
+    const { client, request, emit } = setupClient();
+    let connection!: (event: any) => void;
+    vi.mocked(client.onConnectionState).mockImplementation(async listener => { connection = listener; return async () => {}; });
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    const resume = { runId: "run", runOrdinal: 1, generation: 0, offset: 5, statusSequence: 0 };
+    act(() => emit({ subscriptionId: "att-1", eventType: "output", cursor: resume, payload: { session_id: "ses-1", dataBase64: btoa("hello") } }));
+    act(() => connection({ profileId: "host-1", state: "reconnecting" }));
+    fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
+    expect(request.mock.calls.some(([, method]) => method === "session.input")).toBe(false);
+    act(() => connection({ profileId: "host-1", state: "connected" }));
+    await waitFor(() => expect(request.mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(2));
+    expect(request).toHaveBeenLastCalledWith("host-1", "session.attach", expect.objectContaining({ resumeFrom: resume }));
+    expect(terminalHarness.mounts).toBe(1);
+    expect(terminalHarness.writes).toEqual(["hello"]);
+  });
+
   it("attaches with cursor semantics and keeps interaction on the raw terminal path", async () => {
     const { client, request, emit } = setupClient();
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
@@ -281,12 +307,12 @@ describe("SessionWorkspace", () => {
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).queryByRole("radiogroup")).not.toBeInTheDocument();
     const close = within(dialog).getByRole("button", { name: "Close" });
-    const stop = within(dialog).getByRole("button", { name: "Stop" });
+    const last = within(dialog).getByRole("button", { name: "A+" });
     expect(close).toHaveFocus();
 
     fireEvent.keyDown(close, { key: "Tab", shiftKey: true });
-    expect(stop).toHaveFocus();
-    fireEvent.keyDown(stop, { key: "Tab" });
+    expect(last).toHaveFocus();
+    fireEvent.keyDown(last, { key: "Tab" });
     expect(close).toHaveFocus();
 
     fireEvent.keyDown(close, { key: "Escape" });
@@ -304,7 +330,7 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByRole("button", { name: "Session actions" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back to sessions" })).not.toBeInTheDocument();
     expect(screen.queryByTestId("session-project-branch")).not.toBeInTheDocument();
-    expect(request.mock.calls.some(([, method]) => method === "git.context.resolve")).toBe(false);
+    expect(request.mock.calls.some(([, method]) => method === "git.context.resolve")).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
     expect(screen.getByRole("heading", { name: "Agent task" })).toBeInTheDocument();
@@ -315,6 +341,11 @@ describe("SessionWorkspace", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Show session title and actions" })).toHaveFocus());
     fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
     fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    const menu = screen.getByRole("dialog");
+    expect([...menu.querySelectorAll(".terminal-action-grid button")].map(button => button.textContent)).toEqual(["Rename", "Pin", "Restart", "Stop", "A−", "A+"]);
+    expect(menu).toHaveTextContent("AgentSessions · main");
+    expect(menu).not.toHaveTextContent("running · native");
+    fireEvent.click(within(menu).getByRole("button", { name: "Close" }));
     fireEvent.click(screen.getByRole("button", { name: "Back to sessions" }));
     expect(onClose).toHaveBeenCalledOnce();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();

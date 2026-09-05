@@ -81,7 +81,7 @@ export const resources = {
         title: "Session",
         projects: "项目",
         activity: "活跃 Session",
-        recent: "最近使用",
+        recent: "最近待处理", noRecent: "没有待处理的完成或输入请求。",
         showActivity: "显示活跃 Session",
         showProjects: "显示项目",
         noActivity: "当前设备没有活跃 Agent Session。",
@@ -101,6 +101,7 @@ export const resources = {
         search: "在当前输出中搜索", history: "原生历史", moreHistory: "加载更多历史", waitingForOutput: "正在等待输出…", message: "发送文本", send: "发送",
         openTerminal: "在完整终端中处理", terminalFallback: "该原生 TUI 无法可靠识别；请切换完整终端，未生成任何猜测选项。", resynced: "保留游标已失效；已清空旧画面并加载有界尾部。",
         otherClientTyping: "另一个客户端正在输入…", inputUnknown: "输入结果未知，未自动重放。", endedCleanly: "Session 已结束，进程组已清理。", cleanupUnverified: "无法证明完整进程组已清理。", stopped: "Session 已安全停止。",
+        remove: "Remove", removeBody: "永久删除此 Session 的历史和关联数据？运行中的进程将先停止。此操作不可撤销，但不会删除项目源码。", archiveBody: "停止此 Session 并归档？历史将保留，可从归档中恢复。", removeArchived: "会话已归档，但永久删除失败，可重试删除。", restartAvailable: "此 Session 已停止。你可以选择 Restart 重新启动。", retryAttach: "重试连接终端",
         restorePhoneSize: "恢复手机尺寸",
         appearance: {
           title: "主题",
@@ -216,7 +217,7 @@ export const resources = {
         title: "Sessions",
         projects: "Projects",
         activity: "Active Sessions",
-        recent: "Recent sessions",
+        recent: "Recent sessions", noRecent: "No pending completions or input requests.",
         showActivity: "Show active sessions",
         showProjects: "Show projects",
         noActivity: "No active Agent sessions on this device.",
@@ -236,6 +237,7 @@ export const resources = {
         search: "Search current output", history: "Native history", moreHistory: "Load more history", waitingForOutput: "Waiting for output…", message: "Send text", send: "Send",
         openTerminal: "Handle in full terminal", terminalFallback: "This native TUI was not recognized reliably. Open the full terminal; no options were guessed.", resynced: "The retained cursor expired. Old output was cleared before loading a bounded tail.",
         otherClientTyping: "Another client is typing…", inputUnknown: "Input result is unknown and was not replayed.", endedCleanly: "Session ended and its process group was cleaned.", cleanupUnverified: "Full process-group cleanup could not be proven.", stopped: "Session stopped safely.",
+        remove: "Remove", removeBody: "Permanently delete this session history and associated data? Any running process will be stopped first. This cannot be undone. Project source files will not be deleted.", archiveBody: "Stop and archive this session? Its history is retained and can be restored from archives.", removeArchived: "The session was archived, but permanent deletion failed. You can retry removal.", restartAvailable: "This session has stopped. Choose Restart to start it again.", retryAttach: "Retry terminal connection",
         restorePhoneSize: "Restore phone size",
         appearance: {
           title: "Theme",

@@ -81,8 +81,8 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-003 — Recent、Session 菜单与打开恢复
-- Status: in_progress
+### [x] T-003 — Recent、Session 菜单与打开恢复
+- Status: done
 - Owner: coordinator
 - Objective: 实施待处理队列、黄点、长按菜单、停止会话 Restart 及顶部六项操作。
 - Inputs and prerequisites: U3/U4/U5，现有协议能力。
@@ -92,12 +92,12 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Execution steps: 确定事件确认边界；修复失败的停止会话附加；实现菜单与危险操作确认；回归。
 - Acceptance criteria: U3/U4/U5；已停止不能盲目 attach；失败不清提醒。
 - Verification method: Dashboard/Workspace/Model/App Vitest，最终模拟器。
-- Validation evidence: Not run.
+- Validation evidence: Baseline regressions reproduced missing ended-session Restart and wrong Recent/dot placement. Mobile full suite: 17 files / 99 tests pass; frontend build passes. Added receipts/new-event, long-press cancellation, permanent-delete ordering/partial failure, keyboard menu, stopped attach and reconnect cursor tests. Runtime verification deferred to T-006.
 - Blocker: None.
 - Unblock condition: None.
 
 ### [ ] T-004 — 桌面状态及菜单文案
-- Status: pending
+- Status: in_progress
 - Owner: coordinator
 - Objective: 显示层统一退出标签，简化菜单并移除 Interrupt 项。
 - Inputs and prerequisites: U6 和现有桌面菜单/locale。
@@ -151,6 +151,8 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
+
+- 2026-09-05: T-003 completed. Recent uses authoritative unread attention with confirmed-open cursor receipts; hidden terminal output no longer consumes new attention. Added long-press/actions and two-step confirmed permanent deletion using existing archive/purge contracts. Stopped hosts no longer blindly attach. Top menu is portaled and contains exactly six actions; title returns to list. All 99 Mobile tests pass; T-004 started.
 
 - 2026-09-05: T-002 completed. Native host listing hardcoded disconnected; adapter allowed older snapshots to overwrite events; native reconnect stopped after three delays. Authoritative phases, snapshot fencing, bounded-delay retry and attempt ownership now covered. T-003 started.
 

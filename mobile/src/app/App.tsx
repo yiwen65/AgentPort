@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState, type TouchEvent } from "react";
+import { useCallback, lazy, Suspense, useEffect, useRef, useState, type TouchEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { HostManager } from "../features/hosts-auth/HostManager";
 import type { HostAuthClient } from "../features/hosts-auth/types";
@@ -21,6 +21,8 @@ interface AppProps {
 export function App({ client, hostAuthClient }: AppProps) {
   useApplyAppAppearance();
   const { t } = useTranslation();
+  const [openedSession, setOpenedSession] = useState<{ open: OpenSession; token: number }>();
+  const handleSessionOpened = useCallback((open: OpenSession) => setOpenedSession(previous => ({ open, token: (previous?.token ?? 0) + 1 })), []);
   const [selectedSession, setSelectedSession] = useState<OpenSession>();
   const [terminalVisible, setTerminalVisible] = useState(false);
   useTerminalImmersion(terminalVisible);
@@ -107,6 +109,7 @@ export function App({ client, hostAuthClient }: AppProps) {
         <SessionDashboard
           client={client}
           onOpenSession={openSession}
+          openedSession={openedSession}
           onManageDevices={() => setDeviceManagerOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
         />
@@ -120,6 +123,7 @@ export function App({ client, hostAuthClient }: AppProps) {
               active={terminalVisible}
               open={selectedSession}
               client={client}
+              onOpened={handleSessionOpened}
               onClose={() => setTerminalVisible(false)}
               onSessionChanged={handleSessionChanged}
             />

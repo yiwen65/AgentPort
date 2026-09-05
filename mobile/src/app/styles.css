@@ -225,3 +225,8 @@ html, body, .mobile-session-sidebar, .project-group, .centered-modal, .mobile-si
 .mobile-settings .mobile-terminal-theme-choice-body {
   transition: background-color 180ms ease, color 180ms ease, border-color 180ms ease;
 }
+
+.terminal-title-back { display: block; width: 100%; min-height: 44px; overflow: hidden; padding: 0; border: 0; background: var(--terminal-bg); color: var(--text); font: inherit; text-align: left; text-overflow: ellipsis; white-space: nowrap; pointer-events: auto; }
+.terminal-ended { flex: 0 0 auto; padding: 12px 16px; color: var(--muted); }
+.terminal-ended p { margin: 0 0 10px; }
+.session-row-actions form label { display: grid; gap: 8px; }

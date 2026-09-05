@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useId, useRef, useState } from "react";
 import { AgentPortMark } from "../../components/AgentPortMark";
+import { SessionRowActions } from "./SessionRowActions";
+import { pendingAttention, readReceipts, receiptKey, RECEIPTS_KEY } from "./sessionRecent";
 import { SessionStateBadge } from "./SessionStateBadge";
 import { AgentIcon } from "../../components/AgentIcons";
 import { Modal } from "../../components/Modal";
@@ -111,18 +113,33 @@ function AgentGlyph({ agent }: { agent: string }) {
   </svg>;
 }
 
-function SessionRow({ session, host, stale, onOpen }: {
+function SessionRow({ session, host, stale, onOpen, onActions }: {
   session: SessionSummary;
   host: HostProfileSummary;
   stale?: boolean;
   onOpen: () => void;
+  onActions: () => void;
 }) {
   const { t } = useTranslation();
   const id = useId();
+  const press = useRef<{ x: number; y: number; timer: number }>();
+  const consumed = useRef(false);
+  const cancelPress = () => { window.clearTimeout(press.current?.timer); press.current = undefined; };
+  useEffect(() => cancelPress, []);
   const disabled = Boolean(session.archivedAt) || host.connectionState !== "connected";
   return (
     <li className={`v2-session-row${session.unreadAttention ? " has-unread" : ""}`}>
-      <button type="button" data-session-id={session.id} disabled={disabled} onClick={onOpen} aria-labelledby={`${id}-title`} aria-describedby={`${id}-status`}>
+      <button type="button" data-session-id={session.id} disabled={disabled}
+        onPointerDown={event => {
+          cancelPress(); consumed.current = false;
+          if (event.button !== 0 || disabled) return;
+          press.current = { x: event.clientX, y: event.clientY, timer: window.setTimeout(() => { consumed.current = true; cancelPress(); onActions(); }, 500) };
+        }}
+        onPointerMove={event => { if (press.current && Math.hypot(event.clientX - press.current.x, event.clientY - press.current.y) > 8) cancelPress(); }}
+        onPointerUp={cancelPress} onPointerCancel={cancelPress} onPointerLeave={cancelPress}
+        onContextMenu={event => { event.preventDefault(); cancelPress(); consumed.current = true; onActions(); }}
+        onKeyDown={event => { if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) { event.preventDefault(); cancelPress(); onActions(); } }}
+        onClick={() => { if (consumed.current) { consumed.current = false; return; } onOpen(); }} aria-labelledby={`${id}-title`} aria-describedby={`${id}-status`}>
         <span className="session-row-copy">
           <span id={`${id}-status`} className="session-row-status"><SessionStateBadge session={session} stale={stale || host.connectionState !== "connected"} /></span>
           <strong id={`${id}-title`}>{session.title}</strong>
@@ -134,13 +151,17 @@ function SessionRow({ session, host, stale, onOpen }: {
   );
 }
 
-export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpenSettings }: {
+export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpenSettings, openedSession }: {
   client: RemoteClient;
   onOpenSession: (session: OpenSession) => void;
   onManageDevices?: () => void;
   onOpenSettings?: () => void;
+  openedSession?: { open: OpenSession; token: number };
 }) {
   const { t } = useTranslation();
+  const [receipts, setReceipts] = useState(readReceipts);
+  const [rowActions, setRowActions] = useState<{ hostId: string; session: SessionSummary }>();
+  const refreshEpoch = useRef(0);
   const [hosts, setHosts] = useState<HostProfileSummary[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState(() => {
     try { return localStorage.getItem(DEVICE_KEY) ?? ""; } catch { return ""; }
@@ -173,6 +194,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
 
   const refreshDevice = useCallback(async (deviceId: string) => {
     if (!deviceId) return;
+    const epoch = ++refreshEpoch.current;
     try {
       const [sessions, projects, agents, preferences] = await Promise.all([
         client.request<SessionSummary[]>(deviceId, "session.list", { includeArchived: false }),
@@ -180,10 +202,10 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         client.request<SupportedAgent[]>(deviceId, "agent.supported", {}),
         client.request<AgentPreferences>(deviceId, "agent.preferences", {}),
       ]);
-      if (!mounted.current || deviceId !== selectedDeviceRef.current) return;
+      if (!mounted.current || deviceId !== selectedDeviceRef.current || epoch !== refreshEpoch.current) return;
       setSnapshot({ sessions, projects, agents, preferences, cached: false });
     } catch (error) {
-      if (!mounted.current || deviceId !== selectedDeviceRef.current) return;
+      if (!mounted.current || deviceId !== selectedDeviceRef.current || epoch !== refreshEpoch.current) return;
       setSnapshot((current) => ({
         sessions: current?.sessions ?? [],
         projects: current?.projects ?? [],
@@ -193,26 +215,25 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         error: errorText(error),
       }));
     }
-  }, [client, selectedDeviceId]);
+  }, [client]);
 
   useEffect(() => {
     mounted.current = true;
+    let cancelled = false;
     let unsubscribe: (() => Promise<void>) | undefined;
-    void client.listHostProfiles().then((profiles) => {
-      if (!mounted.current) return;
-      setHosts(profiles);
-      setSelectedDeviceId((current) => profiles.some((profile) => profile.id === current) ? current : profiles[0]?.id ?? "");
-    }).catch((error) => setActionError(errorText(error))).finally(() => mounted.current && setLoading(false));
-    void client.onConnectionState((event) => {
-      setHosts((current) => current.map((host) => host.id === event.profileId ? { ...host, connectionState: event.state } : host));
-      if (event.profileId === selectedDeviceId && event.state === "connected") void refreshDevice(event.profileId);
-      if (event.profileId === selectedDeviceId && event.state !== "connected") setSnapshot((current) => current ? { ...current, cached: true } : current);
-    }).then((value) => { if (!mounted.current) void value(); else unsubscribe = value; });
-    return () => {
-      mounted.current = false;
-      if (unsubscribe) void unsubscribe();
-    };
-  }, [client, refreshDevice, selectedDeviceId]);
+    const phases = new Map<string, ConnectionState>();
+    void client.onConnectionState(event => {
+      if (cancelled) return;
+      phases.set(event.profileId, event.state);
+      setHosts(current => current.map(host => host.id === event.profileId ? { ...host, connectionState: event.state } : host));
+    }).then(value => { if (cancelled) void value(); else unsubscribe = value; });
+    void client.listHostProfiles().then(profiles => {
+      if (cancelled) return;
+      setHosts(profiles.map(profile => ({ ...profile, connectionState: phases.get(profile.id) ?? profile.connectionState })));
+      setSelectedDeviceId(current => profiles.some(profile => profile.id === current) ? current : profiles[0]?.id ?? "");
+    }).catch(error => { if (!cancelled) setActionError(errorText(error)); }).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; mounted.current = false; if (unsubscribe) void unsubscribe(); };
+  }, [client]);
 
   useEffect(() => {
     if (!selectedDeviceId) {
@@ -225,9 +246,33 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     setWorkspace(restored);
     if (restored.scrollTop > 0) window.requestAnimationFrame(() => window.scrollTo({ top: restored.scrollTop, behavior: "auto" }));
     setSnapshot(undefined);
-    const host = hosts.find((candidate) => candidate.id === selectedDeviceId);
-    if (host?.connectionState === "connected") void refreshDevice(selectedDeviceId);
-  }, [hosts, refreshDevice, selectedDeviceId]);
+    setRowActions(undefined);
+  }, [selectedDeviceId]);
+
+  useEffect(() => {
+    if (selectedHost?.connectionState === "connected") void refreshDevice(selectedDeviceId);
+    else setSnapshot(current => current ? { ...current, cached: true } : current);
+  }, [selectedDeviceId, selectedHost?.connectionState, refreshDevice]);
+
+  useEffect(() => {
+    const opened = openedSession?.open;
+    const status = opened?.session.latestStatus;
+    if (!opened || !status || !opened.session.unreadAttention) return;
+    let cancelled = false;
+    void client.request(opened.hostProfileId, "session.seen.mark", { sessionId: opened.session.id, cursor: { runId: status.runId, runOrdinal: status.runOrdinal, sequence: status.sequence } }).then(() => {
+      if (cancelled) return;
+      setReceipts(current => {
+        const key = receiptKey(opened.hostProfileId, opened.session.id);
+        const previous = current[key];
+        if (previous && (previous.runOrdinal > status.runOrdinal || (previous.runOrdinal === status.runOrdinal && previous.sequence >= status.sequence))) return current;
+        const next = { ...current, [key]: { runOrdinal: status.runOrdinal, sequence: status.sequence } };
+        try { localStorage.setItem(RECEIPTS_KEY, JSON.stringify(next)); } catch { /* live receipt remains valid without storage */ }
+        return next;
+      });
+      if (selectedDeviceRef.current === opened.hostProfileId) void refreshDevice(opened.hostProfileId);
+    }).catch(error => { if (!cancelled) setActionError(errorText(error)); });
+    return () => { cancelled = true; };
+  }, [client, openedSession, refreshDevice]);
 
   useEffect(() => () => {
     if (selectedDeviceId) persistWorkspace(selectedDeviceId, { ...workspaceRef.current, recentOpen: false, scrollTop: window.scrollY });
@@ -250,11 +295,13 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   useEffect(() => {
     if (!selectedDeviceId || selectedHost?.connectionState !== "connected") return;
     let busy = false;
+    let cancelled = false;
     const poll = async () => {
       if (busy) return;
       busy = true;
       try {
         const result = await client.request<AttentionPollResult>(selectedDeviceId, "attention.poll", { cursor: attentionCursor.current ?? null, limit: 256 });
+        if (cancelled || selectedDeviceRef.current !== selectedDeviceId) return;
         const wasSeeded = attentionSeeded.current;
         if (wasSeeded && result.events.length) {
           const titles = new Map((snapshotRef.current?.sessions ?? []).map((session) => [session.id, session.title]));
@@ -268,6 +315,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
             occurredAt: event.cursor.occurredAt,
           })), deliveredAttention.current, notificationSink.current).catch((error) => setNotificationError(errorText(error)));
         }
+        if (cancelled || selectedDeviceRef.current !== selectedDeviceId) return;
         if (result.nextCursor) {
           attentionCursor.current = result.nextCursor;
           try { localStorage.setItem(`${ATTENTION_CURSOR_PREFIX}${selectedDeviceId}`, JSON.stringify(result.nextCursor)); } catch { /* cursor persistence is best effort */ }
@@ -286,7 +334,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     };
     void poll();
     const timer = window.setInterval(() => void poll(), 5_000);
-    return () => window.clearInterval(timer);
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, [client, selectedDeviceId, selectedHost?.connectionState]);
 
   useEffect(() => {
@@ -310,10 +358,11 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     }
     return [...known.values()].sort((a, b) => Number(b.pinned) - Number(a.pinned) || a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
   }, [sessions, snapshot?.projects]);
-  const recent = useMemo(() => [...sessions].sort((a, b) => sessionTime(b) - sessionTime(a)).slice(0, 12), [sessions]);
+  const recent = useMemo(() => sessions.filter(session => pendingAttention(session, receipts[receiptKey(selectedDeviceId, session.id)])).sort((a, b) => sessionTime(b) - sessionTime(a)), [sessions, receipts, selectedDeviceId]);
 
   const open = (session: SessionSummary) => {
     if (!selectedHost) return;
+    updateWorkspace({ ...workspace, recentOpen: false });
     onOpenSession({
       hostProfileId: selectedHost.id,
       hostName: selectedHost.name,
@@ -388,7 +437,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
           </select>
         </label>
         <span className="toolbar-spacer" />
-        <button type="button" className="toolbar-icon-button" disabled={!selectedHost} onClick={() => updateWorkspace({ ...workspace, recentOpen: true })} aria-label={t("dashboard.recent")}><Icon name="clock" /></button>
+        <button type="button" className="toolbar-icon-button" disabled={!selectedHost} onClick={() => updateWorkspace({ ...workspace, recentOpen: true })} aria-label={t("dashboard.recent")}><Icon name="clock" />{recent.length > 0 ? <span className="toolbar-attention" aria-hidden="true" /> : null}</button>
         <button type="button" className="toolbar-icon-button" disabled={!selectedDeviceId} onClick={() => void refreshDevice(selectedDeviceId)} aria-label={t("dashboard.refresh")}><Icon name="refresh" /></button>
         <button
           type="button"
@@ -398,7 +447,6 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
           onClick={() => updateWorkspace({ ...workspace, layout: workspace.layout === "projects" ? "active" : "projects" })}
         >
           <Icon name="bell" />
-          {active.some((session) => session.unreadAttention) ? <span className="toolbar-attention" aria-hidden="true" /> : null}
         </button>
         <button type="button" className="toolbar-icon-button" onClick={onOpenSettings} disabled={!onOpenSettings} aria-label={t("settings.title", { defaultValue: "Settings" })} aria-haspopup="dialog"><Icon name="settings" /></button>
       </header>
@@ -432,10 +480,10 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
                 setCreatedSessionId(undefined);
               }}><AgentPortMark /></button>
             </header>
-            <div className={`project-content${expanded ? " is-expanded" : ""}`} aria-hidden={!expanded} {...(expanded ? {} : { inert: "" })}><div><ul className="v2-session-list">{projectSessions.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} stale={snapshot?.cached} onOpen={() => open(session)} />)}</ul></div></div>
+            <div className={`project-content${expanded ? " is-expanded" : ""}`} aria-hidden={!expanded} {...(expanded ? {} : { inert: "" })}><div><ul className="v2-session-list">{projectSessions.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} stale={snapshot?.cached} onOpen={() => open(session)} onActions={() => { updateWorkspace({ ...workspace, recentOpen: false }); setRowActions({ hostId: selectedDeviceId, session }); }} />)}</ul></div></div>
           </section>;
         })}
-      </div> : <div className="activity-session-view"><ul className="v2-session-list active-agent-list">{active.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} stale={snapshot?.cached} onOpen={() => open(session)} />)}</ul>{snapshot && active.length === 0 ? <div className="compact-empty" role="status">{t("dashboard.noActivity")}</div> : null}</div>}
+      </div> : <div className="activity-session-view"><ul className="v2-session-list active-agent-list">{active.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} stale={snapshot?.cached} onOpen={() => open(session)} onActions={() => { updateWorkspace({ ...workspace, recentOpen: false }); setRowActions({ hostId: selectedDeviceId, session }); }} />)}</ul>{snapshot && active.length === 0 ? <div className="compact-empty" role="status">{t("dashboard.noActivity")}</div> : null}</div>}
 
       {snapshot && sessions.length === 0 ? <div className="state-card" role="status">{t("dashboard.noSessions")}</div> : null}
 
@@ -450,10 +498,13 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         </ul>
       </Modal> : null}
 
+      {rowActions && rowActions.hostId === selectedDeviceId ? <SessionRowActions session={rowActions.session} hostId={rowActions.hostId} client={client} onClose={() => setRowActions(undefined)} onChanged={() => void refreshDevice(rowActions.hostId)} /> : null}
+
       {workspace.recentOpen ? <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) updateWorkspace({ ...workspace, recentOpen: false }); }}>
         <section className="modal-sheet recent-sheet" role="dialog" aria-modal="true" aria-labelledby="recent-title">
           <header><h2 id="recent-title">{t("dashboard.recent")}</h2><button type="button" aria-label={t("common.close")} onClick={() => updateWorkspace({ ...workspace, recentOpen: false })}>×</button></header>
-          <ul className="v2-session-list">{recent.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} stale={snapshot?.cached} onOpen={() => open(session)} />)}</ul>
+          {recent.length === 0 ? <p role="status">{t("dashboard.noRecent")}</p> : null}
+          <ul className="v2-session-list">{recent.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} stale={snapshot?.cached} onOpen={() => open(session)} onActions={() => { updateWorkspace({ ...workspace, recentOpen: false }); setRowActions({ hostId: selectedDeviceId, session }); }} />)}</ul>
         </section>
       </div> : null}
     </section>
