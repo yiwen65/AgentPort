@@ -7,7 +7,6 @@ import { AgentIcon } from "./AgentIcons";
 import { api, errorText } from "../api";
 import {
   copyTextWithToast,
-  interruptSessionFlow,
   openNewSessionDialog,
   removeProjectFlow,
   removeWorktreeFlow,
@@ -499,11 +498,6 @@ function sessionMenu(
           },
         ]
       : []),
-    {
-      label: t("session:ui.menu.interrupt"),
-      disabled: ses.lifecycle !== "running",
-      action: () => void interruptSessionFlow(ses.id),
-    },
     {
       label: t("session:ui.menu.stop"),
       danger: true,

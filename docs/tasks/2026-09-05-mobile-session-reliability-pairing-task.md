@@ -96,8 +96,8 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-004 — 桌面状态及菜单文案
-- Status: in_progress
+### [x] T-004 — 桌面状态及菜单文案
+- Status: done
 - Owner: coordinator
 - Objective: 显示层统一退出标签，简化菜单并移除 Interrupt 项。
 - Inputs and prerequisites: U6 和现有桌面菜单/locale。
@@ -107,12 +107,12 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Execution steps: 定位所有相关 UI 消费点；修改显示/翻译；定向验证。
 - Acceptance criteria: U6，保留内部控制能力和退出码诊断。
 - Verification method: 桌面定向 Vitest、i18n检查、前端构建。
-- Validation evidence: Not run.
+- Validation evidence: 4 desktop test files / 22 tests pass, TypeScript/Vite build passes. Full i18n checker is blocked by 3 pre-existing stale Rust allowlist entries in unchanged main.rs (Qoder/Pi defaults); no task-introduced translation errors reported. Runtime screenshots reserved for T-006.
 - Blocker: None.
 - Unblock condition: None.
 
 ### [ ] T-005 — 首次安全扫码配对
-- Status: pending
+- Status: in_progress
 - Owner: coordinator
 - Objective: 实现可撤销的二维码公钥配对及两端独立 UI/原生组件。
 - Inputs and prerequisites: U7，SSH 可用，不修改现有用户凭据进行验证。
@@ -151,6 +151,8 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
+
+- 2026-09-05: T-004 completed: both ended lifecycles use Stoped label/color, exit code remains separate diagnostic detail. Context menu and command palette have concise action names and no Interrupt entry. 22 tests and desktop build pass; i18n baseline allowlist issue documented, not silently fixed. T-005 started.
 
 - 2026-09-05: T-003 completed. Recent uses authoritative unread attention with confirmed-open cursor receipts; hidden terminal output no longer consumes new attention. Added long-press/actions and two-step confirmed permanent deletion using existing archive/purge contracts. Stopped hosts no longer blindly attach. Top menu is portaled and contains exactly six actions; title returns to list. All 99 Mobile tests pass; T-004 started.
 

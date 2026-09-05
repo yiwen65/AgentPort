@@ -13,12 +13,12 @@
     "renameSession": "Rename “{{title}}”…",
     "copySessionId": "Copy current Session ID",
     "sessionIdCopied": "Session ID copied",
-    "exportMarkdown": "Export current Session as Markdown…",
-    "exportLog": "Export current Session conversation JSON…",
-    "restartSession": "Restart and resume current Session…",
+    "exportMarkdown": "Export Markdown",
+    "exportLog": "Export Json",
+    "restartSession": "Restart",
     "interruptSession": "Interrupt current Session (Ctrl-C)",
     "resumeSession": "Resume suspended Agent",
-    "stopSession": "Stop current Session…",
+    "stopSession": "Stop",
     "title": "Command Palette",
     "filterPlaceholder": "Type to filter actions…",
     "filterAria": "Filter Command Palette",
@@ -80,8 +80,8 @@
       "creating": "Creating",
       "running": "Running",
       "interrupted": "Interrupted",
-      "exited": "Exited",
-      "stopped": "Stopped"
+      "exited": "Stoped",
+      "stopped": "Stoped"
     }
   },
   "export": {

@@ -732,21 +732,17 @@ function SessionOverlay({ ses }: { ses: SessionView }) {
   if (ses.lifecycle === "exited" || ses.lifecycle === "stopped" || r.exit) {
     const code = r.exit?.code;
     const signal = r.exit?.signal;
-    const stopped = ses.lifecycle === "stopped";
     return (
       <div className="term-overlay">
         <div className="overlay-card session-state-card" role="alert">
           <SessionAgentMark adapter={ses.adapter} />
           <h3>{ses.title}</h3>
           <p className="session-state-label">
-            {stopped
-              ? t("ui.lifecycle.stopped")
-              : code !== null && code !== undefined
-                ? t("ui.lifecycle.exitedWithCode", { code })
-                : t("ui.lifecycle.exited")}
+            {t("ui.lifecycle.stopped")}
           </p>
-          {(signal !== null && signal !== undefined) || r.exit?.groupCleaned === false ? (
+          {(code !== null && code !== undefined) || (signal !== null && signal !== undefined) || r.exit?.groupCleaned === false ? (
             <p className="session-state-detail">
+              {code !== null && code !== undefined ? <span>{t("ui.lifecycle.exitedWithCode", { code })} </span> : null}
               {signal !== null && signal !== undefined
                 ? t("ui.lifecycle.terminatedBySignal", { signal })
                 : ""}

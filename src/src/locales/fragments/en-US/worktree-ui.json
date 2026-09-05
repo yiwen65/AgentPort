@@ -127,8 +127,8 @@
           "creating": "Creating",
           "running": "Running",
           "interrupted": "Interrupted",
-          "exited": "Exited",
-          "stopped": "Stopped"
+          "exited": "Stoped",
+          "stopped": "Stoped"
         },
         "stopping": "Stopping “{{title}}” safely ({{current}}/{{total}})…",
         "stoppedSummary": "Safely stopped {{count}} Sessions.",

@@ -7,7 +7,6 @@ import Modal from "./Modal";
 import {
   ackTimelineFlow,
   copyTextWithToast,
-  interruptSessionFlow,
   openNewSessionDialog,
   renameSessionFlow,
   resumeSessionFlow,
@@ -105,9 +104,6 @@ export default function CommandPalette() {
       act("restart", t("palette.restartSession"), () => void restartSessionFlow(activeSes.id));
       if (s.runtime[activeSes.id]?.suspended) {
         act("resume", t("palette.resumeSession"), () => void resumeSessionFlow(activeSes.id));
-      }
-      if (activeSes.lifecycle === "running") {
-        act("interrupt", t("palette.interruptSession"), () => void interruptSessionFlow(activeSes.id));
       }
       act("stop", t("palette.stopSession"), () => void stopSessionFlow(activeSes.id));
     }

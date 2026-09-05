@@ -9,13 +9,13 @@
     },
     "menu": {
       "copyId": "Copy Session ID",
-      "exportMarkdown": "Export Markdown…",
-      "exportRawLog": "Export conversation JSON…",
-      "restartAndResume": "Restart and resume…",
+      "exportMarkdown": "Export Markdown",
+      "exportRawLog": "Export Json",
+      "restartAndResume": "Restart",
       "resume": "Resume suspended Agent",
       "interrupt": "Interrupt (Ctrl-C)",
-      "stop": "Stop Session…",
-      "remove": "Remove Session…"
+      "stop": "Stop",
+      "remove": "Remove"
     },
     "toast": {
       "idCopied": "Session ID copied"
@@ -36,8 +36,8 @@
       "connectingHost": "Creating: connecting to Session Host",
       "interruptedResumable": "Interrupted; ready to resume\nResume precision: {{precision}}",
       "exitedWithCode": "Exited (code {{code}})",
-      "exited": "Exited",
-      "stopped": "Stopped",
+      "exited": "Stoped",
+      "stopped": "Stoped",
       "unknownNoEvent": "Status unknown: no status event received",
       "sourceConfidence": "Source: {{source}} · {{confidence}}",
       "time": "Time: {{time}}",
@@ -50,9 +50,9 @@
       "interrupted": "Session interrupted",
       "latestContextWarning": "Some context from this run may be missing.",
       "unavailableResumeWarning": "No resumable identifier is available; restarting will create a new Session.",
-      "stopped": "Session stopped",
-      "exitedWithCode": "Session exited (code {{code}})",
-      "exited": "Session exited",
+      "stopped": "Stoped",
+      "exitedWithCode": "Exit code: {{code}}",
+      "exited": "Stoped",
       "terminatedBySignal": "Terminated by signal {{signal}}.",
       "groupCleanupUnconfirmed": "Process-group cleanup could not be fully confirmed. Check Diagnostics.",
       "readOnlyHistory": "The terminal above shows read-only history. {{note}}"

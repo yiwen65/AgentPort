@@ -15,7 +15,7 @@ export function dotClassFor(ses: SessionView): string {
     case "interrupted":
       return "interrupted";
     case "exited":
-      return "exited";
+      return "stopped";
     case "stopped":
       return "stopped";
     case "running":
@@ -31,13 +31,7 @@ function translatedDotTipFor(ses: SessionView, t: TFunction<"session">): string 
       precision: precisionLabel(ses.resumePrecision),
     });
   }
-  if (ses.lifecycle === "exited") {
-    const code = rt.exit?.code;
-    return code !== undefined && code !== null
-      ? t("ui.status.exitedWithCode", { code })
-      : t("ui.status.exited");
-  }
-  if (ses.lifecycle === "stopped") return t("ui.status.stopped");
+  if (ses.lifecycle === "exited" || ses.lifecycle === "stopped") return t("ui.status.stopped");
   const ev = rt.status ?? ses.status;
   if (!ev) return t("ui.status.unknownNoEvent");
   const lines = [

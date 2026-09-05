@@ -127,7 +127,7 @@
           "creating": "正在创建",
           "running": "运行中",
           "interrupted": "已中断",
-          "exited": "已退出",
+          "exited": "已停止",
           "stopped": "已停止"
         },
         "stopping": "正在安全停止“{{title}}”（{{current}}/{{total}}）…",

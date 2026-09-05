@@ -302,7 +302,7 @@ describe("TerminalArea recursive panes", () => {
       "最大化分屏",
       "从分屏移除",
       "重命名",
-      "停止 Session…",
+      "停止",
     ]));
     expect(labels).not.toContain("全选");
     expect(labels).not.toContain("查找…");
@@ -315,7 +315,7 @@ describe("TerminalArea recursive panes", () => {
     expect(renameSessionFlowMock).toHaveBeenCalledWith(ptyA.id);
 
     const stopItem = getState().contextMenu?.items.find(
-      (item) => item.label === "停止 Session…",
+      (item) => item.label === "停止",
     );
     expect(stopItem?.danger).toBe(true);
     stopItem?.action?.();
