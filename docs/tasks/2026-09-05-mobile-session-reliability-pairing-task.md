@@ -159,8 +159,8 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-008 — 独立后台 Connector 与本地控制
-- Status: pending
+### [x] T-008 — 独立后台 Connector 与本地控制
+- Status: done
 - Owner: coordinator
 - Objective: GUI 退出后保持出站 Relay、配对确认、设备授权撤销与 Bridge 承载。
 - Inputs and prerequisites: T-007 协议与安全通道，现有 Bridge stdio 接口。
@@ -170,7 +170,7 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Execution steps: 身份与本地 IPC；配对状态机；受控 Bridge 子进程；后台生命周期与隔离测试。
 - Acceptance criteria: U7/U9；未授权设备不能启动 Bridge；关闭通道不停止 Session Host；不依赖 GUI。
 - Verification method: 临时目录/loopback/进程测试及 desktop cargo check。
-- Validation evidence: Not run.
+- Validation evidence: cargo test -p agentport-relay --features server,connector: 20 library + 1 CLI pass; optional real_bridge_hello test separately passes with explicit built Bridge path and isolated data/socket root. Covers exact approval, failed/expired/unknown pairing, durable restart, missing key no rekey, storage failure, selected-device-only channel closure, Relay restart and bounded IPC. Strict clippy, client-only check, sidecar build and cargo check -p agentport pass. Detached binary process check verifies PPID 1 after launching process exits, private IPC and explicit stop (unconfigured, no Keychain write). Rebuilt/signed debug app, exact GUI PID 22200/path verified, nonblank screenshot /tmp/relay-desktop-native-stage.png inspected. Tests use an in-memory vault; real Keychain authorization dialogs and configured GUI-exit end-to-end remain T-006. Logs: /tmp/relay-connector-tests.log, /tmp/relay-real-bridge.log, /tmp/relay-connector-process.log, /tmp/relay-connector-clippy.log, /tmp/relay-desktop-check.log, /tmp/relay-debug-app-build.log.
 - Blocker: None.
 - Unblock condition: None.
 
@@ -215,6 +215,10 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 <!-- task-doc-section:execution-log -->
 ## Execution log
 
+- 2026-09-06: T-008 done: independent connector, private same-user IPC/Keychain adapter, exact pairing approval, durable device gate and revoke/Bridge ownership integrated with desktop commands and sidecar scripts. 21 default tests plus explicit real Bridge test pass; launcher-exit process smoke passes without credential creation. Real Bridge test initially assumed a direct result; corrected the fixture reader to consume protocol `accepted` before `result` (no product workaround/replay). Signed debug GUI rebuilt/reopened and nonblank screenshot inspected. T-009/T-010 not started; current visible QR flow remains historical SSH until replacement.
+
+- 2026-09-06: T-008 started by coordinator. Next seam: owned private state/Unix IPC, durable device gate, bounded pairing and Bridge channels; then independent binary/Keychain and desktop sidecar controls. No existing credentials or Session state used in tests.
+
 - 2026-09-06: T-007 done after 14 tests, strict clippy, fmt, server build and isolated CLI startup/shutdown. Added early computer pinning regression and descriptor-based private token loading. Multi-chunk flush originally lost queued data on drop (UnexpectedEof); downstream sent-byte acknowledgement fixes it without test sleeps; stalled consumer is now verified to close within bounded deadline. LEARNS.md remains untouched because it is protected pre-existing work. Endpoint authorization/GUI-exit/revocation remain T-008+, not inferred from crypto tests.
 
 - 2026-09-06: 用户确认 Relay 修订：配对和数据全部中转、不依赖 SSH、独立后台进程、交付自部署服务但不公网部署。保留本文件为唯一状态记录；T-005 作为历史实现，T-007 started，后续串行 T-008/T-009/T-010，再回到 T-006。
@@ -240,8 +244,8 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 - Result: partial
-- Evidence: Historical T-001 through T-005 implementation is committed. Revised Relay scope is in progress (T-007 through T-010); historical SSH verification does not validate the new architecture.
-- Limitations: Relay foundation is verified in isolation; native/background/UI integration is not yet implemented or verified. The historical SSH port22 prerequisite is superseded; the simulator still has no camera. No physical camera, physical keyboard/gesture, Android, Wi-Fi/cellular switch or full first-time SSH pairing/revocation-login claim. Full desktop i18n checker still reports only the three documented pre-existing stale Rust allowlist entries.
+- Evidence: Historical T-001 through T-005 implementation is committed. Revised Relay T-007/T-008 foundations are independently verified; T-009/T-010 Mobile/UI integration remains pending. Historical SSH verification does not validate the new architecture.
+- Limitations: Relay server and background/native control foundations are verified in isolation; Mobile transport and QR UI replacement are not implemented. Full configured GUI-exit/Keychain/device runtime acceptance remains T-006. The historical SSH port22 prerequisite is superseded; the simulator still has no camera. No physical camera, physical keyboard/gesture, Android, Wi-Fi/cellular switch or full first-time SSH pairing/revocation-login claim. Full desktop i18n checker still reports only the three documented pre-existing stale Rust allowlist entries.
 
 ### Historical SSH-era runtime evidence (iOS 26.5 / iPhone 17 Pro simulator, macOS debug app)
 

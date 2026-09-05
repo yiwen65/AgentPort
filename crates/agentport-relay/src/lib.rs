@@ -1,6 +1,9 @@
 //! Untrusted WebSocket relay and authenticated end-to-end Noise channels.
 //! No Session command is exposed to the relay server.
+#[cfg(all(feature = "connector", unix))]
+pub mod connector;
 pub mod crypto;
+pub mod endpoint;
 pub mod net;
 pub mod protocol;
 #[cfg(feature = "server")]
@@ -23,6 +26,10 @@ pub enum Error {
     Offline,
     #[error("Relay capacity is busy; try again later")]
     Busy,
+    #[error("Relay secure credential storage is unavailable; no plaintext fallback")]
+    Credential,
+    #[error("Relay local state could not be safely read or persisted")]
+    Storage,
 }
 impl From<snow::Error> for Error {
     fn from(_: snow::Error) -> Self {

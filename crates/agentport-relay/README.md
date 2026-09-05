@@ -4,12 +4,13 @@ Self-hosted, bounded WebSocket routing for native AgentPort endpoints. Both
 computer and phone make outbound connections; the phone does not need a route
 to the computer, and SSH is not part of this transport.
 
-**Integration status:** this crate currently supplies routing, Noise handshakes
-and an encrypted Tokio byte stream. Desktop background authorization, Mobile
-profile integration and QR UI replacement are tracked in T-008–T-010 of
+**Integration status:** this crate supplies routing, Noise handshakes, an
+encrypted Tokio byte stream and the independent desktop authorization/Bridge
+connector. Mobile profile integration and QR UI replacement remain T-009–T-010 of
 [`mobile-session-reliability-pairing-task.md`](../../docs/tasks/2026-09-05-mobile-session-reliability-pairing-task.md).
-The existing apps do not yet use this transport. Do not treat the server alone
-as a complete pairing/authorization system.
+Desktop native background controls are registered; the existing QR UI and Mobile
+transport do not yet use them. Do not treat the server alone as a complete
+pairing/authorization system.
 
 ## Build and isolated local use
 
@@ -99,11 +100,12 @@ a claim of DDoS resistance. Proxy TLS/certificate deployment is not locally test
 - Pairing/session prologues bind the computer route and connection mode;
   pairing additionally binds the invitation ID. Noise transport nonces reject
   altered/repeated ciphertext; reconnect always needs a fresh handshake.
-- The endpoint connector must enforce one authenticated candidate per invitation,
+- The endpoint connector enforces one authenticated candidate per invitation,
   explicit desktop approval, durable authorization, expiry, and revocation.
-  Revocation must first persist removal and close that device's current channels,
-  not stop Session Hosts. Those application guarantees are not implemented by
-  blind routing and must be verified at the connector integration boundary.
+  Revocation first persists removal, then aborts and joins that device's channel
+  tasks before acknowledging; other devices remain connected. It does not issue
+  Session stop/archive operations. These guarantees are tested at the connector
+  boundary, not supplied by blind routing.
 - Stream flush waits for preceding bytes to be sent by the WebSocket pump. It
   does **not** prove the Bridge executed a command. Drop/cancellation closes the
   channel; half-close is not supported. The caller must preserve uncertain-write
@@ -124,8 +126,8 @@ before exposing sensitive real Sessions through a public deployment.
 ## Verification
 
 ```sh
-cargo test -p agentport-relay --features server
-cargo clippy -p agentport-relay --all-targets --features server -- -D warnings
+cargo test -p agentport-relay --features server,connector
+cargo clippy -p agentport-relay --all-targets --features server,connector -- -D warnings
 cargo fmt -p agentport-relay --check
 ```
 
@@ -134,4 +136,91 @@ no existing credentials, SSH configuration, or user Sessions are accessed.
 Coverage includes pinning before identity disclosure, tampering/replay/wrong PSK,
 registration challenge binding, cross-computer Accept isolation, generation
 replacement, queue/socket/frame limits, private token files, and bidirectional
-multi-chunk encrypted streams (including flush-before-drop).
+multi-chunk encrypted streams (including flush-before-drop), exact approval,
+unknown approval key custody, durable device state, revocation closing all and
+only the selected device's channels, Relay restart recovery and bounded local IPC.
+Tests inject an in-memory credential vault; platform Keychain access is not
+claimed from these tests.
+
+To exercise the actual bundled Bridge with a new isolated data/socket root:
+
+```sh
+bash src-tauri/scripts/build-sidecar.sh debug
+AGENTPORT_RELAY_TEST_BRIDGE="$PWD/target/debug/agentport-remote-bridge" \
+  cargo test -p agentport-relay --features server,connector real_bridge_hello \
+  -- --ignored
+```
+
+This optional check sends only Bridge hello and `project.list` into an empty
+fixture database, then revokes its Relay channel; it never accesses user Sessions.
+
+## Independent desktop connector
+
+`agentport-connector` is a separate process built with the `connector` feature
+and bundled beside `agentport-remote-bridge`. It has a fixed Bridge executable
+and argument list (`serve --stdio`), not an IPC-configurable shell command. It
+passes the selected AgentPort data root and Host socket directory to each Bridge.
+Each authenticated phone connection owns only its Bridge attachment process;
+closing the channel kills that Bridge, not any independent Session Host.
+
+Desktop native commands:
+
+- `desktop_relay_start`: explicitly start or reuse this installation's connector.
+- `desktop_relay_status`: get authoritative phase/peer/device/pairing/channel state.
+- `desktop_relay_control`: bounded Configure, Invite, Decide, CloseInvitation,
+  Revoke and Stop requests. Configure contains the deployment token; it is never
+  echoed. Do not log invoke payloads. Failed/unknown mutations must be followed
+  by a status refresh, not automatic replay.
+
+The GUI launches the connector in a separate POSIX session with null stdio;
+closing the GUI does not stop it. Stop is explicit. **No boot/login autostart**
+is installed. A machine restart therefore requires starting it again. GUI app
+updates do not automatically replace an already-running connector: explicitly
+Stop/Start to use the updated sidecar (this disconnects Relay attachments but
+preserves Session Hosts).
+
+Persistent state lives in `<AgentPort data>/relay-connectors/<namespace>/`;
+private Unix IPC lives in `/tmp/agentport-relay-<uid>-<namespace>/control.sock`.
+The namespace hashes the canonical bundle binary directory and data root. This
+keeps debug/release/checkouts distinct while preserving identity across GUI
+restarts and bundle updates at the same path. Install-path changes intentionally
+use another namespace; no credentials are silently migrated. Two installations
+can still expose the same underlying Session data if configured to share it;
+verify the intended computer name/key before approval.
+
+Directories are owner-only (0700); state/lock/socket files are private. Persistent
+state has a lifetime exclusive flock, bounded no-follow regular-file reads and
+atomic write+fsync+rename. Another lifetime lock protects stale IPC socket cleanup.
+IPC checks socket metadata and kernel peer UID on both sides, with at most 8
+clients, 8 KiB requests, 64 KiB responses and read/write deadlines. This is a
+**same-OS-user boundary**, not protection from malicious code already running as
+that user, root, or a compromised GUI; such principals can approve remote access.
+
+Keychain stores newly generated computer identity and registration token under
+random accounts in `com.agentport.relay.connector.v1`. JSON holds only public
+identity, opaque account references and allowed device keys/names/timestamps.
+Configuration is written/read back in Keychain before its metadata is persisted
+or a Relay connection is attempted. Missing/locked credentials fail closed;
+existing identities are never regenerated automatically and no plaintext fallback
+exists. Reconfiguration preserves computer/device identities, stores a new token
+account and closes old Relay channels. Old/new orphan accounts are deliberately
+not deleted after unknown configuration outcomes; operators should retain them
+until the authoritative config is known. Existing manual SSH credentials and
+`authorized_keys` are not read, written, migrated or removed by the connector.
+
+Only an authenticated pairing handshake claims an invitation; the exact
+invitation/request/phone key must match desktop approval. Approval is persisted
+before encrypted success is sent. A phone whose connection disappears while
+approval is in flight must keep its identity/profile for reconciliation. Creating
+another invitation cancels the previous pending exchange, not its already-durable
+authorization. Removing a device rejects future authenticated sessions and closes
+its live channels. A persistence failure reports an error, disables new access
+and still closes the targeted revoked channels; it must not be shown as successful
+revocation across restart until durable state has been verified.
+
+The connector bounds simultaneous handshake/channel work to 32 and live channels
+per device to 8, with at most 64 allowed devices. Its registration retries
+availability failures with delays capped at 32 seconds; an authenticated Relay
+registration refusal waits for explicit reconfiguration. Commands/data are never
+replayed by this layer. Public Relay deployments still need operational abuse
+limits and independent security review.

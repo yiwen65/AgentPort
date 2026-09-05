@@ -14,6 +14,9 @@ tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
 agentport-pairing = { path = "../crates/agentport-pairing" }
+agentport-relay = { path = "../crates/agentport-relay", features = ["connector"] }
+tokio = { version = "1", features = ["sync", "time"] }
+libc = { workspace = true }
 agentport-core = { path = "../crates/agentport-core" }
 agentport-service = { path = "../crates/agentport-service" }
 agentport-remote-protocol = { path = "../crates/agentport-remote-protocol" }
