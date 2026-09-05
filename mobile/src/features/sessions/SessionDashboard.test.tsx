@@ -84,6 +84,18 @@ describe("V2 Session workspace", () => {
       projectExpansionInitialized: true,
     });
   });
+  it("renders only a status glyph, title and time in each row while preserving the accessible status", async () => {
+    const { container } = render(<SessionDashboard client={client()} onOpenSession={vi.fn()} />);
+    const button = await screen.findByRole("button", { name: /Approval task/ });
+    expect(button.querySelector("small")).toBeNull();
+    expect(button.querySelector(".session-row-meta")).toBeNull();
+    expect(button.querySelector(".session-row-copy")?.firstElementChild).toHaveClass("session-row-status");
+    expect(button.querySelector(".session-state .visually-hidden")).not.toBeNull();
+    expect(button).toHaveAccessibleDescription(/Unknown/);
+    fireEvent.click(screen.getByRole("button", { name: "Show active sessions" }));
+    expect(container.querySelector(".active-agent-list")?.children.length).toBeGreaterThan(0);
+  });
+
   it("uses one project launch entry, accessible view labels, and settings", async () => {
     const onOpenSettings = vi.fn();
     const { container } = render(<SessionDashboard client={client()} onOpenSession={vi.fn()} onOpenSettings={onOpenSettings} />);

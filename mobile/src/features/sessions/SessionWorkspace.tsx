@@ -48,7 +48,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   const [otherClientInput, setOtherClientInput] = useState(false);
   const [attachEpoch, setAttachEpoch] = useState(0);
   const [fontSize, setFontSize] = useState(15);
-  const [terminalAppearance] = useMobileTerminalAppearance();
+  const [terminalAppearance, , resolvedMode] = useMobileTerminalAppearance();
   const [branchName, setBranchName] = useState<string>();
   const [confirmStop, setConfirmStop] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
@@ -73,10 +73,10 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   const geometryRef = useRef<TerminalGeometry>();
   const resizeOwnershipEnabled = useRef(true);
   const sourceDeviceId = useRef(mobileDeviceId());
-  const terminalPalette = getMobileTerminalPalette(terminalAppearance.theme, terminalAppearance.mode);
+  const terminalPalette = getMobileTerminalPalette(terminalAppearance.theme, resolvedMode);
   const terminalWorkspaceStyle = {
-    ...getMobileTerminalWorkspaceVariables(terminalAppearance.theme, terminalAppearance.mode),
-    colorScheme: terminalAppearance.mode,
+    ...getMobileTerminalWorkspaceVariables(terminalAppearance.theme, resolvedMode),
+    colorScheme: resolvedMode,
   } as CSSProperties;
 
   useEffect(() => {
@@ -373,7 +373,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
       aria-labelledby="session-title"
       data-connection-state={connectionLabel}
       data-terminal-theme={terminalAppearance.theme}
-      data-terminal-theme-mode={terminalAppearance.mode}
+      data-terminal-theme-mode={resolvedMode}
       style={terminalWorkspaceStyle}
     >
       <header className="session-workspace-header">

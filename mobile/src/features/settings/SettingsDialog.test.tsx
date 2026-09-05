@@ -11,10 +11,14 @@ describe("SettingsDialog", () => {
   });
   afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
-  it("offers six themes and two modes, persists edits, and restores without resetting storage", () => {
+  it("offers one Theme with six palettes and three modes, persists edits, and restores without resetting storage", () => {
     const first = render(<SettingsDialog onClose={vi.fn()} />);
     const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByRole("radio", { name: "Dark" })).toBeChecked();
+    expect(within(dialog).getByText("Theme")).toBeInTheDocument();
+    expect(within(dialog).getAllByRole("radio")).toHaveLength(9);
+    expect(within(dialog).queryByText("Interface appearance")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Terminal appearance")).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("radio", { name: "System" })).toBeChecked();
     expect(within(dialog).getByRole("radio", { name: "One" })).toBeChecked();
     expect(within(within(dialog).getByRole("radiogroup", { name: "Color theme" })).getAllByRole("radio")).toHaveLength(6);
     fireEvent.click(within(dialog).getByRole("radio", { name: "Light" }));
@@ -66,7 +70,7 @@ describe("SettingsDialog", () => {
     await i18n.changeLanguage("zh-CN");
     render(<SettingsDialog onClose={vi.fn()} />);
     const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByText("终端外观")).toBeInTheDocument();
+    expect(within(dialog).getByText("主题")).toBeInTheDocument();
     expect(within(dialog).getByRole("radiogroup", { name: "深浅模式" })).toBeInTheDocument();
     expect(within(dialog).getByRole("radio", { name: "浅色" })).toBeInTheDocument();
     expect(within(dialog).getByRole("radiogroup", { name: "主题色" })).toBeInTheDocument();

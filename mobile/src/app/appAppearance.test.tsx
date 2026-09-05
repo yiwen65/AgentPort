@@ -1,10 +1,13 @@
+import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { APP_APPEARANCE_KEY, loadAppAppearance, useAppAppearance, useApplyAppAppearance } from "./appAppearance";
+import { useApplyAppAppearance } from "./appAppearance";
+import { useMobileTerminalAppearance } from "../terminal/terminalAppearance";
+import { loadMobileTerminalAppearance, MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY as KEY } from "../terminal/terminalThemes";
 
 function Controls() {
-  const { preference, update, resolved } = useAppAppearance();
-  return <><output>{preference}:{resolved}</output>{(["light", "dark", "system"] as const).map(mode => <button key={mode} onClick={() => update(mode)}>{mode}</button>)}</>;
+  const [appearance, update, resolved] = useMobileTerminalAppearance();
+  return <><output>{appearance.theme}:{appearance.mode}:{resolved}</output>{(["light", "dark", "system"] as const).map(mode => <button key={mode} onClick={() => update({ mode })}>{mode}</button>)}</>;
 }
 function AppTheme() { useApplyAppAppearance(); return null; }
 let media: MediaQueryList;
@@ -22,55 +25,66 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-describe("application appearance", () => {
-  it("defaults to system, follows live OS changes, and ignores them under explicit selection", () => {
+describe("unified Theme", () => {
+  it("defaults to One/System, follows OS changes and leaves the persisted preference as system", () => {
     render(<><AppTheme /><Controls /></>);
-    expect(screen.getByText("system:light")).toBeInTheDocument();
+    expect(screen.getByText("one:system:light")).toBeInTheDocument();
+    expect(document.documentElement.style.getPropertyValue("--bg")).toBe("#fafafa");
     system(true);
     expect(document.documentElement).toHaveAttribute("data-app-theme", "dark");
+    expect(document.documentElement.style.getPropertyValue("--bg")).toBe("#282c34");
     fireEvent.click(screen.getByRole("button", { name: "light" }));
-    expect(localStorage.getItem(APP_APPEARANCE_KEY)).toBe("light");
+    expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ theme: "one", mode: "light" });
     system(false); system(true);
-    expect(screen.getByText("light:light")).toBeInTheDocument();
-    expect(document.documentElement).toHaveAttribute("data-app-theme", "light");
+    expect(screen.getByText("one:light:light")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "system" }));
-    expect(screen.getByText("system:dark")).toBeInTheDocument();
+    expect(screen.getByText("one:system:dark")).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem(KEY)!).mode).toBe("system");
   });
 
-  it("restores stored preference without overwriting it on mount and leaves terminal storage alone", () => {
-    localStorage.setItem(APP_APPEARANCE_KEY, "dark");
-    localStorage.setItem("agentport-mobile-v2:terminal-appearance", '{"theme":"ember","mode":"light"}');
+  it("uses existing terminal choices as the source of truth, ignoring the retired independent app preference", () => {
+    localStorage.setItem("agentport-mobile-v2:app-appearance", "dark");
+    localStorage.setItem(KEY, '{"theme":"ember","mode":"light"}');
     const write = vi.spyOn(Storage.prototype, "setItem");
     const view = render(<><AppTheme /><Controls /></>);
-    expect(screen.getByText("dark:dark")).toBeInTheDocument();
+    expect(screen.getByText("ember:light:light")).toBeInTheDocument();
+    expect(document.documentElement).toHaveAttribute("data-theme-family", "ember");
+    expect(document.documentElement.style.getPropertyValue("--bg")).toBe("#fffaf5");
     expect(write).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "light" }));
-    expect(localStorage.getItem("agentport-mobile-v2:terminal-appearance")).toBe('{"theme":"ember","mode":"light"}');
+    fireEvent.click(screen.getByRole("button", { name: "dark" }));
     view.unmount();
     expect(listeners.size).toBe(0);
     expect(document.documentElement).not.toHaveAttribute("data-app-theme");
+    expect(document.documentElement.style.getPropertyValue("--bg")).toBe("");
     render(<Controls />);
-    expect(screen.getByText("light:light")).toBeInTheDocument();
+    expect(screen.getByText("ember:dark:dark")).toBeInTheDocument();
   });
 
-  it("handles invalid and denied storage and still updates mounted consumers", () => {
-    localStorage.setItem(APP_APPEARANCE_KEY, "invalid");
-    expect(loadAppAppearance()).toBe("system");
+  it("keeps mounted and newly opened consumers unified even when persistence fails", () => {
+    localStorage.setItem(KEY, "invalid");
+    expect(loadMobileTerminalAppearance()).toEqual({ theme: "one", mode: "system" });
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("denied"); });
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("denied"); });
-    render(<><AppTheme /><Controls /></>);
+    function LateConsumer() {
+      const [show, setShow] = useState(false);
+      return <><button onClick={() => setShow(true)}>Mount consumer</button>{show ? <Controls /> : null}</>;
+    }
+    render(<><AppTheme /><Controls /><LateConsumer /></>);
     fireEvent.click(screen.getByRole("button", { name: "dark" }));
+    fireEvent.click(screen.getByRole("button", { name: "Mount consumer" }));
     expect(document.documentElement).toHaveAttribute("data-app-theme", "dark");
-    expect(screen.getByText("dark:dark")).toBeInTheDocument();
+    expect(screen.getAllByText("one:dark:dark")).toHaveLength(2);
   });
 
-  it("accepts cross-window storage changes and a clear falls back to system", () => {
+  it("synchronizes external storage updates and resets to system on clear", () => {
     render(<><AppTheme /><Controls /></>);
-    localStorage.setItem(APP_APPEARANCE_KEY, "dark");
-    act(() => window.dispatchEvent(new StorageEvent("storage", { key: APP_APPEARANCE_KEY })));
+    localStorage.setItem(KEY, '{"theme":"sakura","mode":"dark"}');
+    act(() => window.dispatchEvent(new StorageEvent("storage", { key: KEY })));
+    expect(document.documentElement).toHaveAttribute("data-theme-family", "sakura");
     expect(document.documentElement).toHaveAttribute("data-app-theme", "dark");
     localStorage.clear();
     act(() => window.dispatchEvent(new StorageEvent("storage", { key: null })));
+    expect(document.documentElement).toHaveAttribute("data-theme-family", "one");
     expect(document.documentElement).toHaveAttribute("data-app-theme", "light");
   });
 });

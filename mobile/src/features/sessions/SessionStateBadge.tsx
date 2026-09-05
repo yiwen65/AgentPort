@@ -29,6 +29,6 @@ export function SessionStateBadge({ session, stale = false }: { session: Session
   };
   return <span className={`session-state state-${state}${cached ? " is-cached" : ""}`}>
     <svg className={`session-state-glyph${moving ? " is-moving" : ""}`} data-state={state} aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">{glyphs[state]}</svg>
-    <span>{cached ? <span className="session-state-cached">{t("dashboard.states.cached", { defaultValue: "Last known" })} · </span> : null}{t(`dashboard.states.${state}`, { defaultValue: labels[state] })}</span>
+    <span className="visually-hidden">{cached ? <span className="session-state-cached">{t("dashboard.states.cached", { defaultValue: "Last known" })} · </span> : null}{t(`dashboard.states.${state}`, { defaultValue: labels[state] })}</span>
   </span>;
 }

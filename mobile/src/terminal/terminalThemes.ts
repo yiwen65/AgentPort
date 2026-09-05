@@ -554,14 +554,21 @@ export function getMobileTerminalPalette(
   return getMobileTerminalThemeDefinition(value)[normalizeMobileTerminalThemeMode(mode)];
 }
 
+export const MOBILE_THEME_MODES = ["light", "dark", "system"] as const;
+export type MobileThemeMode = (typeof MOBILE_THEME_MODES)[number];
+
+function normalizeMobileThemeMode(value: unknown): MobileThemeMode {
+  return value === "system" || isMobileTerminalThemeMode(value) ? value : "system";
+}
+
 export interface MobileTerminalAppearance {
   readonly theme: MobileTerminalThemeId;
-  readonly mode: MobileTerminalThemeMode;
+  readonly mode: MobileThemeMode;
 }
 
 export const DEFAULT_MOBILE_TERMINAL_APPEARANCE: MobileTerminalAppearance = {
   theme: "one",
-  mode: "dark",
+  mode: "system",
 };
 
 export const MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY =
@@ -586,7 +593,7 @@ export function loadMobileTerminalAppearance(
     const parsed = JSON.parse(raw) as { theme?: unknown; mode?: unknown };
     return {
       theme: normalizeMobileTerminalThemeId(parsed.theme),
-      mode: normalizeMobileTerminalThemeMode(parsed.mode),
+      mode: normalizeMobileThemeMode(parsed.mode),
     };
   } catch {
     return { ...DEFAULT_MOBILE_TERMINAL_APPEARANCE };
@@ -600,7 +607,7 @@ export function saveMobileTerminalAppearance(
   try {
     storage?.setItem(MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY, JSON.stringify({
       theme: normalizeMobileTerminalThemeId(appearance.theme),
-      mode: normalizeMobileTerminalThemeMode(appearance.mode),
+      mode: normalizeMobileThemeMode(appearance.mode),
     }));
   } catch {
     // Appearance persistence is best-effort; the live selection still applies.
@@ -630,8 +637,8 @@ function withAlpha(color: string, alpha: string): string {
 }
 
 /**
- * Scope terminal colors to the Session workspace. The dashboard and host
- * manager are siblings, so these inherited aliases cannot change their theme.
+ * Palette aliases used by the terminal and by the app-wide Theme projection.
+ * Keep xterm colors exact; semantic text roles account for raised UI surfaces.
  */
 export function getMobileTerminalWorkspaceVariables(
   value: unknown,

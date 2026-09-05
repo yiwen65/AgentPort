@@ -1,76 +1,14 @@
+/* The runtime projects every color from the shared terminal theme catalog. */
 :root {
-  color-scheme: light;
+  color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
   font-synthesis: none;
-  /* Cool mineral surfaces. The terminal overrides its own semantic roles locally. */
-  --bg: #edf3f9;
-  --panel: #ffffff;
-  --panel-strong: #e9f0f7;
   --terminal-bg: #282c34;
-  --text: #14263d;
-  --muted: #526479;
-  --tertiary-text: #5f7085;
-  --line: #b9cbdc;
-  --line-soft: #d5e1ee;
-  --fill: #e8f0f8;
-  --fill-strong: #d8e7f5;
-  --accent: #096a99;
-  --accent-strong: #075982;
-  --success: #167053;
-  --warning: #835600;
-  --danger: #b32d4a;
-  --danger-fill: #b32d4a;
-  --primary-fg: #ffffff;
-  --shadow: 0 18px 60px rgba(30, 64, 103, .13);
-  --nav-glass: rgba(237, 243, 249, .9);
-  --content-active: #deeffa;
-  --content-active-ring: #80acc7;
-  --content-highlight: rgba(255, 255, 255, .8);
-  --ambient: rgba(37, 164, 220, .08);
-  --status-waiting-bg: #fff2d5;
-  --status-error-bg: #fde7ec;
-  --modal-scrim: rgba(20, 38, 61, .28);
-  --mark-cyan: #007b9c;
-  --mark-blue: #186ad2;
-  --mark-violet: #6057c6;
-  --mark-dot: #087898;
-  background: var(--bg);
-  color: var(--text);
+  background: var(--bg, #282c34);
+  color: var(--text, #abb2bf);
 }
-
-:root[data-app-theme="dark"] {
-  color-scheme: dark;
-  --bg: #080f1d;
-  --panel: #101d30;
-  --panel-strong: #15263c;
-  --text: #e7f1ff;
-  --muted: #a0b3ca;
-  --tertiary-text: #8ea3bd;
-  --line: #3a516c;
-  --line-soft: #273c56;
-  --fill: #182c43;
-  --fill-strong: #223d59;
-  --accent: #62d9f4;
-  --accent-strong: #a1ecff;
-  --success: #72dfbe;
-  --warning: #ffd083;
-  --danger: #ff9dad;
-  --danger-fill: #b32d4a;
-  --primary-fg: #071b2b;
-  --shadow: 0 24px 80px rgba(0, 5, 15, .48);
-  --nav-glass: rgba(8, 15, 29, .9);
-  --content-active: #173951;
-  --content-active-ring: #3d849e;
-  --content-highlight: rgba(136, 221, 255, .08);
-  --ambient: rgba(49, 121, 183, .13);
-  --status-waiting-bg: #342d21;
-  --status-error-bg: #392333;
-  --modal-scrim: rgba(2, 7, 17, .58);
-  --mark-cyan: #36d8f4;
-  --mark-blue: #589dff;
-  --mark-violet: #abacff;
-  --mark-dot: #acf3ff;
-}
+:root[data-app-theme="light"] { color-scheme: light; }
+:root[data-app-theme="dark"] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
@@ -175,23 +113,19 @@ textarea { resize: vertical; overflow-wrap: anywhere; }
 .project-toggle[aria-expanded="true"] .ui-icon-chevron { transform: rotate(90deg); color: var(--accent-strong); }
 .v2-session-list { margin: 0; padding: 0; list-style: none; }
 .project-group .v2-session-list { margin: 0 12px 4px; }
-.active-agent-list { margin: 0 12px; overflow: hidden; border: 1px solid var(--line-soft); border-radius: 14px; background: var(--panel); }
+.active-agent-list { display: grid; gap: 8px; margin: 12px 12px 0; }
+.active-agent-list > .v2-session-row { padding: 0 12px; border: 1px solid var(--line-soft); border-radius: 12px; background: var(--panel); }
 .v2-session-row { display: block; padding: 0 3px; }
-.v2-session-row > button { width: 100%; min-height: 72px; padding: 12px 0; align-items: flex-start; gap: 10px; }
-.v2-session-row > button > .session-row-copy { display: flex; flex-direction: column; align-items: stretch; gap: 7px; flex: 1; }
-.v2-session-row .session-row-copy strong { font-weight: 550; }
-.session-row-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.v2-session-row .session-row-meta small { display: inline; color: var(--muted); font-size: 12px; font-weight: 500; }
-.v2-session-row time { padding-top: 1px; font-size: 13px; }
-.session-unread { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-size: 12px; font-weight: 600; }
+.v2-session-row > button { width: 100%; min-width: 0; min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border: 0; background: transparent; text-align: left; }
+.v2-session-row > button > .session-row-copy { min-width: 0; display: flex; align-items: center; gap: 8px; flex: 1; }
+.session-row-status { display: inline-flex; flex: 0 0 18px; }
+.v2-session-row .session-row-copy strong { min-width: 0; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 550; letter-spacing: -.006em; }
+.v2-session-row time { flex: 0 0 auto; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.session-unread { display: inline-flex; flex: 0 0 5px; color: var(--accent); }
 .session-unread > span { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .v2-session-row.has-unread .session-row-copy strong { font-weight: 650; }
-.v2-session-row + .v2-session-row { border-top: 1px solid var(--line-soft); }
+.project-group .v2-session-row + .v2-session-row, .recent-sheet .v2-session-row + .v2-session-row { border-top: 1px solid var(--line-soft); }
 .v2-session-row:has(> button:focus-visible), .v2-session-row:has(> button:active) { border-radius: 10px; background: var(--content-active); box-shadow: inset 0 0 0 1px var(--content-active-ring); }
-.v2-session-row > button { min-width: 0; display: flex; justify-content: space-between; border: 0; background: transparent; text-align: left; }
-.v2-session-row > button > .session-row-copy { min-width: 0; }
-.v2-session-row strong { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; font-size: 16px; letter-spacing: -.006em; }
-.v2-session-row time { flex: 0 0 auto; color: var(--muted); font-variant-numeric: tabular-nums; }
 .state-card, .compact-empty { margin: 24px 12px 0; padding: 24px 18px; border: 1px solid var(--line-soft); border-radius: 14px; background: var(--panel); box-shadow: none; color: var(--muted); font-size: 15px; text-align: center; }
 .state-note { margin: 8px 12px; padding: 10px 12px; border-radius: 10px; color: var(--muted); background: rgba(10, 132, 255, .1); font-size: 13px; line-height: 1.35; }
 .mobile-session-sidebar > .inline-error { margin: 8px 12px; padding: 10px 12px; border-radius: 10px; background: rgba(255, 69, 58, .12); font-size: 13px; line-height: 1.35; }
@@ -243,7 +177,7 @@ textarea { resize: vertical; overflow-wrap: anywhere; }
 .terminal-appearance-settings legend, .terminal-session-actions-title { padding: 0; color: var(--text); font-size: 15px; font-weight: 700; }
 .terminal-appearance-settings > p { margin: 5px 0 16px; color: var(--muted); font-size: 13px; line-height: 1.4; }
 .terminal-appearance-label { display: block; margin: 14px 0 7px; color: var(--muted); font-size: 13px; font-weight: 600; }
-.terminal-mode-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 4px; border: 1px solid var(--line-soft); border-radius: 14px; background: var(--panel-strong); }
+.terminal-mode-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 4px; border: 1px solid var(--line-soft); border-radius: 14px; background: var(--panel-strong); }
 .terminal-mode-options label { min-width: 0; }
 .terminal-mode-options label > span { min-height: 44px; display: grid; place-items: center; border: 1px solid transparent; border-radius: 10px; color: var(--muted); font-size: 15px; font-weight: 600; }
 .terminal-mode-options input:checked + span { border-color: var(--terminal-accent); background: var(--terminal-selection); color: var(--text); }
@@ -281,17 +215,11 @@ textarea { resize: vertical; overflow-wrap: anywhere; }
 }
 
 @media (prefers-contrast: more) {
-  :root {
-    --muted: #263c53;
-    --tertiary-text: #36424e;
-    --line: #606b76;
-    --line-soft: #606b76;
-    --content-active-ring: #096a99;
-  }
-  :root[data-app-theme="dark"] {
-    --muted: #cfdfef; --tertiary-text: #cfdfef;
-    --line: #91abc4; --line-soft: #91abc4;
-    --content-active-ring: #62d9f4;
+  .mobile-session-sidebar, .centered-modal, .device-manager-sheet {
+    --muted: var(--text);
+    --tertiary-text: var(--text);
+    --line: var(--text);
+    --line-soft: var(--text);
   }
 }
 
@@ -308,6 +236,6 @@ textarea { resize: vertical; overflow-wrap: anywhere; }
 
 /* Only app chrome interpolates colors; terminal pixels never cross-fade. */
 html, body, .mobile-session-sidebar, .project-group, .centered-modal, .mobile-sidebar-toolbar,
-.app-appearance-options label > span, .mobile-settings .mobile-terminal-theme-choice-body {
+.mobile-settings .mobile-terminal-theme-choice-body {
   transition: background-color 180ms ease, color 180ms ease, border-color 180ms ease;
 }

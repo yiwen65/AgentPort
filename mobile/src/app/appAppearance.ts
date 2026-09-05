@@ -1,55 +1,46 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useLayoutEffect } from "react";
+import { useMobileTerminalAppearance } from "../terminal/terminalAppearance";
+import { getMobileTerminalPalette, getMobileTerminalWorkspaceVariables } from "../terminal/terminalThemes";
 
-export const APP_APPEARANCE_KEY = "agentport-mobile-v2:app-appearance";
-export const APP_APPEARANCES = ["light", "dark", "system"] as const;
-export type AppAppearance = typeof APP_APPEARANCES[number];
-const CHANGE_EVENT = "agentport-mobile-app-appearance-change";
-const DARK_QUERY = "(prefers-color-scheme: dark)";
-const valid = (value: unknown): value is AppAppearance => APP_APPEARANCES.includes(value as AppAppearance);
-
-export function loadAppAppearance(): AppAppearance {
-  try {
-    const value = localStorage.getItem(APP_APPEARANCE_KEY);
-    return valid(value) ? value : "system";
-  } catch { return "system"; }
+function primaryForeground(background: string): string {
+  const channels = [1, 3, 5].map(i => parseInt(background.slice(i, i + 2), 16) / 255)
+    .map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4);
+  const luminance = channels.reduce((sum, value, i) => sum + value * [.2126, .7152, .0722][i], 0);
+  return 1.05 / (luminance + .05) >= 4.5 ? "#ffffff" : "#000000";
 }
 
-/** Independent from terminal appearance. Same-document events keep retained views in sync. */
-export function useAppAppearance() {
-  const [preference, setPreference] = useState(loadAppAppearance);
-  const [systemDark, setSystemDark] = useState(() => window.matchMedia?.(DARK_QUERY).matches ?? false);
-  useEffect(() => {
-    const media = window.matchMedia?.(DARK_QUERY);
-    const systemChanged = () => setSystemDark(media?.matches ?? false);
-    const changed = (event: Event) => {
-      const value: unknown = (event as CustomEvent).detail;
-      if (valid(value)) setPreference(value);
-    };
-    const storageChanged = (event: StorageEvent) => {
-      if (event.key === APP_APPEARANCE_KEY || event.key === null) setPreference(loadAppAppearance());
-    };
-    systemChanged();
-    media?.addEventListener("change", systemChanged);
-    window.addEventListener(CHANGE_EVENT, changed);
-    window.addEventListener("storage", storageChanged);
-    return () => {
-      media?.removeEventListener("change", systemChanged);
-      window.removeEventListener(CHANGE_EVENT, changed);
-      window.removeEventListener("storage", storageChanged);
-    };
-  }, []);
-  const update = useCallback((value: AppAppearance) => {
-    try { localStorage.setItem(APP_APPEARANCE_KEY, value); } catch { /* live edits still work */ }
-    setPreference(value);
-    window.dispatchEvent(new CustomEvent(CHANGE_EVENT, { detail: value }));
-  }, []);
-  return { preference, update, resolved: preference === "system" ? (systemDark ? "dark" : "light") : preference };
+/** All surfaces derive from the terminal catalog, not a second app palette. */
+export function getAppThemeVariables(theme: unknown, mode: "light" | "dark"): Record<string, string> {
+  const { xterm, workspace } = getMobileTerminalPalette(theme, mode);
+  return {
+    ...getMobileTerminalWorkspaceVariables(theme, mode),
+    "--bg": xterm.background,
+    "--primary-fg": primaryForeground(xterm.blue),
+    "--content-highlight": `${xterm.foreground}12`,
+    "--ambient": `${xterm.blue}0a`,
+    "--status-waiting-bg": workspace.codeBackground,
+    "--status-error-bg": workspace.codeBackground,
+    "--modal-scrim": mode === "dark" ? "rgba(0, 0, 0, .58)" : "rgba(20, 24, 32, .28)",
+    "--mark-cyan": xterm.blue,
+    "--mark-blue": xterm.blue,
+    "--mark-violet": xterm.magenta,
+    "--mark-dot": xterm.cursor,
+  };
 }
 
 export function useApplyAppAppearance() {
-  const { resolved } = useAppAppearance();
+  const [appearance, , resolvedMode] = useMobileTerminalAppearance();
   useLayoutEffect(() => {
-    document.documentElement.dataset.appTheme = resolved;
-    return () => { delete document.documentElement.dataset.appTheme; };
-  }, [resolved]);
+    const root = document.documentElement;
+    const variables = getAppThemeVariables(appearance.theme, resolvedMode);
+    const previous = Object.keys(variables).map(key => [key, root.style.getPropertyValue(key)] as const);
+    root.dataset.appTheme = resolvedMode;
+    root.dataset.themeFamily = appearance.theme;
+    Object.entries(variables).forEach(([key, value]) => root.style.setProperty(key, value));
+    return () => {
+      previous.forEach(([key, value]) => value ? root.style.setProperty(key, value) : root.style.removeProperty(key));
+      delete root.dataset.appTheme;
+      delete root.dataset.themeFamily;
+    };
+  }, [appearance.theme, resolvedMode]);
 }

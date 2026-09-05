@@ -147,6 +147,8 @@ describe("mobile terminal theme catalog", () => {
     localStorage.setItem(MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY, JSON.stringify({ theme: "aurora", mode: "light" }));
     expect(loadMobileTerminalAppearance()).toEqual({ theme: "aurora", mode: "light" });
 
+    saveMobileTerminalAppearance({ theme: "sakura", mode: "system" });
+    expect(loadMobileTerminalAppearance()).toEqual({ theme: "sakura", mode: "system" });
     saveMobileTerminalAppearance({ theme: "sakura", mode: "dark" });
     expect(JSON.parse(localStorage.getItem(MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY)!)).toEqual({ theme: "sakura", mode: "dark" });
   });

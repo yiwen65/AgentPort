@@ -27,7 +27,7 @@ describe("session state presentation", () => {
   });
   it.each([["working", "Working"], ["needs_input", "Needs input"], ["idle", "Idle"], ["unknown", "Unknown"]])("gives %s a text label and distinct glyph", (state, label) => {
     const { container } = render(<SessionStateBadge session={session(state)} />);
-    expect(screen.getByText(label)).toBeInTheDocument();
+    expect(screen.getByText(label).closest(".visually-hidden")).not.toBeNull();
     expect(container.querySelector("svg")).toHaveAttribute("data-state", state);
     expect(container.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
     expect(Boolean(container.querySelector(".is-moving"))).toBe(state === "working");

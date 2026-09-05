@@ -124,12 +124,9 @@ function SessionRow({ session, host, stale, onOpen }: {
     <li className={`v2-session-row${session.unreadAttention ? " has-unread" : ""}`}>
       <button type="button" data-session-id={session.id} disabled={disabled} onClick={onOpen} aria-labelledby={`${id}-title`} aria-describedby={`${id}-status`}>
         <span className="session-row-copy">
+          <span id={`${id}-status`} className="session-row-status"><SessionStateBadge session={session} stale={stale || host.connectionState !== "connected"} /></span>
           <strong id={`${id}-title`}>{session.title}</strong>
-          <span className="session-row-meta" id={`${id}-status`}>
-            <small>{session.adapterType}</small>
-            <SessionStateBadge session={session} stale={stale || host.connectionState !== "connected"} />
-            {session.unreadAttention ? <span className="session-unread"><span aria-hidden="true" />{t("dashboard.unread")}</span> : null}
-          </span>
+          {session.unreadAttention ? <span className="session-unread" role="img" aria-label={t("dashboard.unread")}><span aria-hidden="true" /></span> : null}
         </span>
         <time dateTime={session.updatedAt}>{relativeTime(session.updatedAt)}</time>
       </button>

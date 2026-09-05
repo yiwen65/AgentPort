@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   loadMobileTerminalAppearance,
   MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY,
@@ -6,39 +6,50 @@ import {
   type MobileTerminalAppearance,
 } from "./terminalThemes";
 
-const CHANGE_EVENT = "agentport-mobile-terminal-appearance-change";
+let snapshot: MobileTerminalAppearance | undefined;
+const listeners = new Set<() => void>();
+function apply(next: MobileTerminalAppearance) {
+  if (snapshot?.theme === next.theme && snapshot.mode === next.mode) return;
+  snapshot = next;
+  listeners.forEach(listener => listener());
+}
+function getSnapshot() {
+  // First consumer of a new app lifetime reads storage. Later consumers share
+  // the live choice, including edits that could not be persisted.
+  if (!listeners.size || !snapshot) {
+    const stored = loadMobileTerminalAppearance();
+    if (snapshot?.theme !== stored.theme || snapshot.mode !== stored.mode) snapshot = stored;
+  }
+  return snapshot!;
+}
+function onStorage(event: StorageEvent) {
+  if (event.key === null || event.key === MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY) apply(loadMobileTerminalAppearance());
+}
+function subscribe(listener: () => void) {
+  if (!listeners.size) window.addEventListener("storage", onStorage);
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size) window.removeEventListener("storage", onStorage);
+  };
+}
+function updateAppearance(patch: Partial<MobileTerminalAppearance>) {
+  const next = { ...getSnapshot(), ...patch };
+  saveMobileTerminalAppearance(next);
+  apply(next);
+}
 
-/** Read on mount, not module import: storage may change between app lifetimes. */
+/** One persisted Theme for all surfaces; system mode resolves without rewriting the preference. */
 export function useMobileTerminalAppearance() {
-  const [appearance, setAppearance] = useState(loadMobileTerminalAppearance);
-  const current = useRef(appearance);
-
+  const appearance = useSyncExternalStore(subscribe, getSnapshot);
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
   useEffect(() => {
-    const apply = (next: MobileTerminalAppearance) => {
-      current.current = next;
-      setAppearance((previous) => previous.theme === next.theme && previous.mode === next.mode ? previous : next);
-    };
-    const onChange = (event: Event) => apply((event as CustomEvent<MobileTerminalAppearance>).detail);
-    const onStorage = (event: StorageEvent) => {
-      if (event.key === null || event.key === MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY) apply(loadMobileTerminalAppearance());
-    };
-    window.addEventListener(CHANGE_EVENT, onChange);
-    window.addEventListener("storage", onStorage);
-    apply(loadMobileTerminalAppearance());
-    return () => {
-      window.removeEventListener(CHANGE_EVENT, onChange);
-      window.removeEventListener("storage", onStorage);
-    };
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    const changed = () => setSystemDark(media?.matches ?? false);
+    changed();
+    media?.addEventListener("change", changed);
+    return () => media?.removeEventListener("change", changed);
   }, []);
-
-  const updateAppearance = useCallback((patch: Partial<MobileTerminalAppearance>) => {
-    const next = { ...current.current, ...patch };
-    // Explicit edits only: mounting a consumer must never overwrite persistence.
-    saveMobileTerminalAppearance(next);
-    // Native storage events don't fire in this document. Carry the value so
-    // mounted consumers still update when persistence is unavailable.
-    window.dispatchEvent(new CustomEvent(CHANGE_EVENT, { detail: next }));
-  }, []);
-
-  return [appearance, updateAppearance] as const;
+  const resolvedMode = appearance.mode === "system" ? (systemDark ? "dark" : "light") : appearance.mode;
+  return [appearance, updateAppearance, resolvedMode] as const;
 }

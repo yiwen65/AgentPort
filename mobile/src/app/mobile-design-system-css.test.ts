@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { getAppThemeVariables } from "./appAppearance";
+import { getMobileTerminalPalette, MOBILE_TERMINAL_THEME_IDS, MOBILE_TERMINAL_THEME_MODES } from "../terminal/terminalThemes";
 
 const styles = readFileSync("src/app/styles.css", "utf8");
 const dashboardStyles = readFileSync("src/features/sessions/dashboard.css", "utf8");
@@ -16,32 +18,23 @@ function contrast(first: string, second: string) {
 }
 
 describe("mobile semantic design system", () => {
-  it("uses cool light and midnight dark semantic color roles", () => {
-    expect(styles).toContain("--bg: #edf3f9");
-    expect(styles).toContain("--panel: #ffffff");
-    expect(styles).toContain("--panel-strong: #e9f0f7");
-    expect(styles).toContain("--accent: #096a99");
-    expect(styles).toContain("--success: #167053");
-    expect(styles).toContain("--warning: #835600");
-    expect(styles).toContain("--danger: #b32d4a");
-    expect(styles).toContain(':root[data-app-theme="dark"]');
-    expect(styles).toContain("--bg: #080f1d");
-    expect(styles).toContain("--mark-cyan: #36d8f4");
-    expect(styles).toContain("--mark-cyan: #007b9c");
+  it("derives app colors from all six terminal palettes, without a separate app palette", () => {
+    expect(styles).not.toContain("--bg: #edf3f9");
+    expect(styles).not.toContain("--bg: #080f1d");
     expect(dashboardStyles).toContain("grid-template-rows: 0fr");
     expect(dashboardStyles).toContain("grid-template-rows: 1fr");
     expect(dashboardStyles).toContain("prefers-reduced-motion: reduce");
-  });
-
-  it("keeps opaque text/status roles above 4.5:1 and logo stops above 3:1 in both themes", () => {
-    const tokens = (block: string) => Object.fromEntries([...block.matchAll(/(--[\w-]+): (#[\da-f]{6})/g)].map(m => [m[1], m[2]]));
-    const light = tokens(styles.match(/^:root \{([\s\S]*?)\n\}/)![1]);
-    const dark = { ...light, ...tokens(styles.match(/:root\[data-app-theme="dark"\] \{([\s\S]*?)\n\}/)![1]) };
-    for (const palette of [light, dark]) {
-      for (const [fg, bg] of [["--text", "--panel"], ["--muted", "--bg"], ["--tertiary-text", "--panel"], ["--accent", "--content-active"], ["--warning", "--status-waiting-bg"], ["--danger", "--status-error-bg"], ["--success", "--fill"], ["--primary-fg", "--accent"]]) {
-        expect(contrast(palette[fg], palette[bg]), `${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+    for (const theme of MOBILE_TERMINAL_THEME_IDS) for (const mode of MOBILE_TERMINAL_THEME_MODES) {
+      const palette = getMobileTerminalPalette(theme, mode);
+      const variables = getAppThemeVariables(theme, mode);
+      expect(variables["--bg"]).toBe(palette.xterm.background);
+      expect(variables["--panel"]).toBe(palette.workspace.raisedBackground);
+      expect(variables["--fill"]).toBe(palette.workspace.codeBackground);
+      for (const bg of ["--bg", "--panel", "--fill"]) {
+        for (const fg of ["--text", "--muted"]) expect(contrast(variables[fg], variables[bg]), `${theme}/${mode} ${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+        for (const fg of ["--accent", "--mark-cyan", "--mark-blue", "--mark-violet", "--mark-dot"]) expect(contrast(variables[fg], variables[bg]), `${theme}/${mode} ${fg} on ${bg}`).toBeGreaterThanOrEqual(3);
       }
-      for (const fg of ["--mark-cyan", "--mark-blue", "--mark-violet", "--mark-dot"]) expect(contrast(palette[fg], palette["--fill"])).toBeGreaterThanOrEqual(3);
+      expect(contrast(variables["--primary-fg"], variables["--accent"])).toBeGreaterThanOrEqual(4.5);
     }
   });
 
@@ -49,7 +42,10 @@ describe("mobile semantic design system", () => {
     expect(styles).toMatch(/\.mobile-session-sidebar \{[^}]*background: var\(--bg\);/s);
     expect(styles).toMatch(/\.mobile-sidebar-toolbar \{[^}]*background: var\(--nav-glass\);[^}]*backdrop-filter: blur\(26px\)/s);
     expect(styles).toMatch(/\.project-group \{[^}]*border-radius: 14px;[^}]*background: var\(--panel\);/s);
-    expect(styles).toMatch(/\.active-agent-list \{[^}]*border-radius: 14px;[^}]*background: var\(--panel\);/s);
+    expect(styles).toMatch(/\.active-agent-list \{[^}]*gap: 8px;[^}]*margin: 12px 12px 0;/s);
+    expect(styles).toMatch(/\.active-agent-list > \.v2-session-row \{[^}]*border-radius: 12px;[^}]*background: var\(--panel\);/s);
+    expect(styles).toMatch(/\.v2-session-row > button \{[^}]*min-height: 48px;[^}]*align-items: center;/s);
+    expect(styles).not.toContain(".session-row-meta");
   });
 
   it("uses low-intrusion liquid controls over the unified terminal background", () => {
@@ -62,7 +58,7 @@ describe("mobile semantic design system", () => {
 
   it("provides readable fallback sizes and WebKit system text roles", () => {
     expect(styles).toMatch(/\.project-toggle strong \{[^}]*font-size: 17px;/s);
-    expect(styles).toMatch(/\.v2-session-row strong \{[^}]*font-size: 16px;/s);
+    expect(styles).toMatch(/\.v2-session-row \.session-row-copy strong \{[^}]*white-space: nowrap;[^}]*font-size: 16px;/s);
     expect(styles).toMatch(/\.v2-session-row time \{[^}]*font-size: 13px;/s);
     expect(styles).toMatch(/@supports \(font: -apple-system-body\) \{[^}]*body \{ font: -apple-system-body; \}/s);
     expect(styles).toContain(".project-toggle strong { font: -apple-system-headline;");

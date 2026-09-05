@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HostAuthClient } from "../features/hosts-auth/types";
 import { i18n } from "../i18n";
@@ -65,13 +65,13 @@ describe("AgentPort Mobile V2 shell", () => {
     await waitFor(() => expect(dialog).not.toBeInTheDocument());
   });
 
-  it("opens settings without a selected session and leaves the app theme independent", async () => {
+  it("opens one Theme without a selected session and applies the palette to the app", async () => {
     await i18n.changeLanguage("en-US");
     render(<App client={client()} hostAuthClient={hostAuthClient} />);
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: "Light" }));
-    expect(document.documentElement.style.getPropertyValue("--terminal-bg")).toBe("");
+    expect(document.documentElement.style.getPropertyValue("--terminal-bg")).toBe("#fafafa");
     expect(document.body).not.toHaveClass("terminal-visible");
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -86,6 +86,9 @@ describe("AgentPort Mobile V2 shell", () => {
 
   it("swipes between the persistent list and the selected full-screen terminal", async () => {
     await i18n.changeLanguage("en-US");
+    let systemDark = false;
+    const systemListeners = new Set<() => void>();
+    vi.stubGlobal("matchMedia", () => ({ get matches() { return systemDark; }, addEventListener: (_: string, listener: () => void) => systemListeners.add(listener), removeEventListener: (_: string, listener: () => void) => systemListeners.delete(listener) }));
     const remote = client({
       listHostProfiles: vi.fn().mockResolvedValue([{
         id: "host-1", name: "Studio", hostname: "studio.local", port: 22, username: "dev",
@@ -127,14 +130,20 @@ describe("AgentPort Mobile V2 shell", () => {
     fireEvent.touchStart(shell, { touches: [{ clientX: 180, clientY: 220 }] });
     fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 70, clientY: 224 }] });
     expect(stage).not.toHaveClass("is-visible");
-    const terminalThemeBefore = renderer?.getAttribute("data-terminal-theme");
-    fireEvent.click(screen.getByRole("radio", { name: "Dark interface" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Dark" }));
     expect(document.documentElement).toHaveAttribute("data-app-theme", "dark");
-    expect(renderer).toHaveAttribute("data-terminal-theme", terminalThemeBefore);
+    expect(renderer).toHaveAttribute("data-terminal-theme-mode", "dark");
     fireEvent.click(screen.getByRole("radio", { name: "Light" }));
     fireEvent.click(screen.getByRole("radio", { name: "Aurora" }));
     expect(renderer).toHaveAttribute("data-terminal-theme", "aurora");
     expect(renderer).toHaveAttribute("data-terminal-theme-mode", "light");
+    expect(document.documentElement).toHaveAttribute("data-theme-family", "aurora");
+    expect(document.documentElement.style.getPropertyValue("--bg")).toBe((renderer as HTMLElement).style.getPropertyValue("--terminal-bg"));
+    fireEvent.click(screen.getByRole("radio", { name: "System" }));
+    act(() => { systemDark = true; systemListeners.forEach(listener => listener()); });
+    expect(document.documentElement).toHaveAttribute("data-app-theme", "dark");
+    expect(renderer).toHaveAttribute("data-terminal-theme-mode", "dark");
+    expect(document.documentElement.style.getPropertyValue("--bg")).toBe((renderer as HTMLElement).style.getPropertyValue("--terminal-bg"));
     expect(container.querySelector(".session-workspace")).toBe(renderer);
     expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(1);
     expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.detach")).toHaveLength(0);
