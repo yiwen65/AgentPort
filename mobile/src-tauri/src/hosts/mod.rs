@@ -281,20 +281,23 @@ fn validate_request(request: &SaveHostProfileRequest) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn mobile_list_host_profiles(app: AppHandle) -> Result<Vec<HostProfileSummary>, String> {
+pub fn mobile_list_host_profiles(
+    app: AppHandle,
+    state: tauri::State<'_, crate::remote::RemoteConnections>,
+) -> Result<Vec<HostProfileSummary>, String> {
     let mut profiles = read_profiles(&profile_path(&app)?)?;
     profiles.sort_by_key(|profile| (profile.sort_order, profile.name.to_lowercase()));
     Ok(profiles
         .into_iter()
         .map(|profile| HostProfileSummary {
-            id: profile.id,
+            id: profile.id.clone(),
             name: profile.name,
             hostname: profile.hostname,
             port: profile.port,
             username: profile.username,
             preferred_transport: profile.preferred_transport,
             connection_state: if profile.enabled {
-                "disconnected"
+                state.connection_state(&profile.id)
             } else {
                 "stale"
             },

@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{oneshot, Mutex as AsyncMutex};
 use zeroize::{Zeroize, Zeroizing};
@@ -25,6 +25,11 @@ fn emit_connection_state<R: Runtime>(
     profile_id: &str,
     state: &'static str,
 ) -> tauri::Result<()> {
+    if let Some(connections) = app.try_state::<RemoteConnections>() {
+        if let Ok(mut phases) = connections.inner.phases.lock() {
+            phases.insert(profile_id.to_string(), state);
+        }
+    }
     app.emit(
         CONNECTION_STATE_EVENT,
         json!({"profileId": profile_id, "state": state}),
@@ -105,7 +110,8 @@ struct LocalSubscription {
 #[derive(Default)]
 struct RemoteStateInner {
     connections: AsyncMutex<HashMap<String, Connection>>,
-    connecting_profiles: Mutex<HashSet<String>>,
+    connecting_profiles: Mutex<HashMap<String, String>>,
+    phases: Mutex<HashMap<String, &'static str>>,
     subscriptions: Mutex<HashMap<String, LocalSubscription>>,
     cancelled_profiles: Mutex<HashSet<String>>,
 }
@@ -113,6 +119,62 @@ struct RemoteStateInner {
 #[derive(Clone, Default)]
 pub struct RemoteConnections {
     inner: Arc<RemoteStateInner>,
+}
+
+impl RemoteConnections {
+    pub(crate) fn connection_state(&self, profile_id: &str) -> &'static str {
+        self.inner
+            .phases
+            .lock()
+            .ok()
+            .and_then(|phases| phases.get(profile_id).copied())
+            .unwrap_or("disconnected")
+    }
+
+    fn owns_attempt(&self, profile_id: &str, token: &str) -> bool {
+        self.inner
+            .connecting_profiles
+            .lock()
+            .map(|attempts| attempts.get(profile_id).is_some_and(|value| value == token))
+            .unwrap_or(false)
+    }
+}
+
+fn retry_delay(attempt: u32) -> Duration {
+    Duration::from_secs(1_u64 << attempt.min(5))
+}
+
+fn retryable_connect_error(error: &ConnectError) -> bool {
+    // Only availability failures retry. Trust/authentication/protocol failures
+    // require a user decision and must not repeatedly access locked credentials.
+    matches!(
+        error.code,
+        "ssh_connection_failed"
+            | "jump_ssh_connection_failed"
+            | "jump_forward_failed"
+            | "connection_timeout"
+            | "bridge_hello_timeout"
+            | "bridge_channel_failed"
+            | "bridge_launch_failed"
+            | "bridge_hello_failed"
+    )
+}
+
+fn emit_attempt_state(
+    app: &AppHandle,
+    state: &RemoteConnections,
+    profile_id: &str,
+    token: &str,
+    phase: &'static str,
+) {
+    if let Ok(attempts) = state.inner.connecting_profiles.lock() {
+        if attempts
+            .get(profile_id)
+            .is_some_and(|current| current == token)
+        {
+            let _ = emit_connection_state(app, profile_id, phase);
+        }
+    }
 }
 
 fn authentication(profile: &HostProfile) -> AuthenticationKind {
@@ -496,62 +558,73 @@ async fn reader_loop(
             }
         }
 
-        let mut reconnected = None;
-        for (attempt, delay_seconds) in [1_u64, 2, 4].into_iter().enumerate() {
-            if state
-                .inner
-                .cancelled_profiles
-                .lock()
-                .map(|values| values.contains(&profile_id))
-                .unwrap_or(true)
+        let next_token = format!("connection_{}", uuid::Uuid::new_v4().simple());
+        {
+            let mut attempts = match state.inner.connecting_profiles.lock() {
+                Ok(value) => value,
+                Err(_) => return,
+            };
+            if attempts.contains_key(&profile_id)
+                || state
+                    .inner
+                    .cancelled_profiles
+                    .lock()
+                    .map(|values| values.contains(&profile_id))
+                    .unwrap_or(true)
             {
-                let _ = app.emit(
-                    "agentport-mobile://connection-state",
-                    json!({"profileId": profile_id, "state": "disconnected"}),
-                );
                 return;
             }
-            let _ = app.emit(
-                "agentport-mobile://connection-state",
-                json!({"profileId": profile_id, "state": "reconnecting", "attempt": attempt + 1}),
-            );
-            tokio::time::sleep(Duration::from_secs(delay_seconds)).await;
-            if state
-                .inner
-                .cancelled_profiles
-                .lock()
-                .map(|values| values.contains(&profile_id))
-                .unwrap_or(true)
-            {
+            attempts.insert(profile_id.clone(), next_token.clone());
+        }
+        let mut reconnected = None;
+        let mut attempt = 0_u32;
+        while state.owns_attempt(&profile_id, &next_token) {
+            emit_attempt_state(&app, &state, &profile_id, &next_token, "reconnecting");
+            tokio::time::sleep(retry_delay(attempt)).await;
+            attempt = attempt.saturating_add(1);
+            if !state.owns_attempt(&profile_id, &next_token) {
                 return;
             }
             let Ok(profile) = hosts::get_profile(&app, &profile_id) else {
                 break;
             };
-            if let Ok(established) = establish(&app, &profile).await {
-                reconnected = Some(established);
+            if !profile.enabled {
                 break;
             }
+            match tokio::time::timeout(Duration::from_secs(30), establish(&app, &profile)).await {
+                Ok(Ok(established)) => {
+                    reconnected = Some(established);
+                    break;
+                }
+                Ok(Err(error)) if !retryable_connect_error(&error) => break,
+                _ => {}
+            }
+        }
+        if !state.owns_attempt(&profile_id, &next_token) {
+            return;
         }
         let Some((ssh_session, next_reader, writer, snapshot)) = reconnected else {
-            let _ = app.emit(
-                "agentport-mobile://connection-state",
-                json!({"profileId": profile_id, "state": "failed"}),
-            );
+            if let Ok(mut attempts) = state.inner.connecting_profiles.lock() {
+                if attempts.get(&profile_id) == Some(&next_token) {
+                    attempts.remove(&profile_id);
+                    let _ = emit_connection_state(&app, &profile_id, "failed");
+                }
+            }
             return;
         };
-        let next_generation = format!("connection_{}", uuid::Uuid::new_v4().simple());
+        let next_generation = next_token.clone();
         let next_pending = Arc::new(Mutex::new(HashMap::new()));
         let mut connections = state.inner.connections.lock().await;
-        if connections.contains_key(&profile_id) {
+        if connections.contains_key(&profile_id) || !state.owns_attempt(&profile_id, &next_token) {
             return;
         }
         if connections.len() >= MAX_ONLINE_HOSTS {
-            drop(connections);
-            let _ = app.emit(
-                "agentport-mobile://connection-state",
-                json!({"profileId": profile_id, "state": "failed", "reason": "online_host_limit"}),
-            );
+            if let Ok(mut attempts) = state.inner.connecting_profiles.lock() {
+                if attempts.get(&profile_id) == Some(&next_token) {
+                    attempts.remove(&profile_id);
+                    let _ = emit_connection_state(&app, &profile_id, "failed");
+                }
+            }
             return;
         }
         connections.insert(
@@ -564,11 +637,14 @@ async fn reader_loop(
                 ssh_session,
             },
         );
+        state
+            .inner
+            .connecting_profiles
+            .lock()
+            .ok()
+            .map(|mut attempts| attempts.remove(&profile_id));
+        let _ = emit_connection_state(&app, &profile_id, "connected");
         drop(connections);
-        let _ = app.emit(
-            "agentport-mobile://connection-state",
-            json!({"profileId": profile_id, "state": "connected"}),
-        );
         generation = next_generation;
         reader = next_reader;
         pending = next_pending;
@@ -598,12 +674,13 @@ pub async fn mobile_connect_host(
             host_key_hop: None,
         });
     }
+    let generation = format!("connection_{}", uuid::Uuid::new_v4().simple());
     {
         let connections = state.inner.connections.lock().await;
         if let Some(connection) = connections.get(&profile_id) {
             let snapshot = connection.snapshot.clone();
-            drop(connections);
             let _ = emit_connection_state(&app, &profile_id, "connected");
+            drop(connections);
             return Ok(snapshot);
         }
         let mut connecting = state
@@ -616,7 +693,7 @@ pub async fn mobile_connect_host(
                 fingerprint: None,
                 host_key_hop: None,
             })?;
-        if connecting.contains(&profile_id) {
+        if connecting.contains_key(&profile_id) {
             return Err(ConnectError {
                 code: "connection_in_progress",
                 message: "This host is already connecting".into(),
@@ -632,29 +709,21 @@ pub async fn mobile_connect_host(
                 host_key_hop: None,
             });
         }
-        connecting.insert(profile_id.clone());
+        connecting.insert(profile_id.clone(), generation.clone());
     }
-    let established = establish(&app, &profile).await;
-    if let Ok(mut connecting) = state.inner.connecting_profiles.lock() {
-        connecting.remove(&profile_id);
-    }
-    let (ssh_session, reader, writer, snapshot) = established?;
-    if state
-        .inner
-        .cancelled_profiles
-        .lock()
-        .map(|values| values.contains(&profile_id))
-        .unwrap_or(true)
-    {
-        let _ = ssh_session
-            .session
-            .disconnect(Disconnect::ByApplication, "connection cancelled", "en")
-            .await;
-        if let Some(jump) = ssh_session.jump_session {
-            let _ = jump
-                .disconnect(Disconnect::ByApplication, "connection cancelled", "en")
-                .await;
-        }
+    emit_attempt_state(&app, &state, &profile_id, &generation, "connecting");
+    let established = tokio::time::timeout(Duration::from_secs(30), establish(&app, &profile))
+        .await
+        .unwrap_or_else(|_| {
+            Err(ConnectError {
+                code: "connection_timeout",
+                message: "Connection timed out".into(),
+                fingerprint: None,
+                host_key_hop: None,
+            })
+        });
+    let mut connections = state.inner.connections.lock().await;
+    if !state.owns_attempt(&profile_id, &generation) {
         return Err(ConnectError {
             code: "connection_cancelled",
             message: "Connection was cancelled".into(),
@@ -662,9 +731,18 @@ pub async fn mobile_connect_host(
             host_key_hop: None,
         });
     }
-    let generation = format!("connection_{}", uuid::Uuid::new_v4().simple());
+    state
+        .inner
+        .connecting_profiles
+        .lock()
+        .ok()
+        .map(|mut attempts| attempts.remove(&profile_id));
+    let (ssh_session, reader, writer, snapshot) = established.map_err(|error| {
+        let _ = emit_connection_state(&app, &profile_id, "failed");
+        error
+    })?;
     let pending = Arc::new(Mutex::new(HashMap::new()));
-    state.inner.connections.lock().await.insert(
+    connections.insert(
         profile_id.clone(),
         Connection {
             generation: generation.clone(),
@@ -674,6 +752,8 @@ pub async fn mobile_connect_host(
             ssh_session,
         },
     );
+    let _ = emit_connection_state(&app, &profile_id, "connected");
+    drop(connections);
     tauri::async_runtime::spawn(reader_loop(
         app.clone(),
         state.inner().clone(),
@@ -682,7 +762,6 @@ pub async fn mobile_connect_host(
         reader,
         pending,
     ));
-    let _ = emit_connection_state(&app, &profile_id, "connected");
     Ok(snapshot)
 }
 
@@ -695,7 +774,16 @@ pub async fn mobile_disconnect_host(
     if let Ok(mut cancelled) = state.inner.cancelled_profiles.lock() {
         cancelled.insert(profile_id.clone());
     }
-    let connection = state.inner.connections.lock().await.remove(&profile_id);
+    let mut connections = state.inner.connections.lock().await;
+    state
+        .inner
+        .connecting_profiles
+        .lock()
+        .ok()
+        .map(|mut attempts| attempts.remove(&profile_id));
+    let connection = connections.remove(&profile_id);
+    let _ = emit_connection_state(&app, &profile_id, "disconnected");
+    drop(connections);
     if let Some(connection) = connection {
         fail_pending(&connection.pending);
         let _ = connection
@@ -709,7 +797,6 @@ pub async fn mobile_disconnect_host(
                 .await;
         }
     }
-    let _ = emit_connection_state(&app, &profile_id, "disconnected");
     Ok(())
 }
 
@@ -935,6 +1022,7 @@ mod tests {
     #[test]
     fn explicit_connect_and_disconnect_states_are_broadcast_to_all_consumers() {
         let app = tauri::test::mock_app();
+        app.manage(RemoteConnections::default());
         let received = Arc::new(Mutex::new(Vec::<Value>::new()));
         let captured = Arc::clone(&received);
         app.listen(CONNECTION_STATE_EVENT, move |event| {
@@ -945,7 +1033,17 @@ mod tests {
         });
 
         emit_connection_state(app.handle(), "host_local", "connected").unwrap();
+        assert_eq!(
+            app.state::<RemoteConnections>()
+                .connection_state("host_local"),
+            "connected"
+        );
         emit_connection_state(app.handle(), "host_local", "disconnected").unwrap();
+        assert_eq!(
+            app.state::<RemoteConnections>()
+                .connection_state("host_local"),
+            "disconnected"
+        );
 
         assert_eq!(
             *received.lock().unwrap(),
@@ -987,6 +1085,55 @@ mod tests {
             "not_executed"
         );
         assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn reconnect_backoff_survives_long_outages_but_auth_failures_do_not_retry() {
+        assert_eq!(retry_delay(0).as_secs(), 1);
+        assert_eq!(retry_delay(100).as_secs(), 32);
+        for (code, retry) in [
+            ("ssh_connection_failed", true),
+            ("ssh_authentication_failed", false),
+            ("credential_locked", false),
+            ("ssh_host_key_changed", false),
+        ] {
+            assert_eq!(
+                retryable_connect_error(&ConnectError {
+                    code,
+                    message: String::new(),
+                    fingerprint: None,
+                    host_key_hop: None
+                }),
+                retry
+            );
+        }
+    }
+
+    #[test]
+    fn a_cancelled_or_replaced_attempt_cannot_publish_a_late_connection() {
+        let state = RemoteConnections::default();
+        state
+            .inner
+            .connecting_profiles
+            .lock()
+            .unwrap()
+            .insert("host".into(), "old".into());
+        assert!(state.owns_attempt("host", "old"));
+        state
+            .inner
+            .connecting_profiles
+            .lock()
+            .unwrap()
+            .remove("host");
+        assert!(!state.owns_attempt("host", "old"));
+        state
+            .inner
+            .connecting_profiles
+            .lock()
+            .unwrap()
+            .insert("host".into(), "new".into());
+        assert!(!state.owns_attempt("host", "old"));
+        assert!(state.owns_attempt("host", "new"));
     }
 
     #[test]

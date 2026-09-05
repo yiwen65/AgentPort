@@ -66,8 +66,8 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-002 — 连接状态与恢复传输
-- Status: in_progress
+### [x] T-002 — 连接状态与恢复传输
+- Status: done
 - Owner: coordinator
 - Objective: 修复已连接显示断开及断线后不能恢复的传输根因。
 - Inputs and prerequisites: U2、RemoteClient/原生 remote 状态机。
@@ -77,12 +77,12 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Execution steps: 重现事件/快照或重连失败；验证代际/订阅边界；修复并测试。
 - Acceptance criteria: U2；不自动重试可能已提交的变更请求。
 - Verification method: 适配层 Vitest、Rust 定向测试。
-- Validation evidence: Not run.
+- Validation evidence: Snapshot/event regression failed on baseline and passes after repair; 3 adapter tests and 7 native remote tests pass. TypeScript/Vite passes. Availability retries use capped backoff and attempt ownership; auth/trust failures stop. Runtime outage test remains T-006.
 - Blocker: None.
 - Unblock condition: None.
 
 ### [ ] T-003 — Recent、Session 菜单与打开恢复
-- Status: pending
+- Status: in_progress
 - Owner: coordinator
 - Objective: 实施待处理队列、黄点、长按菜单、停止会话 Restart 及顶部六项操作。
 - Inputs and prerequisites: U3/U4/U5，现有协议能力。
@@ -151,6 +151,8 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
+
+- 2026-09-05: T-002 completed. Native host listing hardcoded disconnected; adapter allowed older snapshots to overwrite events; native reconnect stopped after three delays. Authoritative phases, snapshot fencing, bounded-delay retry and attempt ownership now covered. T-003 started.
 
 - 2026-09-05: T-001 completed: xterm unconditional mousedown focus preceded delayed blur; xterm touch path skips mouse-reporting TUIs. Guard compatibility mousedown before focus and route vertical gestures through existing wheel handling. Two red regressions became green; T-002 started.
 

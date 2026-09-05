@@ -3,13 +3,15 @@ import { TauriRemoteClient } from "./tauriRemoteClient";
 
 const tauri = vi.hoisted(() => ({
   invoke: vi.fn(),
+  connectionListener: undefined as ((event: { payload: unknown }) => void) | undefined,
   inputListener: undefined as ((event: { payload: unknown }) => void) | undefined,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: tauri.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (_eventName: string, listener: (event: { payload: unknown }) => void) => {
-    tauri.inputListener = listener;
+    if (_eventName.endsWith("connection-state")) tauri.connectionListener = listener;
+    else tauri.inputListener = listener;
     return () => undefined;
   }),
 }));
@@ -18,6 +20,18 @@ describe("TauriRemoteClient ordered input submission", () => {
   beforeEach(() => {
     tauri.invoke.mockReset();
     tauri.inputListener = undefined;
+  });
+
+  it("does not let an older profile snapshot overwrite a newly connected event", async () => {
+    let complete!: (value: unknown) => void;
+    tauri.invoke.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
+    const client = new TauriRemoteClient();
+    await client.onConnectionState(() => {});
+    const listing = client.listHostProfiles();
+    await vi.waitFor(() => expect(complete).toBeTypeOf("function"));
+    tauri.connectionListener?.({ payload: { profileId: "host-1", state: "connected" } });
+    complete([{ id: "host-1", connectionState: "disconnected" }]);
+    await expect(listing).resolves.toEqual([expect.objectContaining({ connectionState: "connected" })]);
   });
 
   it("separates local transport submission from the remote input result", async () => {

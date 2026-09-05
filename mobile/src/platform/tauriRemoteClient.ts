@@ -29,6 +29,19 @@ export class TauriRemoteClient implements RemoteClient {
     reject: (error: unknown) => void;
   }>();
   private inputListener?: Promise<UnlistenFn>;
+  private connectionListener?: Promise<UnlistenFn>;
+  private readonly connectionObservers = new Set<(event: RemoteConnectionStateEvent) => void>();
+  private readonly connectionEvents = new Map<string, RemoteConnectionStateEvent>();
+
+  private ensureConnectionListener() {
+    this.connectionListener ??= listen<RemoteConnectionStateEvent>(
+      "agentport-mobile://connection-state", ({ payload }) => {
+        this.connectionEvents.set(payload.profileId, payload);
+        this.connectionObservers.forEach(listener => listener(payload));
+      },
+    ).catch(error => { this.connectionListener = undefined; throw error; });
+    return this.connectionListener;
+  }
 
   private ensureInputListener(): Promise<UnlistenFn> {
     this.inputListener ??= listen<InputResultEvent<unknown>>(
@@ -73,8 +86,14 @@ export class TauriRemoteClient implements RemoteClient {
     });
   }
 
-  listHostProfiles(): Promise<HostProfileSummary[]> {
-    return invoke("mobile_list_host_profiles");
+  async listHostProfiles(): Promise<HostProfileSummary[]> {
+    await this.ensureConnectionListener();
+    const before = new Map(this.connectionEvents);
+    const profiles = await invoke<HostProfileSummary[]>("mobile_list_host_profiles");
+    return profiles.map(profile => {
+      const event = this.connectionEvents.get(profile.id);
+      return event && event !== before.get(profile.id) ? { ...profile, connectionState: event.state } : profile;
+    });
   }
 
   async connect(profileId: string, signal?: AbortSignal): Promise<RemoteConnectionSnapshot> {
@@ -114,11 +133,10 @@ export class TauriRemoteClient implements RemoteClient {
   async onConnectionState(
     listener: (event: RemoteConnectionStateEvent) => void,
   ): Promise<Unsubscribe> {
-    const unlisten = await listen<RemoteConnectionStateEvent>(
-      "agentport-mobile://connection-state",
-      ({ payload }) => listener(payload),
-    );
-    return async () => unlisten();
+    this.connectionObservers.add(listener);
+    try { await this.ensureConnectionListener(); }
+    catch (error) { this.connectionObservers.delete(listener); throw error; }
+    return async () => { this.connectionObservers.delete(listener); };
   }
 
   async subscribe<T>(
