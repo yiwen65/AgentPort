@@ -22,6 +22,7 @@ tauri-plugin-notification = "=2.3.3"
 russh = "=0.62.7"
 russh-sftp = "=2.4.0"
 agentport-pairing = { path = "../../crates/agentport-pairing" }
+agentport-relay = { path = "../../crates/agentport-relay" }
 agentport-remote-protocol = { path = "../../crates/agentport-remote-protocol" }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 base64 = "0.22"
@@ -45,6 +46,7 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
+agentport-relay = { path = "../../crates/agentport-relay", features = ["server"] }
 
 # The GPL mobile app is an intentional workspace boundary from the MIT root.
 [workspace]

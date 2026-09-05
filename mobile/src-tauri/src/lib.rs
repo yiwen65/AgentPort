@@ -1,5 +1,6 @@
 mod appearance;
 mod pairing;
+mod relay_pairing;
 mod credentials;
 mod hosts;
 mod mosh;
@@ -38,12 +39,19 @@ pub fn run() {
                 .build(),
         )
         .manage(remote::RemoteConnections::default())
+        .manage(relay_pairing::RelayPairings::default())
         .manage(mosh::MoshSessions::default());
     #[cfg(mobile)]
     let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
     builder
         .invoke_handler(tauri::generate_handler![
             mobile_scaffold_status,
+            relay_pairing::mobile_relay_pairing_preview,
+            relay_pairing::mobile_relay_pairing_prepare,
+            relay_pairing::mobile_relay_pairing_begin,
+            relay_pairing::mobile_relay_pairing_wait,
+            relay_pairing::mobile_relay_pairing_cancel,
+            relay_pairing::mobile_relay_pairing_reconcile,
             pairing::mobile_pairing_preview,
             pairing::mobile_pairing_prepare,
             pairing::mobile_pairing_exchange,

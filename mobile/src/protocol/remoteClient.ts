@@ -12,7 +12,7 @@ export interface HostProfileSummary {
   hostname: string;
   port: number;
   username: string;
-  preferredTransport: "ssh" | "mosh";
+  preferredTransport: "ssh" | "mosh" | "relay";
   connectionState: ConnectionState;
   lastConnectedAt: string | null;
   lastError: string | null;

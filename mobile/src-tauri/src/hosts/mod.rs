@@ -1,6 +1,7 @@
 use aes_gcm::aead::consts::U12;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
+use agentport_relay::protocol::{decode, Peer};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::Engine as _;
 use rand::RngExt as _;
@@ -9,6 +10,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+static PROFILE_WRITES: Mutex<()> = Mutex::new(());
 use tauri::{AppHandle, Manager};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -25,6 +28,7 @@ const MAX_EXPORT_BYTES: usize = 4 * 1024 * 1024;
 pub enum PreferredTransport {
     Ssh,
     Mosh,
+    Relay,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -32,6 +36,27 @@ pub enum PreferredTransport {
 pub enum AuthenticationKind {
     Password,
     PrivateKey,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RelayProfile {
+    pub peer: Peer,
+    pub device_public_key: Option<String>,
+    pub approved: bool,
+}
+impl RelayProfile {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        self.peer.validate().map_err(|error| error.to_string())?;
+        if let Some(key) = &self.device_public_key {
+            if decode::<32>(key).map_err(|error| error.to_string())? == [0; 32] {
+                return Err("invalid Relay device identity".into());
+            }
+        } else if self.approved {
+            return Err("Relay approval requires a device identity".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -51,6 +76,8 @@ pub struct HostProfile {
     pub preferred_transport: PreferredTransport,
     pub authentication: AuthenticationKind,
     pub credential_id: String,
+    #[serde(default)]
+    pub relay: Option<RelayProfile>,
     #[serde(default)]
     pub jump: Option<JumpProfile>,
     #[serde(default)]
@@ -97,6 +124,8 @@ pub struct SaveHostProfileRequest {
     pub preferred_transport: PreferredTransport,
     pub authentication: AuthenticationKind,
     pub credential_id: String,
+    #[serde(default)]
+    pub relay: Option<RelayProfile>,
     #[serde(default)]
     pub jump: Option<JumpProfile>,
     #[serde(default)]
@@ -165,6 +194,8 @@ struct ExportProfile {
     username: String,
     preferred_transport: PreferredTransport,
     authentication: AuthenticationKind,
+    #[serde(default)]
+    relay_peer: Option<Peer>,
     jump: Option<JumpProfile>,
     mosh_udp_port_start: Option<u16>,
     mosh_udp_port_end: Option<u16>,
@@ -253,6 +284,23 @@ fn valid_text(value: &str, max: usize) -> bool {
 }
 
 fn validate_request(request: &SaveHostProfileRequest) -> Result<(), String> {
+    if matches!(request.preferred_transport, PreferredTransport::Relay) {
+        let relay = request.relay.as_ref().ok_or("Relay identity is missing")?;
+        relay.validate()?;
+        if !valid_text(&request.name, 128)
+            || !valid_text(&request.credential_id, 128)
+            || !matches!(request.authentication, AuthenticationKind::PrivateKey)
+            || request.jump.is_some()
+            || request.mosh_udp_port_start.is_some()
+            || request.mosh_udp_port_end.is_some()
+        {
+            return Err("invalid Relay profile".into());
+        }
+        return Ok(());
+    }
+    if request.relay.is_some() {
+        return Err("Relay identity cannot be used for SSH".into());
+    }
     if !valid_text(&request.name, 128)
         || !valid_text(&request.hostname, 253)
         || request.port == 0
@@ -326,6 +374,9 @@ pub fn mobile_save_host_profile(
     app: AppHandle,
     request: SaveHostProfileRequest,
 ) -> Result<HostProfile, String> {
+    let _write = PROFILE_WRITES
+        .lock()
+        .map_err(|_| "host profile storage is busy")?;
     validate_request(&request)?;
     let path = profile_path(&app)?;
     let mut profiles = read_profiles(&path)?;
@@ -337,8 +388,13 @@ pub fn mobile_save_host_profile(
         return Err("too many host profiles".into());
     }
     let old = existing.map(|index| profiles[index].clone());
+    validate_relay_edit(old.as_ref(), &request)?;
     let endpoint = trust_endpoint(&request.hostname, request.port);
-    let trusted_for_endpoint = read_trust(&trust_path(&app)?)?.get(&endpoint).cloned();
+    let trusted_for_endpoint = if request.relay.is_none() {
+        read_trust(&trust_path(&app)?)?.get(&endpoint).cloned()
+    } else {
+        None
+    };
     let profile = HostProfile {
         id: request
             .id
@@ -350,6 +406,7 @@ pub fn mobile_save_host_profile(
         preferred_transport: request.preferred_transport,
         authentication: request.authentication,
         credential_id: request.credential_id,
+        relay: request.relay,
         jump: request.jump,
         mosh_udp_port_start: request.mosh_udp_port_start,
         mosh_udp_port_end: request.mosh_udp_port_end,
@@ -384,6 +441,9 @@ pub fn mobile_save_host_profile(
 
 #[tauri::command]
 pub fn mobile_copy_host_profile(app: AppHandle, profile_id: String) -> Result<HostProfile, String> {
+    let _write = PROFILE_WRITES
+        .lock()
+        .map_err(|_| "host profile storage is busy")?;
     let path = profile_path(&app)?;
     let mut profiles = read_profiles(&path)?;
     if profiles.len() >= MAX_PROFILES {
@@ -394,6 +454,9 @@ pub fn mobile_copy_host_profile(app: AppHandle, profile_id: String) -> Result<Ho
         .find(|profile| profile.id == profile_id)
         .cloned()
         .ok_or_else(|| "host profile was not found".to_string())?;
+    if source.relay.is_some() {
+        return Err("Pair again to create an independent Relay identity".into());
+    }
     let mut copy = source;
     copy.id = format!("host_{}", uuid::Uuid::new_v4().simple());
     copy.name = format!("{} copy", copy.name);
@@ -418,6 +481,9 @@ pub fn mobile_trust_host_key(
     profile_id: String,
     fingerprint: String,
 ) -> Result<(), String> {
+    let _write = PROFILE_WRITES
+        .lock()
+        .map_err(|_| "host profile storage is busy")?;
     if !fingerprint.starts_with("SHA256:") || fingerprint.len() > 128 {
         return Err("invalid host key fingerprint".into());
     }
@@ -427,6 +493,9 @@ pub fn mobile_trust_host_key(
         .iter_mut()
         .find(|profile| profile.id == profile_id)
         .ok_or_else(|| "host profile was not found".to_string())?;
+    if profile.relay.is_some() {
+        return Err("Relay identities are pinned by pairing, not SSH trust".into());
+    }
     let endpoint = trust_endpoint(&profile.hostname, profile.port);
     profile.trusted_host_key = Some(fingerprint.clone());
     profile.last_error = None;
@@ -442,6 +511,9 @@ pub fn mobile_delete_host_profile(
     app: AppHandle,
     request: DeleteHostProfileRequest,
 ) -> Result<DeleteHostProfileResult, String> {
+    let _write = PROFILE_WRITES
+        .lock()
+        .map_err(|_| "host profile storage is busy")?;
     let path = profile_path(&app)?;
     let mut profiles = read_profiles(&path)?;
     let index = profiles
@@ -467,6 +539,11 @@ pub fn mobile_delete_host_profile(
     let removed = profiles.remove(index);
     let endpoint = trust_endpoint(&removed.hostname, removed.port);
     write_profiles(&path, &profiles)?;
+    if removed.relay.is_some() {
+        return Ok(DeleteHostProfileResult {
+            credential_id: request.delete_credential.then_some(removed.credential_id),
+        });
+    }
     let trust_path = trust_path(&app)?;
     let mut trust = read_trust(&trust_path)?;
     if request.delete_trust {
@@ -510,6 +587,7 @@ pub fn mobile_export_host_profiles(
             username: profile.username,
             preferred_transport: profile.preferred_transport,
             authentication: profile.authentication,
+            relay_peer: profile.relay.map(|relay| relay.peer),
             jump: profile.jump,
             mosh_udp_port_start: profile.mosh_udp_port_start,
             mosh_udp_port_end: profile.mosh_udp_port_end,
@@ -560,6 +638,9 @@ pub fn mobile_import_host_profiles(
     app: AppHandle,
     request: ImportProfilesRequest,
 ) -> Result<ImportProfilesResult, String> {
+    let _write = PROFILE_WRITES
+        .lock()
+        .map_err(|_| "host profile storage is busy")?;
     if request.document.len() > MAX_EXPORT_BYTES * 2 {
         return Err("host profile import is too large".into());
     }
@@ -628,6 +709,7 @@ pub fn mobile_import_host_profiles(
             preferred_transport: profile.preferred_transport.clone(),
             authentication: profile.authentication.clone(),
             credential_id: "cred_import_placeholder".into(),
+            relay: profile.relay_peer.clone().map(imported_relay),
             jump: profile.jump.clone(),
             mosh_udp_port_start: profile.mosh_udp_port_start,
             mosh_udp_port_end: profile.mosh_udp_port_end,
@@ -677,6 +759,7 @@ pub fn mobile_import_host_profiles(
             preferred_transport: exported.preferred_transport,
             authentication: exported.authentication,
             credential_id: String::new(),
+            relay: exported.relay_peer.map(imported_relay),
             jump,
             mosh_udp_port_start: exported.mosh_udp_port_start,
             mosh_udp_port_end: exported.mosh_udp_port_end,
@@ -690,6 +773,113 @@ pub fn mobile_import_host_profiles(
     }
     write_profiles(&path, &profiles)?;
     Ok(ImportProfilesResult { imported_count })
+}
+
+fn imported_relay(peer: Peer) -> RelayProfile {
+    RelayProfile {
+        peer,
+        device_public_key: None,
+        approved: false,
+    }
+}
+fn validate_relay_edit(
+    old: Option<&HostProfile>,
+    request: &SaveHostProfileRequest,
+) -> Result<(), String> {
+    if old.is_some_and(|old| old.relay.is_some()) || request.relay.is_some() {
+        let old = old.ok_or("Use native pairing to create a Relay profile")?;
+        let relay = old
+            .relay
+            .as_ref()
+            .ok_or("Cannot replace SSH identity with Relay")?;
+        if request.relay.as_ref() != Some(relay)
+            || request.credential_id != old.credential_id
+            || !matches!(request.preferred_transport, PreferredTransport::Relay)
+            || (request.enabled && !relay.approved)
+        {
+            return Err(
+                "Relay identity/approval can only be changed by authenticated native pairing"
+                    .into(),
+            );
+        }
+    }
+    Ok(())
+}
+pub(crate) fn create_relay_profile(
+    app: &AppHandle,
+    peer: Peer,
+    device_key: String,
+    credential_id: String,
+) -> Result<HostProfile, String> {
+    let _write = PROFILE_WRITES
+        .lock()
+        .map_err(|_| "host profile storage is busy")?;
+    let path = profile_path(app)?;
+    let mut profiles = read_profiles(&path)?;
+    if profiles.len() >= MAX_PROFILES {
+        return Err("too many host profiles".into());
+    }
+    let relay = RelayProfile {
+        peer: peer.clone(),
+        device_public_key: Some(device_key),
+        approved: false,
+    };
+    relay.validate()?;
+    let profile = HostProfile {
+        id: format!("host_{}", uuid::Uuid::new_v4().simple()),
+        name: peer.name.clone(),
+        hostname: peer.relay_url,
+        port: 443,
+        username: String::new(),
+        preferred_transport: PreferredTransport::Relay,
+        authentication: AuthenticationKind::PrivateKey,
+        credential_id,
+        relay: Some(relay),
+        jump: None,
+        mosh_udp_port_start: None,
+        mosh_udp_port_end: None,
+        enabled: false,
+        sort_order: profiles
+            .iter()
+            .map(|p| p.sort_order)
+            .max()
+            .unwrap_or(-1)
+            .saturating_add(1),
+        trusted_host_key: None,
+        last_connected_at: None,
+        last_error: Some("Relay approval pending".into()),
+        last_known_summary: None,
+    };
+    profiles.push(profile.clone());
+    write_profiles(&path, &profiles)?;
+    Ok(profile)
+}
+pub(crate) fn approve_relay_profile(
+    app: &AppHandle,
+    expected: &HostProfile,
+) -> Result<HostProfile, String> {
+    let _write = PROFILE_WRITES
+        .lock()
+        .map_err(|_| "host profile storage is busy")?;
+    let path = profile_path(app)?;
+    let mut profiles = read_profiles(&path)?;
+    let current = profiles
+        .iter_mut()
+        .find(|p| p.id == expected.id)
+        .ok_or("Pending Relay profile was removed")?;
+    if current.relay != expected.relay || current.credential_id != expected.credential_id {
+        return Err("Pending Relay identity changed".into());
+    }
+    current
+        .relay
+        .as_mut()
+        .ok_or("Relay identity is missing")?
+        .approved = true;
+    current.enabled = true;
+    current.last_error = None;
+    let result = current.clone();
+    write_profiles(&path, &profiles)?;
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -706,12 +896,51 @@ mod tests {
             preferred_transport: PreferredTransport::Ssh,
             authentication: AuthenticationKind::PrivateKey,
             credential_id: "cred_shared".into(),
+            relay: None,
             jump: None,
             mosh_udp_port_start: Some(60000),
             mosh_udp_port_end: Some(61000),
             enabled: true,
             sort_order: 0,
         }
+    }
+
+    #[test]
+    fn relay_metadata_is_backward_compatible_and_public_save_cannot_forge_approval() {
+        let computer = agentport_relay::crypto::Identity::generate().unwrap();
+        let phone = agentport_relay::crypto::Identity::generate().unwrap();
+        let peer = computer
+            .peer("ws://127.0.0.1/v1/relay".into(), "Fixture".into())
+            .unwrap();
+        let legacy = serde_json::json!({"id":"host_fixture","name":"Fixture","hostname":"example.test","port":22,"username":"user","preferredTransport":"ssh","authentication":"private_key","credentialId":"cred_fixture","enabled":true,"sortOrder":0});
+        let mut profile: HostProfile = serde_json::from_value(legacy).unwrap();
+        assert!(profile.relay.is_none());
+        profile.preferred_transport = PreferredTransport::Relay;
+        profile.relay = Some(RelayProfile {
+            peer: peer.clone(),
+            device_public_key: Some(phone.public_key()),
+            approved: false,
+        });
+        let mut edit = request();
+        edit.id = Some(profile.id.clone());
+        edit.preferred_transport = PreferredTransport::Relay;
+        edit.credential_id = profile.credential_id.clone();
+        edit.relay = profile.relay.clone();
+        edit.jump = None;
+        edit.mosh_udp_port_start = None;
+        edit.mosh_udp_port_end = None;
+        edit.enabled = false;
+        assert!(validate_request(&edit).is_ok());
+        assert!(validate_relay_edit(Some(&profile), &edit).is_ok());
+        assert!(validate_relay_edit(None, &edit).is_err());
+        edit.enabled = true;
+        assert!(validate_relay_edit(Some(&profile), &edit).is_err());
+        edit.relay.as_mut().unwrap().approved = true;
+        assert!(validate_relay_edit(Some(&profile), &edit).is_err());
+        let imported = imported_relay(peer);
+        assert!(!imported.approved);
+        assert!(imported.device_public_key.is_none());
+        assert!(imported.validate().is_ok());
     }
 
     #[test]
@@ -736,6 +965,7 @@ mod tests {
             preferred_transport: PreferredTransport::Ssh,
             authentication: AuthenticationKind::Password,
             credential_id: "cred_1".into(),
+            relay: None,
             jump: None,
             mosh_udp_port_start: None,
             mosh_udp_port_end: None,
@@ -778,6 +1008,7 @@ mod tests {
             username: "agent".into(),
             preferred_transport: PreferredTransport::Ssh,
             authentication: AuthenticationKind::PrivateKey,
+            relay_peer: None,
             jump: None,
             mosh_udp_port_start: None,
             mosh_udp_port_end: None,

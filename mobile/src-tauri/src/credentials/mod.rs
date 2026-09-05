@@ -44,7 +44,7 @@ fn account(credential_id: &str) -> Result<String, String> {
     Ok(format!("{ACCOUNT_PREFIX}{credential_id}"))
 }
 
-fn store_secret(app: &AppHandle, secret: &[u8]) -> Result<String, String> {
+pub(crate) fn store_secret(app: &AppHandle, secret: &[u8]) -> Result<String, String> {
     if secret.is_empty() || secret.len() > 1024 * 1024 {
         return Err("credential length is invalid".into());
     }

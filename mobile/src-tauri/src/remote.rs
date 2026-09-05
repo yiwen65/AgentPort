@@ -1,6 +1,9 @@
 use crate::credentials::load_credential;
-use crate::hosts::{self, AuthenticationKind as ProfileAuthentication, HostProfile};
+use crate::hosts::{
+    self, AuthenticationKind as ProfileAuthentication, HostProfile, PreferredTransport,
+};
 use crate::ssh::{self, AuthenticationKind, JumpHostRequest, SshProbeRequest};
+use agentport_relay::{crypto::Identity, endpoint::connect_session};
 use agentport_remote_protocol::{classify_method, RetryClass, ServerEnvelope, PROTOCOL_MAJOR};
 use russh::Disconnect;
 use serde::{Deserialize, Serialize};
@@ -98,7 +101,18 @@ struct Connection {
     snapshot: ConnectionSnapshot,
     writer: Arc<AsyncMutex<Box<dyn AsyncWrite + Send + Unpin>>>,
     pending: Arc<Mutex<HashMap<String, PendingRequest>>>,
-    ssh_session: ssh::AuthenticatedSsh,
+    transport: Transport,
+}
+
+enum Transport {
+    Ssh(ssh::AuthenticatedSsh),
+    Relay(RelayLease),
+}
+struct RelayLease(tokio::task::AbortHandle);
+impl Drop for RelayLease {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 #[derive(Clone)]
@@ -157,6 +171,7 @@ fn retryable_connect_error(error: &ConnectError) -> bool {
             | "bridge_channel_failed"
             | "bridge_launch_failed"
             | "bridge_hello_failed"
+            | "relay_unavailable"
     )
 }
 
@@ -270,7 +285,7 @@ async fn establish(
     profile: &HostProfile,
 ) -> Result<
     (
-        ssh::AuthenticatedSsh,
+        Transport,
         Box<dyn AsyncRead + Send + Unpin>,
         Box<dyn AsyncWrite + Send + Unpin>,
         ConnectionSnapshot,
@@ -283,6 +298,12 @@ async fn establish(
         fingerprint: None,
         host_key_hop: None,
     })?;
+    if matches!(profile.preferred_transport, PreferredTransport::Relay) {
+        return establish_relay_with_secret(profile, secret).await;
+    }
+    if profile.relay.is_some() {
+        return Err(relay_error(agentport_relay::Error::Unauthorized));
+    }
     let jump_profile = profile
         .jump
         .as_ref()
@@ -304,7 +325,9 @@ async fn establish(
             fingerprint: None,
             host_key_hop: Some("jump"),
         })?;
-    establish_with_secrets(profile, jump_profile.as_ref(), secret, jump_secret).await
+    let (ssh, reader, writer, snapshot) =
+        establish_with_secrets(profile, jump_profile.as_ref(), secret, jump_secret).await?;
+    Ok((Transport::Ssh(ssh), reader, writer, snapshot))
 }
 
 pub(crate) async fn establish_with_secrets(
@@ -321,6 +344,14 @@ pub(crate) async fn establish_with_secrets(
     ),
     ConnectError,
 > {
+    if profile.relay.is_some()
+        || matches!(profile.preferred_transport, PreferredTransport::Relay)
+        || jump_profile.is_some_and(|jump| {
+            jump.relay.is_some() || matches!(jump.preferred_transport, PreferredTransport::Relay)
+        })
+    {
+        return Err(relay_error(agentport_relay::Error::Unauthorized));
+    }
     let request = ssh_request(profile, jump_profile.map(|jump| (jump, String::new())));
     let connection = ssh::connect_authenticated_with_jump(
         &request,
@@ -352,8 +383,17 @@ pub(crate) async fn establish_with_secrets(
         })?;
     let stream = channel.into_stream();
     let (mut reader, mut writer) = tokio::io::split(stream);
+    let snapshot = bridge_hello(&profile.id, &mut reader, &mut writer).await?;
+    Ok((connection, Box::new(reader), Box::new(writer), snapshot))
+}
+
+async fn bridge_hello<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    profile_id: &str,
+    reader: &mut R,
+    writer: &mut W,
+) -> Result<ConnectionSnapshot, ConnectError> {
     write_frame(
-        &mut writer,
+        writer,
         &json!({
             "type": "hello",
             "protocol": {"major": 1, "minor": 1},
@@ -368,7 +408,7 @@ pub(crate) async fn establish_with_secrets(
         fingerprint: None,
         host_key_hop: None,
     })?;
-    let body = tokio::time::timeout(Duration::from_secs(10), read_frame(&mut reader))
+    let body = tokio::time::timeout(Duration::from_secs(10), read_frame(reader))
         .await
         .map_err(|_| ConnectError {
             code: "bridge_hello_timeout",
@@ -415,7 +455,7 @@ pub(crate) async fn establish_with_secrets(
         }
     };
     let snapshot = ConnectionSnapshot {
-        profile_id: profile.id.clone(),
+        profile_id: profile_id.to_string(),
         protocol_major: hello.protocol.major,
         protocol_minor: hello.protocol.minor,
         agentport_version: hello.server.agentport_version,
@@ -426,7 +466,58 @@ pub(crate) async fn establish_with_secrets(
             .filter_map(|capability| serde_json::to_value(capability).ok())
             .collect(),
     };
-    Ok((connection, Box::new(reader), Box::new(writer), snapshot))
+    Ok(snapshot)
+}
+
+fn relay_error(error: agentport_relay::Error) -> ConnectError {
+    let code = match error {
+        agentport_relay::Error::Unauthorized => "relay_authentication_failed",
+        agentport_relay::Error::Protocol | agentport_relay::Error::Invalid(_) => {
+            "relay_identity_invalid"
+        }
+        agentport_relay::Error::Credential | agentport_relay::Error::Storage => "credential_locked",
+        _ => "relay_unavailable",
+    };
+    ConnectError {
+        code,
+        message: error.to_string(),
+        fingerprint: None,
+        host_key_hop: None,
+    }
+}
+async fn establish_relay_with_secret(
+    profile: &HostProfile,
+    secret: Zeroizing<Vec<u8>>,
+) -> Result<
+    (
+        Transport,
+        Box<dyn AsyncRead + Send + Unpin>,
+        Box<dyn AsyncWrite + Send + Unpin>,
+        ConnectionSnapshot,
+    ),
+    ConnectError,
+> {
+    let relay = profile
+        .relay
+        .as_ref()
+        .ok_or_else(|| relay_error(agentport_relay::Error::Unauthorized))?;
+    relay
+        .validate()
+        .map_err(|_| relay_error(agentport_relay::Error::Unauthorized))?;
+    if !relay.approved || profile.jump.is_some() {
+        return Err(relay_error(agentport_relay::Error::Unauthorized));
+    }
+    let identity = Identity::from_private(secret).map_err(relay_error)?;
+    if relay.device_public_key.as_deref() != Some(identity.public_key().as_str()) {
+        return Err(relay_error(agentport_relay::Error::Unauthorized));
+    }
+    let stream = connect_session(&identity, &relay.peer)
+        .await
+        .map_err(relay_error)?;
+    let transport = Transport::Relay(RelayLease(stream.abort_handle()));
+    let (mut reader, mut writer) = tokio::io::split(stream);
+    let snapshot = bridge_hello(&profile.id, &mut reader, &mut writer).await?;
+    Ok((transport, Box::new(reader), Box::new(writer), snapshot))
 }
 
 fn zeroize_value(value: &mut Value) {
@@ -603,7 +694,7 @@ async fn reader_loop(
         if !state.owns_attempt(&profile_id, &next_token) {
             return;
         }
-        let Some((ssh_session, next_reader, writer, snapshot)) = reconnected else {
+        let Some((transport, next_reader, writer, snapshot)) = reconnected else {
             if let Ok(mut attempts) = state.inner.connecting_profiles.lock() {
                 if attempts.get(&profile_id) == Some(&next_token) {
                     attempts.remove(&profile_id);
@@ -634,7 +725,7 @@ async fn reader_loop(
                 snapshot,
                 writer: Arc::new(AsyncMutex::new(writer)),
                 pending: Arc::clone(&next_pending),
-                ssh_session,
+                transport,
             },
         );
         state
@@ -737,7 +828,7 @@ pub async fn mobile_connect_host(
         .lock()
         .ok()
         .map(|mut attempts| attempts.remove(&profile_id));
-    let (ssh_session, reader, writer, snapshot) = established.map_err(|error| {
+    let (transport, reader, writer, snapshot) = established.map_err(|error| {
         let _ = emit_connection_state(&app, &profile_id, "failed");
         error
     })?;
@@ -749,7 +840,7 @@ pub async fn mobile_connect_host(
             snapshot: snapshot.clone(),
             writer: Arc::new(AsyncMutex::new(writer)),
             pending: Arc::clone(&pending),
-            ssh_session,
+            transport,
         },
     );
     let _ = emit_connection_state(&app, &profile_id, "connected");
@@ -786,15 +877,19 @@ pub async fn mobile_disconnect_host(
     drop(connections);
     if let Some(connection) = connection {
         fail_pending(&connection.pending);
-        let _ = connection
-            .ssh_session
-            .session
-            .disconnect(Disconnect::ByApplication, "user disconnected", "en")
-            .await;
-        if let Some(jump) = connection.ssh_session.jump_session {
-            let _ = jump
-                .disconnect(Disconnect::ByApplication, "user disconnected", "en")
-                .await;
+        match connection.transport {
+            Transport::Ssh(ssh) => {
+                let _ = ssh
+                    .session
+                    .disconnect(Disconnect::ByApplication, "user disconnected", "en")
+                    .await;
+                if let Some(jump) = ssh.jump_session {
+                    let _ = jump
+                        .disconnect(Disconnect::ByApplication, "user disconnected", "en")
+                        .await;
+                }
+            }
+            Transport::Relay(lease) => drop(lease),
         }
     }
     Ok(())
@@ -1157,3 +1252,7 @@ mod tests {
         assert_eq!(value["params"]["nested"][0], "");
     }
 }
+
+#[cfg(test)]
+#[path = "relay_transport_tests.rs"]
+mod relay_transport_tests;

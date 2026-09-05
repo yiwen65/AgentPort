@@ -1,5 +1,8 @@
-export type PreferredTransport = "ssh" | "mosh";
+export type PreferredTransport = "ssh" | "mosh" | "relay";
 export type AuthenticationKind = "password" | "private_key";
+
+export interface RelayPeer { relayUrl: string; publicKey: string; hostId: string; name: string }
+export interface RelayProfile { peer: RelayPeer; devicePublicKey: string | null; approved: boolean }
 
 export interface HostProfileDraft {
   id?: string;
@@ -10,6 +13,7 @@ export interface HostProfileDraft {
   preferredTransport: PreferredTransport;
   authentication: AuthenticationKind;
   credentialId: string;
+  relay?: RelayProfile | null;
   jump?: { hostProfileId: string };
   moshUdpPortStart?: number;
   moshUdpPortEnd?: number;

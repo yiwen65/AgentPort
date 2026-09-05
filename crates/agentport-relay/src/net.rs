@@ -225,6 +225,13 @@ pub struct EncryptedStream {
     written: u64,
     progress: Arc<WriteProgress>,
 }
+impl EncryptedStream {
+    /// Native connection owners can cancel the pump even while split reader and
+    /// writer halves are retained by pending requests or a blocked reader loop.
+    pub fn abort_handle(&self) -> tokio::task::AbortHandle {
+        self.task.abort_handle()
+    }
+}
 impl Drop for EncryptedStream {
     fn drop(&mut self) {
         self.task.abort();

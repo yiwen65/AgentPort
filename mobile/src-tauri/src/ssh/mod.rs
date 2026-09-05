@@ -770,6 +770,7 @@ mod tests {
             preferred_transport: crate::hosts::PreferredTransport::Ssh,
             authentication: crate::hosts::AuthenticationKind::Password,
             credential_id: "cred_fixture".into(),
+            relay: None,
             jump: None,
             mosh_udp_port_start: None,
             mosh_udp_port_end: None,

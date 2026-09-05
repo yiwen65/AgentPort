@@ -174,8 +174,8 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-009 — Mobile Relay 主机与恢复传输
-- Status: pending
+### [x] T-009 — Mobile Relay 主机与恢复传输
+- Status: done
 - Owner: coordinator
 - Objective: Relay 接入原生状态、请求/订阅和凭据存储，兼容原有 SSH。
 - Inputs and prerequisites: T-007/T-008 协议与后台进程。
@@ -185,7 +185,7 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Execution steps: 向后兼容字段；原生 Relay 配对/连接；复用 Bridge handshake/reader；SSH 回归。
 - Acceptance criteria: U2/U7；现有 SSH 配置/凭据不迁移；身份失败不静默信任；断线保留 Session。
 - Verification method: Rust/适配层测试、Mobile 前端与 iOS 构建。
-- Validation evidence: Not run.
+- Validation evidence: 27 native library tests pass, including a real loopback Relay + native Bridge hello/request path, pinned phone key mismatch, authenticated revoke denial and explicit owner cancellation with retained split halves. Existing SSH/SFTP fixtures and uncertain-write/generation tests pass. Mobile 20 files / 113 tests and frontend build pass; shared Relay suite and strict clippy pass. iOS simulator bundle built, installed and launched as PID 70143; nonblank screenshot /tmp/mobile-relay-native-stage-late.png inspected. Initial iOS build stalled at local Tauri RPC; a process-local retry without proxy environment variables succeeded (no global settings changed). Native platform Keychain/pair approval UX is still final integration T-006. Logs: /tmp/mobile-relay-native-all.log, /tmp/mobile-relay-ui-tests.log, /tmp/mobile-relay-ui-build.log, /tmp/mobile-relay-ios-direct.log, /tmp/mobile-relay-shared-tests.log.
 - Blocker: None.
 - Unblock condition: None.
 
@@ -214,6 +214,14 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
+
+- 2026-09-06: T-009 done: backward-compatible Relay profiles, native opaque pairing attempts with durable disabled-profile/key custody before network authorization, authenticated approval/reconciliation, immutable identity fields, metadata-only import requiring new pairing, and transport-specific cancellation sharing existing Bridge protocol. Profile writes are serialized; adapter saves omit read-only fields while retaining Relay metadata. 27 native + 113 frontend tests pass, iOS build/install/nonblank capture completed. SSH profiles/credentials preserved; UI still uses historical pairing until T-010. LEARNS.md left untouched under protected-file rule; build retry evidence is recorded here instead.
+
+- 2026-09-06: Execution recovered: printf/pwd/git status pass; protected files unchanged by this task. T-009 resumed under the existing confirmed contract.
+
+- 2026-09-06: T-009 blocked by execution-tool failure: several bash calls time out (5–60 seconds), including standalone printf; file read/edit tools still work. No unverified Mobile implementation retained; reverted the unused manifest dependency, and read-back confirmed hosts/mod.rs was unchanged after a timed-out edit command. T-007/T-008 are committed as 6188263/2b45fe6. This final blocker-only document update cannot be revalidated/committed until execution recovers. Resume T-009 from its recorded native seams, then T-010/T-006.
+
+- 2026-09-06: T-009 started by coordinator. Next action: backward-compatible Relay profile metadata/native pairing custody, transport ownership cancellation and shared Bridge hello; preserve SSH establish test seam and existing manual profiles. UI switching remains T-010.
 
 - 2026-09-06: T-008 done: independent connector, private same-user IPC/Keychain adapter, exact pairing approval, durable device gate and revoke/Bridge ownership integrated with desktop commands and sidecar scripts. 21 default tests plus explicit real Bridge test pass; launcher-exit process smoke passes without credential creation. Real Bridge test initially assumed a direct result; corrected the fixture reader to consume protocol `accepted` before `result` (no product workaround/replay). Signed debug GUI rebuilt/reopened and nonblank screenshot inspected. T-009/T-010 not started; current visible QR flow remains historical SSH until replacement.
 
@@ -244,8 +252,8 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 - Result: partial
-- Evidence: Historical T-001 through T-005 implementation is committed. Revised Relay T-007/T-008 foundations are independently verified; T-009/T-010 Mobile/UI integration remains pending. Historical SSH verification does not validate the new architecture.
-- Limitations: Relay server and background/native control foundations are verified in isolation; Mobile transport and QR UI replacement are not implemented. Full configured GUI-exit/Keychain/device runtime acceptance remains T-006. The historical SSH port22 prerequisite is superseded; the simulator still has no camera. No physical camera, physical keyboard/gesture, Android, Wi-Fi/cellular switch or full first-time SSH pairing/revocation-login claim. Full desktop i18n checker still reports only the three documented pre-existing stale Rust allowlist entries.
+- Evidence: Historical T-001 through T-005 implementation is committed. Revised Relay T-007/T-008 foundations are independently verified and committed (6188263/2b45fe6); T-009 native Mobile integration is verified; T-010 QR UI replacement remains pending. Historical SSH verification does not validate the new architecture.
+- Limitations: Relay server and background/native control foundations are verified in isolation; Mobile transport is implemented; QR UI replacement is not yet implemented. Full configured GUI-exit/Keychain/device runtime acceptance remains T-006. The historical SSH port22 prerequisite is superseded; the simulator still has no camera. No physical camera, physical keyboard/gesture, Android, Wi-Fi/cellular switch or full first-time SSH pairing/revocation-login claim. Full desktop i18n checker still reports only the three documented pre-existing stale Rust allowlist entries.
 
 ### Historical SSH-era runtime evidence (iOS 26.5 / iPhone 17 Pro simulator, macOS debug app)
 

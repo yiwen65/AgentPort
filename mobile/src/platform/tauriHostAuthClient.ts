@@ -16,7 +16,14 @@ export class TauriHostAuthClient implements HostAuthClient {
   }
 
   saveProfile(profile: HostProfileDraft): Promise<HostProfileDetails> {
-    return invoke("mobile_save_host_profile", { request: profile });
+    // getProfile also returns read-only status/trust fields, which the native
+    // strict draft schema rejects. Preserve Relay pins but never forward status.
+    const { id, name, hostname, port, username, preferredTransport, authentication,
+      credentialId, relay, jump, moshUdpPortStart, moshUdpPortEnd, enabled, sortOrder } = profile;
+    return invoke("mobile_save_host_profile", { request: {
+      id, name, hostname, port, username, preferredTransport, authentication,
+      credentialId, relay, jump, moshUdpPortStart, moshUdpPortEnd, enabled, sortOrder,
+    } });
   }
 
   copyProfile(profileId: string): Promise<HostProfileDetails> {
