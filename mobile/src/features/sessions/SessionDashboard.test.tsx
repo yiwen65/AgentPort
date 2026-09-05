@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 import { i18n } from "../../i18n";
@@ -58,6 +58,7 @@ describe("V2 Session workspace", () => {
     expect(screen.queryByRole("button", { name: /Dead agent/ })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Show projects" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start agent in AgentPort" }));
     fireEvent.click(screen.getByRole("button", { name: "Start Claude in AgentPort" }));
     await waitFor(() => expect(remote.request).toHaveBeenCalledWith("host-1", "session.create", expect.objectContaining({
       projectId: "project-1", agent: "claude", permission: "bypass", transport: "pty", riskAck: true,
@@ -83,4 +84,102 @@ describe("V2 Session workspace", () => {
       projectExpansionInitialized: true,
     });
   });
+  it("uses one project launch entry, accessible view labels, and settings", async () => {
+    const onOpenSettings = vi.fn();
+    const { container } = render(<SessionDashboard client={client()} onOpenSession={vi.fn()} onOpenSettings={onOpenSettings} />);
+    await screen.findByRole("button", { name: "Start agent in AgentPort" });
+    expect(container.querySelector(".mobile-workspace-caption")).toBeNull();
+    expect(screen.getByText("Projects").closest(".visually-hidden")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Start Claude in AgentPort" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(onOpenSettings).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "Start agent in AgentPort" }));
+    expect(screen.getByRole("dialog", { name: "Choose an agent" })).toHaveTextContent("Project: AgentPort");
+    fireEvent.click(screen.getByRole("button", { name: /close/i }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show active sessions" }));
+    expect(screen.getByRole("button", { name: "Show projects" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("uses selected host/project and preserves ordered installed/hidden preferences", async () => {
+    const remote = client();
+    const request = remote.request;
+    remote.request = vi.fn().mockImplementation((host, method, params) => {
+      if (method === "agent.supported") return Promise.resolve([
+        { agent: "claude", displayName: "Claude", install: {} },
+        { agent: "pi", displayName: "Pi", install: {} },
+        { agent: "codex", displayName: "Codex", install: null },
+        { agent: "shell", displayName: "Shell", install: null },
+      ]);
+      if (method === "agent.preferences") return Promise.resolve({ agentOrder: ["shell", "pi", "claude"], agentHidden: ["claude"] });
+      return request(host, method, params);
+    });
+    const onOpenSession = vi.fn();
+    render(<SessionDashboard client={remote} onOpenSession={onOpenSession} />);
+    await screen.findByRole("button", { name: "Start agent in AgentPort" });
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "host-2" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Start agent in Laptop Project" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getAllByRole("button").filter((button) => button.hasAttribute("data-agent")).map((button) => button.querySelector(".agent-picker-name")?.textContent)).toEqual(["Shell", "Pi"]);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start Shell in Laptop Project" }));
+    await waitFor(() => expect(remote.request).toHaveBeenCalledWith("host-2", "session.create", expect.objectContaining({ projectId: "project-2", agent: "shell", permission: "native" })));
+  });
+
+  it.each(["close", "host switch"])("guards double submit and ignores completion after %s", async (cancel) => {
+    const remote = client();
+    const request = remote.request;
+    let complete!: (value: { sessionId: string }) => void;
+    remote.request = vi.fn().mockImplementation((host, method, params) => method === "session.create"
+      ? new Promise((resolve) => { complete = resolve; }) : request(host, method, params));
+    const onOpenSession = vi.fn();
+    render(<SessionDashboard client={remote} onOpenSession={onOpenSession} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Start agent in AgentPort" }));
+    const start = screen.getByRole("button", { name: "Start Claude in AgentPort" });
+    fireEvent.click(start);
+    fireEvent.click(start);
+    expect(start).toBeDisabled();
+    expect(screen.getByText(/Starting agent/)).toBeInTheDocument();
+    expect(vi.mocked(remote.request).mock.calls.filter((call) => call[1] === "session.create")).toHaveLength(1);
+    // Closing is always possible while create is already submitted.
+    if (cancel === "close") fireEvent.click(screen.getByRole("button", { name: /close/i }));
+    if (cancel === "host switch") {
+      fireEvent.change(screen.getByRole("combobox"), { target: { value: "host-2" } });
+      await screen.findByRole("button", { name: /Laptop task/ });
+    }
+    await act(async () => complete({ sessionId: "attention" }));
+    expect(onOpenSession).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])("handles failure without duplicate create retry after creation=%s", async (created) => {
+    const remote = client();
+    const request = remote.request;
+    let submitted = false;
+    remote.request = vi.fn().mockImplementation((host, method, params) => {
+      if (method === "session.create") { submitted = true; return created ? Promise.resolve({ sessionId: "new" }) : Promise.reject(new Error("Launch denied")); }
+      if (submitted && method === "session.list") return Promise.reject(new Error("List failed"));
+      return request(host, method, params);
+    });
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Start agent in AgentPort" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start Claude in AgentPort" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(created ? "Session created" : "Launch denied");
+    const start = screen.getByRole("button", { name: "Start Claude in AgentPort" });
+    if (created) expect(start).toBeDisabled(); else expect(start).toBeEnabled();
+    expect(screen.getByRole("button", { name: /close/i })).toBeEnabled();
+  });
+
+  it("explains empty and offline launch states", async () => {
+    const remote = client();
+    const request = remote.request;
+    let connection!: (event: { profileId: string; state: string }) => void;
+    remote.onConnectionState = vi.fn().mockImplementation((callback) => { connection = callback; return Promise.resolve(async () => undefined); });
+    remote.request = vi.fn().mockImplementation((host, method, params) => method === "agent.preferences" ? Promise.resolve({ agentHidden: ["claude", "shell"] }) : request(host, method, params));
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Start agent in AgentPort" }));
+    expect(screen.getByText(/No visible agents available/)).toBeInTheDocument();
+    act(() => connection({ profileId: "host-1", state: "disconnected" }));
+    expect(screen.getByText("Connect this device to start an agent.")).toBeInTheDocument();
+  });
+
 });

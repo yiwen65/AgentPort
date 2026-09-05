@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AgentIcon } from "../../components/AgentIcons";
+import { Modal } from "../../components/Modal";
+import "./dashboard.css";
 import { useTranslation } from "react-i18next";
 import type { ConnectionState, HostProfileSummary, RemoteClient } from "../../protocol/remoteClient";
 import { deliverAttentionNotifications, SystemNotificationSink } from "./attentionNotifications";
@@ -88,8 +91,9 @@ function relativeTime(value: string): string {
   return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function Icon({ name }: { name: "computer" | "bell" | "refresh" | "clock" | "folder" | "chevron" }) {
+function Icon({ name }: { name: "computer" | "bell" | "refresh" | "clock" | "folder" | "chevron" | "settings" }) {
   const paths = {
+    settings: <><circle cx="12" cy="12" r="3" /><path d="m9 3-1 3-3 1-2 5 2 5 3 1 1 3h6l1-3 3-1 2-5-2-5-3-1-1-3z" /></>,
     computer: <><rect x="3" y="4" width="18" height="14" rx="2" /><path d="M8 21h8M12 18v3" /></>,
     bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></>,
     refresh: <><path d="M20 6v5h-5" /><path d="M4 18v-5h5" /><path d="M18.5 10a7 7 0 0 0-12-3L4 9M5.5 14a7 7 0 0 0 12 3l2.5-2" /></>,
@@ -100,13 +104,13 @@ function Icon({ name }: { name: "computer" | "bell" | "refresh" | "clock" | "fol
   return <svg className={`ui-icon ui-icon-${name}`} aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
-function agentGlyph(agent: string): string {
-  if (agent === "shell") return ">_";
-  if (agent === "claude") return "✳";
-  if (agent === "codex") return "◎";
-  if (agent === "pi") return "P";
-  if (agent === "kimi") return "K";
-  return agent.slice(0, 1).toUpperCase();
+function AgentGlyph({ agent }: { agent: string }) {
+  if (["pi", "codex", "claude", "kimi", "qoder"].includes(agent)) {
+    return <AgentIcon agent={agent} className="agent-picker-glyph" size={30} mono />;
+  }
+  return <svg className="agent-picker-glyph" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+    <path d="m5 6 6 6-6 6m8 0h6" />
+  </svg>;
 }
 
 function SessionRow({ session, host, onOpen }: {
@@ -127,10 +131,11 @@ function SessionRow({ session, host, onOpen }: {
   );
 }
 
-export function SessionDashboard({ client, onOpenSession, onManageDevices }: {
+export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpenSettings }: {
   client: RemoteClient;
   onOpenSession: (session: OpenSession) => void;
   onManageDevices?: () => void;
+  onOpenSettings?: () => void;
 }) {
   const { t } = useTranslation();
   const [hosts, setHosts] = useState<HostProfileSummary[]>([]);
@@ -141,6 +146,14 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices }: {
   const [workspace, setWorkspace] = useState<PersistedWorkspace>(emptyWorkspace);
   const [loading, setLoading] = useState(true);
   const [launching, setLaunching] = useState<string>();
+  const [picker, setPicker] = useState<{ hostId: string; project: ProjectSummary }>();
+  const pickerRef = useRef(picker);
+  const launchBusy = useRef(false);
+  const [launchError, setLaunchError] = useState("");
+  const [createdSessionId, setCreatedSessionId] = useState<string>();
+  const selectedDeviceRef = useRef(selectedDeviceId);
+  selectedDeviceRef.current = selectedDeviceId;
+  pickerRef.current = picker;
   const [actionError, setActionError] = useState("");
   const [notificationError, setNotificationError] = useState("");
   const mounted = useRef(true);
@@ -164,10 +177,10 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices }: {
         client.request<SupportedAgent[]>(deviceId, "agent.supported", {}),
         client.request<AgentPreferences>(deviceId, "agent.preferences", {}),
       ]);
-      if (!mounted.current || deviceId !== selectedDeviceId) return;
+      if (!mounted.current || deviceId !== selectedDeviceRef.current) return;
       setSnapshot({ sessions, projects, agents, preferences, cached: false });
     } catch (error) {
-      if (!mounted.current || deviceId !== selectedDeviceId) return;
+      if (!mounted.current || deviceId !== selectedDeviceRef.current) return;
       setSnapshot((current) => ({
         sessions: current?.sessions ?? [],
         projects: current?.projects ?? [],
@@ -306,23 +319,42 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices }: {
     });
   };
 
-  const quickLaunch = async (projectId: string, agent: string) => {
-    if (!selectedHost || selectedHost.connectionState !== "connected") return;
-    const key = `${projectId}:${agent}`;
-    if (launching) return;
-    setLaunching(key);
-    setActionError("");
+  const closePicker = () => {
+    pickerRef.current = undefined;
+    setPicker(undefined);
+  };
+
+  useEffect(() => { closePicker(); }, [selectedDeviceId]);
+
+  const quickLaunch = async (agent: string) => {
+    const target = pickerRef.current;
+    if (!target || !selectedHost || selectedHost.id !== target.hostId || selectedHost.connectionState !== "connected" || launchBusy.current || createdSessionId) return;
+    launchBusy.current = true;
+    setLaunching(agent);
+    setLaunchError("");
+    const host = selectedHost;
+    const isCurrent = () => mounted.current && selectedDeviceRef.current === host.id && pickerRef.current === target;
+    let created = false;
     try {
-      const created = await client.request<{ sessionId: string }>(selectedHost.id, "session.create", quickStartParams(projectId, agent));
-      const latest = await client.request<SessionSummary[]>(selectedHost.id, "session.list", { includeArchived: false });
+      const result = await client.request<{ sessionId: string }>(host.id, "session.create", quickStartParams(target.project.id, agent));
+      created = true;
+      if (!isCurrent()) return;
+      setCreatedSessionId(result.sessionId);
+      const latest = await client.request<SessionSummary[]>(host.id, "session.list", { includeArchived: false });
+      if (!isCurrent()) return;
       setSnapshot((current) => current ? { ...current, sessions: latest, cached: false, error: undefined } : current);
-      const session = latest.find((candidate) => candidate.id === created.sessionId);
-      if (session) open(session);
-      else setActionError(t("session.createMissing"));
+      const session = latest.find((candidate) => candidate.id === result.sessionId);
+      if (session) {
+        closePicker();
+        onOpenSession({ hostProfileId: host.id, hostName: host.name, projectName: target.project.name, session });
+      } else setLaunchError(t("session.createMissing", { defaultValue: "The Session was created, but its latest summary could not be loaded." }));
     } catch (error) {
-      setActionError(errorText(error));
+      if (isCurrent()) setLaunchError(created
+        ? t("dashboard.launchCreated", { defaultValue: "Session created. Close this picker and refresh the session list to open it." })
+        : t("dashboard.launchFailed", { defaultValue: "Could not start agent: {{error}}", error: errorText(error) }));
     } finally {
-      setLaunching(undefined);
+      launchBusy.current = false;
+      if (mounted.current) setLaunching(undefined);
     }
   };
 
@@ -345,8 +377,10 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices }: {
           <span className={`device-state ${selectedHost?.connectionState ?? "disconnected"}`} aria-hidden="true" />
           <select value={selectedDeviceId} onChange={(event) => {
             if (selectedDeviceId) persistWorkspace(selectedDeviceId, { ...workspaceRef.current, recentOpen: false, scrollTop: window.scrollY });
+            closePicker();
+            selectedDeviceRef.current = event.target.value;
             setSelectedDeviceId(event.target.value);
-          }} aria-label="Current device">
+          }} aria-label={t("dashboard.currentDevice")}>
             {hosts.map((host) => <option key={host.id} value={host.id}>{host.name}</option>)}
           </select>
         </label>
@@ -363,9 +397,10 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices }: {
           <Icon name="bell" />
           {active.some((session) => session.unreadAttention) ? <span className="toolbar-attention" aria-hidden="true" /> : null}
         </button>
+        <button type="button" className="toolbar-icon-button" onClick={onOpenSettings} disabled={!onOpenSettings} aria-label={t("settings.title", { defaultValue: "Settings" })} aria-haspopup="dialog"><Icon name="settings" /></button>
       </header>
 
-      <div className="mobile-workspace-caption" aria-live="polite">
+      <div className="visually-hidden" aria-live="polite">
         <strong>{workspace.layout === "projects" ? t("dashboard.projects") : t("dashboard.activity")}</strong>
         <span>{workspace.layout === "projects" ? sessions.length : active.length}</span>
       </div>
@@ -386,12 +421,13 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices }: {
           return <section className="project-group" key={project.id}>
             <header>
               <button type="button" className="project-toggle" aria-expanded={expanded} onClick={() => toggleProject(project.id)}><Icon name="chevron" /><Icon name="folder" /><strong>{project.name}</strong></button>
-              <div className="agent-launch-strip" data-horizontal-scroll aria-label={`Start agent in ${project.name}`}>
-                {agents.map((agent) => {
-                  const key = `${project.id}:${agent.agent}`;
-                  return <button type="button" key={agent.agent} data-agent={agent.agent} disabled={Boolean(launching) || selectedHost?.connectionState !== "connected"} aria-label={`Start ${agent.displayName} in ${project.name}`} title={agent.displayName} onClick={() => void quickLaunch(project.id, agent.agent)}>{launching === key ? "…" : agentGlyph(agent.agent)}</button>;
-                })}
-              </div>
+              <button type="button" className="project-launch-button" aria-haspopup="dialog" aria-label={t("dashboard.launchIn", { defaultValue: "Start agent in {{project}}", project: project.name })} onClick={() => {
+                const target = { hostId: selectedDeviceId, project };
+                pickerRef.current = target;
+                setPicker(target);
+                setLaunchError("");
+                setCreatedSessionId(undefined);
+              }}>{t("dashboard.launch", { defaultValue: "Start agent" })}</button>
             </header>
             {expanded ? <ul className="v2-session-list">{projectSessions.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} onOpen={() => open(session)} />)}</ul> : null}
           </section>;
@@ -400,9 +436,20 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices }: {
 
       {snapshot && sessions.length === 0 ? <div className="state-card" role="status">{t("dashboard.noSessions")}</div> : null}
 
+      {picker && picker.hostId === selectedDeviceId ? <Modal title={t("dashboard.chooseAgent", { defaultValue: "Choose an agent" })} onClose={closePicker} className="agent-picker">
+        <p className="agent-picker-project">{t("dashboard.launchTarget", { defaultValue: "Project: {{project}}", project: picker.project.name })}</p>
+        {selectedHost?.connectionState !== "connected" ? <p role="status">{t("dashboard.launchOffline", { defaultValue: "Connect this device to start an agent." })}</p> : null}
+        {!agents.length ? <p role="status">{t("dashboard.noAgents", { defaultValue: "No visible agents available. Check agent installation and preferences on this device." })}</p> : null}
+        {launching ? <p role="status">{t("dashboard.launchBusy", { defaultValue: "Starting agent… You can close this picker; the session will still be created." })}</p> : null}
+        {launchError ? <p className="inline-error" role="alert">{launchError}</p> : null}
+        <ul className="agent-picker-list" aria-busy={Boolean(launching)}>
+          {agents.map((agent) => <li key={agent.agent}><button type="button" data-agent={agent.agent} disabled={Boolean(launching) || Boolean(createdSessionId) || selectedHost?.connectionState !== "connected"} aria-label={t("dashboard.startAgent", { defaultValue: "Start {{agent}} in {{project}}", agent: agent.displayName, project: picker.project.name })} onClick={() => void quickLaunch(agent.agent)}><AgentGlyph agent={agent.agent} /><span className="agent-picker-name">{agent.displayName}</span></button></li>)}
+        </ul>
+      </Modal> : null}
+
       {workspace.recentOpen ? <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) updateWorkspace({ ...workspace, recentOpen: false }); }}>
         <section className="modal-sheet recent-sheet" role="dialog" aria-modal="true" aria-labelledby="recent-title">
-          <header><h2 id="recent-title">Recent</h2><button type="button" aria-label={t("common.close")} onClick={() => updateWorkspace({ ...workspace, recentOpen: false })}>×</button></header>
+          <header><h2 id="recent-title">{t("dashboard.recent")}</h2><button type="button" aria-label={t("common.close")} onClick={() => updateWorkspace({ ...workspace, recentOpen: false })}>×</button></header>
           <ul className="v2-session-list">{recent.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} onOpen={() => open(session)} />)}</ul>
         </section>
       </div> : null}

@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState, type TouchEvent } from "re
 import { useTranslation } from "react-i18next";
 import { HostManager } from "../features/hosts-auth/HostManager";
 import type { HostAuthClient } from "../features/hosts-auth/types";
+import { SettingsDialog } from "../features/settings/SettingsDialog";
 import { SessionDashboard } from "../features/sessions/SessionDashboard";
 import type { OpenSession } from "../features/sessions/types";
 import type { RemoteClient } from "../protocol/remoteClient";
@@ -19,6 +20,7 @@ export function App({ client, hostAuthClient }: AppProps) {
   const { t } = useTranslation();
   const [selectedSession, setSelectedSession] = useState<OpenSession>();
   const [terminalVisible, setTerminalVisible] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [deviceManagerOpen, setDeviceManagerOpen] = useState(false);
   const swipeStart = useRef<{ x: number; y: number; at: number }>();
 
@@ -33,9 +35,10 @@ export function App({ client, hostAuthClient }: AppProps) {
   };
 
   const onTouchStart = (event: TouchEvent) => {
-    if (event.touches.length !== 1) return;
+    swipeStart.current = undefined;
+    if (settingsOpen || deviceManagerOpen || event.touches.length !== 1) return;
     const target = event.target as HTMLElement;
-    if (target.closest("[role=dialog], .modal-backdrop")) return;
+    if (target.closest("[role=dialog], .modal-backdrop, .centered-modal-backdrop")) return;
     if (target.closest("input, select, textarea, [data-horizontal-scroll]")) return;
     if (target.closest("button") && !target.closest(".project-toggle, .v2-session-row")) return;
     const touch = event.touches[0];
@@ -45,7 +48,7 @@ export function App({ client, hostAuthClient }: AppProps) {
   const onTouchEnd = (event: TouchEvent) => {
     const start = swipeStart.current;
     swipeStart.current = undefined;
-    if (!start || event.changedTouches.length !== 1) return;
+    if (settingsOpen || deviceManagerOpen || document.querySelector(".mobile-modal-portal") || !start || event.changedTouches.length !== 1) return;
     const touch = event.changedTouches[0];
     const dx = touch.clientX - start.x;
     const dy = touch.clientY - start.y;
@@ -69,6 +72,8 @@ export function App({ client, hostAuthClient }: AppProps) {
     let frame: number;
     let attempts = 0;
     const restoreFocus = () => {
+      // A modal opened during the transition owns focus until it closes.
+      if (document.querySelector("[role=dialog]")) return;
       const target = terminalVisible
         ? document.querySelector<HTMLElement>(".session-stage .terminal-back-button")
         : [...document.querySelectorAll<HTMLElement>("[data-session-id]")].find((element) => element.dataset.sessionId === selectedSession.session.id);
@@ -99,6 +104,7 @@ export function App({ client, hostAuthClient }: AppProps) {
           client={client}
           onOpenSession={openSession}
           onManageDevices={() => setDeviceManagerOpen(true)}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
       </main>
 
@@ -115,6 +121,8 @@ export function App({ client, hostAuthClient }: AppProps) {
           </Suspense>
         </div>
       ) : null}
+
+      {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
 
       {deviceManagerOpen ? (
         <div className="modal-backdrop device-manager-backdrop" onMouseDown={(event) => {

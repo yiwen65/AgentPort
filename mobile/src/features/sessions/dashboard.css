@@ -1,0 +1,27 @@
+/* Scoped above legacy sidebar rules so import order cannot shrink touch targets. */
+.session-dashboard .mobile-sidebar-toolbar { flex-wrap: wrap; align-items: center; gap: 2px; padding-inline: 8px; box-shadow: none; }
+.session-dashboard .toolbar-icon-button { min-width: 44px; min-height: 44px; }
+.session-dashboard .compact-device-picker { min-width: 64px; flex: 1 1 64px; }
+.session-dashboard .compact-device-picker select { min-height: 44px; width: 100%; min-width: 0; }
+.session-dashboard .toolbar-spacer { display: none; }
+.session-dashboard .dense-project-tree { padding-top: 8px; }
+.session-dashboard .project-group { margin: 0 8px 8px; border-radius: 10px; box-shadow: none; }
+.session-dashboard .project-group > header { min-height: 48px; gap: 4px; padding: 2px 4px; }
+.session-dashboard .project-toggle { min-height: 44px; gap: 6px; padding-inline: 4px; }
+.session-dashboard .project-toggle strong { font-size: 17px; }
+.session-dashboard .project-toggle .ui-icon { flex-shrink: 0; width: 18px; }
+.session-dashboard .project-launch-button { min-height: 44px; min-width: 44px; max-width: 45%; flex-shrink: 0; padding: 6px 10px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--fill); color: var(--text); font-size: 14px; overflow-wrap: anywhere; }
+.centered-modal.agent-picker { width: min(100%, 420px); }
+.agent-picker-project { margin: 0 0 12px; color: var(--muted); overflow-wrap: anywhere; }
+.agent-picker-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; list-style: none; margin: 0; padding: 0; }
+.agent-picker-list button { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 12px; width: 100%; min-height: 104px; padding: 16px 12px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--fill); color: var(--text); text-align: center; font-size: 16px; font-weight: 550; }
+.agent-picker-list .agent-picker-name { min-width: 0; overflow-wrap: anywhere; }
+.agent-picker-list button:disabled { opacity: .5; }
+.agent-picker-glyph { width: 30px; height: 30px; color: var(--accent); flex-shrink: 0; }
+.agent-picker .inline-error { overflow-wrap: anywhere; }
+.session-dashboard button:focus-visible, .agent-picker button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+
+.agent-picker-list button:active:not(:disabled), .project-launch-button:active { background: var(--fill-strong); transform: scale(.97); }
+@media (prefers-reduced-motion: reduce) { .agent-picker-list button:active:not(:disabled), .project-launch-button:active { transform: none; } }
+
+.agent-picker-glyph > svg { width: 100%; height: 100%; display: block; }

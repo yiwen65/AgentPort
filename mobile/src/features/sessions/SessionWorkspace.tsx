@@ -1,15 +1,12 @@
-import { Fragment, useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import type { RemoteClient, RemoteEvent } from "../../protocol/remoteClient";
 import { MobileTerminal, type MobileTerminalHandle } from "../../terminal/MobileTerminal";
 import {
   getMobileTerminalPalette,
   getMobileTerminalWorkspaceVariables,
-  loadMobileTerminalAppearance,
-  MOBILE_TERMINAL_THEME_IDS,
-  MOBILE_TERMINAL_THEME_MODES,
-  saveMobileTerminalAppearance,
 } from "../../terminal/terminalThemes";
+import { useMobileTerminalAppearance } from "../../terminal/terminalAppearance";
 import { decodeBase64Utf8, encodeBase64Utf8, outputBase64Of, sessionBatchId, sessionIdOf } from "./sessionProtocol";
 import type { OpenSession, RunCursor, SessionAttachResult, SessionEventPayload, TerminalGeometry } from "./types";
 
@@ -51,7 +48,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   const [otherClientInput, setOtherClientInput] = useState(false);
   const [attachEpoch, setAttachEpoch] = useState(0);
   const [fontSize, setFontSize] = useState(15);
-  const [terminalAppearance, setTerminalAppearance] = useState(loadMobileTerminalAppearance);
+  const [terminalAppearance] = useMobileTerminalAppearance();
   const [branchName, setBranchName] = useState<string>();
   const [confirmStop, setConfirmStop] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
@@ -81,10 +78,6 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
     ...getMobileTerminalWorkspaceVariables(terminalAppearance.theme, terminalAppearance.mode),
     colorScheme: terminalAppearance.mode,
   } as CSSProperties;
-
-  useEffect(() => {
-    saveMobileTerminalAppearance(terminalAppearance);
-  }, [terminalAppearance]);
 
   useEffect(() => {
     let cancelled = false;
@@ -421,61 +414,6 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
             <div><h2 id="terminal-actions-title">{open.session.title}</h2><p>{open.session.lifecycle} · {open.session.permissionMode}</p></div>
             <button type="button" aria-label={t("common.close")} autoFocus onClick={closeActions}>×</button>
           </header>
-
-          <fieldset className="terminal-appearance-settings" aria-describedby="terminal-appearance-hint">
-            <legend>{t("session.appearance.title")}</legend>
-            <p id="terminal-appearance-hint">{t("session.appearance.hint")}</p>
-
-            <span className="terminal-appearance-label" id="terminal-mode-label">{t("session.appearance.mode")}</span>
-            <div className="terminal-mode-options" role="radiogroup" aria-labelledby="terminal-mode-label">
-              {MOBILE_TERMINAL_THEME_MODES.map((mode) => (
-                <label key={mode}>
-                  <input
-                    className="visually-hidden"
-                    type="radio"
-                    name="mobile-terminal-mode"
-                    value={mode}
-                    checked={terminalAppearance.mode === mode}
-                    onChange={() => setTerminalAppearance((current) => ({ ...current, mode }))}
-                  />
-                  <span>{t(`session.appearance.modes.${mode}`)}</span>
-                </label>
-              ))}
-            </div>
-
-            <span className="terminal-appearance-label" id="terminal-colors-label">{t("session.appearance.colors")}</span>
-            <div className="mobile-terminal-theme-grid" role="radiogroup" aria-labelledby="terminal-colors-label">
-              {MOBILE_TERMINAL_THEME_IDS.map((theme) => {
-                const preview = getMobileTerminalPalette(theme, terminalAppearance.mode).xterm;
-                const descriptionId = `mobile-terminal-theme-${theme}-description`;
-                return <Fragment key={theme}>
-                  <label className="mobile-terminal-theme-choice">
-                    <input
-                      className="visually-hidden"
-                      type="radio"
-                      name="mobile-terminal-theme"
-                      value={theme}
-                      checked={terminalAppearance.theme === theme}
-                      aria-describedby={descriptionId}
-                      onChange={() => setTerminalAppearance((current) => ({ ...current, theme }))}
-                    />
-                    <span className="mobile-terminal-theme-choice-body">
-                      <span className="mobile-terminal-theme-preview" style={{ background: preview.background }} aria-hidden="true">
-                        {[preview.red, preview.yellow, preview.green, preview.cyan, preview.blue, preview.magenta].map((color, index) => (
-                          <span key={`${theme}-${index}`} style={{ background: color }} />
-                        ))}
-                      </span>
-                      <span className="mobile-terminal-theme-copy">
-                        <strong>{t(`session.appearance.themes.${theme}.name`)}</strong>
-                        <span aria-hidden="true">{terminalAppearance.theme === theme ? "✓" : ""}</span>
-                      </span>
-                    </span>
-                  </label>
-                  <span className="visually-hidden" id={descriptionId}>{t(`session.appearance.themes.${theme}.description`)}</span>
-                </Fragment>;
-              })}
-            </div>
-          </fieldset>
 
           <h3 className="terminal-session-actions-title">{t("session.actions")}</h3>
           <div className="terminal-action-grid">

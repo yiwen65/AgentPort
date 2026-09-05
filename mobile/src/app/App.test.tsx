@@ -42,13 +42,14 @@ describe("AgentPort Mobile V2 shell", () => {
   afterEach(cleanup);
 
   beforeEach(async () => {
+    localStorage.clear();
     await i18n.changeLanguage("zh-CN");
   });
 
   it("opens on Sessions without the V1 tab bar or product probes", async () => {
     render(<App client={client()} hostAuthClient={hostAuthClient} />);
     expect(await screen.findByRole("heading", { name: "Session" })).toBeInTheDocument();
-    expect(await screen.findByRole("status")).toHaveTextContent("先添加并连接一台主机。");
+    expect(await screen.findByText("先添加并连接一台主机。")).toHaveAttribute("role", "status");
     expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
     expect(screen.queryByText("工作区")).not.toBeInTheDocument();
     expect(screen.queryByText("内容")).not.toBeInTheDocument();
@@ -62,6 +63,18 @@ describe("AgentPort Mobile V2 shell", () => {
     expect(await screen.findByRole("heading", { name: "还没有主机" })).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(dialog).not.toBeInTheDocument());
+  });
+
+  it("opens settings without a selected session and leaves the app theme independent", async () => {
+    await i18n.changeLanguage("en-US");
+    render(<App client={client()} hostAuthClient={hostAuthClient} />);
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "Light" }));
+    expect(document.documentElement.style.getPropertyValue("--terminal-bg")).toBe("");
+    expect(document.body).not.toHaveClass("terminal-visible");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("supports the English resource set", async () => {
@@ -107,6 +120,32 @@ describe("AgentPort Mobile V2 shell", () => {
     expect(stage).not.toHaveClass("is-visible");
     await waitFor(() => expect(document.body).not.toHaveClass("terminal-visible"));
     await waitFor(() => expect(sessionButton).toHaveFocus());
+
+    const renderer = container.querySelector(".session-workspace");
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+    fireEvent.touchStart(shell, { touches: [{ clientX: 180, clientY: 220 }] });
+    fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 70, clientY: 224 }] });
+    expect(stage).not.toHaveClass("is-visible");
+    fireEvent.click(screen.getByRole("radio", { name: "Light" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Aurora" }));
+    expect(renderer).toHaveAttribute("data-terminal-theme", "aurora");
+    expect(renderer).toHaveAttribute("data-terminal-theme-mode", "light");
+    expect(container.querySelector(".session-workspace")).toBe(renderer);
+    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(1);
+    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.detach")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    // A picker opened after touch-start must also cancel the pending swipe.
+    fireEvent.touchStart(shell, { touches: [{ clientX: 180, clientY: 220 }] });
+    fireEvent.click(screen.getByRole("button", { name: "Start agent in AgentPort" }));
+    fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 70, clientY: 224 }] });
+    expect(stage).not.toHaveClass("is-visible");
+    const backdrop = screen.getByRole("dialog", { name: "Choose an agent" }).parentElement!;
+    fireEvent.touchStart(backdrop, { touches: [{ clientX: 180, clientY: 220 }] });
+    fireEvent.touchEnd(backdrop, { changedTouches: [{ clientX: 70, clientY: 224 }] });
+    expect(stage).not.toHaveClass("is-visible");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
 
     fireEvent.touchStart(shell, { touches: [{ clientX: 180, clientY: 220 }] });
     fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 70, clientY: 224 }] });

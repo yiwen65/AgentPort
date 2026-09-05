@@ -2,18 +2,20 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const styles = readFileSync("src/app/styles.css", "utf8");
+const dashboardStyles = readFileSync("src/features/sessions/dashboard.css", "utf8");
+const modalStyles = readFileSync("src/components/modal.css", "utf8");
 const terminalStyles = readFileSync("src/terminal/mobile-terminal.css", "utf8");
 const workspace = readFileSync("src/features/sessions/SessionWorkspace.tsx", "utf8");
 
 describe("mobile semantic design system", () => {
-  it("uses neutral iOS-dark-inspired semantic color roles", () => {
-    expect(styles).toContain("--bg: #000000");
-    expect(styles).toContain("--panel: #1c1c1e");
-    expect(styles).toContain("--panel-strong: #2c2c2e");
-    expect(styles).toContain("--accent: #0a84ff");
-    expect(styles).toContain("--success: #30d158");
-    expect(styles).toContain("--warning: #ff9f0a");
-    expect(styles).toContain("--danger: #ff453a");
+  it("uses light, warm-gray semantic color roles", () => {
+    expect(styles).toContain("--bg: #f3f2ef");
+    expect(styles).toContain("--panel: #ffffff");
+    expect(styles).toContain("--panel-strong: #eeefef");
+    expect(styles).toContain("--accent: #285f9e");
+    expect(styles).toContain("--success: #237548");
+    expect(styles).toContain("--warning: #945a00");
+    expect(styles).toContain("--danger: #b42332");
   });
 
   it("keeps glass on navigation while presenting list content as grouped material", () => {
@@ -32,17 +34,14 @@ describe("mobile semantic design system", () => {
   });
 
   it("provides readable fallback sizes and WebKit system text roles", () => {
-    expect(styles).toMatch(/\.mobile-workspace-caption strong \{[^}]*font-size: 28px;/s);
     expect(styles).toMatch(/\.project-toggle strong \{[^}]*font-size: 17px;/s);
     expect(styles).toMatch(/\.v2-session-row strong \{[^}]*font-size: 16px;/s);
     expect(styles).toMatch(/\.v2-session-row time \{[^}]*font-size: 13px;/s);
     expect(styles).toMatch(/@supports \(font: -apple-system-body\) \{[^}]*body \{ font: -apple-system-body; \}/s);
-    expect(styles).toContain(".mobile-workspace-caption strong { font: -apple-system-title1;");
     expect(styles).toContain(".project-toggle strong { font: -apple-system-headline;");
   });
 
   it("preserves touch targets, accessibility fallbacks, and an opaque terminal", () => {
-    expect(styles).toMatch(/\.agent-launch-strip button \{ width: 44px; height: 44px;/);
     expect(styles).toMatch(/@media \(prefers-reduced-transparency: reduce\) \{[^}]*\.mobile-sidebar-toolbar \{[^}]*backdrop-filter: none;/s);
     expect(styles).toMatch(/@media \(prefers-contrast: more\)/);
     expect(styles).toMatch(/\.session-stage \{[^}]*background: var\(--terminal-bg\);/s);
@@ -57,5 +56,12 @@ describe("mobile semantic design system", () => {
     expect(terminalStyles).toMatch(/\.mobile-terminal-spike \{[^}]*background: var\(--terminal-bg\);/s);
     expect(terminalStyles).toContain("background: var(--terminal-panel, rgba(44, 44, 46, .94));");
     expect(workspace).toContain("useState(15)");
+    expect(dashboardStyles).toContain("min-width: 44px; min-height: 44px");
+    expect(dashboardStyles).not.toContain("100dvh");
+    expect(modalStyles).toContain("env(safe-area-inset-bottom)");
+    expect(modalStyles).toContain("max-height: 100%");
+    expect(modalStyles).toContain("prefers-reduced-transparency: reduce");
+    expect(styles).not.toContain(".agent-launch-strip");
+    expect(styles).not.toContain(".mobile-workspace-caption");
   });
 });
