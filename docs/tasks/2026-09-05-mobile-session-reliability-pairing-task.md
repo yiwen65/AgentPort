@@ -12,7 +12,7 @@
 
 <!-- task-doc-section:scope-non-goals -->
 ## Scope and non-goals
-本轮实施和验收 iOS + macOS，共享代码不故意破坏 Android，但不声明 Android 原生扫码验收。保留现有用户会话、凭据及项目源码；破坏性测试仅用临时数据，不停止已有 Session。二维码不包含密码/私钥，不自动开启系统 SSH、不配置路由器、不引入公网中继。保留四份原有未提交改动：LEARNS.md、docs/mobile-app-prd.md、src/src/terminals.ts、src/src/terminals-renderer.test.ts。
+本轮实施和验收 iOS + macOS，共享代码不故意破坏 Android，但不声明 Android 原生扫码验收。保留现有用户会话、凭据及项目源码；破坏性测试仅用临时数据，不停止已有 Session。二维码不包含密码/私钥。2026-09-06 用户修订：扫码配对和终端通信全部经可自部署 Relay，不依赖 SSH；独立后台连接进程在 GUI 退出后继续服务，不配置开机自启动。本轮只在本地隔离环境验证，不部署公网服务、不创建云资源、不修改 SSH/防火墙/路由器。已有 SSH 配置/凭据继续可用。保留四份原有未提交改动：LEARNS.md、docs/mobile-app-prd.md、src/src/terminals.ts、src/src/terminals-renderer.test.ts。
 
 <!-- task-doc-section:facts-evidence -->
 ## Confirmed facts and evidence
@@ -20,7 +20,9 @@
 - `SessionDashboard.tsx` 当前 Recent 直接按时间取12条，非待处理事件队列；attention 类型已有 approval_requested / turn_completed。
 - `removeSessionFlow` 当前委派归档；用户明确选择 Mobile Remove 永久删除，Archive 保持可恢复归档。
 - 现有协议提供 session.attach/restart/archive/archives.delete、attention.poll/seen.mark；连接权限以 SSH 用户为主体。
-- 用户确认首次扫码配对、电脑确认、授权手机公钥并支持撤销；已有 SSH 可达为前提。
+- 历史：最初按已有 SSH 可达前提实现短时公钥配对（T-005）。
+- 当前有效修订（2026-09-06）：用户逐项确认全程 Relay、无需 SSH、独立后台进程、可自部署 Relay（本轮不公网部署），并明确确认实施摘要。原 SSH 扫码入口须替换，已有手动 SSH 连接保留。
+- 现有 RemoteClient 的请求/订阅/结果未知语义与 Bridge 的 stdio framed protocol 可复用；原生建立连接、传输所有权和 HostProfile 需要兼容 Relay。
 
 <!-- task-doc-section:assumptions-questions -->
 ## Assumptions and open questions
@@ -29,7 +31,7 @@
 - 已确认：桌面仅将 stopped/exited 的可见标签统一为 Stoped，底层生命周期保留。
 - 已确认：顶部六项菜单不含返回，标题提供按钮式返回，保留滑动返回。
 - 已确认：Remove 删除会话历史/关联数据但不删除项目源码，二次确认；开发验证不对用户现有会话执行。
-- Open question: 无产品阻塞；摄像头真机和真实网络切换能力需在验证阶段按实际条件记录。
+- Open question: 无产品阻塞；仍不以模拟器证明真机摄像头/物理软键盘/网络切换。工程上采用 WSS（仅字面 loopback 允许 WS）、端到端 Noise、Relay 服务端注册凭据与资源上限；不新增云账户体系。
 
 <!-- task-doc-section:acceptance-criteria -->
 ## Acceptance criteria
@@ -39,13 +41,14 @@
 - U4：已停止会话可明确 Restart；长按提供 Rename/Pin/Stop/Archive/Remove；永久删除明确确认且不可删除项目源码。
 - U5：终端菜单仅 Rename/Pin/Restart/Stop/A−/A＋，副标题为 Project/Branch，按钮式与手势返回可用。
 - U6：桌面 Stoped/Restart/Stop/Remove/Export Markdown/Export Json 文案准确，移除 Interrupt 菜单项，不删除协议控制能力。
-- U7：短时一次性二维码，手机扫码后桌面明确确认；手机私钥留安全存储；配对具备服务端身份校验、过期/重放拒绝、授权撤销，无明文敏感凭据或静默信任。
+- U7（修订）：配对和终端通信全程 Relay，不依赖电脑 SSH 或手机直连；短时一次性二维码，桌面明确确认；私钥留本地安全存储；端到端加密并绑定电脑身份，Relay 不解密终端内容；过期/重放拒绝，撤销拒绝新连接并关闭该设备已有 Relay 通道，不停止 Session Host。
+- U9：交付可自部署 Relay 及配置/TLS/安全边界说明；独立后台进程在 GUI 退出后继续提供访问；不配置自启动、不部署公网，保留既有 SSH 主机/凭据。
 - U8：各阶段回归与构建通过后仅提交任务文件；最终更新 iOS 模拟器和 macOS 调试包，核对进程路径及非空白截图，记录未实测边界。
 
 <!-- task-doc-section:dependencies-batches -->
 ## Dependencies and parallel batches
 
-Execution override: User explicitly authorized coordinator-led sequential execution after the interrupted DAG. Current order T-001 -> T-002 -> T-003 -> T-004 -> T-005 -> T-006. The original parallel partition below is retained only as historical file-scope evidence.
+Execution override: User explicitly authorized coordinator-led sequential execution after the interrupted DAG. Historical order T-001 -> T-002 -> T-003 -> T-004 -> T-005 -> T-006. Revised sequential order T-007 -> T-008 -> T-009 -> T-010 -> T-006. The original parallel partition below is retained only as historical file-scope evidence.
 第一批 T-001/T-002/T-003/T-004/T-005 并行，路径独占：终端渲染、传输适配层、Session UI、桌面文案、配对独立模块及依赖。T-006 依赖前五项，协调者串行处理入口/命令注册、共享文件集成及端到端验收。各子任务不得修改任务文档、用户原有改动、直接操作运行窗口或提交 Git。
 
 <!-- task-doc-section:task-list -->
@@ -111,7 +114,7 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Blocker: None.
 - Unblock condition: None.
 
-### [x] T-005 — 首次安全扫码配对
+### [x] T-005 — 历史 SSH 扫码配对（当前方向已由 Relay 替代）
 - Status: done
 - Owner: coordinator
 - Objective: 实现可撤销的二维码公钥配对及两端独立 UI/原生组件。
@@ -133,13 +136,73 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Inputs and prerequisites: T-001 至 T-005 的实际结果。
 - Scope or files: 共享命令注册、App/Settings/HostManager入口、必要协议边界、此任务记录、构建产物。
 - Expected output: 用户11项可追溯验收、task-only commits、更新后的调试窗口。
-- Dependencies: T-001, T-002, T-003, T-004, T-005
+- Dependencies: T-001, T-002, T-003, T-004, T-005, T-007, T-008, T-009, T-010
 - Execution steps: 检查每份diff和证据；集成；审查高风险授权/删除/重连；整体回归；构建安装截图；提交。
 - Acceptance criteria: U1-U8；不以模拟器替代真机摄像头验收，不隐藏任何阻塞。
 - Verification method: Mobile/desktop Vitest、相关Rust测试、构建、simctl、ps、截图。
 - Validation evidence: Mobile 19 files / 112 tests; desktop 5 files / 25 tests; shared pairing 8 tests; native remote 7 tests pass. Both frontend builds, final iOS simulator bundle and signed custom-protocol macOS debug bundle pass. Runtime evidence below includes controlled transport recovery, touch/scroll behavior, lifecycle mutations on a dedicated fixture, native pairing error states and screenshots.
-- Blocker: Physical camera and real SSH first-time onboarding unavailable (simulator has no camera; local system port22 closed). Physical soft-keyboard and real network-switch acceptance are not proven by synthetic WKWebView gestures.
-- Unblock condition: Test on an authorized physical iPhone with an already-enabled reachable macOS SSH account; verify scan/approval/login/revocation and real touch/keyboard/network-switch behavior without changing existing user credentials.
+- Blocker: Revised Relay implementation awaits T-007 through T-010. Physical camera/soft-keyboard/real network-switch acceptance remains unavailable in simulator; system SSH is no longer a prerequisite.
+- Unblock condition: Complete/integrate T-007 through T-010, then verify isolated Relay end-to-end including GUI exit and revocation; record or complete remaining authorized physical-iPhone checks without changing existing credentials.
+
+### [x] T-007 — Relay 协议、加密通道与可自部署服务
+- Status: done
+- Owner: coordinator
+- Objective: 实现不可信中转的受限路由与端到端安全通道。
+- Inputs and prerequisites: 2026-09-06 已确认 Relay 修订；隔离测试，不使用现有凭据。
+- Scope or files: crates/agentport-relay、Cargo manifests/lock、Relay 技术与部署说明。
+- Expected output: Noise 配对/会话身份绑定、注册证明、WSS 校验、受限转发服务与攻击/重放/背压测试。
+- Dependencies: None.
+- Execution steps: 检查官方 crate 来源；协议与资源边界；服务端与 loopback 实测。
+- Acceptance criteria: U7/U9；Relay 不解密终端数据；未授权注册/路由抢占拒绝；注册/连接/帧/时限受限。
+- Verification method: 定向 Rust 测试、隔离 loopback 与服务端编译。
+- Validation evidence: cargo test -p agentport-relay --features server: 13 library + 1 CLI tests pass (pinning before phone disclosure, replay/tamper, registration/Accept isolation, generation/capacity/frame bounds, multi-chunk flush and stalled-consumer deadline, private token file checks). Clippy all-targets with -D warnings, package fmt check and server build pass. Isolated CLI binds ephemeral loopback and exits cleanly on SIGINT. README documents TLS/deployment/security boundaries; TLS proxy and endpoint approval/revocation integration are not claimed. Logs: /tmp/relay-server-tests.log, /tmp/relay-clippy.log, /tmp/relay-build.log.
+- Blocker: None.
+- Unblock condition: None.
+
+### [ ] T-008 — 独立后台 Connector 与本地控制
+- Status: pending
+- Owner: coordinator
+- Objective: GUI 退出后保持出站 Relay、配对确认、设备授权撤销与 Bridge 承载。
+- Inputs and prerequisites: T-007 协议与安全通道，现有 Bridge stdio 接口。
+- Scope or files: crates/agentport-relay connector、src-tauri 控制模块、sidecar/debug bundle scripts。
+- Expected output: 独立进程、受保护 IPC/Keychain、原子授权存储、撤销关闭通道，无自启动副作用。
+- Dependencies: T-007
+- Execution steps: 身份与本地 IPC；配对状态机；受控 Bridge 子进程；后台生命周期与隔离测试。
+- Acceptance criteria: U7/U9；未授权设备不能启动 Bridge；关闭通道不停止 Session Host；不依赖 GUI。
+- Verification method: 临时目录/loopback/进程测试及 desktop cargo check。
+- Validation evidence: Not run.
+- Blocker: None.
+- Unblock condition: None.
+
+### [ ] T-009 — Mobile Relay 主机与恢复传输
+- Status: pending
+- Owner: coordinator
+- Objective: Relay 接入原生状态、请求/订阅和凭据存储，兼容原有 SSH。
+- Inputs and prerequisites: T-007/T-008 协议与后台进程。
+- Scope or files: mobile/src-tauri/src/hosts、remote、credentials、pairing；前端 profile types 与测试。
+- Expected output: Relay profile、扫码后密钥保管、端到端附加、重连且不重放不确定操作。
+- Dependencies: T-007, T-008
+- Execution steps: 向后兼容字段；原生 Relay 配对/连接；复用 Bridge handshake/reader；SSH 回归。
+- Acceptance criteria: U2/U7；现有 SSH 配置/凭据不迁移；身份失败不静默信任；断线保留 Session。
+- Verification method: Rust/适配层测试、Mobile 前端与 iOS 构建。
+- Validation evidence: Not run.
+- Blocker: None.
+- Unblock condition: None.
+
+### [ ] T-010 — 两端扫码 Relay UI 与旧入口替换
+- Status: pending
+- Owner: coordinator
+- Objective: Phone Pairing/Scan to pair 改用 Relay，并说明后台与自部署配置。
+- Inputs and prerequisites: T-008/T-009 原生接口。
+- Scope or files: 桌面 PairingSection、Mobile PairDevice/HostManager、locales、旧 SSH pairing 入口。
+- Expected output: Relay URL/注册凭据配置、后台状态、扫码/验证码/确认/撤销、错误/取消流程及测试。
+- Dependencies: T-008, T-009
+- Execution steps: 沿用界面接线；移除被替代的扫码入口；状态/取消/误配/失败测试；两端构建。
+- Acceptance criteria: U7/U9；扫码不再要求 SSH；配置安全落盘前不显示成功；手动 SSH 保留。
+- Verification method: 两端 Vitest/构建及最终 T-006 原生验收。
+- Validation evidence: Not run.
+- Blocker: None.
+- Unblock condition: None.
 
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
@@ -151,6 +214,10 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
+
+- 2026-09-06: T-007 done after 14 tests, strict clippy, fmt, server build and isolated CLI startup/shutdown. Added early computer pinning regression and descriptor-based private token loading. Multi-chunk flush originally lost queued data on drop (UnexpectedEof); downstream sent-byte acknowledgement fixes it without test sleeps; stalled consumer is now verified to close within bounded deadline. LEARNS.md remains untouched because it is protected pre-existing work. Endpoint authorization/GUI-exit/revocation remain T-008+, not inferred from crypto tests.
+
+- 2026-09-06: 用户确认 Relay 修订：配对和数据全部中转、不依赖 SSH、独立后台进程、交付自部署服务但不公网部署。保留本文件为唯一状态记录；T-005 作为历史实现，T-007 started，后续串行 T-008/T-009/T-010，再回到 T-006。
 
 - 2026-09-06: T-006 available integration gates passed; final acceptance blocked only on the listed physical-device/system-SSH conditions. Scanner native error object was reproduced as `[object Object]`, covered by a failing test, fixed to show its message, rebuilt/reinstalled, and verified as `No camera available on this device (e.g., iOS Simulator)` with preview styles restored. No LEARNS.md edits were made because that file belongs to pre-existing user work.
 
@@ -173,10 +240,10 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 - Result: partial
-- Evidence: T-001 through T-005 implemented and committed; available T-006 checks pass. Physical-device/SSH gates remain blocked, not silently treated as passed.
-- Limitations: System SSH port22 is unavailable and the simulator has no camera. No physical camera, physical keyboard/gesture, Android, Wi-Fi/cellular switch or full first-time SSH pairing/revocation-login claim. Full desktop i18n checker still reports only the three documented pre-existing stale Rust allowlist entries.
+- Evidence: Historical T-001 through T-005 implementation is committed. Revised Relay scope is in progress (T-007 through T-010); historical SSH verification does not validate the new architecture.
+- Limitations: Relay foundation is verified in isolation; native/background/UI integration is not yet implemented or verified. The historical SSH port22 prerequisite is superseded; the simulator still has no camera. No physical camera, physical keyboard/gesture, Android, Wi-Fi/cellular switch or full first-time SSH pairing/revocation-login claim. Full desktop i18n checker still reports only the three documented pre-existing stale Rust allowlist entries.
 
-### Runtime evidence (iOS 26.5 / iPhone 17 Pro simulator, macOS debug app)
+### Historical SSH-era runtime evidence (iOS 26.5 / iPhone 17 Pro simulator, macOS debug app)
 
 | Path | Observed result | Boundary |
 | --- | --- | --- |

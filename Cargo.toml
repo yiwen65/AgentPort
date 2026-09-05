@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/agentport-core",
     "crates/agentport-pairing",
+    "crates/agentport-relay",
     "crates/agentport-host",
     "crates/agentport-cli",
     "crates/agentport-service",
