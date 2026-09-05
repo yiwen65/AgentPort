@@ -40,6 +40,14 @@ describe("pairing UI", () => {
     expect(screen.getByText("No camera? Paste pairing code")).toBeInTheDocument();
     expect(camera.scan).not.toHaveBeenCalled(); expect(auth.generatePrivateKey).not.toHaveBeenCalled();
   });
+  it("renders the structured native camera-unavailable reason rather than object coercion", async () => {
+    camera.scan.mockRejectedValue({ message: "No camera available on this device (e.g., iOS Simulator)" });
+    const { auth, client } = fixture();
+    render(<PairDevice auth={auth} client={client} onClose={vi.fn()} onPaired={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Scan to pair" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("No camera available");
+    expect(auth.generatePrivateKey).not.toHaveBeenCalled();
+  });
   it("scans windowed so Cancel stays reachable, then completes only explicit authorization", async () => {
     const { auth, client } = fixture(); const onPaired = vi.fn();
     render(<PairDevice auth={auth} client={client} onClose={vi.fn()} onPaired={onPaired} />);

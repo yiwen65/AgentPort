@@ -5,6 +5,11 @@ import { Modal } from "../../components/Modal";
 import { finishPairing, pairingClient, preparePairing, type PairingClient, type PairingPreview } from "./pairingClient";
 import type { HostAuthClient } from "./types";
 
+function pairingError(cause: unknown): string {
+  if (cause && typeof cause === "object" && "message" in cause && typeof cause.message === "string") return cause.message;
+  return String(cause);
+}
+
 export function PairDevice({ auth, onClose, onPaired, client = pairingClient }: {
   auth: HostAuthClient; onClose: () => void; onPaired: (profileId: string) => void; client?: PairingClient;
 }) {
@@ -44,7 +49,7 @@ export function PairDevice({ auth, onClose, onPaired, client = pairingClient }: 
       const result = await scan({ cameraDirection: "back", formats: [Format.QRCode], windowed: true });
       if (!lifetime.current?.signal.aborted) await readCode(result.content);
     } catch (cause) {
-      if (!lifetime.current?.signal.aborted) { setError(String(cause)); setPhase("idle"); }
+      if (!lifetime.current?.signal.aborted) { setError(pairingError(cause)); setPhase("idle"); }
     } finally { scanning.current = false; active.current = false; }
   };
   const begin = async () => {
@@ -58,7 +63,7 @@ export function PairDevice({ auth, onClose, onPaired, client = pairingClient }: 
         // The same request/key polls idempotently; no second credential on retry.
         let reply;
         try { reply = await client.exchange(code, attempt.prepared.request); }
-        catch (cause) { if (!signal.aborted) setError(String(cause)); }
+        catch (cause) { if (!signal.aborted) setError(pairingError(cause)); }
         signal.throwIfAborted();
         if (reply?.state === "approved") {
           setPhase("finishing");
@@ -73,7 +78,7 @@ export function PairDevice({ auth, onClose, onPaired, client = pairingClient }: 
       }
       throw new Error(t("pairing.expired"));
     } catch (cause) {
-      if (!signal.aborted) { setCode(""); setPhase("failed"); setError(String(cause)); }
+      if (!signal.aborted) { setCode(""); setPhase("failed"); setError(pairingError(cause)); }
     } finally { active.current = false; }
   };
   return <Modal title={t("pairing.title")} onClose={onClose} className="pair-device-modal">
@@ -83,14 +88,14 @@ export function PairDevice({ auth, onClose, onPaired, client = pairingClient }: 
       <button type="button" className="primary-button wide" onClick={() => void scanCode()}>{t("pairing.scan")}</button>
       <details><summary>{t("pairing.manual")}</summary>
         <label>{t("pairing.code")}<textarea rows={3} autoComplete="off" spellCheck={false} value={code} onChange={event => { setCode(event.target.value); setPreview(undefined); setPhase("idle"); }} /></label>
-        <button type="button" disabled={!code} onClick={() => { setError(""); void readCode(code).catch(cause => setError(String(cause))); }}>{t("pairing.validate")}</button>
+        <button type="button" disabled={!code} onClick={() => { setError(""); void readCode(code).catch(cause => setError(pairingError(cause))); }}>{t("pairing.validate")}</button>
       </details>
       {preview ? <><p className="fingerprint">{preview.ssh.username}@{preview.ssh.hostname}:{preview.ssh.port}<br />{preview.ssh.fingerprint}</p>
         <label>{t("pairing.deviceName")}<input maxLength={80} value={name} onChange={event => setName(event.target.value)} /></label>
         <button type="button" className="primary-button wide" disabled={!name.trim()} onClick={() => void begin()}>{t("pairing.request")}</button></> : null}
     </> : null}
     {busy ? <p role="status">{t(`pairing.${phase}`)}</p> : null}
-    {phase === "scanning" ? <button type="button" onClick={() => void cancel().catch(cause => setError(String(cause)))}>{t("common.cancel")}</button> : null}
+    {phase === "scanning" ? <button type="button" onClick={() => void cancel().catch(cause => setError(pairingError(cause)))}>{t("common.cancel")}</button> : null}
     {verification ? <><strong className="pairing-verification">{verification}</strong><p>{t("pairing.compare")}</p></> : null}
     {error ? <p role="alert" className="inline-error">{error}</p> : null}
     {phase === "failed" || verification ? <p>{t("pairing.retained")}</p> : null}

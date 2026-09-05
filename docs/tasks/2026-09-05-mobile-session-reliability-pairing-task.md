@@ -112,7 +112,7 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Unblock condition: None.
 
 ### [x] T-005 — 首次安全扫码配对
-- Status: completed
+- Status: done
 - Owner: coordinator
 - Objective: 实现可撤销的二维码公钥配对及两端独立 UI/原生组件。
 - Inputs and prerequisites: U7，SSH 可用，不修改现有用户凭据进行验证。
@@ -127,7 +127,7 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Unblock condition: None.
 
 ### [ ] T-006 — 集成、审查与运行验收
-- Status: in_progress
+- Status: blocked
 - Owner: coordinator
 - Objective: 集成模块、补齐协议/入口并逐项验证交付。
 - Inputs and prerequisites: T-001 至 T-005 的实际结果。
@@ -137,9 +137,9 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 - Execution steps: 检查每份diff和证据；集成；审查高风险授权/删除/重连；整体回归；构建安装截图；提交。
 - Acceptance criteria: U1-U8；不以模拟器替代真机摄像头验收，不隐藏任何阻塞。
 - Verification method: Mobile/desktop Vitest、相关Rust测试、构建、simctl、ps、截图。
-- Validation evidence: Not run.
-- Blocker: None.
-- Unblock condition: None.
+- Validation evidence: Mobile 19 files / 112 tests; desktop 5 files / 25 tests; shared pairing 8 tests; native remote 7 tests pass. Both frontend builds, final iOS simulator bundle and signed custom-protocol macOS debug bundle pass. Runtime evidence below includes controlled transport recovery, touch/scroll behavior, lifecycle mutations on a dedicated fixture, native pairing error states and screenshots.
+- Blocker: Physical camera and real SSH first-time onboarding unavailable (simulator has no camera; local system port22 closed). Physical soft-keyboard and real network-switch acceptance are not proven by synthetic WKWebView gestures.
+- Unblock condition: Test on an authorized physical iPhone with an already-enabled reachable macOS SSH account; verify scan/approval/login/revocation and real touch/keyboard/network-switch behavior without changing existing user credentials.
 
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
@@ -151,6 +151,8 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
+
+- 2026-09-06: T-006 available integration gates passed; final acceptance blocked only on the listed physical-device/system-SSH conditions. Scanner native error object was reproduced as `[object Object]`, covered by a failing test, fixed to show its message, rebuilt/reinstalled, and verified as `No camera available on this device (e.g., iOS Simulator)` with preview styles restored. No LEARNS.md edits were made because that file belongs to pre-existing user work.
 
 - 2026-09-06: T-005 implemented and build/test verified. Secure temporary pairing, explicit desktop authorization, key custody, scanner cancellation and revocation are integrated. System SSH port22 is unavailable; no service configuration was changed. T-006 native runtime acceptance started.
 
@@ -170,6 +172,22 @@ Execution override: User explicitly authorized coordinator-led sequential execut
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
-- Result: not_run
-- Evidence: 尚未运行本轮最终验证。
-- Limitations: 真机摄像头和真实网络切换待验证能力判定；不包括 Android 原生交付。
+- Result: partial
+- Evidence: T-001 through T-005 implemented and committed; available T-006 checks pass. Physical-device/SSH gates remain blocked, not silently treated as passed.
+- Limitations: System SSH port22 is unavailable and the simulator has no camera. No physical camera, physical keyboard/gesture, Android, Wi-Fi/cellular switch or full first-time SSH pairing/revocation-login claim. Full desktop i18n checker still reports only the three documented pre-existing stale Rust allowlist entries.
+
+### Runtime evidence (iOS 26.5 / iPhone 17 Pro simulator, macOS debug app)
+
+| Path | Observed result | Boundary |
+| --- | --- | --- |
+| Output tap / touch scrolling | Actual WKWebView/xterm with dedicated shell fixture: synthetic output tap produced 0 focus events, compatibility mousedown was prevented; vertical touch moved normal-buffer viewport 119 → 104 with baseY 119. | Product event routing verified, not a physical-finger/soft-keyboard acceptance claim. No existing Session received test command input. |
+| Disconnect / recovery | Verified simulator TCP endpoint/sshd parent chain, terminated only its Remote Bridge (not a Host): native events reconnecting → connected; exact same xterm DOM node and same fixture Session remained running/hostAlive. Native profile snapshot also returned connected. | Controlled transport outage, not a Wi-Fi/cellular switch. Retained-tail warning can remain when a cursor expires; no claim of unbounded historical retention. |
+| Session controls | Portaled terminal menu showed exactly Rename, Pin, Restart, Stop, A−, A+, plus dialog close; subtitle `Mobile Reliability Fixture · main`. Title returned to list; 500ms synthetic long press showed Rename, Pin, Stop, Archive, Remove. | Screenshots inspected; native assistive-tech audit not performed. |
+| Dedicated fixture lifecycle | Created shell in an isolated `/tmp/agentport-reliability.*` project; printed 160 numbered lines only there. UI Rename and Pin persisted; confirmed Stop produced stopped/hostAlive=false; opening displayed explicit Restart without remote-failure alert; Restart returned running. Confirmed Archive retained the archive and stopped the Host; unarchive restored its record; confirmed Remove removed live/archive DB records and Session data while source sentinel remained intact. | Only `ses_01M1S7QWYVCF5CD5` was mutated. Existing user Sessions were not stopped/archived/deleted. |
+| Fixture cleanup | Removed only the now-empty test project using fresh preflight with exact revision precondition; read-only DB checks found zero fixture project/Session rows. Project source sentinel remains in `/tmp/agentport-reliability.4Vyngx`. | An initial cleanup probe omitted the required request precondition and the bridge rejected/closed it; the mutation was not blindly replayed. Corrected probe re-read authority before cleanup. No product patch was made for this test-script error. |
+| Pairing native integration | Desktop Phone Pairing renders; Generate gives actionable Remote Login prerequisite error with no authorization write. Mobile scanner returns the explicit simulator camera-unavailable reason and restores its preview surface. | No key generated or existing credential changed by runtime pairing tests. Full authorization tested only in isolated loopback/temp-dir tests. |
+| Debug delivery | Rebuilt via `scripts/rebuild-debug-app.sh`, restarted only the exact debug GUI, verified executable under `target/debug/bundle/macos/AgentPort.app/Contents/MacOS/agentport` and unique checkout bundle ID. Both updated apps rendered nonblank. | No release GUI or existing agentport-host was terminated. |
+
+Screenshots inspected: `/tmp/reliability-mobile-dashboard.png`, `/tmp/reliability-mobile-pairing.png`, `/tmp/reliability-mobile-scrolled.png`, `/tmp/reliability-mobile-six-actions.png`, `/tmp/reliability-mobile-row-menu.png`, `/tmp/reliability-mobile-stopped-final.png`, `/tmp/reliability-mobile-camera-final.png`; desktop captures from macos-harness show Stoped/Restart and Phone Pairing. Final delivery captures are `/tmp/reliability-mobile-final.png` and `/tmp/reliability-desktop-final.png`.
+
+Current logs: `/tmp/reliability-mobile-verified-tests.log`, `/tmp/reliability-desktop-final-tests.log`, `/tmp/reliability-pairing-final-tests.log`, `/tmp/reliability-mobile-native-final.log`, `/tmp/reliability-ios-camera-final.log`, `/tmp/reliability-macos-build-final.log`, `/tmp/reliability-pairing-i18n.log`.
