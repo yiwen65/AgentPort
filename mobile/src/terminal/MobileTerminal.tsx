@@ -201,11 +201,13 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     section.addEventListener("focusin", focusIn);
     section.addEventListener("focusout", focusOut);
     const keys = keysRef.current;
-    let dismissFrame: number | undefined;
+    let touchGesture: { x: number; y: number; lastY: number; moved: boolean } | undefined;
+    let compatibilityMouseUntil = 0;
     let gestureStartedInInput: boolean | undefined;
     const tapIsOnCurrentInputRows = (clientY: number) => {
       const screen = container.querySelector<HTMLElement>(".xterm-screen");
       if (!screen || terminal.rows <= 0) return false;
+      if (terminal.buffer.active.viewportY < terminal.buffer.active.baseY) return false;
       const rect = screen.getBoundingClientRect();
       if (rect.height <= 0) return false;
       const rowHeight = rect.height / terminal.rows;
@@ -228,6 +230,10 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     const recordTouchGesture = (event: TouchEvent) => {
       const touch = event.touches[0] ?? event.changedTouches[0];
       if (touch) recordInputGestureAt(event.target instanceof Node ? event.target : null, touch.clientY);
+      if (event.touches.length === 1 && event.target instanceof Node && container.contains(event.target)) {
+        compatibilityMouseUntil = performance.now() + 1000;
+        touchGesture = { x: touch.clientX, y: touch.clientY, lastY: touch.clientY, moved: false };
+      } else touchGesture = undefined;
     };
     const dismissTerminalInput = (event: MouseEvent) => {
       const target = event.target instanceof Node ? event.target : null;
@@ -242,15 +248,51 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
         ?? (container.contains(target) && tapIsOnCurrentInputRows(event.clientY));
       gestureStartedInInput = undefined;
       if (preserveInput) return;
-      if (dismissFrame !== undefined) window.cancelAnimationFrame(dismissFrame);
-      // xterm may focus its helper textarea during the target phase. Blur on
-      // the following frame so a completed tap outside the input rows wins.
-      dismissFrame = window.requestAnimationFrame(() => {
-        dismissFrame = undefined;
+      const helper = container.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
+      if (helper && document.activeElement === helper) helper.blur();
+    };
+    const guardCompatibilityMouse = (event: MouseEvent) => {
+      if (performance.now() >= compatibilityMouseUntil || gestureStartedInInput !== false) return;
+      if (!(event.target instanceof Node) || !container.contains(event.target)) return;
+      // xterm's mousedown handler focuses its textarea unconditionally. Stop
+      // touch-generated mouse events before that handler, not after keyboard UI.
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    const scrollTouch = (event: TouchEvent) => {
+      if (!touchGesture || event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      const dx = touch.clientX - touchGesture.x;
+      const dy = touch.clientY - touchGesture.y;
+      if (Math.abs(dx) > 8 || Math.abs(dy) > 8) touchGesture.moved = true;
+      if (!touchGesture.moved || Math.abs(dy) <= Math.abs(dx)) return;
+      const deltaY = touchGesture.lastY - touch.clientY;
+      touchGesture.lastY = touch.clientY;
+      gestureStartedInInput = false;
+      compatibilityMouseUntil = performance.now() + 1000;
+      event.preventDefault();
+      event.stopPropagation();
+      // Unlike xterm's touch path, wheel handles mouse-reporting TUIs and the
+      // alternate buffer as well as local scrollback. Preserve that protocol.
+      (container.querySelector(".xterm-screen") ?? container).dispatchEvent(new WheelEvent("wheel", {
+        deltaY, clientX: touch.clientX, clientY: touch.clientY, bubbles: true, cancelable: true,
+      }));
+    };
+    const finishTouch = (event: TouchEvent) => {
+      if (!touchGesture) return;
+      if (touchGesture.moved || gestureStartedInInput === false) {
+        event.preventDefault();
+        gestureStartedInInput = false;
+        compatibilityMouseUntil = performance.now() + 1000;
         const helper = container.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
         if (helper && document.activeElement === helper) helper.blur();
-      });
+      }
+      touchGesture = undefined;
     };
+    document.addEventListener("mousedown", guardCompatibilityMouse, true);
+    container.addEventListener("touchmove", scrollTouch, { capture: true, passive: false });
+    container.addEventListener("touchend", finishTouch, { capture: true, passive: false });
+    container.addEventListener("touchcancel", finishTouch, { capture: true, passive: false });
     document.addEventListener("pointerdown", recordPointerGesture, true);
     document.addEventListener("touchstart", recordTouchGesture, { capture: true, passive: true });
     document.addEventListener("click", dismissTerminalInput, true);
@@ -287,7 +329,10 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       pendingRemoteReport.current = false;
       window.clearTimeout(orientationTimerRef.current);
       if (resizeFrameRef.current !== undefined) window.cancelAnimationFrame(resizeFrameRef.current);
-      if (dismissFrame !== undefined) window.cancelAnimationFrame(dismissFrame);
+      document.removeEventListener("mousedown", guardCompatibilityMouse, true);
+      container.removeEventListener("touchmove", scrollTouch, true);
+      container.removeEventListener("touchend", finishTouch, true);
+      container.removeEventListener("touchcancel", finishTouch, true);
       viewport?.removeEventListener("resize", viewportChanged);
       viewport?.removeEventListener("scroll", viewportChanged);
       window.removeEventListener("orientationchange", orientationChanged);

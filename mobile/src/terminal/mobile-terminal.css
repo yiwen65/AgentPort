@@ -28,7 +28,8 @@
   overflow: hidden;
   overscroll-behavior: contain;
   background: var(--terminal-bg);
-  touch-action: pan-y;
+  /* xterm owns touch scrolling; native pan would cancel its event stream. */
+  touch-action: none;
   -webkit-user-select: text;
   user-select: text;
 }

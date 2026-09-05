@@ -194,6 +194,33 @@ describe("MobileTerminal input accessory", () => {
     expect(terminalHarness.fitCalls).toBe(fits);
   });
 
+  it("blocks xterm compatibility mousedown before it can focus output, but permits an input tap", () => {
+    render(<MobileTerminal showHeading={false} />);
+    const focus = vi.fn(() => terminalHarness.helper!.focus());
+    terminalHarness.screen!.addEventListener("mousedown", focus);
+    fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 40 }] });
+    fireEvent.mouseDown(terminalHarness.screen!, { clientY: 40 });
+    expect(focus).not.toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(terminalHarness.helper);
+    fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 205 }] });
+    fireEvent.mouseDown(terminalHarness.screen!, { clientY: 205 });
+    expect(focus).toHaveBeenCalledOnce();
+  });
+
+  it("routes vertical touch movement through xterm's wheel path, without interpreting a horizontal swipe as scroll", () => {
+    render(<MobileTerminal showHeading={false} />);
+    const wheel = vi.fn();
+    screen.getByRole("application").addEventListener("wheel", wheel);
+    fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 160 }] });
+    fireEvent.touchMove(terminalHarness.screen!, { touches: [{ clientX: 32, clientY: 100 }] });
+    expect(wheel).toHaveBeenCalledWith(expect.objectContaining({ deltaY: 60 }));
+    wheel.mockClear();
+    fireEvent.touchEnd(terminalHarness.screen!, { changedTouches: [{ clientX: 32, clientY: 100 }] });
+    fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 160 }] });
+    fireEvent.touchMove(terminalHarness.screen!, { touches: [{ clientX: 120, clientY: 155 }] });
+    expect(wheel).not.toHaveBeenCalled();
+  });
+
   it("uses the keyboard viewport and refits after the shortcut row enters layout", async () => {
     // WKWebView can shrink innerHeight together with visualViewport, so the
     // stable device window height is the keyboard-open comparison baseline.
