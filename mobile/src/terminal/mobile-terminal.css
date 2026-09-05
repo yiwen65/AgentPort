@@ -105,7 +105,7 @@
   max-height: 100%;
   min-height: 0;
   padding:
-    max(8px, env(safe-area-inset-top))
+    max(0px, env(safe-area-inset-top))
     0
     max(6px, env(safe-area-inset-bottom));
   flex-direction: column;
@@ -116,16 +116,67 @@
   color: var(--text);
 }
 
-.session-workspace .session-workspace-header,
-.session-workspace .terminal-status-stack {
-  flex: 0 0 auto;
+/* Overlay chrome lives in the former status-bar band. The center stays empty
+   for the notch / Dynamic Island; showing it never changes terminal geometry. */
+.terminal-chrome-reveal,
+.session-workspace-header {
+  position: absolute;
+  z-index: 6;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: max(44px, env(safe-area-inset-top));
 }
-
-.session-workspace .session-workspace-header {
-  padding-inline:
-    max(12px, env(safe-area-inset-left))
-    max(12px, env(safe-area-inset-right));
+.terminal-chrome-reveal {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  -webkit-tap-highlight-color: transparent;
 }
+.terminal-chrome-reveal:focus-visible {
+  outline-offset: -3px !important;
+}
+.session-workspace-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40% minmax(0, 1fr);
+  align-items: center;
+  padding-inline: max(16px, env(safe-area-inset-left)) max(16px, env(safe-area-inset-right));
+  pointer-events: none;
+}
+.terminal-chrome-reveal[hidden],
+.session-workspace-header[hidden] { display: none; }
+.session-workspace-header h1 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+.terminal-more-button {
+  grid-column: 3;
+  justify-self: end;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--terminal-bg);
+  color: var(--text);
+  font-size: 16px;
+  letter-spacing: -2px;
+  pointer-events: auto;
+  transition: transform 140ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.terminal-more-button:active { transform: scale(.95); }
+@media (prefers-reduced-motion: reduce) {
+  .terminal-more-button { transition: none; }
+}
+.session-workspace .terminal-status-stack { flex: 0 0 auto; }
 
 .session-workspace .mobile-terminal-spike {
   overflow: hidden;
@@ -135,7 +186,7 @@
   height: auto;
   min-height: 0;
   padding:
-    14px
+    2px
     max(16px, env(safe-area-inset-right))
     10px
     max(16px, env(safe-area-inset-left));
@@ -164,23 +215,4 @@
     padding-bottom: max(5px, env(safe-area-inset-bottom));
   }
 
-  .session-workspace .session-workspace-header {
-    grid-template-columns: 44px minmax(0, 1fr) 44px;
-    min-height: 54px;
-  }
-
-  .session-workspace .terminal-back-button,
-  .session-workspace .terminal-more-button {
-    width: 44px;
-    height: 44px;
-  }
-
-  .session-workspace .session-workspace-header h1 {
-    font-size: 15px;
-  }
-
-  .session-workspace .session-workspace-header p {
-    margin-top: 1px;
-    font-size: 12px;
-  }
 }

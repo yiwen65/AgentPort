@@ -232,6 +232,10 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     const dismissTerminalInput = (event: MouseEvent) => {
       const target = event.target instanceof Node ? event.target : null;
       if (!target || keys?.contains(target)) return;
+      if (target instanceof Element && target.closest(".terminal-chrome-reveal")) {
+        gestureStartedInInput = undefined;
+        return;
+      }
       // Use the pre-keyboard geometry captured at pointerdown. WKWebView can
       // resize the visual viewport before emitting the final click.
       const preserveInput = gestureStartedInInput

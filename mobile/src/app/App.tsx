@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState, type TouchEvent } from "re
 import { useTranslation } from "react-i18next";
 import { HostManager } from "../features/hosts-auth/HostManager";
 import type { HostAuthClient } from "../features/hosts-auth/types";
+import { useTerminalImmersion } from "./terminalImmersion";
 import { useApplyAppAppearance } from "./appAppearance";
 import { SettingsDialog } from "../features/settings/SettingsDialog";
 import { SessionDashboard } from "../features/sessions/SessionDashboard";
@@ -22,6 +23,7 @@ export function App({ client, hostAuthClient }: AppProps) {
   const { t } = useTranslation();
   const [selectedSession, setSelectedSession] = useState<OpenSession>();
   const [terminalVisible, setTerminalVisible] = useState(false);
+  useTerminalImmersion(terminalVisible);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deviceManagerOpen, setDeviceManagerOpen] = useState(false);
   const swipeStart = useRef<{ x: number; y: number; at: number }>();
@@ -77,7 +79,7 @@ export function App({ client, hostAuthClient }: AppProps) {
       // A modal opened during the transition owns focus until it closes.
       if (document.querySelector("[role=dialog]")) return;
       const target = terminalVisible
-        ? document.querySelector<HTMLElement>(".session-stage .terminal-back-button")
+        ? document.querySelector<HTMLElement>(".session-stage .session-workspace")
         : [...document.querySelectorAll<HTMLElement>("[data-session-id]")].find((element) => element.dataset.sessionId === selectedSession.session.id);
       if (target) {
         target.focus();
@@ -115,6 +117,7 @@ export function App({ client, hostAuthClient }: AppProps) {
           <Suspense fallback={<div className="state-card" role="status">{t("dashboard.loading")}</div>}>
             <SessionWorkspace
               key={`${selectedSession.hostProfileId}:${selectedSession.session.id}`}
+              active={terminalVisible}
               open={selectedSession}
               client={client}
               onClose={() => setTerminalVisible(false)}

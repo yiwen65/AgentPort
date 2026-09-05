@@ -48,12 +48,15 @@ describe("mobile semantic design system", () => {
     expect(styles).not.toContain(".session-row-meta");
   });
 
-  it("uses low-intrusion liquid controls over the unified terminal background", () => {
-    expect(styles).toMatch(/\.session-workspace-header button \{[^}]*background: transparent;[^}]*transition: transform 140ms/s);
-    expect(styles).toMatch(/\.session-workspace-header button::before \{[^}]*inset: 3px;[^}]*background: linear-gradient\([^}]*backdrop-filter: blur\(18px\) saturate\(1\.18\);/s);
-    expect(styles).toMatch(/\.terminal-back-button:active, \.terminal-more-button:active \{[^}]*transform: scale\(\.95\);/s);
-    expect(styles).toMatch(/\.terminal-back-button:active::before, \.terminal-more-button:active::before \{[^}]*background: var\(--terminal-control-active-bg, rgba\(255, 255, 255, \.105\)\);/s);
-    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[^}]*transition: none !important;/s);
+  it("places immersive chrome out of flow and keeps logs just below the cutout", () => {
+    expect(terminalStyles).toMatch(/\.terminal-chrome-reveal,\s*\.session-workspace-header \{[^}]*position: absolute;[^}]*top: 0;/s);
+    expect(terminalStyles).toContain("grid-template-columns: minmax(0, 1fr) 40% minmax(0, 1fr)");
+    expect(terminalStyles).toContain(".session-workspace-header[hidden] { display: none; }");
+    expect(terminalStyles).toMatch(/\.session-workspace \.mobile-terminal-surface \{[^}]*padding:\s*2px/s);
+    expect(terminalStyles).toContain("prefers-reduced-motion: reduce");
+    expect(styles).not.toContain(".terminal-back-button");
+    expect(styles).not.toContain(".session-workspace-header {");
+    expect(workspace).not.toContain("session-project-branch");
   });
 
   it("provides readable fallback sizes and WebKit system text roles", () => {
@@ -68,9 +71,8 @@ describe("mobile semantic design system", () => {
     expect(styles).toMatch(/@media \(prefers-reduced-transparency: reduce\) \{[^}]*\.mobile-sidebar-toolbar \{[^}]*backdrop-filter: none;/s);
     expect(styles).toMatch(/@media \(prefers-contrast: more\)/);
     expect(styles).toMatch(/\.session-stage \{[^}]*background: var\(--terminal-bg\);/s);
-    expect(styles).toMatch(/\.session-workspace-header \{[^}]*border-bottom: 0;[^}]*background: var\(--terminal-bg\);[^}]*backdrop-filter: none;/s);
     expect(styles).toMatch(/\.terminal-status-stack \{ border-bottom: 0; background: var\(--terminal-bg\); \}/);
-    expect(styles).toMatch(/\.terminal-back-button, \.terminal-more-button \{ width: 44px; height: 44px;/);
+    expect(terminalStyles).toMatch(/\.terminal-more-button \{[^}]*width: 44px;\s*height: 44px;/s);
     expect(styles).toMatch(/\.terminal-mode-options label > span \{ min-height: 44px;/);
     expect(styles).toMatch(/\.mobile-terminal-theme-choice-body \{ min-height: 78px;/);
     expect(styles).toContain("outline: 3px solid var(--terminal-accent)");

@@ -34,8 +34,9 @@ function errorText(error: unknown): string {
   return String(error);
 }
 
-export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
+export function SessionWorkspace({ open, client, active = true, onClose, onSessionChanged }: {
   open: OpenSession;
+  active?: boolean;
   client: RemoteClient;
   onClose: () => void;
   onSessionChanged: (next?: OpenSession) => void;
@@ -49,7 +50,8 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   const [attachEpoch, setAttachEpoch] = useState(0);
   const [fontSize, setFontSize] = useState(15);
   const [terminalAppearance, , resolvedMode] = useMobileTerminalAppearance();
-  const [branchName, setBranchName] = useState<string>();
+  const [chromeVisible, setChromeVisible] = useState(false);
+  const chromeReveal = useRef<HTMLButtonElement>(null);
   const [confirmStop, setConfirmStop] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [busyAction, setBusyAction] = useState("");
@@ -80,15 +82,16 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   } as CSSProperties;
 
   useEffect(() => {
-    let cancelled = false;
-    setBranchName(undefined);
-    void client.request<{ actualBranch?: string; expectedBranch?: string }>(open.hostProfileId, "git.context.resolve", {
-      locator: { kind: "session", sessionId: open.session.id },
-    }).then((context) => {
-      if (!cancelled) setBranchName(context.actualBranch ?? context.expectedBranch);
-    }).catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [client, open.hostProfileId, open.session.id]);
+    setChromeVisible(false);
+    setActionsOpen(false);
+    setConfirmStop(false);
+  }, [active]);
+
+  const hideChrome = () => {
+    setChromeVisible(false);
+    // Keep keyboard focus reachable without focusing xterm's input/keyboard.
+    window.requestAnimationFrame(() => chromeReveal.current?.focus({ preventScroll: true }));
+  };
 
   const handleEvent = useCallback((event: RemoteEvent<SessionEventPayload>) => {
     const payload = event.payload;
@@ -370,21 +373,36 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
   return (
     <article
       className="session-workspace"
-      aria-labelledby="session-title"
+      aria-label={open.session.title}
+      tabIndex={-1}
+      data-chrome-visible={chromeVisible}
+      onPointerDownCapture={(event) => {
+        if (!(event.target as Element).closest(".session-workspace-header, .terminal-chrome-reveal, .modal-backdrop")) setChromeVisible(false);
+      }}
       data-connection-state={connectionLabel}
       data-terminal-theme={terminalAppearance.theme}
       data-terminal-theme-mode={resolvedMode}
       style={terminalWorkspaceStyle}
     >
-      <header className="session-workspace-header">
-        <button className="terminal-back-button" type="button" onClick={onClose} aria-label={t("session.back")}>‹</button>
-        <div className="session-workspace-identity">
-          <h1 id="session-title">{open.session.title}</h1>
-          <p data-testid="session-project-branch" title={[open.projectName ?? open.session.projectId, branchName].filter(Boolean).join(" · ")}>
-            <span>{open.projectName ?? open.session.projectId}</span>
-            {branchName ? <><span aria-hidden="true">·</span><span>{branchName}</span></> : null}
-          </p>
-        </div>
+      <button
+        ref={chromeReveal}
+        className="terminal-chrome-reveal"
+        type="button"
+        hidden={chromeVisible}
+        aria-label={t("session.showControls")}
+        aria-expanded={chromeVisible}
+        aria-controls="session-chrome"
+        onPointerDown={(event) => event.preventDefault()}
+        onClick={(event) => {
+          setChromeVisible(true);
+          // Touch only reveals an overlay: retain terminal input and keyboard.
+          // Keyboard/assistive activation moves focus to the newly shown action.
+          if (event.detail === 0) window.requestAnimationFrame(() => actionsTrigger.current?.focus({ preventScroll: true }));
+        }}
+      />
+      <header id="session-chrome" className="session-workspace-header" hidden={!chromeVisible}
+        onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); hideChrome(); } }}>
+        <h1 id="session-title" title={open.session.title}>{open.session.title}</h1>
         <button ref={actionsTrigger} className="terminal-more-button" type="button" aria-label={t("session.actions")} aria-haspopup="dialog" onClick={() => setActionsOpen(true)}>•••</button>
       </header>
       {otherClientInput || notice || error ? <div className="terminal-status-stack">
@@ -417,6 +435,7 @@ export function SessionWorkspace({ open, client, onClose, onSessionChanged }: {
 
           <h3 className="terminal-session-actions-title">{t("session.actions")}</h3>
           <div className="terminal-action-grid">
+            <button type="button" onClick={() => { setActionsOpen(false); onClose(); }}>{t("session.back")}</button>
             <button type="button" onClick={() => void control("interrupt")}>{t("session.interrupt")}</button>
             <button type="button" onClick={() => setFontSize((value) => Math.max(11, value - 1))}>A−</button>
             <button type="button" onClick={() => setFontSize((value) => Math.min(24, value + 1))}>A+</button>

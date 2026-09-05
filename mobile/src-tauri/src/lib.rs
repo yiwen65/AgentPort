@@ -1,3 +1,4 @@
+mod appearance;
 mod credentials;
 mod hosts;
 mod mosh;
@@ -40,6 +41,7 @@ pub fn run() {
     builder
         .invoke_handler(tauri::generate_handler![
             mobile_scaffold_status,
+            appearance::mobile_set_terminal_immersive,
             hosts::mobile_list_host_profiles,
             hosts::mobile_get_host_profile,
             hosts::mobile_save_host_profile,

@@ -83,7 +83,7 @@ describe("SessionWorkspace", () => {
     const { client, request, emit } = setupClient();
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
-    expect(screen.getByText("AgentSessions")).toBeInTheDocument();
+    expect(screen.queryByText("AgentSessions")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
     await waitFor(() => expect(request).toHaveBeenCalledWith(
       "host-1",
@@ -275,6 +275,7 @@ describe("SessionWorkspace", () => {
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
 
+    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
     const trigger = screen.getByRole("button", { name: "Session actions" });
     fireEvent.click(trigger);
     const dialog = screen.getByRole("dialog");
@@ -293,18 +294,35 @@ describe("SessionWorkspace", () => {
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 
-  it("shows only the project and resolved branch below the session title", async () => {
+  it("starts immersive, reveals only title/actions, and returns to the list without detaching", async () => {
     const { client, request } = setupClient();
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    const onClose = vi.fn();
+    const props = { open, client, onClose, onSessionChanged: vi.fn() };
+    const { rerender } = render(<SessionWorkspace {...props} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    expect(screen.queryByRole("heading", { name: "Agent task" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Session actions" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Back to sessions" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("session-project-branch")).not.toBeInTheDocument();
+    expect(request.mock.calls.some(([, method]) => method === "git.context.resolve")).toBe(false);
 
-    const subtitle = await screen.findByTestId("session-project-branch");
-    await waitFor(() => expect(subtitle).toHaveAttribute("title", "AgentSessions · main"));
-    expect(subtitle).toHaveTextContent("AgentSessions");
-    expect(subtitle).toHaveTextContent("main");
-    expect(subtitle).not.toHaveTextContent("Live");
-    expect(subtitle).not.toHaveTextContent("pi");
-    expect(request).toHaveBeenCalledWith("host-1", "git.context.resolve", {
-      locator: { kind: "session", sessionId: "ses-1" },
-    });
+    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
+    expect(screen.getByRole("heading", { name: "Agent task" })).toBeInTheDocument();
+    fireEvent.pointerDown(screen.getByRole("region", { name: "Raw terminal" }));
+    expect(screen.queryByRole("heading", { name: "Agent task" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: "Session actions" }), { key: "Escape" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show session title and actions" })).toHaveFocus());
+    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to sessions" }));
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    rerender(<SessionWorkspace {...props} active={false} />);
+    rerender(<SessionWorkspace {...props} active />);
+    expect(screen.queryByRole("heading", { name: "Agent task" })).not.toBeInTheDocument();
+    expect(terminalHarness.mounts).toBe(1);
+    expect(request.mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(1);
+    expect(request.mock.calls.filter(([, method]) => method === "session.detach")).toHaveLength(0);
   });
 });

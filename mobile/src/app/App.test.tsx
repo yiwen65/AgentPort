@@ -115,7 +115,7 @@ describe("AgentPort Mobile V2 shell", () => {
     const stage = container.querySelector(".session-stage")!;
     expect(stage).toHaveClass("is-visible");
     await waitFor(() => expect(document.body).toHaveClass("terminal-visible"));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Back to sessions" })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole("article", { name: "Agent task" })).toHaveFocus());
 
     const shell = container.querySelector(".app-shell")!;
     fireEvent.touchStart(shell, { touches: [{ clientX: 40, clientY: 220 }] });
