@@ -10,7 +10,7 @@ export const resources = {
       pairing: {
         "title": "与电脑配对",
         "instructions": "在电脑 AgentPort → 设置 → 手机配对中生成二维码，再扫描。",
-        "requirements": "配对和终端通信均通过端到端加密的 Relay，无需 SSH 或手机直连电脑。请先在电脑配置 Relay 并启动后台连接。二维码不含私钥。",
+        "requirements": "电脑配置 Relay 后，扫码即可授权并连接，无需二次确认或 SSH。二维码是短时一次性访问凭证，只扫描自己电脑上的二维码。",
         "scan": "扫码配对",
         "manual": "无法使用相机？粘贴配对码",
         "code": "二维码原始内容（不保存）",
@@ -20,7 +20,7 @@ export const resources = {
         "cameraDenied": "相机不可用或权限被拒绝。请在系统设置中允许相机，或粘贴配对码。",
         "scanning": "正在扫描…",
         "preparing": "正在生成本机密钥和停用的待配对主机…",
-        "pending": "等待电脑确认授权…",
+        "pending": "正在通过二维码授权并连接…",
         "finishing": "正在保存已验证的 Relay 授权…",
         "compare": "请与电脑核对验证码和手机名称，确认一致后在电脑授权。",
         "denied": "电脑拒绝了配对请求。",
@@ -31,7 +31,7 @@ export const resources = {
         "reconcile": "检查已有授权",
         "relayManaged": "Relay 身份已固定。无需 SSH 密码或私钥；请在电脑撤销设备访问。",
         "deleteRelay": "删除本机 Relay 配置并断开通道不会撤销电脑上的授权。请先在电脑的手机配对设置中撤销该设备。不会停止 Session Host。",
-        "paired": "Relay 配对成功。请选择新主机的“连接”。"
+        "paired": "Relay 配对成功。"
 },
       appName: "AgentPort",
       mobile: "移动端",
@@ -177,7 +177,7 @@ export const resources = {
       pairing: {
         "title": "Pair with a computer",
         "instructions": "On the computer, open AgentPort → Settings → Phone Pairing and generate a code.",
-        "requirements": "Pairing and terminal traffic use end-to-end encrypted Relay, with no SSH or direct connection to the computer. Configure and start Relay on the computer first. The QR contains no private key.",
+        "requirements": "Configure Relay on the computer, then scan to authorize and connect without another confirmation or SSH. The short-lived, one-time QR grants access. Scan only your own computer's code.",
         "scan": "Scan to pair",
         "manual": "No camera? Paste pairing code",
         "code": "Raw QR content (not saved)",
@@ -187,7 +187,7 @@ export const resources = {
         "cameraDenied": "Camera unavailable or denied. Allow camera access in system Settings, or paste the pairing code.",
         "scanning": "Scanning…",
         "preparing": "Creating a local key and disabled pending host…",
-        "pending": "Waiting for approval on the computer…",
+        "pending": "Authorizing and connecting through the QR…",
         "finishing": "Saving verified Relay authorization…",
         "compare": "Compare this code and phone name with the computer, then authorize there only if they match.",
         "denied": "The computer denied this pairing request.",
@@ -198,7 +198,7 @@ export const resources = {
         "reconcile": "Check existing authorization",
         "relayManaged": "Relay identity is pinned. No SSH password or key is needed; revoke device access on the computer.",
         "deleteRelay": "Deleting this local Relay profile disconnects its channel but does not revoke authorization on the computer. Revoke the device in the computer’s Phone Pairing settings first. Session Hosts are not stopped.",
-        "paired": "Paired through Relay. Choose Connect on the new host."
+        "paired": "Paired through Relay."
 },
       appName: "AgentPort",
       mobile: "Mobile",

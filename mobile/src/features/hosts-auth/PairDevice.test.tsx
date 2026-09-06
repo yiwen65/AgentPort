@@ -18,8 +18,7 @@ function fixture(): PairingClient {
 }
 async function request() {
   fireEvent.click(screen.getByRole("button", { name: "Scan to pair" }));
-  fireEvent.change(await screen.findByLabelText("Name of this phone"), { target: { value: "Phone" } });
-  fireEvent.click(screen.getByRole("button", { name: "Request authorization" }));
+
 }
 describe("Relay pairing UI", () => {
   afterEach(cleanup);
@@ -47,6 +46,7 @@ describe("Relay pairing UI", () => {
     await request(); await waitFor(() => expect(onPaired).toHaveBeenCalledWith("new-host"));
     expect(camera.scan).toHaveBeenCalledWith(expect.objectContaining({ windowed: true }));
     expect(client.prepare).toHaveBeenCalledTimes(1); expect(client.wait).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Request authorization" })).not.toBeInTheDocument();
   });
   it("unmount cancels scanning and restores the preview surface", async () => {
     camera.scan.mockReturnValue(new Promise(() => undefined));
@@ -59,7 +59,8 @@ describe("Relay pairing UI", () => {
     const client = fixture(); const onPaired = vi.fn(); let resolve!: (profile: HostProfileDetails) => void;
     vi.mocked(client.wait).mockReturnValue(new Promise(done => { resolve = done; }));
     const view = render(<PairDevice client={client} onClose={vi.fn()} onPaired={onPaired} />);
-    await request(); await screen.findByText("1234-ABCD"); view.unmount();
+    await request(); await waitFor(() => expect(client.wait).toHaveBeenCalled());
+    expect(screen.queryByText("1234-ABCD")).not.toBeInTheDocument(); view.unmount();
     expect(client.cancel).toHaveBeenCalledWith("attempt"); await act(async () => resolve(profile)); expect(onPaired).not.toHaveBeenCalled();
   });
   it("offers a new scan after failure without replaying an unknown mutation", async () => {

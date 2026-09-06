@@ -168,6 +168,7 @@ pub struct PairStatus {
     pub candidate: Option<Candidate>,
 }
 struct Pairing {
+    automatic: bool,
     invitation: Invitation,
     status: PairStatus,
 }
@@ -334,6 +335,14 @@ impl Runtime {
         Ok(())
     }
     pub async fn invite(&self) -> Result<Invitation> {
+        self.invite_with_approval(false).await
+    }
+    /// Creating this short-lived QR explicitly grants its first authenticated
+    /// holder access; the registration token is never part of the invitation.
+    pub async fn invite_automatic(&self) -> Result<Invitation> {
+        self.invite_with_approval(true).await
+    }
+    async fn invite_with_approval(&self, automatic: bool) -> Result<Invitation> {
         let mut inner = self.inner.lock().await;
         if inner.stopping || inner.phase != Phase::Connected {
             return Err(Error::Offline);
@@ -341,6 +350,7 @@ impl Runtime {
         let configured = inner.configured.as_ref().ok_or(Error::Offline)?;
         let invitation = Invitation::new(configured.peer.clone())?;
         inner.pairing = Some(Pairing {
+            automatic,
             status: PairStatus {
                 invitation_id: invitation.id.clone(),
                 expires_at: invitation.expires_at,
@@ -657,7 +667,7 @@ impl Runtime {
             name: hello.name,
             verification_code: established.verification_code.clone(),
         };
-        {
+        let automatic = {
             let mut inner = self.inner.lock().await;
             if inner.stopping || *self.changed.borrow() != generation {
                 return Err(Error::Unauthorized);
@@ -672,6 +682,18 @@ impl Runtime {
             // Only a fully authenticated candidate can claim the one-time invite.
             pairing.status.phase = PairPhase::Pending;
             pairing.status.candidate = Some(candidate.clone());
+            pairing.automatic
+        };
+        if automatic {
+            // Reuse the exact identity/expiry checks and durable allowlist
+            // transaction. No success is sent if persistence fails.
+            self.decide(
+                &invitation.id,
+                &candidate.request_id,
+                &candidate.public_key,
+                true,
+            )
+            .await?;
         }
         let mut channel = SecureChannel::new(socket, established);
         channel

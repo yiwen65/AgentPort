@@ -282,7 +282,7 @@
     },
     "pairing": {
       "description": "通过端到端加密的 Relay 配对手机并访问终端会话。",
-      "requirements": "填写自部署 Relay 地址（wss://host/v1/relay）。两端均主动连接中转，无需 SSH 或手机直连电脑。关闭 App 后后台连接仍保留；不会安装登录自启动。只扫描自己电脑上的二维码。",
+      "requirements": "填写自部署 Relay 地址（wss://host/v1/relay）。两端均主动连接中转，无需 SSH 或手机直连电脑。扫码即授权，无需二次确认。二维码是短时一次性访问凭证，请勿分享。关闭 App 后后台连接仍保留；不会安装登录自启动。",
       "generate": "生成配对码",
       "close": "关闭配对",
       "qrAlt": "AgentPort 短时配对二维码",

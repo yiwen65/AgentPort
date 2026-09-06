@@ -83,7 +83,7 @@ export function PairingSection() {
   });
   const generate = () => run(async () => {
     await close();
-    const reply = await control({ kind: "invite" });
+    const reply = await control({ kind: "invite_automatic" });
     if (reply.kind !== "invitation") throw new Error(t("settings:ui.pairing.invalidReply"));
     const value = reply.invitation; // Contains ephemeral QR secret; never persist/log.
     if (!alive.current) { await control({ kind: "close_invitation", invitation_id: value.id }); return; }
@@ -94,11 +94,6 @@ export function PairingSection() {
     } catch (cause) { await close(); throw cause; }
   });
   const pair = status?.pairing;
-  const decide = (approve: boolean) => run(async () => {
-    if (!pair?.candidate) return;
-    await control({ kind: "decide", invitation_id: pair.invitationId, candidate: pair.candidate, approve });
-    if (alive.current) setImage("");
-  });
   return <section className="pairing-section">
     <p>{t("settings:ui.pairing.description")}</p>
     <p className="form-hint">{t("settings:ui.pairing.requirements")}</p>
@@ -126,11 +121,6 @@ export function PairingSection() {
     {pair ? <p role="status">{t(`settings:ui.pairing.states.${pair.phase}`)} · {t("settings:ui.pairing.expires", { seconds })}</p> : null}
     {pair?.candidate ? <div className="pairing-candidate">
       <strong>{pair.candidate.name}</strong><code className="pairing-fingerprint">{pair.candidate.publicKey}</code>
-      <strong className="pairing-verification">{pair.candidate.verificationCode}</strong>
-      {pair.phase === "pending" ? <><p>{t("settings:ui.pairing.compare")}</p><div className="pairing-buttons">
-        <button className="btn" disabled={busy || seconds <= 0} onClick={() => void decide(false)}>{t("settings:ui.pairing.deny")}</button>
-        <button className="btn btn-primary" disabled={busy || seconds <= 0} onClick={() => void decide(true)}>{t("settings:ui.pairing.approve")}</button>
-      </div></> : null}
     </div> : null}
     {error ? <p role="alert" className="form-error">{error}</p> : null}
     <h3>{t("settings:ui.pairing.devices")}</h3><p className="form-hint">{t("settings:ui.pairing.revokeHint")}</p>

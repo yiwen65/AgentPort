@@ -32,6 +32,7 @@ pub enum Request {
         token: Zeroizing<String>,
     },
     Invite,
+    InviteAutomatic,
     Decide {
         invitation_id: String,
         candidate: Candidate,
@@ -204,6 +205,11 @@ async fn dispatch(runtime: &Runtime, request: Request) -> Result<Response> {
             name,
             token,
         } => runtime.configure(relay_url, name, token).await?,
+        Request::InviteAutomatic => {
+            return Ok(Response::Invitation {
+                invitation: runtime.invite_automatic().await?,
+            })
+        }
         Request::Invite => {
             return Ok(Response::Invitation {
                 invitation: runtime.invite().await?,

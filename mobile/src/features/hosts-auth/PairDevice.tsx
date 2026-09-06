@@ -16,7 +16,6 @@ export function PairDevice({ onClose, onPaired, client = pairingClient }: {
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [preview, setPreview] = useState<PairingPreview>();
-  const [verification, setVerification] = useState("");
   const [phase, setPhase] = useState("idle");
   const [error, setError] = useState("");
   const lifetime = useRef<AbortController>();
@@ -46,24 +45,34 @@ export function PairDevice({ onClose, onPaired, client = pairingClient }: {
       if (lifetime.current?.signal.aborted) return;
       scanning.current = true;
       const result = await scan({ cameraDirection: "back", formats: [Format.QRCode], windowed: true });
-      if (!lifetime.current?.signal.aborted) await readCode(result.content);
+      if (!lifetime.current?.signal.aborted) {
+        const parsed = await client.preview(result.content);
+        if (lifetime.current?.signal.aborted) return;
+        setPreview(parsed);
+        await completePairing(result.content, name.trim() || (/iPhone|iPad|iPod/.test(navigator.userAgent) ? "iPhone / iPad" : "Mobile device"));
+      }
     } catch (cause) {
       if (!lifetime.current?.signal.aborted) { setError(pairingError(cause)); setPhase("idle"); }
     } finally { scanning.current = false; active.current = false; }
   };
-  const begin = async () => {
-    if (active.current || !preview || !name.trim()) return;
+  const completePairing = async (value: string, deviceName: string) => {
     const signal = lifetime.current!.signal;
-    active.current = true; setError(""); setPhase("preparing");
+    setError(""); setPhase("preparing");
     try {
-      const profileId = await pairViaRelay(code, name.trim(), client, signal, value => {
-        setVerification(value); setPhase("pending"); setCode("");
+      const profileId = await pairViaRelay(value, deviceName, client, signal, () => {
+        setPhase("pending"); setCode("");
       });
       if (!signal.aborted) { setCode(""); onPaired(profileId); }
 
     } catch (cause) {
       if (!signal.aborted) { setCode(""); setPhase("failed"); setError(pairingError(cause)); }
-    } finally { active.current = false; }
+    }
+  };
+  const begin = async () => {
+    if (active.current || !preview || !name.trim()) return;
+    active.current = true;
+    try { await completePairing(code, name.trim()); }
+    finally { active.current = false; }
   };
   return <Modal title={t("pairing.title")} onClose={onClose} className="pair-device-modal">
     {phase !== "scanning" ? <><p>{t("pairing.instructions")}</p>
@@ -80,9 +89,8 @@ export function PairDevice({ onClose, onPaired, client = pairingClient }: {
     </> : null}
     {busy ? <p role="status">{t(`pairing.${phase}`)}</p> : null}
     {phase === "scanning" ? <button type="button" onClick={() => void cancel().catch(cause => setError(pairingError(cause)))}>{t("common.cancel")}</button> : null}
-    {verification ? <><strong className="pairing-verification">{verification}</strong><p>{t("pairing.compare")}</p></> : null}
     {error ? <p role="alert" className="inline-error">{error}</p> : null}
-    {phase === "failed" || verification ? <p>{t("pairing.retained")}</p> : null}
-    {phase === "failed" ? <button type="button" onClick={() => { setPreview(undefined); setVerification(""); setError(""); setPhase("idle"); }}>{t("pairing.scanAgain")}</button> : null}
+    {phase === "failed" ? <p>{t("pairing.retained")}</p> : null}
+    {phase === "failed" ? <button type="button" onClick={() => { setPreview(undefined); setError(""); setPhase("idle"); }}>{t("pairing.scanAgain")}</button> : null}
   </Modal>;
 }

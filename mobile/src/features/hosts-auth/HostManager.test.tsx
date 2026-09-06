@@ -4,6 +4,7 @@ import { i18n } from "../../i18n";
 import type { RemoteClient } from "../../protocol/remoteClient";
 import type { HostAuthClient, HostProfileDetails } from "./types";
 import { HostManager } from "./HostManager";
+vi.mock("./PairDevice", () => ({ PairDevice: ({ onPaired }: { onPaired: (id: string) => void }) => <button onClick={() => onPaired("paired-relay")}>Complete isolated scan</button> }));
 
 const profile: HostProfileDetails = {
   id: "host_1",
@@ -45,6 +46,15 @@ function clients() {
 }
 
 describe("host authentication manager", () => {
+  it("connects the exact approved profile after scanning without a Connect tap", async () => {
+    const { remote, auth } = clients();
+    render(<HostManager remoteClient={remote} authClient={auth} />);
+    fireEvent.click(screen.getByRole("button", { name: "Scan to pair" }));
+    fireEvent.click(screen.getByRole("button", { name: "Complete isolated scan" }));
+    await waitFor(() => expect(remote.connect).toHaveBeenCalledWith("paired-relay"));
+    expect(remote.connect).toHaveBeenCalledTimes(1);
+    expect(auth.saveProfile).not.toHaveBeenCalled();
+  });
   afterEach(cleanup);
   beforeEach(async () => {
     await i18n.changeLanguage("en-US");

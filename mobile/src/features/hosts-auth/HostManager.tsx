@@ -244,7 +244,7 @@ export function HostManager({ remoteClient, authClient }: HostManagerProps) {
   };
 
   return <>
-    {pairing ? <PairDevice onClose={() => { setPairing(false); void load(); }} onPaired={() => { setPairing(false); setPaired(true); void load(); }} /> : null}
+    {pairing ? <PairDevice onClose={() => { setPairing(false); void load(); }} onPaired={profileId => { setPairing(false); setPaired(true); void load(); void connect(profileId); }} /> : null}
     <section className="section-heading" aria-labelledby="hosts-title">
       <div>
         <h1 id="hosts-title">{t("hosts.title")}</h1>

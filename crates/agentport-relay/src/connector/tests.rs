@@ -136,6 +136,65 @@ async fn approve(runtime: &Runtime, phone: &Identity) -> Peer {
 }
 
 #[tokio::test]
+async fn automatic_qr_grants_only_first_authenticated_holder_and_remains_revocable() {
+    let fixture = Fixture::new().await;
+    let phone = Identity::generate().unwrap();
+    let other = Identity::generate().unwrap();
+    let invitation = fixture.runtime.invite_automatic().await.unwrap();
+    let mut wrong = invitation.clone();
+    wrong.secret = Invitation::new(invitation.peer.clone())
+        .unwrap()
+        .secret
+        .clone();
+    assert!(PairingConnection::begin(&other, &wrong, "Wrong".into())
+        .await
+        .is_err());
+    assert!(fixture.runtime.status().await.devices.is_empty());
+    PairingConnection::begin(&phone, &invitation, "Phone".into())
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture.runtime.status().await.devices[0].public_key,
+        phone.public_key()
+    );
+    assert!(
+        PairingConnection::begin(&other, &invitation, "Replay".into())
+            .await
+            .is_err()
+    );
+    let mut channel = connect_session(&phone, &invitation.peer).await.unwrap();
+    channel.write_all(b"automatic").await.unwrap();
+    let mut response = [0; 9];
+    channel.read_exact(&mut response).await.unwrap();
+    assert_eq!(&response, b"automatic");
+    fixture.runtime.revoke(&phone.public_key()).await.unwrap();
+    assert!(connect_session(&phone, &invitation.peer).await.is_err());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn automatic_qr_never_reports_approval_when_storage_fails() {
+    let fixture = Fixture::new().await;
+    let invitation = fixture.runtime.invite_automatic().await.unwrap();
+    fs::set_permissions(
+        fixture.temp.path().join("state/state.json"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    assert!(
+        PairingConnection::begin(&Identity::generate().unwrap(), &invitation, "Phone".into())
+            .await
+            .is_err()
+    );
+    assert!(fixture.runtime.status().await.devices.is_empty());
+    assert_eq!(fixture.runtime.status().await.phase, Phase::StorageFailed);
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
 async fn approval_is_exact_durable_one_time_and_revocation_closes_all_device_channels() {
     let fixture = Fixture::new().await;
     let phone = Identity::generate().unwrap();
@@ -463,7 +522,14 @@ async fn real_bridge_hello_and_read_only_request_traverse_relay_in_isolated_data
     .unwrap();
     let fixture = Fixture::with_bridge(Some(bridge)).await;
     let phone = Identity::generate().unwrap();
-    let peer = approve(&fixture.runtime, &phone).await;
+    let invitation = fixture.runtime.invite_automatic().await.unwrap();
+    PairingConnection::begin(&phone, &invitation, "Read-only fixture".into())
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    let peer = invitation.peer.clone();
     let mut stream = connect_session(&phone, &peer).await.unwrap();
     async fn exchange(
         stream: &mut net::EncryptedStream,

@@ -16,7 +16,7 @@ beforeEach(async () => {
     if (command === "desktop_relay_status" || command === "desktop_relay_start") return structuredClone(status);
     if (command === "desktop_relay_control") {
       const req = args.request;
-      if (req.kind === "invite") {
+      if (req.kind === "invite_automatic") {
         status.pairing = { invitationId: "invitation", expiresAt: Date.now() / 1000 + 120, phase: "pending", candidate };
         return { kind: "invitation", invitation: { id: "invitation", expiresAt: status.pairing.expiresAt, secret: "ephemeral-only" } };
       }
@@ -30,14 +30,13 @@ beforeEach(async () => {
 });
 afterEach(cleanup);
 async function loaded() { await screen.findByText("Background connected to Relay"); }
-it("requires exact Relay candidate confirmation and never invokes SSH pairing", async () => {
+it("requests scan-to-authorize without a second confirmation and never invokes SSH pairing", async () => {
   render(<PairingSection />); await loaded(); fireEvent.click(screen.getByRole("button", { name: "Generate pairing code" }));
-  await screen.findByText("1234-ABCD");
+  await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("desktop_relay_control", { request: { kind: "invite_automatic" } }));
   expect(mocks.invoke.mock.calls.some(([, args]) => args?.request?.kind === "decide")).toBe(false);
   expect(screen.queryByText("ephemeral-only")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Codes match · Authorize" }));
-  await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("desktop_relay_control", { request: { kind: "decide", invitation_id: "invitation", candidate, approve: true } }));
-  await screen.findByText(/Phone authorized/); expect(screen.queryByRole("img")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Codes match · Authorize" })).toBeNull();
+  expect(screen.queryByText("1234-ABCD")).toBeNull();
   expect(mocks.invoke.mock.calls.every(([command]) => !String(command).startsWith("desktop_pairing_"))).toBe(true);
 });
 it("revocation requires confirmation and binds the exact device key", async () => {
@@ -49,7 +48,7 @@ it("revocation requires confirmation and binds the exact device key", async () =
 });
 it("closes a late invitation after dismissal, but leaves the background process running", async () => {
   const previous = mocks.invoke.getMockImplementation()!; let resolve!: (value: unknown) => void;
-  mocks.invoke.mockImplementation((command: string, args: any) => args?.request?.kind === "invite" ? new Promise(done => { resolve = done; }) : previous(command, args));
+  mocks.invoke.mockImplementation((command: string, args: any) => args?.request?.kind === "invite_automatic" ? new Promise(done => { resolve = done; }) : previous(command, args));
   const view = render(<PairingSection />); await loaded(); fireEvent.click(screen.getByRole("button", { name: "Generate pairing code" }));
   await waitFor(() => expect(resolve).toBeDefined()); view.unmount();
   await act(async () => resolve({ kind: "invitation", invitation: { id: "late", expiresAt: Date.now() / 1000 + 120, secret: "never-render" } }));
@@ -64,14 +63,13 @@ it("sends the registration credential only to native configuration and clears it
   expect((screen.getByLabelText("Relay registration token") as HTMLInputElement).value).toBe("");
   expect(mocks.qr).not.toHaveBeenCalled();
 });
-it("refreshes uncertain approval instead of repeating the mutation", async () => {
+it("does not replay an uncertain automatic invitation", async () => {
   const previous = mocks.invoke.getMockImplementation()!;
   mocks.invoke.mockImplementation((command: string, args: any) => {
-    if (args?.request?.kind === "decide") { status.pairing.phase = "approved"; return Promise.reject(new Error("unknown delivery")); }
+    if (args?.request?.kind === "invite_automatic") { return Promise.reject(new Error("unknown delivery")); }
     return previous(command, args);
   });
   render(<PairingSection />); await loaded(); fireEvent.click(screen.getByRole("button", { name: "Generate pairing code" }));
-  await screen.findByText("1234-ABCD"); fireEvent.click(screen.getByRole("button", { name: "Codes match · Authorize" }));
-  await screen.findByText("unknown delivery"); await screen.findByText(/Phone authorized/);
-  expect(mocks.invoke.mock.calls.filter(([, args]) => args?.request?.kind === "decide")).toHaveLength(1);
+  await screen.findByText("unknown delivery");
+  expect(mocks.invoke.mock.calls.filter(([, args]) => args?.request?.kind === "invite_automatic")).toHaveLength(1);
 });
