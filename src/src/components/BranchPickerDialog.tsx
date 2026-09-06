@@ -936,10 +936,18 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
         </div>
         <div className="branch-picker-create-grid">
           <input disabled={controlsBusy} value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="feature/my-change" aria-label={t("worktree:ui.branchPicker.create.branchNameAria")} />
-          <select disabled={controlsBusy} value={startBranch} onChange={(event) => setStartBranch(event.target.value)} aria-label={t("worktree:ui.branchPicker.create.startPointAria")}>
-            <option value="">{t("worktree:ui.branchPicker.create.currentHead")}</option>
-            {(data?.branches ?? []).map((branch) => <option key={branch.name} value={branch.name}>{branch.name}</option>)}
-          </select>
+          <input
+            type="text"
+            list="branch-create-start-points"
+            disabled={controlsBusy}
+            value={startBranch}
+            onChange={(event) => setStartBranch(event.target.value)}
+            aria-label={t("worktree:ui.branchPicker.create.startPointAria")}
+            placeholder={t("worktree:ui.branchPicker.create.currentHead")}
+          />
+          <datalist id="branch-create-start-points">
+            {(data?.branches ?? []).map((branch) => <option key={branch.name} value={branch.name} />)}
+          </datalist>
           <label className="check-row"><input disabled={controlsBusy} type="checkbox" checked={switchAfterCreate} onChange={(event) => setSwitchAfterCreate(event.target.checked)} />{t("worktree:ui.branchPicker.create.switchAfterCreate")}</label>
           <button className="btn primary" disabled={!canCreate} onClick={create}>
             {controlsBusy

@@ -638,7 +638,11 @@ describe("local branch management", () => {
     render(<BranchPickerDialog projectId="p1" />);
     await screen.findAllByText("feature/ui");
     await user.type(screen.getByRole("textbox", { name: "新分支名称" }), "feature/new");
-    await user.selectOptions(screen.getByRole("combobox", { name: "新分支起点" }), "feature/ui");
+    const startPoint = screen.getByRole("combobox", { name: "新分支起点" }) as HTMLInputElement;
+    expect(startPoint.value).toBe("main");
+    expect(Array.from(startPoint.list?.options ?? []).map((option) => option.value)).toContain("feature/ui");
+    await user.clear(startPoint);
+    await user.type(startPoint, "feature/ui");
     await user.click(screen.getByRole("button", { name: "创建分支" }));
     await waitFor(() => expect(apiMock.createAndSwitchLocalBranch).toHaveBeenCalledWith(
       "p1",
@@ -652,7 +656,7 @@ describe("local branch management", () => {
     render(<BranchPickerDialog projectId="p1" />);
     await screen.findAllByText("feature/ui");
     await user.type(screen.getByRole("textbox", { name: "新分支名称" }), "feature/head");
-    await user.selectOptions(screen.getByRole("combobox", { name: "新分支起点" }), "");
+    await user.clear(screen.getByRole("combobox", { name: "新分支起点" }));
     await user.click(screen.getByRole("button", { name: "创建分支" }));
     await waitFor(() => expect(apiMock.createAndSwitchLocalBranch).toHaveBeenCalledWith(
       "p1",
@@ -660,6 +664,30 @@ describe("local branch management", () => {
       null,
     ));
   });
+
+  it.each(["origin/main", "refs/tags/v1.0", "abc1234", "HEAD~2", "   "])(
+    "submits editable start point %j for both creation modes and preserves it on refresh",
+    async (revision) => {
+      const user = userEvent.setup();
+      render(<BranchPickerDialog projectId="p1" />);
+      await screen.findAllByText("feature/ui");
+      const startPoint = screen.getByRole("combobox", { name: "新分支起点" }) as HTMLInputElement;
+      await user.clear(startPoint);
+      await user.type(startPoint, revision);
+      await user.click(screen.getByRole("button", { name: "刷新" }));
+      await waitFor(() => expect(apiMock.listLocalBranches).toHaveBeenCalledTimes(2));
+      expect(startPoint.value).toBe(revision);
+      for (const switchAfterCreate of [true, false]) {
+        await user.type(screen.getByRole("textbox", { name: "新分支名称" }), "feature/revision");
+        if (!switchAfterCreate) await user.click(screen.getByRole("checkbox", { name: "创建后切换到新分支" }));
+        await user.click(screen.getByRole("button", { name: "创建分支" }));
+        const command = switchAfterCreate ? apiMock.createAndSwitchLocalBranch : apiMock.createLocalBranch;
+        await waitFor(() => expect(command).toHaveBeenCalledWith("p1", "feature/revision", revision.trim() || null));
+        await waitFor(() => expect((screen.getByRole("textbox", { name: "新分支名称" }) as HTMLInputElement).value).toBe(""));
+        expect(startPoint.value).toBe(revision);
+      }
+    },
+  );
 
   it("keeps structured live-session and recovery metadata without parsing a message", () => {
     const error = {

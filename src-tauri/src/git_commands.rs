@@ -1481,6 +1481,131 @@ mod tests {
     }
 
     #[test]
+    fn current_branch_switch_returns_success_with_durable_operation_without_git_mutation() {
+        for dirty in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("repo");
+            std::fs::create_dir_all(&root).unwrap();
+            let git = |args: &[&str]| {
+                let output = std::process::Command::new("git")
+                    .current_dir(&root)
+                    .env("GIT_OPTIONAL_LOCKS", "0")
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "git {args:?}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                output.stdout
+            };
+            git(&["init", "-b", "main"]);
+            git(&["config", "user.name", "Wrapper Test"]);
+            git(&["config", "user.email", "wrapper@example.invalid"]);
+            std::fs::write(root.join("tracked.txt"), "committed\n").unwrap();
+            git(&["add", "tracked.txt"]);
+            git(&["commit", "-m", "initial"]);
+            if dirty {
+                std::fs::write(root.join("tracked.txt"), "staged\n").unwrap();
+                git(&["add", "tracked.txt"]);
+                std::fs::write(root.join("tracked.txt"), "unstaged\n").unwrap();
+                std::fs::write(root.join("untracked.txt"), "untracked\n").unwrap();
+            }
+            let git_state = || {
+                vec![
+                    git(&["rev-parse", "HEAD"]),
+                    git(&["symbolic-ref", "HEAD"]),
+                    git(&["status", "--porcelain=v1", "-z"]),
+                    git(&["diff", "--binary"]),
+                    git(&["diff", "--cached", "--binary"]),
+                    git(&["ls-files", "--stage", "-z"]),
+                    git(&["reflog", "show", "--all", "--format=%H %gs"]),
+                    git(&["stash", "list"]),
+                    std::fs::read(root.join("tracked.txt")).unwrap(),
+                    std::fs::read(root.join(".git/index")).unwrap(),
+                ]
+            };
+            let before = git_state();
+            let paths = AppPaths::new(temp.path().join("agentport"));
+            let db = Db::open(&paths).unwrap();
+            let project_id = add_project(&db, root.to_string_lossy().into_owned());
+            let command_project_id = project_id.clone();
+            // Exercise the switch command's blocking closure and wire result without
+            // a GUI event loop. In particular, the immediate durable lookup used to
+            // turn an otherwise successful current-branch no-op into a fake failure.
+            let (result, restore_required) = tauri::async_runtime::block_on(run_blocking(
+                paths.clone(),
+                Some(project_id.clone()),
+                wrapper_operation_id("switch_branch"),
+                "switch_local_branch",
+                "switch",
+                move |db, manager| {
+                    let outcome = manager.switch(&command_project_id, "main")?;
+                    let operation = manager.operation(&outcome.operation_id)?;
+                    let restore_required = outcome.pending_restore
+                        || (outcome.stashed
+                            && matches!(operation.phase, BranchOperationPhase::Switched));
+                    let response = repository_response(db, manager, &command_project_id)?;
+                    let auto_stash = response
+                        .auto_stashes
+                        .iter()
+                        .find(|stash| stash.operation_id == outcome.operation_id)
+                        .cloned();
+                    Ok((
+                        BranchOperationResult {
+                            operation_id: outcome.operation_id,
+                            status: response.status,
+                            auto_stash,
+                        },
+                        restore_required,
+                    ))
+                },
+            ))
+            .expect("switching the current branch must not produce a command error");
+            assert!(
+                !restore_required,
+                "wrapper must report completed, not pending_restore"
+            );
+            let wire = serde_json::to_value(&result).unwrap();
+            assert!(result.operation_id.starts_with("op_"));
+            assert_eq!(wire["operationId"], result.operation_id);
+            assert_eq!(wire["status"]["projectId"], project_id);
+            assert_eq!(wire["status"]["head"]["branch"], "main");
+            assert_eq!(wire["status"]["head"]["kind"], "branch");
+            assert_eq!(wire["status"]["pendingAutoStashes"], 0);
+            assert!(wire["autoStash"].is_null());
+            assert!(wire["status"]["ongoingOperation"].is_null());
+            for change in ["staged", "unstaged", "untracked"] {
+                assert_eq!(wire["status"]["changes"][change], usize::from(dirty));
+            }
+
+            // Reopen the database to prove the returned ID resolves durably, not
+            // merely in the command's manager or via a synthetic wrapper ID.
+            let reopened = Db::open(&paths).unwrap();
+            let manager = BranchManager::new(&reopened);
+            let operation = manager.operation(&result.operation_id).unwrap();
+            assert_eq!(operation.project_id, project_id);
+            assert_eq!(operation.phase, BranchOperationPhase::Completed);
+            assert!(operation.completed_at.is_some());
+            assert!(operation.error_json.is_none());
+            assert!(operation.stash_oid.is_none());
+            assert_eq!(operation.source_branch.as_deref(), Some("main"));
+            assert_eq!(operation.target_branch, "main");
+            assert_eq!(operation.source_commit, operation.target_oid);
+            assert_eq!(wire["status"]["head"]["oid"], operation.target_oid);
+            assert!(manager.list_auto_stashes(&project_id).unwrap().is_empty());
+            assert_eq!(git_state(), before, "Git state changed (dirty={dirty})");
+            if dirty {
+                assert_eq!(
+                    std::fs::read(root.join("untracked.txt")).unwrap(),
+                    b"untracked\n"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn repository_response_maps_only_not_found_to_non_git() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::new(temp.path().join("agentport"));

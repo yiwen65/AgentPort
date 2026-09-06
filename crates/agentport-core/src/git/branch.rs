@@ -220,8 +220,13 @@ impl<'a> BranchManager<'a> {
     ) -> Result<CreateBranchOutcome> {
         self.validate_branch_name(&identity, name)?;
         let status = self.status(&identity)?;
-        self.ensure_operation_conflicts(&status)?;
-        self.ensure_checkout_state_allowed(&status)?;
+        // Ref-only creation does not touch the index, worktree, or Git's
+        // ongoing operation. An unborn checkout remains unsupported.
+        if matches!(status.checkout, CheckoutState::Unborn(_)) {
+            return Err(CoreError::Blocked(
+                "branch mutation is blocked in an unborn repository".into(),
+            ));
+        }
         let before = self.list_branches(&identity)?;
         if before.iter().any(|branch| branch.name == name) {
             return Err(CoreError::Conflict(format!(
@@ -229,16 +234,31 @@ impl<'a> BranchManager<'a> {
             )));
         }
         let expected_oid = if let Some(start) = start_point {
-            self.validate_branch_name(&identity, start)?;
-            before
+            // Preserve local-branch precedence over same-named tags. Resolve
+            // everything else as one argument to a commit, never as options or
+            // a shell command. Disable every transport, including lazy fetch
+            // in partial clones: creation must use objects already local.
+            let revision = before
                 .iter()
                 .find(|branch| branch.name == start)
-                .map(|branch| branch.oid.clone())
-                .ok_or_else(|| {
-                    CoreError::NotFound(format!(
-                        "local start branch {start}; remote revisions are not accepted"
-                    ))
-                })?
+                .map(|branch| branch.oid.as_str())
+                .unwrap_or(start);
+            let peeled = format!("{revision}^{{commit}}");
+            self.run_success(
+                &identity,
+                [
+                    "--no-lazy-fetch",
+                    "-c",
+                    "protocol.allow=never",
+                    "rev-parse",
+                    "--verify",
+                    "--end-of-options",
+                    &peeled,
+                ],
+            )?
+            .stdout_lossy()
+            .trim()
+            .to_owned()
         } else {
             self.run_success(&identity, ["rev-parse", "HEAD"])?
                 .stdout_lossy()
@@ -396,6 +416,11 @@ impl<'a> BranchManager<'a> {
         let identity = self.identity(project_id)?;
         let _file_guard = RepositoryFileLock::acquire(&identity.common_dir)?;
         let identity = self.identity(project_id)?;
+        // Unlike create-only, this operation intends to mutate the checkout.
+        // Reject its blockers before creating even a temporary branch ref.
+        let status = self.status(&identity)?;
+        self.ensure_operation_conflicts(&status)?;
+        self.ensure_checkout_state_allowed(&status)?;
         let created = self.create_locked(project_id, name, start_point, identity.clone())?;
         match self.switch_locked(project_id, name, identity.clone()) {
             Ok(outcome) => Ok(outcome),
@@ -876,7 +901,6 @@ impl<'a> BranchManager<'a> {
     ) -> Result<SwitchOutcome> {
         self.validate_branch_name(&identity, target)?;
         let status = self.status(&identity)?;
-        self.ensure_operation_conflicts(&status)?;
         let branches = self.list_branches(&identity)?;
         let target_info = match branches.iter().find(|branch| branch.name == target) {
             Some(branch) => branch,
@@ -886,6 +910,41 @@ impl<'a> BranchManager<'a> {
             }
             None => return Err(CoreError::NotFound(format!("local branch {target}"))),
         };
+        if matches!(&status.checkout, CheckoutState::Branch(branch) if branch == target) {
+            // A durable completed record keeps command wrappers' operation-ID
+            // lookup valid without running checkout, stash, or recovery.
+            let operation_id = format!("op_{}", uuid::Uuid::new_v4().simple());
+            let now = Utc::now();
+            OperationJournal::new(self.db).insert(&BranchOperation {
+                id: operation_id.clone(),
+                kind: BranchOperationKind::Switch,
+                project_id: project_id.to_owned(),
+                repo_key: identity.repo_key.clone(),
+                checkout_root: identity.root.to_string_lossy().into_owned(),
+                source_branch: Some(target.to_owned()),
+                source_commit: target_info.oid.clone(),
+                target_branch: target.to_owned(),
+                target_oid: target_info.oid.clone(),
+                phase: BranchOperationPhase::Completed,
+                stash_oid: None,
+                stash_selector: None,
+                stash_marker: None,
+                snapshot_json: Some(serde_json::to_string(&status)?),
+                error_json: None,
+                created_at: now,
+                updated_at: now,
+                completed_at: Some(now),
+            })?;
+            return Ok(SwitchOutcome {
+                operation_id,
+                source: status.checkout,
+                target_branch: target.to_owned(),
+                stashed: false,
+                restored: false,
+                pending_restore: false,
+            });
+        }
+        self.ensure_operation_conflicts(&status)?;
         if let Some(path) = &target_info.occupied_worktree {
             if canonical_or_original(Path::new(path)) != identity.root {
                 return Err(CoreError::Blocked(format!(
@@ -894,11 +953,6 @@ impl<'a> BranchManager<'a> {
             }
         }
         self.ensure_checkout_state_allowed(&status)?;
-        if matches!(&status.checkout, CheckoutState::Branch(branch) if branch == target) {
-            return Err(CoreError::Conflict(format!(
-                "branch {target} is already checked out"
-            )));
-        }
         self.ensure_no_ignored_collision(&identity, target)?;
 
         let source_commit = self
@@ -3674,6 +3728,34 @@ mod tests {
         git(root, &["branch", name]);
     }
 
+    fn assert_current_switch_noop(fixture: &Fixture) {
+        let outcome = manager(fixture)
+            .switch(&fixture.project_id, "main")
+            .unwrap();
+        assert!(!outcome.stashed && !outcome.restored && !outcome.pending_restore);
+        assert_eq!(outcome.source, CheckoutState::Branch("main".into()));
+        let op = OperationJournal::new(&fixture.db)
+            .get(&outcome.operation_id)
+            .unwrap();
+        assert_eq!(op.kind, BranchOperationKind::Switch);
+        assert_eq!(op.phase, BranchOperationPhase::Completed);
+        assert_eq!(op.source_commit, op.target_oid);
+        assert!(op.stash_oid.is_none());
+    }
+
+    #[test]
+    fn current_switch_is_journaled_noop() {
+        let fixture = fixture();
+        std::fs::write(fixture.root.join("tracked.txt"), "dirty\n").unwrap();
+        let before = manager(&fixture).list(&fixture.project_id).unwrap().status;
+        assert_current_switch_noop(&fixture);
+        assert_eq!(
+            manager(&fixture).list(&fixture.project_id).unwrap().status,
+            before
+        );
+        assert_eq!(git(&fixture.root, &["stash", "list"]), "");
+    }
+
     #[test]
     fn status_v2_parses_mixed_dirty_and_unicode() {
         let fixture = fixture();
@@ -3763,7 +3845,11 @@ mod tests {
                 CheckoutState::Branch(ref branch) if branch == "feature/live"
             ));
             assert_eq!(
-                fixture.db.get_session("ses_create_switch_live").unwrap().lifecycle,
+                fixture
+                    .db
+                    .get_session("ses_create_switch_live")
+                    .unwrap()
+                    .lifecycle,
                 lifecycle
             );
         }
@@ -4132,6 +4218,20 @@ mod tests {
                 matches!(error, CoreError::Blocked(_)),
                 "{sentinel}: {error}"
             );
+            let created = manager(&fixture)
+                .create(&fixture.project_id, &format!("backup-{sentinel}"), None)
+                .unwrap();
+            assert!(!created.branch.current);
+            assert!(manager(&fixture)
+                .create_and_switch(&fixture.project_id, "blocked-new", None)
+                .is_err());
+            assert!(!manager(&fixture)
+                .list(&fixture.project_id)
+                .unwrap()
+                .branches
+                .iter()
+                .any(|b| b.name == "blocked-new"));
+            assert_current_switch_noop(&fixture);
             if directory {
                 std::fs::remove_dir(&path).unwrap();
             } else {
@@ -4266,6 +4366,17 @@ mod tests {
         std::fs::write(fixture.root.join("vendor/child/child.txt"), "dirty child\n").unwrap();
         let status = manager(&fixture).list(&fixture.project_id).unwrap().status;
         assert!(status.dirty_submodule);
+        manager(&fixture)
+            .create(&fixture.project_id, "backup", None)
+            .unwrap();
+        assert_current_switch_noop(&fixture);
+        assert_eq!(
+            manager(&fixture).list(&fixture.project_id).unwrap().status,
+            status
+        );
+        assert!(manager(&fixture)
+            .create_and_switch(&fixture.project_id, "blocked-new", None)
+            .is_err());
         let error = manager(&fixture)
             .switch(&fixture.project_id, "target")
             .unwrap_err();
@@ -4309,7 +4420,10 @@ mod tests {
             manager(&fixture)
                 .switch(&fixture.project_id, "target")
                 .unwrap();
-            assert_eq!(fixture.db.get_session("ses_live").unwrap().lifecycle, lifecycle);
+            assert_eq!(
+                fixture.db.get_session("ses_live").unwrap().lifecycle,
+                lifecycle
+            );
             assert!(matches!(
                 manager(&fixture).list(&fixture.project_id).unwrap().status.checkout,
                 CheckoutState::Branch(ref branch) if branch == "target"
@@ -4441,7 +4555,7 @@ mod tests {
     }
 
     #[test]
-    fn create_accepts_only_local_start_and_never_sets_tracking() {
+    fn create_accepts_local_revisions_and_never_sets_tracking() {
         let fixture = fixture();
         make_branch(&fixture.root, "local-base");
         // A same-named tag makes an unqualified start point ambiguous. The
@@ -4466,14 +4580,57 @@ mod tests {
             )
             .unwrap();
         assert!(!tracking.success());
-        assert!(matches!(
-            manager.create(
-                &fixture.project_id,
-                "feature/from-remote",
-                Some("origin/remote-only")
-            ),
-            Err(CoreError::NotFound(_))
-        ));
+        git(
+            &fixture.root,
+            &["tag", "-a", "annotated", "-m", "tag", "HEAD"],
+        );
+        let oid = git(&fixture.root, &["rev-parse", "HEAD"]);
+        for (i, start) in [
+            "origin/remote-only",
+            "refs/remotes/origin/remote-only",
+            "annotated",
+            oid.trim(),
+            &oid.trim()[..10],
+        ]
+        .iter()
+        .enumerate()
+        {
+            let name = format!("feature/revision-{i}");
+            let result = manager
+                .create(&fixture.project_id, &name, Some(start))
+                .unwrap();
+            assert_eq!(result.branch.oid, oid.trim());
+            assert!(!GitRunner::default()
+                .run(
+                    Some(&fixture.root),
+                    ["config", "--get", &format!("branch.{name}.remote")]
+                )
+                .unwrap()
+                .success());
+        }
+        git(&fixture.root, &["tag", "blob-tag", "HEAD:tracked.txt"]);
+        git(&fixture.root, &["tag", "lightweight", "HEAD"]);
+        assert_eq!(
+            manager
+                .create(&fixture.project_id, "from-lightweight", Some("lightweight"))
+                .unwrap()
+                .branch
+                .oid,
+            oid.trim()
+        );
+        for start in [
+            "--help",
+            "missing",
+            "HEAD:tracked.txt",
+            "blob-tag",
+            "HEAD^{tree}",
+            "$(touch injected)",
+        ] {
+            assert!(manager
+                .create(&fixture.project_id, "invalid-base", Some(start))
+                .is_err());
+        }
+        assert!(!fixture.root.join("injected").exists());
     }
 
     #[test]
@@ -4636,6 +4793,20 @@ mod tests {
             .unwrap();
         assert!(!merge.success());
         let before = git(&fixture.root, &["rev-parse", "HEAD"]);
+        let status = manager(&fixture).list(&fixture.project_id).unwrap().status;
+        let index = std::fs::read(fixture.root.join(".git/index")).unwrap();
+        manager(&fixture)
+            .create(&fixture.project_id, "backup", None)
+            .unwrap();
+        assert_current_switch_noop(&fixture);
+        assert_eq!(
+            manager(&fixture).list(&fixture.project_id).unwrap().status,
+            status
+        );
+        assert_eq!(
+            std::fs::read(fixture.root.join(".git/index")).unwrap(),
+            index
+        );
         let error = manager(&fixture)
             .switch(&fixture.project_id, "conflicting")
             .unwrap_err();
