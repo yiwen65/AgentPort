@@ -298,7 +298,7 @@
       "states": {
         "waiting": "等待手机扫码",
         "pending": "等待你确认",
-        "approved": "手机已授权 · 请在手机完成连接",
+        "approved": "手机已授权",
         "denied": "已拒绝请求",
         "expired": "配对码已过期",
         "closed": "配对已关闭"

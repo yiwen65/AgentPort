@@ -167,9 +167,10 @@ const SessionRows = memo(function SessionRows({ sessions, host, stale, onOpen, o
     onOpen={() => onOpen(session)} onActions={() => onActions(session)} />)}</>;
 });
 
-export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpenSettings, openedSession, hostProfilesEpoch = 0, active: dashboardActive = true }: {
+export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpenSettings, openedSession, hostProfilesEpoch = 0, preferredHostId, active: dashboardActive = true }: {
   client: RemoteClient;
   hostProfilesEpoch?: number;
+  preferredHostId?: string;
   active?: boolean;
   onOpenSession: (session: OpenSession) => void;
   onManageDevices?: () => void;
@@ -277,10 +278,11 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     void client.listHostProfiles().then(profiles => {
       if (cancelled) return;
       setHosts(profiles.map(profile => ({ ...profile, connectionState: phases.get(profile.id) ?? profile.connectionState })));
-      setSelectedDeviceId(current => profiles.some(profile => profile.id === current) ? current : profiles[0]?.id ?? "");
+      setSelectedDeviceId(current => preferredHostId && profiles.some(profile => profile.id === preferredHostId)
+        ? preferredHostId : profiles.some(profile => profile.id === current) ? current : profiles[0]?.id ?? "");
     }).catch(error => { if (!cancelled) setActionError(errorText(error)); }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; mounted.current = false; if (unsubscribe) void unsubscribe(); };
-  }, [client, hostProfilesEpoch]);
+  }, [client, hostProfilesEpoch, preferredHostId]);
 
   useEffect(() => {
     if (!selectedDeviceId) {

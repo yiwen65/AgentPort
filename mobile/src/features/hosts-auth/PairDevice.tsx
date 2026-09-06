@@ -74,8 +74,8 @@ export function PairDevice({ onClose, onPaired, client = pairingClient }: {
     try { await completePairing(code, name.trim()); }
     finally { active.current = false; }
   };
-  return <Modal title={t("pairing.title")} onClose={onClose} className="pair-device-modal">
-    {phase !== "scanning" ? <><p>{t("pairing.instructions")}</p>
+  return <Modal title={t(busy && phase !== "scanning" ? "pairing.connecting" : "pairing.title")} onClose={onClose} className="pair-device-modal">
+    {!busy ? <><p>{t("pairing.instructions")}</p>
     <p className="form-hint">{t("pairing.requirements")}</p></> : null}
     {phase === "idle" || phase === "ready" ? <>
       <button type="button" className="primary-button wide" onClick={() => void scanCode()}>{t("pairing.scan")}</button>

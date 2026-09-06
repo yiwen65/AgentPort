@@ -20,11 +20,46 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_tungstenite::{
-    connect_async_with_config,
+    connect_async_tls_with_config,
     tungstenite::{protocol::WebSocketConfig, Message},
-    MaybeTlsStream, WebSocketStream,
+    Connector, MaybeTlsStream, WebSocketStream,
 };
 use zeroize::Zeroizing;
+
+#[cfg(test)]
+mod tls_tests {
+    #[tokio::test]
+    #[ignore = "requires explicit AGENTPORT_RELAY_TLS_PROBE_URL; WebSocket upgrade only"]
+    async fn trusted_public_wss_upgrade() {
+        let url = std::env::var("AGENTPORT_RELAY_TLS_PROBE_URL").unwrap();
+        assert!(url.starts_with("wss://"));
+        let mut socket = super::connect(&url).await.unwrap();
+        socket.close(None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn wss_failure_returns_error_without_panicking() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            drop(socket);
+        });
+        let result =
+            tokio::spawn(async move { super::connect(&format!("wss://{address}/v1/relay")).await })
+                .await;
+        peer.await.unwrap();
+        assert!(
+            result.is_ok(),
+            "TLS initialization must not panic and strand a native invoke"
+        );
+        assert!(
+            result.unwrap().is_err(),
+            "A non-TLS peer must not be trusted"
+        );
+    }
+}
 
 pub type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 pub const IO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -45,9 +80,26 @@ pub async fn timed<T>(future: impl std::future::Future<Output = Result<T>>) -> R
 pub async fn connect(url: &str) -> Result<Socket> {
     validate_url(url)?;
     timed(async {
-        Ok(connect_async_with_config(url, Some(socket_config()), true)
-            .await?
-            .0)
+        // Select a provider per connection, independent of feature unification
+        // in the embedding app. Implicit rustls initialization can panic when
+        // zero or multiple providers are enabled, stranding native RPC callers.
+        let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|_| Error::Protocol)?
+        .with_root_certificates(rustls::RootCertStore::from_iter(
+            webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+        ))
+        .with_no_client_auth();
+        Ok(connect_async_tls_with_config(
+            url,
+            Some(socket_config()),
+            true,
+            Some(Connector::Rustls(Arc::new(config))),
+        )
+        .await?
+        .0)
     })
     .await
 }

@@ -29,7 +29,14 @@ export function App({ client, hostAuthClient }: AppProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deviceManagerOpen, setDeviceManagerOpen] = useState(false);
   const [hostProfilesEpoch, setHostProfilesEpoch] = useState(0);
-  const closeDeviceManager = useCallback(() => { setDeviceManagerOpen(false); setHostProfilesEpoch(value => value + 1); }, []);
+  const [connectedProfileId, setConnectedProfileId] = useState<string>();
+  const closeDeviceManager = useCallback(() => { setConnectedProfileId(undefined); setDeviceManagerOpen(false); setHostProfilesEpoch(value => value + 1); }, []);
+  const pairedConnected = useCallback((profileId: string) => {
+    setConnectedProfileId(profileId);
+    setDeviceManagerOpen(false);
+    setTerminalVisible(false);
+    setHostProfilesEpoch(value => value + 1);
+  }, []);
   const swipeStart = useRef<{ x: number; y: number; at: number }>();
 
   const openSession = useCallback((session: OpenSession) => {
@@ -114,6 +121,7 @@ export function App({ client, hostAuthClient }: AppProps) {
           onOpenSession={openSession}
           openedSession={openedSession}
           hostProfilesEpoch={hostProfilesEpoch}
+          preferredHostId={connectedProfileId}
           onManageDevices={() => setDeviceManagerOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
         />
@@ -143,7 +151,7 @@ export function App({ client, hostAuthClient }: AppProps) {
         }}>
           <section className="modal-sheet device-manager-sheet" role="dialog" aria-modal="true" aria-label={t("hosts.title")}>
             <button className="device-manager-close" type="button" onClick={closeDeviceManager} aria-label={t("common.close")}>×</button>
-            <HostManager remoteClient={client} authClient={hostAuthClient} />
+            <HostManager remoteClient={client} authClient={hostAuthClient} onPairedConnected={pairedConnected} />
           </section>
         </div>
       ) : null}

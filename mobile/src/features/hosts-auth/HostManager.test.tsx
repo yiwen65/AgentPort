@@ -48,11 +48,13 @@ function clients() {
 describe("host authentication manager", () => {
   it("connects the exact approved profile after scanning without a Connect tap", async () => {
     const { remote, auth } = clients();
-    render(<HostManager remoteClient={remote} authClient={auth} />);
+    const connected = vi.fn();
+    render(<HostManager remoteClient={remote} authClient={auth} onPairedConnected={connected} />);
     fireEvent.click(screen.getByRole("button", { name: "Scan to pair" }));
     fireEvent.click(screen.getByRole("button", { name: "Complete isolated scan" }));
     await waitFor(() => expect(remote.connect).toHaveBeenCalledWith("paired-relay"));
     expect(remote.connect).toHaveBeenCalledTimes(1);
+    expect(connected).toHaveBeenCalledWith("paired-relay");
     expect(auth.saveProfile).not.toHaveBeenCalled();
   });
   afterEach(cleanup);

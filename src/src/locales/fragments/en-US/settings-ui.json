@@ -298,7 +298,7 @@
       "states": {
         "waiting": "Waiting for a phone",
         "pending": "Approval required",
-        "approved": "Phone authorized · finish on the phone",
+        "approved": "Phone authorized",
         "denied": "Request denied",
         "expired": "Code expired",
         "closed": "Pairing closed"

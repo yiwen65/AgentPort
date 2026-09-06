@@ -12,6 +12,8 @@ vi.mock("../terminal/MobileTerminal", async () => {
   };
 });
 
+vi.mock("../features/hosts-auth/PairDevice", () => ({ PairDevice: ({ onPaired }: { onPaired: (id: string) => void }) => <button onClick={() => onPaired("new-relay")}>Complete scan</button> }));
+
 const hostAuthClient: HostAuthClient = {
   getProfile: vi.fn(),
   saveProfile: vi.fn(),
@@ -76,6 +78,25 @@ describe("AgentPort Mobile V2 shell", () => {
     expect(document.body).not.toHaveClass("terminal-visible");
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("returns from scanning to the dashboard for the newly connected computer", async () => {
+    await i18n.changeLanguage("en-US");
+    const remote = client({
+      listHostProfiles: vi.fn().mockResolvedValue([
+        { id: "old-host", name: "Old", connectionState: "disconnected" },
+        { id: "new-relay", name: "New Mac", connectionState: "connected", preferredTransport: "relay" },
+      ]),
+      connect: vi.fn().mockResolvedValue({ profileId: "new-relay" }),
+      request: vi.fn().mockImplementation((_, method) => Promise.resolve(method === "agent.preferences" ? {} : [])),
+    });
+    render(<App client={remote} hostAuthClient={hostAuthClient} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage devices" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Scan to pair" }));
+    fireEvent.click(screen.getByRole("button", { name: "Complete scan" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Computers" })).not.toBeInTheDocument());
+    expect(remote.connect).toHaveBeenCalledWith("new-relay");
+    await waitFor(() => expect(remote.request).toHaveBeenCalledWith("new-relay", "session.list", { includeArchived: false }));
   });
 
   it("supports the English resource set", async () => {

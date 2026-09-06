@@ -13,6 +13,7 @@ type LoadState =
 interface HostManagerProps {
   remoteClient: RemoteClient;
   authClient: HostAuthClient;
+  onPairedConnected?: (profileId: string) => void;
 }
 
 interface TrustPrompt {
@@ -46,7 +47,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function HostManager({ remoteClient, authClient }: HostManagerProps) {
+export function HostManager({ remoteClient, authClient, onPairedConnected }: HostManagerProps) {
   const { t } = useTranslation();
   const [pairing, setPairing] = useState(false);
   const [paired, setPaired] = useState(false);
@@ -156,13 +157,14 @@ export function HostManager({ remoteClient, authClient }: HostManagerProps) {
     }
   };
 
-  const connect = async (profileId: string) => {
+  const connect = async (profileId: string, pairedConnection = false) => {
     setBusy(true);
     setConnectingId(profileId);
     setFormError("");
     try {
       await remoteClient.connect(profileId);
       setConnectionStates((current) => new Map(current).set(profileId, "connected"));
+      if (pairedConnection) onPairedConnected?.(profileId);
     } catch (error) {
       const detail = error as NativeConnectError;
       if ((detail.code === "host_key_confirmation_required" || detail.code === "jump_host_key_confirmation_required") && detail.fingerprint) {
@@ -244,7 +246,7 @@ export function HostManager({ remoteClient, authClient }: HostManagerProps) {
   };
 
   return <>
-    {pairing ? <PairDevice onClose={() => { setPairing(false); void load(); }} onPaired={profileId => { setPairing(false); setPaired(true); void load(); void connect(profileId); }} /> : null}
+    {pairing ? <PairDevice onClose={() => { setPairing(false); void load(); }} onPaired={profileId => { setPairing(false); setPaired(true); void load(); void connect(profileId, true); }} /> : null}
     <section className="section-heading" aria-labelledby="hosts-title">
       <div>
         <h1 id="hosts-title">{t("hosts.title")}</h1>
