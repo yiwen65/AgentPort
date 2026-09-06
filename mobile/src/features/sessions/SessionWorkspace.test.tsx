@@ -80,7 +80,40 @@ describe("SessionWorkspace", () => {
     terminalHarness.mounts = 0;
     await i18n.changeLanguage("en-US");
   });
-  afterEach(() => cleanup());
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+  it("reattaches an externally restarted session without issuing Restart", async () => {
+    vi.useFakeTimers();
+    const { client, request } = setupClient();
+    const base = request.getMockImplementation()!;
+    request.mockImplementation((...args) => args[1] === "session.list"
+      ? Promise.resolve([{ ...open.session, lifecycle: "running", hostAlive: true }]) : base(...args));
+    const changed = vi.fn();
+    render(<SessionWorkspace open={{ ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false } }} client={client} onClose={vi.fn()} onSessionChanged={changed} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+    expect(request.mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(1);
+    expect(request.mock.calls.some(([, method]) => ["session.restart", "session.stop", "session.input"].includes(method))).toBe(false);
+    expect(screen.queryByRole("button", { name: "Restart" })).not.toBeInTheDocument();
+    expect(changed).toHaveBeenCalledWith(expect.objectContaining({ session: expect.objectContaining({ lifecycle: "running" }) }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+    expect(request.mock.calls.filter(([, method]) => method === "session.list")).toHaveLength(1);
+  });
+
+  it("does not overlap ended-state reads or attach after the workspace is hidden", async () => {
+    vi.useFakeTimers();
+    const { client, request } = setupClient();
+    const base = request.getMockImplementation()!;
+    let resolveList!: (value: unknown) => void;
+    request.mockImplementation((...args) => args[1] === "session.list"
+      ? new Promise(resolve => { resolveList = resolve; }) : base(...args));
+    const props = { open: { ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false } }, client, onClose: vi.fn(), onSessionChanged: vi.fn() };
+    const view = render(<SessionWorkspace {...props} active />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(request.mock.calls.filter(([, method]) => method === "session.list")).toHaveLength(1);
+    view.rerender(<SessionWorkspace {...props} active={false} />);
+    await act(async () => { resolveList([{ ...open.session, hostAlive: true }]); });
+    expect(request.mock.calls.some(([, method]) => method === "session.attach")).toBe(false);
+  });
 
   it("offers Restart for an ended host instead of attempting an impossible attachment", async () => {
     const { client, request } = setupClient();

@@ -77,6 +77,17 @@ describe("Pi structured attachment authority", () => {
 
   afterEach(cleanup);
 
+  it("replaces an ended attachment when an external restart snapshot arrives", async () => {
+    apiMock.attachSession.mockResolvedValueOnce({ ...attachInfo, childAlive: false })
+      .mockResolvedValueOnce({ ...attachInfo, attachmentId: 8, runId: "run_2", runOrdinal: 2 });
+    const view = render(<PiStructuredTimeline ses={{ ...session, lifecycle: "stopped" }} />);
+    await waitFor(() => expect(apiMock.attachSession).toHaveBeenCalledTimes(1));
+    view.rerender(<PiStructuredTimeline ses={session} />);
+    await waitFor(() => expect(apiMock.attachSession).toHaveBeenCalledTimes(2));
+    expect(apiMock.sendStructuredPrompt).not.toHaveBeenCalled();
+    expect(apiMock.abortStructuredTurn).not.toHaveBeenCalled();
+  });
+
   it("keeps an exit authoritative when the attach reply arrives later", async () => {
     const attach = deferred<AttachInfo>();
     apiMock.attachSession.mockReturnValueOnce(attach.promise);

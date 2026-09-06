@@ -198,7 +198,7 @@ export default function PiStructuredTimeline({ ses }: { ses: SessionView }) {
       cancelled = true;
       if (attachmentId !== null) void api.detachSession(ses.id, attachmentId).catch(() => undefined);
     };
-  }, [attachAttempt, ses.id]);
+  }, [attachAttempt, ses.id, ses.lifecycle]);
 
   const send = async () => {
     const text = prompt.trim();

@@ -246,6 +246,35 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     window.clearTimeout(seenTimer.current);
   }, []);
 
+  // Exit tears down the run-scoped subscription. While its ended page is
+  // visible, reconcile durable state so a restart by another client is seen.
+  // This is read + attach only: never launch or replay a lifecycle mutation.
+  useEffect(() => {
+    if (!active || connectionLabel !== "ended" || busyAction) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const reconcile = async () => {
+      try {
+        const sessions = await client.request<OpenSession["session"][]>(open.hostProfileId, "session.list", { includeArchived: false });
+        if (cancelled || actionBusy.current) return;
+        const session = sessions.find(value => value.id === open.session.id);
+        if (session?.hostAlive === true && ["running", "creating"].includes(session.lifecycle)) {
+          cursor.current = undefined;
+          terminal.current?.reset();
+          setNotice("");
+          setLocallyStopped(false);
+          setRestartRequested(true);
+          onSessionChanged({ ...open, session });
+          setAttachEpoch(value => value + 1);
+          return;
+        }
+      } catch { /* An unavailable read is not evidence of a restart. */ }
+      if (!cancelled) timer = setTimeout(reconcile, 2000);
+    };
+    timer = setTimeout(reconcile, 2000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [active, busyAction, client, connectionLabel, onSessionChanged, open]);
+
   const sendInput = useCallback((data: string) => {
     if (busyAction === "stop" || !attachmentId || attachmentRef.current !== attachmentId || connectionLabel !== "live") return;
     const batchId = sessionBatchId();

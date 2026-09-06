@@ -14,6 +14,7 @@ import {
   type PointerEvent,
   type WheelEvent,
 } from "react";
+import { watchEndedSessions } from "../endedSessionRefresh";
 import {
   api,
   copyText,
@@ -358,12 +359,13 @@ function TerminalPane({
       cancelAnimationFrame(firstRaf);
       if (secondRaf !== null) cancelAnimationFrame(secondRaf);
     };
-  }, [focused, sessionId, visible]);
+  }, [focused, sessionId, visible, ses?.lifecycle]);
 
   const ended =
     ses?.lifecycle === "exited" ||
     ses?.lifecycle === "stopped" ||
     ses?.lifecycle === "interrupted";
+
 
   return (
     <div
@@ -1092,6 +1094,10 @@ function SessionPaneLeaf({
   const { t } = useTranslation(["session", "shell", "common"]);
   const termSearchOpen = useStore((state) => state.termSearchOpen);
   const [sessionDragActive, setSessionDragActive] = useState(false);
+  const ended = ["stopped", "exited", "interrupted"].includes(ses.lifecycle);
+  useEffect(() => {
+    if (visible && ended) return watchEndedSessions();
+  }, [visible, ended]);
 
   return (
     <div

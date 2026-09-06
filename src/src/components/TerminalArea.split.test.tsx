@@ -62,7 +62,7 @@ vi.mock("../api", () => ({
 }));
 
 vi.mock("../terminals", () => ({
-  attachHandle: vi.fn(),
+  attachHandle: vi.fn().mockResolvedValue(undefined),
   fitSession: fitSessionMock,
   restoreDesktopTerminalSize: vi.fn().mockResolvedValue(undefined),
   focusSession: focusSessionMock,
@@ -101,7 +101,7 @@ import { singletonPaneLayout, splitPane } from "../paneLayout";
 import { getState, setState } from "../store";
 import type { SessionView } from "../types";
 import TerminalArea from "./TerminalArea";
-import { restoreDesktopTerminalSize } from "../terminals";
+import { attachHandle, restoreDesktopTerminalSize } from "../terminals";
 
 const ptyA: SessionView = {
   id: "pty-a",
@@ -205,6 +205,13 @@ function installLayout() {
 }
 
 describe("TerminalArea recursive panes", () => {
+  it("attaches when an external snapshot changes a visible ended pane to running", async () => {
+    act(() => setState({ projects: getState().projects.map(project => ({ ...project, sessions: project.sessions.map(session => session.id === ptyA.id ? { ...session, lifecycle: "stopped" as const } : session) })) }));
+    render(<TerminalArea />);
+    expect(attachHandle).not.toHaveBeenCalledWith(ptyA.id);
+    act(() => setState({ projects: getState().projects.map(project => ({ ...project, sessions: project.sessions.map(session => session.id === ptyA.id ? { ...session, lifecycle: "running" as const } : session) })) }));
+    await waitFor(() => expect(attachHandle).toHaveBeenCalledWith(ptyA.id));
+  });
   it("shows only a laptop restore button for phone geometry", async () => {
     setState({ runtime: {
       ...getState().runtime,
