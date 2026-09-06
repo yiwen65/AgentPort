@@ -11,6 +11,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { installIosImeRouting, isIosKeyboard } from "./iosIme";
+import { selectionMenuPosition } from "./selectionMenu";
 import { MOBILE_TERMINAL_THEMES } from "./terminalThemes";
 import "./mobile-terminal.css";
 
@@ -52,6 +53,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
 }: MobileTerminalProps, ref) {
   const sectionRef = useRef<HTMLElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const selectionMenuRef = useRef<HTMLDivElement>(null);
+  const positionSelectionMenuRef = useRef<() => void>(() => undefined);
   const keysRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -159,8 +162,30 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     terminal.open(container);
     const disposeIosIme = isIosKeyboard() && terminal.textarea
       ? installIosImeRouting(container, terminal.textarea) : undefined;
+    let selectionFrame: number | undefined;
+    const positionSelectionMenu = () => {
+      const menu = selectionMenuRef.current;
+      if (!menu || selectionFrame !== undefined) return;
+      selectionFrame = window.requestAnimationFrame(() => {
+        selectionFrame = undefined;
+        const menu = selectionMenuRef.current;
+        const screen = container.querySelector(".xterm-screen");
+        const selection = terminal.getSelectionPosition();
+        if (!menu || !screen) return;
+        const position = selection && selectionMenuPosition(selection, terminal.buffer.active.viewportY,
+          terminal.cols, terminal.rows, screen.getBoundingClientRect(), section.getBoundingClientRect(), menu.getBoundingClientRect());
+        menu.style.visibility = position ? "visible" : "hidden";
+        if (position) {
+          menu.style.left = `${position.left}px`;
+          menu.style.top = `${position.top}px`;
+        }
+      });
+    };
+    positionSelectionMenuRef.current = positionSelectionMenu;
+    const selectionScrolled = terminal.onScroll(positionSelectionMenu);
     const fitTerminal = (reportRemote: boolean) => {
       fit.fit();
+      positionSelectionMenu();
       if (!reportRemote || terminal.cols <= 0 || terminal.rows <= 0) return;
       if (lastReportedSize.current?.cols === terminal.cols && lastReportedSize.current.rows === terminal.rows) return;
       lastReportedSize.current = { cols: terminal.cols, rows: terminal.rows };
@@ -185,6 +210,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     const selectionChanged = terminal.onSelectionChange(() => {
       setHasSelection(Boolean(terminal.getSelection()));
       setCopyFailed(false);
+      positionSelectionMenu();
     });
     const input = terminal.onData(data => inputHandlerRef.current(data));
     // Ordinary layout and visual-viewport changes (notably the soft keyboard)
@@ -415,11 +441,23 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       resize.disconnect();
       disposeIosIme?.();
       cancelLongPress();
+      if (selectionFrame !== undefined) window.cancelAnimationFrame(selectionFrame);
+      positionSelectionMenuRef.current = () => undefined;
+      selectionScrolled.dispose();
       selectionChanged.dispose();
       input.dispose();
       terminal.dispose();
     };
   }, []); // The terminal is a long-lived renderer; callback refs carry changing handlers.
+
+  useLayoutEffect(() => {
+    const menu = selectionMenuRef.current;
+    if (!menu) return;
+    positionSelectionMenuRef.current();
+    const resize = new ResizeObserver(() => positionSelectionMenuRef.current());
+    resize.observe(menu);
+    return () => resize.disconnect();
+  }, [hasSelection, obscured]);
 
   useLayoutEffect(() => {
     // The shortcut row changes available terminal height after focus state is
@@ -480,9 +518,9 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     <section ref={sectionRef} className="mobile-terminal-spike" data-input-active={inputActive} aria-label={title} aria-hidden={obscured || undefined} style={{ visibility: obscured ? "hidden" : undefined }}>
       {showHeading ? <div className="mobile-terminal-heading"><h2>{title}</h2>{description ? <p>{description}</p> : null}</div> : null}
       <div ref={containerRef} className="mobile-terminal-surface" role="application" aria-label={title} />
-      {hasSelection ? <div className="mobile-terminal-selection" role="group" aria-label="Text selection">
+      {hasSelection && !obscured ? <div ref={selectionMenuRef} className="mobile-terminal-selection" role="group" aria-label="Text selection">
         <button type="button" onMouseDown={event => event.preventDefault()} onClick={copySelection}>Copy</button>
-        <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => terminalRef.current?.clearSelection()}>Clear selection</button>
+        <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => terminalRef.current?.clearSelection()}>Clear</button>
         {copyFailed ? <span role="alert">Unable to copy. Try again.</span> : null}
       </div> : null}
       <div ref={keysRef} className="mobile-terminal-keys" data-horizontal-scroll aria-label="Terminal special keys" hidden={!inputActive}>

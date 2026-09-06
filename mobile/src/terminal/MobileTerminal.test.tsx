@@ -47,6 +47,8 @@ vi.mock("@xterm/xterm", () => ({
       terminalHarness.screen.append(terminalHarness.helper);
       container.append(terminalHarness.screen);
     }
+    onScroll() { return { dispose() {} }; }
+    getSelectionPosition() { return { start: { x: 0, y: 4 }, end: { x: 10, y: 4 } }; }
     onData() { return { dispose() { /* deterministic no-op */ } }; }
     focus() { terminalHarness.helper?.focus(); }
     write(data: string | Uint8Array, callback?: () => void) {
@@ -284,13 +286,24 @@ describe("MobileTerminal input accessory", () => {
     const copy = vi.mocked(navigator.clipboard.writeText);
     copy.mockRejectedValueOnce(new Error("clipboard unavailable"));
     act(() => terminalHarness.selectionChanged());
-    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Copy" }));
     await screen.findByRole("alert");
     expect(terminalHarness.clears).toBe(0);
     expect(copy).toHaveBeenCalledWith("selected output");
     fireEvent.click(screen.getByRole("button", { name: "Copy" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Copy" })).toBeNull());
     expect(terminalHarness.clears).toBe(1);
+  });
+
+  it("hides the floating menu with obscured terminal output and reanchors it on return", async () => {
+    const { rerender } = render(<MobileTerminal showProbeOutput={false} />);
+    act(() => terminalHarness.selectionChanged());
+    await screen.findByRole("button", { name: "Copy" });
+    rerender(<MobileTerminal showProbeOutput={false} obscured />);
+    expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
+    rerender(<MobileTerminal showProbeOutput={false} />);
+    await screen.findByRole("button", { name: "Copy" });
+    expect(terminalHarness.instances).toBe(1);
   });
 
   it("cancels long-press selection on scrolling, multitouch, cancellation and unmount", () => {

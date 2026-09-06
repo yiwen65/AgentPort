@@ -225,23 +225,42 @@
 .mobile-terminal-selection {
   position: absolute;
   z-index: 7;
-  top: 8px;
-  right: 16px;
+  /* Measured after mount; never flash in a fixed corner before anchoring. */
+  visibility: hidden;
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  max-width: calc(100% - 32px);
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--terminal-bg);
-  color: var(--text);
+  max-width: calc(100% - 16px);
+  padding: 2px;
+  border: 1px solid var(--terminal-control-inset, var(--line));
+  border-radius: 25px;
+  background: var(--terminal-panel, var(--terminal-bg));
+  color: var(--terminal-heading, var(--text));
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .18);
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
 }
 .mobile-terminal-selection button {
+  position: relative;
+  min-width: 76px;
   min-height: 44px;
-  padding: 8px 12px;
+  padding: 8px 18px;
   border: 0;
-  border-radius: 8px;
-  background: var(--fill);
+  border-radius: 22px;
+  background: transparent;
+  color: inherit;
+  font-size: 17px;
+  line-height: 1.2;
 }
-.mobile-terminal-selection [role="alert"] { padding: 8px; }
+.mobile-terminal-selection button + button::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 0;
+  width: 1px;
+  background: var(--terminal-border, var(--line));
+}
+.mobile-terminal-selection button:active { background: var(--fill); }
+.mobile-terminal-selection [role="alert"] { flex-basis: 100%; padding: 8px 14px; }

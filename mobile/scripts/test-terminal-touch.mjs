@@ -97,10 +97,29 @@ try {
   assert.ok(selection.includes('hello 中文') && selection.includes('\n'), `Missing multiline selection: ${selection}`);
   assert.deepEqual(await evaluate('input'), [], 'Reading gestures must never send terminal input');
   assert.equal(await evaluate('document.activeElement === term.textarea'), false);
-  await evaluate(`Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.copied = text; } } }); document.querySelector('.mobile-terminal-selection button').click()`);
+  await evaluate(`Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.copied = text; } } }); `);
   await wait(100);
+  const anchor = await evaluate(`(() => {
+    const menu = document.querySelector('.mobile-terminal-selection').getBoundingClientRect();
+    const screen = document.querySelector('.xterm-screen').getBoundingClientRect();
+    const row = term.getSelectionPosition().start.y - term.buffer.active.viewportY;
+    return { gap: screen.top + row * screen.height / term.rows - menu.bottom, left: menu.left, right: menu.right };
+  })()`);
+  assert.ok(Math.abs(anchor.gap - 8) < 2, `Menu is not anchored above selection: ${JSON.stringify(anchor)}`);
+  assert.ok(anchor.left >= 0 && anchor.right <= 390, 'Menu exceeds viewport');
+  const copyRect = await evaluate(`document.querySelector('.mobile-terminal-selection button').getBoundingClientRect().toJSON()`);
+  await touch('touchStart', copyRect.x + copyRect.width / 2, copyRect.y + copyRect.height / 2);
+  await touch('touchEnd'); await wait(200);
   assert.equal(await evaluate('copied'), selection);
   assert.equal(await evaluate('term.getSelection()'), '');
+  await touch('touchStart', 100, 300); await wait(650); await touch('touchEnd'); await wait(100);
+  const clearRect = await evaluate(`Array.from(document.querySelectorAll('.mobile-terminal-selection button')).find(b => b.textContent === 'Clear').getBoundingClientRect().toJSON()`);
+  await touch('touchStart', clearRect.x + clearRect.width / 2, clearRect.y + clearRect.height / 2);
+  await touch('touchEnd'); await wait(100);
+  assert.equal(await evaluate('term.getSelection()'), '');
+  assert.equal(await evaluate(`Boolean(document.querySelector('.mobile-terminal-selection'))`), false);
+  assert.deepEqual(await evaluate('input'), [], 'Menu actions must never send terminal input');
+  assert.equal(await evaluate('document.activeElement === term.textarea'), false, 'Menu must not open the keyboard');
   // Alternate-buffer TUIs still receive xterm's wheel protocol, not local history scrolling.
   await evaluate(`new Promise(r => term.write('\\x1b[?1049h\\x1b[?1000h\\x1b[?1006h', r))`);
   await touch('touchStart', 100, 300); await touch('touchMove', 100, 350); await touch('touchEnd');
