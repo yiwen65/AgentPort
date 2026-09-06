@@ -52,6 +52,8 @@ function setupClient({ rejectResize = false }: { rejectResize?: boolean } = {}) 
   const request = vi.fn().mockImplementation((_profileId, method, params) => {
     if (method === "session.attach") return Promise.resolve({ attachmentId: "att-1", sessionId: "ses-1", childAlive: true, cursor: null, features: ["input_batch_v1", "terminal.geometry_v1"], runId: "run", runOrdinal: 1, terminalGeometry: null });
     if (method === "git.context.resolve") return Promise.resolve({ actualBranch: "main", expectedBranch: "main" });
+    if (method === "session.list") return Promise.resolve([]);
+    if (method === "session.stop") return Promise.resolve({ groupCleaned: true });
     if (method === "session.input") return Promise.resolve({ batchId: "batch", serverSequence: 1, phase: "completed" });
     if (method === "session.control" && params.control === "resize") {
       if (rejectResize) return Promise.reject(new Error("request failed on the remote host"));
@@ -101,6 +103,57 @@ describe("SessionWorkspace", () => {
     expect(restart).toBeDisabled();
     expect(restart).toHaveAttribute("aria-busy", "true");
     expect(request).toHaveBeenCalledWith("host-1", "session.restart", { sessionId: "ses-1", riskAck: false });
+  });
+
+  it("returns to the centered restart page after restarting then stopping without stale parent props", async () => {
+    const { client, request } = setupClient();
+    render(<SessionWorkspace open={{ ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false } }} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Restart" }));
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Stop" }));
+    await screen.findByRole("button", { name: "Restart" });
+    expect(screen.queryByRole("region", { name: "Raw terminal" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Session stopped safely.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Restart" }));
+    await waitFor(() => expect(request.mock.calls.filter(([, m]) => m === "session.restart")).toHaveLength(2));
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+  });
+
+  it("requests explicit permission acknowledgment before restarting a bypass session", async () => {
+    const { client, request } = setupClient();
+    render(<SessionWorkspace open={{ ...open, session: { ...open.session, lifecycle: "stopped", permissionMode: "bypass" } }} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Restart" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(request.mock.calls.some(([, m]) => m === "session.restart")).toBe(false);
+    const restart = within(dialog).getByRole("button", { name: "Restart" });
+    expect(restart).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole("checkbox"));
+    fireEvent.click(restart);
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.restart", { sessionId: "ses-1", riskAck: true }));
+  });
+
+  it("edits the action-sheet title inline and never calls a native browser prompt", async () => {
+    const { client, request } = setupClient();
+    const changed = vi.fn();
+    const prompt = vi.spyOn(window, "prompt").mockReturnValue(null);
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={changed} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.parentElement).toHaveClass("modal-backdrop-no-blur");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Rename" }));
+    const input = within(dialog).getByRole("textbox", { name: "New session name" });
+    expect(input.closest(".centered-modal-header")).not.toBeNull();
+    fireEvent.change(input, { target: { value: "Renamed task" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.rename", { sessionId: "ses-1", title: "Renamed task" }));
+    expect(prompt).not.toHaveBeenCalled();
+    await waitFor(() => expect(changed).toHaveBeenCalledWith(expect.objectContaining({ session: expect.objectContaining({ title: "Renamed task" }) })));
+    prompt.mockRestore();
   });
 
   it("recovers the retained terminal with a resume cursor and disables input while disconnected", async () => {

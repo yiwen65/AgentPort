@@ -57,9 +57,14 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   const [confirmStop, setConfirmStop] = useState(false);
   const [branchName, setBranchName] = useState<string>();
   const [restartRequested, setRestartRequested] = useState(false);
+  const [locallyStopped, setLocallyStopped] = useState(false);
+  const [confirmRestart, setConfirmRestart] = useState(false);
+  const [restartRiskAck, setRestartRiskAck] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameTitle, setRenameTitle] = useState("");
   const actionBusy = useRef(false);
   const stopped = ["stopped", "exited", "interrupted"].includes(open.session.lifecycle) || open.session.hostAlive === false;
-  const shouldAttach = !stopped || restartRequested;
+  const shouldAttach = (!stopped && !locallyStopped) || restartRequested;
   const activeRef = useRef(active);
   activeRef.current = active;
   const openedRef = useRef("");
@@ -160,8 +165,11 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       setNotice(t("session.resynced"));
       setAttachEpoch((current) => current + 1);
     } else if (event.eventType === "exit") {
+      setLocallyStopped(true);
+      setRestartRequested(false);
+      setTerminalGeometry(undefined);
       setConnectionLabel("ended");
-      setNotice((payload.groupCleaned ?? payload.group_cleaned) ? t("session.endedCleanly") : t("session.cleanupUnverified"));
+      setNotice((payload.groupCleaned ?? payload.group_cleaned) ? "" : t("session.cleanupUnverified"));
     } else if (event.eventType === "input_batch_ack") {
       const batchId = (payload as SessionEventPayload & { batchId?: string }).batchId;
       if (batchId && !ownBatches.current.delete(batchId)) {
@@ -205,6 +213,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         resizeOwnershipEnabled.current = true;
         setAttachmentId(attached);
         setConnectionLabel(result.childAlive ? "live" : "ended");
+        if (!result.childAlive) { setLocallyStopped(true); setRestartRequested(false); }
       } catch (requestError) {
         if (!cancelled) {
           setConnectionLabel("failed");
@@ -342,24 +351,40 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     if (resizeFrame.current !== undefined) window.cancelAnimationFrame(resizeFrame.current);
   }, []);
 
-  const action = async (name: "restart" | "pin" | "rename", value?: string) => {
+  const action = async (name: "restart" | "pin" | "rename", value?: string, riskAck = false) => {
     if (actionBusy.current) return;
+    if (name === "restart" && open.session.permissionMode !== "native" && !riskAck) {
+      setActionsOpen(false);
+      setRestartRiskAck(false);
+      setConfirmRestart(true);
+      return;
+    }
     actionBusy.current = true;
     setBusyAction(name);
     setError("");
     try {
       if (name === "restart") {
-        await client.request(open.hostProfileId, "session.restart", { sessionId: open.session.id, riskAck: false });
+        await client.request(open.hostProfileId, "session.restart", { sessionId: open.session.id, riskAck });
         cursor.current = undefined;
         terminal.current?.reset();
         setNotice("");
+        setLocallyStopped(false);
         setRestartRequested(true);
+        setConfirmRestart(false);
+        setActionsOpen(false);
+        onSessionChanged({ ...open, session: { ...open.session, lifecycle: "running", hostAlive: true } });
         setAttachEpoch(current => current + 1);
       }
       if (name === "pin") await client.request(open.hostProfileId, "session.pin", { sessionId: open.session.id, pinned: !open.session.pinnedAt });
-      if (name === "rename" && value) await client.request(open.hostProfileId, "session.rename", { sessionId: open.session.id, title: value });
-      const sessions = await client.request<OpenSession["session"][]>(open.hostProfileId, "session.list", { includeArchived: false });
-      const updated = sessions.find(session => session.id === open.session.id);
+      if (name === "rename" && value) {
+        await client.request(open.hostProfileId, "session.rename", { sessionId: open.session.id, title: value });
+        setRenaming(false);
+        onSessionChanged({ ...open, session: { ...open.session, title: value } });
+      }
+      // A failed read after an acknowledged mutation must not look like a failed
+      // Restart/Rename and invite the user to repeat that mutation.
+      const sessions = await client.request<OpenSession["session"][]>(open.hostProfileId, "session.list", { includeArchived: false }).catch(() => undefined);
+      const updated = sessions?.find(session => session.id === open.session.id);
       if (updated) onSessionChanged({ ...open, session: updated });
     } catch (requestError) {
       setError(errorText(requestError));
@@ -371,6 +396,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
 
   const closeActions = () => {
     setActionsOpen(false);
+    setRenaming(false);
     window.requestAnimationFrame(() => actionsTrigger.current?.focus());
   };
 
@@ -378,9 +404,14 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     if (actionBusy.current) return;
     actionBusy.current = true;
     setBusyAction("stop");
+    setError("");
     try {
       const result = await client.request<{ groupCleaned: boolean }>(open.hostProfileId, "session.stop", { sessionId: open.session.id, graceMs: 1_500 });
-      setNotice(result.groupCleaned ? t("session.stopped") : t("session.cleanupUnverified"));
+      setNotice(result.groupCleaned ? "" : t("session.cleanupUnverified"));
+      setLocallyStopped(true);
+      setRestartRequested(false);
+      setTerminalGeometry(undefined);
+      onSessionChanged({ ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false } });
       setConfirmStop(false);
       attachmentRef.current = undefined;
       setAttachmentId(undefined);
@@ -431,7 +462,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       {otherClientInput || notice || error ? <div className="terminal-status-stack">
         {otherClientInput ? <div className="terminal-status-line ephemeral-notice" role="status">{t("session.otherClientTyping")}</div> : null}
         {notice ? <div className="terminal-status-line ephemeral-notice" role="status">{notice}</div> : null}
-        {error ? <div className="terminal-status-line inline-error" role="alert">{error}</div> : null}
+        {error && !actionsOpen && !confirmRestart ? <div className="terminal-status-line inline-error" role="alert">{error}</div> : null}
       </div> : null}
 
       {terminalGeometry?.sourceKind === "desktop" ? <button className="restore-phone-size-button" type="button" onClick={readaptForPhone} aria-label={t("session.restorePhoneSize")} title={t("session.restorePhoneSize")}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="7" y="2.5" width="10" height="19" rx="2" /><path d="M10.5 5h3M11 18.5h2" /></svg></button> : null}
@@ -461,11 +492,19 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         showProbeOutput={false}
       /> : null}
 
-      {actionsOpen ? <Modal title={open.session.title} onClose={closeActions} className="terminal-actions-sheet">
+      {actionsOpen ? <Modal title={open.session.title} onClose={closeActions} className="terminal-actions-sheet" blurBackdrop={false}
+        titleContent={renaming ? <span className="session-title-editor">
+          <input autoFocus aria-label={t("session.renamePrompt")} value={renameTitle} maxLength={256} disabled={Boolean(busyAction)}
+            onChange={event => setRenameTitle(event.target.value)}
+            onKeyDown={event => { if (event.key === "Enter" && !event.nativeEvent.isComposing && renameTitle.trim()) { event.preventDefault(); void action("rename", renameTitle.trim()); } }} />
+          <button type="button" disabled={Boolean(busyAction) || !renameTitle.trim()} onClick={() => void action("rename", renameTitle.trim())}>{t("common.save")}</button>
+          <button type="button" disabled={Boolean(busyAction)} onClick={() => setRenaming(false)}>{t("common.cancel")}</button>
+        </span> : undefined}>
+          {error ? <p role="alert" className="inline-error">{error}</p> : null}
           <p className="terminal-project-branch">{[open.projectName ?? open.session.projectId, branchName].filter(Boolean).join(" · ")}</p>
           <h3 className="terminal-session-actions-title">{t("session.actions")}</h3>
           <div className="terminal-action-grid">
-            <button type="button" disabled={Boolean(busyAction)} onClick={() => { const title = window.prompt(t("session.renamePrompt"), open.session.title); if (title?.trim()) void action("rename", title.trim()); }}>{t("session.rename")}</button>
+            <button type="button" disabled={Boolean(busyAction)} onClick={() => { setRenameTitle(open.session.title); setRenaming(true); setError(""); }}>{t("session.rename")}</button>
             <button type="button" disabled={Boolean(busyAction)} onClick={() => void action("pin")}>{open.session.pinnedAt ? t("session.unpin") : t("session.pin")}</button>
             <button type="button" disabled={Boolean(busyAction)} onClick={() => void action("restart")}>{t("session.restart")}</button>
             <button className="danger-text" type="button" onClick={() => { setActionsOpen(false); setConfirmStop(true); }}>{t("session.stop")}</button>
@@ -474,6 +513,12 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
           </div>
       </Modal> : null}
 
+      {confirmRestart ? <Modal title={t("session.restart")} onClose={() => setConfirmRestart(false)} blurBackdrop={false}>
+        <p>{t("session.permission")}: {open.session.permissionMode}</p>
+        <label className="check-row"><input type="checkbox" checked={restartRiskAck} onChange={event => setRestartRiskAck(event.target.checked)} />{t("session.riskAck")}</label>
+        {error ? <p role="alert" className="inline-error">{error}</p> : null}
+        <div className="modal-actions"><button type="button" onClick={() => setConfirmRestart(false)}>{t("common.cancel")}</button><button className="primary-button" type="button" disabled={!restartRiskAck || Boolean(busyAction)} onClick={() => void action("restart", undefined, restartRiskAck)}>{t("session.restart")}</button></div>
+      </Modal> : null}
       {confirmStop ? <div className="modal-backdrop"><section className="modal-sheet compact" role="dialog" aria-modal="true" aria-labelledby="stop-title"><h2 id="stop-title">{t("session.stopTitle")}</h2><p>{t("session.stopBody")}</p><div className="modal-actions"><button type="button" onClick={() => setConfirmStop(false)}>{t("common.cancel")}</button><button className="danger-button" type="button" disabled={busyAction === "stop"} onClick={() => void stop()}>{t("session.stop")}</button></div></section></div> : null}
     </article>
   );

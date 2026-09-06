@@ -4,8 +4,10 @@ import { useTranslation } from "react-i18next";
 import "./modal.css";
 
 /** Portaled so background inertness covers the app without hiding the dialog. */
-export function Modal({ title, onClose, children, className = "" }: {
+export function Modal({ title, onClose, children, className = "", titleContent, blurBackdrop = true }: {
   title: string;
+  titleContent?: ReactNode;
+  blurBackdrop?: boolean;
   onClose: () => void;
   children: ReactNode;
   className?: string;
@@ -91,12 +93,12 @@ export function Modal({ title, onClose, children, className = "" }: {
   }, [portal]);
 
   return createPortal(
-    <div className="centered-modal-backdrop" onClick={(event) => {
+    <div className={`centered-modal-backdrop${blurBackdrop ? "" : " modal-backdrop-no-blur"}`} onClick={(event) => {
       if (event.target === event.currentTarget) requestClose();
     }}>
       <section ref={sheet} className={`centered-modal ${className}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <header className="centered-modal-header">
-          <h2 id={titleId}>{title}</h2>
+          <h2 id={titleId} aria-label={titleContent ? title : undefined}>{titleContent ?? title}</h2>
           <button type="button" className="modal-close-button" aria-label={t("common.close")} onClick={requestClose}>
             <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m6 6 12 12M18 6 6 18" /></svg>
           </button>
