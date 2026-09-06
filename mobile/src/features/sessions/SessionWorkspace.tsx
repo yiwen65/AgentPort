@@ -54,7 +54,6 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   const [terminalAppearance, , resolvedMode] = useMobileTerminalAppearance();
   const [chromeVisible, setChromeVisible] = useState(false);
   const chromeReveal = useRef<HTMLButtonElement>(null);
-  const [confirmStop, setConfirmStop] = useState(false);
   const [branchName, setBranchName] = useState<string>();
   const [restartRequested, setRestartRequested] = useState(false);
   const [locallyStopped, setLocallyStopped] = useState(false);
@@ -99,7 +98,6 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   useEffect(() => {
     setChromeVisible(false);
     setActionsOpen(false);
-    setConfirmStop(false);
   }, [active]);
 
   useEffect(() => {
@@ -356,7 +354,6 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     setRestartRequested(false);
     setTerminalGeometry(undefined);
     onSessionChanged({ ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false } });
-    setConfirmStop(false);
     attachmentRef.current = undefined;
     setAttachmentId(undefined);
     setConnectionLabel("ended");
@@ -415,6 +412,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     setError("");
     try {
       await stopCurrentSession();
+      setActionsOpen(false);
     } catch (requestError) {
       setError(errorText(requestError));
     } finally {
@@ -506,13 +504,11 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
             <button type="button" disabled={Boolean(busyAction)} onClick={() => { setRenameTitle(open.session.title); setRenaming(true); setError(""); }}>{t("session.rename")}</button>
             <button type="button" disabled={Boolean(busyAction)} onClick={() => void action("pin")}>{open.session.pinnedAt ? t("session.unpin") : t("session.pin")}</button>
             <button type="button" disabled={Boolean(busyAction)} onClick={() => void action("restart")}>{t("session.restart")}</button>
-            <button className="danger-text" type="button" onClick={() => { setActionsOpen(false); setConfirmStop(true); }}>{t("session.stop")}</button>
+            <button className="danger-text" type="button" disabled={Boolean(busyAction)} onClick={() => void stop()}>{t("session.stop")}</button>
             <button type="button" onClick={() => setFontSize(value => Math.max(11, value - 1))}>A−</button>
             <button type="button" onClick={() => setFontSize(value => Math.min(24, value + 1))}>A+</button>
           </div>
       </Modal> : null}
-
-      {confirmStop ? <div className="modal-backdrop"><section className="modal-sheet compact" role="dialog" aria-modal="true" aria-labelledby="stop-title"><h2 id="stop-title">{t("session.stopTitle")}</h2><p>{t("session.stopBody")}</p><div className="modal-actions"><button type="button" onClick={() => setConfirmStop(false)}>{t("common.cancel")}</button><button className="danger-button" type="button" disabled={busyAction === "stop"} onClick={() => void stop()}>{t("session.stop")}</button></div></section></div> : null}
     </article>
   );
 }

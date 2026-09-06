@@ -46,9 +46,6 @@
   "flow": {
     "timelineLoadFailed": "恢复时间线读取失败：{{detail}}",
     "locateRecoveryFailed": "无法定位恢复输出：{{detail}}",
-    "stopTitle": "停止 Session“{{title}}”？",
-    "stopBody": "将终止完整进程组并保留可恢复记录；Agent 未保存的上下文可能丢失。",
-    "stopAction": "停止",
     "stopped": "已停止 Session（进程组已清理）",
     "stopFailed": "停止失败：{{detail}}",
     "restartTitle": "重启“{{title}}”？",

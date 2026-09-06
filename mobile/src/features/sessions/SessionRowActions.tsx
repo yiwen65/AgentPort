@@ -9,7 +9,7 @@ export function SessionRowActions({ session, hostId, client, onClose, onChanged 
   session: SessionSummary; hostId: string; client: RemoteClient; onClose: () => void; onChanged: () => void;
 }) {
   const { t } = useTranslation();
-  const [action, setAction] = useState<Action>();
+  const [action, setAction] = useState<Exclude<Action, "pin" | "stop">>();
   const [title, setTitle] = useState(session.title);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -45,10 +45,10 @@ export function SessionRowActions({ session, hostId, client, onClose, onChanged 
     {action ? <form onSubmit={event => { event.preventDefault(); void run(action); }}>
       <h3>{t(`session.${action}`)}</h3>
       {action === "rename" ? <label>{t("session.renamePrompt")}<input autoFocus maxLength={256} value={title} onChange={event => setTitle(event.target.value)} /></label>
-        : <p>{t(action === "remove" ? "session.removeBody" : action === "archive" ? "session.archiveBody" : "session.stopBody")}</p>}
+        : <p>{t(action === "remove" ? "session.removeBody" : "session.archiveBody")}</p>}
       <div className="modal-actions"><button type="button" disabled={busy} onClick={() => setAction(undefined)}>{t("common.cancel")}</button><button type="submit" className={action === "rename" ? "primary-button" : "danger-button"} disabled={busy || (action === "rename" && !title.trim())}>{t(`session.${action}`)}</button></div>
     </form> : <div className="terminal-action-grid">
-      {(["rename", "pin", "stop", "archive", "remove"] as const).map(name => <button type="button" key={name} disabled={busy} className={name === "remove" ? "danger-text" : undefined} onClick={() => name === "pin" ? void run(name) : setAction(name)}>{t(name === "pin" && session.pinnedAt ? "session.unpin" : `session.${name}`)}</button>)}
+      {(["rename", "pin", "stop", "archive", "remove"] as const).map(name => <button type="button" key={name} disabled={busy} className={name === "remove" ? "danger-text" : undefined} onClick={() => (name === "pin" || name === "stop") ? void run(name) : setAction(name)}>{t(name === "pin" && session.pinnedAt ? "session.unpin" : `session.${name}`)}</button>)}
     </div>}
   </Modal>;
 }

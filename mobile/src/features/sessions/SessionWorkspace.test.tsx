@@ -113,7 +113,6 @@ describe("SessionWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
     fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Stop" }));
     await screen.findByRole("button", { name: "Restart" });
     expect(screen.queryByRole("region", { name: "Raw terminal" })).not.toBeInTheDocument();
     expect(screen.queryByText("Session stopped safely.")).not.toBeInTheDocument();
@@ -129,6 +128,29 @@ describe("SessionWorkspace", () => {
     await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.restart", { sessionId: "ses-1", riskAck: true }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(request.mock.calls.filter(([, m]) => m === "session.stop")).toHaveLength(0);
+  });
+
+  it("stops from the action sheet immediately and preserves errors without replay", async () => {
+    const { client, request } = setupClient();
+    const original = request.getMockImplementation()!;
+    let fail!: (reason: unknown) => void;
+    request.mockImplementation((...args) => args[1] === "session.stop" ? new Promise((_resolve, reject) => { fail = reject; }) : original(...args));
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    const dialog = screen.getByRole("dialog");
+    const stop = within(dialog).getByRole("button", { name: "Stop" });
+    fireEvent.click(stop);
+    fireEvent.click(stop);
+    expect(request.mock.calls.filter(([, m]) => m === "session.stop")).toHaveLength(1);
+    expect(stop).toBeDisabled();
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+    await act(async () => fail(new Error("stop outcome unknown")));
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("stop outcome unknown");
+    expect(stop).toBeEnabled();
+    expect(request.mock.calls.filter(([, m]) => m === "session.stop")).toHaveLength(1);
   });
 
   it("waits for a running session to stop before restarting, without duplicate writes or confirmation", async () => {

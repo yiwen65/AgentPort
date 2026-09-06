@@ -147,7 +147,6 @@ export const resources = {
         interrupt: "中断", abortTurn: "终止当前 Turn", restart: "重启恢复", pin: "置顶", unpin: "取消置顶", rename: "重命名", renamePrompt: "新的 Session 名称", archive: "归档", unarchive: "恢复归档", deletePermanently: "永久删除", stop: "停止",
         create: "新建 Session", createMissing: "Session 已创建，但无法读取其最新摘要。", agent: "Agent", titleOptional: "标题（可选）", preset: "预设", noPreset: "不使用预设", worktreeOptional: "Worktree ID（可选）", permission: "权限模式", transport: "Agent 传输", columns: "终端列数", rows: "终端行数", extraArgs: "额外参数（每行一个参数）", riskAck: "我理解 auto/bypass 权限模式的风险。",
         deleteArchiveTitle: "永久删除“{{title}}”？", deleteArchiveBody: "此操作不可撤销，只适用于已归档 Session。",
-        stopTitle: "停止此 Session？", stopBody: "这会终止电脑上的完整 Session 进程组，而不只是断开手机。",
         connection: { attaching: "附加中", adapting: "适配手机中", live: "实时", reconnecting: "重连中", failed: "附加失败", ended: "已结束" },
       },
       status: {
@@ -309,7 +308,6 @@ export const resources = {
         interrupt: "Interrupt", abortTurn: "Abort current turn", restart: "Restart", pin: "Pin", unpin: "Unpin", rename: "Rename", renamePrompt: "New session name", archive: "Archive", unarchive: "Restore", deletePermanently: "Delete permanently", stop: "Stop",
         create: "New session", createMissing: "The Session was created, but its latest summary could not be loaded.", agent: "Agent", titleOptional: "Title (optional)", preset: "Preset", noPreset: "No preset", worktreeOptional: "Worktree ID (optional)", permission: "Permission mode", transport: "Agent transport", columns: "Terminal columns", rows: "Terminal rows", extraArgs: "Extra arguments (one argument per line)", riskAck: "I understand the risk of auto/bypass permission mode.",
         deleteArchiveTitle: "Delete “{{title}}” permanently?", deleteArchiveBody: "This cannot be undone and is available only for archived Sessions.",
-        stopTitle: "Stop this session?", stopBody: "This terminates the complete Session process group on the computer; it does more than disconnect the phone.",
         connection: { attaching: "Attaching", adapting: "Adapting for phone", live: "Live", reconnecting: "Reconnecting", failed: "Attach failed", ended: "Ended" },
       },
       status: {

@@ -12,6 +12,7 @@ const {
     listProjects: vi.fn(),
     markSessionSeen: vi.fn(),
     restartSession: vi.fn(),
+    stopSession: vi.fn(),
   },
   attachHandleMock: vi.fn(),
   jumpToRecoveryOutputMock: vi.fn(),
@@ -44,6 +45,7 @@ import {
   openSplitSessionDialog,
   removeSessionPane,
   restartSessionFlow,
+  stopSessionFlow,
   selectSession,
   setPaneSplitRatio,
   splitSessionIntoPane,
@@ -114,6 +116,8 @@ describe("selectSession", () => {
       maximizedSessionId: null,
       attachedIds: ["ses_old"],
       dialog: null,
+      confirm: null,
+      toasts: [],
     });
   });
 
@@ -204,6 +208,31 @@ describe("selectSession", () => {
     expect(getState().attachedIds).toEqual([ended.id]);
     expect(releaseTerminalMock).toHaveBeenCalledWith(oldSession.id);
     expect(jumpToRecoveryOutputMock).not.toHaveBeenCalled();
+  });
+
+  it("stops directly without confirmation and ignores duplicate in-flight requests", async () => {
+    let finish!: () => void;
+    apiMock.stopSession.mockReturnValueOnce(new Promise<void>(resolve => { finish = resolve; }));
+    const stopping = stopSessionFlow(oldSession.id);
+    expect(apiMock.stopSession).toHaveBeenCalledWith(oldSession.id);
+    expect(getState().confirm).toBeNull();
+    await stopSessionFlow(oldSession.id);
+    expect(apiMock.stopSession).toHaveBeenCalledTimes(1);
+    finish();
+    await stopping;
+    expect(getState().toasts.slice(-1)[0]?.kind).toBe("success");
+  });
+
+  it("reports Stop failure without confirmation or automatic replay and permits an explicit retry", async () => {
+    apiMock.stopSession.mockRejectedValueOnce(new Error("stop failed"));
+    await stopSessionFlow(oldSession.id);
+    expect(getState().confirm).toBeNull();
+    expect(getState().toasts.slice(-1)[0]?.kind).toBe("error");
+    expect(apiMock.stopSession).toHaveBeenCalledTimes(1);
+    apiMock.stopSession.mockResolvedValueOnce({});
+    await stopSessionFlow(oldSession.id);
+    expect(apiMock.stopSession).toHaveBeenCalledTimes(2);
+    expect(getState().toasts.slice(-1)[0]?.kind).toBe("success");
   });
 
   it("re-mounts an interrupted PTY after restart publishes it as running", async () => {

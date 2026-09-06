@@ -736,21 +736,19 @@ export function switchSessionByIndex(index: number) {
 // session lifecycle flows
 // ---------------------------------------------------------------------------
 
+const stoppingSessions = new Set<string>();
+
 export async function stopSessionFlow(sessionId: string) {
   const ses = findSession(getState().projects, sessionId);
-  if (!ses) return;
-  const ok = await confirmDialog({
-    title: i18n.t("session:flow.stopTitle", { title: ses.title }),
-    body: i18n.t("session:flow.stopBody"),
-    confirmLabel: i18n.t("session:flow.stopAction"),
-    danger: true,
-  });
-  if (!ok) return;
+  if (!ses || stoppingSessions.has(sessionId)) return;
+  stoppingSessions.add(sessionId);
   try {
     await api.stopSession(sessionId);
     toast(i18n.t("session:flow.stopped"), "success");
   } catch (e) {
     toast(i18n.t("session:flow.stopFailed", { detail: errorText(e) }), "error");
+  } finally {
+    stoppingSessions.delete(sessionId);
   }
 }
 

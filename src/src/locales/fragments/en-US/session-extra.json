@@ -46,9 +46,6 @@
   "flow": {
     "timelineLoadFailed": "Could not load the Recovery Timeline: {{detail}}",
     "locateRecoveryFailed": "Could not locate the recovery output: {{detail}}",
-    "stopTitle": "Stop Session “{{title}}”?",
-    "stopBody": "This terminates the entire process group while keeping recovery records. Unsaved Agent context may be lost.",
-    "stopAction": "Stop",
     "stopped": "Session stopped and its process group was cleaned up",
     "stopFailed": "Could not stop the Session: {{detail}}",
     "restartTitle": "Restart “{{title}}”?",

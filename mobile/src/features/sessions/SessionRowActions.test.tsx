@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { i18n } from "../../i18n";
 import type { RemoteClient } from "../../protocol/remoteClient";
@@ -54,4 +54,28 @@ it("renames a trimmed title and prevents empty names", async () => {
   fireEvent.change(input, { target: { value: " New name " } });
   fireEvent.click(screen.getByRole("button", { name: "Rename" }));
   await waitFor(() => expect(request).toHaveBeenCalledWith("test-host", "session.rename", { sessionId: session.id, title: "New name" }));
+});
+
+it("stops on the first click, blocks duplicates, and closes only after acknowledgment", async () => {
+  const { request, onClose } = setup();
+  let finish!: (value: unknown) => void;
+  request.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  const stop = screen.getByRole("button", { name: "Stop" });
+  fireEvent.click(stop);
+  fireEvent.click(stop);
+  expect(request).toHaveBeenCalledExactlyOnceWith("test-host", "session.stop", { sessionId: session.id, graceMs: 1500 });
+  expect(stop).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+  expect(onClose).not.toHaveBeenCalled();
+  await act(async () => finish({}));
+  expect(onClose).toHaveBeenCalledOnce();
+});
+it("keeps Stop errors visible without automatically replaying", async () => {
+  const { request, onClose } = setup();
+  request.mockRejectedValueOnce(new Error("stop outcome unknown"));
+  fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("stop outcome unknown");
+  expect(request).toHaveBeenCalledOnce();
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
 });
