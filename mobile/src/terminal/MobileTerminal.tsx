@@ -10,6 +10,7 @@ import {
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { installIosImeRouting, isIosKeyboard } from "./iosIme";
 import { MOBILE_TERMINAL_THEMES } from "./terminalThemes";
 import "./mobile-terminal.css";
 
@@ -148,6 +149,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(container);
+    const disposeIosIme = isIosKeyboard() && terminal.textarea
+      ? installIosImeRouting(container, terminal.textarea) : undefined;
     const fitTerminal = (reportRemote: boolean) => {
       fit.fit();
       if (!reportRemote || terminal.cols <= 0 || terminal.rows <= 0) return;
@@ -344,6 +347,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       workspace?.style.removeProperty("--terminal-viewport-top");
       if (workspace) delete workspace.dataset.keyboardVisible;
       resize.disconnect();
+      disposeIosIme?.();
       input.dispose();
       terminal.dispose();
     };
