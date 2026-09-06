@@ -148,7 +148,9 @@ try {
   assert.ok(await evaluate(`document.querySelector('.mobile-terminal-key-scroll').scrollLeft > 80`), 'Shortcut strip did not scroll');
   assert.deepEqual(await evaluate('input'), [], 'Swiping shortcut keys sent input');
   assert.equal(await evaluate(`document.querySelector('[data-terminal-shortcut="control"]').getAttribute('aria-pressed')`), 'false');
-  assert.deepEqual(await evaluate(`document.querySelector('.mobile-terminal-shortcut-settings').getBoundingClientRect().toJSON()`), gearBefore, 'Settings gear scrolled out of reach');
+  assert.ok(await evaluate(`document.querySelector('.mobile-terminal-shortcut-settings').getBoundingClientRect().x`) < gearBefore.x, 'Settings gear must scroll with shortcuts');
+  assert.equal(await evaluate(`document.querySelector('.mobile-terminal-key-scroll').lastElementChild.matches('.mobile-terminal-shortcut-settings')`), true);
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('.mobile-terminal-shortcut-settings svg')).width`), '18px');
   const tapKey = async id => {
     await evaluate(`document.querySelector('[data-terminal-shortcut="${id}"]').scrollIntoView({block:'nearest',inline:'center'})`);
     await wait(80);
@@ -160,7 +162,11 @@ try {
   await tapKey('up'); await tapKey('control'); await tapKey('shift'); await tapKey('left');
   assert.deepEqual(await evaluate('input'), ['\x1bOA', '\x1b[1;6D']);
   await evaluate('input=[]');
-  await touch('touchStart', gearBefore.x + gearBefore.width / 2, gearBefore.y + gearBefore.height / 2);
+  await evaluate(`document.querySelector('.mobile-terminal-shortcut-settings').scrollIntoView({block:'nearest',inline:'end'})`);
+  await wait(100);
+  const gear = await evaluate(`document.querySelector('.mobile-terminal-shortcut-settings').getBoundingClientRect().toJSON()`);
+  assert.ok(gear.x >= bar.x && gear.right <= bar.right, 'Settings gear must be reachable at the end');
+  await touch('touchStart', gear.x + gear.width / 2, gear.y + gear.height / 2);
   await touch('touchEnd'); await wait(300);
   assert.equal(await evaluate(`Boolean(document.querySelector('[role="dialog"]'))`), true);
   assert.deepEqual(await evaluate('input'), [], 'Opening settings sent input');

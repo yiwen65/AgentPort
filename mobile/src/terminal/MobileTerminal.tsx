@@ -542,8 +542,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
             const label = isCustomShortcut(item) ? item.label : t(`shortcuts.names.${item.id}`, { defaultValue: SHORTCUT_NAMES[item.id] });
             return <button key={item.id} className={pressed ? "is-active" : ""} type="button" aria-label={label} title={label} aria-pressed={pressed} {...shortcutHandlers(item.id, shortcutActionsRef.current[item.id])}><ShortcutIcon item={item} /></button>;
           })}
+          <button className="mobile-terminal-shortcut-settings" type="button" aria-label={t("shortcuts.title", { defaultValue: "Terminal shortcuts" })} aria-haspopup="dialog" onMouseDown={event => event.preventDefault()} onClick={() => { clearModifiers(); setShortcutsOpen(true); }}><ShortcutSettingsIcon /></button>
         </div>
-        <button className="mobile-terminal-shortcut-settings" type="button" aria-label={t("shortcuts.title", { defaultValue: "Terminal shortcuts" })} aria-haspopup="dialog" onMouseDown={event => event.preventDefault()} onClick={() => { clearModifiers(); setShortcutsOpen(true); }}><ShortcutSettingsIcon /></button>
       </div>
       {shortcutsOpen ? <ShortcutSettings layout={shortcutLayout} onSave={saveShortcutLayout} onClose={() => setShortcutsOpen(false)} /> : null}
     </section>

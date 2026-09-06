@@ -129,6 +129,8 @@
 
 - 2026-09-07: 原生编辑流程定位到滚动内容内 Add 按钮裁切、XCTest 点击落到 section；编辑时隐藏列表并将编辑操作固定到底部。撤回未经证明的通用 Modal visualViewport 改动；最终设置流程连续两次通过，无编辑输入发送，重启后持久化。快捷键真实软件键盘 Ctrl+C、application Up、横滑无输入和 Paste 单次发送通过。隔离服务已停止、两个夹具 App 已卸载。T-002/T-003 done。
 
+- 2026-09-07 后续调整（覆盖原固定齿轮验收）：按用户新要求将 ⚙️ 放入滚动区末尾；图标 22→18px，间距 8→2px，保留 44px 触摸目标。22 个终端组件测试、真实浏览器触摸回归（齿轮随滚动移动、末尾可达并可打开设置）通过；iOS/签名 desktop 构建通过，更新并重启两端。精确 debug GUI PID 43980 与非白屏截图已确认，Mobile 仍显示 Disconnected — Cached。证据 /tmp/ap-shortcuts-compact/；未重新执行原生 XCTest，不宣称 SSH 已修复。
+
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
