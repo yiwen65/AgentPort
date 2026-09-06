@@ -25,6 +25,8 @@ export interface MobileTerminalProps {
   description?: string;
   showHeading?: boolean;
   showProbeOutput?: boolean;
+  /** Hide transient output without unmounting xterm or changing its geometry. */
+  obscured?: boolean;
 }
 
 export interface MobileTerminalHandle {
@@ -46,6 +48,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   description = "Local input probe; it does not execute commands.",
   showHeading = true,
   showProbeOutput = true,
+  obscured = false,
 }: MobileTerminalProps, ref) {
   const sectionRef = useRef<HTMLElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -409,7 +412,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   });
 
   return (
-    <section ref={sectionRef} className="mobile-terminal-spike" data-input-active={inputActive} aria-label={title}>
+    <section ref={sectionRef} className="mobile-terminal-spike" data-input-active={inputActive} aria-label={title} aria-hidden={obscured || undefined} style={{ visibility: obscured ? "hidden" : undefined }}>
       {showHeading ? <div className="mobile-terminal-heading"><h2>{title}</h2>{description ? <p>{description}</p> : null}</div> : null}
       <div ref={containerRef} className="mobile-terminal-surface" role="application" aria-label={title} />
       <div ref={keysRef} className="mobile-terminal-keys" data-horizontal-scroll aria-label="Terminal special keys" hidden={!inputActive}>

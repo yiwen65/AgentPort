@@ -95,6 +95,22 @@ describe("MobileTerminal input accessory", () => {
     expect(terminalHarness.resets).toBe(1);
   });
 
+  it("obscures stopping output without disposing or clearing the terminal", () => {
+    const ref = createRef<MobileTerminalHandle>();
+    const { rerender } = render(<MobileTerminal ref={ref} showProbeOutput={false} />);
+    const section = screen.getByRole("region", { name: "Terminal interaction test" });
+    rerender(<MobileTerminal ref={ref} showProbeOutput={false} obscured />);
+    ref.current?.write("Resume this session with: claude --resume fixture");
+    expect(section).not.toBeVisible();
+    expect(section).toHaveAttribute("aria-hidden", "true");
+    expect(section.style.display).not.toBe("none");
+    rerender(<MobileTerminal ref={ref} showProbeOutput={false} />);
+    expect(section).toBeVisible();
+    expect(terminalHarness.instances).toBe(1);
+    expect(terminalHarness.resets).toBe(0);
+    expect(terminalHarness.writes).toEqual(["Resume this session with: claude --resume fixture"]);
+  });
+
   it("updates its xterm palette in place without replacing the live renderer", () => {
     const ref = createRef<MobileTerminalHandle>();
     const { rerender } = render(

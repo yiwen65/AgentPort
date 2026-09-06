@@ -11,6 +11,7 @@ const terminalHarness = vi.hoisted(() => ({
     onInput?: (data: string) => void;
     onResize?: (cols: number, rows: number) => void;
     showHeading?: boolean;
+    obscured?: boolean;
     theme?: { background?: string; foreground?: string };
   } | undefined,
   writes: [] as string[],
@@ -30,7 +31,7 @@ vi.mock("../../terminal/MobileTerminal", async () => {
         write: (data: string) => terminalHarness.writes.push(data),
         reset: () => { terminalHarness.resets += 1; },
       }), []);
-      return <section aria-label="Raw terminal">
+      return <section aria-label="Raw terminal" style={{ visibility: props.obscured ? "hidden" : undefined }}>
         <button type="button" onClick={() => props.onInput?.("你好\r")}>Type terminal input</button>
         <button type="button" onClick={() => { props.onResize?.(48, 40); props.onResize?.(52, 32); }}>Resize terminal</button>
       </section>;
@@ -144,13 +145,37 @@ describe("SessionWorkspace", () => {
     fireEvent.click(stop);
     fireEvent.click(stop);
     expect(request.mock.calls.filter(([, m]) => m === "session.stop")).toHaveLength(1);
-    expect(stop).toBeDisabled();
-    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(terminalHarness.props?.obscured).toBe(true);
+    expect(screen.getByLabelText("Raw terminal")).not.toBeVisible();
     expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
     await act(async () => fail(new Error("stop outcome unknown")));
-    expect(within(dialog).getByRole("alert")).toHaveTextContent("stop outcome unknown");
-    expect(stop).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("stop outcome unknown");
+    expect(screen.getByRole("region", { name: "Raw terminal" })).toBeVisible();
+    expect(terminalHarness.mounts).toBe(1);
     expect(request.mock.calls.filter(([, m]) => m === "session.stop")).toHaveLength(1);
+  });
+
+  it("hides CLI exit text during Stop while retaining its output until acknowledgment", async () => {
+    const { client, request, emit } = setupClient();
+    const original = request.getMockImplementation()!;
+    let finish!: (value: unknown) => void;
+    request.mockImplementation((...args) => args[1] === "session.stop" ? new Promise(resolve => { finish = resolve; }) : original(...args));
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    act(() => emit({ subscriptionId: "att-1", eventType: "output", cursor: null, payload: { session_id: "ses-1", dataBase64: btoa("Resume this session with: claude --resume fixture") } }));
+    expect(terminalHarness.writes).toEqual(["Resume this session with: claude --resume fixture"]);
+    expect(screen.getByLabelText("Raw terminal")).not.toBeVisible();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Restart" })).not.toBeInTheDocument();
+    act(() => terminalHarness.props?.onInput?.("not sent"));
+    expect(request.mock.calls.some(([, method]) => method === "session.input")).toBe(false);
+    await act(async () => finish({ groupCleaned: true }));
+    expect(await screen.findByRole("button", { name: "Restart" })).toBeEnabled();
+    expect(screen.queryByLabelText("Raw terminal")).not.toBeInTheDocument();
   });
 
   it("waits for a running session to stop before restarting, without duplicate writes or confirmation", async () => {

@@ -254,7 +254,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   }, []);
 
   const sendInput = useCallback((data: string) => {
-    if (!attachmentId || attachmentRef.current !== attachmentId || connectionLabel !== "live") return;
+    if (busyAction === "stop" || !attachmentId || attachmentRef.current !== attachmentId || connectionLabel !== "live") return;
     const batchId = sessionBatchId();
     ownBatches.current.add(batchId);
     // Serialize only through the local transport write, not the remote result.
@@ -280,7 +280,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         setError(errorText(requestError));
       }).finally(releaseSubmission);
     }));
-  }, [attachmentId, client, open.hostProfileId, t, connectionLabel]);
+  }, [attachmentId, client, open.hostProfileId, t, connectionLabel, busyAction]);
 
   // This is the single mobile -> Bridge resize seam. Host-side CAS ownership
   // keeps xterm/viewport observation separate from cross-client authority.
@@ -409,10 +409,10 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     if (actionBusy.current) return;
     actionBusy.current = true;
     setBusyAction("stop");
+    setActionsOpen(false);
     setError("");
     try {
       await stopCurrentSession();
-      setActionsOpen(false);
     } catch (requestError) {
       setError(errorText(requestError));
     } finally {
@@ -487,6 +487,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         description={t("session.terminalDescription")}
         showHeading={false}
         showProbeOutput={false}
+        obscured={busyAction === "stop"}
       /> : null}
 
       {actionsOpen ? <Modal title={open.session.title} onClose={closeActions} className="terminal-actions-sheet" blurBackdrop={false}
