@@ -5,13 +5,16 @@ fn main() {
 
     let target = std::env::var("TARGET").unwrap_or_default();
     if target.contains("apple-ios") {
-        let native = PathBuf::from("../native/mosh/build/ios-simulator-arm64");
+        let (directory, script) = match target.as_str() {
+            "aarch64-apple-ios" => ("ios-device-arm64", "build-ios-device.sh"),
+            "aarch64-apple-ios-sim" => ("ios-simulator-arm64", "build-ios-simulator.sh"),
+            _ => panic!("Mosh source artifacts are not configured for iOS target {target}"),
+        };
+        let native = PathBuf::from("../native/mosh/build").join(directory);
         let mosh = native.join("libmosh.a");
         let protobuf = native.join("libprotobuf.a");
         if !mosh.is_file() || !protobuf.is_file() {
-            panic!(
-                "Mosh iOS source artifacts are missing; run mobile/native/mosh/build-ios-simulator.sh"
-            );
+            panic!("Mosh iOS source artifacts are missing; run mobile/native/mosh/{script}");
         }
         println!("cargo:rustc-link-search=native={}", native.display());
         println!("cargo:rustc-link-lib=static=mosh");

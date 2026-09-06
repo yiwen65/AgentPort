@@ -6,11 +6,17 @@ ROOT=$(cd "$(dirname "$0")" && pwd)
 source "$ROOT/versions.env"
 DOWNLOADS="$ROOT/downloads"
 SOURCES="$ROOT/sources"
-OUTPUT="$ROOT/build/ios-simulator-arm64"
-MOSH_SRC="$SOURCES/mosh"
+# Default remains the simulator; the device wrapper uses separate sources and
+# artifacts so building for a phone cannot replace simulator libraries.
+case "${1:-simulator}" in
+  simulator) PLATFORM=ios-simulator-arm64; SDK_NAME=iphonesimulator; MIN_FLAG=mios-simulator-version-min; MOSH_SRC="$SOURCES/mosh" ;;
+  device) PLATFORM=ios-device-arm64; SDK_NAME=iphoneos; MIN_FLAG=miphoneos-version-min; MOSH_SRC="$SOURCES/mosh-ios-device" ;;
+  *) echo "usage: $0 [simulator|device]" >&2; exit 1 ;;
+esac
+OUTPUT="$ROOT/build/$PLATFORM"
 PROTOBUF_ARCHIVE="$DOWNLOADS/protobuf-all-$PROTOBUF_IOS_VERSION.tar.gz"
 PROTOBUF_SRC="$SOURCES/protobuf-$PROTOBUF_IOS_VERSION"
-PROTOBUF_BUILD="$SOURCES/protobuf-ios-simulator-arm64-build"
+PROTOBUF_BUILD="$SOURCES/protobuf-$PLATFORM-build"
 
 for tool in git curl shasum tar cmake ninja autoreconf automake libtool xcrun make; do
   command -v "$tool" >/dev/null || { echo "missing build tool: $tool" >&2; exit 1; }
@@ -40,7 +46,7 @@ rm -rf "$PROTOBUF_BUILD"
 cmake -S "$PROTOBUF_SRC/cmake" -B "$PROTOBUF_BUILD" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_SYSTEM_NAME=iOS \
-  -DCMAKE_OSX_SYSROOT=iphonesimulator \
+  -DCMAKE_OSX_SYSROOT="$SDK_NAME" \
   -DCMAKE_OSX_ARCHITECTURES=arm64 \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
   -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
@@ -58,11 +64,11 @@ git -C "$MOSH_SRC" fetch --depth 1 origin "$MOSH_COMMIT"
 git -C "$MOSH_SRC" reset --hard "$MOSH_COMMIT"
 git -C "$MOSH_SRC" clean -fdx
 
-SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
-CC=$(xcrun --sdk iphonesimulator --find clang)
-AR=$(xcrun --sdk iphonesimulator --find ar)
-RANLIB=$(xcrun --sdk iphonesimulator --find ranlib)
-FLAGS="-arch arm64 -isysroot $SDK -mios-simulator-version-min=$IOS_DEPLOYMENT_TARGET -I$NCURSES_PREFIX/include"
+SDK=$(xcrun --sdk "$SDK_NAME" --show-sdk-path)
+CC=$(xcrun --sdk "$SDK_NAME" --find clang)
+AR=$(xcrun --sdk "$SDK_NAME" --find ar)
+RANLIB=$(xcrun --sdk "$SDK_NAME" --find ranlib)
+FLAGS="-arch arm64 -isysroot $SDK -$MIN_FLAG=$IOS_DEPLOYMENT_TARGET -I$NCURSES_PREFIX/include"
 cd "$MOSH_SRC"
 ./autogen.sh
 ac_cv_path_PROTOC="$PROTOC" \
@@ -70,7 +76,7 @@ protobuf_CFLAGS="-I$PROTOBUF_SRC/src" \
 protobuf_LIBS="$PROTOBUF_BUILD/libprotobuf.a" \
 CC="$CC" CXX="$CC" CPP="$CC -E" AR="$AR" RANLIB="$RANLIB" \
 CFLAGS="$FLAGS" CXXFLAGS="$FLAGS -std=c++17" CPPFLAGS="$FLAGS" \
-LDFLAGS="-arch arm64 -isysroot $SDK -mios-simulator-version-min=$IOS_DEPLOYMENT_TARGET" \
+LDFLAGS="-arch arm64 -isysroot $SDK -$MIN_FLAG=$IOS_DEPLOYMENT_TARGET" \
 ./configure --prefix="$OUTPUT" --disable-server --disable-client \
   --enable-ios-controller --host=arm64-apple-darwin
 make clean

@@ -31,6 +31,24 @@ npm run build:ios-simulator
 
 需要 XcodeGen、CocoaPods 和 libimobiledevice；Tauri CLI 会检查这些工具。`build:ios-simulator` 只清理生成的 simulator `.app` 目的目录，再执行 Xcode 的本地 simulator 签名构建；不能传 `--no-sign`，否则 Keychain backend 在 simulator 中不可用。这也避免 Tauri 2.11 重复构建时在有效 archive 之后报 `Directory not empty (os error 66)`。团队签名值通过生成工程的 build setting 或 `signing/ios.xcconfig.template` 注入；不得把真实 Team ID、证书或 profile 提交到仓库。
 
+### 有线安装到 iPhone
+
+真机与模拟器都是 arm64，但静态库平台不同，不能混用。首次真机构建先从固定源码构建 Mosh/protobuf：
+
+```bash
+# 在 mobile 目录执行；需要 protobuf 21.12 的 protoc。
+PROTOC="$(brew --prefix protobuf@21)/bin/protoc" bash native/mosh/build-ios-device.sh
+export PATH="$HOME/.cargo/bin:$PATH" # 使用带 iOS target 的 rustup，而非 Homebrew rustc
+# Team ID 仅在本机环境中设置，不提交。
+APPLE_DEVELOPMENT_TEAM="<your-team-id>" npm run tauri -- ios build --debug --target aarch64 --archive-only --ci
+xcrun devicectl list devices
+xcrun devicectl device install app --device "<device-id>" \
+  src-tauri/gen/apple/build/agentport-mobile_iOS.xcarchive/Products/Applications/AgentPort.app
+xcrun devicectl device process launch --device "<device-id>" com.agentport.mobile
+```
+
+Xcode 必须登录 Apple ID 并允许开发签名配置；手机必须信任 Mac、开启开发者模式。首次安装后，可能还需在手机「设置 → 通用 → VPN 与设备管理」信任开发者 App。安装成功不等于启动/业务验收通过。此流程保留 App 数据，不先卸载。真机库输出为 `native/mosh/build/ios-device-arm64`，模拟器仍为 `ios-simulator-arm64`。
+
 最低版本验收需要 iPhone / iOS 16 runtime；最新版本另行使用当前 Xcode runtime。可用官方命令检查 catalog：
 
 ```bash
