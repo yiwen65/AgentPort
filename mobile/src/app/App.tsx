@@ -110,6 +110,7 @@ export function App({ client, hostAuthClient }: AppProps) {
       <main className="main-content" id="main-content" aria-hidden={terminalVisible}>
         <SessionDashboard
           client={client}
+          active={!terminalVisible && !deviceManagerOpen && !settingsOpen}
           onOpenSession={openSession}
           openedSession={openedSession}
           hostProfilesEpoch={hostProfilesEpoch}

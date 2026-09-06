@@ -151,9 +151,10 @@ function SessionRow({ session, host, stale, onOpen, onActions }: {
   );
 }
 
-export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpenSettings, openedSession, hostProfilesEpoch = 0 }: {
+export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpenSettings, openedSession, hostProfilesEpoch = 0, active: dashboardActive = true }: {
   client: RemoteClient;
   hostProfilesEpoch?: number;
+  active?: boolean;
   onOpenSession: (session: OpenSession) => void;
   onManageDevices?: () => void;
   onOpenSettings?: () => void;
@@ -163,6 +164,16 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   const [receipts, setReceipts] = useState(readReceipts);
   const [rowActions, setRowActions] = useState<{ hostId: string; session: SessionSummary }>();
   const refreshEpoch = useRef(0);
+  const refreshes = useRef(new Map<string, { again: boolean; promise: Promise<void> }>());
+  const [pageVisible, setPageVisible] = useState(() => document.visibilityState !== "hidden");
+  const visible = dashboardActive && pageVisible;
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  useEffect(() => {
+    const changed = () => setPageVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", changed);
+    return () => document.removeEventListener("visibilitychange", changed);
+  }, []);
   const [hosts, setHosts] = useState<HostProfileSummary[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState(() => {
     try { return localStorage.getItem(DEVICE_KEY) ?? ""; } catch { return ""; }
@@ -193,7 +204,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
 
   const selectedHost = hosts.find((host) => host.id === selectedDeviceId);
 
-  const refreshDevice = useCallback(async (deviceId: string) => {
+  const refreshDeviceOnce = useCallback(async (deviceId: string) => {
     if (!deviceId) return;
     const epoch = ++refreshEpoch.current;
     try {
@@ -217,6 +228,25 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
       }));
     }
   }, [client]);
+
+  const refreshDevice = useCallback((deviceId: string, afterPending = true): Promise<void> => {
+    const existing = refreshes.current.get(deviceId);
+    if (existing) {
+      // Timer ticks share the current read. Explicit refresh/mutation/reconnect
+      // requests need one trailing read, since the current snapshot may predate them.
+      existing.again ||= afterPending;
+      return existing.promise;
+    }
+    const entry = { again: false, promise: Promise.resolve() };
+    entry.promise = (async () => {
+      do {
+        entry.again = false;
+        await refreshDeviceOnce(deviceId);
+      } while (entry.again && mounted.current && deviceId === selectedDeviceRef.current);
+    })().finally(() => { refreshes.current.delete(deviceId); });
+    refreshes.current.set(deviceId, entry);
+    return entry.promise;
+  }, [refreshDeviceOnce]);
 
   useEffect(() => {
     mounted.current = true;
@@ -251,9 +281,10 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   }, [selectedDeviceId]);
 
   useEffect(() => {
-    if (selectedHost?.connectionState === "connected") void refreshDevice(selectedDeviceId);
-    else setSnapshot(current => current ? { ...current, cached: true } : current);
-  }, [selectedDeviceId, selectedHost?.connectionState, refreshDevice]);
+    if (selectedHost?.connectionState === "connected") {
+      if (visible) void refreshDevice(selectedDeviceId);
+    } else setSnapshot(current => current ? { ...current, cached: true } : current);
+  }, [selectedDeviceId, selectedHost?.connectionState, refreshDevice, visible]);
 
   useEffect(() => {
     const opened = openedSession?.open;
@@ -270,7 +301,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         try { localStorage.setItem(RECEIPTS_KEY, JSON.stringify(next)); } catch { /* live receipt remains valid without storage */ }
         return next;
       });
-      if (selectedDeviceRef.current === opened.hostProfileId) void refreshDevice(opened.hostProfileId);
+      if (visibleRef.current && selectedDeviceRef.current === opened.hostProfileId) void refreshDevice(opened.hostProfileId);
     }).catch(error => { if (!cancelled) setActionError(errorText(error)); });
     return () => { cancelled = true; };
   }, [client, openedSession, refreshDevice]);
@@ -339,10 +370,10 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   }, [client, selectedDeviceId, selectedHost?.connectionState]);
 
   useEffect(() => {
-    if (!selectedDeviceId || selectedHost?.connectionState !== "connected") return;
-    const timer = window.setInterval(() => void refreshDevice(selectedDeviceId), 5_000);
+    if (!visible || !selectedDeviceId || selectedHost?.connectionState !== "connected") return;
+    const timer = window.setInterval(() => void refreshDevice(selectedDeviceId, false), 5_000);
     return () => window.clearInterval(timer);
-  }, [refreshDevice, selectedDeviceId, selectedHost?.connectionState]);
+  }, [refreshDevice, selectedDeviceId, selectedHost?.connectionState, visible]);
 
   const updateWorkspace = (next: PersistedWorkspace) => {
     setWorkspace(next);

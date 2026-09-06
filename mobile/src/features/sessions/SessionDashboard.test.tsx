@@ -32,7 +32,66 @@ function client(): RemoteClient {
 
 describe("V2 Session workspace", () => {
   beforeEach(async () => { localStorage.clear(); await i18n.changeLanguage("en-US"); });
-  afterEach(() => cleanup());
+  afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  it("coalesces repeated explicit refreshes into one current and one trailing snapshot", async () => {
+    const remote = client();
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await screen.findByRole("button", { name: "Approval task" });
+    const original = vi.mocked(remote.request).getMockImplementation()!;
+    let finish!: (value: unknown) => void;
+    vi.mocked(remote.request).mockImplementation((...args) => args[1] === "session.list"
+      ? new Promise(resolve => { finish = resolve; }) : original(...args));
+    vi.mocked(remote.request).mockClear();
+    for (let i = 0; i < 8; i++) fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    const lists = () => vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.list");
+    expect(lists()).toHaveLength(1);
+    await act(async () => finish([]));
+    expect(lists()).toHaveLength(2);
+    await act(async () => finish([]));
+    expect(lists()).toHaveLength(2);
+  });
+
+  it("does not overlap slow periodic snapshots or starve their results", async () => {
+    const remote = client();
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await screen.findByRole("button", { name: "Approval task" });
+    vi.useFakeTimers();
+    // Rerender connection status installs the polling timer under the fake clock.
+    cleanup();
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const original = vi.mocked(remote.request).getMockImplementation()!;
+    let finish!: (value: unknown) => void;
+    vi.mocked(remote.request).mockImplementation((...args) => args[1] === "session.list"
+      ? new Promise(resolve => { finish = resolve; }) : original(...args));
+    vi.mocked(remote.request).mockClear();
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.list")).toHaveLength(1);
+    await act(async () => finish([]));
+    expect(screen.queryByRole("button", { name: "Approval task" })).not.toBeInTheDocument();
+  });
+
+  it("pauses hidden dashboard refreshes, keeps attention polling, and refreshes on return", async () => {
+    vi.useFakeTimers();
+    const remote = client();
+    const props = { client: remote, onOpenSession: vi.fn() };
+    const { rerender } = render(<SessionDashboard {...props} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    rerender(<SessionDashboard {...props} active={false} />);
+    vi.mocked(remote.request).mockClear();
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.list")).toHaveLength(0);
+    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "attention.poll")).toHaveLength(12);
+    rerender(<SessionDashboard {...props} active />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.list")).toHaveLength(1);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    fireEvent(document, new Event("visibilitychange"));
+    vi.mocked(remote.request).mockClear();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(vi.mocked(remote.request).mock.calls.some(([, method]) => method === "session.list")).toBe(false);
+  });
 
   it("reloads device profiles after host management closes without remounting the dashboard", async () => {
     const remote = client();
