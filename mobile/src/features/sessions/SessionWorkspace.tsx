@@ -423,7 +423,16 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
 
       {terminalGeometry?.sourceKind === "desktop" ? <button className="restore-phone-size-button" type="button" onClick={readaptForPhone} aria-label={t("session.restorePhoneSize")} title={t("session.restorePhoneSize")}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="7" y="2.5" width="10" height="19" rx="2" /><path d="M10.5 5h3M11 18.5h2" /></svg></button> : null}
 
-      {connectionLabel === "ended" ? <div className="terminal-ended" role="status"><p>{t("session.restartAvailable")}</p><button className="primary-button" type="button" disabled={Boolean(busyAction)} onClick={() => void action("restart")}>{t("session.restart")}</button></div> : null}
+      {connectionLabel === "ended" ? <section className="terminal-ended" aria-labelledby="restart-session-title">
+        <div className="restart-identity">
+          <p className="restart-project"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z" /></svg><span>{open.projectName ?? open.session.projectId}</span></p>
+          <h2 id="restart-session-title">{open.session.title}</h2>
+        </div>
+        <button className="session-restart-button" type="button" disabled={Boolean(busyAction)} aria-busy={busyAction === "restart"} onClick={() => void action("restart")}>
+          <svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M25 12a10 10 0 1 0 1 7M25 5v7h-7" /></svg>
+          <span>{t("session.restart")}</span>
+        </button>
+      </section> : null}
       {connectionLabel === "reconnecting" ? <p className="terminal-status-line" role="status">{t("status.reconnecting")}</p> : null}
       {connectionLabel === "failed" ? <button type="button" onClick={() => setAttachEpoch(value => value + 1)}>{t("session.retryAttach")}</button> : null}
       {shouldAttach ? <MobileTerminal

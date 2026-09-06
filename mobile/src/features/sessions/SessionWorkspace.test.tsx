@@ -85,6 +85,22 @@ describe("SessionWorkspace", () => {
     expect(await screen.findByRole("button", { name: "Restart" })).toBeInTheDocument();
     expect(request.mock.calls.some(([, method]) => method === "session.attach")).toBe(false);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Agent task", level: 2 })).toBeVisible();
+    expect(screen.getByText("AgentSessions")).toBeVisible();
+    expect(screen.queryByText(/This session has stopped/)).not.toBeInTheDocument();
+    expect(request.mock.calls.some(([, method]) => method === "session.restart")).toBe(false);
+  });
+
+  it("keeps the restart identity and disables the button while the explicit request is pending", async () => {
+    const { client, request } = setupClient();
+    request.mockImplementation(() => new Promise(() => {}));
+    render(<SessionWorkspace open={{ ...open, projectName: undefined, session: { ...open.session, lifecycle: "stopped" } }} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    const restart = await screen.findByRole("button", { name: "Restart" });
+    expect(screen.getByText("prj-1")).toBeVisible();
+    fireEvent.click(restart);
+    expect(restart).toBeDisabled();
+    expect(restart).toHaveAttribute("aria-busy", "true");
+    expect(request).toHaveBeenCalledWith("host-1", "session.restart", { sessionId: "ses-1", riskAck: false });
   });
 
   it("recovers the retained terminal with a resume cursor and disables input while disconnected", async () => {
