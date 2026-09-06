@@ -90,7 +90,6 @@ import StatusDot from "./StatusDot";
 import { useTranslation } from "react-i18next";
 import { shouldShowTerminalAttachOverlay } from "../terminalAttachVisibility";
 import {
-  dismissGeometryRevision,
   readDismissedGeometryRevision,
   terminalGeometryPromptState,
 } from "../terminalGeometryPrompt";
@@ -837,37 +836,21 @@ function PhoneGeometryBanner({ ses }: { ses: SessionView }) {
   const geometry = useStore(
     (state) => state.runtime[ses.id]?.terminalGeometry ?? null,
   );
-  const [dismissedKey, setDismissedKey] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(false);
-  const currentKey = geometry
-    ? `${geometry.runId}:${geometry.revision}`
-    : null;
-  const dismissedRevision =
-    dismissedKey === currentKey
-      ? geometry?.revision ?? null
-      : readDismissedGeometryRevision(ses.id, geometry);
+  const dismissedRevision = readDismissedGeometryRevision(ses.id, geometry);
   const prompt = terminalGeometryPromptState(geometry, dismissedRevision);
   if (!prompt.visible || !geometry || prompt.revision === null) return null;
 
-  const source = geometry.sourceDeviceId
-    ? t("ui.phoneGeometry.sourceDevice", { device: geometry.sourceDeviceId })
-    : t("ui.phoneGeometry.sourcePhone");
-
+  const label = restoring
+    ? t("ui.phoneGeometry.restoring")
+    : t("ui.phoneGeometry.restore");
   return (
-    <div className="banner info phone-geometry-banner" role="status">
-      <span className="phone-geometry-icon" aria-hidden="true">▯</span>
-      <strong>{t("ui.phoneGeometry.title")}</strong>
-      <span>
-        {t("ui.phoneGeometry.detail", {
-          cols: geometry.cols,
-          rows: geometry.rows,
-          source,
-        })}
-      </span>
-      <span className="spacer" />
+    <div className="phone-geometry-banner">
       <button
         type="button"
-        className="btn small primary"
+        className="btn small phone-geometry-restore"
+        aria-label={label}
+        title={label}
         disabled={restoring}
         onClick={() => {
           setRestoring(true);
@@ -881,20 +864,7 @@ function PhoneGeometryBanner({ ses }: { ses: SessionView }) {
             .finally(() => setRestoring(false));
         }}
       >
-        {restoring
-          ? t("ui.phoneGeometry.restoring")
-          : t("ui.phoneGeometry.restore")}
-      </button>
-      <button
-        type="button"
-        className="btn small ghost phone-geometry-dismiss"
-        aria-label={t("ui.phoneGeometry.dismiss")}
-        onClick={() => {
-          dismissGeometryRevision(ses.id, geometry);
-          setDismissedKey(currentKey);
-        }}
-      >
-        ×
+        <span aria-hidden="true">💻</span>
       </button>
     </div>
   );

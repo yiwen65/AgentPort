@@ -4191,19 +4191,19 @@ body.is-resizing-split .doc-panel-resize::after {
 .phone-geometry-banner {
   /* Overlay the renderer instead of consuming layout height: xterm keeps the
      desktop viewport measurement while the Host remains phone-sized. */
-  min-height: 38px;
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px;
+  pointer-events: none;
 }
 
-.phone-geometry-icon {
-  color: var(--accent);
-  font-size: 17px;
+.phone-geometry-restore {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font-size: 18px;
   line-height: 1;
-  transform: rotate(180deg);
-}
-
-.phone-geometry-dismiss {
-  width: 28px;
-  padding-inline: 0;
+  pointer-events: auto;
 }
 
 /* Status line above the global status bar (PRD ch.2) */

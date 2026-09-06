@@ -64,6 +64,7 @@ vi.mock("../api", () => ({
 vi.mock("../terminals", () => ({
   attachHandle: vi.fn(),
   fitSession: fitSessionMock,
+  restoreDesktopTerminalSize: vi.fn().mockResolvedValue(undefined),
   focusSession: focusSessionMock,
   getHandle: getHandleMock,
   hasWarmTerminalPreview: vi.fn(() => false),
@@ -100,6 +101,7 @@ import { singletonPaneLayout, splitPane } from "../paneLayout";
 import { getState, setState } from "../store";
 import type { SessionView } from "../types";
 import TerminalArea from "./TerminalArea";
+import { restoreDesktopTerminalSize } from "../terminals";
 
 const ptyA: SessionView = {
   id: "pty-a",
@@ -203,6 +205,26 @@ function installLayout() {
 }
 
 describe("TerminalArea recursive panes", () => {
+  it("shows only a laptop restore button for phone geometry", async () => {
+    setState({ runtime: {
+      ...getState().runtime,
+      [ptyA.id]: { attached: true, replayDone: true, terminalGeometry: {
+        runId: "run-1", runOrdinal: 1, cols: 43, rows: 48,
+        sourceKind: "mobile", sourceDeviceId: "private-phone-id",
+        attachmentId: 7, orientation: "portrait", revision: 3,
+        updatedAt: "2026-09-02T10:00:00Z",
+      } },
+    } } as never);
+    const view = render(<TerminalArea />);
+    const prompt = view.container.querySelector(".phone-geometry-banner")!;
+    expect(prompt.textContent).toBe("💻");
+    expect(prompt.querySelectorAll("button")).toHaveLength(1);
+    const button = prompt.querySelector("button")!;
+    expect(button.getAttribute("aria-label")).toBeTruthy();
+    expect(button.title).toBe(button.getAttribute("aria-label"));
+    fireEvent.click(button);
+    await waitFor(() => expect(restoreDesktopTerminalSize).toHaveBeenCalledWith(ptyA.id, 3));
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     getHandleMock.mockImplementation(() => handle());
