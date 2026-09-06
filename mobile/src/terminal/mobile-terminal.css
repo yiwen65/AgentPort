@@ -264,3 +264,18 @@
 }
 .mobile-terminal-selection button:active { background: var(--fill); }
 .mobile-terminal-selection [role="alert"] { flex-basis: 100%; padding: 8px 14px; }
+
+.mobile-terminal-paste-error {
+  position: absolute;
+  z-index: 7;
+  bottom: 64px;
+  left: 12px;
+  right: 12px;
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--terminal-border, var(--line));
+  border-radius: 12px;
+  color: var(--terminal-heading, var(--text));
+  background: var(--terminal-panel, var(--terminal-bg));
+  font-size: 14px;
+}

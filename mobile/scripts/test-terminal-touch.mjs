@@ -124,7 +124,17 @@ try {
   await evaluate(`new Promise(r => term.write('\\x1b[?1049h\\x1b[?1000h\\x1b[?1006h', r))`);
   await touch('touchStart', 100, 300); await touch('touchMove', 100, 350); await touch('touchEnd');
   assert.ok((await evaluate('input.join("")')).includes('\x1b[<64;'), 'Mouse-reporting wheel route lost');
-  console.log(JSON.stringify({ scroll: { before, after }, selection, copied: true, mouseReporting: true }));
+  await evaluate(`new Promise(r => term.write('\\x1b[?1000l\\x1b[?1006l\\x1b[?1049l', r))`);
+  await evaluate(`window.input=[];window.pasteReads=0;Object.defineProperty(navigator, 'clipboard', { configurable:true, value:{readText:async()=>{window.pasteReads++;return 'paste 中文'}} });term.focus()`);
+  await wait(150);
+  const pasteRect = await evaluate(`document.querySelector('[data-terminal-shortcut="paste"]').getBoundingClientRect().toJSON()`);
+  await touch('touchStart', pasteRect.x + pasteRect.width / 2, pasteRect.y + pasteRect.height / 2);
+  assert.equal(await evaluate('pasteReads'), 0, 'Clipboard read before completed user click');
+  await touch('touchEnd'); await wait(150);
+  assert.equal(await evaluate('pasteReads'), 1);
+  assert.deepEqual(await evaluate('input'), ['paste 中文']);
+  assert.equal(await evaluate('document.activeElement === term.textarea'), true, 'Paste dismissed keyboard focus');
+  console.log(JSON.stringify({ scroll: { before, after }, selection, copied: true, mouseReporting: true, pastedOnce: true }));
 } finally {
   ws?.close();
   if (chrome?.pid && chrome.exitCode === null) {

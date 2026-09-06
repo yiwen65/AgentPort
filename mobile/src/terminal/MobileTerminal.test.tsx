@@ -198,6 +198,54 @@ describe("MobileTerminal input accessory", () => {
     expect(onInput).toHaveBeenCalledTimes(1);
   });
 
+  it("reads the clipboard on the completed click, not before WebKit grants user activation", async () => {
+    const onInput = vi.fn();
+    render(<MobileTerminal onInput={onInput} showProbeOutput={false} />);
+    terminalHarness.helper!.focus();
+    const paste = await screen.findByRole("button", { name: "Paste" });
+    paste.getBoundingClientRect = () => ({ left: 0, right: 44, top: 0, bottom: 44 } as DOMRect);
+    const point = { clientX: 10, clientY: 10 };
+    fireEvent.touchStart(paste, { touches: [point] });
+    expect(navigator.clipboard.readText).not.toHaveBeenCalled();
+    fireEvent.touchEnd(paste, { touches: [], changedTouches: [point] });
+    expect(navigator.clipboard.readText).not.toHaveBeenCalled();
+    fireEvent.mouseDown(paste);
+    expect(navigator.clipboard.readText).not.toHaveBeenCalled();
+    fireEvent.click(paste, { detail: 1 });
+    await waitFor(() => expect(onInput).toHaveBeenCalledExactlyOnceWith("pasted"));
+    expect(navigator.clipboard.readText).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(terminalHarness.helper);
+  });
+
+  it("does not paste when a touch is dragged or cancelled", async () => {
+    render(<MobileTerminal showProbeOutput={false} />);
+    terminalHarness.helper!.focus();
+    const paste = await screen.findByRole("button", { name: "Paste" });
+    paste.getBoundingClientRect = () => ({ left: 0, right: 44, top: 0, bottom: 44 } as DOMRect);
+    const point = { clientX: 10, clientY: 10 };
+    fireEvent.touchStart(paste, { touches: [point] });
+    fireEvent.touchMove(paste, { touches: [{ clientX: 60, clientY: 10 }] });
+    fireEvent.touchEnd(paste, { touches: [], changedTouches: [point] });
+    fireEvent.touchStart(paste, { touches: [point] });
+    fireEvent.touchCancel(paste);
+    fireEvent.touchEnd(paste, { touches: [], changedTouches: [point] });
+    expect(navigator.clipboard.readText).not.toHaveBeenCalled();
+  });
+
+  it("reports denied clipboard access without sending input, and permits an explicit retry", async () => {
+    const onInput = vi.fn();
+    vi.mocked(navigator.clipboard.readText).mockRejectedValueOnce(new DOMException("Denied", "NotAllowedError"));
+    render(<MobileTerminal onInput={onInput} showProbeOutput={false} />);
+    terminalHarness.helper!.focus();
+    const paste = await screen.findByRole("button", { name: "Paste" });
+    fireEvent.click(paste);
+    await screen.findByRole("alert");
+    expect(onInput).not.toHaveBeenCalled();
+    fireEvent.click(paste);
+    await waitFor(() => expect(onInput).toHaveBeenCalledExactlyOnceWith("pasted"));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("dismisses terminal input when tapping output but keeps the current input rows active", async () => {
     render(<MobileTerminal showHeading={false} />);
     const toolbar = screen.getByLabelText("Terminal special keys");

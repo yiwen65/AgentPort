@@ -71,6 +71,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const lastTouchShortcutAt = useRef(0);
   const shortcutActionsRef = useRef<Record<string, () => void>>({});
   const [hasSelection, setHasSelection] = useState(false);
+  const [pasteFailed, setPasteFailed] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
   const [inputActive, setInputActive] = useState(false);
   const [shiftActive, setShiftActive] = useState(false);
@@ -115,7 +116,9 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const paste = () => {
     clearModifiers();
     terminalRef.current?.focus();
-    void navigator.clipboard?.readText().then(writeInput).catch(() => undefined);
+    setPasteFailed(false);
+    if (!navigator.clipboard) { setPasteFailed(true); return; }
+    void navigator.clipboard.readText().then(data => { if (data) writeInput(data); }).catch(() => setPasteFailed(true));
   };
 
   const copySelection = () => {
@@ -394,6 +397,9 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
         ? event.target.closest<HTMLButtonElement>("button[data-terminal-shortcut]")
         : null;
       if (!target || !keys?.contains(target)) return;
+      // Clipboard access needs WebKit's completed click activation. Unlike the
+      // immediate special keys, Paste keeps the browser's native tap lifecycle.
+      if (target.dataset.terminalShortcut === "paste") return;
       // React intentionally delegates touchstart as a passive event in WebKit,
       // where preventDefault cannot preserve xterm focus. This native listener
       // is explicitly non-passive so the software keyboard remains connected.
@@ -523,8 +529,9 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
         <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => terminalRef.current?.clearSelection()}>Clear</button>
         {copyFailed ? <span role="alert">Unable to copy. Try again.</span> : null}
       </div> : null}
+      {pasteFailed && inputActive && !obscured ? <p className="mobile-terminal-paste-error" role="alert">Unable to paste. Check clipboard access and try again.</p> : null}
       <div ref={keysRef} className="mobile-terminal-keys" data-horizontal-scroll aria-label="Terminal special keys" hidden={!inputActive}>
-        <button type="button" aria-label="Paste" {...shortcutHandlers("paste", paste)}><PasteIcon /></button>
+        <button type="button" aria-label="Paste" data-terminal-shortcut="paste" onMouseDown={event => event.preventDefault()} onClick={paste}><PasteIcon /></button>
         <button type="button" aria-label="Escape" {...shortcutHandlers("escape", shortcutActionsRef.current.escape)}><span aria-hidden="true">⎋</span></button>
         <button type="button" aria-label="Tab" {...shortcutHandlers("tab", shortcutActionsRef.current.tab)}><span aria-hidden="true">⇥</span></button>
         <button className={shiftActive ? "is-active" : ""} type="button" aria-label="Shift" aria-pressed={shiftActive} {...shortcutHandlers("shift", shortcutActionsRef.current.shift)}><span aria-hidden="true">⇧</span></button>
