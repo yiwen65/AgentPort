@@ -18,6 +18,12 @@ function contrast(first: string, second: string) {
 }
 
 describe("mobile semantic design system", () => {
+  it("limits action-sheet close-button sizing to the direct header child", () => {
+    expect(styles).not.toContain(".terminal-actions-sheet > header button");
+    expect(styles).toContain(".terminal-actions-sheet > header > button");
+    expect(modalStyles).toContain("grid-template-columns: minmax(0, 1fr) 36px 36px");
+  });
+
   it("derives app colors from all six terminal palettes, without a separate app palette", () => {
     expect(styles).not.toContain("--bg: #edf3f9");
     expect(styles).not.toContain("--bg: #080f1d");

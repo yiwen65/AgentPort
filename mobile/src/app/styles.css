@@ -146,7 +146,7 @@ textarea { resize: vertical; overflow-wrap: anywhere; }
 .recent-sheet { padding-bottom: max(22px, env(safe-area-inset-bottom)); }
 .recent-sheet > header { margin-bottom: 8px; }
 .recent-sheet > header h2 { margin: 0; }
-.recent-sheet > header button, .terminal-actions-sheet > header button { width: 44px; height: 44px; border: 0; border-radius: 12px; background: transparent; color: var(--muted); font-size: 24px; }
+.recent-sheet > header button, .terminal-actions-sheet > header > button { width: 44px; height: 44px; border: 0; border-radius: 12px; background: transparent; color: var(--muted); font-size: 24px; }
 .session-connection-state { display: inline-flex !important; align-items: center; gap: 5px; }
 .session-connection-state > span { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--tertiary-text); }
 .session-connection-state.live { color: var(--success); }

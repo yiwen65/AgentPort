@@ -13,7 +13,7 @@ const terminalHarness = vi.hoisted(() => ({
   writes: [] as string[],
   resets: 0,
   instances: 0,
-  options: undefined as { fontSize?: number; minimumContrastRatio?: number; theme?: unknown } | undefined,
+  options: undefined as { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; theme?: unknown } | undefined,
 }));
 
 vi.mock("@xterm/addon-fit", () => ({
@@ -25,8 +25,8 @@ vi.mock("@xterm/xterm", () => ({
     cols = 80;
     rows = 24;
     buffer = { active: { cursorY: 20 } };
-    options: { fontSize?: number; minimumContrastRatio?: number; theme?: unknown };
-    constructor(options: { fontSize?: number; minimumContrastRatio?: number; theme?: unknown } = {}) {
+    options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; theme?: unknown };
+    constructor(options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; theme?: unknown } = {}) {
       this.options = { ...options };
       terminalHarness.options = this.options;
       terminalHarness.instances += 1;
@@ -77,6 +77,11 @@ describe("MobileTerminal input accessory", () => {
     });
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+  it("uses stock xterm input with screen reader mode disabled", () => {
+    render(<MobileTerminal showProbeOutput={false} />);
+    expect(terminalHarness.options?.screenReaderMode).toBe(false);
+  });
 
   it("exposes direct write and reset operations without React output state", () => {
     const ref = createRef<MobileTerminalHandle>();

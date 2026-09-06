@@ -10,7 +10,6 @@ import {
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { installTerminalInput } from "./terminalInput";
 import { MOBILE_TERMINAL_THEMES } from "./terminalThemes";
 import "./mobile-terminal.css";
 
@@ -143,7 +142,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       scrollback: 10_000,
       fontSize,
       minimumContrastRatio: 4.5,
-      screenReaderMode: true,
+      screenReaderMode: false,
       theme,
     });
     const fit = new FitAddon();
@@ -172,7 +171,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       terminal.write("\u001b[1;36mAgentPort transport spike\u001b[0m\r\n");
       terminal.write("Touch, select, type with IME, or use the special-key row.\r\n$ ");
     }
-    const disposeInput = installTerminalInput(terminal, container, data => inputHandlerRef.current(data));
+    const input = terminal.onData(data => inputHandlerRef.current(data));
     // Ordinary layout and visual-viewport changes (notably the soft keyboard)
     // fit only the local renderer. They must not steal PTY geometry ownership.
     const resize = new ResizeObserver(() => scheduleFit(false));
@@ -345,7 +344,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       workspace?.style.removeProperty("--terminal-viewport-top");
       if (workspace) delete workspace.dataset.keyboardVisible;
       resize.disconnect();
-      disposeInput();
+      input.dispose();
       terminal.dispose();
     };
   }, []); // The terminal is a long-lived renderer; callback refs carry changing handlers.

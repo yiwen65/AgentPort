@@ -58,8 +58,6 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   const [branchName, setBranchName] = useState<string>();
   const [restartRequested, setRestartRequested] = useState(false);
   const [locallyStopped, setLocallyStopped] = useState(false);
-  const [confirmRestart, setConfirmRestart] = useState(false);
-  const [restartRiskAck, setRestartRiskAck] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameTitle, setRenameTitle] = useState("");
   const actionBusy = useRef(false);
@@ -351,26 +349,19 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     if (resizeFrame.current !== undefined) window.cancelAnimationFrame(resizeFrame.current);
   }, []);
 
-  const action = async (name: "restart" | "pin" | "rename", value?: string, riskAck = false) => {
+  const action = async (name: "restart" | "pin" | "rename", value?: string) => {
     if (actionBusy.current) return;
-    if (name === "restart" && open.session.permissionMode !== "native" && !riskAck) {
-      setActionsOpen(false);
-      setRestartRiskAck(false);
-      setConfirmRestart(true);
-      return;
-    }
     actionBusy.current = true;
     setBusyAction(name);
     setError("");
     try {
       if (name === "restart") {
-        await client.request(open.hostProfileId, "session.restart", { sessionId: open.session.id, riskAck });
+        await client.request(open.hostProfileId, "session.restart", { sessionId: open.session.id, riskAck: true });
         cursor.current = undefined;
         terminal.current?.reset();
         setNotice("");
         setLocallyStopped(false);
         setRestartRequested(true);
-        setConfirmRestart(false);
         setActionsOpen(false);
         onSessionChanged({ ...open, session: { ...open.session, lifecycle: "running", hostAlive: true } });
         setAttachEpoch(current => current + 1);
@@ -462,7 +453,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       {otherClientInput || notice || error ? <div className="terminal-status-stack">
         {otherClientInput ? <div className="terminal-status-line ephemeral-notice" role="status">{t("session.otherClientTyping")}</div> : null}
         {notice ? <div className="terminal-status-line ephemeral-notice" role="status">{notice}</div> : null}
-        {error && !actionsOpen && !confirmRestart ? <div className="terminal-status-line inline-error" role="alert">{error}</div> : null}
+        {error && !actionsOpen ? <div className="terminal-status-line inline-error" role="alert">{error}</div> : null}
       </div> : null}
 
       {terminalGeometry?.sourceKind === "desktop" ? <button className="restore-phone-size-button" type="button" onClick={readaptForPhone} aria-label={t("session.restorePhoneSize")} title={t("session.restorePhoneSize")}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="7" y="2.5" width="10" height="19" rx="2" /><path d="M10.5 5h3M11 18.5h2" /></svg></button> : null}
@@ -497,8 +488,8 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
           <input autoFocus aria-label={t("session.renamePrompt")} value={renameTitle} maxLength={256} disabled={Boolean(busyAction)}
             onChange={event => setRenameTitle(event.target.value)}
             onKeyDown={event => { if (event.key === "Enter" && !event.nativeEvent.isComposing && renameTitle.trim()) { event.preventDefault(); void action("rename", renameTitle.trim()); } }} />
-          <button type="button" disabled={Boolean(busyAction) || !renameTitle.trim()} onClick={() => void action("rename", renameTitle.trim())}>{t("common.save")}</button>
-          <button type="button" disabled={Boolean(busyAction)} onClick={() => setRenaming(false)}>{t("common.cancel")}</button>
+          <button type="button" aria-label={t("common.save")} title={t("common.save")} disabled={Boolean(busyAction) || !renameTitle.trim()} onClick={() => void action("rename", renameTitle.trim())}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 4 4L19 6" /></svg></button>
+          <button type="button" aria-label={t("common.cancel")} title={t("common.cancel")} disabled={Boolean(busyAction)} onClick={() => setRenaming(false)}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5 4 10l5 5M4 10h10a5 5 0 0 1 0 10" /></svg></button>
         </span> : undefined}>
           {error ? <p role="alert" className="inline-error">{error}</p> : null}
           <p className="terminal-project-branch">{[open.projectName ?? open.session.projectId, branchName].filter(Boolean).join(" · ")}</p>
@@ -513,12 +504,6 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
           </div>
       </Modal> : null}
 
-      {confirmRestart ? <Modal title={t("session.restart")} onClose={() => setConfirmRestart(false)} blurBackdrop={false}>
-        <p>{t("session.permission")}: {open.session.permissionMode}</p>
-        <label className="check-row"><input type="checkbox" checked={restartRiskAck} onChange={event => setRestartRiskAck(event.target.checked)} />{t("session.riskAck")}</label>
-        {error ? <p role="alert" className="inline-error">{error}</p> : null}
-        <div className="modal-actions"><button type="button" onClick={() => setConfirmRestart(false)}>{t("common.cancel")}</button><button className="primary-button" type="button" disabled={!restartRiskAck || Boolean(busyAction)} onClick={() => void action("restart", undefined, restartRiskAck)}>{t("session.restart")}</button></div>
-      </Modal> : null}
       {confirmStop ? <div className="modal-backdrop"><section className="modal-sheet compact" role="dialog" aria-modal="true" aria-labelledby="stop-title"><h2 id="stop-title">{t("session.stopTitle")}</h2><p>{t("session.stopBody")}</p><div className="modal-actions"><button type="button" onClick={() => setConfirmStop(false)}>{t("common.cancel")}</button><button className="danger-button" type="button" disabled={busyAction === "stop"} onClick={() => void stop()}>{t("session.stop")}</button></div></section></div> : null}
     </article>
   );

@@ -102,7 +102,7 @@ describe("SessionWorkspace", () => {
     fireEvent.click(restart);
     expect(restart).toBeDisabled();
     expect(restart).toHaveAttribute("aria-busy", "true");
-    expect(request).toHaveBeenCalledWith("host-1", "session.restart", { sessionId: "ses-1", riskAck: false });
+    expect(request).toHaveBeenCalledWith("host-1", "session.restart", { sessionId: "ses-1", riskAck: true });
   });
 
   it("returns to the centered restart page after restarting then stopping without stale parent props", async () => {
@@ -122,17 +122,12 @@ describe("SessionWorkspace", () => {
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
   });
 
-  it("requests explicit permission acknowledgment before restarting a bypass session", async () => {
+  it("restarts a bypass session directly without a second permission dialog", async () => {
     const { client, request } = setupClient();
     render(<SessionWorkspace open={{ ...open, session: { ...open.session, lifecycle: "stopped", permissionMode: "bypass" } }} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "Restart" }));
-    const dialog = await screen.findByRole("dialog");
-    expect(request.mock.calls.some(([, m]) => m === "session.restart")).toBe(false);
-    const restart = within(dialog).getByRole("button", { name: "Restart" });
-    expect(restart).toBeDisabled();
-    fireEvent.click(within(dialog).getByRole("checkbox"));
-    fireEvent.click(restart);
     await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.restart", { sessionId: "ses-1", riskAck: true }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("edits the action-sheet title inline and never calls a native browser prompt", async () => {
@@ -148,6 +143,8 @@ describe("SessionWorkspace", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Rename" }));
     const input = within(dialog).getByRole("textbox", { name: "New session name" });
     expect(input.closest(".centered-modal-header")).not.toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Save" }).textContent).toBe("");
+    expect(within(dialog).getByRole("button", { name: "Cancel" }).textContent).toBe("");
     fireEvent.change(input, { target: { value: "Renamed task" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.rename", { sessionId: "ses-1", title: "Renamed task" }));
