@@ -125,6 +125,17 @@ try {
   await evaluate(`new Promise(r => term.write('\\x1b[?1049h\\x1b[?1000h\\x1b[?1006h', r))`);
   await touch('touchStart', 100, 300); await touch('touchMove', 100, 350); await touch('touchEnd');
   assert.ok((await evaluate('input.join("")')).includes('\x1b[<64;'), 'Mouse-reporting wheel route lost');
+  assert.ok(!(await evaluate('input.join("")')).includes('\x1b[<0;'), 'Swipe must not click a tool');
+  await evaluate('input=[]');
+  await touch('touchStart', 100, 300); await touch('touchEnd'); await wait(250);
+  const clicks = await evaluate('input');
+  assert.equal(clicks.length, 2, 'A tool tap must send exactly one press and release');
+  assert.match(clicks[0], /^\x1b\[<0;\d+;\d+M$/);
+  assert.equal(clicks[1], clicks[0].slice(0, -1) + 'm');
+  assert.equal(await evaluate('document.activeElement === term.textarea'), false, 'Log tap opened keyboard focus');
+  await evaluate('input=[]');
+  await touch('touchStart', 100, 300); await wait(650); await touch('touchEnd'); await wait(100);
+  assert.deepEqual(await evaluate('input'), [], 'Long-press selection must not click a tool');
   await evaluate(`new Promise(r => term.write('\\x1b[?1000l\\x1b[?1006l\\x1b[?1049l', r))`);
   await evaluate(`window.input=[];window.pasteReads=0;Object.defineProperty(navigator, 'clipboard', { configurable:true, value:{readText:async()=>{window.pasteReads++;return 'paste 中文'}} });term.focus()`);
   await wait(150);

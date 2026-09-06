@@ -336,7 +336,9 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       const helper = container.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
       if (helper && document.activeElement === helper) helper.blur();
     };
+    const forwardedMouseEvents = new WeakSet<Event>();
     const guardCompatibilityMouse = (event: MouseEvent) => {
+      if (forwardedMouseEvents.has(event)) return;
       if (performance.now() >= compatibilityMouseUntil || gestureStartedInInput !== false) return;
       if (!(event.target instanceof Node) || !container.contains(event.target)) return;
       // xterm's mousedown handler focuses its textarea unconditionally. Stop
@@ -383,6 +385,38 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     const finishTouch = (event: TouchEvent) => {
       cancelLongPress();
       if (!touchGesture) return;
+      // Forward completed taps through xterm's own mouse protocol encoder. Do
+      // not forward drags/long presses or cancelled touches as application clicks.
+      if (event.type === "touchend" && !touchGesture.moved && !touchGesture.selection
+        && terminal.modes.mouseTrackingMode !== "none") {
+        const touch = event.changedTouches[0];
+        const screen = container.querySelector(".xterm-screen");
+        const helper = terminal.textarea;
+        if (touch && screen && helper) {
+          event.preventDefault();
+          event.stopPropagation();
+          compatibilityMouseUntil = performance.now() + 1000;
+          const reading = gestureStartedInInput === false;
+          const wasInert = helper.hasAttribute("inert");
+          // xterm unconditionally focuses its textarea on mousedown. Inert only
+          // that helper during synchronous forwarding to keep log taps from
+          // opening the software keyboard; never disable the terminal itself.
+          if (reading) { helper.blur(); helper.setAttribute("inert", ""); }
+          try {
+            for (const type of ["mousedown", "mouseup"]) {
+              const mouse = new MouseEvent(type, {
+                clientX: touch.clientX, clientY: touch.clientY,
+                button: 0, buttons: type === "mousedown" ? 1 : 0,
+                bubbles: true, cancelable: true,
+              });
+              forwardedMouseEvents.add(mouse);
+              screen.dispatchEvent(mouse);
+            }
+          } finally {
+            if (reading && !wasInert) helper.removeAttribute("inert");
+          }
+        }
+      }
       if (touchGesture.moved || gestureStartedInInput === false) {
         event.preventDefault();
         gestureStartedInInput = false;
