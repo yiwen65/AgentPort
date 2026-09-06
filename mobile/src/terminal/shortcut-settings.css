@@ -1,0 +1,27 @@
+.shortcut-settings { display: flex; flex-direction: column; max-height: min(100%, 82dvh, 760px); overflow: hidden; }
+.shortcut-settings > .centered-modal-header { flex: 0 0 auto; }
+.shortcut-settings-content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.shortcut-settings-hint, .shortcut-editor small { color: var(--muted); font-size: 14px; line-height: 1.4; }
+.shortcut-settings-hint { margin: 0 0 12px; }
+.shortcut-settings-list { list-style: none; padding: 0; margin: 0 0 12px; }
+.shortcut-settings-list li { display: grid; grid-template-columns: minmax(0, 1fr) 44px 44px; align-items: center; gap: 4px; border-bottom: 1px solid var(--line-soft); padding: 4px 0; }
+.shortcut-settings-list li[data-custom="true"] { grid-template-columns: repeat(4, minmax(44px, 1fr)); }
+.shortcut-settings-list li[data-custom="true"] .shortcut-visibility { grid-column: 1 / -1; }
+.shortcut-visibility { display: flex; align-items: center; gap: 8px; min-height: 44px; min-width: 0; }
+.shortcut-visibility input, .shortcut-modifiers input { width: 22px; min-height: 22px; flex: 0 0 22px; margin: 0; accent-color: var(--accent); }
+.shortcut-preview { display: grid; place-items: center; min-width: 24px; font-size: 22px; }
+.shortcut-preview svg { width: 22px; height: 22px; }
+.shortcut-setting-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
+.shortcut-settings-list button { display: grid; place-items: center; min-height: 44px; min-width: 44px; padding: 9px; border: 0; border-radius: 10px; background: transparent; font-size: 22px; }
+.shortcut-settings-list button svg { width: 20px; height: 20px; }
+.shortcut-settings-list button:active { background: var(--fill); }
+.shortcut-settings button:disabled { opacity: .35; }
+.shortcut-add, .shortcut-editor-actions button, .shortcut-settings-actions button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--fill); font-size: 15px; }
+.shortcut-editor { display: grid; gap: 12px; padding: 12px 0; }
+.shortcut-editor > label { display: grid; gap: 6px; font-size: 15px; }
+.shortcut-editor input, .shortcut-editor select, .shortcut-editor textarea { min-width: 0; }
+.shortcut-modifiers { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px; margin: 0; border: 1px solid var(--line); border-radius: 12px; }
+.shortcut-modifiers label { display: flex; align-items: center; gap: 6px; min-height: 44px; }
+.shortcut-editor-actions, .shortcut-settings-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.shortcut-settings-actions { flex: 0 0 auto; padding-top: 12px; border-top: 1px solid var(--line-soft); margin-top: 12px; }
+.shortcut-settings-actions .primary-button { background: var(--accent); color: var(--primary-fg); }

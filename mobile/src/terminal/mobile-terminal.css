@@ -39,9 +39,8 @@
   display: flex;
   min-height: 56px;
   align-items: center;
-  justify-content: space-between;
-  gap: 4px;
-  overflow-x: auto;
+  gap: 8px;
+  overflow: hidden;
   padding: 5px 10px;
   border: 1px solid var(--line);
   border-radius: 28px;
@@ -51,7 +50,21 @@
   scrollbar-width: none;
 }
 .mobile-terminal-keys[hidden] { display: none; }
-.mobile-terminal-keys::-webkit-scrollbar { display: none; }
+.mobile-terminal-key-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
+}
+.mobile-terminal-key-scroll::-webkit-scrollbar { display: none; }
+.mobile-terminal-shortcut-settings { flex: 0 0 44px; }
+.mobile-terminal-keys .shortcut-custom-label { font-size: 13px; font-weight: 600; max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-terminal-keys button:has(.shortcut-custom-label) { width: auto; min-width: 44px; max-width: 88px; padding-inline: 8px; }
 
 .mobile-terminal-keys button {
   flex: 0 0 auto;

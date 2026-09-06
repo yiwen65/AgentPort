@@ -7,11 +7,15 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
+import { useTranslation } from "react-i18next";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { installIosImeRouting, isIosKeyboard } from "./iosIme";
 import { selectionMenuPosition } from "./selectionMenu";
+import { ShortcutIcon, SHORTCUT_NAMES, ShortcutSettingsIcon } from "./ShortcutIcon";
+import { ShortcutSettings } from "./ShortcutSettings";
+import { applyShortcutModifiers, encodeShortcutKey, isCustomShortcut, loadShortcuts, saveShortcuts, type ShortcutLayout } from "./shortcuts";
 import { MOBILE_TERMINAL_THEMES } from "./terminalThemes";
 import "./mobile-terminal.css";
 
@@ -35,10 +39,6 @@ export interface MobileTerminalHandle {
   reset(): void;
 }
 
-function PasteIcon() {
-  return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="7" y="5" width="12" height="16" rx="2" /><path d="M9 5V3h6v4H9zM5 17H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1" /></svg>;
-}
-
 export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalProps>(function MobileTerminal({
   onInput,
   onResize,
@@ -51,6 +51,9 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   showProbeOutput = true,
   obscured = false,
 }: MobileTerminalProps, ref) {
+  const { t } = useTranslation();
+  const [shortcutLayout, setShortcutLayout] = useState(loadShortcuts);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const sectionRef = useRef<HTMLElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const selectionMenuRef = useRef<HTMLDivElement>(null);
@@ -67,14 +70,15 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const scheduleFitRef = useRef<(reportRemote?: boolean) => void>(() => undefined);
   const inputHandlerRef = useRef<(data: string) => void>(() => undefined);
   const shiftRef = useRef(false);
+  const controlRef = useRef(false);
   const commandRef = useRef(false);
-  const lastTouchShortcutAt = useRef(0);
   const shortcutActionsRef = useRef<Record<string, () => void>>({});
   const [hasSelection, setHasSelection] = useState(false);
   const [pasteFailed, setPasteFailed] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
   const [inputActive, setInputActive] = useState(false);
   const [shiftActive, setShiftActive] = useState(false);
+  const [controlActive, setControlActive] = useState(false);
   const [commandActive, setCommandActive] = useState(false);
   inputRef.current = onInput;
   resizeRef.current = onResize;
@@ -97,6 +101,11 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     setShiftActive(active);
   };
 
+  const setControl = (active: boolean) => {
+    controlRef.current = active;
+    setControlActive(active);
+  };
+
   const setCommand = (active: boolean) => {
     commandRef.current = active;
     setCommandActive(active);
@@ -104,6 +113,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
 
   const clearModifiers = () => {
     setShift(false);
+    setControl(false);
     setCommand(false);
   };
 
@@ -131,19 +141,16 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
 
   inputHandlerRef.current = (data: string) => {
     if (commandRef.current) {
-      setCommand(false);
+      clearModifiers();
       const command = data.toLocaleLowerCase();
       if (command === "v") paste();
       else if (command === "c") copySelection();
       else if (command === "a") terminalRef.current?.selectAll();
       return;
     }
-    let next = data;
-    if (shiftRef.current) {
-      setShift(false);
-      if (data === "\t") next = "\u001b[Z";
-      else if (data.length === 1) next = data.toLocaleUpperCase();
-    }
+    const next = applyShortcutModifiers(data, { ctrl: controlRef.current, shift: shiftRef.current });
+    if (shiftRef.current) setShift(false);
+    if (controlRef.current) setControl(false);
     writeInput(next);
   };
 
@@ -392,22 +399,6 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     document.addEventListener("pointerdown", recordPointerGesture, true);
     document.addEventListener("touchstart", recordTouchGesture, { capture: true, passive: true });
     document.addEventListener("click", dismissTerminalInput, true);
-    const touchShortcut = (event: TouchEvent) => {
-      const target = event.target instanceof Element
-        ? event.target.closest<HTMLButtonElement>("button[data-terminal-shortcut]")
-        : null;
-      if (!target || !keys?.contains(target)) return;
-      // Clipboard access needs WebKit's completed click activation. Unlike the
-      // immediate special keys, Paste keeps the browser's native tap lifecycle.
-      if (target.dataset.terminalShortcut === "paste") return;
-      // React intentionally delegates touchstart as a passive event in WebKit,
-      // where preventDefault cannot preserve xterm focus. This native listener
-      // is explicitly non-passive so the software keyboard remains connected.
-      event.preventDefault();
-      lastTouchShortcutAt.current = performance.now();
-      shortcutActionsRef.current[target.dataset.terminalShortcut ?? ""]?.();
-    };
-    keys?.addEventListener("touchstart", touchShortcut, { passive: false });
     const orientationChanged = () => {
       window.clearTimeout(orientationTimerRef.current);
       // Orientation events can arrive before safe-area and visual viewport
@@ -440,7 +431,6 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       document.removeEventListener("pointerdown", recordPointerGesture, true);
       document.removeEventListener("touchstart", recordTouchGesture, true);
       document.removeEventListener("click", dismissTerminalInput, true);
-      keys?.removeEventListener("touchstart", touchShortcut);
       workspace?.style.removeProperty("--terminal-viewport-height");
       workspace?.style.removeProperty("--terminal-viewport-top");
       if (workspace) delete workspace.dataset.keyboardVisible;
@@ -495,29 +485,44 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     inputHandlerRef.current(data);
   };
 
+  const sendCursorKey = (key: string) => send(encodeShortcutKey(key, {}, terminalRef.current?.modes.applicationCursorKeysMode ?? false));
   shortcutActionsRef.current = {
     paste,
     escape: () => send("\u001b"),
     tab: () => send("\t"),
-    shift: () => { terminalRef.current?.focus(); setShift(!shiftRef.current); },
+    control: () => { terminalRef.current?.focus(); setCommand(false); setControl(!controlRef.current); },
+    shift: () => { terminalRef.current?.focus(); setCommand(false); setShift(!shiftRef.current); },
     slash: () => send("/"),
     at: () => send("@"),
-    command: () => { terminalRef.current?.focus(); setCommand(!commandRef.current); },
+    up: () => sendCursorKey("ArrowUp"),
+    down: () => sendCursorKey("ArrowDown"),
+    left: () => sendCursorKey("ArrowLeft"),
+    right: () => sendCursorKey("ArrowRight"),
+    command: () => { terminalRef.current?.focus(); setControl(false); setShift(false); setCommand(!commandRef.current); },
+  };
+  for (const item of shortcutLayout.items) {
+    if (!isCustomShortcut(item)) continue;
+    shortcutActionsRef.current[item.id] = () => {
+      clearModifiers();
+      terminalRef.current?.focus();
+      writeInput(item.action.type === "text" ? item.action.text
+        : encodeShortcutKey(item.action.key, item.action, terminalRef.current?.modes.applicationCursorKeysMode ?? false));
+    };
+  }
+  const saveShortcutLayout = (next: ShortcutLayout) => {
+    saveShortcuts(next);
+    setShortcutLayout(next);
+    clearModifiers();
   };
 
   const shortcutHandlers = (shortcut: string, action: () => void) => ({
     "data-terminal-shortcut": shortcut,
     onMouseDown: (event: ReactMouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
-      // Some WebKit versions still emit a compatibility mouse event after a
-      // cancelled touch. Do not send the shortcut a second time.
-      if (performance.now() - lastTouchShortcutAt.current < 750) return;
-      action();
     },
-    // Keyboard and assistive activations do not have a preceding pointer event.
-    onClick: (event: ReactMouseEvent<HTMLButtonElement>) => {
-      if (event.detail === 0) action();
-    },
+    // A native click distinguishes a tap from a horizontal swipe, and carries
+    // WebKit clipboard activation. Never send a key merely on touchstart.
+    onClick: action,
   });
 
   return (
@@ -531,14 +536,16 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       </div> : null}
       {pasteFailed && inputActive && !obscured ? <p className="mobile-terminal-paste-error" role="alert">Unable to paste. Check clipboard access and try again.</p> : null}
       <div ref={keysRef} className="mobile-terminal-keys" data-horizontal-scroll aria-label="Terminal special keys" hidden={!inputActive}>
-        <button type="button" aria-label="Paste" data-terminal-shortcut="paste" onMouseDown={event => event.preventDefault()} onClick={paste}><PasteIcon /></button>
-        <button type="button" aria-label="Escape" {...shortcutHandlers("escape", shortcutActionsRef.current.escape)}><span aria-hidden="true">⎋</span></button>
-        <button type="button" aria-label="Tab" {...shortcutHandlers("tab", shortcutActionsRef.current.tab)}><span aria-hidden="true">⇥</span></button>
-        <button className={shiftActive ? "is-active" : ""} type="button" aria-label="Shift" aria-pressed={shiftActive} {...shortcutHandlers("shift", shortcutActionsRef.current.shift)}><span aria-hidden="true">⇧</span></button>
-        <button type="button" aria-label="Slash" {...shortcutHandlers("slash", shortcutActionsRef.current.slash)}><span aria-hidden="true">/</span></button>
-        <button type="button" aria-label="At sign" {...shortcutHandlers("at", shortcutActionsRef.current.at)}><span aria-hidden="true">@</span></button>
-        <button className={commandActive ? "is-active" : ""} type="button" aria-label="Command" aria-pressed={commandActive} {...shortcutHandlers("command", shortcutActionsRef.current.command)}><span aria-hidden="true">⌘</span></button>
+        <div className="mobile-terminal-key-scroll" data-horizontal-scroll>
+          {shortcutLayout.items.filter(item => item.visible).map(item => {
+            const pressed = item.id === "control" ? controlActive : item.id === "shift" ? shiftActive : item.id === "command" ? commandActive : undefined;
+            const label = isCustomShortcut(item) ? item.label : t(`shortcuts.names.${item.id}`, { defaultValue: SHORTCUT_NAMES[item.id] });
+            return <button key={item.id} className={pressed ? "is-active" : ""} type="button" aria-label={label} title={label} aria-pressed={pressed} {...shortcutHandlers(item.id, shortcutActionsRef.current[item.id])}><ShortcutIcon item={item} /></button>;
+          })}
+        </div>
+        <button className="mobile-terminal-shortcut-settings" type="button" aria-label={t("shortcuts.title", { defaultValue: "Terminal shortcuts" })} aria-haspopup="dialog" onMouseDown={event => event.preventDefault()} onClick={() => { clearModifiers(); setShortcutsOpen(true); }}><ShortcutSettingsIcon /></button>
       </div>
+      {shortcutsOpen ? <ShortcutSettings layout={shortcutLayout} onSave={saveShortcutLayout} onClose={() => setShortcutsOpen(false)} /> : null}
     </section>
   );
 });

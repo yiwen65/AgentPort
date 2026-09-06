@@ -21,11 +21,12 @@ try {
       import {Terminal} from '@xterm/xterm';
       import {MobileTerminal} from './src/terminal/MobileTerminal';
       import './src/app/styles.css';
+      import './src/i18n';
       const open = Terminal.prototype.open;
       Terminal.prototype.open = function(...args) { window.term = this; return open.apply(this, args); };
       window.input = [];
-      createRoot(document.getElementById('root')).render(<article className="session-workspace"><MobileTerminal
-        showHeading={false} showProbeOutput={false} onInput={data => window.input.push(data)} /></article>);
+      createRoot(document.getElementById('root')).render(<div className="app-shell"><article className="session-workspace"><MobileTerminal
+        showHeading={false} showProbeOutput={false} onInput={data => window.input.push(data)} /></article></div>);
       window.ready = async () => {
         while (!window.term) await new Promise(r => setTimeout(r, 20));
         await new Promise(r => term.write(Array.from({length: 200}, (_, i) => 'log '+i+' hello 中文').join('\\r\\n'), r));
@@ -127,6 +128,8 @@ try {
   await evaluate(`new Promise(r => term.write('\\x1b[?1000l\\x1b[?1006l\\x1b[?1049l', r))`);
   await evaluate(`window.input=[];window.pasteReads=0;Object.defineProperty(navigator, 'clipboard', { configurable:true, value:{readText:async()=>{window.pasteReads++;return 'paste 中文'}} });term.focus()`);
   await wait(150);
+  await evaluate(`document.querySelector('[data-terminal-shortcut="paste"]').scrollIntoView({block:'nearest',inline:'center'})`);
+  await wait(80);
   const pasteRect = await evaluate(`document.querySelector('[data-terminal-shortcut="paste"]').getBoundingClientRect().toJSON()`);
   await touch('touchStart', pasteRect.x + pasteRect.width / 2, pasteRect.y + pasteRect.height / 2);
   assert.equal(await evaluate('pasteReads'), 0, 'Clipboard read before completed user click');
@@ -134,7 +137,36 @@ try {
   assert.equal(await evaluate('pasteReads'), 1);
   assert.deepEqual(await evaluate('input'), ['paste 中文']);
   assert.equal(await evaluate('document.activeElement === term.textarea'), true, 'Paste dismissed keyboard focus');
-  console.log(JSON.stringify({ scroll: { before, after }, selection, copied: true, mouseReporting: true, pastedOnce: true }));
+  await evaluate(`input=[];document.querySelector('.mobile-terminal-key-scroll').scrollLeft=0`);
+  await wait(100);
+  const bar = await evaluate(`document.querySelector('.mobile-terminal-key-scroll').getBoundingClientRect().toJSON()`);
+  const gearBefore = await evaluate(`document.querySelector('.mobile-terminal-shortcut-settings').getBoundingClientRect().toJSON()`);
+  const y = bar.y + bar.height / 2;
+  await touch('touchStart', bar.right - 30, y);
+  for (let x = bar.right - 50; x > bar.left + 20; x -= 20) { await touch('touchMove', x, y); await wait(20); }
+  await touch('touchEnd'); await wait(150);
+  assert.ok(await evaluate(`document.querySelector('.mobile-terminal-key-scroll').scrollLeft > 80`), 'Shortcut strip did not scroll');
+  assert.deepEqual(await evaluate('input'), [], 'Swiping shortcut keys sent input');
+  assert.equal(await evaluate(`document.querySelector('[data-terminal-shortcut="control"]').getAttribute('aria-pressed')`), 'false');
+  assert.deepEqual(await evaluate(`document.querySelector('.mobile-terminal-shortcut-settings').getBoundingClientRect().toJSON()`), gearBefore, 'Settings gear scrolled out of reach');
+  const tapKey = async id => {
+    await evaluate(`document.querySelector('[data-terminal-shortcut="${id}"]').scrollIntoView({block:'nearest',inline:'center'})`);
+    await wait(80);
+    const rect = await evaluate(`document.querySelector('[data-terminal-shortcut="${id}"]').getBoundingClientRect().toJSON()`);
+    await touch('touchStart', rect.x + rect.width / 2, rect.y + rect.height / 2);
+    await touch('touchEnd'); await wait(80);
+  };
+  await evaluate(`new Promise(r => term.write('\\x1b[?1h', r))`);
+  await tapKey('up'); await tapKey('control'); await tapKey('shift'); await tapKey('left');
+  assert.deepEqual(await evaluate('input'), ['\x1bOA', '\x1b[1;6D']);
+  await evaluate('input=[]');
+  await touch('touchStart', gearBefore.x + gearBefore.width / 2, gearBefore.y + gearBefore.height / 2);
+  await touch('touchEnd'); await wait(300);
+  assert.equal(await evaluate(`Boolean(document.querySelector('[role="dialog"]'))`), true);
+  assert.deepEqual(await evaluate('input'), [], 'Opening settings sent input');
+  await evaluate(`document.querySelector('[role="dialog"] .modal-close-button').click()`); await wait(300);
+  assert.equal(await evaluate(`Boolean(document.querySelector('[role="dialog"]'))`), false);
+  console.log(JSON.stringify({ scroll: { before, after }, selection, copied: true, mouseReporting: true, pastedOnce: true, shortcutSwipe: true, modifiers: true, settings: true }));
 } finally {
   ws?.close();
   if (chrome?.pid && chrome.exitCode === null) {

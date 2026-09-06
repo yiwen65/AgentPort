@@ -3,6 +3,8 @@ import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MobileTerminal, type MobileTerminalHandle } from "./MobileTerminal";
 import { MOBILE_TERMINAL_THEMES } from "./terminalThemes";
+import { defaultShortcuts, loadShortcuts, saveShortcuts } from "./shortcuts";
+import "../i18n";
 
 const terminalHarness = vi.hoisted(() => ({
   helper: undefined as HTMLTextAreaElement | undefined,
@@ -12,6 +14,8 @@ const terminalHarness = vi.hoisted(() => ({
   selects: [] as number[][],
   clears: 0,
   selectionChanged: () => {},
+  input: (_data: string) => {},
+  applicationCursor: false,
   fitCalls: 0,
   writes: [] as (string | Uint8Array)[],
   resets: 0,
@@ -27,6 +31,7 @@ vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
     rows = 24;
+    get modes() { return { applicationCursorKeysMode: terminalHarness.applicationCursor }; }
     buffer = { active: { cursorY: 20, viewportY: 0, baseY: 0, getLine: () => ({ getCell: () => ({ getChars: () => "a", getWidth: () => 1 }) }) } };
     options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; theme?: unknown };
     constructor(options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; theme?: unknown } = {}) {
@@ -49,7 +54,7 @@ vi.mock("@xterm/xterm", () => ({
     }
     onScroll() { return { dispose() {} }; }
     getSelectionPosition() { return { start: { x: 0, y: 4 }, end: { x: 10, y: 4 } }; }
-    onData() { return { dispose() { /* deterministic no-op */ } }; }
+    onData(handler: (data: string) => void) { terminalHarness.input = handler; return { dispose() { /* deterministic no-op */ } }; }
     focus() { terminalHarness.helper?.focus(); }
     write(data: string | Uint8Array, callback?: () => void) {
       if (data) terminalHarness.writes.push(data);
@@ -67,6 +72,9 @@ vi.mock("@xterm/xterm", () => ({
 
 describe("MobileTerminal input accessory", () => {
   beforeEach(() => {
+    localStorage.clear();
+    terminalHarness.applicationCursor = false;
+    terminalHarness.input = () => {};
     terminalHarness.selection = "selected output";
     terminalHarness.selectionChanged = () => {};
     terminalHarness.selects = [];
@@ -168,7 +176,7 @@ describe("MobileTerminal input accessory", () => {
     terminalHarness.helper!.focus();
     await waitFor(() => expect(toolbar).toBeVisible());
     expect(within(toolbar).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
-      "Paste", "Escape", "Tab", "Shift", "Slash", "At sign", "Command",
+      "Slash", "Control", "Tab", "At sign", "Escape", "Up arrow", "Down arrow", "Left arrow", "Right arrow", "Paste", "Shift", "Command", "Terminal shortcuts",
     ]);
 
     fireEvent.click(within(toolbar).getByRole("button", { name: "Shift" }));
@@ -181,7 +189,7 @@ describe("MobileTerminal input accessory", () => {
     await waitFor(() => expect(toolbar).not.toBeVisible());
   });
 
-  it("dispatches a touch shortcut before WebKit can drop terminal focus", async () => {
+  it("waits for a completed tap so horizontal shortcut swipes do not send input", async () => {
     const onInput = vi.fn();
     render(<MobileTerminal onInput={onInput} showHeading={false} />);
     const toolbar = screen.getByLabelText("Terminal special keys");
@@ -189,13 +197,13 @@ describe("MobileTerminal input accessory", () => {
     await waitFor(() => expect(toolbar).toBeVisible());
 
     const slash = within(toolbar).getByRole("button", { name: "Slash" });
-    expect(fireEvent.touchStart(slash)).toBe(false);
-    expect(onInput).toHaveBeenCalledTimes(1);
-    expect(onInput).toHaveBeenLastCalledWith("/");
-    expect(document.activeElement).toBe(terminalHarness.helper);
-
+    expect(fireEvent.touchStart(slash)).toBe(true);
+    expect(onInput).not.toHaveBeenCalled();
+    fireEvent.mouseDown(slash);
+    expect(onInput).not.toHaveBeenCalled();
     fireEvent.click(slash, { detail: 1 });
-    expect(onInput).toHaveBeenCalledTimes(1);
+    expect(onInput).toHaveBeenCalledExactlyOnceWith("/");
+    expect(document.activeElement).toBe(terminalHarness.helper);
   });
 
   it("reads the clipboard on the completed click, not before WebKit grants user activation", async () => {
@@ -373,6 +381,63 @@ describe("MobileTerminal input accessory", () => {
       start(); unmount(); vi.advanceTimersByTime(550);
       expect(terminalHarness.selects).toEqual([]);
     } finally { vi.useRealTimers(); }
+  });
+
+  it("uses one-shot Control/Shift and live application-cursor mode without duplicate input", async () => {
+    const onInput = vi.fn();
+    render(<MobileTerminal onInput={onInput} showProbeOutput={false} />);
+    terminalHarness.helper!.focus();
+    const ctrl = await screen.findByRole("button", { name: "Control" });
+    fireEvent.click(ctrl);
+    expect(ctrl).toHaveAttribute("aria-pressed", "true");
+    act(() => terminalHarness.input("c"));
+    expect(onInput).toHaveBeenLastCalledWith("\u0003");
+    expect(ctrl).toHaveAttribute("aria-pressed", "false");
+    act(() => terminalHarness.input("c"));
+    expect(onInput).toHaveBeenLastCalledWith("c");
+    terminalHarness.applicationCursor = true;
+    fireEvent.click(screen.getByRole("button", { name: "Up arrow" }));
+    expect(onInput).toHaveBeenLastCalledWith("\u001bOA");
+    fireEvent.click(ctrl);
+    fireEvent.click(screen.getByRole("button", { name: "Shift" }));
+    fireEvent.click(screen.getByRole("button", { name: "Left arrow" }));
+    expect(onInput).toHaveBeenLastCalledWith("\u001b[1;6D");
+    expect(onInput).toHaveBeenCalledTimes(4);
+  });
+
+  it("loads custom text and combinations and sends their exact payload only when clicked", async () => {
+    const layout = defaultShortcuts();
+    layout.items.push({ id: "custom_text", visible: true, label: "Greeting", action: { type: "text", text: "hello 中文\n" } });
+    layout.items.push({ id: "custom_key", visible: true, label: "Interrupt", action: { type: "key", key: "c", ctrl: true } });
+    saveShortcuts(layout);
+    const onInput = vi.fn();
+    render(<MobileTerminal onInput={onInput} showProbeOutput={false} />);
+    terminalHarness.helper!.focus();
+    const text = await screen.findByRole("button", { name: "Greeting" });
+    expect(onInput).not.toHaveBeenCalled();
+    fireEvent.click(text);
+    fireEvent.click(screen.getByRole("button", { name: "Interrupt" }));
+    expect(onInput.mock.calls).toEqual([["hello 中文\n"], ["\u0003"]]);
+  });
+
+  it("saves layout from the gear without sending input and retains it after remount", async () => {
+    const onInput = vi.fn();
+    const view = render(<MobileTerminal onInput={onInput} showProbeOutput={false} />);
+    terminalHarness.helper!.focus();
+    fireEvent.click(await screen.findByRole("button", { name: "Terminal shortcuts" }));
+    const dialog = await screen.findByRole("dialog", { name: "Terminal shortcuts" });
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "Show Slash" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(loadShortcuts().items[0].visible).toBe(false);
+    expect(onInput).not.toHaveBeenCalled();
+    expect(terminalHarness.instances).toBe(1);
+    view.unmount();
+    render(<MobileTerminal onInput={onInput} showProbeOutput={false} />);
+    terminalHarness.helper!.focus();
+    await screen.findByRole("button", { name: "Terminal shortcuts" });
+    expect(screen.queryByRole("button", { name: "Slash" })).toBeNull();
+    expect(onInput).not.toHaveBeenCalled();
   });
 
   it("uses the keyboard viewport and refits after the shortcut row enters layout", async () => {

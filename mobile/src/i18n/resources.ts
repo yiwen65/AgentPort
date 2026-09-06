@@ -1,6 +1,12 @@
 export const resources = {
   "zh-CN": {
     translation: {
+      shortcuts: {
+        title: "终端快捷键", hint: "选择显示的按键并调整顺序。设置不会向终端发送内容。", show: "显示 {{name}}", earlier: "前移 {{name}}", later: "后移 {{name}}",
+        edit: "编辑 {{name}}", remove: "删除 {{name}}", add: "添加快捷键", update: "更新快捷键", label: "名称", kind: "类型", text: "文本", combination: "组合键", content: "发送文本", key: "按键", character: "字符", modifiers: "修饰键",
+        textHint: "按原样发送，不自动添加回车。最多 4096 字符。", labelHint: "最多 16 字符。", cancelEdit: "取消编辑", save: "保存", cancel: "取消", reset: "恢复默认", saveError: "无法保存快捷键。请检查存储空间后重试。", invalid: "请填写有效名称及文本或按键。", limit: "最多添加 24 个自定义快捷键。", empty: "所有快捷键均已隐藏，可通过齿轮恢复。",
+        names: { slash: "斜杠", control: "Control", tab: "Tab", at: "At 符号", escape: "Escape", up: "上方向键", down: "下方向键", left: "左方向键", right: "右方向键", paste: "粘贴", shift: "Shift", command: "Command" }
+      },
       pairing: {
         "title": "与电脑配对",
         "instructions": "在电脑 AgentPort → 设置 → 手机配对中生成二维码，再扫描。",
@@ -162,6 +168,12 @@ export const resources = {
   },
   "en-US": {
     translation: {
+      shortcuts: {
+        title: "Terminal shortcuts", hint: "Choose visible keys and their order. Editing settings never sends terminal input.", show: "Show {{name}}", earlier: "Move {{name}} earlier", later: "Move {{name}} later",
+        edit: "Edit {{name}}", remove: "Delete {{name}}", add: "Add shortcut", update: "Update shortcut", label: "Name", kind: "Type", text: "Text", combination: "Key combination", content: "Text to send", key: "Key", character: "Character", modifiers: "Modifiers",
+        textHint: "Send exactly as entered, without adding Return. Up to 4096 characters.", labelHint: "Up to 16 characters.", cancelEdit: "Cancel edit", save: "Save", cancel: "Cancel", reset: "Restore defaults", saveError: "Unable to save shortcuts. Check available storage and try again.", invalid: "Enter a valid name and text or key.", limit: "Up to 24 custom shortcuts.", empty: "All shortcuts are hidden. Use settings to restore them.",
+        names: { slash: "Slash", control: "Control", tab: "Tab", at: "At sign", escape: "Escape", up: "Up arrow", down: "Down arrow", left: "Left arrow", right: "Right arrow", paste: "Paste", shift: "Shift", command: "Command" }
+      },
       pairing: {
         "title": "Pair with a computer",
         "instructions": "On the computer, open AgentPort → Settings → Phone Pairing and generate a code.",
