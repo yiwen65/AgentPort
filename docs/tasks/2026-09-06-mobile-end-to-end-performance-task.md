@@ -3,7 +3,7 @@
 - Created: 2026-09-06
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: in_progress
+- Overall status: done
 - Source: 用户确认“以当前 iOS 为主，全面实测并执行 Mobile 性能优化”。
 
 <!-- task-doc-section:background-goal -->
@@ -132,9 +132,9 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-005 — 综合复测和调试交付
+### [x] T-005 — 综合复测和调试交付
 
-- Status: in_progress
+- Status: done
 - Owner: coordinator
 - Objective: 综合复测和调试交付，保持已确认性能契约。
 - Inputs and prerequisites: T-001 至 T-004 完成
@@ -148,7 +148,7 @@
   - 结果可追溯且符合总体验收，无法测量部分不宣称完成。
 - Verification method:
   - 受控重复测量、针对性测试、按风险必要的构建与集成验证。
-- Validation evidence: Not run.
+- Validation evidence: Mobile 全套 148 tests passed（all-tests.log）；native Mobile 27 tests passed（native-tests.log）；前端、iOS simulator 与签名 desktop debug 构建通过（final-frontend-build.log、ios-build.log、macos-build.log），日志均在 /tmp/ap-mobile-perf/。已安装并启动更新后的 com.agentport.mobile；ps 确认 PID 85537 的可执行路径为 /Users/w/Projects/AgentSessions/target/debug/bundle/macos/AgentPort.app/Contents/MacOS/agentport。已读取 Mobile 与桌面截图，终端、工具栏/侧边栏正常渲染，非白屏。WebKit 复测与边界见下文。
 - Blocker: None.
 - Unblock condition: None.
 
@@ -175,9 +175,20 @@
 
 - 2026-09-06: T-004 done; T-005 started. Cold-start and cross-network claims remain bounded to available measurements; no speculative native tuning. Final native tests/build and signed debug delivery next.
 
+- 2026-09-06: T-005 done。实现提交 f829cbd（刷新调度）、f760dad（终端字节热路径）、3c52f5c（列表渲染隔离）。最终 148 前端 + 27 原生测试及三个构建通过。清理本轮 native 测试生成的 ACL schema 平台漂移，仅恢复该文件；原有四处未提交改动保留。隔离 HTTP 夹具已关闭，更新后的模拟器 App 与精确 debug GUI 已打开；未终止任何用户 Host。
+
+### iOS simulator WebKit 同条件复测
+
+- 证据：/tmp/ap-mobile-perf/ios-results.jsonl、ios-runner.js、fixture.tsx。实际 App/Workspace/xterm 生产打包代码配 synthetic RemoteClient，无真实 Host 请求。Simulator runtime 26.5、Safari 26.5（冻结 UA 显示 OS 18_7）；并非原生 Tauri 传输或实体 iPhone 测量。
+- 顺序 baseline/candidate/candidate/baseline/baseline/candidate；每版本三页，每页 1000 Sessions、六次项目折叠、三组 1000×1024 字节输出。每页确认 xterm 实际解析 3,072,000 字节，测量等到全部 write callbacks 完成及两次 animation frame。
+- 全样本中位数：项目折叠至两帧 56 → 38 ms；输出同步分发 30 → 7 ms；全部写入完成至两帧 129 → 116 ms。后者范围重叠，不据此宣称稳定的整体帧率提升。首个 baseline 页折叠为 298–607 ms，未剔除；存在预热/宿主负载波动。
+- 八次刷新总读取 32 → 8、最大并发 32 → 4；每组输出存储写 1000 → 0。隐藏 candidate 保留 unread mark/attention.poll、不再发起四种全量列表读取。
+- 模块加载后首视图样本 baseline [250,218,222]、candidate [222,208,213] ms，不是真正 App 冷启动，不作冷启动收益结论。连接认证、重连 backoff、物理输入/滚动与耗电无新增实测收益，不做推测性修改。
+- 已检查截图：/tmp/ap-mobile-perf/mobile-installed.png；/var/folders/rb/jccv7g0d5gnf20hz77wy08jw0000gn/T/macos-harness-2vzg_vft.png。截图仅验证交付渲染，不作为真实性能测量。
+
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
-- Result: not_run
-- Evidence: T-001 正在建立基线。
-- Limitations: 真机、Android 与公网网络测量暂不可用。
+- Result: passed
+- Evidence: T-001 至 T-005 全部完成；148 前端 / 27 原生测试、前端/iOS/签名 desktop 构建通过，同条件夹具复测与安装窗口检查完成。任务文档校验与 git diff --check 通过。
+- Limitations: 本轮为已确认范围内的证据驱动优化交付；真机、Android、公网切换、真实原生冷启动、键盘/滚动帧率及电池收益未验证。模拟器 WebKit 与受限 CPU Chrome 数据不得外推到这些环境。
