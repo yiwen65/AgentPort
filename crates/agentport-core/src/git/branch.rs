@@ -220,7 +220,8 @@ impl<'a> BranchManager<'a> {
     ) -> Result<CreateBranchOutcome> {
         self.validate_branch_name(&identity, name)?;
         let status = self.status(&identity)?;
-        self.ensure_mutation_allowed(&identity, &status)?;
+        self.ensure_operation_conflicts(&status)?;
+        self.ensure_checkout_state_allowed(&status)?;
         let before = self.list_branches(&identity)?;
         if before.iter().any(|branch| branch.name == name) {
             return Err(CoreError::Conflict(format!(
@@ -875,7 +876,7 @@ impl<'a> BranchManager<'a> {
     ) -> Result<SwitchOutcome> {
         self.validate_branch_name(&identity, target)?;
         let status = self.status(&identity)?;
-        self.ensure_operation_conflicts_and_sessions(&identity, &status)?;
+        self.ensure_operation_conflicts(&status)?;
         let branches = self.list_branches(&identity)?;
         let target_info = match branches.iter().find(|branch| branch.name == target) {
             Some(branch) => branch,
@@ -1163,7 +1164,7 @@ impl<'a> BranchManager<'a> {
                 ));
             }
             let live_status = self.status(&identity)?;
-            self.ensure_operation_conflicts_and_sessions(&identity, &live_status)?;
+            self.ensure_operation_conflicts(&live_status)?;
             if self
                 .run_success(&identity, ["rev-parse", "HEAD"])?
                 .stdout_lossy()
@@ -2292,11 +2293,8 @@ impl<'a> BranchManager<'a> {
         Ok(())
     }
 
-    fn ensure_operation_conflicts_and_sessions(
-        &self,
-        identity: &RepositoryIdentity,
-        status: &RepoStatus,
-    ) -> Result<()> {
+    // Create/switch may run alongside Sessions; Git safety guards still apply.
+    fn ensure_operation_conflicts(&self, status: &RepoStatus) -> Result<()> {
         if let Some(state) = &status.operation_state {
             return Err(CoreError::Blocked(format!(
                 "branch mutation is blocked while Git operation is active: {state}"
@@ -2307,6 +2305,16 @@ impl<'a> BranchManager<'a> {
                 "branch mutation is blocked by unresolved index conflicts".into(),
             ));
         }
+        Ok(())
+    }
+
+    // Restore/recovery retains its stricter checkout ownership requirement.
+    fn ensure_operation_conflicts_and_sessions(
+        &self,
+        identity: &RepositoryIdentity,
+        status: &RepoStatus,
+    ) -> Result<()> {
+        self.ensure_operation_conflicts(status)?;
         if let Some(session_id) = self.live_session_ids_for_checkout(identity)?.first() {
             let session = self.db.get_session(session_id)?;
             return Err(CoreError::Blocked(format!(
@@ -3714,50 +3722,51 @@ mod tests {
     }
 
     #[test]
-    fn create_and_switch_does_not_create_a_ref_while_a_session_is_live() {
-        let fixture = fixture();
-        fixture
-            .db
-            .insert_session(&Session {
-                id: "ses_create_switch_live".into(),
-                project_id: fixture.project_id.clone(),
-                worktree_id: None,
-                preset_id: "preset".into(),
-                title: "live create and switch".into(),
-                cwd: fixture.root.to_string_lossy().into_owned(),
-                host_pid: None,
-                host_socket: None,
-                host_token: "token".into(),
-                lifecycle: Lifecycle::Running,
-                agent_session_id: None,
-                resume_precision: ResumePrecision::Unavailable,
-                log_path: fixture.root.join("log").to_string_lossy().into_owned(),
-                adapter_type: AgentType::Shell,
-                transport: AgentTransport::Pty,
-                command: vec![],
-                permission_mode: PermissionMode::Native,
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-                pinned_at: None,
-                archived_at: None,
-            })
-            .unwrap();
+    fn create_and_switch_preserves_live_sessions() {
+        for lifecycle in [Lifecycle::Creating, Lifecycle::Running] {
+            let fixture = fixture();
+            fixture
+                .db
+                .insert_session(&Session {
+                    id: "ses_create_switch_live".into(),
+                    project_id: fixture.project_id.clone(),
+                    worktree_id: None,
+                    preset_id: "preset".into(),
+                    title: "live create and switch".into(),
+                    cwd: fixture.root.to_string_lossy().into_owned(),
+                    host_pid: None,
+                    host_socket: None,
+                    host_token: "token".into(),
+                    lifecycle: lifecycle.clone(),
+                    agent_session_id: None,
+                    resume_precision: ResumePrecision::Unavailable,
+                    log_path: fixture.root.join("log").to_string_lossy().into_owned(),
+                    adapter_type: AgentType::Shell,
+                    transport: AgentTransport::Pty,
+                    command: vec![],
+                    permission_mode: PermissionMode::Native,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    pinned_at: None,
+                    archived_at: None,
+                })
+                .unwrap();
 
-        let error = manager(&fixture)
-            .create_and_switch(&fixture.project_id, "feature/not-created", None)
-            .unwrap_err();
+            std::fs::write(fixture.root.join("tracked.txt"), "session edits\n").unwrap();
+            let outcome = manager(&fixture)
+                .create_and_switch(&fixture.project_id, "feature/live", None)
+                .unwrap();
+            assert!(outcome.stashed);
 
-        assert!(matches!(error, CoreError::Blocked(_)), "{error}");
-        assert!(!manager(&fixture)
-            .list(&fixture.project_id)
-            .unwrap()
-            .branches
-            .iter()
-            .any(|branch| branch.name == "feature/not-created"));
-        assert!(matches!(
-            manager(&fixture).list(&fixture.project_id).unwrap().status.checkout,
-            CheckoutState::Branch(ref branch) if branch == "main"
-        ));
+            assert!(matches!(
+                manager(&fixture).list(&fixture.project_id).unwrap().status.checkout,
+                CheckoutState::Branch(ref branch) if branch == "feature/live"
+            ));
+            assert_eq!(
+                fixture.db.get_session("ses_create_switch_live").unwrap().lifecycle,
+                lifecycle
+            );
+        }
     }
 
     #[test]
@@ -4264,39 +4273,48 @@ mod tests {
     }
 
     #[test]
-    fn live_session_blocks_only_its_exact_checkout() {
-        let fixture = fixture();
-        make_branch(&fixture.root, "target");
-        fixture
-            .db
-            .insert_session(&Session {
-                id: "ses_live".into(),
-                project_id: fixture.project_id.clone(),
-                worktree_id: None,
-                preset_id: "preset".into(),
-                title: "live".into(),
-                cwd: fixture.root.to_string_lossy().into_owned(),
-                host_pid: None,
-                host_socket: None,
-                host_token: "token".into(),
-                lifecycle: Lifecycle::Running,
-                agent_session_id: None,
-                resume_precision: ResumePrecision::Unavailable,
-                log_path: fixture.root.join("log").to_string_lossy().into_owned(),
-                adapter_type: AgentType::Shell,
-                transport: AgentTransport::Pty,
-                command: vec![],
-                permission_mode: PermissionMode::Native,
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-                pinned_at: None,
-                archived_at: None,
-            })
-            .unwrap();
-        let error = manager(&fixture)
-            .switch(&fixture.project_id, "target")
-            .unwrap_err();
-        assert!(matches!(error, CoreError::Blocked(_)), "{error}");
+    fn create_and_switch_separately_preserve_live_sessions() {
+        for lifecycle in [Lifecycle::Creating, Lifecycle::Running] {
+            let fixture = fixture();
+            make_branch(&fixture.root, "target");
+            fixture
+                .db
+                .insert_session(&Session {
+                    id: "ses_live".into(),
+                    project_id: fixture.project_id.clone(),
+                    worktree_id: None,
+                    preset_id: "preset".into(),
+                    title: "live".into(),
+                    cwd: fixture.root.to_string_lossy().into_owned(),
+                    host_pid: None,
+                    host_socket: None,
+                    host_token: "token".into(),
+                    lifecycle: lifecycle.clone(),
+                    agent_session_id: None,
+                    resume_precision: ResumePrecision::Unavailable,
+                    log_path: fixture.root.join("log").to_string_lossy().into_owned(),
+                    adapter_type: AgentType::Shell,
+                    transport: AgentTransport::Pty,
+                    command: vec![],
+                    permission_mode: PermissionMode::Native,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    pinned_at: None,
+                    archived_at: None,
+                })
+                .unwrap();
+            manager(&fixture)
+                .create(&fixture.project_id, "feature/live", None)
+                .unwrap();
+            manager(&fixture)
+                .switch(&fixture.project_id, "target")
+                .unwrap();
+            assert_eq!(fixture.db.get_session("ses_live").unwrap().lifecycle, lifecycle);
+            assert!(matches!(
+                manager(&fixture).list(&fixture.project_id).unwrap().status.checkout,
+                CheckoutState::Branch(ref branch) if branch == "target"
+            ));
+        }
     }
 
     #[test]
