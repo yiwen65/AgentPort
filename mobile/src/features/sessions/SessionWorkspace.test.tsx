@@ -128,6 +128,66 @@ describe("SessionWorkspace", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Restart" }));
     await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.restart", { sessionId: "ses-1", riskAck: true }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(request.mock.calls.filter(([, m]) => m === "session.stop")).toHaveLength(0);
+  });
+
+  it("waits for a running session to stop before restarting, without duplicate writes or confirmation", async () => {
+    const { client, request } = setupClient();
+    const original = request.getMockImplementation()!;
+    let finishStop!: (value: unknown) => void;
+    let running = true;
+    request.mockImplementation((...args) => {
+      if (args[1] === "session.stop") return new Promise(resolve => { finishStop = value => { running = false; resolve(value); }; });
+      if (args[1] === "session.restart" && running) return Promise.reject(new Error("request failed on the remote host"));
+      return original(...args);
+    });
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    const restart = screen.getByRole("button", { name: "Restart" });
+    fireEvent.click(restart);
+    fireEvent.click(restart);
+    expect(request.mock.calls.filter(([, m]) => m === "session.stop")).toHaveLength(1);
+    expect(request.mock.calls.filter(([, m]) => m === "session.restart")).toHaveLength(0);
+    expect(restart).toBeDisabled();
+    await act(async () => finishStop({ groupCleaned: true }));
+    await waitFor(() => expect(request.mock.calls.filter(([, m]) => m === "session.restart")).toHaveLength(1));
+    await waitFor(() => expect(request.mock.calls.filter(([, m]) => m === "session.attach")).toHaveLength(2));
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it.each(["Stop failed", "Stop outcome unknown"])("does not restart or replay after %s", async message => {
+    const { client, request } = setupClient();
+    const original = request.getMockImplementation()!;
+    request.mockImplementation((...args) => args[1] === "session.stop" ? Promise.reject(new Error(message)) : original(...args));
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+    expect(request.mock.calls.filter(([, m]) => m === "session.stop")).toHaveLength(1);
+    expect(request.mock.calls.filter(([, m]) => m === "session.restart")).toHaveLength(0);
+  });
+
+  it("retains stopped state and the error when Stop succeeds but Restart fails", async () => {
+    const { client, request } = setupClient();
+    const original = request.getMockImplementation()!;
+    const changed = vi.fn();
+    request.mockImplementation((...args) => args[1] === "session.restart" ? Promise.reject(new Error("Restart outcome unknown")) : original(...args));
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={changed} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart" }));
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "ended"));
+    expect(screen.getByRole("alert")).toHaveTextContent("Restart outcome unknown");
+    expect(changed).toHaveBeenCalledWith(expect.objectContaining({ session: expect.objectContaining({ lifecycle: "stopped", hostAlive: false }) }));
+    expect(request.mock.calls.filter(([, m]) => m === "session.restart")).toHaveLength(1);
+    expect(screen.queryByRole("region", { name: "Raw terminal" })).not.toBeInTheDocument();
   });
 
   it("edits the action-sheet title inline and never calls a native browser prompt", async () => {

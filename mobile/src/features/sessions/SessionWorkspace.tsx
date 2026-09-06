@@ -349,6 +349,19 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     if (resizeFrame.current !== undefined) window.cancelAnimationFrame(resizeFrame.current);
   }, []);
 
+  const stopCurrentSession = async () => {
+    const result = await client.request<{ groupCleaned: boolean }>(open.hostProfileId, "session.stop", { sessionId: open.session.id, graceMs: 1_500 });
+    setNotice(result.groupCleaned ? "" : t("session.cleanupUnverified"));
+    setLocallyStopped(true);
+    setRestartRequested(false);
+    setTerminalGeometry(undefined);
+    onSessionChanged({ ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false } });
+    setConfirmStop(false);
+    attachmentRef.current = undefined;
+    setAttachmentId(undefined);
+    setConnectionLabel("ended");
+  };
+
   const action = async (name: "restart" | "pin" | "rename", value?: string) => {
     if (actionBusy.current) return;
     actionBusy.current = true;
@@ -356,6 +369,10 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     setError("");
     try {
       if (name === "restart") {
+        // The service only restarts ended sessions. Respect local Stop/exit and
+        // successful Restart state too: parent summaries can still be stale.
+        // A failed/unknown Stop must abort here, never replay or launch anyway.
+        if (shouldAttach) await stopCurrentSession();
         await client.request(open.hostProfileId, "session.restart", { sessionId: open.session.id, riskAck: true });
         cursor.current = undefined;
         terminal.current?.reset();
@@ -397,16 +414,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     setBusyAction("stop");
     setError("");
     try {
-      const result = await client.request<{ groupCleaned: boolean }>(open.hostProfileId, "session.stop", { sessionId: open.session.id, graceMs: 1_500 });
-      setNotice(result.groupCleaned ? "" : t("session.cleanupUnverified"));
-      setLocallyStopped(true);
-      setRestartRequested(false);
-      setTerminalGeometry(undefined);
-      onSessionChanged({ ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false } });
-      setConfirmStop(false);
-      attachmentRef.current = undefined;
-      setAttachmentId(undefined);
-      setConnectionLabel("ended");
+      await stopCurrentSession();
     } catch (requestError) {
       setError(errorText(requestError));
     } finally {
