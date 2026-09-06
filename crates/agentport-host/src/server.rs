@@ -12,7 +12,7 @@ use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agentport_core::models::{AgentTransport, LogCursor};
 use agentport_core::protocol::{
@@ -64,12 +64,17 @@ pub(crate) struct InputMutation {
     ack: Option<InputAckTarget>,
 }
 
+/// Encoded output or a queue-local writer barrier; neither changes the wire protocol.
+pub(crate) enum OutboundFrame {
+    Data(Arc<Vec<u8>>),
+    // A queue-local barrier: acknowledged only after all earlier socket writes.
+    Flush(mpsc::Sender<()>),
+}
+
 /// One entry in the Host broadcast table. The sender is bounded; an explicit
 /// eviction closes the socket so the reader and writer threads for that one
 /// client both wake and exit. Ordinary removal lets already-enqueued terminal
 /// replies drain in order before the channel closes.
-pub(crate) type OutboundFrame = Arc<Vec<u8>>;
-
 pub(crate) struct ClientSink {
     pub(crate) tx: mpsc::SyncSender<OutboundFrame>,
     pub(crate) subscribe_output: bool,
@@ -268,7 +273,10 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
             let Ok(encoded) = encode_frame(&frame) else {
                 return;
             };
-            if frame_tx.try_send(Arc::new(encoded)).is_err() {
+            if frame_tx
+                .try_send(OutboundFrame::Data(Arc::new(encoded)))
+                .is_err()
+            {
                 return;
             }
         }
@@ -626,7 +634,7 @@ fn queue_client_frame(
             return false;
         }
     };
-    match tx.try_send(encoded) {
+    match tx.try_send(OutboundFrame::Data(encoded)) {
         Ok(()) => true,
         Err(mpsc::TrySendError::Full(_)) => {
             warn!(client_id = id, "dropping client: outbound queue full");
@@ -996,9 +1004,7 @@ fn client_writer(
         }
         match rx.recv_timeout(CLIENT_WRITER_POLL) {
             Ok(frame) => {
-                if closed.load(Ordering::Acquire)
-                    || w.write_all(&frame).and_then(|_| w.flush()).is_err()
-                {
+                if closed.load(Ordering::Acquire) || write_outbound(&mut w, frame).is_err() {
                     break;
                 }
             }
@@ -1008,4 +1014,104 @@ fn client_writer(
     }
     disconnect_client(&shared, id);
     let _ = stream.shutdown(Shutdown::Both);
+}
+
+fn write_outbound(w: &mut impl Write, frame: OutboundFrame) -> std::io::Result<()> {
+    match frame {
+        OutboundFrame::Data(bytes) => w.write_all(&bytes).and_then(|_| w.flush()),
+        OutboundFrame::Flush(ack) => {
+            w.flush()?;
+            let _ = ack.send(());
+            Ok(())
+        }
+    }
+}
+
+/// Wait for real writer progress, not a fixed sleep. Slow/full client queues
+/// retain the previous bounded drain budget; no socket I/O holds the table lock.
+pub(crate) fn flush_clients(shared: &Shared, budget: Duration) {
+    let queues: Vec<_> = shared
+        .clients
+        .lock()
+        .unwrap()
+        .values()
+        .map(|client| client.tx.clone())
+        .collect();
+    flush_queues(&queues, budget);
+}
+
+fn flush_queues(queues: &[mpsc::SyncSender<OutboundFrame>], budget: Duration) {
+    let deadline = Instant::now() + budget;
+    let (ack, completed) = mpsc::channel();
+    let mut pending = 0;
+    let mut full = false;
+    for queue in queues {
+        match queue.try_send(OutboundFrame::Flush(ack.clone())) {
+            Ok(()) => pending += 1,
+            Err(mpsc::TrySendError::Full(_)) => full = true,
+            Err(mpsc::TrySendError::Disconnected(_)) => {}
+        }
+    }
+    drop(ack);
+    for _ in 0..pending {
+        if completed
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .is_err()
+        {
+            break;
+        }
+    }
+    // A full queue could not accept a barrier; preserve its old drain allowance.
+    if full {
+        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+    }
+}
+
+#[cfg(test)]
+mod drain_tests {
+    use super::*;
+
+    #[test]
+    fn flush_barrier_follows_output_and_exit_without_spending_the_drain_budget() {
+        let (tx, rx) = mpsc::sync_channel(8);
+        tx.send(OutboundFrame::Data(Arc::new(b"final output".to_vec())))
+            .unwrap();
+        tx.send(OutboundFrame::Data(Arc::new(b"exit".to_vec()))).unwrap();
+        let writer = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            for _ in 0..3 {
+                write_outbound(&mut bytes, rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+            }
+            bytes
+        });
+        let start = Instant::now();
+        flush_queues(&[tx], Duration::from_secs(5));
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert_eq!(writer.join().unwrap(), b"final outputexit");
+    }
+
+    #[test]
+    fn nonreading_and_full_queues_cannot_hold_shutdown_indefinitely() {
+        let (tx, _rx) = mpsc::sync_channel(1);
+        let start = Instant::now();
+        flush_queues(&[tx.clone()], Duration::from_millis(20));
+        flush_queues(&[tx], Duration::from_millis(20));
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn failed_socket_flush_does_not_acknowledge_the_barrier() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                unreachable!()
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+        }
+        let (ack, completed) = mpsc::channel();
+        assert!(write_outbound(&mut Broken, OutboundFrame::Flush(ack)).is_err());
+        assert!(completed.recv().is_err());
+    }
 }

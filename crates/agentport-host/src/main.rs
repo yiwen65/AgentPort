@@ -420,7 +420,10 @@ pub(crate) fn broadcast(shared: &Shared, frame: &HostFrame) {
         if is_output && !client.subscribe_output {
             continue;
         }
-        match client.tx.try_send(encoded.clone()) {
+        match client
+            .tx
+            .try_send(server::OutboundFrame::Data(encoded.clone()))
+        {
             Ok(()) => {}
             Err(mpsc::TrySendError::Full(_)) => {
                 drop_ids.push((id, "outbound queue full"));
@@ -1624,8 +1627,9 @@ fn stop_flow(
     info!(?code, ?signal, group_cleaned, "stop flow complete");
     // Let the PTY reader observe EOF and finish() the log before we leave.
     wait_pty_eof(rx, Duration::from_secs(2));
-    // Give per-client writer threads a moment to flush the Exit frame.
-    std::thread::sleep(Duration::from_millis(200));
+    // Exit and final output have been enqueued. Fast clients need no artificial
+    // delay; slow clients retain the existing bounded shutdown allowance.
+    server::flush_clients(shared, Duration::from_millis(200));
     shutdown(shared, code, signal, group_cleaned, exit_reason);
     EXIT_OK
 }

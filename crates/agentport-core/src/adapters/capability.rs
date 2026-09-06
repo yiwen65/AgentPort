@@ -704,6 +704,17 @@ pub fn merge_path_env(env: &mut Vec<(String, String)>, effective_paths: &[PathBu
     Ok(())
 }
 
+/// Complete an already-captured login-shell environment with process and
+/// discovery paths. The shell PATH is already in `env`; probing it again would
+/// launch the same interactive login shell twice for every Session start.
+/// Do not cache the snapshot: rc-file/environment changes apply on the next run.
+pub fn merge_launch_path_env(env: &mut Vec<(String, String)>) -> Result<()> {
+    merge_path_env(
+        env,
+        &effective_path_entries_from(&process_path_entries(), &[], &discovery_dirs()),
+    )
+}
+
 pub fn merge_effective_path_env(env: &mut Vec<(String, String)>) -> Result<()> {
     merge_path_env(env, &effective_path_entries())
 }
@@ -738,6 +749,30 @@ mod tests {
         assert!(parsed.iter().any(|(name, value)| name == "HTTP_PROXY"
             && value == "http://user:password@proxy"));
     }
+    #[test]
+    fn captured_launch_path_preserves_login_and_overlay_priority() {
+        let mut env = vec![
+            ("PATH".into(), "/fixture/login:/fixture/shared".into()),
+            ("PATH".into(), "/fixture/overlay:/fixture/shared".into()),
+            ("EDITOR".into(), "fixture-editor".into()),
+        ];
+        merge_launch_path_env(&mut env).unwrap();
+        let paths: Vec<_> =
+            std::env::split_paths(&env.iter().find(|(name, _)| name == "PATH").unwrap().1).collect();
+        assert_eq!(
+            &paths[..3],
+            &[
+                PathBuf::from("/fixture/login"),
+                PathBuf::from("/fixture/shared"),
+                PathBuf::from("/fixture/overlay"),
+            ]
+        );
+        assert!(process_path_entries().iter().all(|p| paths.contains(p)));
+        assert!(discovery_dirs().iter().all(|(p, _)| paths.contains(p)));
+        assert_eq!(env.iter().filter(|(name, _)| name == "PATH").count(), 1);
+        assert!(env.contains(&("EDITOR".into(), "fixture-editor".into())));
+    }
+
     const CODEX: &str = "/Users/w/.local/bin/codex";
     const KIMI: &str = "/Users/w/.kimi-code/bin/kimi";
     const QODER: &str = "/Users/w/.local/bin/qodercli";

@@ -2829,7 +2829,7 @@ fn materialize_launch_environment(
             env.push((name.clone(), value));
         }
     }
-    capability::merge_effective_path_env(&mut env)?;
+    capability::merge_launch_path_env(&mut env)?;
     let refs = preset
         .secret_ref_ids
         .iter()
