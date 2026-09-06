@@ -83,6 +83,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   const pendingResize = useRef<{ cols: number; rows: number }>();
   const lastResize = useRef<{ attachmentId: string; cols: number; rows: number }>();
   const resizeFrame = useRef<number>();
+  const resizeInFlight = useRef<string>();
   const geometryRef = useRef<TerminalGeometry>();
   const resizeOwnershipEnabled = useRef(true);
   const sourceDeviceId = useRef(mobileDeviceId());
@@ -278,14 +279,15 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
 
   // This is the single mobile -> Bridge resize seam. Host-side CAS ownership
   // keeps xterm/viewport observation separate from cross-client authority.
-  const flushResize = useCallback(() => {
+  const flushResize = useCallback((): void => {
     resizeFrame.current = undefined;
     const size = pendingResize.current;
-    if (!attachmentId || !size || !resizeOwnershipEnabled.current) return;
+    if (!attachmentId || !size || !resizeOwnershipEnabled.current || resizeInFlight.current === attachmentId) return;
     if (lastResize.current?.attachmentId === attachmentId
       && lastResize.current.cols === size.cols
       && lastResize.current.rows === size.rows) return;
     lastResize.current = { attachmentId, ...size };
+    resizeInFlight.current = attachmentId;
     void client.request<{ accepted: boolean; terminalGeometry: TerminalGeometry }>(open.hostProfileId, "session.control", {
       attachmentId,
       control: "resize",
@@ -296,13 +298,24 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       sourceDeviceId: sourceDeviceId.current,
       orientation: globalThis.matchMedia?.("(orientation: landscape)").matches ? "landscape" : "portrait",
     }).then((result) => {
+      if (attachmentRef.current !== attachmentId) return;
+      // A desktop ownership event may arrive before this older mobile reply.
+      if (result.terminalGeometry.revision < (geometryRef.current?.revision ?? 0)) return;
       geometryRef.current = result.terminalGeometry;
       setTerminalGeometry(result.terminalGeometry);
       setConnectionLabel("live");
     }).catch(() => {
-      // Geometry adaptation is best-effort. A resize failure must not obscure
-      // or disable the already-attached PTY; the next xterm resize may retry.
-      lastResize.current = undefined;
+      // Do not replay an uncertain resize. A newer observed size may proceed.
+      if (attachmentRef.current === attachmentId) lastResize.current = undefined;
+    }).finally(() => {
+      if (resizeInFlight.current !== attachmentId) return;
+      resizeInFlight.current = undefined;
+      // Keyboard animation spans frames: coalesce while awaiting the Host CAS
+      // acknowledgment, then send only the latest size using its new revision.
+      if (attachmentRef.current === attachmentId && pendingResize.current !== size
+        && resizeOwnershipEnabled.current && resizeFrame.current === undefined) {
+        resizeFrame.current = window.requestAnimationFrame(flushResize);
+      }
     });
   }, [attachmentId, client, open.hostProfileId]);
 

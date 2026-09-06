@@ -252,6 +252,26 @@ describe("SessionWorkspace", () => {
     expect(request.mock.calls.filter(([, method, params]) => method === "session.control" && params.control === "resize")).toHaveLength(1);
   });
 
+  it("serializes keyboard animation resizes and publishes the final rows with the acknowledged revision", async () => {
+    const { client, request } = setupClient();
+    const original = request.getMockImplementation()!;
+    let finish!: (value: unknown) => void;
+    request.mockImplementation((...args) => {
+      if (args[1] === "session.control") return new Promise(resolve => { finish = resolve; });
+      return original(...args);
+    });
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    act(() => terminalHarness.props!.onResize!(52, 40));
+    await waitFor(() => expect(request.mock.calls.filter(([, m]) => m === "session.control")).toHaveLength(1));
+    act(() => terminalHarness.props!.onResize!(52, 24));
+    // Allow another animation frame while the network acknowledgment is pending.
+    await act(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    expect(request.mock.calls.filter(([, m]) => m === "session.control")).toHaveLength(1);
+    await act(async () => finish({ accepted: true, terminalGeometry: { cols: 52, rows: 40, revision: 1, sourceKind: "mobile" } }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.control", expect.objectContaining({ rows: 24, expectedRevision: 1 })));
+  });
+
   it("keeps the live terminal clean and interactive when phone resize fails", async () => {
     const { client, request } = setupClient({ rejectResize: true });
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
