@@ -30,7 +30,7 @@ export interface MobileTerminalProps {
 }
 
 export interface MobileTerminalHandle {
-  write(data: string): void;
+  write(data: string | Uint8Array): void;
   reset(): void;
 }
 
@@ -74,7 +74,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   resizeRef.current = onResize;
 
   useImperativeHandle(ref, () => ({
-    write(data: string) {
+    write(data: string | Uint8Array) {
       terminalRef.current?.write(data);
     },
     reset() {

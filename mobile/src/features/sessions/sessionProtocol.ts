@@ -7,10 +7,12 @@ export function encodeBase64Utf8(value: string): string {
   return btoa(binary);
 }
 
-export function decodeBase64Utf8(value: string): string {
+/** Keep PTY bytes intact; xterm owns the incremental UTF-8 decoder across frames. */
+export function decodeBase64Bytes(value: string): Uint8Array {
   const binary = atob(value);
-  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
 }
 
 export function sessionIdOf(payload: SessionEventPayload): string | undefined {

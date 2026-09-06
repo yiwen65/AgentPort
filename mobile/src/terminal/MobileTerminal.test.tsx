@@ -10,7 +10,7 @@ const terminalHarness = vi.hoisted(() => ({
   screenHeight: 240,
   selection: "selected output",
   fitCalls: 0,
-  writes: [] as string[],
+  writes: [] as (string | Uint8Array)[],
   resets: 0,
   instances: 0,
   options: undefined as { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; theme?: unknown } | undefined,
@@ -46,7 +46,7 @@ vi.mock("@xterm/xterm", () => ({
     }
     onData() { return { dispose() { /* deterministic no-op */ } }; }
     focus() { terminalHarness.helper?.focus(); }
-    write(data: string, callback?: () => void) {
+    write(data: string | Uint8Array, callback?: () => void) {
       if (data) terminalHarness.writes.push(data);
       callback?.();
     }
@@ -93,6 +93,14 @@ describe("MobileTerminal input accessory", () => {
 
     expect(terminalHarness.writes).toEqual(["first", "second"]);
     expect(terminalHarness.resets).toBe(1);
+  });
+
+  it("passes raw bytes to the retained xterm without a text re-encode", () => {
+    const ref = createRef<MobileTerminalHandle>();
+    render(<MobileTerminal ref={ref} showProbeOutput={false} />);
+    const bytes = new Uint8Array([0xe4, 0xbd]);
+    ref.current?.write(bytes);
+    expect(terminalHarness.writes[0]).toBe(bytes);
   });
 
   it("obscures stopping output without disposing or clearing the terminal", () => {

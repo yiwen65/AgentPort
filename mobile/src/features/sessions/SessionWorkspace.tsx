@@ -8,10 +8,9 @@ import {
   getMobileTerminalWorkspaceVariables,
 } from "../../terminal/terminalThemes";
 import { useMobileTerminalAppearance } from "../../terminal/terminalAppearance";
-import { decodeBase64Utf8, encodeBase64Utf8, outputBase64Of, sessionBatchId, sessionIdOf } from "./sessionProtocol";
+import { decodeBase64Bytes, encodeBase64Utf8, outputBase64Of, sessionBatchId, sessionIdOf } from "./sessionProtocol";
 import type { OpenSession, RunCursor, SessionAttachResult, SessionEventPayload, TerminalGeometry } from "./types";
 
-const CURSOR_PREFIX = "agentport-mobile-session-cursor-v1:";
 const MOBILE_DEVICE_ID_KEY = "agentport-mobile-v2:device-id";
 
 function mobileDeviceId(): string {
@@ -24,10 +23,6 @@ function mobileDeviceId(): string {
   } catch {
     return "mobile-ephemeral";
   }
-}
-
-function cursorKey(open: OpenSession) {
-  return `${CURSOR_PREFIX}${open.hostProfileId}:${open.session.id}`;
 }
 
 function errorText(error: unknown): string {
@@ -129,7 +124,6 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     if (sessionIdOf(payload) !== open.session.id && !attachmentGap) return;
     if (event.cursor && typeof event.cursor === "object") {
       cursor.current = event.cursor as RunCursor;
-      try { localStorage.setItem(cursorKey(open), JSON.stringify(cursor.current)); } catch { /* persistence is best effort */ }
     }
     if (event.eventType === "terminal_geometry_changed" && payload.geometry) {
       geometryRef.current = payload.geometry;
@@ -153,10 +147,9 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     if ((event.eventType === "output" || event.eventType === "transient_output") && outputBase64) {
       // xterm already owns the bounded scrollback. Stream directly into it so
       // every output event does not clone retained output and rerender React.
-      terminal.current?.write(decodeBase64Utf8(outputBase64));
+      terminal.current?.write(decodeBase64Bytes(outputBase64));
     } else if (event.eventType === "resync_required") {
       cursor.current = undefined;
-      try { localStorage.removeItem(cursorKey(open)); } catch { /* persistence is best effort */ }
       terminal.current?.reset();
       setNotice(t("session.resynced"));
       setAttachEpoch((current) => current + 1);

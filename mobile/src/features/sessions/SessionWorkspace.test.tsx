@@ -28,7 +28,7 @@ vi.mock("../../terminal/MobileTerminal", async () => {
       terminalHarness.props = props;
       terminalHarness.renders += 1;
       useImperativeHandle(ref, () => ({
-        write: (data: string) => terminalHarness.writes.push(data),
+        write: (data: string | Uint8Array) => terminalHarness.writes.push(typeof data === "string" ? data : new TextDecoder().decode(data)),
         reset: () => { terminalHarness.resets += 1; },
       }), []);
       return <section aria-label="Raw terminal" style={{ visibility: props.obscured ? "hidden" : undefined }}>
@@ -297,7 +297,7 @@ describe("SessionWorkspace", () => {
     expect(terminalHarness.props?.showHeading).toBe(false);
     expect(screen.queryByRole("button", { name: "Conversation" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Send text")).not.toBeInTheDocument();
-    expect(JSON.parse(localStorage.getItem("agentport-mobile-session-cursor-v1:host-1:ses-1")!)).toEqual(expect.objectContaining({ offset: 5 }));
+    expect(localStorage.getItem("agentport-mobile-session-cursor-v1:host-1:ses-1")).toBeNull();
   });
 
   it("dispatches ordered input batches without waiting for earlier remote results", async () => {
@@ -332,13 +332,14 @@ describe("SessionWorkspace", () => {
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     const settledRenders = terminalHarness.renders;
+    const persist = vi.spyOn(Storage.prototype, "setItem");
 
     await act(async () => {
       for (let index = 0; index < 200; index += 1) {
         emit({
           subscriptionId: "sub",
           eventType: "output",
-          cursor: null,
+          cursor: { runId: "run", runOrdinal: 1, generation: 0, offset: index * 256, statusSequence: 0 },
           payload: { session_id: "ses-1", dataBase64: btoa("x".repeat(256)) },
         });
       }
@@ -347,6 +348,8 @@ describe("SessionWorkspace", () => {
     expect(terminalHarness.writes).toHaveLength(200);
     expect(terminalHarness.writes.every((chunk) => chunk.length === 256)).toBe(true);
     expect(terminalHarness.renders).toBe(settledRenders);
+    expect(persist).not.toHaveBeenCalled();
+    persist.mockRestore();
   });
 
   it("consumes the Host terminal_geometry_changed event contract", async () => {
