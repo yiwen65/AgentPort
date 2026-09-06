@@ -67,6 +67,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const commandRef = useRef(false);
   const lastTouchShortcutAt = useRef(0);
   const shortcutActionsRef = useRef<Record<string, () => void>>({});
+  const [hasSelection, setHasSelection] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const [inputActive, setInputActive] = useState(false);
   const [shiftActive, setShiftActive] = useState(false);
   const [commandActive, setCommandActive] = useState(false);
@@ -115,7 +117,10 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
 
   const copySelection = () => {
     const selection = terminalRef.current?.getSelection() ?? "";
-    if (selection) void navigator.clipboard?.writeText(selection).catch(() => undefined);
+    if (!selection) return;
+    setCopyFailed(false);
+    if (!navigator.clipboard) { setCopyFailed(true); return; }
+    void navigator.clipboard.writeText(selection).then(() => terminalRef.current?.clearSelection()).catch(() => setCopyFailed(true));
   };
 
   inputHandlerRef.current = (data: string) => {
@@ -177,6 +182,10 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       terminal.write("\u001b[1;36mAgentPort transport spike\u001b[0m\r\n");
       terminal.write("Touch, select, type with IME, or use the special-key row.\r\n$ ");
     }
+    const selectionChanged = terminal.onSelectionChange(() => {
+      setHasSelection(Boolean(terminal.getSelection()));
+      setCopyFailed(false);
+    });
     const input = terminal.onData(data => inputHandlerRef.current(data));
     // Ordinary layout and visual-viewport changes (notably the soft keyboard)
     // fit only the local renderer. They must not steal PTY geometry ownership.
@@ -205,7 +214,40 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     section.addEventListener("focusin", focusIn);
     section.addEventListener("focusout", focusOut);
     const keys = keysRef.current;
-    let touchGesture: { x: number; y: number; lastY: number; moved: boolean } | undefined;
+    let touchGesture: { x: number; y: number; lastY: number; moved: boolean; selection?: { start: number; end: number } } | undefined;
+    let longPressTimer: number | undefined;
+    const cancelLongPress = () => window.clearTimeout(longPressTimer);
+    const cellAt = (x: number, y: number) => {
+      const rect = container.querySelector(".xterm-screen")?.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return;
+      return {
+        col: Math.max(0, Math.min(terminal.cols - 1, Math.floor((x - rect.left) / rect.width * terminal.cols))),
+        row: terminal.buffer.active.viewportY + Math.max(0, Math.min(terminal.rows - 1, Math.floor((y - rect.top) / rect.height * terminal.rows))),
+      };
+    };
+    const beginSelection = () => {
+      if (!touchGesture || touchGesture.moved) return;
+      const cell = cellAt(touchGesture.x, touchGesture.y);
+      if (!cell) return;
+      const line = terminal.buffer.active.getLine(cell.row);
+      if (!line) return;
+      let start = cell.col;
+      if (line.getCell(start)?.getWidth() === 0 && start > 0) start--;
+      let end = start + Math.max(1, line.getCell(start)?.getWidth() ?? 1);
+      const isWord = (col: number) => {
+        const cell = line.getCell(col);
+        return cell?.getWidth() === 0 || /[^\s]/u.test(cell?.getChars() ?? "");
+      };
+      if (isWord(start)) {
+        while (start > 0 && isWord(start - 1)) start--;
+        while (end < terminal.cols && isWord(end)) end++;
+      }
+      touchGesture.selection = { start: cell.row * terminal.cols + start, end: cell.row * terminal.cols + end };
+      gestureStartedInInput = false;
+      compatibilityMouseUntil = performance.now() + 1000;
+      terminal.textarea?.blur();
+      terminal.select(start, cell.row, end - start);
+    };
     let compatibilityMouseUntil = 0;
     let gestureStartedInInput: boolean | undefined;
     const tapIsOnCurrentInputRows = (clientY: number) => {
@@ -232,11 +274,14 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       recordInputGestureAt(event.target instanceof Node ? event.target : null, event.clientY);
     };
     const recordTouchGesture = (event: TouchEvent) => {
+      cancelLongPress();
       const touch = event.touches[0] ?? event.changedTouches[0];
       if (touch) recordInputGestureAt(event.target instanceof Node ? event.target : null, touch.clientY);
       if (event.touches.length === 1 && event.target instanceof Node && container.contains(event.target)) {
         compatibilityMouseUntil = performance.now() + 1000;
+        terminal.clearSelection();
         touchGesture = { x: touch.clientX, y: touch.clientY, lastY: touch.clientY, moved: false };
+        longPressTimer = window.setTimeout(beginSelection, 500);
       } else touchGesture = undefined;
     };
     const dismissTerminalInput = (event: MouseEvent) => {
@@ -268,7 +313,24 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       const touch = event.touches[0];
       const dx = touch.clientX - touchGesture.x;
       const dy = touch.clientY - touchGesture.y;
-      if (Math.abs(dx) > 8 || Math.abs(dy) > 8) touchGesture.moved = true;
+      if (touchGesture.selection) {
+        event.preventDefault();
+        event.stopPropagation();
+        const cell = cellAt(touch.clientX, touch.clientY);
+        if (cell) {
+          const line = terminal.buffer.active.getLine(cell.row);
+          const col = line?.getCell(cell.col)?.getWidth() === 0 ? Math.max(0, cell.col - 1) : cell.col;
+          const at = cell.row * terminal.cols + col;
+          const start = Math.min(touchGesture.selection.start, at);
+          const end = Math.max(touchGesture.selection.end, at + Math.max(1, line?.getCell(col)?.getWidth() ?? 1));
+          terminal.select(start % terminal.cols, Math.floor(start / terminal.cols), end - start);
+        }
+        return;
+      }
+      if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
+        touchGesture.moved = true;
+        cancelLongPress();
+      }
       if (!touchGesture.moved || Math.abs(dy) <= Math.abs(dx)) return;
       const deltaY = touchGesture.lastY - touch.clientY;
       touchGesture.lastY = touch.clientY;
@@ -283,6 +345,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       }));
     };
     const finishTouch = (event: TouchEvent) => {
+      cancelLongPress();
       if (!touchGesture) return;
       if (touchGesture.moved || gestureStartedInInput === false) {
         event.preventDefault();
@@ -351,6 +414,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       if (workspace) delete workspace.dataset.keyboardVisible;
       resize.disconnect();
       disposeIosIme?.();
+      cancelLongPress();
+      selectionChanged.dispose();
       input.dispose();
       terminal.dispose();
     };
@@ -415,6 +480,11 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     <section ref={sectionRef} className="mobile-terminal-spike" data-input-active={inputActive} aria-label={title} aria-hidden={obscured || undefined} style={{ visibility: obscured ? "hidden" : undefined }}>
       {showHeading ? <div className="mobile-terminal-heading"><h2>{title}</h2>{description ? <p>{description}</p> : null}</div> : null}
       <div ref={containerRef} className="mobile-terminal-surface" role="application" aria-label={title} />
+      {hasSelection ? <div className="mobile-terminal-selection" role="group" aria-label="Text selection">
+        <button type="button" onMouseDown={event => event.preventDefault()} onClick={copySelection}>Copy</button>
+        <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => terminalRef.current?.clearSelection()}>Clear selection</button>
+        {copyFailed ? <span role="alert">Unable to copy. Try again.</span> : null}
+      </div> : null}
       <div ref={keysRef} className="mobile-terminal-keys" data-horizontal-scroll aria-label="Terminal special keys" hidden={!inputActive}>
         <button type="button" aria-label="Paste" {...shortcutHandlers("paste", paste)}><PasteIcon /></button>
         <button type="button" aria-label="Escape" {...shortcutHandlers("escape", shortcutActionsRef.current.escape)}><span aria-hidden="true">⎋</span></button>

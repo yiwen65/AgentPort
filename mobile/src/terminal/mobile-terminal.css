@@ -217,3 +217,31 @@
   }
 
 }
+
+/* DOM renderer rows are replaced while scrolling. A touch stays bound to its
+   original target, so hit-test the persistent screen instead of disposable spans. */
+.mobile-terminal-surface .xterm-rows { pointer-events: none; }
+
+.mobile-terminal-selection {
+  position: absolute;
+  z-index: 7;
+  top: 8px;
+  right: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: calc(100% - 32px);
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--terminal-bg);
+  color: var(--text);
+}
+.mobile-terminal-selection button {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--fill);
+}
+.mobile-terminal-selection [role="alert"] { padding: 8px; }

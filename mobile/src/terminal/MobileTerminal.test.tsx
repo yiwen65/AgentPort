@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MobileTerminal, type MobileTerminalHandle } from "./MobileTerminal";
@@ -9,6 +9,9 @@ const terminalHarness = vi.hoisted(() => ({
   screen: undefined as HTMLDivElement | undefined,
   screenHeight: 240,
   selection: "selected output",
+  selects: [] as number[][],
+  clears: 0,
+  selectionChanged: () => {},
   fitCalls: 0,
   writes: [] as (string | Uint8Array)[],
   resets: 0,
@@ -24,7 +27,7 @@ vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
     rows = 24;
-    buffer = { active: { cursorY: 20 } };
+    buffer = { active: { cursorY: 20, viewportY: 0, baseY: 0, getLine: () => ({ getCell: () => ({ getChars: () => "a", getWidth: () => 1 }) }) } };
     options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; theme?: unknown };
     constructor(options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; theme?: unknown } = {}) {
       this.options = { ...options };
@@ -54,11 +57,18 @@ vi.mock("@xterm/xterm", () => ({
     dispose() { /* deterministic no-op */ }
     selectAll() { /* deterministic no-op */ }
     getSelection() { return terminalHarness.selection; }
+    select(...args: number[]) { terminalHarness.selects.push(args); }
+    clearSelection() { terminalHarness.clears += 1; terminalHarness.selection = ""; terminalHarness.selectionChanged(); }
+    onSelectionChange(callback: () => void) { terminalHarness.selectionChanged = callback; return { dispose() {} }; }
   },
 }));
 
 describe("MobileTerminal input accessory", () => {
   beforeEach(() => {
+    terminalHarness.selection = "selected output";
+    terminalHarness.selectionChanged = () => {};
+    terminalHarness.selects = [];
+    terminalHarness.clears = 0;
     terminalHarness.helper = undefined;
     terminalHarness.screen = undefined;
     terminalHarness.screenHeight = 240;
@@ -248,6 +258,60 @@ describe("MobileTerminal input accessory", () => {
     fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 160 }] });
     fireEvent.touchMove(terminalHarness.screen!, { touches: [{ clientX: 120, clientY: 155 }] });
     expect(wheel).not.toHaveBeenCalled();
+  });
+
+  it("long-presses and drag-selects output without wheel events or keyboard focus", () => {
+    vi.useFakeTimers();
+    try {
+      const onInput = vi.fn();
+      render(<MobileTerminal onInput={onInput} showProbeOutput={false} />);
+      const wheel = vi.fn();
+      terminalHarness.screen!.addEventListener("wheel", wheel);
+      fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 40 }] });
+      vi.advanceTimersByTime(550);
+      expect(terminalHarness.selects).toEqual([[0, 4, 80]]);
+      fireEvent.touchMove(terminalHarness.screen!, { touches: [{ clientX: 80, clientY: 60 }] });
+      expect(terminalHarness.selects.at(-1)).toEqual([0, 4, 181]);
+      fireEvent.touchEnd(terminalHarness.screen!, { changedTouches: [{ clientX: 80, clientY: 60 }] });
+      expect(wheel).not.toHaveBeenCalled();
+      expect(onInput).not.toHaveBeenCalled();
+      expect(document.activeElement).not.toBe(terminalHarness.helper);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps selection available after a failed copy, and clears it only after success", async () => {
+    render(<MobileTerminal showProbeOutput={false} />);
+    const copy = vi.mocked(navigator.clipboard.writeText);
+    copy.mockRejectedValueOnce(new Error("clipboard unavailable"));
+    act(() => terminalHarness.selectionChanged());
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await screen.findByRole("alert");
+    expect(terminalHarness.clears).toBe(0);
+    expect(copy).toHaveBeenCalledWith("selected output");
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Copy" })).toBeNull());
+    expect(terminalHarness.clears).toBe(1);
+  });
+
+  it("cancels long-press selection on scrolling, multitouch, cancellation and unmount", () => {
+    vi.useFakeTimers();
+    try {
+      const { unmount } = render(<MobileTerminal showProbeOutput={false} />);
+      const start = () => fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 40 }] });
+      start();
+      fireEvent.touchMove(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 100 }] });
+      vi.advanceTimersByTime(550);
+      expect(terminalHarness.selects).toEqual([]);
+      start();
+      fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 40 }, { clientX: 50, clientY: 40 }] });
+      vi.advanceTimersByTime(550);
+      expect(terminalHarness.selects).toEqual([]);
+      start(); fireEvent.touchCancel(terminalHarness.screen!);
+      vi.advanceTimersByTime(550);
+      expect(terminalHarness.selects).toEqual([]);
+      start(); unmount(); vi.advanceTimersByTime(550);
+      expect(terminalHarness.selects).toEqual([]);
+    } finally { vi.useRealTimers(); }
   });
 
   it("uses the keyboard viewport and refits after the shortcut row enters layout", async () => {
