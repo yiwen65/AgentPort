@@ -46,10 +46,16 @@ h1 { margin: 0; font-size: clamp(27px, 8vw, 38px); letter-spacing: -0.045em; }
 .empty-orbit::after { inset: 31px; background: var(--accent); box-shadow: 0 0 28px color-mix(in srgb, var(--accent) 70%, transparent); }
 .empty-orbit span { position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--success); top: 8px; left: 15px; box-shadow: 0 0 18px rgba(48, 209, 88, 0.5); }
 .host-list { list-style: none; padding: 0; margin: 28px 0 0; display: grid; gap: 12px; }
-.host-row { border: 1px solid var(--line); border-radius: 18px; background: var(--panel); overflow: hidden; }
-.host-card { width: 100%; border: 0; background: transparent; padding: 17px; display: flex; align-items: center; gap: 13px; text-align: left; }
-.host-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; padding: 0 12px 12px; }
-.host-actions button { min-height: 36px; border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; background: var(--panel-strong); }
+.host-row { display: flex; align-items: flex-start; gap: 2px; padding: 10px 8px 10px 12px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); }
+.host-card { flex: 1; min-width: 0; min-height: 44px; border: 0; background: transparent; padding: 3px 0; display: flex; align-items: center; gap: 9px; text-align: left; }
+.host-actions { display: flex; flex: 0 0 auto; gap: 2px; }
+.host-actions button { display: grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 12px; padding: 11px; background: transparent; }
+.host-actions button:active:not(:disabled) { background: var(--panel-strong); }
+.host-actions svg { width: 20px; height: 20px; }
+.host-connection-action { color: var(--muted); }
+.host-connection-action[data-connected="true"] { color: var(--accent); }
+.host-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.host-card .host-copy > span { font-size: 13px; }
 .host-actions button:disabled { opacity: 0.45; }
 .danger-text { color: var(--danger); }
 .status-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; background: var(--tertiary-text); }
@@ -58,7 +64,6 @@ h1 { margin: 0; font-size: clamp(27px, 8vw, 38px); letter-spacing: -0.045em; }
 .status-dot.connecting, .status-dot.reconnecting { background: var(--warning); }
 .host-copy { display: grid; gap: 3px; min-width: 0; flex: 1; }
 .host-copy > span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.host-state { color: var(--muted); font-size: 13px; }
 .modal-backdrop { position: fixed; z-index: 10; inset: 0; padding: max(20px, env(safe-area-inset-top)) 14px max(20px, env(safe-area-inset-bottom)); display: grid; align-items: end; background: rgba(0, 0, 0, 0.62); overflow-y: auto; }
 .modal-sheet { width: min(100%, 620px); max-height: calc(100dvh - 40px); margin: auto auto 0; padding: 24px; overflow-y: auto; border: 1px solid var(--line-soft); border-radius: 26px 26px 20px 20px; background: var(--panel); box-shadow: var(--shadow); }
 .modal-sheet.compact { max-width: 480px; margin: auto; }

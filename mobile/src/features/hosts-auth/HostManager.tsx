@@ -277,11 +277,16 @@ export function HostManager({ remoteClient, authClient }: HostManagerProps) {
         <button type="button" className="host-card" disabled={isConnected || connectingId === host.id} onClick={() => void openEdit(host.id)}>
           <span className={`status-dot ${displayedState}`} aria-hidden="true" />
           <span className="host-copy"><strong>{host.name}</strong><span>{host.preferredTransport === "relay" ? host.hostname : `${host.username}@${host.hostname}:${host.port}`}</span></span>
-          <span className="host-state">{t(`status.${displayedState}`)}</span>
+          <span className="visually-hidden">{t(`status.${displayedState}`)}</span>
         </button>
         <div className="host-actions" aria-label={t("hosts.actions", { name: host.name })}>
-          <button type="button" disabled={busy && connectingId !== host.id} onClick={() => isConnected || connectingId === host.id ? void disconnect(host.id) : void connect(host.id)}>{connectingId === host.id ? t("hosts.cancelConnect") : isConnected ? t("hosts.disconnect") : t("hosts.connect")}</button>
-          <button className="danger-text" type="button" disabled={busy} onClick={() => setDeleteTarget(host)}>{t("common.delete")}</button>
+          <button type="button" className="host-connection-action" data-connected={isConnected} disabled={busy && connectingId !== host.id}
+            aria-label={connectingId === host.id ? t("hosts.cancelConnect") : isConnected ? t("hosts.disconnect") : t("hosts.connect")}
+            title={connectingId === host.id ? t("hosts.cancelConnect") : isConnected ? t("hosts.disconnect") : t("hosts.connect")}
+            onClick={() => isConnected || connectingId === host.id ? void disconnect(host.id) : void connect(host.id)}>
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{connectingId === host.id ? <path d="m7 7 10 10M17 7 7 17" /> : <><path d="M12 3v9" /><path d="M7 5.8a8 8 0 1 0 10 0" /></>}</svg>
+          </button>
+          <button className="danger-text" type="button" disabled={busy} aria-label={t("common.delete")} title={t("common.delete")} onClick={() => setDeleteTarget(host)}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5" /></svg></button>
         </div>
       </li>;
       })}

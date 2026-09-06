@@ -59,7 +59,7 @@ describe("AgentPort Mobile V2 shell", () => {
   it("keeps device management reachable as a modal sheet", async () => {
     render(<App client={client()} hostAuthClient={hostAuthClient} />);
     fireEvent.click(screen.getByRole("button", { name: "管理设备" }));
-    const dialog = await screen.findByRole("dialog", { name: "你的电脑" });
+    const dialog = await screen.findByRole("dialog", { name: "电脑" });
     expect(dialog).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "还没有主机" })).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });

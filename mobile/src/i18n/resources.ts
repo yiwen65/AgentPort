@@ -31,8 +31,8 @@ export const resources = {
       mobile: "移动端",
       hosts: {
         manage: "管理设备",
-        title: "你的电脑",
-        subtitle: "扫码通过 Relay 配对，或保留手动 SSH / Mosh 连接。",
+        title: "电脑",
+        subtitle: "Relay 扫码配对，或添加 SSH / Mosh。",
         emptyTitle: "还没有主机",
         emptyBody: "添加一台电脑后，即可查看和接续 Agent Session。",
         add: "添加主机",
@@ -193,8 +193,8 @@ export const resources = {
       mobile: "Mobile",
       hosts: {
         manage: "Manage devices",
-        title: "Your computers",
-        subtitle: "Scan to pair through Relay, or use manual SSH / Mosh connections.",
+        title: "Computers",
+        subtitle: "Pair via Relay or add SSH / Mosh.",
         emptyTitle: "No hosts yet",
         emptyBody: "Add a computer to inspect and continue Agent sessions.",
         add: "Add host",

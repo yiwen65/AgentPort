@@ -50,6 +50,19 @@ describe("host authentication manager", () => {
     await i18n.changeLanguage("en-US");
   });
 
+  it("uses compact named icon actions and keeps deletion behind confirmation", async () => {
+    const { remote, auth } = clients();
+    render(<HostManager remoteClient={remote} authClient={auth} />);
+    expect(await screen.findByRole("heading", { name: "Computers" })).toBeInTheDocument();
+    const connect = await screen.findByRole("button", { name: "Connect" });
+    expect(connect.textContent).toBe("");
+    expect(connect.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByText("Disconnected")).toHaveClass("visually-hidden");
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(auth.deleteProfile).not.toHaveBeenCalled();
+  });
+
   it("stores a password before saving only its opaque credential reference", async () => {
     const { remote, auth } = clients();
     vi.mocked(remote.listHostProfiles).mockResolvedValue([]);
