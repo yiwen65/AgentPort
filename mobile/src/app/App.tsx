@@ -32,10 +32,10 @@ export function App({ client, hostAuthClient }: AppProps) {
   const closeDeviceManager = useCallback(() => { setDeviceManagerOpen(false); setHostProfilesEpoch(value => value + 1); }, []);
   const swipeStart = useRef<{ x: number; y: number; at: number }>();
 
-  const openSession = (session: OpenSession) => {
+  const openSession = useCallback((session: OpenSession) => {
     setSelectedSession(session);
     setTerminalVisible(true);
-  };
+  }, []);
 
   const handleSessionChanged = (next?: OpenSession) => {
     setSelectedSession(next);

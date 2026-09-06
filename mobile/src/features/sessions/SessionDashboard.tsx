@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useId, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useId, useRef, useState } from "react";
 import { AgentPortMark } from "../../components/AgentPortMark";
 import { SessionRowActions } from "./SessionRowActions";
 import { pendingAttention, readReceipts, receiptKey, RECEIPTS_KEY } from "./sessionRecent";
@@ -150,6 +150,22 @@ function SessionRow({ session, host, stale, onOpen, onActions }: {
     </li>
   );
 }
+
+const EMPTY_SESSIONS: SessionSummary[] = [];
+
+// Project disclosure and toolbar changes do not change the Session rows.
+// Keep their event handlers and list identity stable instead of rendering every
+// row in every project for those local UI-only updates.
+const SessionRows = memo(function SessionRows({ sessions, host, stale, onOpen, onActions }: {
+  sessions: SessionSummary[];
+  host: HostProfileSummary;
+  stale?: boolean;
+  onOpen: (session: SessionSummary) => void;
+  onActions: (session: SessionSummary) => void;
+}) {
+  return <>{sessions.map(session => <SessionRow key={session.id} session={session} host={host} stale={stale}
+    onOpen={() => onOpen(session)} onActions={() => onActions(session)} />)}</>;
+});
 
 export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpenSettings, openedSession, hostProfilesEpoch = 0, active: dashboardActive = true }: {
   client: RemoteClient;
@@ -375,12 +391,21 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     return () => window.clearInterval(timer);
   }, [refreshDevice, selectedDeviceId, selectedHost?.connectionState, visible]);
 
-  const updateWorkspace = (next: PersistedWorkspace) => {
+  const updateWorkspace = useCallback((next: PersistedWorkspace) => {
     setWorkspace(next);
     if (selectedDeviceId) persistWorkspace(selectedDeviceId, next);
-  };
+  }, [selectedDeviceId]);
 
-  const sessions = snapshot?.sessions.filter((session) => !session.archivedAt) ?? [];
+  const sessions = useMemo(() => snapshot?.sessions.filter(session => !session.archivedAt) ?? EMPTY_SESSIONS, [snapshot?.sessions]);
+  const sessionsByProject = useMemo(() => {
+    const grouped = new Map<string, SessionSummary[]>();
+    for (const session of sessions) {
+      const group = grouped.get(session.projectId);
+      if (group) group.push(session); else grouped.set(session.projectId, [session]);
+    }
+    for (const group of grouped.values()) group.sort((a, b) => sessionTime(b) - sessionTime(a));
+    return grouped;
+  }, [sessions]);
   const active = useMemo(() => activeAgentSessions(sessions), [sessions]);
   const agents = useMemo(() => orderedVisibleAgents(snapshot?.agents ?? [], snapshot?.preferences), [snapshot?.agents, snapshot?.preferences]);
   const projects = useMemo(() => {
@@ -392,16 +417,21 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   }, [sessions, snapshot?.projects]);
   const recent = useMemo(() => sessions.filter(session => pendingAttention(session, receipts[receiptKey(selectedDeviceId, session.id)])).sort((a, b) => sessionTime(b) - sessionTime(a)), [sessions, receipts, selectedDeviceId]);
 
-  const open = (session: SessionSummary) => {
+  const open = useCallback((session: SessionSummary) => {
     if (!selectedHost) return;
-    updateWorkspace({ ...workspace, recentOpen: false });
+    updateWorkspace({ ...workspaceRef.current, recentOpen: false });
     onOpenSession({
       hostProfileId: selectedHost.id,
       hostName: selectedHost.name,
       projectName: projects.find((project) => project.id === session.projectId)?.name,
       session,
     });
-  };
+  }, [selectedHost, projects, updateWorkspace, onOpenSession]);
+
+  const showSessionActions = useCallback((session: SessionSummary) => {
+    updateWorkspace({ ...workspaceRef.current, recentOpen: false });
+    setRowActions({ hostId: selectedDeviceId, session });
+  }, [selectedDeviceId, updateWorkspace]);
 
   const closePicker = () => {
     pickerRef.current = undefined;
@@ -497,7 +527,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
 
       {workspace.layout === "projects" ? <div className="project-session-list dense-project-tree">
         {projects.map((project) => {
-          const projectSessions = sessions.filter((session) => session.projectId === project.id).sort((a, b) => sessionTime(b) - sessionTime(a));
+          const projectSessions = sessionsByProject.get(project.id) ?? EMPTY_SESSIONS;
           const expanded = workspace.projectExpansionInitialized
             ? workspace.expandedProjects.includes(project.id)
             : true;
@@ -512,10 +542,10 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
                 setCreatedSessionId(undefined);
               }}><AgentPortMark /></button>
             </header>
-            <div className={`project-content${expanded ? " is-expanded" : ""}`} aria-hidden={!expanded} {...(expanded ? {} : { inert: "" })}><div><ul className="v2-session-list">{projectSessions.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} stale={snapshot?.cached} onOpen={() => open(session)} onActions={() => { updateWorkspace({ ...workspace, recentOpen: false }); setRowActions({ hostId: selectedDeviceId, session }); }} />)}</ul></div></div>
+            <div className={`project-content${expanded ? " is-expanded" : ""}`} aria-hidden={!expanded} {...(expanded ? {} : { inert: "" })}><div><ul className="v2-session-list"><SessionRows sessions={projectSessions} host={selectedHost!} stale={snapshot?.cached} onOpen={open} onActions={showSessionActions} /></ul></div></div>
           </section>;
         })}
-      </div> : <div className="activity-session-view"><ul className="v2-session-list active-agent-list">{active.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} stale={snapshot?.cached} onOpen={() => open(session)} onActions={() => { updateWorkspace({ ...workspace, recentOpen: false }); setRowActions({ hostId: selectedDeviceId, session }); }} />)}</ul>{snapshot && active.length === 0 ? <div className="compact-empty" role="status">{t("dashboard.noActivity")}</div> : null}</div>}
+      </div> : <div className="activity-session-view"><ul className="v2-session-list active-agent-list"><SessionRows sessions={active} host={selectedHost!} stale={snapshot?.cached} onOpen={open} onActions={showSessionActions} /></ul>{snapshot && active.length === 0 ? <div className="compact-empty" role="status">{t("dashboard.noActivity")}</div> : null}</div>}
 
       {snapshot && sessions.length === 0 ? <div className="state-card" role="status">{t("dashboard.noSessions")}</div> : null}
 
@@ -536,7 +566,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         <section className="modal-sheet recent-sheet" role="dialog" aria-modal="true" aria-labelledby="recent-title">
           <header><h2 id="recent-title">{t("dashboard.recent")}</h2><button type="button" aria-label={t("common.close")} onClick={() => updateWorkspace({ ...workspace, recentOpen: false })}>×</button></header>
           {recent.length === 0 ? <p role="status">{t("dashboard.noRecent")}</p> : null}
-          <ul className="v2-session-list">{recent.map((session) => <SessionRow key={session.id} session={session} host={selectedHost!} stale={snapshot?.cached} onOpen={() => open(session)} onActions={() => { updateWorkspace({ ...workspace, recentOpen: false }); setRowActions({ hostId: selectedDeviceId, session }); }} />)}</ul>
+          <ul className="v2-session-list"><SessionRows sessions={recent} host={selectedHost!} stale={snapshot?.cached} onOpen={open} onActions={showSessionActions} /></ul>
         </section>
       </div> : null}
     </section>

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 import { i18n } from "../../i18n";
 import type { RemoteClient } from "../../protocol/remoteClient";
+import * as badges from "./SessionStateBadge";
 import { SessionDashboard } from "./SessionDashboard";
 
 const hosts = [
@@ -91,6 +92,21 @@ describe("V2 Session workspace", () => {
     vi.mocked(remote.request).mockClear();
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     expect(vi.mocked(remote.request).mock.calls.some(([, method]) => method === "session.list")).toBe(false);
+  });
+
+  it("does not rerender unchanged Session rows when a project is folded", async () => {
+    const badge = vi.spyOn(badges, "SessionStateBadge");
+    const remote = client();
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await screen.findByRole("button", { name: "Approval task" });
+    const renders = badge.mock.calls.length;
+    expect(renders).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "AgentPort" }));
+    expect(screen.getByRole("button", { name: "AgentPort" })).toHaveAttribute("aria-expanded", "false");
+    expect(badge.mock.calls).toHaveLength(renders);
+    fireEvent.click(screen.getByRole("button", { name: "AgentPort" }));
+    expect(screen.getByRole("button", { name: "Approval task" })).toBeVisible();
+    expect(badge.mock.calls).toHaveLength(renders);
   });
 
   it("reloads device profiles after host management closes without remounting the dashboard", async () => {

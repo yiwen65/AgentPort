@@ -92,9 +92,9 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-003 — 优化终端事件热路径
+### [x] T-003 — 优化终端事件热路径
 
-- Status: in_progress
+- Status: done
 - Owner: coordinator
 - Objective: 优化终端事件热路径，保持已确认性能契约。
 - Inputs and prerequisites: T-001/T-002 证据
@@ -108,13 +108,13 @@
   - 结果可追溯且符合总体验收，无法测量部分不宣称完成。
 - Verification method:
   - 受控重复测量、针对性测试、按风险必要的构建与集成验证。
-- Validation evidence: Not run.
+- Validation evidence: f760dad; Workspace/Protocol/MobileTerminal: 38 tests passed; npm run build passed. /tmp/ap-mobile-perf/mobile-drain-perf.*.json: 2+2 interleaved processes, five 1000x1024-byte bursts each; awaited all xterm write callbacks and two animation frames. Storage writes per burst 1000 -> 0; 5120000 bytes parsed per process. Split UTF-8, cursor reconnect, input ordering and keyboard resize regressions passed.
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-004 — 按测量优化启动与列表交互
+### [x] T-004 — 按测量优化启动与列表交互
 
-- Status: pending
+- Status: done
 - Owner: coordinator
 - Objective: 按测量优化启动与列表交互，保持已确认性能契约。
 - Inputs and prerequisites: 前序测量及已优化结果
@@ -128,13 +128,13 @@
   - 结果可追溯且符合总体验收，无法测量部分不宣称完成。
 - Verification method:
   - 受控重复测量、针对性测试、按风险必要的构建与集成验证。
-- Validation evidence: Not run.
+- Validation evidence: Dashboard/App 25 tests passed; complete Mobile suite 148 passed; npm run build passed. /tmp/ap-mobile-perf/collapse-{baseline,candidate}-{1,2}.json: 1000 Sessions / 50 projects / 4x CPU; disclosure-to-two-frames median 253.45 -> 79.6 ms (20 operations/variant). Deterministic badge-render guard failed before and passed after. Indexed grouping and memoized rows keep disclosure animation, focus, ordering and context menus unchanged. Startup bundle inspection: no measured justification for splitting small device/settings modules or changing native handshake/backoff.
 - Blocker: None.
 - Unblock condition: None.
 
 ### [ ] T-005 — 综合复测和调试交付
 
-- Status: pending
+- Status: in_progress
 - Owner: coordinator
 - Objective: 综合复测和调试交付，保持已确认性能契约。
 - Inputs and prerequisites: T-001 至 T-004 完成
@@ -170,6 +170,10 @@
 - 2026-09-06: T-001 完成，T-002 开始。原生协议请求入口已检查；未发现需降低安全语义的理由。夹具原始 esbuild safari13 转换不支持，改为一致 es2020 生产优化；该夹具用于受控浏览器比较，不替代 Vite/iOS 构建。
 
 - 2026-09-06: T-002 完成；保留完整metadata刷新而非引入过期cache。T-003 开始，重点测量base64解码与同步cursor存储。
+
+- 2026-09-06: T-003 done (f760dad); T-004 started. Stream decoding uses xterm incremental UTF-8; runtime cursor retained. Next: measure project expansion rendering and cold-load module cost.
+
+- 2026-09-06: T-004 done; T-005 started. Cold-start and cross-network claims remain bounded to available measurements; no speculative native tuning. Final native tests/build and signed debug delivery next.
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
