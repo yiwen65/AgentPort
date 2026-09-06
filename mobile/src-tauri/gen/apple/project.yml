@@ -10,7 +10,7 @@ configs:
 settingGroups:
   app:
     base:
-      PRODUCT_NAME: AgentPort Mobile
+      PRODUCT_NAME: AgentPort
       PRODUCT_BUNDLE_IDENTIFIER: com.agentport.mobile
 targetTemplates:
   app:

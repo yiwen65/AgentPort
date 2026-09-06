@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AgentPort Mobile",
+  "productName": "AgentPort",
   "version": "0.1.0",
   "identifier": "com.agentport.mobile",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "AgentPort Mobile",
+        "title": "AgentPort",
         "width": 390,
         "height": 844,
         "minWidth": 320,

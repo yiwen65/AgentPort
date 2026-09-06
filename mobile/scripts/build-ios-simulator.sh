@@ -5,6 +5,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Xcode inherits PATH and must use rustup's Cargo so the installed iOS target is visible.
 export PATH="$HOME/.cargo/bin:$PATH"
-rm -rf -- "$ROOT/src-tauri/gen/apple/build/arm64-sim/AgentPort Mobile.app"
+rm -rf -- "$ROOT/src-tauri/gen/apple/build/arm64-sim/AgentPort.app"
 cd "$ROOT"
 exec npm run tauri -- ios build --debug --target aarch64-sim --ci "$@"
