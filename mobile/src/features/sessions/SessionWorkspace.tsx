@@ -581,6 +581,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         ref={terminal}
         resizeEpoch={attachmentId}
         onInput={sendInput}
+        draftInputEnabled={busyAction !== "stop" && !!attachmentId && attachmentRef.current === attachmentId && connectionLabel === "live" && !replayPending}
         onResize={requestTerminalResize}
         fontSize={fontSize}
         theme={terminalPalette.xterm}

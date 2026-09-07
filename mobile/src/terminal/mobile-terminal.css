@@ -305,3 +305,25 @@
   background: var(--terminal-panel, var(--terminal-bg));
   font-size: 14px;
 }
+
+.mobile-terminal-draft-entry {
+  align-self: flex-end;
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 8px 16px;
+  color: var(--terminal-fg, inherit);
+  background: var(--terminal-panel);
+}
+.dictation-draft textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 100px;
+  height: 24dvh;
+  max-height: 40dvh;
+  resize: vertical;
+  font: inherit;
+  font-size: 16px;
+}
+.dictation-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 12px; }
+.dictation-actions button { min-height: 44px; }

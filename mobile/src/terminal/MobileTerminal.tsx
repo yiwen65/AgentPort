@@ -18,9 +18,12 @@ import { ShortcutSettings } from "./ShortcutSettings";
 import { applyShortcutModifiers, encodeShortcutKey, isCustomShortcut, loadShortcuts, saveShortcuts, type ShortcutLayout } from "./shortcuts";
 import { MOBILE_TERMINAL_THEMES } from "./terminalThemes";
 import "./mobile-terminal.css";
+import { DictationDraft } from "./DictationDraft";
 
 export interface MobileTerminalProps {
   onInput?: (data: string) => void;
+  /** Whether a draft can currently be submitted to the attached session. */
+  draftInputEnabled?: boolean;
   onResize?: (cols: number, rows: number) => void;
   /** Forces a fresh size report after the remote attachment/owner changes. */
   resizeEpoch?: unknown;
@@ -42,6 +45,7 @@ export interface MobileTerminalHandle {
 
 export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalProps>(function MobileTerminal({
   onInput,
+  draftInputEnabled = true,
   onResize,
   resizeEpoch,
   fontSize = 14,
@@ -55,6 +59,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const { t } = useTranslation();
   const [shortcutLayout, setShortcutLayout] = useState(loadShortcuts);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [draftOpen, setDraftOpen] = useState(false);
   const sectionRef = useRef<HTMLElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const selectionMenuRef = useRef<HTMLDivElement>(null);
@@ -605,6 +610,16 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   return (
     <section ref={sectionRef} className="mobile-terminal-spike" data-input-active={inputActive} aria-label={title} aria-hidden={obscured || undefined} style={{ visibility: obscured ? "hidden" : undefined }}>
       {showHeading ? <div className="mobile-terminal-heading"><h2>{title}</h2>{description ? <p>{description}</p> : null}</div> : null}
+      <button type="button" className="mobile-terminal-draft-entry" aria-haspopup="dialog" onClick={() => { clearModifiers(); setDraftOpen(true); }}>{t("dictation.title")}</button>
+      {draftOpen ? <DictationDraft available={draftInputEnabled && !obscured} onClose={() => setDraftOpen(false)} onInsert={text => {
+        const terminal = terminalRef.current;
+        if (!terminal || !draftInputEnabled || obscured) return false;
+        clearModifiers();
+        // xterm encodes bracketed paste according to the current terminal mode.
+        // Its onData path retains the workspace's normal transport guards.
+        terminal.paste(text);
+        return true;
+      }} /> : null}
       <div ref={containerRef} className="mobile-terminal-surface" role="application" aria-label={title} />
       {hasSelection && !obscured ? <div ref={selectionMenuRef} className="mobile-terminal-selection" role="group" aria-label="Text selection">
         <button type="button" onMouseDown={event => event.preventDefault()} onClick={copySelection}>Copy</button>
