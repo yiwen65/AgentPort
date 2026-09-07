@@ -4292,6 +4292,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             notifications::install(app.handle());
+            relay::start_on_app_launch(app.handle());
             // The sidebar glass is pure CSS now: the window stays
             // transparent (tauri.conf.json) and `.sidebar` owns blur,
             // saturation, and tint via backdrop-filter. A native

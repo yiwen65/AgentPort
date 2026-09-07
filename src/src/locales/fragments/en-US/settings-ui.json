@@ -282,7 +282,7 @@
     },
     "pairing": {
       "description": "Pair a phone and use terminal sessions through an end-to-end encrypted Relay.",
-      "requirements": "Use your self-hosted Relay endpoint (wss://host/v1/relay). Both devices connect outbound; no SSH or direct phone-to-computer access is required. Scanning the QR automatically grants access without another confirmation. Keep this short-lived, one-time access code private. The background connector survives closing the app; no login autostart is installed.",
+      "requirements": "Use your self-hosted Relay endpoint (wss://host/v1/relay). Both devices connect outbound; no SSH or direct phone-to-computer access is required. Scanning the QR automatically grants access without another confirmation. Keep this short-lived, one-time access code private. Opening AgentPort automatically starts or reuses the background connector without creating a pairing invitation or granting new access. It survives closing the app. Manual Stop lasts until you start it again or relaunch the app; no OS boot/login autostart is installed.",
       "generate": "Generate pairing code",
       "close": "Close pairing",
       "qrAlt": "Short-lived AgentPort pairing QR code",

@@ -186,10 +186,18 @@ Desktop native commands:
   echoed. Do not log invoke payloads. Failed/unknown mutations must be followed
   by a status refresh, not automatic replay.
 
+On each desktop app launch, backend setup asynchronously starts or reuses this
+installation/data-root connector once, using the same start lock as manual Start.
+Startup failures are logged without preventing the GUI from opening; there is no
+automatic retry, pairing invitation, or new device authorization. Existing saved
+configuration and authorizations remain in effect. Manual Stop keeps it stopped
+for the current GUI lifetime unless you explicitly Start again; the next app
+launch attempts startup again.
+
 The GUI launches the connector in a separate POSIX session with null stdio;
-closing the GUI does not stop it. Stop is explicit. **No boot/login autostart**
-is installed. A machine restart therefore requires starting it again. GUI app
-updates do not automatically replace an already-running connector: explicitly
+closing the GUI does not stop it. **No OS boot/login autostart** is installed.
+After a machine restart, opening AgentPort starts it again (or start it manually).
+GUI app updates do not automatically replace an already-running connector: explicitly
 Stop/Start to use the updated sidecar (this disconnects Relay attachments but
 preserves Session Hosts).
 
