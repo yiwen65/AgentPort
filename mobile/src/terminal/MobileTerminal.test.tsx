@@ -19,7 +19,13 @@ const terminalHarness = vi.hoisted(() => ({
   input: (_data: string) => {},
   applicationCursor: false,
   mouseTracking: "none",
+  bufferType: "normal",
+  queued: false,
+  writesQueue: [] as (() => void)[],
   fitCalls: 0,
+  cols: 80,
+  rows: 24,
+  resizeObserved: () => {},
   scrolledLines: [] as number[],
   writes: [] as (string | Uint8Array)[],
   resets: 0,
@@ -34,10 +40,10 @@ vi.mock("@xterm/addon-fit", () => ({
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
-    cols = 80;
-    rows = 24;
+    get cols() { return terminalHarness.cols; }
+    get rows() { return terminalHarness.rows; }
     get modes() { return { applicationCursorKeysMode: terminalHarness.applicationCursor, mouseTrackingMode: terminalHarness.mouseTracking }; }
-    buffer = { active: { cursorY: 20, viewportY: 0, get baseY() { return terminalHarness.baseY; }, getLine: () => ({ getCell: () => ({ getChars: () => "a", getWidth: () => 1 }) }) } };
+    buffer = { active: { get type() { return terminalHarness.bufferType; }, cursorY: 20, viewportY: 0, get baseY() { return terminalHarness.baseY; }, getLine: () => ({ getCell: () => ({ getChars: () => "a", getWidth: () => 1 }) }) } };
     options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown };
     constructor(options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown } = {}) {
       this.options = { ...options };
@@ -62,8 +68,8 @@ vi.mock("@xterm/xterm", () => ({
     onData(handler: (data: string) => void) { terminalHarness.input = handler; return { dispose() { /* deterministic no-op */ } }; }
     focus() { terminalHarness.helper?.focus(); }
     write(data: string | Uint8Array, callback?: () => void) {
-      if (data) terminalHarness.writes.push(data);
-      callback?.();
+      const parse = () => { if (data) terminalHarness.writes.push(data); callback?.(); };
+      if (terminalHarness.queued) terminalHarness.writesQueue.push(parse); else parse();
     }
     reset() { terminalHarness.resets += 1; }
     scrollLines(rows: number) { terminalHarness.scrolledLines.push(rows); }
@@ -82,6 +88,9 @@ describe("MobileTerminal input accessory", () => {
     localStorage.clear();
     terminalHarness.applicationCursor = false;
     terminalHarness.mouseTracking = "none";
+    terminalHarness.bufferType = "normal";
+    terminalHarness.queued = false;
+    terminalHarness.writesQueue = [];
     terminalHarness.scrolledLines = [];
     terminalHarness.input = () => {};
     terminalHarness.selection = "selected output";
@@ -94,12 +103,15 @@ describe("MobileTerminal input accessory", () => {
     terminalHarness.screenHeight = 240;
     terminalHarness.baseY = 0;
     terminalHarness.fitCalls = 0;
+    terminalHarness.cols = 80;
+    terminalHarness.rows = 24;
     terminalHarness.writes = [];
     terminalHarness.resets = 0;
     terminalHarness.scrollToTopCalls = 0;
     terminalHarness.instances = 0;
     terminalHarness.options = undefined;
     vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { terminalHarness.resizeObserved = callback; }
       observe() { /* deterministic no-op */ }
       disconnect() { /* deterministic no-op */ }
     });
@@ -136,13 +148,27 @@ describe("MobileTerminal input accessory", () => {
     expect(terminalHarness.writes[0]).toBe(bytes);
   });
 
-  it("can replace retained output and reveal the newly prepended top", () => {
+  it("fences reset and parse completion behind queued writes, without reordering live bytes", () => {
     const ref = createRef<MobileTerminalHandle>();
     render(<MobileTerminal ref={ref} showProbeOutput={false} />);
-    ref.current?.replaceBuffer("older\ntail", true);
+    terminalHarness.queued = true;
+    const parsed = vi.fn();
+    ref.current?.write("old");
+    ref.current?.reset();
+    ref.current?.write("replay");
+    ref.current?.write("", parsed);
+    ref.current?.write("live");
+    expect(terminalHarness.resets).toBe(0);
+    expect(parsed).not.toHaveBeenCalled();
+    terminalHarness.writesQueue.shift()?.();
+    terminalHarness.writesQueue.shift()?.();
     expect(terminalHarness.resets).toBe(1);
-    expect(terminalHarness.writes).toEqual(["older\ntail"]);
-    expect(terminalHarness.scrollToTopCalls).toBe(1);
+    terminalHarness.writesQueue.shift()?.();
+    expect(parsed).not.toHaveBeenCalled();
+    terminalHarness.writesQueue.shift()?.();
+    expect(parsed).toHaveBeenCalledOnce();
+    terminalHarness.writesQueue.shift()?.();
+    expect(terminalHarness.writes).toEqual(["old", "replay", "live"]);
   });
 
   it("obscures stopping output without disposing or clearing the terminal", () => {
@@ -326,17 +352,6 @@ describe("MobileTerminal input accessory", () => {
     expect(focus).toHaveBeenCalledOnce();
   });
 
-  it("notifies when the user reaches the oldest retained scrollback row", () => {
-    const onReachTop = vi.fn();
-    render(<MobileTerminal onReachTop={onReachTop} showHeading={false} showProbeOutput={false} />);
-    terminalHarness.baseY = 10;
-    act(() => terminalHarness.scrolled(0));
-    expect(onReachTop).toHaveBeenCalledOnce();
-    terminalHarness.baseY = 0;
-    act(() => terminalHarness.scrolled(0));
-    expect(onReachTop).toHaveBeenCalledOnce();
-  });
-
   it("routes vertical touch movement through fast local scrollback, without interpreting a horizontal swipe as scroll", async () => {
     render(<MobileTerminal showHeading={false} />);
     const wheel = vi.fn();
@@ -355,8 +370,12 @@ describe("MobileTerminal input accessory", () => {
     expect(terminalHarness.scrolledLines).toEqual([21]);
   });
 
-  it("preserves wheel dispatch for mouse-reporting TUIs", async () => {
-    terminalHarness.mouseTracking = "x10";
+  it.each([
+    ["alternate", "none"], ["normal", "x10"], ["alternate", "vt200"],
+    ["normal", "drag"], ["alternate", "any"],
+  ])("delegates %s buffer / %s mouse mode to xterm's wheel encoder", async (bufferType, mouseTracking) => {
+    terminalHarness.bufferType = bufferType;
+    terminalHarness.mouseTracking = mouseTracking;
     render(<MobileTerminal showHeading={false} />);
     const wheel = vi.fn();
     screen.getByRole("application").addEventListener("wheel", wheel);
@@ -487,6 +506,21 @@ describe("MobileTerminal input accessory", () => {
     await screen.findByRole("button", { name: "Terminal shortcuts" });
     expect(screen.queryByRole("button", { name: "Slash" })).toBeNull();
     expect(onInput).not.toHaveBeenCalled();
+  });
+
+  it("reports content-box geometry changes after layout settles, including while concealed", async () => {
+    const onResize = vi.fn();
+    render(<MobileTerminal onResize={onResize} showProbeOutput={false} obscured />);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    onResize.mockClear();
+    terminalHarness.cols = 52;
+    terminalHarness.rows = 38;
+    act(() => { terminalHarness.resizeObserved(); terminalHarness.resizeObserved(); });
+    await waitFor(() => expect(onResize).toHaveBeenCalledWith(52, 38));
+    expect(onResize).toHaveBeenCalledOnce();
+    act(() => terminalHarness.resizeObserved());
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(onResize).toHaveBeenCalledOnce();
   });
 
   it("uses the keyboard viewport and refits after the shortcut row enters layout", async () => {

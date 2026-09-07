@@ -16,6 +16,8 @@ const terminalHarness = vi.hoisted(() => ({
     theme?: { background?: string; foreground?: string };
   } | undefined,
   writes: [] as string[],
+  queued: false,
+  writesQueue: [] as (() => void)[],
   resets: 0,
   renders: 0,
   mounts: 0,
@@ -29,9 +31,11 @@ vi.mock("../../terminal/MobileTerminal", async () => {
       terminalHarness.props = props;
       terminalHarness.renders += 1;
       useImperativeHandle(ref, () => ({
-        write: (data: string | Uint8Array) => terminalHarness.writes.push(typeof data === "string" ? data : new TextDecoder().decode(data)),
+        write: (data: string | Uint8Array, callback?: () => void) => {
+          const parse = () => { if (data.length) terminalHarness.writes.push(typeof data === "string" ? data : new TextDecoder().decode(data)); callback?.(); };
+          if (terminalHarness.queued) terminalHarness.writesQueue.push(parse); else parse();
+        },
         reset: () => { terminalHarness.resets += 1; },
-        replaceBuffer: (data: string | Uint8Array) => { terminalHarness.resets += 1; terminalHarness.writes = [typeof data === "string" ? data : new TextDecoder().decode(data)]; },
       }), []);
       return <section aria-label="Raw terminal" style={{ visibility: props.obscured ? "hidden" : undefined }}>
         <button type="button" onClick={() => props.onInput?.("你好\r")}>Type terminal input</button>
@@ -50,10 +54,10 @@ const open: OpenSession = {
   },
 };
 
-function setupClient({ rejectResize = false }: { rejectResize?: boolean } = {}) {
+function setupClient({ rejectResize = false, autoReplay = true }: { rejectResize?: boolean; autoReplay?: boolean } = {}) {
   let listener: ((event: RemoteEvent<SessionEventPayload>) => void) | undefined;
   const request = vi.fn().mockImplementation((_profileId, method, params) => {
-    if (method === "session.attach") return Promise.resolve({ attachmentId: "att-1", sessionId: "ses-1", childAlive: true, cursor: null, features: ["input_batch_v1", "terminal.geometry_v1"], runId: "run", runOrdinal: 1, terminalGeometry: null });
+    if (method === "session.attach") { if (autoReplay) listener?.({ subscriptionId: "att-1", eventType: "replay_done", cursor: null, payload: { session_id: "ses-1" } }); return Promise.resolve({ attachmentId: "att-1", sessionId: "ses-1", childAlive: true, cursor: null, features: ["input_batch_v1", "terminal.geometry_v1"], runId: "run", runOrdinal: 1, terminalGeometry: null }); }
     if (method === "git.context.resolve") return Promise.resolve({ actualBranch: "main", expectedBranch: "main" });
     if (method === "session.list") return Promise.resolve([]);
     if (method === "session.stop") return Promise.resolve({ groupCleaned: true });
@@ -77,6 +81,8 @@ describe("SessionWorkspace", () => {
     localStorage.clear();
     terminalHarness.props = undefined;
     terminalHarness.writes = [];
+    terminalHarness.queued = false;
+    terminalHarness.writesQueue = [];
     terminalHarness.resets = 0;
     terminalHarness.renders = 0;
     terminalHarness.mounts = 0;
@@ -397,29 +403,49 @@ describe("SessionWorkspace", () => {
     persist.mockRestore();
   });
 
-  it("loads an older verified log page when terminal scrollback reaches the top", async () => {
-    const { client, request, emit } = setupClient();
-    const base = request.getMockImplementation()!;
-    request.mockImplementation((...args) => args[1] === "session.recovery_context.read"
-      ? Promise.resolve({ dataBase64: btoa("pref"), offset: 0, total: 8, cursor: args[2].cursor })
-      : base(...args));
+  it("conceals cold replay through the parse barrier and does not rebuild live TUI history", async () => {
+    const { client, request, emit } = setupClient({ autoReplay: false });
+    terminalHarness.queued = true;
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
-    await act(async () => {
-      emit({ subscriptionId: "sub", eventType: "output", cursor: { runId: "run", runOrdinal: 1, generation: 0, offset: 8, statusSequence: 0 }, payload: { session_id: "ses-1", dataBase64: btoa("tail") } });
-      await new Promise((resolve) => requestAnimationFrame(resolve));
+    expect(terminalHarness.props?.obscured).toBe(true);
+    act(() => terminalHarness.props?.onResize?.(52, 32));
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(request.mock.calls.some(([, method]) => method === "session.control")).toBe(false);
+    act(() => {
+      emit({ subscriptionId: "att-1", eventType: "output", cursor: null, payload: { session_id: "ses-1", dataBase64: btoa("replay") } });
+      emit({ subscriptionId: "att-1", eventType: "replay_done", cursor: null, payload: { session_id: "ses-1" } });
+      emit({ subscriptionId: "att-1", eventType: "output", cursor: null, payload: { session_id: "ses-1", dataBase64: btoa("live") } });
     });
+    expect(terminalHarness.props?.obscured).toBe(true);
+    act(() => terminalHarness.writesQueue.shift()?.());
+    expect(terminalHarness.writes).toEqual(["replay"]);
+    expect(terminalHarness.props?.obscured).toBe(true);
+    act(() => terminalHarness.writesQueue.shift()?.());
+    expect(terminalHarness.props?.obscured).toBe(false);
+    await waitFor(() => expect(request.mock.calls.some(([, method]) => method === "session.control")).toBe(true));
+    act(() => { while (terminalHarness.writesQueue.length) terminalHarness.writesQueue.shift()?.(); });
+    expect(terminalHarness.writes).toEqual(["replay", "live"]);
+    expect(terminalHarness.props?.onReachTop).toBeUndefined();
+    expect(terminalHarness.resets).toBe(0);
+    expect(request.mock.calls.some(([, method]) => method === "session.recovery_context.read")).toBe(false);
+  });
 
-    await act(async () => {
-      terminalHarness.props?.onReachTop?.();
-      await Promise.resolve();
+  it("does not let an old parse completion reveal a replacement replay after resync", async () => {
+    const { client, request, emit } = setupClient({ autoReplay: false });
+    terminalHarness.queued = true;
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    act(() => {
+      emit({ subscriptionId: "att-1", eventType: "replay_done", cursor: null, payload: { session_id: "ses-1" } });
+      emit({ subscriptionId: "att-1", eventType: "resync_required", cursor: null, payload: { session_id: "ses-1" } });
     });
-
-    expect(request).toHaveBeenCalledWith("host-1", "session.recovery_context.read", {
-      sessionId: "ses-1",
-      cursor: { runId: "run", runOrdinal: 1, generation: 0, offset: 4, statusSequence: 0 },
-    });
-    expect(terminalHarness.writes).toEqual(["preftail"]);
+    await waitFor(() => expect(request.mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(2));
+    act(() => terminalHarness.writesQueue.shift()?.());
+    expect(terminalHarness.props?.obscured).toBe(true);
+    act(() => emit({ subscriptionId: "att-1", eventType: "replay_done", cursor: null, payload: { session_id: "ses-1" } }));
+    act(() => { while (terminalHarness.writesQueue.length) terminalHarness.writesQueue.shift()?.(); });
+    expect(terminalHarness.props?.obscured).toBe(false);
   });
 
   it("consumes the Host terminal_geometry_changed event contract", async () => {
