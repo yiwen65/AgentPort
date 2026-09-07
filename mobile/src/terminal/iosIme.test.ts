@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { Terminal } from "@xterm/xterm";
-import { installIosImeRouting } from "./iosIme";
+import { installIosImeRouting, iosImeDiagnostics } from "./iosIme";
 
 const disposals: (() => void)[] = [];
 beforeEach(() => {
@@ -182,6 +182,94 @@ describe("iOS edit routing against a real opened xterm 5.5", () => {
     insert(textarea, "a"); up(textarea, "a");
     textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter", keyCode: 13 }));
     expect(sent.join("")).toBe("a\r");
+  });
+  it.each([0, 20, 1000])("waits for an asynchronous final DOM commit (%sms)", async delay => {
+    const { textarea, sent } = setup();
+    textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    insert(textarea, "ni", "insertCompositionText", true);
+    textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "你" }));
+    await vi.advanceTimersByTimeAsync(delay);
+    expect(sent).toEqual([]);
+    textarea.value = "你";
+    textarea.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromComposition", data: "你" }));
+    await tick();
+    replace(textarea, "你", "你", "insertText");
+    expect(sent).toEqual(["你"]);
+  });
+  it("blocks xterm composition readers and 229 fallback with interleaved final input", async () => {
+    const { textarea, sent } = setup();
+    const leaked = vi.fn();
+    for (const type of ["compositionstart", "compositionupdate", "compositionend", "input"]) textarea.addEventListener(type, leaked);
+    down(textarea, "Process");
+    textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    insert(textarea, "你", "insertText", false); // Some keyboards omit isComposing.
+    textarea.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: "你" }));
+    await tick(); expect(sent).toEqual([]);
+    textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "你" }));
+    replace(textarea, "你", "你", "insertText");
+    await tick();
+    replace(textarea, "你", "你", "insertFromComposition");
+    expect(sent).toEqual(["你"]); expect(leaked).not.toHaveBeenCalled();
+  });
+  it("corrects proven CJK suffixes by scalar, not byte or cell width", () => {
+    const { textarea, sent } = setup();
+    replace(textarea, "你好世间", "你好世间", "insertFromDictation");
+    textarea.setSelectionRange(0, 4);
+    replace(textarea, "你好世界", "你好世界", "insertReplacementText");
+    textarea.setSelectionRange(0, 4);
+    replace(textarea, "你好世界！", "你好世界！", "insertFromDictation");
+    expect(sent).toEqual(["你好世间", "\x7f界", "！"]);
+  });
+  it("commits composition replacement once rather than appending revised CJK", async () => {
+    const { textarea, sent } = setup();
+    insert(textarea, "你好"); textarea.setSelectionRange(0, 2);
+    textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    textarea.value = "您好";
+    textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "您好" }));
+    await tick();
+    replace(textarea, "您好", "您好", "insertText");
+    expect(sent).toEqual(["你好", "\x7f\x7f您好"]);
+  });
+  it("fences destructive corrections after out-of-band toolbar input", () => {
+    const { textarea, sent, dispose } = setup();
+    insert(textarea, "你好");
+    dispose.invalidate(); // MobileTerminal calls this for toolbar/paste/reset.
+    textarea.setSelectionRange(0, 2);
+    replace(textarea, "您好", "您好", "insertReplacementText");
+    expect(sent).toEqual(["你好"]);
+  });
+  it("owns soft deletion when beforeinput proves the suffix", () => {
+    const { textarea, sent } = setup();
+    insert(textarea, "你好"); textarea.setSelectionRange(2, 2);
+    replace(textarea, "你", "", "deleteContentBackward");
+    expect(sent).toEqual(["你好", "\x7f"]);
+  });
+  it("does not emit canceled composition preedit", async () => {
+    const { textarea, sent } = setup();
+    textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    insert(textarea, "ni", "insertCompositionText", true);
+    textarea.value = "";
+    textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "" }));
+    await tick(); expect(sent).toEqual([]);
+  });
+  it("cancels pending commits on disposal", async () => {
+    const { textarea, sent, dispose } = setup();
+    textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    textarea.value = "hello";
+    textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "hello" }));
+    dispose(); await tick(); expect(sent).toEqual([]);
+  });
+  it("provides opt-in bounded diagnostics without text and clears on disable", () => {
+    iosImeDiagnostics.disable();
+    const { textarea } = setup(); insert(textarea, "private phrase");
+    expect(iosImeDiagnostics.snapshot()).toEqual([]);
+    iosImeDiagnostics.enable();
+    for (let i = 0; i < 300; i++) insert(textarea, "secret");
+    const records = iosImeDiagnostics.snapshot();
+    expect(records).toHaveLength(256);
+    expect(JSON.stringify(records)).not.toMatch(/private|secret/);
+    expect(records.at(-1)).toMatchObject({ type: "input", dataLength: 6, emittedLength: 6 });
+    iosImeDiagnostics.disable(); expect(iosImeDiagnostics.snapshot()).toEqual([]);
   });
   it("removes listeners on disposal (upstream timing regression returns)", async () => {
     const { textarea, sent, dispose } = setup(); dispose();

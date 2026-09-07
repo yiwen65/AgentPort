@@ -1,7 +1,6 @@
 export const resources = {
   "zh-CN": {
     translation: {
-      dictation: { title: "语音草稿", label: "草稿内容", hint: "在此使用键盘语音输入（如豆包）并检查最终文本。编辑不会发送到终端；插入仅粘贴，不额外回车。多行文本在未启用括号粘贴的程序中可能执行命令。", insert: "插入", cancel: "取消", unavailable: "终端尚未就绪，草稿暂未发送。" },
       shortcuts: {
         title: "终端快捷键", hint: "选择显示的按键并调整顺序。设置不会向终端发送内容。", show: "显示 {{name}}", earlier: "前移 {{name}}", later: "后移 {{name}}",
         edit: "编辑 {{name}}", remove: "删除 {{name}}", add: "添加快捷键", update: "更新快捷键", label: "名称", kind: "类型", text: "文本", combination: "组合键", content: "发送文本", key: "按键", character: "字符", modifiers: "修饰键",
@@ -170,7 +169,6 @@ export const resources = {
   },
   "en-US": {
     translation: {
-      dictation: { title: "Voice draft", label: "Draft text", hint: "Use keyboard dictation (such as Doubao) here and review the final text. Edits stay local; Insert only pastes, without adding Enter. Multiline text may execute commands in programs without bracketed paste.", insert: "Insert", cancel: "Cancel", unavailable: "Terminal is not ready; draft has not been sent." },
       shortcuts: {
         title: "Terminal shortcuts", hint: "Choose visible keys and their order. Editing settings never sends terminal input.", show: "Show {{name}}", earlier: "Move {{name}} earlier", later: "Move {{name}} later",
         edit: "Edit {{name}}", remove: "Delete {{name}}", add: "Add shortcut", update: "Update shortcut", label: "Name", kind: "Type", text: "Text", combination: "Key combination", content: "Text to send", key: "Key", character: "Character", modifiers: "Modifiers",

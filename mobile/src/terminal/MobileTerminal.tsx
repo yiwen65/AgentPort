@@ -18,12 +18,9 @@ import { ShortcutSettings } from "./ShortcutSettings";
 import { applyShortcutModifiers, encodeShortcutKey, isCustomShortcut, loadShortcuts, saveShortcuts, type ShortcutLayout } from "./shortcuts";
 import { MOBILE_TERMINAL_THEMES } from "./terminalThemes";
 import "./mobile-terminal.css";
-import { DictationDraft } from "./DictationDraft";
 
 export interface MobileTerminalProps {
   onInput?: (data: string) => void;
-  /** Whether a draft can currently be submitted to the attached session. */
-  draftInputEnabled?: boolean;
   onResize?: (cols: number, rows: number) => void;
   /** Forces a fresh size report after the remote attachment/owner changes. */
   resizeEpoch?: unknown;
@@ -45,7 +42,6 @@ export interface MobileTerminalHandle {
 
 export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalProps>(function MobileTerminal({
   onInput,
-  draftInputEnabled = true,
   onResize,
   resizeEpoch,
   fontSize = 14,
@@ -59,7 +55,6 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const { t } = useTranslation();
   const [shortcutLayout, setShortcutLayout] = useState(loadShortcuts);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [draftOpen, setDraftOpen] = useState(false);
   const sectionRef = useRef<HTMLElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const selectionMenuRef = useRef<HTMLDivElement>(null);
@@ -75,6 +70,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const pendingRemoteReport = useRef(false);
   const scheduleFitRef = useRef<(reportRemote?: boolean) => void>(() => undefined);
   const inputHandlerRef = useRef<(data: string) => void>(() => undefined);
+  const invalidateIosImeRef = useRef<() => void>(() => undefined);
+  const iosEmissionRef = useRef(false);
   const shiftRef = useRef(false);
   const controlRef = useRef(false);
   const commandRef = useRef(false);
@@ -94,6 +91,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       terminalRef.current?.write(data, onParsed);
     },
     reset() {
+      invalidateIosImeRef.current();
       const terminal = terminalRef.current;
       if (!terminal) return;
       // Fence the reset behind writes already queued in xterm, while writes
@@ -124,6 +122,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   };
 
   const writeInput = (data: string) => {
+    // Toolbar navigation/paste bypass DOM key events and end the owned suffix.
+    if (!iosEmissionRef.current) invalidateIosImeRef.current();
     const terminal = terminalRef.current;
     if (inputRef.current) inputRef.current(data);
     else terminal?.write(data === "\r" ? "\r\n$ " : data);
@@ -147,6 +147,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
 
   inputHandlerRef.current = (data: string) => {
     if (commandRef.current) {
+      invalidateIosImeRef.current();
       clearModifiers();
       const command = data.toLocaleLowerCase();
       if (command === "v") paste();
@@ -155,6 +156,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       return;
     }
     const next = applyShortcutModifiers(data, { ctrl: controlRef.current, shift: shiftRef.current });
+    if (next !== data) invalidateIosImeRef.current();
     if (shiftRef.current) setShift(false);
     if (controlRef.current) setControl(false);
     writeInput(next);
@@ -179,7 +181,11 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     terminal.loadAddon(fit);
     terminal.open(container);
     const disposeIosIme = isIosKeyboard() && terminal.textarea
-      ? installIosImeRouting(container, terminal.textarea, text => terminal.input(text, true)) : undefined;
+      ? installIosImeRouting(container, terminal.textarea, text => {
+        iosEmissionRef.current = true;
+        try { terminal.input(text, true); } finally { iosEmissionRef.current = false; }
+      }) : undefined;
+    invalidateIosImeRef.current = disposeIosIme?.invalidate ?? (() => undefined);
     let selectionFrame: number | undefined;
     const positionSelectionMenu = () => {
       const menu = selectionMenuRef.current;
@@ -518,6 +524,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       if (workspace) delete workspace.dataset.keyboardVisible;
       resize.disconnect();
       disposeIosIme?.();
+      invalidateIosImeRef.current = () => undefined;
       cancelLongPress();
       if (selectionFrame !== undefined) window.cancelAnimationFrame(selectionFrame);
       positionSelectionMenuRef.current = () => undefined;
@@ -610,16 +617,6 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   return (
     <section ref={sectionRef} className="mobile-terminal-spike" data-input-active={inputActive} aria-label={title} aria-hidden={obscured || undefined} style={{ visibility: obscured ? "hidden" : undefined }}>
       {showHeading ? <div className="mobile-terminal-heading"><h2>{title}</h2>{description ? <p>{description}</p> : null}</div> : null}
-      <button type="button" className="mobile-terminal-draft-entry" aria-haspopup="dialog" onClick={() => { clearModifiers(); setDraftOpen(true); }}>{t("dictation.title")}</button>
-      {draftOpen ? <DictationDraft available={draftInputEnabled && !obscured} onClose={() => setDraftOpen(false)} onInsert={text => {
-        const terminal = terminalRef.current;
-        if (!terminal || !draftInputEnabled || obscured) return false;
-        clearModifiers();
-        // xterm encodes bracketed paste according to the current terminal mode.
-        // Its onData path retains the workspace's normal transport guards.
-        terminal.paste(text);
-        return true;
-      }} /> : null}
       <div ref={containerRef} className="mobile-terminal-surface" role="application" aria-label={title} />
       {hasSelection && !obscured ? <div ref={selectionMenuRef} className="mobile-terminal-selection" role="group" aria-label="Text selection">
         <button type="button" onMouseDown={event => event.preventDefault()} onClick={copySelection}>Copy</button>

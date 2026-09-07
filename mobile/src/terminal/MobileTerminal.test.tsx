@@ -66,7 +66,6 @@ vi.mock("@xterm/xterm", () => ({
     onScroll(callback: (viewportY: number) => void) { terminalHarness.scrolled = callback; return { dispose() {} }; }
     getSelectionPosition() { return { start: { x: 0, y: 4 }, end: { x: 10, y: 4 } }; }
     onData(handler: (data: string) => void) { terminalHarness.input = handler; return { dispose() { /* deterministic no-op */ } }; }
-    paste(text: string) { terminalHarness.input(`\u001b[200~${text}\u001b[201~`); }
     focus() { terminalHarness.helper?.focus(); }
     write(data: string | Uint8Array, callback?: () => void) {
       const parse = () => { if (data) terminalHarness.writes.push(data); callback?.(); };
@@ -85,16 +84,6 @@ vi.mock("@xterm/xterm", () => ({
 }));
 
 describe("MobileTerminal input accessory", () => {
-  it("offers an unfocused native draft and uses xterm paste through onInput", () => {
-    const onInput = vi.fn();
-    render(<MobileTerminal onInput={onInput} showProbeOutput={false} />);
-    fireEvent.click(screen.getByRole("button", { name: "Voice draft" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "Draft text" }), { target: { value: "hello" } });
-    expect(onInput).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Insert" }));
-    expect(onInput).toHaveBeenCalledExactlyOnceWith("\u001b[200~hello\u001b[201~");
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  });
   beforeEach(() => {
     localStorage.clear();
     terminalHarness.applicationCursor = false;

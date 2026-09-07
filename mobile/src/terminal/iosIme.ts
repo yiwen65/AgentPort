@@ -1,130 +1,165 @@
-/** Keep xterm 5.5's CompositionHelper as the single composition reader.
- * Its deferred textarea read and Terminal._inputEvent otherwise both commit a
- * trailing insertText. Track the DOM edit, not recently emitted strings: equal
- * text appended by a new utterance must still be sent.
+/** iOS owns DOM text edits; xterm owns hardware keys and paste only.
+ * xterm 5.5 CompositionHelper has TWO deferred textarea readers (compositionend
+ * and keyCode 229), in addition to Terminal._inputEvent. Capture at the parent
+ * prevents all three from observing edits owned here. Do not install mid-IME.
+ *
+ * DOM values, never event.data or a time/string dedup window, identify edits.
+ * Terminal input is not a document editor: destructive changes require a proven
+ * owned suffix and beforeinput selection. DEL assumes normal terminal erase
+ * semantics; complex graphemes are deliberately not rewritten.
  */
+type TraceEntry = { type: string; inputType?: string; dataLength: number; valueLength: number;
+  equalsObserved: boolean; selection: [number, number]; composing: boolean; emittedLength: number; reason?: string };
+const trace: TraceEntry[] = [];
+let tracing = false;
+export const iosImeDiagnostics = {
+  enable() { trace.length = 0; tracing = true; },
+  disable() { tracing = false; trace.length = 0; },
+  snapshot() { return trace.map(entry => ({ ...entry, selection: [...entry.selection] })); },
+};
+// Explicitly opt-in, bounded, memory-only. No text, hashes, storage or network.
+Object.assign(window, { __agentportIosImeDiagnostics: iosImeDiagnostics });
+
 export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextAreaElement,
   send: (text: string) => void) {
   let composing = false;
-  let committing = false;
-  let commitTimer: ReturnType<typeof setTimeout> | undefined;
-  // Only this suffix is known to have been sent by the current voice/IME edit.
-  let committed: { value: string; start: number } | undefined;
-  let compositionStart = 0;
+  let pending = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let observed = textarea.value;
+  let ownedStart = observed.length;
   let hardware = false;
   let before: { value: string; start: number; end: number } | undefined;
-  const reset = () => { committed = undefined; before = undefined; };
+  let compositionBefore: typeof before;
+  const record = (event: Event | undefined, emittedLength = 0, reason?: string) => {
+    if (!tracing) return;
+    const edit = event as InputEvent | undefined;
+    trace.push({ type: event?.type ?? "commit", inputType: edit?.inputType,
+      dataLength: typeof edit?.data === "string" ? edit.data.length : 0,
+      valueLength: textarea.value.length, equalsObserved: textarea.value === observed,
+      selection: [textarea.selectionStart, textarea.selectionEnd], composing, emittedLength, reason });
+    if (trace.length > 256) trace.shift();
+  };
+  const snapshot = () => ({ value: textarea.value, start: textarea.selectionStart, end: textarea.selectionEnd });
+  const invalidate = () => {
+    clearTimeout(timer); pending = false; composing = false;
+    observed = textarea.value; ownedStart = observed.length; before = compositionBefore = undefined;
+  };
+  const reconcile = (event?: Event, previous = before) => {
+    const value = textarea.value;
+    // A witnessed browser/xterm reset is a new document epoch, not repetition.
+    if (previous && previous.value !== observed) {
+      observed = previous.value; ownedStart = observed.length;
+    }
+    const base = observed;
+    const atEnd = textarea.selectionStart === value.length && textarea.selectionEnd === value.length;
+    let output = "";
+    let reason = "unchanged";
+    if (value !== base) {
+      if (atEnd && value.startsWith(base)) {
+        output = value.slice(base.length); reason = "append";
+      } else if (atEnd && previous?.value === base && previous.start >= ownedStart
+        && previous.end === base.length && (value.startsWith(base.slice(0, previous.start))
+          || ((event as InputEvent | undefined)?.inputType === "deleteContentBackward"
+            && previous.start === previous.end && base.startsWith(value) && value.length >= ownedStart))) {
+        // Compare Unicode scalars, not UTF-16 units (never split a surrogate).
+        const old = Array.from(base.slice(ownedStart));
+        const next = Array.from(value.slice(ownedStart));
+        let common = 0;
+        while (common < old.length && common < next.length && old[common] === next[common]) common++;
+        const removed = old.slice(common).join("");
+        // Plain ASCII and individual CJK ideographs have one logical erase per
+        // scalar in conventional line editors. Never count terminal cell width.
+        if (/^[\x20-\x7e\p{Unified_Ideograph}]*$/u.test(removed)
+          && !/^[\p{M}\u200d\ufe0f]/u.test(next.slice(common).join(""))) {
+          output = "\x7f".repeat(old.length - common) + next.slice(common).join(""); reason = "suffix-replacement";
+        } else reason = "unsupported-grapheme";
+      } else reason = "unproven-edit";
+      observed = value;
+      if (!output) ownedStart = value.length;
+    }
+    before = undefined;
+    record(event, output.length, reason);
+    if (output) send(output);
+  };
+  const finish = () => {
+    clearTimeout(timer);
+    if (!pending) return;
+    pending = false;
+    reconcile(undefined, compositionBefore);
+    compositionBefore = undefined;
+  };
+  const composition = (event: Event) => {
+    if (event.target !== textarea) return;
+    event.stopImmediatePropagation();
+    if (event.type === "compositionstart") {
+      finish(); hardware = false; compositionBefore = snapshot(); composing = true;
+    } else if (event.type === "compositionend") {
+      composing = false; pending = true;
+      // compositionend may precede the native DOM mutation, even by a task.
+      // Never commit the preedit merely because a zero-delay timer fired.
+      const origin = compositionBefore ?? snapshot();
+      compositionBefore = origin;
+      const expected = origin.value.slice(0, origin.start) + (event as CompositionEvent).data
+        + origin.value.slice(origin.end);
+      clearTimeout(timer);
+      timer = setTimeout(() => { if (textarea.value === expected) finish(); }, 0);
+    }
+    record(event);
+  };
   const keydown = (event: KeyboardEvent) => {
     if (event.target !== textarea) return;
-    if (event.keyCode === 229) event.stopPropagation();
-    else { hardware = true; reset(); } // Never rewrite after hardware/navigation keys.
+    record(event);
+    if (event.keyCode === 229 || event.isComposing) {
+      hardware = false; event.stopImmediatePropagation();
+    } else if (![16, 17, 18, 20].includes(event.keyCode)) {
+      finish(); invalidate(); hardware = true;
+    }
   };
-  const start = () => {
-    reset();
-    hardware = false;
-    composing = true;
-    compositionStart = textarea.value.length;
+  const keypress = (event: Event) => {
+    if (event.target !== textarea) return;
+    if (composing || (event as KeyboardEvent).keyCode === 229) event.stopImmediatePropagation();
+    else { finish(); invalidate(); hardware = true; }
   };
-  const end = () => {
-    composing = false;
-    committing = true;
-    clearTimeout(commitTimer);
-    // Installed after open(): CompositionHelper's read runs before this snapshot.
-    const start = compositionStart;
-    commitTimer = setTimeout(() => {
-      committing = false;
-      if (!composing) committed = { value: textarea.value, start };
-    }, 0);
+  const keyup = (event: Event) => {
+    if (event.target !== textarea) return;
+    if ((event as KeyboardEvent).keyCode === 229) event.stopImmediatePropagation();
+    if (hardware) { invalidate(); hardware = false; }
   };
-  const keypress = () => { hardware = true; reset(); };
-  const keyup = () => { hardware = false; observed = textarea.value; };
-  const invalidate = () => { reset(); observed = textarea.value; };
-  const beforeinput = () => {
-    before = { value: textarea.value, start: textarea.selectionStart, end: textarea.selectionEnd };
+  const beforeinput = (event: Event) => {
+    if (event.target !== textarea) return;
+    before = snapshot(); record(event);
   };
   const input = (event: Event) => {
     if (event.target !== textarea) return;
-    const edit = event as InputEvent;
-    const previous = before;
-    const oldValue = observed;
-    observed = textarea.value;
-    before = undefined;
-    const textEdit = ["insertText", "insertReplacementText", "insertFromDictation", "insertFromComposition"].includes(edit.inputType);
-    if (!textEdit) { reset(); return; }
-    if (hardware) { reset(); return; }
-    if (composing || committing || edit.isComposing) {
-      event.stopPropagation();
-      return;
-    }
-    // A late notification of the already-read DOM commit is not a second edit.
-    // A new composition clears this checkpoint, and appending identical words
-    // changes the value, so neither is text-deduplicated.
-    if (committed && textarea.value === committed.value
-      && (!previous || previous.value === committed.value)) {
-      event.stopPropagation();
-      return;
-    }
-    // Own ordinary soft-keyboard DOM edits too: xterm sends event.data, which
-    // may describe the entire cumulative phrase rather than the changed suffix.
-    if (textEdit) {
-      // One owner: xterm sends insertText.data verbatim and ignores the other
-      // input types, neither of which models a revised textarea value.
-      event.stopPropagation();
-      const value = textarea.value;
-      if (committed && previous?.value === committed.value
-        && previous.start >= committed.start && previous.end === committed.value.length
-        && value.startsWith(previous.value.slice(0, previous.start))
-        && textarea.selectionStart === value.length && textarea.selectionEnd === value.length) {
-        // Only replace a proven, still-current terminal input suffix. Do not
-        // infer replacements from data (which can contain the entire phrase).
-        let common = committed.start;
-        while (common < value.length && common < committed.value.length
-          && value[common] === committed.value[common]) common++;
-        // DEL counts are application-dependent for graphemes/wide characters.
-        // Only erase printable ASCII, and never split a combining sequence.
-        const removed = committed.value.slice(common);
-        if (!/^[\x20-\x7e]*$/.test(removed)
-          || /^\p{M}/u.test(value.slice(common))) { reset(); return; }
-        send("\x7f".repeat(removed.length) + value.slice(common));
-        committed = { value, start: committed.start };
-      } else {
-        // Without beforeinput, only a literal DOM prefix extension is evidence
-        // of an append. Never infer a destructive correction from event.data.
-        const base = previous?.value ?? committed?.value ?? oldValue;
-        const atEnd = textarea.selectionStart === value.length && textarea.selectionEnd === value.length;
-        if (atEnd && value.startsWith(base) && value.length > base.length
-          && (!previous || (previous.start === previous.end && previous.end === base.length))) {
-          send(value.slice(base.length));
-          committed = { value, start: committed?.value === base ? committed.start : base.length };
-        } else reset();
-      }
-      // No safe edit range: leave unsupported replacement alone rather than
-      // erase arbitrary terminal contents or append an entire revised phrase.
-      return;
-    }
+    event.stopImmediatePropagation(); // Never let Terminal._inputEvent send data.
+    record(event, 0, "received");
+    if (hardware) { invalidate(); record(event, 0, "hardware-owned"); return; }
+    if (composing || (event as InputEvent).isComposing) { record(event); before = undefined; return; }
+    if (pending) {
+      clearTimeout(timer); pending = false;
+      reconcile(event, compositionBefore); compositionBefore = undefined;
+    } else reconcile(event);
   };
-  container.addEventListener("keydown", keydown, true);
-  container.addEventListener("input", input, true);
-  textarea.addEventListener("beforeinput", beforeinput);
-  textarea.addEventListener("compositionstart", start);
-  textarea.addEventListener("compositionend", end);
-  container.addEventListener("keypress", keypress, true);
-  container.addEventListener("keyup", keyup, true);
-  textarea.addEventListener("paste", invalidate);
+  const boundary = (event: Event) => {
+    if (event.target !== textarea) return;
+    finish(); invalidate(); hardware = false; record(event, 0, "boundary");
+  };
+  const listeners: [string, EventListener][] = [
+    ["compositionstart", composition], ["compositionupdate", composition], ["compositionend", composition],
+    ["keydown", keydown as EventListener], ["keypress", keypress], ["keyup", keyup],
+    ["beforeinput", beforeinput], ["input", input], ["paste", boundary], ["blur", boundary],
+  ];
+  for (const [type, listener] of listeners) container.addEventListener(type, listener, true);
+  // xterm clears its textarea in these target handlers, after our capture fence.
   textarea.addEventListener("blur", invalidate);
-  return () => {
-    clearTimeout(commitTimer);
-    container.removeEventListener("keydown", keydown, true);
-    container.removeEventListener("input", input, true);
-    textarea.removeEventListener("beforeinput", beforeinput);
-    textarea.removeEventListener("compositionstart", start);
-    textarea.removeEventListener("compositionend", end);
-    container.removeEventListener("keypress", keypress, true);
-    container.removeEventListener("keyup", keyup, true);
-    textarea.removeEventListener("paste", invalidate);
+  textarea.addEventListener("paste", invalidate);
+  const dispose = () => {
+    clearTimeout(timer);
     textarea.removeEventListener("blur", invalidate);
+    textarea.removeEventListener("paste", invalidate);
+    for (const [type, listener] of listeners) container.removeEventListener(type, listener, true);
   };
+  return Object.assign(dispose, { invalidate });
 }
 
 export function isIosKeyboard() {
