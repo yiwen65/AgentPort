@@ -31,6 +31,10 @@ npm run build:ios-simulator
 
 需要 XcodeGen、CocoaPods 和 libimobiledevice；Tauri CLI 会检查这些工具。`build:ios-simulator` 只清理生成的 simulator `.app` 目的目录，再执行 Xcode 的本地 simulator 签名构建；不能传 `--no-sign`，否则 Keychain backend 在 simulator 中不可用。这也避免 Tauri 2.11 重复构建时在有效 archive 之后报 `Directory not empty (os error 66)`。团队签名值通过生成工程的 build setting 或 `signing/ios.xcconfig.template` 注入；不得把真实 Team ID、证书或 profile 提交到仓库。
 
+### 免费 Personal Team 开发 IPA
+
+完整操作与限制见 [RELEASE.md](RELEASE.md)：`scripts/build-ios-personal-team.sh` 创建开发签名真机 archive，`scripts/package-ios-development.py` 验证 profile/签名并包装 IPA、manifest 和 SHA-256。Team ID/设备 UDID 仅通过本机环境传入，脚本不修改生成 Xcode 工程；生成工程中的现有本机 Team ID 不得提交。免费团队通常约 7 天有效且仅限已注册设备，不是付费 Ad Hoc 或企业 OTA 分发。现有 archive 的单独包装不会刷新签名有效期。
+
 ### 有线安装到 iPhone
 
 真机与模拟器都是 arm64，但静态库平台不同，不能混用。首次真机构建先从固定源码构建 Mosh/protobuf：

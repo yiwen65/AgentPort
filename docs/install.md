@@ -12,7 +12,7 @@
 | Arch 发布快照 | tarball | 社区验证 |
 | Linux 通用 | AppImage | Beta |
 
-Windows、移动端、SSH 主机、容器和远程主机不在支持范围内。"社区验证"与 Beta 不等同于正式支持：发行版滚动更新可能带来兼容回归。
+此表描述桌面分发支持；Windows、容器与通用远程主机部署不在该范围内。AgentPort Mobile 可通过 SSH 连接已安装的 macOS 桌面端，需单独启用下述 Bridge 入口（不是独立 SSH 服务）。"社区验证"与 Beta 不等同于正式支持：发行版滚动更新可能带来兼容回归。
 
 ## macOS（正式支持）
 
@@ -33,6 +33,48 @@ xattr -cr /Applications/AgentPort.app
 ```
 
 经过 Developer ID 签名与公证的构建无需上述操作；本仓库当前构建仅有 ad-hoc 完整性签名，未执行 Developer ID 签名与公证（见 release-manifest.json）。
+
+### Mobile SSH Bridge（macOS，可选、显式安装）
+
+先把完整的发布版 `AgentPort.app` 复制到 `/Applications`（或稳定的自选目录），不要从 DMG、checkout 的 `target/debug` 或临时构建目录运行。App 包内已带 `Contents/MacOS/agentport-remote-bridge`、Host 等 Sidecar。发布 DMG 和 `dist-release/macos/` 同时附带 `install-remote-bridge.py`、`verify-installed-remote-bridge.py` 和本文；挂载 DMG、复制或启动 App **不会**自动安装 SSH 入口。
+
+需要 Python 3。以手机 SSH 登录的同一 macOS 用户执行，不要用 `sudo`：
+
+```bash
+# 在下载的安装脚本所在目录运行；默认 App 为 /Applications/AgentPort.app
+python3 install-remote-bridge.py
+# 自选稳定路径（含空格也支持）
+python3 install-remote-bridge.py --app "$HOME/Applications/AgentPort.app"
+```
+
+脚本只创建 `~/.local/bin/agentport-remote-bridge`（可用 `--bin-dir` 指定目录）。这是指向已安装 App 的小型 wrapper，不依赖源码 checkout、Python 运行时或开发服务器；同路径替换整个 App 后自动使用新版。相同配置可重复安装；其他已有文件、目录或符号链接一律拒绝覆盖，包括旧的 debug wrapper。**先自行检查旧文件，再手动改名备份**后重试；脚本不提供强制覆盖，不修改 `.zshenv`、SSH 配置、密钥、系统服务或运行中的 App。
+
+手机执行固定命令 `agentport-remote-bridge serve --stdio`，所以该目录必须在 **非交互 SSH shell** 的 PATH 中。macOS 默认 zsh 用户可检查 `${ZDOTDIR:-$HOME}/.zshenv`，若尚无等效配置，手动追加下面一行；保留已有内容，不要覆盖文件或重复追加：
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+若已用 `.zshenv` 将同一个 `~/.local/bin` 加入 PATH，无需再改。其他 shell 按其非交互启动规则配置，`.zshrc` / `.zprofile` 通常不足以覆盖 SSH 命令。启动文件不可向 stdout 输出欢迎语，否则会破坏二进制协议。用另一台电脑检查（不要加 `-t`）：
+
+```bash
+ssh user@mac 'command -v agentport-remote-bridge'
+```
+
+应显示新入口的绝对路径，而不是 checkout/debug 路径。wrapper 每次通过 `/usr/bin/getconf DARWIN_USER_TEMP_DIR` 设置当前用户的 `TMPDIR`，避免 SSH 环境缺失该值而找不到桌面 Host 的 socket；查询失败则终止，不退回 `/tmp`。显式的 `AGENTPORT_DATA_DIR` / `AGENTPORT_SOCKET_DIR` 仍保留，若设置它们，必须与目标桌面实例一致。
+
+在 macOS「系统设置 → 通用 → 共享 → 远程登录」中自行启用 SSH，仅允许需要的用户，按 Mobile 的连接流程配置公钥并核对服务器指纹。安装器不启用 sshd、不监听端口、不配置防火墙或 `authorized_keys`。仅在受信任网络/VPN 使用，SSH 登录权限是安全边界；此 wrapper 的参数检查**不是**受限 SSH 账号或授权策略，也不会限制同一密钥执行其他 SSH 命令。GUI 不必一直打开，Bridge 通过本地 Host 操作会话。
+
+可选本机打包/入口自检（先自行退出该安装路径的 GUI；不要停止 Host 或其他 App 实例）：
+
+```bash
+python3 verify-installed-remote-bridge.py --app /Applications/AgentPort.app \
+  --bridge "$HOME/.local/bin/agentport-remote-bridge"
+```
+
+该检查验证签名、隔离数据目录中的 hello/EOF、无 Bridge socket 和 Host 进程集合不变；不会启动 GUI/Host，也不验证 SSH 身份认证、网络可达性或真实会话 attach。完整验收还需从 Mobile 建立 SSH 连接并选择真实会话。
+
+卸载入口：先检查 `~/.local/bin/agentport-remote-bridge` 确为本安装器创建的 wrapper，再手动删除该文件；仅在不影响其他工具时移除自行添加的 PATH 行。保留旧文件备份以便回滚。更换 App 安装路径时也先手动备份旧 wrapper，再重新运行安装器。
 
 ## Ubuntu 22.04 / 24.04（正式支持）
 
