@@ -82,8 +82,12 @@ export function App({ client, hostAuthClient }: AppProps) {
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [deviceManagerOpen, closeDeviceManager]);
 
+  // Restore focus only for navigation, not replacement Session snapshots.
+  // Live status/rename updates must never move focus from the input to ARTICLE.
+  const selectedSessionId = selectedSession?.session.id;
+  const selectedHostProfileId = selectedSession?.hostProfileId;
   useEffect(() => {
-    if (!selectedSession) return;
+    if (!selectedSessionId) return;
     let frame: number;
     let attempts = 0;
     const restoreFocus = () => {
@@ -91,9 +95,11 @@ export function App({ client, hostAuthClient }: AppProps) {
       if (document.querySelector("[role=dialog]")) return;
       const target = terminalVisible
         ? document.querySelector<HTMLElement>(".session-stage .session-workspace")
-        : [...document.querySelectorAll<HTMLElement>("[data-session-id]")].find((element) => element.dataset.sessionId === selectedSession.session.id);
+        : [...document.querySelectorAll<HTMLElement>("[data-session-id]")].find((element) => element.dataset.sessionId === selectedSessionId);
       if (target) {
-        target.focus();
+        // A tap can focus the terminal input before this navigation frame runs.
+        // Keep that descendant's focus instead of dismissing the iOS keyboard.
+        if (!target.contains(document.activeElement)) target.focus();
       } else if (attempts < 60) {
         attempts += 1;
         frame = window.requestAnimationFrame(restoreFocus);
@@ -101,7 +107,7 @@ export function App({ client, hostAuthClient }: AppProps) {
     };
     frame = window.requestAnimationFrame(restoreFocus);
     return () => window.cancelAnimationFrame(frame);
-  }, [selectedSession, terminalVisible]);
+  }, [selectedHostProfileId, selectedSessionId, terminalVisible]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("terminal-visible", terminalVisible);

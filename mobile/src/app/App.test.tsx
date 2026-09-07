@@ -2,13 +2,14 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HostAuthClient } from "../features/hosts-auth/types";
 import { i18n } from "../i18n";
-import type { RemoteClient } from "../protocol/remoteClient";
+import type { RemoteClient, RemoteEvent } from "../protocol/remoteClient";
+import type { SessionEventPayload } from "../features/sessions/types";
 import { App } from "./App";
 
 vi.mock("../terminal/MobileTerminal", async () => {
   const { forwardRef } = await vi.importActual<typeof import("react")>("react");
   return {
-    MobileTerminal: forwardRef(() => <div role="application" aria-label="Full terminal" />),
+    MobileTerminal: forwardRef(() => <div role="application" aria-label="Full terminal"><textarea className="xterm-helper-textarea" aria-label="Terminal input" /></div>),
   };
 });
 
@@ -40,6 +41,40 @@ function client(overrides: Partial<RemoteClient> = {}): RemoteClient {
     ...overrides,
   };
 }
+
+function focusTestClient() {
+  const listeners = new Set<(event: RemoteEvent<SessionEventPayload>) => void>();
+  const sessions = ["Active task", "Other task"].map((title, index) => ({
+    id: `ses-${index + 1}`, projectId: "project-1", presetId: "p", title, cwd: "/repo",
+    lifecycle: "running", resumePrecision: "exact", adapterType: "pi", transport: "pty",
+    permissionMode: "native", hostAlive: true, createdAt: "2026-09-08T00:00:00Z", updatedAt: "2026-09-08T00:00:00Z",
+  }));
+  const remote = client({
+    listHostProfiles: vi.fn().mockResolvedValue([{ id: "host-1", name: "Studio", connectionState: "connected" }]),
+    request: vi.fn().mockImplementation((_profileId, method, params) => {
+      if (method === "session.list") return Promise.resolve(sessions);
+      if (method === "project.list") return Promise.resolve([{ id: "project-1", name: "AgentPort", rootPath: "/repo", pinned: false, sortOrder: 0 }]);
+      if (method === "agent.supported") return Promise.resolve([]);
+      if (method === "agent.preferences") return Promise.resolve({ revision: 1, agentOrder: [], agentHidden: [] });
+      if (method === "attention.poll") return Promise.resolve({ events: [] });
+      if (method === "session.attach") return Promise.resolve({ attachmentId: `att-${params.sessionId}`, sessionId: params.sessionId, childAlive: true, runId: `run-${params.sessionId}`, runOrdinal: 1, features: [] });
+      return Promise.resolve({});
+    }),
+    subscribe: vi.fn().mockImplementation(async (_profileId, _topics, listener) => {
+      listeners.add(listener);
+      return async () => { listeners.delete(listener); };
+    }),
+  });
+  const emitState = (sessionId: string, sequence: number, state: string) => {
+    const event: RemoteEvent<SessionEventPayload> = { subscriptionId: `att-${sessionId}`, eventType: "state", cursor: null,
+      payload: { session_id: sessionId, run_id: `run-${sessionId}`, run_ordinal: 1, sequence, state,
+        source: "process", confidence: "high", occurred_at: "2026-09-08T00:00:00Z" } };
+    listeners.forEach(listener => listener(event));
+  };
+  return { remote, sessions, emitState };
+}
+
+const settleFocusFrames = () => act(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 
 describe("AgentPort Mobile V2 shell", () => {
   afterEach(cleanup);
@@ -104,6 +139,60 @@ describe("AgentPort Mobile V2 shell", () => {
     render(<App client={client()} hostAuthClient={hostAuthClient} />);
     await waitFor(() => expect(screen.getByRole("heading", { name: "Sessions" })).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Manage devices" })).toBeInTheDocument();
+  });
+
+  it.each([0, 1])("does not dismiss terminal input when Session %s receives status updates", async index => {
+    await i18n.changeLanguage("en-US");
+    const { remote, sessions, emitState } = focusTestClient();
+    const session = sessions[index];
+    render(<App client={remote} hostAuthClient={hostAuthClient} />);
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(session.title) }));
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    await settleFocusFrames();
+    const input = screen.getByRole("textbox", { name: "Terminal input" });
+    act(() => input.focus());
+    for (const [index, state] of ["working", "idle", "needs_input"].entries()) {
+      act(() => emitState(session.id, index + 1, state));
+      await settleFocusFrames();
+      expect(input).toHaveFocus();
+      expect(screen.getByRole("textbox", { name: "Terminal input" })).toBe(input);
+    }
+    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(1);
+    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.detach")).toHaveLength(0);
+  });
+
+  it("does not steal a tap's input focus while the navigation focus frame is pending", async () => {
+    await i18n.changeLanguage("en-US");
+    const { remote } = focusTestClient();
+    render(<App client={remote} hostAuthClient={hostAuthClient} />);
+    const row = await screen.findByRole("button", { name: /Other task/ });
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(callback => frames.push(callback));
+    try {
+      fireEvent.click(row);
+      const input = await screen.findByRole("textbox", { name: "Terminal input" });
+      act(() => input.focus());
+      act(() => frames.splice(0).forEach(callback => callback(performance.now())));
+      expect(input).toHaveFocus();
+    } finally { raf.mockRestore(); }
+  });
+
+  it("does not move dashboard focus when a hidden Session receives a state update", async () => {
+    await i18n.changeLanguage("en-US");
+    const { remote, emitState } = focusTestClient();
+    const { container } = render(<App client={remote} hostAuthClient={hostAuthClient} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Active task/ }));
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    await settleFocusFrames();
+    const shell = container.querySelector(".app-shell")!;
+    fireEvent.touchStart(shell, { touches: [{ clientX: 40, clientY: 220 }] });
+    fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 160, clientY: 224 }] });
+    await settleFocusFrames();
+    const otherRow = screen.getByRole("button", { name: /Other task/ });
+    act(() => otherRow.focus());
+    act(() => emitState("ses-1", 1, "working"));
+    await settleFocusFrames();
+    expect(otherRow).toHaveFocus();
   });
 
   it("swipes between the persistent list and the selected full-screen terminal", async () => {
