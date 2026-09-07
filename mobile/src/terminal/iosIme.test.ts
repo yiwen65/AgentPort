@@ -106,6 +106,54 @@ describe("iOS edit routing against a real opened xterm 5.5", () => {
     replace(textarea, "hello world", "hello world", "insertText");
     expect(sent).toEqual(["hello", " world"]);
   });
+  it.each([false, true])("owns cumulative ordinary edits without composition (beforeinput: %s)", withBefore => {
+    const { textarea, sent } = setup();
+    const update = (value: string) => {
+      if (withBefore) textarea.setSelectionRange(0, textarea.value.length);
+      if (withBefore) replace(textarea, value, value, "insertText");
+      else {
+        textarea.value = value;
+        textarea.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText", data: value }));
+      }
+    };
+    update("hello"); update("hello world"); update("hello world");
+    expect(sent).toEqual(["hello", " world"]);
+    if (withBefore) {
+      update("hello word");
+      expect(sent.at(-1)).toBe("\x7f\x7fd");
+    }
+    const phrase = textarea.value;
+    textarea.setSelectionRange(phrase.length, phrase.length);
+    replace(textarea, phrase + phrase, phrase, "insertText");
+    expect(sent.at(-1)).toBe(phrase); // intentional identical utterance
+  });
+  it("preserves identical insertion after a witnessed textarea reset", () => {
+    const { textarea, sent } = setup();
+    insert(textarea, "hello");
+    textarea.value = "";
+    replace(textarea, "hello", "hello", "insertText");
+    expect(sent).toEqual(["hello", "hello"]);
+  });
+  it("demonstrates upstream no-composition cumulative duplication", () => {
+    const { textarea, sent, dispose } = setup(); dispose();
+    replace(textarea, "hello", "hello", "insertText");
+    textarea.setSelectionRange(0, 5);
+    replace(textarea, "hello world", "hello world", "insertText");
+    replace(textarea, "hello world", "hello world", "insertText");
+    expect(sent).toEqual(["hello", "hello world", "hello world"]);
+  });
+  it("declines unproven corrections and complex grapheme deletion", () => {
+    const { textarea, sent } = setup();
+    insert(textarea, "hello");
+    textarea.value = "world";
+    textarea.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "world" }));
+    expect(sent).toEqual(["hello"]);
+    textarea.dispatchEvent(new Event("blur"));
+    insert(textarea, "👩‍💻");
+    textarea.setSelectionRange(5, textarea.value.length);
+    replace(textarea, "worldX", "X", "insertText");
+    expect(sent).toEqual(["hello", "👩‍💻"]);
+  });
   it("demonstrates upstream omission of dictation-specific input types", () => {
     const { textarea, sent, dispose } = setup(); dispose();
     replace(textarea, "hello", "hello", "insertFromDictation");

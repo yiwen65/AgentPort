@@ -11,15 +11,18 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
   // Only this suffix is known to have been sent by the current voice/IME edit.
   let committed: { value: string; start: number } | undefined;
   let compositionStart = 0;
+  let observed = textarea.value;
+  let hardware = false;
   let before: { value: string; start: number; end: number } | undefined;
   const reset = () => { committed = undefined; before = undefined; };
   const keydown = (event: KeyboardEvent) => {
     if (event.target !== textarea) return;
     if (event.keyCode === 229) event.stopPropagation();
-    else reset(); // Never rewrite terminal input after hardware cursor/navigation keys.
+    else { hardware = true; reset(); } // Never rewrite after hardware/navigation keys.
   };
   const start = () => {
     reset();
+    hardware = false;
     composing = true;
     compositionStart = textarea.value.length;
   };
@@ -34,6 +37,9 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
       if (!composing) committed = { value: textarea.value, start };
     }, 0);
   };
+  const keypress = () => { hardware = true; reset(); };
+  const keyup = () => { hardware = false; observed = textarea.value; };
+  const invalidate = () => { reset(); observed = textarea.value; };
   const beforeinput = () => {
     before = { value: textarea.value, start: textarea.selectionStart, end: textarea.selectionEnd };
   };
@@ -41,9 +47,12 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
     if (event.target !== textarea) return;
     const edit = event as InputEvent;
     const previous = before;
+    const oldValue = observed;
+    observed = textarea.value;
     before = undefined;
     const textEdit = ["insertText", "insertReplacementText", "insertFromDictation", "insertFromComposition"].includes(edit.inputType);
-    if (!textEdit) return;
+    if (!textEdit) { reset(); return; }
+    if (hardware) { reset(); return; }
     if (composing || committing || edit.isComposing) {
       event.stopPropagation();
       return;
@@ -51,15 +60,17 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
     // A late notification of the already-read DOM commit is not a second edit.
     // A new composition clears this checkpoint, and appending identical words
     // changes the value, so neither is text-deduplicated.
-    if (committed && textarea.value === committed.value) {
+    if (committed && textarea.value === committed.value
+      && (!previous || previous.value === committed.value)) {
       event.stopPropagation();
       return;
     }
-    const replacesCommittedTail = edit.inputType === "insertText" && committed
-      && previous?.value === committed.value && previous.start < previous.end;
-    if (edit.inputType === "insertReplacementText" || edit.inputType === "insertFromDictation"
-      || replacesCommittedTail) {
-      event.stopPropagation(); // xterm 5.5 ignores these input types altogether.
+    // Own ordinary soft-keyboard DOM edits too: xterm sends event.data, which
+    // may describe the entire cumulative phrase rather than the changed suffix.
+    if (textEdit) {
+      // One owner: xterm sends insertText.data verbatim and ignores the other
+      // input types, neither of which models a revised textarea value.
+      event.stopPropagation();
       const value = textarea.value;
       if (committed && previous?.value === committed.value
         && previous.start >= committed.start && previous.end === committed.value.length
@@ -70,29 +81,38 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
         let common = committed.start;
         while (common < value.length && common < committed.value.length
           && value[common] === committed.value[common]) common++;
-        // Avoid splitting a surrogate pair at the common-prefix boundary.
-        if (common > 0 && /[\uD800-\uDBFF]/.test(value[common - 1])) common--;
-        send("\x7f".repeat(Array.from(committed.value.slice(common)).length) + value.slice(common));
+        // DEL counts are application-dependent for graphemes/wide characters.
+        // Only erase printable ASCII, and never split a combining sequence.
+        const removed = committed.value.slice(common);
+        if (!/^[\x20-\x7e]*$/.test(removed)
+          || /^\p{M}/u.test(value.slice(common))) { reset(); return; }
+        send("\x7f".repeat(removed.length) + value.slice(common));
         committed = { value, start: committed.start };
-      } else if (previous && previous.start === previous.end
-        && previous.start === previous.value.length && value.startsWith(previous.value)) {
-        const added = value.slice(previous.value.length);
-        if (added) send(added);
-        committed = { value, start: previous.value.length };
+      } else {
+        // Without beforeinput, only a literal DOM prefix extension is evidence
+        // of an append. Never infer a destructive correction from event.data.
+        const base = previous?.value ?? committed?.value ?? oldValue;
+        const atEnd = textarea.selectionStart === value.length && textarea.selectionEnd === value.length;
+        if (atEnd && value.startsWith(base) && value.length > base.length
+          && (!previous || (previous.start === previous.end && previous.end === base.length))) {
+          send(value.slice(base.length));
+          committed = { value, start: committed?.value === base ? committed.start : base.length };
+        } else reset();
       }
       // No safe edit range: leave unsupported replacement alone rather than
       // erase arbitrary terminal contents or append an entire revised phrase.
       return;
     }
-    reset(); // Ordinary insertText remains xterm's hardware/input path.
   };
   container.addEventListener("keydown", keydown, true);
   container.addEventListener("input", input, true);
   textarea.addEventListener("beforeinput", beforeinput);
   textarea.addEventListener("compositionstart", start);
   textarea.addEventListener("compositionend", end);
-  textarea.addEventListener("paste", reset);
-  textarea.addEventListener("blur", reset);
+  container.addEventListener("keypress", keypress, true);
+  container.addEventListener("keyup", keyup, true);
+  textarea.addEventListener("paste", invalidate);
+  textarea.addEventListener("blur", invalidate);
   return () => {
     clearTimeout(commitTimer);
     container.removeEventListener("keydown", keydown, true);
@@ -100,8 +120,10 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
     textarea.removeEventListener("beforeinput", beforeinput);
     textarea.removeEventListener("compositionstart", start);
     textarea.removeEventListener("compositionend", end);
-    textarea.removeEventListener("paste", reset);
-    textarea.removeEventListener("blur", reset);
+    container.removeEventListener("keypress", keypress, true);
+    container.removeEventListener("keyup", keyup, true);
+    textarea.removeEventListener("paste", invalidate);
+    textarea.removeEventListener("blur", invalidate);
   };
 }
 
