@@ -12,9 +12,17 @@ import { decodeBase64Bytes, encodeBase64Utf8, outputBase64Of, sessionBatchId, se
 import type { OpenSession, RunCursor, SessionAttachResult, SessionEventPayload, TerminalGeometry } from "./types";
 
 const MOBILE_DEVICE_ID_KEY = "agentport-mobile-v2:device-id";
-// Service caps this at 4 MiB. Mobile cannot page earlier PTY bytes yet, so
-// request the largest bounded replay window to make upward log review useful.
+// Service caps this at 4 MiB; older PTY bytes are paged on demand from the
+// verified recovery log when the user scrolls to the top of xterm scrollback.
 const MOBILE_ATTACH_REPLAY_TAIL_BYTES = 4 * 1024 * 1024;
+const MOBILE_HISTORY_RETAIN_BYTES = 12 * 1024 * 1024;
+
+interface RecoveryContextResult {
+  dataBase64: string;
+  offset: number;
+  total: number;
+  cursor: RunCursor;
+}
 
 function mobileDeviceId(): string {
   try {
@@ -88,6 +96,11 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   const outputFrame = useRef<number>();
   const pendingOutputChunks = useRef<Uint8Array[]>([]);
   const pendingOutputBytes = useRef(0);
+  const retainedOutputChunks = useRef<Uint8Array[]>([]);
+  const retainedOutputBytes = useRef(0);
+  const retainedStartCursor = useRef<RunCursor>();
+  const loadingOlderHistory = useRef(false);
+  const historyExhausted = useRef(false);
   const resizeOwnershipEnabled = useRef(true);
   const sourceDeviceId = useRef(mobileDeviceId());
   const terminalPalette = getMobileTerminalPalette(terminalAppearance.theme, resolvedMode);
@@ -124,6 +137,30 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     window.requestAnimationFrame(() => chromeReveal.current?.focus({ preventScroll: true }));
   };
 
+  const mergeChunks = useCallback((chunks: readonly Uint8Array[], totalBytes: number) => {
+    if (chunks.length === 1) return chunks[0];
+    const merged = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return merged;
+  }, []);
+
+  const appendRetainedOutput = useCallback((chunk: Uint8Array) => {
+    retainedOutputChunks.current.push(chunk);
+    retainedOutputBytes.current += chunk.byteLength;
+    while (retainedOutputBytes.current > MOBILE_HISTORY_RETAIN_BYTES && retainedOutputChunks.current.length > 1) {
+      const removed = retainedOutputChunks.current.shift()!;
+      retainedOutputBytes.current -= removed.byteLength;
+      retainedStartCursor.current = undefined;
+      historyExhausted.current = true;
+    }
+  }, []);
+
+  const retainedOutput = useCallback(() => mergeChunks(retainedOutputChunks.current, retainedOutputBytes.current), [mergeChunks]);
+
   const flushTerminalOutput = useCallback(() => {
     outputFrame.current = undefined;
     const chunks = pendingOutputChunks.current;
@@ -131,20 +168,15 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     pendingOutputChunks.current = [];
     const totalBytes = pendingOutputBytes.current;
     pendingOutputBytes.current = 0;
-    if (chunks.length === 1) {
-      terminal.current?.write(chunks[0]);
-      return;
-    }
-    const merged = new Uint8Array(totalBytes);
-    let offset = 0;
-    for (const chunk of chunks) {
-      merged.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    terminal.current?.write(merged);
-  }, []);
+    for (const chunk of chunks) appendRetainedOutput(chunk);
+    terminal.current?.write(mergeChunks(chunks, totalBytes));
+  }, [appendRetainedOutput, mergeChunks]);
 
-  const scheduleTerminalOutput = useCallback((chunk: Uint8Array) => {
+  const scheduleTerminalOutput = useCallback((chunk: Uint8Array, cursorAfter?: RunCursor) => {
+    if (!retainedStartCursor.current && cursorAfter && cursorAfter.offset >= chunk.byteLength) {
+      retainedStartCursor.current = { ...cursorAfter, offset: cursorAfter.offset - chunk.byteLength };
+      historyExhausted.current = retainedStartCursor.current.offset === 0;
+    }
     pendingOutputChunks.current.push(chunk);
     pendingOutputBytes.current += chunk.byteLength;
     if (outputFrame.current !== undefined) return;
@@ -156,7 +188,41 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     outputFrame.current = undefined;
     pendingOutputChunks.current = [];
     pendingOutputBytes.current = 0;
+    retainedOutputChunks.current = [];
+    retainedOutputBytes.current = 0;
+    retainedStartCursor.current = undefined;
+    loadingOlderHistory.current = false;
+    historyExhausted.current = false;
   }, []);
+
+  const loadOlderHistory = useCallback(() => {
+    if (loadingOlderHistory.current || historyExhausted.current || !activeRef.current) return;
+    const startCursor = retainedStartCursor.current;
+    if (!startCursor || startCursor.offset <= 0) { historyExhausted.current = true; return; }
+    loadingOlderHistory.current = true;
+    flushTerminalOutput();
+    void client.request<RecoveryContextResult>(open.hostProfileId, "session.recovery_context.read", {
+      sessionId: open.session.id,
+      cursor: startCursor,
+    }).then((result) => {
+      if (!activeRef.current || retainedStartCursor.current !== startCursor) return;
+      const currentStart = startCursor.offset;
+      const pageStart = result.offset;
+      if (pageStart >= currentStart) { historyExhausted.current = true; return; }
+      const page = decodeBase64Bytes(result.dataBase64);
+      const prefixLength = Math.min(page.byteLength, currentStart - pageStart);
+      if (prefixLength <= 0) { historyExhausted.current = true; return; }
+      const prefix = page.subarray(0, prefixLength);
+      retainedOutputChunks.current.unshift(prefix);
+      retainedOutputBytes.current += prefix.byteLength;
+      retainedStartCursor.current = { ...startCursor, offset: pageStart };
+      historyExhausted.current = pageStart === 0;
+      terminal.current?.replaceBuffer(retainedOutput(), true);
+    }).catch(() => {
+      // Ignore transient paging failures; the live attachment remains usable and
+      // a later top-scroll can retry with the same verified cursor.
+    }).finally(() => { loadingOlderHistory.current = false; });
+  }, [client, flushTerminalOutput, open.hostProfileId, open.session.id, retainedOutput]);
 
   const handleEvent = useCallback((event: RemoteEvent<SessionEventPayload>) => {
     const payload = event.payload;
@@ -188,9 +254,13 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       // xterm already owns the bounded scrollback. Coalesce bursts to one
       // renderer write per frame so mobile touch scrolling is not competing
       // with hundreds of small xterm parse/render tasks.
-      scheduleTerminalOutput(decodeBase64Bytes(outputBase64));
+      scheduleTerminalOutput(decodeBase64Bytes(outputBase64), event.cursor as RunCursor | undefined);
     } else if (event.eventType === "resync_required") {
       flushTerminalOutput();
+      retainedOutputChunks.current = [];
+      retainedOutputBytes.current = 0;
+      retainedStartCursor.current = undefined;
+      historyExhausted.current = false;
       cursor.current = undefined;
       terminal.current?.reset();
       setNotice(t("session.resynced"));
@@ -546,6 +616,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         resizeEpoch={attachmentId}
         onInput={sendInput}
         onResize={requestTerminalResize}
+        onReachTop={loadOlderHistory}
         fontSize={fontSize}
         theme={terminalPalette.xterm}
         title={t("session.fullTerminal")}

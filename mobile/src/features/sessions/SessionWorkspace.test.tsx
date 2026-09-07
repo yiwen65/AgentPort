@@ -10,6 +10,7 @@ const terminalHarness = vi.hoisted(() => ({
   props: undefined as {
     onInput?: (data: string) => void;
     onResize?: (cols: number, rows: number) => void;
+    onReachTop?: () => void;
     showHeading?: boolean;
     obscured?: boolean;
     theme?: { background?: string; foreground?: string };
@@ -30,6 +31,7 @@ vi.mock("../../terminal/MobileTerminal", async () => {
       useImperativeHandle(ref, () => ({
         write: (data: string | Uint8Array) => terminalHarness.writes.push(typeof data === "string" ? data : new TextDecoder().decode(data)),
         reset: () => { terminalHarness.resets += 1; },
+        replaceBuffer: (data: string | Uint8Array) => { terminalHarness.resets += 1; terminalHarness.writes = [typeof data === "string" ? data : new TextDecoder().decode(data)]; },
       }), []);
       return <section aria-label="Raw terminal" style={{ visibility: props.obscured ? "hidden" : undefined }}>
         <button type="button" onClick={() => props.onInput?.("你好\r")}>Type terminal input</button>
@@ -393,6 +395,31 @@ describe("SessionWorkspace", () => {
     expect(terminalHarness.renders).toBe(settledRenders);
     expect(persist).not.toHaveBeenCalled();
     persist.mockRestore();
+  });
+
+  it("loads an older verified log page when terminal scrollback reaches the top", async () => {
+    const { client, request, emit } = setupClient();
+    const base = request.getMockImplementation()!;
+    request.mockImplementation((...args) => args[1] === "session.recovery_context.read"
+      ? Promise.resolve({ dataBase64: btoa("pref"), offset: 0, total: 8, cursor: args[2].cursor })
+      : base(...args));
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    await act(async () => {
+      emit({ subscriptionId: "sub", eventType: "output", cursor: { runId: "run", runOrdinal: 1, generation: 0, offset: 8, statusSequence: 0 }, payload: { session_id: "ses-1", dataBase64: btoa("tail") } });
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+
+    await act(async () => {
+      terminalHarness.props?.onReachTop?.();
+      await Promise.resolve();
+    });
+
+    expect(request).toHaveBeenCalledWith("host-1", "session.recovery_context.read", {
+      sessionId: "ses-1",
+      cursor: { runId: "run", runOrdinal: 1, generation: 0, offset: 4, statusSequence: 0 },
+    });
+    expect(terminalHarness.writes).toEqual(["preftail"]);
   });
 
   it("consumes the Host terminal_geometry_changed event contract", async () => {

@@ -32,11 +32,14 @@ export interface MobileTerminalProps {
   showProbeOutput?: boolean;
   /** Hide transient output without unmounting xterm or changing its geometry. */
   obscured?: boolean;
+  /** Called when the user scrolls to the oldest retained xterm row. */
+  onReachTop?: () => void;
 }
 
 export interface MobileTerminalHandle {
   write(data: string | Uint8Array): void;
   reset(): void;
+  replaceBuffer(data: string | Uint8Array, scrollToTop?: boolean): void;
 }
 
 export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalProps>(function MobileTerminal({
@@ -50,6 +53,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   showHeading = true,
   showProbeOutput = true,
   obscured = false,
+  onReachTop,
 }: MobileTerminalProps, ref) {
   const { t } = useTranslation();
   const [shortcutLayout, setShortcutLayout] = useState(loadShortcuts);
@@ -63,6 +67,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const fitRef = useRef<FitAddon | null>(null);
   const inputRef = useRef(onInput);
   const resizeRef = useRef(onResize);
+  const reachTopRef = useRef(onReachTop);
   const resizeFrameRef = useRef<number>();
   const orientationTimerRef = useRef<number>();
   const lastReportedSize = useRef<{ cols: number; rows: number }>();
@@ -82,6 +87,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const [commandActive, setCommandActive] = useState(false);
   inputRef.current = onInput;
   resizeRef.current = onResize;
+  reachTopRef.current = onReachTop;
 
   useImperativeHandle(ref, () => ({
     write(data: string | Uint8Array) {
@@ -93,6 +99,14 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       // Fence the reset behind writes already queued in xterm, while writes
       // received after this call remain behind the reset sentinel.
       terminal.write("", () => terminal.reset());
+    },
+    replaceBuffer(data: string | Uint8Array, scrollToTop = false) {
+      const terminal = terminalRef.current;
+      if (!terminal) return;
+      terminal.reset();
+      terminal.write(data, () => {
+        if (scrollToTop) terminal.scrollToTop();
+      });
     },
   }), []);
 
@@ -194,7 +208,10 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       });
     };
     positionSelectionMenuRef.current = positionSelectionMenu;
-    const selectionScrolled = terminal.onScroll(positionSelectionMenu);
+    const selectionScrolled = terminal.onScroll((viewportY) => {
+      positionSelectionMenu();
+      if (viewportY <= 1 && terminal.buffer.active.baseY > 0) reachTopRef.current?.();
+    });
     const fitTerminal = (reportRemote: boolean) => {
       fit.fit();
       positionSelectionMenu();

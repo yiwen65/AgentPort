@@ -10,15 +10,18 @@ const terminalHarness = vi.hoisted(() => ({
   helper: undefined as HTMLTextAreaElement | undefined,
   screen: undefined as HTMLDivElement | undefined,
   screenHeight: 240,
+  baseY: 0,
   selection: "selected output",
   selects: [] as number[][],
   clears: 0,
   selectionChanged: () => {},
+  scrolled: (_viewportY: number) => {},
   input: (_data: string) => {},
   applicationCursor: false,
   fitCalls: 0,
   writes: [] as (string | Uint8Array)[],
   resets: 0,
+  scrollToTopCalls: 0,
   instances: 0,
   options: undefined as { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown } | undefined,
 }));
@@ -32,7 +35,7 @@ vi.mock("@xterm/xterm", () => ({
     cols = 80;
     rows = 24;
     get modes() { return { applicationCursorKeysMode: terminalHarness.applicationCursor }; }
-    buffer = { active: { cursorY: 20, viewportY: 0, baseY: 0, getLine: () => ({ getCell: () => ({ getChars: () => "a", getWidth: () => 1 }) }) } };
+    buffer = { active: { cursorY: 20, viewportY: 0, get baseY() { return terminalHarness.baseY; }, getLine: () => ({ getCell: () => ({ getChars: () => "a", getWidth: () => 1 }) }) } };
     options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown };
     constructor(options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown } = {}) {
       this.options = { ...options };
@@ -52,7 +55,7 @@ vi.mock("@xterm/xterm", () => ({
       terminalHarness.screen.append(terminalHarness.helper);
       container.append(terminalHarness.screen);
     }
-    onScroll() { return { dispose() {} }; }
+    onScroll(callback: (viewportY: number) => void) { terminalHarness.scrolled = callback; return { dispose() {} }; }
     getSelectionPosition() { return { start: { x: 0, y: 4 }, end: { x: 10, y: 4 } }; }
     onData(handler: (data: string) => void) { terminalHarness.input = handler; return { dispose() { /* deterministic no-op */ } }; }
     focus() { terminalHarness.helper?.focus(); }
@@ -61,6 +64,7 @@ vi.mock("@xterm/xterm", () => ({
       callback?.();
     }
     reset() { terminalHarness.resets += 1; }
+    scrollToTop() { terminalHarness.scrollToTopCalls += 1; }
     dispose() { /* deterministic no-op */ }
     selectAll() { /* deterministic no-op */ }
     getSelection() { return terminalHarness.selection; }
@@ -77,14 +81,17 @@ describe("MobileTerminal input accessory", () => {
     terminalHarness.input = () => {};
     terminalHarness.selection = "selected output";
     terminalHarness.selectionChanged = () => {};
+    terminalHarness.scrolled = () => {};
     terminalHarness.selects = [];
     terminalHarness.clears = 0;
     terminalHarness.helper = undefined;
     terminalHarness.screen = undefined;
     terminalHarness.screenHeight = 240;
+    terminalHarness.baseY = 0;
     terminalHarness.fitCalls = 0;
     terminalHarness.writes = [];
     terminalHarness.resets = 0;
+    terminalHarness.scrollToTopCalls = 0;
     terminalHarness.instances = 0;
     terminalHarness.options = undefined;
     vi.stubGlobal("ResizeObserver", class {
@@ -122,6 +129,15 @@ describe("MobileTerminal input accessory", () => {
     const bytes = new Uint8Array([0xe4, 0xbd]);
     ref.current?.write(bytes);
     expect(terminalHarness.writes[0]).toBe(bytes);
+  });
+
+  it("can replace retained output and reveal the newly prepended top", () => {
+    const ref = createRef<MobileTerminalHandle>();
+    render(<MobileTerminal ref={ref} showProbeOutput={false} />);
+    ref.current?.replaceBuffer("older\ntail", true);
+    expect(terminalHarness.resets).toBe(1);
+    expect(terminalHarness.writes).toEqual(["older\ntail"]);
+    expect(terminalHarness.scrollToTopCalls).toBe(1);
   });
 
   it("obscures stopping output without disposing or clearing the terminal", () => {
@@ -303,6 +319,17 @@ describe("MobileTerminal input accessory", () => {
     fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 205 }] });
     fireEvent.mouseDown(terminalHarness.screen!, { clientY: 205 });
     expect(focus).toHaveBeenCalledOnce();
+  });
+
+  it("notifies when the user reaches the oldest retained scrollback row", () => {
+    const onReachTop = vi.fn();
+    render(<MobileTerminal onReachTop={onReachTop} showHeading={false} showProbeOutput={false} />);
+    terminalHarness.baseY = 10;
+    act(() => terminalHarness.scrolled(0));
+    expect(onReachTop).toHaveBeenCalledOnce();
+    terminalHarness.baseY = 0;
+    act(() => terminalHarness.scrolled(0));
+    expect(onReachTop).toHaveBeenCalledOnce();
   });
 
   it("routes vertical touch movement through xterm's wheel path, without interpreting a horizontal swipe as scroll", async () => {
