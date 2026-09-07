@@ -168,6 +168,24 @@ describe("frontend state authority", () => {
     expect(getState().projects[0].sessions[0].status?.sequence).toBe(4);
   });
 
+  it("keeps lifecycle and liveness with the newer run when a stale tree arrives", () => {
+    const next = { ...status(1), runId: "run_2", runOrdinal: 2 };
+    setState({ projects: projects(session({ lifecycle: "running", hostAlive: true, status: next })) });
+    applyProjectsSnapshot(projects(session({ lifecycle: "stopped", hostAlive: false, status: status(9) })));
+    expect(getState().projects[0].sessions[0]).toMatchObject({ lifecycle: "running", hostAlive: true, status: next });
+  });
+
+  it("rejects delayed exits from an old or conflicting run but accepts the current exit", () => {
+    const next = { ...status(1), runId: "run_2", runOrdinal: 2 };
+    setState({ projects: projects(session({ hostAlive: true, status: next })) });
+    for (const run of [{ runId: "run_1", runOrdinal: 1 }, { runId: "foreign", runOrdinal: 2 }]) {
+      patchSession("ses_1", { lifecycle: "stopped", hostAlive: false }, run);
+      expect(getState().projects[0].sessions[0].lifecycle).toBe("running");
+    }
+    patchSession("ses_1", { lifecycle: "exited", hostAlive: false }, next);
+    expect(getState().projects[0].sessions[0]).toMatchObject({ lifecycle: "exited", hostAlive: false });
+  });
+
   it("does not let an old repository probe overwrite a newer event", async () => {
     const stale = deferred<RepositoryStatus>();
     apiMock.getRepositoryStatus.mockReturnValueOnce(stale.promise);

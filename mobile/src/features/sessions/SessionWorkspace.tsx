@@ -9,7 +9,7 @@ import {
 } from "../../terminal/terminalThemes";
 import { useMobileTerminalAppearance } from "../../terminal/terminalAppearance";
 import { decodeBase64Bytes, encodeBase64Utf8, outputBase64Of, sessionBatchId, sessionIdOf } from "./sessionProtocol";
-import type { OpenSession, RunCursor, SessionAttachResult, SessionEventPayload, TerminalGeometry } from "./types";
+import type { OpenSession, RunCursor, SessionAttachResult, SessionEventPayload, SessionStatus, TerminalGeometry } from "./types";
 
 const MOBILE_DEVICE_ID_KEY = "agentport-mobile-v2:device-id";
 // Seed the current TUI modes from a small recent tail, then render live output.
@@ -76,6 +76,12 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   const cursor = useRef<RunCursor>();
   const ownBatches = useRef(new Set<string>());
   const attachmentRef = useRef<string>();
+  const attachedRun = useRef<{ runId: string; runOrdinal: number }>();
+  const latestStatus = useRef(open.session.latestStatus);
+  const openRef = useRef(open);
+  const changedRef = useRef(onSessionChanged);
+  openRef.current = open;
+  changedRef.current = onSessionChanged;
   const inputDispatchQueue = useRef(Promise.resolve());
   const otherInputTimer = useRef<number>();
   const seenTimer = useRef<number>();
@@ -175,20 +181,77 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     });
   }, [flushTerminalOutput]);
 
+  const resetRunOutput = useCallback(() => {
+    replayGeneration.current += 1;
+    cursor.current = undefined;
+    attachmentRef.current = undefined;
+    setAttachmentId(undefined);
+    geometryRef.current = undefined;
+    setTerminalGeometry(undefined);
+    window.clearTimeout(seenTimer.current);
+    if (outputFrame.current !== undefined) window.cancelAnimationFrame(outputFrame.current);
+    outputFrame.current = undefined;
+    pendingOutputChunks.current = [];
+    pendingOutputBytes.current = 0;
+    terminal.current?.reset();
+    setReplayPending(true);
+  }, []);
+
+  useEffect(() => {
+    const next = open.session.latestStatus;
+    const current = attachedRun.current;
+    if (!next || !current || next.runOrdinal < current.runOrdinal
+      || (next.runOrdinal === current.runOrdinal && next.runId !== current.runId)) return;
+    if (stopped && open.session.hostAlive === false && !actionBusy.current && connectionLabel !== "ended") {
+      // An authoritative current-run snapshot also closes a missing Exit event.
+      // The temporary local Restart override must not keep a stopped run live.
+      resetRunOutput();
+      latestStatus.current = next;
+      setLocallyStopped(true);
+      setRestartRequested(false);
+      setConnectionLabel("ended");
+      return;
+    }
+    if (next.runOrdinal <= current.runOrdinal || stopped || open.session.hostAlive !== true) return;
+    // Another client can stop/start between snapshots, leaving both lifecycles
+    // "running". The run identity, not the Session ID, invalidates the stream.
+    resetRunOutput();
+    attachedRun.current = next;
+    latestStatus.current = next;
+    setLocallyStopped(false);
+    setRestartRequested(true);
+    setAttachEpoch(value => value + 1);
+  }, [open.session.latestStatus, open.session.hostAlive, stopped, resetRunOutput, connectionLabel, busyAction]);
+
   const handleEvent = useCallback((event: RemoteEvent<SessionEventPayload>) => {
     const payload = event.payload;
     const attachmentGap = event.eventType === "resync_required" && event.subscriptionId === attachmentRef.current;
     if (sessionIdOf(payload) !== open.session.id && !attachmentGap) return;
+    const eventCursor = event.cursor as Partial<RunCursor> | null;
+    const runId = payload.runId ?? payload.run_id ?? payload.geometry?.runId ?? eventCursor?.runId;
+    const runOrdinal = payload.runOrdinal ?? payload.run_ordinal ?? payload.geometry?.runOrdinal ?? eventCursor?.runOrdinal;
+    if (!attachmentGap && attachedRun.current && runId && runOrdinal !== undefined
+      && (runId !== attachedRun.current.runId || runOrdinal !== attachedRun.current.runOrdinal)) return;
     if (event.cursor && typeof event.cursor === "object") {
       cursor.current = event.cursor as RunCursor;
     }
     if (event.eventType === "terminal_geometry_changed" && payload.geometry) {
+      if (payload.geometry.revision < (geometryRef.current?.revision ?? 0)) return;
       geometryRef.current = payload.geometry;
       setTerminalGeometry(payload.geometry);
-      if (payload.geometry.sourceKind === "desktop") {
-        resizeOwnershipEnabled.current = false;
-      } else if (payload.geometry.sourceDeviceId === sourceDeviceId.current) {
-        setConnectionLabel("live");
+      if (payload.geometry.sourceKind === "desktop") resizeOwnershipEnabled.current = false;
+      // Geometry acknowledgments are not proof that a process is still alive.
+    }
+    if (event.eventType === "state" && runId && runOrdinal !== undefined
+      && payload.sequence !== undefined && payload.state) {
+      const previous = latestStatus.current;
+      if (!previous || runOrdinal > previous.runOrdinal
+        || (runId === previous.runId && runOrdinal === previous.runOrdinal && payload.sequence >= previous.sequence)) {
+        const status: SessionStatus = { runId, runOrdinal, sequence: payload.sequence, state: payload.state,
+          source: payload.source ?? "process", confidence: payload.confidence ?? "low",
+          occurredAt: payload.occurredAt ?? payload.occurred_at ?? "" };
+        latestStatus.current = status;
+        changedRef.current({ ...openRef.current, session: { ...openRef.current.session, latestStatus: status } });
       }
     }
     if (activeRef.current && ["output", "replay_done", "state"].includes(event.eventType)) {
@@ -209,15 +272,20 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     } else if (event.eventType === "replay_done") {
       finishReplay();
     } else if (event.eventType === "resync_required") {
-      flushTerminalOutput();
-      replayGeneration.current += 1;
-      setReplayPending(true);
-      cursor.current = undefined;
-      terminal.current?.reset();
+      resetRunOutput();
       setNotice(t("session.resynced"));
       setAttachEpoch((current) => current + 1);
     } else if (event.eventType === "exit") {
       finishReplay();
+      // Fence queued replies/events immediately, not after React effect cleanup.
+      replayGeneration.current += 1;
+      attachmentRef.current = undefined;
+      setAttachmentId(undefined);
+      geometryRef.current = undefined;
+      window.clearTimeout(seenTimer.current);
+      changedRef.current({ ...openRef.current, session: { ...openRef.current.session,
+        lifecycle: payload.reason === "user_stop" ? "stopped" : "exited", hostAlive: false,
+        latestStatus: latestStatus.current } });
       setLocallyStopped(true);
       setRestartRequested(false);
       setTerminalGeometry(undefined);
@@ -231,7 +299,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         otherInputTimer.current = window.setTimeout(() => setOtherClientInput(false), 1_500);
       }
     }
-  }, [client, finishReplay, flushTerminalOutput, open.hostProfileId, open.session.id, scheduleTerminalOutput, t]);
+  }, [client, finishReplay, resetRunOutput, open.hostProfileId, open.session.id, scheduleTerminalOutput, t]);
 
   useEffect(() => {
     if (!shouldAttach) { setReplayPending(false); setConnectionLabel("ended"); setError(""); return; }
@@ -242,6 +310,10 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     let unsubscribeEvents: (() => Promise<void>) | undefined;
     let unsubscribeConnection: (() => Promise<void>) | undefined;
     let attached: string | undefined;
+    // Native events can beat the invoke reply. Buffer a bounded early window
+    // until the server-issued attachment ID tells us which stream we own.
+    const earlyEvents: RemoteEvent<SessionEventPayload>[] = [];
+    let earlyOverflow = false;
     attachmentRef.current = undefined;
     setAttachmentId(undefined);
     setConnectionLabel("attaching");
@@ -250,9 +322,14 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       // A resync invalidates this subscription synchronously, before React
       // runs effect cleanup. Already queued heartbeat/output/ReplayDone must
       // not restore a tail cursor onto the freshly reset terminal.
-      if (!cancelled && generation === replayGeneration.current) handleEvent(event);
+      if (cancelled || generation !== replayGeneration.current) return;
+      if (!attached) {
+        if (sessionIdOf(event.payload) !== open.session.id && event.eventType !== "resync_required") return;
+        if (earlyEvents.length >= 256) { earlyOverflow = true; earlyEvents.length = 0; }
+        if (!earlyOverflow) earlyEvents.push(event);
+      } else if (event.subscriptionId === attached) handleEvent(event);
     }).then(async (unsubscribe) => {
-      if (cancelled) return unsubscribe();
+      if (cancelled || generation !== replayGeneration.current) return unsubscribe();
       unsubscribeEvents = unsubscribe;
       try {
         const result = await client.request<SessionAttachResult>(open.hostProfileId, "session.attach", {
@@ -261,12 +338,19 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
           resumeFrom: cursor.current,
           subscribeOutput: true,
         });
-        if (cancelled) {
+        if (cancelled || generation !== replayGeneration.current) {
           await client.request(open.hostProfileId, "session.detach", { attachmentId: result.attachmentId }).catch(() => undefined);
           return;
         }
         attached = result.attachmentId;
+        if (earlyOverflow) {
+          resetRunOutput();
+          setNotice(t("session.resynced"));
+          setAttachEpoch(value => value + 1);
+          return;
+        }
         attachmentRef.current = attached;
+        attachedRun.current = { runId: result.runId, runOrdinal: result.runOrdinal };
         geometryRef.current = result.terminalGeometry;
         setTerminalGeometry(result.terminalGeometry);
         // Opening from Mobile requests phone geometry, but PTY input remains
@@ -274,15 +358,20 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         resizeOwnershipEnabled.current = true;
         setAttachmentId(attached);
         setConnectionLabel(result.childAlive ? "live" : "ended");
-        if (!result.childAlive) { setLocallyStopped(true); setRestartRequested(false); }
+        if (!result.childAlive) { setLocallyStopped(true); setRestartRequested(false); setReplayPending(false); }
+        for (const event of earlyEvents) {
+          if (generation !== replayGeneration.current) break;
+          if (event.subscriptionId === attached) handleEvent(event);
+        }
+        earlyEvents.length = 0;
       } catch (requestError) {
-        if (!cancelled) {
+        if (!cancelled && generation === replayGeneration.current) {
           setConnectionLabel("failed");
           setError(errorText(requestError));
         }
       }
     }).catch((subscribeError) => {
-      if (!cancelled) {
+      if (!cancelled && generation === replayGeneration.current) {
         setConnectionLabel("failed");
         setError(errorText(subscribeError));
       }
@@ -313,7 +402,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       if (unsubscribeEvents) void unsubscribeEvents();
       if (unsubscribeConnection) void unsubscribeConnection();
     };
-  }, [attachEpoch, client, handleEvent, open.hostProfileId, open.session.id, shouldAttach]);
+  }, [attachEpoch, client, handleEvent, open.hostProfileId, open.session.id, shouldAttach, resetRunOutput, t]);
 
   useEffect(() => () => {
     window.clearTimeout(otherInputTimer.current);
@@ -333,8 +422,9 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         if (cancelled || actionBusy.current) return;
         const session = sessions.find(value => value.id === open.session.id);
         if (session?.hostAlive === true && ["running", "creating"].includes(session.lifecycle)) {
-          cursor.current = undefined;
-          terminal.current?.reset();
+          resetRunOutput();
+          attachedRun.current = session.latestStatus;
+          latestStatus.current = session.latestStatus;
           setNotice("");
           setLocallyStopped(false);
           setRestartRequested(true);
@@ -347,7 +437,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     };
     timer = setTimeout(reconcile, 2000);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [active, busyAction, client, connectionLabel, onSessionChanged, open]);
+  }, [active, busyAction, client, connectionLabel, onSessionChanged, open, resetRunOutput]);
 
   const sendInput = useCallback((data: string) => {
     if (busyAction === "stop" || !attachmentId || attachmentRef.current !== attachmentId || connectionLabel !== "live") return;
@@ -404,7 +494,6 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       if (result.terminalGeometry.revision < (geometryRef.current?.revision ?? 0)) return;
       geometryRef.current = result.terminalGeometry;
       setTerminalGeometry(result.terminalGeometry);
-      setConnectionLabel("live");
     }).catch(() => {
       // Do not replay an uncertain resize. A newer observed size may proceed.
       if (attachmentRef.current === attachmentId) lastResize.current = undefined;
@@ -449,6 +538,8 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
 
   const stopCurrentSession = async () => {
     const result = await client.request<{ groupCleaned: boolean }>(open.hostProfileId, "session.stop", { sessionId: open.session.id, graceMs: 1_500 });
+    replayGeneration.current += 1;
+    geometryRef.current = undefined;
     setNotice(result.groupCleaned ? "" : t("session.cleanupUnverified"));
     setLocallyStopped(true);
     setRestartRequested(false);
@@ -471,8 +562,9 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         // A failed/unknown Stop must abort here, never replay or launch anyway.
         if (shouldAttach) await stopCurrentSession();
         await client.request(open.hostProfileId, "session.restart", { sessionId: open.session.id, riskAck: true });
-        cursor.current = undefined;
-        terminal.current?.reset();
+        resetRunOutput();
+        attachedRun.current = undefined;
+        latestStatus.current = undefined;
         setNotice("");
         setLocallyStopped(false);
         setRestartRequested(true);

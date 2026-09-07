@@ -646,6 +646,8 @@ export function onSessionExit(
     code: number | null;
     signal: number | null;
     reason?: string;
+    runId?: string;
+    runOrdinal?: number;
   }) => void,
 ): Promise<UnlistenFn> {
   return listen<{
@@ -653,6 +655,8 @@ export function onSessionExit(
     code: number | null;
     signal: number | null;
     reason?: string;
+    runId?: string;
+    runOrdinal?: number;
   }>(
     "session-exit",
     (e) => cb(e.payload),

@@ -279,6 +279,7 @@ vi.mock("./api", () => ({
 import {
   applyTerminalLanguage,
   applyXtermTheme,
+  attachHandle,
   disposeHandle,
   fitHandle,
   fitSession,
@@ -297,7 +298,7 @@ import {
 } from "./terminals";
 import { bytesToB64 } from "./api";
 import { applyUiLanguage } from "./i18n";
-import { emptyRuntime, getState, setState } from "./store";
+import { applyProjectsSnapshot, emptyRuntime, getState, setState } from "./store";
 import type { AttachInfo, Settings } from "./types";
 
 let resizeObserverCallbacks: Array<() => void> = [];
@@ -330,10 +331,14 @@ describe("terminal renderer", () => {
     rendererMocks.offscreenCanvasDuringCanvasLoad.length = 0;
     rendererMocks.offscreenCanvasDuringOpen.length = 0;
     vi.clearAllMocks();
+    rendererMocks.apiMock.attachSession.mockReset().mockResolvedValue({
+      attachmentId: 1, childAlive: true, hostPid: 42, logBytes: 0, status: null, agentSessionId: null,
+    });
     vi.mocked(bytesToB64).mockReturnValue("encoded-input");
     rendererMocks.apiMock.clipboardHasImage.mockResolvedValue(false);
     setState({
       activeSessionId: "renderer-test",
+      runtime: {},
       platform: null,
       projects: [
         {
@@ -1279,6 +1284,55 @@ describe("terminal renderer", () => {
     resolveAttach?.(info);
     await Promise.resolve();
     expect(rendererMocks.apiMock.sendInput).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([false, true])("reattaches an external restart and clears old run state (exit observed: %s)", async sawExit => {
+    const oldInfo = { attachmentId: 101, childAlive: true, hostPid: 42, logBytes: 0, status: null,
+      runId: "old-run", runOrdinal: 1, logCursor: { runId: "old-run", runOrdinal: 1, generation: 0, offset: 0 } };
+    rendererMocks.apiMock.attachSession.mockResolvedValueOnce(oldInfo);
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(getHandle("renderer-test")?.attached).toBe(true));
+    const oldChannel = rendererMocks.channels[0];
+    oldChannel.onmessage?.({ t: "process_status", suspended: true, signal: 20 });
+    oldChannel.onmessage?.({ t: "output", data: btoa("old"), offset: 0, cursor: oldInfo.logCursor });
+    if (sawExit) oldChannel.onmessage?.({ t: "exit", code: 0, signal: null, groupCleaned: true, reason: "user_stop", runId: "old-run", runOrdinal: 1 });
+    const nextStatus = { sessionId: "renderer-test", runId: "new-run", runOrdinal: 2, sequence: 1,
+      state: "idle" as const, source: "process" as const, confidence: "high" as const, evidence: null, logCursor: null, occurredAt: "2026-09-08T01:00:00Z" };
+    applyProjectsSnapshot(getState().projects.map(project => ({ ...project,
+      sessions: project.sessions.map(session => ({ ...session, lifecycle: "running", hostAlive: true, status: nextStatus })) })));
+    const nextInfo = { ...oldInfo, attachmentId: 102, hostPid: 43, runId: "new-run", runOrdinal: 2, status: nextStatus };
+    rendererMocks.apiMock.attachSession.mockResolvedValueOnce(nextInfo);
+    await attachHandle("renderer-test");
+    expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledTimes(2);
+    expect(rendererMocks.apiMock.attachSession.mock.calls[1][3]).toBeNull();
+    expect(getState().runtime["renderer-test"]).toMatchObject({ attached: true, exit: null, suspended: false, hostPid: 43 });
+    expect(getHandle("renderer-test")?.attachmentId).toBe(102);
+    oldChannel.onmessage?.({ t: "exit", code: 0, signal: null, groupCleaned: true, reason: "user_stop", runId: "old-run", runOrdinal: 1 });
+    expect(getState().projects[0].sessions[0].lifecycle).toBe("running");
+    expect(getState().runtime["renderer-test"]?.exit).toBeNull();
+  });
+
+  it("finishes a rejected stale handshake instead of leaving the loading overlay stuck", async () => {
+    setState({ projects: getState().projects.map(project => ({ ...project, sessions: project.sessions.map(session => ({ ...session,
+      status: { sessionId: session.id, runId: "current", runOrdinal: 2, sequence: 1, state: "idle", source: "process", confidence: "high", evidence: null, logCursor: null, occurredAt: "2026-09-08T00:00:00Z" },
+    })) })) });
+    rendererMocks.apiMock.attachSession.mockResolvedValueOnce({ attachmentId: 7, childAlive: true, runId: "old", runOrdinal: 1 });
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(getState().runtime["renderer-test"]?.attaching).toBe(false));
+    expect(getState().runtime["renderer-test"]).toMatchObject({ attached: false, detached: true });
+    expect(rendererMocks.apiMock.detachSession).toHaveBeenCalledWith("renderer-test", 7);
+  });
+
+  it("does not revive an attachment whose own run exits before its invoke reply", async () => {
+    let finish!: (info: unknown) => void;
+    rendererMocks.apiMock.attachSession.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+    rendererMocks.channels[0].onmessage?.({ t: "exit", code: 1, signal: null, groupCleaned: true, reason: "child_exit", runId: "run", runOrdinal: 1 });
+    finish({ attachmentId: 88, childAlive: true, runId: "run", runOrdinal: 1 });
+    await Promise.resolve(); await Promise.resolve();
+    expect(getState().runtime["renderer-test"]).toMatchObject({ attached: false, exit: { code: 1 } });
+    expect(getState().projects[0].sessions[0].lifecycle).toBe("exited");
   });
 
   it("uses the DOM renderer only when CanvasAddon fails to initialize", () => {

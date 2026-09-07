@@ -26,6 +26,7 @@ import {
   readClipboardText,
 } from "./api";
 import { PiStartupNoticeFilter } from "./piStartupNotice";
+import { newerSessionRun, staleSessionRun, type SessionRun } from "./sessionRun";
 import {
   announce,
   findSession,
@@ -769,6 +770,8 @@ export interface TermHandle {
   generation: number;
   /** Backend-issued capability; only this renderer may detach it. */
   attachmentId: number | null;
+  /** Host identity is known at handshake, even before the first output byte. */
+  runIdentity: SessionRun | null;
   /** A checkpoint or completed replay has drained through xterm and can be
    * shown immediately while a warm background attach catches up. */
   displayReady: boolean;
@@ -1241,6 +1244,7 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     attaching: false,
     generation: 0,
     attachmentId: null,
+    runIdentity: null,
     displayReady: false,
     displayRenderPending: false,
     terminalSnapshotRevision: 0,
@@ -2723,6 +2727,15 @@ function activateAttachment(handle: TermHandle, info: AttachInfo): boolean {
   // A Host can exit between its handshake and either readiness delivery. The
   // channel remains authoritative for this attach generation.
   const runtime = getState().runtime[sessionId];
+  const session = findSession(getState().projects, sessionId);
+  if (staleSessionRun(info, session?.status)) {
+    void api.detachSession(sessionId, info.attachmentId).catch(() => undefined);
+    if (!handle.attached) {
+      handle.pendingAttachInput = [];
+      patchRuntime(sessionId, { attaching: false, attached: false, detached: true });
+    }
+    return false;
+  }
   if (runtime?.exit || runtime?.detached || !info.childAlive) {
     handle.attached = false;
     handle.pendingAttachInput = [];
@@ -2734,12 +2747,16 @@ function activateAttachment(handle: TermHandle, info: AttachInfo): boolean {
       attached: false,
       detached: !info.childAlive,
     });
+    if (!info.childAlive) patchSession(sessionId, {
+      lifecycle: session?.lifecycle === "stopped" ? "stopped" : "exited", hostAlive: false,
+    }, info);
     return false;
   }
 
   const newlyWritable =
     !handle.attached || handle.attachmentId !== info.attachmentId;
   handle.attachmentId = info.attachmentId;
+  if (info.runId) handle.runIdentity = { runId: info.runId, runOrdinal: info.runOrdinal };
   handle.attached = true;
   handle.attaching = false;
   if (handle.logCursor) queueRenderedLogObservation(handle, handle.logCursor);
@@ -2782,7 +2799,17 @@ export async function attachHandle(
   preserveErrorDuringAttach = false,
 ): Promise<void> {
   const handle = getOrCreateHandle(sessionId);
+  const session = findSession(getState().projects, sessionId);
+  const run = handle.runIdentity ?? handle.logCursor;
+  const live = session?.lifecycle === "running" || session?.lifecycle === "creating";
+  if (live && (newerSessionRun(session.status, run) || getState().runtime[sessionId]?.exit)) {
+    // A remote restart does not execute restartSessionFlow in this renderer.
+    // Invalidate the old channel/buffer AND its exit flag before readiness can
+    // arrive. A same-generation Exit during attach still wins below.
+    resetForRestart(sessionId);
+  }
   if (handle.attached || handle.attaching) return;
+  handle.runIdentity ??= session?.status ?? null;
   handle.attaching = true;
   handle.pendingAttachInput = [];
   const generation = ++handle.generation;
@@ -3022,6 +3049,11 @@ function applyOutputFrame(
 
 function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
   const sessionId = handle.sessionId;
+  const current = findSession(getState().projects, sessionId)?.status;
+  const incoming = msg.t === "state" ? msg.event : msg.t === "exit" ? msg
+    : msg.t === "output" || msg.t === "replay_done" ? msg.cursor
+    : msg.t === "terminal_geometry_changed" || msg.t === "resize_ack" ? msg.payload.geometry : null;
+  if (staleSessionRun(incoming, current)) return;
   switch (msg.t) {
     case "attached": {
       activateAttachment(handle, msg.info);
@@ -3119,9 +3151,12 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       finishTerminalStartupFilter(handle);
       handle.pendingAttachInput = [];
       handle.attached = false;
+      handle.attaching = false;
       handle.attachmentId = null;
       patchRuntime(sessionId, {
         attached: false,
+        attaching: false,
+        suspended: false,
         terminalGeometry: null,
         exit: {
           code: msg.code,
@@ -3131,6 +3166,7 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       });
       patchSession(sessionId, {
         lifecycle: msg.reason === "user_stop" ? "stopped" : "exited",
+        hostAlive: false,
       });
       break;
     }
@@ -3174,10 +3210,14 @@ export function resetForRestart(sessionId: string) {
   const startupPending = session?.adapter === "pi";
   const handle = handles.get(sessionId);
   if (handle) {
+    const previousAttachment = handle.attachmentId;
+    handle.attachmentId = null;
+    handle.runIdentity = null;
     handle.attached = false;
     handle.attaching = false;
     handle.pendingAttachInput = [];
     handle.generation += 1; // drop messages from the pre-restart channel
+    if (previousAttachment !== null) void api.detachSession(sessionId, previousAttachment).catch(() => undefined);
     resetRenderObservation(handle);
     // Clear the buffer: the re-attach replays the same log tail and would
     // otherwise duplicate it under the old content / loaded history.
@@ -3196,7 +3236,12 @@ export function resetForRestart(sessionId: string) {
   }
   patchRuntime(sessionId, {
     attached: false,
+    attaching: false,
     detached: false,
+    suspended: false,
+    terminalGeometry: null,
+    hostPid: null,
+    terminalTitle: null,
     exit: null,
     error: null,
     errorMessage: null,

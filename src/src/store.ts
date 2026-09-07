@@ -3,6 +3,7 @@
 // imperative, non-serializable and must survive tab switches).
 
 import { useSyncExternalStore } from "react";
+import { staleSessionRun, type SessionRun } from "./sessionRun";
 import {
   emptyPaneLayout,
   focusPane,
@@ -658,7 +659,9 @@ export function getRuntime(sessionId: string): SessionRuntime {
 }
 
 /** Patch one session inside the project tree (keeps unread/ordering intact). */
-export function patchSession(sessionId: string, patch: Partial<SessionView>) {
+export function patchSession(sessionId: string, patch: Partial<SessionView>, run: Partial<SessionRun> | null | undefined = patch.status) {
+  const known = [findSession(state.projects, sessionId)?.status, state.runtime[sessionId]?.status];
+  if (known.some(status => staleSessionRun(run, status))) return;
   invalidateProjectsSnapshotRequests();
   update((s) => ({
     projectsAuthorityRevision: s.projectsAuthorityRevision + 1,
@@ -807,7 +810,11 @@ export function applyProjectsSnapshot(projects: ProjectView[]) {
       sessions: project.sessions.map((session) => {
         const current = currentSessions.get(session.id);
         if (!current) return session;
-        return { ...session, status: latestStatus(current.status, session.status) ?? null };
+        const status = latestStatus(current.status, session.status) ?? null;
+        // Keeping only the newer status would pair a new run's badge with an
+        // old run's stopped lifecycle/overlay. These facts share one run fence.
+        const stale = session.status && status !== session.status;
+        return { ...session, status, ...(stale ? { lifecycle: current.lifecycle, hostAlive: current.hostAlive } : {}) };
       }),
     }));
     const aliveSessionIds = sessionIds(nextProjects);

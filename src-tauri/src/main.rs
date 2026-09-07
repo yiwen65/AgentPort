@@ -1622,7 +1622,8 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
                         }
                         let _ = app.emit(
                             "session-exit",
-                            json!({"sessionId": session_id, "reason": reason}),
+                            json!({"sessionId": session_id, "reason": reason,
+                                "runId": run_id, "runOrdinal": run_ordinal}),
                         );
                         terminal = true;
                         break;
@@ -2069,7 +2070,7 @@ fn watch_loop(
                             "session-exit",
                             json!({
                                 "sessionId": session_id, "code": code, "signal": signal,
-                                "reason": reason,
+                                "reason": reason, "runId": run_id, "runOrdinal": run_ordinal,
                             }),
                         );
                         break;

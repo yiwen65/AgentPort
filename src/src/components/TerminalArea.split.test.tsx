@@ -98,7 +98,7 @@ import {
   writeSessionPaneDragPayload,
 } from "../paneSessionDrag";
 import { singletonPaneLayout, splitPane } from "../paneLayout";
-import { getState, setState } from "../store";
+import { getState, patchSession, setState } from "../store";
 import type { SessionView } from "../types";
 import TerminalArea from "./TerminalArea";
 import { attachHandle, restoreDesktopTerminalSize } from "../terminals";
@@ -212,6 +212,25 @@ describe("TerminalArea recursive panes", () => {
     act(() => setState({ projects: getState().projects.map(project => ({ ...project, sessions: project.sessions.map(session => session.id === ptyA.id ? { ...session, lifecycle: "running" as const } : session) })) }));
     await waitFor(() => expect(attachHandle).toHaveBeenCalledWith(ptyA.id));
   });
+  it("updates the overlay and dimming together for a non-focused split pane", () => {
+    const view = render(<TerminalArea />);
+    const pane = () => view.container.querySelector(`[data-pane-session-id="${ptyA.id}"]`)!;
+    act(() => patchSession(ptyA.id, { lifecycle: "stopped", hostAlive: false }));
+    expect(pane().querySelector(".term-pane")?.classList.contains("ended")).toBe(true);
+    expect(pane().querySelector(".session-state-card")).not.toBeNull();
+    act(() => patchSession(ptyA.id, { lifecycle: "running", hostAlive: true }));
+    expect(pane().querySelector(".term-pane")?.classList.contains("ended")).toBe(false);
+    expect(pane().querySelector(".session-state-card")).toBeNull();
+  });
+
+  it("reattaches a new run even when a rapid external restart skipped the stopped snapshot", async () => {
+    render(<TerminalArea />);
+    vi.mocked(attachHandle).mockClear();
+    act(() => patchSession(ptyA.id, { status: { sessionId: ptyA.id, runId: "new-run", runOrdinal: 2, sequence: 1,
+      state: "idle", source: "process", confidence: "high", evidence: null, logCursor: null, occurredAt: "2026-09-08T00:00:00Z" } }));
+    await waitFor(() => expect(attachHandle).toHaveBeenCalledWith(ptyA.id));
+  });
+
   it("shows only a laptop restore button for phone geometry", async () => {
     setState({ runtime: {
       ...getState().runtime,

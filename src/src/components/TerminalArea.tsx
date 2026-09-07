@@ -331,7 +331,7 @@ function TerminalPane({
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const ses = useStore((state) => findSession(state.projects, sessionId));
-  useStore((state) => state.runtime[sessionId]);
+  const runtime = useStore((state) => state.runtime[sessionId]);
   const scrolledUp = getRuntime(sessionId).scrolledUp;
   const [dropActive, setDropActive] = useState(false);
 
@@ -339,7 +339,7 @@ function TerminalPane({
     if (hostRef.current) mountTerminal(sessionId, hostRef.current);
   }, [sessionId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setTerminalActive(sessionId, visible);
     if (!visible) return;
     // Every visible split pane owns a live attachment. Focus is independent:
@@ -359,12 +359,12 @@ function TerminalPane({
       cancelAnimationFrame(firstRaf);
       if (secondRaf !== null) cancelAnimationFrame(secondRaf);
     };
-  }, [focused, sessionId, visible, ses?.lifecycle]);
+  }, [focused, sessionId, visible, ses?.lifecycle, ses?.hostAlive, ses?.status?.runId, ses?.status?.runOrdinal]);
 
   const ended =
     ses?.lifecycle === "exited" ||
     ses?.lifecycle === "stopped" ||
-    ses?.lifecycle === "interrupted";
+    ses?.lifecycle === "interrupted" || Boolean(runtime?.exit);
 
 
   return (
@@ -1079,7 +1079,7 @@ function PaneDropOverlay({
 }
 
 function SessionPaneLeaf({
-  ses,
+  ses: initialSession,
   focused,
   visible,
   multiPane,
@@ -1092,6 +1092,9 @@ function SessionPaneLeaf({
   maximized: boolean;
 }) {
   const { t } = useTranslation(["session", "shell", "common"]);
+  // A non-focused leaf can change without changing the root's active Session
+  // selector. Its overlay/header must observe the same snapshot as TerminalPane.
+  const ses = useStore((state) => findSession(state.projects, initialSession.id)) ?? initialSession;
   const termSearchOpen = useStore((state) => state.termSearchOpen);
   const [sessionDragActive, setSessionDragActive] = useState(false);
   const ended = ["stopped", "exited", "interrupted"].includes(ses.lifecycle);

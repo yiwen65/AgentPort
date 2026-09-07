@@ -123,6 +123,128 @@ describe("SessionWorkspace", () => {
     expect(request.mock.calls.some(([, method]) => method === "session.attach")).toBe(false);
   });
 
+  it("keeps Exit authoritative when it arrives before the attach reply", async () => {
+    const { client, request, emit } = setupClient({ autoReplay: false });
+    const base = request.getMockImplementation()!;
+    let finish!: (value: unknown) => void;
+    request.mockImplementation((...args) => args[1] === "session.attach" ? new Promise(resolve => { finish = resolve; }) : base(...args));
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(finish).toBeTypeOf("function"));
+    await act(async () => {
+      emit({ subscriptionId: "att-1", eventType: "exit", cursor: null, payload: { session_id: "ses-1", run_id: "run", run_ordinal: 1, group_cleaned: true } });
+      finish({ attachmentId: "att-1", sessionId: "ses-1", childAlive: true, runId: "run", runOrdinal: 1 });
+    });
+    expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "ended");
+    expect(screen.getByRole("button", { name: "Restart" })).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Raw terminal" })).not.toBeInTheDocument();
+  });
+
+  it("does not let a late resize reply revive an exited session", async () => {
+    const { client, request, emit } = setupClient();
+    const base = request.getMockImplementation()!;
+    let finish!: (value: unknown) => void;
+    request.mockImplementation((...args) => args[1] === "session.control" ? new Promise(resolve => { finish = resolve; }) : base(...args));
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    act(() => terminalHarness.props?.onResize?.(52, 32));
+    await waitFor(() => expect(finish).toBeTypeOf("function"));
+    await act(async () => {
+      emit({ subscriptionId: "att-1", eventType: "exit", cursor: null, payload: { session_id: "ses-1", group_cleaned: true } });
+      finish({ accepted: true, terminalGeometry: { runId: "run", runOrdinal: 1, revision: 1, sourceKind: "mobile" } });
+    });
+    expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "ended");
+    expect(screen.getByRole("button", { name: "Restart" })).toBeVisible();
+  });
+
+  it("ignores another attachment's late exit and output for the same Session", async () => {
+    const { client, emit } = setupClient();
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    await act(async () => {
+      emit({ subscriptionId: "old-attachment", eventType: "output", cursor: null, payload: { session_id: "ses-1", dataBase64: btoa("old-run") } });
+      emit({ subscriptionId: "old-attachment", eventType: "exit", cursor: null, payload: { session_id: "ses-1", group_cleaned: true } });
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    });
+    expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live");
+    expect(terminalHarness.writes).not.toContain("old-run");
+  });
+
+  it("reattaches on a newer run snapshot even if both snapshots say running", async () => {
+    const { client, request } = setupClient();
+    const status = { runId: "run", runOrdinal: 1, sequence: 1, state: "idle", source: "process", confidence: "high", occurredAt: "2026-09-08T00:00:00Z" };
+    const props = { client, onClose: vi.fn(), onSessionChanged: vi.fn() };
+    const view = render(<SessionWorkspace {...props} open={{ ...open, session: { ...open.session, hostAlive: true, latestStatus: status } }} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    const base = request.getMockImplementation()!;
+    request.mockImplementation((...args) => args[1] === "session.attach"
+      ? Promise.resolve({ attachmentId: "att-2", sessionId: "ses-1", childAlive: true, runId: "run-2", runOrdinal: 2 }) : base(...args));
+    view.rerender(<SessionWorkspace {...props} open={{ ...open, session: { ...open.session, hostAlive: true, latestStatus: { ...status, runId: "run-2", runOrdinal: 2 } } }} />);
+    await waitFor(() => expect(request.mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(2));
+    expect(terminalHarness.resets).toBe(1);
+    expect(request.mock.calls.some(([, method]) => ["session.stop", "session.restart"].includes(method))).toBe(false);
+  });
+
+  it("publishes current state and exit while rejecting stale run and sequence events", async () => {
+    const { client, emit } = setupClient();
+    const changed = vi.fn();
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={changed} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    const state = { session_id: "ses-1", run_id: "run", run_ordinal: 1, sequence: 3, state: "needs_input", source: "hook", confidence: "high", occurred_at: "2026-09-08T00:00:00Z" };
+    act(() => emit({ subscriptionId: "att-1", eventType: "state", cursor: null, payload: state }));
+    expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ latestStatus: expect.objectContaining({ runId: "run", sequence: 3, state: "needs_input" }) }) }));
+    act(() => {
+      emit({ subscriptionId: "att-1", eventType: "state", cursor: null, payload: { ...state, sequence: 2, state: "working" } });
+      emit({ subscriptionId: "att-1", eventType: "exit", cursor: null, payload: { session_id: "ses-1", run_id: "old", run_ordinal: 0 } });
+    });
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live");
+    act(() => emit({ subscriptionId: "att-1", eventType: "exit", cursor: null, payload: { session_id: "ses-1", run_id: "run", run_ordinal: 1, reason: "user_stop", group_cleaned: true } }));
+    expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ lifecycle: "stopped", hostAlive: false }) }));
+  });
+
+  it("ignores stale geometry revisions instead of changing ownership back", async () => {
+    const { client, emit } = setupClient();
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    const geometry = { runId: "run", runOrdinal: 1, cols: 100, rows: 30, sourceKind: "desktop" as const, revision: 3, updatedAt: "2026-09-08T00:00:00Z" };
+    act(() => {
+      emit({ subscriptionId: "att-1", eventType: "terminal_geometry_changed", cursor: null, payload: { session_id: "ses-1", geometry } });
+      emit({ subscriptionId: "att-1", eventType: "terminal_geometry_changed", cursor: null, payload: { session_id: "ses-1", geometry: { ...geometry, sourceKind: "mobile", revision: 2 } } });
+    });
+    expect(screen.getByRole("button", { name: "Restore phone size" })).toBeVisible();
+  });
+
+  it("accepts a current-run stopped snapshot after local Restart when Exit delivery was lost", async () => {
+    const { client } = setupClient();
+    const props = { client, onClose: vi.fn(), onSessionChanged: vi.fn() };
+    const view = render(<SessionWorkspace {...props} open={{ ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false } }} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Restart" }));
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    view.rerender(<SessionWorkspace {...props} open={{ ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false,
+      latestStatus: { runId: "run", runOrdinal: 1, sequence: 2, state: "exited", source: "process", confidence: "high", occurredAt: "2026-09-08T00:00:00Z" } } }} />);
+    expect(await screen.findByRole("button", { name: "Restart" })).toBeVisible();
+    expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "ended");
+    expect(screen.queryByRole("region", { name: "Raw terminal" })).not.toBeInTheDocument();
+  });
+
+  it("routes an early attachment-scoped resync without a Session ID after the reply identifies it", async () => {
+    const { client, request, emit } = setupClient({ autoReplay: false });
+    const base = request.getMockImplementation()!;
+    let finish!: (value: unknown) => void;
+    request.mockImplementation((...args) => {
+      if (args[1] === "session.attach" && !finish) return new Promise(resolve => { finish = resolve; });
+      return base(...args);
+    });
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(finish).toBeTypeOf("function"));
+    await act(async () => {
+      emit({ subscriptionId: "att-1", eventType: "resync_required", cursor: null, payload: { reason: "host_stream_closed" } });
+      finish({ attachmentId: "att-1", sessionId: "ses-1", childAlive: true, runId: "run", runOrdinal: 1 });
+    });
+    await waitFor(() => expect(request.mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(2));
+    expect(terminalHarness.resets).toBe(1);
+  });
+
   it("offers Restart for an ended host instead of attempting an impossible attachment", async () => {
     const { client, request } = setupClient();
     render(<SessionWorkspace open={{ ...open, session: { ...open.session, lifecycle: "exited", hostAlive: false } }} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
@@ -340,7 +462,7 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByText("终端仍在适配手机尺寸")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Resize terminal" }));
     await act(async () => {
-      emit({ subscriptionId: "sub", eventType: "output", cursor: { runId: "run", runOrdinal: 1, generation: 0, offset: 5, statusSequence: 0 }, payload: { session_id: "ses-1", dataBase64: btoa("hello") } });
+      emit({ subscriptionId: "att-1", eventType: "output", cursor: { runId: "run", runOrdinal: 1, generation: 0, offset: 5, statusSequence: 0 }, payload: { session_id: "ses-1", dataBase64: btoa("hello") } });
       await new Promise((resolve) => requestAnimationFrame(resolve));
     });
     expect(terminalHarness.writes).toEqual(["hello"]);
@@ -387,7 +509,7 @@ describe("SessionWorkspace", () => {
     await act(async () => {
       for (let index = 0; index < 200; index += 1) {
         emit({
-          subscriptionId: "sub",
+          subscriptionId: "att-1",
           eventType: "output",
           cursor: { runId: "run", runOrdinal: 1, generation: 0, offset: index * 256, statusSequence: 0 },
           payload: { session_id: "ses-1", dataBase64: btoa("x".repeat(256)) },
@@ -513,7 +635,7 @@ describe("SessionWorkspace", () => {
     const { client, request, emit } = setupClient();
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
-    await act(async () => emit({ subscriptionId: "sub", eventType: "structured", cursor: {}, payload: { sessionId: "ses-1", event: { type: "tui", text: "Approve? [y/N]" } } }));
+    await act(async () => emit({ subscriptionId: "att-1", eventType: "structured", cursor: {}, payload: { sessionId: "ses-1", event: { type: "tui", text: "Approve? [y/N]" } } }));
     expect(screen.queryByText("Approval requested")).not.toBeInTheDocument();
     expect(request).not.toHaveBeenCalledWith("host-1", "session.structured_input", expect.anything());
 

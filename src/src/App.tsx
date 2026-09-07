@@ -153,12 +153,12 @@ function useBoot() {
               refreshProjectsSoon();
             });
           }),
-          onSessionExit(({ sessionId, reason }) => {
+          onSessionExit(({ sessionId, reason, runId, runOrdinal }) => {
             applyWhenBooted(() => {
               patchSession(sessionId, {
                 lifecycle: reason === "user_stop" ? "stopped" : "exited",
                 hostAlive: false,
-              });
+              }, { runId, runOrdinal });
               refreshProjectsSoon();
             });
           }),
