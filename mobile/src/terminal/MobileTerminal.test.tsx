@@ -20,7 +20,7 @@ const terminalHarness = vi.hoisted(() => ({
   writes: [] as (string | Uint8Array)[],
   resets: 0,
   instances: 0,
-  options: undefined as { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; theme?: unknown } | undefined,
+  options: undefined as { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown } | undefined,
 }));
 
 vi.mock("@xterm/addon-fit", () => ({
@@ -33,8 +33,8 @@ vi.mock("@xterm/xterm", () => ({
     rows = 24;
     get modes() { return { applicationCursorKeysMode: terminalHarness.applicationCursor }; }
     buffer = { active: { cursorY: 20, viewportY: 0, baseY: 0, getLine: () => ({ getCell: () => ({ getChars: () => "a", getWidth: () => 1 }) }) } };
-    options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; theme?: unknown };
-    constructor(options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; theme?: unknown } = {}) {
+    options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown };
+    constructor(options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown } = {}) {
       this.options = { ...options };
       terminalHarness.options = this.options;
       terminalHarness.instances += 1;
@@ -98,9 +98,10 @@ describe("MobileTerminal input accessory", () => {
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-  it("uses stock xterm input with screen reader mode disabled", () => {
+  it("uses stock xterm input with screen reader mode disabled and deep scrollback", () => {
     render(<MobileTerminal showProbeOutput={false} />);
     expect(terminalHarness.options?.screenReaderMode).toBe(false);
+    expect(terminalHarness.options?.scrollback).toBe(50_000);
   });
 
   it("exposes direct write and reset operations without React output state", () => {

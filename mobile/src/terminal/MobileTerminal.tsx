@@ -161,7 +161,9 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     const terminal = new Terminal({
       cursorBlink: true,
       convertEol: true,
-      scrollback: 10_000,
+      // Match the larger mobile attach replay tail. Long agent logs can easily
+      // exceed 10k wrapped rows on a phone-sized PTY; keep them scrollable.
+      scrollback: 50_000,
       fontSize,
       minimumContrastRatio: 4.5,
       screenReaderMode: false,

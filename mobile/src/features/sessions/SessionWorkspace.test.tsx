@@ -502,7 +502,7 @@ describe("SessionWorkspace", () => {
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     expect(request).toHaveBeenCalledWith("host-1", "session.attach", expect.objectContaining({
-      replayTailBytes: 512 * 1024,
+      replayTailBytes: 4 * 1024 * 1024,
       resumeFrom: undefined,
       subscribeOutput: true,
     }));

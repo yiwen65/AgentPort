@@ -12,6 +12,9 @@ import { decodeBase64Bytes, encodeBase64Utf8, outputBase64Of, sessionBatchId, se
 import type { OpenSession, RunCursor, SessionAttachResult, SessionEventPayload, TerminalGeometry } from "./types";
 
 const MOBILE_DEVICE_ID_KEY = "agentport-mobile-v2:device-id";
+// Service caps this at 4 MiB. Mobile cannot page earlier PTY bytes yet, so
+// request the largest bounded replay window to make upward log review useful.
+const MOBILE_ATTACH_REPLAY_TAIL_BYTES = 4 * 1024 * 1024;
 
 function mobileDeviceId(): string {
   try {
@@ -225,7 +228,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       try {
         const result = await client.request<SessionAttachResult>(open.hostProfileId, "session.attach", {
           sessionId: open.session.id,
-          replayTailBytes: 512 * 1024,
+          replayTailBytes: MOBILE_ATTACH_REPLAY_TAIL_BYTES,
           resumeFrom: cursor.current,
           subscribeOutput: true,
         });
