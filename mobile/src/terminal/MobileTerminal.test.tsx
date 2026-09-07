@@ -18,7 +18,9 @@ const terminalHarness = vi.hoisted(() => ({
   scrolled: (_viewportY: number) => {},
   input: (_data: string) => {},
   applicationCursor: false,
+  mouseTracking: "none",
   fitCalls: 0,
+  scrolledLines: [] as number[],
   writes: [] as (string | Uint8Array)[],
   resets: 0,
   scrollToTopCalls: 0,
@@ -34,7 +36,7 @@ vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
     rows = 24;
-    get modes() { return { applicationCursorKeysMode: terminalHarness.applicationCursor }; }
+    get modes() { return { applicationCursorKeysMode: terminalHarness.applicationCursor, mouseTrackingMode: terminalHarness.mouseTracking }; }
     buffer = { active: { cursorY: 20, viewportY: 0, get baseY() { return terminalHarness.baseY; }, getLine: () => ({ getCell: () => ({ getChars: () => "a", getWidth: () => 1 }) }) } };
     options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown };
     constructor(options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown } = {}) {
@@ -64,6 +66,7 @@ vi.mock("@xterm/xterm", () => ({
       callback?.();
     }
     reset() { terminalHarness.resets += 1; }
+    scrollLines(rows: number) { terminalHarness.scrolledLines.push(rows); }
     scrollToTop() { terminalHarness.scrollToTopCalls += 1; }
     dispose() { /* deterministic no-op */ }
     selectAll() { /* deterministic no-op */ }
@@ -78,6 +81,8 @@ describe("MobileTerminal input accessory", () => {
   beforeEach(() => {
     localStorage.clear();
     terminalHarness.applicationCursor = false;
+    terminalHarness.mouseTracking = "none";
+    terminalHarness.scrolledLines = [];
     terminalHarness.input = () => {};
     terminalHarness.selection = "selected output";
     terminalHarness.selectionChanged = () => {};
@@ -332,21 +337,34 @@ describe("MobileTerminal input accessory", () => {
     expect(onReachTop).toHaveBeenCalledOnce();
   });
 
-  it("routes vertical touch movement through xterm's wheel path, without interpreting a horizontal swipe as scroll", async () => {
+  it("routes vertical touch movement through fast local scrollback, without interpreting a horizontal swipe as scroll", async () => {
     render(<MobileTerminal showHeading={false} />);
     const wheel = vi.fn();
     screen.getByRole("application").addEventListener("wheel", wheel);
     fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 160 }] });
     fireEvent.touchMove(terminalHarness.screen!, { touches: [{ clientX: 32, clientY: 100 }] });
     expect(wheel).not.toHaveBeenCalled();
+    expect(terminalHarness.scrolledLines).toEqual([]);
     await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
-    expect(wheel).toHaveBeenCalledWith(expect.objectContaining({ deltaY: 81, deltaMode: WheelEvent.DOM_DELTA_PIXEL }));
-    wheel.mockClear();
+    expect(terminalHarness.scrolledLines).toEqual([21]);
+    expect(wheel).not.toHaveBeenCalled();
     fireEvent.touchEnd(terminalHarness.screen!, { changedTouches: [{ clientX: 32, clientY: 100 }] });
     fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 160 }] });
     fireEvent.touchMove(terminalHarness.screen!, { touches: [{ clientX: 120, clientY: 155 }] });
     await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
-    expect(wheel).not.toHaveBeenCalled();
+    expect(terminalHarness.scrolledLines).toEqual([21]);
+  });
+
+  it("preserves wheel dispatch for mouse-reporting TUIs", async () => {
+    terminalHarness.mouseTracking = "x10";
+    render(<MobileTerminal showHeading={false} />);
+    const wheel = vi.fn();
+    screen.getByRole("application").addEventListener("wheel", wheel);
+    fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 160 }] });
+    fireEvent.touchMove(terminalHarness.screen!, { touches: [{ clientX: 32, clientY: 100 }] });
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
+    expect(wheel).toHaveBeenCalledWith(expect.objectContaining({ deltaY: 150, deltaMode: WheelEvent.DOM_DELTA_PIXEL }));
+    expect(terminalHarness.scrolledLines).toEqual([]);
   });
 
   it("long-presses and drag-selects output without wheel events or keyboard focus", () => {

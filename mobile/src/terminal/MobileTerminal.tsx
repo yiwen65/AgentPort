@@ -358,17 +358,26 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     const forwardedMouseEvents = new WeakSet<Event>();
     let scrollWheelFrame: number | undefined;
     let pendingWheel: { deltaY: number; clientX: number; clientY: number } | undefined;
+    const terminalRowHeight = () => {
+      const screen = container.querySelector<HTMLElement>(".xterm-screen");
+      const rect = screen?.getBoundingClientRect();
+      return rect && terminal.rows > 0 && rect.height > 0 ? rect.height / terminal.rows : 16;
+    };
     const flushScrollWheel = () => {
       scrollWheelFrame = undefined;
       const next = pendingWheel;
       pendingWheel = undefined;
       if (!next) return;
-      // Unlike xterm's touch path, wheel handles mouse-reporting TUIs and the
-      // alternate buffer as well as local scrollback. Preserve that protocol,
-      // but coalesce touchmove bursts to the display frame so scroll handling
-      // never out-runs rendering on mobile GPUs.
+      if (terminal.modes.mouseTrackingMode === "none") {
+        const rows = Math.sign(next.deltaY) * Math.max(1, Math.round(Math.abs(next.deltaY) / terminalRowHeight() * 3.5));
+        terminal.scrollLines(rows);
+        return;
+      }
+      // Mouse-reporting TUIs and the alternate buffer need xterm's wheel
+      // protocol encoder. Normal log scrollback uses scrollLines above because
+      // WebKit's synthetic wheel path is too damped for finger scrolling.
       (container.querySelector(".xterm-screen") ?? container).dispatchEvent(new WheelEvent("wheel", {
-        deltaY: next.deltaY,
+        deltaY: next.deltaY * 2.5,
         deltaMode: WheelEvent.DOM_DELTA_PIXEL,
         clientX: next.clientX,
         clientY: next.clientY,
@@ -377,12 +386,11 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       }));
     };
     const queueScrollWheel = (deltaY: number, clientX: number, clientY: number) => {
-      const acceleratedDelta = deltaY * 1.35;
       if (pendingWheel) {
-        pendingWheel.deltaY += acceleratedDelta;
+        pendingWheel.deltaY += deltaY;
         pendingWheel.clientX = clientX;
         pendingWheel.clientY = clientY;
-      } else pendingWheel = { deltaY: acceleratedDelta, clientX, clientY };
+      } else pendingWheel = { deltaY, clientX, clientY };
       if (scrollWheelFrame === undefined) scrollWheelFrame = window.requestAnimationFrame(flushScrollWheel);
     };
     const guardCompatibilityMouse = (event: MouseEvent) => {
