@@ -174,7 +174,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     terminal.loadAddon(fit);
     terminal.open(container);
     const disposeIosIme = isIosKeyboard() && terminal.textarea
-      ? installIosImeRouting(container, terminal.textarea) : undefined;
+      ? installIosImeRouting(container, terminal.textarea, text => terminal.input(text, true)) : undefined;
     let selectionFrame: number | undefined;
     const positionSelectionMenu = () => {
       const menu = selectionMenuRef.current;
