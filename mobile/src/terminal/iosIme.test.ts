@@ -29,7 +29,8 @@ function up(ta: HTMLTextAreaElement, key: string) {
 }
 const tick = () => vi.advanceTimersByTimeAsync(1);
 
-// Synthetic event sequences, not a captured iPhone dictation trace.
+// Synthetic browser dispatch against real xterm; the Doubao batch regression
+// below replays the event shape captured on iPhone, with neutral test content.
 describe("iOS edit routing against a real opened xterm 5.5", () => {
   it.each([false, true])("emits each digit/symbol once (input arrives in a later task: %s)", async delayed => {
     const { textarea, sent } = setup();
@@ -241,6 +242,110 @@ describe("iOS edit routing against a real opened xterm 5.5", () => {
   it("owns soft deletion when beforeinput proves the suffix", () => {
     const { textarea, sent } = setup();
     insert(textarea, "你好"); textarea.setSelectionRange(2, 2);
+    replace(textarea, "你", "", "deleteContentBackward");
+    expect(sent).toEqual(["你好", "\x7f"]);
+  });
+  it.each(["abcdefghi", "甲乙丙丁戊己庚辛壬", "甲乙丙丁戊己庚辛。"])(
+    "routes every Doubao retraction under one Backspace before the final phrase (%s)", async phrase => {
+      const { textarea, sent } = setup();
+      for (const char of phrase) {
+        down(textarea, "Unidentified");
+        replace(textarea, textarea.value + char, char, "insertText");
+        up(textarea, "Unidentified");
+      }
+      const backspace = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Backspace", keyCode: 8 });
+      textarea.dispatchEvent(backspace);
+      // On-device: xterm canceled this keydown, then eight DOM deletions still
+      // arrived under the SAME key. Model the first native deletion as the
+      // key's default action; the IME's remaining eight edits are independent.
+      if (!backspace.defaultPrevented) replace(textarea, textarea.value.slice(0, -1), "", "deleteContentBackward");
+      for (let i = 0; i < 8; i++) replace(textarea, textarea.value.slice(0, -1), "", "deleteContentBackward");
+      textarea.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Backspace", keyCode: 8 }));
+      down(textarea, "Unidentified");
+      replace(textarea, textarea.value + phrase, phrase, "insertText");
+      up(textarea, "Unidentified");
+      await tick();
+      expect(sent.join("")).toBe(phrase + "\x7f".repeat(9) + phrase);
+      expect(backspace.defaultPrevented).toBe(false);
+      expect(textarea.value).toBe(phrase);
+      const line: string[] = [];
+      for (const char of sent.join("")) char === "\x7f" ? line.pop() : line.push(char);
+      expect(line.join("")).toBe(phrase);
+    },
+  );
+  it("preserves two intentional identical dictations with separate retraction batches", () => {
+    const { textarea, sent } = setup();
+    const phrase = "甲乙丙丁戊己庚辛。";
+    for (let utterance = 1; utterance <= 2; utterance++) {
+      for (const char of phrase) {
+        down(textarea, "Unidentified"); insert(textarea, char); up(textarea, "Unidentified");
+      }
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Backspace", keyCode: 8 }));
+      for (let i = 0; i < phrase.length; i++) replace(textarea, textarea.value.slice(0, -1), "", "deleteContentBackward");
+      textarea.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Backspace", keyCode: 8 }));
+      down(textarea, "Unidentified"); insert(textarea, phrase); up(textarea, "Unidentified");
+      expect(sent.join("")).toBe((phrase + "\x7f".repeat(9) + phrase).repeat(utterance));
+      expect(textarea.value).toBe(phrase.repeat(utterance));
+    }
+  });
+  it("does not infer an extra erase from Backspace when only eight DOM deletes arrive", () => {
+    const { textarea, sent } = setup();
+    insert(textarea, "abcdefghi");
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Backspace", keyCode: 8 }));
+    for (let i = 0; i < 8; i++) replace(textarea, textarea.value.slice(0, -1), "", "deleteContentBackward");
+    textarea.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Backspace", keyCode: 8 }));
+    expect(sent).toEqual(["abcdefghi", ...Array(8).fill("\x7f")]);
+    expect(textarea.value).toBe("a");
+  });
+  it("waits for actual DOM deletion instead of speculatively sending Backspace", () => {
+    const { textarea, sent } = setup();
+    insert(textarea, "你好");
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Backspace", keyCode: 8 }));
+    up(textarea, "Backspace");
+    expect(sent).toEqual(["你好"]);
+  });
+  it("handles repeated Backspace then falls back to xterm when the owned suffix is empty", () => {
+    const { textarea, sent } = setup();
+    insert(textarea, "你好");
+    for (let i = 0; i < 3; i++) {
+      const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Backspace", keyCode: 8, repeat: i > 0 });
+      textarea.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(i === 2);
+      if (!event.defaultPrevented) replace(textarea, textarea.value.slice(0, -1), "", "deleteContentBackward");
+    }
+    up(textarea, "Backspace");
+    expect(sent).toEqual(["你好", "\x7f", "\x7f", "\x7f"]);
+  });
+  it.each([
+    [{ ctrlKey: true }, "\b"], [{ altKey: true }, "\x1b\x7f"],
+    [{ metaKey: true }, "\x7f"], [{ shiftKey: true }, "\x7f"],
+  ] as const)("leaves modified Backspace with xterm (%s)", (modifiers, output) => {
+    const { textarea, sent } = setup();
+    insert(textarea, "你好");
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Backspace", keyCode: 8, ...modifiers }));
+    expect(sent).toEqual(["你好", output]);
+  });
+  it.each(["invalidated", "changed-dom", "caret-moved", "selected", "complex-grapheme"])(
+    "does not take Backspace from xterm without a safe owned tail (%s)", boundary => {
+      const { textarea, sent, dispose } = setup();
+      const text = boundary === "complex-grapheme" ? "👩‍💻" : "你好";
+      insert(textarea, text);
+      if (boundary === "invalidated") dispose.invalidate();
+      if (boundary === "changed-dom") textarea.value = "别的";
+      if (boundary === "caret-moved") textarea.setSelectionRange(1, 1);
+      if (boundary === "selected") textarea.setSelectionRange(0, 2);
+      const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Backspace", keyCode: 8 });
+      textarea.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      expect(sent).toEqual([text, "\x7f"]);
+    },
+  );
+  it("finishes a pending composition before routing its native Backspace", () => {
+    const { textarea, sent } = setup();
+    textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    textarea.value = "你好";
+    textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "你好" }));
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Backspace", keyCode: 8 }));
     replace(textarea, "你", "", "deleteContentBackward");
     expect(sent).toEqual(["你好", "\x7f"]);
   });

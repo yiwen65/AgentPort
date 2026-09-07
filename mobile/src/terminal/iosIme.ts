@@ -1,4 +1,4 @@
-/** iOS owns DOM text edits; xterm owns hardware keys and paste only.
+/** iOS owns DOM text edits; xterm owns non-edit keys and paste.
  * xterm 5.5 CompositionHelper has TWO deferred textarea readers (compositionend
  * and keyCode 229), in addition to Terminal._inputEvent. Capture at the parent
  * prevents all three from observing edits owned here. Do not install mid-IME.
@@ -8,6 +8,10 @@
  * owned suffix and beforeinput selection. DEL assumes normal terminal erase
  * semantics; complex graphemes are deliberately not rewritten.
  */
+// These scalars (including dictation punctuation) each need one terminal erase.
+// Do not infer erase counts for combining sequences, emoji or other graphemes.
+const erasableScalars = /^[\x20-\x7e\p{Unified_Ideograph}\p{P}]*$/u;
+
 type TraceEntry = { type: string; inputType?: string; dataLength: number; valueLength: number;
   equalsObserved: boolean; selection: [number, number]; composing: boolean; emittedLength: number; reason?: string };
 const trace: TraceEntry[] = [];
@@ -67,9 +71,8 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
         let common = 0;
         while (common < old.length && common < next.length && old[common] === next[common]) common++;
         const removed = old.slice(common).join("");
-        // Plain ASCII and individual CJK ideographs have one logical erase per
-        // scalar in conventional line editors. Never count terminal cell width.
-        if (/^[\x20-\x7e\p{Unified_Ideograph}]*$/u.test(removed)
+        // Count logical erases, never UTF-16 units or terminal cell width.
+        if (erasableScalars.test(removed)
           && !/^[\p{M}\u200d\ufe0f]/u.test(next.slice(common).join(""))) {
           output = "\x7f".repeat(old.length - common) + next.slice(common).join(""); reason = "suffix-replacement";
         } else reason = "unsupported-grapheme";
@@ -112,7 +115,20 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
     if (event.keyCode === 229 || event.isComposing) {
       hardware = false; event.stopImmediatePropagation();
     } else if (![16, 17, 18, 20].includes(event.keyCode)) {
-      finish(); invalidate(); hardware = true;
+      finish();
+      if (event.keyCode === 8 && !composing && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
+        && textarea.value === observed && ownedStart < observed.length
+        && textarea.selectionStart === observed.length && textarea.selectionEnd === observed.length
+        && erasableScalars.test(observed.slice(ownedStart))) {
+        // Real iPhone Doubao retraction: ONE Backspace wraps MANY native
+        // deleteContentBackward edits. xterm would send one DEL, cancel the
+        // first DOM deletion and invalidate the suffix for all remaining edits.
+        // Keep the browser default action; reconcile EACH witnessed DOM edit.
+        hardware = false; event.stopImmediatePropagation();
+        record(event, 0, "dom-backspace");
+        return;
+      }
+      invalidate(); hardware = true;
     }
   };
   const keypress = (event: Event) => {
