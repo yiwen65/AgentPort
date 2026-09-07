@@ -103,9 +103,14 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     replaceBuffer(data: string | Uint8Array, scrollToTop = false) {
       const terminal = terminalRef.current;
       if (!terminal) return;
-      terminal.reset();
-      terminal.write(data, () => {
-        if (scrollToTop) terminal.scrollToTop();
+      // xterm writes are queued. Fence the replacement behind already queued
+      // writes; otherwise a pending tail replay can paint after reset and make
+      // the same Pi output appear twice in the rebuilt buffer.
+      terminal.write("", () => {
+        terminal.reset();
+        terminal.write(data, () => {
+          if (scrollToTop) terminal.scrollToTop();
+        });
       });
     },
   }), []);

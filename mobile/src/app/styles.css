@@ -16,6 +16,7 @@ html, body, #root { min-height: 100%; margin: 0; }
 body { min-width: 320px; overflow-x: hidden; background: var(--bg); font-size: 17px; line-height: 1.4; }
 html.terminal-visible, body.terminal-visible { height: 100%; overflow: hidden; overscroll-behavior: none; }
 body.terminal-visible #root { height: 100%; overflow: hidden; }
+body.terminal-visible .main-content { visibility: hidden; pointer-events: none; }
 button { font: inherit; color: inherit; }
 button:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
 

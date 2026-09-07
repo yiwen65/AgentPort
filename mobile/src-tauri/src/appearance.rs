@@ -22,6 +22,7 @@ pub async fn mobile_set_terminal_immersive(
                     let supported: bool = msg_send![controller, respondsToSelector: sel!(setPrefersStatusBarHidden:)];
                     if supported {
                         let _: () = msg_send![controller, setPrefersStatusBarHidden: immersive];
+                        let _: () = msg_send![controller, setNeedsStatusBarAppearanceUpdate];
                         Ok(())
                     } else {
                         Err("iOS controller does not support status-bar visibility".to_string())
