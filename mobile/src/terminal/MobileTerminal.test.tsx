@@ -304,17 +304,20 @@ describe("MobileTerminal input accessory", () => {
     expect(focus).toHaveBeenCalledOnce();
   });
 
-  it("routes vertical touch movement through xterm's wheel path, without interpreting a horizontal swipe as scroll", () => {
+  it("routes vertical touch movement through xterm's wheel path, without interpreting a horizontal swipe as scroll", async () => {
     render(<MobileTerminal showHeading={false} />);
     const wheel = vi.fn();
     screen.getByRole("application").addEventListener("wheel", wheel);
     fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 160 }] });
     fireEvent.touchMove(terminalHarness.screen!, { touches: [{ clientX: 32, clientY: 100 }] });
-    expect(wheel).toHaveBeenCalledWith(expect.objectContaining({ deltaY: 60 }));
+    expect(wheel).not.toHaveBeenCalled();
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
+    expect(wheel).toHaveBeenCalledWith(expect.objectContaining({ deltaY: 81, deltaMode: WheelEvent.DOM_DELTA_PIXEL }));
     wheel.mockClear();
     fireEvent.touchEnd(terminalHarness.screen!, { changedTouches: [{ clientX: 32, clientY: 100 }] });
     fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 160 }] });
     fireEvent.touchMove(terminalHarness.screen!, { touches: [{ clientX: 120, clientY: 155 }] });
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
     expect(wheel).not.toHaveBeenCalled();
   });
 

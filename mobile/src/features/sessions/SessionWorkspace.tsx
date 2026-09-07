@@ -82,6 +82,9 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   const resizeFrame = useRef<number>();
   const resizeInFlight = useRef<string>();
   const geometryRef = useRef<TerminalGeometry>();
+  const outputFrame = useRef<number>();
+  const pendingOutputChunks = useRef<Uint8Array[]>([]);
+  const pendingOutputBytes = useRef(0);
   const resizeOwnershipEnabled = useRef(true);
   const sourceDeviceId = useRef(mobileDeviceId());
   const terminalPalette = getMobileTerminalPalette(terminalAppearance.theme, resolvedMode);
@@ -118,6 +121,40 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     window.requestAnimationFrame(() => chromeReveal.current?.focus({ preventScroll: true }));
   };
 
+  const flushTerminalOutput = useCallback(() => {
+    outputFrame.current = undefined;
+    const chunks = pendingOutputChunks.current;
+    if (chunks.length === 0) return;
+    pendingOutputChunks.current = [];
+    const totalBytes = pendingOutputBytes.current;
+    pendingOutputBytes.current = 0;
+    if (chunks.length === 1) {
+      terminal.current?.write(chunks[0]);
+      return;
+    }
+    const merged = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    terminal.current?.write(merged);
+  }, []);
+
+  const scheduleTerminalOutput = useCallback((chunk: Uint8Array) => {
+    pendingOutputChunks.current.push(chunk);
+    pendingOutputBytes.current += chunk.byteLength;
+    if (outputFrame.current !== undefined) return;
+    outputFrame.current = window.requestAnimationFrame(flushTerminalOutput);
+  }, [flushTerminalOutput]);
+
+  useEffect(() => () => {
+    if (outputFrame.current !== undefined) window.cancelAnimationFrame(outputFrame.current);
+    outputFrame.current = undefined;
+    pendingOutputChunks.current = [];
+    pendingOutputBytes.current = 0;
+  }, []);
+
   const handleEvent = useCallback((event: RemoteEvent<SessionEventPayload>) => {
     const payload = event.payload;
     const attachmentGap = event.eventType === "resync_required" && event.subscriptionId === attachmentRef.current;
@@ -145,15 +182,18 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     }
     const outputBase64 = outputBase64Of(payload);
     if ((event.eventType === "output" || event.eventType === "transient_output") && outputBase64) {
-      // xterm already owns the bounded scrollback. Stream directly into it so
-      // every output event does not clone retained output and rerender React.
-      terminal.current?.write(decodeBase64Bytes(outputBase64));
+      // xterm already owns the bounded scrollback. Coalesce bursts to one
+      // renderer write per frame so mobile touch scrolling is not competing
+      // with hundreds of small xterm parse/render tasks.
+      scheduleTerminalOutput(decodeBase64Bytes(outputBase64));
     } else if (event.eventType === "resync_required") {
+      flushTerminalOutput();
       cursor.current = undefined;
       terminal.current?.reset();
       setNotice(t("session.resynced"));
       setAttachEpoch((current) => current + 1);
     } else if (event.eventType === "exit") {
+      flushTerminalOutput();
       setLocallyStopped(true);
       setRestartRequested(false);
       setTerminalGeometry(undefined);
@@ -167,7 +207,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         otherInputTimer.current = window.setTimeout(() => setOtherClientInput(false), 1_500);
       }
     }
-  }, [client, open.hostProfileId, open.session.id, t]);
+  }, [client, flushTerminalOutput, open.hostProfileId, open.session.id, scheduleTerminalOutput, t]);
 
   useEffect(() => {
     if (!shouldAttach) { setConnectionLabel("ended"); setError(""); return; }

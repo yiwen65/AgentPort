@@ -199,7 +199,10 @@ describe("SessionWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
     fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
-    act(() => emit({ subscriptionId: "att-1", eventType: "output", cursor: null, payload: { session_id: "ses-1", dataBase64: btoa("Resume this session with: claude --resume fixture") } }));
+    await act(async () => {
+      emit({ subscriptionId: "att-1", eventType: "output", cursor: null, payload: { session_id: "ses-1", dataBase64: btoa("Resume this session with: claude --resume fixture") } });
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
     expect(terminalHarness.writes).toEqual(["Resume this session with: claude --resume fixture"]);
     expect(screen.getByLabelText("Raw terminal")).not.toBeVisible();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -300,7 +303,10 @@ describe("SessionWorkspace", () => {
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     const resume = { runId: "run", runOrdinal: 1, generation: 0, offset: 5, statusSequence: 0 };
-    act(() => emit({ subscriptionId: "att-1", eventType: "output", cursor: resume, payload: { session_id: "ses-1", dataBase64: btoa("hello") } }));
+    await act(async () => {
+      emit({ subscriptionId: "att-1", eventType: "output", cursor: resume, payload: { session_id: "ses-1", dataBase64: btoa("hello") } });
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
     act(() => connection({ profileId: "host-1", state: "reconnecting" }));
     fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
     expect(request.mock.calls.some(([, method]) => method === "session.input")).toBe(false);
@@ -325,7 +331,10 @@ describe("SessionWorkspace", () => {
     ));
     expect(screen.queryByText("终端仍在适配手机尺寸")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Resize terminal" }));
-    await act(async () => emit({ subscriptionId: "sub", eventType: "output", cursor: { runId: "run", runOrdinal: 1, generation: 0, offset: 5, statusSequence: 0 }, payload: { session_id: "ses-1", dataBase64: btoa("hello") } }));
+    await act(async () => {
+      emit({ subscriptionId: "sub", eventType: "output", cursor: { runId: "run", runOrdinal: 1, generation: 0, offset: 5, statusSequence: 0 }, payload: { session_id: "ses-1", dataBase64: btoa("hello") } });
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
     expect(terminalHarness.writes).toEqual(["hello"]);
     expect(terminalHarness.props?.showHeading).toBe(false);
     expect(screen.queryByRole("button", { name: "Conversation" })).not.toBeInTheDocument();
@@ -376,10 +385,11 @@ describe("SessionWorkspace", () => {
           payload: { session_id: "ses-1", dataBase64: btoa("x".repeat(256)) },
         });
       }
+      await new Promise((resolve) => requestAnimationFrame(resolve));
     });
 
-    expect(terminalHarness.writes).toHaveLength(200);
-    expect(terminalHarness.writes.every((chunk) => chunk.length === 256)).toBe(true);
+    expect(terminalHarness.writes).toHaveLength(1);
+    expect(terminalHarness.writes[0]).toHaveLength(200 * 256);
     expect(terminalHarness.renders).toBe(settledRenders);
     expect(persist).not.toHaveBeenCalled();
     persist.mockRestore();

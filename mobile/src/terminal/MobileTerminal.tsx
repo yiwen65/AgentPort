@@ -337,6 +337,35 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       if (helper && document.activeElement === helper) helper.blur();
     };
     const forwardedMouseEvents = new WeakSet<Event>();
+    let scrollWheelFrame: number | undefined;
+    let pendingWheel: { deltaY: number; clientX: number; clientY: number } | undefined;
+    const flushScrollWheel = () => {
+      scrollWheelFrame = undefined;
+      const next = pendingWheel;
+      pendingWheel = undefined;
+      if (!next) return;
+      // Unlike xterm's touch path, wheel handles mouse-reporting TUIs and the
+      // alternate buffer as well as local scrollback. Preserve that protocol,
+      // but coalesce touchmove bursts to the display frame so scroll handling
+      // never out-runs rendering on mobile GPUs.
+      (container.querySelector(".xterm-screen") ?? container).dispatchEvent(new WheelEvent("wheel", {
+        deltaY: next.deltaY,
+        deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+        clientX: next.clientX,
+        clientY: next.clientY,
+        bubbles: true,
+        cancelable: true,
+      }));
+    };
+    const queueScrollWheel = (deltaY: number, clientX: number, clientY: number) => {
+      const acceleratedDelta = deltaY * 1.35;
+      if (pendingWheel) {
+        pendingWheel.deltaY += acceleratedDelta;
+        pendingWheel.clientX = clientX;
+        pendingWheel.clientY = clientY;
+      } else pendingWheel = { deltaY: acceleratedDelta, clientX, clientY };
+      if (scrollWheelFrame === undefined) scrollWheelFrame = window.requestAnimationFrame(flushScrollWheel);
+    };
     const guardCompatibilityMouse = (event: MouseEvent) => {
       if (forwardedMouseEvents.has(event)) return;
       if (performance.now() >= compatibilityMouseUntil || gestureStartedInInput !== false) return;
@@ -376,11 +405,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       compatibilityMouseUntil = performance.now() + 1000;
       event.preventDefault();
       event.stopPropagation();
-      // Unlike xterm's touch path, wheel handles mouse-reporting TUIs and the
-      // alternate buffer as well as local scrollback. Preserve that protocol.
-      (container.querySelector(".xterm-screen") ?? container).dispatchEvent(new WheelEvent("wheel", {
-        deltaY, clientX: touch.clientX, clientY: touch.clientY, bubbles: true, cancelable: true,
-      }));
+      queueScrollWheel(deltaY, touch.clientX, touch.clientY);
     };
     const finishTouch = (event: TouchEvent) => {
       cancelLongPress();
@@ -416,6 +441,10 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
             if (reading && !wasInert) helper.removeAttribute("inert");
           }
         }
+      }
+      if (scrollWheelFrame !== undefined) {
+        window.cancelAnimationFrame(scrollWheelFrame);
+        flushScrollWheel();
       }
       if (touchGesture.moved || gestureStartedInInput === false) {
         event.preventDefault();
@@ -453,6 +482,9 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       pendingRemoteReport.current = false;
       window.clearTimeout(orientationTimerRef.current);
       if (resizeFrameRef.current !== undefined) window.cancelAnimationFrame(resizeFrameRef.current);
+      if (scrollWheelFrame !== undefined) window.cancelAnimationFrame(scrollWheelFrame);
+      scrollWheelFrame = undefined;
+      pendingWheel = undefined;
       document.removeEventListener("mousedown", guardCompatibilityMouse, true);
       container.removeEventListener("touchmove", scrollTouch, true);
       container.removeEventListener("touchend", finishTouch, true);
