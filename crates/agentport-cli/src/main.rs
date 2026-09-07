@@ -520,7 +520,10 @@ fn launch_session(
         transport,
     };
     let adapter = adapters::adapter_for(agent);
-    let plan = adapter.build_launch(&ctx_launch)?;
+    let mut plan = adapter.build_launch(&ctx_launch)?;
+    if agent == AgentType::Pi {
+        agentport_core::pi_storage::prepare_launch(&ctx.paths, &session_id, &mut plan)?;
+    }
     // Helper files (e.g. claude per-session settings) — 0600.
     for (path, contents) in &plan.helper_files {
         agentport_core::host_manager::write_private_file(path, contents)?;
@@ -999,7 +1002,10 @@ fn cmd_session_restart(ctx: &Ctx, args: &[String]) -> Result<()> {
             .into_owned(),
         transport: session.transport,
     };
-    let plan = adapter.build_resume_checked(&rctx)?;
+    let mut plan = adapter.build_resume_checked(&rctx)?;
+    if session.adapter_type == AgentType::Pi {
+        agentport_core::pi_storage::prepare_launch(&ctx.paths, &session.id, &mut plan)?;
+    }
     for (path, contents) in &plan.helper_files {
         agentport_core::host_manager::write_private_file(path, contents)?;
     }

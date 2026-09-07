@@ -2,6 +2,8 @@
 //!
 //! Pi has no tool-by-tool approval protocol. AgentPort owns its native Session
 //! ID and private storage while preserving Pi's native project-trust prompt.
+//! These pure plans name the legacy storage source. Both launch coordinators
+//! finalize --session-dir via pi_storage::prepare_launch before spawning.
 
 use super::{AgentAdapter, LaunchContext, LaunchPlan, ResumeContext};
 use crate::error::{CoreError, Result};

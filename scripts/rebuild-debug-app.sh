@@ -43,11 +43,22 @@ if ! grep -Fq "$DEBUG_BUNDLE_ID" < <(strings "$ROOT/target/debug/agentport"); th
   exit 2
 fi
 
-cp "$ROOT/target/debug/agentport" "$APP/Contents/MacOS/agentport"
-cp "$ROOT/target/debug/agentport-host" "$APP/Contents/MacOS/agentport-host"
-cp "$ROOT/target/debug/agentport-remote-bridge" "$APP/Contents/MacOS/agentport-remote-bridge"
-cp "$ROOT/target/debug/agentport-mosh-attach" "$APP/Contents/MacOS/agentport-mosh-attach"
-cp "$ROOT/target/debug/agentport-connector" "$APP/Contents/MacOS/agentport-connector"
+# Replace inodes rather than truncating executables used by live hosts.
+# Signing below then touches only the newly installed executables.
+install_binary() {
+  local name="$1" temporary
+  temporary="$(mktemp "$APP/Contents/MacOS/.${name}.XXXXXX")"
+  if cp "$ROOT/target/debug/$name" "$temporary" &&
+    chmod 755 "$temporary" &&
+    mv -f "$temporary" "$APP/Contents/MacOS/$name"; then
+    return 0
+  fi
+  rm -f "$temporary"
+  return 1
+}
+for name in agentport agentport-host agentport-remote-bridge agentport-mosh-attach agentport-connector; do
+  install_binary "$name"
+done
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $DEBUG_BUNDLE_ID" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $DEBUG_DISPLAY_NAME" "$PLIST"
 

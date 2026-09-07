@@ -99,9 +99,9 @@ fn push_target(plan: &mut NativeCleanupPlan, target: CleanupTarget) {
 
 /// Build the deletion plan for one Session that is about to be purged.
 ///
-/// Pi transcripts live inside AgentPort's own session directory
-/// (`session_dir/pi/*.jsonl`) and are removed by the existing durable
-/// session-directory cleanup, so Pi — like Shell — needs no native plan.
+/// Pi history published under .epi is retained, not part of AgentPort's
+/// external deletion plan. Legacy `session_dir/pi` copies remain subject to
+/// the existing explicit session-directory cleanup; no .epi tree is deleted.
 pub fn plan_native_cleanup(paths: &AppPaths, session: &Session) -> NativeCleanupPlan {
     let mut plan = NativeCleanupPlan::default();
     match session.adapter_type {

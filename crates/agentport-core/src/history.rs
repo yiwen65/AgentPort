@@ -518,6 +518,7 @@ impl<'a> NativeHistory<'a> {
                     Resolution::Available(sources)
                 }
             }
+            Err(ResolveError::Unavailable(reason)) => Resolution::Unavailable(reason),
             Err(ResolveError::Ambiguous(count)) => Resolution::Ambiguous(
                 "Several native transcripts match and AgentPort cannot bind one safely".into(),
                 count,
@@ -544,6 +545,7 @@ impl<'a> NativeHistory<'a> {
 
 #[derive(Debug)]
 enum ResolveError {
+    Unavailable(String),
     Ambiguous(usize),
 }
 
@@ -769,7 +771,8 @@ fn resolve_pi(
     session: &Session,
     native_ids: &[String],
 ) -> std::result::Result<Vec<NativeSource>, ResolveError> {
-    let root = paths.session_dir(&session.id).join("pi");
+    let root = crate::pi_storage::read_directory(paths, &session.id)
+        .map_err(|error| ResolveError::Unavailable(error.to_string()))?;
     let Ok(entries) = fs::read_dir(&root) else {
         return Ok(Vec::new());
     };
@@ -1243,6 +1246,79 @@ mod tests {
         let events: Vec<HistoryEvent> = serde_json::from_slice(&fs::read(json).unwrap()).unwrap();
         assert_eq!(events.len(), 2);
         assert_eq!(events[1].text, "second answer");
+    }
+
+    #[test]
+    fn pi_epi_history_search_export_and_backup_use_the_published_copy() {
+        let temp = TempDir::new().unwrap();
+        let paths = AppPaths::new(temp.path().join("data"))
+            .with_pi_sessions_root(temp.path().join(".epi/agent/sessions"));
+        paths.ensure_layout().unwrap();
+        let session = session(temp.path(), AgentType::Pi, Some("pi-native"));
+        let legacy = paths.session_dir(&session.id).join("pi");
+        fs::create_dir_all(&legacy).unwrap();
+        let name = "2026_pi-native.jsonl";
+        let old = b"{\"type\":\"session\",\"version\":3,\"id\":\"pi-native\"}\n{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"old question\"}}\n";
+        fs::write(legacy.join(name), old).unwrap();
+        let mut ctx = crate::adapters::test_fixtures::resume_ctx(
+            AgentType::Pi,
+            &["session-id", "session-dir", "tui-mode"],
+            Some("pi-native"),
+        );
+        ctx.session_id = session.id.clone();
+        ctx.session_dir = paths
+            .session_dir(&session.id)
+            .to_string_lossy()
+            .into_owned();
+        let mut plan = crate::adapters::adapter_for(AgentType::Pi)
+            .build_resume_checked(&ctx)
+            .unwrap();
+        crate::pi_storage::prepare_launch(&paths, &session.id, &mut plan).unwrap();
+        let published = crate::pi_storage::read_directory(&paths, &session.id).unwrap();
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(published.join(name))
+            .unwrap();
+        file.write_all(b"{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":\"new epi answer\"}}\n").unwrap();
+        file.sync_all().unwrap();
+        let history = NativeHistory::new(&paths);
+        assert_eq!(
+            history.page(&session, None, 1).unwrap().events[0].text,
+            "new epi answer"
+        );
+        assert_eq!(
+            history
+                .search_session(&session, "new epi answer", 10)
+                .unwrap()
+                .total_hits,
+            1
+        );
+        let export = temp.path().join("epi.md");
+        history.export(&session, &export, "md").unwrap();
+        assert!(fs::read_to_string(export)
+            .unwrap()
+            .contains("new epi answer"));
+        let staging = temp.path().join("staging");
+        fs::create_dir_all(&staging).unwrap();
+        let backup = crate::native_backup::capture_session(&paths, &session, &staging).unwrap();
+        assert_eq!(
+            backup.artifacts.len(),
+            1,
+            "migration marker is not a transcript backup artifact"
+        );
+        let restored = temp.path().join("restored");
+        crate::native_backup::materialize(&staging, &restored, &[backup]).unwrap();
+        let restored_file = restored
+            .join("sessions")
+            .join(&session.id)
+            .join("pi")
+            .join(name);
+        assert!(fs::read_to_string(restored_file)
+            .unwrap()
+            .contains("new epi answer"));
+        assert_eq!(fs::read(legacy.join(name)).unwrap(), old);
+        assert!(crate::native_cleanup::plan_native_cleanup(&paths, &session).is_empty());
+        assert!(published.join(name).exists());
     }
 
     #[test]

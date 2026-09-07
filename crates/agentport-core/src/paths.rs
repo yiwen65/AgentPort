@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct AppPaths {
     root: PathBuf,
+    pi_sessions_root: Option<PathBuf>,
 }
 
 impl AppPaths {
@@ -29,7 +30,34 @@ impl AppPaths {
     }
 
     pub fn new(root: PathBuf) -> Self {
-        AppPaths { root }
+        AppPaths {
+            root,
+            pi_sessions_root: None,
+        }
+    }
+
+    /// Explicit embedding/test override. Never derives provider storage from the app data root.
+    pub fn with_pi_sessions_root(mut self, root: PathBuf) -> Self {
+        self.pi_sessions_root = Some(root);
+        self
+    }
+
+    pub fn pi_sessions_root(&self) -> Result<PathBuf> {
+        let root = if let Some(root) = &self.pi_sessions_root {
+            root.clone()
+        } else if let Some(agent_dir) = std::env::var_os("EASY_PI_CODING_AGENT_DIR") {
+            PathBuf::from(agent_dir).join("sessions")
+        } else {
+            dirs::home_dir()
+                .ok_or_else(|| CoreError::Internal("no home directory".into()))?
+                .join(".epi/agent/sessions")
+        };
+        if !root.is_absolute() {
+            return Err(CoreError::Validation(
+                "easy-pi sessions directory must be absolute".into(),
+            ));
+        }
+        Ok(root)
     }
 
     pub fn root(&self) -> &Path {

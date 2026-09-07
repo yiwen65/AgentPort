@@ -297,13 +297,34 @@ fn plan_session(paths: &AppPaths, session: &Session, roots: &NativeRoots) -> Res
             }
         }
         AgentType::Pi => {
-            let pi_root = paths.session_dir(&session.id).join("pi");
-            collect_directory_files(
-                &pi_root,
-                paths.root(),
-                NativeTargetRoot::AgentPort,
-                &mut files,
-            )?;
+            let pi_root = crate::pi_storage::read_directory(paths, &session.id)?;
+            if pi_root.exists() {
+                collect_directory_files(
+                    &pi_root,
+                    pi_root.parent().ok_or_else(|| {
+                        CoreError::Validation("invalid Pi history directory".into())
+                    })?,
+                    NativeTargetRoot::AgentPort,
+                    &mut files,
+                )?;
+                let canonical = pi_root.canonicalize()?;
+                files.retain(|file| {
+                    file.source.file_name().is_none_or(|name| {
+                        name != crate::pi_storage::ORIGIN && name != ".origin-pending"
+                    })
+                });
+                for file in &mut files {
+                    // Restore remains isolated in the chosen AgentPort data root.
+                    // Its first explicit resume migrates to a new .epi namespace.
+                    let relative = file.source.strip_prefix(&canonical).map_err(|_| {
+                        CoreError::Validation("Pi backup source escaped its root".into())
+                    })?;
+                    file.target_path = Path::new("sessions")
+                        .join(&session.id)
+                        .join("pi")
+                        .join(relative);
+                }
+            }
         }
         AgentType::Kimi => {
             let wanted = native_ids

@@ -2184,7 +2184,7 @@ impl RemoteService for CoreService {
         .map_err(ServiceError::NotExecutedCore)?;
         adapters::validate_user_args(session.adapter_type, &preset.args)
             .map_err(ServiceError::NotExecutedCore)?;
-        let plan = adapters::adapter_for(session.adapter_type)
+        let mut plan = adapters::adapter_for(session.adapter_type)
             .build_resume_checked(&ResumeContext {
                 install,
                 preset: preset.clone(),
@@ -2205,6 +2205,10 @@ impl RemoteService for CoreService {
                 transport: session.transport,
             })
             .map_err(ServiceError::NotExecutedCore)?;
+        if session.adapter_type == AgentType::Pi {
+            agentport_core::pi_storage::prepare_launch(&self.paths, &session.id, &mut plan)
+                .map_err(ServiceError::NotExecutedCore)?;
+        }
         let (env, secrets) = materialize_launch_environment(self, &preset, &plan.env)
             .map_err(ServiceError::NotExecutedCore)?;
         let settings = self
@@ -2923,6 +2927,9 @@ fn build_launch_plan(
         }
         adapters::validate_user_args(agent, &extra_args)?;
         plan.argv.extend(extra_args);
+    }
+    if agent == AgentType::Pi {
+        agentport_core::pi_storage::prepare_launch(&service.paths, &session_id, &mut plan)?;
     }
     Ok((plan, preset, cwd, session_id))
 }
@@ -4278,6 +4285,45 @@ mod tests {
             .capabilities
             .iter()
             .any(|capability| capability.name == "session.read" && capability.enabled));
+    }
+
+    #[test]
+    fn pi_launch_plan_finalizes_epi_storage_without_starting_a_host() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(root.path().join("app"))
+            .with_pi_sessions_root(root.path().join(".epi/agent/sessions"));
+        let service = CoreService::open(paths).unwrap();
+        let exe = root.path().join("pi-not-executed");
+        std::fs::write(&exe, "fixture only").unwrap();
+        let install = adapters::adapter_for(AgentType::Pi)
+            .parse_capabilities(&exe, "fixture", "--session-id --session-dir --tui-mode")
+            .unwrap();
+        service.db.upsert_adapter(&install).unwrap();
+        let project = service
+            .add_project(ProjectAddParams {
+                path: root.path().to_string_lossy().into_owned(),
+                name: Some("Pi fixture".into()),
+            })
+            .unwrap();
+        let (plan, _, _, id) = build_launch_plan(
+            &service,
+            &project.project.id,
+            AgentType::Pi,
+            None,
+            None,
+            PermissionMode::Native,
+            AgentTransport::Pty,
+            None,
+        )
+        .unwrap();
+        let location = agentport_core::pi_storage::read_directory(&service.paths, &id).unwrap();
+        assert!(location.starts_with(service.paths.pi_sessions_root().unwrap()));
+        assert!(plan
+            .argv
+            .windows(2)
+            .any(|pair| pair[0] == "--session-dir" && std::path::Path::new(&pair[1]) == location));
+        assert!(plan.assigned_agent_session_id.is_some());
+        assert!(!service.paths.host_config_path(&id).exists());
     }
 
     #[test]

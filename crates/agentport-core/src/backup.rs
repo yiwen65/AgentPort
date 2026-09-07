@@ -447,7 +447,10 @@ fn collect_session_files(paths: &AppPaths, out: &mut Vec<PathBuf>) -> Result<()>
                 }
                 stack.push(path);
             } else if ft.is_file() {
-                if path.file_name().and_then(|name| name.to_str()) == Some("output.log") {
+                if matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some("output.log" | ".pi-storage.lock")
+                ) {
                     continue;
                 }
                 out.push(path);
