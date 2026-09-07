@@ -18,7 +18,7 @@ use agentport_core::models::{AgentTransport, LogCursor};
 use agentport_core::protocol::{
     encode_frame, read_frame, write_frame, ClientFrame, HostFrame, InputBatchAckPhase,
     TerminalGeometry, HOST_FEATURE_INPUT_BATCH_V1, HOST_FEATURE_TERMINAL_GEOMETRY_V1,
-    PROTOCOL_VERSION,
+    HOST_FEATURE_TERMINAL_SEED_V1, PROTOCOL_VERSION,
 };
 use chrono::Utc;
 use nix::sys::signal::Signal;
@@ -240,6 +240,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
             features: vec![
                 HOST_FEATURE_INPUT_BATCH_V1.to_string(),
                 HOST_FEATURE_TERMINAL_GEOMETRY_V1.to_string(),
+                HOST_FEATURE_TERMINAL_SEED_V1.to_string(),
             ],
             terminal_geometry: Some(shared.terminal_geometry.lock().unwrap().clone()),
         }];
@@ -249,6 +250,19 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                 suspended: true,
                 signal: None,
             });
+        }
+        if subscribe_output
+            && resume_from.is_none()
+            && replay_target.is_none()
+            && replay_tail_bytes > 0
+        {
+            let seed = shared.output_tail.lock().unwrap().terminal_seed.bytes();
+            if !seed.is_empty() {
+                initial_frames.push(HostFrame::TransientOutput {
+                    session_id: shared.cfg.session_id.clone(),
+                    data: seed,
+                });
+            }
         }
         if subscribe_output
             && (resume_from.is_some() || replay_target.is_some() || replay_tail_bytes > 0)
@@ -1076,11 +1090,13 @@ mod drain_tests {
         let (tx, rx) = mpsc::sync_channel(8);
         tx.send(OutboundFrame::Data(Arc::new(b"final output".to_vec())))
             .unwrap();
-        tx.send(OutboundFrame::Data(Arc::new(b"exit".to_vec()))).unwrap();
+        tx.send(OutboundFrame::Data(Arc::new(b"exit".to_vec())))
+            .unwrap();
         let writer = std::thread::spawn(move || {
             let mut bytes = Vec::new();
             for _ in 0..3 {
-                write_outbound(&mut bytes, rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+                write_outbound(&mut bytes, rx.recv_timeout(Duration::from_secs(5)).unwrap())
+                    .unwrap();
             }
             bytes
         });

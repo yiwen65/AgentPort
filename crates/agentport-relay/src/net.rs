@@ -241,23 +241,12 @@ impl SecureChannel {
         Ok(serde_json::from_slice(&plaintext[..n])?)
     }
     pub fn into_stream(self) -> EncryptedStream {
-        let (stream, local) = tokio::io::duplex(CHUNK * 2);
-        let progress = Arc::new(WriteProgress::default());
-        let worker_progress = progress.clone();
-        let task = tokio::spawn(async move {
-            let _closed = PumpClosed(worker_progress.clone());
-            let _ = pump(self.socket, self.cipher, local, worker_progress).await;
-        });
-        EncryptedStream {
-            stream,
-            task,
-            written: 0,
-            progress,
-        }
+        EncryptedStream::new(self.socket, Some(self.cipher))
     }
 }
 /// Owns its pump: dropping a cancelled/obsolete connection closes the WebSocket.
-/// No auto-replay; a fresh Noise handshake is mandatory on every reconnect.
+/// No auto-replay; a fresh authenticated handshake is mandatory on reconnect.
+/// Session data uses either Noise or the negotiated WSS/TLS-only mode.
 #[derive(Default)]
 struct WriteProgress {
     sent: AtomicU64,
@@ -272,12 +261,41 @@ impl Drop for PumpClosed {
     }
 }
 pub struct EncryptedStream {
+    end_to_end_encrypted: bool,
     stream: DuplexStream,
     task: JoinHandle<()>,
     written: u64,
     progress: Arc<WriteProgress>,
 }
 impl EncryptedStream {
+    /// Call only after the peer authenticated and explicitly negotiated this
+    /// mode inside the Noise handshake. Public Relay links still require WSS.
+    pub(crate) fn authenticated_wss(socket: Socket) -> Self {
+        Self::new(socket, None)
+    }
+
+    fn new(socket: Socket, cipher: Option<snow::TransportState>) -> Self {
+        let end_to_end_encrypted = cipher.is_some();
+        let (stream, local) = tokio::io::duplex(CHUNK * 2);
+        let progress = Arc::new(WriteProgress::default());
+        let worker_progress = progress.clone();
+        let task = tokio::spawn(async move {
+            let _closed = PumpClosed(worker_progress.clone());
+            let _ = pump(socket, cipher, local, worker_progress).await;
+        });
+        Self {
+            stream,
+            task,
+            written: 0,
+            progress,
+            end_to_end_encrypted,
+        }
+    }
+
+    pub fn is_end_to_end_encrypted(&self) -> bool {
+        self.end_to_end_encrypted
+    }
+
     /// Native connection owners can cancel the pump even while split reader and
     /// writer halves are retained by pending requests or a blocked reader loop.
     pub fn abort_handle(&self) -> tokio::task::AbortHandle {
@@ -333,7 +351,7 @@ impl AsyncWrite for EncryptedStream {
 }
 async fn pump(
     mut socket: Socket,
-    mut cipher: snow::TransportState,
+    mut cipher: Option<snow::TransportState>,
     mut local: DuplexStream,
     progress: Arc<WriteProgress>,
 ) -> Result<()> {
@@ -345,8 +363,15 @@ async fn pump(
         tokio::select! {
             count = local.read(&mut input) => {
                 let count = count?; if count == 0 { return Ok(()); }
-                let mut encrypted = vec![0; count + 16]; let n = cipher.write_message(&input[..count], &mut encrypted)?; encrypted.truncate(n);
-                send_packet(&mut socket, encrypted).await?;
+                let packet = if let Some(cipher) = cipher.as_mut() {
+                    let mut encrypted = vec![0; count + 16];
+                    let n = cipher.write_message(&input[..count], &mut encrypted)?;
+                    encrypted.truncate(n);
+                    encrypted
+                } else {
+                    input[..count].to_vec()
+                };
+                send_packet(&mut socket, packet).await?;
                 progress.sent.fetch_add(count as u64, Ordering::Release); progress.waker.wake();
             }
             message = socket.next() => {
@@ -354,8 +379,12 @@ async fn pump(
                 match message.ok_or(Error::Transport)?? {
                     Message::Binary(bytes) => {
                         if bytes.len() > MAX_CIPHER { return Err(Error::Protocol); }
-                        let count = cipher.read_message(&bytes, &mut plaintext)?;
-                        timed(async { local.write_all(&plaintext[..count]).await?; Ok(()) }).await?;
+                        if let Some(cipher) = cipher.as_mut() {
+                            let count = cipher.read_message(&bytes, &mut plaintext)?;
+                            timed(async { local.write_all(&plaintext[..count]).await?; Ok(()) }).await?;
+                        } else {
+                            timed(async { local.write_all(&bytes).await?; Ok(()) }).await?;
+                        }
                     }
                     Message::Ping(_) => { timed(async { socket.flush().await?; Ok(()) }).await?; }
                     Message::Pong(_) => {},

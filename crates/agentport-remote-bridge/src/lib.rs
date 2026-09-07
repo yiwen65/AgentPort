@@ -804,45 +804,31 @@ fn spawn_dispatcher(
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
     let worker = std::thread::spawn(move || {
-        let mut gap: Option<RunCursor> = None;
-        loop {
+        'dispatch: loop {
             if worker_cancel.load(Ordering::Acquire) {
                 break;
             }
-            if let Some(cursor) = gap.clone() {
-                let envelope = push_gap_envelope(&attachment_id, cursor);
-                match event_writer.try_send(envelope) {
-                    Ok(()) => gap = None,
-                    Err(mpsc::TrySendError::Full(_)) => {}
-                    Err(mpsc::TrySendError::Disconnected(_)) => break,
-                }
-            }
             match subscription.recv_timeout(DISPATCH_TICK) {
                 Ok(event) => {
-                    if worker_cancel.load(Ordering::Acquire) {
-                        break;
-                    }
-                    if gap.is_some() {
-                        gap = Some(event.cursor);
-                        continue;
-                    }
-                    let cursor = event.cursor.clone();
-                    match event_writer.try_send(event_envelope(&attachment_id, event)) {
-                        Ok(()) => {}
-                        Err(mpsc::TrySendError::Full(_)) => gap = Some(cursor),
-                        Err(mpsc::TrySendError::Disconnected(_)) => break,
+                    let mut pending = event_envelope(&attachment_id, event);
+                    loop {
+                        if worker_cancel.load(Ordering::Acquire) {
+                            break 'dispatch;
+                        }
+                        match event_writer.try_send(pending) {
+                            Ok(()) => break,
+                            Err(mpsc::TrySendError::Full(envelope)) => {
+                                // Hold one event and stop reading upstream. A replay
+                                // burst must apply backpressure, not become a gap.
+                                pending = envelope;
+                                std::thread::sleep(Duration::from_millis(1));
+                            }
+                            Err(mpsc::TrySendError::Disconnected(_)) => break 'dispatch,
+                        }
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    if let Some(cursor) = gap.take() {
-                        // Overflow is control information. Preserve it even
-                        // when the upstream Service closes immediately after
-                        // filling this attachment's ordinary event queue.
-                        let _ = event_writer.send(push_gap_envelope(&attachment_id, cursor));
-                    }
-                    break;
-                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
     });
@@ -858,18 +844,6 @@ fn event_envelope(attachment_id: &str, event: SessionEvent) -> ServerEnvelope {
         event_type: event.event_type,
         cursor: event.cursor,
         payload: event.payload,
-    })
-}
-
-fn push_gap_envelope(attachment_id: &str, cursor: RunCursor) -> ServerEnvelope {
-    ServerEnvelope::Event(Event {
-        subscription_id: attachment_id.into(),
-        event_type: "resync_required".into(),
-        payload: serde_json::json!({
-            "reason": "bridge_writer_queue_overflow",
-            "authoritativeCursor": cursor,
-        }),
-        cursor,
     })
 }
 
@@ -2160,46 +2134,86 @@ mod tests {
     }
 
     #[test]
-    fn full_writer_queue_becomes_explicit_gap() {
+    fn full_writer_queue_preserves_complete_replay() {
         let (event_tx, event_rx) = mpsc::sync_channel(64);
         let (writer_tx, writer_rx) = mpsc::sync_channel(1);
         let dispatcher = spawn_dispatcher(
             "att-1".into(),
             SessionSubscription::new("att-1".into(), event_rx),
-            writer_tx.clone(),
+            writer_tx,
         )
         .unwrap();
         let pushed = match writer_rx.recv_timeout(Duration::from_secs(1)).unwrap() {
             WriterMessage::Register { events, .. } => events,
-            _ => panic!("dispatcher did not register its event queue"),
+            _ => panic!("dispatcher did not register"),
         };
-        for offset in 0..(ATTACHMENT_WRITER_QUEUE_CAPACITY as u64 + 2) {
+        // A full 4 MiB replay has 64 output chunks followed by ReplayDone.
+        let producer = std::thread::spawn(move || {
+            for offset in 0..65 {
+                event_tx
+                    .send(SessionEvent {
+                        event_type: if offset == 64 {
+                            "replay_done"
+                        } else {
+                            "output"
+                        }
+                        .into(),
+                        cursor: test_cursor(offset),
+                        payload: json!({}),
+                    })
+                    .unwrap();
+            }
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        for offset in 0..65 {
+            let ServerEnvelope::Event(event) = pushed.recv_timeout(Duration::from_secs(1)).unwrap()
+            else {
+                panic!("expected event");
+            };
+            assert_eq!(event.cursor.offset, offset);
+            assert_eq!(
+                event.event_type,
+                if offset == 64 {
+                    "replay_done"
+                } else {
+                    "output"
+                }
+            );
+        }
+        producer.join().unwrap();
+        dispatcher.stop();
+    }
+
+    #[test]
+    fn full_writer_queue_can_be_cancelled_without_drain() {
+        let (event_tx, event_rx) = mpsc::sync_channel(64);
+        let (writer_tx, writer_rx) = mpsc::sync_channel(1);
+        let dispatcher = spawn_dispatcher(
+            "att-1".into(),
+            SessionSubscription::new("att-1".into(), event_rx),
+            writer_tx,
+        )
+        .unwrap();
+        let _registration = writer_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        for offset in 0..40 {
             event_tx
                 .send(SessionEvent {
                     event_type: "output".into(),
                     cursor: test_cursor(offset),
-                    payload: json!({"discarded":true}),
+                    payload: json!({}),
                 })
                 .unwrap();
         }
         drop(event_tx);
-        std::thread::sleep(Duration::from_millis(30));
-        let deadline = Instant::now() + Duration::from_secs(1);
-        let gap = loop {
-            let envelope = pushed.recv_timeout(Duration::from_millis(50)).unwrap();
-            if matches!(
-                envelope,
-                ServerEnvelope::Event(Event { ref event_type, .. }) if event_type == "resync_required"
-            ) {
-                break envelope;
-            }
-            assert!(Instant::now() < deadline, "gap was not emitted");
-        };
-        assert!(matches!(
-            gap,
-            ServerEnvelope::Event(Event { event_type, .. }) if event_type == "resync_required"
-        ));
-        dispatcher.stop();
+        std::thread::sleep(Duration::from_millis(50));
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            dispatcher.stop();
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cancel must wake a full queue");
     }
 
     fn test_cursor(offset: u64) -> RunCursor {

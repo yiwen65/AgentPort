@@ -12,9 +12,9 @@ import { decodeBase64Bytes, encodeBase64Utf8, outputBase64Of, sessionBatchId, se
 import type { OpenSession, RunCursor, SessionAttachResult, SessionEventPayload, TerminalGeometry } from "./types";
 
 const MOBILE_DEVICE_ID_KEY = "agentport-mobile-v2:device-id";
-// Keep a bounded cold replay and xterm's local scrollback. Raw PTY pages are
-// not snapshots: prepending them via reset/replay can corrupt a live TUI.
-const MOBILE_ATTACH_REPLAY_TAIL_BYTES = 4 * 1024 * 1024;
+// Seed the current TUI modes from a small recent tail, then render live output.
+// Replaying megabytes of historical redraws delays a screen the user needs now.
+const MOBILE_ATTACH_REPLAY_TAIL_BYTES = 64 * 1024;
 
 function mobileDeviceId(): string {
   try {
@@ -83,6 +83,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   const pendingResize = useRef<{ cols: number; rows: number }>();
   const lastResize = useRef<{ attachmentId: string; cols: number; rows: number }>();
   const resizeFrame = useRef<number>();
+  const flushResizeRef = useRef<() => void>(() => undefined);
   const resizeInFlight = useRef<string>();
   const geometryRef = useRef<TerminalGeometry>();
   const outputFrame = useRef<number>();
@@ -165,7 +166,8 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
 
   const finishReplay = useCallback(() => {
     // The wire marker only means delivery is done. xterm parses asynchronously;
-    // keep the surface concealed until all preceding writes have been parsed.
+    // defer resize ownership until preceding writes have been parsed. Display
+    // and input remain live while this small seed is being consumed.
     flushTerminalOutput();
     const generation = replayGeneration.current;
     terminal.current?.write("", () => {
@@ -234,6 +236,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   useEffect(() => {
     if (!shouldAttach) { setReplayPending(false); setConnectionLabel("ended"); setError(""); return; }
     replayGeneration.current += 1;
+    const generation = replayGeneration.current;
     if (!cursor.current) setReplayPending(true);
     let cancelled = false;
     let unsubscribeEvents: (() => Promise<void>) | undefined;
@@ -243,7 +246,12 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     setAttachmentId(undefined);
     setConnectionLabel("attaching");
     setError("");
-    void client.subscribe<SessionEventPayload>(open.hostProfileId, [], event => { if (!cancelled) handleEvent(event); }).then(async (unsubscribe) => {
+    void client.subscribe<SessionEventPayload>(open.hostProfileId, [], event => {
+      // A resync invalidates this subscription synchronously, before React
+      // runs effect cleanup. Already queued heartbeat/output/ReplayDone must
+      // not restore a tail cursor onto the freshly reset terminal.
+      if (!cancelled && generation === replayGeneration.current) handleEvent(event);
+    }).then(async (unsubscribe) => {
       if (cancelled) return unsubscribe();
       unsubscribeEvents = unsubscribe;
       try {
@@ -283,6 +291,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       if (cancelled || event.profileId !== open.hostProfileId) return;
       if (event.state === "reconnecting" || event.state === "disconnected" || event.state === "failed") {
         needsReattach.current = true;
+        replayGeneration.current += 1;
         attachmentRef.current = undefined;
         setAttachmentId(undefined);
         setConnectionLabel("reconnecting");
@@ -341,7 +350,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   }, [active, busyAction, client, connectionLabel, onSessionChanged, open]);
 
   const sendInput = useCallback((data: string) => {
-    if (replayPending || busyAction === "stop" || !attachmentId || attachmentRef.current !== attachmentId || connectionLabel !== "live") return;
+    if (busyAction === "stop" || !attachmentId || attachmentRef.current !== attachmentId || connectionLabel !== "live") return;
     const batchId = sessionBatchId();
     ownBatches.current.add(batchId);
     // Serialize only through the local transport write, not the remote result.
@@ -367,7 +376,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         setError(errorText(requestError));
       }).finally(releaseSubmission);
     }));
-  }, [attachmentId, client, open.hostProfileId, t, connectionLabel, busyAction, replayPending]);
+  }, [attachmentId, client, open.hostProfileId, t, connectionLabel, busyAction]);
 
   // This is the single mobile -> Bridge resize seam. Host-side CAS ownership
   // keeps xterm/viewport observation separate from cross-client authority.
@@ -406,16 +415,20 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       // acknowledgment, then send only the latest size using its new revision.
       if (attachmentRef.current === attachmentId && pendingResize.current !== size
         && resizeOwnershipEnabled.current && resizeFrame.current === undefined) {
-        resizeFrame.current = window.requestAnimationFrame(flushResize);
+        resizeFrame.current = window.requestAnimationFrame(() => flushResizeRef.current());
       }
     });
   }, [attachmentId, client, open.hostProfileId, replayPending]);
+
+  // A queued frame must observe the latest attach/replay state, not the
+  // closure from before a reconnect or the replay parse barrier.
+  flushResizeRef.current = flushResize;
 
   const requestTerminalResize = useCallback((cols: number, rows: number) => {
     if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols <= 0 || rows <= 0) return;
     pendingResize.current = { cols, rows };
     if (resizeFrame.current !== undefined) return;
-    resizeFrame.current = window.requestAnimationFrame(flushResize);
+    resizeFrame.current = window.requestAnimationFrame(() => flushResizeRef.current());
   }, [flushResize]);
 
   const readaptForPhone = useCallback(() => {
@@ -562,7 +575,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         </button>
       </section> : null}
       {connectionLabel === "reconnecting" ? <p className="terminal-status-line" role="status">{t("status.reconnecting")}</p> : null}
-      {shouldAttach && replayPending && connectionLabel !== "failed" ? <p className="terminal-replay-status" role="status">{t("session.connection.attaching")}</p> : null}
+      {shouldAttach && connectionLabel === "attaching" ? <p className="terminal-replay-status" role="status">{t("session.connection.attaching")}</p> : null}
       {connectionLabel === "failed" ? <button type="button" onClick={() => setAttachEpoch(value => value + 1)}>{t("session.retryAttach")}</button> : null}
       {shouldAttach ? <MobileTerminal
         ref={terminal}
@@ -575,7 +588,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         description={t("session.terminalDescription")}
         showHeading={false}
         showProbeOutput={false}
-        obscured={busyAction === "stop" || replayPending}
+        obscured={busyAction === "stop"}
       /> : null}
 
       {actionsOpen ? <Modal title={open.session.title} onClose={closeActions} className="terminal-actions-sheet" blurBackdrop={false}

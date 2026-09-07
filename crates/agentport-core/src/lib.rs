@@ -31,3 +31,5 @@ pub mod state;
 pub mod timeline;
 
 pub use error::{CoreError, Result};
+
+pub mod terminal_seed;

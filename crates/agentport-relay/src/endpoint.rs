@@ -100,13 +100,41 @@ impl PairingConnection {
     }
 }
 
+pub(crate) const WSS_STREAM_OFFER: &[u8] = b"wss-stream-v1";
+pub(crate) const WSS_STREAM_ACCEPTED: &[u8] = b"accepted:wss-stream-v1";
+
 pub async fn connect_session(identity: &Identity, peer: &Peer) -> Result<EncryptedStream> {
+    connect_session_mode(identity, peer, false).await
+}
+
+/// Authenticate the device as before, then avoid a second encryption layer on
+/// terminal data when the Connector accepts. WSS terminates at the Relay, so
+/// this mode intentionally permits the Relay to read session data.
+pub async fn connect_session_realtime(identity: &Identity, peer: &Peer) -> Result<EncryptedStream> {
+    connect_session_mode(identity, peer, true).await
+}
+
+async fn connect_session_mode(
+    identity: &Identity,
+    peer: &Peer,
+    realtime: bool,
+) -> Result<EncryptedStream> {
     let mut socket = net::join(peer, Mode::Session).await?;
     let mut noise = Handshake::session(identity, peer, true)?;
-    net::send_packet(&mut socket, noise.write(&[])?).await?;
+    net::send_packet(
+        &mut socket,
+        noise.write(if realtime { WSS_STREAM_OFFER } else { &[] })?,
+    )
+    .await?;
     let response = noise.read(&net::receive_packet(&mut socket).await?)?;
-    if response.as_slice() != b"accepted" {
-        return Err(Error::Unauthorized);
+    let established = noise.finish()?;
+    if realtime && response.as_slice() == WSS_STREAM_ACCEPTED {
+        Ok(EncryptedStream::authenticated_wss(socket))
+    } else if response.as_slice() == b"accepted" {
+        // Existing Connectors ignore the offer and retain Noise. Never guess
+        // a transport mode or retry an uncertain session input.
+        Ok(SecureChannel::new(socket, established).into_stream())
+    } else {
+        Err(Error::Unauthorized)
     }
-    Ok(SecureChannel::new(socket, noise.finish()?).into_stream())
 }

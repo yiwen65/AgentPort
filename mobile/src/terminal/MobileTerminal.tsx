@@ -164,7 +164,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       convertEol: true,
       // Match the larger mobile attach replay tail. Long agent logs can easily
       // exceed 10k wrapped rows on a phone-sized PTY; keep them scrollable.
-      scrollback: 50_000,
+      scrollback: 2_000,
       fontSize,
       minimumContrastRatio: 4.5,
       screenReaderMode: false,

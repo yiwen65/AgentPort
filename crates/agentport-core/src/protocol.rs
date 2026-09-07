@@ -25,6 +25,8 @@ pub const HOST_FEATURE_INPUT_BATCH_V1: &str = "input_batch_v1";
 /// metadata or wait for resize acknowledgements unless the Host advertises
 /// this feature in `HelloOk`.
 pub const HOST_FEATURE_TERMINAL_GEOMETRY_V1: &str = "terminal_geometry_v1";
+/// A cold replay starts with modes retained independently from the text tail.
+pub const HOST_FEATURE_TERMINAL_SEED_V1: &str = "terminal_seed_v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

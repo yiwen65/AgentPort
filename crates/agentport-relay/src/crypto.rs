@@ -224,6 +224,89 @@ mod tests {
         (a, b)
     }
     #[test]
+    fn accelerated_session_interoperates_with_existing_default_resolver() {
+        let (host, phone, invitation) = fixture();
+        // Model an already installed peer using the previous resolver. The
+        // protocol, identity checks and nonce sequence must remain identical.
+        let context = Mode::Session.context(&invitation.peer.host_id).unwrap();
+        let mut legacy =
+            Builder::with_resolver(SESSION.parse().unwrap(), Box::new(DefaultResolver))
+                .local_private_key(phone.private_bytes())
+                .unwrap()
+                .remote_public_key(host.public_bytes())
+                .unwrap()
+                .prologue(&context)
+                .unwrap()
+                .build_initiator()
+                .unwrap();
+        let mut accelerated = Handshake::session(&host, &invitation.peer, false).unwrap();
+        let mut message = vec![0; MAX_CIPHER];
+        let n = legacy.write_message(&[], &mut message).unwrap();
+        accelerated.read(&message[..n]).unwrap();
+        let response = accelerated.write(&[]).unwrap();
+        legacy.read_message(&response, &mut message).unwrap();
+        let mut accelerated = accelerated.finish().unwrap();
+        assert_eq!(accelerated.remote_key, Some(phone.public_key()));
+        let mut legacy = legacy.into_transport_mode().unwrap();
+        let plaintext = vec![42; 65_519];
+        let mut decoded = vec![0; MAX_CIPHER];
+        for nonce in 0..64 {
+            let n = legacy.write_message(&plaintext, &mut message).unwrap();
+            if nonce == 0 {
+                message[n - 1] ^= 1;
+                assert!(accelerated
+                    .cipher
+                    .read_message(&message[..n], &mut decoded)
+                    .is_err());
+                message[n - 1] ^= 1;
+            }
+            let count = accelerated
+                .cipher
+                .read_message(&message[..n], &mut decoded)
+                .unwrap();
+            assert_eq!(&decoded[..count], plaintext.as_slice());
+            assert!(accelerated
+                .cipher
+                .read_message(&message[..n], &mut decoded)
+                .is_err());
+            let n = accelerated
+                .cipher
+                .write_message(&plaintext, &mut message)
+                .unwrap();
+            let count = legacy.read_message(&message[..n], &mut decoded).unwrap();
+            assert_eq!(&decoded[..count], plaintext.as_slice());
+        }
+    }
+
+    #[test]
+    #[ignore = "manual throughput measurement; run with --ignored --nocapture"]
+    fn cipher_throughput_comparison() {
+        use snow::{params::CipherChoice, resolvers::RingResolver};
+        for (name, resolver) in [
+            ("default", &DefaultResolver as &dyn CryptoResolver),
+            ("ring", &RingResolver as &dyn CryptoResolver),
+        ] {
+            let mut cipher = resolver.resolve_cipher(&CipherChoice::ChaChaPoly).unwrap();
+            cipher.set(&[7; 32]);
+            let plain = vec![42; 65_519];
+            let mut encrypted = vec![0; 65_535];
+            let mut decoded = vec![0; 65_519];
+            let start = std::time::Instant::now();
+            for nonce in 0..64 {
+                let n = cipher.encrypt(nonce, &[], &plain, &mut encrypted);
+                let m = cipher
+                    .decrypt(nonce, &[], &encrypted[..n], &mut decoded)
+                    .unwrap();
+                assert_eq!(&decoded[..m], plain.as_slice());
+            }
+            eprintln!(
+                "{name}: 4 MiB encrypt+decrypt {:.2} ms",
+                start.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+    }
+
+    #[test]
     fn pairing_binds_both_identities_and_ciphertext_replay_is_rejected() {
         let (mut a, mut b) = paired();
         let mut bytes = [0; 128];

@@ -403,12 +403,14 @@ describe("SessionWorkspace", () => {
     persist.mockRestore();
   });
 
-  it("conceals cold replay through the parse barrier and does not rebuild live TUI history", async () => {
+  it("shows the small replay immediately and allows input before replay completes", async () => {
     const { client, request, emit } = setupClient({ autoReplay: false });
     terminalHarness.queued = true;
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
-    expect(terminalHarness.props?.obscured).toBe(true);
+    expect(terminalHarness.props?.obscured).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
+    await waitFor(() => expect(request.mock.calls.some(([, method]) => method === "session.input")).toBe(true));
     act(() => terminalHarness.props?.onResize?.(52, 32));
     await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
     expect(request.mock.calls.some(([, method]) => method === "session.control")).toBe(false);
@@ -417,10 +419,10 @@ describe("SessionWorkspace", () => {
       emit({ subscriptionId: "att-1", eventType: "replay_done", cursor: null, payload: { session_id: "ses-1" } });
       emit({ subscriptionId: "att-1", eventType: "output", cursor: null, payload: { session_id: "ses-1", dataBase64: btoa("live") } });
     });
-    expect(terminalHarness.props?.obscured).toBe(true);
+    expect(terminalHarness.props?.obscured).toBe(false);
     act(() => terminalHarness.writesQueue.shift()?.());
     expect(terminalHarness.writes).toEqual(["replay"]);
-    expect(terminalHarness.props?.obscured).toBe(true);
+    expect(terminalHarness.props?.obscured).toBe(false);
     act(() => terminalHarness.writesQueue.shift()?.());
     expect(terminalHarness.props?.obscured).toBe(false);
     await waitFor(() => expect(request.mock.calls.some(([, method]) => method === "session.control")).toBe(true));
@@ -431,20 +433,41 @@ describe("SessionWorkspace", () => {
     expect(request.mock.calls.some(([, method]) => method === "session.recovery_context.read")).toBe(false);
   });
 
-  it("does not let an old parse completion reveal a replacement replay after resync", async () => {
+  it("does not let an old parse completion release resize before the replacement replay", async () => {
     const { client, request, emit } = setupClient({ autoReplay: false });
     terminalHarness.queued = true;
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    act(() => terminalHarness.props?.onResize?.(52, 32));
     act(() => {
       emit({ subscriptionId: "att-1", eventType: "replay_done", cursor: null, payload: { session_id: "ses-1" } });
       emit({ subscriptionId: "att-1", eventType: "resync_required", cursor: null, payload: { session_id: "ses-1" } });
     });
     await waitFor(() => expect(request.mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(2));
     act(() => terminalHarness.writesQueue.shift()?.());
-    expect(terminalHarness.props?.obscured).toBe(true);
+    expect(request.mock.calls.some(([, method]) => method === "session.control")).toBe(false);
+    expect(terminalHarness.props?.obscured).toBe(false);
     act(() => emit({ subscriptionId: "att-1", eventType: "replay_done", cursor: null, payload: { session_id: "ses-1" } }));
     act(() => { while (terminalHarness.writesQueue.length) terminalHarness.writesQueue.shift()?.(); });
+    expect(terminalHarness.props?.obscured).toBe(false);
+    await waitFor(() => expect(request.mock.calls.some(([, method]) => method === "session.control")).toBe(true));
+  });
+
+  it("fences queued events immediately when resync resets the renderer", async () => {
+    const { client, request, emit } = setupClient({ autoReplay: false });
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    const stale = { runId: "old", runOrdinal: 1, generation: 0, offset: 999, statusSequence: 1 };
+    act(() => {
+      emit({ subscriptionId: "att-1", eventType: "resync_required", cursor: stale, payload: { reason: "host_stream_closed" } });
+      emit({ subscriptionId: "att-1", eventType: "heartbeat", cursor: stale, payload: { session_id: "ses-1" } });
+      emit({ subscriptionId: "att-1", eventType: "output", cursor: stale, payload: { session_id: "ses-1", dataBase64: btoa("stale") } });
+      emit({ subscriptionId: "att-1", eventType: "replay_done", cursor: stale, payload: { session_id: "ses-1" } });
+    });
+    await waitFor(() => expect(request.mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(2));
+    const attach = request.mock.calls.filter(([, method]) => method === "session.attach")[1];
+    expect(attach[2].resumeFrom).toBeUndefined();
+    expect(terminalHarness.writes).not.toContain("stale");
     expect(terminalHarness.props?.obscured).toBe(false);
   });
 
@@ -555,7 +578,7 @@ describe("SessionWorkspace", () => {
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     expect(request).toHaveBeenCalledWith("host-1", "session.attach", expect.objectContaining({
-      replayTailBytes: 4 * 1024 * 1024,
+      replayTailBytes: 64 * 1024,
       resumeFrom: undefined,
       subscribeOutput: true,
     }));

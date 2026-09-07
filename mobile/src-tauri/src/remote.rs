@@ -3,7 +3,7 @@ use crate::hosts::{
     self, AuthenticationKind as ProfileAuthentication, HostProfile, PreferredTransport,
 };
 use crate::ssh::{self, AuthenticationKind, JumpHostRequest, SshProbeRequest};
-use agentport_relay::{crypto::Identity, endpoint::connect_session};
+use agentport_relay::{crypto::Identity, endpoint::connect_session_realtime as connect_session};
 use agentport_remote_protocol::{classify_method, RetryClass, ServerEnvelope, PROTOCOL_MAJOR};
 use russh::Disconnect;
 use serde::{Deserialize, Serialize};

@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    endpoint::{connect_session, PairingConnection},
+    endpoint::{connect_session, connect_session_realtime, PairingConnection},
     server,
 };
 use std::{fs, os::unix::fs::PermissionsExt, sync::Mutex as SyncMutex};
@@ -133,6 +133,41 @@ async fn approve(runtime: &Runtime, phone: &Identity) -> Peer {
         .unwrap();
     pairing.wait().await.unwrap();
     invitation.peer.clone()
+}
+
+#[tokio::test]
+async fn realtime_stream_uses_tls_only_after_device_authorization_and_remains_revocable() {
+    let fixture = Fixture::new().await;
+    let phone = Identity::generate().unwrap();
+    let peer = approve(&fixture.runtime, &phone).await;
+    let unauthorized = Identity::generate().unwrap();
+    assert!(connect_session_realtime(&unauthorized, &peer)
+        .await
+        .is_err());
+    assert_eq!(fixture.spawns(), 0);
+    let stream = connect_session_realtime(&phone, &peer).await.unwrap();
+    assert!(!stream.is_end_to_end_encrypted());
+    let (mut reader, mut writer) = tokio::io::split(stream);
+    let payload = vec![42; 256 * 1024];
+    let mut received = vec![0; payload.len()];
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let (sent, read) = tokio::join!(
+            async {
+                writer.write_all(&payload).await?;
+                writer.flush().await
+            },
+            reader.read_exact(&mut received),
+        );
+        sent.unwrap();
+        read.unwrap();
+    })
+    .await
+    .unwrap();
+    assert_eq!(received, payload);
+    fixture.runtime.revoke(&phone.public_key()).await.unwrap();
+    assert!(connect_session_realtime(&phone, &peer).await.is_err());
+    assert_eq!(fixture.runtime.status().await.active_channels, 0);
+    fixture.shutdown().await;
 }
 
 #[tokio::test]

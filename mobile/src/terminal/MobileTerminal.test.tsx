@@ -125,7 +125,7 @@ describe("MobileTerminal input accessory", () => {
   it("uses stock xterm input with screen reader mode disabled and deep scrollback", () => {
     render(<MobileTerminal showProbeOutput={false} />);
     expect(terminalHarness.options?.screenReaderMode).toBe(false);
-    expect(terminalHarness.options?.scrollback).toBe(50_000);
+    expect(terminalHarness.options?.scrollback).toBe(2_000);
   });
 
   it("exposes direct write and reset operations without React output state", () => {

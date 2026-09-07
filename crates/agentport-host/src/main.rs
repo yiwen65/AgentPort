@@ -74,6 +74,7 @@ pub(crate) const LIVE_OUTPUT_TAIL_BYTES: usize = 4 * 1024 * 1024;
 /// Bounded live terminal bytes. `start_offset..end_offset` names the retained
 /// suffix of this Host run; bytes before `start_offset` are intentionally gone.
 pub(crate) struct OutputTail {
+    terminal_seed: agentport_core::terminal_seed::TerminalSeed,
     bytes: VecDeque<u8>,
     start_offset: u64,
     end_offset: u64,
@@ -82,6 +83,7 @@ pub(crate) struct OutputTail {
 impl OutputTail {
     fn new() -> Self {
         Self {
+            terminal_seed: Default::default(),
             bytes: VecDeque::with_capacity(LIVE_OUTPUT_TAIL_BYTES),
             start_offset: 0,
             end_offset: 0,
@@ -89,6 +91,7 @@ impl OutputTail {
     }
 
     fn append(&mut self, data: &[u8]) -> u64 {
+        self.terminal_seed.advance(data);
         let offset = self.end_offset;
         self.end_offset = self.end_offset.saturating_add(data.len() as u64);
         if data.len() >= LIVE_OUTPUT_TAIL_BYTES {
@@ -146,6 +149,19 @@ impl OutputTail {
 #[cfg(test)]
 mod output_tail_tests {
     use super::{OutputTail, LIVE_OUTPUT_TAIL_BYTES};
+
+    #[test]
+    fn terminal_modes_survive_text_tail_eviction() {
+        let mut tail = OutputTail::new();
+        tail.append(b"\x1b[?1049h\x1b[?1003;1006h");
+        tail.append(&vec![b'x'; LIVE_OUTPUT_TAIL_BYTES + 1]);
+        assert_eq!(
+            tail.terminal_seed.bytes(),
+            b"\x1b[?1003h\x1b[?1006h\x1b[?1049h"
+        );
+        tail.append(b"\x1b[?1049l\x1b[?1003l");
+        assert_eq!(tail.terminal_seed.bytes(), b"\x1b[?1003l\x1b[?1006h");
+    }
 
     #[test]
     fn append_evicts_in_bulk_and_retains_exact_suffix() {

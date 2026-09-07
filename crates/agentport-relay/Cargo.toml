@@ -27,7 +27,10 @@ getrandom = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-snow = "=0.10.0"
+# Keep the Noise suite unchanged; use ring for accelerated ChaChaPoly.
+# ring is already used by the WSS transport. Unsupported primitives retain
+# Snow's default resolver (25519 and BLAKE2s).
+snow = { version = "=0.10.0", features = ["ring-accelerated"] }
 subtle = "2.6"
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }

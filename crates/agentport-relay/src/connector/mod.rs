@@ -609,7 +609,11 @@ impl Runtime {
                 )
                 .await?;
                 let mut noise = Handshake::session(&configured.identity, &configured.peer, false)?;
-                noise.read(&net::receive_packet(&mut socket).await?)?;
+                let offer = noise.read(&net::receive_packet(&mut socket).await?)?;
+                let realtime = offer.as_slice() == crate::endpoint::WSS_STREAM_OFFER;
+                if !offer.is_empty() && !realtime {
+                    return Err(Error::Protocol);
+                }
                 let key = encode(&noise.remote_key()?);
                 let mut inner = self.inner.lock().await;
                 reap(&mut inner);
@@ -639,8 +643,18 @@ impl Runtime {
                     .or_default()
                     .push(tokio::spawn(async move {
                         let _slot = slot;
-                        net::send_packet(&mut socket, noise.write(b"accepted")?).await?;
-                        let stream = SecureChannel::new(socket, noise.finish()?).into_stream();
+                        let response = if realtime {
+                            crate::endpoint::WSS_STREAM_ACCEPTED
+                        } else {
+                            b"accepted"
+                        };
+                        net::send_packet(&mut socket, noise.write(response)?).await?;
+                        let established = noise.finish()?;
+                        let stream = if realtime {
+                            net::EncryptedStream::authenticated_wss(socket)
+                        } else {
+                            SecureChannel::new(socket, established).into_stream()
+                        };
                         runtime.bridge(stream).await
                     }));
                 Ok(())

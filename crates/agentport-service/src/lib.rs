@@ -3,6 +3,7 @@
 //! listing without exposing Host credentials or private socket paths.
 
 mod commit_ai;
+use agentport_core::terminal_seed;
 
 use agentport_core::adapters::{self, capability, LaunchContext, ResumeContext};
 use agentport_core::db::Db;
@@ -772,9 +773,6 @@ enum PushCommand {
     Control {
         params: SessionControlParams,
         reply: mpsc::SyncSender<Result<SessionControlResult>>,
-    },
-    Detach {
-        reply: mpsc::SyncSender<Result<()>>,
     },
 }
 
@@ -2499,12 +2497,27 @@ impl RemoteService for CoreService {
             paths: &self.paths,
             db: &self.db,
         };
-        let (mut client, info) = manager.attach_with_resume(
+        let small_seed = params.subscribe_output
+            && params.resume_from.is_none()
+            && (1..=65_536).contains(&params.replay_tail_bytes);
+        let (mut client, mut info) = manager.attach_with_resume(
             &params.session_id,
             params.replay_tail_bytes.min(4 * 1024 * 1024),
             resume,
             params.subscribe_output,
         )?;
+        if small_seed
+            && !info
+                .features
+                .iter()
+                .any(|f| f == agentport_core::protocol::HOST_FEATURE_TERMINAL_SEED_V1)
+        {
+            // Upgrade-free fallback for already running Hosts. New Hosts send
+            // their persistent mode seed with only the requested small tail.
+            let _ = client.detach();
+            (client, info) =
+                manager.attach_with_resume(&params.session_id, 4 * 1024 * 1024, None, true)?;
+        }
         if !client.supports_input_batches() {
             let _ = client.detach();
             return Err(ServiceError::InvalidRequest);
@@ -2512,6 +2525,19 @@ impl RemoteService for CoreService {
         let attachment_id = agentport_core::ids::new_id("att");
         let cursor = attach_cursor(&info);
         let replay_pending = replay_expected(&params);
+        let cutoff = cursor.offset.saturating_sub(params.replay_tail_bytes);
+        let mut attachment = Attachment {
+            client,
+            cursor,
+            replay_pending,
+            pending: VecDeque::new(),
+            next_input_batch_sequence: 0,
+            host_exit_seen: false,
+            closed: false,
+        };
+        if small_seed {
+            prepare_terminal_seed(&mut attachment, cutoff)?;
+        }
         let result = SessionAttachResult {
             attachment_id: attachment_id.clone(),
             session_id: info.session_id,
@@ -2529,20 +2555,12 @@ impl RemoteService for CoreService {
             .map_err(|_| ServiceError::AttachmentState)?;
         prune_closed_attachments(&mut attachments);
         if attachments.len() >= self.service_snapshot().limits.max_subscriptions as usize {
-            let _ = client.detach();
+            let _ = attachment.client.detach();
             return Err(ServiceError::InvalidRequest);
         }
         attachments.insert(
             attachment_id,
-            Arc::new(Mutex::new(AttachmentState::Direct(Attachment {
-                client,
-                cursor,
-                replay_pending,
-                pending: VecDeque::new(),
-                next_input_batch_sequence: 0,
-                host_exit_seen: false,
-                closed: false,
-            }))),
+            Arc::new(Mutex::new(AttachmentState::Direct(attachment))),
         );
         Ok(result)
     }
@@ -2711,17 +2729,15 @@ impl RemoteService for CoreService {
                 Ok(())
             }
             AttachmentState::Push(push) => {
-                let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-                let sent = push.commands.send(PushCommand::Detach { reply: reply_tx });
-                let result = if sent.is_ok() {
-                    reply_rx.recv().unwrap_or(Ok(()))
-                } else {
-                    Ok(())
-                };
+                // Wake a reader held by output backpressure before waiting for
+                // its command queue or join. Detach must not require a consumer.
+                push.closed.store(true, Ordering::Release);
                 if let Some(worker) = push.worker.take() {
                     let _ = worker.join();
                 }
-                result
+                // The worker drops its Host connection before join returns,
+                // including when sending the optional Detach frame fails.
+                Ok(())
             }
             AttachmentState::Transition => Err(ServiceError::AttachmentState),
         }
@@ -3821,6 +3837,82 @@ fn resync_event(cursor: RunCursor, reason: &str) -> SessionEvent {
     }
 }
 
+// Old Hosts already retain the recent PTY stream in memory. Scan its omitted
+// prefix locally so small Mobile replays keep mouse/alternate/paste modes,
+// without sending megabytes of obsolete redraws over the network.
+fn prepare_terminal_seed(attachment: &mut Attachment, cutoff: u64) -> Result<()> {
+    attachment
+        .client
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(agentport_core::CoreError::Io)?;
+    let mut seed = terminal_seed::TerminalSeed::default();
+    let mut seeded = false;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while attachment.replay_pending {
+        if Instant::now() >= deadline {
+            return Err(ServiceError::InvalidRequest);
+        }
+        let Some(mut frame) =
+            read_host_frame(&mut attachment.client).map_err(agentport_core::CoreError::Io)?
+        else {
+            return Err(ServiceError::InvalidRequest);
+        };
+        if let HostFrame::TransientOutput { data, .. } = &frame {
+            // New Hosts retain modes independently from their text ring. Old
+            // Hosts simply omit this optional prefix.
+            seed.advance(data);
+            continue;
+        }
+        if let HostFrame::Output {
+            session_id,
+            data,
+            offset,
+            cursor,
+        } = &mut frame
+        {
+            let skipped = cutoff.saturating_sub(*offset).min(data.len() as u64) as usize;
+            seed.advance(&data[..skipped]);
+            if skipped == data.len() {
+                continue;
+            }
+            if !seeded {
+                let modes = seed.bytes();
+                if !modes.is_empty() {
+                    let mut cursor = attachment.cursor.clone();
+                    cursor.offset = (*offset).saturating_add(skipped as u64);
+                    attachment.pending.push_back(SessionEvent {
+                        event_type: "transient_output".into(), cursor,
+                        payload: serde_json::json!({"sessionId":session_id, "dataBase64":base64::engine::general_purpose::STANDARD.encode(modes)}),
+                    });
+                }
+                seeded = true;
+            }
+            data.drain(..skipped);
+            *offset = offset.saturating_add(skipped as u64);
+            cursor.offset = *offset as i64;
+        }
+        if let Some(event) = host_event(
+            &mut attachment.cursor,
+            &mut attachment.replay_pending,
+            frame,
+        ) {
+            attachment.pending.push_back(event);
+            if attachment.pending.len() >= PUSH_EVENT_QUEUE_CAPACITY {
+                return Err(ServiceError::InvalidRequest);
+            }
+        }
+    }
+    attachment
+        .client
+        .reader
+        .get_ref()
+        .set_read_timeout(None)
+        .map_err(agentport_core::CoreError::Io)?;
+    Ok(())
+}
+
 fn push_worker(
     mut attachment: Attachment,
     commands: mpsc::Receiver<PushCommand>,
@@ -3832,12 +3924,20 @@ fn push_worker(
         .reader
         .get_ref()
         .set_read_timeout(Some(PUSH_READ_SLICE));
-    let mut gap: Option<RunCursor> = None;
     let mut unexpected_close = false;
     'worker: loop {
+        if closed.load(Ordering::Acquire) {
+            break;
+        }
+        if let Some(event) = attachment.pending.pop_front() {
+            if !push_event(&events, event, &closed, None) {
+                break;
+            }
+            continue;
+        }
         match commands.try_recv() {
             Ok(PushCommand::Input { params, reply }) => {
-                let result = worker_input(&mut attachment, params, &events, &mut gap);
+                let result = worker_input(&mut attachment, params, &events, &closed);
                 let terminal = matches!(result, Err(ServiceError::InputOutcomeUnknown));
                 let _ = reply.send(result);
                 if terminal && attachment.closed {
@@ -3871,16 +3971,6 @@ fn push_worker(
                 }
                 continue;
             }
-            Ok(PushCommand::Detach { reply }) => {
-                let result = if attachment.closed {
-                    Ok(())
-                } else {
-                    attachment.client.detach().map_err(ServiceError::from)
-                };
-                attachment.closed = true;
-                let _ = reply.send(result);
-                break;
-            }
             Err(mpsc::TryRecvError::Disconnected) => {
                 let _ = attachment.client.detach();
                 break;
@@ -3888,13 +3978,6 @@ fn push_worker(
             Err(mpsc::TryRecvError::Empty) => {}
         }
 
-        if let Some(cursor) = gap.clone() {
-            match events.try_send(gap_event(cursor)) {
-                Ok(()) => gap = None,
-                Err(mpsc::TrySendError::Full(_)) => {}
-                Err(mpsc::TrySendError::Disconnected(_)) => break,
-            }
-        }
         match read_host_frame(&mut attachment.client) {
             Ok(Some(HostFrame::InputBatchAck { .. })) => {}
             Ok(Some(frame)) => {
@@ -3906,7 +3989,7 @@ fn push_worker(
                     &mut attachment.replay_pending,
                     frame,
                 ) {
-                    if !try_push_event(&events, event, &mut gap) {
+                    if !push_event(&events, event, &closed, None) {
                         break 'worker;
                     }
                 }
@@ -3928,37 +4011,35 @@ fn push_worker(
             }
         }
     }
+    if closed.load(Ordering::Acquire) {
+        let _ = attachment.client.detach();
+    } else if unexpected_close {
+        // Preserve real stream discontinuities after queued output, while
+        // allowing detach to cancel even this final notification.
+        let _ = push_event(
+            &events,
+            resync_event(attachment.cursor.clone(), "host_stream_closed"),
+            &closed,
+            None,
+        );
+    }
     closed.store(true, Ordering::Release);
-    // Preserve an already-recorded overflow discontinuity even when the Host
-    // closes immediately after the frame that overflowed the lossy queue.
-    if let Some(cursor) = gap {
-        let _ = events.send(gap_event(cursor));
-    }
-    if unexpected_close {
-        // A terminal resync signal is control information, not ordinary lossy
-        // output. Blocking is bounded to this attachment and wakes immediately
-        // if an intentional detach has dropped the receiver.
-        let _ = events.send(resync_event(
-            attachment.cursor.clone(),
-            "host_stream_closed",
-        ));
-    }
 }
 
 fn worker_input(
     attachment: &mut Attachment,
     params: SessionInputParams,
     events: &mpsc::SyncSender<SessionEvent>,
-    gap: &mut Option<RunCursor>,
+    cancel: &AtomicBool,
 ) -> Result<SessionInputResult> {
-    worker_input_with_timeout(attachment, params, events, gap, Duration::from_secs(5))
+    worker_input_with_timeout(attachment, params, events, cancel, Duration::from_secs(5))
 }
 
 fn worker_input_with_timeout(
     attachment: &mut Attachment,
     params: SessionInputParams,
     events: &mpsc::SyncSender<SessionEvent>,
-    gap: &mut Option<RunCursor>,
+    cancel: &AtomicBool,
     timeout: Duration,
 ) -> Result<SessionInputResult> {
     let client_batch_id = params.batch_id.clone();
@@ -3976,7 +4057,7 @@ fn worker_input_with_timeout(
     let deadline = Instant::now() + timeout;
     let mut accepted_sequence = None;
     loop {
-        if Instant::now() >= deadline {
+        if cancel.load(Ordering::Acquire) || Instant::now() >= deadline {
             return Err(ServiceError::InputOutcomeUnknown);
         }
         match read_host_frame(&mut attachment.client) {
@@ -4023,7 +4104,7 @@ fn worker_input_with_timeout(
                     &mut attachment.replay_pending,
                     frame,
                 ) {
-                    if !try_push_event(events, event, gap) {
+                    if !push_event(events, event, cancel, Some(deadline)) {
                         attachment.closed = true;
                         return Err(ServiceError::InputOutcomeUnknown);
                     }
@@ -4058,22 +4139,26 @@ fn next_wire_batch_id(attachment: &mut Attachment) -> Result<String> {
     Ok(format!("remote-{}", attachment.next_input_batch_sequence))
 }
 
-fn try_push_event(
+fn push_event(
     events: &mpsc::SyncSender<SessionEvent>,
-    event: SessionEvent,
-    gap: &mut Option<RunCursor>,
+    mut event: SessionEvent,
+    cancel: &AtomicBool,
+    deadline: Option<Instant>,
 ) -> bool {
-    if gap.is_some() {
-        *gap = Some(event.cursor);
-        return true;
-    }
-    match events.try_send(event) {
-        Ok(()) => true,
-        Err(mpsc::TrySendError::Full(event)) => {
-            *gap = Some(event.cursor);
-            true
+    loop {
+        if cancel.load(Ordering::Acquire) || deadline.is_some_and(|end| Instant::now() >= end) {
+            return false;
         }
-        Err(mpsc::TrySendError::Disconnected(_)) => false,
+        match events.try_send(event) {
+            Ok(()) => return true,
+            Err(mpsc::TrySendError::Full(pending)) => {
+                // Keep memory bounded and propagate pressure to the Host socket.
+                // Unlike SyncSender::send, this wait is cancellable on detach.
+                event = pending;
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => return false,
+        }
     }
 }
 
@@ -5327,6 +5412,123 @@ mod tests {
     }
 
     #[test]
+    fn small_replay_keeps_modes_tail_and_exact_output_cursor() {
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("seed-host.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let prefix = b"old text\x1b[?1049h\x1b[?1003;1006h".to_vec();
+        let cutoff = prefix.len() as u64;
+        let (proceed_tx, proceed_rx) = mpsc::sync_channel(1);
+        let server = std::thread::spawn(move || {
+            let (_reader, mut writer, session_id) = accept_test_host(listener);
+            proceed_rx.recv().unwrap();
+            let mut data = prefix;
+            data.extend_from_slice(b"current screen");
+            let end = data.len() as u64;
+            write_frame(
+                &mut writer,
+                &HostFrame::Output {
+                    session_id: session_id.clone(),
+                    data,
+                    offset: 0,
+                    cursor: LogCursor::default(),
+                },
+            )
+            .unwrap();
+            write_frame(
+                &mut writer,
+                &HostFrame::ReplayDone {
+                    session_id,
+                    offset: end,
+                    cursor: LogCursor {
+                        offset: end as i64,
+                        ..LogCursor::default()
+                    },
+                    partial_context: false,
+                },
+            )
+            .unwrap();
+            proceed_rx.recv().unwrap();
+        });
+        let mut attachment = connect_test_attachment(&socket, "ses-seed");
+        proceed_tx.send(()).unwrap();
+        attachment.replay_pending = true;
+        prepare_terminal_seed(&mut attachment, cutoff).unwrap();
+        assert!(!attachment.replay_pending);
+        assert_eq!(attachment.pending.len(), 3);
+        let seed = attachment.pending.pop_front().unwrap();
+        assert_eq!(seed.event_type, "transient_output");
+        assert_eq!(seed.cursor.offset, cutoff);
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(seed.payload["dataBase64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(bytes, b"\x1b[?1003h\x1b[?1006h\x1b[?1049h");
+        let tail = attachment.pending.pop_front().unwrap();
+        assert_eq!(tail.event_type, "output");
+        assert_eq!(tail.cursor.offset, cutoff + 14);
+        let host: HostFrame = serde_json::from_value(tail.payload).unwrap();
+        assert!(
+            matches!(host, HostFrame::Output { data, offset, .. } if data == b"current screen" && offset == cutoff)
+        );
+        assert_eq!(
+            attachment.pending.pop_front().unwrap().event_type,
+            "replay_done"
+        );
+        proceed_tx.send(()).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn detach_cancels_a_saturated_push_subscription() {
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("backpressure-host.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (sent_tx, sent_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut reader, mut writer, session_id) = accept_test_host(listener);
+            for offset in 0..(PUSH_EVENT_QUEUE_CAPACITY + 8) {
+                write_frame(
+                    &mut writer,
+                    &HostFrame::Output {
+                        session_id: session_id.clone(),
+                        data: vec![b'x'],
+                        offset: offset as u64,
+                        cursor: LogCursor::default(),
+                    },
+                )
+                .unwrap();
+            }
+            sent_tx.send(()).unwrap();
+            assert!(matches!(
+                read_frame::<ClientFrame>(&mut reader).unwrap().unwrap(),
+                ClientFrame::Detach { .. }
+            ));
+        });
+        let attachment = connect_test_attachment(&socket, "ses-backpressure");
+        let service = CoreService::memory().unwrap();
+        service.attachments.lock().unwrap().insert(
+            "att-full".into(),
+            Arc::new(Mutex::new(AttachmentState::Direct(attachment))),
+        );
+        let _subscription = service.subscribe_session("att-full").unwrap();
+        sent_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = service.detach_session(SessionDetachParams {
+                attachment_id: "att-full".into(),
+            });
+            done_tx.send(result).unwrap();
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("detach must not need output drain")
+            .unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
     fn clean_host_exit_then_eof_does_not_require_stream_resync() {
         let temp = tempfile::tempdir().unwrap();
         let socket = temp.path().join("clean-exit-host.sock");
@@ -5457,14 +5659,14 @@ mod tests {
             .set_read_timeout(Some(Duration::from_millis(5)))
             .unwrap();
         let (events_tx, _events_rx) = mpsc::sync_channel(PUSH_EVENT_QUEUE_CAPACITY);
-        let mut gap = None;
+        let cancel = AtomicBool::new(false);
 
         assert!(matches!(
             worker_input_with_timeout(
                 &mut attachment,
                 test_input_params("batch-reused"),
                 &events_tx,
-                &mut gap,
+                &cancel,
                 Duration::from_millis(20),
             ),
             Err(ServiceError::InputOutcomeUnknown)
@@ -5473,7 +5675,7 @@ mod tests {
             &mut attachment,
             test_input_params("batch-reused"),
             &events_tx,
-            &mut gap,
+            &cancel,
             Duration::from_secs(1),
         )
         .unwrap();
@@ -5504,31 +5706,70 @@ mod tests {
     }
 
     #[test]
-    fn bounded_push_overflow_records_an_explicit_gap_cursor() {
+    fn bounded_push_preserves_replay_under_backpressure() {
         let (sender, receiver) = mpsc::sync_channel(1);
-        let mut gap = None;
-        assert!(try_push_event(
+        let worker = std::thread::spawn(move || {
+            let cancel = AtomicBool::new(false);
+            for offset in 0..65 {
+                assert!(push_event(
+                    &sender,
+                    SessionEvent {
+                        event_type: if offset == 64 {
+                            "replay_done"
+                        } else {
+                            "output"
+                        }
+                        .into(),
+                        cursor: test_run_cursor(offset),
+                        payload: serde_json::json!({}),
+                    },
+                    &cancel,
+                    None
+                ));
+            }
+        });
+        std::thread::sleep(Duration::from_millis(30));
+        for offset in 0..65 {
+            let event = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_eq!(event.cursor.offset, offset);
+            assert_eq!(
+                event.event_type,
+                if offset == 64 {
+                    "replay_done"
+                } else {
+                    "output"
+                }
+            );
+        }
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn bounded_push_wait_can_be_cancelled_or_expire() {
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        let event = || SessionEvent {
+            event_type: "output".into(),
+            cursor: test_run_cursor(1),
+            payload: serde_json::json!({}),
+        };
+        sender.send(event()).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let worker_sender = sender.clone();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = push_event(&worker_sender, event(), &worker_cancel, None);
+            done_tx.send(result).unwrap();
+        });
+        cancel.store(true, Ordering::Release);
+        assert!(!done_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        worker.join().unwrap();
+        assert!(!push_event(
             &sender,
-            SessionEvent {
-                event_type: "output".into(),
-                cursor: test_run_cursor(1),
-                payload: serde_json::json!({}),
-            },
-            &mut gap,
+            event(),
+            &AtomicBool::new(false),
+            Some(Instant::now() + Duration::from_millis(10))
         ));
-        assert!(try_push_event(
-            &sender,
-            SessionEvent {
-                event_type: "output".into(),
-                cursor: test_run_cursor(2),
-                payload: serde_json::json!({}),
-            },
-            &mut gap,
-        ));
-        assert_eq!(gap.as_ref().unwrap().offset, 2);
-        let _ = receiver.recv().unwrap();
-        sender.send(gap_event(gap.take().unwrap())).unwrap();
-        assert_eq!(receiver.recv().unwrap().event_type, "resync_required");
     }
 
     fn test_run_cursor(offset: u64) -> RunCursor {
