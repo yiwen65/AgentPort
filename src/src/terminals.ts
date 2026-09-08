@@ -1514,9 +1514,20 @@ function armPiStartupReadyTimeout(handle: TermHandle) {
       handle.generation !== generation
     )
       return;
-    // Compatibility escape hatch for an older Pi that does not emit the
-    // semantic marker. The paired custom Pi takes the marker path instead.
-    queuePiStartupReady(handle);
+    // Compatibility escape hatch for an older or wedged Pi TUI that never
+    // emits the semantic marker, or keeps xterm's parser busy with redraw-only
+    // synchronized frames. Do not wait on another parser drain here: that is
+    // exactly the path that can leave the pane covered by "Connecting" forever.
+    handle.displayRenderPending = false;
+    handle.displayReady = true;
+    const revision =
+      (getState().runtime[handle.sessionId]?.terminalPreviewRevision ?? 0) + 1;
+    patchRuntime(handle.sessionId, {
+      startupPending: false,
+      replayDone: true,
+      terminalPreviewRevision: revision,
+    });
+    handle.term.refresh(0, Math.max(0, handle.term.rows - 1));
   }, PI_STARTUP_READY_TIMEOUT_MS);
 }
 
@@ -2805,6 +2816,9 @@ export async function attachHandle(
   handle.attaching = true;
   handle.pendingAttachInput = [];
   const generation = ++handle.generation;
+  if (getState().runtime[sessionId]?.startupPending) {
+    armPiStartupReadyTimeout(handle);
+  }
   resetRenderObservation(handle);
   const resumeFrom = recoveryTarget ? null : handle.logCursor;
   patchRuntime(sessionId, {

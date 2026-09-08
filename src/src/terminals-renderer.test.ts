@@ -682,6 +682,49 @@ describe("terminal renderer", () => {
     expect(handle.lastFitDurationMs).toBeGreaterThanOrEqual(0);
   });
 
+  it("reveals Pi startup after the timeout even when parser drains are wedged", () => {
+    vi.useFakeTimers();
+    setState({
+      projects: [
+        {
+          id: "prj",
+          name: "Project",
+          rootPath: "/tmp/project",
+          gitRootPath: null,
+          pinned: false,
+          sessions: [
+            {
+              ...getState().projects[0].sessions[0],
+              adapter: "pi",
+              transport: "pty",
+            },
+          ],
+          worktrees: [],
+        },
+      ],
+      runtime: {
+        ...getState().runtime,
+        "renderer-test": { ...emptyRuntime(), startupPending: true, attaching: true },
+      },
+    });
+    const container = document.createElement("div");
+    Object.defineProperties(container, {
+      clientWidth: { configurable: true, value: 800 },
+      clientHeight: { configurable: true, value: 600 },
+    });
+    mountTerminal("renderer-test", container);
+    const handle = getHandle("renderer-test")!;
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1]!;
+    vi.mocked(terminal.refresh).mockClear();
+
+    vi.runOnlyPendingTimers();
+
+    expect(getState().runtime["renderer-test"]?.startupPending).toBe(false);
+    expect(getState().runtime["renderer-test"]?.replayDone).toBe(true);
+    expect(handle.displayReady).toBe(true);
+    expect(terminal.refresh).toHaveBeenCalledWith(0, terminal.rows - 1);
+  });
+
   it("repaints the canvas after coalesced visible-pane resize", () => {
     vi.useFakeTimers();
     const container = document.createElement("div");
