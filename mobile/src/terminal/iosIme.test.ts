@@ -237,6 +237,54 @@ describe("iOS edit routing against a real opened xterm 5.5", () => {
     textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter", keyCode: 13 }));
     expect(sent.join("")).toBe("a\r");
   });
+  // Physical Typeless trace: keydown(0), one printable keypress, then a
+  // nine-character DOM insertion, then keyup(0). No composition events.
+  it.each([0, 20, 1000])("owns the complete Typeless insertion without an early first character (%sms)", async delay => {
+    const { textarea, sent } = setup();
+    for (const text of ["甲乙丙丁戊己庚辛壬", "甲乙丙丁戊己庚辛壬", "abc 👋 xyz"]) {
+      const downEvent = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, keyCode: 0 });
+      textarea.dispatchEvent(downEvent);
+      const pressEvent = new KeyboardEvent("keypress", { bubbles: true, cancelable: true,
+        keyCode: text.charCodeAt(0), charCode: text.charCodeAt(0) });
+      const count = sent.length;
+      textarea.dispatchEvent(pressEvent);
+      expect(sent).toHaveLength(count);
+      expect(downEvent.defaultPrevented).toBe(false);
+      expect(pressEvent.defaultPrevented).toBe(false); // Preserve the native DOM edit.
+      await vi.advanceTimersByTimeAsync(delay);
+      textarea.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, inputType: "insertText", data: text }));
+      insert(textarea, text);
+      up(textarea, "");
+      expect(sent.at(-1)).toBe(text);
+      expect(sent).toHaveLength(count + 1);
+    }
+    expect(sent).toEqual(["甲乙丙丁戊己庚辛壬", "甲乙丙丁戊己庚辛壬", "abc 👋 xyz"]);
+  });
+  it("owns an unidentified DOM insertion even without keypress", () => {
+    const { textarea, sent } = setup();
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, keyCode: 0 }));
+    insert(textarea, "abcdefghi"); up(textarea, "");
+    expect(sent).toEqual(["abcdefghi"]);
+  });
+  it.each(["keyup", "blur", "invalidate", "known-key"])("ends unidentified-key ownership at %s", boundary => {
+    const { textarea, sent, dispose } = setup();
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, keyCode: 0 }));
+    if (boundary === "invalidate") dispose.invalidate();
+    else if (boundary === "known-key") textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "A", keyCode: 65 }));
+    else textarea.dispatchEvent(new Event(boundary, { bubbles: true }));
+    textarea.dispatchEvent(new KeyboardEvent("keypress", { bubbles: true, key: "a", charCode: 97 }));
+    insert(textarea, "a"); up(textarea, "a");
+    expect(sent).toEqual(["a"]);
+  });
+  it.each(["ctrlKey", "altKey", "metaKey", "shiftKey"])("does not capture modified unidentified keys (%s)", modifier => {
+    const { textarea, sent } = setup();
+    const reachedXterm = vi.fn();
+    textarea.addEventListener("keydown", reachedXterm);
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, keyCode: 0, [modifier]: true }));
+    expect(reachedXterm).toHaveBeenCalledOnce();
+    insert(textarea, "not a DOM-owned edit"); up(textarea, "");
+    expect(sent).toEqual([]);
+  });
   it.each([0, 20, 1000])("waits for an asynchronous final DOM commit (%sms)", async delay => {
     const { textarea, sent } = setup();
     textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));

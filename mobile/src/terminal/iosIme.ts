@@ -38,6 +38,7 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
   let observed = textarea.value;
   let ownedStart = observed.length;
   let hardware = false;
+  let unidentifiedKey = false;
   let before: { value: string; start: number; end: number } | undefined;
   let compositionBefore: typeof before;
   const record = (event: Event | undefined, emittedLength = 0, reason?: string) => {
@@ -51,7 +52,7 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
   };
   const snapshot = () => ({ value: textarea.value, start: textarea.selectionStart, end: textarea.selectionEnd });
   const invalidate = () => {
-    clearTimeout(timer); pending = false; composing = false;
+    clearTimeout(timer); pending = false; composing = false; unidentifiedKey = false;
     observed = textarea.value; ownedStart = observed.length; before = compositionBefore = undefined;
   };
   const reconcile = (event?: Event, previous = before) => {
@@ -131,7 +132,12 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
   const keydown = (event: KeyboardEvent) => {
     if (event.target !== textarea) return;
     record(event);
-    if (event.keyCode === 229 || event.isComposing) {
+    // Typeless emits keydown(0), a single printable keypress, then the full
+    // DOM insertion. Neither key event owns text: allowing keypress through
+    // sends only the first character and marks the full input hardware-owned.
+    // Fence this key cycle without cancelling the browser's native edit.
+    unidentifiedKey = event.keyCode === 0 && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey;
+    if (unidentifiedKey || event.keyCode === 229 || event.isComposing) {
       hardware = false; event.stopImmediatePropagation();
     } else if (![16, 17, 18, 20].includes(event.keyCode)) {
       finish();
@@ -152,12 +158,13 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
   };
   const keypress = (event: Event) => {
     if (event.target !== textarea) return;
-    if (composing || (event as KeyboardEvent).keyCode === 229) event.stopImmediatePropagation();
+    if (unidentifiedKey || composing || (event as KeyboardEvent).keyCode === 229) event.stopImmediatePropagation();
     else { finish(); invalidate(); hardware = true; }
   };
   const keyup = (event: Event) => {
     if (event.target !== textarea) return;
     if ((event as KeyboardEvent).keyCode === 229) event.stopImmediatePropagation();
+    unidentifiedKey = false;
     if (hardware) { invalidate(); hardware = false; }
   };
   const beforeinput = (event: Event) => {
