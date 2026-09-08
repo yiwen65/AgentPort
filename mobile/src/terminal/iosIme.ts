@@ -11,7 +11,7 @@
  */
 // These scalars (including dictation punctuation) each need one terminal erase.
 // Do not infer erase counts for combining sequences, emoji or other graphemes.
-const erasableScalars = /^[\x20-\x7e\p{Unified_Ideograph}\p{P}]*$/u;
+const erasableScalars = /^[\x20-\x7e\u00a0\p{Unified_Ideograph}\p{P}]*$/u;
 
 // WebKit represents a typed trailing space as NBSP, then changes it back to
 // SP when the next character arrives. This is not an edit to terminal history.
@@ -81,6 +81,20 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
           && output !== edit.data && sameSpaceRepresentation(output, edit.data)) {
           output = edit.data; reason = "space-normalized-append";
         }
+      } else if (atEnd && previous?.value === base
+        && previous.start === base.length && previous.end === base.length
+        && (event as InputEvent | undefined)?.inputType === "deleteContentBackward"
+        && value.length < base.length && value.length >= ownedStart
+        && sameSpaceRepresentation(base.slice(0, value.length), value)) {
+        // WebKit also converts retained SP -> NBSP while retracting dictation.
+        // Only a witnessed end deletion proves this is representation, not a
+        // replacement of earlier text. Erase the removed suffix alone; leave
+        // the terminal's retained spaces unchanged and keep tail ownership.
+        const removed = base.slice(value.length);
+        if (erasableScalars.test(removed)) {
+          output = "\x7f".repeat(Array.from(removed).length);
+          reason = base.startsWith(value) ? "suffix-replacement" : "space-normalized-delete";
+        } else reason = "unsupported-grapheme";
       } else if (atEnd && previous?.value === base && previous.start >= ownedStart
         && previous.end === base.length && (value.startsWith(base.slice(0, previous.start))
           || ((event as InputEvent | undefined)?.inputType === "deleteContentBackward"

@@ -346,6 +346,60 @@ describe("iOS edit routing against a real opened xterm 5.5", () => {
     replace(textarea, "你", "", "deleteContentBackward");
     expect(sent).toEqual(["你好", "\x7f"]);
   });
+  it.each([false, true])("retracts mixed-language dictation across SP/NBSP changes (separate Backspaces: %s)", async separateKeys => {
+    const { textarea, sent } = setup();
+    const phrase = "甲 React 修改这个页面。";
+    const line: string[] = [];
+    // Repeat intentionally, without clearing the previous final phrase.
+    for (let utterance = 1; utterance <= 2; utterance++) {
+      for (const char of phrase) {
+        down(textarea, "Unidentified");
+        replace(textarea, textarea.value.replace(/\u00a0/g, " ") + (char === " " ? "\u00a0" : char), char, "insertText");
+        up(textarea, "Unidentified");
+      }
+      for (let i = 0; i < phrase.length; i++) {
+        if (i === 0 || separateKeys) textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Backspace", keyCode: 8 }));
+        // Captured first divergence: 9 -> 8 chars also changes the retained
+        // trailing SP to NBSP. Subsequent deletes must retain suffix ownership.
+        replace(textarea, textarea.value.slice(0, -1).replace(/ $/, "\u00a0"), "", "deleteContentBackward");
+        if (separateKeys) up(textarea, "Backspace");
+      }
+      if (!separateKeys) up(textarea, "Backspace");
+      down(textarea, "Unidentified");
+      replace(textarea, textarea.value + phrase, phrase, "insertText");
+      up(textarea, "Unidentified");
+      await tick();
+      expect(sent.join("")).toBe((phrase + "\x7f".repeat(phrase.length) + phrase).repeat(utterance));
+    }
+    for (const char of sent.join("")) char === "\x7f" ? line.pop() : line.push(char);
+    expect(line.join("")).toBe(phrase.repeat(2));
+  });
+
+  it("erases only the removed suffix, not the retained normalized space", () => {
+    const { textarea, sent } = setup();
+    insert(textarea, "甲 React 中文");
+    replace(textarea, "甲 React\u00a0", "", "deleteContentBackward");
+    expect(sent).toEqual(["甲 React 中文", "\x7f\x7f"]);
+    replace(textarea, "甲 React", "", "deleteContentBackward");
+    expect(sent.at(-1)).toBe("\x7f");
+  });
+
+  it.each(["unowned", "missing-beforeinput", "caret-moved", "wrong-type", "changed-prefix", "tab", "emoji"])(
+    "does not normalize destructive deletion across %s", boundary => {
+      const { textarea, sent, dispose } = setup();
+      const initial = boundary === "tab" ? "甲\t文" : boundary === "emoji" ? "甲 🙂" : "甲 文";
+      insert(textarea, initial);
+      if (boundary === "unowned") dispose.invalidate();
+      if (boundary === "caret-moved") textarea.setSelectionRange(1, 1);
+      const value = boundary === "changed-prefix" ? "乙\u00a0" : "甲\u00a0";
+      if (boundary === "missing-beforeinput") {
+        textarea.value = value;
+        textarea.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
+      } else replace(textarea, value, "", boundary === "wrong-type" ? "insertText" : "deleteContentBackward");
+      expect(sent).toEqual([initial]);
+    },
+  );
+
   it.each(["abcdefghi", "甲乙丙丁戊己庚辛壬", "甲乙丙丁戊己庚辛。"])(
     "routes every Doubao retraction under one Backspace before the final phrase (%s)", async phrase => {
       const { textarea, sent } = setup();
