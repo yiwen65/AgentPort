@@ -3,7 +3,8 @@
  * and keyCode 229), in addition to Terminal._inputEvent. Capture at the parent
  * prevents all three from observing edits owned here. Do not install mid-IME.
  *
- * DOM values, never event.data or a time/string dedup window, identify edits.
+ * DOM deltas identify edits, never event.data alone or a time/string dedup
+ * window. A witnessed append can use event.data to disambiguate SP/NBSP only.
  * Terminal input is not a document editor: destructive changes require a proven
  * owned suffix and beforeinput selection. DEL assumes normal terminal erase
  * semantics; complex graphemes are deliberately not rewritten.
@@ -11,6 +12,11 @@
 // These scalars (including dictation punctuation) each need one terminal erase.
 // Do not infer erase counts for combining sequences, emoji or other graphemes.
 const erasableScalars = /^[\x20-\x7e\p{Unified_Ideograph}\p{P}]*$/u;
+
+// WebKit represents a typed trailing space as NBSP, then changes it back to
+// SP when the next character arrives. This is not an edit to terminal history.
+const sameSpaceRepresentation = (a: string, b: string) =>
+  a === b || a.replace(/\u00a0/g, " ") === b.replace(/\u00a0/g, " ");
 
 type TraceEntry = { type: string; inputType?: string; dataLength: number; valueLength: number;
   equalsObserved: boolean; selection: [number, number]; composing: boolean; emittedLength: number; reason?: string };
@@ -59,8 +65,21 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
     let output = "";
     let reason = "unchanged";
     if (value !== base) {
-      if (atEnd && value.startsWith(base)) {
-        output = value.slice(base.length); reason = "append";
+      const witnessedEndInsertion = atEnd && previous?.value === base
+        && previous.start === base.length && previous.end === base.length;
+      const normalizedPrefix = witnessedEndInsertion && value.length > base.length
+        && sameSpaceRepresentation(value.slice(0, base.length), base);
+      if (atEnd && (value.startsWith(base) || normalizedPrefix)) {
+        output = value.slice(base.length);
+        reason = value.startsWith(base) ? "append" : "space-normalized-append";
+        const edit = event as InputEvent | undefined;
+        // Only choose the input's space representation when its entire data
+        // matches the witnessed DOM insertion (apart from SP/NBSP). Preserve
+        // intentional NBSP; never echo a full-word or unchanged notification.
+        if (witnessedEndInsertion && edit?.inputType === "insertText" && typeof edit.data === "string"
+          && output !== edit.data && sameSpaceRepresentation(output, edit.data)) {
+          output = edit.data; reason = "space-normalized-append";
+        }
       } else if (atEnd && previous?.value === base && previous.start >= ownedStart
         && previous.end === base.length && (value.startsWith(base.slice(0, previous.start))
           || ((event as InputEvent | undefined)?.inputType === "deleteContentBackward"

@@ -42,6 +42,59 @@ describe("iOS edit routing against a real opened xterm 5.5", () => {
     expect(sent.join("")).toBe("33355@￥，。+-");
     expect(sent).toHaveLength(11);
   });
+  it.each([false, true])("preserves every word's first character across WebKit space normalization (delayed: %s)", async delayed => {
+    const { textarea, sent } = setup();
+    for (const text of "abc abc abc") {
+      down(textarea, text);
+      if (delayed) await tick();
+      // Real iPhone trace: the space key reports U+0020 but inserts U+00A0.
+      // The next letter changes that retained NBSP to U+0020 in the same edit.
+      const value = text === " " ? textarea.value + "\u00a0" : textarea.value.replace(/\u00a0/g, " ") + text;
+      replace(textarea, value, text, "insertText");
+      textarea.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: text, keyCode: text === " " ? 32 : text.toUpperCase().charCodeAt(0) }));
+      await tick();
+    }
+    expect(sent).toEqual(Array.from("abc abc abc"));
+    expect(textarea.value).toBe("abc abc abc");
+  });
+
+  it.each(["a", "你", "🙂"])("appends %s after normalization without rewriting an unowned prefix", text => {
+    const { textarea, sent, dispose } = setup();
+    textarea.value = "older\u00a0";
+    dispose.invalidate();
+    replace(textarea, "older " + text, text, "insertText");
+    expect(sent).toEqual([text]);
+  });
+
+  it("preserves an intentional NBSP instead of globally replacing pasted or typed text", () => {
+    const { textarea, sent } = setup();
+    replace(textarea, "\u00a0", "\u00a0", "insertText");
+    replace(textarea, " a", "a", "insertText");
+    expect(sent).toEqual(["\u00a0", "a"]);
+  });
+
+  it.each(["missing-beforeinput", "selected-prefix", "tab-change", "letter-change"])("does not invent append ownership for %s", boundary => {
+    const { textarea, sent, dispose } = setup();
+    textarea.value = boundary === "tab-change" ? "older\t" : "older\u00a0";
+    dispose.invalidate();
+    if (boundary === "selected-prefix") textarea.setSelectionRange(0, textarea.value.length);
+    const value = boundary === "letter-change" ? "Older a" : "older a";
+    if (boundary === "missing-beforeinput") {
+      textarea.value = value;
+      textarea.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText", data: "a" }));
+    } else replace(textarea, value, "a", "insertText");
+    expect(sent).toEqual([]);
+  });
+
+  it("uses actual appended bytes when event.data describes the entire word", () => {
+    const { textarea, sent } = setup();
+    replace(textarea, "abc\u00a0", "abc ", "insertText");
+    replace(textarea, "abc a", "abc a", "insertText");
+    expect(sent).toEqual(["abc ", "a"]);
+    replace(textarea, "abc a", "abc a", "insertText");
+    expect(sent).toHaveLength(2);
+  });
+
   it.each([false, true])("commits Chinese and trailing punctuation once (punctuation delayed: %s)", async delayed => {
     const { textarea, sent } = setup();
     down(textarea, "n");
