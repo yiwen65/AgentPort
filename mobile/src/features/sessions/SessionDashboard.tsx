@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useId, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useId, useRef, useState } from "react";
 import { AgentPortMark } from "../../components/AgentPortMark";
 import { SessionRowActions } from "./SessionRowActions";
 import { useAttentionInbox } from "./useAttentionInbox";
@@ -17,6 +17,7 @@ const DEVICE_KEY = "agentport-mobile-v2:selected-device";
 const WORKSPACE_PREFIX = "agentport-mobile-v2:workspace:";
 
 interface DeviceSnapshot {
+  deviceId: string;
   sessions: SessionSummary[];
   projects: ProjectSummary[];
   agents: SupportedAgent[];
@@ -213,6 +214,8 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   pickerRef.current = picker;
   const [actionError, setActionError] = useState("");
   const mounted = useRef(true);
+  const dashboardRef = useRef<HTMLElement>(null);
+  const pendingScroll = useRef<{ deviceId: string; top: number }>();
   const snapshotRef = useRef<DeviceSnapshot>();
   const workspaceRef = useRef(workspace);
   snapshotRef.current = snapshot;
@@ -234,11 +237,12 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         client.request<AgentPreferences>(deviceId, "agent.preferences", {}),
       ]);
       if (!mounted.current || deviceId !== selectedDeviceRef.current || epoch !== refreshEpoch.current) return;
-      setSnapshot({ sessions, projects, agents, preferences, cached: false });
+      setSnapshot({ deviceId, sessions, projects, agents, preferences, cached: false });
       setUpdateErrorHost(current => current === deviceId ? undefined : current);
     } catch (error) {
       if (!mounted.current || deviceId !== selectedDeviceRef.current || epoch !== refreshEpoch.current) return;
       setSnapshot((current) => ({
+        deviceId,
         sessions: current?.sessions ?? [],
         projects: current?.projects ?? [],
         agents: current?.agents ?? [],
@@ -335,7 +339,9 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     try { localStorage.setItem(DEVICE_KEY, selectedDeviceId); } catch { /* selection persistence is best effort */ }
     const restored = readWorkspace(selectedDeviceId);
     setWorkspace(restored);
-    if (restored.scrollTop > 0) window.requestAnimationFrame(() => window.scrollTo({ top: restored.scrollTop, behavior: "auto" }));
+    pendingScroll.current = { deviceId: selectedDeviceId, top: restored.scrollTop };
+    const scroller = dashboardRef.current?.closest<HTMLElement>(".main-content");
+    if (scroller) scroller.scrollTop = 0;
     setSnapshot(undefined);
     setUpdateErrorHost(undefined);
     setRowActions(undefined);
@@ -353,8 +359,27 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     if (opened && status) acknowledge(opened.hostProfileId, opened.session.id, status);
   }, [openedSession, acknowledge]);
 
-  useEffect(() => () => {
-    if (selectedDeviceId) persistWorkspace(selectedDeviceId, { ...workspaceRef.current, recentOpen: false, scrollTop: window.scrollY });
+  // Restore only once the matching device's rows are committed. Restoring on
+  // device selection would clamp against the empty/loading list. No queued RAF
+  // may later apply an old device's offset to the new device.
+  useLayoutEffect(() => {
+    const pending = pendingScroll.current;
+    const scroller = dashboardRef.current?.closest<HTMLElement>(".main-content");
+    if (!scroller || !pending || pending.deviceId !== selectedDeviceId || snapshot?.deviceId !== selectedDeviceId) return;
+    scroller.scrollTop = pending.top;
+    pendingScroll.current = undefined;
+  }, [selectedDeviceId, snapshot]);
+
+  useEffect(() => {
+    // Capture the node while mounted: React may detach the ref before cleanup.
+    const scroller = dashboardRef.current?.closest<HTMLElement>(".main-content");
+    return () => {
+      const pending = pendingScroll.current;
+      if (selectedDeviceId) persistWorkspace(selectedDeviceId, {
+        ...workspaceRef.current, recentOpen: false,
+        scrollTop: pending?.deviceId === selectedDeviceId ? pending.top : scroller?.scrollTop ?? 0,
+      });
+    };
   }, [selectedDeviceId]);
 
   useEffect(() => {
@@ -469,7 +494,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   };
 
   return (
-    <section className="session-dashboard mobile-session-sidebar" aria-labelledby="dashboard-title">
+    <section ref={dashboardRef} className="session-dashboard mobile-session-sidebar" aria-labelledby="dashboard-title">
       <h1 className="visually-hidden" id="dashboard-title">{t("dashboard.title")}</h1>
       <header className="mobile-sidebar-toolbar">
         <button type="button" className="toolbar-icon-button" onClick={onManageDevices} aria-label={t("hosts.manage")} aria-haspopup="dialog">
@@ -478,7 +503,6 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         <label className="compact-device-picker">
           <span className={`device-state ${selectedHost?.connectionState ?? "disconnected"}`} aria-hidden="true" />
           <select value={selectedDeviceId} onChange={(event) => {
-            if (selectedDeviceId) persistWorkspace(selectedDeviceId, { ...workspaceRef.current, recentOpen: false, scrollTop: window.scrollY });
             closePicker();
             selectedDeviceRef.current = event.target.value;
             setSelectedDeviceId(event.target.value);

@@ -37,6 +37,65 @@ describe("V2 Session workspace", () => {
   beforeEach(async () => { localStorage.clear(); await i18n.changeLanguage("en-US"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
+  it("restores the inner scroller after device data arrives and persists it, not window scroll", async () => {
+    const key = (id: string) => `agentport-mobile-v2:workspace:${id}`;
+    localStorage.setItem(key("host-1"), JSON.stringify({ scrollTop: 240 }));
+    localStorage.setItem(key("host-2"), JSON.stringify({ scrollTop: 75 }));
+    const remote = client();
+    const original = vi.mocked(remote.request).getMockImplementation()!;
+    let finish!: () => void;
+    vi.mocked(remote.request).mockImplementation((...args) => args[0] === "host-2" && args[1] === "project.list"
+      ? new Promise(resolve => { finish = async () => resolve(await original(...args)); }) : original(...args));
+    const view = render(<main className="main-content"><SessionDashboard client={remote} onOpenSession={vi.fn()} /></main>);
+    const scroller = view.container.querySelector("main")!;
+    await screen.findByRole("button", { name: "Approval task" });
+    await waitFor(() => expect(scroller.scrollTop).toBe(240));
+    scroller.scrollTop = 360;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled());
+    expect(scroller.scrollTop).toBe(360);
+    fireEvent.change(screen.getByRole("combobox", { name: "Current device" }), { target: { value: "host-2" } });
+    expect(JSON.parse(localStorage.getItem(key("host-1"))!).scrollTop).toBe(360);
+    expect(scroller.scrollTop).toBe(0);
+    await act(async () => finish());
+    await screen.findByRole("button", { name: "Laptop task" });
+    await waitFor(() => expect(scroller.scrollTop).toBe(75));
+    scroller.scrollTop = 125;
+    view.unmount();
+    expect(JSON.parse(localStorage.getItem(key("host-2"))!).scrollTop).toBe(125);
+  });
+
+  it("does not restore a late old-device response over the current device", async () => {
+    localStorage.setItem("agentport-mobile-v2:workspace:host-1", JSON.stringify({ scrollTop: 240 }));
+    localStorage.setItem("agentport-mobile-v2:workspace:host-2", JSON.stringify({ scrollTop: 75 }));
+    const remote = client();
+    const original = vi.mocked(remote.request).getMockImplementation()!;
+    let finish!: () => void;
+    vi.mocked(remote.request).mockImplementation((...args) => args[0] === "host-1" && args[1] === "project.list"
+      ? new Promise(resolve => { finish = async () => resolve(await original(...args)); }) : original(...args));
+    const view = render(<main className="main-content"><SessionDashboard client={remote} onOpenSession={vi.fn()} /></main>);
+    const scroller = view.container.querySelector("main")!;
+    await screen.findByRole("option", { name: "Studio" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Current device" }), { target: { value: "host-2" } });
+    await screen.findByRole("button", { name: "Laptop task" });
+    expect(scroller.scrollTop).toBe(75);
+    scroller.scrollTop = 110;
+    await act(async () => finish());
+    expect(scroller.scrollTop).toBe(110);
+    expect(screen.queryByRole("button", { name: "Approval task" })).toBeNull();
+  });
+
+  it("preserves a pending device scroll position if unmounted before its data arrives", async () => {
+    const key = "agentport-mobile-v2:workspace:host-1";
+    localStorage.setItem(key, JSON.stringify({ scrollTop: 240 }));
+    const remote = client();
+    vi.mocked(remote.request).mockReturnValue(new Promise(() => {}));
+    const view = render(<main className="main-content"><SessionDashboard client={remote} onOpenSession={vi.fn()} /></main>);
+    await screen.findByRole("option", { name: "Studio" });
+    view.unmount();
+    expect(JSON.parse(localStorage.getItem(key)!).scrollTop).toBe(240);
+  });
+
   it("ignores repeated refresh clicks while showing busy, then finishes silently", async () => {
     const remote = client();
     render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);

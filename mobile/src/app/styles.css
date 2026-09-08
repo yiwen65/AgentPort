@@ -12,10 +12,12 @@
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-html, body, #root { min-height: 100%; margin: 0; }
+/* Keep WKWebView's document inside the viewport; only main content scrolls.
+   overflow:hidden alone leaves stale root overflow after iOS viewport changes. */
+html, body, #root { height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; touch-action: pan-y; }
 /* App chrome is not a document. Cover body-level modal portals as well as
    #root, without cancelling touch events needed by controls or xterm. */
-body { min-width: 320px; overflow-x: hidden; background: var(--bg); font-size: 17px; line-height: 1.4; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+body { position: fixed; inset: 0; min-width: 320px; overflow-x: hidden; background: var(--bg); font-size: 17px; line-height: 1.4; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 /* Keep iOS editing, paste, and selection (including xterm's helper textarea). */
 input, textarea, [contenteditable="true"], [contenteditable="plaintext-only"] {
   -webkit-user-select: text;
@@ -28,9 +30,9 @@ body.terminal-visible .main-content { visibility: hidden; pointer-events: none; 
 button { font: inherit; color: inherit; }
 button:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
 
-.app-shell { min-height: 100dvh; background: transparent; touch-action: pan-y; }
+.app-shell { height: 100%; min-height: 0; overflow: hidden; background: transparent; touch-action: pan-y; }
 .device-manager-close { width: 44px; height: 44px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); }
-.main-content { width: min(100%, 560px); min-height: 100dvh; margin: 0 auto; padding: 0; background: transparent; }
+.main-content { width: min(100%, 560px); height: 100%; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; margin: 0 auto; padding: 0; background: transparent; }
 .session-stage { position: fixed; z-index: 8; inset: 0; overflow: hidden; overscroll-behavior: none; transform: translate3d(100%, 0, 0); visibility: hidden; pointer-events: none; background: var(--terminal-bg); transition: transform 220ms cubic-bezier(.2, .8, .2, 1), visibility 0s linear 220ms; }
 .session-stage.is-visible { transform: translate3d(0, 0, 0); visibility: visible; pointer-events: auto; transition-delay: 0s; }
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }

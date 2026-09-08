@@ -18,6 +18,18 @@ function contrast(first: string, second: string) {
 }
 
 describe("mobile semantic design system", () => {
+  it("locks the native app viewport scale, including blank areas outside touch-action targets", () => {
+    const html = readFileSync("index.html", "utf8");
+    expect(html).toMatch(/name="viewport"[^>]*initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover/);
+  });
+
+  it("bounds the root frame and gives dashboard content sole vertical scroll ownership", () => {
+    expect(styles).toMatch(/html, body, #root\s*\{[^}]*height:\s*100%;[^}]*overflow:\s*hidden;[^}]*touch-action:\s*pan-y;/s);
+    expect(styles).toMatch(/body\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*0;/s);
+    expect(styles).toMatch(/\.app-shell\s*\{[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
+    expect(styles).toMatch(/\.main-content\s*\{[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;/s);
+  });
+
   it("disables native selection and callouts for app chrome, including body-level portals", () => {
     expect(styles).toMatch(/body\s*\{[^}]*-webkit-user-select:\s*none;[^}]*user-select:\s*none;[^}]*-webkit-touch-callout:\s*none;/s);
   });
