@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, cleanup } from "@testing-library/react"
 import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RecentNotifications } from "./RecentNotifications";
+import recentStyles from "./recentNotifications.css?raw";
 import type { InboxEntry } from "./attentionInbox";
 import type { HostProfileSummary } from "../../protocol/remoteClient";
 import { i18n } from "../../i18n";
@@ -15,6 +16,25 @@ function setup(connected = true) {
   return { onOpen, onDismiss, row: screen.getByRole("button", { name: /Build.*Turn completed/ }) };
 }
 describe("Recent message actions", () => {
+  it.each(["opening", "offline"])("keeps the covering surface opaque while %s", state => {
+    const style = document.createElement("style");
+    style.textContent = recentStyles;
+    document.head.append(style);
+    try {
+      const props = { entries: [entry], hosts: [host], onOpen: vi.fn(), onDismiss: vi.fn() };
+      const { rerender } = render(<RecentNotifications {...props} />);
+      const row = screen.getByRole("button", { name: /Build.*Turn completed/ });
+      if (state === "opening") {
+        fireEvent.click(row);
+        rerender(<RecentNotifications {...props} opening="h:s" />);
+        expect(row).toHaveAttribute("aria-busy", "true");
+      } else rerender(<RecentNotifications {...props} hosts={[{ ...host, connectionState: "disconnected" }]} />);
+      expect(row).toHaveAttribute("aria-disabled", "true");
+      expect(row.closest("li")).not.toHaveClass("is-expanded");
+      expect(getComputedStyle(row).opacity || "1").toBe("1");
+      expect(getComputedStyle(row.querySelector(".recent-message-copy")!).opacity).toBe("0.8");
+    } finally { style.remove(); }
+  });
   it("opens without consuming the message until the workspace confirms viewing", () => {
     const { row, onOpen, onDismiss } = setup(); fireEvent.click(row);
     expect(onOpen).toHaveBeenCalledWith(entry); expect(onDismiss).not.toHaveBeenCalled();

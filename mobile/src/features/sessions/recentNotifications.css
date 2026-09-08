@@ -6,7 +6,8 @@
 .recent-message:focus-within .recent-dismiss:focus-visible { background: #942638; }
 .recent-message-surface { position: relative; width: 100%; min-height: 92px; display: flex; align-items: center; gap: 12px; padding: 16px; border: 1px solid var(--line-soft); border-radius: inherit; background: var(--panel, #252a32); color: var(--text); text-align: left; touch-action: pan-y; transform: translateX(var(--swipe-x, 0px)); transition: transform 220ms cubic-bezier(.2,.8,.2,1); }
 .recent-message-surface.is-dragging { transition: none; }
-.recent-message-surface[aria-disabled=true] { opacity: .8; }
+/* Dim content only: fading the covering surface exposes the Remove action beneath it. */
+.recent-message-surface[aria-disabled=true] > * { opacity: .8; }
 .recent-message-copy { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: 4px; }
 .recent-message-copy strong { overflow-wrap: anywhere; font-size: 15px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .recent-message-copy span { font-size: 13px; }
