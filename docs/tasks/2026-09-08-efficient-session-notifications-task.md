@@ -14,9 +14,11 @@
 <!-- task-doc-section:scope-non-goals -->
 ## Scope and non-goals
 
-包含消息元数据模型、设备级查看/移除游标、持久投递状态、多 Host 接收、Recent 左滑交互、通知点击定位、后台推送边界和性能验证。复用桌面现有语义事件与通知 worker。消息移除不得停止、归档或删除 Session。
+包含消息元数据模型、设备级查看/移除游标、持久投递状态、多 Host 前台接收、Recent 左滑交互、本地通知点击定位和性能验证。复用桌面现有语义事件与通知 worker。消息移除不得停止、归档或删除 Session。
 
-不改变输入、终端渲染或 Session 生命周期，不混入现有未提交改动。所有工作由当前 agent 串行执行，不使用 subagent。不擅自读取 APNs 私钥、部署线上服务或变更 Apple 配置；这些操作须确认授权。
+用户最新决定：只保留前台通知，不实施后台通知方案。排除 APNs provider、远程推送 token 注册、后台保活及 Apple 推送能力配置。手机回到前台且恢复连接后增量补收，不承诺锁屏、挂起或终止时实时通知。
+
+不改变输入、终端渲染或 Session 生命周期，不混入现有未提交改动。所有工作由当前 agent 串行执行，不使用 subagent。不读取 APNs 私钥、不部署推送服务、不变更 Apple 推送配置；本方案不需要 Key ID 或 APNs 凭据。
 
 <!-- task-doc-section:facts-evidence -->
 ## Confirmed facts and evidence
@@ -24,9 +26,9 @@
 | ID | Confirmed fact | Evidence |
 | --- | --- | --- |
 | F-001 | 桌面已有语义通知、去重、原生通知 worker 和点击定位 | src-tauri/src/main.rs::notify_status_once; src-tauri/src/notifications.rs |
-| F-002 | 手机仅选中 Host 由 WebView 每五秒 attention.poll 后发本地通知 | mobile/src/features/sessions/SessionDashboard.tsx:394-436 |
-| F-003 | Recent 依赖最新状态及跨端共享 unreadAttention；不是独立消息箱 | sessionRecent.ts; agentport-service::SessionSummary::from_projection |
-| F-004 | 消息左滑移除未实现；现有 remove 是删除 Session | SessionDashboard::SessionRow; SessionRowActions.tsx |
+| F-002 | 整改前：手机仅选中 Host 由 WebView 每五秒 attention.poll 后发本地通知 | mobile/src/features/sessions/SessionDashboard.tsx:394-436 |
+| F-003 | 整改前：Recent 依赖最新状态及跨端共享 unreadAttention；不是独立消息箱 | sessionRecent.ts; agentport-service::SessionSummary::from_projection |
+| F-004 | 整改前：消息左滑移除未实现；现有 remove 是删除 Session | SessionDashboard::SessionRow; SessionRowActions.tsx |
 | F-005 | 当前协议提供 attention.poll，未提供全局 attention 事件订阅 | crates/agentport-remote-protocol/src/lib.rs; agentport-remote-bridge/src/lib.rs |
 | F-006 | 本次前置审查的相关测试通过 | /tmp/agentport-notification-review-mobile.log:36; desktop.log:6; core.log:14 |
 | F-007 | Relay 为自部署密文转发服务，没有现成 APNs provider | crates/agentport-relay/README.md; src 中 APNs 检索 |
@@ -36,8 +38,8 @@
 
 - Assumption: Recent 按 Session 合并显示最新待处理提示，保留消息游标；新事件仍可重新进入，不按句子或时间猜测去重。
 - Assumption: 手机本机查看/移除不消费其他设备的未读消息；App 已展示的当前 Session 视为已查看，以实际可见和成功打开为边界。
-- Confirmed decision: 用户选择常在线 Mac 直接向 APNs 投递，不新增服务器；私钥只留 Mac。Apple 凭据读取和配置变更仍需确认。
-- Open question: APNs 开发/生产权限及凭据尚未检查，不将后台通知标为已完成。
+- Confirmed decision: 用户撤回此前的 Mac→APNs 方案，明确只保留前台通知。以本条最新决定为准，不再询问或配置 APNs 凭据。
+- Remaining work: 前台本地通知的真实系统呈现、原生完成回执与点击定位仍需验证/完善；这些与 APNs 无关，不能因取消后台推送而视为自动完成。
 
 <!-- task-doc-section:acceptance-criteria -->
 ## Acceptance criteria
@@ -45,7 +47,7 @@
 - Completed / Approval 被准确识别，事件重放不产生重复提示，投递失败不静默跳过。
 - 手机消息在后续 Working/Exited、桌面已读、App 重启和离线情况下仍保留；本机查看/手动移除只确认已见游标，不消费更新消息。
 - 左滑只移除消息，支持回弹、取消、纵向滚动、辅助操作和 reduced-motion，不操作 Session 删除接口。
-- 所有已连接 Host 均可接收，不依赖当前浏览设备；后台不依赖无限 JS 轮询。
+- 前台覆盖所有已连接 Host，不依赖当前浏览设备；后台停止 JS 轮询，回到前台恢复连接后补收。后台实时通知不属于验收要求。
 - 队列有明确背压/容量行为，不能为了有界内存静默丢弃未读；持久化与 UI 更新按批次进行。
 - 记录空闲请求量、并发上限、延迟/失败退避、队列增长和列表更新边界的测试结果；实机未测项明确列出。
 - 相关回归、构建和实机界面检查通过后仅提交任务改动。
@@ -136,30 +138,30 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-005 — 后台推送与通知点击恢复
+### [ ] T-005 — 前台本地通知原生回执与点击定位
 
-- Status: blocked
+- Status: pending
 - Owner: coordinator
-- Objective: 实现经确认的 APNs 链路和 host/session 点击定位，包含冷启动。
-- Inputs and prerequisites: T-001 权限与架构、T-003 投递状态
-- Scope or files: 经确认的 native/provider 范围
-- Expected output: 最小内容系统通知、点击定位、前后台去重
+- Objective: 完善本地通知的 OS 完成回执及 host/session 点击定位；原任务中的 APNs 部分已由用户取消，未实现且不再实施。
+- Inputs and prerequisites: 用户最新前台限定、T-003 投递状态
+- Scope or files: mobile 本地通知原生桥及点击路由；不含 APNs/provider
+- Expected output: 本地通知真实完成/失败反馈、点击定位；无需推送密钥
 - Dependencies: T-003
 - Execution steps:
-  1. 按确认方案实现注册/撤销、投递、失效 token 处理、冷启动路由；部署前再次确认外部操作。
+  1. 针对 iOS 插件提前 resolve 的行为建立回归，补齐本地完成回执与点击定位；不添加远程推送注册或后台保活。
 - Acceptance criteria:
-  - 锁屏/挂起可投递；不泄露终端正文；无不必要保活。
+  - 原生错误可观察；本地通知点击可定位正确 Session；不把 invoke 返回当成 OS 已接收或横幅已呈现。
 - Verification method:
-  - 本地 provider/mock 测试及获授权的真机前后台测试。
-- Validation evidence: 已核对 tauri-plugin-notification 2.3.3 的 NotificationManager.swift / NotificationPlugin.swift：远程推送不路由，本地 show 提前 resolve；仓库无 APNs token 注册及 provider。未进行凭据/Apple 能力配置或真实推送测试。
-- Blocker: 尚未确认 APNs .p8 密钥/Key ID 是否已备好及 App ID Push Notifications 能力；未读取任何私钥、未改变 Apple 配置。Mac provider、原生 token 注册和冷启动路由仍未实现。现有 iOS 插件不路由远程推送，且本地 show 在 OS completion 前 resolve；下一阶段需自有原生桥，不把当前 invoke 回执等同于 OS 接收。
-- Unblock condition: 用户确认 Apple 推送资源是否已具备及本机配置授权；按结果继续原生/provider 实现与端到端验证。
+  - 本地原生桥回归、前台系统通知与点击实机验证。
+- Validation evidence: 已核对 tauri-plugin-notification 2.3.3 的 NotificationPlugin.swift：本地 show 在 OS completion 前 resolve。当前仅等待原生命令返回；真实 OS 呈现和点击定位尚未验收。
+- Blocker: None.
+- Unblock condition: None.
 
 ### [ ] T-006 — 端到端与性能验收
 
 - Status: pending
 - Owner: coordinator
-- Objective: 验证正常、恢复、后台和手势路径以及空闲/突发开销。
+- Objective: 验证前台通知、恢复补收、后台停止轮询和手势路径以及空闲/突发开销；不验证后台实时推送。
 - Inputs and prerequisites: T-002 至 T-005
 - Scope or files: 相关测试、调试 App
 - Expected output: 可复现的功能与性能证据
@@ -215,18 +217,20 @@
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
 
-状态模型先测后改，通知用 fake sink 和可控时钟验证失败、重放、断线和多 Host。交互用组件事件及真机检查。对通知权限拒绝、锁屏、冷启动独立验收。请求量、并发和有界状态以可重复测试验证；CPU/电量未测时不声称低耗电已达标。构建前后保留生成文件既有差异，只重启本任务相关 GUI，不终止 Host。
+状态模型先测后改，通知用 fake sink 和可控时钟验证失败、重放、断线和多 Host。交互用组件事件及真机检查。对通知权限拒绝、前台呈现、本地通知点击、后台停止轮询和返回前台补收独立验收；取消锁屏实时推送验收。请求量、并发和有界状态以可重复测试验证；CPU/电量未测时不声称低耗电已达标。构建前后保留生成文件既有差异，只重启本任务相关 GUI，不终止 Host。
 
 <!-- task-doc-section:risks-blockers -->
 ## Risks and blockers
 
-- APNs 需要 Apple 能力/签名和 provider；外部服务及凭据处理未获具体授权，先确认方案。
+- APNs 已明确取消，不再构成阻塞或待办；前台本地通知仍受 iOS 通知权限及系统呈现策略影响。
 - 当前事件协议只有增量拉取，全局订阅需核对服务生命周期，不能声称现有连接已经支持通知推送。
 - 待处理数据必须可靠保留；队列达到上限时采用背压及持久游标恢复，不静默淘汰未读。
 - 工作区已有 LEARNS、PRD、Xcode、ACL 和桌面输入修改，必须原样保留。
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
+
+- 2026-09-08: 用户最新决定“保持能够前台通知就行，不用后台通知方案”。取消 APNs/provider/token 注册及相关凭据询问；T-005 从 APNs 资源 blocked 收敛为仅前台原生回执/点击定位 pending。现有前台代码无需回滚；本次只更新范围，不声称剩余实机验收已完成。
 
 - 2026-09-08 18:55: 本地阶段已提交 5260dfc。T-005 核对原生边界后 blocked，准备询问 Apple 推送资源与配置授权；不把尚未编写的 APNs provider 描述为只差开关。用户工作区其他修改保持不动。
 
@@ -243,4 +247,4 @@
 
 - Result: partial
 - Evidence: 本地阶段 Mobile 308、核心 350 通过，核心 6 ignored；构建/安装/重开两端调试包并确认非白屏。
-- Limitations: 后台 APNs、通知点击冷启动定位尚未实现；物理左滑、系统横幅、锁屏推送、CPU/电量测量未验收。不得把本地阶段视为整体完成。
+- Limitations: 后台 APNs 已由用户取消，不属于未完成项。前台原生完成回执、通知点击定位、物理左滑、系统横幅及 CPU/电量测量仍未完成验收；历史自动化结果不等于这些实机验收。
