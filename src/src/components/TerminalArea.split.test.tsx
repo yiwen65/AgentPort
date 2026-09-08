@@ -16,6 +16,7 @@ const {
   setPaneSplitRatioMock,
   setTerminalActiveMock,
   splitSessionIntoPaneMock,
+  restartSessionFlowMock,
   stopSessionFlowMock,
   toggleMaximizedMock,
 } = vi.hoisted(() => ({
@@ -32,6 +33,7 @@ const {
   setPaneSplitRatioMock: vi.fn().mockReturnValue(true),
   setTerminalActiveMock: vi.fn(),
   splitSessionIntoPaneMock: vi.fn(),
+  restartSessionFlowMock: vi.fn(),
   stopSessionFlowMock: vi.fn(),
   toggleMaximizedMock: vi.fn(),
 }));
@@ -46,7 +48,7 @@ vi.mock("../actions", () => ({
   removeSessionPane: removePaneMock,
   renameSessionFlow: renameSessionFlowMock,
   resumeSessionFlow: vi.fn(),
-  restartSessionFlow: vi.fn(),
+  restartSessionFlow: restartSessionFlowMock,
   selectSession: selectSessionMock,
   setPaneSplitRatio: setPaneSplitRatioMock,
   splitSessionIntoPane: splitSessionIntoPaneMock,
@@ -326,7 +328,7 @@ describe("TerminalArea recursive panes", () => {
     expect(view.container.querySelectorAll(".pane-split.maximized-path")).toHaveLength(2);
   });
 
-  it("keeps clipboard, pane, rename, and stop actions in the PTY context menu", () => {
+  it("keeps clipboard, split, rename, restart, and stop actions in the PTY context menu", () => {
     const { container } = render(<TerminalArea />);
     const pane = container.querySelector<HTMLElement>(
       `[data-pane-session-id="${ptyA.id}"]`,
@@ -347,11 +349,12 @@ describe("TerminalArea recursive panes", () => {
       "粘贴",
       "向右分屏",
       "向下分屏",
-      "最大化分屏",
-      "从分屏移除",
       "重命名",
+      "重启",
       "停止",
     ]));
+    expect(labels).not.toContain("最大化分屏");
+    expect(labels).not.toContain("从分屏移除");
     expect(labels).not.toContain("全选");
     expect(labels).not.toContain("查找…");
 
@@ -361,6 +364,9 @@ describe("TerminalArea recursive panes", () => {
 
     getState().contextMenu?.items.find((item) => item.label === "重命名")?.action?.();
     expect(renameSessionFlowMock).toHaveBeenCalledWith(ptyA.id);
+
+    getState().contextMenu?.items.find((item) => item.label === "重启")?.action?.();
+    expect(restartSessionFlowMock).toHaveBeenCalledWith(ptyA.id);
 
     const stopItem = getState().contextMenu?.items.find(
       (item) => item.label === "停止",

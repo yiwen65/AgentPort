@@ -963,8 +963,6 @@ function PaneHeader({
 
 function paneContextItems(
   ses: SessionView,
-  multiPane: boolean,
-  maximized: boolean,
   t: ReturnType<typeof useTranslation<["session", "shell", "common"]>>["t"],
 ): MenuItem[] {
   const items: MenuItem[] = [];
@@ -1011,18 +1009,12 @@ function paneContextItems(
     },
     { label: "", separator: true },
     {
-      label: maximized ? t("shell:pane.restore") : t("shell:pane.maximize"),
-      disabled: !multiPane,
-      action: () => toggleSessionPaneMaximized(ses.id),
-    },
-    {
-      label: t("shell:pane.remove"),
-      action: () => removeSessionPane(ses.id),
-    },
-    { label: "", separator: true },
-    {
       label: t("common:actions.rename"),
       action: () => void renameSessionFlow(ses.id),
+    },
+    {
+      label: t("session:ui.menu.restartAndResume"),
+      action: () => void restartSessionFlow(ses.id),
     },
     {
       label: t("session:ui.menu.stop"),
@@ -1124,7 +1116,7 @@ function SessionPaneLeaf({
         openContextMenu(
           event.clientX,
           event.clientY,
-          paneContextItems(ses, multiPane, maximized, t),
+          paneContextItems(ses, t),
         );
       }}
       onDragEnter={(event) => {
