@@ -11,6 +11,7 @@ const {
   openSplitSessionDialogMock,
   persistLayoutMock,
   removePaneMock,
+  removeSessionFlowMock,
   renameSessionFlowMock,
   selectSessionMock,
   setPaneSplitRatioMock,
@@ -28,6 +29,7 @@ const {
   openSplitSessionDialogMock: vi.fn(),
   persistLayoutMock: vi.fn(),
   removePaneMock: vi.fn(),
+  removeSessionFlowMock: vi.fn(),
   renameSessionFlowMock: vi.fn(),
   selectSessionMock: vi.fn(),
   setPaneSplitRatioMock: vi.fn().mockReturnValue(true),
@@ -46,6 +48,7 @@ vi.mock("../actions", () => ({
   openSplitSessionDialog: openSplitSessionDialogMock,
   persistCurrentPaneLayout: persistLayoutMock,
   removeSessionPane: removePaneMock,
+  removeSessionFlow: removeSessionFlowMock,
   renameSessionFlow: renameSessionFlowMock,
   resumeSessionFlow: vi.fn(),
   restartSessionFlow: restartSessionFlowMock,
@@ -328,7 +331,7 @@ describe("TerminalArea recursive panes", () => {
     expect(view.container.querySelectorAll(".pane-split.maximized-path")).toHaveLength(2);
   });
 
-  it("keeps clipboard, split, rename, restart, and stop actions in the PTY context menu", () => {
+  it("keeps clipboard, split, rename, restart, stop, and remove actions in the PTY context menu", () => {
     const { container } = render(<TerminalArea />);
     const pane = container.querySelector<HTMLElement>(
       `[data-pane-session-id="${ptyA.id}"]`,
@@ -352,6 +355,7 @@ describe("TerminalArea recursive panes", () => {
       "重命名",
       "重启",
       "停止",
+      "移除",
     ]));
     expect(labels).not.toContain("最大化分屏");
     expect(labels).not.toContain("从分屏移除");
@@ -374,6 +378,13 @@ describe("TerminalArea recursive panes", () => {
     expect(stopItem?.danger).toBe(true);
     stopItem?.action?.();
     expect(stopSessionFlowMock).toHaveBeenCalledWith(ptyA.id);
+
+    const removeItem = getState().contextMenu?.items.find(
+      (item) => item.label === "移除",
+    );
+    expect(removeItem?.danger).toBe(true);
+    removeItem?.action?.();
+    expect(removeSessionFlowMock).toHaveBeenCalledWith(ptyA.id);
   });
 
   it("shows two Session drop zones and routes the chosen direction", () => {
