@@ -1460,6 +1460,79 @@ describe("terminal renderer", () => {
     );
   });
 
+  it("automatically retries a transient Host connection failure and clears its error", async () => {
+    vi.useFakeTimers();
+    rendererMocks.apiMock.attachSession.mockRejectedValueOnce({ code: "host_connection_failed", technicalDetail: "host not reachable" });
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getState().runtime["renderer-test"]?.detached).toBe(true);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledTimes(2);
+    expect(getState().runtime["renderer-test"]).toMatchObject({ attached: true, detached: false, error: null, errorMessage: null });
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("reconnects a lost channel from its contiguous cursor without clearing the terminal", async () => {
+    vi.useFakeTimers();
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.advanceTimersByTimeAsync(0);
+    const handle = getHandle("renderer-test")!;
+    const cursor = { runId: "run-reconnect", runOrdinal: 1, generation: 0, offset: 0 };
+    rendererMocks.channels[0].onmessage?.({ t: "output", data: "QQ==", offset: 0, cursor });
+    rendererMocks.channels[0].onmessage?.({ t: "detached" });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledTimes(2);
+    expect(rendererMocks.apiMock.attachSession.mock.calls[1][3]).toEqual({ ...cursor, offset: 1 });
+    expect(handle.term.reset).not.toHaveBeenCalled();
+    expect(getState().runtime["renderer-test"]?.attached).toBe(true);
+    rendererMocks.channels[0].onmessage?.({ t: "detached" });
+    expect(getState().runtime["renderer-test"]?.attached).toBe(true);
+  });
+
+  it("backs off repeated failures and caps retries at one per five seconds", async () => {
+    vi.useFakeTimers();
+    rendererMocks.apiMock.attachSession.mockRejectedValue(new Error("host not reachable"));
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.advanceTimersByTimeAsync(0);
+    for (const [index, delay] of [500, 1000, 2000, 4000, 5000, 5000].entries()) {
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledTimes(index + 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledTimes(index + 2);
+    }
+    expect(getState().runtime["renderer-test"]?.detached).toBe(true);
+  });
+
+  it.each(["hidden", "disposed", "ended", "restarted"])("does not retry an obsolete attachment after it is %s", async reason => {
+    vi.useFakeTimers();
+    rendererMocks.apiMock.attachSession.mockRejectedValue(new Error("host not reachable"));
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.advanceTimersByTimeAsync(0);
+    if (reason === "hidden") setTerminalActive("renderer-test", false);
+    if (reason === "disposed") disposeHandle("renderer-test");
+    if (reason === "restarted") resetForRestart("renderer-test");
+    if (reason === "ended") setState({ projects: getState().projects.map(project => ({ ...project, sessions: project.sessions.map(session => ({ ...session, lifecycle: "exited" as const })) })) });
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("fences a detached channel before a late attach reply and never overlaps pending retries", async () => {
+    vi.useFakeTimers();
+    let finish!: (info: AttachInfo) => void;
+    rendererMocks.apiMock.attachSession.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    mountTerminal("renderer-test", document.createElement("div"));
+    rendererMocks.channels[0].onmessage?.({ t: "detached" });
+    rendererMocks.apiMock.attachSession.mockReturnValueOnce(new Promise(() => undefined));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledTimes(2);
+    finish({ attachmentId: 99, childAlive: true, hostPid: 42, logBytes: 0, status: null, agentSessionId: null } as AttachInfo);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(rendererMocks.apiMock.detachSession).toHaveBeenCalledWith("renderer-test", 99);
+    expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledTimes(2);
+    expect(getState().runtime["renderer-test"]?.attached).not.toBe(true);
+  });
+
   it("re-localizes a structured Host attach rejection", async () => {
     await applyUiLanguage("zh-CN", { persistHint: false });
     rendererMocks.apiMock.attachSession.mockRejectedValueOnce({

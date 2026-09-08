@@ -73,6 +73,12 @@ describe("terminal attach/replay veil", () => {
     );
   });
 
+  it.each(["warn", "info"])("composites the %s banner tint over an opaque background", tone => {
+    const banner = ruleBody(new RegExp(`\\.banner\\.${tone}\\s*\\{([^}]*)\\}`));
+    expect(banner).toContain("linear-gradient(");
+    expect(banner).toContain(", var(--bg)");
+  });
+
   it("keeps ended/interrupted overlays translucent (history stays visible)", () => {
     const base = ruleBody(/\.term-overlay\s*\{([^}]*)\}/);
     expect(base).toContain("rgba(");

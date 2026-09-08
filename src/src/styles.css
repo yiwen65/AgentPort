@@ -4174,13 +4174,15 @@ body.is-resizing-split .doc-panel-resize::after {
   pointer-events: auto;
 }
 
+/* Soft tints contain alpha; composite over an opaque base so terminal text
+   under these overlay banners cannot bleed through their labels. */
 .banner.warn {
-  background: var(--amber-soft);
+  background: linear-gradient(var(--amber-soft), var(--amber-soft)), var(--bg);
   color: var(--amber);
 }
 
 .banner.info {
-  background: var(--accent-soft);
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--bg);
   color: var(--accent-text);
 }
 

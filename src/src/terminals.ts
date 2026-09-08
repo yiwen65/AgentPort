@@ -766,6 +766,8 @@ export interface TermHandle {
   opened: boolean;
   attached: boolean;
   attaching: boolean;
+  reconnectTimer: number | null;
+  reconnectAttempt: number;
   /** Bumped per attach — stale channels from previous attaches are ignored. */
   generation: number;
   /** Backend-issued capability; only this renderer may detach it. */
@@ -1242,6 +1244,8 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     opened: false,
     attached: false,
     attaching: false,
+    reconnectTimer: null,
+    reconnectAttempt: 0,
     generation: 0,
     attachmentId: null,
     runIdentity: null,
@@ -2605,7 +2609,11 @@ export function fitHandle(
  */
 export function setTerminalActive(sessionId: string, active: boolean) {
   const handle = handles.get(sessionId);
-  if (handle) handle.active = active;
+  if (handle) {
+    handle.active = active;
+    if (!active) clearAttachmentRetry(handle);
+    else scheduleAttachmentRetry(handle);
+  }
 }
 
 export function fitSession(sessionId: string, forceResize = false) {
@@ -2722,6 +2730,35 @@ export function clearUnreadOutputTracking(sessionId: string) {
   unreadOutputPending.delete(sessionId);
 }
 
+function clearAttachmentRetry(handle: TermHandle, resetAttempts = true) {
+  if (handle.reconnectTimer !== null) window.clearTimeout(handle.reconnectTimer);
+  handle.reconnectTimer = null;
+  if (resetAttempts) handle.reconnectAttempt = 0;
+}
+
+function shouldRetryAttachment(handle: TermHandle): boolean {
+  const state = getState();
+  const runtime = state.runtime[handle.sessionId];
+  const session = findSession(state.projects, handle.sessionId);
+  return handles.get(handle.sessionId) === handle && handle.active &&
+    !handle.attached && !handle.attaching && runtime?.detached === true && !runtime.exit &&
+    (session?.lifecycle === "running" || session?.lifecycle === "creating");
+}
+
+/** Transport loss is not Agent death. Retry only a visible, still-live pane,
+ * keeping its cursor/buffer and never restarting or signalling the Host. */
+function scheduleAttachmentRetry(handle: TermHandle) {
+  if (handle.reconnectTimer !== null || !shouldRetryAttachment(handle)) return;
+  const generation = handle.generation;
+  const delay = Math.min(500 * 2 ** handle.reconnectAttempt, 5000);
+  handle.reconnectAttempt = Math.min(handle.reconnectAttempt + 1, 4);
+  handle.reconnectTimer = window.setTimeout(() => {
+    handle.reconnectTimer = null;
+    if (generation !== handle.generation || !shouldRetryAttachment(handle)) return;
+    void attachHandle(handle.sessionId, null, true);
+  }, delay);
+}
+
 function activateAttachment(handle: TermHandle, info: AttachInfo): boolean {
   const sessionId = handle.sessionId;
   // A Host can exit between its handshake and either readiness delivery. The
@@ -2759,6 +2796,7 @@ function activateAttachment(handle: TermHandle, info: AttachInfo): boolean {
   if (info.runId) handle.runIdentity = { runId: info.runId, runOrdinal: info.runOrdinal };
   handle.attached = true;
   handle.attaching = false;
+  clearAttachmentRetry(handle);
   if (handle.logCursor) queueRenderedLogObservation(handle, handle.logCursor);
   // Content now arrives via replay/live stream — never tail-load on top.
   handle.historyLoaded = true;
@@ -2809,6 +2847,7 @@ export async function attachHandle(
     resetForRestart(sessionId);
   }
   if (handle.attached || handle.attaching) return;
+  clearAttachmentRetry(handle, false);
   handle.runIdentity ??= session?.status ?? null;
   handle.attaching = true;
   handle.pendingAttachInput = [];
@@ -2862,6 +2901,7 @@ export async function attachHandle(
   } finally {
     if (handles.get(sessionId) === handle && generation === handle.generation) {
       handle.attaching = false;
+      scheduleAttachmentRetry(handle);
     }
   }
 }
@@ -3148,6 +3188,7 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       break;
     }
     case "exit": {
+      clearAttachmentRetry(handle);
       finishTerminalStartupFilter(handle);
       handle.pendingAttachInput = [];
       handle.attached = false;
@@ -3177,6 +3218,10 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       break;
     }
     case "detached": {
+      // EOF closes this generation even if its invoke reply is still pending.
+      // Neither that reply nor another queued callback may revive the channel.
+      handle.generation += 1;
+      handle.attaching = false;
       handle.pendingAttachInput = [];
       const detail =
         msg.code || msg.message || msg.technicalDetail
@@ -3186,11 +3231,13 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       handle.attachmentId = null;
       patchRuntime(sessionId, {
         attached: false,
+        attaching: false,
         detached: true,
         terminalGeometry: null,
         error: detail,
         errorMessage: detail ? msg : null,
       });
+      scheduleAttachmentRetry(handle);
       break;
     }
   }
@@ -3210,6 +3257,7 @@ export function resetForRestart(sessionId: string) {
   const startupPending = session?.adapter === "pi";
   const handle = handles.get(sessionId);
   if (handle) {
+    clearAttachmentRetry(handle);
     const previousAttachment = handle.attachmentId;
     handle.attachmentId = null;
     handle.runIdentity = null;
@@ -3408,6 +3456,7 @@ export function applyXtermTheme(
 export function disposeHandle(sessionId: string) {
   const handle = handles.get(sessionId);
   if (!handle) return;
+  clearAttachmentRetry(handle);
   handle.generation += 1;
   resetRenderObservation(handle);
   resetNativeHistory(handle);
@@ -3447,6 +3496,7 @@ export function disposeHandle(sessionId: string) {
 export async function releaseTerminal(sessionId: string): Promise<void> {
   const handle = handles.get(sessionId);
   if (!handle) return;
+  clearAttachmentRetry(handle);
   // The durable cursor advances when Channel bytes enter the coordinator. Flush
   // any open DEC-2026 candidate/frame before fencing that Channel so the saved
   // checkpoint cannot claim bytes that were discarded before xterm parsed them.

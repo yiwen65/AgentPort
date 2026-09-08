@@ -34,6 +34,26 @@ Session；未聚焦叶子的更新可能没有让根组件重新渲染，导致�
 hostAlive 与 status 一起遵守已有的 run/sequence 防回退规则。旧 attachment 只按其
 服务端 capability 解绑，不能移除新 writer。
 
+## 桌面短暂断连恢复
+
+Host socket 暂时不可用不等于 Agent 已退出。此前桌面 `attachHandle` 失败或收到
+`detached` 后只显示提示，没有自动重试；后台 monitor 恢复连接也不会让同一 run、
+同一 lifecycle 的 TerminalPane 再次 attach，提示因此可能滞留。
+
+- 可见且仍为 running/creating 的终端自动重试 attach，间隔为 500ms、1s、2s、4s，
+  之后最多每 5s 一次；一次只允许一个待执行重试或连接请求。
+- 保留当前终端与连续输出游标，恢复后清除断连错误；不重发输入、不执行 Restart/Stop。
+- 隐藏、释放、重置或退出后停止旧重试；回调执行前再次核对 handle、generation 和生命周期。
+- `detached` 立即失效旧 channel generation，迟到的 invoke 回复只能解绑它自己的 attachment。
+- 真正持续不可达时仍保留错误与手动重连/诊断入口，不把缓存内容视作活连接的证据。
+- 覆盖在终端上的提示条以不透明底色承载半透明 tint，避免终端文字透出、与提示重叠。
+
+回归覆盖首次连接失败、连接中断后的游标续接、退避上限、退出/隐藏/释放/重置取消，
+以及旧 channel 与迟到 attach 回复。原实现的四项自动恢复回归均先失败，再修复通过。
+本次只含任务改动的暂存候选通过 Desktop 552 项测试及 TypeScript 检查；Debug App
+重新构建、签名、打开并截图确认非白屏。未人为中断用户的 Host 来制造断连，故障顺序
+由模拟连接/Channel 的回归测试验证。
+
 ## 验证
 
 - 新增回归先复现旧行为：旧 exit 卡住新连接、跳过 stopped 的快速 restart、
