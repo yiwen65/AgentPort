@@ -1,0 +1,17 @@
+.recent-message-list { list-style: none; margin: 0; padding: 0; }
+.recent-message { position: relative; overflow: hidden; border-radius: 14px; margin: 8px 0; background: var(--panel); max-height: 220px; transition: max-height 180ms ease, margin 180ms ease, opacity 180ms ease; }
+.recent-message.is-removing { max-height: 0; margin-block: 0; opacity: 0; }
+.recent-dismiss { position: absolute; inset: 0 0 0 auto; width: 80px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; border: 0; background: #bd3345; color: #fff; font-size: 12px; }
+.recent-dismiss:focus-visible { outline: 3px solid white; outline-offset: -4px; z-index: 2; }
+.recent-message:focus-within .recent-dismiss:focus-visible { background: #942638; }
+.recent-message-surface { position: relative; width: 100%; min-height: 92px; display: flex; align-items: center; gap: 12px; padding: 16px; border: 1px solid var(--line-soft); border-radius: inherit; background: var(--panel, #252a32); color: var(--text); text-align: left; touch-action: pan-y; transform: translateX(var(--swipe-x, 0px)); transition: transform 220ms cubic-bezier(.2,.8,.2,1); }
+.recent-message-surface.is-dragging { transition: none; }
+.recent-message-surface[aria-disabled=true] { opacity: .8; }
+.recent-message-copy { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: 4px; }
+.recent-message-copy strong { overflow-wrap: anywhere; font-size: 15px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.recent-message-copy span { font-size: 13px; }
+.recent-message-copy small, .recent-message-surface time { color: var(--muted); font-size: 12px; }
+.recent-message-surface time { align-self: flex-start; flex-shrink: 0; }
+.recent-kind { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; flex-shrink: 0; background: color-mix(in srgb, currentColor 12%, transparent); color: #23866d; font-weight: 700; }
+.recent-kind.approval_requested { color: #ac791e; }
+@media (prefers-reduced-motion: reduce) { .recent-message, .recent-message-surface { transition: none; } }

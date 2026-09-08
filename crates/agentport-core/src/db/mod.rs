@@ -326,6 +326,19 @@ pub mod schema {
         ALTER TABLE sessions
             ADD COLUMN pinned_at TEXT;
         "#,
+        // v13 -> v14: metadata-only attention catch-up seeks directly into a
+        // small semantic-event index instead of sorting all status traffic.
+        r#"
+        CREATE INDEX idx_attention_cursor
+        ON status_events(occurred_at,session_id,run_ordinal,sequence)
+        WHERE (state='needs_input' AND (
+          (source='hook' AND evidence='hook:PermissionRequest') OR
+          (source='pty' AND evidence LIKE 'pty:pattern:%')
+        )) OR (state='idle' AND (
+          (source='hook' AND (evidence='hook:Stop' OR evidence='hook:TurnEnd')) OR
+          (source='adapter' AND (evidence='adapter:kimi:TurnEnd' OR evidence='adapter:pi:TurnEnd'))
+        ));
+        "#,
     ];
 }
 
@@ -3406,14 +3419,7 @@ impl Db {
 
     /// Poll only user-actionable semantic events in a stable global order.
     /// The same exact evidence predicate is used by unread/sidebar semantics.
-    pub fn poll_attention_events(
-        &self,
-        after: Option<&AttentionCursor>,
-        limit: u16,
-    ) -> Result<Vec<StatusEvent>> {
-        let conn = self.conn.lock().unwrap();
-        let mut st = conn.prepare(
-            "SELECT session_id,run_id,run_ordinal,sequence,state,source,confidence,evidence,
+    const ATTENTION_POLL_QUERY: &str = "SELECT session_id,run_id,run_ordinal,sequence,state,source,confidence,evidence,
                     log_generation,log_offset,occurred_at
              FROM status_events e
              WHERE (
@@ -3426,28 +3432,30 @@ impl Db {
                  (e.source='adapter' AND
                    (e.evidence='adapter:kimi:TurnEnd' OR e.evidence='adapter:pi:TurnEnd'))
                ))
-             ) AND (
-               ?1=0 OR e.occurred_at>?2 OR
-               (e.occurred_at=?2 AND e.session_id>?3) OR
-               (e.occurred_at=?2 AND e.session_id=?3 AND e.run_ordinal>?4) OR
-               (e.occurred_at=?2 AND e.session_id=?3 AND e.run_ordinal=?4 AND e.sequence>?5)
-             )
+             ) AND (e.occurred_at,e.session_id,e.run_ordinal,e.sequence)>(?1,?2,?3,?4)
              ORDER BY e.occurred_at,e.session_id,e.run_ordinal,e.sequence
-             LIMIT ?6",
-        )?;
-        let (has_after, occurred_at, session_id, run_ordinal, sequence) = match after {
+             LIMIT ?5";
+
+    pub fn poll_attention_events(
+        &self,
+        after: Option<&AttentionCursor>,
+        limit: u16,
+    ) -> Result<Vec<StatusEvent>> {
+        let conn = self.conn.lock().unwrap();
+        let mut st = conn.prepare(Self::ATTENTION_POLL_QUERY)?;
+        let (occurred_at, session_id, run_ordinal, sequence) = match after {
             Some(cursor) => (
-                1_i64,
                 dt_str(&cursor.occurred_at),
                 cursor.session_id.as_str(),
                 cursor.run_ordinal,
                 cursor.sequence,
             ),
-            None => (0_i64, String::new(), "", 0, 0),
+            // Persisted timestamps are nonempty ISO dates, so this lower bound
+            // also lets an initial scan use the same index-seek query plan.
+            None => (String::new(), "", 0, 0),
         };
         let rows = st.query_map(
             params![
-                has_after,
                 occurred_at,
                 session_id,
                 run_ordinal,
@@ -5912,6 +5920,22 @@ mod tests {
             db.get_recovery_summary("ses_1").unwrap().summary_state,
             SummaryState::Output
         );
+    }
+
+    #[test]
+    fn attention_poll_seeks_the_semantic_index_without_sorting_status_history() {
+        let db = Db::open_memory().unwrap();
+        let conn = db.conn.lock().unwrap();
+        let mut query = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {}", Db::ATTENTION_POLL_QUERY))
+            .unwrap();
+        let details: Vec<String> = query
+            .query_map(params!["2026-09-08", "ses", 1, 1, 64], |row| row.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(details.iter().any(|line| line.contains("SEARCH e USING INDEX idx_attention_cursor")), "{details:?}");
+        assert!(!details.iter().any(|line| line.contains("TEMP B-TREE")), "{details:?}");
     }
 
     #[test]

@@ -24,6 +24,7 @@ function client(): RemoteClient {
       if (method === "project.list") return Promise.resolve([{ id: profileId === "host-1" ? "project-1" : "project-2", name: profileId === "host-1" ? "AgentPort" : "Laptop Project", rootPath: "/repo", pinned: false, sortOrder: 0 }]);
       if (method === "agent.supported") return Promise.resolve([{ agent: "claude", displayName: "Claude", install: {} }, { agent: "shell", displayName: "Shell", install: null }]);
       if (method === "agent.preferences") return Promise.resolve({ revision: 1, agentOrder: ["claude", "shell"], agentHidden: [] });
+      if (method === "attention.poll") return Promise.resolve({ events: [] });
       if (method === "session.create") return Promise.resolve({ sessionId: "attention" });
       return Promise.resolve(undefined);
     }),
@@ -188,7 +189,7 @@ describe("V2 Session workspace", () => {
     expect(screen.queryByRole("button", { name: "Approval task" })).not.toBeInTheDocument();
   });
 
-  it("pauses hidden dashboard refreshes, keeps attention polling, and refreshes on return", async () => {
+  it("pauses hidden dashboard refreshes, backs off metadata polling, and refreshes on return", async () => {
     vi.useFakeTimers();
     const remote = client();
     const props = { client: remote, onOpenSession: vi.fn() };
@@ -198,7 +199,7 @@ describe("V2 Session workspace", () => {
     vi.mocked(remote.request).mockClear();
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
     expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.list")).toHaveLength(0);
-    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "attention.poll")).toHaveLength(12);
+    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "attention.poll")).toHaveLength(6); // Three idle polls per connected Host, not twelve per Host.
     rerender(<SessionDashboard {...props} active />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.list")).toHaveLength(1);
@@ -240,6 +241,7 @@ describe("V2 Session workspace", () => {
     const request = remote.request;
     remote.request = vi.fn(async (host, method, params) => {
       const value = await request(host, method, params);
+      if (method === "attention.poll" && host === "host-1") return { events: [{ sessionId: "attention", runId: "run", kind: "approval_requested", cursor: { sessionId: "attention", runOrdinal: 1, sequence: 1, occurredAt: "2026-09-02T00:02:00Z" } }] };
       if (method === "session.list") return (value as any[]).map(session => session.id === "attention" ? { ...session, latestAttentionKind: "approval_requested" } : session);
       return value;
     }) as RemoteClient["request"];
@@ -250,7 +252,7 @@ describe("V2 Session workspace", () => {
     expect(screen.getByRole("button", { name: "Show active sessions" }).querySelector(".toolbar-attention")).toBeNull();
     fireEvent.click(recent);
     const dialog = screen.getByRole("dialog", { name: "Recent sessions" });
-    expect(within(dialog).getByRole("button", { name: "Approval task" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /Approval task.*Approval requested/ })).toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: "Shell" })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: "Dead agent" })).not.toBeInTheDocument();
   });
@@ -261,6 +263,7 @@ describe("V2 Session workspace", () => {
     let sequence = 1;
     remote.request = vi.fn(async (host, method, params) => {
       const value = await base(host, method, params);
+      if (method === "attention.poll" && host === "host-1") return { events: [{ sessionId: "attention", runId: "run", kind: "approval_requested", cursor: { sessionId: "attention", runOrdinal: 1, sequence, occurredAt: "2026-09-02T00:02:00Z" } }] };
       if (method === "session.list") return (value as any[]).map(session => session.id === "attention" ? { ...session, latestAttentionKind: "approval_requested", latestStatus: { runId: "run", runOrdinal: 1, sequence, state: "needs_input", occurredAt: session.updatedAt } } : session);
       return value;
     }) as RemoteClient["request"];
@@ -271,9 +274,13 @@ describe("V2 Session workspace", () => {
     const open = onOpenSession.mock.calls[0][0];
     rerender(<SessionDashboard client={remote} onOpenSession={onOpenSession} openedSession={{ open, token: 1 }} />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Recent sessions" }).querySelector(".toolbar-attention")).toBeNull());
-    expect(remote.request).toHaveBeenCalledWith("host-1", "session.seen.mark", { sessionId: "attention", cursor: { runId: "run", runOrdinal: 1, sequence: 1 } });
+    expect(vi.mocked(remote.request).mock.calls.some(([, method]) => method === "session.seen.mark")).toBe(false);
     sequence = 2;
-    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    // Returning from suspension triggers an immediate incremental catch-up.
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    fireEvent(document, new Event("visibilitychange"));
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    fireEvent(document, new Event("visibilitychange"));
     await waitFor(() => expect(screen.getByRole("button", { name: "Recent sessions" }).querySelector(".toolbar-attention")).not.toBeNull());
   });
 

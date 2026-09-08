@@ -1,10 +1,10 @@
-import { isTauri } from "@tauri-apps/api/core";
-import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { isSystemNotificationKind } from "./sessionModel";
 import type { AttentionEvent } from "./types";
 
 export interface AttentionNotificationSink {
-  notify(title: string, body: string, tag: string): Promise<void> | void;
+  notify(title: string, body: string, tag: string, id?: number): Promise<void> | void;
 }
 
 export function attentionEventKey(event: AttentionEvent): string {
@@ -40,12 +40,14 @@ export class WebNotificationSink implements AttentionNotificationSink {
 }
 
 export class SystemNotificationSink implements AttentionNotificationSink {
-  async notify(title: string, body: string, tag: string): Promise<void> {
+  async notify(title: string, body: string, tag: string, id?: number): Promise<void> {
     if (isTauri()) {
       let granted = await isPermissionGranted();
       if (!granted) granted = (await requestPermission()) === "granted";
       if (!granted) throw new Error("System notification permission was not granted");
-      sendNotification({ title, body });
+      // The plugin's JS sendNotification returns void and discards native
+      // rejection. Await the command before acknowledging durable delivery.
+      await invoke("plugin:notification|notify", { options: { title, body, ...(id === undefined ? {} : { id }), extra: { eventKey: tag } } });
       return;
     }
     await new WebNotificationSink().notify(title, body, tag);

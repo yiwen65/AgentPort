@@ -1,21 +1,20 @@
 import { memo, useCallback, useEffect, useMemo, useId, useRef, useState } from "react";
 import { AgentPortMark } from "../../components/AgentPortMark";
 import { SessionRowActions } from "./SessionRowActions";
-import { pendingAttention, readReceipts, receiptKey, RECEIPTS_KEY } from "./sessionRecent";
+import { useAttentionInbox } from "./useAttentionInbox";
+import { RecentNotifications } from "./RecentNotifications";
+import type { InboxEntry } from "./attentionInbox";
 import { SessionStateBadge } from "./SessionStateBadge";
 import { AgentIcon } from "../../components/AgentIcons";
 import { Modal } from "../../components/Modal";
 import "./dashboard.css";
 import { useTranslation } from "react-i18next";
 import type { ConnectionState, HostProfileSummary, RemoteClient, RemoteConnectionStateEvent } from "../../protocol/remoteClient";
-import { deliverAttentionNotifications, SystemNotificationSink } from "./attentionNotifications";
 import { activeAgentSessions, orderedVisibleAgents, quickStartParams, type SessionLayout } from "./sessionModel";
-import type { AgentPreferences, AttentionCursor, AttentionPollResult, OpenSession, ProjectSummary, SessionSummary, SupportedAgent } from "./types";
+import type { AgentPreferences, OpenSession, ProjectSummary, SessionSummary, SupportedAgent } from "./types";
 
 const DEVICE_KEY = "agentport-mobile-v2:selected-device";
 const WORKSPACE_PREFIX = "agentport-mobile-v2:workspace:";
-const ATTENTION_CURSOR_PREFIX = "agentport-mobile-v2:attention-cursor:";
-const ATTENTION_SEEDED_PREFIX = "agentport-mobile-v2:attention-seeded:";
 
 interface DeviceSnapshot {
   sessions: SessionSummary[];
@@ -178,7 +177,8 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   openedSession?: { open: OpenSession; token: number };
 }) {
   const { t } = useTranslation();
-  const [receipts, setReceipts] = useState(readReceipts);
+  const [openingRecent, setOpeningRecent] = useState<string>();
+  const recentOpening = useRef(false);
   const [rowActions, setRowActions] = useState<{ hostId: string; session: SessionSummary }>();
   const refreshEpoch = useRef(0);
   const refreshes = useRef(new Map<string, { again: boolean; promise: Promise<void> }>());
@@ -212,18 +212,14 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   selectedDeviceRef.current = selectedDeviceId;
   pickerRef.current = picker;
   const [actionError, setActionError] = useState("");
-  const [notificationError, setNotificationError] = useState("");
   const mounted = useRef(true);
-  const attentionCursor = useRef<AttentionCursor>();
-  const attentionSeeded = useRef(false);
-  const deliveredAttention = useRef(new Set<string>());
-  const notificationSink = useRef(new SystemNotificationSink());
   const snapshotRef = useRef<DeviceSnapshot>();
   const workspaceRef = useRef(workspace);
   snapshotRef.current = snapshot;
   workspaceRef.current = workspace;
 
   const selectedHost = hosts.find((host) => host.id === selectedDeviceId);
+  const { entries: recent, error: notificationError, acknowledge } = useAttentionInbox(client, hosts, pageVisible);
   const updateBusy = updatingHosts.has(selectedDeviceId) || selectedHost?.connectionState === "connecting" || selectedHost?.connectionState === "reconnecting";
   const updateFailed = Boolean(snapshot?.error || updateErrorHost === selectedDeviceId);
 
@@ -354,85 +350,12 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   useEffect(() => {
     const opened = openedSession?.open;
     const status = opened?.session.latestStatus;
-    if (!opened || !status || !opened.session.unreadAttention) return;
-    let cancelled = false;
-    void client.request(opened.hostProfileId, "session.seen.mark", { sessionId: opened.session.id, cursor: { runId: status.runId, runOrdinal: status.runOrdinal, sequence: status.sequence } }).then(() => {
-      if (cancelled) return;
-      setReceipts(current => {
-        const key = receiptKey(opened.hostProfileId, opened.session.id);
-        const previous = current[key];
-        if (previous && (previous.runOrdinal > status.runOrdinal || (previous.runOrdinal === status.runOrdinal && previous.sequence >= status.sequence))) return current;
-        const next = { ...current, [key]: { runOrdinal: status.runOrdinal, sequence: status.sequence } };
-        try { localStorage.setItem(RECEIPTS_KEY, JSON.stringify(next)); } catch { /* live receipt remains valid without storage */ }
-        return next;
-      });
-      if (visibleRef.current && selectedDeviceRef.current === opened.hostProfileId) void refreshDevice(opened.hostProfileId);
-    }).catch(error => { if (!cancelled) setActionError(errorText(error)); });
-    return () => { cancelled = true; };
-  }, [client, openedSession, refreshDevice]);
+    if (opened && status) acknowledge(opened.hostProfileId, opened.session.id, status);
+  }, [openedSession, acknowledge]);
 
   useEffect(() => () => {
     if (selectedDeviceId) persistWorkspace(selectedDeviceId, { ...workspaceRef.current, recentOpen: false, scrollTop: window.scrollY });
   }, [selectedDeviceId]);
-
-  useEffect(() => {
-    attentionCursor.current = undefined;
-    attentionSeeded.current = false;
-    deliveredAttention.current.clear();
-    if (!selectedDeviceId) return;
-    try {
-      const stored = localStorage.getItem(`${ATTENTION_CURSOR_PREFIX}${selectedDeviceId}`);
-      if (stored) {
-        attentionCursor.current = JSON.parse(stored) as AttentionCursor;
-        attentionSeeded.current = true;
-      } else attentionSeeded.current = localStorage.getItem(`${ATTENTION_SEEDED_PREFIX}${selectedDeviceId}`) === "1";
-    } catch { /* invalid cursor safely starts a silent baseline scan */ }
-  }, [selectedDeviceId]);
-
-  useEffect(() => {
-    if (!selectedDeviceId || selectedHost?.connectionState !== "connected") return;
-    let busy = false;
-    let cancelled = false;
-    const poll = async () => {
-      if (busy) return;
-      busy = true;
-      try {
-        const result = await client.request<AttentionPollResult>(selectedDeviceId, "attention.poll", { cursor: attentionCursor.current ?? null, limit: 256 });
-        if (cancelled || selectedDeviceRef.current !== selectedDeviceId) return;
-        const wasSeeded = attentionSeeded.current;
-        if (wasSeeded && result.events.length) {
-          const titles = new Map((snapshotRef.current?.sessions ?? []).map((session) => [session.id, session.title]));
-          await deliverAttentionNotifications(result.events.map((event) => ({
-            sessionId: event.sessionId,
-            sessionTitle: titles.get(event.sessionId),
-            kind: event.kind,
-            runId: event.runId,
-            runOrdinal: event.cursor.runOrdinal,
-            sequence: event.cursor.sequence,
-            occurredAt: event.cursor.occurredAt,
-          })), deliveredAttention.current, notificationSink.current).catch((error) => setNotificationError(errorText(error)));
-        }
-        if (cancelled || selectedDeviceRef.current !== selectedDeviceId) return;
-        if (result.nextCursor) {
-          attentionCursor.current = result.nextCursor;
-          try { localStorage.setItem(`${ATTENTION_CURSOR_PREFIX}${selectedDeviceId}`, JSON.stringify(result.nextCursor)); } catch { /* cursor persistence is best effort */ }
-        }
-        // A new install drains old attention silently in bounded pages. Only
-        // after reaching the tail can later events become system notifications.
-        if (!wasSeeded && result.events.length < 256) {
-          attentionSeeded.current = true;
-          try { localStorage.setItem(`${ATTENTION_SEEDED_PREFIX}${selectedDeviceId}`, "1"); } catch { /* best effort */ }
-        }
-      } catch {
-        // Session status refresh remains useful when notification polling is unavailable.
-      } finally {
-        busy = false;
-      }
-    };
-    void poll();
-    const timer = window.setInterval(() => void poll(), 5_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [client, selectedDeviceId, selectedHost?.connectionState]);
 
   useEffect(() => {
     if (!visible || !selectedDeviceId || selectedHost?.connectionState !== "connected") return;
@@ -464,7 +387,6 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     }
     return [...known.values()].sort((a, b) => Number(b.pinned) - Number(a.pinned) || a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
   }, [sessions, snapshot?.projects]);
-  const recent = useMemo(() => sessions.filter(session => pendingAttention(session, receipts[receiptKey(selectedDeviceId, session.id)])).sort((a, b) => sessionTime(b) - sessionTime(a)), [sessions, receipts, selectedDeviceId]);
 
   const open = useCallback((session: SessionSummary) => {
     if (!selectedHost) return;
@@ -476,6 +398,23 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
       session,
     });
   }, [selectedHost, projects, updateWorkspace, onOpenSession]);
+
+  const dismissRecent = useCallback((entry: InboxEntry) => acknowledge(entry.hostId, entry.sessionId, entry), [acknowledge]);
+  const openRecent = useCallback(async (entry: InboxEntry) => {
+    const host = hosts.find(item => item.id === entry.hostId);
+    if (!host || host.connectionState !== "connected" || recentOpening.current) return;
+    recentOpening.current = true;
+    setOpeningRecent(`${entry.hostId}:${entry.sessionId}`);
+    try {
+      const current = await client.request<SessionSummary[]>(entry.hostId, "session.list", { includeArchived: false });
+      if (!mounted.current || !workspaceRef.current.recentOpen) return;
+      const session = current.find(item => item.id === entry.sessionId);
+      if (!session) throw new Error(t("dashboard.notificationSessionUnavailable"));
+      onOpenSession({ hostProfileId: host.id, hostName: host.name, session });
+      updateWorkspace({ ...workspaceRef.current, recentOpen: false });
+    } catch (failure) { if (mounted.current) setActionError(errorText(failure)); }
+    finally { recentOpening.current = false; if (mounted.current) setOpeningRecent(undefined); }
+  }, [client, hosts, onOpenSession, t, updateWorkspace]);
 
   const showSessionActions = useCallback((session: SessionSummary) => {
     updateWorkspace({ ...workspaceRef.current, recentOpen: false });
@@ -615,7 +554,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         <section className="modal-sheet recent-sheet" role="dialog" aria-modal="true" aria-labelledby="recent-title">
           <header><h2 id="recent-title">{t("dashboard.recent")}</h2><button type="button" aria-label={t("common.close")} onClick={() => updateWorkspace({ ...workspace, recentOpen: false })}>×</button></header>
           {recent.length === 0 ? <p role="status">{t("dashboard.noRecent")}</p> : null}
-          <ul className="v2-session-list"><SessionRows sessions={recent} host={selectedHost!} stale={snapshot?.cached} onOpen={open} onActions={showSessionActions} /></ul>
+          <RecentNotifications entries={recent} hosts={hosts} opening={openingRecent} onOpen={openRecent} onDismiss={dismissRecent} />
         </section>
       </div> : null}
     </section>

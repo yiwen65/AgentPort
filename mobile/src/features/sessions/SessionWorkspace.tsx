@@ -110,14 +110,20 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     setActionsOpen(false);
   }, [active]);
 
+  const [pageVisible, setPageVisible] = useState(() => document.visibilityState !== "hidden");
   useEffect(() => {
-    if (!active) { openedRef.current = ""; return; }
+    const changed = () => setPageVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", changed);
+    return () => document.removeEventListener("visibilitychange", changed);
+  }, []);
+  useEffect(() => {
+    if (!active || !pageVisible) { openedRef.current = ""; return; }
     if (!["live", "ended"].includes(connectionLabel)) return;
     const key = JSON.stringify([open.hostProfileId, open.session.id, open.session.latestStatus?.runOrdinal, open.session.latestStatus?.sequence]);
     if (openedRef.current === key) return;
     openedRef.current = key;
     onOpenedRef.current?.(open);
-  }, [active, connectionLabel, open]);
+  }, [active, connectionLabel, open, pageVisible]);
 
   useEffect(() => {
     let cancelled = false;
