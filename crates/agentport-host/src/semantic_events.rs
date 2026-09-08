@@ -64,7 +64,8 @@ impl Snapshot {
         let mut inherited_turn_complete = false;
         let source = match (cfg.adapter_type.as_str(), cfg.transport) {
             ("pi", transport) => {
-                let directory = PathBuf::from(&cfg.session_dir).join("pi");
+                let directory = pi_session_dir(cfg)
+                    .unwrap_or_else(|| PathBuf::from(&cfg.session_dir).join("pi"));
                 let offsets = jsonl_offsets(&directory);
                 inherited_turn_complete = cfg
                     .agent_session_id_hint
@@ -127,6 +128,12 @@ pub(crate) fn spawn(snapshot: Snapshot, shared: Arc<Shared>, tx: mpsc::Sender<Ho
             std::thread::spawn(move || follow_kimi(home, cwd, initial_sessions, shared, tx));
         }
     }
+}
+
+fn pi_session_dir(cfg: &HostConfig) -> Option<PathBuf> {
+    cfg.command
+        .windows(2)
+        .find_map(|pair| (pair[0] == "--session-dir").then(|| PathBuf::from(&pair[1])))
 }
 
 fn follow_pi(
@@ -644,6 +651,51 @@ fn validated_kimi_wire_path(home: &Path, entry: &Value) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pi_semantic_source_uses_managed_cli_session_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let managed = dir.path().join("managed-pi");
+        fs::create_dir_all(&managed).unwrap();
+        fs::write(
+            managed.join("pi-session.jsonl"),
+            b"{\"type\":\"session\",\"id\":\"native-id\"}\n{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\"}}\n",
+        )
+        .unwrap();
+        let cfg = HostConfig {
+            protocol: 2,
+            session_id: "ses".into(),
+            run_id: "run".into(),
+            run_ordinal: 1,
+            host_token: "tok".into(),
+            command: vec![
+                "pi".into(),
+                "--session-dir".into(),
+                managed.to_string_lossy().into_owned(),
+            ],
+            cwd: "/tmp".into(),
+            env: vec![],
+            adapter_type: "pi".into(),
+            detect_pty_needs_input: false,
+            transport: AgentTransport::Pty,
+            socket_path: dir.path().join("sock").to_string_lossy().into_owned(),
+            session_dir: dir.path().join("stable").to_string_lossy().into_owned(),
+            log_path: dir.path().join("output.log").to_string_lossy().into_owned(),
+            host_log_path: dir.path().join("host.log").to_string_lossy().into_owned(),
+            hook_events_path: dir.path().join("events.jsonl").to_string_lossy().into_owned(),
+            log_limit_bytes: 1024,
+            agent_session_id_hint: Some("native-id".into()),
+            secret_env_names: vec![],
+            sigint_grace_ms: 1500,
+            sigterm_grace_ms: 2500,
+            cols: 120,
+            rows: 32,
+        };
+
+        let snapshot = Snapshot::capture(&cfg);
+
+        assert!(snapshot.inherited_turn_complete());
+    }
 
     #[test]
     fn resumed_pi_transcript_inherits_only_a_completed_latest_message() {
