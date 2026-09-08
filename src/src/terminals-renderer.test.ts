@@ -682,6 +682,24 @@ describe("terminal renderer", () => {
     expect(handle.lastFitDurationMs).toBeGreaterThanOrEqual(0);
   });
 
+  it("repaints the canvas after coalesced visible-pane resize", () => {
+    vi.useFakeTimers();
+    const container = document.createElement("div");
+    Object.defineProperties(container, {
+      clientWidth: { configurable: true, value: 800 },
+      clientHeight: { configurable: true, value: 600 },
+    });
+    mountTerminal("renderer-test", container);
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1]!;
+    vi.mocked(terminal.refresh).mockClear();
+
+    resizeObserverCallbacks[0]?.();
+    expect(terminal.refresh).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(90);
+
+    expect(terminal.refresh).toHaveBeenCalledWith(0, terminal.rows - 1);
+  });
+
   it("fits xterm without publishing a passive PTY resize while mobile owns geometry", () => {
     vi.useFakeTimers();
     const container = document.createElement("div");
@@ -1809,7 +1827,7 @@ describe("terminal renderer", () => {
     );
   });
 
-  it("keeps synthetic repeat for a local held key until its keyup", async () => {
+  it("does not infer a held key from UU's keydown-only text stream", async () => {
     const container = document.createElement("div");
     mountTerminal("renderer-test", container);
     await vi.waitFor(() =>
@@ -1817,29 +1835,29 @@ describe("terminal renderer", () => {
     );
     const terminal =
       rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.textarea?.addEventListener("keydown", (event) =>
+      terminal.emitData(event.key),
+    );
     vi.useFakeTimers();
 
-    terminal.textarea?.dispatchEvent(
-      new KeyboardEvent("keydown", {
-        key: "s",
-        code: "KeyS",
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
-    await vi.advanceTimersByTimeAsync(541);
+    for (const key of ["a", "b", "c"]) {
+      terminal.textarea?.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key,
+          // UU Remote reports every committed phone-keyboard character with
+          // the same physical code and sends neither keyup nor InputEvent.
+          code: "KeyA",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    }
+    await vi.advanceTimersByTimeAsync(550);
 
-    expect(terminal.input).toHaveBeenCalledOnce();
-    terminal.textarea?.dispatchEvent(
-      new KeyboardEvent("keyup", {
-        key: "s",
-        code: "KeyS",
-        bubbles: true,
-      }),
+    expect(terminal.input).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.sendInput).toHaveBeenCalledTimes(3),
     );
-    await vi.advanceTimersByTimeAsync(200);
-
-    expect(terminal.input).toHaveBeenCalledOnce();
   });
 
   it("does not use terminal-generated OSC color replies for the automatic title", async () => {

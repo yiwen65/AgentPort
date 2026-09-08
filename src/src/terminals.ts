@@ -1864,14 +1864,10 @@ function updateScrolledUp(handle: TermHandle) {
 }
 
 /** Mount (once) into a pane container div; starts the attach if needed. */
-// WKWebView suppresses native key auto-repeat under macOS press-and-hold
-// semantics (observed even with ApplePressAndHoldEnabled=false), so holding a
-// key never repeats in the terminal. Synthesize repeat ourselves: when no
-// native repeat arrives (KeyboardEvent.repeat), feed term.input() — the same
-// path as real typing (onData → send_input → first-input title capture).
-const REPEAT_DELAY_MS = 500;
-const REPEAT_INTERVAL_MS = 40;
-
+// Only an observed KeyboardEvent.repeat proves that a key is being held. UU
+// Remote sends phone-keyboard text as trusted keydown events with no keyup or
+// InputEvent, which is indistinguishable from a held physical key. Inferring
+// hold from one keydown would therefore repeat the final character forever.
 function repeatableInput(e: KeyboardEvent): string | null {
   if (e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return null;
   if (e.key.length === 1) return e.key; // printable; Shift/CapsLock already applied
@@ -1886,9 +1882,6 @@ function installInputCompatibility(
   container: HTMLElement,
 ): () => void {
   if (!term.textarea) return () => {};
-  let delayTimer: number | undefined;
-  let intervalTimer: number | undefined;
-  let activeCode: string | null = null;
   let forwardedGeneration = 0;
   let disposed = false;
   let pendingKeyDown: { generation: number; timeStamp: number } | null = null;
@@ -1896,18 +1889,6 @@ function installInputCompatibility(
   const forwarded = term.onData(() => {
     forwardedGeneration += 1;
   });
-
-  const stopRepeat = () => {
-    if (delayTimer !== undefined) {
-      window.clearTimeout(delayTimer);
-      delayTimer = undefined;
-    }
-    if (intervalTimer !== undefined) {
-      window.clearInterval(intervalTimer);
-      intervalTimer = undefined;
-    }
-    activeCode = null;
-  };
 
   const deferFallback = (data: string, generation: number) => {
     // First let the current DOM event finish. xterm may handle it synchronously
@@ -1941,42 +1922,19 @@ function installInputCompatibility(
       generation: generationAtKeyDown,
       timeStamp: event.timeStamp,
     };
+    if (!event.repeat) return;
     const data = repeatableInput(event);
-    if (event.repeat) {
-      stopRepeat();
-      if (data !== null) {
-        // Let xterm keep its key/onData/textarea and accessibility behavior;
-        // only synthesize the repeat if that complete path produces no data.
-        deferFallback(data, generationAtKeyDown);
-      }
-      return;
+    if (data !== null) {
+      // Let xterm keep its key/onData/textarea and accessibility behavior;
+      // only fill a native repeat event that produced no terminal data.
+      deferFallback(data, generationAtKeyDown);
     }
-    stopRepeat();
-    if (data === null) return;
-    activeCode = event.code;
-    delayTimer = window.setTimeout(() => {
-      delayTimer = undefined;
-      intervalTimer = window.setInterval(
-        () => term.input(data),
-        REPEAT_INTERVAL_MS,
-      );
-    }, REPEAT_DELAY_MS);
-  };
-
-  const onKeyUp = (e: KeyboardEvent) => {
-    if (activeCode === null || e.code === activeCode) stopRepeat();
   };
 
   const onInput = (event: Event) => {
     if (!(event instanceof InputEvent)) return;
     if (!event.data || event.inputType !== "insertText" || event.isComposing)
       return;
-    // Remote/mobile keyboards can commit text without a matching keyup. Treat
-    // that commit as the end of the logical keystroke so our local hold
-    // fallback cannot repeat the final character indefinitely. Do this before
-    // the de-duplication return below, because xterm may already have forwarded
-    // the keydown that corresponds to this input event.
-    stopRepeat();
     const data = event.data;
     const generationAtInput = forwardedGeneration;
     const keyDown = pendingKeyDown;
@@ -1996,18 +1954,13 @@ function installInputCompatibility(
   // handlers stop propagation, so listeners on the textarea itself never
   // fire. Shift+Tab only cancels WebView focus traversal; no event is stopped.
   container.addEventListener("keydown", onKeyDown, true);
-  container.addEventListener("keyup", onKeyUp, true);
-  container.addEventListener("blur", stopRepeat, true);
   container.addEventListener("input", onInput, true);
   return () => {
     disposed = true;
-    stopRepeat();
     for (const timer of fallbackTimers) window.clearTimeout(timer);
     fallbackTimers.clear();
     forwarded.dispose();
     container.removeEventListener("keydown", onKeyDown, true);
-    container.removeEventListener("keyup", onKeyUp, true);
-    container.removeEventListener("blur", stopRepeat, true);
     container.removeEventListener("input", onInput, true);
   };
 }
@@ -2492,7 +2445,7 @@ function scheduleFitHandle(handle: TermHandle) {
     window.setTimeout(() => {
       fitTimers.delete(handle.sessionId);
       if (handles.get(handle.sessionId) !== handle) return;
-      fitHandle(handle, false, false, "resize-observer");
+      fitHandle(handle, true, false, "resize-observer");
     }, 90),
   );
 }
