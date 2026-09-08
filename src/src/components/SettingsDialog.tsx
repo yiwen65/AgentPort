@@ -8,6 +8,7 @@ import {
   api,
   commitAiErrorText,
   errorText,
+  onProjectsChanged,
   type NativeCoverageSummary,
 } from "../api";
 import { applyThemeSettings, refreshProjects } from "../actions";
@@ -975,7 +976,19 @@ function ArchiveSection() {
   };
 
   useEffect(() => {
+    let unlisten: (() => void) | null = null;
     void reload();
+    void onProjectsChanged(() => {
+      void reload();
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    const onFocus = () => void reload();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      unlisten?.();
+      window.removeEventListener("focus", onFocus);
+    };
   }, []);
 
   const projects = useMemo(
