@@ -250,6 +250,26 @@ describe("selectSession", () => {
     expect(getState().toasts.slice(-1)[0]?.kind).toBe("success");
   });
 
+  it("restarts a running Session without opening a confirmation dialog", async () => {
+    const restarted = { ...oldSession, lifecycle: "running" as const };
+    apiMock.stopSession.mockResolvedValueOnce(undefined);
+    apiMock.restartSession.mockResolvedValueOnce({
+      resumePrecision: "exact",
+      agentSessionId: "native-session",
+      notes: [],
+      notices: [],
+      hostPid: 4242,
+    });
+    apiMock.listProjects.mockResolvedValue(projectWith(restarted));
+
+    await restartSessionFlow(oldSession.id);
+
+    expect(getState().confirm).toBeNull();
+    expect(apiMock.stopSession).toHaveBeenCalledWith(oldSession.id);
+    expect(apiMock.restartSession).toHaveBeenCalledWith(oldSession.id, true);
+    expect(resetForRestartMock).toHaveBeenCalledWith(oldSession.id);
+  });
+
   it("re-mounts an interrupted PTY after restart publishes it as running", async () => {
     const interrupted = {
       ...oldSession,

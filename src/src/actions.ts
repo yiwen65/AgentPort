@@ -756,13 +756,6 @@ export async function restartSessionFlow(sessionId: string) {
   const ses = findSession(getState().projects, sessionId);
   if (!ses) return;
   if (ses.lifecycle === "running" || ses.lifecycle === "creating") {
-    const ok = await confirmDialog({
-      title: i18n.t("session:flow.restartTitle", { title: ses.title }),
-      body: i18n.t("session:flow.restartBody"),
-      confirmLabel: i18n.t("session:flow.stopAndRestart"),
-      danger: true,
-    });
-    if (!ok) return;
     try {
       await api.stopSession(sessionId);
     } catch (e) {
