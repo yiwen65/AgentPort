@@ -384,7 +384,7 @@ describe("TerminalArea recursive panes", () => {
     );
     expect(removeItem?.danger).toBe(true);
     removeItem?.action?.();
-    expect(removeSessionFlowMock).toHaveBeenCalledWith(ptyA.id);
+    expect(removeSessionFlowMock).toHaveBeenCalledWith(ptyA.id, { confirm: true });
   });
 
   it("shows two Session drop zones and routes the chosen direction", () => {

@@ -852,10 +852,47 @@ export async function archiveSessionFlow(sessionId: string) {
   }
 }
 
-/** UI-level removal uses the archive operation; archived Sessions are kept
-    until explicitly restored or permanently deleted in Settings. */
-export async function removeSessionFlow(sessionId: string) {
-  await archiveSessionFlow(sessionId);
+export async function removeSessionFlow(
+  sessionId: string,
+  options: { confirm?: boolean } = {},
+) {
+  const initial = getState();
+  const ses = findSession(initial.projects, sessionId);
+  if (!ses) return;
+  if (initial.archivingSessionIds.includes(sessionId)) return;
+  if (options.confirm) {
+    const ok = await confirmDialog({
+      title: i18n.t("session:flow.removeTitle", { title: ses.title }),
+      body: i18n.t("session:flow.removeBody"),
+      confirmLabel: i18n.t("common:actions.remove"),
+      danger: true,
+    });
+    if (!ok) return;
+  }
+
+  const wasActive = initial.activeSessionId === sessionId;
+  setSessionArchiving(sessionId, true);
+  try {
+    await api.archiveSession(sessionId);
+    await api.deleteArchivedSession(sessionId);
+    disposeHandle(sessionId);
+    clearSessionScopedState(sessionId);
+    if (wasActive && getState().activeSessionId === null) {
+      const current = getState();
+      const archiving = new Set(current.archivingSessionIds);
+      const next = flattenSessions(current.projects).find(
+        (session) => session.id !== sessionId && !archiving.has(session.id),
+      );
+      if (next) selectSession(next.id);
+    }
+    void refreshProjects();
+  } catch (e) {
+    setSessionArchiving(sessionId, false);
+    toast(
+      i18n.t("session:flow.removeFailed", { detail: errorText(e) }),
+      "error",
+    );
+  }
 }
 
 export async function renameSessionFlow(sessionId: string) {

@@ -9,6 +9,8 @@ const {
   resetForRestartMock,
 } = vi.hoisted(() => ({
   apiMock: {
+    archiveSession: vi.fn(),
+    deleteArchivedSession: vi.fn(),
     listProjects: vi.fn(),
     markSessionSeen: vi.fn(),
     restartSession: vi.fn(),
@@ -43,6 +45,7 @@ import {
   canSplitSessionPane,
   openSplitAgentPicker,
   openSplitSessionDialog,
+  removeSessionFlow,
   removeSessionPane,
   restartSessionFlow,
   stopSessionFlow,
@@ -221,6 +224,18 @@ describe("selectSession", () => {
     finish();
     await stopping;
     expect(getState().toasts.slice(-1)[0]?.kind).toBe("success");
+  });
+
+  it("permanently removes a Session after the existing row confirmation", async () => {
+    apiMock.archiveSession.mockResolvedValueOnce(undefined);
+    apiMock.deleteArchivedSession.mockResolvedValueOnce(undefined);
+    apiMock.listProjects.mockResolvedValueOnce(projectWith(newSession));
+
+    await removeSessionFlow(oldSession.id);
+
+    expect(getState().confirm).toBeNull();
+    expect(apiMock.archiveSession).toHaveBeenCalledWith(oldSession.id);
+    expect(apiMock.deleteArchivedSession).toHaveBeenCalledWith(oldSession.id);
   });
 
   it("reports Stop failure without confirmation or automatic replay and permits an explicit retry", async () => {

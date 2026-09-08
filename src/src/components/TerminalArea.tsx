@@ -1025,7 +1025,7 @@ function paneContextItems(
     {
       label: t("session:ui.menu.remove"),
       danger: true,
-      action: () => void removeSessionFlow(ses.id),
+      action: () => void removeSessionFlow(ses.id, { confirm: true }),
     },
   );
   return items;
