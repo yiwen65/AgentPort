@@ -29,6 +29,7 @@ const terminalHarness = vi.hoisted(() => ({
   scrolledLines: [] as number[],
   writes: [] as (string | Uint8Array)[],
   resets: 0,
+  pastes: [] as string[],
   scrollToTopCalls: 0,
   instances: 0,
   options: undefined as { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown } | undefined,
@@ -72,6 +73,7 @@ vi.mock("@xterm/xterm", () => ({
       if (terminalHarness.queued) terminalHarness.writesQueue.push(parse); else parse();
     }
     reset() { terminalHarness.resets += 1; }
+    paste(data: string) { terminalHarness.pastes.push(data); terminalHarness.input(data); }
     scrollLines(rows: number) { terminalHarness.scrolledLines.push(rows); }
     scrollToTop() { terminalHarness.scrollToTopCalls += 1; }
     dispose() { /* deterministic no-op */ }
@@ -107,6 +109,7 @@ describe("MobileTerminal input accessory", () => {
     terminalHarness.rows = 24;
     terminalHarness.writes = [];
     terminalHarness.resets = 0;
+    terminalHarness.pastes = [];
     terminalHarness.scrollToTopCalls = 0;
     terminalHarness.instances = 0;
     terminalHarness.options = undefined;
@@ -271,6 +274,66 @@ describe("MobileTerminal input accessory", () => {
     await waitFor(() => expect(onInput).toHaveBeenCalledExactlyOnceWith("pasted"));
     expect(navigator.clipboard.readText).toHaveBeenCalledTimes(1);
     expect(document.activeElement).toBe(terminalHarness.helper);
+  });
+
+  it("pastes through the native bridge once without opening WebKit's clipboard menu", async () => {
+    const invoke = vi.fn().mockResolvedValue("native pasted");
+    vi.stubGlobal("isTauri", true);
+    vi.stubGlobal("__TAURI_INTERNALS__", { invoke });
+    vi.mocked(navigator.clipboard.readText).mockRejectedValue(new DOMException("WebKit menu", "NotAllowedError"));
+    const onInput = vi.fn();
+    render(<MobileTerminal onInput={onInput} showProbeOutput={false} />);
+    terminalHarness.helper!.focus();
+    fireEvent.click(await screen.findByRole("button", { name: "Paste" }));
+    await waitFor(() => expect(onInput).toHaveBeenCalledExactlyOnceWith("native pasted"));
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("plugin:clipboard-manager|read_text", {}, undefined);
+    expect(navigator.clipboard.readText).not.toHaveBeenCalled();
+    expect(terminalHarness.pastes).toEqual(["native pasted"]);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("does not fall back to WebKit or send input when native clipboard access is denied", async () => {
+    const invoke = vi.fn().mockRejectedValue("Denied");
+    vi.stubGlobal("isTauri", true);
+    vi.stubGlobal("__TAURI_INTERNALS__", { invoke });
+    const onInput = vi.fn();
+    render(<MobileTerminal onInput={onInput} showProbeOutput={false} />);
+    terminalHarness.helper!.focus();
+    fireEvent.click(await screen.findByRole("button", { name: "Paste" }));
+    await screen.findByRole("alert");
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(navigator.clipboard.readText).not.toHaveBeenCalled();
+    expect(onInput).not.toHaveBeenCalled();
+  });
+
+  it("allows only one clipboard read while a paste request is pending", async () => {
+    let resolve!: (text: string) => void;
+    vi.mocked(navigator.clipboard.readText).mockReturnValue(new Promise(done => { resolve = done; }));
+    const onInput = vi.fn();
+    render(<MobileTerminal onInput={onInput} showProbeOutput={false} />);
+    terminalHarness.helper!.focus();
+    const paste = await screen.findByRole("button", { name: "Paste" });
+    fireEvent.click(paste);
+    fireEvent.click(paste);
+    expect(navigator.clipboard.readText).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Control" }));
+    await act(async () => resolve("c"));
+    expect(onInput).toHaveBeenCalledExactlyOnceWith("c");
+  });
+
+  it.each(["reset", "unmount", "hide"])("discards a clipboard reply after terminal %s", async boundary => {
+    let resolve!: (text: string) => void;
+    vi.mocked(navigator.clipboard.readText).mockReturnValueOnce(new Promise(done => { resolve = done; }));
+    const ref = createRef<MobileTerminalHandle>();
+    const onInput = vi.fn();
+    const view = render(<MobileTerminal ref={ref} onInput={onInput} showProbeOutput={false} />);
+    terminalHarness.helper!.focus();
+    fireEvent.click(await screen.findByRole("button", { name: "Paste" }));
+    if (boundary === "reset") act(() => ref.current?.reset());
+    if (boundary === "unmount") view.unmount();
+    if (boundary === "hide") view.rerender(<MobileTerminal ref={ref} onInput={onInput} showProbeOutput={false} obscured />);
+    await act(async () => resolve("late paste"));
+    expect(onInput).not.toHaveBeenCalled();
   });
 
   it("does not paste when a touch is dragged or cancelled", async () => {

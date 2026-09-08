@@ -12,6 +12,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { installIosImeRouting, isIosKeyboard } from "./iosIme";
+import { readClipboardText } from "../platform/clipboard";
 import { selectionMenuPosition } from "./selectionMenu";
 import { ShortcutIcon, SHORTCUT_NAMES, ShortcutSettingsIcon } from "./ShortcutIcon";
 import { ShortcutSettings } from "./ShortcutSettings";
@@ -78,6 +79,9 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const shortcutActionsRef = useRef<Record<string, () => void>>({});
   const [hasSelection, setHasSelection] = useState(false);
   const [pasteFailed, setPasteFailed] = useState(false);
+  const pasteGeneration = useRef(0);
+  const pastePending = useRef(false);
+  const cancelPendingPaste = () => { pasteGeneration.current += 1; pastePending.current = false; };
   const [copyFailed, setCopyFailed] = useState(false);
   const [inputActive, setInputActive] = useState(false);
   const [shiftActive, setShiftActive] = useState(false);
@@ -91,6 +95,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       terminalRef.current?.write(data, onParsed);
     },
     reset() {
+      cancelPendingPaste();
       invalidateIosImeRef.current();
       const terminal = terminalRef.current;
       if (!terminal) return;
@@ -130,11 +135,27 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   };
 
   const paste = () => {
+    const terminal = terminalRef.current;
+    if (!terminal || obscured || pastePending.current) return;
     clearModifiers();
-    terminalRef.current?.focus();
+    terminal.focus();
     setPasteFailed(false);
-    if (!navigator.clipboard) { setPasteFailed(true); return; }
-    void navigator.clipboard.readText().then(data => { if (data) writeInput(data); }).catch(() => setPasteFailed(true));
+    pastePending.current = true;
+    const generation = ++pasteGeneration.current;
+    void readClipboardText().then(data => {
+      if (generation !== pasteGeneration.current || terminalRef.current !== terminal || !data) return;
+      invalidateIosImeRef.current();
+      // Authorization can take time; modifiers toggled while waiting must
+      // not turn literal clipboard text into Ctrl-C or another command.
+      clearModifiers();
+      // Let xterm normalize newlines and honor the application's bracketed
+      // paste mode, rather than treating pasted text as raw keystrokes.
+      terminal.paste(data);
+    }).catch(() => {
+      if (generation === pasteGeneration.current) setPasteFailed(true);
+    }).finally(() => {
+      if (generation === pasteGeneration.current) pastePending.current = false;
+    });
   };
 
   const copySelection = () => {
@@ -498,6 +519,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     terminalRef.current = terminal;
     fitRef.current = fit;
     return () => {
+      cancelPendingPaste();
       terminalRef.current = null;
       fitRef.current = null;
       scheduleFitRef.current = () => undefined;
@@ -534,6 +556,10 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       terminal.dispose();
     };
   }, []); // The terminal is a long-lived renderer; callback refs carry changing handlers.
+
+  useLayoutEffect(() => {
+    if (obscured) cancelPendingPaste();
+  }, [obscured]);
 
   useLayoutEffect(() => {
     const menu = selectionMenuRef.current;

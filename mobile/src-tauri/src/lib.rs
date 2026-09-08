@@ -32,6 +32,7 @@ fn mobile_scaffold_status() -> ScaffoldStatus {
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
             tauri_plugin_keyring_store::Builder::new()
                 .service("com.agentport.mobile.credentials")
