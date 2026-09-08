@@ -138,7 +138,7 @@
 
 ### [ ] T-005 — 后台推送与通知点击恢复
 
-- Status: in_progress
+- Status: blocked
 - Owner: coordinator
 - Objective: 实现经确认的 APNs 链路和 host/session 点击定位，包含冷启动。
 - Inputs and prerequisites: T-001 权限与架构、T-003 投递状态
@@ -151,9 +151,9 @@
   - 锁屏/挂起可投递；不泄露终端正文；无不必要保活。
 - Verification method:
   - 本地 provider/mock 测试及获授权的真机前后台测试。
-- Validation evidence: Not run.
-- Blocker: 尚无 APNs provider/凭据授权；未经确认不实施线上操作。
-- Unblock condition: T-001 方案确认及所需外部授权/资源可用。
+- Validation evidence: 已核对 tauri-plugin-notification 2.3.3 的 NotificationManager.swift / NotificationPlugin.swift：远程推送不路由，本地 show 提前 resolve；仓库无 APNs token 注册及 provider。未进行凭据/Apple 能力配置或真实推送测试。
+- Blocker: 尚未确认 APNs .p8 密钥/Key ID 是否已备好及 App ID Push Notifications 能力；未读取任何私钥、未改变 Apple 配置。Mac provider、原生 token 注册和冷启动路由仍未实现。现有 iOS 插件不路由远程推送，且本地 show 在 OS completion 前 resolve；下一阶段需自有原生桥，不把当前 invoke 回执等同于 OS 接收。
+- Unblock condition: 用户确认 Apple 推送资源是否已具备及本机配置授权；按结果继续原生/provider 实现与端到端验证。
 
 ### [ ] T-006 — 端到端与性能验收
 
@@ -227,6 +227,8 @@
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
+
+- 2026-09-08 18:55: 本地阶段已提交 5260dfc。T-005 核对原生边界后 blocked，准备询问 Apple 推送资源与配置授权；不把尚未编写的 APNs provider 描述为只差开关。用户工作区其他修改保持不动。
 
 - 2026-09-08 18:50: T-002/T-003/T-004 本地实现和组件验证完成；新增 T-008 索引性能任务并验证完成。T-005 开始代码/原生边界设计，APNs 及点击定位尚未实现，未读取私钥或修改 Apple 能力。
 - 2026-09-08 18:50: iPhone 最终候选安装/启动成功；准备只提交本地阶段，保留所有无关未提交工作。实机未采到真实左滑展开，留 T-006。
