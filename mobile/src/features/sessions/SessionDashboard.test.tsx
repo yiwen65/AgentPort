@@ -35,7 +35,7 @@ describe("V2 Session workspace", () => {
   beforeEach(async () => { localStorage.clear(); await i18n.changeLanguage("en-US"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
-  it("coalesces repeated explicit refreshes into one current and one trailing snapshot", async () => {
+  it("ignores repeated refresh clicks while showing busy, then finishes silently", async () => {
     const remote = client();
     render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
     await screen.findByRole("button", { name: "Approval task" });
@@ -47,10 +47,125 @@ describe("V2 Session workspace", () => {
     for (let i = 0; i < 8; i++) fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     const lists = () => vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.list");
     expect(lists()).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Refresh" })).toHaveAttribute("aria-busy", "true");
     await act(async () => finish([]));
-    expect(lists()).toHaveLength(2);
-    await act(async () => finish([]));
-    expect(lists()).toHaveLength(2);
+    expect(lists()).toHaveLength(1);
+    expect(remote.connect).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("uses the same button to reconnect and then refresh exactly once", async () => {
+    const remote = client();
+    vi.mocked(remote.listHostProfiles).mockResolvedValue([{ ...hosts[0], connectionState: "disconnected" }]);
+    let emit: Parameters<RemoteClient["onConnectionState"]>[0] = () => {};
+    vi.mocked(remote.onConnectionState).mockImplementation(async listener => { emit = listener; return async () => {}; });
+    let finish!: () => void;
+    vi.mocked(remote.connect).mockImplementation(() => new Promise(resolve => { finish = () => resolve({ profileId: "host-1" } as any); }));
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    const refresh = await screen.findByRole("button", { name: "Refresh" });
+    await waitFor(() => expect(refresh).toBeEnabled());
+    fireEvent.click(refresh); fireEvent.click(refresh);
+    expect(remote.connect).toHaveBeenCalledExactlyOnceWith("host-1");
+    expect(refresh).toHaveAttribute("aria-busy", "true");
+    expect(vi.mocked(remote.request).mock.calls.some(([, method]) => method === "session.list")).toBe(false);
+    act(() => emit({ profileId: "host-1", state: "connected" }));
+    await act(async () => finish());
+    await screen.findByRole("button", { name: "Approval task" });
+    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.list")).toHaveLength(1);
+    expect(refresh).toBeEnabled();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(remote.disconnect).not.toHaveBeenCalled();
+  });
+
+  it.each(["connecting", "reconnecting"] as const)("does not start another connection while the host is %s", async connectionState => {
+    const remote = client();
+    vi.mocked(remote.listHostProfiles).mockResolvedValue([{ ...hosts[0], connectionState }]);
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await screen.findByRole("combobox", { name: "Current device" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).toHaveAttribute("aria-busy", "true"));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(remote.connect).not.toHaveBeenCalled();
+    expect(remote.request).not.toHaveBeenCalled();
+  });
+
+  it("keeps old rows on failure and exposes only one quiet inline retry action", async () => {
+    const remote = client();
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await screen.findByRole("button", { name: "Approval task" });
+    const original = vi.mocked(remote.request).getMockImplementation()!;
+    vi.mocked(remote.request).mockImplementation((...args) => args[1] === "session.list" ? Promise.reject(new Error("technical transport detail")) : original(...args));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    const retry = await screen.findByRole("button", { name: "Update failed. Tap to retry" });
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.queryByText(/technical transport detail/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Approval task" })).toBeInTheDocument();
+    vi.mocked(remote.request).mockImplementation(original);
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(remote.connect).not.toHaveBeenCalled();
+  });
+
+  it("lets the failure line retry a failed connection without extra prompts", async () => {
+    const remote = client();
+    vi.mocked(remote.listHostProfiles).mockResolvedValue([{ ...hosts[0], connectionState: "failed" }]);
+    vi.mocked(remote.connect).mockRejectedValueOnce(new Error("SSH refused")).mockResolvedValue({ profileId: "host-1" } as any);
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Update failed. Tap to retry" }));
+    await screen.findByRole("button", { name: "Approval task" });
+    expect(remote.connect).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled());
+    expect(remote.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it("releases a failed connect spinner even without a final platform state event", async () => {
+    const remote = client();
+    vi.mocked(remote.listHostProfiles).mockResolvedValue([{ ...hosts[0], connectionState: "disconnected" }]);
+    let emit: Parameters<RemoteClient["onConnectionState"]>[0] = () => {};
+    vi.mocked(remote.onConnectionState).mockImplementation(async listener => { emit = listener; return async () => {}; });
+    vi.mocked(remote.connect).mockImplementation(async () => { emit({ profileId: "host-1", state: "connecting" }); throw new Error("failed"); });
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await screen.findByRole("button", { name: "Update failed. Tap to retry" });
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled();
+  });
+
+  it("does not revive a connection when a newer disconnect overtakes the connect reply", async () => {
+    const remote = client();
+    vi.mocked(remote.listHostProfiles).mockResolvedValue([{ ...hosts[0], connectionState: "disconnected" }]);
+    let emit: Parameters<RemoteClient["onConnectionState"]>[0] = () => {};
+    vi.mocked(remote.onConnectionState).mockImplementation(async listener => { emit = listener; return async () => {}; });
+    let finish!: () => void;
+    vi.mocked(remote.connect).mockImplementation(() => new Promise(resolve => { finish = () => resolve({ profileId: "host-1" } as any); }));
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    act(() => emit({ profileId: "host-1", state: "disconnected" }));
+    await act(async () => finish());
+    await screen.findByRole("button", { name: "Update failed. Tap to retry" });
+    expect(vi.mocked(remote.request).mock.calls.some(([, method]) => method === "session.list")).toBe(false);
+  });
+
+  it("does not refresh a previous device after its pending reconnect finishes", async () => {
+    const remote = client();
+    vi.mocked(remote.listHostProfiles).mockResolvedValue([{ ...hosts[0], connectionState: "disconnected" }, hosts[1]]);
+    let finish!: () => void;
+    vi.mocked(remote.connect).mockImplementation(() => new Promise(resolve => { finish = () => resolve({ profileId: "host-1" } as any); }));
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Current device" }), { target: { value: "host-2" } });
+    await screen.findByRole("button", { name: "Laptop task" });
+    await act(async () => finish());
+    expect(vi.mocked(remote.request).mock.calls.some(([host, method]) => host === "host-1" && method === "session.list")).toBe(false);
+    expect(screen.getByRole("button", { name: "Laptop task" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled();
   });
 
   it("does not overlap slow periodic snapshots or starve their results", async () => {

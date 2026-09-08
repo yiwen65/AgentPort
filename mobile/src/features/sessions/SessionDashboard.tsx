@@ -7,7 +7,7 @@ import { AgentIcon } from "../../components/AgentIcons";
 import { Modal } from "../../components/Modal";
 import "./dashboard.css";
 import { useTranslation } from "react-i18next";
-import type { ConnectionState, HostProfileSummary, RemoteClient } from "../../protocol/remoteClient";
+import type { ConnectionState, HostProfileSummary, RemoteClient, RemoteConnectionStateEvent } from "../../protocol/remoteClient";
 import { deliverAttentionNotifications, SystemNotificationSink } from "./attentionNotifications";
 import { activeAgentSessions, orderedVisibleAgents, quickStartParams, type SessionLayout } from "./sessionModel";
 import type { AgentPreferences, AttentionCursor, AttentionPollResult, OpenSession, ProjectSummary, SessionSummary, SupportedAgent } from "./types";
@@ -182,6 +182,10 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   const [rowActions, setRowActions] = useState<{ hostId: string; session: SessionSummary }>();
   const refreshEpoch = useRef(0);
   const refreshes = useRef(new Map<string, { again: boolean; promise: Promise<void> }>());
+  const manualUpdates = useRef(new Set<string>());
+  const [updatingHosts, setUpdatingHosts] = useState(new Set<string>());
+  const [updateErrorHost, setUpdateErrorHost] = useState<string>();
+  const connectionEvents = useRef(new Map<string, RemoteConnectionStateEvent>());
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState !== "hidden");
   const visible = dashboardActive && pageVisible;
   const visibleRef = useRef(visible);
@@ -220,6 +224,8 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   workspaceRef.current = workspace;
 
   const selectedHost = hosts.find((host) => host.id === selectedDeviceId);
+  const updateBusy = updatingHosts.has(selectedDeviceId) || selectedHost?.connectionState === "connecting" || selectedHost?.connectionState === "reconnecting";
+  const updateFailed = Boolean(snapshot?.error || updateErrorHost === selectedDeviceId);
 
   const refreshDeviceOnce = useCallback(async (deviceId: string) => {
     if (!deviceId) return;
@@ -233,6 +239,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
       ]);
       if (!mounted.current || deviceId !== selectedDeviceRef.current || epoch !== refreshEpoch.current) return;
       setSnapshot({ sessions, projects, agents, preferences, cached: false });
+      setUpdateErrorHost(current => current === deviceId ? undefined : current);
     } catch (error) {
       if (!mounted.current || deviceId !== selectedDeviceRef.current || epoch !== refreshEpoch.current) return;
       setSnapshot((current) => ({
@@ -265,14 +272,53 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     return entry.promise;
   }, [refreshDeviceOnce]);
 
+  // One explicit action: connected -> read; offline -> connect then read.
+  // Keep the lock in a ref so repeated taps cannot race React's next render.
+  const updateSelectedDevice = async () => {
+    const deviceId = selectedDeviceId;
+    const before = connectionEvents.current.get(deviceId);
+    const phase = before?.state ?? selectedHost?.connectionState;
+    if (!selectedHost || manualUpdates.current.has(deviceId) || phase === "connecting" || phase === "reconnecting") return;
+    manualUpdates.current.add(deviceId);
+    setUpdatingHosts(new Set(manualUpdates.current));
+    setUpdateErrorHost(undefined);
+    try {
+      if (phase !== "connected") {
+        await client.connect(deviceId);
+        if (!mounted.current) return;
+        const after = connectionEvents.current.get(deviceId);
+        // An older connect reply cannot overwrite a newer transport failure.
+        if (after && after !== before && after.state !== "connected" && after.state !== "connecting") throw new Error("Connection changed during update");
+        connectionEvents.current.set(deviceId, { profileId: deviceId, state: "connected" });
+        setHosts(current => current.map(host => host.id === deviceId ? { ...host, connectionState: "connected" } : host));
+      }
+      if (mounted.current && selectedDeviceRef.current === deviceId) await refreshDevice(deviceId, false);
+    } catch {
+      if (!mounted.current) return;
+      const latest = connectionEvents.current.get(deviceId);
+      // A rejected connect must release the spinner even if the platform did
+      // not deliver its final failed event. Preserve any newer terminal state.
+      if (phase !== "connected" && (!latest || latest === before || latest.state === "connecting")) {
+        connectionEvents.current.set(deviceId, { profileId: deviceId, state: "failed" });
+        setHosts(current => current.map(host => host.id === deviceId ? { ...host, connectionState: "failed" } : host));
+      }
+      if (selectedDeviceRef.current === deviceId) setUpdateErrorHost(deviceId);
+    } finally {
+      manualUpdates.current.delete(deviceId);
+      if (mounted.current) setUpdatingHosts(new Set(manualUpdates.current));
+    }
+  };
+
   useEffect(() => {
     mounted.current = true;
     let cancelled = false;
     let unsubscribe: (() => Promise<void>) | undefined;
     const phases = new Map<string, ConnectionState>();
+    connectionEvents.current.clear();
     void client.onConnectionState(event => {
       if (cancelled) return;
       phases.set(event.profileId, event.state);
+      connectionEvents.current.set(event.profileId, event);
       setHosts(current => current.map(host => host.id === event.profileId ? { ...host, connectionState: event.state } : host));
     }).then(value => { if (cancelled) void value(); else unsubscribe = value; });
     void client.listHostProfiles().then(profiles => {
@@ -295,12 +341,13 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     setWorkspace(restored);
     if (restored.scrollTop > 0) window.requestAnimationFrame(() => window.scrollTo({ top: restored.scrollTop, behavior: "auto" }));
     setSnapshot(undefined);
+    setUpdateErrorHost(undefined);
     setRowActions(undefined);
   }, [selectedDeviceId]);
 
   useEffect(() => {
     if (selectedHost?.connectionState === "connected") {
-      if (visible) void refreshDevice(selectedDeviceId);
+      if (visible && !manualUpdates.current.has(selectedDeviceId)) void refreshDevice(selectedDeviceId);
     } else setSnapshot(current => current ? { ...current, cached: true } : current);
   }, [selectedDeviceId, selectedHost?.connectionState, refreshDevice, visible]);
 
@@ -502,7 +549,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         </label>
         <span className="toolbar-spacer" />
         <button type="button" className="toolbar-icon-button" disabled={!selectedHost} onClick={() => updateWorkspace({ ...workspace, recentOpen: true })} aria-label={t("dashboard.recent")}><Icon name="clock" />{recent.length > 0 ? <span className="toolbar-attention" aria-hidden="true" /> : null}</button>
-        <button type="button" className="toolbar-icon-button" disabled={!selectedDeviceId} onClick={() => void refreshDevice(selectedDeviceId)} aria-label={t("dashboard.refresh")}><Icon name="refresh" /></button>
+        <button type="button" className="toolbar-icon-button toolbar-refresh" disabled={!selectedDeviceId || updateBusy} aria-busy={updateBusy} onClick={() => void updateSelectedDevice()} aria-label={t("dashboard.refresh")}><Icon name="refresh" /></button>
         <button
           type="button"
           className={`toolbar-icon-button activity-toggle${workspace.layout === "active" ? " is-active" : ""}`}
@@ -522,8 +569,8 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
 
       {loading ? <div className="state-card" role="status">{t("dashboard.loading")}</div> : null}
       {!loading && hosts.length === 0 ? <div className="state-card" role="status">{t("dashboard.noHosts")}</div> : null}
-      {selectedHost && selectedHost.connectionState !== "connected" ? <div className="state-note" role="status">{t(`status.${selectedHost.connectionState as ConnectionState}`)} — {t("dashboard.cached")}</div> : null}
-      {snapshot?.error ? <p className="inline-error" role="alert">{snapshot.error}</p> : null}
+      {selectedHost && selectedHost.connectionState !== "connected" && !updateFailed && !updateBusy ? <div className="state-note" role="status">{t(`status.${selectedHost.connectionState as ConnectionState}`)} — {t("dashboard.cached")}</div> : null}
+      {updateFailed && !updateBusy ? <p className="dashboard-refresh-error" role="alert"><button type="button" onClick={() => void updateSelectedDevice()}>{t("dashboard.updateFailed")}</button></p> : null}
       {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
       {notificationError ? <p className="state-note" role="status">{notificationError}</p> : null}
 
