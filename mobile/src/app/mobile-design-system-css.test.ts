@@ -18,6 +18,19 @@ function contrast(first: string, second: string) {
 }
 
 describe("mobile semantic design system", () => {
+  it("disables native selection and callouts for app chrome, including body-level portals", () => {
+    expect(styles).toMatch(/body\s*\{[^}]*-webkit-user-select:\s*none;[^}]*user-select:\s*none;[^}]*-webkit-touch-callout:\s*none;/s);
+  });
+
+  it("keeps native selection and paste menus available in editable fields", () => {
+    expect(styles).toMatch(/input, textarea, \[contenteditable=\"true\"\], \[contenteditable=\"plaintext-only\"\]\s*\{[^}]*-webkit-user-select:\s*text;[^}]*user-select:\s*text;[^}]*-webkit-touch-callout:\s*default;/s);
+  });
+
+  it("preserves copyable fingerprints and xterm's own selection surface", () => {
+    expect(styles).toMatch(/\.fingerprint\s*\{[^}]*-webkit-user-select:\s*all;[^}]*user-select:\s*all;[^}]*-webkit-touch-callout:\s*default;/s);
+    expect(terminalStyles).toMatch(/\.mobile-terminal-surface\s*\{[^}]*-webkit-user-select:\s*text;[^}]*user-select:\s*text;/s);
+  });
+
   it("limits action-sheet close-button sizing to the direct header child", () => {
     expect(styles).not.toContain(".terminal-actions-sheet > header button");
     expect(styles).toContain(".terminal-actions-sheet > header > button");

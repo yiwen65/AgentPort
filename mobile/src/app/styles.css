@@ -13,7 +13,15 @@
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 html, body, #root { min-height: 100%; margin: 0; }
-body { min-width: 320px; overflow-x: hidden; background: var(--bg); font-size: 17px; line-height: 1.4; }
+/* App chrome is not a document. Cover body-level modal portals as well as
+   #root, without cancelling touch events needed by controls or xterm. */
+body { min-width: 320px; overflow-x: hidden; background: var(--bg); font-size: 17px; line-height: 1.4; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+/* Keep iOS editing, paste, and selection (including xterm's helper textarea). */
+input, textarea, [contenteditable="true"], [contenteditable="plaintext-only"] {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
 html.terminal-visible, body.terminal-visible { height: 100%; overflow: hidden; overscroll-behavior: none; }
 body.terminal-visible #root { height: 100%; overflow: hidden; }
 body.terminal-visible .main-content { visibility: hidden; pointer-events: none; }
@@ -89,7 +97,7 @@ textarea { resize: vertical; overflow-wrap: anywhere; }
 .modal-actions { margin-top: 22px; }
 .modal-actions > .primary-button { border: 0; background: var(--accent); }
 .danger-button { color: white !important; border-color: var(--danger-fill, var(--danger)) !important; background: var(--danger-fill, var(--danger)) !important; font-weight: 700; }
-.fingerprint { display: block; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); overflow-wrap: anywhere; user-select: all; }
+.fingerprint { display: block; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); overflow-wrap: anywhere; -webkit-user-select: all; user-select: all; -webkit-touch-callout: default; }
 .file-field { display: grid; gap: 8px; margin-top: 14px; color: var(--muted); font-size: 15px; font-weight: 600; }
 .check-row { display: flex; align-items: flex-start; gap: 10px; margin: 14px 0; line-height: 1.4; }
 .check-row input { width: 22px; min-height: 22px; flex: 0 0 auto; }
