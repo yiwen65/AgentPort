@@ -409,12 +409,12 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
       const current = await client.request<SessionSummary[]>(entry.hostId, "session.list", { includeArchived: false });
       if (!mounted.current || !workspaceRef.current.recentOpen) return;
       const session = current.find(item => item.id === entry.sessionId);
-      if (!session) throw new Error(t("dashboard.notificationSessionUnavailable"));
+      if (!session) return; // Keep the notification dismissible without an unavailable-Session warning.
       onOpenSession({ hostProfileId: host.id, hostName: host.name, session });
       updateWorkspace({ ...workspaceRef.current, recentOpen: false });
     } catch (failure) { if (mounted.current) setActionError(errorText(failure)); }
     finally { recentOpening.current = false; if (mounted.current) setOpeningRecent(undefined); }
-  }, [client, hosts, onOpenSession, t, updateWorkspace]);
+  }, [client, hosts, onOpenSession, updateWorkspace]);
 
   const showSessionActions = useCallback((session: SessionSummary) => {
     updateWorkspace({ ...workspaceRef.current, recentOpen: false });

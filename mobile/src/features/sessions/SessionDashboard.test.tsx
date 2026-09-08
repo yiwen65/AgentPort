@@ -5,6 +5,7 @@ import { i18n } from "../../i18n";
 import type { RemoteClient } from "../../protocol/remoteClient";
 import * as badges from "./SessionStateBadge";
 import { SessionDashboard } from "./SessionDashboard";
+import { AttentionInbox } from "./attentionInbox";
 
 const hosts = [
   { id: "host-1", name: "Studio", hostname: "studio.local", port: 22, username: "dev", preferredTransport: "ssh" as const, connectionState: "connected" as const, lastConnectedAt: null, lastError: null },
@@ -282,6 +283,22 @@ describe("V2 Session workspace", () => {
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     fireEvent(document, new Event("visibilitychange"));
     await waitFor(() => expect(screen.getByRole("button", { name: "Recent sessions" }).querySelector(".toolbar-attention")).not.toBeNull());
+  });
+
+  it("silently keeps an unavailable Session notification for manual dismissal", async () => {
+    new AttentionInbox("host-1").ingest({ events: [{ sessionId: "missing", runId: "r", kind: "turn_completed",
+      cursor: { sessionId: "missing", runOrdinal: 1, sequence: 1, occurredAt: "2026-09-08T00:00:00Z" } }] }, new Map([["missing", "Old task"]]));
+    const remote = client();
+    const onOpenSession = vi.fn();
+    render(<SessionDashboard client={remote} onOpenSession={onOpenSession} />);
+    await screen.findByRole("button", { name: "Approval task" });
+    fireEvent.click(screen.getByRole("button", { name: "Recent sessions" }));
+    const row = screen.getByRole("button", { name: /Old task.*Turn completed/ });
+    await act(async () => { fireEvent.click(row); });
+    expect(onOpenSession).not.toHaveBeenCalled();
+    expect(screen.queryByText("This Session is no longer available. You can still remove its notification.")).not.toBeInTheDocument();
+    expect(row).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove notification for Old task" })).toBeInTheDocument();
   });
 
   it("offers the row action menu via keyboard without opening the terminal", async () => {
