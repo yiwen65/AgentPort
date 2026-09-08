@@ -1,4 +1,8 @@
 .recent-message-list { list-style: none; margin: 0; padding: 0; }
+.recent-sheet > header { flex-wrap: wrap; }
+.recent-header-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.recent-sheet .recent-clear-all { width: auto; min-width: 44px; padding: 0 10px; font-size: 14px; color: var(--text); }
+.recent-sheet .recent-clear-all:disabled { opacity: .4; }
 .recent-message { position: relative; overflow: hidden; border-radius: 14px; margin: 8px 0; background: var(--panel); max-height: 220px; transition: max-height 180ms ease, margin 180ms ease, opacity 180ms ease; }
 .recent-message.is-removing { max-height: 0; margin-block: 0; opacity: 0; }
 .recent-dismiss { position: absolute; inset: 0 0 0 auto; width: 80px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; border: 0; background: #bd3345; color: #fff; font-size: 12px; }

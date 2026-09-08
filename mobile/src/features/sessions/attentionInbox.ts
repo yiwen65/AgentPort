@@ -95,11 +95,25 @@ export class AttentionInbox {
   acknowledge(sessionId: string, cursor: Receipt): boolean {
     const previous = this.state.receipts[sessionId];
     if (previous && !newer(cursor, previous)) return false;
+    return this.acknowledgeMany([{ sessionId, runOrdinal: cursor.runOrdinal, sequence: cursor.sequence }]);
+  }
+  acknowledgeMany(displayed: readonly (Receipt & { sessionId: string })[]): boolean {
+    if (!displayed.length) return false;
     const entries = { ...this.state.entries };
-    if (entries[sessionId] && !newer(entries[sessionId], cursor)) delete entries[sessionId];
-    // Acknowledgement is local and works offline. Never call Session deletion.
-    this.commit({ ...this.state, entries, receipts: { ...this.state.receipts, [sessionId]: cursor },
-      pending: this.state.pending.filter(event => event.sessionId !== sessionId || newer(event, cursor)) });
+    const receipts = { ...this.state.receipts };
+    const confirmed = new Set<string>();
+    for (const cursor of displayed) {
+      const previous = receipts[cursor.sessionId];
+      if (previous && !newer(cursor, previous)) continue;
+      receipts[cursor.sessionId] = { runOrdinal: cursor.runOrdinal, sequence: cursor.sequence };
+      if (entries[cursor.sessionId] && !newer(entries[cursor.sessionId], cursor)) delete entries[cursor.sessionId];
+      confirmed.add(cursor.sessionId);
+    }
+    if (!confirmed.size) return false;
+    // One local transaction per Host, not a write per row. Confirm only the
+    // displayed cursors; a newer arrival must survive Clear all.
+    this.commit({ ...this.state, entries, receipts,
+      pending: this.state.pending.filter(event => !confirmed.has(event.sessionId) || newer(event, receipts[event.sessionId])) });
     return true;
   }
   async deliver(sink: AttentionNotificationSink): Promise<void> {

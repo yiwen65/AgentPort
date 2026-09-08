@@ -93,5 +93,18 @@ export function useAttentionInbox(client: RemoteClient, hosts: HostProfileSummar
     try { if (box(hostId).acknowledge(sessionId, cursor)) publish(); report(hostId); }
     catch (failure) { report(hostId, failure); }
   }, [box, publish, report]);
-  return { entries, error, acknowledge };
+  const clearAll = useCallback(() => {
+    const displayed = new Map<string, InboxEntry[]>();
+    for (const entry of entries) {
+      const group = displayed.get(entry.hostId) ?? [];
+      group.push(entry); displayed.set(entry.hostId, group);
+    }
+    let changed = false;
+    for (const [hostId, group] of displayed) {
+      try { changed = box(hostId).acknowledgeMany(group) || changed; report(hostId); }
+      catch (failure) { report(hostId, failure); }
+    }
+    if (changed) publish();
+  }, [entries, box, report, publish]);
+  return { entries, error, acknowledge, clearAll };
 }

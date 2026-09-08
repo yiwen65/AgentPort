@@ -285,6 +285,25 @@ describe("V2 Session workspace", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Recent sessions" }).querySelector(".toolbar-attention")).not.toBeNull());
   });
 
+  it("clears all Recent messages across devices without any remote Session mutations", async () => {
+    for (const hostId of ["host-1", "host-2"]) {
+      new AttentionInbox(hostId).ingest({ events: [{ sessionId: "s", runId: "r", kind: "turn_completed",
+        cursor: { sessionId: "s", runOrdinal: 1, sequence: 1, occurredAt: "2026-09-08T00:00:00Z" } }] });
+    }
+    const remote = client(); const onOpenSession = vi.fn();
+    render(<SessionDashboard client={remote} onOpenSession={onOpenSession} />);
+    await screen.findByRole("button", { name: "Approval task" });
+    fireEvent.click(screen.getByRole("button", { name: "Recent sessions" }));
+    const clear = screen.getByRole("button", { name: "Clear all" });
+    vi.mocked(remote.request).mockClear();
+    fireEvent.click(clear);
+    expect(screen.getByText("No pending completions or input requests.")).toBeInTheDocument();
+    expect(clear).toBeDisabled(); expect(onOpenSession).not.toHaveBeenCalled();
+    expect(remote.request).not.toHaveBeenCalled();
+    expect(new AttentionInbox("host-1").entries).toHaveLength(0);
+    expect(new AttentionInbox("host-2").entries).toHaveLength(0);
+  });
+
   it("silently keeps an unavailable Session notification for manual dismissal", async () => {
     new AttentionInbox("host-1").ingest({ events: [{ sessionId: "missing", runId: "r", kind: "turn_completed",
       cursor: { sessionId: "missing", runOrdinal: 1, sequence: 1, occurredAt: "2026-09-08T00:00:00Z" } }] }, new Map([["missing", "Old task"]]));

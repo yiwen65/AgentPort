@@ -27,6 +27,42 @@ describe("durable device-local attention inbox", () => {
     inbox.ingest(page(event(1, "s", 2)));
     expect(inbox.entries[0].runOrdinal).toBe(2);
   });
+  it("keeps only the latest notification for a Session across kinds and runs", () => {
+    const inbox = new AttentionInbox("h");
+    inbox.ingest(page(event(1), { ...event(2), kind: "approval_requested" }));
+    expect(inbox.entries).toHaveLength(1);
+    expect(inbox.entries[0].kind).toBe("approval_requested");
+    inbox.ingest(page(event(3), event(1)));
+    expect(inbox.entries).toHaveLength(1);
+    expect(inbox.entries[0]).toMatchObject({ sequence: 3, kind: "turn_completed" });
+    inbox.ingest(page({ ...event(1, "s", 2), kind: "approval_requested" }));
+    expect(new AttentionInbox("h").entries).toEqual([expect.objectContaining({ runOrdinal: 2, sequence: 1, kind: "approval_requested" })]);
+  });
+  it("clears a displayed batch in one write while preserving newer unseen messages", () => {
+    const inbox = new AttentionInbox("h"); inbox.ingest(page());
+    inbox.ingest(page(event(1, "a"), event(1, "b")));
+    const displayed = inbox.entries;
+    inbox.ingest(page(event(2, "a")));
+    const writes = vi.spyOn(Storage.prototype, "setItem");
+    try {
+      inbox.acknowledgeMany(displayed);
+      expect(writes).toHaveBeenCalledOnce();
+      expect(inbox.entries).toEqual([expect.objectContaining({ sessionId: "a", sequence: 2 })]);
+      expect(inbox.pendingCount).toBe(1);
+      inbox.acknowledgeMany(inbox.entries);
+      expect(inbox.entries).toHaveLength(0);
+      expect(new AttentionInbox("h").entries).toHaveLength(0);
+      inbox.ingest(page(event(2, "b")));
+      expect(inbox.entries).toEqual([expect.objectContaining({ sessionId: "b", sequence: 2 })]);
+    } finally { writes.mockRestore(); }
+  });
+  it("keeps the entire batch when clearing cannot be persisted", () => {
+    const setItem = vi.fn(); const inbox = new AttentionInbox("h", { getItem: () => null, setItem });
+    inbox.ingest(page(event(1, "a"), event(1, "b")));
+    setItem.mockImplementation(() => { throw new Error("quota"); });
+    expect(() => inbox.acknowledgeMany(inbox.entries)).toThrow("quota");
+    expect(inbox.entries).toHaveLength(2);
+  });
   it("does not let one host acknowledgement affect another", () => {
     const a = new AttentionInbox("a"), b = new AttentionInbox("b");
     a.ingest(page(event(1))); b.ingest(page(event(1)));

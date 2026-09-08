@@ -219,7 +219,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   workspaceRef.current = workspace;
 
   const selectedHost = hosts.find((host) => host.id === selectedDeviceId);
-  const { entries: recent, error: notificationError, acknowledge } = useAttentionInbox(client, hosts, pageVisible);
+  const { entries: recent, error: notificationError, acknowledge, clearAll } = useAttentionInbox(client, hosts, pageVisible);
   const updateBusy = updatingHosts.has(selectedDeviceId) || selectedHost?.connectionState === "connecting" || selectedHost?.connectionState === "reconnecting";
   const updateFailed = Boolean(snapshot?.error || updateErrorHost === selectedDeviceId);
 
@@ -552,7 +552,10 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
 
       {workspace.recentOpen ? <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) updateWorkspace({ ...workspace, recentOpen: false }); }}>
         <section className="modal-sheet recent-sheet" role="dialog" aria-modal="true" aria-labelledby="recent-title">
-          <header><h2 id="recent-title">{t("dashboard.recent")}</h2><button type="button" aria-label={t("common.close")} onClick={() => updateWorkspace({ ...workspace, recentOpen: false })}>×</button></header>
+          <header><h2 id="recent-title">{t("dashboard.recent")}</h2><div className="recent-header-actions">
+            <button type="button" className="recent-clear-all" disabled={recent.length === 0} onClick={clearAll}>{t("dashboard.clearRecent")}</button>
+            <button type="button" aria-label={t("common.close")} onClick={() => updateWorkspace({ ...workspace, recentOpen: false })}>×</button>
+          </div></header>
           {recent.length === 0 ? <p role="status">{t("dashboard.noRecent")}</p> : null}
           <RecentNotifications entries={recent} hosts={hosts} opening={openingRecent} onOpen={openRecent} onDismiss={dismissRecent} />
         </section>
