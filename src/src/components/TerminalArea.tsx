@@ -378,6 +378,7 @@ function TerminalPane({
         (scrolledUp ? " scrolled-up" : "") +
         (dropActive ? " drop-target" : "")
       }
+      data-terminal-session-id={sessionId}
       onWheelCapture={(event: WheelEvent<HTMLDivElement>) => {
         if (!visible || event.deltaY >= 0) return;
         const buffer = getHandle(sessionId)?.term.buffer.active;

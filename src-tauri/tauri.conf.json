@@ -16,7 +16,7 @@
         "title": "AgentPort",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "dragDropEnabled": false,
+        "dragDropEnabled": true,
         "transparent": true,
         "width": 1200,
         "height": 800,

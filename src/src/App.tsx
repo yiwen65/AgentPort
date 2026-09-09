@@ -48,12 +48,14 @@ import {
 import {
   applyTerminalLanguage,
   getHandle,
+  insertTextIntoTerminal,
   pruneHandles,
   scrollToBottom,
 } from "./terminals";
 import { handleFontZoomKey, initFontZoom } from "./fontZoom";
 import { piTerminalShortcutSequence } from "./piTerminalShortcuts";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import TopBar from "./components/TopBar";
 import Sidebar from "./components/Sidebar";
 import TooltipHost from "./components/Tooltip";
@@ -63,6 +65,7 @@ import { ConfirmDialogHost, PromptDialogHost } from "./components/Dialogs";
 import { applyUiLanguage, i18n } from "./i18n";
 import { TERMINAL_LAYOUT_STORAGE_KEY } from "./paneLayout";
 import { paneShortcutAction } from "./paneShortcuts";
+import { formatTerminalReference } from "./terminalDrop";
 
 const TerminalArea = lazy(() => import("./components/TerminalArea"));
 const NewSessionDialog = lazy(() => import("./components/NewSessionDialog"));
@@ -78,6 +81,13 @@ const CommandPalette = lazy(() => import("./components/CommandPalette"));
 const BranchPickerDialog = lazy(() => import("./components/BranchPickerDialog"));
 const Onboarding = lazy(() => import("./components/Onboarding"));
 const GitCenter = lazy(() => import("./components/GitCenter"));
+
+function terminalSessionAtPhysicalPosition(position: { x: number; y: number }): string | null {
+  const scale = window.devicePixelRatio || 1;
+  const element = document.elementFromPoint(position.x / scale, position.y / scale);
+  const pane = element?.closest<HTMLElement>("[data-terminal-session-id]");
+  return pane?.dataset.terminalSessionId ?? null;
+}
 
 function hasPersistedTerminalLayout(): boolean {
   try {
@@ -577,6 +587,25 @@ export default function App() {
   useBoot();
   useHotkeys();
   useWindowDragClass();
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void getCurrentWebview().onDragDropEvent((event) => {
+      if (event.payload.type !== "drop") return;
+      const sessionId = terminalSessionAtPhysicalPosition(event.payload.position);
+      if (!sessionId) return;
+      const session = findSession(getState().projects, sessionId);
+      const paths = event.payload.paths.filter((path) => path.startsWith("/"));
+      if (!session || paths.length === 0) return;
+      const text = paths.map((path) => formatTerminalReference(path, false, session.adapter)).join("");
+      if (!insertTextIntoTerminal(sessionId, text)) {
+        toast(i18n.t("shell:ui.document.dropFailed"), "error");
+      }
+    }).then((value) => {
+      if (disposed) value(); else unlisten = value;
+    }).catch(() => undefined);
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
   useEffect(() => {
     noteActiveSessionForGitCenter(activeSessionId);
   }, [activeSessionId]);
