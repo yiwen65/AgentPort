@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mac-only, isolated review-host pairing portal. No generic command/IPC endpoint.
+"""macOS/Linux isolated review-host pairing portal. No generic command/IPC endpoint.
 
 Run as the dedicated review account, behind a TLS proxy, on loopback only.
 A review Host intentionally grants terminal execution as that account. This
@@ -21,6 +21,7 @@ import secrets
 import socket
 import stat
 import struct
+import sys
 import threading
 import time
 import urllib.parse
@@ -39,6 +40,22 @@ def private_path(path, directory=False):
     return path
 
 
+def verify_peer(s):
+    # A private pathname alone cannot prove the connected server's identity.
+    if sys.platform == "darwin":
+        uid, gid = ctypes.c_uint(), ctypes.c_uint()
+        if ctypes.CDLL(None).getpeereid(s.fileno(), ctypes.byref(uid), ctypes.byref(gid)):
+            raise Unavailable("Cannot verify connector owner")
+        peer_uid = uid.value
+    elif sys.platform == "linux":
+        credentials = s.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        _, peer_uid, _ = struct.unpack("3i", credentials)
+    else:
+        raise Unavailable("Unsupported peer credential platform")
+    if peer_uid != os.getuid():
+        raise Unavailable("Wrong connector owner")
+
+
 def ipc(directory, request):
     directory = private_path(directory, directory=True)
     target = directory / "control.sock"
@@ -51,10 +68,7 @@ def ipc(directory, request):
     with socket.socket(socket.AF_UNIX) as s:
         s.settimeout(5)
         s.connect(str(target))
-        # macOS getpeereid: don't trust a pathname check alone.
-        uid, gid = ctypes.c_uint(), ctypes.c_uint()
-        if ctypes.CDLL(None).getpeereid(s.fileno(), ctypes.byref(uid), ctypes.byref(gid)) or uid.value != os.getuid():
-            raise Unavailable("Wrong connector owner")
+        verify_peer(s)
         s.sendall(struct.pack("!I", len(payload)) + payload)
         def receive(n):
             result = bytearray()

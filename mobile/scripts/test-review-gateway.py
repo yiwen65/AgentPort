@@ -216,6 +216,22 @@ class GatewayTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             gateway.private_path(link)
 
+    def test_linux_peer_uid_is_checked(self):
+        from unittest.mock import Mock, patch
+        peer = Mock()
+        peer.getsockopt.return_value = struct.pack('3i', 123, os.getuid(), 456)
+        with patch.object(gateway.sys, 'platform', 'linux'), patch.object(socket, 'SO_PEERCRED', 17, create=True):
+            gateway.verify_peer(peer)
+            peer.getsockopt.assert_called_with(socket.SOL_SOCKET, 17, 12)
+            peer.getsockopt.return_value = struct.pack('3i', 123, os.getuid() + 1, 456)
+            with self.assertRaises(gateway.Unavailable):
+                gateway.verify_peer(peer)
+
+    def test_peer_check_fails_closed_on_unknown_platform(self):
+        from unittest.mock import Mock, patch
+        with patch.object(gateway.sys, 'platform', 'unknown'), self.assertRaises(gateway.Unavailable):
+            gateway.verify_peer(Mock())
+
     def test_real_same_user_unix_ipc_framing_and_peer(self):
         path = self.temp.name + '/control.sock'
         listener = socket.socket(socket.AF_UNIX)

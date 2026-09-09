@@ -3,7 +3,7 @@
 - Created: 2026-09-09
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: submitted; network-condition acceptance remains unverified
+- Overall status: blocked
 - Source: 用户确认独立标准测试账号、文件隔离、受保护配对网页和仅供网页的 HTTPS 公网入口；系统授权、费用另行确认。
 
 <!-- task-doc-section:background-goal -->
@@ -150,6 +150,46 @@
 - Blocker: None.
 - Unblock condition: None.
 
+### [x] T-006 — Linux 独立部署与恢复验证
+- Status: done
+- Owner: coordinator
+- Objective: 将审核演示服务迁移至全天在线 Linux，不再依赖工作 Mac。
+- Inputs and prerequisites: 用户提供 FRP SSH 入口并明确授权迁移及 sudo；只读检查确认 Ubuntu 24.04 x86_64、Docker/Rust/DBus/Secret Service 依赖、Tailscale Funnel 能力。
+- Scope or files: review_gateway.py 的 Linux peer 校验、回归测试、专用隔离容器与演示数据、启动与恢复脚本；不修改既有 FRP 和业务服务。
+- Expected output: 原生 Linux CLI/Host/connector/Relay、受保护 HTTPS 配对入口与自动恢复。
+- Dependencies: T-003, T-005.
+- Execution steps:
+  1. 适配并测试 Linux 同 UID peer 校验，构建原生组件。
+  2. 使用无私人挂载、无 Docker socket、非 root 的专用容器运行演示与独立 Secret Service；仅回环发布服务端口。
+  3. 验证公网认证/配对/终端及容器重建恢复，确认原服务不受影响。
+- Acceptance criteria:
+  - Linux 真实握手和终端可用，独立身份持久化，自动恢复配置生效；私人数据不挂入演示环境。
+- Verification method:
+  - 双平台 gateway 测试、native build、容器配置检查、公网与原生连接探针、任务容器恢复测试。
+- Validation evidence: macOS/Linux gateway 各 25 项测试通过；Linux CLI/Host/connector/Relay/remote-bridge 构建成功。独立容器 UID/GID 1550、只读 rootfs、cap-drop ALL、no-new-privileges、1GB/1CPU/pids256，仅挂专用 HOME 卷且宿主仅回环发布端口。私有 DBus/Secret Service 持久化正常：创建任何 Host 前，用 acceptance-no-shell 标记启动、配对临时身份，然后移除标记并仅重启该新容器；原身份可经公网 WSS 重连，自动创建 running Review Terminal。最终原生探针等待真实 Result（不是 Accepted），验证 project.list/session.list/attach/input/poll/detach，输出 LINUX_REVIEW_OK。仅撤销探针自己的身份后公网重连返回 Unauthorized，剩余设备 0。docker/tailscaled enabled，restart unless-stopped；未重启整台 Linux。原有三个业务容器仍 Up 3 weeks。
+- Blocker: None.
+- Unblock condition: None.
+
+### [x] T-007 — 审核入口切换与 Mac 退役
+- Status: done
+- Owner: coordinator
+- Objective: 让审核员使用 Linux，并解除工作 Mac 在线要求。
+- Inputs and prerequisites: T-006 通过。
+- Scope or files: 已提交 build 0.1.0 (1) 的审核说明、任务专属公网路由和配对授权。
+- Expected output: ASC 新入口保存验证，Mac 演示入口停止；原 Host/Session 均不终止。
+- Dependencies: T-006.
+- Execution steps:
+  1. 验证 ASC 等待审核时是否可编辑说明；不可编辑则暂停切换，不擅自撤回审核。
+  2. 更新新 HTTPS 地址，保留专用网站登录并验证保存。
+  3. 关闭仅任务所有的 Mac 公网路由并撤销旧演示设备，不杀任何 Host。
+- Acceptance criteria:
+  - 审核资料指向已验收的新入口；Mac 不再承担审核流量。
+- Verification method:
+  - ASC 保存后重新读取、HTTPS/WSS 探针与旧入口关闭确认。
+- Validation evidence: ASC build 0.1.0 (1) 仍 Waiting for Review；What to Test 更新为 https://linux.tailbb155a.ts.net，专用网站账号不变。Save 显示 Saved，刷新页面后通过 Chrome AXTextArea 重新读取并与预期 1230 字符说明精确比较通过；未撤回审核。确认 Mac Funnel 443 仅有任务两条路由后关闭，No serve config、旧 HTTPS 探针 000；撤销旧演示设备 1→0。仅停止 Mac 的任务 gateway 和 caffeinate，未停止任何 Host/原有 Session。Linux HTTPS 匿名 401、connector connected，旧 Mac 不再承担审核流量。
+- Blocker: None.
+- Unblock condition: None.
+
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
 先验证入口及权限，再隔离负向测试，然后服务安全测试，最后真实外网完整闭环。不用仅在本机 curl 的结果代替外网验收。仅将本任务文件加入提交。
@@ -160,6 +200,8 @@
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
+- 2026-09-09: T-006/T-007 done。Linux 独立运行及公网终端闭环通过，容器恢复与配对持久化通过；已将 ASC 审核说明切换到 Linux 并刷新重读验证，未撤回 Waiting for Review。旧 Mac 公网入口关闭、旧设备撤销，仅停止任务网页与防睡眠进程。T-004 保留手机网络条件的历史验收缺口，不阻塞用户已授权的迁移；不宣称本次完成 iPhone 蜂窝实测。
+- 2026-09-09: 用户确认演示正常并补齐联系信息，已授权提交且 ASC 显示 Waiting for Review。随后提供 Linux FRP SSH 入口；只读检查通过，用户明确授权执行迁移。T-006 in_progress，T-007 pending；不更改现有业务服务，不重启 Linux 整机，不撤回 Apple 审核。
 - 2026-09-09: 用户确认实施；串行执行。T-001 开始：Tailscale 在线但无入口；非交互 sudo 不可用。
 - 2026-09-09: T-001 blocked。原生 Funnel CLI 确认 tailnet 未启用功能，已提供官方启用页面；探测退出，No serve config，无对外服务。等待用户完成账户和系统授权。
 - 2026-09-09: 用户启用 Funnel，443 探针经两条本机出口返回预期内容；已撤销临时配置。用户允许管理员弹窗，但调用 180 秒超时；未创建任何账号/组/密码。提供 /tmp/agentport-create-review-account.py 供用户在终端 sudo 执行；仅通过 py_compile，实际创建尚未验证，不算完成 T-002。
@@ -175,7 +217,8 @@
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
-- Result: TestFlight external beta submitted; T-004 network-condition evidence remains partial.
+- Result: partial
 - Evidence: T-001、T-002、T-003、T-005 通过；gateway 23 项测试、用户配对/连接、独立身份实际撤销和公网入口恢复均有证据。用户确认正常后明确授权审核提交，并自行补齐联系信息。2026-09-09 16:03 CST，App Store Connect external 组显示 1 Build，0.1.0 (1) 为 Waiting for Review；尚非审核通过。
 - Submission details: 补齐英文 Beta App Description、What to Test（含 HTTPS 入口和 120 秒粘贴配对流程），专用网站账号只填入 Sign-In Information。电话按 Apple 错误提示补中国 +86 国际格式后提交成功。未提供 macOS 密码、私人 Host 或 Relay token；未开启公开邀请链接，组内仍为 0 Testers。提交前 demo connector connected、HTTPS 匿名 401。
-- Limitations: T-004 仍缺明确蜂窝/独立网络条件，不以本机探针替代；已提交 Apple 外部测试审核而非公开发布。无重启后自动恢复配置，Mac 必须保持运行、接通电源并勿合盖；网页有效期为创建起 7 天，最多 3 个设备、30 次发码尝试。已配对设备不会因网页凭据过期自动撤销。
+- Migration result: T-006、T-007 已完成。Linux 入口 https://linux.tailbb155a.ts.net 已保存到 Apple 审核说明；原公网 WSS 端到端探针验证真实终端输出，容器重启后配对身份保留。Mac 可正常休眠/关机，不再承担审核环境服务。部署目录为 Linux 的 ~/agentport-review-deploy，容器 agentport-review-linux，持久化卷 agentport-review-home；操作说明见 mobile/scripts/review-linux/README.md。
+- Limitations: T-004 仍未明确原 iPhone 蜂窝网络条件，本次 Linux 由 Mac 经公网 HTTPS/WSS 进行原生端到端验收，不宣称新的真机蜂窝测试。已提交的是 Apple 外部测试审核而非公开发布。Linux Docker/tailscaled 已启用开机启动，容器恢复已测，未整机重启（避免打断现有服务）。新网页有效期至 2026-09-16 16:40:22 CST，最多 3 个设备、30 次发码尝试；需在审核延迟时人工续期。已配对设备不会因网页过期自动撤销。旧手机 Mac 配对已撤销，测试新环境须重新取码配对。

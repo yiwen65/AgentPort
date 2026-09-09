@@ -1,7 +1,9 @@
 # Isolated TestFlight review access
 
-`review_gateway.py` is a small, Mac-only pairing portal for a dedicated
+`review_gateway.py` is a small macOS/Linux pairing portal for a dedicated
 `agentportreview` account. It is not a general Relay admin API or an OS sandbox.
+The active review environment has migrated to Linux; see
+`scripts/review-linux/README.md` for the isolated container and restart procedure.
 The authoritative deployment/acceptance status is in
 `docs/tasks/2026-09-09-testflight-review-access-task.md`.
 
@@ -74,7 +76,8 @@ Connect when explicitly authorized. Never supply the macOS account password.
   configuration are **local operator operations**, not public HTTP routes.
 - Repeated requests reuse a still-waiting invitation. A lost response cannot
   trigger blind mutation replay: wait for the unknown invitation to expire.
-- Each IPC call verifies the private socket and its actual same-UID peer, uses
+- Each IPC call verifies the private socket and its actual same-UID peer
+  (`getpeereid` on macOS, `SO_PEERCRED` on Linux), uses
   bounded frames and a timeout. HTTP worker count, body size and idle time are
   bounded. Do not expose Python's listener directly on all interfaces.
 
