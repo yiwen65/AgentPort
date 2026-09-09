@@ -27,6 +27,7 @@ const rendererMocks = vi.hoisted(() => {
     readRecoveryLogContext: vi.fn(),
     resizePty: vi.fn().mockResolvedValue(undefined),
     sendInput: vi.fn().mockResolvedValue(undefined),
+    listProjects: vi.fn(),
   };
   const config = { canvasShouldFail: false, openShouldFail: false };
   class FakeTerminal {
@@ -334,6 +335,7 @@ describe("terminal renderer", () => {
     rendererMocks.apiMock.attachSession.mockReset().mockResolvedValue({
       attachmentId: 1, childAlive: true, hostPid: 42, logBytes: 0, status: null, agentSessionId: null,
     });
+    rendererMocks.apiMock.listProjects.mockReset();
     vi.mocked(bytesToB64).mockReturnValue("encoded-input");
     rendererMocks.apiMock.clipboardHasImage.mockResolvedValue(false);
     setState({
@@ -373,6 +375,7 @@ describe("terminal renderer", () => {
       rendererMode: "dom",
       rendererFallbackReason: null,
     });
+    rendererMocks.apiMock.listProjects.mockResolvedValue(getState().projects);
   });
 
   it("uses Unicode 11 width tables for modern emoji and combining text", () => {
@@ -1524,6 +1527,7 @@ describe("terminal renderer", () => {
   it("automatically retries a transient Host connection failure and clears its error", async () => {
     vi.useFakeTimers();
     rendererMocks.apiMock.attachSession.mockRejectedValueOnce({ code: "host_connection_failed", technicalDetail: "host not reachable" });
+    rendererMocks.apiMock.listProjects.mockResolvedValueOnce(getState().projects);
     mountTerminal("renderer-test", document.createElement("div"));
     await vi.advanceTimersByTimeAsync(0);
     expect(getState().runtime["renderer-test"]?.detached).toBe(true);
@@ -1532,6 +1536,22 @@ describe("terminal renderer", () => {
     expect(getState().runtime["renderer-test"]).toMatchObject({ attached: true, detached: false, error: null, errorMessage: null });
     await vi.advanceTimersByTimeAsync(10000);
     expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes a stale running session after Host attach failure stops being live", async () => {
+    vi.useFakeTimers();
+    rendererMocks.apiMock.attachSession.mockRejectedValue(new Error("host not reachable"));
+    rendererMocks.apiMock.listProjects.mockResolvedValueOnce(getState().projects.map(project => ({
+      ...project,
+      sessions: project.sessions.map(session => ({ ...session, lifecycle: "interrupted" as const, hostAlive: false })),
+    })));
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(() => expect(rendererMocks.apiMock.listProjects).toHaveBeenCalledTimes(1));
+    expect(getState().projects[0].sessions[0]).toMatchObject({ lifecycle: "interrupted", hostAlive: false });
+    expect(getState().runtime["renderer-test"]?.detached).toBe(false);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledTimes(1);
   });
 
   it("reconnects a lost channel from its contiguous cursor without clearing the terminal", async () => {

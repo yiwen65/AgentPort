@@ -29,8 +29,11 @@ import { PiStartupNoticeFilter } from "./piStartupNotice";
 import { newerSessionRun, staleSessionRun, type SessionRun } from "./sessionRun";
 import {
   announce,
+  applyProjectsSnapshot,
+  beginProjectsSnapshotRequest,
   findSession,
   getState,
+  isCurrentProjectsSnapshotRequest,
   openContextMenu,
   patchRuntime,
   patchSession,
@@ -2700,6 +2703,23 @@ function clearAttachmentRetry(handle: TermHandle, resetAttempts = true) {
   if (resetAttempts) handle.reconnectAttempt = 0;
 }
 
+async function refreshProjectsAfterAttachFailure(sessionId: string) {
+  const request = beginProjectsSnapshotRequest();
+  try {
+    const projects = await api.listProjects(getState().activeSessionId);
+    if (!isCurrentProjectsSnapshotRequest(request)) return;
+    applyProjectsSnapshot(projects);
+    const session = findSession(projects, sessionId);
+    if (session && session.lifecycle !== "running" && session.lifecycle !== "creating") {
+      const handle = handles.get(sessionId);
+      if (handle) clearAttachmentRetry(handle);
+      patchRuntime(sessionId, { detached: false, attaching: false, attached: false });
+    }
+  } catch {
+    // Keep the explicit transport error visible; automatic retries will keep probing.
+  }
+}
+
 function shouldRetryAttachment(handle: TermHandle): boolean {
   const state = getState();
   const runtime = state.runtime[handle.sessionId];
@@ -2865,6 +2885,7 @@ export async function attachHandle(
       error: errorMessage ? runtimeMessageText(errorMessage) : errorText(e),
       errorMessage,
     });
+    void refreshProjectsAfterAttachFailure(sessionId);
   } finally {
     if (handles.get(sessionId) === handle && generation === handle.generation) {
       handle.attaching = false;
