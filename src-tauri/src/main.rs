@@ -848,8 +848,12 @@ async fn boot(state: State<'_, AppState>, app: AppHandle) -> std::result::Result
 #[tauri::command]
 async fn list_projects(
     state: State<'_, AppState>,
+    app: AppHandle,
     active_session: Option<String>,
 ) -> std::result::Result<Vec<ProjectView>, String> {
+    // Remote create/restart does not pass through the desktop launch commands.
+    // Discover its monitor on refresh too, not only during GUI boot.
+    ensure_live_session_monitors(&app, &state);
     let paths = state.paths.clone();
     run_backend_blocking(move || {
         let db = Db::open(&paths).map_err(|error| error.to_string())?;
@@ -1694,7 +1698,15 @@ async fn attach_session(
         recovery_target,
         true,
     )
-    .map_err(|error| runtime_command_error_from_core(error, "host_connection_failed"))?;
+    .map_err(|error| {
+        // A failed renderer attach must reconcile durable exit/PID facts before
+        // its follow-up project refresh. Socket failure alone is not death.
+        reconcile_monitor_liveness(&app, &state.paths, &state.db, &session_id);
+        runtime_command_error_from_core(error, "host_connection_failed")
+    })?;
+    if let Ok(session) = state.db.get_session(&session_id) {
+        ensure_session_monitor(&app, &state, &session);
+    }
     let host = HostIdentity::from_attach(&info);
     if !host_identity_is_current(&state.db, &session_id, &host) {
         return Err(runtime_command_error(
