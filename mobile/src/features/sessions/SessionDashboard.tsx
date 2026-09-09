@@ -229,24 +229,40 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   const refreshDeviceOnce = useCallback(async (deviceId: string) => {
     if (!deviceId) return;
     const epoch = ++refreshEpoch.current;
+    const sessionsRequest = client.request<SessionSummary[]>(deviceId, "session.list", { includeArchived: false });
+    const metadataRequest = Promise.all([
+      client.request<ProjectSummary[]>(deviceId, "project.list", {}),
+      client.request<SupportedAgent[]>(deviceId, "agent.supported", {}),
+      client.request<AgentPreferences>(deviceId, "agent.preferences", {}),
+    ]).then(
+      value => ({ ok: true as const, value }),
+      error => ({ ok: false as const, error }),
+    );
     try {
-      const [sessions, projects, agents, preferences] = await Promise.all([
-        client.request<SessionSummary[]>(deviceId, "session.list", { includeArchived: false }),
-        client.request<ProjectSummary[]>(deviceId, "project.list", {}),
-        client.request<SupportedAgent[]>(deviceId, "agent.supported", {}),
-        client.request<AgentPreferences>(deviceId, "agent.preferences", {}),
-      ]);
+      const sessions = await sessionsRequest;
       if (!mounted.current || deviceId !== selectedDeviceRef.current || epoch !== refreshEpoch.current) return;
-      setSnapshot({ deviceId, sessions, projects, agents, preferences, cached: false });
+      setSnapshot((current) => ({
+        deviceId,
+        sessions,
+        projects: current?.deviceId === deviceId ? current.projects : [],
+        agents: current?.deviceId === deviceId ? current.agents : [],
+        preferences: current?.deviceId === deviceId ? current.preferences : undefined,
+        cached: false,
+      }));
       setUpdateErrorHost(current => current === deviceId ? undefined : current);
+      const metadata = await metadataRequest;
+      if (!metadata.ok) throw metadata.error;
+      if (!mounted.current || deviceId !== selectedDeviceRef.current || epoch !== refreshEpoch.current) return;
+      const [projects, agents, preferences] = metadata.value;
+      setSnapshot({ deviceId, sessions, projects, agents, preferences, cached: false });
     } catch (error) {
       if (!mounted.current || deviceId !== selectedDeviceRef.current || epoch !== refreshEpoch.current) return;
       setSnapshot((current) => ({
         deviceId,
-        sessions: current?.sessions ?? [],
-        projects: current?.projects ?? [],
-        agents: current?.agents ?? [],
-        preferences: current?.preferences,
+        sessions: current?.deviceId === deviceId ? current.sessions : [],
+        projects: current?.deviceId === deviceId ? current.projects : [],
+        agents: current?.deviceId === deviceId ? current.agents : [],
+        preferences: current?.deviceId === deviceId ? current.preferences : undefined,
         cached: true,
         error: errorText(error),
       }));

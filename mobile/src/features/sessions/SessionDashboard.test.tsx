@@ -96,6 +96,19 @@ describe("V2 Session workspace", () => {
     expect(JSON.parse(localStorage.getItem(key)!).scrollTop).toBe(240);
   });
 
+  it("renders refreshed Session rows before slower metadata requests finish", async () => {
+    const remote = client();
+    const original = vi.mocked(remote.request).getMockImplementation()!;
+    let finishProject!: () => void;
+    vi.mocked(remote.request).mockImplementation((...args) => args[1] === "project.list"
+      ? new Promise(resolve => { finishProject = async () => resolve(await original(...args)); }) : original(...args));
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await screen.findByRole("button", { name: "Approval task" });
+    expect(screen.queryByRole("button", { name: "AgentPort" })).toBeNull();
+    await act(async () => finishProject());
+    expect(await screen.findByRole("button", { name: "AgentPort" })).toBeInTheDocument();
+  });
+
   it("ignores repeated refresh clicks while showing busy, then finishes silently", async () => {
     const remote = client();
     render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
