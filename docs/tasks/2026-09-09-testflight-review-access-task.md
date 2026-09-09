@@ -200,6 +200,7 @@
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
+- 2026-09-09 17:41 CST: 用户明确要求撤回并重新提交，以避免旧审核资料快照仍指向 Mac。执行 Remove from Review 后，external 组确认 0.1.0 (1) 为 Ready to Submit；从 external 组移除再重新添加同一构建（未 Expire Build，未重传 IPA）。提交前核对 Linux URL、120 秒配对步骤，并通过 AX 在内存中比较审核登录字段与专用网站凭据（只输出匹配布尔值，不输出密码）。重新 Submit for Review 后确认 external 组 1 Build、0 Testers，0.1.0 (1) 再次 Waiting for Review。Linux HTTPS 匿名 401 正常，Mac 无需恢复入口。
 - 2026-09-09: T-006/T-007 done。Linux 独立运行及公网终端闭环通过，容器恢复与配对持久化通过；已将 ASC 审核说明切换到 Linux 并刷新重读验证，未撤回 Waiting for Review。旧 Mac 公网入口关闭、旧设备撤销，仅停止任务网页与防睡眠进程。T-004 保留手机网络条件的历史验收缺口，不阻塞用户已授权的迁移；不宣称本次完成 iPhone 蜂窝实测。
 - 2026-09-09: 用户确认演示正常并补齐联系信息，已授权提交且 ASC 显示 Waiting for Review。随后提供 Linux FRP SSH 入口；只读检查通过，用户明确授权执行迁移。T-006 in_progress，T-007 pending；不更改现有业务服务，不重启 Linux 整机，不撤回 Apple 审核。
 - 2026-09-09: 用户确认实施；串行执行。T-001 开始：Tailscale 在线但无入口；非交互 sudo 不可用。
@@ -220,5 +221,6 @@
 - Result: partial
 - Evidence: T-001、T-002、T-003、T-005 通过；gateway 23 项测试、用户配对/连接、独立身份实际撤销和公网入口恢复均有证据。用户确认正常后明确授权审核提交，并自行补齐联系信息。2026-09-09 16:03 CST，App Store Connect external 组显示 1 Build，0.1.0 (1) 为 Waiting for Review；尚非审核通过。
 - Submission details: 补齐英文 Beta App Description、What to Test（含 HTTPS 入口和 120 秒粘贴配对流程），专用网站账号只填入 Sign-In Information。电话按 Apple 错误提示补中国 +86 国际格式后提交成功。未提供 macOS 密码、私人 Host 或 Relay token；未开启公开邀请链接，组内仍为 0 Testers。提交前 demo connector connected、HTTPS 匿名 401。
+- Resubmission result: 用户随后明确授权撤回并重新提交；2026-09-09 17:41 CST，已使用 Linux 审核说明和核对过的专用网站凭据重新提交同一 build 0.1.0 (1)，状态 Waiting for Review。不是审核通过，可能重新排队。
 - Migration result: T-006、T-007 已完成。Linux 入口 https://linux.tailbb155a.ts.net 已保存到 Apple 审核说明；原公网 WSS 端到端探针验证真实终端输出，容器重启后配对身份保留。Mac 可正常休眠/关机，不再承担审核环境服务。部署目录为 Linux 的 ~/agentport-review-deploy，容器 agentport-review-linux，持久化卷 agentport-review-home；操作说明见 mobile/scripts/review-linux/README.md。
 - Limitations: T-004 仍未明确原 iPhone 蜂窝网络条件，本次 Linux 由 Mac 经公网 HTTPS/WSS 进行原生端到端验收，不宣称新的真机蜂窝测试。已提交的是 Apple 外部测试审核而非公开发布。Linux Docker/tailscaled 已启用开机启动，容器恢复已测，未整机重启（避免打断现有服务）。新网页有效期至 2026-09-16 16:40:22 CST，最多 3 个设备、30 次发码尝试；需在审核延迟时人工续期。已配对设备不会因网页过期自动撤销。旧手机 Mac 配对已撤销，测试新环境须重新取码配对。
