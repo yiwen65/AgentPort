@@ -961,6 +961,24 @@ impl<'a> HostManager<'a> {
         (imported, skipped)
     }
 
+    /// Read current Host facts without subscribing to output or requiring a GUI
+    /// monitor to have projected them into SQLite. Never changes lifecycle.
+    pub fn live_snapshot(&self, session_id: &str) -> Result<AttachInfo> {
+        let (_client, mut info, binding) =
+            self.connect_bound_host_with_resume(session_id, 0, None, false)?;
+        if self.db.session_host_binding(session_id)? != binding {
+            return Err(CoreError::Host("host binding changed during snapshot".into()));
+        }
+        // The envelope is authenticated above; an additive status snapshot must
+        // also belong to that exact Session/run before it can reach a caller.
+        info.current_status = info.current_status.filter(|event| {
+            event.session_id == session_id
+                && event.run_id == info.run_id
+                && event.run_ordinal == info.run_ordinal
+        });
+        Ok(info)
+    }
+
     /// True when a host answers the handshake for this session.
     pub fn is_alive(&self, session_id: &str) -> bool {
         self.connect_bound_host(session_id).is_ok()

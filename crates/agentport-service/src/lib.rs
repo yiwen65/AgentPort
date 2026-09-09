@@ -1983,15 +1983,7 @@ impl RemoteService for CoreService {
         self.db
             .list_session_projections(include_archived)?
             .into_iter()
-            .map(|projection| {
-                let host_alive = manager.is_alive(&projection.session.id);
-                Ok(SessionSummary::from_projection(
-                    projection.session,
-                    projection.latest_status,
-                    projection.unread_attention,
-                    host_alive,
-                ))
-            })
+            .map(|projection| Ok(live_session_summary(&manager, projection)))
             .collect()
     }
 
@@ -3474,13 +3466,31 @@ fn session_summary(paths: &AppPaths, db: &Db, session_id: &str) -> Result<Sessio
         .into_iter()
         .find(|projection| projection.session.id == session_id)
         .ok_or_else(|| agentport_core::CoreError::NotFound(format!("session {session_id}")))?;
-    let host_alive = (HostManager { paths, db }).is_alive(session_id);
-    Ok(SessionSummary::from_projection(
+    Ok(live_session_summary(&HostManager { paths, db }, projection))
+}
+
+fn live_session_summary(
+    manager: &HostManager<'_>,
+    projection: agentport_core::db::SessionProjection,
+) -> SessionSummary {
+    // The existing liveness handshake already carries current status.
+    // Mobile-created Sessions may have no desktop DB monitor at all.
+    let live = manager.live_snapshot(&projection.session.id).ok();
+    let host_alive = live.is_some();
+    let mut latest_status = projection.latest_status;
+    if let Some(status) = live.and_then(|info| info.current_status) {
+        if latest_status.as_ref().is_none_or(|stored| {
+            (status.run_ordinal, status.sequence) >= (stored.run_ordinal, stored.sequence)
+        }) {
+            latest_status = Some(status);
+        }
+    }
+    SessionSummary::from_projection(
         projection.session,
-        projection.latest_status,
+        latest_status,
         projection.unread_attention,
         host_alive,
-    ))
+    )
 }
 
 fn core_project_snapshot(params: ProjectRemoveParams) -> Result<CoreProjectRemovalSnapshot> {
@@ -4523,6 +4533,88 @@ mod tests {
             ),
             Err(ServiceError::PreconditionFailed)
         ));
+    }
+
+    #[test]
+    fn session_list_reads_live_status_without_a_desktop_monitor() {
+        use agentport_core::models::{AgentState, Confidence, StateSource};
+        for (state, persisted, snapshot_run, expected) in [
+            (AgentState::Working, false, "current-run", Some(AgentState::Working)),
+            (AgentState::Idle, false, "current-run", Some(AgentState::Idle)),
+            (AgentState::NeedsInput, false, "current-run", Some(AgentState::NeedsInput)),
+            (AgentState::Working, true, "current-run", Some(AgentState::Working)),
+            (AgentState::Working, false, "wrong-run", None),
+            (AgentState::Working, false, "wrong-session", None),
+            (AgentState::Working, false, "no-snapshot", None),
+            (AgentState::Working, true, "no-snapshot", Some(AgentState::Idle)),
+            (AgentState::Working, true, "newer-db", Some(AgentState::Idle)),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let service = CoreService::open(AppPaths::new(root.path().join("app"))).unwrap();
+            let project = service.add_project(ProjectAddParams {
+                path: root.path().to_string_lossy().into_owned(), name: None,
+            }).unwrap();
+            let id = "ses_live_status";
+            let socket = root.path().join("host.sock");
+            let log = root.path().join("output.log").to_string_lossy().into_owned();
+            service.db.insert_session(&Session {
+                id: id.into(), project_id: project.project.id, worktree_id: None,
+                preset_id: "pre_codex_bypass".into(), title: "Mobile-created".into(),
+                cwd: root.path().to_string_lossy().into_owned(), host_pid: None,
+                host_socket: None, host_token: "fixture-only-token".into(), lifecycle: Lifecycle::Creating,
+                agent_session_id: None, resume_precision: ResumePrecision::Unavailable,
+                log_path: log.clone(), adapter_type: AgentType::Codex,
+                transport: AgentTransport::Pty, command: Vec::new(),
+                permission_mode: PermissionMode::Bypass, pinned_at: None,
+                created_at: Utc::now(), updated_at: Utc::now(), archived_at: None,
+            }).unwrap();
+            let run = service.db.create_session_run(id, "current-run").unwrap();
+            service.db.claim_session_run(id, &run.run_id, run.run_ordinal, &log).unwrap();
+            service.db.bind_session_host_for_run(id, &run.run_id, run.run_ordinal,
+                i64::from(std::process::id()), &socket.to_string_lossy()).unwrap();
+            service.db.update_session_lifecycle(id, Lifecycle::Running).unwrap();
+            let mut event = StatusEvent {
+                session_id: id.into(), run_id: snapshot_run.into(), run_ordinal: run.run_ordinal,
+                sequence: 2, state, source: StateSource::Pty, confidence: Confidence::Medium,
+                evidence: Some("pty:activity".into()), log_cursor: None, occurred_at: Utc::now(),
+            };
+            if persisted {
+                let mut old = event.clone();
+                old.run_id = "current-run".into();
+                old.sequence = if snapshot_run == "newer-db" { 3 } else { 1 };
+                old.state = AgentState::Idle;
+                service.db.record_status_event(&old).unwrap();
+            }
+            let listener = UnixListener::bind(&socket).unwrap();
+            let host = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let hello = read_frame::<ClientFrame>(&mut BufReader::new(stream.try_clone().unwrap())).unwrap().unwrap();
+                assert!(matches!(hello, ClientFrame::Hello { replay_tail_bytes: 0, subscribe_output: false, .. }));
+                event.evidence = Some("fixture:live-status".into());
+                if snapshot_run == "wrong-session" {
+                    event.session_id = "another-session".into();
+                    event.run_id = "current-run".into();
+                } else if snapshot_run == "newer-db" {
+                    event.run_id = "current-run".into();
+                }
+                write_frame(&mut stream, &HostFrame::HelloOk {
+                    protocol: PROTOCOL_VERSION, session_id: id.into(), host_pid: std::process::id(),
+                    child_alive: true, log_bytes: 0, agent_session_id: None,
+                    run_id: run.run_id.clone(), run_ordinal: run.run_ordinal,
+                    current_status: (snapshot_run != "no-snapshot").then_some(event), log_cursor: LogCursor { run_id: run.run_id,
+                        run_ordinal: run.run_ordinal, generation: 0, offset: 0 },
+                    features: Vec::new(), terminal_geometry: None,
+                }).unwrap();
+                // Keep the socket alive until the liveness client drops it.
+                let _ = read_frame::<ClientFrame>(&mut BufReader::new(stream));
+            });
+            let sessions = service.list_sessions(false).unwrap();
+            host.join().unwrap();
+            assert!(sessions[0].host_alive);
+            assert_eq!(sessions[0].latest_status.as_ref().map(|s| s.state.clone()), expected.map(|s| s.as_str().to_string()));
+            // A status read is not a new persisted transition or attention event.
+            assert_eq!(service.db.latest_status(id).unwrap().is_some(), persisted);
+        }
     }
 
     #[test]
