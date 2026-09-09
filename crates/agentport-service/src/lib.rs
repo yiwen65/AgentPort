@@ -2152,6 +2152,12 @@ impl RemoteService for CoreService {
         }
         let repository_lock =
             acquire_session_repository_lock(&initial.cwd).map_err(ServiceError::NotExecutedCore)?;
+        // Mobile receives Host Exit directly, before a desktop reaper may
+        // update the DB. Reconcile matching durable exit/PID evidence before
+        // testing lifecycle; a socket failure alone must not permit Restart.
+        (HostManager { paths: &self.paths, db: &self.db })
+            .reconcile_session_liveness(&params.session_id)
+            .map_err(ServiceError::NotExecutedCore)?;
         let session = self
             .db
             .get_session(&params.session_id)
@@ -4517,6 +4523,62 @@ mod tests {
             ),
             Err(ServiceError::PreconditionFailed)
         ));
+    }
+
+    #[test]
+    fn restart_reconciles_ended_host_before_rejecting_stale_running_state() {
+        // The phone receives Exit directly, while DB lifecycle can remain
+        // Running until the desktop reaper observes it. No Host is launched:
+        // reaching RiskAcknowledgementRequired proves the stale guard cleared.
+        for (case, alive, exit_run, lifecycle, expected) in [
+            ("matching-exit", false, Some("current-run"), Lifecycle::Running, Lifecycle::Exited),
+            ("dead-no-exit", false, None, Lifecycle::Running, Lifecycle::Interrupted),
+            ("live-no-exit", true, None, Lifecycle::Running, Lifecycle::Running),
+            ("live-old-exit", true, Some("old-run"), Lifecycle::Running, Lifecycle::Running),
+            ("creating-no-pid", false, None, Lifecycle::Creating, Lifecycle::Creating),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let service = CoreService::open(AppPaths::new(root.path().join("app"))).unwrap();
+            let project = service.add_project(ProjectAddParams {
+                path: root.path().to_string_lossy().into_owned(), name: Some(case.into()),
+            }).unwrap();
+            let id = "ses_restart_fixture";
+            let dir = service.paths.session_dir(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            let log = dir.join("output.log").to_string_lossy().into_owned();
+            service.db.insert_session(&Session {
+                id: id.into(), project_id: project.project.id, worktree_id: None,
+                preset_id: "pre_codex_bypass".into(), title: case.into(),
+                cwd: root.path().to_string_lossy().into_owned(), host_pid: None,
+                host_socket: None, host_token: "fixture-only-token".into(), lifecycle,
+                agent_session_id: None, resume_precision: ResumePrecision::Unavailable,
+                log_path: log.clone(), adapter_type: AgentType::Codex,
+                transport: AgentTransport::Pty, command: Vec::new(),
+                permission_mode: PermissionMode::Bypass, pinned_at: None,
+                created_at: Utc::now(), updated_at: Utc::now(), archived_at: None,
+            }).unwrap();
+            let run = service.db.create_session_run(id, "current-run").unwrap();
+            service.db.claim_session_run(id, &run.run_id, run.run_ordinal, &log).unwrap();
+            let pid = if alive { i64::from(std::process::id()) } else { i64::from(i32::MAX) };
+            if lifecycle == Lifecycle::Running {
+                assert!(service.db.bind_session_host_for_run(id, &run.run_id, run.run_ordinal, pid, "/tmp/not-a-real-host.sock").unwrap());
+                service.db.update_session_lifecycle(id, lifecycle).unwrap();
+            }
+            if let Some(exit_run) = exit_run {
+                std::fs::write(dir.join("host-state.json"), serde_json::to_vec(&serde_json::json!({
+                    "session_id": id, "host_pid": pid, "run_id": exit_run,
+                    "run_ordinal": run.run_ordinal, "exit_reason": "process_exit",
+                    "exited_at": Utc::now(), "exit_code": 0, "group_cleaned": true,
+                })).unwrap()).unwrap();
+            }
+            let result = service.restart_session(SessionRestartParams { session_id: id.into(), risk_ack: false });
+            if matches!(expected, Lifecycle::Exited | Lifecycle::Interrupted) {
+                assert!(matches!(result, Err(ServiceError::RiskAcknowledgementRequired)), "{case}: {result:?}");
+            } else {
+                assert!(matches!(result, Err(ServiceError::PreconditionFailed)), "{case}: {result:?}");
+            }
+            assert_eq!(service.db.get_session(id).unwrap().lifecycle, expected, "{case}");
+        }
     }
 
     #[test]

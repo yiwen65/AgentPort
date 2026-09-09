@@ -287,3 +287,12 @@
 - Correct approach: Use `Referrer-Policy: same-origin` for this same-site form, retaining exact Origin and CSRF validation and suppressing cross-origin Referer. Do not simply accept null origins or remove CSRF checks.
 - Prevention: Verify the response policy as well as rejection paths, then exercise a real browser form; synthetic HTTP headers cannot establish browser compatibility.
 - Verified by: The response-policy regression failed before the change; after deployment, real form submission issued a new code and the user's device was approved and connected. See `mobile/scripts/test-review-gateway.py` and `mobile/REVIEW_ACCESS.md`.
+
+## `Remote Session restart` — reproduce the missing creator reaper, then reconcile before the lifecycle guard
+
+- Wrong approach: Reproduce Ctrl+C/restart while keeping the creating Bridge alive, or assume a mobile Exit event means the Session row is already terminal.
+- Why it failed: The launcher's detached reaper updates the DB only while its owning process exists. The independent Host survives a Bridge reconnect, so its later Exit can leave a stale Running row that the restart guard rejects.
+- Recognition signal: The phone shows Restart, but the service returns request_not_executed; DB lifecycle is Running while a matching PID/run host-state records exit.
+- Correct approach: Under the restart repository lock, run Core's PID/run-fenced liveness reconciliation, reread the Session, then enforce the existing live/creating/archived guards. Do not blindly Stop, retry, or equate a socket failure with death.
+- Prevention: In isolated native regressions, close only the creating Bridge, reconnect before Ctrl+C, then assert the actual Restart result, new run ordinal and terminal input/output; include live-PID, mismatched-run and creating-without-PID counterexamples.
+- Verified by: The isolated old Bridge returned not_executed with DB Running after Ctrl+C; the fixed bundled Bridge produced run 1→2 and echoed new-run input. The service regression failed before the fix and passes all five cases afterward.
