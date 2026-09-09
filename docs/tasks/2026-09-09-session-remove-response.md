@@ -13,7 +13,7 @@ Desktop already filtered archiving Sidebar rows but retained the selected pane u
 ## Implementation
 
 - Desktop leaves the target pane immediately and selects a remaining Session if necessary. Stop failure restores the previous layout only if selection intent and layout remain unchanged. Delete failure after successful archive refreshes authoritative state rather than resurrecting a live pane.
-- Mobile hides confirmed pending removals, dismisses the confirmation, and shows background-removal status. Pending filters survive stale refresh snapshots until mutation and refresh complete. Failures surface in the dashboard. Host/Session-keyed actions isolate independent menus; an earlier completion cannot close another Session's menu.
+- Mobile hides confirmed pending removals and dismisses the confirmation. Per the user's follow-up, background removal is silent; only failures show a message. Pending filters survive stale refresh snapshots until mutation and refresh complete. Failures surface in the dashboard. Host/Session-keyed actions isolate independent menus; an earlier completion cannot close another Session's menu.
 - Backend archive → verified stop → permanent delete ordering is unchanged. Actual process cleanup can still take approximately three seconds.
 
 ## Verification

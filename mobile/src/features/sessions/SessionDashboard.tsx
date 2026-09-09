@@ -553,7 +553,6 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
       {!loading && hosts.length === 0 ? <div className="state-card" role="status">{t("dashboard.noHosts")}</div> : null}
       {selectedHost && selectedHost.connectionState !== "connected" && !updateFailed && !updateBusy ? <div className="state-note" role="status">{t(`status.${selectedHost.connectionState as ConnectionState}`)} — {t("dashboard.cached")}</div> : null}
       {updateFailed && !updateBusy ? <p className="dashboard-refresh-error" role="alert"><button type="button" onClick={() => void updateSelectedDevice()}>{t("dashboard.updateFailed")}</button></p> : null}
-      {removingSessions.some(key => JSON.parse(key)[0] === selectedDeviceId) ? <p className="state-note" role="status">{t("session.removing")}</p> : null}
       {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
       {notificationError ? <p className="state-note" role="status">{notificationError}</p> : null}
 

@@ -49,7 +49,8 @@ describe("V2 Session workspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approval task" })).not.toBeInTheDocument();
-    expect(screen.getByText("Stopping and removing session in the background…")).toBeInTheDocument();
+    expect(screen.queryByText("Stopping and removing session in the background…")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled());
     expect(screen.queryByRole("button", { name: "Approval task" })).not.toBeInTheDocument();
