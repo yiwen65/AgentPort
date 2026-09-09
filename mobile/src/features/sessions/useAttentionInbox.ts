@@ -1,18 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { HostProfileSummary, RemoteClient } from "../../protocol/remoteClient";
 import { AttentionInbox, type InboxEntry } from "./attentionInbox";
-import { SystemNotificationSink, type AttentionNotificationSink } from "./attentionNotifications";
 import type { AttentionPollResult, SessionSummary } from "./types";
 
 /** Metadata-only incremental fallback. APNs is the background delivery path;
  * never keep a suspended WebView alive to poll. Each Host has one in-flight
  * request, one timer and exponential idle/error backoff (5s..30s / 60s). */
-export function useAttentionInbox(client: RemoteClient, hosts: HostProfileSummary[], visible: boolean,
-  sink?: AttentionNotificationSink) {
+export function useAttentionInbox(client: RemoteClient, hosts: HostProfileSummary[], visible: boolean) {
   const boxes = useRef(new Map<string, AttentionInbox>());
   const [entries, setEntries] = useState<InboxEntry[]>([]);
   const [error, setError] = useState("");
-  const nativeSink = useRef(sink ?? new SystemNotificationSink());
   const errors = useRef(new Map<string, string>());
   const titles = useRef(new Map<string, Map<string, string>>());
   const box = useCallback((host: string) => {
@@ -45,10 +42,6 @@ export function useAttentionInbox(client: RemoteClient, hosts: HostProfileSummar
         let delay = 5_000;
         try {
           const inbox = box(host.id);
-          // Notification denial must not prevent new messages entering Recent.
-          let deliveryError: unknown;
-          try { await inbox.deliver(nativeSink.current); } catch (failure) { deliveryError = failure; }
-          if (controller.signal.aborted) return;
           const result = await client.request<AttentionPollResult>(host.id, "attention.poll",
             { cursor: inbox.cursor ?? null, limit: 64 }, { signal: controller.signal });
           if (controller.signal.aborted) return;
@@ -66,8 +59,6 @@ export function useAttentionInbox(client: RemoteClient, hosts: HostProfileSummar
           // rather than treating every short page as a complete baseline.
           const changed = inbox.ingest(result, names, 64);
           if (changed) publish();
-          if (deliveryError) throw deliveryError;
-          await inbox.deliver(nativeSink.current);
           failures = 0;
           idle = result.events.length ? 0 : Math.min(idle + 1, 3);
           delay = result.events.length === 64 || inbox.pendingCount ? 250 : Math.min(30_000, 5_000 * 2 ** idle);

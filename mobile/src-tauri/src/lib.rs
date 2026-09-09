@@ -31,7 +31,6 @@ fn mobile_scaffold_status() -> ScaffoldStatus {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
             tauri_plugin_keyring_store::Builder::new()

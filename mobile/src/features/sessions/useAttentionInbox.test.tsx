@@ -9,7 +9,7 @@ const makeClient = () => ({ request: vi.fn().mockResolvedValue({ events: [] }) }
 describe("bounded metadata notification reception", () => {
   it("covers all connected hosts with idle backoff, no Session list polling and no hidden work", async () => {
     const client = makeClient();
-    const { rerender } = renderHook(({ visible }) => useAttentionInbox(client, hosts, visible, { notify: vi.fn() }), { initialProps: { visible: true } });
+    const { rerender } = renderHook(({ visible }) => useAttentionInbox(client, hosts, visible), { initialProps: { visible: true } });
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
     const calls = vi.mocked(client.request).mock.calls;
     expect(calls.filter(([id]) => id === "one")).toHaveLength(4);
@@ -30,18 +30,17 @@ describe("bounded metadata notification reception", () => {
     await act(async () => finish({ events: [{ sessionId: "s" }] }));
     expect(result.current.entries).toHaveLength(0);
   });
-  it("denied notifications do not prevent messages entering the local inbox", async () => {
-    const client = makeClient(); const sink = { notify: vi.fn().mockRejectedValue(new Error("denied")) };
+  it("keeps messages in the local inbox without system notification delivery", async () => {
+    const client = makeClient();
     let seq = 0;
     vi.mocked(client.request).mockImplementation(async (_host, method) => {
       if (method === "session.list") return [{ id: "s", title: "Build" }];
       if (!seq++) return { events: [] };
       return { events: [{ sessionId: "s", runId: "r", kind: "turn_completed", cursor: { sessionId: "s", runOrdinal: 1, sequence: seq, occurredAt: "2026-09-08T00:00:00Z" } }] };
     });
-    const { result } = renderHook(() => useAttentionInbox(client, hosts.slice(0, 1), true, sink));
+    const { result } = renderHook(() => useAttentionInbox(client, hosts.slice(0, 1), true));
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     expect(result.current.entries[0].sequence).toBe(3);
-    expect(result.current.error).toBe("denied");
-    expect(sink.notify).toHaveBeenCalled();
+    expect(result.current.error).toBe("");
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeAgentSessions, isSystemNotificationKind, orderedVisibleAgents, quickStartParams, statusClass } from "./sessionModel";
+import { activeAgentSessions, orderedVisibleAgents, quickStartParams, statusClass } from "./sessionModel";
 import type { SessionSummary } from "./types";
 
 function session(id: string, overrides: Partial<SessionSummary> = {}): SessionSummary {
@@ -48,12 +48,6 @@ describe("V2 session model", () => {
     expect(quickStartParams("p", "shell")).toMatchObject({ permission: "native", riskAck: true });
   });
 
-  it("allows system notifications only for desktop AttentionKind values", () => {
-    expect(isSystemNotificationKind("approval_requested")).toBe(true);
-    expect(isSystemNotificationKind("turn_completed")).toBe(true);
-    expect(isSystemNotificationKind("working")).toBe(false);
-    expect(isSystemNotificationKind("failed")).toBe(false);
-  });
 
   it("uses lifecycle first and desktop status state while running", () => {
     expect(statusClass(session("stopped", { lifecycle: "stopped" }))).toBe("stopped");

@@ -59,10 +59,7 @@ export class AttentionInbox {
     const entries = { ...this.state.entries };
     const received = { ...this.state.received };
     const pending = [...this.state.pending];
-    const queued = new Set(pending.map(attentionEventKey));
     let changed = false;
-    const allocated = Number(this.storage.getItem(NEXT_NOTIFICATION_ID) ?? "0");
-    let nextId = allocated;
     for (const item of page.events) {
       if (!["approval_requested", "turn_completed"].includes(item.kind)) continue;
       const event: InboxEntry = { hostId: this.hostId, sessionId: item.sessionId, runId: item.runId,
@@ -76,18 +73,10 @@ export class AttentionInbox {
         entries[event.sessionId] = event;
         changed = true;
       }
-      if (this.state.seeded && !queued.has(attentionEventKey(event))) {
-        if (!Number.isSafeInteger(nextId) || nextId < 0 || nextId >= 2_147_483_647) throw new Error("Notification identifier capacity reached");
-        event.notificationId = ++nextId;
-        pending.push(event); queued.add(attentionEventKey(event));
-      }
     }
     if (Object.keys(entries).length > INBOX_LIMIT || pending.length > DELIVERY_LIMIT) {
       throw new Error("Notification inbox is full; open or dismiss messages to resume syncing");
     }
-    // Reserve IDs before the page commit. A crash can skip IDs but never reuse
-    // another Host's notification ID. Retries retain the persisted same ID.
-    if (nextId !== allocated) this.storage.setItem(NEXT_NOTIFICATION_ID, String(nextId));
     this.commit({ ...this.state, cursor: page.nextCursor ?? this.state.cursor,
       seeded: this.state.seeded || page.events.length < pageSize, entries, received, pending });
     return changed;

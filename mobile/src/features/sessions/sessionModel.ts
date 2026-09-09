@@ -1,4 +1,4 @@
-import type { AgentPreferences, AttentionKind, SessionSummary, SupportedAgent } from "./types";
+import type { AgentPreferences, SessionSummary, SupportedAgent } from "./types";
 
 export type SessionLayout = "projects" | "active";
 
@@ -75,8 +75,4 @@ export function quickStartParams(projectId: string, agent: string): QuickStartPa
 export function statusClass(session: SessionSummary): string {
   if (session.lifecycle !== "running") return session.lifecycle;
   return session.latestStatus?.state ?? "unknown";
-}
-
-export function isSystemNotificationKind(kind: string): kind is AttentionKind {
-  return kind === "approval_requested" || kind === "turn_completed";
 }
