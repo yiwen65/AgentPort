@@ -99,10 +99,26 @@ export function formatTerminalReference(path: string, isDir: boolean, adapter: s
  * silently veto every drop. Accept tree payloads and any plain-text drag;
  * the drop handler still validates that the text is really an absolute path.
  */
+export function dragTypes(dt: DataTransfer): string[] {
+  return Array.from(dt.types ?? []);
+}
+
 export function hasTreeDragPayload(dt: DataTransfer): boolean {
-  const types = Array.from(dt.types ?? []);
+  const types = dragTypes(dt);
   return types.includes(TREE_DND_MIME)
     || types.includes("text/plain")
+    || types.includes("text/uri-list")
+    || types.includes("Files");
+}
+
+/**
+ * File/URI/tree drops must be owned by AgentPort even if WebKit withholds the
+ * path until `drop` (or withholds it entirely). Otherwise the browser default
+ * navigates the WebView to the image/PDF and replaces the app chrome.
+ */
+export function mustHandleTerminalDrop(dt: DataTransfer): boolean {
+  const types = dragTypes(dt);
+  return types.includes(TREE_DND_MIME)
     || types.includes("text/uri-list")
     || types.includes("Files");
 }

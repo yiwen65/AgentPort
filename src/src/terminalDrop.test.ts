@@ -3,6 +3,7 @@ import {
   computeLineRange,
   formatSelectionReference,
   formatTerminalReference,
+  mustHandleTerminalDrop,
   readDragPayload,
   writeDragPayload,
   TREE_DND_MIME,
@@ -52,6 +53,16 @@ describe("tree drag payload round-trip", () => {
       path: "/Users/w/My Docs/报告.md",
       isDir: false,
     });
+  });
+
+  it("owns file-like drops even before a path can be decoded", () => {
+    const fileDrop = { types: ["Files"], getData: () => "", files: [{}] } as unknown as DataTransfer;
+    expect(readDragPayload(fileDrop)).toBeNull();
+    expect(mustHandleTerminalDrop(fileDrop)).toBe(true);
+
+    const textDrop = fakeDataTransfer();
+    textDrop.setData("text/plain", "hello");
+    expect(mustHandleTerminalDrop(textDrop)).toBe(false);
   });
 });
 

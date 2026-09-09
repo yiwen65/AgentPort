@@ -50,6 +50,7 @@ import {
 import {
   dropTreeEntryIntoTerminal,
   hasTreeDragPayload,
+  mustHandleTerminalDrop,
   readDragPayload,
 } from "../terminalDrop";
 import {
@@ -404,10 +405,16 @@ function TerminalPane({
       onDrop={(event) => {
         setDropActive(false);
         if (!visible) return;
+        const ownedDrop = mustHandleTerminalDrop(event.dataTransfer);
         const payload = readDragPayload(event.dataTransfer);
         // Plain non-path text falls through to the native drop, which inserts
-        // the text into the terminal as-is.
-        if (!payload) return;
+        // the text into the terminal as-is. File/URI drops are different: if
+        // WebKit cannot expose a usable local path, suppress the browser's
+        // default image/document navigation instead of letting it replace the app.
+        if (!payload) {
+          if (ownedDrop) event.preventDefault();
+          return;
+        }
         event.preventDefault();
         dropTreeEntryIntoTerminal(sessionId, ses?.adapter ?? "shell", payload);
       }}
