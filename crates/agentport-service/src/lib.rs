@@ -328,6 +328,8 @@ pub struct SessionAttachResult {
     pub run_id: String,
     pub run_ordinal: i64,
     pub terminal_geometry: Option<agentport_core::protocol::TerminalGeometry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen_snapshot: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2497,13 +2499,15 @@ impl RemoteService for CoreService {
         let small_seed = params.subscribe_output
             && params.resume_from.is_none()
             && (1..=65_536).contains(&params.replay_tail_bytes);
-        let (mut client, mut info) = manager.attach_with_resume(
+        let (mut client, mut info) = manager.attach_with_screen_snapshot(
             &params.session_id,
             params.replay_tail_bytes.min(4 * 1024 * 1024),
             resume,
             params.subscribe_output,
+            params.screen_snapshot,
         )?;
         if small_seed
+            && info.screen_snapshot.is_none()
             && !info
                 .features
                 .iter()
@@ -2521,7 +2525,8 @@ impl RemoteService for CoreService {
         }
         let attachment_id = agentport_core::ids::new_id("att");
         let cursor = attach_cursor(&info);
-        let replay_pending = replay_expected(&params);
+        let snapshot_cursor = info.screen_snapshot.as_ref().map(|_| cursor.clone());
+        let replay_pending = replay_expected(&params) || snapshot_cursor.is_some();
         let cutoff = cursor.offset.saturating_sub(params.replay_tail_bytes);
         let mut attachment = Attachment {
             client,
@@ -2532,7 +2537,7 @@ impl RemoteService for CoreService {
             host_exit_seen: false,
             closed: false,
         };
-        if small_seed {
+        if small_seed && info.screen_snapshot.is_none() {
             prepare_terminal_seed(&mut attachment, cutoff)?;
         }
         let result = SessionAttachResult {
@@ -2540,7 +2545,8 @@ impl RemoteService for CoreService {
             session_id: info.session_id,
             child_alive: info.child_alive,
             agent_session_id: info.agent_session_id,
-            cursor: params.resume_from.clone(),
+            cursor: snapshot_cursor.or_else(|| params.resume_from.clone()),
+            screen_snapshot: info.screen_snapshot,
             features: info.features,
             run_id: info.run_id,
             run_ordinal: info.run_ordinal,
@@ -4373,6 +4379,7 @@ mod tests {
                 log_cursor: LogCursor::default(),
                 features: vec![HOST_FEATURE_INPUT_BATCH_V1.into()],
                 terminal_geometry: None,
+                screen_snapshot: None,
             },
         )
         .unwrap();
@@ -4633,7 +4640,7 @@ mod tests {
                     run_id: run.run_id.clone(), run_ordinal: run.run_ordinal,
                     current_status: (snapshot_run != "no-snapshot").then_some(event), log_cursor: LogCursor { run_id: run.run_id,
                         run_ordinal: run.run_ordinal, generation: 0, offset: 0 },
-                    features: Vec::new(), terminal_geometry: None,
+                    features: Vec::new(), terminal_geometry: None, screen_snapshot: None,
                 }).unwrap();
                 // Keep the socket alive until the liveness client drops it.
                 let _ = read_frame::<ClientFrame>(&mut BufReader::new(stream));
@@ -5353,6 +5360,7 @@ mod tests {
                     log_cursor: LogCursor::default(),
                     features: vec![HOST_FEATURE_INPUT_BATCH_V1.into()],
                     terminal_geometry: None,
+                    screen_snapshot: None,
                 },
             )
             .unwrap();
@@ -5491,6 +5499,7 @@ mod tests {
                     log_cursor: LogCursor::default(),
                     features: vec![HOST_FEATURE_INPUT_BATCH_V1.into()],
                     terminal_geometry: None,
+                    screen_snapshot: None,
                 },
             )
             .unwrap();

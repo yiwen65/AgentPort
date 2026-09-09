@@ -35,6 +35,11 @@ const terminalHarness = vi.hoisted(() => ({
   options: undefined as { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown } | undefined,
 }));
 
+vi.mock("./terminalSnapshot", () => ({
+  captureSnapshotState: () => ({ version: 1 }),
+  restoreSnapshotState: vi.fn(),
+}));
+
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: class { fit() { terminalHarness.fitCalls += 1; } },
 }));
@@ -101,7 +106,7 @@ describe("MobileTerminal input accessory", () => {
     view.unmount();
     expect(captured).toBeDefined();
     while (terminalHarness.writesQueue.length) terminalHarness.writesQueue.shift()!();
-    expect(await captured).toEqual({ content: "serialized-screen", cols: 80, rows: 24, pending: [...new TextEncoder().encode("\x1b[38;2;")] });
+    expect(await captured).toEqual({ content: "serialized-screen", cols: 80, rows: 24, pending: [...new TextEncoder().encode("\x1b[38;2;")], state: { version: 1 } });
   });
 
   it("keeps checkpoint geometry until resumed output has drained", async () => {

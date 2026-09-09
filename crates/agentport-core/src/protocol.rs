@@ -27,6 +27,7 @@ pub const HOST_FEATURE_INPUT_BATCH_V1: &str = "input_batch_v1";
 pub const HOST_FEATURE_TERMINAL_GEOMETRY_V1: &str = "terminal_geometry_v1";
 /// A cold replay starts with modes retained independently from the text tail.
 pub const HOST_FEATURE_TERMINAL_SEED_V1: &str = "terminal_seed_v1";
+pub const HOST_FEATURE_TERMINAL_SNAPSHOT_V1: &str = "terminal_snapshot_v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,6 +83,9 @@ pub enum ClientFrame {
         /// default preserves v1 behavior for ordinary terminal clients.
         #[serde(default = "default_subscribe_output")]
         subscribe_output: bool,
+        /// Prefer a complete screen at the Hello cursor on cold/gapped attaches.
+        #[serde(default)]
+        screen_snapshot: bool,
     },
     /// Keystrokes / pasted bytes for the PTY. Session id re-checked.
     Input {
@@ -187,6 +191,8 @@ pub enum HostFrame {
         features: Vec<String>,
         #[serde(default)]
         terminal_geometry: Option<TerminalGeometry>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        screen_snapshot: Option<serde_json::Value>,
     },
     ResizeAck {
         session_id: String,

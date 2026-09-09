@@ -165,6 +165,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
             resume_from,
             replay_target,
             subscribe_output,
+            screen_snapshot,
         })) => (
             protocol,
             session_id,
@@ -173,6 +174,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
             resume_from,
             replay_target,
             subscribe_output,
+            screen_snapshot,
         ),
         Ok(Some(_)) => {
             // Any other first frame is a protocol violation.
@@ -189,6 +191,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
         resume_from,
         replay_target,
         subscribe_output,
+        screen_snapshot,
     ) = hello;
     if protocol != PROTOCOL_VERSION
         || session_id != shared.cfg.session_id
@@ -226,6 +229,13 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
     {
         let _output_guard = shared.output_serial.lock().unwrap();
         let high_water = current_log_cursor(&shared);
+        let snapshot = if screen_snapshot && subscribe_output && replay_target.is_none() {
+            // A retained byte cursor alone cannot prove checkpoint equivalence:
+            // another client may have resized the PTY without producing bytes.
+            // Requested authoritative state therefore also replaces warm resumes.
+            shared.output_tail.lock().unwrap().screen.as_ref().and_then(|screen| screen.snapshot())
+        } else { None };
+        let has_snapshot = snapshot.is_some();
         let mut initial_frames = vec![HostFrame::HelloOk {
             protocol: PROTOCOL_VERSION,
             session_id: shared.cfg.session_id.clone(),
@@ -241,8 +251,10 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                 HOST_FEATURE_INPUT_BATCH_V1.to_string(),
                 HOST_FEATURE_TERMINAL_GEOMETRY_V1.to_string(),
                 HOST_FEATURE_TERMINAL_SEED_V1.to_string(),
+                agentport_core::protocol::HOST_FEATURE_TERMINAL_SNAPSHOT_V1.to_string(),
             ],
             terminal_geometry: Some(shared.terminal_geometry.lock().unwrap().clone()),
+            screen_snapshot: snapshot,
         }];
         if shared.process_suspended.load(Ordering::Acquire) {
             initial_frames.push(HostFrame::ProcessStatus {
@@ -251,7 +263,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                 signal: None,
             });
         }
-        if subscribe_output
+        if !has_snapshot && subscribe_output
             && resume_from.is_none()
             && replay_target.is_none()
             && replay_tail_bytes > 0
@@ -264,7 +276,13 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                 });
             }
         }
-        if subscribe_output
+        if has_snapshot {
+            initial_frames.push(HostFrame::ReplayDone {
+                session_id: shared.cfg.session_id.clone(), cursor: high_water.clone(),
+                offset: high_water.offset as u64, partial_context: false,
+            });
+        }
+        if !has_snapshot && subscribe_output
             && (resume_from.is_some() || replay_target.is_some() || replay_tail_bytes > 0)
         {
             initial_frames.extend(build_replay_frames(
@@ -560,6 +578,7 @@ fn apply_terminal_resize(
     attachment_id: Option<String>,
     orientation: Option<String>,
 ) -> (bool, TerminalGeometry, Option<String>, bool) {
+    let _output_guard = shared.output_serial.lock().unwrap();
     let mut current = shared.terminal_geometry.lock().unwrap();
     let reject = |reason: &str, geometry: &TerminalGeometry| {
         (false, geometry.clone(), Some(reason.to_string()), false)
@@ -621,6 +640,7 @@ fn apply_terminal_resize(
         return reject(reason, &current);
     }
 
+    shared.output_tail.lock().unwrap().resize_screen(cols, rows);
     current.cols = cols;
     current.rows = rows;
     current.source_kind = source_kind;

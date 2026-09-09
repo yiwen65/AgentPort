@@ -1671,6 +1671,7 @@ mod tests {
                 run_id: "run-push".into(),
                 run_ordinal: 1,
                 terminal_geometry: None,
+                screen_snapshot: None,
             })
         }
 

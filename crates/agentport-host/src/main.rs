@@ -62,6 +62,7 @@ use tracing::{error, info, warn};
 
 mod semantic_events;
 mod server;
+mod terminal_screen;
 
 /// Exit codes (contract): 0 clean stop / child exit; 2 config invalid;
 /// 3 pty/spawn failed; 4 socket bind failed. 64 = usage error.
@@ -75,6 +76,7 @@ pub(crate) const LIVE_OUTPUT_TAIL_BYTES: usize = 4 * 1024 * 1024;
 /// suffix of this Host run; bytes before `start_offset` are intentionally gone.
 pub(crate) struct OutputTail {
     terminal_seed: agentport_core::terminal_seed::TerminalSeed,
+    screen: Option<terminal_screen::TerminalScreen>,
     bytes: VecDeque<u8>,
     start_offset: u64,
     end_offset: u64,
@@ -84,13 +86,33 @@ impl OutputTail {
     fn new() -> Self {
         Self {
             terminal_seed: Default::default(),
+            screen: None,
             bytes: VecDeque::with_capacity(LIVE_OUTPUT_TAIL_BYTES),
             start_offset: 0,
             end_offset: 0,
         }
     }
 
+    fn with_screen(cols: u16, rows: u16) -> Self {
+        let mut tail = Self::new();
+        tail.screen = terminal_screen::TerminalScreen::new(cols, rows).map_err(|error| {
+            warn!(%error, "terminal snapshot engine unavailable");
+        }).ok();
+        tail
+    }
+
+    fn resize_screen(&mut self, cols: u16, rows: u16) {
+        if self.screen.as_ref().is_some_and(|screen| screen.resize(cols, rows).is_err()) {
+            self.screen = None;
+            warn!("terminal snapshot engine disabled after resize failure");
+        }
+    }
+
     fn append(&mut self, data: &[u8]) -> u64 {
+        if self.screen.as_ref().is_some_and(|screen| screen.feed(data).is_err()) {
+            self.screen = None;
+            warn!("terminal snapshot engine disabled after bounded parser failure");
+        }
         self.terminal_seed.advance(data);
         let offset = self.end_offset;
         self.end_offset = self.end_offset.saturating_add(data.len() as u64);
@@ -937,7 +959,7 @@ fn run() -> i32 {
         process_suspended: AtomicBool::new(false),
         log_bytes: AtomicU64::new(0),
         log_position: Mutex::new((0, 0)),
-        output_tail: Mutex::new(OutputTail::new()),
+        output_tail: Mutex::new(OutputTail::with_screen(cfg.cols, cfg.rows)),
         output_serial: Mutex::new(()),
         last_output_at: Mutex::new(Instant::now()),
         known_descendants: Mutex::new(vec![]),

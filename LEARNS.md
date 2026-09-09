@@ -314,3 +314,12 @@
 - Correct approach: Build debug sidecars under an explicit host target, stage those isolated artifacts before the GUI build, and compare staged versus GUI-output helpers before installation/signing.
 - Prevention: Run `python3 scripts/test-debug-sidecars.py`; test stale externalBin inputs, contaminated Fresh outputs, and unexpected replacements. Do not downgrade the real DB to make an old helper start.
 - Verified by: The old bundled Bridge failed on a private v14 DB copy but started when only the copy's schema marker was v13. Three build regressions fail before/pass after; the updated signed Bridge opens the real v14 DB, and the existing iPhone pairing completes hello and lists 8 projects without restarting its Connector.
+
+## `embedded xterm Host` — validate bulk ingestion in the actual debug profile
+
+- Wrong approach: Accept a small embedded QuickJS screen test as sufficient evidence that maintaining VT state synchronously will not delay PTY ingestion.
+- Why it failed: The default unoptimized QuickJS C interpreter put the 4 MiB flood beyond the existing monitor test deadline under parallel load; per-ASCII-byte prefix arrays added avoidable work.
+- Recognition signal: `broadcast_evicts_nonreading_output_client_without_stalling_monitor` fails at the ingestion marker with the screen enabled, but the same full suite passes with only the screen initialization disabled.
+- Correct approach: Optimize `rquickjs-sys` in the dev profile and skip prefix allocation for ground-state ASCII. Keep memory/interrupt limits and preserve raw streaming if the screen engine fails.
+- Prevention: Run the complete Host integration suite, not only the snapshot unit test, when changing the engine or build profile; run `node scripts/build-terminal-snapshot.mjs --check` after shared parser changes.
+- Verified by: Screen-enabled parallel runs failed twice; the screen-disabled control passed 35/35. With the dependency optimization, the unchanged deadlines passed all 36 Host integration tests; the iPhone then restored a >128 KiB differential TUI after cold launch.

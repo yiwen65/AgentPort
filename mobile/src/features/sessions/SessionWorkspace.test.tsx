@@ -5,6 +5,8 @@ import { i18n } from "../../i18n";
 import type { RemoteClient, RemoteEvent } from "../../protocol/remoteClient";
 import type { OpenSession, SessionEventPayload } from "./types";
 import { SessionWorkspace } from "./SessionWorkspace";
+import { Terminal as Headless } from "@xterm/headless";
+import { captureSnapshotState } from "../../terminal/terminalSnapshot";
 import type { MobileTerminalHandle } from "../../terminal/MobileTerminal";
 import { clearTerminalCheckpoints, checkpointKey, readCheckpoint, saveCheckpoint } from "../../terminal/terminalCheckpoint";
 
@@ -19,6 +21,7 @@ const terminalHarness = vi.hoisted(() => ({
     theme?: { background?: string; foreground?: string };
   } | undefined,
   writes: [] as string[],
+  restoreWait: undefined as Promise<void> | undefined,
   queued: false,
   writesQueue: [] as (() => void)[],
   resets: 0,
@@ -40,7 +43,7 @@ vi.mock("../../terminal/MobileTerminal", async () => {
         },
         reset: () => { terminalHarness.resets += 1; },
         capture: async () => ({ content: terminalHarness.writes.join(""), cols: 47, rows: 53, pending: [] }),
-        restore: async (saved: { content: string }) => { terminalHarness.writes.push(saved.content); },
+        restore: async (saved: { content: string }) => { await terminalHarness.restoreWait; terminalHarness.writes.push(saved.content); },
         finishRestore: () => undefined,
       }), []);
       const release = useRef(props.onRelease); release.current = props.onRelease;
@@ -86,6 +89,47 @@ function setupClient({ rejectResize = false, autoReplay = true }: { rejectResize
 }
 
 describe("SessionWorkspace", () => {
+  it("restores the authoritative snapshot before early ReplayDone and live bytes", async () => {
+    const { client, request, emit } = setupClient({ autoReplay: false });
+    const h = new Headless({ cols: 47, rows: 53 });
+    const state = captureSnapshotState(h); h.dispose();
+    let release!: () => void;
+    terminalHarness.restoreWait = new Promise(resolve => { release = resolve; });
+    const cursor = { runId: "run", runOrdinal: 1, generation: 0, offset: 90000, statusSequence: 0 };
+    const base = request.getMockImplementation()!;
+    request.mockImplementation((...args) => {
+      if (args[1] !== "session.attach") return base(...args);
+      emit({ subscriptionId: "att-1", eventType: "replay_done", cursor, payload: { session_id: "ses-1" } });
+      emit({ subscriptionId: "att-1", eventType: "output", cursor: { ...cursor, offset: 90004 }, payload: { session_id: "ses-1", data: btoa("LIVE") } });
+      return Promise.resolve({ attachmentId: "att-1", sessionId: "ses-1", childAlive: true, runId: "run", runOrdinal: 1,
+        cursor, features: ["terminal_snapshot_v1"], screenSnapshot: { content: "FULL_SCREEN", cols: 47, rows: 53, pending: [], state } });
+    });
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.attach", expect.objectContaining({ screenSnapshot: true })));
+    expect(terminalHarness.writes).toEqual([]);
+    expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "attaching");
+    await act(async () => release());
+    await waitFor(() => expect(terminalHarness.writes.join("")).toBe("FULL_SCREENLIVE"));
+    expect(screen.queryByText(/This Host has no complete screen/)).not.toBeInTheDocument();
+  });
+
+  it.each(["not_executed", "unknown"])("only retries an old Bridge attach when outcome is %s", async (status) => {
+    const { client, request } = setupClient();
+    const base = request.getMockImplementation()!;
+    request.mockImplementation((...args) => args[1] === "session.attach" && args[2].screenSnapshot
+      ? Promise.reject({ code: "request_not_executed", status, message: "old Bridge" }) : base(...args));
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", status === "not_executed" ? "live" : "failed"));
+    const calls = request.mock.calls.filter(call => call[1] === "session.attach");
+    expect(calls).toHaveLength(status === "not_executed" ? 2 : 1);
+    if (status === "not_executed") expect(calls[1][2]).not.toHaveProperty("screenSnapshot");
+  });
+
+  it("explicitly warns when a cold attach has no complete snapshot", async () => {
+    const { client } = setupClient();
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    expect(await screen.findByText(/This Host has no complete screen snapshot/)).toBeInTheDocument();
+  });
   it("restores a replaced terminal screen and resumes strictly after its captured cursor", async () => {
     const first = setupClient();
     const props = { open, onClose: vi.fn(), onSessionChanged: vi.fn() };
@@ -132,6 +176,7 @@ describe("SessionWorkspace", () => {
     terminalHarness.props = undefined;
     terminalHarness.writes = [];
     terminalHarness.queued = false;
+    terminalHarness.restoreWait = undefined;
     terminalHarness.writesQueue = [];
     terminalHarness.resets = 0;
     terminalHarness.renders = 0;

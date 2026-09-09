@@ -837,6 +837,8 @@ pub struct SessionAttachParams {
     pub resume_from: Option<RunCursor>,
     #[serde(default = "default_true")]
     pub subscribe_output: bool,
+    #[serde(default)]
+    pub screen_snapshot: bool,
 }
 
 /// Terminal input stays in a zeroizing base64 allocation until Service decodes

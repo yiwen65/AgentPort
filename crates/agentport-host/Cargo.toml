@@ -18,6 +18,7 @@ portable-pty = { workspace = true }
 nix = { workspace = true }
 libc = { workspace = true }
 signal-hook = { workspace = true }
+rquickjs = { version = "=0.8.1", features = ["parallel", "array-buffer"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

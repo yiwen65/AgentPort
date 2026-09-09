@@ -105,6 +105,7 @@ export interface TerminalGeometry {
 }
 
 export interface SessionAttachResult {
+  screenSnapshot?: import("../../terminal/terminalCheckpoint").TerminalScreen;
   attachmentId: string;
   sessionId: string;
   childAlive: boolean;

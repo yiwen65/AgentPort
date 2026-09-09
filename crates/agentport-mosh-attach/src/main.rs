@@ -110,6 +110,7 @@ fn run(session_id: String) -> Result<(), ()> {
         .attach_session(SessionAttachParams {
             session_id,
             replay_tail_bytes: 0,
+            screen_snapshot: false,
             resume_from: None,
             subscribe_output: true,
         })

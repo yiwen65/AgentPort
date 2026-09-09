@@ -6,6 +6,7 @@ import { recoverConnection } from "../../protocol/connectionRecovery";
 import { useForegroundRecovery } from "../../protocol/useForegroundRecovery";
 import { MobileTerminal, type MobileTerminalHandle } from "../../terminal/MobileTerminal";
 import { checkpointKey, forgetCheckpoint, readCheckpoint, saveCheckpoint } from "../../terminal/terminalCheckpoint";
+import { isTerminalSnapshot } from "../../terminal/terminalSnapshot";
 import {
   getMobileTerminalPalette,
   getMobileTerminalWorkspaceVariables,
@@ -361,6 +362,8 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     let unsubscribeEvents: (() => Promise<void>) | undefined;
     let unsubscribeConnection: (() => Promise<void>) | undefined;
     let attached: string | undefined;
+    let ownedAttachment: string | undefined;
+    let restoringSnapshot = false;
     // Native events can beat the invoke reply. Buffer a bounded early window
     // until the server-issued attachment ID tells us which stream we own.
     const earlyEvents: RemoteEvent<SessionEventPayload>[] = [];
@@ -398,16 +401,43 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       if (cancelled || generation !== replayGeneration.current) return unsubscribe();
       unsubscribeEvents = unsubscribe;
       try {
-        const result = await client.request<SessionAttachResult>(open.hostProfileId, "session.attach", {
-          sessionId: open.session.id,
-          replayTailBytes: MOBILE_ATTACH_REPLAY_TAIL_BYTES,
-          resumeFrom: cursor.current,
-          subscribeOutput: true,
-        });
+        const params = { sessionId: open.session.id, replayTailBytes: MOBILE_ATTACH_REPLAY_TAIL_BYTES,
+          resumeFrom: cursor.current, subscribeOutput: true };
+        let result: SessionAttachResult;
+        try {
+          result = await client.request<SessionAttachResult>(open.hostProfileId, "session.attach", { ...params, screenSnapshot: true });
+        } catch (error) {
+          // Older Bridges reject unknown fields before executing the attach.
+          // Retry only an explicitly unexecuted request, never a timeout/unknown outcome.
+          const failure = error as { code?: string; status?: string } | null;
+          if (failure?.code !== "request_not_executed" || failure.status !== "not_executed"
+            || cancelled || generation !== replayGeneration.current) throw error;
+          result = await client.request<SessionAttachResult>(open.hostProfileId, "session.attach", params);
+        }
         if (cancelled || generation !== replayGeneration.current) {
           await client.request(open.hostProfileId, "session.detach", { attachmentId: result.attachmentId }).catch(() => undefined);
           return;
         }
+        ownedAttachment = result.attachmentId;
+        if (result.screenSnapshot) {
+          if (!isTerminalSnapshot(result.screenSnapshot) || !result.cursor
+            || result.sessionId !== open.session.id || result.cursor.runId !== result.runId
+            || result.cursor.runOrdinal !== result.runOrdinal) throw new Error("Invalid terminal snapshot");
+          restoringSnapshot = true;
+          // Once replacement starts, the old cursor no longer describes this
+          // renderer, even if transport recovery cancels the awaited restore.
+          cursor.current = undefined;
+          forgetCheckpoint(screenKey);
+          flushTerminalOutput();
+          await terminal.current?.restore(result.screenSnapshot);
+          if (cancelled || generation !== replayGeneration.current) {
+            await client.request(open.hostProfileId, "session.detach", { attachmentId: result.attachmentId }).catch(() => undefined);
+            return;
+          }
+          cursor.current = result.cursor;
+          restoringSnapshot = false;
+          setNotice("");
+        } else if (!cursor.current) setNotice(t("session.incompleteScreen"));
         attached = result.attachmentId;
         if (earlyOverflow || (cursor.current && (cursor.current.runId !== result.runId || cursor.current.runOrdinal !== result.runOrdinal))) {
           resetRunOutput();
@@ -431,6 +461,10 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         }
         earlyEvents.length = 0;
       } catch (requestError) {
+        if (ownedAttachment) {
+          void client.request(open.hostProfileId, "session.detach", { attachmentId: ownedAttachment }).catch(() => undefined);
+          ownedAttachment = undefined;
+        }
         if (!cancelled && generation === replayGeneration.current) {
           setConnectionLabel("failed");
           setError(errorText(requestError));
@@ -462,13 +496,14 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     return () => {
       cancelled = true;
       replayGeneration.current += 1;
+      if (restoringSnapshot) { cursor.current = undefined; forgetCheckpoint(screenKey); }
       setAttachmentId(undefined);
       if (attachmentRef.current === attached) attachmentRef.current = undefined;
-      if (attached) void client.request(open.hostProfileId, "session.detach", { attachmentId: attached }).catch(() => undefined);
+      if (ownedAttachment) void client.request(open.hostProfileId, "session.detach", { attachmentId: ownedAttachment }).catch(() => undefined);
       if (unsubscribeEvents) void unsubscribeEvents();
       if (unsubscribeConnection) void unsubscribeConnection();
     };
-  }, [attachEpoch, client, handleEvent, open.hostProfileId, open.session.id, shouldAttach, resetRunOutput, screenKey, t]);
+  }, [attachEpoch, client, handleEvent, open.hostProfileId, open.session.id, shouldAttach, resetRunOutput, flushTerminalOutput, screenKey, t]);
 
   useEffect(() => () => {
     window.clearTimeout(otherInputTimer.current);

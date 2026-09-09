@@ -6,6 +6,7 @@ export interface TerminalScreen {
   rows: number;
   /** An unfinished escape/UTF-8 sequence must precede the resumed byte stream. */
   pending: number[];
+  state?: import("./terminalSnapshot").SnapshotState;
 }
 export interface TerminalCheckpoint extends TerminalScreen { cursor: RunCursor }
 
@@ -27,7 +28,7 @@ export function saveCheckpoint(key: string, value: Promise<TerminalCheckpoint | 
   entry.value = value.catch(() => undefined).then(screen => {
     if (checkpoints.get(key) !== entry) return undefined;
     if (!screen) { checkpoints.delete(key); return undefined; }
-    entry.bytes = screen.content.length * 2 + screen.pending.length * 8;
+    entry.bytes = screen.content.length * 2 + screen.pending.length * 8 + JSON.stringify(screen.state ?? {}).length * 2;
     if (entry.bytes > MAX_BYTES) { checkpoints.delete(key); return undefined; }
     let bytes = [...checkpoints.values()].reduce((sum, item) => sum + item.bytes, 0);
     for (const [oldKey, old] of checkpoints) {
@@ -52,6 +53,9 @@ export class TerminalParserTail {
   snapshot(): number[] | undefined { return this.overflow || this.unsafePrefix ? undefined : [...this.tail]; }
   advance(data: string | Uint8Array): void {
     for (const byte of typeof data === "string" ? new TextEncoder().encode(data) : data) {
+      // Most terminal bytes cannot start a parser prefix. Avoid allocating two
+      // arrays per ASCII byte in the Host's synchronous embedded engine.
+      if (this.state === "ground" && this.utf8 === 0 && byte < 0x80 && byte !== 0x1b) continue;
       if (this.tail.length < 65536) this.tail.push(byte); else this.overflow = true;
       // Embedded C0 controls may already have moved the cursor. Never replay
       // such a prefix on top of a serialized screen that includes that effect.

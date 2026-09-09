@@ -135,6 +135,57 @@ fn terminal_geometry_is_run_scoped_revisioned_and_rejects_stale_or_implicit_stea
     }));
 }
 
+#[test]
+fn screen_snapshot_replaces_raw_replay_and_live_output_starts_at_its_high_water() {
+    let script = r"printf '\033[?1049h\033[HHEADER\033[30;1HINPUT_BOTTOM'; i=0; while [ $i -lt 2000 ]; do printf '\033[20;1HWorking................................'; i=$((i+1)); done; printf '\033[21;1HREADY'; while :; do printf '\033[22;1HLIVE'; sleep 0.02; done";
+    let ctx = make_ctx(vec!["/bin/sh".into(), "-c".into(), script.into()], 1 << 20, vec![]);
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut observer = connect(&ctx, &ctx.session_id, TOKEN, 1 << 20);
+    observer.expect_hello_ok();
+    let frames = observer.collect_until(Duration::from_secs(10), |frames| {
+        output_bytes(frames).windows(5).any(|s| s == b"READY")
+    });
+    assert!(output_bytes(&frames).windows(5).any(|s| s == b"READY"));
+    let mut client = connect_with_snapshot(&ctx, &ctx.session_id, TOKEN, 65536, None, true, true);
+    let high_water = match client.read1(Duration::from_secs(5)) {
+        Read1::Frame(HostFrame::HelloOk { screen_snapshot: Some(screen), log_cursor, .. }) => {
+            let content = screen["content"].as_str().unwrap();
+            assert!(content.contains("HEADER"));
+            assert!(content.contains("INPUT_BOTTOM"));
+            assert!(log_cursor.offset > 65536);
+            log_cursor
+        }
+        other => panic!("expected screen snapshot, got {}", read1_desc(other)),
+    };
+    match client.read1(Duration::from_secs(5)) {
+        Read1::Frame(HostFrame::ReplayDone { cursor, .. }) => assert_eq!(cursor, high_water),
+        other => panic!("snapshot must not replay old bytes: {}", read1_desc(other)),
+    }
+    match client.read1(Duration::from_secs(5)) {
+        Read1::Frame(HostFrame::Output { cursor, .. }) => assert_eq!(cursor, high_water),
+        other => panic!("expected contiguous live output, got {}", read1_desc(other)),
+    }
+    client.send(&ClientFrame::Resize {
+        session_id: ctx.session_id.clone(), cols: 60, rows: 40, pixel_width: 0, pixel_height: 0,
+        expected_revision: None, source_kind: None, source_device_id: None,
+        attachment_id: None, orientation: None,
+    });
+    let resized = client.collect_until(Duration::from_secs(3), |frames| frames.iter().any(|frame|
+        matches!(frame, HostFrame::ResizeAck { accepted: true, .. })));
+    assert!(resized.iter().any(|frame| matches!(frame, HostFrame::ResizeAck { accepted: true, .. })));
+    let mut resumed = connect_with_snapshot(&ctx, &ctx.session_id, TOKEN, 65536, Some(high_water.clone()), true, true);
+    match resumed.read1(Duration::from_secs(5)) {
+        Read1::Frame(HostFrame::HelloOk { screen_snapshot: Some(screen), terminal_geometry: Some(geometry), .. }) => {
+            assert_eq!((screen["cols"].as_u64(), screen["rows"].as_u64()), (Some(60), Some(40)));
+            assert_eq!((geometry.cols, geometry.rows), (60, 40));
+        }
+        other => panic!("warm cursor must also restore resize state: {}", read1_desc(other)),
+    }
+    let mut legacy = connect_with_resume(&ctx, &ctx.session_id, TOKEN, 65536, Some(high_water), true);
+    assert!(matches!(legacy.read1(Duration::from_secs(5)), Read1::Frame(HostFrame::HelloOk { screen_snapshot: None, .. })));
+}
+
 // ---------------------------------------------------------------------------
 // Test scaffolding
 // ---------------------------------------------------------------------------
@@ -495,6 +546,13 @@ fn connect_with_resume(
     resume_from: Option<LogCursor>,
     subscribe_output: bool,
 ) -> Conn {
+    connect_with_snapshot(ctx, session_id, token, replay_tail_bytes, resume_from, subscribe_output, false)
+}
+
+fn connect_with_snapshot(
+    ctx: &TestCtx, session_id: &str, token: &str, replay_tail_bytes: u64,
+    resume_from: Option<LogCursor>, subscribe_output: bool, screen_snapshot: bool,
+) -> Conn {
     let s = UnixStream::connect(&ctx.socket).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     let w = s.try_clone().unwrap();
@@ -509,6 +567,7 @@ fn connect_with_resume(
         replay_tail_bytes,
         resume_from,
         replay_target: None,
+        screen_snapshot,
         subscribe_output,
     });
     c
@@ -535,6 +594,7 @@ fn connect_with_recovery_target(
         replay_tail_bytes,
         resume_from: None,
         replay_target: Some(replay_target),
+        screen_snapshot: false,
         subscribe_output: true,
     });
     c

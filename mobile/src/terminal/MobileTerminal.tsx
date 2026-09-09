@@ -11,6 +11,7 @@ import { useTranslation } from "react-i18next";
 import { FitAddon } from "@xterm/addon-fit";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { TerminalParserTail, type TerminalScreen } from "./terminalCheckpoint";
+import { captureSnapshotState, restoreSnapshotState } from "./terminalSnapshot";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { installIosImeRouting, isIosKeyboard } from "./iosIme";
@@ -120,7 +121,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
         try {
           const encoding = mouseEncoding.current ? `\x1b[?${mouseEncoding.current}h` : "";
           resolve({ content: serialize.serialize({ scrollback: 2_000 }) + encoding,
-            cols: terminal.cols, rows: terminal.rows, pending });
+            cols: terminal.cols, rows: terminal.rows, pending, state: captureSnapshotState(terminal) });
         } catch { resolve(undefined); }
       }));
     },
@@ -128,11 +129,21 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       const terminal = terminalRef.current;
       if (!terminal) return Promise.resolve();
       restoring.current = true;
-      terminal.resize(screen.cols, screen.rows);
       parserTail.current.reset();
       parserTail.current.advance(new Uint8Array(screen.pending));
-      return new Promise(resolve => {
-        terminal.write(screen.content);
+      return new Promise((resolve, reject) => {
+        // Drain older writes before replacing the screen. The caller fences
+        // incremental delivery until both state and parser prefix are restored.
+        terminal.write("", () => {
+          terminal.reset();
+          terminal.resize(screen.cols, screen.rows);
+        });
+        // Enqueue the entire transaction now. Nested write callbacks would let
+        // a newer restore/reset overtake this snapshot's parser prefix.
+        terminal.write(screen.content, () => {
+          try { if (screen.state) restoreSnapshotState(terminal, screen.state); }
+          catch (error) { reject(error); }
+        });
         terminal.write(new Uint8Array(screen.pending), resolve);
       });
     },

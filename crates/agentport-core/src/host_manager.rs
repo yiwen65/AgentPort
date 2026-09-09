@@ -244,6 +244,7 @@ pub struct AttachInfo {
     /// Additive Host features negotiated by presence in `HelloOk`.
     pub features: Vec<String>,
     pub terminal_geometry: Option<TerminalGeometry>,
+    pub screen_snapshot: Option<serde_json::Value>,
 }
 
 pub struct HostManager<'a> {
@@ -488,7 +489,7 @@ impl<'a> HostManager<'a> {
         &self,
         session_id: &str,
     ) -> Result<(HostClient, AttachInfo, SessionHostBinding)> {
-        self.connect_bound_host_with_resume(session_id, 0, None, true)
+        self.connect_bound_host_with_resume(session_id, 0, None, true, false)
     }
 
     fn connect_bound_host_with_resume(
@@ -497,6 +498,7 @@ impl<'a> HostManager<'a> {
         replay_tail_bytes: u64,
         resume_from: Option<LogCursor>,
         subscribe_output: bool,
+        screen_snapshot: bool,
     ) -> Result<(HostClient, AttachInfo, SessionHostBinding)> {
         let session = self.db.get_session(session_id)?;
         let binding = self.db.session_host_binding(session_id)?;
@@ -510,13 +512,15 @@ impl<'a> HostManager<'a> {
         if session.host_token.is_empty() {
             return Err(CoreError::Host("no host token recorded".into()));
         }
-        let (client, info) = HostClient::connect_with_resume(
+        let (client, info) = HostClient::connect_with_snapshot(
             &socket,
             session_id,
             &session.host_token,
             replay_tail_bytes,
             resume_from,
+            None,
             subscribe_output,
+            screen_snapshot,
         )?;
         if info.host_pid as i64 != expected_pid {
             return Err(CoreError::Protocol(format!(
@@ -556,6 +560,19 @@ impl<'a> HostManager<'a> {
         resume_from: Option<LogCursor>,
         subscribe_output: bool,
     ) -> Result<(HostClient, AttachInfo)> {
+        self.attach_with_screen_snapshot(
+            session_id, replay_tail_bytes, resume_from, subscribe_output, false,
+        )
+    }
+
+    pub fn attach_with_screen_snapshot(
+        &self,
+        session_id: &str,
+        replay_tail_bytes: u64,
+        resume_from: Option<LogCursor>,
+        subscribe_output: bool,
+        screen_snapshot: bool,
+    ) -> Result<(HostClient, AttachInfo)> {
         // Retain the observation made before the socket operation. Re-reading
         // after an I/O failure could instead capture a replacement Host and
         // incorrectly mark that newer run interrupted.
@@ -565,6 +582,7 @@ impl<'a> HostManager<'a> {
             replay_tail_bytes,
             resume_from,
             subscribe_output,
+            screen_snapshot,
         ) {
             Ok((client, info, _binding)) => Ok((client, info)),
             Err(CoreError::Host(_)) => {
@@ -965,7 +983,7 @@ impl<'a> HostManager<'a> {
     /// monitor to have projected them into SQLite. Never changes lifecycle.
     pub fn live_snapshot(&self, session_id: &str) -> Result<AttachInfo> {
         let (_client, mut info, binding) =
-            self.connect_bound_host_with_resume(session_id, 0, None, false)?;
+            self.connect_bound_host_with_resume(session_id, 0, None, false, false)?;
         if self.db.session_host_binding(session_id)? != binding {
             return Err(CoreError::Host("host binding changed during snapshot".into()));
         }
@@ -1075,6 +1093,7 @@ impl std::fmt::Debug for HostClient {
 }
 
 struct ProtocolConnectOptions {
+    screen_snapshot: bool,
     resume_from: Option<LogCursor>,
     replay_target: Option<LogCursor>,
     subscribe_output: bool,
@@ -1134,12 +1153,30 @@ impl HostClient {
         replay_target: Option<LogCursor>,
         subscribe_output: bool,
     ) -> Result<(Self, AttachInfo)> {
+        Self::connect_with_snapshot(
+            socket_path, session_id, token, replay_tail_bytes,
+            resume_from, replay_target, subscribe_output, false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn connect_with_snapshot(
+        socket_path: &str,
+        session_id: &str,
+        token: &str,
+        replay_tail_bytes: u64,
+        resume_from: Option<LogCursor>,
+        replay_target: Option<LogCursor>,
+        subscribe_output: bool,
+        screen_snapshot: bool,
+    ) -> Result<(Self, AttachInfo)> {
         match Self::connect_protocol(
             socket_path,
             session_id,
             token,
             replay_tail_bytes,
             ProtocolConnectOptions {
+                screen_snapshot,
                 resume_from: resume_from.clone(),
                 replay_target: replay_target.clone(),
                 subscribe_output,
@@ -1155,6 +1192,7 @@ impl HostClient {
                 token,
                 replay_tail_bytes,
                 ProtocolConnectOptions {
+                    screen_snapshot: false,
                     resume_from: None,
                     replay_target: None,
                     subscribe_output,
@@ -1173,6 +1211,7 @@ impl HostClient {
         options: ProtocolConnectOptions,
     ) -> Result<(Self, AttachInfo)> {
         let ProtocolConnectOptions {
+            screen_snapshot,
             resume_from,
             replay_target,
             subscribe_output,
@@ -1200,6 +1239,7 @@ impl HostClient {
                 resume_from,
                 replay_target,
                 subscribe_output,
+                screen_snapshot,
             },
         )
         .map_err(io_host("send hello"))?;
@@ -1230,6 +1270,7 @@ impl HostClient {
                 log_cursor,
                 features,
                 terminal_geometry,
+                screen_snapshot,
             } => {
                 if protocol != requested_protocol {
                     return Err(CoreError::Protocol(format!(
@@ -1254,6 +1295,7 @@ impl HostClient {
                     log_cursor,
                     features,
                     terminal_geometry,
+                    screen_snapshot,
                 }
             }
             HostFrame::Error {
@@ -1691,6 +1733,7 @@ mod tests {
                 log_cursor: LogCursor::default(),
                 features: vec![HOST_FEATURE_INPUT_BATCH_V1.into()],
                 terminal_geometry: None,
+                screen_snapshot: None,
             },
         )
         .is_err()
