@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useId, useRef, useState } from "react";
 import { AgentPortMark } from "../../components/AgentPortMark";
 import { SessionRowActions } from "./SessionRowActions";
+import { useForegroundRecovery } from "../../protocol/useForegroundRecovery";
 import { useAttentionInbox } from "./useAttentionInbox";
 import { RecentNotifications } from "./RecentNotifications";
 import type { InboxEntry } from "./attentionInbox";
@@ -288,6 +289,13 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     refreshes.current.set(deviceId, entry);
     return entry.promise;
   }, [refreshDeviceOnce]);
+
+  useForegroundRecovery(client, selectedDeviceId,
+    dashboardActive && Boolean(selectedHost) && selectedHost?.connectionState !== "disconnected", {
+      onStart: () => { refreshEpoch.current += 1; },
+      onRecovered: () => { void refreshDevice(selectedDeviceId); },
+      onError: () => setUpdateErrorHost(selectedDeviceId),
+    });
 
   // One explicit action: connected -> read; offline -> connect then read.
   // Keep the lock in a ref so repeated taps cannot race React's next render.

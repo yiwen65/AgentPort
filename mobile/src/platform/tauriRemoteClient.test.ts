@@ -22,6 +22,19 @@ describe("TauriRemoteClient ordered input submission", () => {
     tauri.inputListener = undefined;
   });
 
+  it("cancels an in-flight local wait and ignores its late reply without claiming a mutation was cancelled", async () => {
+    let complete!: (value: unknown) => void;
+    tauri.invoke.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
+    const client = new TauriRemoteClient();
+    const controller = new AbortController();
+    const request = client.request("host-1", "session.list", {}, { signal: controller.signal });
+    controller.abort();
+    await expect(request).rejects.toMatchObject({ name: "AbortError", status: "unknown" });
+    complete([]);
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    expect(tauri.invoke).toHaveBeenCalledTimes(1);
+  });
+
   it("does not let an older profile snapshot overwrite a newly connected event", async () => {
     let complete!: (value: unknown) => void;
     tauri.invoke.mockImplementation(() => new Promise(resolve => { complete = resolve; }));

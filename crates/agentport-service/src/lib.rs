@@ -20,7 +20,7 @@ use agentport_core::host_manager::{
 };
 use agentport_core::models::{
     AdapterInstall, AgentPreferencesSnapshot as CoreAgentPreferencesSnapshot, AgentTransport,
-    AgentType, LogCursor, PermissionMode, Preset, Project, ProjectRemovalSession,
+    AgentType, Lifecycle, LogCursor, PermissionMode, Preset, Project, ProjectRemovalSession,
     ProjectRemovalSnapshot as CoreProjectRemovalSnapshot, ReducedMotion, ResumePrecision,
     SecretRef, Session, Settings, StatusEvent, TerminalTheme, Theme, UiLanguage, Worktree,
 };
@@ -1980,11 +1980,10 @@ impl RemoteService for CoreService {
             paths: &self.paths,
             db: &self.db,
         };
-        self.db
-            .list_session_projections(include_archived)?
-            .into_iter()
-            .map(|projection| Ok(live_session_summary(&manager, projection)))
-            .collect()
+        let projections = self.db.list_session_projections(include_archived)?;
+        // Bound both parallel handshakes and their total scheduling window.
+        // A slow Host must not serialize every other Session/metadata request.
+        collect_live_session_summaries(&manager, projections, std::time::Duration::from_secs(8))
     }
 
     fn create_session(&self, params: SessionCreateParams) -> Result<SessionLaunchResult> {
@@ -3469,13 +3468,44 @@ fn session_summary(paths: &AppPaths, db: &Db, session_id: &str) -> Result<Sessio
     Ok(live_session_summary(&HostManager { paths, db }, projection))
 }
 
+fn collect_live_session_summaries(
+    manager: &HostManager<'_>,
+    projections: Vec<agentport_core::db::SessionProjection>,
+    budget: std::time::Duration,
+) -> Result<Vec<SessionSummary>> {
+    if projections.is_empty() { return Ok(Vec::new()); }
+    let deadline = std::time::Instant::now() + budget;
+    let chunk_size = projections.len().div_ceil(4);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = projections.chunks(chunk_size).map(|chunk| scope.spawn(move || {
+            chunk.iter().map(|projection| {
+                if matches!(projection.session.lifecycle, Lifecycle::Creating | Lifecycle::Running)
+                    && std::time::Instant::now() >= deadline {
+                    // Fail the read rather than falsely labeling unprobed Hosts dead.
+                    return Err(ServiceError::Core(agentport_core::CoreError::Host(
+                        "Session refresh exceeded its Host-check budget; retry refresh".into())));
+                }
+                Ok(live_session_summary(manager, projection.clone()))
+            }).collect::<Result<Vec<_>>>()
+        })).collect();
+        let mut result = Vec::with_capacity(projections.len());
+        for worker in workers {
+            result.extend(worker.join().map_err(|_| ServiceError::Core(
+                agentport_core::CoreError::Internal("Host-check worker failed".into())))??);
+        }
+        Ok(result)
+    })
+}
+
 fn live_session_summary(
     manager: &HostManager<'_>,
     projection: agentport_core::db::SessionProjection,
 ) -> SessionSummary {
     // The existing liveness handshake already carries current status.
     // Mobile-created Sessions may have no desktop DB monitor at all.
-    let live = manager.live_snapshot(&projection.session.id).ok();
+    let live = if matches!(projection.session.lifecycle, Lifecycle::Creating | Lifecycle::Running) {
+        manager.live_snapshot(&projection.session.id).ok()
+    } else { None };
     let host_alive = live.is_some();
     let mut latest_status = projection.latest_status;
     if let Some(status) = live.and_then(|info| info.current_status) {
@@ -4614,6 +4644,13 @@ mod tests {
             assert_eq!(sessions[0].latest_status.as_ref().map(|s| s.state.clone()), expected.map(|s| s.as_str().to_string()));
             // A status read is not a new persisted transition or attention event.
             assert_eq!(service.db.latest_status(id).unwrap().is_some(), persisted);
+            let manager = HostManager { paths: &service.paths, db: &service.db };
+            assert!(collect_live_session_summaries(&manager,
+                service.db.list_session_projections(false).unwrap(), std::time::Duration::ZERO).is_err());
+            service.db.update_session_lifecycle(id, Lifecycle::Exited).unwrap();
+            let ended = collect_live_session_summaries(&manager,
+                service.db.list_session_projections(false).unwrap(), std::time::Duration::ZERO).unwrap();
+            assert!(!ended[0].host_alive); // no handshake for terminal history
         }
     }
 

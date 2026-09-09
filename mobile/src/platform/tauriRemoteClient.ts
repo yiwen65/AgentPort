@@ -127,7 +127,17 @@ export class TauriRemoteClient implements RemoteClient {
       precondition: options.precondition,
     };
     if (method === "session.input") return this.submitInput(command, options);
-    return invoke("mobile_remote_request", { command });
+    const result = invoke<T>("mobile_remote_request", { command });
+    const signal = options.signal;
+    if (!signal) return result;
+    // Cancel the local wait, not a submitted remote mutation. Native deadlines
+    // still clean up the request; a late reply must not revive a hidden view.
+    return new Promise<T>((resolve, reject) => {
+      const abort = () => reject(Object.assign(new DOMException("Request wait cancelled", "AbortError"), { status: "unknown" }));
+      signal.addEventListener("abort", abort, { once: true });
+      result.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+      if (signal.aborted) abort();
+    });
   }
 
   async onConnectionState(

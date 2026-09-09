@@ -37,6 +37,18 @@ describe("V2 Session workspace", () => {
   beforeEach(async () => { localStorage.clear(); await i18n.changeLanguage("en-US"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
+  it("reconnects the selected device on foreground without waiting for a disconnect event", async () => {
+    const remote = client();
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await screen.findByRole("button", { name: "Approval task" });
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    visibility.mockReturnValue("hidden"); fireEvent(document, new Event("visibilitychange"));
+    visibility.mockReturnValue("visible"); fireEvent(document, new Event("visibilitychange"));
+    await waitFor(() => expect(remote.disconnect).toHaveBeenCalledWith("host-1"));
+    await waitFor(() => expect(remote.connect).toHaveBeenCalledWith("host-1"));
+    expect(await screen.findByRole("button", { name: "Approval task" })).toBeEnabled();
+  });
+
   it("hides a confirmed Remove during slow stop, survives stale refresh, and restores on failure", async () => {
     const remote = client();
     const original = vi.mocked(remote.request).getMockImplementation()!;

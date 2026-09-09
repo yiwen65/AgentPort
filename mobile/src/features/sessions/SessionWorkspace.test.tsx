@@ -476,6 +476,36 @@ describe("SessionWorkspace", () => {
     prompt.mockRestore();
   });
 
+  it.each([false, true])("replaces a suspended connection and resumes once (connection events delivered: %s)", async delivered => {
+    const { client, request, emit } = setupClient();
+    if (delivered) {
+      let connection!: (event: any) => void;
+      vi.mocked(client.onConnectionState).mockImplementation(async listener => { connection = listener; return async () => {}; });
+      vi.mocked(client.disconnect).mockImplementation(async () => { connection({ profileId: "host-1", state: "disconnected" }); });
+      vi.mocked(client.connect).mockImplementation(async () => {
+        connection({ profileId: "host-1", state: "connected" });
+        return {} as Awaited<ReturnType<RemoteClient["connect"]>>;
+      });
+    }
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    const consumed = { runId: "run", runOrdinal: 1, generation: 0, offset: 5 };
+    await act(async () => {
+      emit({ subscriptionId: "att-1", eventType: "output", cursor: consumed,
+        payload: { session_id: "ses-1", dataBase64: btoa("hello") } });
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    });
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    visibility.mockReturnValue("hidden"); fireEvent(document, new Event("visibilitychange"));
+    visibility.mockReturnValue("visible"); fireEvent(document, new Event("visibilitychange"));
+    await waitFor(() => expect(client.disconnect).toHaveBeenCalledWith("host-1"));
+    await waitFor(() => expect(request.mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(2));
+    expect(client.connect).toHaveBeenCalledWith("host-1");
+    expect(request).toHaveBeenCalledWith("host-1", "session.attach", expect.objectContaining({ resumeFrom: consumed }));
+    expect(terminalHarness.mounts).toBe(1);
+    expect(terminalHarness.writes).toEqual(["hello"]);
+  });
+
   it("recovers the retained terminal with a resume cursor and disables input while disconnected", async () => {
     const { client, request, emit } = setupClient();
     let connection!: (event: any) => void;

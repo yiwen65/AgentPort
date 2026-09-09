@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 import { Modal } from "../../components/Modal";
 import { useTranslation } from "react-i18next";
 import type { RemoteClient, RemoteEvent } from "../../protocol/remoteClient";
+import { recoverConnection } from "../../protocol/connectionRecovery";
+import { useForegroundRecovery } from "../../protocol/useForegroundRecovery";
 import { MobileTerminal, type MobileTerminalHandle } from "../../terminal/MobileTerminal";
 import { checkpointKey, forgetCheckpoint, readCheckpoint, saveCheckpoint } from "../../terminal/terminalCheckpoint";
 import {
@@ -87,6 +89,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   const otherInputTimer = useRef<number>();
   const seenTimer = useRef<number>();
   const needsReattach = useRef(false);
+  const recoveryPending = useRef(false);
   const pendingResize = useRef<{ cols: number; rows: number }>();
   const lastResize = useRef<{ attachmentId: string; cols: number; rows: number }>();
   const resizeFrame = useRef<number>();
@@ -110,6 +113,32 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     setChromeVisible(false);
     setActionsOpen(false);
   }, [active]);
+
+  const beginRecovery = () => {
+    recoveryPending.current = true;
+    needsReattach.current = true;
+    replayGeneration.current += 1;
+    attachmentRef.current = undefined;
+    setAttachmentId(undefined);
+    setConnectionLabel("reconnecting");
+    setError("");
+  };
+  const finishRecovery = () => {
+    recoveryPending.current = false;
+    // A delivered connected event may have already scheduled the same attach.
+    if (needsReattach.current) {
+      needsReattach.current = false;
+      setAttachEpoch(value => value + 1);
+    }
+  };
+  const failRecovery = (failure: unknown) => { recoveryPending.current = false; setConnectionLabel("failed"); setError(errorText(failure)); };
+  useForegroundRecovery(client, open.hostProfileId, active && shouldAttach, {
+    onStart: beginRecovery, onRecovered: finishRecovery, onError: failRecovery,
+  });
+  const retryConnection = () => {
+    beginRecovery();
+    void recoverConnection(client, open.hostProfileId).then(finishRecovery).catch(failRecovery);
+  };
 
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState !== "hidden");
   useEffect(() => {
@@ -420,7 +449,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         replayGeneration.current += 1;
         attachmentRef.current = undefined;
         setAttachmentId(undefined);
-        setConnectionLabel("reconnecting");
+        setConnectionLabel(event.state === "reconnecting" || recoveryPending.current ? "reconnecting" : "failed");
       }
       if (event.state === "connected" && needsReattach.current) {
         needsReattach.current = false;
@@ -705,7 +734,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       </section> : null}
       {connectionLabel === "reconnecting" ? <p className="terminal-status-line" role="status">{t("status.reconnecting")}</p> : null}
       {shouldAttach && connectionLabel === "attaching" ? <p className="terminal-replay-status" role="status">{t("session.connection.attaching")}</p> : null}
-      {connectionLabel === "failed" ? <button type="button" onClick={() => setAttachEpoch(value => value + 1)}>{t("session.retryAttach")}</button> : null}
+      {connectionLabel === "failed" ? <button type="button" onClick={retryConnection}>{t("session.retryAttach")}</button> : null}
       {shouldAttach ? <MobileTerminal
         onRelease={releaseTerminal}
         ref={terminal}

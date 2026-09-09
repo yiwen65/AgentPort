@@ -877,20 +877,7 @@ pub async fn mobile_disconnect_host(
     drop(connections);
     if let Some(connection) = connection {
         fail_pending(&connection.pending);
-        match connection.transport {
-            Transport::Ssh(ssh) => {
-                let _ = ssh
-                    .session
-                    .disconnect(Disconnect::ByApplication, "user disconnected", "en")
-                    .await;
-                if let Some(jump) = ssh.jump_session {
-                    let _ = jump
-                        .disconnect(Disconnect::ByApplication, "user disconnected", "en")
-                        .await;
-                }
-            }
-            Transport::Relay(lease) => drop(lease),
-        }
+        close_transport(connection.transport).await;
     }
     Ok(())
 }
@@ -959,29 +946,36 @@ pub async fn mobile_remote_submit_input(
         );
     }
     let mut frame = json!({"type": "request", "requestId": request_id.clone(), "method": command.method, "params": command.params, "precondition": command.precondition});
-    let write_failed = write_frame(writer.lock().await.as_mut(), &frame)
-        .await
-        .is_err();
+    let write_failed = !matches!(tokio::time::timeout(Duration::from_secs(15), async {
+        write_frame(writer.lock().await.as_mut(), &frame).await
+    }).await, Ok(Ok(())));
     zeroize_value(&mut frame);
     if write_failed {
         pending
             .lock()
             .ok()
             .and_then(|mut requests| requests.remove(&request_id));
+        retire_connection(&app, &state, &command.profile_id, &pending).await;
         return Err(RemoteCommandError {
             code: "connection_unknown".into(),
             message: "The input could not be submitted and was not replayed".into(),
             status: "unknown",
         });
     }
+    let state = state.inner().clone();
     tauri::async_runtime::spawn(async move {
-        let outcome = receiver.await.unwrap_or_else(|_| {
-            Err(RemoteCommandError {
-                code: "connection_unknown".into(),
-                message: "The connection ended before the input result was known".into(),
-                status: "unknown",
-            })
-        });
+        let outcome = match tokio::time::timeout(Duration::from_secs(15), receiver).await {
+            Ok(Ok(result)) => result,
+            result => {
+                pending.lock().ok().map(|mut requests| requests.remove(&request_id));
+                if result.is_err() { retire_connection(&app, &state, &command.profile_id, &pending).await; }
+                Err(RemoteCommandError {
+                    code: "connection_unknown".into(),
+                    message: "The input result was not received and was not replayed".into(),
+                    status: "unknown",
+                })
+            }
+        };
         let payload = match outcome {
             Ok(value) => InputResultEvent {
                 batch_id,
@@ -1001,11 +995,15 @@ pub async fn mobile_remote_submit_input(
 
 #[tauri::command]
 pub async fn mobile_remote_request(
+    app: AppHandle,
     state: State<'_, RemoteConnections>,
     command: RemoteRequestCommand,
 ) -> Result<Value, RemoteCommandError> {
     let request_id = format!("request_{}", uuid::Uuid::new_v4().simple());
     let is_read = classify_method(&command.method) == RetryClass::Read;
+    let deadline = if is_read || matches!(command.method.as_str(), "session.attach" | "session.detach" | "session.control") {
+        Duration::from_secs(15)
+    } else { Duration::from_secs(120) };
     let (sender, receiver) = oneshot::channel();
     let (writer, pending) = {
         let connections = state.inner.connections.lock().await;
@@ -1038,35 +1036,84 @@ pub async fn mobile_remote_request(
             },
         );
     let mut frame = json!({"type": "request", "requestId": request_id.clone(), "method": command.method, "params": command.params, "precondition": command.precondition});
-    let write_failed = write_frame(writer.lock().await.as_mut(), &frame)
-        .await
-        .is_err();
+    let outcome = timed_request(&writer, &mut frame, receiver, is_read, deadline).await;
     zeroize_value(&mut frame);
-    if write_failed {
-        let request = pending
-            .lock()
-            .ok()
-            .and_then(|mut requests| requests.remove(&request_id));
-        if let Some(request) = request {
-            let status = if request.is_read {
-                "not_executed"
-            } else {
-                "unknown"
-            };
+    if outcome.is_err() {
+        pending.lock().ok().map(|mut requests| requests.remove(&request_id));
+    }
+    if outcome.as_ref().is_err_and(|error| matches!(error.code.as_str(), "request_timeout" | "connection_write_failed")) {
+        retire_connection(&app, &state, &command.profile_id, &pending).await;
+    }
+    outcome
+}
+
+/// Covers queueing for the writer, writing a complete frame, and its response.
+/// A timeout after starting a mutation write is unknown, never safe to replay.
+async fn timed_request(
+    writer: &Arc<AsyncMutex<Box<dyn AsyncWrite + Send + Unpin>>>,
+    frame: &mut Value,
+    receiver: oneshot::Receiver<Result<Value, RemoteCommandError>>,
+    is_read: bool,
+    deadline: Duration,
+) -> Result<Value, RemoteCommandError> {
+    let mut write_started = false;
+    let result = tokio::time::timeout(deadline, async {
+        let mut writer = writer.lock().await;
+        write_started = true;
+        if write_frame(writer.as_mut(), frame).await.is_err() {
             return Err(RemoteCommandError {
-                code: format!("connection_{status}"),
-                message: "The request could not be completed and was not replayed".into(),
-                status,
+                code: "connection_write_failed".into(),
+                message: "The request could not be written and was not replayed".into(),
+                status: if is_read { "not_executed" } else { "unknown" },
             });
         }
-    }
-    receiver.await.unwrap_or_else(|_| {
-        Err(RemoteCommandError {
+        zeroize_value(frame);
+        drop(writer);
+        receiver.await.unwrap_or_else(|_| Err(RemoteCommandError {
             code: "connection_unknown".into(),
             message: "The connection ended before the result was known".into(),
-            status: "unknown",
-        })
-    })
+            status: if is_read { "not_executed" } else { "unknown" },
+        }))
+    }).await;
+    result.unwrap_or_else(|_| Err(RemoteCommandError {
+        code: "request_timeout".into(),
+        message: "The request timed out. Reconnect to refresh; it was not replayed.".into(),
+        status: if is_read || !write_started { "not_executed" } else { "unknown" },
+    }))
+}
+
+/// Retire only the generation that timed out, never a replacement connection.
+async fn retire_connection<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &RemoteConnections,
+    profile_id: &str,
+    pending: &Arc<Mutex<HashMap<String, PendingRequest>>>,
+) {
+    let connection = {
+        let mut connections = state.inner.connections.lock().await;
+        if !connections.get(profile_id).is_some_and(|value| Arc::ptr_eq(&value.pending, pending)) { return; }
+        let old = connections.remove(profile_id);
+        let _ = emit_connection_state(app, profile_id, "failed");
+        old
+    };
+    if let Some(connection) = connection {
+        fail_pending(&connection.pending);
+        tauri::async_runtime::spawn(close_transport(connection.transport));
+    }
+}
+
+async fn close_transport(transport: Transport) {
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        match transport {
+            Transport::Ssh(ssh) => {
+                let _ = ssh.session.disconnect(Disconnect::ByApplication, "connection retired", "en").await;
+                if let Some(jump) = ssh.jump_session {
+                    let _ = jump.disconnect(Disconnect::ByApplication, "connection retired", "en").await;
+                }
+            }
+            Transport::Relay(lease) => drop(lease),
+        }
+    }).await;
 }
 
 #[tauri::command]
@@ -1113,6 +1160,54 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use tauri::Listener;
+
+    #[tokio::test]
+    async fn request_deadline_covers_writer_queue_and_missing_response_without_replay() {
+        let writer: Arc<AsyncMutex<Box<dyn AsyncWrite + Send + Unpin>>> =
+            Arc::new(AsyncMutex::new(Box::new(tokio::io::sink())));
+        for (is_read, blocked, expected) in [(true, false, "not_executed"), (false, false, "unknown"), (false, true, "not_executed")] {
+            let guard = if blocked { Some(writer.lock().await) } else { None };
+            let (_sender, receiver) = oneshot::channel();
+            let error = timed_request(&writer, &mut json!({"type":"request"}), receiver,
+                is_read, Duration::from_millis(10)).await.unwrap_err();
+            assert_eq!(error.code, "request_timeout");
+            assert_eq!(error.status, expected);
+            drop(guard);
+            assert!(writer.try_lock().is_ok());
+        }
+        let (sender, receiver) = oneshot::channel();
+        sender.send(Ok(json!({"ok":true}))).unwrap();
+        assert_eq!(timed_request(&writer, &mut json!({}), receiver, true,
+            Duration::from_secs(1)).await.unwrap(), json!({"ok":true}));
+    }
+
+    #[tokio::test]
+    async fn timed_out_generation_cannot_retire_a_replacement_and_pending_reads_are_released() {
+        let app = tauri::test::mock_app();
+        let state = RemoteConnections::default();
+        app.manage(state.clone());
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let obsolete = Arc::new(Mutex::new(HashMap::new()));
+        let transport = tokio::spawn(std::future::pending::<()>());
+        let (sender, receiver) = oneshot::channel();
+        pending.lock().unwrap().insert("read".into(), PendingRequest {
+            accepted: false, is_read: true, response: sender,
+        });
+        state.inner.connections.lock().await.insert("host".into(), Connection {
+            generation: "new".into(),
+            snapshot: ConnectionSnapshot { profile_id: "host".into(), protocol_major: 1,
+                protocol_minor: 0, agentport_version: "test".into(), platform: "test".into(), capabilities: vec![] },
+            writer: Arc::new(AsyncMutex::new(Box::new(tokio::io::sink()))),
+            pending: pending.clone(), transport: Transport::Relay(RelayLease(transport.abort_handle())),
+        });
+        retire_connection(app.handle(), &state, "host", &obsolete).await;
+        assert!(state.inner.connections.lock().await.contains_key("host"));
+        assert_eq!(pending.lock().unwrap().len(), 1);
+        retire_connection(app.handle(), &state, "host", &pending).await;
+        assert!(!state.inner.connections.lock().await.contains_key("host"));
+        assert_eq!(receiver.await.unwrap().unwrap_err().status, "not_executed");
+        assert!(pending.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn explicit_connect_and_disconnect_states_are_broadcast_to_all_consumers() {
