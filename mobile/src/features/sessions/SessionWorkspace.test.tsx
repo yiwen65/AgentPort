@@ -5,9 +5,12 @@ import { i18n } from "../../i18n";
 import type { RemoteClient, RemoteEvent } from "../../protocol/remoteClient";
 import type { OpenSession, SessionEventPayload } from "./types";
 import { SessionWorkspace } from "./SessionWorkspace";
+import type { MobileTerminalHandle } from "../../terminal/MobileTerminal";
+import { clearTerminalCheckpoints, checkpointKey, readCheckpoint, saveCheckpoint } from "../../terminal/terminalCheckpoint";
 
 const terminalHarness = vi.hoisted(() => ({
   props: undefined as {
+    onRelease?: (handle: MobileTerminalHandle) => void;
     onInput?: (data: string) => void;
     onResize?: (cols: number, rows: number) => void;
     onReachTop?: () => void;
@@ -24,19 +27,25 @@ const terminalHarness = vi.hoisted(() => ({
 }));
 
 vi.mock("../../terminal/MobileTerminal", async () => {
-  const { forwardRef, useImperativeHandle, useEffect } = await vi.importActual<typeof import("react")>("react");
+  const { forwardRef, useImperativeHandle, useEffect, useMemo, useRef } = await vi.importActual<typeof import("react")>("react");
   return {
     MobileTerminal: forwardRef((props: NonNullable<typeof terminalHarness.props>, ref) => {
       useEffect(() => { terminalHarness.mounts += 1; }, []);
       terminalHarness.props = props;
       terminalHarness.renders += 1;
-      useImperativeHandle(ref, () => ({
+      const handle = useMemo(() => ({
         write: (data: string | Uint8Array, callback?: () => void) => {
           const parse = () => { if (data.length) terminalHarness.writes.push(typeof data === "string" ? data : new TextDecoder().decode(data)); callback?.(); };
           if (terminalHarness.queued) terminalHarness.writesQueue.push(parse); else parse();
         },
         reset: () => { terminalHarness.resets += 1; },
+        capture: async () => ({ content: terminalHarness.writes.join(""), cols: 47, rows: 53, pending: [] }),
+        restore: async (saved: { content: string }) => { terminalHarness.writes.push(saved.content); },
+        finishRestore: () => undefined,
       }), []);
+      const release = useRef(props.onRelease); release.current = props.onRelease;
+      useImperativeHandle(ref, () => handle, [handle]);
+      useEffect(() => () => release.current?.(handle), [handle]);
       return <section aria-label="Raw terminal" style={{ visibility: props.obscured ? "hidden" : undefined }}>
         <button type="button" onClick={() => props.onInput?.("你好\r")}>Type terminal input</button>
         <button type="button" onClick={() => { props.onResize?.(48, 40); props.onResize?.(52, 32); }}>Resize terminal</button>
@@ -77,7 +86,48 @@ function setupClient({ rejectResize = false, autoReplay = true }: { rejectResize
 }
 
 describe("SessionWorkspace", () => {
+  it("restores a replaced terminal screen and resumes strictly after its captured cursor", async () => {
+    const first = setupClient();
+    const props = { open, onClose: vi.fn(), onSessionChanged: vi.fn() };
+    const view = render(<SessionWorkspace {...props} client={first.client} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    const consumed = { runId: "run", runOrdinal: 1, generation: 0, offset: 123, statusSequence: 0 };
+    act(() => first.emit({ subscriptionId: "att-1", eventType: "output", cursor: consumed,
+      payload: { session_id: "ses-1", data: btoa("HISTORY_MUST_SURVIVE") } }));
+    // Release before the animation-frame output flush: the snapshot must include it.
+    view.unmount();
+    expect((await readCheckpoint(checkpointKey("host-1", "ses-1")))?.content).toContain("HISTORY_MUST_SURVIVE");
+    terminalHarness.writes = [];
+    const second = setupClient();
+    render(<SessionWorkspace {...props} client={second.client} />);
+    await waitFor(() => expect(second.request).toHaveBeenCalledWith("host-1", "session.attach", expect.objectContaining({ resumeFrom: consumed })));
+    expect(terminalHarness.writes).toContain("HISTORY_MUST_SURVIVE");
+  });
+
+  it("waits for a pending capture and fences a reselect cancelled before it resolves", async () => {
+    let resolve!: (screen: import("../../terminal/terminalCheckpoint").TerminalCheckpoint) => void;
+    saveCheckpoint(checkpointKey("host-1", "ses-1"), new Promise(done => { resolve = done; }));
+    const { client, request } = setupClient();
+    const view = render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await act(async () => undefined);
+    expect(request.mock.calls.filter(call => call[1] === "session.attach")).toHaveLength(0);
+    view.unmount();
+    await act(async () => resolve({ content: "late", cols: 47, rows: 53, pending: [], cursor: { runId: "run", runOrdinal: 1, generation: 0, offset: 123, statusSequence: 0 } }));
+    expect(request.mock.calls.filter(call => call[1] === "session.attach")).toHaveLength(0);
+    expect(terminalHarness.writes).not.toContain("late");
+  });
+
+  it("does not restore a screen from an older run", async () => {
+    const saved = { content: "OLD_RUN", cols: 47, rows: 53, pending: [], cursor: { runId: "old", runOrdinal: 0, generation: 0, offset: 123, statusSequence: 0 } };
+    saveCheckpoint(checkpointKey("host-1", "ses-1"), Promise.resolve(saved));
+    const { client, request } = setupClient();
+    render(<SessionWorkspace open={{ ...open, session: { ...open.session, latestStatus: { runId: "run", runOrdinal: 1, sequence: 1, state: "idle", source: "process", confidence: "low", occurredAt: "" } } }} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.attach", expect.objectContaining({ resumeFrom: undefined })));
+    expect(terminalHarness.writes).not.toContain("OLD_RUN");
+  });
+
   beforeEach(async () => {
+    clearTerminalCheckpoints();
     localStorage.clear();
     terminalHarness.props = undefined;
     terminalHarness.writes = [];

@@ -39,8 +39,14 @@ vi.mock("@xterm/addon-fit", () => ({
   FitAddon: class { fit() { terminalHarness.fitCalls += 1; } },
 }));
 
+vi.mock("@xterm/addon-serialize", () => ({
+  SerializeAddon: class { serialize() { return "serialized-screen"; } },
+}));
+
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
+    parser = { registerCsiHandler: () => ({ dispose() {} }), registerEscHandler: () => ({ dispose() {} }) };
+    resize(cols: number, rows: number) { terminalHarness.cols = cols; terminalHarness.rows = rows; }
     get cols() { return terminalHarness.cols; }
     get rows() { return terminalHarness.rows; }
     get modes() { return { applicationCursorKeysMode: terminalHarness.applicationCursor, mouseTrackingMode: terminalHarness.mouseTracking }; }
@@ -86,6 +92,32 @@ vi.mock("@xterm/xterm", () => ({
 }));
 
 describe("MobileTerminal input accessory", () => {
+  it("captures after queued writes during release, before disposal", async () => {
+    const ref = createRef<MobileTerminalHandle>();
+    let captured: ReturnType<MobileTerminalHandle["capture"]> | undefined;
+    const view = render(<MobileTerminal ref={ref} showProbeOutput={false} onRelease={handle => { captured = handle.capture(); }} />);
+    terminalHarness.queued = true;
+    ref.current!.write("\x1b[38;2;");
+    view.unmount();
+    expect(captured).toBeDefined();
+    while (terminalHarness.writesQueue.length) terminalHarness.writesQueue.shift()!();
+    expect(await captured).toEqual({ content: "serialized-screen", cols: 80, rows: 24, pending: [...new TextEncoder().encode("\x1b[38;2;")] });
+  });
+
+  it("keeps checkpoint geometry until resumed output has drained", async () => {
+    const ref = createRef<MobileTerminalHandle>();
+    render(<MobileTerminal ref={ref} showProbeOutput={false} />);
+    await act(async () => ref.current!.restore({ content: "screen", cols: 47, rows: 53, pending: [27, 91] }));
+    const fits = terminalHarness.fitCalls;
+    act(() => terminalHarness.resizeObserved());
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(terminalHarness.fitCalls).toBe(fits);
+    expect(terminalHarness.cols).toBe(47);
+    expect(terminalHarness.rows).toBe(53);
+    act(() => ref.current!.finishRestore());
+    await waitFor(() => expect(terminalHarness.fitCalls).toBeGreaterThan(fits));
+  });
+
   beforeEach(() => {
     localStorage.clear();
     terminalHarness.applicationCursor = false;

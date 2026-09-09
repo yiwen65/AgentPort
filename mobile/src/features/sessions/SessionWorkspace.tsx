@@ -3,6 +3,7 @@ import { Modal } from "../../components/Modal";
 import { useTranslation } from "react-i18next";
 import type { RemoteClient, RemoteEvent } from "../../protocol/remoteClient";
 import { MobileTerminal, type MobileTerminalHandle } from "../../terminal/MobileTerminal";
+import { checkpointKey, forgetCheckpoint, readCheckpoint, saveCheckpoint } from "../../terminal/terminalCheckpoint";
 import {
   getMobileTerminalPalette,
   getMobileTerminalWorkspaceVariables,
@@ -69,10 +70,10 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   const [busyAction, setBusyAction] = useState("");
   const [terminalGeometry, setTerminalGeometry] = useState<TerminalGeometry>();
   const actionsTrigger = useRef<HTMLButtonElement>(null);
-  // A fresh xterm has no retained screen to pair with a persisted tail cursor,
-  // so it must request a bounded replay. This ref still advances and resumes
-  // efficiently for reconnects during this renderer's lifetime.
   const terminal = useRef<MobileTerminalHandle>(null);
+  const screenKey = checkpointKey(open.hostProfileId, open.session.id);
+  const restoreAttempted = useRef(false);
+  const checkpointReady = useRef(false);
   const cursor = useRef<RunCursor>();
   const ownBatches = useRef(new Set<string>());
   const attachmentRef = useRef<string>();
@@ -171,10 +172,19 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   useEffect(() => () => {
     if (outputFrame.current !== undefined) window.cancelAnimationFrame(outputFrame.current);
     outputFrame.current = undefined;
-    pendingOutputChunks.current = [];
-    pendingOutputBytes.current = 0;
+    // Child release flushes these bytes before capturing the matching cursor.
     replayGeneration.current += 1;
   }, []);
+
+  const releaseTerminal = useCallback((handle: MobileTerminalHandle) => {
+    const chunks = pendingOutputChunks.current;
+    if (chunks.length) handle.write(mergeChunks(chunks, pendingOutputBytes.current));
+    pendingOutputChunks.current = [];
+    pendingOutputBytes.current = 0;
+    const consumed = cursor.current;
+    if (!checkpointReady.current || !consumed) return;
+    saveCheckpoint(screenKey, handle.capture().then(screen => screen ? { ...screen, cursor: consumed } : undefined));
+  }, [mergeChunks, screenKey]);
 
   const finishReplay = useCallback(() => {
     // The wire marker only means delivery is done. xterm parses asynchronously;
@@ -183,11 +193,17 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     flushTerminalOutput();
     const generation = replayGeneration.current;
     terminal.current?.write("", () => {
-      if (generation === replayGeneration.current) setReplayPending(false);
+      if (generation === replayGeneration.current) {
+        checkpointReady.current = true;
+        terminal.current?.finishRestore();
+        setReplayPending(false);
+      }
     });
   }, [flushTerminalOutput]);
 
   const resetRunOutput = useCallback(() => {
+    forgetCheckpoint(screenKey);
+    checkpointReady.current = false;
     replayGeneration.current += 1;
     cursor.current = undefined;
     attachmentRef.current = undefined;
@@ -201,7 +217,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     pendingOutputBytes.current = 0;
     terminal.current?.reset();
     setReplayPending(true);
-  }, []);
+  }, [screenKey]);
 
   useEffect(() => {
     const next = open.session.latestStatus;
@@ -324,7 +340,20 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     setAttachmentId(undefined);
     setConnectionLabel("attaching");
     setError("");
-    void client.subscribe<SessionEventPayload>(open.hostProfileId, [], event => {
+    void (async () => {
+      if (!restoreAttempted.current) {
+        restoreAttempted.current = true;
+        const saved = await readCheckpoint(screenKey);
+        if (cancelled || generation !== replayGeneration.current) return;
+        const run = openRef.current.session.latestStatus;
+        if (saved && (!run || (saved.cursor.runId === run.runId && saved.cursor.runOrdinal === run.runOrdinal))) {
+          await terminal.current?.restore(saved);
+          if (cancelled || generation !== replayGeneration.current) return;
+          cursor.current = saved.cursor;
+        } else if (saved) forgetCheckpoint(screenKey);
+      }
+      if (cancelled || generation !== replayGeneration.current) return;
+      return client.subscribe<SessionEventPayload>(open.hostProfileId, [], event => {
       // A resync invalidates this subscription synchronously, before React
       // runs effect cleanup. Already queued heartbeat/output/ReplayDone must
       // not restore a tail cursor onto the freshly reset terminal.
@@ -334,7 +363,9 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         if (earlyEvents.length >= 256) { earlyOverflow = true; earlyEvents.length = 0; }
         if (!earlyOverflow) earlyEvents.push(event);
       } else if (event.subscriptionId === attached) handleEvent(event);
-    }).then(async (unsubscribe) => {
+      });
+    })().then(async (unsubscribe) => {
+      if (!unsubscribe) return;
       if (cancelled || generation !== replayGeneration.current) return unsubscribe();
       unsubscribeEvents = unsubscribe;
       try {
@@ -349,7 +380,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
           return;
         }
         attached = result.attachmentId;
-        if (earlyOverflow) {
+        if (earlyOverflow || (cursor.current && (cursor.current.runId !== result.runId || cursor.current.runOrdinal !== result.runOrdinal))) {
           resetRunOutput();
           setNotice(t("session.resynced"));
           setAttachEpoch(value => value + 1);
@@ -408,7 +439,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       if (unsubscribeEvents) void unsubscribeEvents();
       if (unsubscribeConnection) void unsubscribeConnection();
     };
-  }, [attachEpoch, client, handleEvent, open.hostProfileId, open.session.id, shouldAttach, resetRunOutput, t]);
+  }, [attachEpoch, client, handleEvent, open.hostProfileId, open.session.id, shouldAttach, resetRunOutput, screenKey, t]);
 
   useEffect(() => () => {
     window.clearTimeout(otherInputTimer.current);
@@ -676,6 +707,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       {shouldAttach && connectionLabel === "attaching" ? <p className="terminal-replay-status" role="status">{t("session.connection.attaching")}</p> : null}
       {connectionLabel === "failed" ? <button type="button" onClick={() => setAttachEpoch(value => value + 1)}>{t("session.retryAttach")}</button> : null}
       {shouldAttach ? <MobileTerminal
+        onRelease={releaseTerminal}
         ref={terminal}
         resizeEpoch={attachmentId}
         onInput={sendInput}

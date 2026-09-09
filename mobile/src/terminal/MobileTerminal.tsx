@@ -9,6 +9,8 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { FitAddon } from "@xterm/addon-fit";
+import { SerializeAddon } from "@xterm/addon-serialize";
+import { TerminalParserTail, type TerminalScreen } from "./terminalCheckpoint";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { installIosImeRouting, isIosKeyboard } from "./iosIme";
@@ -23,6 +25,7 @@ import "./mobile-terminal.css";
 export interface MobileTerminalProps {
   onInput?: (data: string) => void;
   onResize?: (cols: number, rows: number) => void;
+  onRelease?: (terminal: MobileTerminalHandle) => void;
   /** Forces a fresh size report after the remote attachment/owner changes. */
   resizeEpoch?: unknown;
   fontSize?: number;
@@ -39,11 +42,15 @@ export interface MobileTerminalHandle {
   /** Callback runs after xterm parses this write and all earlier queued writes. */
   write(data: string | Uint8Array, onParsed?: () => void): void;
   reset(): void;
+  capture(): Promise<TerminalScreen | undefined>;
+  restore(screen: TerminalScreen): Promise<void>;
+  finishRestore(): void;
 }
 
 export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalProps>(function MobileTerminal({
   onInput,
   onResize,
+  onRelease,
   resizeEpoch,
   fontSize = 14,
   theme = MOBILE_TERMINAL_THEMES.one.dark.xterm,
@@ -63,6 +70,13 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const keysRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const serializeRef = useRef<SerializeAddon>();
+  const parserTail = useRef(new TerminalParserTail());
+  const restoring = useRef(false);
+  const mouseEncoding = useRef(0);
+  const releaseRef = useRef(onRelease);
+  releaseRef.current = onRelease;
+  const handleRef = useRef<MobileTerminalHandle>();
   const inputRef = useRef(onInput);
   const resizeRef = useRef(onResize);
   const resizeFrameRef = useRef<number>();
@@ -90,9 +104,42 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   inputRef.current = onInput;
   resizeRef.current = onResize;
 
-  useImperativeHandle(ref, () => ({
+  useImperativeHandle(ref, () => {
+    const handle: MobileTerminalHandle = {
     write(data: string | Uint8Array, onParsed?: () => void) {
+      parserTail.current.advance(data);
       terminalRef.current?.write(data, onParsed);
+    },
+    capture() {
+      const terminal = terminalRef.current;
+      const serialize = serializeRef.current;
+      if (!terminal || !serialize) return Promise.resolve(undefined);
+      const pending = parserTail.current.snapshot();
+      return new Promise(resolve => terminal.write("", () => {
+        if (!pending) { resolve(undefined); return; }
+        try {
+          const encoding = mouseEncoding.current ? `\x1b[?${mouseEncoding.current}h` : "";
+          resolve({ content: serialize.serialize({ scrollback: 2_000 }) + encoding,
+            cols: terminal.cols, rows: terminal.rows, pending });
+        } catch { resolve(undefined); }
+      }));
+    },
+    restore(screen) {
+      const terminal = terminalRef.current;
+      if (!terminal) return Promise.resolve();
+      restoring.current = true;
+      terminal.resize(screen.cols, screen.rows);
+      parserTail.current.reset();
+      parserTail.current.advance(new Uint8Array(screen.pending));
+      return new Promise(resolve => {
+        terminal.write(screen.content);
+        terminal.write(new Uint8Array(screen.pending), resolve);
+      });
+    },
+    finishRestore() {
+      restoring.current = false;
+      lastReportedSize.current = undefined;
+      scheduleFitRef.current(true);
     },
     reset() {
       cancelPendingPaste();
@@ -101,9 +148,14 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       if (!terminal) return;
       // Fence the reset behind writes already queued in xterm, while writes
       // received after this call remain behind the reset sentinel.
-      terminal.write("", () => terminal.reset());
+      parserTail.current.reset();
+      restoring.current = false;
+      terminal.write("", () => { mouseEncoding.current = 0; terminal.reset(); });
     },
-  }), []);
+    };
+    handleRef.current = handle;
+    return handle;
+  }, []);
 
   const setShift = (active: boolean) => {
     shiftRef.current = active;
@@ -200,6 +252,20 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
+    const serialize = new SerializeAddon();
+    terminal.loadAddon(serialize);
+    serializeRef.current = serialize;
+    const encodingHandlers = [
+      terminal.parser.registerCsiHandler({ prefix: "?", final: "h" }, params => {
+        for (const mode of params) if (mode === 1006 || mode === 1016) mouseEncoding.current = mode;
+        return false;
+      }),
+      terminal.parser.registerCsiHandler({ prefix: "?", final: "l" }, params => {
+        if (params.includes(1006) || params.includes(1016)) mouseEncoding.current = 0;
+        return false;
+      }),
+      terminal.parser.registerEscHandler({ final: "c" }, () => { mouseEncoding.current = 0; return false; }),
+    ];
     terminal.open(container);
     const disposeIosIme = isIosKeyboard() && terminal.textarea
       ? installIosImeRouting(container, terminal.textarea, text => {
@@ -229,6 +295,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     positionSelectionMenuRef.current = positionSelectionMenu;
     const selectionScrolled = terminal.onScroll(() => positionSelectionMenu());
     const fitTerminal = (reportRemote: boolean) => {
+      if (restoring.current) return;
       fit.fit();
       positionSelectionMenu();
       if (!reportRemote || terminal.cols <= 0 || terminal.rows <= 0) return;
@@ -520,7 +587,6 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     fitRef.current = fit;
     return () => {
       cancelPendingPaste();
-      terminalRef.current = null;
       fitRef.current = null;
       scheduleFitRef.current = () => undefined;
       pendingRemoteReport.current = false;
@@ -553,7 +619,19 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       selectionScrolled.dispose();
       selectionChanged.dispose();
       input.dispose();
-      terminal.dispose();
+      // The Workspace fences delivery and queues its final output before capture.
+      // Keep only this detached renderer until that parser fence drains.
+      if (releaseRef.current && handleRef.current) {
+        releaseRef.current(handleRef.current);
+        terminal.write("", () => {
+          encodingHandlers.forEach(handler => handler.dispose());
+          terminal.dispose();
+        });
+      } else {
+        encodingHandlers.forEach(handler => handler.dispose());
+        terminal.dispose();
+      }
+      terminalRef.current = null;
     };
   }, []); // The terminal is a long-lived renderer; callback refs carry changing handlers.
 
