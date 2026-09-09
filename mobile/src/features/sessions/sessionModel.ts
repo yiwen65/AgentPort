@@ -15,10 +15,10 @@ export function activeSessionPriority(session: SessionSummary): number {
   return 3;
 }
 
-/** Mirrors the desktop Active Agent filter and ordering. */
+/** Active Sessions includes live, unarchived agents and shells with shared ordering. */
 export function activeAgentSessions(sessions: readonly SessionSummary[]): SessionSummary[] {
   return sessions
-    .filter((session) => session.hostAlive === true && session.adapterType !== "shell" && !session.archivedAt)
+    .filter((session) => session.hostAlive === true && !session.archivedAt)
     .sort((a, b) => {
       const priority = activeSessionPriority(a) - activeSessionPriority(b);
       if (priority !== 0) return priority;

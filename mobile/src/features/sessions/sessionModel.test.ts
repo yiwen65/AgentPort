@@ -22,16 +22,19 @@ function session(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
 }
 
 describe("V2 session model", () => {
-  it("uses desktop Active Agent filtering and priority order", () => {
+  it("includes live shells in Active Sessions with the shared priority order", () => {
     const result = activeAgentSessions([
       session("idle", { latestStatus: { runId: "r", runOrdinal: 1, sequence: 1, state: "idle", source: "hook", confidence: "high", occurredAt: "2026-09-02T00:02:00Z" } }),
       session("attention", { unreadAttention: true }),
       session("working", { latestStatus: { runId: "r", runOrdinal: 1, sequence: 1, state: "working", source: "hook", confidence: "high", occurredAt: "2026-09-02T00:01:00Z" } }),
       session("shell", { adapterType: "shell" }),
+      session("dead-shell", { adapterType: "shell", hostAlive: false }),
+      session("unknown-shell", { adapterType: "shell", hostAlive: undefined }),
+      session("archived-shell", { adapterType: "shell", archivedAt: "2026-09-02T00:03:00Z" }),
       session("dead", { hostAlive: false }),
       session("archived", { archivedAt: "2026-09-02T00:03:00Z" }),
     ]);
-    expect(result.map((item) => item.id)).toEqual(["attention", "working", "idle"]);
+    expect(result.map((item) => item.id)).toEqual(["attention", "working", "idle", "shell"]);
   });
 
   it("orders and hides installed quick-launch agents using desktop preferences", () => {

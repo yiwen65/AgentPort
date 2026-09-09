@@ -435,14 +435,18 @@ describe("V2 Session workspace", () => {
     expect(remote.request).toHaveBeenCalledWith("host-2", "session.list", { includeArchived: false });
   });
 
-  it("matches Active Agent filtering and desktop quick-start parameters", async () => {
+  it("includes live shells in Active Sessions and preserves desktop quick-start parameters", async () => {
     const remote = client();
     const onOpenSession = vi.fn();
     render(<SessionDashboard client={remote} onOpenSession={onOpenSession} />);
     expect(await screen.findByRole("button", { name: /Approval task/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Show active sessions" }));
     expect(screen.getByRole("button", { name: /Approval task/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Shell,/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Shell" }));
+    expect(onOpenSession).toHaveBeenCalledWith(expect.objectContaining({
+      session: expect.objectContaining({ id: "shell", adapterType: "shell" }),
+    }));
+    onOpenSession.mockClear();
     expect(screen.queryByRole("button", { name: /Dead agent/ })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Show projects" }));

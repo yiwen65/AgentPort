@@ -1085,7 +1085,6 @@ function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
       for (const session of project.sessions) {
         if (
           session.hostAlive &&
-          session.adapter !== "shell" &&
           !archiving.has(session.id)
         ) {
           projectBySession.set(session.id, project);

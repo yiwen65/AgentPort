@@ -171,6 +171,7 @@ function projects(): ProjectView[] {
         session("Inactive shell", "working", {
           projectId: "prj_inactive",
           adapter: "shell",
+          hostAlive: false,
           cwd: "/tmp/inactive",
         }),
       ],
@@ -250,12 +251,13 @@ describe("active Agent sidebar", () => {
     const items = screen.getAllByRole("listitem");
     expect(items.map((item) => item.textContent)).toEqual([
       expect.stringContaining("Needs review"),
+      expect.stringContaining("Shell terminal"),
       expect.stringContaining("Worktree idle"),
       expect.stringContaining("Unknown agent"),
     ]);
-    expect(screen.queryByText("Shell terminal")).toBeNull();
+    expect(screen.queryByText("Inactive shell")).toBeNull();
     expect(screen.queryByText("Dead agent")).toBeNull();
-    expect(screen.getByText("Apollo · main")).toBeTruthy();
+    expect(screen.getAllByText("Apollo · main")).toHaveLength(2);
     expect(screen.getByText("Apollo · feature/live-view")).toBeTruthy();
     expect(screen.getByText("Notes")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Apollo" })).toBeNull();
@@ -287,15 +289,19 @@ describe("active Agent sidebar", () => {
     );
 
     expect(selectSessionMock).toHaveBeenCalledWith("Needs review");
+    fireEvent.click(screen.getByRole("button", { name: /^Shell terminal，/ }));
+    expect(selectSessionMock).toHaveBeenCalledWith("Shell terminal");
   });
 
-  it("shows only the localized empty state when no live Agent remains", () => {
+  it("excludes dead and archiving shells from the active list", () => {
     setState({
+      archivingSessionIds: ["Archiving shell"],
       projects: [
         {
           ...projects()[0],
           sessions: [
-            session("Shell only", "working", { adapter: "shell" }),
+            session("Dead shell", "working", { adapter: "shell", hostAlive: false }),
+            session("Archiving shell", "working", { adapter: "shell" }),
             session("Dead only", "idle", { hostAlive: false }),
           ],
         },
