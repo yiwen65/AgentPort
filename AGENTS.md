@@ -11,12 +11,12 @@
 调试窗口运行的是 `target/debug/bundle/macos/AgentPort.app`，其前端资源在 Rust 编译期嵌入二进制。正确生效路径：
 
 ```bash
-# 构建前端、Host 与带 custom-protocol 的 GUI，安装进调试 .app，
-# 为当前 checkout 写入唯一 Debug Bundle ID，并重新签名。
-bash scripts/rebuild-debug-app.sh
-# 关闭旧 debug 窗口后，以独立实例打开。不能只用 `open`：若 release App
-# 同时运行，仍需确保打开的是工作区内的调试包。
-open -n "target/debug/bundle/macos/AgentPort.app"
+# 统一入口：构建并签名，然后仅关闭路径完全匹配的旧 GUI，再独立打开。
+python3 scripts/restart-debug-app.py
+# 已完成构建且签名有效时，可只重启 GUI：
+python3 scripts/restart-debug-app.py --skip-build
+# 仅查看目标，不构建、不发送信号、不打开窗口：
+python3 scripts/restart-debug-app.py --dry-run
 ```
 
 注意事项：
@@ -25,8 +25,8 @@ open -n "target/debug/bundle/macos/AgentPort.app"
 - 调试构建使用由 checkout 绝对路径派生的唯一 Bundle ID；不得改回发布版的 `com.agentport.desktop`，否则 macOS 可能把系统通知点击路由到另一个 AgentPort 实例。
 - 调试包显示名包含 checkout 名（例如 `AgentPort Debug - AgentSessions`），用于在通知来源、系统设置和多实例窗口中区分目标。
 - 手动替换 `.app/Contents/MacOS` 下的主程序或 `agentport-host` 后，必须对整个 `.app` 执行上面的 ad-hoc `codesign`；否则 macOS 会以 `SIGKILL` 终止 Host，表现为 `host exited during startup`。
-- Session 由独立的 `agentport-host` 进程承载，重启 GUI 窗口不会中断进行中的 session，可以放心重启。
+- Session 由独立的 `agentport-host` 进程承载。**重启必须使用上述统一脚本，不得自行拼接查杀命令。** 禁止 `pgrep -f "$APP"` / `pkill -f` / `killall`：GUI 路径也是 `agentport-host`、`agentport-connector` 等程序的前缀，会误杀 Session 并切断手机连接。只有精确关闭 GUI 才不会中断现有 Session。
 - 重启后截图确认窗口正常渲染（非空白）再交付。
-- 若同时存在 `dist-release/macos/AgentPort.app`，**不得**关闭它或任何 `agentport-host`。只定位并关闭 `target/debug/bundle/macos/AgentPort.app/Contents/MacOS/agentport` 的旧 GUI PID，再执行上面的 `open -n`。
+- 若同时存在 `dist-release/macos/AgentPort.app`，**不得**关闭它、任何 `agentport-host` 或 `agentport-connector`。统一脚本通过 `ps` 的可执行路径完全匹配当前 checkout 的旧 GUI，并在发送信号前再次核验 PID；关闭失败会报错，不会升级为强制查杀。
 - 不要以窗口标题判断启动目标（两个实例都叫 AgentPort）。交付前必须用 `ps` 确认新 GUI 进程的可执行路径为 `target/debug/bundle/macos/AgentPort.app/Contents/MacOS/agentport`；随后截图确认该窗口非白屏。
 - 开发期想走热更新就用 `tauri dev`（1420 端口），不适用上面的替换流程。

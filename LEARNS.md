@@ -5,9 +5,9 @@
 - Wrong approach: Selecting PIDs with a substring match on `.../Contents/MacOS/agentport` before restarting the debug GUI.
 - Why it failed: The path is also a prefix of `agentport-host`, so the command terminated a Session host and stopped that Session.
 - Recognition signal: The candidate PID list contains commands ending in `agentport-host --config ...`, not only the exact GUI executable.
-- Correct approach: Select from macOS `ps`'s executable column and require exact equality: `ps -axo pid=,comm= | awk -v bin="$DEBUG_BIN" '$2 == bin { print $1 }'`.
-- Prevention: Print and inspect the exact-match PID list before `kill`; never match the full argv by substring and never terminate any `agentport-host`.
-- Verified by: A substring match selected both the GUI and a Host; exact `comm` output distinguished the GUI path from `agentport-host`, and the affected Session required a restart.
+- Correct approach: Use `python3 scripts/restart-debug-app.py` (or `--skip-build` for an already signed bundle). It matches the complete `ps comm` path, rechecks each PID, and never signals helpers or escalates to SIGKILL.
+- Prevention: Use `--dry-run` to inspect targets and `python3 scripts/test-restart-debug-app.py` for the selector/reuse/failure guards. Do not hand-roll `pgrep -f`, `pkill`, or `killall` restarts; the prefix also matches the mobile Connector.
+- Verified by: The failure recurred on 2026-09-09: recorded `pgrep -f "$APP"; kill $pids` commands aligned with Host `sig=15` and GUI SIGTERM from bash. The replacement passes 8 isolated tests; actual GUI restart preserved all 20 observed Hosts, Connectors and direct Agent children, with a nonblank screenshot.
 
 ## `macOS debug App screenshot` — activate the exact debug process before judging a black capture
 
