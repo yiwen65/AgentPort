@@ -37,6 +37,8 @@ export interface MobileTerminalProps {
   showProbeOutput?: boolean;
   /** Hide transient output without unmounting xterm or changing its geometry. */
   obscured?: boolean;
+  recovering?: boolean;
+  recoveryLabel?: string;
 }
 
 export interface MobileTerminalHandle {
@@ -45,7 +47,7 @@ export interface MobileTerminalHandle {
   reset(): void;
   capture(): Promise<TerminalScreen | undefined>;
   restore(screen: TerminalScreen): Promise<void>;
-  finishRestore(): void;
+  finishRestore(onRendered?: () => void): void;
 }
 
 export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalProps>(function MobileTerminal({
@@ -60,6 +62,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   showHeading = true,
   showProbeOutput = true,
   obscured = false,
+  recovering = false,
+  recoveryLabel,
 }: MobileTerminalProps, ref) {
   const { t } = useTranslation();
   const [shortcutLayout, setShortcutLayout] = useState(loadShortcuts);
@@ -85,6 +89,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const lastReportedSize = useRef<{ cols: number; rows: number }>();
   const pendingRemoteReport = useRef(false);
   const scheduleFitRef = useRef<(reportRemote?: boolean) => void>(() => undefined);
+  const cancelRestoreRender = useRef<(() => void) | undefined>(undefined);
   const inputHandlerRef = useRef<(data: string) => void>(() => undefined);
   const invalidateIosImeRef = useRef<() => void>(() => undefined);
   const iosEmissionRef = useRef(false);
@@ -147,10 +152,23 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
         terminal.write(new Uint8Array(screen.pending), resolve);
       });
     },
-    finishRestore() {
+    finishRestore(onRendered) {
       restoring.current = false;
       lastReportedSize.current = undefined;
+      cancelRestoreRender.current?.();
       scheduleFitRef.current(true);
+      const terminal = terminalRef.current;
+      if (terminal && onRendered) {
+        const subscription = terminal.onRender(() => {
+          subscription.dispose();
+          cancelRestoreRender.current = undefined;
+          onRendered();
+        });
+        cancelRestoreRender.current = () => subscription.dispose();
+        // An empty replay may otherwise never paint. Register after the parser
+        // barrier and request an actual render, not a timer-based reveal.
+        terminal.refresh(0, terminal.rows - 1);
+      }
     },
     reset() {
       cancelPendingPaste();
@@ -600,6 +618,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       cancelPendingPaste();
       fitRef.current = null;
       scheduleFitRef.current = () => undefined;
+      cancelRestoreRender.current?.();
+      cancelRestoreRender.current = undefined;
       pendingRemoteReport.current = false;
       window.clearTimeout(orientationTimerRef.current);
       if (resizeFrameRef.current !== undefined) window.cancelAnimationFrame(resizeFrameRef.current);
@@ -732,7 +752,9 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   return (
     <section ref={sectionRef} className="mobile-terminal-spike" data-input-active={inputActive} aria-label={title} aria-hidden={obscured || undefined} style={{ visibility: obscured ? "hidden" : undefined }}>
       {showHeading ? <div className="mobile-terminal-heading"><h2>{title}</h2>{description ? <p>{description}</p> : null}</div> : null}
-      <div ref={containerRef} className="mobile-terminal-surface" role="application" aria-label={title} />
+      <div ref={containerRef} className="mobile-terminal-surface" role="application" aria-label={title}
+        aria-busy={recovering || undefined} data-recovering={recovering || undefined}
+        data-recovery-label={recovering ? (recoveryLabel ?? t("session.connection.attaching")) : undefined} />
       {hasSelection && !obscured ? <div ref={selectionMenuRef} className="mobile-terminal-selection" role="group" aria-label="Text selection">
         <button type="button" onMouseDown={event => event.preventDefault()} onClick={copySelection}>Copy</button>
         <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => terminalRef.current?.clearSelection()}>Clear</button>

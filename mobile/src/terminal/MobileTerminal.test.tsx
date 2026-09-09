@@ -28,6 +28,8 @@ const terminalHarness = vi.hoisted(() => ({
   resizeObserved: () => {},
   scrolledLines: [] as number[],
   writes: [] as (string | Uint8Array)[],
+  renderListeners: new Set<() => void>(),
+  refreshes: 0,
   resets: 0,
   pastes: [] as string[],
   scrollToTopCalls: 0,
@@ -84,6 +86,8 @@ vi.mock("@xterm/xterm", () => ({
       if (terminalHarness.queued) terminalHarness.writesQueue.push(parse); else parse();
     }
     reset() { terminalHarness.resets += 1; }
+    onRender(callback: () => void) { terminalHarness.renderListeners.add(callback); return { dispose() { terminalHarness.renderListeners.delete(callback); } }; }
+    refresh() { terminalHarness.refreshes += 1; }
     paste(data: string) { terminalHarness.pastes.push(data); terminalHarness.input(data); }
     scrollLines(rows: number) { terminalHarness.scrolledLines.push(rows); }
     scrollToTop() { terminalHarness.scrollToTopCalls += 1; }
@@ -97,6 +101,35 @@ vi.mock("@xterm/xterm", () => ({
 }));
 
 describe("MobileTerminal input accessory", () => {
+  it("covers recovery without hiding or replacing the focused terminal", () => {
+    const view = render(<MobileTerminal showProbeOutput={false} />);
+    const helper = terminalHarness.helper!;
+    helper.focus();
+    view.rerender(<MobileTerminal showProbeOutput={false} recovering recoveryLabel="Reconnecting" />);
+    expect(document.activeElement).toBe(helper);
+    const surface = view.container.querySelector(".mobile-terminal-surface")!;
+    expect(surface).toHaveAttribute("data-recovering", "true");
+    expect(surface).toHaveAttribute("data-recovery-label", "Reconnecting");
+    expect(surface).toHaveAttribute("aria-busy", "true");
+    expect(view.container.querySelector(".mobile-terminal-spike")).not.toHaveStyle({ visibility: "hidden" });
+    view.rerender(<MobileTerminal showProbeOutput={false} />);
+    expect(surface).not.toHaveAttribute("data-recovering");
+    expect(document.activeElement).toBe(helper);
+  });
+
+  it("finishes restoration only on a real render and cancels an obsolete render waiter", async () => {
+    const ref = createRef<MobileTerminalHandle>();
+    const view = render(<MobileTerminal ref={ref} showProbeOutput={false} />);
+    const old = vi.fn(), current = vi.fn();
+    act(() => { ref.current!.finishRestore(old); ref.current!.finishRestore(current); });
+    expect(old).not.toHaveBeenCalled(); expect(current).not.toHaveBeenCalled();
+    act(() => { for (const render of [...terminalHarness.renderListeners]) render(); });
+    expect(old).not.toHaveBeenCalled(); expect(current).toHaveBeenCalledTimes(1);
+    const disposed = vi.fn(); ref.current!.finishRestore(disposed);
+    view.unmount();
+    for (const render of [...terminalHarness.renderListeners]) render();
+    expect(disposed).not.toHaveBeenCalled();
+  });
   it("captures after queued writes during release, before disposal", async () => {
     const ref = createRef<MobileTerminalHandle>();
     let captured: ReturnType<MobileTerminalHandle["capture"]> | undefined;

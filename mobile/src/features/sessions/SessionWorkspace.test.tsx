@@ -18,10 +18,13 @@ const terminalHarness = vi.hoisted(() => ({
     onReachTop?: () => void;
     showHeading?: boolean;
     obscured?: boolean;
+    recovering?: boolean;
     theme?: { background?: string; foreground?: string };
   } | undefined,
   writes: [] as string[],
   restoreWait: undefined as Promise<void> | undefined,
+  deferPaint: false,
+  paintQueue: [] as (() => void)[],
   queued: false,
   writesQueue: [] as (() => void)[],
   resets: 0,
@@ -44,7 +47,9 @@ vi.mock("../../terminal/MobileTerminal", async () => {
         reset: () => { terminalHarness.resets += 1; },
         capture: async () => ({ content: terminalHarness.writes.join(""), cols: 47, rows: 53, pending: [] }),
         restore: async (saved: { content: string }) => { await terminalHarness.restoreWait; terminalHarness.writes.push(saved.content); },
-        finishRestore: () => undefined,
+        finishRestore: (painted?: () => void) => {
+          if (painted) { if (terminalHarness.deferPaint) terminalHarness.paintQueue.push(painted); else painted(); }
+        },
       }), []);
       const release = useRef(props.onRelease); release.current = props.onRelease;
       useImperativeHandle(ref, () => handle, [handle]);
@@ -177,6 +182,8 @@ describe("SessionWorkspace", () => {
     terminalHarness.writes = [];
     terminalHarness.queued = false;
     terminalHarness.restoreWait = undefined;
+    terminalHarness.deferPaint = false;
+    terminalHarness.paintQueue = [];
     terminalHarness.writesQueue = [];
     terminalHarness.resets = 0;
     terminalHarness.renders = 0;
@@ -521,6 +528,28 @@ describe("SessionWorkspace", () => {
     prompt.mockRestore();
   });
 
+  it("covers foreground replay until the matching parsed frame has rendered", async () => {
+    const { client, request } = setupClient();
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    terminalHarness.deferPaint = true;
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    visibility.mockReturnValue("hidden"); fireEvent(document, new Event("visibilitychange"));
+    visibility.mockReturnValue("visible"); fireEvent(document, new Event("visibilitychange"));
+    expect(terminalHarness.props?.recovering).toBe(true);
+    expect(terminalHarness.props?.obscured).toBe(false);
+    await waitFor(() => expect(request.mock.calls.filter(([, m]) => m === "session.attach")).toHaveLength(2));
+    await waitFor(() => expect(terminalHarness.paintQueue).toHaveLength(1));
+    expect(terminalHarness.props?.recovering).toBe(true);
+    visibility.mockReturnValue("hidden"); fireEvent(document, new Event("visibilitychange"));
+    visibility.mockReturnValue("visible"); fireEvent(document, new Event("visibilitychange"));
+    await waitFor(() => expect(terminalHarness.paintQueue).toHaveLength(2));
+    act(() => terminalHarness.paintQueue.shift()!());
+    expect(terminalHarness.props?.recovering).toBe(true); // old generation cannot reveal
+    act(() => terminalHarness.paintQueue.shift()!());
+    expect(terminalHarness.props?.recovering).toBe(false);
+  });
+
   it.each([false, true])("replaces a suspended connection and resumes once (connection events delivered: %s)", async delivered => {
     const { client, request, emit } = setupClient();
     if (delivered) {
@@ -563,7 +592,8 @@ describe("SessionWorkspace", () => {
       await new Promise((resolve) => requestAnimationFrame(resolve));
     });
     act(() => connection({ profileId: "host-1", state: "reconnecting" }));
-    fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
+    // Late native input must remain fenced even while the terminal is veiled.
+    act(() => terminalHarness.props?.onInput?.("你好\r"));
     expect(request.mock.calls.some(([, method]) => method === "session.input")).toBe(false);
     act(() => connection({ profileId: "host-1", state: "connected" }));
     await waitFor(() => expect(request.mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(2));

@@ -21,6 +21,7 @@
 }
 
 .mobile-terminal-surface {
+  position: relative;
   flex: 1 1 auto;
   height: min(44vh, 420px);
   min-height: 260px;
@@ -32,6 +33,19 @@
   touch-action: none;
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* Keep the real renderer and focused textarea mounted and paintable. Only
+   cover its recovery frames; hiding xterm itself can collapse the iOS keyboard. */
+.mobile-terminal-surface[data-recovering]::after {
+  content: attr(data-recovery-label);
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  background: var(--terminal-bg);
+  color: var(--terminal-fg);
 }
 
 .mobile-terminal-keys {

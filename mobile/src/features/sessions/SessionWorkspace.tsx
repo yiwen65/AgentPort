@@ -101,6 +101,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   const pendingOutputChunks = useRef<Uint8Array[]>([]);
   const pendingOutputBytes = useRef(0);
   const [replayPending, setReplayPending] = useState(shouldAttach);
+  const [recoveryVeil, setRecoveryVeil] = useState(false);
   const replayGeneration = useRef(0);
   const resizeOwnershipEnabled = useRef(true);
   const sourceDeviceId = useRef(mobileDeviceId());
@@ -116,6 +117,8 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   }, [active]);
 
   const beginRecovery = () => {
+    setRecoveryVeil(true);
+    setReplayPending(true);
     recoveryPending.current = true;
     needsReattach.current = true;
     replayGeneration.current += 1;
@@ -225,7 +228,9 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     terminal.current?.write("", () => {
       if (generation === replayGeneration.current) {
         checkpointReady.current = true;
-        terminal.current?.finishRestore();
+        terminal.current?.finishRestore(() => {
+          if (generation === replayGeneration.current) setRecoveryVeil(false);
+        });
         setReplayPending(false);
       }
     });
@@ -479,6 +484,8 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     void client.onConnectionState((event) => {
       if (cancelled || event.profileId !== open.hostProfileId) return;
       if (event.state === "reconnecting" || event.state === "disconnected" || event.state === "failed") {
+        setRecoveryVeil(true);
+        setReplayPending(true);
         needsReattach.current = true;
         replayGeneration.current += 1;
         attachmentRef.current = undefined;
@@ -768,7 +775,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         </button>
       </section> : null}
       {connectionLabel === "reconnecting" ? <p className="terminal-status-line" role="status">{t("status.reconnecting")}</p> : null}
-      {shouldAttach && connectionLabel === "attaching" ? <p className="terminal-replay-status" role="status">{t("session.connection.attaching")}</p> : null}
+      {shouldAttach && (connectionLabel === "attaching" || (recoveryVeil && connectionLabel === "live")) ? <p className="terminal-replay-status" role="status">{t("session.connection.attaching")}</p> : null}
       {connectionLabel === "failed" ? <button type="button" onClick={retryConnection}>{t("session.retryAttach")}</button> : null}
       {shouldAttach ? <MobileTerminal
         onRelease={releaseTerminal}
@@ -783,6 +790,8 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         showHeading={false}
         showProbeOutput={false}
         obscured={busyAction === "stop"}
+        recovering={recoveryVeil || !pageVisible}
+        recoveryLabel={t(`session.connection.${connectionLabel === "failed" ? "failed" : connectionLabel === "reconnecting" ? "reconnecting" : "attaching"}`)}
       /> : null}
 
       {actionsOpen ? <Modal title={open.session.title} onClose={closeActions} className="terminal-actions-sheet" blurBackdrop={false}
