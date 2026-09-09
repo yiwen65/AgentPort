@@ -3,7 +3,7 @@
 - Created: 2026-09-09
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: blocked
+- Overall status: submitted; network-condition acceptance remains unverified
 - Source: 用户确认独立标准测试账号、文件隔离、受保护配对网页和仅供网页的 HTTPS 公网入口；系统授权、费用另行确认。
 
 <!-- task-doc-section:background-goal -->
@@ -13,7 +13,7 @@
 <!-- task-doc-section:scope-non-goals -->
 ## Scope and non-goals
 复用桌面程序、Relay 和手机粘贴配对码功能。隔离演示账号；受保护入口按需生成短期码；验收外网连接、限流和撤销。
-不停止现有 Host/Session，不开放 SSH，不复制私人凭据，不购买服务，不自动提交审核，不使用子代理。
+不停止现有 Host/Session，不开放 SSH，不复制私人凭据，不购买服务，不使用子代理。用户后续明确授权提交 TestFlight 外部测试审核；不包含 App Store 公开发布。
 
 <!-- task-doc-section:facts-evidence -->
 ## Confirmed facts and evidence
@@ -33,7 +33,7 @@
 - Assumption: Tailscale Funnel 可用于审核 HTTPS；待账户能力及真实外网测试验证。
 - Open question: 系统管理员授权如何完成；不可在聊天获取密码。
 - Open question: 专用演示 agent 是否需服务凭据；不得复用个人凭据，先保留 Shell 演示。
-- Open question: 审核联系人、反馈邮箱尚未提供。
+- Resolved: 用户已在 App Store Connect 填写审核联系人和反馈邮箱；不在仓库记录个人联系方式。
 
 <!-- task-doc-section:acceptance-criteria -->
 ## Acceptance criteria
@@ -126,9 +126,9 @@
   - 真实外网闭环通过；关停和设备撤销有效；个人 Session 未受影响。
 - Verification method:
   - 真机测试、权限复核、关闭入口/撤销测试。
-- Validation evidence: 用户设备已配对并建立演示通道（devices=1, activeChannels=1），但蜂窝条件与终端显示/输入仍待用户明确确认。临时原生 Rust 身份完成实际配对、连接、仅撤销自己、原连接关闭、重连被拒；原用户设备数保持 1，不影响其授权。关闭任务独占的 Funnel 443 两条路由后 No serve config，公网探针不能访问；恢复存在约数十秒传播延迟，随后 HTTPS 匿名 401 正常。已有 Mac 主 GUI/connector 未重启；未终止任何 Host。测试账号已启用仅接通电源有效、截至网页有效期的 caffeinate 断言；不覆盖合盖或重启。
-- Blocker: 等待用户确认演示终端可显示/输入及测试网络；审核联系人和提交资料尚未齐备。
-- Unblock condition: 用户完成真机确认并补齐联系信息；再交付审核备注，不自动提交。
+- Validation evidence: 用户设备已配对并建立演示通道（devices=1, activeChannels=1）；用户随后确认正常并授权提交，但未明确蜂窝或独立外网条件。临时原生 Rust 身份完成实际配对、连接、仅撤销自己、原连接关闭、重连被拒；原用户设备数保持 1，不影响其授权。关闭任务独占的 Funnel 443 两条路由后 No serve config，公网探针不能访问；恢复存在约数十秒传播延迟，随后 HTTPS 匿名 401 正常。已有 Mac 主 GUI/connector 未重启；未终止任何 Host。测试账号已启用仅接通电源有效、截至网页有效期的 caffeinate 断言；不覆盖合盖或重启。
+- Blocker: 蜂窝或独立外网测试条件尚未明确；不再阻塞用户已授权的审核提交。
+- Unblock condition: 补充独立网络条件证据。终端正常确认、联系信息补齐与审核提交均已完成。
 
 ### [x] T-005 — 独立演示 Relay 与公网 WSS 路由
 - Status: done
@@ -175,6 +175,7 @@
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
-- Result: partial
-- Evidence: T-001、T-002、T-003、T-005 通过；gateway 23 项测试、用户配对/连接、独立身份实际撤销和公网入口恢复均有证据。
-- Limitations: T-004 等待用户确认终端显示/输入、网络和联系人；未提交 Apple。无重启后自动恢复配置，Mac 必须保持运行、接通电源并勿合盖；网页有效期为创建起 7 天，最多 3 个设备、30 次发码尝试。已配对设备不会因网页凭据过期自动撤销。
+- Result: TestFlight external beta submitted; T-004 network-condition evidence remains partial.
+- Evidence: T-001、T-002、T-003、T-005 通过；gateway 23 项测试、用户配对/连接、独立身份实际撤销和公网入口恢复均有证据。用户确认正常后明确授权审核提交，并自行补齐联系信息。2026-09-09 16:03 CST，App Store Connect external 组显示 1 Build，0.1.0 (1) 为 Waiting for Review；尚非审核通过。
+- Submission details: 补齐英文 Beta App Description、What to Test（含 HTTPS 入口和 120 秒粘贴配对流程），专用网站账号只填入 Sign-In Information。电话按 Apple 错误提示补中国 +86 国际格式后提交成功。未提供 macOS 密码、私人 Host 或 Relay token；未开启公开邀请链接，组内仍为 0 Testers。提交前 demo connector connected、HTTPS 匿名 401。
+- Limitations: T-004 仍缺明确蜂窝/独立网络条件，不以本机探针替代；已提交 Apple 外部测试审核而非公开发布。无重启后自动恢复配置，Mac 必须保持运行、接通电源并勿合盖；网页有效期为创建起 7 天，最多 3 个设备、30 次发码尝试。已配对设备不会因网页凭据过期自动撤销。
