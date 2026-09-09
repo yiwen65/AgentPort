@@ -55,6 +55,16 @@ describe("tree drag payload round-trip", () => {
     });
   });
 
+  it("accepts file URLs exposed as plain text or DownloadURL", () => {
+    const text = fakeDataTransfer();
+    text.setData("text/plain", "file:///Users/w/Pictures/a%20b.png");
+    expect(readDragPayload(text)).toEqual({ path: "/Users/w/Pictures/a b.png", isDir: false });
+
+    const download = fakeDataTransfer();
+    download.setData("DownloadURL", "image/png:a b.png:file:///Users/w/Pictures/a%20b.png");
+    expect(readDragPayload(download)).toEqual({ path: "/Users/w/Pictures/a b.png", isDir: false });
+  });
+
   it("owns file-like drops even before a path can be decoded", () => {
     const fileDrop = { types: ["Files"], getData: () => "", files: [{}] } as unknown as DataTransfer;
     expect(readDragPayload(fileDrop)).toBeNull();

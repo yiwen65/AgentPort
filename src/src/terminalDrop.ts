@@ -32,6 +32,23 @@ export function writeDragPayload(dt: DataTransfer, payload: TreeDragPayload): vo
   dt.effectAllowed = "copy";
 }
 
+function pathFromFileUrl(value: string): string | null {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "file:") return null;
+    const path = decodeURIComponent(url.pathname);
+    return path.startsWith("/") ? path : null;
+  } catch {
+    return null;
+  }
+}
+
+function pathFromDownloadUrl(value: string): string | null {
+  const parts = value.split(":");
+  if (parts.length < 3) return null;
+  return pathFromFileUrl(parts.slice(2).join(":"));
+}
+
 export function readDragPayload(dt: DataTransfer): TreeDragPayload | null {
   const raw = dt.getData(TREE_DND_MIME);
   if (raw) {
@@ -54,19 +71,17 @@ export function readDragPayload(dt: DataTransfer): TreeDragPayload | null {
   for (const line of uriList.split(/\r?\n/)) {
     const value = line.trim();
     if (!value || value.startsWith("#")) continue;
-    try {
-      const url = new URL(value);
-      if (url.protocol === "file:") {
-        const path = decodeURIComponent(url.pathname);
-        if (path.startsWith("/")) return { path, isDir: false };
-      }
-    } catch {
-      // Continue to the validated plain-text fallback below.
-    }
+    const path = pathFromFileUrl(value);
+    if (path) return { path, isDir: false };
   }
+  const downloadUrl = dt.getData("DownloadURL");
+  const downloadPath = pathFromDownloadUrl(downloadUrl);
+  if (downloadPath) return { path: downloadPath, isDir: false };
   // Fallback: a dragged text snippet that is itself an absolute path (e.g.
   // selected text from the terminal or another app).
   const text = dt.getData("text/plain").trim();
+  const textFilePath = pathFromFileUrl(text);
+  if (textFilePath) return { path: textFilePath, isDir: false };
   if (text.startsWith("/") && !text.includes("\n")) {
     return { path: text, isDir: false };
   }
