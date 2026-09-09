@@ -37,6 +37,31 @@ describe("V2 Session workspace", () => {
   beforeEach(async () => { localStorage.clear(); await i18n.changeLanguage("en-US"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
+  it("hides a confirmed Remove during slow stop, survives stale refresh, and restores on failure", async () => {
+    const remote = client();
+    const original = vi.mocked(remote.request).getMockImplementation()!;
+    let fail!: (error: Error) => void;
+    vi.mocked(remote.request).mockImplementation((...args) => args[1] === "session.archive"
+      ? new Promise((_, reject) => { fail = reject; }) : original(...args));
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    fireEvent.contextMenu(await screen.findByRole("button", { name: "Approval task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approval task" })).not.toBeInTheDocument();
+    expect(screen.getByText("Stopping and removing session in the background…")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "Approval task" })).not.toBeInTheDocument();
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Shell" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("Shell");
+    await act(async () => fail(new Error("stop failed")));
+    expect(await screen.findByRole("button", { name: "Approval task" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Approval task: stop failed");
+    expect(screen.getByRole("dialog")).toHaveTextContent("Shell");
+    expect(vi.mocked(remote.request).mock.calls.some(call => call[1] === "session.archives.delete")).toBe(false);
+  });
+
   it("restores the inner scroller after device data arrives and persists it, not window scroll", async () => {
     const key = (id: string) => `agentport-mobile-v2:workspace:${id}`;
     localStorage.setItem(key("host-1"), JSON.stringify({ scrollTop: 240 }));

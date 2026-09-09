@@ -845,6 +845,32 @@ export async function archiveSessionFlow(sessionId: string) {
   }
 }
 
+// Leave the removed pane immediately; process cleanup still runs to completion.
+// Restore only if cleanup failed and the user has not navigated elsewhere.
+function leaveRemovingSession(sessionId: string): () => void {
+  const before = getState();
+  const layout = visiblePaneLayout(before.terminalLayout, before.activeSessionId);
+  if (!layoutContains(layout, sessionId)) return () => undefined;
+  commitPaneLayout(removePane(layout, sessionId), {
+    maximizedSessionId: null,
+    acknowledgeFocused: false,
+    previousLayout: layout,
+  });
+  if (getState().activeSessionId === null) {
+    const current = getState();
+    const next = flattenSessions(current.projects).find(session =>
+      session.id !== sessionId && !current.archivingSessionIds.includes(session.id));
+    if (next) selectSession(next.id);
+  }
+  const intent = sessionSelectionIntent;
+  const pendingLayout = getState().terminalLayout;
+  return () => {
+    if (sessionSelectionIntent !== intent || !samePaneLayout(getState().terminalLayout, pendingLayout)) return;
+    commitPaneLayout(layout, { maximizedSessionId: before.maximizedSessionId,
+      acknowledgeFocused: false, previousLayout: pendingLayout });
+  };
+}
+
 export async function removeSessionFlow(
   sessionId: string,
   options: { confirm?: boolean } = {},
@@ -865,8 +891,11 @@ export async function removeSessionFlow(
 
   const wasActive = initial.activeSessionId === sessionId;
   setSessionArchiving(sessionId, true);
+  const restorePane = leaveRemovingSession(sessionId);
+  let archived = false;
   try {
     await api.archiveSession(sessionId);
+    archived = true;
     await api.deleteArchivedSession(sessionId);
     disposeHandle(sessionId);
     clearSessionScopedState(sessionId);
@@ -881,6 +910,8 @@ export async function removeSessionFlow(
     void refreshProjects();
   } catch (e) {
     setSessionArchiving(sessionId, false);
+    if (!archived) restorePane();
+    else void refreshProjects();
     toast(
       i18n.t("session:flow.removeFailed", { detail: errorText(e) }),
       "error",

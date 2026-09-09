@@ -181,6 +181,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   const [openingRecent, setOpeningRecent] = useState<string>();
   const recentOpening = useRef(false);
   const [rowActions, setRowActions] = useState<{ hostId: string; session: SessionSummary }>();
+  const [removingSessions, setRemovingSessions] = useState<string[]>([]);
   const refreshEpoch = useRef(0);
   const refreshes = useRef(new Map<string, { again: boolean; promise: Promise<void> }>());
   const manualUpdates = useRef(new Set<string>());
@@ -409,7 +410,9 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     if (selectedDeviceId) persistWorkspace(selectedDeviceId, next);
   }, [selectedDeviceId]);
 
-  const sessions = useMemo(() => snapshot?.sessions.filter(session => !session.archivedAt) ?? EMPTY_SESSIONS, [snapshot?.sessions]);
+  const sessions = useMemo(() => snapshot?.sessions.filter(session => !session.archivedAt
+    && !removingSessions.includes(JSON.stringify([snapshot.deviceId, session.id]))) ?? EMPTY_SESSIONS,
+  [snapshot?.sessions, snapshot?.deviceId, removingSessions]);
   const sessionsByProject = useMemo(() => {
     const grouped = new Map<string, SessionSummary[]>();
     for (const session of sessions) {
@@ -550,6 +553,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
       {!loading && hosts.length === 0 ? <div className="state-card" role="status">{t("dashboard.noHosts")}</div> : null}
       {selectedHost && selectedHost.connectionState !== "connected" && !updateFailed && !updateBusy ? <div className="state-note" role="status">{t(`status.${selectedHost.connectionState as ConnectionState}`)} — {t("dashboard.cached")}</div> : null}
       {updateFailed && !updateBusy ? <p className="dashboard-refresh-error" role="alert"><button type="button" onClick={() => void updateSelectedDevice()}>{t("dashboard.updateFailed")}</button></p> : null}
+      {removingSessions.some(key => JSON.parse(key)[0] === selectedDeviceId) ? <p className="state-note" role="status">{t("session.removing")}</p> : null}
       {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
       {notificationError ? <p className="state-note" role="status">{notificationError}</p> : null}
 
@@ -588,7 +592,17 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         </ul>
       </Modal> : null}
 
-      {rowActions && rowActions.hostId === selectedDeviceId ? <SessionRowActions session={rowActions.session} hostId={rowActions.hostId} client={client} onClose={() => setRowActions(undefined)} onChanged={() => void refreshDevice(rowActions.hostId)} /> : null}
+      {rowActions && rowActions.hostId === selectedDeviceId ? <SessionRowActions
+        key={JSON.stringify([rowActions.hostId, rowActions.session.id])}
+        session={rowActions.session} hostId={rowActions.hostId} client={client}
+        onClose={() => setRowActions(current => current?.hostId === rowActions.hostId && current.session.id === rowActions.session.id ? undefined : current)}
+        onChanged={() => refreshDevice(rowActions.hostId)}
+        onRemovalPending={pending => {
+          const key = JSON.stringify([rowActions.hostId, rowActions.session.id]);
+          setRemovingSessions(current => pending ? [...new Set([...current, key])] : current.filter(value => value !== key));
+        }}
+        onRemovalError={message => setActionError(`${rowActions.session.title}: ${message}`)}
+      /> : null}
 
       {workspace.recentOpen ? <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) updateWorkspace({ ...workspace, recentOpen: false }); }}>
         <section className="modal-sheet recent-sheet" role="dialog" aria-modal="true" aria-labelledby="recent-title">

@@ -121,6 +121,7 @@ describe("selectSession", () => {
       dialog: null,
       confirm: null,
       toasts: [],
+      archivingSessionIds: [],
     });
   });
 
@@ -224,6 +225,72 @@ describe("selectSession", () => {
     finish();
     await stopping;
     expect(getState().toasts.slice(-1)[0]?.kind).toBe("success");
+  });
+
+  it("leaves the removed active pane before the safe stop completes", async () => {
+    let finish!: () => void;
+    apiMock.archiveSession.mockReturnValueOnce(new Promise<void>(resolve => { finish = resolve; }));
+    apiMock.deleteArchivedSession.mockResolvedValueOnce(undefined);
+    apiMock.listProjects.mockResolvedValueOnce(projectWith(newSession));
+    setState({ projects: projectWith(oldSession, newSession) });
+    const pending = removeSessionFlow(oldSession.id);
+    expect(getState().activeSessionId).toBe(newSession.id);
+    expect(getState().archivingSessionIds).toContain(oldSession.id);
+    expect(apiMock.deleteArchivedSession).not.toHaveBeenCalled();
+    finish(); await pending;
+    expect(apiMock.deleteArchivedSession).toHaveBeenCalledWith(oldSession.id);
+  });
+
+  it("restores a removed pane on stop failure without stealing later navigation", async () => {
+    let fail!: (error: Error) => void;
+    apiMock.archiveSession.mockReturnValueOnce(new Promise<void>((_, reject) => { fail = reject; }));
+    setState({ projects: projectWith(oldSession, newSession) });
+    const pending = removeSessionFlow(oldSession.id);
+    expect(getState().activeSessionId).toBe(newSession.id);
+    fail(new Error("stop failed")); await pending;
+    expect(getState().activeSessionId).toBe(oldSession.id);
+    expect(getState().archivingSessionIds).not.toContain(oldSession.id);
+
+    apiMock.archiveSession.mockReturnValueOnce(new Promise<void>((_, reject) => { fail = reject; }));
+    const second = removeSessionFlow(oldSession.id);
+    selectSession(newSession.id);
+    fail(new Error("stop failed")); await second;
+    expect(getState().activeSessionId).toBe(newSession.id);
+  });
+
+  it("leaves an empty workspace while its only Session stops and restores on failure", async () => {
+    let fail!: (error: Error) => void;
+    apiMock.archiveSession.mockReturnValueOnce(new Promise<void>((_, reject) => { fail = reject; }));
+    setState({ projects: projectWith(oldSession) });
+    const pending = removeSessionFlow(oldSession.id);
+    expect(getState().activeSessionId).toBeNull();
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([]);
+    fail(new Error("stop failed")); await pending;
+    expect(getState().activeSessionId).toBe(oldSession.id);
+  });
+
+  it("removes a nonfocused split pane immediately and restores the split on stop failure", async () => {
+    let fail!: (error: Error) => void;
+    apiMock.archiveSession.mockReturnValueOnce(new Promise<void>((_, reject) => { fail = reject; }));
+    setState({ projects: projectWith(oldSession, newSession) });
+    splitSessionIntoPane(oldSession.id, newSession.id, "right");
+    const layout = getState().terminalLayout;
+    const pending = removeSessionFlow(oldSession.id);
+    expect(getState().activeSessionId).toBe(newSession.id);
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([newSession.id]);
+    fail(new Error("stop failed")); await pending;
+    expect(getState().terminalLayout).toEqual(layout);
+  });
+
+  it("does not restore a live pane when archive succeeded but permanent delete failed", async () => {
+    apiMock.archiveSession.mockResolvedValueOnce(undefined);
+    apiMock.deleteArchivedSession.mockRejectedValueOnce(new Error("delete failed"));
+    apiMock.listProjects.mockResolvedValueOnce(projectWith(newSession));
+    setState({ projects: projectWith(oldSession, newSession) });
+    await removeSessionFlow(oldSession.id);
+    expect(getState().activeSessionId).toBe(newSession.id);
+    expect(getState().toasts.slice(-1)[0]?.kind).toBe("error");
+    expect(apiMock.listProjects).toHaveBeenCalled();
   });
 
   it("permanently removes a Session after the existing row confirmation", async () => {

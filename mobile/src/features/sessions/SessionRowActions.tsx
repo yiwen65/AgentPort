@@ -5,13 +5,16 @@ import type { RemoteClient } from "../../protocol/remoteClient";
 import type { SessionSummary } from "./types";
 
 type Action = "rename" | "pin" | "stop" | "archive" | "remove";
-export function SessionRowActions({ session, hostId, client, onClose, onChanged }: {
-  session: SessionSummary; hostId: string; client: RemoteClient; onClose: () => void; onChanged: () => void;
+export function SessionRowActions({ session, hostId, client, onClose, onChanged, onRemovalPending, onRemovalError }: {
+  session: SessionSummary; hostId: string; client: RemoteClient; onClose: () => void; onChanged: () => void | Promise<void>;
+  onRemovalPending?: (pending: boolean) => void;
+  onRemovalError?: (message: string) => void;
 }) {
   const { t } = useTranslation();
   const [action, setAction] = useState<Exclude<Action, "pin" | "stop">>();
   const [title, setTitle] = useState(session.title);
   const [busy, setBusy] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const [error, setError] = useState("");
   const submitted = useRef(false);
   const archived = useRef(Boolean(session.archivedAt));
@@ -20,6 +23,8 @@ export function SessionRowActions({ session, hostId, client, onClose, onChanged 
     submitted.current = true;
     setBusy(true);
     setError("");
+    const backgroundRemoval = name === "remove" && Boolean(onRemovalPending && onRemovalError);
+    if (backgroundRemoval) { setRemoving(true); onRemovalPending?.(true); }
     try {
       const params = { sessionId: session.id };
       if (name === "rename") await client.request(hostId, "session.rename", { ...params, title: title.trim() });
@@ -32,14 +37,21 @@ export function SessionRowActions({ session, hostId, client, onClose, onChanged 
         }
         if (name === "remove") await client.request(hostId, "session.archives.delete", params);
       }
-      onChanged();
+      await onChanged();
       onClose();
     } catch (failure) {
       const message = failure && typeof failure === "object" && "message" in failure ? String(failure.message) : String(failure);
-      setError((archived.current && name === "remove" ? t("session.removeArchived") + " " : "") + message);
-      onChanged();
-    } finally { submitted.current = false; setBusy(false); }
+      const detail = (archived.current && name === "remove" ? t("session.removeArchived") + " " : "") + message;
+      setError(detail);
+      if (backgroundRemoval) { onRemovalError?.(detail); onClose(); }
+      await onChanged();
+    } finally {
+      submitted.current = false;
+      setBusy(false);
+      if (backgroundRemoval) onRemovalPending?.(false);
+    }
   };
+  if (removing) return null;
   return <Modal title={session.title} onClose={onClose} className="session-row-actions">
     {error ? <p className="inline-error" role="alert">{error}</p> : null}
     {action ? <form onSubmit={event => { event.preventDefault(); void run(action); }}>

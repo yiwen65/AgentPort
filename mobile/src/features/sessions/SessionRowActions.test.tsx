@@ -14,6 +14,40 @@ function setup() {
   render(<SessionRowActions session={session} hostId="test-host" client={{ request } as unknown as RemoteClient} onClose={onClose} onChanged={vi.fn()} />);
   return { request, onClose };
 }
+it("dismisses Remove immediately but keeps it pending until safe deletion and refresh finish", async () => {
+  let finish!: () => void, refresh!: () => void;
+  const request = vi.fn().mockReturnValueOnce(new Promise<void>(resolve => { finish = resolve; })).mockResolvedValue({});
+  const onChanged = vi.fn(() => new Promise<void>(resolve => { refresh = resolve; }));
+  const onRemovalPending = vi.fn(), onRemovalError = vi.fn(), onClose = vi.fn();
+  render(<SessionRowActions session={session} hostId="test-host" client={{ request } as unknown as RemoteClient}
+    onClose={onClose} onChanged={onChanged} onRemovalPending={onRemovalPending} onRemovalError={onRemovalError} />);
+  fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+  fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(onRemovalPending).toHaveBeenCalledExactlyOnceWith(true);
+  expect(request.mock.calls.map(call => call[1])).toEqual(["session.archive"]);
+  await act(async () => finish());
+  expect(request.mock.calls.map(call => call[1])).toEqual(["session.archive", "session.archives.delete"]);
+  expect(onRemovalPending).not.toHaveBeenCalledWith(false);
+  await act(async () => refresh());
+  expect(onRemovalPending).toHaveBeenLastCalledWith(false);
+  expect(onClose).toHaveBeenCalledOnce();
+});
+
+it("restores pending visibility and reports a background stop failure", async () => {
+  let fail!: (error: Error) => void;
+  const request = vi.fn(() => new Promise<void>((_, reject) => { fail = reject; }));
+  const onRemovalPending = vi.fn(), onRemovalError = vi.fn();
+  render(<SessionRowActions session={session} hostId="test-host" client={{ request } as unknown as RemoteClient}
+    onClose={vi.fn()} onChanged={vi.fn()} onRemovalPending={onRemovalPending} onRemovalError={onRemovalError} />);
+  fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+  fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+  await act(async () => fail(new Error("stop failed")));
+  expect(onRemovalError).toHaveBeenCalledWith("stop failed");
+  expect(onRemovalPending.mock.calls).toEqual([[true], [false]]);
+  expect(request).toHaveBeenCalledOnce();
+});
+
 it("requires permanent-delete confirmation and archives/stops before deleting history", async () => {
   const { request, onClose } = setup();
   fireEvent.click(screen.getByRole("button", { name: "Remove" }));
