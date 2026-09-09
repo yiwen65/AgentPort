@@ -2,7 +2,10 @@
 
 The mobile app uses a fixed body/root frame. `.main-content` owns dashboard
 vertical scrolling; the document must not scroll. The toolbar remains sticky
-inside that scroller. Session viewport and IME code are unchanged.
+inside that scroller. The scroller uses `overscroll-behavior-y: none`: `contain`
+prevents scroll chaining but still allows iOS's local rubber-band overscroll,
+which drags the sticky toolbar downward and exposes empty space above it.
+Session viewport and IME code are unchanged.
 
 `SessionDashboard` saves the inner offset per device, restores it only after the
 matching device snapshot is committed, and does not restore again on polling.
@@ -38,6 +41,28 @@ On iPhone 17 Pro Max / iOS 26.6, 440 × 956 CSS viewport:
 The precise WebKit internal trigger for the original excess height was not
 established. Keyboard-open/close, rotation, and terminal IME physical regression
 coverage is not complete; do not infer it from the dashboard captures.
+
+## iPhone boundary-bounce verification (2026-09-09)
+
+A separate physical down-pull regression remained despite the fixed root:
+1,000 baseline samples showed `.main-content.scrollTop` reaching **−264** and
+the sticky toolbar moving down **264 CSS px**. Root scrollY, main top and visual
+viewport offset stayed 0; root height stayed 956 and scale stayed 1. Thus this
+was inner-scroller rubber-banding, not the earlier root-height defect.
+
+Changing only the inner scroller's overscroll policy from `contain` to `none`
+yielded 2,021 physical gesture samples with scrollTop **0…1069**, toolbar top
+always 0 and no bad frames. Normal scrolling through the expanded project
+remained possible. No touch cancellation, scroll-position reset, fixed toolbar,
+or native WebView/IME changes are needed.
+
+The CSS regression fails against `contain` and passes with `none`; the full
+mobile suite passes **347 tests**. The signed debug archive was installed on the
+physical iPhone at 20:46 CST. Inspector confirms the packaged computed policy is
+`none` with no inline override, root offset 0 and nonblank rendering. The later
+packaged capture did not establish a second complete physical drag sequence
+(the user navigated into a Session); the 2,021-frame gesture comparison above
+is the direct behavioral evidence. TestFlight was not changed.
 
 ## Regression checks
 

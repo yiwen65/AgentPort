@@ -23,11 +23,11 @@ describe("mobile semantic design system", () => {
     expect(html).toMatch(/name="viewport"[^>]*initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover/);
   });
 
-  it("bounds the root frame and gives dashboard content sole vertical scroll ownership", () => {
+  it("bounds the root frame and scrolls dashboard content without boundary bounce", () => {
     expect(styles).toMatch(/html, body, #root\s*\{[^}]*height:\s*100%;[^}]*overflow:\s*hidden;[^}]*touch-action:\s*pan-y;/s);
     expect(styles).toMatch(/body\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*0;/s);
     expect(styles).toMatch(/\.app-shell\s*\{[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
-    expect(styles).toMatch(/\.main-content\s*\{[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;/s);
+    expect(styles).toMatch(/\.main-content\s*\{[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*none;/s);
   });
 
   it("disables native selection and callouts for app chrome, including body-level portals", () => {
