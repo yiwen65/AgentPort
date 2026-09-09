@@ -278,3 +278,12 @@
 - Correct approach: For a non-composing `insertText` commit with data, stop synthetic repeat before any forwarding/de-duplication branch; leave keydown-only local holds on the existing repeat path.
 - Prevention: Keep regressions for both xterm-forwarded and fallback-forwarded remote commits with no keyup, plus a neighboring local keydown-only hold that still repeats until keyup.
 - Verified by: Both remote event-sequence tests repeated after 550 ms before the fix and passed afterward; the complete terminal renderer suite passes 89/89 and the packaged Debug App renders normally.
+
+## `review pairing portal` — align Referrer-Policy with strict form Origin validation
+
+- Wrong approach: Send `Referrer-Policy: no-referrer` on a protected HTML form while requiring its navigation POST to carry the exact HTTPS `Origin`.
+- Why it failed: The real browser sent `Origin: null`; the portal rejected the legitimate request before issuing a pairing code. A hand-built HTTP test with an explicit Origin did not reproduce browser policy behavior.
+- Recognition signal: Login works but Get connection code returns `Invalid request origin`; metadata-only diagnostics report a null origin and no same-origin Referer.
+- Correct approach: Use `Referrer-Policy: same-origin` for this same-site form, retaining exact Origin and CSRF validation and suppressing cross-origin Referer. Do not simply accept null origins or remove CSRF checks.
+- Prevention: Verify the response policy as well as rejection paths, then exercise a real browser form; synthetic HTTP headers cannot establish browser compatibility.
+- Verified by: The response-policy regression failed before the change; after deployment, real form submission issued a new code and the user's device was approved and connected. See `mobile/scripts/test-review-gateway.py` and `mobile/REVIEW_ACCESS.md`.
