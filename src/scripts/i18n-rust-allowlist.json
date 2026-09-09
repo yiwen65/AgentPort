@@ -29,7 +29,7 @@
   "crates/agentport-core/src/adapters/codex.rs": [
     "该版本未暴露可验证的会话级 Hook 能力，状态降级为 PTY 启发式",
     "首轮完成通知前尚无原生 Session ID；收到通知后将升级为精确恢复",
-    "无原生 Session ID，仅支持恢复最近的 Session"
+    "没有可验证的 Codex Session ID，已启动新会话，未恢复其他历史会话"
   ],
   "crates/agentport-core/src/adapters/kimi.rs": [
     "Kimi 无 Session 级 Hook 注入机制（仅全局 ~/.kimi-code/config.toml，不做修改）；单轮完成使用官方 wire 事件，批准请求降级为 PTY 启发式",

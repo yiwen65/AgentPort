@@ -80,6 +80,26 @@
 - Blocker: None.
 - Unblock condition: None.
 
+### [x] T-003 — 无原生 Codex ID 时禁止猜测恢复目标
+- Status: done
+- Owner: coordinator
+- Objective: 未发送输入就终止的 Codex Session 再次启动时不得打开其他历史会话。
+- Inputs and prerequisites: 用户确认 Restart 打开其他已存在 Session；只读检查近期 Codex 无 native ID，但 host command 使用 resume --last。
+- Scope or files: 共用 Codex adapter、回归与新启动提示；桌面/CLI/远端服务共用此计划，不改其他 Agent 的恢复策略或已有用户历史。
+- Expected output: 有明确 ID 精确恢复，无 ID/空白 ID 新启动，无 --last；正确声明 resumePrecision 与提示。
+- Dependencies: T-001, T-002.
+- Execution steps:
+  1. 回归证明旧计划含 resume --last，补丁消除跨 Session 选择。
+  2. 用隔离 CLI 夹具区分新启动/打开其他历史，不以进程存活代替恢复身份正确。
+  3. 构建部署 Mac debug 包并重连手机，不中断其他 Host。
+- Acceptance criteria:
+  - 缺失/空白 ID 无 resume/--last；已有 ID、Hook、参数、权限不退化，旧错误计划红/绿明确。
+- Verification method:
+  - Codex adapter 回归、真实 Bridge/Host 命令与终端输出断言、相关测试、签名与进程路径/截图。
+- Validation evidence: 新增回归在旧代码失败，命令明确含 resume --last；首次启动原 Latest 精度断言同时失败。修复后 Codex 9 项回归通过（含 None/空字符串/空白 ID、新启动精度、已知 ID 精确恢复、Hook 与用户参数保留）。实际旧 bundled Bridge 的隔离回放可启动/输入但 argv 身份断言失败；修复后的 bundled Bridge 新 run 1→2、命令不含 resume/--last，输出 FRESH_CONVERSATION 与 ECHO:RESTART_CHAIN_OK 通过。全部 adapter 串行 59 过/1 原有 ignored，Service/Bridge 49 过，桌面提示 12 过；调试构建/签名通过，GUI PID 41449 路径正确且截图非白屏，手机重连。随后原 Codex Session 的真实重试观察到 run 4、无 native ID，启动命令不含 resume/--last。无用户历史/ID 修改、无其他 Host 终止。
+- Blocker: None.
+- Unblock condition: None.
+
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
 先回放失败，再保护反例，随后验证真实启动/附着；不要把成功进入前置检查等同于启动成功。只提交本任务改动。
@@ -90,6 +110,8 @@
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
+- 2026-09-09: T-003 done。确认第一轮生命周期/I/O 验证漏掉恢复身份；新增 argv/会话身份 oracle 后旧 bundled Bridge 精确失败、修复后新会话/I/O 全部通过。新旧 i18n 扫描对照仅剩相同的 3 项 src-tauri 既有 allowlist 错误，本任务不混入清理。adapter 并行测试首次有 1 项 probe 测试失败，串行重跑全部 59 项通过；未据此修改无关 probe 代码。已更新并重开 Mac debug GUI、重连手机；实际空 Session 重试不再携带 resume/--last。
+- 2026-09-09: 用户指出未输入就结束的 Codex 重启后打开其他历史会话；重新打开本任务，新增 T-003。上一修复解决生命周期拒绝，但没有证明原生恢复目标正确；本轮以无 resume/--last、新会话输出及精确 ID 对照作为验收。
 - 2026-09-09: T-002 done。102 项相关测试通过，目标 debug App 和活动 Bridge 已更新；真实 bundled Bridge 隔离闭环通过。随后观察到原失败 Codex Session 新 run/新 Host/Codex 均启动。无需手机代码更新，不改变 TestFlight 或 Linux 审核环境。
 - 2026-09-09: T-001 done，T-002 in_progress。确认消失的创建者 Bridge/reaper 是稳定复现旧 Running 的条件；修复是在 repository lock 内、Running/Creating guard 前调用 Core 的 PID/run-fenced reconcile，再重新读取 session。隔离新 run 与终端读写已过，准备部署调试 Bridge。
 - 2026-09-09: 创建计划，已捕获最新 Codex 的 DB/Host 状态分歧；开始隔离回放。
@@ -98,4 +120,5 @@
 ## Final validation result
 - Result: passed
 - Evidence: 匹配退出记录+旧 Running 的回归先失败后通过；HEAD 旧 Bridge 原生回放返回 not_executed，修复后的真实 bundled Bridge 创建新 run 并完成终端输入输出。102 项相关测试、调试构建、GUI 路径与非白屏截图验证通过。原失败用户 Session 已观察到 run 2 且 Host/Codex 存活。
-- Limitations: 真机屏幕未通过旧 screenshotr 工具采集；不据此声称已截图验证手机终端内容。没有修改 Codex 的历史恢复策略，也没有更新待审核手机构建。其他运行 Session 未被测试终止。
+- Identity verification: T-003 修复 Codex 无 ID 时猜测最近会话的问题；现在无 ID 新启动、已有 ID 精确恢复，并提供中英提示。适配器/Service/Bridge/提示共 120 项通过（adapter 使用串行），已在实际 bundled Bridge 与用户新启动命令验证身份，不只验证进程存活。
+- Limitations: 真机屏幕未通过旧 screenshotr 工具采集；不声称已截图验证手机内容。没有更新待审核手机构建或其他 Agent 的恢复策略，也不自动关闭之前已打开的错误历史会话/重写原生 ID。全局 i18n 扫描仍有与 HEAD 完全相同的 3 项既有 allowlist 错误；首次 adapter 并行有 1 项 probe 失败，串行 59 项通过。其他运行 Session 未被测试终止。

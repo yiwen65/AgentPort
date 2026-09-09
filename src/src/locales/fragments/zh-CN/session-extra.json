@@ -52,7 +52,7 @@
     "restartBody": "Session 正在运行。重启将先停止当前进程组，再按恢复信息重新启动。",
     "stopAndRestart": "停止并重启",
     "latestResumeNotice": "将恢复最近的 Session，可能不包含本次完整上下文",
-    "freshStartNotice": "该 Agent 不支持恢复上下文，已启动全新 Session",
+    "freshStartNotice": "此 Session 暂无可验证的恢复上下文，已启动新会话",
     "restartFailed": "重启失败：{{detail}}",
     "interruptFailed": "中断失败：{{detail}}",
     "resumeFailed": "无法继续已挂起的 Session：{{detail}}",

@@ -85,6 +85,8 @@ export function runtimeMessageText(envelope: RuntimeMessageEnvelope): string {
       return i18n.t("runtime:messages.adapter.codexHookUnverified");
     case "codex_session_id_unverified":
       return i18n.t("runtime:messages.adapter.codexSessionIdUnverified");
+    case "codex_resume_id_unavailable":
+      return i18n.t("runtime:messages.adapter.codexResumeIdUnavailable");
     case "native_session_id_unavailable":
       return i18n.t("runtime:messages.adapter.nativeSessionIdUnavailable", { agent });
     case "resume_latest_only":

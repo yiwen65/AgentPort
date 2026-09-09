@@ -1,7 +1,8 @@
 //! Codex adapter. Verified on this machine against codex-cli 0.144.5 and 0.145.0
 //! (fixtures in tests/fixtures/cli/):
 //! - `codex resume [SESSION_ID]` : exact resume by UUID (or name).
-//! - `codex resume --last`       : latest session for this cwd (precision = latest).
+//! - Without a verified native ID, start fresh; `resume --last` can select a
+//!   different AgentPort Session's conversation and must never be inferred.
 //! - `-c key=value`              : per-invocation config override (confirmed in --help).
 //!   Builds exposing `--dangerously-bypass-hook-trust` have Codex's documented
 //!   current notification surface. AgentPort configures the external notifier
@@ -10,7 +11,7 @@
 //! - Session-id capture: `codex exec --json` emits
 //!   `{"type":"thread.started","thread_id":"<uuid>"}` (verified 2026-07-18,
 //!   fixture codex-exec-ok.txt). Whether the interactive TUI prints the id is
-//!   unverified, so launch precision stays Latest; extract_session_id still
+//!   unverified, so launch precision stays Unavailable; extract_session_id still
 //!   recognizes the thread.started line when it appears (e.g. exec in PTY).
 //! - Approval flags on 0.144.5 (verified): `-a, --ask-for-approval
 //!   <untrusted|on-request|never>` and `--dangerously-bypass-approvals-and-sandbox`.
@@ -140,7 +141,7 @@ impl AgentAdapter for CodexAdapter {
             env: vec![],
             // TUI session id unverified -> cannot assign; capture best-effort.
             assigned_agent_session_id: None,
-            resume_precision: ResumePrecision::Latest,
+            resume_precision: ResumePrecision::Unavailable,
             hook_status,
             transport: ctx.transport,
             helper_files,
@@ -160,7 +161,11 @@ impl AgentAdapter for CodexAdapter {
         let mut notices = Vec::new();
         let launch_ctx = ctx.to_launch_context();
         let (hook_status, helper_files) = hook_plan(install, &launch_ctx, &mut argv, &mut notices);
-        let resume_precision = match &ctx.agent_session_id {
+        let resume_precision = match ctx
+            .agent_session_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+        {
             Some(id) => {
                 if !install.exact_resume {
                     return Err(CoreError::Blocked(
@@ -168,17 +173,15 @@ impl AgentAdapter for CodexAdapter {
                     ));
                 }
                 argv.push("resume".into());
-                argv.push(id.clone());
+                argv.push(id.to_owned());
                 ResumePrecision::Exact
             }
             None => {
-                argv.push("resume".into());
-                argv.push("--last".into());
                 notices.push(LaunchNotice::new(
-                    "resume_latest_only",
-                    "无原生 Session ID，仅支持恢复最近的 Session",
+                    "codex_resume_id_unavailable",
+                    "没有可验证的 Codex Session ID，已启动新会话，未恢复其他历史会话",
                 ));
-                ResumePrecision::Latest
+                ResumePrecision::Unavailable
             }
         };
         argv.extend(ctx.preset.args.clone());
@@ -298,7 +301,7 @@ mod tests {
         assert_eq!(plan.argv[1..], ["--ask-for-approval", "never"]);
         assert!(!plan.argv.iter().any(|a| a.contains("notify")));
         assert_eq!(plan.hook_status, HookStatus::Degraded);
-        assert_eq!(plan.resume_precision, ResumePrecision::Latest);
+        assert_eq!(plan.resume_precision, ResumePrecision::Unavailable);
         assert!(plan.helper_files.is_empty());
     }
 
@@ -387,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn build_resume_exact_latest() {
+    fn build_resume_uses_only_the_explicit_native_session_id() {
         let mut ctx = fx::resume_ctx(AgentType::Codex, &[], Some("uuid-9"));
         ctx.install.hook_status = HookStatus::Supported;
         let plan = CodexAdapter.build_resume(&ctx).unwrap();
@@ -403,17 +406,25 @@ mod tests {
             .iter()
             .any(|arg| arg == "tui.notification_condition=\"always\""));
         assert_eq!(plan.helper_files.len(), 1);
+    }
 
-        let mut ctx = fx::resume_ctx(AgentType::Codex, &[], None);
-        ctx.install.hook_status = HookStatus::Supported;
-        let plan = CodexAdapter.build_resume(&ctx).unwrap();
-        assert_eq!(plan.resume_precision, ResumePrecision::Latest);
-        let resume_index = plan.argv.iter().position(|arg| arg == "resume").unwrap();
-        assert_eq!(&plan.argv[resume_index..], ["resume", "--last"]);
-        assert_eq!(plan.helper_files.len(), 1);
-        assert!(plan
-            .notices
-            .iter()
-            .any(|notice| notice.code == "resume_latest_only"));
+    #[test]
+    fn restart_without_native_id_starts_fresh_instead_of_another_sessions_history() {
+        for native_id in [None, Some(""), Some("  ")] {
+            let mut ctx = fx::resume_ctx(AgentType::Codex, &[], native_id);
+            ctx.install.hook_status = HookStatus::Supported;
+            ctx.preset.args = vec!["--model".into(), "fixture-model".into()];
+            let plan = CodexAdapter.build_resume_checked(&ctx).unwrap();
+            assert!(
+                !plan.argv.iter().any(|arg| arg == "resume" || arg == "--last"),
+                "must not guess another native session: {:?}",
+                plan.argv
+            );
+            assert_eq!(plan.resume_precision, ResumePrecision::Unavailable);
+            assert_eq!(plan.helper_files.len(), 1);
+            assert!(plan.argv.windows(2).any(|args| args == ["--model", "fixture-model"]));
+            assert!(plan.notices.iter().any(|notice| notice.code == "codex_resume_id_unavailable"));
+            assert!(!plan.notices.iter().any(|notice| notice.code == "resume_latest_only"));
+        }
     }
 }

@@ -62,6 +62,7 @@
       "kimiHookUnavailable": "此版本的 Kimi 仅支持全局 Hook 配置；AgentPort 不会修改全局配置，状态检测已降级为 PTY 启发式。",
       "codexHookUnverified": "此版本的 Codex 未公开可验证的 notify 配置，状态检测已降级为 PTY 启发式。",
       "codexSessionIdUnverified": "首次收到回合完成通知前，Codex 尚无可验证的原生 Session ID；收到后 AgentPort 会升级为精确恢复。",
+      "codexResumeIdUnavailable": "没有可验证的 Codex Session ID，已启动新会话，未恢复其他历史会话。",
       "nativeSessionIdUnavailable": "此版本的 {{agent}} 无法指定原生 Session ID，仅支持恢复最近的 Session。",
       "resumeLatestOnly": "没有原生 Session ID，仅支持恢复最近的 Session。",
       "piLocalPermissions": "Pi 不提供逐项权限确认，将以本地用户权限执行。",

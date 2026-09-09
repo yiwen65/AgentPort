@@ -99,6 +99,15 @@ describe("runtime message localization", () => {
       .toEqual(["legacy adapter notice"]);
   });
 
+  it("explains that Codex without a verified ID starts fresh, not unrelated history", async () => {
+    await applyUiLanguage("en-US", { persistHint: false });
+    expect(runtimeMessageText({ code: "codex_resume_id_unavailable" }))
+      .toBe("No verified Codex Session ID is available. A new conversation was started instead of resuming unrelated history.");
+    await applyUiLanguage("zh-CN", { persistHint: false });
+    expect(runtimeMessageText({ code: "codex_resume_id_unavailable" }))
+      .toBe("没有可验证的 Codex Session ID，已启动新会话，未恢复其他历史会话。");
+  });
+
   it("formats probe messages with named parameters and plural rules", async () => {
     await applyUiLanguage("en-US", { persistHint: false });
     expect(runtimeMessageText({ code: "probe_auto_selected", params: { count: 1 } }))

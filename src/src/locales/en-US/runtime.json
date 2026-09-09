@@ -62,6 +62,7 @@
       "kimiHookUnavailable": "This version of Kimi supports only global Hook configuration. AgentPort leaves global configuration unchanged and uses PTY heuristics for state detection.",
       "codexHookUnverified": "This version of Codex does not expose a verifiable notify setting. State detection is using PTY heuristics.",
       "codexSessionIdUnverified": "Before the first turn-complete notification, Codex has no verified native Session ID. AgentPort upgrades the Session to exact resume when that notification arrives.",
+      "codexResumeIdUnavailable": "No verified Codex Session ID is available. A new conversation was started instead of resuming unrelated history.",
       "nativeSessionIdUnavailable": "This version of {{agent}} cannot assign a native Session ID. Only the most recent Session can be resumed.",
       "resumeLatestOnly": "There is no native Session ID. Only the most recent Session can be resumed.",
       "piLocalPermissions": "Pi does not provide per-action approvals and will run with the local user's permissions.",

@@ -52,7 +52,7 @@
     "restartBody": "This Session is running. AgentPort will stop its current process group, then restart it from the available recovery information.",
     "stopAndRestart": "Stop and restart",
     "latestResumeNotice": "The most recent Session will be resumed and may not include all context from this run",
-    "freshStartNotice": "This Agent cannot resume its context, so a new Session was started",
+    "freshStartNotice": "This Session has no verified context to resume, so a new conversation was started",
     "restartFailed": "Could not restart the Session: {{detail}}",
     "interruptFailed": "Could not interrupt the Session: {{detail}}",
     "resumeFailed": "Could not resume the suspended Session: {{detail}}",

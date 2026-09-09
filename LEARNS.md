@@ -296,3 +296,12 @@
 - Correct approach: Under the restart repository lock, run Core's PID/run-fenced liveness reconciliation, reread the Session, then enforce the existing live/creating/archived guards. Do not blindly Stop, retry, or equate a socket failure with death.
 - Prevention: In isolated native regressions, close only the creating Bridge, reconnect before Ctrl+C, then assert the actual Restart result, new run ordinal and terminal input/output; include live-PID, mismatched-run and creating-without-PID counterexamples.
 - Verified by: The isolated old Bridge returned not_executed with DB Running after Ctrl+C; the fixed bundled Bridge produced run 1→2 and echoed new-run input. The service regression failed before the fix and passes all five cases afterward.
+
+## `Codex restart identity` — missing native ID must not select the latest conversation
+
+- Wrong approach: Use `codex resume --last` when the AgentPort Session has no native ID, and treat a new Host/run with working terminal I/O as proof of correct recovery.
+- Why it failed: An unused Codex Session may exit before any ID is captured; `--last` selects a different conversation in the same working directory, not the original AgentPort Session.
+- Recognition signal: A never-used Session reopens another conversation; its persisted native ID is absent and its launch command contains `resume --last`.
+- Correct approach: Start a fresh conversation for missing/blank IDs, report resume precision as unavailable, and emit an explicit notice. Preserve exact `resume <id>` when a verified ID exists; never guess a target from recency.
+- Prevention: Assert the selected native identity or fresh-conversation output in restart tests, in addition to lifecycle, new run and terminal I/O. Do not automatically rewrite IDs/history of previously misdirected Sessions.
+- Verified by: The isolated pre-fix Bridge passed restart/I/O but failed an argv identity assertion with `['resume', '--last']`; the fixed bundled Bridge passed both fresh-conversation and I/O assertions. The real retry also launched without `resume` or `--last`.
