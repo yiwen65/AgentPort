@@ -305,3 +305,12 @@
 - Correct approach: Start a fresh conversation for missing/blank IDs, report resume precision as unavailable, and emit an explicit notice. Preserve exact `resume <id>` when a verified ID exists; never guess a target from recency.
 - Prevention: Assert the selected native identity or fresh-conversation output in restart tests, in addition to lifecycle, new run and terminal I/O. Do not automatically rewrite IDs/history of previously misdirected Sessions.
 - Verified by: The isolated pre-fix Bridge passed restart/I/O but failed an argv identity assertion with `['resume', '--last']`; the fixed bundled Bridge passed both fresh-conversation and I/O assertions. The real retry also launched without `resume` or `--last`.
+
+## `Tauri debug sidecars` — GUI builds can overwrite freshly built helper executables
+
+- Wrong approach: Build native helpers into `target/debug`, then build the GUI without refreshing `src-tauri/binaries`, and install helpers from `target/debug`.
+- Why it failed: tauri-build copies configured externalBin inputs back into that same output directory. Stale staged sidecars replaced the fresh binaries; Cargo can subsequently regard the overwritten output as Fresh.
+- Recognition signal: Relay remains connected but Mobile reports `bridge_hello_failed`; the bundled Bridge exits at service startup while the GUI opens the current DB. Top-level helper timestamps/content match old staged sidecars.
+- Correct approach: Build debug sidecars under an explicit host target, stage those isolated artifacts before the GUI build, and compare staged versus GUI-output helpers before installation/signing.
+- Prevention: Run `python3 scripts/test-debug-sidecars.py`; test stale externalBin inputs, contaminated Fresh outputs, and unexpected replacements. Do not downgrade the real DB to make an old helper start.
+- Verified by: The old bundled Bridge failed on a private v14 DB copy but started when only the copy's schema marker was v13. Three build regressions fail before/pass after; the updated signed Bridge opens the real v14 DB, and the existing iPhone pairing completes hello and lists 8 projects without restarting its Connector.

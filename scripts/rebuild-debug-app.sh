@@ -34,9 +34,20 @@ if [ "$DEBUG_SIGN_IDENTITY" != "-" ] &&
 fi
 
 (cd "$ROOT/src" && npm run build)
-(cd "$ROOT" && cargo build -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-relay --features agentport-relay/connector)
+# tauri-build copies externalBin from src-tauri/binaries back into target/debug
+# while building the GUI. Refresh those inputs FIRST or it overwrites current
+# Host/Bridge binaries with stale versions (including an older DB schema).
+(cd "$ROOT" && bash src-tauri/scripts/build-sidecar.sh debug)
 (cd "$ROOT" && TAURI_CONFIG="{\"identifier\":\"$DEBUG_BUNDLE_ID\"}" \
   cargo build -p agentport --features tauri/custom-protocol)
+
+TARGET_TRIPLE="$(rustc -vV | awk '/^host: / { print $2 }')"
+for name in agentport-host agentport-remote-bridge agentport-mosh-attach agentport-connector; do
+  if ! cmp -s "$ROOT/src-tauri/binaries/$name-$TARGET_TRIPLE" "$ROOT/target/debug/$name"; then
+    echo "ERROR: GUI build changed staged sidecar $name; refusing to install a mixed bundle" >&2
+    exit 2
+  fi
+done
 
 if ! grep -Fq "$DEBUG_BUNDLE_ID" < <(strings "$ROOT/target/debug/agentport"); then
   echo "ERROR: debug binary does not contain the expected Bundle ID: $DEBUG_BUNDLE_ID" >&2
