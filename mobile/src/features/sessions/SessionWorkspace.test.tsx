@@ -529,6 +529,24 @@ describe("SessionWorkspace", () => {
     prompt.mockRestore();
   });
 
+  it.each(["feature/very-long-branch-name", undefined])("separates the action sheet identity from its controls (branch: %s)", async branch => {
+    const { client, request } = setupClient();
+    const base = request.getMockImplementation()!;
+    request.mockImplementation((...args) => args[1] === "git.context.resolve"
+      ? Promise.resolve({ actualBranch: branch }) : base(...args));
+    const title = "A long Session name with 中文 and several words";
+    render(<SessionWorkspace open={{ ...open, session: { ...open.session, title } }} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    const dialog = screen.getByRole("dialog", { name: title });
+    expect(within(dialog).getByRole("heading", { name: title, level: 2 })).toBeInTheDocument();
+    expect(within(dialog).queryByText("Session actions")).not.toBeInTheDocument();
+    expect(dialog.querySelector(".terminal-session-context")).toHaveTextContent(branch ? `AgentSessions · ${branch}` : "AgentSessions");
+    expect(dialog.querySelector(".terminal-session-context")?.textContent).toBe(branch ? `AgentSessions · ${branch}` : "AgentSessions");
+    expect(within(dialog).getByRole("button", { name: "Rename" })).toBeEnabled();
+  });
+
   it("keeps a healthy foreground connection, attachment and terminal immediately usable", async () => {
     const { client, request } = setupClient();
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);

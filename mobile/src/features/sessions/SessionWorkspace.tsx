@@ -803,8 +803,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
           <button type="button" aria-label={t("common.cancel")} title={t("common.cancel")} disabled={Boolean(busyAction)} onClick={() => setRenaming(false)}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5 4 10l5 5M4 10h10a5 5 0 0 1 0 10" /></svg></button>
         </span> : undefined}>
           {error ? <p role="alert" className="inline-error">{error}</p> : null}
-          <p className="terminal-project-branch">{[open.projectName ?? open.session.projectId, branchName].filter(Boolean).join(" · ")}</p>
-          <h3 className="terminal-session-actions-title">{t("session.actions")}</h3>
+          <p className="terminal-session-context">{[open.projectName ?? open.session.projectId, branchName].filter(Boolean).join(" · ")}</p>
           <div className="terminal-action-grid">
             <button type="button" disabled={Boolean(busyAction)} onClick={() => { setRenameTitle(open.session.title); setRenaming(true); setError(""); }}>{t("session.rename")}</button>
             <button type="button" disabled={Boolean(busyAction)} onClick={() => void action("pin")}>{open.session.pinnedAt ? t("session.unpin") : t("session.pin")}</button>
