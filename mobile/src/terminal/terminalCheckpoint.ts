@@ -83,7 +83,13 @@ export class TerminalParserTail {
         else if (byte >= 0x30) this.state = "ground";
       } else if (this.state === "csi" && byte >= 0x40 && byte <= 0x7e) this.state = "ground";
       else if (this.state === "intermediate" && byte >= 0x30 && byte <= 0x7e) this.state = "ground";
-      if (this.state === "ground" && this.utf8 === 0) { this.tail = []; this.overflow = false; this.unsafePrefix = false; }
+      // Reuse short prefixes instead of allocating per UTF-8/VT sequence on
+      // QuickJS. Drop long strings: setting length to zero retains capacity in
+      // that engine. snapshot() copies, so checkpoints never share this storage.
+      if (this.state === "ground" && this.utf8 === 0) {
+        if (this.tail.length > 256) this.tail = []; else this.tail.length = 0;
+        this.overflow = false; this.unsafePrefix = false;
+      }
     }
   }
 }

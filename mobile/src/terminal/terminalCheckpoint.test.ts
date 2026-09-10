@@ -40,6 +40,44 @@ describe("serialized parser prefix", () => {
       expect(restored.snapshot()).toEqual([]);
     }
   });
+  it("reuses short prefix storage but releases long-string capacity", () => {
+    const tail = new TerminalParserTail();
+    // Inspect allocation identity rather than asserting noisy wall-clock limits.
+    const storage = () => (tail as unknown as { tail: number[] }).tail;
+    const short = storage();
+    tail.advance("中文🙂\x1b[32m");
+    expect(storage()).toBe(short);
+    tail.advance("\x1b]" + "x".repeat(70000));
+    const large = storage();
+    tail.advance("\x07");
+    expect(storage()).not.toBe(large);
+    expect(tail.snapshot()).toEqual([]);
+    tail.advance("\x1b[12;");
+    const unfinished = storage();
+    tail.reset();
+    expect(storage()).not.toBe(unfinished);
+  });
+
+  it("keeps captured prefixes independent while reusing storage across completion and reset", () => {
+    const tail = new TerminalParserTail();
+    tail.advance(new Uint8Array([0xe4, 0xb8]));
+    const utf8 = tail.snapshot();
+    tail.advance(new Uint8Array([0xad]));
+    tail.advance("中文🙂\x1b[38;2;");
+    const csi = tail.snapshot();
+    tail.advance("1;2;3m");
+    tail.reset();
+    tail.advance("\x1b]" + "x".repeat(70000));
+    expect(tail.snapshot()).toBeUndefined();
+    tail.advance("\x07\x1b[");
+    expect(utf8).toEqual([0xe4, 0xb8]);
+    expect(csi).toEqual([...new TextEncoder().encode("\x1b[38;2;")]);
+    expect(tail.snapshot()).toEqual([27, 91]);
+    tail.reset();
+    expect(tail.snapshot()).toEqual([]);
+    expect(csi).toEqual([...new TextEncoder().encode("\x1b[38;2;")]);
+  });
+
   it("rejects prefixes with already-executed controls instead of moving the cursor twice", () => {
     const tail = new TerminalParserTail();
     tail.advance("\x1b[\n2");
