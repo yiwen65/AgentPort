@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { HostProfileSummary, RemoteClient } from "../../protocol/remoteClient";
+import { remoteErrorMessage } from "../../protocol/remoteError";
 import { AttentionInbox, type InboxEntry } from "./attentionInbox";
 import type { AttentionPollResult, SessionSummary } from "./types";
 
@@ -20,7 +21,7 @@ export function useAttentionInbox(client: RemoteClient, hosts: HostProfileSummar
   const publish = useCallback(() => setEntries([...boxes.current.values()].flatMap(value => value.entries)
     .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))), []);
   const report = useCallback((host: string, failure?: unknown) => {
-    if (failure) errors.current.set(host, failure instanceof Error ? failure.message : String(failure));
+    if (failure) errors.current.set(host, remoteErrorMessage(failure));
     else errors.current.delete(host);
     setError([...errors.current.values()][0] ?? "");
   }, []);

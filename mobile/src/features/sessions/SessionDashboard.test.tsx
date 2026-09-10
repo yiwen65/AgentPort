@@ -37,6 +37,53 @@ describe("V2 Session workspace", () => {
   beforeEach(async () => { localStorage.clear(); await i18n.changeLanguage("en-US"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
+  it("pauses dashboard and inbox reads until foreground transport replacement finishes", async () => {
+    const remote = client();
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await screen.findByRole("button", { name: "Approval task" });
+    let finish!: () => void;
+    vi.mocked(remote.disconnect).mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+    const request = vi.mocked(remote.request), original = request.getMockImplementation()!;
+    let replacing = true;
+    request.mockImplementation((...args) => args[0] === "host-1" && replacing
+      ? Promise.reject({ code: "connection_closed", message: "Old transport closed" }) : original(...args));
+    request.mockClear();
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    visibility.mockReturnValue("hidden"); fireEvent(document, new Event("visibilitychange"));
+    visibility.mockReturnValue("visible"); fireEvent(document, new Event("visibilitychange"));
+    await waitFor(() => expect(remote.disconnect).toHaveBeenCalledWith("host-1"));
+    await act(async () => {});
+    expect(request.mock.calls.filter(([id]) => id === "host-1")).toHaveLength(0);
+    expect(screen.queryByText("[object Object]")).not.toBeInTheDocument();
+    expect(screen.queryByText("Update failed. Tap to retry")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approval task" })).toBeInTheDocument();
+    replacing = false;
+    await act(async () => finish());
+    await waitFor(() => expect(request.mock.calls.some(([id, method]) => id === "host-1" && method === "session.list")).toBe(true));
+    await waitFor(() => expect(request.mock.calls.some(([id, method]) => id === "host-1" && method === "attention.poll")).toBe(true));
+    expect(screen.queryByText("Update failed. Tap to retry")).not.toBeInTheDocument();
+  });
+
+  it.each(["connect", "read"])("retains retry and cached rows when foreground %s actually fails", async phase => {
+    const remote = client();
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await screen.findByRole("button", { name: "Approval task" });
+    const request = vi.mocked(remote.request), original = request.getMockImplementation()!;
+    if (phase === "connect") vi.mocked(remote.connect).mockRejectedValue({ message: "Connection unavailable" });
+    else request.mockImplementation((...args) => args[0] === "host-1" ? Promise.reject({ message: "Read unavailable" }) : original(...args));
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    visibility.mockReturnValue("hidden"); fireEvent(document, new Event("visibilitychange"));
+    visibility.mockReturnValue("visible"); fireEvent(document, new Event("visibilitychange"));
+    const retry = await screen.findByRole("button", { name: "Update failed. Tap to retry" });
+    expect(screen.getByRole("button", { name: /Approval task/ })).toBeInTheDocument();
+    expect(screen.queryByText("[object Object]")).not.toBeInTheDocument();
+    request.mockImplementation(original);
+    vi.mocked(remote.connect).mockResolvedValue({} as Awaited<ReturnType<RemoteClient["connect"]>>);
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Update failed. Tap to retry" })).not.toBeInTheDocument());
+    if (phase === "connect") expect(remote.connect).toHaveBeenCalledTimes(2);
+  });
+
   it("reconnects the selected device on foreground without waiting for a disconnect event", async () => {
     const remote = client();
     render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);

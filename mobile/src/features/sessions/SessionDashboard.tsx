@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useId, useRef, 
 import { AgentPortMark } from "../../components/AgentPortMark";
 import { SessionRowActions } from "./SessionRowActions";
 import { useForegroundRecovery } from "../../protocol/useForegroundRecovery";
+import { remoteErrorMessage } from "../../protocol/remoteError";
 import { useAttentionInbox } from "./useAttentionInbox";
 import { RecentNotifications } from "./RecentNotifications";
 import type { InboxEntry } from "./attentionInbox";
@@ -69,11 +70,7 @@ function persistWorkspace(deviceId: string, value: PersistedWorkspace) {
   try { localStorage.setItem(workspaceKey(deviceId), JSON.stringify(value)); } catch { /* device UI state is best effort */ }
 }
 
-function errorText(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (error && typeof error === "object" && "message" in error) return String((error as { message: unknown }).message);
-  return String(error);
-}
+const errorText = remoteErrorMessage;
 
 function sessionTime(session: SessionSummary): number {
   const parsed = Date.parse(session.latestStatus?.occurredAt ?? session.updatedAt ?? session.createdAt);
@@ -186,6 +183,8 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   const refreshEpoch = useRef(0);
   const refreshes = useRef(new Map<string, { again: boolean; promise: Promise<void> }>());
   const manualUpdates = useRef(new Set<string>());
+  const recoveringDevice = useRef<string>();
+  const [recoveringHost, setRecoveringHost] = useState<string>();
   const [updatingHosts, setUpdatingHosts] = useState(new Set<string>());
   const [updateErrorHost, setUpdateErrorHost] = useState<string>();
   const connectionEvents = useRef(new Map<string, RemoteConnectionStateEvent>());
@@ -224,12 +223,13 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   workspaceRef.current = workspace;
 
   const selectedHost = hosts.find((host) => host.id === selectedDeviceId);
-  const { entries: recent, error: notificationError, acknowledge, clearAll } = useAttentionInbox(client, hosts, pageVisible);
-  const updateBusy = updatingHosts.has(selectedDeviceId) || selectedHost?.connectionState === "connecting" || selectedHost?.connectionState === "reconnecting";
+  const { entries: recent, error: notificationError, acknowledge, clearAll } = useAttentionInbox(client, hosts.map(host => host.id === recoveringHost
+    ? { ...host, connectionState: "reconnecting" as const } : host), pageVisible);
+  const updateBusy = recoveringHost === selectedDeviceId || updatingHosts.has(selectedDeviceId) || selectedHost?.connectionState === "connecting" || selectedHost?.connectionState === "reconnecting";
   const updateFailed = Boolean(snapshot?.error || updateErrorHost === selectedDeviceId);
 
   const refreshDeviceOnce = useCallback(async (deviceId: string) => {
-    if (!deviceId) return;
+    if (!deviceId || recoveringDevice.current === deviceId) return;
     const epoch = ++refreshEpoch.current;
     const sessionsRequest = client.request<SessionSummary[]>(deviceId, "session.list", { includeArchived: false });
     const metadataRequest = Promise.all([
@@ -292,9 +292,26 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
 
   useForegroundRecovery(client, selectedDeviceId,
     dashboardActive && Boolean(selectedHost) && selectedHost?.connectionState !== "disconnected", {
-      onStart: () => { refreshEpoch.current += 1; },
-      onRecovered: () => { void refreshDevice(selectedDeviceId); },
-      onError: () => setUpdateErrorHost(selectedDeviceId),
+      onStart: () => {
+        // Invalidate old reads before foreground effects can submit new ones.
+        refreshEpoch.current += 1;
+        recoveringDevice.current = selectedDeviceId;
+        setRecoveringHost(selectedDeviceId);
+        setUpdateErrorHost(undefined);
+        setSnapshot(current => current ? { ...current, cached: true, error: undefined } : current);
+      },
+      onRecovered: () => {
+        recoveringDevice.current = undefined;
+        setRecoveringHost(undefined);
+        void refreshDevice(selectedDeviceId);
+      },
+      onError: () => {
+        recoveringDevice.current = undefined;
+        setRecoveringHost(undefined);
+        connectionEvents.current.set(selectedDeviceId, { profileId: selectedDeviceId, state: "failed" });
+        setHosts(current => current.map(host => host.id === selectedDeviceId ? { ...host, connectionState: "failed" } : host));
+        setUpdateErrorHost(selectedDeviceId);
+      },
     });
 
   // One explicit action: connected -> read; offline -> connect then read.
@@ -303,7 +320,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     const deviceId = selectedDeviceId;
     const before = connectionEvents.current.get(deviceId);
     const phase = before?.state ?? selectedHost?.connectionState;
-    if (!selectedHost || manualUpdates.current.has(deviceId) || phase === "connecting" || phase === "reconnecting") return;
+    if (!selectedHost || recoveringDevice.current === deviceId || manualUpdates.current.has(deviceId) || phase === "connecting" || phase === "reconnecting") return;
     manualUpdates.current.add(deviceId);
     setUpdatingHosts(new Set(manualUpdates.current));
     setUpdateErrorHost(undefined);
@@ -368,6 +385,8 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     const scroller = dashboardRef.current?.closest<HTMLElement>(".main-content");
     if (scroller) scroller.scrollTop = 0;
     setSnapshot(undefined);
+    recoveringDevice.current = undefined;
+    setRecoveringHost(undefined);
     setUpdateErrorHost(undefined);
     setRowActions(undefined);
   }, [selectedDeviceId]);
@@ -562,7 +581,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
       {selectedHost && selectedHost.connectionState !== "connected" && !updateFailed && !updateBusy ? <div className="state-note" role="status">{t(`status.${selectedHost.connectionState as ConnectionState}`)} — {t("dashboard.cached")}</div> : null}
       {updateFailed && !updateBusy ? <p className="dashboard-refresh-error" role="alert"><button type="button" onClick={() => void updateSelectedDevice()}>{t("dashboard.updateFailed")}</button></p> : null}
       {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
-      {notificationError ? <p className="state-note" role="status">{notificationError}</p> : null}
+      {notificationError && !recoveringHost ? <p className="state-note" role="status">{notificationError}</p> : null}
 
       {workspace.layout === "projects" ? <div className="project-session-list dense-project-tree">
         {projects.map((project) => {

@@ -7,6 +7,13 @@ beforeEach(() => { localStorage.clear(); vi.useFakeTimers(); });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 const makeClient = () => ({ request: vi.fn().mockResolvedValue({ events: [] }) }) as unknown as RemoteClient;
 describe("bounded metadata notification reception", () => {
+  it("renders a native error message instead of object coercion", async () => {
+    const client = makeClient();
+    vi.mocked(client.request).mockRejectedValue({ code: "request_timeout", message: "Request timed out" });
+    const { result } = renderHook(() => useAttentionInbox(client, hosts.slice(0, 1), true));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current.error).toBe("Request timed out");
+  });
   it("covers all connected hosts with idle backoff, no Session list polling and no hidden work", async () => {
     const client = makeClient();
     const { rerender } = renderHook(({ visible }) => useAttentionInbox(client, hosts, visible), { initialProps: { visible: true } });
