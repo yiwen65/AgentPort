@@ -1,9 +1,12 @@
-New Agent icon assets — MIT License
+Third-party Agent icon license notices
+
+The current omp.svg is a vector redraw of a user-supplied reference.
+The historical Oh My Pi license below does not establish that reference's license.
 
 LobeHub SVGs:
 Copyright (c) 2023 LobeHub
 
-Oh My Pi SVG:
+Former Oh My Pi SVG (historical attribution retained):
 Copyright (c) 2025 Mario Zechner
 Copyright (c) 2025-2026 Can Bölük
 Copyright (c) 2026 Stencil Labs, Inc.

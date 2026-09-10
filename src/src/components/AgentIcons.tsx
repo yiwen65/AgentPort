@@ -3,6 +3,7 @@
 // button color in both themes, no filter hacks), and the marks are not
 // draggable like <img> elements.
 
+import { useId } from "react";
 import piSvg from "../assets/agent-icons/pi.svg?raw";
 import qoderSvg from "../assets/agent-icons/qoder.svg?raw";
 import ompSvg from "../assets/agent-icons/omp.svg?raw";
@@ -41,12 +42,13 @@ type AgentIconProps = {
 };
 
 function InlineAssetIcon({ svg, className, size }: AgentIconProps & { svg: string }) {
+  const id = `agent-icon-${useId().replace(/:/g, "")}`;
   return (
     <span
       className={className}
       style={{ width: size, height: size }}
       aria-hidden="true"
-      dangerouslySetInnerHTML={{ __html: svg }}
+      dangerouslySetInnerHTML={{ __html: svg.replaceAll("__AGENT_ICON_ID__", id) }}
     />
   );
 }

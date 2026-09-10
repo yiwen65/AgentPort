@@ -1,16 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 90" width="1em" height="1em">
-  <!-- Pi symbol with plugin connector -->
-  <!-- Horizontal bar -->
-  <rect x="10" y="8" width="100" height="12" rx="2" fill="currentColor"/>
-  <!-- Left leg -->
-  <rect x="25" y="20" width="12" height="62" rx="2" fill="currentColor"/>
-  <!-- Right leg -->
-  <rect x="75" y="20" width="12" height="45" rx="2" fill="currentColor"/>
-  <!-- Plugin connector -->
-  <rect x="71" y="55" width="20" height="16" rx="3" fill="#f97316"/>
-  <rect x="76" y="59" width="3" height="8" rx="1" fill="#0d0d0d"/>
-  <rect x="82" y="59" width="3" height="8" rx="1" fill="#0d0d0d"/>
-  <!-- Decorative dots -->
-  <circle cx="18" cy="14" r="2" fill="#f97316" opacity="0.8"/>
-  <circle cx="102" cy="14" r="2" fill="#f97316" opacity="0.8"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 960" width="1em" height="1em">
+  <defs>
+    <linearGradient id="__AGENT_ICON_ID__" x1="32" y1="245" x2="928" y2="530" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ed00ff"/>
+      <stop offset="0.48" stop-color="#963aff"/>
+      <stop offset="1" stop-color="#00cef0"/>
+    </linearGradient>
+  </defs>
+  <!-- Vector redraw of the user's supplied rounded, unequal-leg pi mark. -->
+  <path fill="url(#__AGENT_ICON_ID__)" d="M82 98H878Q928 98 928 148V203Q928 253 878 253H738Q706 253 706 285V807Q706 860 653 860H593Q540 860 540 807V285Q540 253 508 253H443Q411 253 411 285V670Q411 723 358 723H300Q247 723 247 670V285Q247 253 215 253H82Q32 253 32 203V148Q32 98 82 98Z"/>
 </svg>

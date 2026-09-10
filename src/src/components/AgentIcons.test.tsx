@@ -23,12 +23,28 @@ describe("new Agent brand icons", () => {
       expect(mark?.getAttribute("aria-hidden")).toBe("true");
       expect((mark as HTMLElement).style.width).toBe("30px");
       expect(mark?.querySelectorAll("svg").length).toBe(1);
-      expect(mark?.innerHTML).toContain("currentColor");
+      if (agent === "omp") {
+        expect(mark?.querySelectorAll("linearGradient stop")).toHaveLength(3);
+        expect(mark?.querySelector("rect")).toBeNull(); // No opaque background.
+      } else {
+        expect(mark?.innerHTML).toContain("currentColor");
+      }
       expect(mark?.innerHTML).toContain("Copyright (c) 2023 LobeHub");
       expect(mark?.innerHTML).toContain("Permission is hereby granted");
       expect(mark?.querySelector("script, foreignObject, image, use, a")).toBeNull();
       expect(mark?.innerHTML).not.toMatch(/\son\w+=/i);
     }
+  });
+
+  it("isolates Omp gradients across repeated and hidden icon instances", () => {
+    const { container } = render(<><AgentIcon agent="omp" /><AgentIcon agent="omp" mono /></>);
+    const icons = [...container.querySelectorAll("svg")];
+    const ids = icons.map((icon) => icon.querySelector("linearGradient")!.id);
+    expect(new Set(ids).size).toBe(2);
+    icons.forEach((icon, index) => {
+      expect(icon.querySelector("path")?.getAttribute("fill")).toBe(`url(#${ids[index]})`);
+      expect(icon.innerHTML).not.toContain("__AGENT_ICON_ID__");
+    });
   });
 
   it("connects the new mono marks to distinct application theme foregrounds", () => {
