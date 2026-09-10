@@ -5578,6 +5578,18 @@ textarea:focus {
   padding: 2px 0 0;
 }
 
+/* Agent backup actions stay visible even for hidden/uninstalled adapters. */
+.backup-agent-list { display: grid; gap: 8px; }
+.backup-agent-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--settings-border);
+}
+.backup-agent-row > strong { flex: 1 0 140px; }
+
 /* Settings grid */
 .settings-grid {
   display: grid;

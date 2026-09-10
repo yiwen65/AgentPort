@@ -51,6 +51,9 @@ pub struct BackupManifest {
     pub data_model_version: i64,
     /// Payload files (manifest.json itself is not listed).
     pub files: Vec<BackupFileEntry>,
+    /// None identifies legacy full-data archives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<AgentType>,
     /// Provider-native Session payload descriptors. Missing in format v1.
     #[serde(default)]
     pub native_sessions: Vec<NativeSessionBackup>,
@@ -464,6 +467,24 @@ fn collect_session_files(paths: &AppPaths, out: &mut Vec<PathBuf>) -> Result<()>
 /// Create a backup archive at `dest` (must not exist). Atomic: staged under
 /// the exports dir and renamed into place; any failure leaves no partial file.
 pub fn create(paths: &AppPaths, db: &Db, dest: &Path) -> Result<BackupReport> {
+    create_scoped(paths, db, dest, None)
+}
+
+pub fn create_agent(
+    paths: &AppPaths,
+    db: &Db,
+    dest: &Path,
+    agent: AgentType,
+) -> Result<BackupReport> {
+    create_scoped(paths, db, dest, Some(agent))
+}
+
+fn create_scoped(
+    paths: &AppPaths,
+    db: &Db,
+    dest: &Path,
+    agent: Option<AgentType>,
+) -> Result<BackupReport> {
     if dest.exists() {
         return Err(CoreError::Conflict(format!(
             "backup destination already exists: {}",
@@ -479,6 +500,15 @@ pub fn create(paths: &AppPaths, db: &Db, dest: &Path) -> Result<BackupReport> {
     // 1. Consistent DB snapshot (online backup API; never copies the WAL raw).
     let db_snapshot = staging.join("agentport.db");
     db.backup_snapshot(&db_snapshot)?;
+    // Read the same consistent snapshot we pack, not a later live Session list.
+    let snapshot = Db::open(&AppPaths::new(staging.clone()))?;
+    if let Some(agent) = agent {
+        snapshot.retain_backup_agent(agent)?;
+    }
+    let sessions = snapshot.list_sessions(None, true)?;
+    drop(snapshot);
+    let session_ids: std::collections::HashSet<_> =
+        sessions.iter().map(|s| s.id.as_str()).collect();
 
     // 2. Capture provider-native payloads after the database snapshot, then
     // inventory every archive payload with its integrity digest.
@@ -488,7 +518,7 @@ pub fn create(paths: &AppPaths, db: &Db, dest: &Path) -> Result<BackupReport> {
     }];
     let mut payload_sources = vec![db_snapshot.clone()];
     let mut native_sessions = Vec::new();
-    for session in db.list_sessions(None, true)? {
+    for session in &sessions {
         let native = crate::native_backup::capture_session(paths, &session, &staging)?;
         for artifact in &native.artifacts {
             files.push(BackupFileEntry {
@@ -508,6 +538,16 @@ pub fn create(paths: &AppPaths, db: &Db, dest: &Path) -> Result<BackupReport> {
         if is_excluded_from_backup(paths, &abs) {
             continue;
         }
+        if agent.is_some() {
+            let relative = abs.strip_prefix(paths.sessions_dir()).unwrap_or(&abs);
+            let id = relative
+                .components()
+                .next()
+                .and_then(|c| c.as_os_str().to_str());
+            if !id.is_some_and(|id| session_ids.contains(id)) {
+                continue;
+            }
+        }
         let rel = abs
             .strip_prefix(paths.root())
             .map_err(|_| CoreError::Internal("session file outside data root".into()))?
@@ -526,6 +566,7 @@ pub fn create(paths: &AppPaths, db: &Db, dest: &Path) -> Result<BackupReport> {
         app_version: env!("CARGO_PKG_VERSION").into(),
         data_model_version: DATA_MODEL_VERSION,
         files: files.clone(),
+        agent_type: agent,
         native_sessions,
         native_coverage,
     };
@@ -713,6 +754,14 @@ pub fn restore(archive: &Path, target_root: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(&staging)?;
     let _guard = crate::export::TempDirGuard::new(staging.clone());
 
+    extract_verified(archive, &manifest, &staging)?;
+    let previous = publish_restore(&staging, target_root, parent, &manifest)?;
+    // Staging was consumed by the swap; disarm the guard.
+    std::mem::forget(_guard);
+    Ok(previous)
+}
+
+fn extract_verified(archive: &Path, manifest: &BackupManifest, staging: &Path) -> Result<()> {
     // Extract verified payload only.
     {
         let f = std::fs::File::open(archive)?;
@@ -770,6 +819,15 @@ pub fn restore(archive: &Path, target_root: &Path) -> Result<PathBuf> {
         }
     }
 
+    Ok(())
+}
+
+fn publish_restore(
+    staging: &Path,
+    target_root: &Path,
+    parent: &Path,
+    manifest: &BackupManifest,
+) -> Result<PathBuf> {
     // Native restore validates every destination before writing any artifact.
     // Pi targets the not-yet-published staging root, while external providers
     // use their configured homes. A conflict therefore leaves target_root
@@ -812,9 +870,137 @@ pub fn restore(archive: &Path, target_root: &Path) -> Result<PathBuf> {
         }
         return Err(CoreError::Io(e));
     }
-    // Staging was consumed by the swap; disarm the guard.
-    std::mem::forget(_guard);
     Ok(previous.unwrap_or_default())
+}
+
+/// Existing IDs are explicitly reported as skipped; they are never updated.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeReport {
+    pub imported: Vec<String>,
+    pub skipped: Vec<String>,
+    pub native_coverage: NativeCoverageSummary,
+}
+
+pub fn restore_agent(
+    archive: &Path,
+    paths: &AppPaths,
+    db: &Db,
+    agent: AgentType,
+) -> Result<MergeReport> {
+    let manifest = verify(archive)?;
+    if manifest.agent_type.is_some_and(|kind| kind != agent) {
+        return Err(CoreError::Validation(
+            "backup belongs to a different agent".into(),
+        ));
+    }
+    let staging = paths.exports_dir().join(crate::ids::new_id("restore"));
+    std::fs::create_dir_all(&staging)?;
+    let _guard = crate::export::TempDirGuard::new(staging.clone());
+    extract_verified(archive, &manifest, &staging)?;
+    let snapshot_paths = AppPaths::new(staging.clone());
+    let snapshot = Db::open(&snapshot_paths)?;
+    snapshot.retain_backup_agent(agent)?;
+    let sessions = snapshot.list_sessions(None, true)?;
+    // A descriptor must agree with its database row before it can write any
+    // provider-native file. Legacy mixed archives are filtered using DB rows.
+    let selected: std::collections::HashSet<_> = sessions.iter().map(|s| s.id.as_str()).collect();
+    let native: Vec<_> = manifest
+        .native_sessions
+        .iter()
+        .filter(|s| selected.contains(s.agentport_session_id.as_str()))
+        .cloned()
+        .collect();
+    for descriptor in &native {
+        if descriptor.provider != agent {
+            return Err(CoreError::Validation(
+                "native descriptor does not match Session agent".into(),
+            ));
+        }
+    }
+    drop(snapshot);
+    let mut created_dirs = Vec::new();
+    let mut coverage = NativeCoverageSummary::default();
+    let result = db.merge_backup(&snapshot_paths.db_path(), paths, |ids| {
+        let parent = paths.sessions_dir();
+        if std::fs::symlink_metadata(&parent)?.file_type().is_symlink() {
+            return Err(CoreError::Validation(
+                "Session directory must not be a symlink".into(),
+            ));
+        }
+        for id in ids {
+            match std::fs::symlink_metadata(paths.session_dir(id)) {
+                Ok(_) => {
+                    return Err(CoreError::Conflict(format!(
+                        "Session directory already exists: {id}"
+                    )))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let native: Vec<_> = native
+            .iter()
+            .filter(|s| ids.contains(&s.agentport_session_id))
+            .cloned()
+            .collect();
+        coverage = NativeCoverageSummary::from_sessions(&native);
+        // Native files targeting AgentPort stay in staging until their Session
+        // directory is published. External providers retain never-overwrite rules.
+        crate::native_backup::materialize(&staging, &staging, &native)?;
+        for id in ids {
+            let target = paths.session_dir(id);
+            private_create_dir(&target)?; // exclusive: never replace an orphan tree
+            created_dirs.push(target.clone());
+            let source = snapshot_paths.session_dir(id);
+            if source.exists() {
+                copy_restore_tree(&source, &target)?;
+            }
+        }
+        Ok(())
+    });
+    match result {
+        Ok((imported, skipped)) => Ok(MergeReport {
+            imported,
+            skipped,
+            native_coverage: coverage,
+        }),
+        Err(error) => {
+            for path in created_dirs.iter().rev() {
+                let _ = std::fs::remove_dir_all(path);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn private_create_dir(path: &Path) -> Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)?;
+    Ok(())
+}
+
+fn copy_restore_tree(source: &Path, target: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let destination = target.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            private_create_dir(&destination)?;
+            copy_restore_tree(&entry.path(), &destination)?;
+        } else if kind.is_file() {
+            let mut output = private_create(&destination)?;
+            std::io::copy(&mut std::fs::File::open(entry.path())?, &mut output)?;
+        } else {
+            return Err(CoreError::Validation("non-regular restore payload".into()));
+        }
+    }
+    Ok(())
 }
 
 struct TempFileGuard {
@@ -944,6 +1130,255 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn scoped_backup_excludes_other_agents_settings_and_deleted_pages() {
+        let f = fx();
+        insert_session(&f, "ses_other", AgentType::Codex, None, "/tmp/other");
+        let conn = rusqlite::Connection::open(f.paths.db_path()).unwrap();
+        conn.execute(
+            "INSERT INTO settings VALUES ('private','GLOBAL_SECRET_SENTINEL_987654')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE sessions SET title='OTHER_AGENT_SENTINEL_987654' WHERE id='ses_other'",
+            [],
+        )
+        .unwrap();
+        std::fs::create_dir_all(f.paths.session_dir("ses_other")).unwrap();
+        std::fs::write(
+            f.paths.session_dir("ses_other").join("private.json"),
+            "other",
+        )
+        .unwrap();
+        std::fs::write(
+            f.paths.session_dir("ses_1").join("events.jsonl"),
+            "selected",
+        )
+        .unwrap();
+        let archive = f.dir.path().join("shell.zip");
+        create_agent(&f.paths, &f.db, &archive, AgentType::Shell).unwrap();
+        let manifest = verify(&archive).unwrap();
+        assert_eq!(manifest.agent_type, Some(AgentType::Shell));
+        assert_eq!(manifest.native_coverage.total, 1);
+        assert!(manifest.files.iter().all(|e| !e.path.contains("ses_other")));
+        let raw = std::fs::read(&archive).unwrap();
+        for secret in [
+            b"GLOBAL_SECRET_SENTINEL_987654".as_slice(),
+            b"OTHER_AGENT_SENTINEL_987654".as_slice(),
+        ] {
+            assert!(!raw.windows(secret.len()).any(|w| w == secret));
+        }
+        assert_eq!(f.db.list_sessions(None, true).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn scoped_restore_merges_legacy_archive_and_reports_duplicates() {
+        let source = fx();
+        insert_session(&source, "ses_other", AgentType::Codex, None, "/tmp/other");
+        std::fs::write(
+            source.paths.session_dir("ses_1").join("events.jsonl"),
+            "selected",
+        )
+        .unwrap();
+        let archive = source.dir.path().join("legacy.zip");
+        create(&source.paths, &source.db, &archive).unwrap();
+        let target = AppPaths::new(source.dir.path().join("target"));
+        let db = Db::open(&target).unwrap();
+        // Existing project with a different ID must be reused by checkout path.
+        let mut project = source.db.list_projects().unwrap().remove(0);
+        project.id = "existing_project".into();
+        project.name = "keep current name".into();
+        db.add_project(&project).unwrap();
+        let report = restore_agent(&archive, &target, &db, AgentType::Shell).unwrap();
+        assert_eq!(report.imported, ["ses_1"]);
+        assert!(report.skipped.is_empty());
+        assert_eq!(db.list_sessions(None, true).unwrap().len(), 1);
+        let session = db.get_session("ses_1").unwrap();
+        assert_eq!(session.project_id, "existing_project");
+        assert_eq!(session.log_path, target.log_path("ses_1").to_string_lossy());
+        assert!(session.host_pid.is_none());
+        assert_eq!(db.list_projects().unwrap()[0].name, "keep current name");
+        assert_eq!(
+            std::fs::read_to_string(target.session_dir("ses_1").join("events.jsonl")).unwrap(),
+            "selected"
+        );
+        let report = restore_agent(&archive, &target, &db, AgentType::Shell).unwrap();
+        assert!(report.imported.is_empty());
+        assert_eq!(report.skipped, ["ses_1"]);
+    }
+
+    #[test]
+    fn scoped_restore_rejects_wrong_agent_and_orphan_directory_without_changes() {
+        let f = fx();
+        let archive = f.dir.path().join("shell.zip");
+        create_agent(&f.paths, &f.db, &archive, AgentType::Shell).unwrap();
+        let target = AppPaths::new(f.dir.path().join("target"));
+        let db = Db::open(&target).unwrap();
+        assert!(restore_agent(&archive, &target, &db, AgentType::Codex).is_err());
+        std::fs::create_dir(target.session_dir("ses_1")).unwrap();
+        std::fs::write(target.session_dir("ses_1").join("keep"), "keep").unwrap();
+        assert!(restore_agent(&archive, &target, &db, AgentType::Shell).is_err());
+        assert!(db.list_projects().unwrap().is_empty());
+        assert!(db.list_sessions(None, true).unwrap().is_empty());
+        assert_eq!(
+            std::fs::read_to_string(target.session_dir("ses_1").join("keep")).unwrap(),
+            "keep"
+        );
+        // A failed attempt must detach and roll back temp tables for a retry.
+        std::fs::remove_dir_all(target.session_dir("ses_1")).unwrap();
+        assert!(restore_agent(&archive, &target, &db, AgentType::Shell).is_ok());
+    }
+
+    #[test]
+    fn scoped_restore_preserves_other_agents_and_rejects_cross_agent_id_collision() {
+        let source = fx();
+        let target = fx();
+        insert_session(
+            &target,
+            "ses_other",
+            AgentType::Codex,
+            Some("native_other"),
+            "/tmp/other",
+        );
+        let before = serde_json::to_value(target.db.get_session("ses_other").unwrap()).unwrap();
+        let archive = source.dir.path().join("shell.zip");
+        create_agent(&source.paths, &source.db, &archive, AgentType::Shell).unwrap();
+        let report = restore_agent(&archive, &target.paths, &target.db, AgentType::Shell).unwrap();
+        assert_eq!(report.skipped, ["ses_1"]);
+        assert_eq!(
+            before,
+            serde_json::to_value(target.db.get_session("ses_other").unwrap()).unwrap()
+        );
+        let conn = rusqlite::Connection::open(target.paths.db_path()).unwrap();
+        conn.execute(
+            "UPDATE sessions SET adapter_type='codex' WHERE id='ses_1'",
+            [],
+        )
+        .unwrap();
+        assert!(restore_agent(&archive, &target.paths, &target.db, AgentType::Shell).is_err());
+        assert_eq!(
+            target.db.get_session("ses_1").unwrap().adapter_type,
+            AgentType::Codex
+        );
+    }
+
+    #[test]
+    fn scoped_restore_imports_native_history_into_selected_session_only() {
+        let source = fx();
+        insert_session(
+            &source,
+            "ses_easy",
+            AgentType::EasyPi,
+            Some("easy-native"),
+            "/tmp/demo",
+        );
+        let native = source.paths.session_dir("ses_easy").join("easy_pi");
+        std::fs::create_dir_all(&native).unwrap();
+        std::fs::write(
+            native.join("history.jsonl"),
+            "{\"type\":\"session\",\"id\":\"easy-native\"}\n",
+        )
+        .unwrap();
+        let archive = source.dir.path().join("easy.zip");
+        create_agent(&source.paths, &source.db, &archive, AgentType::EasyPi).unwrap();
+        let target = AppPaths::new(source.dir.path().join("target"));
+        let db = Db::open(&target).unwrap();
+        let result = restore_agent(&archive, &target, &db, AgentType::EasyPi).unwrap();
+        assert_eq!(result.imported, ["ses_easy"]);
+        assert!(target
+            .session_dir("ses_easy")
+            .join("easy_pi/history.jsonl")
+            .is_file());
+        assert!(!target.session_dir("ses_1").exists());
+    }
+
+    #[test]
+    fn scoped_restore_v1_imports_worktree_status_and_interrupts_live_binding() {
+        let f = fx();
+        let conn = rusqlite::Connection::open(f.paths.db_path()).unwrap();
+        conn.execute_batch("INSERT INTO worktrees VALUES ('wt_1','prj_1','feature','abc',NULL,'/tmp/backup-worktree','clean','2026-01-01T00:00:00Z'); UPDATE sessions SET worktree_id='wt_1',lifecycle='running',host_pid=123,host_socket='/tmp/old.sock',host_run_id='legacy',host_run_ordinal=0;
+            INSERT INTO status_events(session_id,run_id,run_ordinal,sequence,state,source,confidence,occurred_at) VALUES ('ses_1','legacy',0,1,'idle','hook','high','2026-01-01T00:00:00Z');").unwrap();
+        let snapshot = f.dir.path().join("v1.db");
+        f.db.backup_snapshot(&snapshot).unwrap();
+        let bytes = std::fs::read(snapshot).unwrap();
+        let mut legacy = manifest(vec![entry("agentport.db", &bytes)]);
+        legacy.format_version = 1;
+        let archive = f.dir.path().join("v1.zip");
+        write_custom_backup_with_method(
+            &archive,
+            &legacy,
+            &[("agentport.db".into(), bytes)],
+            zip::CompressionMethod::Stored,
+        );
+        let paths = AppPaths::new(f.dir.path().join("target"));
+        let db = Db::open(&paths).unwrap();
+        restore_agent(&archive, &paths, &db, AgentType::Shell).unwrap();
+        let session = db.get_session("ses_1").unwrap();
+        assert_eq!(session.lifecycle, Lifecycle::Interrupted);
+        assert_eq!(session.worktree_id.as_deref(), Some("wt_1"));
+        assert!(session.host_pid.is_none() && session.host_socket.is_none());
+        let target_conn = rusqlite::Connection::open(paths.db_path()).unwrap();
+        assert_eq!(
+            target_conn
+                .query_row(
+                    "SELECT count(*) FROM status_events WHERE session_id='ses_1'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        assert!(target_conn
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn scoped_restore_rejects_project_and_native_identity_conflicts() {
+        let source = fx();
+        insert_session(
+            &source,
+            "ses_new",
+            AgentType::Codex,
+            Some("same-native"),
+            "/tmp/demo",
+        );
+        let archive = source.dir.path().join("codex.zip");
+        create_agent(&source.paths, &source.db, &archive, AgentType::Codex).unwrap();
+        let target = fx();
+        let conn = rusqlite::Connection::open(target.paths.db_path()).unwrap();
+        conn.execute("UPDATE projects SET root_path='/different'", [])
+            .unwrap();
+        assert!(
+            restore_agent(&archive, &target.paths, &target.db, AgentType::Codex)
+                .unwrap_err()
+                .to_string()
+                .contains("project")
+        );
+        conn.execute("UPDATE projects SET root_path='/tmp/demo'", [])
+            .unwrap();
+        insert_session(
+            &target,
+            "ses_existing_native",
+            AgentType::Codex,
+            Some("same-native"),
+            "/tmp/demo",
+        );
+        assert!(
+            restore_agent(&archive, &target.paths, &target.db, AgentType::Codex)
+                .unwrap_err()
+                .to_string()
+                .contains("native Session")
+        );
+        assert!(target.db.get_session("ses_new").is_err());
+    }
+
     fn manifest(files: Vec<BackupFileEntry>) -> BackupManifest {
         BackupManifest {
             format_version: BACKUP_FORMAT_VERSION,
@@ -951,6 +1386,7 @@ mod tests {
             app_version: "test".into(),
             data_model_version: DATA_MODEL_VERSION,
             files,
+            agent_type: None,
             native_sessions: Vec::new(),
             native_coverage: NativeCoverageSummary::default(),
         }
@@ -1186,6 +1622,14 @@ mod tests {
         let error = restore(&archive, &target).unwrap_err();
         assert!(matches!(&error, CoreError::Conflict(_)), "{error}");
         assert!(!target.exists());
+        let merge_paths = AppPaths::new(fx.dir.path().join("merge-target"));
+        let merge_db = Db::open(&merge_paths).unwrap();
+        let error =
+            restore_agent(&archive, &merge_paths, &merge_db, AgentType::Claude).unwrap_err();
+        assert!(matches!(error, CoreError::Conflict(_)));
+        assert!(merge_db.list_sessions(None, true).unwrap().is_empty());
+        assert!(merge_db.list_projects().unwrap().is_empty());
+        assert!(!merge_paths.session_dir("ses_claude").exists());
         assert_eq!(
             std::fs::read(&transcript).unwrap(),
             b"different local content\n"

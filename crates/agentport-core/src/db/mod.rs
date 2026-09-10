@@ -13,6 +13,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration as StdDuration;
 
+mod backup;
+
 pub mod schema {
     /// Ordered migrations. Index N migrates version N -> N+1.
     /// NEVER edit an already-applied entry; append new ones.

@@ -166,14 +166,15 @@ Pi 与 Generic Shell 不使用 Agent 权限模式。启动 Pi 时不会添加权
 
 ## 备份与恢复
 
-在“设置 → 备份与恢复”可创建并自动校验 v2 备份，或校验已有 v1/v2 ZIP。
+在“设置 → 备份与恢复”中，每种 Agent 都有独立的备份、合并恢复入口（包括隐藏或未安装的 Agent）。
 
-- v2 备份包含数据库、AgentPort Session 元数据，以及能够按原生 Session ID（必要时同时校验工作目录）唯一定位的 Claude、Codex、Pi、Kimi 或 Qoder Session 文件。旧 `output.log`、Worktree、导出物和诊断物不入包。
+- 新备份是按 Agent 筛选的 v2 ZIP，文件名包含类型；仅包含 AgentPort 管理的该类型会话、必要的项目/Worktree 元数据，以及可定位的原生历史。其他 Agent、全局设置、预设、Secret 引用、旧 `output.log`、Worktree 文件、导出物和诊断物不入包。应用外创建的会话不在范围内。
 - 被捕获的原生 Session 包含**完整对话和工具输出**，可能含提示词、代码、路径或其他敏感信息。备份 ZIP **不加密**，请按敏感明文文件保管。
 - macOS Keychain / Linux Secret Service 的系统凭据和 Secret 原值不入包；恢复后如需这些凭据，需由目标系统安全存储另行提供。
 - 创建和校验结果会显示原生覆盖：v2 的“完整”表示 `missing=0` 且 `ambiguous=0`；若缺失或来源歧义则显示“不完整”及计数。Generic Shell 等没有原生会话来源的项目记为“不支持”。v1 显示为“旧版”，不声称含原生正文。
-- 恢复先校验整个 ZIP，再写入新的 AgentPort 数据目录，并把包内原生 Session 安装到**当前配置的 Provider home**。目标文件缺失或内容完全相同才允许安装；同路径不同内容会报告冲突，绝不覆盖。
-- 启用新数据目录仍需退出 AgentPort 后手工替换目录；恢复过程不会删除当前 AgentPort 数据目录。
+- 合并恢复先校验整个 ZIP，只向当前数据目录导入选中 Agent 的缺失会话。已有会话不覆盖，并在结果中列出跳过的 ID；其他 Agent 和现有项目配置不变。无需退出应用或手工替换目录，恢复也不会启动会话或重建 Git Worktree。
+- 兼容旧 v1/v2 整库备份，但只导入选中类型；选择其他类型的新版备份会报错。项目路径可复用，项目 ID、Worktree 或原生会话归属冲突会阻止导入。
+- 原生 Session 安装到**当前配置的 Provider home**；目标文件缺失或内容完全相同才允许安装，同路径不同内容绝不覆盖。SQLite 导入失败会回滚会话元数据及本次新建的 AgentPort 会话目录；若原生文件已安装后才遇到磁盘等错误，外部 Provider home 可能留下同内容文件，重试会复用这些文件。
 
 ## 搜索
 

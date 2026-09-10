@@ -41,11 +41,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
-mod relay;
 mod commit_ai;
 mod git_commands;
 mod git_workspace_commands;
 mod notifications;
+mod relay;
 
 // ---------------------------------------------------------------------------
 // App state
@@ -3129,37 +3129,40 @@ async fn export_session(
 }
 
 // ---------------------------------------------------------------------------
-// Full-data backup / restore (settings page)
+// Agent-scoped backup / merge restore (settings page)
 // ---------------------------------------------------------------------------
 
-/// Create a full-data backup. Default destination is the private backups dir
-/// with a UTC timestamp name; every backup is verified before reporting
-/// success so the user never sees a green check on a broken archive.
+/// Each archive contains only the chosen agent and its Session dependencies.
 #[tauri::command]
 async fn backup_create(
-    state: State<'_, AppState>,
+    app: AppHandle,
+    agent: AgentType,
     dest: Option<String>,
 ) -> std::result::Result<Value, String> {
-    let dest = match dest {
-        Some(d) if !d.trim().is_empty() => std::path::PathBuf::from(d),
-        _ => state.paths.backups_dir().join(format!(
-            "agentport-backup-{}.zip",
-            Utc::now().format("%Y%m%d-%H%M%S")
-        )),
-    };
-    let report = map_err!(agentport_core::backup::create(
-        &state.paths,
-        &state.db,
-        &dest
-    ))?;
-    map_err!(agentport_core::backup::verify(&dest))?;
-    Ok(json!({
-        "path": dest,
-        "files": report.files,
-        "bytes": report.bytes,
-        "verified": true,
-        "nativeCoverage": report.native_coverage,
-    }))
+    run_backend_blocking(move || {
+        let state = app.state::<AppState>();
+        let dest = match dest {
+            Some(d) if !d.trim().is_empty() => std::path::PathBuf::from(d),
+            _ => state.paths.backups_dir().join(format!(
+                "agentport-{}-{}.zip",
+                agent.as_str(),
+                Utc::now().format("%Y%m%d-%H%M%S-%3f")
+            )),
+        };
+        let report = map_err!(agentport_core::backup::create_agent(
+            &state.paths,
+            &state.db,
+            &dest,
+            agent
+        ))?;
+        map_err!(agentport_core::backup::verify(&dest))?;
+        Ok(json!({
+            "path": dest, "agentType": agent,
+            "files": report.files, "bytes": report.bytes, "verified": true,
+            "nativeCoverage": report.native_coverage,
+        }))
+    })
+    .await
 }
 
 /// Lightweight listing of the private backups dir. Integrity is verified on
@@ -3203,6 +3206,7 @@ async fn backup_verify(path: String) -> std::result::Result<Value, String> {
     Ok(json!({
         "ok": true,
         "formatVersion": manifest.format_version,
+        "agentType": manifest.agent_type,
         "createdAt": manifest.created_at,
         "dataModelVersion": manifest.data_model_version,
         "files": manifest.files.len(),
@@ -3210,36 +3214,25 @@ async fn backup_verify(path: String) -> std::result::Result<Value, String> {
     }))
 }
 
-/// Restore AgentPort data into a NEW directory chosen by the user. The live
-/// AgentPort data root is never touched; provider-native artifacts are also
-/// installed into the currently configured Provider homes under the core's
-/// validate-before-write, never-overwrite contract. Swapping the data root
-/// requires the app to be quit first, which is a deliberate manual step.
+/// Merge missing Sessions of one agent. Existing Sessions are never replaced.
 #[tauri::command]
 async fn backup_restore(
-    state: State<'_, AppState>,
+    app: AppHandle,
     path: String,
-    target: String,
+    agent: AgentType,
 ) -> std::result::Result<Value, String> {
-    if target.trim().is_empty() {
-        return Err("restore target directory required".into());
-    }
-    let live = state.paths.root().to_path_buf();
-    let target_path = std::path::PathBuf::from(&target);
-    if target_path == live || target_path.starts_with(&live) || live.starts_with(&target_path) {
-        return Err(
-            "restore target must be outside the live data directory; quit the app before swapping data roots"
-                .into(),
-        );
-    }
-    let previous = map_err!(agentport_core::backup::restore(
-        std::path::Path::new(&path),
-        &target_path
-    ))?;
-    Ok(json!({
-        "restored": target_path,
-        "previousKeptAt": previous,
-    }))
+    run_backend_blocking(move || {
+        let state = app.state::<AppState>();
+        let report = map_err!(agentport_core::backup::restore_agent(
+            std::path::Path::new(&path),
+            &state.paths,
+            &state.db,
+            agent
+        ))?;
+        let _ = app.emit("projects-changed", collect_projects(&state.db, None));
+        Ok(json!(report))
+    })
+    .await
 }
 
 fn search_sync(

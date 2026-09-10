@@ -20,7 +20,7 @@ import {
   secretBackendZh,
 } from "../format";
 import { applyUiLanguage, currentUiLanguage, i18n } from "../i18n";
-import { orderAgentIds, visibleAgentIds } from "../agentOrder";
+import { DEFAULT_AGENT_ORDER, orderAgentIds, visibleAgentIds } from "../agentOrder";
 import { applyTerminalLanguage } from "../terminals";
 import { getTerminalPalette, TERMINAL_THEME_IDS } from "../terminalThemes";
 import { AgentIcon } from "./AgentIcons";
@@ -726,9 +726,7 @@ export function nativeCoverageComplete(coverage: NativeCoverageSummary): boolean
   return coverage.missing === 0 && coverage.ambiguous === 0;
 }
 
-/** Backup and restore: create/verify coverage-aware archives, then restore
- * AgentPort data into a new directory while conflict-safely installing native
- * Session artifacts into the currently configured Provider homes. */
+/** Per-agent archives and insert-only restore; existing Sessions stay intact. */
 export function BackupSection() {
   const { t } = useTranslation(["settings", "common"]);
   const s = useStore();
@@ -736,10 +734,11 @@ export function BackupSection() {
   const backupsDir = `${dataRoot}/backups`;
   const [items, setItems] = useState<BackupItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState<string | null>(null);
   const [verifyState, setVerifyState] = useState<Record<string, BackupStatus>>({});
-  const [restoring, setRestoring] = useState(false);
-  const [restored, setRestored] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState<string | null>(null);
+  const [restored, setRestored] = useState<{ agent: string; imported: string[]; skipped: string[] } | null>(null);
+  const busy = creating !== null || restoring !== null;
   const [error, setError] = useState<string | null>(null);
 
   const reload = async () => {
@@ -757,11 +756,12 @@ export function BackupSection() {
     void reload();
   }, []);
 
-  const create = async () => {
-    setCreating(true);
+  const create = async (agent: string) => {
+    setCreating(agent);
     setError(null);
+    setRestored(null);
     try {
-      const r = await api.backupCreate(null);
+      const r = await api.backupCreate(agent, null);
       const complete = nativeCoverageComplete(r.nativeCoverage);
       toast(
         t(
@@ -788,7 +788,7 @@ export function BackupSection() {
     } catch (e) {
       setError(t("settings:ui.backup.createFailed", { detail: errorText(e) }));
     } finally {
-      setCreating(false);
+      setCreating(null);
     }
   };
 
@@ -824,27 +824,29 @@ export function BackupSection() {
     }
   };
 
-  const restore = async () => {
+  const restore = async (agent: string) => {
     setError(null);
-    const archive = await api.pickFile(t("settings:ui.backup.filePickerTitle"));
-    if (!archive) return;
-    const ok = await confirmDialog({
-      title: t("settings:ui.backup.restoreTitle"),
-      body: t("settings:ui.backup.restoreBody"),
-      confirmLabel: t("settings:ui.backup.chooseRestoreLocation"),
-    });
-    if (!ok) return;
-    const parent = await api.pickDirectory();
-    if (!parent) return;
-    setRestoring(true);
+    setRestored(null);
+    setRestoring(agent);
     try {
-      const r = await api.backupRestore(archive, `${parent}/agentport-restored`);
-      setRestored(r.restored);
-      toast(t("settings:ui.backup.restoreComplete"), "success");
+      const archive = await api.pickFile(t("settings:ui.backup.filePickerTitle"));
+      if (!archive) return;
+      const ok = await confirmDialog({
+        title: t("settings:ui.backup.restoreTitle", { agent: agentDisplay(agent) }),
+        body: t("settings:ui.backup.restoreBody", { agent: agentDisplay(agent) }),
+        confirmLabel: t("settings:ui.backup.mergeRestore"),
+      });
+      if (!ok) return;
+      const r = await api.backupRestore(archive, agent);
+      setRestored({ agent, imported: r.imported, skipped: r.skipped });
+      toast(t("settings:ui.backup.mergeResult", {
+        agent: agentDisplay(agent), imported: r.imported.length, skipped: r.skipped.length,
+      }), r.skipped.length ? "info" : "success");
+      await refreshProjects();
     } catch (e) {
       setError(t("settings:ui.backup.restoreFailed", { detail: errorText(e) }));
     } finally {
-      setRestoring(false);
+      setRestoring(null);
     }
   };
 
@@ -860,52 +862,39 @@ export function BackupSection() {
         <strong>{t("settings:ui.backup.dataBoundaryTitle")}</strong>
         <p className="form-hint">{t("settings:ui.backup.dataBoundaryBody")}</p>
       </div>
-      <div className="settings-grid">
-        <label>{t("settings:ui.backup.createLabel")}</label>
-        <div className="control">
-          <button className="btn primary" disabled={creating} onClick={() => void create()}>
-            {creating ? t("settings:ui.backup.creating") : t("settings:ui.backup.createNow")}
-          </button>
-          <button
-            className="btn small ghost"
-            onClick={() =>
-              void api.revealInFileManager(backupsDir).catch((e) =>
-                toast(t("settings:ui.backup.openDirectoryFailed", { detail: errorText(e) }), "error"))
-            }
-          >
-            {t("settings:ui.backup.openDirectory")}
-          </button>
-          <span className="form-hint">{t("settings:ui.backup.createHint")}</span>
-        </div>
-        <label>{t("settings:ui.backup.restoreLabel")}</label>
-        <div className="control">
-          <button className="btn" disabled={restoring} onClick={() => void restore()}>
-            {restoring ? t("settings:ui.backup.restoring") : t("settings:ui.backup.restoreToNew")}
-          </button>
-          <span className="form-hint">{t("settings:ui.backup.restoreHint")}</span>
-        </div>
+      <div className="backup-agent-list" aria-busy={busy}>
+        {orderAgentIds(s.settings?.agentOrder, DEFAULT_AGENT_ORDER).map((agent) => (
+          <div className="backup-agent-row" role="group" aria-label={agentDisplay(agent)} key={agent}>
+            <strong>{agentDisplay(agent)}</strong>
+            <button className="btn" disabled={busy}
+              aria-label={t("settings:ui.backup.createAgent", { agent: agentDisplay(agent) })}
+              onClick={() => void create(agent)}>
+              {creating === agent ? t("settings:ui.backup.creating") : t("settings:ui.backup.createNow")}
+            </button>
+            <button className="btn" disabled={busy}
+              aria-label={t("settings:ui.backup.restoreAgent", { agent: agentDisplay(agent) })}
+              onClick={() => void restore(agent)}>
+              {restoring === agent ? t("settings:ui.backup.restoring") : t("settings:ui.backup.mergeRestore")}
+            </button>
+          </div>
+        ))}
       </div>
+      <p className="form-hint">{t("settings:ui.backup.createHint")}</p>
+      <button className="btn small ghost" onClick={() =>
+        void api.revealInFileManager(backupsDir).catch((e) =>
+          toast(t("settings:ui.backup.openDirectoryFailed", { detail: errorText(e) }), "error"))}>
+        {t("settings:ui.backup.openDirectory")}
+      </button>
       {error ? <div className="error-bar" role="alert">{error}</div> : null}
       {restored ? (
         <div className="info-box" role="status">
-          <div className="kv">
-            <span className="k">{t("settings:ui.backup.restoredTo")}</span>
-            <span className="v mono">{restored}</span>
-          </div>
-          <p className="form-hint">
-            {t("settings:ui.backup.instructionsBeforePath")}{" "}
-            <span className="mono">{dataRoot}</span>{" "}
-            {t("settings:ui.backup.instructionsAfterPath")}
-          </p>
-          <button
-            className="btn small"
-            onClick={() =>
-              void api.revealInFileManager(restored).catch((e) =>
-                toast(t("settings:ui.backup.revealRestoredFailed", { detail: errorText(e) }), "error"))
-            }
-          >
-            {t("settings:ui.backup.revealRestored")}
-          </button>
+          <p>{t("settings:ui.backup.mergeResult", {
+            agent: agentDisplay(restored.agent), imported: restored.imported.length, skipped: restored.skipped.length,
+          })}</p>
+          {restored.skipped.length > 0 ? <details>
+            <summary>{t("settings:ui.backup.skippedSessions")}</summary>
+            <ul>{restored.skipped.map((id) => <li className="mono" key={id}>{id}</li>)}</ul>
+          </details> : null}
         </div>
       ) : null}
       <div className="section-title">{t("settings:ui.backup.existingTitle")}</div>

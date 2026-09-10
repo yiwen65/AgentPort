@@ -228,6 +228,7 @@ export type BackupCreateResult = {
 
 export type BackupVerifyResult = {
   ok: boolean;
+  agentType?: string | null;
   formatVersion: number;
   createdAt: string;
   files: number;
@@ -559,14 +560,14 @@ export const api = {
       message,
     }),
   exportSession: (args: ExportArgs) => invoke<string>("export_session", args),
-  backupCreate: (dest: string | null) =>
-    invoke<BackupCreateResult>("backup_create", { dest }),
+  backupCreate: (agent: string, dest: string | null) =>
+    invoke<BackupCreateResult>("backup_create", { agent, dest }),
   backupList: () =>
     invoke<{ path: string; name: string; size: number; modifiedAt: string }[]>("backup_list"),
   backupVerify: (path: string) =>
     invoke<BackupVerifyResult>("backup_verify", { path }),
-  backupRestore: (path: string, target: string) =>
-    invoke<{ restored: string; previousKeptAt: string }>("backup_restore", { path, target }),
+  backupRestore: (path: string, agent: string) =>
+    invoke<{ imported: string[]; skipped: string[]; nativeCoverage: NativeCoverageSummary }>("backup_restore", { path, agent }),
   search: (query: string, limit: number | null) =>
     invoke<SearchResult>("search", { query, limit }),
   /** Full persisted output for one Session, including text outside xterm's scrollback. */
