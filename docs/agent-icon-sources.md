@@ -33,7 +33,7 @@ LobeHub 目录未找到 Oh My Pi 或 easy-pi 的独立品牌项。Oh My Pi 原�
 
 移动端启动选择界面支持同一组14种正式Agent品牌图标；Shell及未知类型仍使用终端符号。新增资源与许可同步到 `mobile/src/assets/agent-icons/`，由字节一致性回归测试防止两端再次漂移。Omp保持彩色渐变且实例ID独立；easy-pi使用裁掉留白的透明PNG，启动界面用38px容器，其余图标30px，不增加交互行为或改变启动权限。
 
-移动端本次验证：仅包含本任务改动的暂存快照中，395项测试、TypeScript及Vite构建通过；包括全部新增图标、桌面/移动资源一致性和真实启动选择组件回归。设备列表中的两台iPhone均不可连接，未安装更新或完成真机视觉验收。
+移动端本次验证：仅包含本任务改动的暂存快照中，395项测试、TypeScript及Vite构建通过；包括全部新增图标、桌面/移动资源一致性和真实启动选择组件回归。首次验收时两台iPhone均不可连接；用户随后连接iPhone 17 Pro Max，已完成iOS调试归档、安装并启动 `com.agentport.mobile`，未重启Host/Agent。设备截图服务返回Invalid service，因此未宣称完成真机视觉验收。
 
 ## 许可（随源码与 App 保留）
 
