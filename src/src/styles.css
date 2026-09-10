@@ -5578,7 +5578,7 @@ textarea:focus {
   padding: 2px 0 0;
 }
 
-/* Agent backup actions stay visible even for hidden/uninstalled adapters. */
+/* Backup actions for locally detected agent installations. */
 .backup-progress progress { display: block; width: 100%; margin-top: 8px; }
 .backup-agent-list { display: grid; gap: 8px; }
 .backup-agent-row {

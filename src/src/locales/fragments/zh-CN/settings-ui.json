@@ -282,6 +282,7 @@
       "restoreTitle": "合并恢复 {{agent}} 会话？",
       "restoreBody": "仅导入 {{agent}} 的缺失会话；已有会话保留并列出为跳过，其他 Agent 和全局配置不变。原生历史写入当前配置的 Provider home；同路径不同内容会报冲突，绝不覆盖。兼容旧整库备份，但仅导入所选类型。恢复不会启动会话，也不会重建 Worktree。",
       "mergeRestore": "合并恢复…",
+      "noInstalledAgents": "尚未探测到已安装的 Agent，请到 Agent 适配器页面重新探测。",
       "createAgent": "备份 {{agent}}",
       "restoreAgent": "恢复 {{agent}}",
       "mergeResult": "{{agent}}：导入 {{imported}} 个会话，跳过 {{skipped}} 个已有会话（未覆盖）。",

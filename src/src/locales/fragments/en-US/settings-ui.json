@@ -282,6 +282,7 @@
       "restoreTitle": "Merge {{agent}} Sessions?",
       "restoreBody": "Import only missing {{agent}} Sessions. Existing Sessions are kept and reported as skipped; other agents and global settings stay unchanged. Native history goes into the configured Provider home; different content at the same path is a conflict and is never overwritten. Legacy full backups are supported, but only the selected agent is imported. Restore does not start Sessions or recreate Worktrees.",
       "mergeRestore": "Merge restore…",
+      "noInstalledAgents": "No installed agents detected. Re-scan on the Agent Adapters page.",
       "createAgent": "Back up {{agent}}",
       "restoreAgent": "Restore {{agent}}",
       "mergeResult": "{{agent}}: imported {{imported}} Sessions; skipped {{skipped}} existing Sessions (not overwritten).",

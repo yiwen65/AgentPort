@@ -22,7 +22,7 @@ import {
   secretBackendZh,
 } from "../format";
 import { applyUiLanguage, currentUiLanguage, i18n } from "../i18n";
-import { DEFAULT_AGENT_ORDER, orderAgentIds, visibleAgentIds } from "../agentOrder";
+import { orderAgentIds, visibleAgentIds } from "../agentOrder";
 import { applyTerminalLanguage } from "../terminals";
 import { getTerminalPalette, TERMINAL_THEME_IDS } from "../terminalThemes";
 import { AgentIcon } from "./AgentIcons";
@@ -902,8 +902,9 @@ export function BackupSection() {
         <p className="form-hint">{t("settings:ui.backup.elapsed", { seconds: backupElapsed })}</p>
         <p className="form-hint">{t("settings:ui.backup.busyHint")}</p>
       </div> : null}
+      {s.adapters.length === 0 ? <p className="form-hint">{t("settings:ui.backup.noInstalledAgents")}</p> : null}
       <div className="backup-agent-list" aria-busy={busy}>
-        {orderAgentIds(s.settings?.agentOrder, DEFAULT_AGENT_ORDER).map((agent) => (
+        {orderAgentIds(s.settings?.agentOrder, s.adapters.map((adapter) => adapter.agentType)).map((agent) => (
           <div className="backup-agent-row" role="group" aria-label={agentDisplay(agent)} key={agent}>
             <strong>{agentDisplay(agent)}</strong>
             <button className="btn" disabled={busy}

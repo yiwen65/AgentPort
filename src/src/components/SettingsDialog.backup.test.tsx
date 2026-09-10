@@ -42,6 +42,16 @@ vi.mock("../terminals", () => ({
 
 import { getState, setState } from "../store";
 import { BackupSection } from "./SettingsDialog";
+import type { AdapterInstall } from "../types";
+
+function installedAgent(agentType: AdapterInstall["agentType"]): AdapterInstall {
+  return {
+    agentType, executablePath: `/usr/local/bin/${agentType}`, versionText: "1.0",
+    capabilityHash: "test", exactResume: true, hookStatus: "supported",
+    approvalModel: "native_prompts", defaultTransport: "pty",
+    probedAt: "2026-09-11T00:00:00Z", candidates: [], flags: [],
+  };
+}
 
 const archive = {
   path: "/tmp/agentport/backups/backup.zip",
@@ -66,10 +76,29 @@ describe("Settings backup native coverage", () => {
     progressMock.mockResolvedValue(unlistenMock);
     pickFileMock.mockResolvedValue(archive.path);
     confirmMock.mockResolvedValue(true);
-    setState({ exportsDir: "/tmp/agentport/exports", toasts: [] });
+    setState({ exportsDir: "/tmp/agentport/exports", toasts: [], adapters: [installedAgent("codex"), installedAgent("claude")] });
   });
 
   afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+  it("shows only detected installs and reacts to refreshed probe results", async () => {
+    renderBackupSection();
+    await screen.findByText("backup.zip");
+    expect(screen.getAllByRole("group").map((group) => group.getAttribute("aria-label"))).toEqual(["Codex", "Claude Code"]);
+    expect(screen.queryByRole("button", { name: "备份 easy-pi" })).toBeNull();
+    act(() => setState({ adapters: [installedAgent("easy_pi")] }));
+    expect(screen.getByRole("button", { name: "备份 easy-pi" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "备份 Codex" })).toBeNull();
+  });
+
+  it("shows an empty-install hint without hiding existing archives", async () => {
+    setState({ adapters: [] });
+    renderBackupSection();
+    await screen.findByText("backup.zip");
+    expect(screen.queryAllByRole("group")).toHaveLength(0);
+    expect(screen.getByText("尚未探测到已安装的 Agent，请到 Agent 适配器页面重新探测。")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "校验" })).toBeTruthy();
+  });
 
   it("reports a complete v2 native capture as success", async () => {
     backupCreateMock.mockResolvedValue({
