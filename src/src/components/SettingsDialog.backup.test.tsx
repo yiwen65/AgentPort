@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { backupCreateMock, backupListMock, backupVerifyMock, backupRestoreMock, pickFileMock, confirmMock } = vi.hoisted(() => ({
+const { backupCreateMock, backupListMock, backupVerifyMock, backupRestoreMock, pickFileMock, confirmMock, progressMock, unlistenMock } = vi.hoisted(() => ({
   backupCreateMock: vi.fn(),
   backupListMock: vi.fn(),
   backupVerifyMock: vi.fn(),
   backupRestoreMock: vi.fn(),
   pickFileMock: vi.fn(),
   confirmMock: vi.fn(),
+  progressMock: vi.fn(),
+  unlistenMock: vi.fn(),
 }));
 
 vi.mock("../store", async (original) => ({
@@ -24,6 +26,7 @@ vi.mock("../api", () => ({
     backupRestore: backupRestoreMock,
     pickFile: pickFileMock,
   },
+  onBackupProgress: progressMock,
   commitAiErrorText: (error: unknown) => String(error),
   errorText: (error: unknown) => String(error),
 }));
@@ -60,12 +63,13 @@ function latestToast() {
 describe("Settings backup native coverage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    progressMock.mockResolvedValue(unlistenMock);
     pickFileMock.mockResolvedValue(archive.path);
     confirmMock.mockResolvedValue(true);
     setState({ exportsDir: "/tmp/agentport/exports", toasts: [] });
   });
 
-  afterEach(() => cleanup());
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   it("reports a complete v2 native capture as success", async () => {
     backupCreateMock.mockResolvedValue({
@@ -85,7 +89,7 @@ describe("Settings backup native coverage", () => {
 
     await screen.findByText("backup.zip");
     fireEvent.click(screen.getByRole("button", { name: "备份 Codex" }));
-    expect(backupCreateMock).toHaveBeenCalledWith("codex", null);
+    await waitFor(() => expect(backupCreateMock).toHaveBeenCalledWith("codex", null, expect.any(String)));
 
     await screen.findByText(/有效的 v2 备份 · 受支持 Session 原生覆盖完整/);
     expect(latestToast()).toMatchObject({ kind: "success" });
@@ -110,7 +114,7 @@ describe("Settings backup native coverage", () => {
 
     await screen.findByText("backup.zip");
     fireEvent.click(screen.getByRole("button", { name: "备份 Claude Code" }));
-    expect(backupCreateMock).toHaveBeenCalledWith("claude", null);
+    await waitFor(() => expect(backupCreateMock).toHaveBeenCalledWith("claude", null, expect.any(String)));
 
     const status = await screen.findByText(/有效的 v2 备份 · 原生覆盖不完整/);
     expect(status.closest("td")?.classList.contains("warn-text")).toBe(true);
@@ -136,8 +140,52 @@ describe("Settings backup native coverage", () => {
     renderBackupSection();
     fireEvent.click(screen.getByRole("button", { name: "备份 Codex" }));
     expect((screen.getByRole("button", { name: "恢复 Claude Code" }) as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect(backupCreateMock).toHaveBeenCalled());
     release({ path: archive.path, files: 1, nativeCoverage: { total: 0, captured: 0, missing: 0, ambiguous: 0, unsupported: 0 } });
     await waitFor(() => expect((screen.getByRole("button", { name: "恢复 Claude Code" }) as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it("shows correlated phase progress and elapsed time, then releases buttons on timeout", async () => {
+    vi.useFakeTimers();
+    let fail!: (error: unknown) => void;
+    backupCreateMock.mockReturnValue(new Promise((_, reject) => { fail = reject; }));
+    renderBackupSection();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "备份 Codex" })); });
+    const requestId = backupCreateMock.mock.calls[0][2];
+    const notify = progressMock.mock.calls[0][0];
+    expect(progressMock.mock.invocationCallOrder[0]).toBeLessThan(backupCreateMock.mock.invocationCallOrder[0]);
+    act(() => notify({ requestId: "other-job", agent: "codex", phase: "archive", completed: 1, total: 2 }));
+    expect(screen.getByRole("status").textContent).toContain("正在准备备份");
+    act(() => notify({ requestId, agent: "codex", phase: "native", completed: 3, total: 12 }));
+    expect(screen.getByRole("status").textContent).toContain("正在收集原生历史（会话） · 3 / 12");
+    expect((screen.getByRole("progressbar") as HTMLProgressElement).value).toBe(3);
+    act(() => vi.advanceTimersByTime(3000));
+    expect(screen.getByText("已用时 3 秒")).toBeTruthy();
+    await act(async () => fail("database backup exceeded its time limit"));
+    expect(screen.getByRole("alert").textContent).toContain("time limit");
+    expect((screen.getByRole("button", { name: "备份 Codex" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    expect(unlistenMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start an unobservable job if subscribing fails", async () => {
+    progressMock.mockRejectedValue(new Error("event subscription failed"));
+    renderBackupSection();
+    fireEvent.click(screen.getByRole("button", { name: "备份 Codex" }));
+    await screen.findByRole("alert");
+    expect(backupCreateMock).not.toHaveBeenCalled();
+    expect((screen.getByRole("button", { name: "备份 Codex" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("cleans up a subscription that arrives after unmount without starting a job", async () => {
+    let subscribed!: (unlisten: () => void) => void;
+    progressMock.mockReturnValue(new Promise((resolve) => { subscribed = resolve; }));
+    renderBackupSection();
+    fireEvent.click(screen.getByRole("button", { name: "备份 Codex" }));
+    cleanup();
+    await act(async () => subscribed(unlistenMock));
+    expect(unlistenMock).toHaveBeenCalledTimes(1);
+    expect(backupCreateMock).not.toHaveBeenCalled();
   });
 
   it("keeps conflicts visible and permits a retry", async () => {

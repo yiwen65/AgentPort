@@ -955,6 +955,8 @@ fn ensure_session_run_tx(
 /// WAL allows concurrent reads.
 pub struct Db {
     conn: Mutex<Connection>,
+    // Captured once so a long backup never needs the live connection mutex.
+    snapshot_source: Option<std::path::PathBuf>,
 }
 
 /// Sidebar/project-list data projected in a fixed number of SQLite queries.
@@ -1011,8 +1013,13 @@ impl Db {
             "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;",
         )?;
         Self::migrate(&conn)?;
+        let snapshot_source = conn
+            .path()
+            .filter(|path| !path.is_empty())
+            .map(std::path::PathBuf::from);
         Ok(Db {
             conn: Mutex::new(conn),
+            snapshot_source,
         })
     }
 
@@ -1160,27 +1167,6 @@ impl Db {
 
     pub fn conn(&self) -> &Mutex<Connection> {
         &self.conn
-    }
-
-    /// Write a consistent snapshot of the full database (including WAL state)
-    /// to `dest` using SQLite's online backup API. This never blocks readers
-    /// for long and never touches the live file — the only supported way to
-    /// capture a restorable copy while the app is running.
-    pub fn backup_snapshot(&self, dest: &std::path::Path) -> Result<()> {
-        if dest.exists() {
-            return Err(CoreError::Conflict(format!(
-                "backup snapshot destination already exists: {}",
-                dest.display()
-            )));
-        }
-        let mut target = Connection::open(dest)?;
-        {
-            let conn = self.conn.lock().unwrap();
-            let backup = rusqlite::backup::Backup::new(&conn, &mut target)?;
-            backup.run_to_completion(32, std::time::Duration::from_millis(50), None)?;
-        }
-        crate::paths::AppPaths::restrict_file(dest)?;
-        Ok(())
     }
 
     // -- projects -----------------------------------------------------------

@@ -323,3 +323,12 @@
 - Correct approach: Optimize `rquickjs-sys` in the dev profile and skip prefix allocation for ground-state ASCII. Keep memory/interrupt limits and preserve raw streaming if the screen engine fails.
 - Prevention: Run the complete Host integration suite, not only the snapshot unit test, when changing the engine or build profile; run `node scripts/build-terminal-snapshot.mjs --check` after shared parser changes.
 - Verified by: Screen-enabled parallel runs failed twice; the screen-disabled control passed 35/35. With the dependency optimization, the unchanged deadlines passed all 36 Host integration tests; the iPhone then restored a >128 KiB differential TUI after cold launch.
+
+## `SQLite live backups` — pin the read view and avoid the GUI connection mutex
+
+- Wrong approach: Accept idle-database backup tests, then run incremental `run_to_completion(32, 50ms)` while holding the GUI's Db mutex.
+- Why it failed: Independent Host writes repeatedly restarted the unpinned source snapshot; the unconditional sleeps widened the restart window, while other GUI database work waited behind the same mutex indefinitely.
+- Recognition signal: A backup produces only a small temporary DB, workers wait on Db mutex, and the backup worker repeatedly sleeps in `run_to_completion`; page progress moves backwards while `PRAGMA data_version` changes.
+- Correct approach: Open a separate read-only connection, begin a read transaction and perform a read to pin its WAL view, then copy bounded page batches without sleeping on successful progress. Bound lock retries and report phase/count/elapsed status.
+- Prevention: Test sustained writes from a second connection, monotonic snapshot progress, exclusion of post-snapshot writes, an available GUI mutex during copying, and lock-deadline failure. Include a real busy-database read-only probe when validating backup changes.
+- Verified by: The sustained-writer regression failed before the fix and passed after it. The unpinned live probe restarted three times in three seconds; the corrected Rust snapshot copied 11,699 pages in 0.269 seconds with integrity OK. The packaged GUI subsequently published and verified the Codex archive and released its buttons.

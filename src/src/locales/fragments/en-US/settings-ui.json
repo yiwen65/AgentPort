@@ -287,6 +287,18 @@
       "mergeResult": "{{agent}}: imported {{imported}} Sessions; skipped {{skipped}} existing Sessions (not overwritten).",
       "skippedSessions": "View skipped existing Session IDs",
       "creating": "Backing up…",
+      "phases": {
+        "preparing": "Preparing backup",
+        "database": "Copying database snapshot (pages)",
+        "filtering": "Filtering this agent's metadata",
+        "native": "Collecting native history (Sessions)",
+        "files": "Checking Session files",
+        "archive": "Writing backup archive (files)",
+        "verify": "Verifying backup integrity"
+      },
+      "phaseProgress": "Current backup phase progress",
+      "elapsed": "Elapsed: {{seconds}} seconds",
+      "busyHint": "This page runs one backup or restore at a time. Buttons become available after success or failure. Database snapshots have a 120-second limit; collecting and packing large native histories may take longer.",
       "createNow": "Back up now",
       "openDirectory": "Open backup directory",
       "createHint": "Saved under backups/ in the app data directory, then checked for native coverage and file integrity",

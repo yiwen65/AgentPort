@@ -287,6 +287,18 @@
       "mergeResult": "{{agent}}：导入 {{imported}} 个会话，跳过 {{skipped}} 个已有会话（未覆盖）。",
       "skippedSessions": "查看跳过的已有会话 ID",
       "creating": "备份中…",
+      "phases": {
+        "preparing": "正在准备备份",
+        "database": "正在复制数据库快照（页）",
+        "filtering": "正在筛选该 Agent 的元数据",
+        "native": "正在收集原生历史（会话）",
+        "files": "正在检查会话文件",
+        "archive": "正在写入备份包（文件）",
+        "verify": "正在校验备份完整性"
+      },
+      "phaseProgress": "当前备份阶段进度",
+      "elapsed": "已用时 {{seconds}} 秒",
+      "busyHint": "本页面一次执行一个备份或恢复任务，完成或失败后按钮恢复。数据库快照限时 120 秒；大体积原生历史的收集与打包可能更久。",
       "createNow": "立即备份",
       "openDirectory": "打开备份目录",
       "createHint": "保存到应用数据目录 backups/，创建后自动校验原生覆盖与文件完整性",

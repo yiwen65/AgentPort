@@ -3137,6 +3137,7 @@ async fn export_session(
 async fn backup_create(
     app: AppHandle,
     agent: AgentType,
+    request_id: String,
     dest: Option<String>,
 ) -> std::result::Result<Value, String> {
     run_backend_blocking(move || {
@@ -3149,12 +3150,27 @@ async fn backup_create(
                 Utc::now().format("%Y%m%d-%H%M%S-%3f")
             )),
         };
-        let report = map_err!(agentport_core::backup::create_agent(
-            &state.paths,
-            &state.db,
-            &dest,
-            agent
+        let mut last_phase = None;
+        let mut last_emit = std::time::Instant::now();
+        let mut progress = |progress: agentport_core::backup::BackupProgress| {
+            if last_phase != Some(progress.phase)
+                || (progress.total > 0 && progress.completed == progress.total)
+                || last_emit.elapsed() >= Duration::from_millis(100)
+            {
+                let _ = app.emit("backup-progress", json!({
+                    "requestId": request_id, "agent": agent,
+                    "phase": progress.phase, "completed": progress.completed, "total": progress.total,
+                }));
+                last_phase = Some(progress.phase);
+                last_emit = std::time::Instant::now();
+            }
+        };
+        let report = map_err!(agentport_core::backup::create_agent_with_progress(
+            &state.paths, &state.db, &dest, agent, &mut progress
         ))?;
+        progress(agentport_core::backup::BackupProgress {
+            phase: agentport_core::backup::BackupPhase::Verify, completed: 0, total: 0,
+        });
         map_err!(agentport_core::backup::verify(&dest))?;
         Ok(json!({
             "path": dest, "agentType": agent,

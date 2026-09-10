@@ -218,6 +218,14 @@ export type NativeCoverageSummary = {
   unsupported: number;
 };
 
+export type BackupProgress = {
+  requestId: string;
+  agent: string;
+  phase: "database" | "filtering" | "native" | "files" | "archive" | "verify";
+  completed: number;
+  total: number;
+};
+
 export type BackupCreateResult = {
   path: string;
   files: number;
@@ -560,8 +568,8 @@ export const api = {
       message,
     }),
   exportSession: (args: ExportArgs) => invoke<string>("export_session", args),
-  backupCreate: (agent: string, dest: string | null) =>
-    invoke<BackupCreateResult>("backup_create", { agent, dest }),
+  backupCreate: (agent: string, dest: string | null, requestId: string) =>
+    invoke<BackupCreateResult>("backup_create", { agent, dest, requestId }),
   backupList: () =>
     invoke<{ path: string; name: string; size: number; modifiedAt: string }[]>("backup_list"),
   backupVerify: (path: string) =>
@@ -635,6 +643,10 @@ export const api = {
 // ---------------------------------------------------------------------------
 // app-level events
 // ---------------------------------------------------------------------------
+
+export function onBackupProgress(cb: (progress: BackupProgress) => void): Promise<UnlistenFn> {
+  return listen<BackupProgress>("backup-progress", (event) => cb(event.payload));
+}
 
 export function onProjectsChanged(cb: (projects: ProjectView[]) => void): Promise<UnlistenFn> {
   return listen<ProjectView[]>("projects-changed", (e) => cb(e.payload));

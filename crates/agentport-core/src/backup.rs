@@ -70,6 +70,38 @@ pub struct BackupFileEntry {
     pub sha256: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupPhase {
+    Database,
+    Filtering,
+    Native,
+    Files,
+    Archive,
+    Verify,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupProgress {
+    pub phase: BackupPhase,
+    pub completed: u64,
+    pub total: u64,
+}
+
+fn report_progress(
+    progress: &mut dyn FnMut(BackupProgress),
+    phase: BackupPhase,
+    completed: u64,
+    total: u64,
+) {
+    progress(BackupProgress {
+        phase,
+        completed,
+        total,
+    });
+}
+
 pub struct BackupReport {
     pub files: u64,
     pub bytes: u64,
@@ -467,7 +499,7 @@ fn collect_session_files(paths: &AppPaths, out: &mut Vec<PathBuf>) -> Result<()>
 /// Create a backup archive at `dest` (must not exist). Atomic: staged under
 /// the exports dir and renamed into place; any failure leaves no partial file.
 pub fn create(paths: &AppPaths, db: &Db, dest: &Path) -> Result<BackupReport> {
-    create_scoped(paths, db, dest, None)
+    create_scoped(paths, db, dest, None, &mut |_| {})
 }
 
 pub fn create_agent(
@@ -476,7 +508,17 @@ pub fn create_agent(
     dest: &Path,
     agent: AgentType,
 ) -> Result<BackupReport> {
-    create_scoped(paths, db, dest, Some(agent))
+    create_agent_with_progress(paths, db, dest, agent, &mut |_| {})
+}
+
+pub fn create_agent_with_progress(
+    paths: &AppPaths,
+    db: &Db,
+    dest: &Path,
+    agent: AgentType,
+    progress: &mut dyn FnMut(BackupProgress),
+) -> Result<BackupReport> {
+    create_scoped(paths, db, dest, Some(agent), progress)
 }
 
 fn create_scoped(
@@ -484,6 +526,7 @@ fn create_scoped(
     db: &Db,
     dest: &Path,
     agent: Option<AgentType>,
+    progress: &mut dyn FnMut(BackupProgress),
 ) -> Result<BackupReport> {
     if dest.exists() {
         return Err(CoreError::Conflict(format!(
@@ -499,7 +542,11 @@ fn create_scoped(
 
     // 1. Consistent DB snapshot (online backup API; never copies the WAL raw).
     let db_snapshot = staging.join("agentport.db");
-    db.backup_snapshot(&db_snapshot)?;
+    report_progress(progress, BackupPhase::Database, 0, 0);
+    db.backup_snapshot_with_progress(&db_snapshot, &mut |completed, total| {
+        report_progress(progress, BackupPhase::Database, completed, total);
+    })?;
+    report_progress(progress, BackupPhase::Filtering, 0, 0);
     // Read the same consistent snapshot we pack, not a later live Session list.
     let snapshot = Db::open(&AppPaths::new(staging.clone()))?;
     if let Some(agent) = agent {
@@ -518,8 +565,9 @@ fn create_scoped(
     }];
     let mut payload_sources = vec![db_snapshot.clone()];
     let mut native_sessions = Vec::new();
-    for session in &sessions {
-        let native = crate::native_backup::capture_session(paths, &session, &staging)?;
+    report_progress(progress, BackupPhase::Native, 0, sessions.len() as u64);
+    for (index, session) in sessions.iter().enumerate() {
+        let native = crate::native_backup::capture_session(paths, session, &staging)?;
         for artifact in &native.artifacts {
             files.push(BackupFileEntry {
                 path: artifact.archive_path.clone(),
@@ -529,9 +577,16 @@ fn create_scoped(
             payload_sources.push(staging.join(&artifact.archive_path));
         }
         native_sessions.push(native);
+        report_progress(
+            progress,
+            BackupPhase::Native,
+            (index + 1) as u64,
+            sessions.len() as u64,
+        );
     }
     let native_coverage = NativeCoverageSummary::from_sessions(&native_sessions);
 
+    report_progress(progress, BackupPhase::Files, 0, 0);
     let mut session_files = Vec::new();
     collect_session_files(paths, &mut session_files)?;
     for abs in session_files {
@@ -580,6 +635,7 @@ fn create_scoped(
     }
 
     // 3. Pack staged zip, then publish atomically.
+    report_progress(progress, BackupPhase::Archive, 0, files.len() as u64);
     let tmp_zip = exports.join(format!(".backup-{}.zip", crate::ids::new_id("bak")));
     let _zip_guard = TempFileGuard::new(tmp_zip.clone());
     {
@@ -595,7 +651,7 @@ fn create_scoped(
         zw.start_file("manifest.json", opts)
             .map_err(|e| CoreError::Export(format!("backup zip manifest: {e}")))?;
         zw.write_all(&manifest_json)?;
-        for (entry, src) in files.iter().zip(&payload_sources) {
+        for (index, (entry, src)) in files.iter().zip(&payload_sources).enumerate() {
             zw.start_file(entry.path.clone(), opts)
                 .map_err(|e| CoreError::Export(format!("backup zip entry {}: {e}", entry.path)))?;
             let mut source = std::fs::File::open(src)?;
@@ -608,6 +664,12 @@ fn create_scoped(
                     entry.path
                 )));
             }
+            report_progress(
+                progress,
+                BackupPhase::Archive,
+                (index + 1) as u64,
+                files.len() as u64,
+            );
         }
         let f = zw
             .finish()
@@ -1157,7 +1219,26 @@ mod tests {
         )
         .unwrap();
         let archive = f.dir.path().join("shell.zip");
-        create_agent(&f.paths, &f.db, &archive, AgentType::Shell).unwrap();
+        let mut events = Vec::new();
+        create_agent_with_progress(&f.paths, &f.db, &archive, AgentType::Shell, &mut |event| {
+            events.push(event)
+        })
+        .unwrap();
+        let mut phases: Vec<_> = events.iter().map(|event| event.phase).collect();
+        phases.dedup();
+        assert_eq!(
+            phases,
+            [
+                BackupPhase::Database,
+                BackupPhase::Filtering,
+                BackupPhase::Native,
+                BackupPhase::Files,
+                BackupPhase::Archive
+            ]
+        );
+        let last = events.last().unwrap();
+        assert_eq!(last.completed, last.total);
+        assert!(last.total > 0);
         let manifest = verify(&archive).unwrap();
         assert_eq!(manifest.agent_type, Some(AgentType::Shell));
         assert_eq!(manifest.native_coverage.total, 1);

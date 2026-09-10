@@ -9,6 +9,8 @@ import {
   commitAiErrorText,
   errorText,
   onProjectsChanged,
+  onBackupProgress,
+  type BackupProgress,
   type NativeCoverageSummary,
 } from "../api";
 import { applyThemeSettings, refreshProjects } from "../actions";
@@ -735,6 +737,21 @@ export function BackupSection() {
   const [items, setItems] = useState<BackupItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState<string | null>(null);
+  const [backupProgress, setBackupProgress] = useState<BackupProgress | null>(null);
+  const [backupElapsed, setBackupElapsed] = useState(0);
+  const progressListener = useRef<(() => void) | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; progressListener.current?.(); progressListener.current = null; };
+  }, []);
+  useEffect(() => {
+    if (!creating) return;
+    const startedAt = Date.now();
+    setBackupElapsed(0);
+    const timer = setInterval(() => setBackupElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [creating]);
   const [verifyState, setVerifyState] = useState<Record<string, BackupStatus>>({});
   const [restoring, setRestoring] = useState<string | null>(null);
   const [restored, setRestored] = useState<{ agent: string; imported: string[]; skipped: string[] } | null>(null);
@@ -758,10 +775,20 @@ export function BackupSection() {
 
   const create = async (agent: string) => {
     setCreating(agent);
+    setBackupProgress(null);
+    setBackupElapsed(0);
     setError(null);
     setRestored(null);
     try {
-      const r = await api.backupCreate(agent, null);
+      const requestId = crypto.randomUUID();
+      // Install the listener before invoking: even a fast snapshot must not
+      // outrun subscription. Ignore other windows' and older jobs' events.
+      const unlisten = await onBackupProgress((event) => {
+        if (mounted.current && event.requestId === requestId && event.agent === agent) setBackupProgress(event);
+      });
+      if (!mounted.current) { unlisten(); return; }
+      progressListener.current = unlisten;
+      const r = await api.backupCreate(agent, null, requestId);
       const complete = nativeCoverageComplete(r.nativeCoverage);
       toast(
         t(
@@ -788,7 +815,10 @@ export function BackupSection() {
     } catch (e) {
       setError(t("settings:ui.backup.createFailed", { detail: errorText(e) }));
     } finally {
+      progressListener.current?.();
+      progressListener.current = null;
       setCreating(null);
+      setBackupProgress(null);
     }
   };
 
@@ -862,6 +892,16 @@ export function BackupSection() {
         <strong>{t("settings:ui.backup.dataBoundaryTitle")}</strong>
         <p className="form-hint">{t("settings:ui.backup.dataBoundaryBody")}</p>
       </div>
+      {creating ? <div className="info-box backup-progress">
+        <strong role="status">{agentDisplay(creating)} · {t(`settings:ui.backup.phases.${backupProgress?.phase ?? "preparing"}`)}
+          {backupProgress && backupProgress.total > 0 ? ` · ${backupProgress.completed} / ${backupProgress.total}` : ""}
+        </strong>
+        {backupProgress && backupProgress.total > 0 ? <progress
+          aria-label={t("settings:ui.backup.phaseProgress")}
+          max={backupProgress.total} value={backupProgress.completed} /> : null}
+        <p className="form-hint">{t("settings:ui.backup.elapsed", { seconds: backupElapsed })}</p>
+        <p className="form-hint">{t("settings:ui.backup.busyHint")}</p>
+      </div> : null}
       <div className="backup-agent-list" aria-busy={busy}>
         {orderAgentIds(s.settings?.agentOrder, DEFAULT_AGENT_ORDER).map((agent) => (
           <div className="backup-agent-row" role="group" aria-label={agentDisplay(agent)} key={agent}>

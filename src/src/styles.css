@@ -5579,6 +5579,7 @@ textarea:focus {
 }
 
 /* Agent backup actions stay visible even for hidden/uninstalled adapters. */
+.backup-progress progress { display: block; width: 100%; margin-top: 8px; }
 .backup-agent-list { display: grid; gap: 8px; }
 .backup-agent-row {
   display: flex;
