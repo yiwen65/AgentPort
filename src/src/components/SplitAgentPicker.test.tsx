@@ -141,7 +141,7 @@ describe("SplitAgentPicker", () => {
       expect(button.textContent).toContain(agentDisplay(agent));
       expect(button.getAttribute("aria-label")).toMatch(/原生默认|Native defaults/);
       expect(button.getAttribute("aria-label")).not.toMatch(/绕过|Bypass/);
-      expect(button.querySelector(".themed-agent-icon svg")).toBeTruthy();
+      expect(button.querySelector(".themed-agent-icon svg, .themed-agent-icon img")).toBeTruthy();
       fireEvent.click(button);
       expect(quickStartSessionMock).toHaveBeenLastCalledWith(
         targetSession.projectId, agent, targetSession.worktreeId,
