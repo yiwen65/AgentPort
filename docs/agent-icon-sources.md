@@ -18,14 +18,14 @@ LobeHub 图标目录：<https://lobehub.com/icons>。实际 SVG 来自其官方�
 | Kiro CLI | kiro_cli.svg | LobeHub `kiro.svg` | 仅文件名 |
 | Cursor CLI | cursor_agent.svg | LobeHub `cursor.svg` | 仅文件名 |
 | Grok Build | grok_build.svg | LobeHub `grok.svg`，对应 xAI Grok 产品标识 | 仅文件名 |
-| easy-pi | easy_pi.svg | LobeHub `pi.svg`；当前 fork README 仍采用 Pi 官方 logo（证据见下） | 仅文件名 |
+| easy-pi | easy_pi.png | 用户于本次会话提供的红白机器人星球原图 | 原图1254×1254等比缩小至512×512，保留透明背景、立体光影与环形轨道，不做矢量重绘或主题反色 |
 | Oh My Pi | omp.svg | 用户于本次会话提供的紫蓝青渐变 π 图形 | 按参考图重绘透明背景 SVG，保留圆角、左短右长双脚及品牌渐变；去除边缘杂点和外围留白 |
 
-LobeHub 目录未找到 Oh My Pi 或 easy-pi 的独立品牌项。Oh My Pi 原使用官方专属资源，现按用户提供的参考图替换；不宣称该参考图具有旧资源的 MIT 授权。easy-pi 的本地官方 fork `/Users/w/Projects/easy-pi/pi`，remote `https://github.com/yiwen65/pi.git`，提交 `c227dbb2ee1d69e8428edfa9cc1ca7ba315f6547`，`packages/coding-agent/README.md` 顶部仍引用 `https://pi.dev/logo-auto.svg`，因此使用同一 Pi 品牌的 LobeHub 图形，并保留独立的 easy-pi 文字标签与入口；未虚构 easy-pi 新品牌。
+LobeHub 目录未找到 Oh My Pi 或 easy-pi 的独立品牌项。Oh My Pi 原使用官方专属资源，现按用户提供的参考图替换；不宣称该参考图具有旧资源的 MIT 授权。easy-pi 的本地官方 fork `/Users/w/Projects/easy-pi/pi`，remote `https://github.com/yiwen65/pi.git`，提交 `c227dbb2ee1d69e8428edfa9cc1ca7ba315f6547`，`packages/coding-agent/README.md` 顶部仍引用 `https://pi.dev/logo-auto.svg`，因此旧版曾使用同一 Pi 品牌的 LobeHub 图形；现按用户指定替换为机器人星球原图，保留独立的 easy-pi 文字标签与入口。用户提供的原图不被宣称具有 LobeHub 的 MIT 授权。
 
 ## light / dark 处理
 
-这批图标使用原站单色版本而非全局反色滤镜。八份 LobeHub 图标原本使用 `currentColor`；Oh My Pi 按用户要求在 light/dark 下均保留紫蓝青渐变，背景透明；每个实例使用独立渐变 ID，避免多图标引用冲突。`AgentIcons.tsx` 的新增图标统一使用 `.themed-agent-icon`，其前景为应用语义变量 `--text`：dark `#f3f5fb`，light `#111217`。应用根节点切换 `data-theme` 时 SVG 自动同步，无外部图片加载、闪烁或依赖系统主题与 App 主题一致的假设。图标为装饰，`aria-hidden=true`；按钮/选择器已有完整产品文字标签。
+这批图标使用原站单色版本而非全局反色滤镜。当前七份 LobeHub 图标使用 `currentColor`；easy-pi 在两种主题下保持原图颜色和透明背景，图片不可拖动；Oh My Pi 按用户要求在 light/dark 下均保留紫蓝青渐变，背景透明；每个实例使用独立渐变 ID，避免多图标引用冲突。`AgentIcons.tsx` 的新增图标统一使用 `.themed-agent-icon`，其前景为应用语义变量 `--text`：dark `#f3f5fb`，light `#111217`。应用根节点切换 `data-theme` 时 SVG 自动同步，无远程图片加载或依赖系统主题与 App 主题一致的假设；easy-pi PNG由构建产物本地提供。图标为装饰，`aria-hidden=true`；按钮/选择器已有完整产品文字标签。
 
 图标测试检查九种资源渲染、固定文件来源、无脚本/外链、`currentColor` 及明暗语义变量连通性。实际 App 截图由交付阶段检查，不以 jsdom 测试冒充像素或完整 WCAG 验证。
 

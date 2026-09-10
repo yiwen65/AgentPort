@@ -1,7 +1,8 @@
 Third-party Agent icon license notices
 
 The current omp.svg is a vector redraw of a user-supplied reference.
-The historical Oh My Pi license below does not establish that reference's license.
+The current easy_pi.png is resized from a user-supplied original image.
+The third-party licenses below do not establish either reference's license.
 
 LobeHub SVGs:
 Copyright (c) 2023 LobeHub

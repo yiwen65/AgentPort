@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 describe("new Agent brand icons", () => {
-  it.each(ADDED_AGENT_IDS)("renders %s with theme-aware, inert inline SVG", (agent) => {
+  it.each(ADDED_AGENT_IDS)("renders %s as an inert, theme-compatible brand mark", (agent) => {
     const { container, rerender } = render(<AgentIcon agent={agent} size={30} />);
     expect(hasAgentIcon(agent)).toBe(true);
     for (const theme of ["light", "dark"]) {
@@ -22,6 +22,15 @@ describe("new Agent brand icons", () => {
       const mark = container.querySelector(".themed-agent-icon");
       expect(mark?.getAttribute("aria-hidden")).toBe("true");
       expect((mark as HTMLElement).style.width).toBe("30px");
+      if (agent === "easy_pi") {
+        const image = mark?.querySelector("img");
+        expect(image?.getAttribute("src")).toContain("easy_pi.png");
+        expect(image?.getAttribute("alt")).toBe("");
+        expect(image?.getAttribute("draggable")).toBe("false");
+        expect(image?.getAttribute("width")).toBe("30");
+        expect(mark?.querySelector("svg")).toBeNull();
+        continue;
+      }
       expect(mark?.querySelectorAll("svg").length).toBe(1);
       if (agent === "omp") {
         expect(mark?.querySelectorAll("linearGradient stop")).toHaveLength(3);

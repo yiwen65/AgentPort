@@ -13,7 +13,7 @@ import geminiSvg from "../assets/agent-icons/gemini.svg?raw";
 import clineSvg from "../assets/agent-icons/cline.svg?raw";
 import kiroSvg from "../assets/agent-icons/kiro_cli.svg?raw";
 import cursorSvg from "../assets/agent-icons/cursor_agent.svg?raw";
-import easyPiSvg from "../assets/agent-icons/easy_pi.svg?raw";
+import easyPiImage from "../assets/agent-icons/easy_pi.png";
 import grokSvg from "../assets/agent-icons/grok_build.svg?raw";
 import iconLicense from "../assets/agent-icons/LICENSE.txt?raw";
 
@@ -27,12 +27,11 @@ const addedAgentIcons: Record<string, string> = {
   cline: clineSvg,
   kiro_cli: kiroSvg,
   cursor_agent: cursorSvg,
-  easy_pi: easyPiSvg,
   grok_build: grokSvg,
 };
 
 export function hasAgentIcon(agent: string): boolean {
-  return ["codex", "claude", "kimi", "qoder", "pi"].includes(agent)
+  return ["codex", "claude", "kimi", "qoder", "pi", "easy_pi"].includes(agent)
     || Object.prototype.hasOwnProperty.call(addedAgentIcons, agent);
 }
 
@@ -104,6 +103,13 @@ export function AgentIcon({
     );
   }
   switch (agent) {
+    case "easy_pi":
+      return (
+        <span className={["themed-agent-icon", className].filter(Boolean).join(" ")}
+          style={{ width: size, height: size }} aria-hidden="true">
+          <img src={easyPiImage} alt="" width={size} height={size} draggable={false} />
+        </span>
+      );
     case "codex":
       return <CodexIcon className={className} size={size} />;
     case "claude":
