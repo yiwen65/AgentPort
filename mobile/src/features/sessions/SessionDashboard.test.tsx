@@ -53,7 +53,9 @@ describe("V2 Session workspace", () => {
     visibility.mockReturnValue("visible"); fireEvent(document, new Event("visibilitychange"));
     await waitFor(() => expect(remote.disconnect).toHaveBeenCalledWith("host-1"));
     await act(async () => {});
-    expect(request.mock.calls.filter(([id]) => id === "host-1")).toHaveLength(0);
+    const duringRecovery = request.mock.calls.filter(([id]) => id === "host-1");
+    expect(duringRecovery).toHaveLength(1); // only the failed read-only liveness probe
+    expect(duringRecovery[0][1]).toBe("agent.preferences");
     expect(screen.queryByText("[object Object]")).not.toBeInTheDocument();
     expect(screen.queryByText("Update failed. Tap to retry")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approval task" })).toBeInTheDocument();
@@ -69,8 +71,11 @@ describe("V2 Session workspace", () => {
     render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
     await screen.findByRole("button", { name: "Approval task" });
     const request = vi.mocked(remote.request), original = request.getMockImplementation()!;
-    if (phase === "connect") vi.mocked(remote.connect).mockRejectedValue({ message: "Connection unavailable" });
-    else request.mockImplementation((...args) => args[0] === "host-1" ? Promise.reject({ message: "Read unavailable" }) : original(...args));
+    if (phase === "connect") {
+      vi.mocked(remote.connect).mockRejectedValue({ message: "Connection unavailable" });
+      request.mockImplementation((...args) => args[0] === "host-1" && args[1] === "agent.preferences" && args[3]?.signal
+        ? Promise.reject({ message: "Suspended transport" }) : original(...args));
+    } else request.mockImplementation((...args) => args[0] === "host-1" ? Promise.reject({ message: "Read unavailable" }) : original(...args));
     const visibility = vi.spyOn(document, "visibilityState", "get");
     visibility.mockReturnValue("hidden"); fireEvent(document, new Event("visibilitychange"));
     visibility.mockReturnValue("visible"); fireEvent(document, new Event("visibilitychange"));
@@ -84,15 +89,38 @@ describe("V2 Session workspace", () => {
     if (phase === "connect") expect(remote.connect).toHaveBeenCalledTimes(2);
   });
 
-  it("reconnects the selected device on foreground without waiting for a disconnect event", async () => {
+  it("does not cancel its own recovery when native disconnect is delivered before a failed connect", async () => {
+    const remote = client();
+    let connection!: (event: any) => void;
+    vi.mocked(remote.onConnectionState).mockImplementation(async listener => { connection = listener; return async () => {}; });
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await screen.findByRole("button", { name: "Approval task" });
+    const request = vi.mocked(remote.request), original = request.getMockImplementation()!;
+    request.mockImplementation((...args) => args[1] === "agent.preferences" && args[3]?.signal
+      ? Promise.reject(new Error("offline")) : original(...args));
+    vi.mocked(remote.disconnect).mockImplementation(async () => { connection({ profileId: "host-1", state: "disconnected" }); });
+    let reject!: (error: unknown) => void;
+    vi.mocked(remote.connect).mockImplementation(() => new Promise((_, fail) => { reject = fail; }));
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    visibility.mockReturnValue("hidden"); fireEvent(document, new Event("visibilitychange"));
+    visibility.mockReturnValue("visible"); fireEvent(document, new Event("visibilitychange"));
+    await waitFor(() => expect(remote.connect).toHaveBeenCalledOnce());
+    await act(async () => reject(new Error("Connection failed")));
+    expect(await screen.findByRole("button", { name: "Update failed. Tap to retry" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled();
+  });
+
+  it("refreshes the selected device on foreground without replacing a healthy connection", async () => {
     const remote = client();
     render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
     await screen.findByRole("button", { name: "Approval task" });
     const visibility = vi.spyOn(document, "visibilityState", "get");
     visibility.mockReturnValue("hidden"); fireEvent(document, new Event("visibilitychange"));
     visibility.mockReturnValue("visible"); fireEvent(document, new Event("visibilitychange"));
-    await waitFor(() => expect(remote.disconnect).toHaveBeenCalledWith("host-1"));
-    await waitFor(() => expect(remote.connect).toHaveBeenCalledWith("host-1"));
+    await waitFor(() => expect(remote.request).toHaveBeenCalledWith("host-1", "agent.preferences", {}, expect.objectContaining({ signal: expect.any(AbortSignal) })));
+    await act(async () => {});
+    expect(remote.disconnect).not.toHaveBeenCalled();
+    expect(remote.connect).not.toHaveBeenCalled();
     expect(await screen.findByRole("button", { name: "Approval task" })).toBeEnabled();
   });
 

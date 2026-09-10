@@ -291,15 +291,16 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   }, [refreshDeviceOnce]);
 
   useForegroundRecovery(client, selectedDeviceId,
-    dashboardActive && Boolean(selectedHost) && selectedHost?.connectionState !== "disconnected", {
-      onStart: () => {
+    dashboardActive && Boolean(selectedHost) && (recoveringDevice.current === selectedDeviceId || selectedHost?.connectionState !== "disconnected"), {
+      onChecking: () => {
         // Invalidate old reads before foreground effects can submit new ones.
         refreshEpoch.current += 1;
         recoveringDevice.current = selectedDeviceId;
         setRecoveringHost(selectedDeviceId);
         setUpdateErrorHost(undefined);
-        setSnapshot(current => current ? { ...current, cached: true, error: undefined } : current);
+        setSnapshot(current => current ? { ...current, error: undefined } : current);
       },
+      onStart: () => setSnapshot(current => current ? { ...current, cached: true } : current),
       onRecovered: () => {
         recoveringDevice.current = undefined;
         setRecoveringHost(undefined);

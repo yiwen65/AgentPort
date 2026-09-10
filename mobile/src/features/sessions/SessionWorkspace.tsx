@@ -790,7 +790,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         showHeading={false}
         showProbeOutput={false}
         obscured={busyAction === "stop"}
-        recovering={recoveryVeil || !pageVisible}
+        recovering={recoveryVeil}
         recoveryLabel={t(`session.connection.${connectionLabel === "failed" ? "failed" : connectionLabel === "reconnecting" ? "reconnecting" : "attaching"}`)}
       /> : null}
 

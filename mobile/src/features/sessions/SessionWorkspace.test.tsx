@@ -71,10 +71,11 @@ const open: OpenSession = {
   },
 };
 
-function setupClient({ rejectResize = false, autoReplay = true }: { rejectResize?: boolean; autoReplay?: boolean } = {}) {
+function setupClient({ rejectResize = false, autoReplay = true, probeHealthy = true }: { rejectResize?: boolean; autoReplay?: boolean; probeHealthy?: boolean } = {}) {
   let listener: ((event: RemoteEvent<SessionEventPayload>) => void) | undefined;
   const request = vi.fn().mockImplementation((_profileId, method, params) => {
     if (method === "session.attach") { if (autoReplay) listener?.({ subscriptionId: "att-1", eventType: "replay_done", cursor: null, payload: { session_id: "ses-1" } }); return Promise.resolve({ attachmentId: "att-1", sessionId: "ses-1", childAlive: true, cursor: null, features: ["input_batch_v1", "terminal.geometry_v1"], runId: "run", runOrdinal: 1, terminalGeometry: null }); }
+    if (method === "agent.preferences" && !probeHealthy) return Promise.reject(new Error("Suspended transport"));
     if (method === "git.context.resolve") return Promise.resolve({ actualBranch: "main", expectedBranch: "main" });
     if (method === "session.list") return Promise.resolve([]);
     if (method === "session.stop") return Promise.resolve({ groupCleaned: true });
@@ -528,15 +529,31 @@ describe("SessionWorkspace", () => {
     prompt.mockRestore();
   });
 
-  it("covers foreground replay until the matching parsed frame has rendered", async () => {
+  it("keeps a healthy foreground connection, attachment and terminal immediately usable", async () => {
     const { client, request } = setupClient();
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    visibility.mockReturnValue("hidden"); fireEvent(document, new Event("visibilitychange"));
+    visibility.mockReturnValue("visible"); fireEvent(document, new Event("visibilitychange"));
+    await act(async () => {});
+    expect(client.disconnect).not.toHaveBeenCalled();
+    expect(client.connect).not.toHaveBeenCalled();
+    expect(request.mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(1);
+    expect(terminalHarness.props?.recovering).toBe(false);
+    expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live");
+    expect(terminalHarness.mounts).toBe(1);
+  });
+
+  it("covers foreground replay until the matching parsed frame has rendered", async () => {
+    const { client, request } = setupClient({ probeHealthy: false });
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     terminalHarness.deferPaint = true;
     const visibility = vi.spyOn(document, "visibilityState", "get");
     visibility.mockReturnValue("hidden"); fireEvent(document, new Event("visibilitychange"));
     visibility.mockReturnValue("visible"); fireEvent(document, new Event("visibilitychange"));
-    expect(terminalHarness.props?.recovering).toBe(true);
+    await waitFor(() => expect(terminalHarness.props?.recovering).toBe(true));
     expect(terminalHarness.props?.obscured).toBe(false);
     await waitFor(() => expect(request.mock.calls.filter(([, m]) => m === "session.attach")).toHaveLength(2));
     await waitFor(() => expect(terminalHarness.paintQueue).toHaveLength(1));
@@ -551,7 +568,7 @@ describe("SessionWorkspace", () => {
   });
 
   it.each([false, true])("replaces a suspended connection and resumes once (connection events delivered: %s)", async delivered => {
-    const { client, request, emit } = setupClient();
+    const { client, request, emit } = setupClient({ probeHealthy: false });
     if (delivered) {
       let connection!: (event: any) => void;
       vi.mocked(client.onConnectionState).mockImplementation(async listener => { connection = listener; return async () => {}; });

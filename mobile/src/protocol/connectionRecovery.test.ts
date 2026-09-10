@@ -1,8 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { recoverConnection } from "./connectionRecovery";
+import { checkConnection, recoverConnection } from "./connectionRecovery";
 import type { RemoteClient } from "./remoteClient";
 
 describe("connection recovery", () => {
+  it("coalesces concurrent probes only for the same client and host", async () => {
+    const client = { request: vi.fn().mockResolvedValue({}) } as unknown as RemoteClient;
+    const first = checkConnection(client, "host");
+    expect(checkConnection(client, "host")).toBe(first);
+    const other = checkConnection(client, "other");
+    expect(other).not.toBe(first);
+    expect(await first).toBe(true); expect(await other).toBe(true);
+    expect(client.request).toHaveBeenCalledTimes(2);
+    await checkConnection(client, "host");
+    expect(client.request).toHaveBeenCalledTimes(3);
+  });
   it("coalesces the same host and releases a failed recovery for explicit retry", async () => {
     let release!: () => void;
     const client = {
