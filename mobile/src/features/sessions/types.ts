@@ -40,7 +40,7 @@ export interface SessionSummary {
   statusEvidence?: string;
 }
 
-export type AttentionKind = "approval_requested" | "turn_completed";
+export type AttentionKind = "approval_requested" | "turn_completed" | "execution_failed";
 
 export interface ProjectSummary {
   id: string;

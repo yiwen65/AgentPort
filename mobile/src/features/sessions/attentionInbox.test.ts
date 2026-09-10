@@ -8,6 +8,12 @@ const event = (sequence: number, sessionId = "s", runOrdinal = 1): AttentionPoll
 const page = (...events: AttentionPollEvent[]) => ({ events, nextCursor: events.at(-1)?.cursor });
 beforeEach(() => localStorage.clear());
 describe("durable device-local attention inbox", () => {
+  it("retains execution failures without enabling system notification delivery", () => {
+    const inbox = new AttentionInbox("h");
+    inbox.ingest(page({ ...event(1), kind: "execution_failed" }));
+    expect(new AttentionInbox("h").entries[0].kind).toBe("execution_failed");
+    expect(inbox.pendingCount).toBe(0);
+  });
   it("keeps metadata through restart independently of shared unread/current status", () => {
     const inbox = new AttentionInbox("h"); inbox.ingest(page(event(1)), new Map([["s", "Build"]]));
     expect(new AttentionInbox("h").entries).toEqual([expect.objectContaining({ sessionTitle: "Build", sequence: 1 })]);

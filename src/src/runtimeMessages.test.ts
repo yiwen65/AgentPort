@@ -122,6 +122,16 @@ describe("runtime message localization", () => {
     expect(runtimeMessageText({ code, params: { agent: "Test Agent" } })).toContain(en);
   });
 
+  it("localizes notification setup degradation while retaining actionable technical detail", async () => {
+    await applyUiLanguage("en-US", { persistHint: false });
+    const envelope = { code: "notification_setup_degraded", technicalDetail: "fixture.json: permission denied" };
+    expect(runtimeMessageText(envelope)).toContain("basic Agent startup remains available");
+    expect(runtimeMessageText(envelope)).toContain("fixture.json: permission denied");
+    await applyUiLanguage("zh-CN", { persistHint: false });
+    expect(runtimeMessageText(envelope)).toContain("仍可基本启动 Agent");
+    expect(runtimeMessageText(envelope)).toContain("fixture.json: permission denied");
+  });
+
   it("formats probe messages with named parameters and plural rules", async () => {
     await applyUiLanguage("en-US", { persistHint: false });
     expect(runtimeMessageText({ code: "probe_auto_selected", params: { count: 1 } }))

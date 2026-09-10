@@ -9,6 +9,8 @@
   ],
   "crates/agentport-core/src/notify.rs": [
     "等待批准",
+    "等待处理",
+    "执行失败",
     "已完成",
     "AgentPort 测试通知",
     "通知通道工作正常。"

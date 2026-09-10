@@ -375,6 +375,7 @@ fn timeline_bucket(event: &StatusEvent) -> Option<TimelineBucket> {
     match (event.attention_kind(), event.state) {
         (Some(AttentionKind::ApprovalRequested), _) => Some(TimelineBucket::Waiting),
         (Some(AttentionKind::TurnCompleted), _) => Some(TimelineBucket::Completed),
+        (Some(AttentionKind::ExecutionFailed), _) => Some(TimelineBucket::Failed),
         (None, AgentState::Exited) if event.evidence.as_deref() == Some("process:exit:0") => {
             Some(TimelineBucket::Completed)
         }

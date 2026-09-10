@@ -246,6 +246,22 @@ export interface BootInfo {
   exportsDir: string;
 }
 
+export type NotificationSetupState = "ready" | "degraded" | "failed" | "unavailable";
+export type NotificationEventSource = "hook" | "native" | "process" | "heuristic" | "unavailable";
+
+export interface NotificationSetup {
+  agent: AgentTypeStr;
+  state: NotificationSetupState;
+  strategy: string;
+  events: {
+    completed: NotificationEventSource;
+    needsInput: NotificationEventSource;
+    failed: NotificationEventSource;
+  };
+  detail: string;
+  checkedAt: string;
+}
+
 export interface ProbeOutcome {
   agent: AgentTypeStr;
   displayName: string;
@@ -253,6 +269,8 @@ export interface ProbeOutcome {
   reason: string | null;
   /** Localizable application message from newer backends; `reason` remains for compatibility. */
   reasonMessage?: RuntimeMessageEnvelope | null;
+  /** Independent from CLI availability; setup failure must not discard install. */
+  notificationSetup?: NotificationSetup | null;
   install: AdapterInstall | null;
   candidates: ProbeCandidate[];
 }

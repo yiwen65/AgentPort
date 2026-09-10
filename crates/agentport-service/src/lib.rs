@@ -278,6 +278,7 @@ impl SessionSummary {
             .map(|kind| match kind {
                 agentport_core::models::AttentionKind::ApprovalRequested => "approval_requested",
                 agentport_core::models::AttentionKind::TurnCompleted => "turn_completed",
+                agentport_core::models::AttentionKind::ExecutionFailed => "execution_failed",
             })
             .map(str::to_owned);
         Self {
@@ -347,6 +348,7 @@ pub struct SupportedAgentSummary {
     pub display_name: String,
     pub command_names: Vec<String>,
     pub install: Option<AdapterInstall>,
+    pub notification_setup: Option<agentport_core::notification_setup::NotificationSetup>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -368,6 +370,7 @@ pub struct AgentProbeResult {
     pub reason_detail: Option<String>,
     pub install: Option<AdapterInstall>,
     pub candidates: Vec<agentport_core::models::ProbeCandidate>,
+    pub notification_setup: Option<agentport_core::notification_setup::NotificationSetup>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1142,6 +1145,8 @@ impl RemoteService for CoreService {
 
     fn supported_agents(&self) -> Result<Vec<SupportedAgentSummary>> {
         let selectable = self.db.list_adapters()?;
+        let notification_setups =
+            agentport_core::notification_setup::list_status(&self.paths).unwrap_or_default();
         AgentType::all()
             .iter()
             .copied()
@@ -1154,7 +1159,14 @@ impl RemoteService for CoreService {
                         .iter()
                         .map(|name| (*name).into())
                         .collect(),
-                    install: selectable.iter().find(|install| install.agent_type == agent).cloned(),
+                    install: selectable
+                        .iter()
+                        .find(|install| install.agent_type == agent)
+                        .cloned(),
+                    notification_setup: notification_setups
+                        .iter()
+                        .find(|setup| setup.agent == agent)
+                        .cloned(),
                 })
             })
             .collect()
@@ -1167,7 +1179,14 @@ impl RemoteService for CoreService {
         if let Some(install) = &outcome.install {
             self.db.upsert_adapter(install)?;
         }
-        Ok(probe_result(agent, outcome))
+        let setup = agentport_core::notification_setup::for_probe(
+            &self.paths,
+            agent,
+            outcome.install.as_ref(),
+        );
+        let mut result = probe_result(agent, outcome);
+        result.notification_setup = Some(setup);
+        Ok(result)
     }
 
     fn probe_all_agents(&self, params: AgentProbeAllParams) -> Result<Vec<AgentProbeResult>> {
@@ -1190,7 +1209,14 @@ impl RemoteService for CoreService {
                 if let Some(install) = &outcome.install {
                     self.db.upsert_adapter(install)?;
                 }
-                Ok(probe_result(agent, outcome))
+                let setup = agentport_core::notification_setup::for_probe(
+                    &self.paths,
+                    agent,
+                    outcome.install.as_ref(),
+                );
+                let mut result = probe_result(agent, outcome);
+                result.notification_setup = Some(setup);
+                Ok(result)
             })
             .collect()
     }
@@ -2207,6 +2233,12 @@ impl RemoteService for CoreService {
             agentport_core::pi_storage::prepare_launch(&self.paths, &session.id, &mut plan)
                 .map_err(ServiceError::NotExecutedCore)?;
         }
+        agentport_core::notification_setup::apply_to_launch(
+            &self.paths,
+            session.adapter_type,
+            &mut plan,
+        )
+        .map_err(ServiceError::NotExecutedCore)?;
         let (env, secrets) = materialize_launch_environment(self, &preset, &plan.env)
             .map_err(ServiceError::NotExecutedCore)?;
         let settings = self
@@ -2416,6 +2448,9 @@ impl RemoteService for CoreService {
                         "approval_requested"
                     }
                     Some(agentport_core::models::AttentionKind::TurnCompleted) => "turn_completed",
+                    Some(agentport_core::models::AttentionKind::ExecutionFailed) => {
+                        "execution_failed"
+                    }
                     None => unreachable!("DB attention predicate must match shared classifier"),
                 };
                 AttentionEventSummary {
@@ -2795,6 +2830,7 @@ fn install_for(service: &CoreService, agent: AgentType) -> agentport_core::Resul
     match outcome.install {
         Some(install) => {
             service.db.upsert_adapter(&install)?;
+            let _ = agentport_core::notification_setup::setup(&service.paths, &install);
             Ok(install)
         }
         None => Err(agentport_core::CoreError::Adapter(format!(
@@ -2849,6 +2885,9 @@ fn materialize_launch_environment(
     let mut env = capability::login_shell_launch_environment();
     env.extend_from_slice(plan_env);
     for name in &preset.env_names {
+        if name.starts_with("AGENTPORT_NOTIFICATION_") {
+            continue;
+        }
         if let Ok(value) = std::env::var(name) {
             env.push((name.clone(), value));
         }
@@ -2952,6 +2991,7 @@ fn build_launch_plan(
     if agent == AgentType::Pi {
         agentport_core::pi_storage::prepare_launch(&service.paths, &session_id, &mut plan)?;
     }
+    agentport_core::notification_setup::apply_to_launch(&service.paths, agent, &mut plan)?;
     Ok((plan, preset, cwd, session_id))
 }
 
@@ -3054,6 +3094,7 @@ fn probe_result(agent: AgentType, outcome: capability::ProbeOutcome) -> AgentPro
         reason_detail: outcome.reason_detail,
         install: outcome.install,
         candidates: outcome.candidates,
+        notification_setup: None,
     }
 }
 

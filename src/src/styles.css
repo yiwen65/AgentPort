@@ -938,6 +938,58 @@ body.is-project-dragging .tree-row.project {
   opacity: 1;
 }
 
+.notification-setup-panel {
+  margin-top: 24px;
+}
+
+.notification-setup-panel p {
+  margin: 8px 0;
+}
+
+.notification-setup-table-wrap {
+  overflow-x: auto;
+}
+
+.notification-setup-table th,
+.notification-setup-table td {
+  vertical-align: top;
+}
+
+.notification-setup-table summary {
+  margin-top: 8px;
+  cursor: pointer;
+}
+
+.notification-setup-state {
+  font-weight: 600;
+}
+
+.notification-setup-coverage {
+  margin: 8px 0;
+}
+
+.notification-setup-coverage > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.notification-setup-coverage dd {
+  margin: 0;
+}
+
+.notification-setup-detail {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.notification-setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
 .adapter-order-name {
   display: inline-flex;
   align-items: center;

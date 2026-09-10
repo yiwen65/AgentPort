@@ -35,6 +35,11 @@ describe("Onboarding localization", () => {
         displayName: "Pi",
         state: "available",
         reason: null,
+        notificationSetup: {
+          agent: "pi", state: "failed", strategy: "extension",
+          events: { completed: "unavailable", needsInput: "heuristic", failed: "process" },
+          detail: "fixture permission denied", checkedAt: "2026-09-10T00:00:00Z",
+        },
         install: {
           agentType: "pi",
           executablePath: "/home/test/.volta/bin/pi",
@@ -56,6 +61,8 @@ describe("Onboarding localization", () => {
 
     await waitFor(() => expect(probe).toHaveBeenCalledTimes(1));
     expect(await screen.findByText("/home/test/.volta/bin/pi")).toBeTruthy();
+    expect(screen.getByText("通知: 配置失败")).toBeTruthy();
+    expect(getState().adapters.some((adapter) => adapter.agentType === "pi")).toBe(true);
   });
 
   it("browses for an executable file instead of an installation directory", async () => {

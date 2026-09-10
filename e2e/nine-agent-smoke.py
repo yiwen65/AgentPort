@@ -21,9 +21,11 @@ def main():
     parser.add_argument("--agent", action="append", required=True, metavar="ID=EXE")
     parser.add_argument("--startup-timeout", type=float, default=30, help="bounded wait for first PTY bytes (seconds)")
     parser.add_argument("--resume-agent", action="append", default=[], help="also verify cold exact resume for this ID (requires persisted native history)")
+    parser.add_argument("--verify-notifications", action="store_true", help="also require setup, owned runtime context, idempotent probe and rollback")
     options = parser.parse_args()
     cli = options.cli.resolve(strict=True)
-    root = Path(tempfile.mkdtemp(prefix="agentport-nine-smoke-"))
+    # Resolve macOS /var -> /private/var before strict no-symlink installers.
+    root = Path(tempfile.mkdtemp(prefix="agentport-nine-smoke-")).resolve()
     home, project = root / "home", root / "project"
     home.mkdir(mode=0o700)
     project.mkdir(mode=0o700)
@@ -61,6 +63,16 @@ def main():
             if probe["state"] != "available":
                 raise RuntimeError(probe.get("reason", "probe unavailable"))
             row["version"] = probe["install"]["version"]
+            if options.verify_notifications:
+                setup = probe.get("notificationSetup", {})
+                row["notificationSetup"] = setup
+                if setup.get("state") not in ("ready", "degraded"):
+                    raise RuntimeError("notification setup did not install safely")
+                repeated = call("probe", agent, "--path", executable)
+                if isinstance(repeated, list):
+                    repeated = repeated[0]
+                if repeated.get("notificationSetup", {}).get("state") != setup["state"]:
+                    raise RuntimeError("repeated notification setup changed readiness")
             launch = call("session", "new", "--project", project_id, "--agent", agent)
             session_id = launch["id"]
             row["sessionId"] = session_id
@@ -79,8 +91,24 @@ def main():
                     break
             status = call("session", "status", session_id)
             row["lifecycle"] = status["session"]["lifecycle"]
+            if options.verify_notifications:
+                session_dir = root / "data" / "sessions" / session_id
+                cfg = json.loads((session_dir / "host.json").read_text())
+                bindings = dict(cfg["env"])
+                context_path = Path(bindings["AGENTPORT_NOTIFICATION_CONTEXT_FILE"])
+                context = json.loads(context_path.read_text())
+                if (context.get("sessionId") != session_id or
+                        context.get("runId") != bindings["AGENTPORT_RUN_ID"] or
+                        not context.get("ownerPid") or
+                        context.get("nativeSessionId") != launch["agentSessionId"]):
+                    raise RuntimeError("managed runtime context was not bound to the actual child")
+                row["notificationContextBound"] = True
             replay_again = call("session", "read", session_id, "--timeout", "1")
             row["reattachBytes"] = replay_again["bytes"]
+            if options.verify_notifications:
+                # Isolated unauthenticated startup only; retain native loader
+                # diagnostics for review instead of treating any PTY bytes as proof.
+                (root / f"{agent}-startup.txt").write_text(replay_again.get("output", ""))
             if not launch["childAlive"] or row["lifecycle"] != "running" or not row["ptyBytes"] or not row["reattachBytes"]:
                 raise RuntimeError("real CLI did not remain running with PTY output")
             if agent in options.resume_agent:
@@ -105,6 +133,11 @@ def main():
                 try:
                     call("session", "stop", session_id)
                     row["stopped"] = True
+                    if options.verify_notifications:
+                        rolled_back = call("notification", "rollback", agent)
+                        if rolled_back.get("state") != "unavailable":
+                            raise RuntimeError("notification rollback did not deactivate integration")
+                        row["notificationRolledBack"] = True
                 except (RuntimeError, subprocess.TimeoutExpired) as error:
                     row["status"] = "failed"
                     row["stopError"] = str(error)

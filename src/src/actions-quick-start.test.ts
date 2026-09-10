@@ -194,6 +194,16 @@ describe("quickStartSession split intent", () => {
     expect(getState().toasts.some((toast) => toast.kind === "info" && toast.text.includes("auto-approve=true"))).toBe(true);
   });
 
+  it("shows notification setup degradation for an existing Agent without blocking quick launch", async () => {
+    apiMock.createSession.mockResolvedValue({
+      ...createResult, notices: [{ code: "notification_setup_degraded", technicalDetail: "fixture relay unavailable" }],
+    });
+    await quickStartSession(targetSession.projectId, "codex");
+    expect(getState().toasts.some((toast) => toast.kind === "info" && toast.text.includes("fixture relay unavailable"))).toBe(true);
+    expect(getState().toasts.some((toast) => toast.kind === "success")).toBe(true);
+    expect(getState().activeSessionId).toBe(createdSession.id);
+  });
+
   it("does not change the pane layout when creation fails", async () => {
     apiMock.createSession.mockRejectedValue(new Error("create failed"));
 

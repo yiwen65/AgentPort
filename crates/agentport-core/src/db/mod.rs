@@ -339,6 +339,23 @@ pub mod schema {
           (source='adapter' AND (evidence='adapter:kimi:TurnEnd' OR evidence='adapter:pi:TurnEnd'))
         ));
         "#,
+        // v14 -> v15: include managed notification events and unexpected exits
+        // in the same bounded attention index used by unread and catch-up.
+        r#"
+        DROP INDEX idx_attention_cursor;
+        CREATE INDEX idx_attention_cursor
+        ON status_events(occurred_at,session_id,run_ordinal,sequence)
+        WHERE (state='needs_input' AND (
+          (source='hook' AND evidence IN ('hook:PermissionRequest','hook:AskUserQuestion','hook:AgentPortNotification:needs_input')) OR
+          (source='pty' AND evidence LIKE 'pty:pattern:%')
+        )) OR (state='idle' AND (
+          (source='hook' AND evidence IN ('hook:Stop','hook:TurnEnd','hook:AgentPortNotification:completed','hook:AgentPortNotification:failed')) OR
+          (source='adapter' AND evidence IN ('adapter:kimi:TurnEnd','adapter:pi:TurnEnd','adapter:omp:TurnEnd','adapter:easy_pi:TurnEnd'))
+        )) OR (state='exited' AND source='process' AND (
+          (evidence GLOB 'process:exit:[0-9]*' AND substr(evidence,14) NOT GLOB '*[^0-9]*' AND CAST(substr(evidence,14) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(evidence,14) AS INTEGER) NOT IN (130,143)) OR
+          (evidence GLOB 'process:signal:[0-9]*' AND substr(evidence,16) NOT GLOB '*[^0-9]*' AND CAST(substr(evidence,16) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(evidence,16) AS INTEGER) NOT IN (2,15))
+        ));
+        "#,
     ];
 }
 
@@ -597,6 +614,7 @@ fn summary_state_for(e: &StatusEvent) -> SummaryState {
     match (e.attention_kind(), e.state) {
         (Some(AttentionKind::ApprovalRequested), _) => SummaryState::Waiting,
         (Some(AttentionKind::TurnCompleted), _) => SummaryState::Completed,
+        (Some(AttentionKind::ExecutionFailed), _) => SummaryState::Failed,
         (None, AgentState::Exited) => {
             if ev == "process:exit:0" {
                 SummaryState::Completed
@@ -2320,15 +2338,16 @@ impl Db {
                              AND e.sequence>r.last_seen_sequence)
                           ) AND (
                             (e.state='needs_input' AND (
-                              (e.source='hook' AND e.evidence='hook:PermissionRequest') OR
+                              (e.source='hook' AND e.evidence IN ('hook:PermissionRequest','hook:AskUserQuestion','hook:AgentPortNotification:needs_input')) OR
                               (e.source='pty' AND e.evidence LIKE 'pty:pattern:%')
                             )) OR
                             (e.state='idle' AND (
-                              (e.source='hook' AND
-                               (e.evidence='hook:Stop' OR e.evidence='hook:TurnEnd')) OR
-                              (e.source='adapter' AND
-                               (e.evidence='adapter:kimi:TurnEnd' OR
-                                e.evidence='adapter:pi:TurnEnd'))
+                              (e.source='hook' AND e.evidence IN ('hook:Stop','hook:TurnEnd','hook:AgentPortNotification:completed','hook:AgentPortNotification:failed')) OR
+                              (e.source='adapter' AND e.evidence IN ('adapter:kimi:TurnEnd','adapter:pi:TurnEnd','adapter:omp:TurnEnd','adapter:easy_pi:TurnEnd'))
+                            )) OR
+                            (e.state='exited' AND e.source='process' AND (
+                              (e.evidence GLOB 'process:exit:[0-9]*' AND substr(e.evidence,14) NOT GLOB '*[^0-9]*' AND CAST(substr(e.evidence,14) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(e.evidence,14) AS INTEGER) NOT IN (130,143)) OR
+                              (e.evidence GLOB 'process:signal:[0-9]*' AND substr(e.evidence,16) NOT GLOB '*[^0-9]*' AND CAST(substr(e.evidence,16) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(e.evidence,16) AS INTEGER) NOT IN (2,15))
                             ))
                           )
                         ) END
@@ -3464,13 +3483,16 @@ impl Db {
              FROM status_events e
              WHERE (
                (e.state='needs_input' AND (
-                 (e.source='hook' AND e.evidence='hook:PermissionRequest') OR
+                 (e.source='hook' AND e.evidence IN ('hook:PermissionRequest','hook:AskUserQuestion','hook:AgentPortNotification:needs_input')) OR
                  (e.source='pty' AND e.evidence LIKE 'pty:pattern:%')
                )) OR
                (e.state='idle' AND (
-                 (e.source='hook' AND (e.evidence='hook:Stop' OR e.evidence='hook:TurnEnd')) OR
-                 (e.source='adapter' AND
-                   (e.evidence='adapter:kimi:TurnEnd' OR e.evidence='adapter:pi:TurnEnd'))
+                 (e.source='hook' AND e.evidence IN ('hook:Stop','hook:TurnEnd','hook:AgentPortNotification:completed','hook:AgentPortNotification:failed')) OR
+                 (e.source='adapter' AND e.evidence IN ('adapter:kimi:TurnEnd','adapter:pi:TurnEnd','adapter:omp:TurnEnd','adapter:easy_pi:TurnEnd'))
+               )) OR
+               (e.state='exited' AND e.source='process' AND (
+                 (e.evidence GLOB 'process:exit:[0-9]*' AND substr(e.evidence,14) NOT GLOB '*[^0-9]*' AND CAST(substr(e.evidence,14) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(e.evidence,14) AS INTEGER) NOT IN (130,143)) OR
+                 (e.evidence GLOB 'process:signal:[0-9]*' AND substr(e.evidence,16) NOT GLOB '*[^0-9]*' AND CAST(substr(e.evidence,16) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(e.evidence,16) AS INTEGER) NOT IN (2,15))
                ))
              ) AND (e.occurred_at,e.session_id,e.run_ordinal,e.sequence)>(?1,?2,?3,?4)
              ORDER BY e.occurred_at,e.session_id,e.run_ordinal,e.sequence
@@ -4190,15 +4212,16 @@ impl Db {
                     (run_ordinal=?2 AND run_id=?3 AND sequence>?4)
                 ) AND (
                     (state='needs_input' AND (
-                        (source='hook' AND evidence='hook:PermissionRequest') OR
+                        (source='hook' AND evidence IN ('hook:PermissionRequest','hook:AskUserQuestion','hook:AgentPortNotification:needs_input')) OR
                         (source='pty' AND evidence LIKE 'pty:pattern:%')
                     )) OR
                     (state='idle' AND (
-                        (source='hook' AND
-                            (evidence='hook:Stop' OR evidence='hook:TurnEnd')) OR
-                        (source='adapter' AND
-                            (evidence='adapter:kimi:TurnEnd' OR
-                             evidence='adapter:pi:TurnEnd'))
+                        (source='hook' AND evidence IN ('hook:Stop','hook:TurnEnd','hook:AgentPortNotification:completed','hook:AgentPortNotification:failed')) OR
+                        (source='adapter' AND evidence IN ('adapter:kimi:TurnEnd','adapter:pi:TurnEnd','adapter:omp:TurnEnd','adapter:easy_pi:TurnEnd'))
+                    )) OR
+                    (state='exited' AND source='process' AND (
+                        (evidence GLOB 'process:exit:[0-9]*' AND substr(evidence,14) NOT GLOB '*[^0-9]*' AND CAST(substr(evidence,14) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(evidence,14) AS INTEGER) NOT IN (130,143)) OR
+                        (evidence GLOB 'process:signal:[0-9]*' AND substr(evidence,16) NOT GLOB '*[^0-9]*' AND CAST(substr(evidence,16) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(evidence,16) AS INTEGER) NOT IN (2,15))
                     ))
                 )
              )",
@@ -6096,6 +6119,102 @@ mod tests {
             (AgentState::Idle, StateSource::Hook, "hook:Stop", true),
             (AgentState::Idle, StateSource::Hook, "hook:TurnEnd", true),
             (
+                AgentState::NeedsInput,
+                StateSource::Hook,
+                "hook:AgentPortNotification:needs_input",
+                true,
+            ),
+            (
+                AgentState::Idle,
+                StateSource::Hook,
+                "hook:AgentPortNotification:completed",
+                true,
+            ),
+            (
+                AgentState::Idle,
+                StateSource::Hook,
+                "hook:AgentPortNotification:failed",
+                true,
+            ),
+            (
+                AgentState::Working,
+                StateSource::Hook,
+                "hook:AgentPortNotification:working",
+                false,
+            ),
+            (
+                AgentState::Idle,
+                StateSource::Adapter,
+                "adapter:omp:TurnEnd",
+                true,
+            ),
+            (
+                AgentState::Idle,
+                StateSource::Adapter,
+                "adapter:easy_pi:TurnEnd",
+                true,
+            ),
+            (
+                AgentState::Exited,
+                StateSource::Process,
+                "process:exit:1",
+                true,
+            ),
+            (
+                AgentState::Exited,
+                StateSource::Process,
+                "process:exit:130",
+                false,
+            ),
+            (
+                AgentState::Exited,
+                StateSource::Process,
+                "process:exit:143",
+                false,
+            ),
+            (
+                AgentState::Exited,
+                StateSource::Process,
+                "process:exit:1junk",
+                false,
+            ),
+            (
+                AgentState::Exited,
+                StateSource::Process,
+                "process:exit:+1",
+                false,
+            ),
+            (
+                AgentState::Exited,
+                StateSource::Process,
+                "process:exit:2147483648",
+                false,
+            ),
+            (
+                AgentState::Exited,
+                StateSource::Process,
+                "process:signal:9",
+                true,
+            ),
+            (
+                AgentState::Exited,
+                StateSource::Process,
+                "process:signal:2",
+                false,
+            ),
+            (
+                AgentState::Exited,
+                StateSource::Process,
+                "process:signal:15",
+                false,
+            ),
+            (
+                AgentState::Exited,
+                StateSource::Process,
+                "process:stopped:client_stop",
+                false,
+            ),
+            (
                 AgentState::Idle,
                 StateSource::Adapter,
                 "adapter:kimi:TurnEnd",
@@ -6117,7 +6236,7 @@ mod tests {
                 AgentState::NeedsInput,
                 StateSource::Hook,
                 "hook:AskUserQuestion",
-                false,
+                true,
             ),
             (
                 AgentState::Idle,

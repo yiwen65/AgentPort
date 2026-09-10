@@ -74,6 +74,7 @@
       "clineNativeAutoApprove": "Cline CLI 默认 auto-approve=true；原生模式保留该默认行为，不保证逐次人工审批。",
       "ompNativePermissionDefaults": "Oh My Pi 保留自身权限设置；上游默认是 yolo（自动批准工具），如需审批请在 Oh My Pi 中配置。",
       "easyPiNativePermissionDefaults": "easy-pi 保留自身权限设置；上游初始模式为 full-access，可在 easy-pi 内使用 /permissions 修改。",
+      "notificationSetupDegraded": "通知集成已降级，但仍可基本启动 Agent。请在 Agent 设置中查看或重试通知配置。技术详情：{{detail}}",
       "generic": "Agent 提示：{{detail}}"
     }
   }

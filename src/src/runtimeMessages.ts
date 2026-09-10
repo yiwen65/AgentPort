@@ -109,6 +109,8 @@ export function runtimeMessageText(envelope: RuntimeMessageEnvelope): string {
       return i18n.t("runtime:messages.adapter.ompNativePermissionDefaults");
     case "easy_pi_native_permission_defaults":
       return i18n.t("runtime:messages.adapter.easyPiNativePermissionDefaults");
+    case "notification_setup_degraded":
+      return i18n.t("runtime:messages.adapter.notificationSetupDegraded", { detail });
     case "adapter_notice":
       return i18n.t("runtime:messages.adapter.generic", { detail });
     case "terminal_history_tail":

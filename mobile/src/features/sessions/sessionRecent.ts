@@ -12,7 +12,7 @@ export function readReceipts(): AttentionReceipts {
   } catch { return {}; }
 }
 export function pendingAttention(session: SessionSummary, receipt?: AttentionReceipt) {
-  if (!session.unreadAttention || session.archivedAt || !["turn_completed", "approval_requested"].includes(session.latestAttentionKind ?? "")) return false;
+  if (!session.unreadAttention || session.archivedAt || !["turn_completed", "approval_requested", "execution_failed"].includes(session.latestAttentionKind ?? "")) return false;
   const status = session.latestStatus;
   return !receipt || !status || status.runOrdinal > receipt.runOrdinal
     || (status.runOrdinal === receipt.runOrdinal && status.sequence > receipt.sequence);

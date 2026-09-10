@@ -928,7 +928,11 @@ async fn probe_agents(
         if let Some(i) = &o.install {
             let _ = state.db.upsert_adapter(i);
         }
-        out.push(probe_outcome_json(t, &o));
+        let setup =
+            agentport_core::notification_setup::for_probe(&state.paths, t, o.install.as_ref());
+        let mut result = probe_outcome_json(t, &o);
+        result["notificationSetup"] = json!(setup);
+        out.push(result);
     }
     Ok(out)
 }
@@ -964,7 +968,37 @@ async fn probe_agent(
     if let Some(i) = &o.install {
         let _ = state.db.upsert_adapter(i);
     }
-    Ok(probe_outcome_json(t, &o))
+    let setup = agentport_core::notification_setup::for_probe(&state.paths, t, o.install.as_ref());
+    let mut result = probe_outcome_json(t, &o);
+    result["notificationSetup"] = json!(setup);
+    Ok(result)
+}
+
+#[tauri::command]
+async fn notification_setups(
+    state: State<'_, AppState>,
+) -> std::result::Result<Vec<agentport_core::notification_setup::NotificationSetup>, String> {
+    let paths = state.paths.clone();
+    run_backend_blocking(move || {
+        agentport_core::notification_setup::list_status(&paths).map_err(|error| error.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn rollback_notification_setup(
+    state: State<'_, AppState>,
+    agent: String,
+) -> std::result::Result<agentport_core::notification_setup::NotificationSetup, String> {
+    let agent: AgentType = agent
+        .parse()
+        .map_err(|error: agentport_core::CoreError| error.to_string())?;
+    let paths = state.paths.clone();
+    run_backend_blocking(move || {
+        agentport_core::notification_setup::rollback(&paths, agent)
+            .map_err(|error| error.to_string())
+    })
+    .await
 }
 
 fn probe_outcome_json(t: AgentType, o: &capability::ProbeOutcome) -> Value {
@@ -4325,6 +4359,8 @@ fn main() {
             list_archived_sessions,
             probe_agents,
             probe_agent,
+            notification_setups,
+            rollback_notification_setup,
             list_supported_agents,
             add_project,
             rename_project,

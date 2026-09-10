@@ -11,7 +11,7 @@ vi.mock("../terminals", () => ({ applyTerminalLanguage: vi.fn() }));
 import { api } from "../api";
 import { currentUiLanguage, UI_LANGUAGE_STORAGE_KEY } from "../i18n";
 import { getState, setState } from "../store";
-import type { Settings } from "../types";
+import type { AdapterInstall, NotificationSetup, Settings } from "../types";
 import SettingsDialog from "./SettingsDialog";
 
 const settings: Settings = {
@@ -48,6 +48,31 @@ describe("Settings language preference", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+  });
+
+  it("refreshes notification readiness after full probing without dropping a CLI on setup failure", async () => {
+    const install: AdapterInstall = {
+      agentType: "claude", executablePath: "/fixture/claude", versionText: "test", capabilityHash: "sha256:test",
+      exactResume: true, hookStatus: "supported", approvalModel: "native_prompts", defaultTransport: "pty",
+      probedAt: "2026-09-10T00:00:00Z", candidates: [], flags: [],
+    };
+    const notificationSetup: NotificationSetup = {
+      agent: "claude", state: "failed", strategy: "session-hooks", detail: "fixture setup failed",
+      events: { completed: "unavailable", needsInput: "heuristic", failed: "process" }, checkedAt: "2026-09-10T00:00:00Z",
+    };
+    const statuses = vi.spyOn(api, "notificationSetups").mockResolvedValueOnce([]).mockResolvedValue([notificationSetup]);
+    vi.spyOn(api, "probeAgents").mockResolvedValue([{
+      agent: "claude", displayName: "Claude Code", state: "available", reason: null,
+      candidates: [], install, notificationSetup,
+    }]);
+    render(<SettingsDialog />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent 适配器" }));
+    await waitFor(() => expect(screen.queryByText("正在读取通知配置…")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "重新自动检测" }));
+    await waitFor(() => expect(screen.getByText("配置失败")).toBeTruthy());
+    expect(statuses).toHaveBeenCalledTimes(2);
+    expect(getState().adapters).toEqual([install]);
+    expect(screen.getByText("/fixture/claude")).toBeTruthy();
   });
 
   it("does not expose the retired legacy storage cleanup page", () => {

@@ -29,6 +29,7 @@ import type {
   PermissionStr,
   Preset,
   ProbeOutcome,
+  NotificationSetup,
   ProjectLayoutEntry,
   ProjectView,
   ProjectRemovalPreflight,
@@ -243,6 +244,9 @@ export const api = {
   probeAgent: (agent: string, path: string | null) =>
     invoke<ProbeOutcome>("probe_agent", { agent, path }),
   listSupportedAgents: () => invoke<SupportedAgent[]>("list_supported_agents"),
+  notificationSetups: () => invoke<NotificationSetup[]>("notification_setups"),
+  rollbackNotificationSetup: (agent: string) =>
+    invoke<NotificationSetup>("rollback_notification_setup", { agent }),
   addProject: (path: string, name: string | null) =>
     invoke<AddProjectResult>("add_project", { path, name }),
   renameProject: (id: string, name: string) =>

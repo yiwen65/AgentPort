@@ -240,6 +240,11 @@ pub(crate) enum HostMsg {
         name: String,
         completion_input_boundary: Option<SystemTime>,
     },
+    /// A strict, authenticated metadata-only integration relay event.
+    NotificationObs {
+        kind: agentport_core::state::NotificationEvent,
+        completion_input_boundary: Option<SystemTime>,
+    },
     /// Ordered native-log evidence that a main adapter turn completed. The
     /// final-record write boundary fences delayed completion against new input.
     SemanticCompletion {
@@ -662,6 +667,84 @@ const DEFAULT_UTF8_CTYPE: &str = "UTF-8";
 #[cfg(not(target_os = "macos"))]
 const DEFAULT_UTF8_CTYPE: &str = "C.UTF-8";
 
+const NOTIFICATION_IDENTITY_ENV: &[&str] = &[
+    "AGENTPORT_SESSION_ID", "AGENTPORT_RUN_ID", "AGENTPORT_NOTIFICATION_TOKEN",
+    "AGENTPORT_NOTIFICATION_AGENT", "AGENTPORT_NOTIFICATION_NATIVE_SESSION_ID",
+    "AGENTPORT_NOTIFICATION_CONTEXT_FILE", "AGENTPORT_HOOK_EVENTS_FILE",
+];
+
+fn bind_notification_context(cfg: &HostConfig, child_pid: i32) -> Result<(), ()> {
+    let env = |name: &str| cfg.env.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str());
+    let Some(path) = env("AGENTPORT_NOTIFICATION_CONTEXT_FILE") else {
+        // Legacy configurations and Generic Shell have neither token nor
+        // context. A token without its verified ownership file is not valid.
+        return if env("AGENTPORT_NOTIFICATION_TOKEN").is_none() { Ok(()) } else { Err(()) };
+    };
+    let token = env("AGENTPORT_NOTIFICATION_TOKEN").filter(|token| !token.is_empty()).ok_or(())?;
+    if env("AGENTPORT_SESSION_ID") != Some(cfg.session_id.as_str())
+        || env("AGENTPORT_RUN_ID") != Some(cfg.run_id.as_str())
+        || env("AGENTPORT_NOTIFICATION_AGENT") != Some(cfg.adapter_type.as_str())
+        || env("AGENTPORT_HOOK_EVENTS_FILE") != Some(cfg.hook_events_path.as_str())
+        || env("AGENTPORT_NOTIFICATION_NATIVE_SESSION_ID") != cfg.agent_session_id_hint.as_deref()
+    {
+        return Err(());
+    }
+    let expected = serde_json::json!({
+        "sessionId":cfg.session_id, "runId":cfg.run_id, "token":token,
+        "agent":cfg.adapter_type, "nativeSessionId":cfg.agent_session_id_hint,
+        "eventsFile":cfg.hook_events_path, "ownerPid":null,
+    });
+    finalize_notification_context(Path::new(path), &expected, child_pid)
+}
+
+fn finalize_notification_context(path: &Path, expected: &serde_json::Value, child_pid: i32) -> Result<(), ()> {
+    if child_pid <= 0 || !path.is_absolute() {
+        return Err(());
+    }
+    let uid = unsafe { libc::geteuid() };
+    let parent = path.parent().ok_or(())?;
+    let parent_meta = std::fs::symlink_metadata(parent).map_err(|_| ())?;
+    if !parent_meta.is_dir() || parent_meta.uid() != uid || parent_meta.mode() & 0o077 != 0 {
+        return Err(());
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| ())?;
+    if !metadata.is_file() || metadata.uid() != uid || metadata.mode() & 0o777 != 0o600 || metadata.len() > 16 * 1024 {
+        return Err(());
+    }
+    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path).map_err(|_| ())?;
+    let opened = file.metadata().map_err(|_| ())?;
+    if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
+        return Err(());
+    }
+    let mut bytes = Vec::new();
+    file.take(16 * 1024 + 1).read_to_end(&mut bytes).map_err(|_| ())?;
+    if bytes.len() > 16 * 1024 { return Err(()); }
+    let mut context: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| ())?;
+    if &context != expected { return Err(()); }
+    context["ownerPid"] = child_pid.into();
+    let temporary = parent.join(format!(".notification-context-{}.tmp", agentport_core::ids::new_uuid()));
+    let result = (|| -> Result<(), ()> {
+        let mut output = OpenOptions::new().write(true).create_new(true)
+            .mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&temporary).map_err(|_| ())?;
+        output.write_all(&serde_json::to_vec(&context).map_err(|_| ())?).map_err(|_| ())?;
+        output.sync_all().map_err(|_| ())?;
+        // Do not replace a concurrently changed context or a swapped directory.
+        let current = std::fs::symlink_metadata(path).map_err(|_| ())?;
+        let current_parent = std::fs::symlink_metadata(parent).map_err(|_| ())?;
+        if current.dev() != metadata.dev() || current.ino() != metadata.ino()
+            || current.len() != metadata.len() || current.mode() != metadata.mode()
+            || current.uid() != uid || current_parent.uid() != uid
+            || current_parent.mode() & 0o077 != 0 || !current_parent.is_dir()
+            || current.mtime() != metadata.mtime() || current.mtime_nsec() != metadata.mtime_nsec()
+            || current_parent.dev() != parent_meta.dev() || current_parent.ino() != parent_meta.ino()
+        { return Err(()); }
+        std::fs::rename(&temporary, path).map_err(|_| ())?;
+        Ok(())
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(&temporary); }
+    result
+}
+
 fn default_utf8_ctype(cfg: &HostConfig) -> Option<&'static str> {
     const LOCALE_NAMES: [&str; 3] = ["LC_ALL", "LC_CTYPE", "LANG"];
     let configured = LOCALE_NAMES
@@ -687,7 +770,7 @@ fn run() -> i32 {
             return EXIT_CONFIG;
         }
     };
-    let cfg: HostConfig = match serde_json::from_str(&raw) {
+    let mut cfg: HostConfig = match serde_json::from_str(&raw) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("cannot parse config {}: {e}", args[2]);
@@ -715,11 +798,17 @@ fn run() -> i32 {
 
     // Secret values come ONLY from the host's own environment (PRD 3.7);
     // they are never logged — only the configured names are.
-    let secrets: Vec<Vec<u8>> = cfg
+    let mut secrets: Vec<Vec<u8>> = cfg
         .secret_env_names
         .iter()
         .filter_map(|n| std::env::var(n).ok().map(String::into_bytes))
         .collect();
+    // The notification token is run-scoped capability metadata, not a model
+    // credential. It still must not leak if an agent prints its environment.
+    secrets.extend(cfg.env.iter().filter_map(|(name, value)| {
+        (name == "AGENTPORT_NOTIFICATION_TOKEN" && !value.is_empty())
+            .then(|| value.as_bytes().to_vec())
+    }));
     // RPC events are parsed before they reach the structured UI, so redact
     // string leaves independently of the streaming terminal redactor.
     let structured_secret_text: Vec<String> = secrets
@@ -826,6 +915,11 @@ fn run() -> i32 {
                 command.arg(arg);
             }
             command.cwd(&cfg.cwd);
+            // Never inherit another managed Session's identity, including when
+            // AgentPort itself was launched from a managed terminal.
+            for name in NOTIFICATION_IDENTITY_ENV {
+                command.env_remove(name);
+            }
             for (key, value) in &cfg.env {
                 command.env(key, value);
             }
@@ -882,6 +976,9 @@ fn run() -> i32 {
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
+            for name in NOTIFICATION_IDENTITY_ENV {
+                command.env_remove(name);
+            }
             for (key, value) in &cfg.env {
                 command.env(key, value);
             }
@@ -938,6 +1035,13 @@ fn run() -> i32 {
         }
     };
 
+    // The parent can only prepare an unowned context; only this Host knows
+    // the PID of the actual Agent child. Publish ownership before any pollers
+    // start. Failure disables relay acceptance, never terminates the CLI.
+    if bind_notification_context(&cfg, child_pid).is_err() {
+        cfg.env.retain(|(name, _)| name != "AGENTPORT_NOTIFICATION_TOKEN");
+        warn!("notification context ownership could not be verified; integration disabled for this run");
+    }
     let (pgid, pgid_verified) = verify_pgid(child_pid);
     info!(child_pid, pgid, pgid_verified, "agent spawned");
     if !pgid_verified {
@@ -1215,6 +1319,7 @@ fn is_semantic_turn_complete(obs: &Observation, adapter: &str) -> bool {
     }
     match obs {
         Observation::AdapterTurnEnd { adapter: observed } => observed == adapter,
+        Observation::Notification(agentport_core::state::NotificationEvent::Completed) => true,
         Observation::Hook(name) => {
             name == "Stop" && matches!(adapter, "claude" | "codex" | "qoder")
         }
@@ -1226,8 +1331,19 @@ fn is_semantic_turn_complete(obs: &Observation, adapter: &str) -> bool {
 /// PTY activity is intentionally excluded: idle TUIs may repaint periodically,
 /// and user input has its own generation fence.
 fn is_semantic_turn_activity(obs: &Observation, adapter: &str) -> bool {
-    semantic_idle_cleanup_supported(adapter)
-        && matches!(
+    if !semantic_idle_cleanup_supported(adapter) {
+        return false;
+    }
+    if matches!(obs,
+        Observation::AdapterTurnStart { adapter: observed } if observed == adapter)
+        || matches!(obs, Observation::Notification(
+            agentport_core::state::NotificationEvent::Working
+            | agentport_core::state::NotificationEvent::NeedsInput
+            | agentport_core::state::NotificationEvent::Failed))
+    {
+        return true;
+    }
+    matches!(
             obs,
             Observation::Hook(name)
                 if matches!(
@@ -1380,6 +1496,14 @@ fn control_loop(
                     completion_generation,
                 );
             }
+            Ok(HostMsg::NotificationObs { kind, completion_input_boundary }) => {
+                let completion_generation =
+                    completion_generation_at_boundary(shared, completion_input_boundary);
+                handle_observation(
+                    shared, &mut sm, &mut status_file, &mut idle_shutdown,
+                    Observation::Notification(kind), completion_generation,
+                );
+            }
             Ok(HostMsg::SemanticCompletion {
                 adapter,
                 completion_input_boundary,
@@ -1396,8 +1520,11 @@ fn control_loop(
                 );
             }
             Ok(HostMsg::SemanticActivity { adapter }) => {
-                if adapter == shared.cfg.adapter_type && idle_shutdown.cancel() {
-                    shared.tick_count.store(0, Ordering::Relaxed);
+                if adapter == shared.cfg.adapter_type {
+                    handle_observation(
+                        shared, &mut sm, &mut status_file, &mut idle_shutdown,
+                        Observation::AdapterTurnStart { adapter }, None,
+                    );
                 }
             }
             Ok(HostMsg::PtyEof) => {
@@ -1640,7 +1767,12 @@ fn stop_flow(
     // replace it with the signal used to retire the now-idle CLI: that
     // would misclassify a successful turn as a failed process exit.
     if reason != "semantic_turn_complete" {
-        if let Some(ev) = sm.observe(Observation::ProcessExited { code, signal }) {
+        let observation = if matches!(reason, "client_stop" | "host_signal") {
+            Observation::ProcessStopped { code, signal }
+        } else {
+            Observation::ProcessExited { code, signal }
+        };
+        if let Some(ev) = sm.observe(observation) {
             emit_event(shared, status_file, ev);
         }
     }
@@ -2429,6 +2561,12 @@ fn latest_hook_turn_is_complete(
     false
 }
 
+fn parse_notification_relay(
+    line: &[u8], session_id: &str, run_id: &str, token: &str,
+) -> Option<agentport_core::state::NotificationEvent> {
+    agentport_core::state::parse_notification_relay(line, session_id, run_id, token)
+}
+
 struct BoundedHookRecordRead {
     consumed: usize,
     complete: bool,
@@ -2550,6 +2688,24 @@ fn spawn_hook_poller(shared: Arc<Shared>, tx: mpsc::Sender<HostMsg>, initial_off
                     .iter()
                     .find_map(|key| v.get(*key))
                     .and_then(|value| value.as_str());
+                // Relay metadata is not a legacy hook payload or a native
+                // session ID. Never fall through after failed authentication.
+                if event_name == Some("AgentPortNotification")
+                    || (v.get("kind").is_some() && v.get("runId").is_some() && v.get("token").is_some())
+                {
+                    let expected_token = shared.cfg.env.iter()
+                        .find(|(name, _)| name == "AGENTPORT_NOTIFICATION_TOKEN")
+                        .map(|(_, value)| value.as_str()).unwrap_or("");
+                    if let Some(kind) = parse_notification_relay(
+                        &line, &shared.cfg.session_id, &shared.cfg.run_id, expected_token,
+                    ) {
+                        let _ = tx.send(HostMsg::NotificationObs {
+                            kind,
+                            completion_input_boundary: (offset == meta.len()).then_some(observed_at),
+                        });
+                    }
+                    continue;
+                }
                 if let Some(name) = event_name {
                     let producer_observed_at = v
                         .get("observed_at_unix")
@@ -2604,6 +2760,116 @@ fn spawn_signal_handler(tx: mpsc::Sender<HostMsg>) {
             });
         }
         Err(e) => error!("failed to register signal handlers: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod notification_relay_tests {
+    use super::*;
+    use agentport_core::state::NotificationEvent;
+
+    fn envelope(kind: &str) -> serde_json::Value {
+        serde_json::json!({"event":"AgentPortNotification", "kind":kind,
+            "sessionId":"ses_current", "runId":"run_current", "token":"notification-only-token"})
+    }
+    fn parse(value: &serde_json::Value) -> Option<NotificationEvent> {
+        parse_notification_relay(&serde_json::to_vec(value).unwrap(), "ses_current", "run_current", "notification-only-token")
+    }
+
+    fn context_fixture() -> (tempfile::TempDir, PathBuf, serde_json::Value) {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = directory.path().join("notification-context.json");
+        let context = serde_json::json!({"sessionId":"ses_current", "runId":"run_current",
+            "token":"notification-only-token", "agent":"cline", "nativeSessionId":null,
+            "eventsFile":"/private/hooks.jsonl", "ownerPid":null});
+        let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).unwrap();
+        file.write_all(&serde_json::to_vec(&context).unwrap()).unwrap();
+        (directory, path, context)
+    }
+
+    #[test]
+    fn context_is_bound_atomically_to_the_actual_child_without_changing_identity() {
+        let (_directory, path, mut expected) = context_fixture();
+        let old_inode = std::fs::metadata(&path).unwrap().ino();
+        finalize_notification_context(&path, &expected, 12345).unwrap();
+        expected["ownerPid"] = 12345.into();
+        let actual: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(actual, expected);
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(metadata.mode() & 0o777, 0o600);
+        assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+        assert_ne!(metadata.ino(), old_inode);
+        assert_eq!(std::fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn context_rejects_changed_identity_modes_symlinks_and_preclaimed_owner_without_writes() {
+        for key in ["sessionId", "runId", "token", "agent", "nativeSessionId", "eventsFile", "ownerPid"] {
+            let (_directory, path, expected) = context_fixture();
+            let mut changed = expected.clone();
+            changed[key] = "other".into();
+            let bytes = serde_json::to_vec(&changed).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(finalize_notification_context(&path, &expected, 12345).is_err(), "{key}");
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        let (_directory, path, expected) = context_fixture();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(finalize_notification_context(&path, &expected, 12345).is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = path.with_file_name("linked-context.json");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(finalize_notification_context(&link, &expected, 12345).is_err());
+        assert!(finalize_notification_context(&path, &expected, 0).is_err());
+        std::fs::set_permissions(path.parent().unwrap(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(finalize_notification_context(&path, &expected, 12345).is_err());
+        let actual: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn accepts_only_known_kinds_with_exact_session_run_and_token() {
+        for (kind, expected) in [("completed", NotificationEvent::Completed),
+            ("needs_input", NotificationEvent::NeedsInput), ("failed", NotificationEvent::Failed),
+            ("working", NotificationEvent::Working)] {
+            assert_eq!(parse(&envelope(kind)), Some(expected));
+        }
+        for (key, wrong) in [("sessionId", "ses_other"), ("runId", "run_old"),
+            ("token", "host-control-token"), ("event", "Stop"), ("kind", "unknown")] {
+            let mut value = envelope("completed");
+            value[key] = wrong.into();
+            assert_eq!(parse(&value), None, "{key}");
+        }
+    }
+
+    #[test]
+    fn rejects_missing_null_wrong_type_extra_payload_and_duplicate_fields() {
+        for key in ["event", "kind", "sessionId", "runId", "token"] {
+            let mut value = envelope("completed");
+            value.as_object_mut().unwrap().remove(key);
+            assert_eq!(parse(&value), None);
+            let mut value = envelope("completed");
+            value[key] = serde_json::Value::Null;
+            assert_eq!(parse(&value), None);
+            value[key] = serde_json::json!(7);
+            assert_eq!(parse(&value), None);
+        }
+        let mut value = envelope("completed");
+        value["payload"] = serde_json::json!({"prompt":"must-not-be-copied"});
+        assert_eq!(parse(&value), None);
+        let line = br#"{"event":"AgentPortNotification","kind":"completed","sessionId":"ses_current","runId":"run_old","runId":"run_current","token":"notification-only-token"}"#;
+        assert!(parse_notification_relay(line, "ses_current", "run_current", "notification-only-token").is_none());
+    }
+
+    #[test]
+    fn ordinary_terminal_or_legacy_host_without_notification_token_cannot_report() {
+        let line = serde_json::to_vec(&envelope("completed")).unwrap();
+        for (session, run, token) in [("", "run_current", "notification-only-token"),
+            ("ses_current", "", "notification-only-token"), ("ses_current", "run_current", "")] {
+            assert!(parse_notification_relay(&line, session, run, token).is_none());
+        }
+        assert!(parse_notification_relay(b"not json", "ses_current", "run_current", "notification-only-token").is_none());
     }
 }
 

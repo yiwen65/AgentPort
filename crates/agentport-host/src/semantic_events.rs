@@ -223,6 +223,9 @@ fn is_pi_turn_start(event: &Value) -> bool {
 }
 
 fn is_pi_turn_end(event: &Value) -> bool {
+    // error/aborted are not terminal failures here: the Pi-family runtime may
+    // retry an assistant error. Without an authoritative retry-exhausted event,
+    // failure coverage remains process-only, never a premature failure notice.
     event.get("type").and_then(Value::as_str) == Some("message")
         && event.pointer("/message/role").and_then(Value::as_str) == Some("assistant")
         && event.pointer("/message/stopReason").and_then(Value::as_str) == Some("stop")
@@ -814,6 +817,13 @@ mod tests {
         assert!(!is_pi_turn_end(&user));
         assert!(is_pi_turn_start(&user));
         assert!(!is_pi_turn_start(&complete));
+        for reason in ["error", "aborted", "length", "toolUse"] {
+            let retryable_or_intermediate = serde_json::json!({
+                "type": "message", "message": {"role": "assistant", "stopReason": reason}
+            });
+            assert!(!is_pi_turn_end(&retryable_or_intermediate), "{reason}");
+            assert!(!is_pi_turn_start(&retryable_or_intermediate), "{reason}");
+        }
     }
 
     #[test]

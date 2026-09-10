@@ -96,11 +96,13 @@ AgentPort 是 macOS/Linux 上的本地 AI CLI 工作台：用一个界面同时�
 
 macOS 上实测了 Oh My Pi 18.0.11、easy-pi 0.84.2、Grok Build 1.0.13 的隔离 HOME 启动、PTY 重连与正常停止，以及 Oh My Pi 的同 UUID 冷恢复。未发送模型请求：这些结果**不代表登录态多轮对话验收**。其余六种尚未实机验证，Linux 尚未实机验证；自动化与命令证据详见[任务交付记录](tasks/2026-09-10-nine-agent-support-task.md)和[接口矩阵](agent-cli-evidence.md)。
 
-状态 Hook 的支持现状（详见"状态与置信度"）：
+探测完成后会自动准备对应通知集成。在「设置 → Agent」独立查看完成、待审批/回答、失败的覆盖来源，支持重试与确认回滚。通知配置失败不影响 CLI 基本启动；当前 Session 不被强制重启，必要时下次启动生效。全局配置安全边界、14 种覆盖及缺少运行时的处理见[通知自动配置](agent-notifications.md)。
+
+原有状态 Hook 保持兼容（详见"状态与置信度"）：
 
 - Claude Code：通过按调用注入的 `--settings` 文件接入官方 Hook（该版本提供 `--settings` 时）；绝不修改你的全局 `~/.claude/settings.json`。
 - Codex 0.144.5：通过每次调用的 `-c notify=...` 接入官方完成/审批通知；仅写入当前 Session 的中继脚本，绝不修改 `~/.codex/config.toml`。
-- Kimi Code 0.27.0：没有会话级 Hook 机制（唯一的全局配置 `~/.kimi-code/config.toml` 不会被 AgentPort 修改），降级为 PTY 启发式。
+- Kimi Code：不修改全局配置；完成读取原生 wire TurnEnd，待审批/回答仍为 PTY 启发式。
 - Generic Shell：无 Hook，状态来自 PTY 启发式与进程事实。
 
 ## 权限模型

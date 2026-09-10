@@ -24,6 +24,7 @@ import { orderAgentIds, visibleAgentIds } from "../agentOrder";
 import { applyTerminalLanguage } from "../terminals";
 import { getTerminalPalette, TERMINAL_THEME_IDS } from "../terminalThemes";
 import { AgentIcon } from "./AgentIcons";
+import NotificationSetupPanel from "./NotificationSetupPanel";
 import ShellIcon from "./ShellIcon";
 import { PairingSection } from "./PairingSection";
 import { closeDialog, confirmDialog, setState, toast, useStore } from "../store";
@@ -543,6 +544,8 @@ function AdapterSection({
   const { t } = useTranslation(["settings", "common"]);
   const s = useStore();
   const [busy, setBusy] = useState(false);
+  const [setupBusy, setSetupBusy] = useState(false);
+  const [notificationRevision, setNotificationRevision] = useState(0);
   const orderedAgentIds = visibleAgentIds(
     orderAgentIds(
       agentOrder,
@@ -579,6 +582,7 @@ function AdapterSection({
         .map((o) => o.install)
         .filter((x): x is AdapterInstall => x !== null);
       setState({ adapters: installs });
+      setNotificationRevision((value) => value + 1);
       if (installs.length > 0) {
         toast(t("settings:ui.adapters.probePassed", { count: installs.length }), "success");
       } else {
@@ -685,7 +689,7 @@ function AdapterSection({
         </div>
       ) : null}
       <div className="control" style={{ display: "flex", gap: 8 }}>
-        <button className="btn small" disabled={busy} onClick={() => void reprobe()}>
+        <button className="btn small" disabled={busy || setupBusy} onClick={() => void reprobe()}>
           {busy ? t("settings:ui.adapters.probing") : t("settings:ui.adapters.reprobeAll")}
         </button>
         <button
@@ -698,6 +702,7 @@ function AdapterSection({
           {t("settings:ui.adapters.manage")}
         </button>
       </div>
+      <NotificationSetupPanel refreshKey={notificationRevision} disabled={busy} onBusyChange={setSetupBusy} />
     </>
   );
 }

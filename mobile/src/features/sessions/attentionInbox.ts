@@ -61,7 +61,7 @@ export class AttentionInbox {
     const pending = [...this.state.pending];
     let changed = false;
     for (const item of page.events) {
-      if (!["approval_requested", "turn_completed"].includes(item.kind)) continue;
+      if (!["approval_requested", "turn_completed", "execution_failed"].includes(item.kind)) continue;
       const event: InboxEntry = { hostId: this.hostId, sessionId: item.sessionId, runId: item.runId,
         runOrdinal: item.cursor.runOrdinal, sequence: item.cursor.sequence, occurredAt: item.cursor.occurredAt,
         kind: item.kind, sessionTitle: titles.get(item.sessionId) ?? entries[item.sessionId]?.sessionTitle };
@@ -113,7 +113,7 @@ export class AttentionInbox {
       // Bound each flush; don't monopolize the event loop after reconnecting.
       for (const event of this.state.pending.slice(0, 8)) {
         if (!this.state.pending.some(current => attentionEventKey(current) === attentionEventKey(event))) continue;
-        await sink.notify(event.sessionTitle ?? "AgentPort", event.kind === "approval_requested" ? "请求批准" : "任务已完成",
+        await sink.notify(event.sessionTitle ?? "AgentPort", event.kind === "execution_failed" ? "执行失败" : event.kind === "approval_requested" ? "请求批准" : "任务已完成",
           `${this.hostId}:${attentionEventKey(event)}`, event.notificationId);
         completed.add(attentionEventKey(event));
       }

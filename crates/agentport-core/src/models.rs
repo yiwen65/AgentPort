@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level data model version (PRD ch.5 `version`). Bump when the schema
 /// changes in a way the migrator must handle; SQLite user_version tracks the same.
-pub const DATA_MODEL_VERSION: i64 = 14;
+pub const DATA_MODEL_VERSION: i64 = 15;
 pub const APP_ID: &str = "agentport.local";
 pub const DELIVERY_SCOPE: &str = "p0_p2";
 
@@ -145,9 +145,7 @@ impl AgentType {
 
     pub fn approval_model(&self) -> ApprovalModel {
         match self {
-            AgentType::Pi | AgentType::Amp | AgentType::Shell => {
-                ApprovalModel::NoBuiltinPrompts
-            }
+            AgentType::Pi | AgentType::Amp | AgentType::Shell => ApprovalModel::NoBuiltinPrompts,
             _ => ApprovalModel::NativePrompts,
         }
     }
@@ -741,12 +739,18 @@ impl StatusEvent {
 
     /// User-actionable semantic events shared by system notifications, unread
     /// badges and recovery surfaces. Keep this exact: generic hook
-    /// notifications and process lifecycle facts are not user messages.
+    /// notifications and successful/requested process stops are not user messages.
     pub fn attention_kind(&self) -> Option<AttentionKind> {
         let evidence = self.evidence.as_deref().unwrap_or("");
         match self.state {
             AgentState::NeedsInput
-                if (self.source == StateSource::Hook && evidence == "hook:PermissionRequest")
+                if (self.source == StateSource::Hook
+                    && matches!(
+                        evidence,
+                        "hook:PermissionRequest"
+                            | "hook:AskUserQuestion"
+                            | "hook:AgentPortNotification:needs_input"
+                    ))
                     || (self.source == StateSource::Pty
                         && evidence.starts_with("pty:pattern:")) =>
             {
@@ -754,11 +758,31 @@ impl StatusEvent {
             }
             AgentState::Idle
                 if (self.source == StateSource::Hook
-                    && matches!(evidence, "hook:Stop" | "hook:TurnEnd"))
+                    && matches!(
+                        evidence,
+                        "hook:Stop" | "hook:TurnEnd" | "hook:AgentPortNotification:completed"
+                    ))
                     || (self.source == StateSource::Adapter
-                        && matches!(evidence, "adapter:kimi:TurnEnd" | "adapter:pi:TurnEnd")) =>
+                        && matches!(
+                            evidence,
+                            "adapter:kimi:TurnEnd"
+                                | "adapter:pi:TurnEnd"
+                                | "adapter:easy_pi:TurnEnd"
+                                | "adapter:omp:TurnEnd"
+                        )) =>
             {
                 Some(AttentionKind::TurnCompleted)
+            }
+            AgentState::Idle
+                if self.source == StateSource::Hook
+                    && evidence == "hook:AgentPortNotification:failed" =>
+            {
+                Some(AttentionKind::ExecutionFailed)
+            }
+            AgentState::Exited
+                if self.source == StateSource::Process && unexpected_process_exit(evidence) =>
+            {
+                Some(AttentionKind::ExecutionFailed)
             }
             _ => None,
         }
@@ -769,6 +793,28 @@ impl StatusEvent {
 pub enum AttentionKind {
     ApprovalRequested,
     TurnCompleted,
+    ExecutionFailed,
+}
+
+/// Only explicit unexpected failures are actionable. Requested stop observations
+/// use a different evidence prefix; conventional interrupt/termination exits are
+/// also excluded when the CLI itself handles Ctrl-C or terminal shutdown.
+fn unexpected_process_exit(evidence: &str) -> bool {
+    if let Some(code) = evidence
+        .strip_prefix("process:exit:")
+        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|s| s.parse::<i32>().ok())
+    {
+        return code > 0 && code != 130 && code != 143;
+    }
+    if let Some(signal) = evidence
+        .strip_prefix("process:signal:")
+        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|s| s.parse::<i32>().ok())
+    {
+        return signal > 0 && signal != 2 && signal != 15;
+    }
+    false
 }
 
 /// Stable total-order cursor for bounded cross-Session attention polling.

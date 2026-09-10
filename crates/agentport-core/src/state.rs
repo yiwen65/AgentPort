@@ -12,6 +12,55 @@ use crate::models::{
 use chrono::{Duration, Utc};
 use regex::Regex;
 
+/// Metadata-only event accepted after Host session/run/token validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationEvent {
+    Completed,
+    NeedsInput,
+    Failed,
+    Working,
+}
+
+/// This envelope intentionally has no prompt/tool/error payload field. Strict
+/// deserialization also rejects duplicate keys, unknown fields and wrong types.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NotificationRelay {
+    event: String,
+    kind: String,
+    session_id: String,
+    run_id: String,
+    token: String,
+}
+
+/// Authenticate metadata against this concrete Host launch before interpreting
+/// its kind. No payload or token is returned to journals or notification clients.
+pub fn parse_notification_relay(
+    line: &[u8],
+    session_id: &str,
+    run_id: &str,
+    token: &str,
+) -> Option<NotificationEvent> {
+    if session_id.is_empty() || run_id.is_empty() || token.is_empty() {
+        return None;
+    }
+    let relay: NotificationRelay = serde_json::from_slice(line).ok()?;
+    if relay.event != "AgentPortNotification"
+        || relay.session_id != session_id
+        || relay.run_id != run_id
+        || relay.token != token
+    {
+        return None;
+    }
+    match relay.kind.as_str() {
+        "completed" => Some(NotificationEvent::Completed),
+        "needs_input" => Some(NotificationEvent::NeedsInput),
+        "failed" => Some(NotificationEvent::Failed),
+        "working" => Some(NotificationEvent::Working),
+        _ => None,
+    }
+}
+
 /// What the host (or tests) observed.
 #[derive(Debug, Clone)]
 pub enum Observation {
@@ -20,8 +69,19 @@ pub enum Observation {
         code: Option<i32>,
         signal: Option<i32>,
     },
+    /// A requested stop is distinct from an unexpected nonzero process exit,
+    /// including the SIGKILL escalation used to clean up a stopped process.
+    ProcessStopped {
+        code: Option<i32>,
+        signal: Option<i32>,
+    },
+    /// Only the authenticated relay parser may construct this observation.
+    Notification(NotificationEvent),
     /// Official CLI hook event, e.g. "Stop", "Notification", "PreToolUse".
     Hook(String),
+    AdapterTurnStart {
+        adapter: String,
+    },
     /// A structured adapter protocol proved that the current turn settled.
     /// Unlike PTY silence, this is a semantic lifecycle fact.
     AdapterTurnEnd {
@@ -49,6 +109,8 @@ pub struct StateMachine {
     sequence: i64,
     last: Option<(AgentState, StateSource)>,
     last_emitted_at: Option<chrono::DateTime<Utc>>,
+    last_evidence: Option<String>,
+    last_completion: Option<(StateSource, chrono::DateTime<Utc>)>,
     /// When true (hook integration unavailable), PTY-derived needs_input is
     /// capped at medium confidence and flagged as imprecise (PRD 3.4 failure A).
     hooks_degraded: bool,
@@ -74,6 +136,8 @@ impl StateMachine {
             sequence: 0,
             last: None,
             last_emitted_at: None,
+            last_evidence: None,
+            last_completion: None,
             hooks_degraded: false,
         }
     }
@@ -104,7 +168,45 @@ impl StateMachine {
                 };
                 (Exited, Process, High, Some(ev))
             }
+            Observation::ProcessStopped { code, signal } => (
+                Exited,
+                Process,
+                High,
+                Some(format!("process:stopped:code={code:?}:signal={signal:?}")),
+            ),
+            Observation::Notification(kind) => match kind {
+                NotificationEvent::Completed => (
+                    Idle,
+                    Hook,
+                    High,
+                    Some("hook:AgentPortNotification:completed".into()),
+                ),
+                NotificationEvent::NeedsInput => (
+                    NeedsInput,
+                    Hook,
+                    High,
+                    Some("hook:AgentPortNotification:needs_input".into()),
+                ),
+                NotificationEvent::Failed => (
+                    Idle,
+                    Hook,
+                    High,
+                    Some("hook:AgentPortNotification:failed".into()),
+                ),
+                NotificationEvent::Working => (
+                    Working,
+                    Hook,
+                    High,
+                    Some("hook:AgentPortNotification:working".into()),
+                ),
+            },
             Observation::Hook(name) => return classify_hook(name),
+            Observation::AdapterTurnStart { adapter } => (
+                Working,
+                Adapter,
+                High,
+                Some(format!("adapter:{adapter}:TurnStart")),
+            ),
             Observation::AdapterTurnEnd { adapter } => (
                 Idle,
                 Adapter,
@@ -129,9 +231,43 @@ impl StateMachine {
     /// Feed an observation; returns Some(StatusEvent) when a transition should be recorded.
     pub fn observe(&mut self, obs: Observation) -> Option<StatusEvent> {
         let (state, source, confidence, evidence) = self.classify(&obs)?;
+        if source != StateSource::Pty
+            && matches!(state, AgentState::Working | AgentState::NeedsInput)
+        {
+            self.last_completion = None;
+        }
+        let completed = state == AgentState::Idle
+            && ((source == StateSource::Hook
+                && matches!(
+                    evidence.as_deref(),
+                    Some("hook:Stop" | "hook:TurnEnd" | "hook:AgentPortNotification:completed")
+                ))
+                || (source == StateSource::Adapter
+                    && matches!(
+                        evidence.as_deref(),
+                        Some(
+                            "adapter:pi:TurnEnd"
+                                | "adapter:easy_pi:TurnEnd"
+                                | "adapter:omp:TurnEnd"
+                                | "adapter:kimi:TurnEnd"
+                        )
+                    )));
+        if completed
+            && self.last_completion.is_some_and(|(previous_source, at)| {
+                previous_source != source && Utc::now() - at < Duration::seconds(2)
+            })
+        {
+            return None;
+        }
         // Dedupe identical state+source.
         if let Some((last_state, last_source)) = &self.last {
-            if *last_state == state && *last_source == source {
+            // Different terminal outcomes (failed vs completed) must survive
+            // even when both are represented as an idle interactive process.
+            let changed_terminal_outcome = state == AgentState::Idle
+                && evidence.as_deref() != self.last_evidence.as_deref()
+                && (evidence.as_deref() == Some("hook:AgentPortNotification:failed")
+                    || self.last_evidence.as_deref() == Some("hook:AgentPortNotification:failed"));
+            if *last_state == state && *last_source == source && !changed_terminal_outcome {
                 return None;
             }
         }
@@ -160,6 +296,10 @@ impl StateMachine {
             occurred_at: Utc::now(),
         };
         self.last = Some((state, source));
+        self.last_evidence = ev.evidence.clone();
+        if completed {
+            self.last_completion = Some((source, ev.occurred_at));
+        }
         self.last_emitted_at = Some(ev.occurred_at);
         Some(ev)
     }
@@ -283,6 +423,121 @@ impl PtyDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authenticated_relay_kinds_are_precise_but_raw_hook_names_cannot_spoof_them() {
+        use crate::models::AttentionKind;
+        for (kind, expected) in [
+            (
+                NotificationEvent::Completed,
+                Some(AttentionKind::TurnCompleted),
+            ),
+            (
+                NotificationEvent::NeedsInput,
+                Some(AttentionKind::ApprovalRequested),
+            ),
+            (
+                NotificationEvent::Failed,
+                Some(AttentionKind::ExecutionFailed),
+            ),
+            (NotificationEvent::Working, None),
+        ] {
+            let mut sm = StateMachine::new("ses_t");
+            let event = sm.observe(Observation::Notification(kind)).unwrap();
+            assert_eq!(event.confidence, Confidence::High);
+            assert_eq!(event.attention_kind(), expected);
+            assert!(sm.observe(Observation::Notification(kind)).is_none());
+        }
+        let mut sm = StateMachine::new("ses_t");
+        for name in [
+            "AgentPortNotification",
+            "AgentPortNotification:completed",
+            "AgentPortNotification:failed",
+        ] {
+            if let Some(event) = sm.observe(Observation::Hook(name.into())) {
+                assert_eq!(event.attention_kind(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn hook_and_native_completion_share_one_journal_event_until_a_precise_new_turn() {
+        let mut sm = StateMachine::new("ses_t");
+        sm.observe(Observation::Notification(NotificationEvent::Completed))
+            .unwrap();
+        assert!(sm
+            .observe(Observation::AdapterTurnEnd {
+                adapter: "omp".into()
+            })
+            .is_none());
+        sm.observe(Observation::AdapterTurnStart {
+            adapter: "omp".into(),
+        })
+        .unwrap();
+        assert!(sm
+            .observe(Observation::AdapterTurnEnd {
+                adapter: "omp".into()
+            })
+            .is_some());
+        assert!(sm
+            .observe(Observation::Notification(NotificationEvent::Completed))
+            .is_none());
+        assert_eq!(sm.sequence(), 3);
+    }
+
+    #[test]
+    fn requested_stop_never_becomes_failure_even_after_sigkill_escalation() {
+        for (code, signal) in [(Some(1), None), (None, Some(9)), (Some(137), None)] {
+            let mut sm = StateMachine::new("ses_t");
+            let event = sm
+                .observe(Observation::ProcessStopped { code, signal })
+                .unwrap();
+            assert_eq!(event.state, AgentState::Exited);
+            assert_eq!(event.attention_kind(), None);
+        }
+        let mut sm = StateMachine::new("ses_t");
+        let failed = sm
+            .observe(Observation::ProcessExited {
+                code: Some(1),
+                signal: None,
+            })
+            .unwrap();
+        assert_eq!(
+            failed.attention_kind(),
+            Some(crate::models::AttentionKind::ExecutionFailed)
+        );
+    }
+
+    #[test]
+    fn working_clears_pending_relay_approval_and_terminal_outcomes_remain_distinct() {
+        let mut sm = StateMachine::new("ses_t");
+        sm.observe(Observation::Notification(NotificationEvent::NeedsInput))
+            .unwrap();
+        assert_eq!(
+            sm.observe(Observation::Notification(NotificationEvent::Working))
+                .unwrap()
+                .state,
+            AgentState::Working
+        );
+        let failed = sm
+            .observe(Observation::Notification(NotificationEvent::Failed))
+            .unwrap();
+        let completed = sm
+            .observe(Observation::Notification(NotificationEvent::Completed))
+            .unwrap();
+        assert_ne!(failed.attention_kind(), completed.attention_kind());
+        sm.observe(Observation::AdapterTurnStart {
+            adapter: "omp".into(),
+        })
+        .unwrap();
+        assert!(sm
+            .observe(Observation::AdapterTurnEnd {
+                adapter: "omp".into()
+            })
+            .unwrap()
+            .attention_kind()
+            .is_some());
+    }
 
     #[test]
     fn process_exit_is_high_confidence_fact() {

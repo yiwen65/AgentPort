@@ -16,6 +16,11 @@ function setup(connected = true) {
   return { onOpen, onDismiss, row: screen.getByRole("button", { name: /Build.*Turn completed/ }) };
 }
 describe("Recent message actions", () => {
+  it("labels failure separately from completion or approval", () => {
+    render(<RecentNotifications entries={[{ ...entry, kind: "execution_failed" }]} hosts={[host]} onOpen={vi.fn()} onDismiss={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /Build.*Execution failed/ })).toBeVisible();
+    expect(screen.queryByText("Approval requested")).not.toBeInTheDocument();
+  });
   it.each(["opening", "offline"])("keeps the covering surface opaque while %s", state => {
     const style = document.createElement("style");
     style.textContent = recentStyles;

@@ -1285,9 +1285,10 @@ export async function quickStartSession(
         )
       : false;
     if (!inserted) selectSession(res.id);
-    if (isAddedAgent(agent)) {
-      for (const notice of localizedNotices(res)) toast(notice, "info");
-    }
+    const launchNotices = isAddedAgent(agent)
+      ? res
+      : { notices: res.notices?.filter((notice) => notice.code === "notification_setup_degraded") };
+    for (const notice of localizedNotices(launchNotices)) toast(notice, "info");
     toast(
       plain
         ? i18n.t("session:flow.quickStartedPlain", {

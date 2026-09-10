@@ -505,6 +505,9 @@ impl AgentAdapter for ExtendedAdapter {
                     result.argv.extend([format!("--{flag}"), id.clone()]);
                 }
                 result.resume_precision = ResumePrecision::Exact;
+                // The managed notification bridge must bind the same native
+                // conversation after cold resume, not lose its identity fence.
+                result.assigned_agent_session_id = Some(id.clone());
             }
             None => {
                 let args = latest_args(self.0, &ctx.install).ok_or_else(|| CoreError::Blocked(format!("{} has no captured native session ID and no verified latest-session recovery; the original conversation cannot be recovered automatically", self.0.display_name())))?;
@@ -626,6 +629,7 @@ mod tests {
                 .build_resume(&resume(agent, Some(&id)))
                 .unwrap();
             assert_eq!(result.resume_precision, ResumePrecision::Exact);
+            assert_eq!(result.assigned_agent_session_id.as_deref(), Some(id.as_str()));
             assert!(result.argv.contains(&id));
             assert!(!result.argv.iter().any(|arg| arg == "--continue"));
             if agent == AgentType::Amp {

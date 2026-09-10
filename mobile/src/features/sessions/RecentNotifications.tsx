@@ -9,6 +9,8 @@ const RecentRow = memo(function RecentRow({ entry, host, busy, onOpen, onDismiss
   onOpen: (entry: InboxEntry) => void; onDismiss: (entry: InboxEntry) => void;
 }) {
   const { t } = useTranslation();
+  const kindLabel = entry.kind === "execution_failed" ? "dashboard.executionFailed"
+    : entry.kind === "turn_completed" ? "dashboard.turnCompleted" : "dashboard.approvalRequested";
   const date = new Date(entry.occurredAt);
   const timestamp = date.toDateString() === new Date().toDateString()
     ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -38,7 +40,7 @@ const RecentRow = memo(function RecentRow({ entry, host, busy, onOpen, onDismiss
       <span>{t("dashboard.dismiss")}</span>
     </button>
     <button ref={surface} type="button" className="recent-message-surface" aria-busy={busy || undefined}
-      aria-label={`${entry.sessionTitle ?? entry.sessionId}, ${t(entry.kind === "turn_completed" ? "dashboard.turnCompleted" : "dashboard.approvalRequested")}, ${host?.name ?? entry.hostId}`}
+      aria-label={`${entry.sessionTitle ?? entry.sessionId}, ${t(kindLabel)}, ${host?.name ?? entry.hostId}`}
       aria-disabled={host?.connectionState !== "connected" || busy}
       onPointerDown={event => {
         if (event.button !== 0) return;
@@ -68,7 +70,7 @@ const RecentRow = memo(function RecentRow({ entry, host, busy, onOpen, onDismiss
       }}>
       <span className={`recent-kind ${entry.kind}`} aria-hidden="true">{entry.kind === "turn_completed" ? "✓" : "!"}</span>
       <span className="recent-message-copy"><strong>{entry.sessionTitle ?? entry.sessionId}</strong>
-        <span>{t(entry.kind === "turn_completed" ? "dashboard.turnCompleted" : "dashboard.approvalRequested")}</span>
+        <span>{t(kindLabel)}</span>
         <small>{host?.name ?? entry.hostId}</small></span>
       <time dateTime={entry.occurredAt}>{timestamp}</time>
     </button>

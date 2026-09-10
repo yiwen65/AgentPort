@@ -289,6 +289,86 @@ impl<'a> HostManager<'a> {
 
             let bin = host_binary_path()?;
 
+            let mut notification_env = spec.env.clone();
+            notification_env.retain(|(name, _)| {
+                !matches!(
+                    name.as_str(),
+                    "AGENTPORT_SESSION_ID"
+                        | "AGENTPORT_RUN_ID"
+                        | "AGENTPORT_NOTIFICATION_TOKEN"
+                        | "AGENTPORT_NOTIFICATION_AGENT"
+                        | "AGENTPORT_NOTIFICATION_NATIVE_SESSION_ID"
+                        | "AGENTPORT_NOTIFICATION_CONTEXT_FILE"
+                        | "AGENTPORT_HOOK_EVENTS_FILE"
+                )
+            });
+            if session.adapter_type != AgentType::Shell {
+                let prepare_notifications = (|| -> Result<()> {
+                    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+                    let run_dir = self.paths.run_dir(&id, &run.run_id);
+                    std::fs::create_dir_all(&run_dir)?;
+                    std::fs::set_permissions(&run_dir, std::fs::Permissions::from_mode(0o700))?;
+                    let events = self.paths.hook_events_path(&id);
+                    let file = std::fs::OpenOptions::new()
+                        .append(true)
+                        .create(true)
+                        .mode(0o600)
+                        .custom_flags(libc::O_NOFOLLOW)
+                        .open(&events)?;
+                    if !file.metadata()?.is_file() {
+                        return Err(CoreError::Host(
+                            "notification event path is not a regular file".into(),
+                        ));
+                    }
+                    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+                    let token = ids::new_uuid();
+                    let context_path = run_dir.join("notification-context.json");
+                    let context = serde_json::json!({
+                        "sessionId": id, "runId": run.run_id, "token": token,
+                        "agent": session.adapter_type.as_str(),
+                        "nativeSessionId": spec.agent_session_id_hint,
+                        "eventsFile": events.to_string_lossy(), "ownerPid": null
+                    });
+                    let mut context_file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o600)
+                        .custom_flags(libc::O_NOFOLLOW)
+                        .open(&context_path)?;
+                    context_file.write_all(&serde_json::to_vec(&context)?)?;
+                    context_file.sync_all()?;
+                    notification_env.extend([
+                        ("AGENTPORT_SESSION_ID".into(), id.clone()),
+                        ("AGENTPORT_RUN_ID".into(), run.run_id.clone()),
+                        ("AGENTPORT_NOTIFICATION_TOKEN".into(), token),
+                        (
+                            "AGENTPORT_NOTIFICATION_AGENT".into(),
+                            session.adapter_type.as_str().into(),
+                        ),
+                        (
+                            "AGENTPORT_NOTIFICATION_CONTEXT_FILE".into(),
+                            context_path.to_string_lossy().into_owned(),
+                        ),
+                        (
+                            "AGENTPORT_HOOK_EVENTS_FILE".into(),
+                            events.to_string_lossy().into_owned(),
+                        ),
+                    ]);
+                    if let Some(native_id) = &spec.agent_session_id_hint {
+                        notification_env.push((
+                            "AGENTPORT_NOTIFICATION_NATIVE_SESSION_ID".into(),
+                            native_id.clone(),
+                        ));
+                    }
+                    Ok(())
+                })();
+                if prepare_notifications.is_err() {
+                    // Filesystem conflicts in optional notification integration
+                    // must not prevent the underlying CLI from starting.
+                    eprintln!("AgentPort notification context unavailable; starting CLI without managed relay");
+                }
+            }
+
             let cfg = HostConfig {
                 protocol: PROTOCOL_VERSION,
                 session_id: id.clone(),
@@ -297,7 +377,7 @@ impl<'a> HostManager<'a> {
                 host_token: session.host_token.clone(),
                 command: spec.command.clone(),
                 cwd: session.cwd.clone(),
-                env: spec.env.clone(),
+                env: notification_env,
                 adapter_type: session.adapter_type.as_str().to_string(),
                 detect_pty_needs_input: session
                     .adapter_type
@@ -314,7 +394,20 @@ impl<'a> HostManager<'a> {
                     .into_owned(),
                 log_limit_bytes: spec.log_limit_bytes,
                 agent_session_id_hint: spec.agent_session_id_hint.clone(),
-                secret_env_names: spec.secrets.iter().map(|(n, _)| n.clone()).collect(),
+                secret_env_names: spec
+                    .secrets
+                    .iter()
+                    .filter(|(n, _)| {
+                        !n.starts_with("AGENTPORT_NOTIFICATION_")
+                            && !matches!(
+                                n.as_str(),
+                                "AGENTPORT_SESSION_ID"
+                                    | "AGENTPORT_RUN_ID"
+                                    | "AGENTPORT_HOOK_EVENTS_FILE"
+                            )
+                    })
+                    .map(|(n, _)| n.clone())
+                    .collect(),
                 sigint_grace_ms: DEFAULT_SIGINT_GRACE_MS,
                 sigterm_grace_ms: DEFAULT_SIGTERM_GRACE_MS,
                 cols: if spec.cols > 0 {

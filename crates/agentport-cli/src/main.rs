@@ -80,6 +80,7 @@ fn run() -> Result<()> {
     let rest = &args[1..];
     match cmd {
         "probe" => cmd_probe(&ctx, rest),
+        "notification" => cmd_notification_setup(&ctx, rest),
         "project" => cmd_project(&ctx, rest),
         "preset" => cmd_preset(&ctx, rest),
         "session" => cmd_session(&ctx, rest),
@@ -119,7 +120,9 @@ fn usage() {
     eprintln!(
         "agentport-cli [--json] <command>
 
-  probe [agent] [--path <exe>]           detect CLI capabilities
+  probe [agent] [--path <exe>]           detect CLI and prepare notification integration
+  notification status                  list notification setup status
+  notification rollback <agent>        remove only owned notification integration
   project add <path> [--name N]          register a project (dup path -> focuses existing)
   project list | rename <id> <name> | remove <id>
   preset list [--agent A]
@@ -207,8 +210,11 @@ fn cmd_probe(ctx: &Ctx, args: &[String]) -> Result<()> {
         if let Some(install) = &outcome.install {
             ctx.db.upsert_adapter(install)?;
         }
+        let notification_setup =
+            agentport_core::notification_setup::for_probe(&ctx.paths, t, outcome.install.as_ref());
         results.push(json!({
             "agent": t.as_str(),
+            "notificationSetup": notification_setup,
             "state": format!("{:?}", outcome.state).to_lowercase(),
             "reason": outcome.reason,
             "install": outcome.install.as_ref().map(|i| json!({
@@ -227,6 +233,26 @@ fn cmd_probe(ctx: &Ctx, args: &[String]) -> Result<()> {
         }));
     }
     ctx.out(Value::Array(results));
+    Ok(())
+}
+
+fn cmd_notification_setup(ctx: &Ctx, args: &[String]) -> Result<()> {
+    match args.first().map(String::as_str) {
+        Some("status") => ctx.out(json!(agentport_core::notification_setup::list_status(
+            &ctx.paths
+        )?)),
+        Some("rollback") => {
+            let agent: AgentType = positional(args, 1)?.parse()?;
+            ctx.out(json!(agentport_core::notification_setup::rollback(
+                &ctx.paths, agent
+            )?));
+        }
+        _ => {
+            return Err(CoreError::Validation(
+                "notification status | rollback <agent>".into(),
+            ))
+        }
+    }
     Ok(())
 }
 
@@ -376,6 +402,7 @@ fn install_for(ctx: &Ctx, t: AgentType) -> Result<AdapterInstall> {
             return match outcome.install {
                 Some(fresh) => {
                     ctx.db.upsert_adapter(&fresh)?;
+                    let _ = agentport_core::notification_setup::setup(&ctx.paths, &fresh);
                     Ok(fresh)
                 }
                 None => Err(CoreError::Adapter(format!(
@@ -392,6 +419,7 @@ fn install_for(ctx: &Ctx, t: AgentType) -> Result<AdapterInstall> {
     match outcome.install {
         Some(i) => {
             ctx.db.upsert_adapter(&i)?;
+            let _ = agentport_core::notification_setup::setup(&ctx.paths, &i);
             Ok(i)
         }
         None => Err(CoreError::Adapter(format!(
@@ -527,6 +555,9 @@ fn launch_session(
     if agent == AgentType::Pi {
         agentport_core::pi_storage::prepare_launch(&ctx.paths, &session_id, &mut plan)?;
     }
+    // Notification preparation is independent of CLI availability. Activation
+    // uses only verified owned assets and leaves failed setups as clear notices.
+    agentport_core::notification_setup::apply_to_launch(&ctx.paths, agent, &mut plan)?;
     // Helper files (e.g. claude per-session settings) — 0600.
     for (path, contents) in &plan.helper_files {
         agentport_core::host_manager::write_private_file(path, contents)?;
@@ -573,6 +604,9 @@ fn launch_session(
     // Inherited plain env (names only).
     let mut env = plan.env.clone();
     for name in &preset.env_names {
+        if name.starts_with("AGENTPORT_NOTIFICATION_") {
+            continue;
+        }
         if let Ok(v) = std::env::var(name) {
             env.push((name.clone(), v));
         }
@@ -1006,6 +1040,11 @@ fn cmd_session_restart(ctx: &Ctx, args: &[String]) -> Result<()> {
         transport: session.transport,
     };
     let mut plan = adapter.build_resume_checked(&rctx)?;
+    agentport_core::notification_setup::apply_to_launch(
+        &ctx.paths,
+        session.adapter_type,
+        &mut plan,
+    )?;
     if session.adapter_type == AgentType::Pi {
         agentport_core::pi_storage::prepare_launch(&ctx.paths, &session.id, &mut plan)?;
     }

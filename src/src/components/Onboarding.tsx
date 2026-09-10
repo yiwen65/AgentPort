@@ -30,7 +30,7 @@ function probeReason(outcome: ProbeOutcome): string | null {
 }
 
 export default function Onboarding() {
-  const { t } = useTranslation(["shell", "common"]);
+  const { t } = useTranslation(["shell", "common", "settings"]);
   const [agents, setAgents] = useState<SupportedAgent[]>([]);
   const [rows, setRows] = useState<Record<string, RowState>>({});
   const [manualPath, setManualPath] = useState<Record<string, string>>({});
@@ -164,6 +164,9 @@ export default function Onboarding() {
         <p className="dim" style={{ margin: 0, lineHeight: 1.7 }}>
           {t("shell:onboarding.intro")}
         </p>
+        <p className="dim" style={{ margin: 0, lineHeight: 1.7 }}>
+          {t("settings:ui.notificationSetup.description")}
+        </p>
 
         {registryError ? (
           <div className="error-bar" role="alert">
@@ -200,6 +203,11 @@ export default function Onboarding() {
                         ? t("shell:onboarding.exactResumeSupported")
                         : t("shell:onboarding.exactResumeUnsupported")}
                     </span>
+                    {row.outcome.notificationSetup && registered.agent !== "shell" ? (
+                      <><br /><span>
+                        {t("settings:ui.notificationSetup.notifications")}: {t(`settings:ui.notificationSetup.state.${row.outcome.notificationSetup.state}`)}
+                      </span></>
+                    ) : null}
                     {probeReason(row.outcome) ? <><br /><span className="dim">{probeReason(row.outcome)}</span></> : null}
                     <details className="agent-candidates">
                       <summary>

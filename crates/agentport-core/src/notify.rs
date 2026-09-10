@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 const MAX_TRACKED_NOTIFICATION_EVENTS: usize = 4096;
 const APPROVAL_CROSS_SOURCE_DEDUP_WINDOW: Duration = Duration::from_secs(2);
 const PTY_APPROVAL_REPEAT_WINDOW: Duration = Duration::from_secs(15);
+const TERMINAL_CROSS_SOURCE_DEDUP_WINDOW: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub struct Notification {
@@ -29,10 +30,18 @@ struct ApprovalDedupState {
     notified_source: StateSource,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TerminalDedupState {
+    kind: AttentionKind,
+    source: StateSource,
+    seen_at: Instant,
+}
+
 #[derive(Default)]
 pub struct NotificationDeduper {
     exact_events: HashSet<String>,
     approvals: HashMap<String, ApprovalDedupState>,
+    terminals: HashMap<String, TerminalDedupState>,
 }
 
 impl NotificationDeduper {
@@ -41,6 +50,20 @@ impl NotificationDeduper {
     }
 
     fn should_notify_at(&mut self, event: &StatusEvent, now: Instant) -> bool {
+        let run_key = format!(
+            "{}:{}:{}",
+            event.session_id, event.run_id, event.run_ordinal
+        );
+        // A precise new-turn/tool/approval-resolution signal separates epochs.
+        // Never use PTY redraws or silence as proof of a new turn.
+        if event.source != StateSource::Pty
+            && matches!(event.state, AgentState::Working | AgentState::NeedsInput)
+        {
+            self.terminals.remove(&run_key);
+            if event.state == AgentState::Working {
+                self.approvals.remove(&run_key);
+            }
+        }
         let Some(kind) = event.attention_kind() else {
             return false;
         };
@@ -55,10 +78,6 @@ impl NotificationDeduper {
             return false;
         }
 
-        let run_key = format!(
-            "{}:{}:{}",
-            event.session_id, event.run_id, event.run_ordinal
-        );
         match kind {
             AttentionKind::ApprovalRequested => {
                 if self.approvals.len() >= MAX_TRACKED_NOTIFICATION_EVENTS {
@@ -103,7 +122,34 @@ impl NotificationDeduper {
                     true
                 }
             }
-            AttentionKind::TurnCompleted => true,
+            AttentionKind::TurnCompleted | AttentionKind::ExecutionFailed => {
+                if self.terminals.len() >= MAX_TRACKED_NOTIFICATION_EVENTS {
+                    self.terminals.retain(|_, terminal| {
+                        now.saturating_duration_since(terminal.seen_at)
+                            < TERMINAL_CROSS_SOURCE_DEDUP_WINDOW
+                    });
+                    if self.terminals.len() >= MAX_TRACKED_NOTIFICATION_EVENTS {
+                        self.terminals.clear();
+                    }
+                }
+                let duplicate = self.terminals.get(&run_key).is_some_and(|last| {
+                    last.kind == kind
+                        && last.source != event.source
+                        && now.saturating_duration_since(last.seen_at)
+                            < TERMINAL_CROSS_SOURCE_DEDUP_WINDOW
+                });
+                if !duplicate {
+                    self.terminals.insert(
+                        run_key,
+                        TerminalDedupState {
+                            kind,
+                            source: event.source,
+                            seen_at: now,
+                        },
+                    );
+                }
+                !duplicate
+            }
         }
     }
 }
@@ -311,13 +357,27 @@ pub fn notification_for_state_change(
     session_title: &str,
     event: &StatusEvent,
 ) -> Option<Notification> {
-    event.attention_kind()?;
-    let body = match (language, event.state) {
-        (UiLanguage::ZhCn, AgentState::NeedsInput) => "等待批准",
-        (UiLanguage::ZhCn, AgentState::Idle) => "已完成",
-        (UiLanguage::EnUs, AgentState::NeedsInput) => "Waiting for approval",
-        (UiLanguage::EnUs, AgentState::Idle) => "Completed",
-        _ => return None,
+    let kind = event.attention_kind()?;
+    let body = if kind == AttentionKind::ExecutionFailed {
+        match language {
+            UiLanguage::ZhCn => "执行失败",
+            UiLanguage::EnUs => "Execution failed",
+        }
+    } else if event.evidence.as_deref() == Some("hook:AgentPortNotification:needs_input")
+        || event.evidence.as_deref() == Some("hook:AskUserQuestion")
+    {
+        match language {
+            UiLanguage::ZhCn => "等待处理",
+            UiLanguage::EnUs => "Waiting for input",
+        }
+    } else {
+        match (language, event.state) {
+            (UiLanguage::ZhCn, AgentState::NeedsInput) => "等待批准",
+            (UiLanguage::ZhCn, AgentState::Idle) => "已完成",
+            (UiLanguage::EnUs, AgentState::NeedsInput) => "Waiting for approval",
+            (UiLanguage::EnUs, AgentState::Idle) => "Completed",
+            _ => return None,
+        }
     };
     Some(Notification {
         session_id: event.session_id.clone(),
@@ -405,7 +465,7 @@ mod tests {
                 "process:exit:0"
             )
         ));
-        assert!(!notify_state_change(
+        assert!(notify_state_change(
             &n,
             "跑测试",
             &event(
@@ -448,12 +508,13 @@ mod tests {
         ));
 
         let sent = n.sent();
-        assert_eq!(sent.len(), 2);
+        assert_eq!(sent.len(), 3);
         assert_eq!(sent[0].title, "更新部署文档");
         assert_eq!(sent[0].body, "等待批准");
         assert_eq!(sent[0].session_id, "ses_1");
         assert_eq!(sent[1].title, "构建前端");
         assert_eq!(sent[1].body, "已完成");
+        assert_eq!(sent[2].body, "执行失败");
     }
 
     #[test]
@@ -483,21 +544,34 @@ mod tests {
     }
 
     #[test]
-    fn process_exit_events_never_notify() {
-        for evidence in ["process:exit:0", "process:exit:1", "process:signal:9"] {
+    fn only_unexpected_process_failures_notify() {
+        for (evidence, expected) in [
+            ("process:exit:0", false),
+            ("process:exit:1", true),
+            ("process:signal:9", true),
+            ("process:signal:11", true),
+            ("process:signal:2", false),
+            ("process:signal:15", false),
+            ("process:exit:130", false),
+            ("process:exit:143", false),
+            ("process:exit:unknown", false),
+            ("process:stopped:code=None:signal=Some(9)", false),
+        ] {
             let process_exit = event(
                 AgentState::Exited,
                 StateSource::Process,
                 Confidence::High,
                 evidence,
             );
-            assert!(
+            assert_eq!(
                 notification_for_state_change(UiLanguage::ZhCn, "完成任务", &process_exit)
-                    .is_none()
+                    .is_some(),
+                expected,
+                "{evidence}"
             );
 
             let mut deduper = NotificationDeduper::default();
-            assert!(!deduper.should_notify(&process_exit));
+            assert_eq!(deduper.should_notify(&process_exit), expected);
         }
     }
 
@@ -505,6 +579,8 @@ mod tests {
     fn only_approval_requests_notify_from_needs_input_events() {
         for (source, evidence) in [
             (StateSource::Hook, "hook:PermissionRequest"),
+            (StateSource::Hook, "hook:AskUserQuestion"),
+            (StateSource::Hook, "hook:AgentPortNotification:needs_input"),
             (StateSource::Pty, "pty:pattern:approve?"),
         ] {
             assert!(notification_for_state_change(
@@ -517,7 +593,6 @@ mod tests {
 
         for (source, evidence) in [
             (StateSource::Hook, "hook:Notification"),
-            (StateSource::Hook, "hook:AskUserQuestion"),
             (StateSource::Process, "process:waiting"),
         ] {
             assert!(notification_for_state_change(
@@ -592,10 +667,103 @@ mod tests {
         let mut failed_exit = process_exit.clone();
         failed_exit.sequence = 4;
         failed_exit.evidence = Some("process:exit:1".into());
-        assert!(!deduper.should_notify(&failed_exit));
+        assert!(deduper.should_notify(&failed_exit));
 
         process_exit.run_id = "run_without_hooks".into();
         assert!(!deduper.should_notify(&process_exit));
+    }
+
+    #[test]
+    fn completion_cross_source_duplicates_are_suppressed_but_next_turn_is_not() {
+        let mut deduper = NotificationDeduper::default();
+        let started = Instant::now();
+        let hook = event(
+            AgentState::Idle,
+            StateSource::Hook,
+            Confidence::High,
+            "hook:AgentPortNotification:completed",
+        );
+        let mut native = event(
+            AgentState::Idle,
+            StateSource::Adapter,
+            Confidence::High,
+            "adapter:omp:TurnEnd",
+        );
+        native.sequence = 2;
+        assert!(deduper.should_notify_at(&hook, started));
+        assert!(!deduper.should_notify_at(&native, started + Duration::from_millis(100)));
+        let mut work = event(
+            AgentState::Working,
+            StateSource::Adapter,
+            Confidence::High,
+            "adapter:omp:TurnStart",
+        );
+        work.sequence = 3;
+        assert!(!deduper.should_notify_at(&work, started + Duration::from_millis(150)));
+        native.sequence = 4;
+        assert!(deduper.should_notify_at(&native, started + Duration::from_millis(200)));
+        let mut late_hook = hook.clone();
+        late_hook.sequence = 5;
+        assert!(!deduper.should_notify_at(&late_hook, started + Duration::from_millis(250)));
+        native.run_id = "next_run".into();
+        assert!(deduper.should_notify_at(&native, started + Duration::from_millis(300)));
+    }
+
+    #[test]
+    fn hook_failure_and_process_failure_are_one_attention_episode() {
+        let mut deduper = NotificationDeduper::default();
+        let started = Instant::now();
+        let failed = event(
+            AgentState::Idle,
+            StateSource::Hook,
+            Confidence::High,
+            "hook:AgentPortNotification:failed",
+        );
+        let mut exited = event(
+            AgentState::Exited,
+            StateSource::Process,
+            Confidence::High,
+            "process:exit:1",
+        );
+        exited.sequence = 2;
+        assert!(deduper.should_notify_at(&failed, started));
+        assert!(!deduper.should_notify_at(&exited, started + Duration::from_millis(10)));
+        assert_eq!(
+            notification_for_state_change(UiLanguage::EnUs, "Build", &failed)
+                .unwrap()
+                .body,
+            "Execution failed"
+        );
+    }
+
+    #[test]
+    fn precise_resolution_allows_a_second_approval_without_a_time_window() {
+        let mut deduper = NotificationDeduper::default();
+        let started = Instant::now();
+        let first = event(
+            AgentState::NeedsInput,
+            StateSource::Hook,
+            Confidence::High,
+            "hook:AgentPortNotification:needs_input",
+        );
+        let mut resolved = event(
+            AgentState::Working,
+            StateSource::Hook,
+            Confidence::High,
+            "hook:AgentPortNotification:working",
+        );
+        resolved.sequence = 2;
+        let mut second = first.clone();
+        second.sequence = 3;
+        assert!(deduper.should_notify_at(&first, started));
+        assert!(!deduper.should_notify_at(&resolved, started));
+        assert!(deduper.should_notify_at(&second, started));
+        assert_eq!(
+            notification_for_state_change(UiLanguage::EnUs, "Question", &first)
+                .unwrap()
+                .body,
+            "Waiting for input"
+        );
     }
 
     #[test]

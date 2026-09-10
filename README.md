@@ -46,6 +46,10 @@ cd src && npm install && npm run dev   # 前端开发服务器（:1420）
 | AppImage（Beta） | `bash scripts/build-linux.sh appimage` |
 | 发布清单 | `bash scripts/generate-release-manifest.sh` |
 
+## 通知自动配置
+
+探测 14 种正式 Agent 时自动准备相应通知集成；设置页分别显示 CLI 可用性、通知覆盖、重试与回滚。配置失败不阻止基本启动，普通终端不报告事件。缺少可靠接口或运行时会明确降级/失败，不伪装全部就绪。详见[通知自动配置](docs/agent-notifications.md)。
+
 ## 新增 Agent
 
 新增九种均接入 GUI 与无头 CLI，并使用随 light/dark 主题适配的品牌图标。

@@ -1735,6 +1735,206 @@ fn process_group_cleanup() {
     assert_eq!(state["exit_reason"], serde_json::json!("user_stop"));
 }
 
+// These tests drive the production relay through an actual Agent child and
+// Host socket. They never invoke Notifier or an external model/account.
+fn make_notification_ctx() -> (TestCtx, PathBuf, String) {
+    let script = r#"
+printf 'AGENT_PID=%s\n' "$$"
+while IFS= read -r action; do
+  case "$action" in
+    stale_run) AGENTPORT_RUN_ID=run_stale /bin/sh "$AP_TEST_RELAY" failed ;;
+    wrong_token) AGENTPORT_NOTIFICATION_TOKEN=wrong_token /bin/sh "$AP_TEST_RELAY" completed ;;
+    wrong_session) AGENTPORT_SESSION_ID=ses_other /bin/sh "$AP_TEST_RELAY" needs_input ;;
+    duplicate_needs_input)
+      /bin/sh "$AP_TEST_RELAY" needs_input
+      /bin/sh "$AP_TEST_RELAY" needs_input ;;
+    token)
+      printf 'TOKEN_ECHO:%s\nTOKEN_DONE_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n' "$AGENTPORT_NOTIFICATION_TOKEN" ;;
+    exit_ok) exit 0 ;;
+    fail_process) exit 7 ;;
+    *) /bin/sh "$AP_TEST_RELAY" "$action" ;;
+  esac
+  printf 'ACK_%s\n' "$action"
+done
+"#;
+    let ctx = make_ctx(vec!["/bin/sh".into(), "-c".into(), script.into()], 1 << 20, vec![]);
+    std::fs::set_permissions(&ctx.dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let relay = ctx.dir.join("production-relay.sh");
+    std::fs::write(&relay, include_str!("../../agentport-core/src/notification_setup/relay.sh")).unwrap();
+    std::fs::set_permissions(&relay, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let context_path = ctx.dir.join("notification-context.json");
+    let token = uniq("notification-token");
+    let mut cfg: HostConfig = serde_json::from_slice(&std::fs::read(&ctx.cfg_path).unwrap()).unwrap();
+    cfg.adapter_type = "cline".into();
+    let context = serde_json::json!({
+        "sessionId": cfg.session_id, "runId": cfg.run_id, "token": token,
+        "agent": "cline", "nativeSessionId": null,
+        "eventsFile": cfg.hook_events_path, "ownerPid": null,
+    });
+    std::fs::write(&context_path, serde_json::to_vec(&context).unwrap()).unwrap();
+    std::fs::set_permissions(&context_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::write(&cfg.hook_events_path, b"").unwrap();
+    std::fs::set_permissions(&cfg.hook_events_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    cfg.env.extend([
+        ("AGENTPORT_SESSION_ID".into(), cfg.session_id.clone()),
+        ("AGENTPORT_RUN_ID".into(), cfg.run_id.clone()),
+        ("AGENTPORT_NOTIFICATION_TOKEN".into(), token.clone()),
+        ("AGENTPORT_NOTIFICATION_AGENT".into(), "cline".into()),
+        ("AGENTPORT_NOTIFICATION_CONTEXT_FILE".into(), context_path.to_string_lossy().into_owned()),
+        ("AGENTPORT_HOOK_EVENTS_FILE".into(), cfg.hook_events_path.clone()),
+        ("AP_TEST_RELAY".into(), relay.to_string_lossy().into_owned()),
+    ]);
+    std::fs::write(&ctx.cfg_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+    (ctx, context_path, token)
+}
+
+fn notification_journal(ctx: &TestCtx) -> Vec<agentport_core::models::StatusEvent> {
+    std::fs::read_to_string(ctx.dir.join("status-events.jsonl"))
+        .unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+}
+
+fn send_notification_action(client: &mut Conn, ctx: &TestCtx, action: &str) {
+    client.send(&ClientFrame::Input {
+        session_id: ctx.session_id.clone(), data: format!("{action}\n").into_bytes(),
+    });
+}
+
+fn wait_notification_state(client: &mut Conn, evidence: &str) -> Vec<HostFrame> {
+    let frames = client.collect_until(Duration::from_secs(5), |frames| frames.iter().any(|frame| {
+        matches!(frame, HostFrame::State { evidence: Some(value), .. } if value == evidence)
+    }));
+    assert!(frames.iter().any(|frame| matches!(frame,
+        HostFrame::State { evidence: Some(value), .. } if value == evidence)),
+        "expected metadata state {evidence}, got {frames:?}");
+    frames
+}
+
+#[test]
+fn notification_runtime_binds_owner_and_classifies_production_relay_without_payload_leaks() {
+    use agentport_core::models::AttentionKind;
+    let (ctx, context_path, token) = make_notification_ctx();
+    let mut guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    wait_for(|| {
+        let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&context_path).unwrap()).unwrap();
+        value["ownerPid"].as_i64().is_some_and(|pid| Some(pid as i32) == guard.agent_pid())
+    }, Duration::from_secs(5), "context bound to actual Agent child PID");
+    let owner: serde_json::Value = serde_json::from_slice(&std::fs::read(&context_path).unwrap()).unwrap();
+    assert_ne!(owner["ownerPid"].as_i64(), Some(i64::from(guard.pid())));
+    assert_eq!(owner["sessionId"], ctx.session_id);
+    assert_eq!(owner["token"], token);
+    assert_eq!(std::fs::metadata(&context_path).unwrap().permissions().mode() & 0o777, 0o600);
+
+    let mut client = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    client.expect_hello_ok();
+    // The valid Working event is an ordering barrier after three rejected
+    // production relay invocations. No sleeping is needed to infer rejection.
+    send_notification_action(&mut client, &ctx, "stale_run\nwrong_token\nwrong_session\nworking");
+    let mut all_frames = wait_notification_state(&mut client, "hook:AgentPortNotification:working");
+    assert!(notification_journal(&ctx).iter().all(|event| event.attention_kind().is_none()));
+
+    send_notification_action(&mut client, &ctx, "duplicate_needs_input");
+    all_frames.extend(wait_notification_state(&mut client, "hook:AgentPortNotification:needs_input"));
+    send_notification_action(&mut client, &ctx, "working");
+    all_frames.extend(wait_notification_state(&mut client, "hook:AgentPortNotification:working"));
+    send_notification_action(&mut client, &ctx, "needs_input");
+    all_frames.extend(wait_notification_state(&mut client, "hook:AgentPortNotification:needs_input"));
+    send_notification_action(&mut client, &ctx, "completed");
+    all_frames.extend(wait_notification_state(&mut client, "hook:AgentPortNotification:completed"));
+    send_notification_action(&mut client, &ctx, "failed");
+    all_frames.extend(wait_notification_state(&mut client, "hook:AgentPortNotification:failed"));
+
+    let attention: Vec<_> = notification_journal(&ctx).iter().filter_map(|event| event.attention_kind()).collect();
+    assert_eq!(attention, vec![AttentionKind::ApprovalRequested, AttentionKind::ApprovalRequested,
+        AttentionKind::TurnCompleted, AttentionKind::ExecutionFailed]);
+    // A relay's sessionId is routing metadata, never a native conversation ID.
+    let mut observer = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    assert!(matches!(observer.read1(Duration::from_secs(3)),
+        Read1::Frame(HostFrame::HelloOk { agent_session_id: None, child_alive: true, .. })));
+
+    send_notification_action(&mut client, &ctx, "token");
+    all_frames.extend(client.collect_until(Duration::from_secs(3), |frames| {
+        String::from_utf8_lossy(&output_bytes(frames)).contains("TOKEN_DONE_")
+    }));
+    client.send(&ClientFrame::Stop { session_id: ctx.session_id.clone(), grace_ms: 500 });
+    all_frames.extend(client.collect_until(Duration::from_secs(8), |frames| frames.iter().any(|frame| matches!(frame, HostFrame::Exit { .. }))));
+    assert!(guard.wait_exit(Duration::from_secs(10)).is_some());
+    let output = output_bytes(&all_frames);
+    assert!(String::from_utf8_lossy(&output).contains("TOKEN_ECHO:"));
+    assert!(!output.windows(token.len()).any(|window| window == token.as_bytes()));
+    assert!(!std::fs::read_to_string(&ctx.host_log).unwrap().contains(&token));
+    assert!(!std::fs::read_to_string(ctx.dir.join("status-events.jsonl")).unwrap().contains(&token));
+    assert_eq!(notification_journal(&ctx).iter().filter_map(|event| event.attention_kind()).count(), 4,
+        "explicit stop must not add an execution failure");
+}
+
+#[test]
+fn notification_runtime_invalid_context_disables_relay_without_killing_agent() {
+    let (ctx, context_path, _token) = make_notification_ctx();
+    let mut context: serde_json::Value = serde_json::from_slice(&std::fs::read(&context_path).unwrap()).unwrap();
+    context["runId"] = "other-run".into();
+    let original = serde_json::to_vec(&context).unwrap();
+    std::fs::write(&context_path, &original).unwrap();
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut client = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    client.expect_hello_ok();
+    send_notification_action(&mut client, &ctx, "failed\ncompleted\nneeds_input");
+    // A legacy hook after the rejected relay entries proves that the hook
+    // poller consumed the file while preserving compatibility and CLI life.
+    wait_for(|| std::fs::read_to_string(ctx.dir.join("events.jsonl")).unwrap().lines().count() == 3,
+        Duration::from_secs(3), "production relay appended all rejected events");
+    let mut file = std::fs::OpenOptions::new().append(true).open(ctx.dir.join("events.jsonl")).unwrap();
+    file.write_all(b"{\"event\":\"UserPromptSubmit\"}\n").unwrap();
+    file.flush().unwrap();
+    wait_notification_state(&mut client, "hook:UserPromptSubmit");
+    assert!(notification_journal(&ctx).iter().all(|event| event.attention_kind().is_none()));
+    assert_eq!(std::fs::read(&context_path).unwrap(), original);
+    let mut observer = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    assert!(matches!(observer.read1(Duration::from_secs(3)),
+        Read1::Frame(HostFrame::HelloOk { child_alive: true, .. })));
+}
+
+#[test]
+fn notification_runtime_nonzero_exit_is_failure_but_clean_exit_is_not() {
+    use agentport_core::models::AttentionKind;
+    for (action, code, expected) in [("fail_process", 7, Some(AttentionKind::ExecutionFailed)),
+        ("exit_ok", 0, None)] {
+        let (ctx, _context, _token) = make_notification_ctx();
+        let mut guard = spawn_host(&ctx, &[]);
+        wait_socket(&ctx);
+        let mut client = connect(&ctx, &ctx.session_id, TOKEN, 0);
+        client.expect_hello_ok();
+        send_notification_action(&mut client, &ctx, action);
+        let frames = client.collect_until(Duration::from_secs(8), |frames| frames.iter().any(|frame| matches!(frame, HostFrame::Exit { .. })));
+        assert!(frames.iter().any(|frame| matches!(frame, HostFrame::Exit { code: Some(actual), reason, .. } if *actual == code && reason == "natural")));
+        assert!(guard.wait_exit(Duration::from_secs(10)).is_some());
+        let journal = notification_journal(&ctx);
+        let exit = journal.iter().find(|event| event.state == AgentState::Exited && event.source == StateSource::Process).unwrap();
+        assert_eq!(exit.attention_kind(), expected);
+        assert_eq!(journal.iter().filter_map(|event| event.attention_kind()).count(), usize::from(expected.is_some()));
+    }
+}
+
+#[test]
+fn shell_child_does_not_inherit_parent_managed_notification_identity() {
+    let names = ["AGENTPORT_SESSION_ID", "AGENTPORT_RUN_ID", "AGENTPORT_NOTIFICATION_TOKEN",
+        "AGENTPORT_NOTIFICATION_AGENT", "AGENTPORT_NOTIFICATION_NATIVE_SESSION_ID",
+        "AGENTPORT_NOTIFICATION_CONTEXT_FILE", "AGENTPORT_HOOK_EVENTS_FILE"];
+    // Report only presence of these fixed test names, never dump inherited
+    // environment values (which could include unrelated developer secrets).
+    let checks = names.iter().map(|name| format!(
+        "if [ \"${{{name}+present}}\" = present ]; then printf '%s\\n' '{name}'; fi;"
+    )).collect::<Vec<_>>().join(" ");
+    let script = format!("{{ {checks} }} > environment.tmp; mv environment.tmp child-environment.txt; sleep 60");
+    let ctx = make_ctx(vec!["/bin/sh".into(), "-c".into(), script], 1 << 20, vec![]);
+    let inherited: Vec<_> = names.iter().map(|name| (*name, "inherited-managed-identity")).collect();
+    let _guard = spawn_host(&ctx, &inherited);
+    wait_for(|| ctx.dir.join("child-environment.txt").is_file(), Duration::from_secs(5), "child environment dump");
+    let environment = std::fs::read_to_string(ctx.dir.join("child-environment.txt")).unwrap();
+    for name in names { assert!(!environment.lines().any(|line| line == name), "inherited {name}"); }
+}
+
 #[test]
 fn hook_poller_ignores_events_before_the_run_snapshot() {
     let ctx = make_ctx(

@@ -74,6 +74,7 @@
       "clineNativeAutoApprove": "Cline CLI defaults to auto-approve=true. Native mode preserves that default and does not guarantee manual approval prompts.",
       "ompNativePermissionDefaults": "Oh My Pi preserves its own permission settings. The upstream default is yolo (automatic tool approval); configure approvals in Oh My Pi if needed.",
       "easyPiNativePermissionDefaults": "easy-pi preserves its own permission settings. Its upstream initial mode is full-access; use /permissions inside easy-pi to change it.",
+      "notificationSetupDegraded": "Notification integration is degraded; basic Agent startup remains available. Review or retry notification setup in Agent settings. Technical detail: {{detail}}",
       "generic": "Agent notice: {{detail}}"
     }
   }
