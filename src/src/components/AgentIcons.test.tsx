@@ -33,10 +33,10 @@ describe("new Agent brand icons", () => {
         continue;
       }
       expect(mark?.querySelectorAll("svg").length).toBe(1);
-      if (agent === "omp") {
+      if (agent === "omp" || agent === "gemini") {
         expect(mark?.querySelectorAll("linearGradient stop")).toHaveLength(3);
-        expect(mark?.querySelector("rect")).toBeNull(); // No opaque background.
-      } else {
+        if (agent === "omp") expect(mark?.querySelector("rect")).toBeNull(); // Transparent Omp background.
+      } else if (!["amp", "kiro_cli"].includes(agent)) {
         expect(mark?.innerHTML).toContain("currentColor");
       }
       expect(mark?.innerHTML).toContain("Copyright (c) 2023 LobeHub");
@@ -46,8 +46,16 @@ describe("new Agent brand icons", () => {
     }
   });
 
-  it("isolates Omp gradients across repeated and hidden icon instances", () => {
-    const { container } = render(<><AgentIcon agent="omp" /><AgentIcon agent="omp" mono /></>);
+  it.each([false, true])("preserves brand colors when mono=%s", mono => {
+    const { container } = render(<><AgentIcon agent="kimi" mono={mono} /><AgentIcon agent="amp" mono={mono} /><AgentIcon agent="kiro_cli" mono={mono} /><AgentIcon agent="gemini" mono={mono} /></>);
+    expect(container.querySelector('[fill="#1783FF"]')).not.toBeNull();
+    expect(container.querySelector('[fill="#F34E3F"]')).not.toBeNull();
+    expect(container.querySelector('[fill="#9046FF"]')).not.toBeNull();
+    expect(container.querySelector('[stop-color="#207CFE"]')).not.toBeNull();
+  });
+
+  it.each(["omp", "gemini"])("isolates %s gradients across repeated and hidden icon instances", agent => {
+    const { container } = render(<><AgentIcon agent={agent} /><AgentIcon agent={agent} mono /></>);
     const icons = [...container.querySelectorAll("svg")];
     const ids = icons.map((icon) => icon.querySelector("linearGradient")!.id);
     expect(new Set(ids).size).toBe(2);

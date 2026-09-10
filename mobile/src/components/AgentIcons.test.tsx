@@ -22,13 +22,24 @@ describe("mobile Agent brand icons", () => {
     } else {
       expect(mark.querySelector("svg")).not.toBeNull();
       expect(mark.querySelector("script, foreignObject, image, use, a")).toBeNull();
-      if (agent === "omp") expect(mark.querySelector("linearGradient")?.children).toHaveLength(3);
-      else expect(mark.innerHTML).toContain("currentColor");
+      if (agent === "omp" || agent === "gemini") expect(mark.querySelector("linearGradient")?.children).toHaveLength(3);
+      else if (!["amp", "kiro_cli"].includes(agent)) expect(mark.innerHTML).toContain("currentColor");
     }
   });
 
   it.each([...added.map(agent => `${agent}.${agent === "easy_pi" ? "png" : "svg"}`), "LICENSE.txt"])("keeps %s identical to desktop artwork", file => {
     expect(readFileSync(`src/assets/agent-icons/${file}`)).toEqual(readFileSync(`../src/src/assets/agent-icons/${file}`));
+  });
+
+  it("does not tint monochrome brand marks with the application accent", () => {
+    const styles = readFileSync("src/features/sessions/dashboard.css", "utf8");
+    expect(styles).toMatch(/\.agent-picker-glyph\s*\{[^}]*color:\s*var\(--text\)/);
+  });
+
+  it("retains brand accents in the launch picker's mono mode", () => {
+    const { container } = render(<><AgentIcon agent="kimi" mono /><AgentIcon agent="amp" mono /><AgentIcon agent="kiro_cli" mono /><AgentIcon agent="gemini" mono /></>);
+    for (const color of ["#1783FF", "#F34E3F", "#9046FF"]) expect(container.querySelector(`[fill="${color}"]`)).not.toBeNull();
+    expect(container.querySelector('[stop-color="#207CFE"]')).not.toBeNull();
   });
 
   it("isolates repeated gradient references and retains unknown/Shell fallback", () => {

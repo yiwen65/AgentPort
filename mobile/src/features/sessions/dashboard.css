@@ -28,7 +28,7 @@
 .agent-picker-list button { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 12px; width: 100%; min-height: 100px; padding: 16px 12px; border: 1px solid var(--line-soft); border-radius: 14px; background: var(--fill); color: var(--text); text-align: center; font-size: 16px; font-weight: 550; transition: transform 120ms ease, background-color 160ms ease; }
 .agent-picker-list .agent-picker-name { min-width: 0; overflow-wrap: anywhere; }
 .agent-picker-list button:disabled { opacity: .5; }
-.agent-picker-glyph { width: 30px; height: 30px; color: var(--accent); flex-shrink: 0; }
+.agent-picker-glyph { width: 30px; height: 30px; color: var(--text); flex-shrink: 0; }
 .agent-picker-glyph > svg { width: 100%; height: 100%; display: block; }
 .agent-picker .inline-error { overflow-wrap: anywhere; }
 .session-dashboard button:focus-visible, .agent-picker button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
