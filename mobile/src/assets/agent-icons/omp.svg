@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 960" width="1em" height="1em">
+  <defs>
+    <linearGradient id="__AGENT_ICON_ID__" x1="32" y1="245" x2="928" y2="530" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ed00ff"/>
+      <stop offset="0.48" stop-color="#963aff"/>
+      <stop offset="1" stop-color="#00cef0"/>
+    </linearGradient>
+  </defs>
+  <!-- Vector redraw of the user's supplied rounded, unequal-leg pi mark. -->
+  <path fill="url(#__AGENT_ICON_ID__)" d="M82 98H878Q928 98 928 148V203Q928 253 878 253H738Q706 253 706 285V807Q706 860 653 860H593Q540 860 540 807V285Q540 253 508 253H443Q411 253 411 285V670Q411 723 358 723H300Q247 723 247 670V285Q247 253 215 253H82Q32 253 32 203V148Q32 98 82 98Z"/>
+</svg>

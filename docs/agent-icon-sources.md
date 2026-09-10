@@ -29,6 +29,12 @@ LobeHub 目录未找到 Oh My Pi 或 easy-pi 的独立品牌项。Oh My Pi 原�
 
 图标测试检查九种资源渲染、固定文件来源、无脚本/外链、`currentColor` 及明暗语义变量连通性。实际 App 截图由交付阶段检查，不以 jsdom 测试冒充像素或完整 WCAG 验证。
 
+## 移动端同步
+
+移动端启动选择界面支持同一组14种正式Agent品牌图标；Shell及未知类型仍使用终端符号。新增资源与许可同步到 `mobile/src/assets/agent-icons/`，由字节一致性回归测试防止两端再次漂移。Omp保持彩色渐变且实例ID独立；easy-pi使用裁掉留白的透明PNG，启动界面用38px容器，其余图标30px，不增加交互行为或改变启动权限。
+
+移动端本次验证：仅包含本任务改动的暂存快照中，395项测试、TypeScript及Vite构建通过；包括全部新增图标、桌面/移动资源一致性和真实启动选择组件回归。设备列表中的两台iPhone均不可连接，未安装更新或完成真机视觉验收。
+
 ## 许可（随源码与 App 保留）
 
 完整条款另存 `src/src/assets/agent-icons/LICENSE.txt`，通过 raw import 随新增图标嵌入构建产物及不可见 HTML 注释，避免只在开发文档中保留而在分发 App 时遗漏。

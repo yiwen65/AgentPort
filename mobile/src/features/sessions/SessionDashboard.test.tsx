@@ -546,6 +546,25 @@ describe("V2 Session workspace", () => {
     expect(screen.getByRole("button", { name: "Show projects" })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("uses updated brand artwork rather than terminal fallbacks in the launch picker", async () => {
+    const remote = client();
+    const request = remote.request;
+    remote.request = vi.fn().mockImplementation((host, method, params) => {
+      if (method === "agent.supported") return Promise.resolve([
+        { agent: "omp", displayName: "Oh My Pi", install: {} },
+        { agent: "easy_pi", displayName: "easy-pi", install: {} },
+        { agent: "opencode", displayName: "OpenCode", install: {} },
+      ]);
+      return request(host, method, params);
+    });
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Start agent in AgentPort" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: "Start Oh My Pi in AgentPort" }).querySelector("linearGradient")).not.toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Start easy-pi in AgentPort" }).querySelector("img")?.getAttribute("src")).toContain("easy_pi.png");
+    expect(within(dialog).getByRole("button", { name: "Start OpenCode in AgentPort" }).querySelector("span.agent-picker-glyph svg")).not.toBeNull();
+  });
+
   it("uses selected host/project and preserves ordered installed/hidden preferences", async () => {
     const remote = client();
     const request = remote.request;

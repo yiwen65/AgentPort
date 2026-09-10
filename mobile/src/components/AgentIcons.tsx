@@ -3,8 +3,30 @@
 // button color in both themes, no filter hacks), and the marks are not
 // draggable like <img> elements.
 
+import { useId } from "react";
 import piSvg from "../assets/agent-icons/pi.svg?raw";
 import qoderSvg from "../assets/agent-icons/qoder.svg?raw";
+
+import ompSvg from "../assets/agent-icons/omp.svg?raw";
+import opencodeSvg from "../assets/agent-icons/opencode.svg?raw";
+import ampSvg from "../assets/agent-icons/amp.svg?raw";
+import geminiSvg from "../assets/agent-icons/gemini.svg?raw";
+import clineSvg from "../assets/agent-icons/cline.svg?raw";
+import kiroSvg from "../assets/agent-icons/kiro_cli.svg?raw";
+import cursorSvg from "../assets/agent-icons/cursor_agent.svg?raw";
+import easyPiImage from "../assets/agent-icons/easy_pi.png";
+import grokSvg from "../assets/agent-icons/grok_build.svg?raw";
+import iconLicense from "../assets/agent-icons/LICENSE.txt?raw";
+
+const addedAgentIcons: Record<string, string> = {
+  omp: ompSvg, opencode: opencodeSvg, amp: ampSvg, gemini: geminiSvg,
+  cline: clineSvg, kiro_cli: kiroSvg, cursor_agent: cursorSvg, grok_build: grokSvg,
+};
+
+export function hasAgentIcon(agent: string): boolean {
+  return ["codex", "claude", "kimi", "qoder", "pi", "easy_pi"].includes(agent)
+    || Object.prototype.hasOwnProperty.call(addedAgentIcons, agent);
+}
 
 type AgentIconProps = {
   className?: string;
@@ -12,12 +34,13 @@ type AgentIconProps = {
 };
 
 function InlineAssetIcon({ svg, className, size }: AgentIconProps & { svg: string }) {
+  const id = `mobile-agent-icon-${useId().replace(/:/g, "")}`;
   return (
     <span
       className={className}
       style={{ width: size, height: size }}
       aria-hidden="true"
-      dangerouslySetInnerHTML={{ __html: svg }}
+      dangerouslySetInnerHTML={{ __html: svg.replaceAll("__AGENT_ICON_ID__", id) }}
     />
   );
 }
@@ -63,7 +86,16 @@ export function AgentIcon({
   size = 20,
   mono = false,
 }: AgentIconProps & { agent: string; mono?: boolean }) {
+  if (Object.prototype.hasOwnProperty.call(addedAgentIcons, agent)) {
+    return <InlineAssetIcon svg={`<!-- ${iconLicense} -->${addedAgentIcons[agent]}`}
+      className={className} size={size} />;
+  }
   switch (agent) {
+    case "easy_pi":
+      return <span className={className} style={{ width: size, height: size }} aria-hidden="true">
+        <img src={easyPiImage} alt="" width={size} height={size} draggable={false}
+          style={{ display: "block", objectFit: "contain" }} />
+      </span>;
     case "codex":
       return <CodexIcon className={className} size={size} />;
     case "claude":

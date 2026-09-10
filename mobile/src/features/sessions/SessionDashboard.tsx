@@ -6,7 +6,7 @@ import { useAttentionInbox } from "./useAttentionInbox";
 import { RecentNotifications } from "./RecentNotifications";
 import type { InboxEntry } from "./attentionInbox";
 import { SessionStateBadge } from "./SessionStateBadge";
-import { AgentIcon } from "../../components/AgentIcons";
+import { AgentIcon, hasAgentIcon } from "../../components/AgentIcons";
 import { Modal } from "../../components/Modal";
 import "./dashboard.css";
 import { useTranslation } from "react-i18next";
@@ -106,8 +106,8 @@ function Icon({ name }: { name: "computer" | "bell" | "refresh" | "clock" | "fol
 }
 
 function AgentGlyph({ agent }: { agent: string }) {
-  if (["pi", "codex", "claude", "kimi", "qoder"].includes(agent)) {
-    return <AgentIcon agent={agent} className="agent-picker-glyph" size={30} mono />;
+  if (hasAgentIcon(agent)) {
+    return <AgentIcon agent={agent} className="agent-picker-glyph" size={agent === "easy_pi" ? 38 : 30} mono />;
   }
   return <svg className="agent-picker-glyph" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
     <path d="m5 6 6 6-6 6m8 0h6" />
