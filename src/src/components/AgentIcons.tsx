@@ -107,7 +107,8 @@ export function AgentIcon({
       return (
         <span className={["themed-agent-icon", className].filter(Boolean).join(" ")}
           style={{ width: size, height: size }} aria-hidden="true">
-          <img src={easyPiImage} alt="" width={size} height={size} draggable={false} />
+          <img src={easyPiImage} alt="" width={size} height={size} draggable={false}
+            style={{ display: "block", objectFit: "contain" }} />
         </span>
       );
     case "codex":

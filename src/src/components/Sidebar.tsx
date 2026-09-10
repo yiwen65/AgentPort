@@ -281,7 +281,7 @@ function QuickAgentIcon({ agent }: { agent: string }) {
     <AgentIcon
       agent={agent}
       className={`quick-agent-mark ${agent}`}
-      size={17}
+      size={agent === "easy_pi" ? 22 : 17}
       mono={theme === "light"}
     />
   );

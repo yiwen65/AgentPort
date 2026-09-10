@@ -18,7 +18,7 @@ LobeHub 图标目录：<https://lobehub.com/icons>。实际 SVG 来自其官方�
 | Kiro CLI | kiro_cli.svg | LobeHub `kiro.svg` | 仅文件名 |
 | Cursor CLI | cursor_agent.svg | LobeHub `cursor.svg` | 仅文件名 |
 | Grok Build | grok_build.svg | LobeHub `grok.svg`，对应 xAI Grok 产品标识 | 仅文件名 |
-| easy-pi | easy_pi.png | 用户于本次会话提供的红白机器人星球原图 | 原图1254×1254等比缩小至512×512，保留透明背景、立体光影与环形轨道，不做矢量重绘或主题反色 |
+| easy-pi | easy_pi.png | 用户于本次会话提供的红白机器人星球原图 | 原图1254×1254等比缩小后裁去外围透明留白，输出455×319；保留透明背景、立体光影与完整轨道，以contain保持比例。快捷栏单独使用22px容器，其余图标仍为17px，不改变按钮尺寸 |
 | Oh My Pi | omp.svg | 用户于本次会话提供的紫蓝青渐变 π 图形 | 按参考图重绘透明背景 SVG，保留圆角、左短右长双脚及品牌渐变；去除边缘杂点和外围留白 |
 
 LobeHub 目录未找到 Oh My Pi 或 easy-pi 的独立品牌项。Oh My Pi 原使用官方专属资源，现按用户提供的参考图替换；不宣称该参考图具有旧资源的 MIT 授权。easy-pi 的本地官方 fork `/Users/w/Projects/easy-pi/pi`，remote `https://github.com/yiwen65/pi.git`，提交 `c227dbb2ee1d69e8428edfa9cc1ca7ba315f6547`，`packages/coding-agent/README.md` 顶部仍引用 `https://pi.dev/logo-auto.svg`，因此旧版曾使用同一 Pi 品牌的 LobeHub 图形；现按用户指定替换为机器人星球原图，保留独立的 easy-pi 文字标签与入口。用户提供的原图不被宣称具有 LobeHub 的 MIT 授权。

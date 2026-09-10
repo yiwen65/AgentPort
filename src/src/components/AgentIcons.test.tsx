@@ -28,6 +28,7 @@ describe("new Agent brand icons", () => {
         expect(image?.getAttribute("alt")).toBe("");
         expect(image?.getAttribute("draggable")).toBe("false");
         expect(image?.getAttribute("width")).toBe("30");
+        expect(image?.style.objectFit).toBe("contain");
         expect(mark?.querySelector("svg")).toBeNull();
         continue;
       }
