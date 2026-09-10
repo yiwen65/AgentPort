@@ -3,7 +3,23 @@
 App Store Connect display name: **AgentPorts**. Bundle ID remains
 `com.agentport.mobile`; the installed app name is unchanged.
 
-## Verified upload (2026-09-09)
+## Latest verified upload (2026-09-11)
+
+Release **0.1.0 (2)**, built from source revision **be4d486**, was uploaded
+successfully at **02:37 CST**. Xcode reported `Upload succeeded` / `EXPORT
+SUCCEEDED`; refreshing App Store Connect confirmed build **2** as **Processing**.
+This is upload acceptance, not processing completion or tester availability.
+No public App Store release, external-review submission, or tester-group change
+was performed; the previous build **1** remained **Testing**.
+
+Validation: all **424 Mobile tests** passed; the Release archive passed
+`codesign --verify --deep --strict`, bundle/version checks, and contained no
+static `.a` libraries. Existing generated Xcode/schema edits were backed up and
+restored. Existing Hosts and Agents were not restarted. The first export failed
+because Xcode could not find an account with App Store Connect access; after the
+user verified the Xcode account, the same archive uploaded successfully.
+
+## Previous verified upload (2026-09-09)
 
 Release version **0.1.0**, build **1**, was accepted by Apple's upload service
 and entered processing. Upload acceptance is not approval or tester availability.
