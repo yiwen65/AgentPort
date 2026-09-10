@@ -3,6 +3,7 @@
 
 import { lazy, Suspense, useEffect, useRef, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
+import { forwardNativeSessionDrag } from "./sessionNativeDrag";
 import {
   api,
   errorText,
@@ -591,6 +592,7 @@ export default function App() {
     let disposed = false;
     let unlisten: (() => void) | null = null;
     void getCurrentWebview().onDragDropEvent((event) => {
+      if (forwardNativeSessionDrag(event.payload)) return;
       if (event.payload.type !== "drop") return;
       const sessionId = terminalSessionAtPhysicalPosition(event.payload.position);
       if (!sessionId) return;
