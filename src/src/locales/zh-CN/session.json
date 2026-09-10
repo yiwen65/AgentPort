@@ -33,6 +33,15 @@
     "pre_kimi_safe": "Kimi 安全默认",
     "pre_qoder_safe": "Qoder 安全默认",
     "pre_pi_safe": "Pi 默认",
+    "pre_omp_safe": "Oh My Pi 原生默认",
+    "pre_opencode_safe": "OpenCode 原生默认",
+    "pre_amp_safe": "Amp 原生默认",
+    "pre_gemini_safe": "Gemini CLI 原生默认",
+    "pre_cline_safe": "Cline CLI 原生默认",
+    "pre_kiro_cli_safe": "Kiro CLI 原生默认",
+    "pre_cursor_agent_safe": "Cursor CLI 原生默认",
+    "pre_easy_pi_safe": "easy-pi 原生默认",
+    "pre_grok_build_safe": "Grok Build 原生默认",
     "pre_shell_safe": "Shell 安全默认"
   },
   "cleanup": {

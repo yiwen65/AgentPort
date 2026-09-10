@@ -457,8 +457,8 @@ fn enforce_permission_preflight(
         return Ok(());
     }
     let risk = match mode {
-        PermissionMode::Auto => "自动批准：文件写入与部分操作无需逐次确认",
-        PermissionMode::Bypass => "绕过权限：全部检查被跳过（危险）",
+        PermissionMode::Auto => "auto approval: CLI-specific policy; explicit denies may still apply",
+        PermissionMode::Bypass => "broad approvals: CLI-specific policy; sandbox and managed restrictions may still apply",
         PermissionMode::Native => unreachable!(),
     };
     eprintln!("== 启动预检（风险确认） ==");
@@ -497,6 +497,7 @@ fn launch_session(
             agent.display_name()
         )));
     }
+    ctx.db.validate_new_agent_selection(agent)?;
     let install = install_for(ctx, agent)?;
     adapters::validate_user_args(agent, &preset.args)?;
     let cwd = match &worktree_id {
@@ -506,9 +507,11 @@ fn launch_session(
     let session_id = ids::new_id("ses");
     let session_dir = ctx.paths.session_dir(&session_id);
     std::fs::create_dir_all(&session_dir)?;
+    let mut launch_preset = preset.clone();
+    launch_preset.permission_mode = permission;
     let ctx_launch = LaunchContext {
         install: install.clone(),
-        preset: preset.clone(),
+        preset: launch_preset,
         cwd: cwd.clone(),
         session_id: session_id.clone(),
         hook_events_path: ctx
@@ -1618,6 +1621,47 @@ fn cmd_settings(ctx: &Ctx, args: &[String]) -> Result<()> {
             Ok(())
         }
         _ => Err(CoreError::Validation("settings get|set".into())),
+    }
+}
+
+#[cfg(test)]
+mod agent_launch_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_permission_reaches_adapter_before_preflight_or_spawn() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("data"));
+        paths.ensure_layout().unwrap();
+        let db = Db::open_memory().unwrap();
+        db.seed_builtin_presets().unwrap();
+        let executable = temp.path().join("opencode");
+        std::fs::write(&executable, b"not executed").unwrap();
+        let install = adapters::adapter_for(AgentType::Opencode)
+            .parse_capabilities(&executable, "test", "--session --continue --auto")
+            .unwrap();
+        db.upsert_adapter(&install).unwrap();
+        let ctx = Ctx { paths, db, json: true };
+        let preset = ctx.db.get_preset("pre_opencode_safe").unwrap();
+        assert_eq!(preset.permission_mode, PermissionMode::Native);
+        let project = Project {
+            id: "prj_permission_test".into(),
+            name: "permission test".into(),
+            root_path: temp.path().to_string_lossy().into_owned(),
+            git_root_path: None,
+            created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
+        };
+        // OpenCode has no verified Bypass option. The requested mode must reach
+        // its adapter, not be silently replaced by the native built-in preset.
+        // No risk acknowledgement is supplied, so even the faulty path cannot
+        // spawn a process while this regression is reproduced.
+        let error = launch_session(&ctx, &project, AgentType::Opencode, "test", &preset,
+            None, PermissionMode::Bypass, AgentTransport::Pty, 80, 24, &[]).unwrap_err();
+        assert!(matches!(error, CoreError::Validation(ref message)
+            if message.contains("does not support the requested permission mode")), "{error}");
+        assert!(ctx.db.list_sessions(None, true).unwrap().is_empty());
     }
 }
 

@@ -63,9 +63,9 @@ impl Snapshot {
     pub(crate) fn capture(cfg: &HostConfig) -> Self {
         let mut inherited_turn_complete = false;
         let source = match (cfg.adapter_type.as_str(), cfg.transport) {
-            ("pi", transport) => {
+            ("pi" | "easy_pi" | "omp", transport) => {
                 let directory = pi_session_dir(cfg)
-                    .unwrap_or_else(|| PathBuf::from(&cfg.session_dir).join("pi"));
+                    .unwrap_or_else(|| PathBuf::from(&cfg.session_dir).join(&cfg.adapter_type));
                 let offsets = jsonl_offsets(&directory);
                 inherited_turn_complete = cfg
                     .agent_session_id_hint
@@ -156,12 +156,12 @@ fn follow_pi(
             follow_jsonl(&path, cursor, |event, completion_input_boundary| {
                 if is_pi_turn_end(event) {
                     let _ = tx.send(HostMsg::SemanticCompletion {
-                        adapter: "pi".into(),
+                        adapter: shared.cfg.adapter_type.clone(),
                         completion_input_boundary,
                     });
                 } else if is_pi_turn_start(event) {
                     let _ = tx.send(HostMsg::SemanticActivity {
-                        adapter: "pi".into(),
+                        adapter: shared.cfg.adapter_type.clone(),
                     });
                 }
             });
@@ -692,9 +692,13 @@ mod tests {
             rows: 32,
         };
 
-        let snapshot = Snapshot::capture(&cfg);
-
-        assert!(snapshot.inherited_turn_complete());
+        for adapter in ["pi", "easy_pi", "omp"] {
+            let mut cfg = cfg.clone();
+            cfg.adapter_type = adapter.into();
+            let snapshot = Snapshot::capture(&cfg);
+            assert!(snapshot.inherited_turn_complete(), "{adapter}");
+            assert!(matches!(snapshot.source, Source::Pi { .. }), "{adapter}");
+        }
     }
 
     #[test]

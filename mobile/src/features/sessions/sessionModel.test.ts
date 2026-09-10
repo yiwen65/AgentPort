@@ -49,6 +49,9 @@ describe("V2 session model", () => {
     expect(quickStartParams("p", "claude")).toMatchObject({ permission: "bypass", riskAck: true, transport: "pty" });
     expect(quickStartParams("p", "pi")).toMatchObject({ permission: "native", riskAck: true });
     expect(quickStartParams("p", "shell")).toMatchObject({ permission: "native", riskAck: true });
+    for (const agent of ["omp", "opencode", "amp", "gemini", "cline", "kiro_cli", "cursor_agent", "easy_pi", "grok_build"]) {
+      expect(quickStartParams("p", agent)).toMatchObject({ permission: "native", transport: "pty" });
+    }
   });
 
 

@@ -501,10 +501,13 @@ impl<'a> NativeHistory<'a> {
         let resolved = match session.adapter_type {
             AgentType::Claude => resolve_claude(session, &native_ids),
             AgentType::Codex => resolve_codex(session, &native_ids, self.codex_files()),
-            AgentType::Pi => resolve_pi(self.paths, session, &native_ids),
+            AgentType::Pi | AgentType::EasyPi | AgentType::Omp => resolve_pi(self.paths, session, &native_ids),
             AgentType::Kimi => resolve_kimi(session, &native_ids, self.kimi_index()),
             AgentType::Qoder => resolve_qoder(session, &native_ids),
-            AgentType::Shell => unreachable!(),
+            _ => return Resolution::Unavailable(format!(
+                "{} native transcript import is not supported; terminal logs remain available",
+                session.adapter_type.display_name()
+            )),
         };
         match resolved {
             Ok(mut sources) => {
@@ -771,8 +774,12 @@ fn resolve_pi(
     session: &Session,
     native_ids: &[String],
 ) -> std::result::Result<Vec<NativeSource>, ResolveError> {
-    let root = crate::pi_storage::read_directory(paths, &session.id)
-        .map_err(|error| ResolveError::Unavailable(error.to_string()))?;
+    let root = if session.adapter_type == AgentType::Pi {
+        crate::pi_storage::read_directory(paths, &session.id)
+            .map_err(|error| ResolveError::Unavailable(error.to_string()))?
+    } else {
+        paths.session_dir(&session.id).join(session.adapter_type.as_str())
+    };
     let Ok(entries) = fs::read_dir(&root) else {
         return Ok(Vec::new());
     };
@@ -785,7 +792,7 @@ fn resolve_pi(
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| native_ids.iter().any(|id| name.contains(id)))
         })
-        .filter_map(|path| source(AgentType::Pi, path, &root))
+        .filter_map(|path| source(session.adapter_type, path, &root))
         .collect::<Vec<_>>();
     sources.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(sources)
@@ -1194,6 +1201,26 @@ mod tests {
                 .unwrap();
         assert_eq!(line, b"oldest\n");
         assert_eq!(oldest.start, 0);
+    }
+
+    #[test]
+    fn new_pi_family_history_cannot_read_other_provider_namespaces() {
+        let temp = TempDir::new().unwrap();
+        let paths = AppPaths::new(temp.path().join("data"));
+        for agent in [AgentType::EasyPi, AgentType::Omp] {
+            let session = session(temp.path(), agent, Some("same-native-id"));
+            for provider in ["pi", "easy_pi", "omp"] {
+                let root = paths.session_dir(&session.id).join(provider);
+                fs::create_dir_all(&root).unwrap();
+                fs::write(root.join("same-native-id.jsonl"), format!(
+                    "{{\"type\":\"message\",\"message\":{{\"role\":\"user\",\"content\":\"{provider}\"}}}}\n"
+                )).unwrap();
+            }
+            let page = NativeHistory::new(&paths).page(&session, None, 10).unwrap();
+            assert_eq!(page.events.len(), 1);
+            assert_eq!(page.events[0].text, agent.as_str());
+            assert_eq!(page.events[0].provider, agent);
+        }
     }
 
     #[test]

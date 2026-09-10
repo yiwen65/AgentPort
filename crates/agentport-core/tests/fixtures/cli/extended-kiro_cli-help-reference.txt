@@ -1,0 +1,15 @@
+Kiro CLI documentation excerpt, NOT a captured executable help fixture.
+Sources: https://kiro.dev/docs/reference/cli-commands.md and https://kiro.dev/docs/cli/chat/session-management.md (retrieved 2026-09-10)
+
+kiro-cli chat [OPTIONS] [INPUT]
+--resume -r Resume the previous conversation from this directory
+--resume-picker Open interactive session picker to choose which session to resume
+--resume-id <ID> Resume a specific session by its ID
+--list-sessions List all saved sessions for the current directory
+--trust-all-tools Trust all tools without prompting
+--trust-tools Trust specified tools
+--no-interactive Run without interactive prompts
+--agent <NAME> Specify the agent to use
+
+When you exit a session, Kiro CLI prints the session ID along with the command to resume it:
+kiro-cli chat --resume-id abc123-def456

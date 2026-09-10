@@ -1206,7 +1206,7 @@ fn wait_dead(shared: &Shared, reaper: &mut Reaper, budget: Duration) -> bool {
 }
 
 fn semantic_idle_cleanup_supported(adapter: &str) -> bool {
-    matches!(adapter, "claude" | "codex" | "kimi" | "pi" | "qoder")
+    matches!(adapter, "claude" | "codex" | "kimi" | "pi" | "qoder" | "easy_pi" | "omp")
 }
 
 fn is_semantic_turn_complete(obs: &Observation, adapter: &str) -> bool {
@@ -1270,7 +1270,7 @@ fn handle_observation(
 }
 
 fn input_requires_turn_fence(adapter: &str, transport: AgentTransport) -> bool {
-    transport == AgentTransport::JsonRpc || !matches!(adapter, "pi" | "kimi")
+    transport == AgentTransport::JsonRpc || !matches!(adapter, "pi" | "kimi" | "easy_pi" | "omp")
 }
 
 fn completion_generation_at_boundary(

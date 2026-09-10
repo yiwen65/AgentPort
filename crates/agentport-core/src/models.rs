@@ -45,6 +45,15 @@ pub enum AgentType {
     Kimi,
     Qoder,
     Pi,
+    Omp,
+    Opencode,
+    Amp,
+    Gemini,
+    Cline,
+    KiroCli,
+    CursorAgent,
+    EasyPi,
+    GrokBuild,
     Shell,
 }
 
@@ -58,6 +67,15 @@ impl AgentType {
         Self::Kimi,
         Self::Qoder,
         Self::Pi,
+        Self::Omp,
+        Self::Opencode,
+        Self::Amp,
+        Self::Gemini,
+        Self::Cline,
+        Self::KiroCli,
+        Self::CursorAgent,
+        Self::EasyPi,
+        Self::GrokBuild,
         Self::Shell,
     ];
 
@@ -72,6 +90,15 @@ impl AgentType {
             AgentType::Kimi => "kimi",
             AgentType::Qoder => "qoder",
             AgentType::Pi => "pi",
+            AgentType::Omp => "omp",
+            AgentType::Opencode => "opencode",
+            AgentType::Amp => "amp",
+            AgentType::Gemini => "gemini",
+            AgentType::Cline => "cline",
+            AgentType::KiroCli => "kiro_cli",
+            AgentType::CursorAgent => "cursor_agent",
+            AgentType::EasyPi => "easy_pi",
+            AgentType::GrokBuild => "grok_build",
             AgentType::Shell => "shell",
         }
     }
@@ -82,6 +109,17 @@ impl AgentType {
             AgentType::Kimi => &["kimi"],
             AgentType::Qoder => &["qodercli"],
             AgentType::Pi => &["pi"],
+            AgentType::Omp => &["omp"],
+            AgentType::Opencode => &["opencode"],
+            AgentType::Amp => &["amp"],
+            AgentType::Gemini => &["gemini"],
+            AgentType::Cline => &["cline"],
+            AgentType::KiroCli => &["kiro-cli"],
+            AgentType::CursorAgent => &["cursor-agent", "agent"],
+            // easy-pi deliberately retains the pi executable name. The
+            // adapter verifies easy-pi help branding and its environment contract.
+            AgentType::EasyPi => &["pi"],
+            AgentType::GrokBuild => &["grok"],
             AgentType::Shell => &["sh", "bash", "zsh"],
         }
     }
@@ -92,16 +130,25 @@ impl AgentType {
             AgentType::Kimi => "Kimi Code",
             AgentType::Qoder => "Qoder",
             AgentType::Pi => "Pi",
+            AgentType::Omp => "Oh My Pi",
+            AgentType::Opencode => "OpenCode",
+            AgentType::Amp => "Amp",
+            AgentType::Gemini => "Gemini CLI",
+            AgentType::Cline => "Cline CLI",
+            AgentType::KiroCli => "Kiro CLI",
+            AgentType::CursorAgent => "Cursor CLI",
+            AgentType::EasyPi => "easy-pi",
+            AgentType::GrokBuild => "Grok Build",
             AgentType::Shell => "Generic Shell",
         }
     }
 
     pub fn approval_model(&self) -> ApprovalModel {
         match self {
-            AgentType::Pi | AgentType::Shell => ApprovalModel::NoBuiltinPrompts,
-            AgentType::Claude | AgentType::Codex | AgentType::Kimi | AgentType::Qoder => {
-                ApprovalModel::NativePrompts
+            AgentType::Pi | AgentType::Amp | AgentType::Shell => {
+                ApprovalModel::NoBuiltinPrompts
             }
+            _ => ApprovalModel::NativePrompts,
         }
     }
 
@@ -113,12 +160,12 @@ impl AgentType {
         PermissionMode::Native
     }
 
-    /// Pi and Generic Shell have no permission-mode protocol. Keep `Native`
+    /// Pi, Amp and Generic Shell have no permission-mode protocol. Keep `Native`
     /// as the stored sentinel for compatibility, but never expose or enforce
     /// a permission mode for them.
     pub fn effective_permission_mode(&self, requested: PermissionMode) -> PermissionMode {
         match self {
-            AgentType::Shell | AgentType::Pi => PermissionMode::Native,
+            AgentType::Shell | AgentType::Pi | AgentType::Amp => PermissionMode::Native,
             _ => requested,
         }
     }
@@ -141,6 +188,15 @@ impl std::str::FromStr for AgentType {
             "kimi" => Ok(AgentType::Kimi),
             "qoder" => Ok(AgentType::Qoder),
             "pi" => Ok(AgentType::Pi),
+            "omp" => Ok(AgentType::Omp),
+            "opencode" => Ok(AgentType::Opencode),
+            "amp" => Ok(AgentType::Amp),
+            "gemini" => Ok(AgentType::Gemini),
+            "cline" => Ok(AgentType::Cline),
+            "kiro_cli" | "kiro-cli" => Ok(AgentType::KiroCli),
+            "cursor_agent" | "cursor-agent" => Ok(AgentType::CursorAgent),
+            "easy_pi" | "easy-pi" | "epi" => Ok(AgentType::EasyPi),
+            "grok_build" | "grok-build" | "grok" => Ok(AgentType::GrokBuild),
             "shell" => Ok(AgentType::Shell),
             other => Err(crate::error::CoreError::Validation(format!(
                 "unknown agent type: {other}"
@@ -1124,6 +1180,29 @@ mod tests {
         let value = serde_json::to_value(Settings::default()).unwrap();
         assert_eq!(value["terminalTheme"], "one");
         assert!(value.get("terminal_theme").is_none());
+    }
+
+    #[test]
+    fn every_registered_agent_round_trips_and_defaults_to_native_pty() {
+        let mut ids = std::collections::HashSet::new();
+        assert_eq!(AgentType::all().len(), 15);
+        for &agent in AgentType::all() {
+            assert!(ids.insert(agent.as_str()));
+            assert_eq!(agent.as_str().parse::<AgentType>().unwrap(), agent);
+            assert_eq!(serde_json::to_value(agent).unwrap(), agent.as_str());
+            assert_eq!(
+                serde_json::from_value::<AgentType>(serde_json::json!(agent.as_str())).unwrap(),
+                agent
+            );
+            assert!(!agent.command_names().is_empty());
+            assert_eq!(agent.default_permission_mode(), PermissionMode::Native);
+            assert_eq!(agent.default_transport(), AgentTransport::Pty);
+            assert_eq!(crate::adapters::adapter_for(agent).agent_type(), agent);
+        }
+        assert_eq!("kiro-cli".parse::<AgentType>().unwrap(), AgentType::KiroCli);
+        assert_eq!("cursor-agent".parse::<AgentType>().unwrap(), AgentType::CursorAgent);
+        assert_eq!("easy-pi".parse::<AgentType>().unwrap(), AgentType::EasyPi);
+        assert_eq!("grok".parse::<AgentType>().unwrap(), AgentType::GrokBuild);
     }
 
     #[test]

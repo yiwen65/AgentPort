@@ -29,6 +29,7 @@ vi.mock("./terminals", () => ({
 }));
 
 import { quickStartSession } from "./actions";
+import { ADDED_AGENT_IDS } from "./agentCapabilities";
 import { orderedLayoutSessionIds, singletonPaneLayout } from "./paneLayout";
 import { getState, setState } from "./store";
 import type { SessionView } from "./types";
@@ -178,6 +179,19 @@ describe("quickStartSession split intent", () => {
     const successToast = getState().toasts.find((toast) => toast.kind === "success");
     expect(successToast?.text).toMatch(/Session started \(Pi\)|Session 已启动（Pi）/);
     expect(successToast?.text).not.toMatch(/permission|权限/i);
+  });
+
+  it.each(ADDED_AGENT_IDS)("quick-starts %s with native defaults, never implied bypass", async (agent) => {
+    await quickStartSession(targetSession.projectId, agent);
+    expect(apiMock.createSession).toHaveBeenCalledWith(expect.objectContaining({ agent, permission: "native" }));
+    const successToast = getState().toasts.find((toast) => toast.kind === "success");
+    expect(successToast?.text).not.toMatch(/绕过|Bypass|全权限|Full access/i);
+  });
+
+  it("does not discard a new Agent's native auto-approval warning on quick launch", async () => {
+    apiMock.createSession.mockResolvedValue({ ...createResult, notices: [{ code: "cline_native_auto_approve" }] });
+    await quickStartSession(targetSession.projectId, "cline");
+    expect(getState().toasts.some((toast) => toast.kind === "info" && toast.text.includes("auto-approve=true"))).toBe(true);
   });
 
   it("does not change the pane layout when creation fails", async () => {

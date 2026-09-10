@@ -4,7 +4,7 @@
 
 ## AgentPort 是什么
 
-AgentPort 是 macOS/Linux 上的本地 AI CLI 工作台：用一个界面同时运行、隔离、观察并恢复多个编码 Agent（Claude Code、Codex、Kimi Code），不必在多个终端窗口、项目目录和会话恢复命令之间来回切换。
+AgentPort 是 macOS/Linux 上的本地 AI CLI 工作台：用一个界面同时运行、隔离、观察并恢复多个编码 Agent（包括 Claude Code、Codex、Pi 及下列新增九种 CLI），不必在多个终端窗口、项目目录和会话恢复命令之间来回切换。
 
 架构上只需要记住一句话：**GUI 只是一个可重连的客户端**。每个 Session 背后是一个独立的 Host 进程、一个独立 PTY、一个独立本地 Socket 和一份独立日志文件。关闭（甚至强杀）GUI 不会终止任何任务；重新打开 GUI 后会重新连接（attach）到正在运行的 Session。
 
@@ -47,9 +47,9 @@ AgentPort 是 macOS/Linux 上的本地 AI CLI 工作台：用一个界面同时�
 
 新建 Session 时需要选择：
 
-- **Agent**：Claude Code、Codex、Kimi Code，或 Generic Shell（其他任意命令的降级入口）。
+- **Agent**：从已探测的 Agent 列表选择，或使用 Generic Shell（其他任意命令的降级入口）；新增九种列表见下文。
 - **位置**：项目主目录，或新建/已有 Worktree。
-- **预设**：启动参数、权限模式与环境变量的组合；内置"安全默认"预设。
+- **预设**：启动参数、权限模式与环境变量的组合；新增九种使用内置“原生默认”预设，沿用工具本身的权限配置。
 - **参数**：附加给 CLI 的参数（如 `--model sonnet`）。
 - **权限模式**：见下文"权限模型"。
 
@@ -72,6 +72,30 @@ AgentPort 是 macOS/Linux 上的本地 AI CLI 工作台：用一个界面同时�
 
 恢复精度分为 exact（精确）/ latest（最近会话）/ unavailable（不可恢复）三档，始终展示在 Session 信息中；降级恢复不会被伪装成精确恢复。
 
+### 新增九种 CLI
+
+| Agent | 类型 ID / 实际命令 | 原生对话恢复边界 |
+|---|---|---|
+| Oh My Pi | `omp` / `omp` | 独立托管目录；启动建立原生 UUID，恢复前核对 JSONL header、项目和唯一性 |
+| OpenCode | `opencode` / `opencode` | 有已记录 ID 时精确；未捕获 ID 时只提供明确的最近会话降级 |
+| Amp | `amp` / `amp` | 指定线程需探测 `threads continue`；没有 ID 则阻止自动恢复 |
+| Gemini CLI | `gemini` / `gemini` | 使用完整 UUID 精确恢复；没有 ID 时最近会话降级，不把数字索引视为稳定身份 |
+| Cline CLI | `cline` / `cline` | 有已记录 ID 时使用 `--id`；不能用它为新会话分配 ID，没有 ID 则阻止自动恢复 |
+| Kiro CLI | `kiro_cli` / `kiro-cli chat` | 捕获明确的原生恢复命令后按 ID 恢复，否则仅最近会话降级 |
+| Cursor CLI | `cursor_agent` / `cursor-agent` 或新版 `agent` | 有 ID 精确，否则最近会话降级；同名非 Cursor 工具拒绝探测 |
+| easy-pi | `easy_pi` / `pi` | 配置固定到 `~/.epi/agent`，独立托管目录；恢复要求已存在且项目匹配的原生记录 |
+| Grok Build | `grok_build` / `grok` | help 同时支持 `--session-id` 与 `--resume` 时预分配 UUID；恢复只用 `--resume`，不误用新建参数 |
+
+所有恢复参数均依赖当前安装版本的只读探测。**最近会话可能是同目录下另一个 Session，不能视为当前对话的精确恢复。** OpenCode、Amp、Gemini、Cline、Cursor 本轮没有可靠的新交互会话 ID 自动捕获机制，因此“支持按 ID 恢复”不等于每次新建都能自动精确恢复。没有可用能力时明确阻止或提示降级。
+
+存活 Host 的终端重连不依赖上述原生恢复功能。Oh My Pi/easy-pi 接入了原生 JSONL 历史、备份及语义状态；其余七种目前使用 PTY 状态启发式，原生历史导入/备份明确为不支持，不猜测或删除全局数据。终端回放由存活 Host 提供，进程退出后的历史可用性按上述原生能力区分。
+
+原版 Pi 入口保留；若系统 `pi` 实际是 easy-pi，只在 easy-pi 项显示可用，避免重复误认。旧 Pi Session 不会被自动改名或迁移到 easy-pi 类型。
+
+新增图标优先来自 LobeHub，缺失时回退工具官方资源。单色图形随应用 light/dark 前景色切换，原有图标不变；[来源和许可](agent-icon-sources.md)。
+
+macOS 上实测了 Oh My Pi 18.0.11、easy-pi 0.84.2、Grok Build 1.0.13 的隔离 HOME 启动、PTY 重连与正常停止，以及 Oh My Pi 的同 UUID 冷恢复。未发送模型请求：这些结果**不代表登录态多轮对话验收**。其余六种尚未实机验证，Linux 尚未实机验证；自动化与命令证据详见[任务交付记录](tasks/2026-09-10-nine-agent-support-task.md)和[接口矩阵](agent-cli-evidence.md)。
+
 状态 Hook 的支持现状（详见"状态与置信度"）：
 
 - Claude Code：通过按调用注入的 `--settings` 文件接入官方 Hook（该版本提供 `--settings` 时）；绝不修改你的全局 `~/.claude/settings.json`。
@@ -81,10 +105,12 @@ AgentPort 是 macOS/Linux 上的本地 AI CLI 工作台：用一个界面同时�
 
 ## 权限模型
 
-支持权限审批的 CLI 提供三种模式，**默认是 native（沿用 CLI 原生审批）**：
+权限模式按 CLI 能力提供，新增九种**默认是 native（沿用 CLI 原生配置）**，并非每种都有三档：
 
-- **native**：不加任何跳过审批的参数，Agent 的每次确认都由该 CLI 自己的界面完成。
+- **native**：不额外添加跳过审批参数，实际审批行为由工具及其配置决定。Amp 原生不逐次审批，Cline 默认自动批准，Oh My Pi 默认 yolo，easy-pi 默认 full-access；AgentPort 会显示提示，不把这些默认行为宣称为逐次人工审批。
 - **auto / bypass**：在新建 Session 的高级设置或预设中显式选择。创建和恢复时直接使用所选模式，不再弹出二次风险确认；Session 存续期间标题栏常驻 ⚠ 警示徽标。
+
+Pi、Amp 与 Generic Shell 不提供 AgentPort 权限模式。easy-pi 使用自己的原生权限控制，AgentPort 暂不提供 CLI 级 auto/bypass 覆盖。新增其他工具只有探测确认的模式可选，auto/bypass 的实际含义以 CLI 为准，不承诺绕过企业策略或 sandbox。
 
 Pi 与 Generic Shell 不使用 Agent 权限模式。启动 Pi 时不会添加权限参数；数据库中的 `native` 仅是兼容字段。AgentPort 绝不会默认添加 `--yolo` 类的跳过审批参数。
 

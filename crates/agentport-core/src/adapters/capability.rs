@@ -175,12 +175,29 @@ fn run_readonly_probe_for_agent(
     exe: &Path,
     path_env: &OsStr,
 ) -> Result<(String, String)> {
-    match run_readonly_probe_with_path(exe, path_env) {
+    let (version, mut help) = match run_readonly_probe_with_path(exe, path_env) {
         Err(CoreError::Timeout(_)) if agent == AgentType::Qoder => {
             run_readonly_probe_with_path(exe, path_env)
         }
         result => result,
+    }?;
+    // These CLIs put interactive/resume flags in subcommand help, not the
+    // top-level help. Only append successfully probed read-only help; a
+    // missing/old subcommand must never turn into assumed capabilities.
+    let subcommand: &[&str] = match agent {
+        AgentType::KiroCli => &["chat", "--help"],
+        AgentType::Amp => &["threads", "continue", "--help"],
+        _ => &[],
+    };
+    if !subcommand.is_empty() {
+        if let Ok(extra) = spawn_capture_with_path(
+            exe, subcommand, PROBE_TIMEOUT, MAX_PROBE_OUTPUT, Some(path_env),
+        ) {
+            help.push('\n');
+            help.push_str(&extra);
+        }
     }
+    Ok((version, help))
 }
 
 /// sha256 over version+help — the capability snapshot identity.
@@ -277,7 +294,10 @@ fn discovery_dirs() -> Vec<(PathBuf, &'static str)> {
         for path in versioned_runtime_dirs(&home.join(".nvm/versions/node"), Path::new("bin")) {
             dirs.push((path, "version_manager"));
         }
-        for relative in [".local/bin", ".cargo/bin", ".kimi-code/bin", ".claude/bin"] {
+        for relative in [
+            ".local/bin", ".cargo/bin", ".kimi-code/bin", ".claude/bin",
+            ".opencode/bin", ".amp/bin", ".grok/bin",
+        ] {
             dirs.push((home.join(relative), "well_known_dir"));
         }
     }
@@ -861,6 +881,30 @@ mod tests {
         assert_eq!(version, "1.1.5");
         assert!(help.contains("Usage: qodercli"));
         assert!(start.elapsed() < Duration::from_secs(6));
+    }
+
+    #[test]
+    fn new_subcommand_probes_expose_only_successful_capabilities() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (agent, command, sub_help) in [
+            (AgentType::KiroCli, "chat --help", "Usage: kiro-cli chat [OPTIONS]\\n--resume-id ID --resume"),
+            (AgentType::Amp, "threads continue --help", "Usage: amp threads continue [threadId]"),
+        ] {
+            for succeeds in [true, false] {
+                let exe = write_exe(tmp.path(), agent.as_str(), &format!(
+                    "#!/bin/sh\ncase \"$*\" in\n--version) echo 'test 1.0';;\n--help) echo 'Root help';;\n'{command}') printf '{sub_help}\\n'; exit {};;\n*) exit 1;;\nesac\n",
+                    if succeeds { 0 } else { 1 }
+                ));
+                let (version, help) = run_readonly_probe_for_agent(agent, &exe, OsStr::new("/usr/bin:/bin")).unwrap();
+                let install = super::super::adapter_for(agent).parse_capabilities(&exe, &version, &help).unwrap();
+                assert_eq!(install.exact_resume, succeeds, "{agent:?}: {help}");
+                assert!(help.contains("Root help"));
+                if !succeeds {
+                    assert!(!help.contains("resume-id"));
+                    assert!(!help.contains("threads continue"));
+                }
+            }
+        }
     }
 
     #[test]

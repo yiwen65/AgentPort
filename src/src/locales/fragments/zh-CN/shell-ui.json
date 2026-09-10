@@ -67,6 +67,7 @@
       "collapseAll": "折叠所有项目与 Session",
       "quickLaunch": {
         "terminal": "终端",
+        "nativeDefaults": "原生默认",
         "bypassPermissionChecks": "绕过权限检查",
         "listLabel": "在{{scope}}快速启动 Agent；拖动查看全部",
         "launchLabel": "在{{scope}}启动 {{agent}}（{{mode}}）",

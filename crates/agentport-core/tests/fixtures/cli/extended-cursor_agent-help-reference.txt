@@ -1,0 +1,18 @@
+Cursor CLI parameter documentation excerpt, NOT a captured executable help fixture.
+Source: https://cursor.com/docs/cli/reference/parameters (retrieved 2026-09-10)
+
+agent [options] [command] [prompt...]
+--resume [chatId] Resume a chat session
+--continue Continue the previous session (alias for --resume=-1)
+--model <model> Model to use
+--mode <mode> Set agent mode: plan or ask
+--force -f Force allow commands unless explicitly denied
+--yolo Alias for --force
+--sandbox <mode> Set sandbox mode: enabled or disabled
+--approve-mcps Automatically approve all MCP servers
+--trust Trust the workspace without prompting (headless mode only)
+--workspace <path> Workspace directory to use
+--worktree -w Run in a new Git worktree
+--print -p Print responses to console
+--output-format <format> Output format (only works with --print)
+--help -h Display help for command

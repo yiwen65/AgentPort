@@ -108,6 +108,20 @@ describe("runtime message localization", () => {
       .toBe("没有可验证的 Codex Session ID，已启动新会话，未恢复其他历史会话。");
   });
 
+  it.each([
+    ["extended_hooks_degraded", "PTY", "PTY"],
+    ["extended_resume_unavailable", "重连", "Reconnecting"],
+    ["amp_native_no_approval", "不请求工具审批", "does not ask for tool approval"],
+    ["cline_native_auto_approve", "不保证逐次人工审批", "does not guarantee manual approval"],
+    ["omp_native_permission_defaults", "yolo", "yolo"],
+    ["easy_pi_native_permission_defaults", "full-access", "full-access"],
+  ])("localizes %s without inventing safe permission defaults", async (code, zh, en) => {
+    await applyUiLanguage("zh-CN", { persistHint: false });
+    expect(runtimeMessageText({ code, params: { agent: "Test Agent" } })).toContain(zh);
+    await applyUiLanguage("en-US", { persistHint: false });
+    expect(runtimeMessageText({ code, params: { agent: "Test Agent" } })).toContain(en);
+  });
+
   it("formats probe messages with named parameters and plural rules", async () => {
     await applyUiLanguage("en-US", { persistHint: false });
     expect(runtimeMessageText({ code: "probe_auto_selected", params: { count: 1 } }))

@@ -1,7 +1,8 @@
 # AgentPort
 
 面向 macOS 13+ 与 Ubuntu 22.04/24.04 的本地 AI CLI 工作台：用一个界面统一管理
-Claude Code、Codex、Kimi Code、Qoder CLI、Pi（以及 Generic Shell 降级入口）的持久 Session、
+Claude Code、Codex、Kimi Code、Qoder CLI、Pi，以及 Oh My Pi、OpenCode、Amp、Gemini CLI、
+Cline CLI、Kiro CLI、Cursor CLI、easy-pi、Grok Build（另有 Generic Shell 降级入口）的持久 Session、
 PTY、状态、日志、Git Worktree 与恢复流程。本地优先、单用户、无账号、无云端、
 无遥测。
 
@@ -9,7 +10,8 @@ PTY、状态、日志、Git Worktree 与恢复流程。本地优先、单用户�
 GUI（Tauri 2 + React + xterm.js，可重连客户端，不拥有进程）
   └─ agentport-core（SQLite、Adapter 探测、Worktree、脱敏、Credential Broker）
        └─ agentport-host（每 Session 一个独立进程：PTY、进程组、Socket、心跳、日志）
-            └─ claude / codex / kimi / qodercli / pi / sh
+            └─ claude / codex / kimi / qodercli / pi / omp / opencode / amp
+               gemini / cline / kiro-cli / cursor-agent (agent) / grok / sh
 ```
 
 ## 快速开始（开发）
@@ -44,6 +46,14 @@ cd src && npm install && npm run dev   # 前端开发服务器（:1420）
 | AppImage（Beta） | `bash scripts/build-linux.sh appimage` |
 | 发布清单 | `bash scripts/generate-release-manifest.sh` |
 
+## 新增 Agent
+
+新增九种均接入 GUI 与无头 CLI，并使用随 light/dark 主题适配的品牌图标。
+`easy_pi` 与 `pi` 为独立 Agent 类型，虽然可执行名同为 `pi`，探测会核实产品标识；easy-pi 配置使用 `~/.epi/agent`，托管会话与原 Pi/Oh My Pi 隔离。
+
+新类型 ID：`omp`、`opencode`、`amp`、`gemini`、`cline`、`kiro_cli`、`cursor_agent`、`easy_pi`、`grok_build`。
+新增 Agent 快速启动沿用原生权限配置，**不保证原生默认一定逐次审批**；具体能力与限制见 [用户指南](docs/user-guide.md)、[CLI 接口证据](docs/agent-cli-evidence.md) 和 [图标来源/许可](docs/agent-icon-sources.md)。
+
 ## agentport-cli（无头客户端）
 
 GUI 的全部核心能力都能脚本化（E2E 与验收就靠它）：
@@ -66,7 +76,7 @@ agentport-cli timeline                            # 离开期间恢复时间线
 ## 硬约束（实现即如此）
 
 - GUI 关闭 ≠ Session 停止；每个 Session 独立 Host/PTY/Socket/日志/输入通道。
-- 支持权限审批的 CLI 默认沿用原生审批；Pi 与 Generic Shell 不使用权限模式，Pi 启动时不附加权限参数。
+- 新增 Agent 默认沿用原生权限配置，不额外附加自动审批参数；上游本身可能默认自动批准，界面会明确提示。Pi、Amp 与 Generic Shell 不提供 AgentPort 权限模式；旧 Agent 快速启动策略保持兼容。
 - Secret 只存 macOS Keychain / Linux Secret Service；绝不落 SQLite/日志/索引/导出/进程参数；后端不可用则禁用、无明文回退。
 - 停止 Session 清理完整进程组（含 job control 逃逸的后台任务）。
 - 不静默修改用户 CLI 全局配置；状态必须带来源/置信度/时间/证据。

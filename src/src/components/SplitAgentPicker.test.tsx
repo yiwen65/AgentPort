@@ -13,6 +13,8 @@ vi.mock("../actions", () => ({
 import { getState, setState } from "../store";
 import type { AdapterInstall, SessionView } from "../types";
 import SplitAgentPicker from "./SplitAgentPicker";
+import { ADDED_AGENT_IDS } from "../agentCapabilities";
+import { agentDisplay } from "../format";
 
 const targetSession: SessionView = {
   id: "session-target",
@@ -123,6 +125,29 @@ describe("SplitAgentPicker", () => {
     const piButton = screen.getByRole("button", { name: /Pi/ });
     expect(piButton.getAttribute("aria-label")).not.toMatch(/permission|权限/i);
     expect(within(piButton).queryByText(/permission|权限/i)).toBeNull();
+  });
+
+  it.each(["light", "dark"] as const)("shows all nine new brands with native defaults in %s theme", (theme) => {
+    setState({
+      adapters: ADDED_AGENT_IDS.map(adapter),
+      settings: { ...getState().settings!, agentHidden: [], agentOrder: [] },
+      themeEffective: theme,
+    });
+    render(<SplitAgentPicker targetSessionId={targetSession.id} direction="down" />);
+    const buttons = within(screen.getByRole("group")).getAllByRole("button");
+    expect(buttons.map((button) => button.dataset.agent)).toEqual([...ADDED_AGENT_IDS]);
+    for (const agent of ADDED_AGENT_IDS) {
+      const button = buttons.find((item) => item.dataset.agent === agent)!;
+      expect(button.textContent).toContain(agentDisplay(agent));
+      expect(button.getAttribute("aria-label")).toMatch(/原生默认|Native defaults/);
+      expect(button.getAttribute("aria-label")).not.toMatch(/绕过|Bypass/);
+      expect(button.querySelector(".themed-agent-icon svg")).toBeTruthy();
+      fireEvent.click(button);
+      expect(quickStartSessionMock).toHaveBeenLastCalledWith(
+        targetSession.projectId, agent, targetSession.worktreeId,
+        { targetSessionId: targetSession.id, direction: "down" },
+      );
+    }
   });
 
   it("closes immediately and quick-starts in the target Worktree and direction", () => {

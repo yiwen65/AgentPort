@@ -20,8 +20,10 @@ pub mod capability;
 
 pub mod claude;
 pub mod codex;
+pub mod extended;
 pub mod kimi;
 pub mod pi;
+pub mod pi_family;
 pub mod qoder;
 pub mod shell;
 
@@ -151,6 +153,11 @@ pub fn adapter_for(t: AgentType) -> Box<dyn AgentAdapter> {
         AgentType::Kimi => Box::new(kimi::KimiAdapter),
         AgentType::Qoder => Box::new(qoder::QoderAdapter),
         AgentType::Pi => Box::new(pi::PiAdapter),
+        AgentType::Omp | AgentType::EasyPi => Box::new(pi_family::PiFamilyAdapter(t)),
+        AgentType::Opencode | AgentType::Amp | AgentType::Gemini | AgentType::Cline
+        | AgentType::KiroCli | AgentType::CursorAgent | AgentType::GrokBuild => {
+            Box::new(extended::ExtendedAdapter(t))
+        }
         AgentType::Shell => Box::new(shell::ShellAdapter),
     }
 }
@@ -182,6 +189,10 @@ pub(crate) fn has_flag(install: &AdapterInstall, flag: &str) -> bool {
 /// identity, transport, permissions, or lifecycle are never accepted from a
 /// preset or the advanced argv field.
 pub fn validate_user_args(t: AgentType, args: &[String]) -> Result<()> {
+    if matches!(t, AgentType::Opencode | AgentType::Amp | AgentType::Gemini
+        | AgentType::Cline | AgentType::KiroCli | AgentType::CursorAgent | AgentType::GrokBuild) {
+        extended::validate_advanced_args(t, args)?;
+    }
     let protected: &[&str] = match t {
         AgentType::Qoder => &[
             "--cwd",
@@ -229,11 +240,26 @@ pub fn validate_user_args(t: AgentType, args: &[String]) -> Result<()> {
             "--theme",
             "--no-themes",
         ],
+        AgentType::Omp | AgentType::EasyPi => pi_family::protected_args(t),
+        AgentType::Opencode | AgentType::Amp | AgentType::Gemini | AgentType::Cline
+        | AgentType::KiroCli | AgentType::CursorAgent | AgentType::GrokBuild => extended::protected_args(t),
         _ => &[],
     };
+    let new_adapter = matches!(t,
+        AgentType::Omp | AgentType::EasyPi | AgentType::Opencode | AgentType::Amp
+        | AgentType::Gemini | AgentType::Cline | AgentType::KiroCli
+        | AgentType::CursorAgent | AgentType::GrokBuild
+    );
+    if new_adapter && args.first().is_some_and(|arg| !arg.starts_with('-')) {
+        return Err(crate::error::CoreError::Validation(
+            "advanced arguments must be options, not a CLI subcommand or initial prompt".into(),
+        ));
+    }
     for arg in args {
         let key = arg.split('=').next().unwrap_or(arg.as_str());
-        if protected.contains(&key) {
+        let attached_short = new_adapter && arg.starts_with('-') && !arg.starts_with("--")
+            && protected.iter().any(|flag| flag.len() == 2 && arg.starts_with(flag));
+        if protected.contains(&key) || attached_short || (new_adapter && arg == "--") {
             return Err(crate::error::CoreError::Validation(format!(
                 "{} argument is managed by AgentPort and cannot be overridden in a preset or advanced arguments: {key}",
                 t.display_name()
@@ -257,6 +283,12 @@ pub fn permission_argv(
     if mode == Native {
         return Ok(vec![]);
     }
+    if matches!(t, Omp | EasyPi) {
+        return pi_family::permission_args(t, mode, install);
+    }
+    if matches!(t, Opencode | Amp | Gemini | Cline | KiroCli | CursorAgent | GrokBuild) {
+        return extended::permission_args(t, mode, install);
+    }
     if t == Shell || t == Pi {
         // Shell has no approval concept; auto/bypass is meaningless there.
         return Err(crate::error::CoreError::Validation(
@@ -274,7 +306,7 @@ pub fn permission_argv(
         (Kimi, Bypass) => &["--yolo"],
         (Qoder, Auto) => &["--permission-mode", "auto"],
         (Qoder, Bypass) => &["--dangerously-skip-permissions"],
-        (Pi | Shell, _) => unreachable!(),
+        (Pi | Shell | Omp | EasyPi | Opencode | Amp | Gemini | Cline | KiroCli | CursorAgent | GrokBuild, _) => unreachable!(),
         (Claude | Codex | Kimi | Qoder, Native) => unreachable!(),
     };
     let flag = argv[0].trim_start_matches('-');
@@ -405,6 +437,26 @@ mod tests {
         assert!(validate_user_args(AgentType::Pi, &["--api-key".into(), "secret".into()]).is_err());
         assert!(validate_user_args(AgentType::Pi, &["--tui-mode=regular".into()]).is_err());
         assert!(validate_user_args(AgentType::Pi, &["--model".into(), "custom".into()]).is_ok());
+    }
+
+    #[test]
+    fn new_agent_advanced_arguments_cannot_override_lifecycle_or_permissions() {
+        for (agent, flag) in [
+            (AgentType::Omp, "--session=other"),
+            (AgentType::EasyPi, "--session-dir=/tmp/other"),
+            (AgentType::Opencode, "-sother"),
+            (AgentType::Amp, "--execute=prompt"),
+            (AgentType::Gemini, "-r123"),
+            (AgentType::Cline, "--auto-approve=false"),
+            (AgentType::KiroCli, "--trust-all-tools"),
+            (AgentType::CursorAgent, "-f"),
+            (AgentType::GrokBuild, "-sother"),
+        ] {
+            assert!(validate_user_args(agent, &[flag.into()]).is_err(), "{agent:?} {flag}");
+            assert!(validate_user_args(agent, &["logout".into()]).is_err());
+            assert!(validate_user_args(agent, &["--".into()]).is_err());
+            assert!(validate_user_args(agent, &["--model".into(), "example/model".into()]).is_ok());
+        }
     }
 
     #[test]

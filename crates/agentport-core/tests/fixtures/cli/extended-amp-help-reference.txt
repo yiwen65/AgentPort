@@ -1,0 +1,15 @@
+Amp documentation excerpts, NOT a captured executable help fixture.
+Sources: https://ampcode.com/docs/markdown/cli and https://ampcode.com/docs/markdown/threads (retrieved 2026-09-10)
+
+Run amp to start the Amp CLI. Without any arguments, it runs in interactive mode.
+To see more of what the CLI can do, run amp --help.
+amp --executor local
+amp --executor orb
+amp --executor runner:grandmas-garage-server
+
+Run amp threads continue T-… to attach the CLI to a thread.
+amp threads continue T-…
+
+Source: https://ampcode.com/docs/markdown/tools
+Amp does not ask for approval before running tools.
+Use a custom plugin to control tool use.

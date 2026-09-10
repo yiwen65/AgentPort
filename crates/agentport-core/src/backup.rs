@@ -162,10 +162,10 @@ fn native_target_matches_session(
 ) -> bool {
     let target = Path::new(&artifact.target_path);
     match session.provider {
-        AgentType::Pi => target.starts_with(
+        AgentType::Pi | AgentType::EasyPi | AgentType::Omp => target.starts_with(
             Path::new("sessions")
                 .join(&session.agentport_session_id)
-                .join("pi"),
+                .join(session.provider.as_str()),
         ),
         AgentType::Claude => {
             let project = Path::new("projects").join(crate::history::cwd_slug(&session.cwd));
@@ -189,7 +189,7 @@ fn native_target_matches_session(
                 .iter()
                 .any(|id| target.starts_with(project.join(id)))
         }
-        AgentType::Shell => false,
+        _ => false,
     }
 }
 
@@ -282,15 +282,15 @@ fn validate_native_manifest(manifest: &BackupManifest) -> Result<()> {
         }
 
         let expected_root = match session.provider {
-            AgentType::Pi => NativeTargetRoot::AgentPort,
+            AgentType::Pi | AgentType::EasyPi | AgentType::Omp => NativeTargetRoot::AgentPort,
             AgentType::Claude => NativeTargetRoot::Claude,
             AgentType::Codex => NativeTargetRoot::Codex,
             AgentType::Kimi => NativeTargetRoot::Kimi,
             AgentType::Qoder => NativeTargetRoot::Qoder,
-            AgentType::Shell => {
+            _ => {
                 if !session.artifacts.is_empty() {
                     return Err(CoreError::Validation(
-                        "Shell native Session contains artifacts".into(),
+                        "Unsupported native Session contains artifacts".into(),
                     ));
                 }
                 continue;

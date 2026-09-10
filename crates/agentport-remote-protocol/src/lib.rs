@@ -514,6 +514,15 @@ pub enum RemoteAgentType {
     Kimi,
     Qoder,
     Pi,
+    Omp,
+    Opencode,
+    Amp,
+    Gemini,
+    Cline,
+    KiroCli,
+    CursorAgent,
+    EasyPi,
+    GrokBuild,
     Shell,
 }
 

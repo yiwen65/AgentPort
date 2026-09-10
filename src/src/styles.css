@@ -899,6 +899,20 @@ body.is-project-dragging .tree-row.project {
   height: 100% !important;
 }
 
+/* New brand marks use semantic foregrounds in both application themes. The
+   explicit mapping avoids a dark-only fill even outside the quick-launch bar. */
+.themed-agent-icon {
+  display: inline-block;
+  flex: none;
+  color: var(--text);
+}
+
+.themed-agent-icon svg {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
 .quick-agent-fallback {
   display: inline-grid;
   width: 17px;

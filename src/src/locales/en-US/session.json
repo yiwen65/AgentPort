@@ -33,6 +33,15 @@
     "pre_kimi_safe": "Kimi safe defaults",
     "pre_qoder_safe": "Qoder safe defaults",
     "pre_pi_safe": "Pi defaults",
+    "pre_omp_safe": "Oh My Pi native defaults",
+    "pre_opencode_safe": "OpenCode native defaults",
+    "pre_amp_safe": "Amp native defaults",
+    "pre_gemini_safe": "Gemini CLI native defaults",
+    "pre_cline_safe": "Cline CLI native defaults",
+    "pre_kiro_cli_safe": "Kiro CLI native defaults",
+    "pre_cursor_agent_safe": "Cursor CLI native defaults",
+    "pre_easy_pi_safe": "easy-pi native defaults",
+    "pre_grok_build_safe": "Grok Build native defaults",
     "pre_shell_safe": "Shell safe defaults"
   },
   "cleanup": {

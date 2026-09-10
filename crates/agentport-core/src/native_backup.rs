@@ -241,7 +241,10 @@ fn push_file(
 }
 
 fn plan_session(paths: &AppPaths, session: &Session, roots: &NativeRoots) -> Result<Plan> {
-    if session.adapter_type == AgentType::Shell {
+    if !matches!(session.adapter_type,
+        AgentType::Claude | AgentType::Codex | AgentType::Kimi | AgentType::Qoder
+        | AgentType::Pi | AgentType::EasyPi | AgentType::Omp
+    ) {
         return Ok(Plan {
             coverage: NativeCoverage::Unsupported,
             files: Vec::new(),
@@ -296,8 +299,12 @@ fn plan_session(paths: &AppPaths, session: &Session, roots: &NativeRoots) -> Res
                 }
             }
         }
-        AgentType::Pi => {
-            let pi_root = crate::pi_storage::read_directory(paths, &session.id)?;
+        AgentType::Pi | AgentType::EasyPi | AgentType::Omp => {
+            let pi_root = if session.adapter_type == AgentType::Pi {
+                crate::pi_storage::read_directory(paths, &session.id)?
+            } else {
+                paths.session_dir(&session.id).join(session.adapter_type.as_str())
+            };
             if pi_root.exists() {
                 collect_directory_files(
                     &pi_root,
@@ -321,7 +328,7 @@ fn plan_session(paths: &AppPaths, session: &Session, roots: &NativeRoots) -> Res
                     })?;
                     file.target_path = Path::new("sessions")
                         .join(&session.id)
-                        .join("pi")
+                        .join(session.adapter_type.as_str())
                         .join(relative);
                 }
             }
@@ -385,7 +392,7 @@ fn plan_session(paths: &AppPaths, session: &Session, roots: &NativeRoots) -> Res
                 )?;
             }
         }
-        AgentType::Shell => unreachable!(),
+        _ => unreachable!(),
     }
     files.sort_by(|left, right| {
         left.target_root
@@ -932,6 +939,47 @@ mod tests {
             fs::read(restored.join("sessions/ses_pi/pi/pi-native.jsonl")).unwrap(),
             b"pi\n"
         );
+    }
+
+    #[test]
+    fn new_pi_family_backups_remain_provider_scoped() {
+        for agent in [AgentType::EasyPi, AgentType::Omp] {
+            let temp = TempDir::new().unwrap();
+            let paths = AppPaths::new(temp.path().join("data"));
+            paths.ensure_layout().unwrap();
+            let roots = roots(temp.path());
+            let session = session(&paths, agent, Some("shared-native-id"));
+            for provider in ["pi", "easy_pi", "omp"] {
+                let transcript = paths.session_dir(&session.id).join(provider).join("shared-native-id.jsonl");
+                fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+                fs::write(transcript, provider).unwrap();
+            }
+            let staging = temp.path().join("staging");
+            fs::create_dir_all(&staging).unwrap();
+            let captured = capture_session_with_roots(&paths, &session, &staging, &roots).unwrap();
+            assert_eq!(captured.coverage, NativeCoverage::Complete);
+            assert_eq!(captured.artifacts.len(), 1);
+            let relative = format!("sessions/{}/{}/shared-native-id.jsonl", session.id, agent.as_str());
+            assert_eq!(captured.artifacts[0].target_path, relative);
+            let restored = temp.path().join("restored");
+            materialize_with_roots(&staging, &restored, &[captured], &roots).unwrap();
+            assert_eq!(fs::read_to_string(restored.join(relative)).unwrap(), agent.as_str());
+        }
+    }
+
+    #[test]
+    fn unsupported_new_native_formats_never_claim_complete_backup() {
+        let temp = TempDir::new().unwrap();
+        let paths = AppPaths::new(temp.path().join("data"));
+        paths.ensure_layout().unwrap();
+        let roots = roots(temp.path());
+        for agent in [AgentType::Opencode, AgentType::Amp, AgentType::Gemini,
+            AgentType::Cline, AgentType::KiroCli, AgentType::CursorAgent, AgentType::GrokBuild] {
+            let session = session(&paths, agent, Some("known-id"));
+            let captured = capture_with(&temp, &paths, &session, &roots);
+            assert_eq!(captured.coverage, NativeCoverage::Unsupported);
+            assert!(captured.artifacts.is_empty());
+        }
     }
 
     #[test]

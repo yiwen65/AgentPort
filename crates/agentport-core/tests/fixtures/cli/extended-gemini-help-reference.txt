@@ -1,0 +1,14 @@
+Gemini CLI documentation excerpt, NOT a captured executable help fixture.
+Sources: https://geminicli.com/docs/cli/cli-reference/ and https://github.com/google-gemini/gemini-cli/blob/main/packages/cli/src/utils/sessionUtils.ts (retrieved 2026-09-10)
+
+--version -v Show CLI version number and exit
+--help -h Show help information
+--model -m Model to use
+--prompt -p Prompt text. Forces non-interactive mode.
+--approval-mode Approval mode: default, auto_edit, yolo, plan
+--yolo -y Auto-approve all actions. Deprecated; use --approval-mode=yolo.
+--resume -r Resume a previous session. Use latest for most recent or index number.
+--list-sessions List available sessions for the current project and exit
+--delete-session Delete a session by index number
+
+sessionUtils.ts resolveSession(resumeArg): Can be latest, a full UUID, or an index number (1-based).

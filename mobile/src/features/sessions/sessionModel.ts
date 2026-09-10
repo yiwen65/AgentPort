@@ -63,7 +63,9 @@ export function quickStartParams(projectId: string, agent: string): QuickStartPa
     title: null,
     presetId: null,
     worktreeId: null,
-    permission: agent === "shell" || agent === "pi" ? "native" : "bypass",
+    // Preserve existing quick-start choices; newly registered agents must
+    // retain native permissions rather than inheriting an unverified bypass.
+    permission: ["claude", "codex", "kimi", "qoder"].includes(agent) ? "bypass" : "native",
     transport: "pty",
     riskAck: true,
     cols: null,

@@ -67,6 +67,7 @@
       "collapseAll": "Collapse all projects and Sessions",
       "quickLaunch": {
         "terminal": "Terminal",
+        "nativeDefaults": "Native defaults",
         "bypassPermissionChecks": "Bypass permission checks",
         "listLabel": "Quick-launch an Agent in {{scope}}; drag to see all",
         "launchLabel": "Launch {{agent}} in {{scope}} ({{mode}})",

@@ -3,7 +3,8 @@
 
 import StatusDot from "./StatusDot";
 import ShellIcon from "./ShellIcon";
-import { AgentIcon } from "./AgentIcons";
+import { AgentIcon, hasAgentIcon } from "./AgentIcons";
+import { isAddedAgent } from "../agentCapabilities";
 import { api, errorText } from "../api";
 import {
   copyTextWithToast,
@@ -272,7 +273,10 @@ function QuickAgentIcon({ agent }: { agent: string }) {
   if (agent === "shell") {
     return <ShellIcon className="quick-agent-mark shell" size={17} />;
   }
-  const icon = (
+  if (!hasAgentIcon(agent)) {
+    return <span className="quick-agent-fallback" aria-hidden="true">{agent.slice(0, 1).toUpperCase()}</span>;
+  }
+  return (
     <AgentIcon
       agent={agent}
       className={`quick-agent-mark ${agent}`}
@@ -280,18 +284,12 @@ function QuickAgentIcon({ agent }: { agent: string }) {
       mono={theme === "light"}
     />
   );
-  return (
-    icon ?? (
-      <span className="quick-agent-fallback" aria-hidden="true">
-        {agent.slice(0, 1).toUpperCase()}
-      </span>
-    )
-  );
 }
 
 function quickAgentMode(agent: string, t: SidebarT) {
   if (agent === "pi") return null;
   if (agent === "shell") return t("shell:ui.sidebar.quickLaunch.terminal");
+  if (isAddedAgent(agent)) return t("shell:ui.sidebar.quickLaunch.nativeDefaults");
   return t("shell:ui.sidebar.quickLaunch.bypassPermissionChecks");
 }
 

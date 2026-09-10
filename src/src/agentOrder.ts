@@ -1,5 +1,8 @@
 /** Existing quick-launch order, chosen to preserve the four-icon layout. */
-export const DEFAULT_AGENT_ORDER = ["shell", "codex", "claude", "kimi", "qoder", "pi"];
+export const DEFAULT_AGENT_ORDER = [
+  "shell", "codex", "claude", "kimi", "qoder", "pi",
+  "omp", "opencode", "amp", "gemini", "cline", "kiro_cli", "cursor_agent", "easy_pi", "grok_build",
+];
 
 /**
  * Keep a user's saved ordering, discard stale duplicates, and append any

@@ -1141,6 +1141,7 @@ impl RemoteService for CoreService {
     }
 
     fn supported_agents(&self) -> Result<Vec<SupportedAgentSummary>> {
+        let selectable = self.db.list_adapters()?;
         AgentType::all()
             .iter()
             .copied()
@@ -1153,7 +1154,7 @@ impl RemoteService for CoreService {
                         .iter()
                         .map(|name| (*name).into())
                         .collect(),
-                    install: self.db.get_adapter(agent)?,
+                    install: selectable.iter().find(|install| install.agent_type == agent).cloned(),
                 })
             })
             .collect()
@@ -2904,6 +2905,7 @@ fn build_launch_plan(
         )));
     }
     let project = service.db.get_project(project_id)?;
+    service.db.validate_new_agent_selection(agent)?;
     let install = install_for(service, agent)?;
     let mut preset = preset_for(service, agent, preset_id, &install)?;
     preset.permission_mode = permission;
@@ -3029,6 +3031,15 @@ fn remote_agent_to_core(agent: RemoteAgentType) -> AgentType {
         RemoteAgentType::Kimi => AgentType::Kimi,
         RemoteAgentType::Qoder => AgentType::Qoder,
         RemoteAgentType::Pi => AgentType::Pi,
+        RemoteAgentType::Omp => AgentType::Omp,
+        RemoteAgentType::Opencode => AgentType::Opencode,
+        RemoteAgentType::Amp => AgentType::Amp,
+        RemoteAgentType::Gemini => AgentType::Gemini,
+        RemoteAgentType::Cline => AgentType::Cline,
+        RemoteAgentType::KiroCli => AgentType::KiroCli,
+        RemoteAgentType::CursorAgent => AgentType::CursorAgent,
+        RemoteAgentType::EasyPi => AgentType::EasyPi,
+        RemoteAgentType::GrokBuild => AgentType::GrokBuild,
         RemoteAgentType::Shell => AgentType::Shell,
     }
 }
@@ -4517,7 +4528,25 @@ mod tests {
     }
 
     #[test]
-    fn facade_uses_all_six_core_adapters_and_revisioned_preferences() {
+    fn facade_does_not_advertise_a_shadowed_legacy_pi_cache_as_available() {
+        let service = CoreService::memory().unwrap();
+        let easy = adapters::adapter_for(AgentType::EasyPi).parse_capabilities(
+            std::path::Path::new("/same/bin/pi"), "0.84.2",
+            "easy-pi - AI coding assistant\nEASY_PI_CODING_AGENT_DIR --session --session-id --session-dir --tui-mode"
+        ).unwrap();
+        let mut old_pi = easy.clone();
+        old_pi.agent_type = AgentType::Pi;
+        old_pi.probed_at -= chrono::Duration::seconds(1);
+        service.db.upsert_adapter(&old_pi).unwrap();
+        service.db.upsert_adapter(&easy).unwrap();
+        let supported = service.supported_agents().unwrap();
+        assert!(supported.iter().find(|a| a.agent == "pi").unwrap().install.is_none());
+        assert!(supported.iter().find(|a| a.agent == "easy_pi").unwrap().install.is_some());
+        assert!(service.db.get_adapter(AgentType::Pi).unwrap().is_some());
+    }
+
+    #[test]
+    fn facade_uses_all_registered_adapters_and_revisioned_preferences() {
         let service = CoreService::memory().unwrap();
         let supported = service.supported_agents().unwrap();
         assert_eq!(supported.len(), AgentType::all().len());
@@ -4531,6 +4560,13 @@ mod tests {
                 .map(AgentType::as_str)
                 .collect::<Vec<_>>()
         );
+        // Every serialized public agent type must also be accepted by remote
+        // probe/session requests, not just advertised by supported_agents.
+        for &agent in AgentType::all() {
+            let remote: RemoteAgentType = serde_json::from_value(serde_json::json!(agent.as_str())).unwrap();
+            assert_eq!(remote_agent_to_core(remote), agent);
+            assert_eq!(serde_json::to_value(remote).unwrap(), agent.as_str());
+        }
         let initial = service.agent_preferences().unwrap();
         let replaced = service
             .replace_agent_preferences(

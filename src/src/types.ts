@@ -9,6 +9,15 @@ export type AgentTypeStr =
   | "kimi"
   | "qoder"
   | "pi"
+  | "omp"
+  | "opencode"
+  | "amp"
+  | "gemini"
+  | "cline"
+  | "kiro_cli"
+  | "cursor_agent"
+  | "easy_pi"
+  | "grok_build"
   | "shell";
 export type AgentTransportStr = "pty" | "json_rpc";
 export type AgentStateStr =

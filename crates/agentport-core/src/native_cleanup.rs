@@ -105,8 +105,10 @@ fn push_target(plan: &mut NativeCleanupPlan, target: CleanupTarget) {
 pub fn plan_native_cleanup(paths: &AppPaths, session: &Session) -> NativeCleanupPlan {
     let mut plan = NativeCleanupPlan::default();
     match session.adapter_type {
-        AgentType::Shell | AgentType::Pi => return plan,
-        _ => {}
+        AgentType::Claude | AgentType::Codex | AgentType::Kimi | AgentType::Qoder => {}
+        // New adapters do not grant ownership of global native data. Managed
+        // per-session files are removed by the existing session-directory cleanup.
+        _ => return plan,
     }
     let native_ids = collect_native_ids(paths, session);
     if native_ids.is_empty() {
@@ -117,7 +119,7 @@ pub fn plan_native_cleanup(paths: &AppPaths, session: &Session) -> NativeCleanup
         AgentType::Codex => plan_codex(&mut plan, session, &native_ids),
         AgentType::Kimi => plan_kimi(&mut plan, session, &native_ids),
         AgentType::Qoder => plan_qoder(&mut plan, session, &native_ids),
-        AgentType::Shell | AgentType::Pi => unreachable!(),
+        _ => unreachable!(),
     }
     plan
 }

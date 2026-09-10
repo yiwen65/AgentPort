@@ -1557,11 +1557,42 @@ impl Db {
         }
     }
 
+    /// Selectable installations, not a destructive migration of legacy caches.
+    /// Pi/easy-pi share a bin name: a later successful identity probe supersedes
+    /// the old selectable identity, while get_adapter retains it for old Sessions.
     pub fn list_adapters(&self) -> Result<Vec<AdapterInstall>> {
         let conn = self.conn.lock().unwrap();
         let mut st = conn.prepare("SELECT * FROM adapters ORDER BY agent_type")?;
         let rows = st.query_map([], row_adapter)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        let mut installs: Vec<AdapterInstall> = rows.filter_map(|r| r.ok()).collect();
+        let hidden = installs.iter().find(|i| i.agent_type == AgentType::Pi)
+            .zip(installs.iter().find(|i| i.agent_type == AgentType::EasyPi))
+            .and_then(|(pi, easy)| {
+                let same_executable = pi.executable_path == easy.executable_path
+                    || std::fs::canonicalize(&pi.executable_path).ok()
+                        .zip(std::fs::canonicalize(&easy.executable_path).ok())
+                        .is_some_and(|(left, right)| left == right);
+                same_executable.then_some(if pi.probed_at > easy.probed_at {
+                    AgentType::EasyPi
+                } else {
+                    AgentType::Pi
+                })
+            });
+        installs.retain(|i| Some(i.agent_type) != hidden);
+        Ok(installs)
+    }
+
+    pub fn validate_new_agent_selection(&self, agent: AgentType) -> Result<()> {
+        if matches!(agent, AgentType::Pi | AgentType::EasyPi)
+            && self.get_adapter(agent)?.is_some()
+            && !self.list_adapters()?.iter().any(|i| i.agent_type == agent)
+        {
+            return Err(CoreError::Blocked(format!(
+                "{} cached executable now identifies as a different Pi product; re-probe or select the current Agent. Existing Session recovery is unchanged.",
+                agent.display_name()
+            )));
+        }
+        Ok(())
     }
 
     // -- presets ------------------------------------------------------------
@@ -1644,6 +1675,15 @@ impl Db {
             ("pre_kimi_safe", AgentType::Kimi, "Kimi 安全默认"),
             ("pre_qoder_safe", AgentType::Qoder, "Qoder 安全默认"),
             ("pre_pi_safe", AgentType::Pi, "Pi 默认"),
+            ("pre_omp_safe", AgentType::Omp, "Oh My Pi native defaults"),
+            ("pre_opencode_safe", AgentType::Opencode, "OpenCode native defaults"),
+            ("pre_amp_safe", AgentType::Amp, "Amp native defaults"),
+            ("pre_gemini_safe", AgentType::Gemini, "Gemini CLI native defaults"),
+            ("pre_cline_safe", AgentType::Cline, "Cline CLI native defaults"),
+            ("pre_kiro_cli_safe", AgentType::KiroCli, "Kiro CLI native defaults"),
+            ("pre_cursor_agent_safe", AgentType::CursorAgent, "Cursor CLI native defaults"),
+            ("pre_easy_pi_safe", AgentType::EasyPi, "easy-pi native defaults"),
+            ("pre_grok_build_safe", AgentType::GrokBuild, "Grok Build native defaults"),
             ("pre_shell_safe", AgentType::Shell, "Shell 安全默认"),
         ] {
             let p = Preset {
@@ -5268,7 +5308,13 @@ mod tests {
         db.seed_builtin_presets().unwrap();
         db.seed_builtin_presets().unwrap(); // idempotent
         let presets = db.list_presets(None).unwrap();
-        assert_eq!(presets.len(), 6);
+        assert_eq!(presets.len(), AgentType::all().len());
+        for agent in AgentType::all() {
+            let preset = db.get_preset(&format!("pre_{}_safe", agent.as_str())).unwrap();
+            assert_eq!(preset.agent_type, *agent);
+            assert!(preset.args.is_empty());
+            assert!(preset.built_in);
+        }
         assert!(presets
             .iter()
             .all(|preset| preset.permission_mode == PermissionMode::Native));
@@ -5300,6 +5346,55 @@ mod tests {
         assert_eq!(back.args, vec!["--model", "k2"]);
         assert_eq!(back.env_names, vec!["FOO"]);
         db.delete_preset("pre_custom").unwrap();
+    }
+
+    #[test]
+    fn selectable_pi_identity_uses_newest_probe_without_deleting_legacy_cache() {
+        let db = db();
+        let mut pi = crate::adapters::test_fixtures::install(AgentType::Pi, &[]);
+        let mut easy = crate::adapters::test_fixtures::install(AgentType::EasyPi, &[]);
+        easy.executable_path = pi.executable_path.clone();
+        easy.probed_at = pi.probed_at + chrono::Duration::seconds(1);
+        db.upsert_adapter(&pi).unwrap();
+        db.upsert_adapter(&easy).unwrap();
+        let visible = db.list_adapters().unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].agent_type, AgentType::EasyPi);
+        assert!(db.validate_new_agent_selection(AgentType::Pi).is_err());
+        assert!(db.validate_new_agent_selection(AgentType::EasyPi).is_ok());
+        assert!(db.get_adapter(AgentType::Pi).unwrap().is_some(), "legacy resume must retain its cache");
+        pi.probed_at = easy.probed_at + chrono::Duration::seconds(1);
+        db.upsert_adapter(&pi).unwrap();
+        let visible = db.list_adapters().unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].agent_type, AgentType::Pi);
+        assert!(db.validate_new_agent_selection(AgentType::EasyPi).is_err());
+        assert!(db.validate_new_agent_selection(AgentType::Pi).is_ok());
+        assert!(db.get_adapter(AgentType::EasyPi).unwrap().is_some());
+        // Independent installations remain independently selectable.
+        easy.executable_path = "/different/bin/pi".into();
+        db.upsert_adapter(&easy).unwrap();
+        assert_eq!(db.list_adapters().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn selectable_pi_identity_deduplicates_symlink_aliases() {
+        let db = db();
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("actual-pi");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let alias = temp.path().join("pi");
+        std::os::unix::fs::symlink(&executable, &alias).unwrap();
+        let mut pi = crate::adapters::test_fixtures::install(AgentType::Pi, &[]);
+        pi.executable_path = alias.to_string_lossy().into_owned();
+        let mut easy = pi.clone();
+        easy.agent_type = AgentType::EasyPi;
+        easy.executable_path = executable.to_string_lossy().into_owned();
+        easy.probed_at = pi.probed_at + chrono::Duration::seconds(1);
+        db.upsert_adapter(&pi).unwrap();
+        db.upsert_adapter(&easy).unwrap();
+        assert_eq!(db.list_adapters().unwrap().iter().map(|i| i.agent_type).collect::<Vec<_>>(), vec![AgentType::EasyPi]);
+        assert_eq!(db.get_adapter(AgentType::Pi).unwrap().unwrap().executable_path, pi.executable_path);
     }
 
     #[test]

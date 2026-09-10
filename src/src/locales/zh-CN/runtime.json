@@ -68,6 +68,12 @@
       "piLocalPermissions": "Pi 不提供逐项权限确认，将以本地用户权限执行。",
       "claudeConversationMissing": "原 Session 没有可恢复的对话记录（首轮可能尚未产生消息），已按新 Session 启动。",
       "shellResumeUnavailable": "Shell 没有可恢复的 Session，已重新打开新的 Shell。",
+      "extendedHooksDegraded": "{{agent}} 使用 PTY 启发式状态检测，未启用可验证的按 Session Hook 集成；CLI 原生设置保持不变。",
+      "extendedResumeUnavailable": "尚未捕获可验证的原生 Session ID，暂不可自动恢复对话；仍可重连正在运行的 AgentPort 终端。",
+      "ampNativeNoApproval": "Amp 默认不请求工具审批；AgentPort 不会添加或修改其权限插件。",
+      "clineNativeAutoApprove": "Cline CLI 默认 auto-approve=true；原生模式保留该默认行为，不保证逐次人工审批。",
+      "ompNativePermissionDefaults": "Oh My Pi 保留自身权限设置；上游默认是 yolo（自动批准工具），如需审批请在 Oh My Pi 中配置。",
+      "easyPiNativePermissionDefaults": "easy-pi 保留自身权限设置；上游初始模式为 full-access，可在 easy-pi 内使用 /permissions 修改。",
       "generic": "Agent 提示：{{detail}}"
     }
   }

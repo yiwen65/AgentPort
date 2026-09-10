@@ -49,6 +49,14 @@ impl AgentAdapter for PiAdapter {
         version_out: &str,
         help_out: &str,
     ) -> Result<AdapterInstall> {
+        // easy-pi may still install a binary named `pi` and report the upstream
+        // package version. Only new probes reject that fork's explicit help
+        // identity; saved legacy Pi installs keep their launch/resume behavior.
+        if super::pi_family::is_easy_pi_help(help_out) {
+            return Err(CoreError::Adapter(
+                "this executable identifies as easy-pi, not Pi; select the easy-pi agent".into(),
+            ));
+        }
         let flags = super::extract_flags(help_out);
         let has = |flag: &str| flags.iter().any(|value| value == flag);
         Ok(AdapterInstall {
@@ -294,6 +302,41 @@ mod tests {
         let error = PiAdapter.build_launch(&ctx).unwrap_err();
         assert!(error.to_string().contains("--tui-mode"));
         assert!(error.to_string().contains("fullscreen"));
+    }
+
+    #[test]
+    fn new_probes_separate_easy_pi_without_relabeling_legacy_installs() {
+        let help = fx::read_fixture("easy-pi-0.84.2-help.txt");
+        let version = fx::read_fixture("easy-pi-0.84.2-version.txt");
+        let executable = Path::new("/fake/bin/pi");
+        let error = PiAdapter
+            .parse_capabilities(executable, &version, &help)
+            .unwrap_err();
+        assert!(error.to_string().contains("select the easy-pi agent"));
+        let fork = super::super::pi_family::PiFamilyAdapter(AgentType::EasyPi)
+            .parse_capabilities(executable, &version, &help)
+            .unwrap();
+        assert_eq!(fork.agent_type, AgentType::EasyPi);
+
+        // Existing saved Pi installs predate the independent fork entry. Their
+        // commands and storage must not change during an unrelated new probe.
+        let flags = ["session-id", "session-dir", "tui-mode"];
+        let launch = fx::launch_ctx(AgentType::Pi, &flags, PermissionMode::Native);
+        let plan = PiAdapter.build_launch(&launch).unwrap();
+        assert!(plan
+            .argv
+            .windows(2)
+            .any(|pair| pair == ["--session-dir", "/tmp/work/.agentport/pi"]));
+        let resume = fx::resume_ctx(AgentType::Pi, &flags, Some("legacy-native-id"));
+        let plan = PiAdapter.build_resume(&resume).unwrap();
+        assert!(plan
+            .argv
+            .windows(2)
+            .any(|pair| pair == ["--session-id", "legacy-native-id"]));
+        assert_eq!(
+            plan.assigned_agent_session_id.as_deref(),
+            Some("legacy-native-id")
+        );
     }
 
     #[test]

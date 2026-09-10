@@ -24,6 +24,24 @@ export function agentDisplay(adapter: string): string {
       return "Qoder";
     case "pi":
       return "Pi";
+    case "omp":
+      return "Oh My Pi";
+    case "opencode":
+      return "OpenCode";
+    case "amp":
+      return "Amp";
+    case "gemini":
+      return "Gemini CLI";
+    case "cline":
+      return "Cline CLI";
+    case "kiro_cli":
+      return "Kiro CLI";
+    case "cursor_agent":
+      return "Cursor CLI";
+    case "easy_pi":
+      return "easy-pi";
+    case "grok_build":
+      return "Grok Build";
     case "shell":
       return "Shell";
     default:
@@ -46,6 +64,16 @@ export function presetDisplayName(preset: Pick<Preset, "id" | "name" | "builtIn"
       return i18n.t("session:builtInPreset.pre_pi_safe");
     case "pre_shell_safe":
       return i18n.t("session:builtInPreset.pre_shell_safe");
+    case "pre_omp_safe":
+    case "pre_opencode_safe":
+    case "pre_amp_safe":
+    case "pre_gemini_safe":
+    case "pre_cline_safe":
+    case "pre_kiro_cli_safe":
+    case "pre_cursor_agent_safe":
+    case "pre_easy_pi_safe":
+    case "pre_grok_build_safe":
+      return i18n.t(`session:builtInPreset.${preset.id}`);
     default:
       return preset.name;
   }

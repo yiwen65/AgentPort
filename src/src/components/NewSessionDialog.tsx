@@ -13,8 +13,19 @@ import {
 import { agentDisplay, permissionLabel, presetDisplayName } from "../format";
 import { closeDialog, toast, useStore } from "../store";
 import { localizedNotices } from "../runtimeMessages";
+import { availablePermissionModes, isAddedAgent } from "../agentCapabilities";
 import type { PaneSplitDirection } from "../paneLayout";
 import type { AgentTransportStr, PermissionStr, Preset } from "../types";
+
+function nativePermissionWarning(agent: string) {
+  switch (agent) {
+    case "amp": return "runtime:messages.adapter.ampNativeNoApproval" as const;
+    case "cline": return "runtime:messages.adapter.clineNativeAutoApprove" as const;
+    case "omp": return "runtime:messages.adapter.ompNativePermissionDefaults" as const;
+    case "easy_pi": return "runtime:messages.adapter.easyPiNativePermissionDefaults" as const;
+    default: return undefined;
+  }
+}
 
 export default function NewSessionDialog(props: {
   projectId?: string;
@@ -23,7 +34,7 @@ export default function NewSessionDialog(props: {
   splitTargetSessionId?: string;
   splitDirection?: PaneSplitDirection;
 }) {
-  const { t } = useTranslation(["session", "common"]);
+  const { t } = useTranslation(["session", "common", "runtime"]);
   const s = useStore();
   const [projectId, setProjectId] = useState(props.projectId ?? s.projects[0]?.id ?? "");
   const [agent, setAgent] = useState<string>(props.agent ?? "claude");
@@ -49,6 +60,11 @@ export default function NewSessionDialog(props: {
   );
   const isShell = agent === "shell";
   const isPi = agent === "pi";
+  const addedAgent = isAddedAgent(agent);
+  const selectedAdapter = adapterFor(agent);
+  const permissionModes = availablePermissionModes(agent, selectedAdapter);
+  const noPermissionModes = isShell || isPi || selectedAdapter?.approvalModel === "no_builtin_prompts";
+  const nativeWarningKey = permission === "native" ? nativePermissionWarning(agent) : undefined;
 
   useEffect(() => {
     let cancelled = false;
@@ -83,7 +99,7 @@ export default function NewSessionDialog(props: {
       title: title.trim() || null,
       presetId: presetId || null,
       worktreeId: position === "main" ? null : position,
-      permission: isShell || isPi ? "native" : permission,
+      permission: permissionModes.includes(permission) ? permission : "native",
       transport,
       riskAck: true,
       cols: null,
@@ -249,6 +265,23 @@ export default function NewSessionDialog(props: {
             </div>
           ) : null}
 
+          {addedAgent ? (
+            <div className="form-row">
+              <span className="form-hint">
+                {t("session:new.agentCapabilityNotice")}
+                {agent === "easy_pi" ? ` ${t("session:new.easyPiDataNotice")}` : ""}
+                {selectedAdapter && !selectedAdapter.exactResume
+                  ? ` ${t("session:new.exactResumeUnavailable")}` : ""}
+              </span>
+            </div>
+          ) : null}
+
+          {nativeWarningKey ? (
+            <div className="form-row">
+              <span className="warn-text">{t(nativeWarningKey)}</span>
+            </div>
+          ) : null}
+
           <div className="advanced-fields">
             <button
               type="button"
@@ -272,8 +305,8 @@ export default function NewSessionDialog(props: {
                       const id = e.target.value;
                       setPresetId(id);
                       const p = presets.find((x) => x.id === id);
-                      if (p && !isShell && !isPi) {
-                        setPermission(p.permissionMode);
+                      if (p && !noPermissionModes) {
+                        setPermission(permissionModes.includes(p.permissionMode) ? p.permissionMode : "native");
                         if (p.permissionMode !== "native") setAdvancedOpen(true);
                       }
                     }}
@@ -281,12 +314,16 @@ export default function NewSessionDialog(props: {
                     <option value="">
                       {isPi
                         ? t("session:new.defaultPi")
-                        : t("session:new.defaultSafe")}
+                        : t(addedAgent ? "session:new.defaultNative" : "session:new.defaultSafe")}
                     </option>
                     {presets.map((p) => (
-                      <option key={p.id} value={p.id}>
+                      <option
+                        key={p.id}
+                        value={p.id}
+                        disabled={addedAgent && !permissionModes.includes(p.permissionMode)}
+                      >
                         {presetDisplayName(p)}
-                        {!isShell && !isPi && p.permissionMode !== "native"
+                        {!noPermissionModes && p.permissionMode !== "native"
                           ? t("session:new.permissionSuffix", {
                               permission: permissionLabel(p.permissionMode),
                             })
@@ -308,6 +345,8 @@ export default function NewSessionDialog(props: {
                   <div className="form-hint">{t("session:new.shellPermissionNote")}</div>
                 ) : isPi ? (
                   <div className="form-hint">{t("session:new.piPermissionNote")}</div>
+                ) : noPermissionModes ? (
+                  <div className="form-hint">{t("session:new.noPermissionMode", { agent: agentDisplay(agent) })}</div>
                 ) : (
                   <div className="form-row">
                     <label htmlFor="ns-permission">{t("session:new.permission")}</label>
@@ -320,18 +359,24 @@ export default function NewSessionDialog(props: {
                         if (value !== "native") setAdvancedOpen(true);
                       }}
                     >
-                      <option value="native">{t("session:new.nativePermission")}</option>
-                      <option value="auto">{t("session:new.autoPermission")}</option>
-                      <option value="bypass">{t("session:new.bypassPermission")}</option>
+                      <option value="native">{t(addedAgent ? "session:new.nativeDefaultsPermission" : "session:new.nativePermission")}</option>
+                      {permissionModes.includes("auto") ? (
+                        <option value="auto">{t(addedAgent ? "session:new.verifiedAutoPermission" : "session:new.autoPermission")}</option>
+                      ) : null}
+                      {permissionModes.includes("bypass") ? (
+                        <option value="bypass">{t(addedAgent ? "session:new.verifiedBypassPermission" : "session:new.bypassPermission")}</option>
+                      ) : null}
                     </select>
                     {permission !== "native" ? (
                       <span className="warn-text">
-                        {permission === "auto"
-                          ? t("session:new.autoWarning")
-                          : t("session:new.bypassWarning")}
+                        {addedAgent
+                          ? t("session:new.verifiedPermissionWarning")
+                          : permission === "auto"
+                            ? t("session:new.autoWarning")
+                            : t("session:new.bypassWarning")}
                       </span>
                     ) : (
-                      <span className="form-hint">{t("session:new.nativeHint")}</span>
+                      <span className="form-hint">{t(addedAgent ? "session:new.nativeDefaultsHint" : "session:new.nativeHint")}</span>
                     )}
                     {presetHasSecrets ? (
                       <span className="form-hint">

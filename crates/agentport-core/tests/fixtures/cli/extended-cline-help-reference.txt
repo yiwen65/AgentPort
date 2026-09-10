@@ -1,0 +1,45 @@
+Usage: cline [options] [command] [prompt]
+
+Cline CLI - AI coding assistant in your terminal
+
+Arguments:
+  prompt                       Your prompt. Default to start in act mode with auto-approve enabled.
+
+Options:
+  -V, --version                Output the version number
+  -p, --plan                   Run in plan mode
+  --json                       Output messages as JSON instead of styled text
+  --auto-approve <boolean>     Set tool auto-approval for all tools (default: true)
+  -t, --timeout <seconds>      Optional timeout in seconds (default: 0 for no timeout)
+  -m, --model <model-id>       Model to use for the session with the selected provider
+  -v, --verbose                Show verbose output
+  -c, --cwd <path>             Working directory
+  --config <path>              Configuration directory (default: ~/.cline/data/settings)
+  --data-dir <path>            Use isolated local state at this directory path (default: ~/.cline)
+  --thinking <level>           Set reasoning effort level between none|low|medium|high|xhigh (default: medium)
+  --retries <count>            Maximum consecutive mistakes (retries) before halting
+  --hooks-dir <path>           Directory path to additional hooks for runtime hook injection (default: ~/.cline/hooks)
+  --acp                        Run in Agent Client Protocol (ACP) mode for editor integration
+  -i, --tui                    Open the terminal user interface (TUI) for interactive sessions
+  --id <session-id>            Resume an existing session by ID
+  -k, --key <api-key>          API key override for this run
+  -P, --provider <id>          Provider id (default: cline)
+  -s, --system <system-prompt> Override the default system prompt
+  -z, --zen                    Start a session that runs in the background hub
+  -h, --help                   display help for command
+
+Commands:
+  auth [options] [provider]    Authenticate a provider and configure what model is used
+  config [options]             Show current configuration
+  connect [options] [adapter]  Connect to an editor or IDE adapter
+  mcp                          Manage MCP servers
+  dev                          Developer tools and utilities
+  doctor                       Diagnose and fix configuration issues
+  history|h [options]          List session history or manage saved sessions
+  hook                         Handle a hook payload from stdin
+  plugin                       Manage Cline Plugins
+  schedule                     Manage scheduled tasks
+  hub                          Manage the local hub daemon
+  update [options]             Check for updates and install if available
+  version                      Show Cline CLI version number
+  kanban                       Launch the kanban app and exit

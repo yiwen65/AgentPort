@@ -68,6 +68,12 @@
       "piLocalPermissions": "Pi does not provide per-action approvals and will run with the local user's permissions.",
       "claudeConversationMissing": "The original Session has no conversation to resume (the first turn may not have produced a message), so a new Session was started.",
       "shellResumeUnavailable": "Shell has no resumable Session, so a new Shell was opened.",
+      "extendedHooksDegraded": "{{agent}} uses PTY status heuristics; no verified per-Session Hook integration is enabled. Native CLI settings are unchanged.",
+      "extendedResumeUnavailable": "Automatic conversation recovery is unavailable until a verified native Session ID is captured. Reconnecting a running AgentPort terminal remains available.",
+      "ampNativeNoApproval": "Amp does not ask for tool approval by default. AgentPort does not add or change its permission plugins.",
+      "clineNativeAutoApprove": "Cline CLI defaults to auto-approve=true. Native mode preserves that default and does not guarantee manual approval prompts.",
+      "ompNativePermissionDefaults": "Oh My Pi preserves its own permission settings. The upstream default is yolo (automatic tool approval); configure approvals in Oh My Pi if needed.",
+      "easyPiNativePermissionDefaults": "easy-pi preserves its own permission settings. Its upstream initial mode is full-access; use /permissions inside easy-pi to change it.",
       "generic": "Agent notice: {{detail}}"
     }
   }

@@ -25,6 +25,8 @@ vi.mock("../api", () => ({
 
 import { setState } from "../store";
 import NewSessionDialog from "./NewSessionDialog";
+import { ADDED_AGENT_IDS } from "../agentCapabilities";
+import { agentDisplay } from "../format";
 
 describe("NewSessionDialog", () => {
   beforeEach(() => {
@@ -169,6 +171,53 @@ describe("NewSessionDialog", () => {
     await waitFor(() => expect(createSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({ agent: "pi", permission: "native" }),
     ));
+  });
+
+  it.each(ADDED_AGENT_IDS)("offers %s and only verified native permission by default", async (agent) => {
+    setState({ adapters: [{
+      agentType: agent,
+      executablePath: `/usr/local/bin/${agent}`,
+      versionText: "test",
+      capabilityHash: `sha256:${agent}`,
+      exactResume: false,
+      hookStatus: "degraded",
+      approvalModel: "native_prompts",
+      defaultTransport: "pty",
+      probedAt: "2026-09-10T00:00:00.000Z",
+      candidates: [],
+      flags: [],
+    }] });
+    render(<NewSessionDialog projectId="project-1" agent={agent} />);
+    expect(screen.getByRole("radio", { name: agentDisplay(agent) })).toBeTruthy();
+    expect(screen.getByText(/不支持精确恢复原生对话|Exact native conversation recovery/)).toBeTruthy();
+    if (agent === "easy_pi") expect(screen.getByText(/~\/\.epi/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "高级设置 展开" }));
+    const permissions = screen.getByLabelText("权限") as HTMLSelectElement;
+    expect(Array.from(permissions.options).map((option) => option.value)).toEqual(["native"]);
+    fireEvent.click(screen.getByRole("button", { name: "启动" }));
+    await waitFor(() => expect(createSessionMock).toHaveBeenCalledWith(expect.objectContaining({ agent, permission: "native" })));
+  });
+
+  it("offers only the verified OpenCode auto mode and disables an unsupported bypass preset", async () => {
+    setState({ adapters: [{
+      agentType: "opencode", executablePath: "/usr/local/bin/opencode", versionText: "test",
+      capabilityHash: "sha256:opencode", exactResume: true, hookStatus: "degraded",
+      approvalModel: "native_prompts", defaultTransport: "pty", probedAt: "2026-09-10T00:00:00.000Z",
+      candidates: [], flags: ["auto"],
+    }] });
+    listPresetsMock.mockResolvedValue([{
+      id: "unsupported-bypass", agentType: "opencode", name: "Unsupported bypass",
+      executablePath: "", args: [], permissionMode: "bypass", envNames: [], secretRefIds: [], builtIn: false,
+    }]);
+    render(<NewSessionDialog projectId="project-1" agent="opencode" />);
+    fireEvent.click(screen.getByRole("button", { name: "高级设置 展开" }));
+    const permissions = screen.getByLabelText("权限") as HTMLSelectElement;
+    expect(Array.from(permissions.options).map((option) => option.value)).toEqual(["native", "auto"]);
+    const preset = await screen.findByRole("option", { name: /Unsupported bypass/ }) as HTMLOptionElement;
+    expect(preset.disabled).toBe(true);
+    fireEvent.change(permissions, { target: { value: "auto" } });
+    fireEvent.click(screen.getByRole("button", { name: "启动" }));
+    await waitFor(() => expect(createSessionMock).toHaveBeenCalledWith(expect.objectContaining({ agent: "opencode", permission: "auto" })));
   });
 
   it("restores native permission when switching away from a bypass preset", async () => {

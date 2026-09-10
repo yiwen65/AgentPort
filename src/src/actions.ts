@@ -4,6 +4,7 @@
 import { api, copyText, errorText } from "./api";
 import { setTheme as setNativeTheme } from "@tauri-apps/api/app";
 import { localizedNotices } from "./runtimeMessages";
+import { isAddedAgent, quickStartPermission } from "./agentCapabilities";
 import {
   applyProjectsSnapshot,
   applyRepositoryStatusSnapshot,
@@ -1253,7 +1254,7 @@ export async function quickStartSession(
   splitIntent?: QuickStartSplitIntent,
 ) {
   const shell = agent === "shell";
-  const pi = agent === "pi";
+  const plain = agent === "pi" || isAddedAgent(agent);
   try {
     const res = await api.createSession({
       projectId,
@@ -1261,9 +1262,9 @@ export async function quickStartSession(
       title: null,
       presetId: null,
       worktreeId: worktreeId ?? null,
-      // Pi and Generic Shell have no permission mode; native is only the API's
-      // persisted compatibility sentinel. Other shortcuts explicitly bypass.
-      permission: shell || pi ? "native" : "bypass",
+      // Newly supported agents preserve upstream defaults. Only the established
+      // legacy shortcuts retain their explicit bypass behavior.
+      permission: quickStartPermission(agent),
       transport: "pty",
       riskAck: true,
       cols: null,
@@ -1284,8 +1285,11 @@ export async function quickStartSession(
         )
       : false;
     if (!inserted) selectSession(res.id);
+    if (isAddedAgent(agent)) {
+      for (const notice of localizedNotices(res)) toast(notice, "info");
+    }
     toast(
-      pi
+      plain
         ? i18n.t("session:flow.quickStartedPlain", {
             agent: agentDisplay(agent),
           })

@@ -97,6 +97,18 @@ export function runtimeMessageText(envelope: RuntimeMessageEnvelope): string {
       return i18n.t("runtime:messages.adapter.claudeConversationMissing");
     case "shell_resume_unavailable":
       return i18n.t("runtime:messages.adapter.shellResumeUnavailable");
+    case "extended_hooks_degraded":
+      return i18n.t("runtime:messages.adapter.extendedHooksDegraded", { agent });
+    case "extended_resume_unavailable":
+      return i18n.t("runtime:messages.adapter.extendedResumeUnavailable");
+    case "amp_native_no_approval":
+      return i18n.t("runtime:messages.adapter.ampNativeNoApproval");
+    case "cline_native_auto_approve":
+      return i18n.t("runtime:messages.adapter.clineNativeAutoApprove");
+    case "omp_native_permission_defaults":
+      return i18n.t("runtime:messages.adapter.ompNativePermissionDefaults");
+    case "easy_pi_native_permission_defaults":
+      return i18n.t("runtime:messages.adapter.easyPiNativePermissionDefaults");
     case "adapter_notice":
       return i18n.t("runtime:messages.adapter.generic", { detail });
     case "terminal_history_tail":

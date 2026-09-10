@@ -5,7 +5,8 @@ import { orderAgentIds, visibleAgentIds } from "../agentOrder";
 import { agentDisplay } from "../format";
 import { closeDialog, findSession, useStore } from "../store";
 import type { PaneSplitDirection } from "../paneLayout";
-import { AgentIcon } from "./AgentIcons";
+import { AgentIcon, hasAgentIcon } from "./AgentIcons";
+import { isAddedAgent } from "../agentCapabilities";
 import Modal from "./Modal";
 import ShellIcon from "./ShellIcon";
 
@@ -14,7 +15,7 @@ function PickerAgentIcon({ agent }: { agent: string }) {
   if (agent === "shell") {
     return <ShellIcon className="split-agent-picker-mark shell" size={30} />;
   }
-  if (["codex", "claude", "kimi", "qoder", "pi"].includes(agent)) {
+  if (hasAgentIcon(agent)) {
     return (
       <AgentIcon
         agent={agent}
@@ -61,6 +62,7 @@ export default function SplitAgentPicker({
   const modeFor = (agent: string) => {
     if (agent === "pi") return null;
     if (agent === "shell") return t("ui.sidebar.quickLaunch.terminal");
+    if (isAddedAgent(agent)) return t("ui.sidebar.quickLaunch.nativeDefaults");
     return t("ui.sidebar.quickLaunch.bypassPermissionChecks");
   };
   const title = t(
