@@ -116,9 +116,9 @@ impl AgentType {
             AgentType::Cline => &["cline"],
             AgentType::KiroCli => &["kiro-cli"],
             AgentType::CursorAgent => &["cursor-agent", "agent"],
-            // easy-pi deliberately retains the pi executable name. The
-            // adapter verifies easy-pi help branding and its environment contract.
-            AgentType::EasyPi => &["pi"],
+            // Prefer easy-pi's public launcher; retain `pi` for existing installs.
+            // The adapter verifies easy-pi help branding and its environment contract.
+            AgentType::EasyPi => &["epi", "pi"],
             AgentType::GrokBuild => &["grok"],
             AgentType::Shell => &["sh", "bash", "zsh"],
         }
