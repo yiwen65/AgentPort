@@ -71,6 +71,8 @@ import {
   setProjectPinnedAtFront,
 } from "../projectLayout";
 
+import "./SidebarGroups.css";
+
 type SidebarT = TFunction<["session", "shell", "common", "git"]>;
 
 function IconFolder({ open = false }: { open?: boolean }) {
@@ -1795,6 +1797,39 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
   );
 }
 
+function PaneGroupNode({ group, projects }: { group: PaneLayout; projects: ProjectView[] }) {
+  const { t } = useTranslation("shell");
+  const [expanded, setExpanded] = useState(true);
+  const ids = orderedLayoutSessionIds(group);
+  const sessions = ids.flatMap((id) => {
+    const session = projects.flatMap((project) => project.sessions).find((item) => item.id === id);
+    return session ? [session] : [];
+  });
+  const title = sessions.map((session) => session.title).join(" · ");
+  const label = t("sidebarGroups.group", { title });
+  if (!sessions.length) return null;
+  return (
+    <section className="tree-project sidebar-pane-group">
+      <div className="sidebar-group-heading">
+        <button type="button" className="sidebar-group-fold" aria-expanded={expanded}
+          aria-label={t("sidebarGroups.fold", { title })} onClick={() => setExpanded(!expanded)}>
+          <IconChevron dir={expanded ? "down" : "right"} />
+        </button>
+        <button type="button" className="tree-row project sidebar-group-open" title={label}
+          onClick={() => selectSession(group.focusedSessionId ?? sessions[0].id)}>
+          <svg className="sidebar-group-glyph" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <rect x="2" y="3" width="12" height="10" rx="2" stroke="currentColor" />
+            <path d="M8 3v10" stroke="currentColor" />
+          </svg>
+          <span className="tree-label">{label}</span>
+          <span className="sidebar-group-count">{sessions.length}</span>
+        </button>
+      </div>
+      {expanded ? sessions.map((ses) => <SessionRow key={ses.id} ses={ses} nested />) : null}
+    </section>
+  );
+}
+
 export default function Sidebar({
   collapsed,
   width,
@@ -1808,6 +1843,31 @@ export default function Sidebar({
   const projects = useStore((state) => state.projects);
   const sidebarViewMode = useStore((state) => state.sidebarViewMode);
   const activeAgentsView = sidebarViewMode === "activeAgents";
+  const [groupsPage, setGroupsPage] = useState(false);
+  const groups = useStore((state) => state.terminalLayoutGroups);
+  const sidebarRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const element = sidebarRef.current;
+    if (!element || activeAgentsView || collapsed) return;
+    let distance = 0;
+    let lastEvent = 0;
+    let switched = false;
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
+      event.preventDefault();
+      const now = performance.now();
+      if (now - lastEvent > 180) { distance = 0; switched = false; }
+      lastEvent = now;
+      if (switched) return;
+      distance += event.deltaX * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? element.clientWidth : 1);
+      if (Math.abs(distance) < 60) return;
+      setGroupsPage(distance > 0);
+      switched = true;
+    };
+    element.addEventListener("wheel", onWheel, { passive: false });
+    return () => element.removeEventListener("wheel", onWheel);
+  }, [activeAgentsView, collapsed]);
+  const showGroups = groupsPage && !activeAgentsView;
   const projectLayoutSaving = useStore((state) => state.projectLayoutSaving);
   const projectDrag = useProjectDrag(projects, projectLayoutSaving);
   const expandedProjects = useStore((state) => state.expandedProjects);
@@ -1828,9 +1888,10 @@ export default function Sidebar({
     : null;
   return (
     <aside
+      ref={sidebarRef}
       className={`sidebar${collapsed ? " collapsed" : ""}${anim ? ` anim-${anim}` : ""}`}
       aria-label={t(
-        activeAgentsView
+        showGroups ? "shell:sidebarGroups.groups" : activeAgentsView
           ? "shell:ui.sidebar.activeAgentSidebarLabel"
           : "shell:ui.sidebar.label",
       )}
@@ -1840,9 +1901,9 @@ export default function Sidebar({
       <div
         ref={projectDrag.scrollRef}
         className="sidebar-scroll"
-        role={activeAgentsView ? "region" : "tree"}
+        role={activeAgentsView || showGroups ? "region" : "tree"}
         aria-label={
-          activeAgentsView
+          showGroups ? t("shell:sidebarGroups.groups") : activeAgentsView
             ? t("shell:ui.sidebar.activeAgentListLabel")
             : worktreeProject
               ? t("shell:ui.sidebar.worktreeTreeLabel", {
@@ -1851,7 +1912,14 @@ export default function Sidebar({
               : t("shell:ui.sidebar.projectTreeLabel")
         }
       >
-        {activeAgentsView ? (
+        {showGroups ? (
+          <div className="sidebar-groups-page">
+            <div className="sidebar-groups-caption">{t("shell:sidebarGroups.groups")}</div>
+            {groups.length ? groups.map((group) => (
+              <PaneGroupNode key={[...orderedLayoutSessionIds(group)].sort().join("/")} group={group} projects={projects} />
+            )) : <div className="empty-state"><div>{t("shell:sidebarGroups.empty")}</div><p>{t("shell:sidebarGroups.hint")}</p></div>}
+          </div>
+        ) : activeAgentsView ? (
           <ActiveAgentSessionsView projects={projects} />
         ) : projects.length === 0 ? (
           <div className="empty-state">
@@ -1893,6 +1961,13 @@ export default function Sidebar({
           })
         )}
       </div>
+      {!activeAgentsView ? <nav className="sidebar-page-dots" aria-label={t("shell:sidebarGroups.views")}>
+        {[false, true].map((page) => <button key={String(page)} type="button"
+          aria-label={t(page ? "shell:sidebarGroups.groups" : "shell:sidebarGroups.projects")}
+          aria-current={groupsPage === page ? "page" : undefined}
+          title={t(page ? "shell:sidebarGroups.groups" : "shell:sidebarGroups.projects")}
+          onClick={() => setGroupsPage(page)}><span /></button>)}
+      </nav> : null}
       <div className="sidebar-footer">
         <button
           className="sidebar-footer-action"
@@ -1909,7 +1984,7 @@ export default function Sidebar({
           <IconPlus />
         </button>
         <span className="sidebar-footer-spacer" />
-        {activeAgentsView ? null : (
+        {activeAgentsView || showGroups ? null : (
           <button
             className="sidebar-footer-action collapse-projects"
             onClick={() =>

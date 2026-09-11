@@ -1,4 +1,9 @@
 {
+  "sidebarGroups": {
+    "groups": "分屏分组", "projects": "项目", "views": "侧边栏视图",
+    "group": "分组 · {{title}}", "fold": "展开或收起分组：{{title}}",
+    "empty": "暂无分屏分组", "hint": "将 Session 拖到另一终端上，即可创建分屏分组。"
+  },
   "boot": {
     "starting": "正在启动 AgentPort…",
     "failed": "启动失败：{{detail}}"

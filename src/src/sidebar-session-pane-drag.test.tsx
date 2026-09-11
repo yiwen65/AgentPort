@@ -150,6 +150,37 @@ describe("sidebar Session pane drag", () => {
 
   afterEach(cleanup);
 
+  it("switches to saved groups, restores a group, and keeps ungrouped Sessions on the project page", () => {
+    const view = render(<Sidebar collapsed={false} width={296} />);
+    fireEvent.click(view.getByRole("button", { name: "分屏分组" }));
+    expect(view.container.querySelectorAll(".sidebar-pane-group")).toHaveLength(2);
+    expect(view.container.querySelectorAll(".tree-row.session")).toHaveLength(4);
+    fireEvent.click(view.getByRole("button", { name: /分组 · Third/ }));
+    expect(selectSessionMock).toHaveBeenCalledWith(getState().terminalLayoutGroups[1].focusedSessionId);
+    fireEvent.click(view.getByRole("button", { name: /展开或收起分组：Third/ }));
+    expect(view.container.querySelectorAll(".tree-row.session")).toHaveLength(2);
+    fireEvent.click(view.getByRole("button", { name: "项目" }));
+    expect(view.container.querySelectorAll(".tree-row.session")).toHaveLength(5);
+  });
+
+  it("uses horizontal wheel gestures without hijacking vertical scrolling and shows an empty state", () => {
+    setState({ terminalLayoutGroups: [] });
+    const view = render(<Sidebar collapsed={false} width={296} />);
+    const sidebar = view.container.querySelector("aside")!;
+    fireEvent.wheel(sidebar, { deltaY: 100, deltaX: 2 });
+    expect(view.queryByText("暂无分屏分组")).toBeNull();
+    fireEvent.wheel(sidebar, { deltaX: 100, deltaY: 2 });
+    expect(view.getByText("暂无分屏分组")).toBeTruthy();
+    expect(view.getByRole("button", { name: "分屏分组" }).getAttribute("aria-current")).toBe("page");
+    // Momentum belongs to the same gesture and must not bounce to the other page.
+    fireEvent.wheel(sidebar, { deltaX: -100 });
+    expect(view.getByText("暂无分屏分组")).toBeTruthy();
+    const clock = vi.spyOn(performance, "now").mockReturnValue(performance.now() + 1000);
+    fireEvent.wheel(sidebar, { deltaX: -100 });
+    expect(view.queryByText("暂无分屏分组")).toBeNull();
+    clock.mockRestore();
+  });
+
   it("marks remembered pane rows without rendering a trailing badge", () => {
     const { container } = render(<Sidebar collapsed={false} width={296} />);
     const rows = [...container.querySelectorAll<HTMLElement>(".tree-row.session")];

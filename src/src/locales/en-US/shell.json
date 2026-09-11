@@ -1,4 +1,9 @@
 {
+  "sidebarGroups": {
+    "groups": "Split groups", "projects": "Projects", "views": "Sidebar views",
+    "group": "Group · {{title}}", "fold": "Expand or collapse group: {{title}}",
+    "empty": "No split groups yet", "hint": "Drag a Session onto another terminal to create a split group."
+  },
   "boot": {
     "starting": "Starting AgentPort…",
     "failed": "AgentPort failed to start: {{detail}}"
