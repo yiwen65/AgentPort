@@ -9,7 +9,7 @@
 .session-dashboard .compact-device-picker select { min-height: 44px; width: 100%; min-width: 0; }
 .session-dashboard .toolbar-spacer { display: none; }
 .session-dashboard .dense-project-tree { padding-top: 12px; }
-.session-dashboard .project-group { margin: 0 14px 13px; border: 0; border-radius: 24px; background: linear-gradient(150deg, color-mix(in srgb, var(--project-color, var(--accent)) 16%, var(--panel)), var(--panel) 58%); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--project-color, var(--line)) 26%, transparent), 0 12px 28px #00000014; }
+.session-dashboard .project-group { margin: 0 14px 13px; border: 0; border-radius: 24px; background: linear-gradient(150deg, color-mix(in srgb, var(--project-color, var(--accent)) 16%, var(--panel)), var(--panel) 58%); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--project-color, var(--accent)) 14%, transparent), 0 12px 28px #00000014; }
 .session-dashboard .project-group[data-project-tone="0"] { --project-color: #c8f16d; }
 .session-dashboard .project-group[data-project-tone="1"] { --project-color: #83d8ae; }
 .session-dashboard .project-group[data-project-tone="2"] { --project-color: #f7c66a; }
@@ -20,7 +20,7 @@
 .session-dashboard .project-toggle { min-height: 48px; gap: 10px; padding-inline: 0; letter-spacing: -.015em; }
 .session-dashboard .project-toggle .ui-icon { flex-shrink: 0; }
 .session-dashboard .project-toggle .ui-icon-folder { width: 27px; height: 27px; color: var(--project-color, var(--folder-glow)); stroke-width: 2; }
-.session-dashboard .project-launch-button { display: grid; place-items: center; width: 46px; height: 46px; flex: 0 0 46px; padding: 8px; border: 1px solid color-mix(in srgb, var(--project-color, var(--accent)) 36%, transparent); border-radius: 14px; background: linear-gradient(145deg, color-mix(in srgb, var(--project-color, var(--accent)) 18%, transparent), transparent); transition: transform 120ms ease, background-color 180ms ease, border-color 180ms ease; }
+.session-dashboard .project-launch-button { display: grid; place-items: center; width: 46px; height: 46px; flex: 0 0 46px; padding: 8px; border: 0; border-radius: 14px; background: linear-gradient(145deg, color-mix(in srgb, var(--project-color, var(--accent)) 18%, transparent), transparent); transition: transform 120ms ease, background-color 180ms ease, border-color 180ms ease; }
 .agentport-mark { width: 30px; height: 30px; overflow: visible; }
 .agentport-mark .mark-cyan { stop-color: var(--mark-cyan); }
 .agentport-mark .mark-blue { stop-color: var(--mark-blue); }
