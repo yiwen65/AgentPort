@@ -25,6 +25,8 @@ export interface PaneSplit {
 export type PaneLayoutNode = PaneLeaf | PaneSplit;
 
 export interface PaneLayout {
+  /** Optional user-defined group title, persisted with the layout. */
+  name?: string;
   root: PaneLayoutNode | null;
   focusedSessionId: string | null;
 }
@@ -468,7 +470,7 @@ export function splitPane(
     0,
   );
   if (root === layout.root) return layout;
-  return { root, focusedSessionId: newSessionId };
+  return { ...layout, root, focusedSessionId: newSessionId };
 }
 
 function directPlacementExists(
@@ -602,7 +604,7 @@ export function movePane(
   );
   // A depth-bounded target cannot be split; keep the move transactional.
   if (root === removed.node) return layout;
-  return { root, focusedSessionId: movingSessionId };
+  return { ...layout, root, focusedSessionId: movingSessionId };
 }
 
 /** Remove a leaf and focus the closest edge of its promoted sibling. */
@@ -618,7 +620,7 @@ export function removePane(layout: PaneLayout, sessionId: string): PaneLayout {
     layoutContains(result.node, layout.focusedSessionId)
       ? layout.focusedSessionId
       : result.promotedFocusSessionId ?? firstSessionId(result.node);
-  return { root: result.node, focusedSessionId };
+  return { ...layout, root: result.node, focusedSessionId };
 }
 
 function updateNodeRatio(
@@ -744,7 +746,7 @@ function sameNode(a: PaneLayoutNode | null, b: PaneLayoutNode | null, depth = 0)
 }
 
 export function samePaneLayout(a: PaneLayout, b: PaneLayout): boolean {
-  return a.focusedSessionId === b.focusedSessionId && sameNode(a.root, b.root);
+  return a.name === b.name && a.focusedSessionId === b.focusedSessionId && sameNode(a.root, b.root);
 }
 
 export function paneLayoutHasSplit(layout: PaneLayout): boolean {
@@ -794,6 +796,8 @@ export function sanitizePaneLayout(
   return {
     root,
     focusedSessionId: nearestSurvivingFocus(originalIds, rawFocus, ids),
+    ...(wrapper && typeof value.name === "string" && value.name.trim()
+      ? { name: value.name.trim() } : {}),
   };
 }
 

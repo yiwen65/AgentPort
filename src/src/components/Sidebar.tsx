@@ -33,6 +33,8 @@ import {
   openDialog,
   openWorktreeView,
   persistProjectExpansion,
+  getState,
+  promptDialog,
   toast,
   update,
   useStore,
@@ -59,6 +61,8 @@ import { useTranslation } from "react-i18next";
 import { openGitCenter } from "../gitCenter";
 import {
   orderedLayoutSessionIds,
+  layoutContains,
+  persistTerminalLayouts,
   type PaneLayout,
 } from "../paneLayout";
 import { writeSessionPaneDragPayload } from "../paneSessionDrag";
@@ -1806,7 +1810,24 @@ function PaneGroupNode({ group, projects }: { group: PaneLayout; projects: Proje
     return session ? [session] : [];
   });
   const title = sessions.map((session) => session.title).join(" · ");
-  const label = t("sidebarGroups.group", { title });
+  const label = group.name || t("sidebarGroups.unnamed");
+  const rename = async () => {
+    const name = await promptDialog({
+      title: t("sidebarGroups.rename"), label: t("sidebarGroups.name"),
+      initial: group.name ?? "",
+    });
+    if (!name?.trim()) return;
+    // The first click may activate/reorder the group before dblclick runs.
+    const anchor = ids[0];
+    update((state) => ({
+      terminalLayoutGroups: state.terminalLayoutGroups.map((candidate) =>
+        layoutContains(candidate, anchor) ? { ...candidate, name: name.trim() } : candidate),
+      terminalLayout: layoutContains(state.terminalLayout, anchor)
+        ? { ...state.terminalLayout, name: name.trim() } : state.terminalLayout,
+    }));
+    const state = getState();
+    persistTerminalLayouts(state.terminalLayoutGroups, state.terminalLayout);
+  };
   if (!sessions.length) return null;
   return (
     <section className="tree-project sidebar-pane-group">
@@ -1816,6 +1837,8 @@ function PaneGroupNode({ group, projects }: { group: PaneLayout; projects: Proje
           <IconChevron dir={expanded ? "down" : "right"} />
         </button>
         <button type="button" className="tree-row project sidebar-group-open" title={label}
+          onDoubleClick={() => void rename()}
+          onKeyDown={(event) => { if (event.key === "F2") { event.preventDefault(); void rename(); } }}
           onClick={() => selectSession(group.focusedSessionId ?? sessions[0].id)}>
           <svg className="sidebar-group-glyph" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <rect x="2" y="3" width="12" height="10" rx="2" stroke="currentColor" />

@@ -155,7 +155,7 @@ describe("sidebar Session pane drag", () => {
     fireEvent.click(view.getByRole("button", { name: "分屏分组" }));
     expect(view.container.querySelectorAll(".sidebar-pane-group")).toHaveLength(2);
     expect(view.container.querySelectorAll(".tree-row.session")).toHaveLength(4);
-    fireEvent.click(view.getByRole("button", { name: /分组 · Third/ }));
+    fireEvent.click(view.getAllByRole("button", { name: "未命名分组 2" })[1]);
     expect(selectSessionMock).toHaveBeenCalledWith(getState().terminalLayoutGroups[1].focusedSessionId);
     fireEvent.click(view.getByRole("button", { name: /展开或收起分组：Third/ }));
     expect(view.container.querySelectorAll(".tree-row.session")).toHaveLength(2);
@@ -179,6 +179,16 @@ describe("sidebar Session pane drag", () => {
     fireEvent.wheel(sidebar, { deltaX: -100 });
     expect(view.queryByText("暂无分屏分组")).toBeNull();
     clock.mockRestore();
+  });
+
+  it("renames a group on double click and persists its custom title", async () => {
+    const view = render(<Sidebar collapsed={false} width={296} />);
+    fireEvent.click(view.getByRole("button", { name: "分屏分组" }));
+    fireEvent.doubleClick(view.getAllByRole("button", { name: "未命名分组 2" })[0]);
+    expect(getState().prompt?.initial).toBe("");
+    await act(async () => { getState().prompt?.resolve("  工作组  "); });
+    expect(view.getByRole("button", { name: "工作组 2" })).toBeTruthy();
+    expect(JSON.parse(localStorage.getItem("agentport-terminal-layout")!).groups[0].name).toBe("工作组");
   });
 
   it("marks remembered pane rows without rendering a trailing badge", () => {

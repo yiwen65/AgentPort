@@ -1,7 +1,7 @@
 {
   "sidebarGroups": {
     "groups": "分屏分组", "projects": "项目", "views": "侧边栏视图",
-    "group": "分组 · {{title}}", "fold": "展开或收起分组：{{title}}",
+    "unnamed": "未命名分组", "rename": "重命名分组", "name": "分组名称", "fold": "展开或收起分组：{{title}}",
     "empty": "暂无分屏分组", "hint": "将 Session 拖到另一终端上，即可创建分屏分组。"
   },
   "boot": {

@@ -1,7 +1,7 @@
 {
   "sidebarGroups": {
     "groups": "Split groups", "projects": "Projects", "views": "Sidebar views",
-    "group": "Group · {{title}}", "fold": "Expand or collapse group: {{title}}",
+    "unnamed": "Unnamed group", "rename": "Rename group", "name": "Group name", "fold": "Expand or collapse group: {{title}}",
     "empty": "No split groups yet", "hint": "Drag a Session onto another terminal to create a split group."
   },
   "boot": {
