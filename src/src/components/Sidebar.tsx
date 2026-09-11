@@ -1875,18 +1875,21 @@ export default function Sidebar({
     if (!element || activeAgentsView || collapsed) return;
     let distance = 0;
     let lastEvent = 0;
-    let switched = false;
     const onWheel = (event: WheelEvent) => {
       if (event.ctrlKey || Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
       event.preventDefault();
       const now = performance.now();
-      if (now - lastEvent > 180) { distance = 0; switched = false; }
+      // Direction chooses a page rather than toggling it: same-direction
+      // momentum is harmless. Do not lock out a new reverse swipe until the
+      // trackpad goes silent, which can take seconds with momentum events.
+      if (now - lastEvent > 180 || Math.sign(distance) !== Math.sign(event.deltaX)) {
+        distance = 0;
+      }
       lastEvent = now;
-      if (switched) return;
       distance += event.deltaX * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? element.clientWidth : 1);
       if (Math.abs(distance) < 60) return;
       setGroupsPage(distance > 0);
-      switched = true;
+      distance = 0;
     };
     element.addEventListener("wheel", onWheel, { passive: false });
     return () => element.removeEventListener("wheel", onWheel);

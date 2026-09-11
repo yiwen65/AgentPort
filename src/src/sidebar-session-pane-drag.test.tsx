@@ -179,12 +179,31 @@ describe("sidebar Session pane drag", () => {
     expect(view.getByText("暂无分屏分组")).toBeTruthy();
     expect(view.getByRole("button", { name: "分屏分组" }).getAttribute("aria-current")).toBe("page");
     // Momentum belongs to the same gesture and must not bounce to the other page.
-    fireEvent.wheel(sidebar, { deltaX: -100 });
+    fireEvent.wheel(sidebar, { deltaX: -5 });
     expect(view.getByText("暂无分屏分组")).toBeTruthy();
     const clock = vi.spyOn(performance, "now").mockReturnValue(performance.now() + 1000);
     fireEvent.wheel(sidebar, { deltaX: -100 });
     expect(view.queryByText("暂无分屏分组")).toBeNull();
     clock.mockRestore();
+  });
+
+  it("responds to a deliberate reverse swipe without waiting for wheel silence", () => {
+    setState({ terminalLayoutGroups: [] });
+    const view = render(<Sidebar collapsed={false} width={296} />);
+    const sidebar = view.container.querySelector("aside")!;
+    const clock = vi.spyOn(performance, "now").mockReturnValue(1000);
+    try {
+      fireEvent.wheel(sidebar, { deltaX: 80 });
+      expect(view.getByText("暂无分屏分组")).toBeTruthy();
+      // Ongoing momentum never produces the old 180ms silence window.
+      clock.mockReturnValue(1100);
+      fireEvent.wheel(sidebar, { deltaX: 8 });
+      clock.mockReturnValue(1200);
+      fireEvent.wheel(sidebar, { deltaX: -35 });
+      clock.mockReturnValue(1250);
+      fireEvent.wheel(sidebar, { deltaX: -35 });
+      expect(view.queryByText("暂无分屏分组")).toBeNull();
+    } finally { clock.mockRestore(); }
   });
 
   it("renames a group on double click and persists its custom title", async () => {
