@@ -187,23 +187,6 @@ describe("sidebar Session pane drag", () => {
     clock.mockRestore();
   });
 
-  it("switches between active Sessions and split groups with swipes and dots", () => {
-    setState({ sidebarViewMode: "activeAgents", terminalLayoutGroups: [] });
-    const view = render(<Sidebar collapsed={false} width={296} />);
-    const sidebar = view.container.querySelector("aside")!;
-    try {
-      fireEvent.wheel(sidebar, { deltaX: 80 });
-      expect(view.getByText("暂无分屏分组")).toBeTruthy();
-      fireEvent.wheel(sidebar, { deltaX: -80 });
-      expect(view.queryByText("暂无分屏分组")).toBeNull();
-      fireEvent.click(view.getByRole("button", { name: "分屏分组" }));
-      expect(view.getByText("暂无分屏分组")).toBeTruthy();
-      fireEvent.click(view.container.querySelector(".sidebar-page-dots button")!);
-      expect(view.queryByText("暂无分屏分组")).toBeNull();
-      expect(getState().sidebarViewMode).toBe("activeAgents");
-    } finally { act(() => setState({ sidebarViewMode: "projects" })); }
-  });
-
   it("responds to a deliberate reverse swipe without waiting for wheel silence", () => {
     setState({ terminalLayoutGroups: [] });
     const view = render(<Sidebar collapsed={false} width={296} />);

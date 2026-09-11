@@ -1874,7 +1874,7 @@ export default function Sidebar({
   const sidebarRef = useRef<HTMLElement>(null);
   useEffect(() => {
     const element = sidebarRef.current;
-    if (!element || collapsed) return;
+    if (!element || activeAgentsView || collapsed) return;
     let distance = 0;
     let lastEvent = 0;
     const onWheel = (event: WheelEvent) => {
@@ -1895,8 +1895,8 @@ export default function Sidebar({
     };
     element.addEventListener("wheel", onWheel, { passive: false });
     return () => element.removeEventListener("wheel", onWheel);
-  }, [collapsed]);
-  const showGroups = groupsPage;
+  }, [activeAgentsView, collapsed]);
+  const showGroups = groupsPage && !activeAgentsView;
   const projectLayoutSaving = useStore((state) => state.projectLayoutSaving);
   const projectDrag = useProjectDrag(projects, projectLayoutSaving);
   const expandedProjects = useStore((state) => state.expandedProjects);
@@ -1989,13 +1989,13 @@ export default function Sidebar({
           })
         )}
       </div>
-      <nav className="sidebar-page-dots" aria-label={t("shell:sidebarGroups.views")}>
+      {!activeAgentsView ? <nav className="sidebar-page-dots" aria-label={t("shell:sidebarGroups.views")}>
         {[false, true].map((page) => <button key={String(page)} type="button"
-          aria-label={t(page ? "shell:sidebarGroups.groups" : activeAgentsView ? "shell:ui.sidebar.activeAgentListLabel" : "shell:sidebarGroups.projects")}
+          aria-label={t(page ? "shell:sidebarGroups.groups" : "shell:sidebarGroups.projects")}
           aria-current={groupsPage === page ? "page" : undefined}
-          title={t(page ? "shell:sidebarGroups.groups" : activeAgentsView ? "shell:ui.sidebar.activeAgentListLabel" : "shell:sidebarGroups.projects")}
+          title={t(page ? "shell:sidebarGroups.groups" : "shell:sidebarGroups.projects")}
           onClick={() => setGroupsPage(page)}><span /></button>)}
-      </nav>
+      </nav> : null}
       <div className="sidebar-footer">
         <button
           className="sidebar-footer-action"
