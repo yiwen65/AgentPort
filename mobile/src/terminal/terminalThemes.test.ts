@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_MOBILE_TERMINAL_APPEARANCE,
+  getMobileTerminalFontFamily,
   getMobileTerminalPalette,
   getMobileTerminalWorkspaceVariables,
   loadMobileTerminalAppearance,
   MOBILE_TERMINAL_ANSI_KEYS,
   MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY,
+  MOBILE_TERMINAL_FONTS,
   MOBILE_TERMINAL_THEME_IDS,
   MOBILE_TERMINAL_THEME_MODES,
   MOBILE_TERMINAL_THEMES,
@@ -144,13 +146,19 @@ describe("mobile terminal theme catalog", () => {
     localStorage.setItem(MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY, "not-json");
     expect(loadMobileTerminalAppearance()).toEqual(DEFAULT_MOBILE_TERMINAL_APPEARANCE);
 
-    localStorage.setItem(MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY, JSON.stringify({ theme: "aurora", mode: "light" }));
-    expect(loadMobileTerminalAppearance()).toEqual({ theme: "aurora", mode: "light" });
+    localStorage.setItem(MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY, JSON.stringify({ theme: "aurora", mode: "light", font: "fira" }));
+    expect(loadMobileTerminalAppearance()).toEqual({ theme: "aurora", mode: "light", font: "fira" });
 
-    saveMobileTerminalAppearance({ theme: "sakura", mode: "system" });
-    expect(loadMobileTerminalAppearance()).toEqual({ theme: "sakura", mode: "system" });
-    saveMobileTerminalAppearance({ theme: "sakura", mode: "dark" });
-    expect(JSON.parse(localStorage.getItem(MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY)!)).toEqual({ theme: "sakura", mode: "dark" });
+    saveMobileTerminalAppearance({ theme: "sakura", mode: "system", font: "jetbrains" });
+    expect(loadMobileTerminalAppearance()).toEqual({ theme: "sakura", mode: "system", font: "jetbrains" });
+    saveMobileTerminalAppearance({ theme: "sakura", mode: "dark", font: "plex" });
+    expect(JSON.parse(localStorage.getItem(MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY)!)).toEqual({ theme: "sakura", mode: "dark", font: "plex" });
+  });
+
+  it("registers bundled terminal fonts and normalizes families", () => {
+    for (const font of MOBILE_TERMINAL_FONTS) expect(getMobileTerminalFontFamily(font.id)).toContain(font.family);
+    expect(getMobileTerminalFontFamily("unknown")).toContain("ui-monospace");
+    expect(MOBILE_TERMINAL_FONTS.filter(font => font.regular && font.bold)).toHaveLength(3);
   });
 
   it("derives scoped workspace variables from the same palette as xterm", () => {

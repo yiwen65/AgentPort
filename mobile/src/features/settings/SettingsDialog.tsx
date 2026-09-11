@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Modal } from "../../components/Modal";
 import { useAppAppearance } from "../../app/appAppearance";
 import { useMobileTerminalAppearance } from "../../terminal/terminalAppearance";
-import { getMobileTerminalPalette, getMobileTerminalWorkspaceVariables, MOBILE_TERMINAL_THEME_IDS, MOBILE_THEME_MODES } from "../../terminal/terminalThemes";
+import { getMobileTerminalFontFamily, getMobileTerminalPalette, getMobileTerminalWorkspaceVariables, MOBILE_TERMINAL_FONT_IDS, MOBILE_TERMINAL_THEME_IDS, MOBILE_THEME_MODES } from "../../terminal/terminalThemes";
 
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
@@ -76,6 +76,14 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               <span className="visually-hidden" id={descriptionId}>{t(`session.appearance.themes.${theme}.description`)}</span>
             </Fragment>;
           })}
+        </div>
+
+        <span className="terminal-appearance-label" id="terminal-font-label">{t("settings.terminalFont")}</span>
+        <div className="mobile-terminal-font-grid" role="radiogroup" aria-labelledby="terminal-font-label">
+          {MOBILE_TERMINAL_FONT_IDS.map(font => <label key={font} className="mobile-terminal-font-choice">
+            <input className="visually-hidden" type="radio" name="mobile-terminal-font" value={font} checked={terminalAppearance.font === font} onChange={() => setTerminalAppearance({ font })} />
+            <span style={{ fontFamily: getMobileTerminalFontFamily(font) }}>{t(`settings.fonts.${font}`)}</span>
+          </label>)}
         </div>
       </fieldset>
     </Modal>

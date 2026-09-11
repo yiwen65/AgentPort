@@ -554,9 +554,38 @@ export function getMobileTerminalPalette(
   return getMobileTerminalThemeDefinition(value)[normalizeMobileTerminalThemeMode(mode)];
 }
 
-export const MOBILE_THEME_MODES = ["light", "dark", "system"] as const;
-export type MobileThemeMode = (typeof MOBILE_THEME_MODES)[number];
+import jetbrainsRegular from "../assets/fonts/JetBrainsMono-Regular.ttf";
+import jetbrainsBold from "../assets/fonts/JetBrainsMono-Bold.ttf";
+import firaRegular from "../assets/fonts/FiraCode-Regular.ttf";
+import firaBold from "../assets/fonts/FiraCode-Bold.ttf";
+import plexRegular from "../assets/fonts/IBMPlexMono-Regular.otf";
+import plexBold from "../assets/fonts/IBMPlexMono-Bold.otf";
 
+export const MOBILE_TERMINAL_FONT_IDS = ["system", "jetbrains", "fira", "plex"] as const;
+export type MobileTerminalFontId = (typeof MOBILE_TERMINAL_FONT_IDS)[number];
+export interface MobileTerminalFontDefinition {
+  readonly id: MobileTerminalFontId;
+  readonly family: string;
+  readonly regular?: string;
+  readonly bold?: string;
+  readonly format: "truetype" | "opentype";
+}
+export const MOBILE_TERMINAL_FONTS: readonly MobileTerminalFontDefinition[] = [
+  { id: "system", family: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", format: "truetype" },
+  { id: "jetbrains", family: "JetBrains Mono", regular: jetbrainsRegular, bold: jetbrainsBold, format: "truetype" },
+  { id: "fira", family: "Fira Code", regular: firaRegular, bold: firaBold, format: "truetype" },
+  { id: "plex", family: "IBM Plex Mono", regular: plexRegular, bold: plexBold, format: "opentype" },
+];
+export function normalizeMobileTerminalFontId(value: unknown): MobileTerminalFontId {
+  return MOBILE_TERMINAL_FONTS.some(font => font.id === value) ? value as MobileTerminalFontId : "system";
+}
+export function getMobileTerminalFontFamily(value: unknown): string {
+  return MOBILE_TERMINAL_FONTS.find(font => font.id === normalizeMobileTerminalFontId(value))!.family;
+}
+
+export const MOBILE_THEME_MODES = ["light", "dark", "system"] as const;
+
+export type MobileThemeMode = (typeof MOBILE_THEME_MODES)[number];
 function normalizeMobileThemeMode(value: unknown): MobileThemeMode {
   return value === "system" || isMobileTerminalThemeMode(value) ? value : "system";
 }
@@ -564,11 +593,13 @@ function normalizeMobileThemeMode(value: unknown): MobileThemeMode {
 export interface MobileTerminalAppearance {
   readonly theme: MobileTerminalThemeId;
   readonly mode: MobileThemeMode;
+  readonly font: MobileTerminalFontId;
 }
 
 export const DEFAULT_MOBILE_TERMINAL_APPEARANCE: MobileTerminalAppearance = {
   theme: "one",
   mode: "system",
+  font: "system",
 };
 
 export const MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY =
@@ -590,10 +621,11 @@ export function loadMobileTerminalAppearance(
   try {
     const raw = storage?.getItem(MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY);
     if (!raw) return { ...DEFAULT_MOBILE_TERMINAL_APPEARANCE };
-    const parsed = JSON.parse(raw) as { theme?: unknown; mode?: unknown };
+    const parsed = JSON.parse(raw) as { theme?: unknown; mode?: unknown; font?: unknown };
     return {
       theme: normalizeMobileTerminalThemeId(parsed.theme),
       mode: normalizeMobileThemeMode(parsed.mode),
+      font: normalizeMobileTerminalFontId(parsed.font),
     };
   } catch {
     return { ...DEFAULT_MOBILE_TERMINAL_APPEARANCE };
@@ -608,6 +640,7 @@ export function saveMobileTerminalAppearance(
     storage?.setItem(MOBILE_TERMINAL_APPEARANCE_STORAGE_KEY, JSON.stringify({
       theme: normalizeMobileTerminalThemeId(appearance.theme),
       mode: normalizeMobileThemeMode(appearance.mode),
+      font: normalizeMobileTerminalFontId(appearance.font),
     }));
   } catch {
     // Appearance persistence is best-effort; the live selection still applies.

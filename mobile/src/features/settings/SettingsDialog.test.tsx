@@ -12,8 +12,9 @@ describe("SettingsDialog", () => {
   it("offers independent interface and terminal modes and preserves existing terminal preferences", () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ theme: "aurora", mode: "light" }));
     const first = render(<SettingsDialog onClose={vi.fn()} />);
-    expect(screen.getAllByRole("radio")).toHaveLength(12);
+    expect(screen.getAllByRole("radio")).toHaveLength(16);
     expect(interfaceGroup().getByRole("radio", { name: "Dark" })).toBeChecked();
+    expect(terminal().getByRole("radiogroup", { name: "Terminal font" })).toBeInTheDocument();
     expect(terminal().getByRole("radio", { name: "Light" })).toBeChecked();
     expect(terminal().getByRole("radio", { name: "Aurora" })).toBeChecked();
     fireEvent.click(interfaceGroup().getByRole("radio", { name: "Light" }));

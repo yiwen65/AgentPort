@@ -23,7 +23,7 @@ describe("independent interface appearance", () => {
     fireEvent.click(screen.getByText("terminal"));
     expect(document.documentElement.style.getPropertyValue("--bg")).toBe(background);
     fireEvent.click(screen.getByText("light", { selector: "button" }));
-    expect(JSON.parse(localStorage.getItem(TERMINAL_KEY)!)).toEqual({ theme: "aurora", mode: "light" });
+    expect(JSON.parse(localStorage.getItem(TERMINAL_KEY)!)).toEqual({ theme: "aurora", mode: "light", font: "system" });
     expect(localStorage.getItem(APP_APPEARANCE_STORAGE_KEY)).toBe("light");
   });
   it("responds only to its own storage key and restores its independent mode", () => {

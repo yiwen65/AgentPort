@@ -8,6 +8,7 @@ import { MobileTerminal, type MobileTerminalHandle } from "../../terminal/Mobile
 import { checkpointKey, forgetCheckpoint, readCheckpoint, saveCheckpoint } from "../../terminal/terminalCheckpoint";
 import { isTerminalSnapshot } from "../../terminal/terminalSnapshot";
 import {
+  getMobileTerminalFontFamily,
   getMobileTerminalPalette,
   getMobileTerminalWorkspaceVariables,
 } from "../../terminal/terminalThemes";
@@ -786,6 +787,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         imageUploadTarget={JSON.stringify([open.hostProfileId, open.session.id, open.session.latestStatus?.runId, attachmentId, active, connectionLabel === "live"])}
         onResize={requestTerminalResize}
         fontSize={fontSize}
+        fontFamily={getMobileTerminalFontFamily(terminalAppearance.font)}
         theme={terminalPalette.xterm}
         title={t("session.fullTerminal")}
         description={t("session.terminalDescription")}

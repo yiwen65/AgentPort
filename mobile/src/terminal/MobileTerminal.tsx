@@ -22,6 +22,7 @@ import { ShortcutIcon, SHORTCUT_NAMES, ShortcutSettingsIcon } from "./ShortcutIc
 import { ShortcutSettings } from "./ShortcutSettings";
 import { applyShortcutModifiers, encodeShortcutKey, isCustomShortcut, loadShortcuts, saveShortcuts, type ShortcutLayout } from "./shortcuts";
 import { MOBILE_TERMINAL_THEMES } from "./terminalThemes";
+import "./terminalFonts.css";
 import "./mobile-terminal.css";
 
 export interface MobileTerminalProps {
@@ -34,6 +35,7 @@ export interface MobileTerminalProps {
   /** Forces a fresh size report after the remote attachment/owner changes. */
   resizeEpoch?: unknown;
   fontSize?: number;
+  fontFamily?: string;
   theme?: ITheme;
   title?: string;
   description?: string;
@@ -61,6 +63,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   onUploadImage,
   imageUploadTarget,
   resizeEpoch,
+  fontFamily = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
   fontSize = 14,
   theme = MOBILE_TERMINAL_THEMES.one.dark.xterm,
   title = "Terminal interaction test",
@@ -317,6 +320,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       // exceed 10k wrapped rows on a phone-sized PTY; keep them scrollable.
       scrollback: 2_000,
       fontSize,
+      fontFamily,
       minimumContrastRatio: 4.5,
       screenReaderMode: false,
       theme,
@@ -736,9 +740,10 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     const terminal = terminalRef.current;
     if (!terminal) return;
     terminal.options.fontSize = fontSize;
+    terminal.options.fontFamily = fontFamily;
     lastReportedSize.current = undefined;
     scheduleFitRef.current(true);
-  }, [fontSize]);
+  }, [fontSize, fontFamily]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

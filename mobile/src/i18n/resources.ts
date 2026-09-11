@@ -97,7 +97,7 @@ export const resources = {
           credentialRequired: "请先安全保存密码、导入私钥或生成密钥。",
         },
       },
-      settings: { title: "设置", interfaceTitle: "主界面外观", interfaceHint: "独立设置界面明暗，不影响终端配色。", interfaceMode: "界面深浅模式", mosaic: "拼贴" },
+      settings: { title: "设置", interfaceTitle: "主界面外观", interfaceHint: "独立设置界面明暗，不影响终端配色。", interfaceMode: "界面深浅模式", mosaic: "拼贴", terminalFont: "终端字体", fonts: { system: "系统默认", jetbrains: "JetBrains Mono", fira: "Fira Code", plex: "IBM Plex Mono" } },
       dashboard: {
         states: { creating: "启动中", working: "运行中", needs_input: "等待输入", idle: "空闲", exited: "已结束", interrupted: "已中断", stopped: "已停止", unknown: "状态未知", cached: "上次状态" },
         currentDevice: "当前设备",
@@ -268,7 +268,7 @@ export const resources = {
           credentialRequired: "Store a password, import a private key, or generate a key first.",
         },
       },
-      settings: { title: "Settings", interfaceTitle: "Interface appearance", interfaceHint: "Choose the interface mode independently of terminal colors.", interfaceMode: "Interface mode", mosaic: "Mosaic" },
+      settings: { title: "Settings", interfaceTitle: "Interface appearance", interfaceHint: "Choose the interface mode independently of terminal colors.", interfaceMode: "Interface mode", mosaic: "Mosaic", terminalFont: "Terminal font", fonts: { system: "System default", jetbrains: "JetBrains Mono", fira: "Fira Code", plex: "IBM Plex Mono" } },
       dashboard: {
         states: { creating: "Starting", working: "Working", needs_input: "Needs input", idle: "Idle", exited: "Ended", interrupted: "Interrupted", stopped: "Stopped", unknown: "Unknown", cached: "Last known" },
         currentDevice: "Current device",

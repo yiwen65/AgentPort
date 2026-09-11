@@ -9,7 +9,7 @@ import {
 let snapshot: MobileTerminalAppearance | undefined;
 const listeners = new Set<() => void>();
 function apply(next: MobileTerminalAppearance) {
-  if (snapshot?.theme === next.theme && snapshot.mode === next.mode) return;
+  if (snapshot?.theme === next.theme && snapshot.mode === next.mode && snapshot.font === next.font) return;
   snapshot = next;
   listeners.forEach(listener => listener());
 }
@@ -18,7 +18,7 @@ function getSnapshot() {
   // the live choice, including edits that could not be persisted.
   if (!listeners.size || !snapshot) {
     const stored = loadMobileTerminalAppearance();
-    if (snapshot?.theme !== stored.theme || snapshot.mode !== stored.mode) snapshot = stored;
+    if (snapshot?.theme !== stored.theme || snapshot.mode !== stored.mode || snapshot.font !== stored.font) snapshot = stored;
   }
   return snapshot!;
 }

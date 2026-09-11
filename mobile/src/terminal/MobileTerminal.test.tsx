@@ -34,7 +34,7 @@ const terminalHarness = vi.hoisted(() => ({
   pastes: [] as string[],
   scrollToTopCalls: 0,
   instances: 0,
-  options: undefined as { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown } | undefined,
+  options: undefined as { fontSize?: number; fontFamily?: string; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown } | undefined,
 }));
 
 vi.mock("./terminalSnapshot", () => ({
@@ -58,8 +58,8 @@ vi.mock("@xterm/xterm", () => ({
     get rows() { return terminalHarness.rows; }
     get modes() { return { applicationCursorKeysMode: terminalHarness.applicationCursor, mouseTrackingMode: terminalHarness.mouseTracking }; }
     buffer = { active: { get type() { return terminalHarness.bufferType; }, cursorY: 20, viewportY: 0, get baseY() { return terminalHarness.baseY; }, getLine: () => ({ getCell: () => ({ getChars: () => "a", getWidth: () => 1 }) }) } };
-    options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown };
-    constructor(options: { fontSize?: number; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown } = {}) {
+    options: { fontSize?: number; fontFamily?: string; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown };
+    constructor(options: { fontSize?: number; fontFamily?: string; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown } = {}) {
       this.options = { ...options };
       terminalHarness.options = this.options;
       terminalHarness.instances += 1;
@@ -115,6 +115,13 @@ describe("MobileTerminal input accessory", () => {
     view.rerender(<MobileTerminal showProbeOutput={false} />);
     expect(surface).not.toHaveAttribute("data-recovering");
     expect(document.activeElement).toBe(helper);
+  });
+
+  it("applies and updates the configured terminal font", () => {
+    const view = render(<MobileTerminal showProbeOutput={false} fontFamily="JetBrains Mono" />);
+    expect(terminalHarness.options?.fontFamily).toBe("JetBrains Mono");
+    view.rerender(<MobileTerminal showProbeOutput={false} fontFamily="Fira Code" />);
+    expect(terminalHarness.options?.fontFamily).toBe("Fira Code");
   });
 
   it("finishes restoration only on a real render and cancels an obsolete render waiter", async () => {
