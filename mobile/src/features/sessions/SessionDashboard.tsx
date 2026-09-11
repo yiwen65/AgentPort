@@ -115,8 +115,9 @@ function AgentGlyph({ agent }: { agent: string }) {
   </svg>;
 }
 
-function SessionRow({ session, host, stale, onOpen, onActions }: {
+function SessionRow({ session, unread, host, stale, onOpen, onActions }: {
   session: SessionSummary;
+  unread: boolean;
   host: HostProfileSummary;
   stale?: boolean;
   onOpen: () => void;
@@ -130,7 +131,7 @@ function SessionRow({ session, host, stale, onOpen, onActions }: {
   useEffect(() => cancelPress, []);
   const disabled = Boolean(session.archivedAt) || host.connectionState !== "connected";
   return (
-    <li className={`v2-session-row${session.unreadAttention ? " has-unread" : ""}`}>
+    <li className={`v2-session-row${unread ? " has-unread" : ""}`}>
       <button type="button" data-session-id={session.id} disabled={disabled}
         onPointerDown={event => {
           cancelPress(); consumed.current = false;
@@ -145,7 +146,7 @@ function SessionRow({ session, host, stale, onOpen, onActions }: {
         <span className="session-row-copy">
           <span id={`${id}-status`} className="session-row-status"><SessionStateBadge session={session} stale={stale || host.connectionState !== "connected"} /></span>
           <strong id={`${id}-title`}>{session.title}</strong>
-          {session.unreadAttention ? <span className="session-unread" role="img" aria-label={t("dashboard.unread")}><span aria-hidden="true" /></span> : null}
+          {unread ? <span className="session-unread" role="img" aria-label={t("dashboard.unread")}><span aria-hidden="true" /></span> : null}
         </span>
         <time dateTime={session.updatedAt}>{relativeTime(session.updatedAt)}</time>
       </button>
@@ -158,14 +159,15 @@ const EMPTY_SESSIONS: SessionSummary[] = [];
 // Project disclosure and toolbar changes do not change the Session rows.
 // Keep their event handlers and list identity stable instead of rendering every
 // row in every project for those local UI-only updates.
-const SessionRows = memo(function SessionRows({ sessions, host, stale, onOpen, onActions }: {
+const SessionRows = memo(function SessionRows({ sessions, unreadSessionIds, host, stale, onOpen, onActions }: {
   sessions: SessionSummary[];
+  unreadSessionIds: ReadonlySet<string>;
   host: HostProfileSummary;
   stale?: boolean;
   onOpen: (session: SessionSummary) => void;
   onActions: (session: SessionSummary) => void;
 }) {
-  return <>{sessions.map(session => <SessionRow key={session.id} session={session} host={host} stale={stale}
+  return <>{sessions.map(session => <SessionRow key={session.id} session={session} unread={unreadSessionIds.has(session.id)} host={host} stale={stale}
     onOpen={() => onOpen(session)} onActions={() => onActions(session)} />)}</>;
 });
 
@@ -442,6 +444,14 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     if (selectedDeviceId) persistWorkspace(selectedDeviceId, next);
   }, [selectedDeviceId]);
 
+  // Mobile receipts belong to this phone, not the shared desktop unread bit.
+  // Use the same durable inbox as Recent so old server snapshots cannot relight
+  // an acknowledged row, while a newer attention event can.
+  // A value-stable key preserves memoized rows when inbox polling publishes
+  // unchanged entries. Keep the original Session objects and lists intact.
+  const unreadSessionKey = JSON.stringify(recent
+    .filter(entry => entry.hostId === snapshot?.deviceId).map(entry => entry.sessionId).sort());
+  const unreadSessionIds = useMemo(() => new Set<string>(JSON.parse(unreadSessionKey)), [unreadSessionKey]);
   const sessions = useMemo(() => snapshot?.sessions.filter(session => !session.archivedAt
     && !removingSessions.includes(JSON.stringify([snapshot.deviceId, session.id]))) ?? EMPTY_SESSIONS,
   [snapshot?.sessions, snapshot?.deviceId, removingSessions]);
@@ -605,10 +615,10 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
                 setCreatedSessionId(undefined);
               }}><AgentPortMark /></button>
             </header>
-            <div className={`project-content${expanded ? " is-expanded" : ""}`} aria-hidden={!expanded} {...(expanded ? {} : { inert: "" })}><div><ul className="v2-session-list"><SessionRows sessions={projectSessions} host={selectedHost!} stale={snapshot?.cached} onOpen={open} onActions={showSessionActions} /></ul></div></div>
+            <div className={`project-content${expanded ? " is-expanded" : ""}`} aria-hidden={!expanded} {...(expanded ? {} : { inert: "" })}><div><ul className="v2-session-list"><SessionRows sessions={projectSessions} unreadSessionIds={unreadSessionIds} host={selectedHost!} stale={snapshot?.cached} onOpen={open} onActions={showSessionActions} /></ul></div></div>
           </section>;
         })}
-      </div> : <div className="activity-session-view"><ul className="v2-session-list active-agent-list"><SessionRows sessions={active} host={selectedHost!} stale={snapshot?.cached} onOpen={open} onActions={showSessionActions} /></ul>{snapshot && active.length === 0 ? <div className="compact-empty" role="status">{t("dashboard.noActivity")}</div> : null}</div>}
+      </div> : <div className="activity-session-view"><ul className="v2-session-list active-agent-list"><SessionRows sessions={active} unreadSessionIds={unreadSessionIds} host={selectedHost!} stale={snapshot?.cached} onOpen={open} onActions={showSessionActions} /></ul>{snapshot && active.length === 0 ? <div className="compact-empty" role="status">{t("dashboard.noActivity")}</div> : null}</div>}
 
       {snapshot && sessions.length === 0 ? <div className="state-card" role="status">{t("dashboard.noSessions")}</div> : null}
 

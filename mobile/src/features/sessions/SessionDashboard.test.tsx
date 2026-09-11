@@ -457,9 +457,16 @@ describe("V2 Session workspace", () => {
     const { rerender } = render(<SessionDashboard client={remote} onOpenSession={onOpenSession} />);
     fireEvent.click(await screen.findByRole("button", { name: "Approval task" }));
     expect(screen.getByRole("button", { name: "Recent sessions" }).querySelector(".toolbar-attention")).not.toBeNull();
+    const rowDot = () => screen.getByRole("button", { name: "Approval task" }).closest("li")!.querySelector(".session-unread");
+    expect(rowDot()).not.toBeNull();
     const open = onOpenSession.mock.calls[0][0];
     rerender(<SessionDashboard client={remote} onOpenSession={onOpenSession} openedSession={{ open, token: 1 }} />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Recent sessions" }).querySelector(".toolbar-attention")).toBeNull());
+    expect(rowDot()).toBeNull();
+    // The shared desktop unread bit remains true in this stale server snapshot.
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).not.toBeDisabled());
+    expect(rowDot()).toBeNull();
     expect(vi.mocked(remote.request).mock.calls.some(([, method]) => method === "session.seen.mark")).toBe(false);
     sequence = 2;
     // Returning from suspension triggers an immediate incremental catch-up.
@@ -468,6 +475,24 @@ describe("V2 Session workspace", () => {
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     fireEvent(document, new Event("visibilitychange"));
     await waitFor(() => expect(screen.getByRole("button", { name: "Recent sessions" }).querySelector(".toolbar-attention")).not.toBeNull());
+    expect(rowDot()).not.toBeNull();
+  });
+
+  it("uses persisted phone receipts and does not mix same-named sessions across hosts", async () => {
+    const event = { sessionId: "attention", runId: "run", kind: "approval_requested" as const,
+      cursor: { sessionId: "attention", runOrdinal: 1, sequence: 1, occurredAt: "2026-09-02T00:02:00Z" } };
+    const phone = new AttentionInbox("host-1");
+    phone.ingest({ events: [event] });
+    phone.acknowledge("attention", event.cursor);
+    new AttentionInbox("host-2").ingest({ events: [event] });
+    const remote = client();
+    const view = render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    const row = (await screen.findByRole("button", { name: "Approval task" })).closest("li")!;
+    expect(row.querySelector(".session-unread")).toBeNull();
+    view.unmount();
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    expect((await screen.findByRole("button", { name: "Approval task" })).closest("li")!.querySelector(".session-unread")).toBeNull();
+    expect(vi.mocked(remote.request).mock.calls.some(([, method]) => method === "session.seen.mark")).toBe(false);
   });
 
   it("clears all Recent messages across devices without any remote Session mutations", async () => {
