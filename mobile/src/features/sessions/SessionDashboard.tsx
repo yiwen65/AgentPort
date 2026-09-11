@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useId, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useId, useRef, useState, type CSSProperties } from "react";
 import { AgentPortMark } from "../../components/AgentPortMark";
 import { SessionRowActions } from "./SessionRowActions";
 import { useForegroundRecovery } from "../../protocol/useForegroundRecovery";
@@ -96,10 +96,14 @@ function Icon({ name }: { name: "computer" | "bell" | "refresh" | "clock" | "fol
     bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></>,
     refresh: <><path d="M20 6v5h-5" /><path d="M4 18v-5h5" /><path d="M18.5 10a7 7 0 0 0-12-3L4 9M5.5 14a7 7 0 0 0 12 3l2.5-2" /></>,
     clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
-    folder: <path d="M3 6.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
+    folder: <path d="M5.2 6.8h5.3l1.6 2h6.7a1.6 1.6 0 0 1 1.6 1.6v7a1.6 1.6 0 0 1-1.6 1.6H5.2a1.6 1.6 0 0 1-1.6-1.6V8.4a1.6 1.6 0 0 1 1.6-1.6Z" />,
     chevron: <path d="m9 6 6 6-6 6" />,
   } as const;
   return <svg className={`ui-icon ui-icon-${name}`} aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
+}
+
+function projectTone(id: string): number {
+  return [...id].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 6;
 }
 
 function AgentGlyph({ agent }: { agent: string }) {
@@ -544,7 +548,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     <section ref={dashboardRef} className="session-dashboard mobile-session-sidebar" aria-labelledby="dashboard-title">
       <h1 className="visually-hidden" id="dashboard-title">{t("dashboard.title")}</h1>
       <header className="mobile-sidebar-toolbar">
-        <button type="button" className="toolbar-icon-button" onClick={onManageDevices} aria-label={t("hosts.manage")} aria-haspopup="dialog">
+        <button type="button" className="toolbar-icon-button" style={{ "--toolbar-tint": "#8ed88c" } as CSSProperties} onClick={onManageDevices} aria-label={t("hosts.manage")} aria-haspopup="dialog">
           <Icon name="computer" />
         </button>
         <label className="compact-device-picker">
@@ -558,18 +562,19 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
           </select>
         </label>
         <span className="toolbar-spacer" />
-        <button type="button" className="toolbar-icon-button" disabled={!selectedHost} onClick={() => updateWorkspace({ ...workspace, recentOpen: true })} aria-label={t("dashboard.recent")}><Icon name="clock" />{recent.length > 0 ? <span className="toolbar-attention" aria-hidden="true" /> : null}</button>
-        <button type="button" className="toolbar-icon-button toolbar-refresh" disabled={!selectedDeviceId || updateBusy} aria-busy={updateBusy} onClick={() => void updateSelectedDevice()} aria-label={t("dashboard.refresh")}><Icon name="refresh" /></button>
+        <button type="button" className="toolbar-icon-button" style={{ "--toolbar-tint": "#ffd166" } as CSSProperties} disabled={!selectedHost} onClick={() => updateWorkspace({ ...workspace, recentOpen: true })} aria-label={t("dashboard.recent")}><Icon name="clock" />{recent.length > 0 ? <span className="toolbar-attention" aria-hidden="true" /> : null}</button>
+        <button type="button" className="toolbar-icon-button toolbar-refresh" style={{ "--toolbar-tint": "#7ed6df" } as CSSProperties} disabled={!selectedDeviceId || updateBusy} aria-busy={updateBusy} onClick={() => void updateSelectedDevice()} aria-label={t("dashboard.refresh")}><Icon name="refresh" /></button>
         <button
           type="button"
           className={`toolbar-icon-button activity-toggle${workspace.layout === "active" ? " is-active" : ""}`}
+          style={{ "--toolbar-tint": "#d8f075" } as CSSProperties}
           aria-label={workspace.layout === "projects" ? t("dashboard.showActivity") : t("dashboard.showProjects")}
           aria-pressed={workspace.layout === "active"}
           onClick={() => updateWorkspace({ ...workspace, layout: workspace.layout === "projects" ? "active" : "projects" })}
         >
           <Icon name="bell" />
         </button>
-        <button type="button" className="toolbar-icon-button" onClick={onOpenSettings} disabled={!onOpenSettings} aria-label={t("settings.title", { defaultValue: "Settings" })} aria-haspopup="dialog"><Icon name="settings" /></button>
+        <button type="button" className="toolbar-icon-button" style={{ "--toolbar-tint": "#b7dca0" } as CSSProperties} onClick={onOpenSettings} disabled={!onOpenSettings} aria-label={t("settings.title", { defaultValue: "Settings" })} aria-haspopup="dialog"><Icon name="settings" /></button>
       </header>
 
       <div className="visually-hidden" aria-live="polite">
@@ -590,9 +595,9 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
           const expanded = workspace.projectExpansionInitialized
             ? workspace.expandedProjects.includes(project.id)
             : true;
-          return <section className="project-group" key={project.id}>
+          return <section className="project-group" data-project-tone={projectTone(project.id)} key={project.id}>
             <header>
-              <button type="button" className="project-toggle" aria-expanded={expanded} onClick={() => toggleProject(project.id)}><Icon name="chevron" /><Icon name="folder" /><strong>{project.name}</strong></button>
+              <button type="button" className="project-toggle" aria-expanded={expanded} onClick={() => toggleProject(project.id)}><Icon name="folder" /><strong>{project.name}</strong></button>
               <button type="button" className="project-launch-button" aria-haspopup="dialog" aria-label={t("dashboard.launchIn", { defaultValue: "Start agent in {{project}}", project: project.name })} onClick={() => {
                 const target = { hostId: selectedDeviceId, project };
                 pickerRef.current = target;

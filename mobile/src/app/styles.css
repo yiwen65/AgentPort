@@ -104,9 +104,9 @@ textarea { resize: vertical; overflow-wrap: anywhere; }
 .check-row { display: flex; align-items: flex-start; gap: 10px; margin: 14px 0; line-height: 1.4; }
 .check-row input { width: 22px; min-height: 22px; flex: 0 0 auto; }
 .mobile-session-sidebar { min-height: 100dvh; padding-bottom: max(24px, env(safe-area-inset-bottom)); background: var(--bg); color: var(--text); }
-.mobile-sidebar-toolbar { position: sticky; z-index: 3; top: 0; display: flex; min-height: calc(60px + env(safe-area-inset-top)); align-items: flex-end; gap: 4px; padding: env(safe-area-inset-top) 10px 8px; border-bottom: 1px solid var(--line-soft); background: var(--nav-glass); box-shadow: 0 8px 24px rgba(0, 0, 0, .18), inset 0 1px 0 rgba(255, 255, 255, .055); backdrop-filter: blur(26px) saturate(1.18); -webkit-backdrop-filter: blur(26px) saturate(1.18); }
-.toolbar-icon-button { position: relative; width: 44px; height: 44px; flex: 0 0 auto; display: grid; place-items: center; border: 0; border-radius: 12px; background: transparent; color: var(--muted); }
-.toolbar-icon-button:active, .toolbar-icon-button.is-active { color: var(--text); background: var(--fill-strong); }
+.mobile-sidebar-toolbar { position: sticky; z-index: 3; top: 0; display: flex; min-height: calc(60px + env(safe-area-inset-top)); align-items: flex-end; gap: 4px; padding: env(safe-area-inset-top) 10px 8px; border-bottom: 1px solid var(--line-soft); background: var(--nav-glass); box-shadow: inset 0 -1px 0 #d0fa590f; backdrop-filter: blur(26px) saturate(1.18); -webkit-backdrop-filter: blur(26px) saturate(1.18); }
+.toolbar-icon-button { position: relative; width: 44px; height: 44px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--toolbar-tint, var(--line)) 62%, transparent); border-radius: 14px; background: color-mix(in srgb, var(--toolbar-tint, var(--fill)) 18%, var(--panel)); color: color-mix(in srgb, var(--toolbar-tint, var(--muted)) 78%, var(--text)); box-shadow: inset 0 1px 0 #ffffff08; }
+.toolbar-icon-button:active, .toolbar-icon-button.is-active { color: var(--text); background: color-mix(in srgb, var(--toolbar-tint, var(--fill-strong)) 36%, var(--panel-strong)); }
 .toolbar-icon-button:disabled { opacity: .35; }
 .toolbar-refresh[aria-busy="true"] { opacity: .75; }
 .toolbar-refresh[aria-busy="true"] .ui-icon { animation: status-spin 1s linear infinite; }
@@ -115,7 +115,7 @@ textarea { resize: vertical; overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) { .toolbar-refresh[aria-busy="true"] .ui-icon { animation: none; } }
 .toolbar-spacer { flex: 1; }
 .ui-icon { width: 20px; height: 20px; }
-.ui-icon-folder { width: 19px; height: 19px; color: var(--muted); fill: currentColor; stroke: none; }
+.ui-icon-folder { width: 19px; height: 19px; color: var(--muted); fill: none; stroke: currentColor; }
 .ui-icon-chevron { width: 15px; height: 15px; color: var(--tertiary-text); transition: transform 160ms ease; }
 .toolbar-attention { position: absolute; top: 8px; right: 8px; width: 7px; height: 7px; border-radius: 50%; background: var(--warning); box-shadow: 0 0 0 2px var(--bg); }
 .compact-device-picker { min-width: 0; max-width: 148px; height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 4px; }
