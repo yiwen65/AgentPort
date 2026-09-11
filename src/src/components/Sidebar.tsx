@@ -91,15 +91,17 @@ function IconFolder({ open = false }: { open?: boolean }) {
     >
       {open ? (
         <path
-          d="M2.75 6.5h5l1.55 1.75h7.95l-1.15 7.1a1.5 1.5 0 0 1-1.48 1.26H4.3a1.5 1.5 0 0 1-1.48-1.26L2.75 6.5Z"
-          fill="currentColor"
-          opacity=".86"
+          d="M3.25 8.25V5.5c0-.83.67-1.5 1.5-1.5H8l1.5 1.75h5.25c.83 0 1.5.67 1.5 1.5v1M2.75 8.25h14.5l-1.15 6.1a1.5 1.5 0 0 1-1.48 1.26H4.3a1.5 1.5 0 0 1-1.48-1.26L2.75 8.25Z"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinejoin="round"
         />
       ) : (
         <path
           d="M3.25 5.25c0-.83.67-1.5 1.5-1.5H8l1.5 1.75h5.75c.83 0 1.5.67 1.5 1.5v7.25c0 .83-.67 1.5-1.5 1.5H4.75c-.83 0-1.5-.67-1.5-1.5V5.25Z"
-          fill="currentColor"
-          opacity=".86"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinejoin="round"
         />
       )}
     </svg>
