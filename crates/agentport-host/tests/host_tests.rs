@@ -2076,6 +2076,33 @@ fn hook_poller_updates_a_hint_when_claude_starts_a_new_native_session() {
 }
 
 #[test]
+fn precise_approval_survives_live_pty_repaints() {
+    let ctx = make_ctx(
+        vec!["/bin/sh".into(), "-c".into(), "while :; do printf '\\rspinner repaint'; sleep 0.1; done".into()],
+        1 << 20, vec![],
+    );
+    let mut cfg: HostConfig = serde_json::from_str(&std::fs::read_to_string(&ctx.cfg_path).unwrap()).unwrap();
+    cfg.adapter_type = "claude".into();
+    std::fs::write(&ctx.cfg_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut client = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    client.expect_hello_ok();
+    let mut hook = std::fs::OpenOptions::new().create(true).append(true)
+        .open(ctx.dir.join("events.jsonl")).unwrap();
+    writeln!(hook, "{{\"event\":\"PermissionRequest\"}}").unwrap();
+    hook.flush().unwrap();
+    let frames = client.collect_until(Duration::from_secs(3), |frames| frames.iter().any(|frame|
+        matches!(frame, HostFrame::State { state: AgentState::NeedsInput, source: StateSource::Hook, .. })));
+    assert!(frames.iter().any(|frame| matches!(frame,
+        HostFrame::State { state: AgentState::NeedsInput, source: StateSource::Hook, .. })));
+    let later = client.collect_until(Duration::from_secs(1), |_| false);
+    assert!(later.iter().any(|frame| matches!(frame, HostFrame::Output { .. })));
+    assert!(!later.iter().any(|frame| matches!(frame,
+        HostFrame::State { state: AgentState::Working | AgentState::Idle, .. })), "{later:?}");
+}
+
+#[test]
 fn hook_semantic_agents_arm_idle_shutdown_on_stop() {
     for adapter in ["claude", "codex", "qoder"] {
         let ctx = make_ctx(

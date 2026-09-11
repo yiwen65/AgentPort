@@ -16,6 +16,18 @@ export function feed(bytes: Uint8Array) {
   terminal._core._writeBuffer.writeSync(bytes);
 }
 export function resize(cols: number, rows: number) { terminal.resize(cols, rows); }
+/** Live buffer bottom, never the scrollable viewport or retained transcript. */
+export function detectionText(): string {
+  const pending = tail.snapshot();
+  if (!pending || pending.length) return "";
+  const buffer = terminal.buffer.active;
+  const lines: string[] = [];
+  for (let row = Math.max(0, terminal.rows - 64); row < terminal.rows; row++) {
+    lines.push(buffer.getLine(buffer.baseY + row)?.translateToString(true, 0, Math.min(terminal.cols, 1024)) ?? "");
+  }
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  return lines.slice(-8).join("\n").slice(-8192);
+}
 export function snapshot(): string {
   const pending = tail.snapshot();
   if (!pending) return "null"; // Never replay a prefix with already-applied side effects.

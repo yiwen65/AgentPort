@@ -1424,6 +1424,9 @@ fn control_loop(
     // remain wall-clock based under high-frequency PTY or hook activity.
     let tick_interval = Duration::from_secs(1);
     let mut next_tick = Instant::now() + tick_interval;
+    let mut next_screen_tick = Instant::now();
+    let mut screen_generation = None;
+    let mut screen_detector = agentport_core::screen_detection::ScreenDetector::default();
     let mut idle_shutdown = SemanticIdleShutdown::at_host_start(
         SEMANTIC_IDLE_SHUTDOWN_DELAY,
         Instant::now(),
@@ -1436,6 +1439,23 @@ fn control_loop(
 
     loop {
         let now = Instant::now();
+        if now >= next_screen_tick {
+            next_screen_tick = now + Duration::from_millis(300);
+            let generation = shared.log_bytes.load(Ordering::Relaxed);
+            if screen_generation != Some(generation) && shared.cfg.transport == AgentTransport::Pty {
+                screen_generation = Some(generation);
+                let text = {
+                    let _serial = shared.output_serial.lock().unwrap();
+                    shared.output_tail.lock().unwrap().screen.as_ref()
+                        .and_then(|screen| screen.detection_text())
+                };
+                if let Some(text) = text {
+                    if let Some(obs) = screen_detector.detect(&text, shared.cfg.detect_pty_needs_input) {
+                        handle_observation(shared, &mut sm, &mut status_file, &mut idle_shutdown, obs, None);
+                    }
+                }
+            }
+        }
         let user_activity_generation = shared.user_activity_generation.load(Ordering::Relaxed);
         if idle_shutdown.observe_user_activity(
             user_activity_generation,
@@ -1464,7 +1484,8 @@ fn control_loop(
 
         let wake_at = idle_shutdown
             .deadline()
-            .map_or(next_tick, |deadline| deadline.min(next_tick));
+            .map_or(next_tick, |deadline| deadline.min(next_tick))
+            .min(next_screen_tick);
         match rx.recv_timeout(wake_at.saturating_duration_since(now)) {
             Ok(HostMsg::Obs(obs)) => {
                 let completion_generation = matches!(
@@ -2171,9 +2192,11 @@ fn spawn_pty_reader(
                     if !data.is_empty() {
                         append_live_output(data, &shared);
                     }
-                    for obs in detector.feed(&chunk) {
-                        let _ = tx.send(HostMsg::Obs(obs));
-                    }
+                    // Retain the bounded tail only for native session identity.
+                    // Status patterns use the parsed live screen on the control
+                    // loop's bounded cadence, never historical raw output.
+                    if adapter.is_some() { detector.retain_tail(&chunk); }
+                    let _ = tx.send(HostMsg::Obs(Observation::PtyActivity));
                     if let Some(adapter) = &adapter {
                         if let Some(id) = adapter.extract_session_id(&detector.stripped_tail()) {
                             set_agent_session_id(&shared, &id);

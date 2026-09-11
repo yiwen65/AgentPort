@@ -590,6 +590,8 @@ export const api = {
   rebuildSearchIndex: () => invoke<void>("rebuild_search_index"),
   getTimeline: () => invoke<TimelineData>("get_timeline"),
   ackTimeline: (snapshots: TimelineAckSnapshot[]) => invoke<void>("ack_timeline", { snapshots }),
+  setNotificationSession: (sessionId: string | null) =>
+    invoke<void>("set_notification_session", { sessionId }),
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
   getCommitAiConfig: () => invoke<CommitAiConfig>("get_commit_ai_config"),

@@ -99,7 +99,7 @@
     "notifications": {
       "description": "Control status-change notifications. Conversation bodies are owned by each Agent's native log.",
       "systemLabel": "System notifications",
-      "systemHint": "Send system notifications when status changes (in-app unread indicators always remain active)",
+      "systemHint": "Notify after a 1-second recheck; resolved requests, superseded completions and the currently focused Session are suppressed. History and unread indicators remain unchanged.",
       "permissionHintMacos": "If notifications do not appear, allow AgentPort under System Settings → Notifications. In-app unread indicators are unaffected.",
       "permissionHintLinux": "If notifications do not appear, check that the desktop notification service is available and notify-send is installed. In-app unread indicators are unaffected.",
       "logLimitLabel": "Log limit (20–2048 MiB)",
@@ -111,7 +111,7 @@
     "notificationSetup": {
       "title": "Agent notification integration",
       "description": "CLI availability and notification readiness are separate. Probing prepares supported hooks or plugins only for AgentPort-managed Sessions, merging global registration when needed while preserving existing settings and supporting rollback. Setup failure does not prevent basic startup.",
-      "nextStart": "Changes apply to newly started or restarted Sessions. Existing Sessions are not restarted. Notification channels and switches remain unchanged; integration readiness does not grant system notification permission.",
+      "nextStart": "This shows installation readiness, not whether an existing Session loaded the integration. Changes apply to newly started or restarted Sessions. Existing Sessions are not restarted. Probing safely upgrades unmodified managed integrations. System notification permission is separate.",
       "table": "Agent CLI availability and notification readiness",
       "cli": "CLI",
       "notifications": "Notifications",
@@ -130,6 +130,8 @@
       "strategy": "Integration strategy",
       "technicalDetail": "Technical detail",
       "checkedAt": "Last checked",
+      "updateAvailable": "Integration update available. Unmodified managed files can be upgraded safely; configuration conflicts will not be overwritten.",
+      "update": "Safely update integration",
       "retry": "Probe and configure",
       "retryAgent": "Probe and configure notifications for {{agent}}",
       "busy": "Working…",

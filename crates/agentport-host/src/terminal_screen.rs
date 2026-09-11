@@ -56,6 +56,14 @@ impl TerminalScreen {
             })
             .map_err(|e| e.to_string())
     }
+    pub fn detection_text(&self) -> Option<String> {
+        *self.deadline.lock().unwrap() = Instant::now() + Duration::from_millis(100);
+        self.context.with(|ctx| -> rquickjs::Result<String> {
+            let engine: Object = ctx.globals().get("SnapshotEngine")?;
+            engine.get::<_, Function>("detectionText")?.call(())
+        }).ok()
+    }
+
     pub fn snapshot(&self) -> Option<serde_json::Value> {
         *self.deadline.lock().unwrap() = Instant::now() + Duration::from_secs(1);
         let json = self
@@ -79,6 +87,36 @@ impl TerminalScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn detection_uses_live_screen_and_honors_clear_and_cursor_rewrites() {
+        let screen = TerminalScreen::new(80, 24).unwrap();
+        screen.feed(b"Do you want to proceed? (y/n)").unwrap();
+        assert!(screen.detection_text().unwrap().contains("(y/n)"));
+        screen.feed(b"\x1b[2J\x1b[HWorking").unwrap();
+        assert_eq!(screen.detection_text().unwrap(), "Working");
+        screen.feed(b"\r\x1b[2KReady").unwrap();
+        assert_eq!(screen.detection_text().unwrap(), "Ready");
+        screen.feed(b"\x1b[").unwrap();
+        assert_eq!(screen.detection_text().unwrap(), "");
+    }
+
+    #[test]
+    #[ignore = "manual supporting measurement; no wall-clock CI threshold"]
+    fn detection_sampling_cost() {
+        for count in [1, 15] {
+            let screens: Vec<_> = (0..count).map(|_| {
+                let screen = TerminalScreen::new(120, 40).unwrap();
+                screen.feed(&b"Example live output\r\n".repeat(200)).unwrap();
+                screen
+            }).collect();
+            let started = Instant::now();
+            for _ in 0..100 {
+                for screen in &screens { assert!(screen.detection_text().is_some()); }
+            }
+            eprintln!("detection sample: {count} sessions x 100 ticks: {:?}", started.elapsed());
+        }
+    }
+
     #[test]
     fn retains_screen_beyond_the_raw_tail_and_keeps_parser_prefix() {
         let screen = TerminalScreen::new(47, 53).unwrap();

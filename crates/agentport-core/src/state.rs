@@ -114,6 +114,10 @@ pub struct StateMachine {
     /// When true (hook integration unavailable), PTY-derived needs_input is
     /// capped at medium confidence and flagged as imprecise (PRD 3.4 failure A).
     hooks_degraded: bool,
+    /// A run cannot be resurrected by queued observations after exit.
+    exited: bool,
+    /// Precise lifecycle authority survives silence and ordinary PTY repaints.
+    lifecycle: Option<AgentState>,
 }
 
 impl StateMachine {
@@ -139,6 +143,8 @@ impl StateMachine {
             last_evidence: None,
             last_completion: None,
             hooks_degraded: false,
+            exited: false,
+            lifecycle: None,
         }
     }
 
@@ -230,7 +236,38 @@ impl StateMachine {
 
     /// Feed an observation; returns Some(StatusEvent) when a transition should be recorded.
     pub fn observe(&mut self, obs: Observation) -> Option<StatusEvent> {
+        if self.exited {
+            return None;
+        }
         let (state, source, confidence, evidence) = self.classify(&obs)?;
+        if source == StateSource::Pty {
+            // Raw output includes spinner repaints and delayed flushes. Neither
+            // it nor silence can resolve a precise lifecycle observation.
+            if (self.lifecycle.is_some() || self.last.is_some_and(|(state, _)| state == AgentState::NeedsInput))
+                && matches!(obs, Observation::PtyActivity | Observation::PtySilence { .. })
+            {
+                return None;
+            }
+            // Visible working controls are fallback, not proof that an
+            // authenticated approval/question has been resolved.
+            if self.lifecycle == Some(AgentState::NeedsInput)
+                && state != AgentState::NeedsInput
+            {
+                return None;
+            }
+        } else if matches!(source, StateSource::Hook | StateSource::Adapter) {
+            if state == AgentState::Unknown && self.lifecycle.is_some() {
+                return None;
+            }
+            if confidence == Confidence::High {
+                self.lifecycle = Some(state);
+            }
+        }
+        // A hook's SessionEnd is not the process result. Preserve a later
+        // nonzero exit so failure classification cannot be swallowed.
+        if state == AgentState::Exited && source == StateSource::Process {
+            self.exited = true;
+        }
         if source != StateSource::Pty
             && matches!(state, AgentState::Working | AgentState::NeedsInput)
         {
@@ -275,7 +312,9 @@ impl StateMachine {
         // authoritative, and a PTY needs-input match is user-actionable, so
         // neither may be swallowed merely because an activity frame arrived
         // in the same output burst.
-        if source == StateSource::Pty && state != AgentState::NeedsInput {
+        if source == StateSource::Pty && state != AgentState::NeedsInput
+            && !matches!(obs, Observation::PtyWorkingPattern(_))
+        {
             if let Some(t) = self.last_emitted_at {
                 if Utc::now() - t < Duration::milliseconds(DEBOUNCE_MS) && self.last.is_some() {
                     return None;
@@ -314,15 +353,15 @@ fn classify_hook(name: &str) -> Option<(AgentState, StateSource, Confidence, Opt
     let ev = Some(format!("hook:{name}"));
     let classified = match name {
         // Claude Code + Kimi hook names (verified per adapter fixtures).
-        "PreToolUse" | "UserPromptSubmit" | "SessionStart" | "BeforeTool" => {
+        "PreToolUse" | "UserPromptSubmit" | "SessionStart" | "BeforeTool" | "AfterTool" => {
             (Working, Hook, High, ev)
         }
         // Claude's generic Notification hook includes idle_prompt and
         // push_notification. It is informational; PermissionRequest is the
         // authoritative approval signal.
-        "Notification" => return None,
+        "Notification" | "SubagentStop" => return None,
         "PermissionRequest" | "AskUserQuestion" => (NeedsInput, Hook, High, ev),
-        "Stop" | "SubagentStop" | "TurnEnd" | "AfterTool" => (Idle, Hook, High, ev),
+        "Stop" | "TurnEnd" => (Idle, Hook, High, ev),
         "SessionEnd" => (Exited, Hook, High, ev),
         _ => (Unknown, Hook, Low, ev),
     };
@@ -380,18 +419,24 @@ impl PtyDetector {
         }
     }
 
-    /// Feed raw PTY bytes; returns observations derived from the current tail.
-    pub fn feed(&mut self, chunk: &[u8]) -> Vec<Observation> {
+    /// Metadata-only retention; no status rules run on this raw byte tail.
+    pub fn retain_tail(&mut self, chunk: &[u8]) -> usize {
         let stripped = strip_ansi_escapes::strip(chunk);
         self.tail.extend_from_slice(&stripped);
         if self.tail.len() > self.max_tail {
             let drop = self.tail.len() - self.max_tail;
             self.tail.drain(..drop);
         }
+        stripped.len()
+    }
+
+    /// Legacy detector for callers without a live terminal screen.
+    pub fn feed(&mut self, chunk: &[u8]) -> Vec<Observation> {
+        let appended = self.retain_tail(chunk);
         // The tail exists so patterns split across reads still match. A prompt
         // wholly before this boundary is historical output, not evidence that
         // an unrelated TUI repaint (for example, mouse hover) needs approval.
-        let new_output_start = self.tail.len().saturating_sub(stripped.len());
+        let new_output_start = self.tail.len().saturating_sub(appended);
         let mut out = vec![Observation::PtyActivity];
         let text = String::from_utf8_lossy(&self.tail);
         for r in &self.needs_input {
@@ -422,6 +467,64 @@ impl PtyDetector {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lifecycle_authority_survives_repaints_and_silence() {
+        use super::*;
+        for kind in [NotificationEvent::Working, NotificationEvent::NeedsInput,
+            NotificationEvent::Completed, NotificationEvent::Failed] {
+            let mut sm = StateMachine::new("s");
+            sm.observe(Observation::Notification(kind)).unwrap();
+            assert!(sm.observe(Observation::PtyActivity).is_none());
+            assert!(sm.observe(Observation::PtySilence { ms: 60_000 }).is_none());
+            assert!(sm.observe(Observation::Hook("future-event".into())).is_none());
+        }
+    }
+
+    #[test]
+    fn explicit_blocker_can_supplement_working_but_not_clear_precise_request() {
+        use super::*;
+        let mut sm = StateMachine::new("s");
+        sm.observe(Observation::Notification(NotificationEvent::Working)).unwrap();
+        let blocker = sm.observe(Observation::PtyNeedsInputPattern("approval-control".into())).unwrap();
+        assert_eq!(blocker.state, crate::models::AgentState::NeedsInput);
+        sm.observe(Observation::Notification(NotificationEvent::NeedsInput)).unwrap();
+        assert!(sm.observe(Observation::PtyWorkingPattern("spinner".into())).is_none());
+        assert!(sm.observe(Observation::Notification(NotificationEvent::Working)).is_some());
+    }
+
+    #[test]
+    fn tool_and_subagent_end_do_not_complete_the_root_turn() {
+        use super::*;
+        let mut sm = StateMachine::new("s");
+        let event = sm.observe(Observation::Hook("AfterTool".into())).unwrap();
+        assert_eq!(event.state, crate::models::AgentState::Working);
+        assert!(event.attention_kind().is_none());
+        assert!(sm.observe(Observation::Hook("SubagentStop".into())).is_none());
+    }
+
+    #[test]
+    fn hook_session_end_does_not_swallow_the_actual_process_failure() {
+        use super::*;
+        let mut sm = StateMachine::new("s");
+        sm.observe(Observation::Hook("SessionEnd".into())).unwrap();
+        let exit = sm.observe(Observation::ProcessExited { code: Some(1), signal: None }).unwrap();
+        assert_eq!(exit.attention_kind(), Some(crate::models::AttentionKind::ExecutionFailed));
+    }
+
+    #[test]
+    fn exited_run_rejects_all_late_observations() {
+        use super::*;
+        let mut sm = StateMachine::new("s");
+        sm.observe(Observation::ProcessExited { code: Some(1), signal: None }).unwrap();
+        for obs in [Observation::PtyActivity,
+            Observation::Notification(NotificationEvent::Completed),
+            Observation::Notification(NotificationEvent::Working),
+            Observation::ProcessSpawned] {
+            assert!(sm.observe(obs).is_none());
+        }
+        assert_eq!(sm.sequence(), 1);
+    }
+
     use super::*;
 
     #[test]

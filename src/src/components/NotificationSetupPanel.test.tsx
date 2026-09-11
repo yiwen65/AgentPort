@@ -40,6 +40,18 @@ afterEach(async () => {
 });
 
 describe("Agent notification readiness", () => {
+  it("offers a safe update without a destructive rollback or changing CLI selection", async () => {
+    vi.mocked(api.notificationSetups).mockResolvedValue([{ ...setup(), updateAvailable: true }]);
+    render(<NotificationSetupPanel />);
+    const button = await screen.findByText("Safely update integration");
+    expect(screen.getByText(/Integration update available/)).toBeTruthy();
+    fireEvent.click(button);
+    await waitFor(() => expect(api.probeAgent).toHaveBeenCalledWith("claude", "/chosen/claude"));
+    await waitFor(() => expect(screen.queryByText("Safely update integration")).toBeNull());
+    expect(api.rollbackNotificationSetup).not.toHaveBeenCalled();
+    expect(getState().adapters).toEqual([install]);
+  });
+
   it("shows all fourteen Agents, separate CLI availability, and three event sources", async () => {
     render(<NotificationSetupPanel />);
     await waitFor(() => expect(within(claudeRow()).getByText("Ready")).toBeTruthy());

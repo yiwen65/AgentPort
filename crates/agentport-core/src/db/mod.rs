@@ -3301,6 +3301,16 @@ impl Db {
         })
     }
 
+    /// Current launch, including a reserved run that has not emitted status yet.
+    pub fn latest_session_run(&self, session_id: &str) -> Result<Option<SessionRun>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.query_row(
+            "SELECT session_id,run_id,run_ordinal,created_at FROM session_runs
+             WHERE session_id=?1 ORDER BY run_ordinal DESC LIMIT 1",
+            params![session_id], row_session_run,
+        ).optional()?)
+    }
+
     pub fn list_session_runs(&self, session_id: &str) -> Result<Vec<SessionRun>> {
         let conn = self.conn.lock().unwrap();
         let mut st = conn.prepare(
@@ -6476,6 +6486,9 @@ mod tests {
         let second = db.create_session_run("ses_1", "run_second").unwrap();
         assert_eq!(first.run_ordinal, 1);
         assert_eq!(second.run_ordinal, 2);
+        // Delivery must see the new reservation before its first status event.
+        let reserved = db.latest_session_run("ses_1").unwrap().unwrap();
+        assert_eq!((reserved.run_id, reserved.run_ordinal), (second.run_id.clone(), second.run_ordinal));
         assert_eq!(
             db.create_session_run("ses_1", "run_first")
                 .unwrap()

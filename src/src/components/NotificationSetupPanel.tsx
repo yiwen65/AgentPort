@@ -125,6 +125,7 @@ export default function NotificationSetupPanel({ refreshKey = 0, disabled = fals
                   <span className={`notification-setup-state ${state}`}>
                     {t(`ui.notificationSetup.state.${state}`)}
                   </span>
+                  {setup?.updateAvailable ? <p className="dim">{t("ui.notificationSetup.updateAvailable")}</p> : null}
                   <details open={state === "failed"}>
                     <summary aria-label={t("ui.notificationSetup.coverageAgent", { agent: agentDisplay(agent) })}>
                       {t("ui.notificationSetup.coverage")}
@@ -146,7 +147,7 @@ export default function NotificationSetupPanel({ refreshKey = 0, disabled = fals
                     <button type="button" className="btn small" disabled={busy}
                       aria-label={t("ui.notificationSetup.retryAgent", { agent: agentDisplay(agent) })}
                       onClick={() => void retry(agent)}>
-                      {pending === agent ? t("ui.notificationSetup.busy") : t("ui.notificationSetup.retry")}
+                      {pending === agent ? t("ui.notificationSetup.busy") : t(setup?.updateAvailable ? "ui.notificationSetup.update" : "ui.notificationSetup.retry")}
                     </button>
                     {setup && (setup.state !== "unavailable" || setup.strategy !== "none") ? <button type="button" className="btn small ghost" disabled={busy}
                       aria-label={t("ui.notificationSetup.rollbackAgent", { agent: agentDisplay(agent) })}

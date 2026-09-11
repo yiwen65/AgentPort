@@ -260,6 +260,7 @@ export interface NotificationSetup {
   };
   detail: string;
   checkedAt: string;
+  updateAvailable?: boolean;
 }
 
 export interface ProbeOutcome {

@@ -610,6 +610,13 @@ export default function App() {
   }, []);
   useEffect(() => {
     noteActiveSessionForGitCenter(activeSessionId);
+    // Native window focus is checked again by the delivery worker. This only
+    // identifies the selected Session; it never marks its history as read.
+    if ("__TAURI_INTERNALS__" in window) {
+      void api.setNotificationSession(activeSessionId).catch((error) => {
+        console.warn("Could not update notification target", error);
+      });
+    }
   }, [activeSessionId]);
 
   if (!ready) {

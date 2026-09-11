@@ -15,6 +15,7 @@ use std::{
 };
 mod providers_cli;
 mod providers_pi;
+mod upgrade;
 #[cfg(test)]
 mod tests;
 
@@ -51,6 +52,9 @@ pub struct NotificationSetup {
     pub events: EventCoverage,
     pub detail: String,
     pub checked_at: DateTime<Utc>,
+    /// Installation health only, not proof that a running Session loaded it.
+    #[serde(default)]
+    pub update_available: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct ManagedAsset {
@@ -205,6 +209,7 @@ fn unavailable(agent: AgentType, detail: &str) -> NotificationSetup {
         },
         detail: detail.into(),
         checked_at: Utc::now(),
+        update_available: false,
     }
 }
 fn load(dir: &Path) -> Result<Option<Manifest>> {
@@ -229,11 +234,18 @@ fn verify(m: &Manifest) -> Result<()> {
     }
     Ok(())
 }
-fn add_change(changes: &mut Vec<Change>, path: PathBuf, after: Vec<u8>) -> Result<()> {
+fn original_bytes(path: &Path, previous: Option<&Manifest>) -> Result<Option<Vec<u8>>> {
+    if let Some(change) = previous.and_then(|m| m.changes.iter().find(|c| c.path == path)) {
+        Ok(change.before.clone())
+    } else {
+        bytes(path)
+    }
+}
+fn add_change(changes: &mut Vec<Change>, path: PathBuf, after: Vec<u8>, previous: Option<&Manifest>) -> Result<()> {
     if changes.iter().any(|c| c.path == path) {
         return Err(err("conflicting notification registration targets"));
     }
-    let before = bytes(&path)?;
+    let before = original_bytes(&path, previous)?;
     changes.push(Change {
         path,
         before,
@@ -347,6 +359,7 @@ fn install_plan(
     }
     let dir = base(paths, agent);
     let _lock = lock(&dir)?;
+    upgrade::recover(&dir)?;
     if bytes(&dir.join("failure.json"))?.is_some() {
         fs::remove_file(dir.join("failure.json"))?;
     }
@@ -355,19 +368,10 @@ fn install_plan(
             "interrupted notification transaction requires recovery; files preserved",
         ));
     }
-    use sha2::{Digest, Sha256};
-    let mut digest = Sha256::new();
-    digest.update(serde_json::to_vec(&plan)?);
-    digest.update(RELAY.as_bytes());
-    let source_hash = format!("{:x}", digest.finalize());
+    let source_hash = plan_hash(&plan)?;
     let previous = load(&dir)?;
     if let Some(m) = &previous {
         verify(m)?;
-        if m.capability_hash != install.capability_hash || m.source_hash != source_hash {
-            return Err(err(
-                "Agent capabilities or notification provider assets changed; existing files were preserved. Roll back the old integration, then probe again to install the updated integration",
-            ));
-        }
     }
     // Cached installation does not prove a runtime is still on PATH.
     for command in &plan.required_commands {
@@ -395,7 +399,10 @@ fn install_plan(
             )));
         }
     }
-    if let Some(mut m) = previous {
+    if let Some(m) = previous.as_ref().filter(|m|
+        m.capability_hash == install.capability_hash && m.source_hash == source_hash)
+    {
+        let mut m = m.clone();
         m.status.checked_at = Utc::now();
         atomic(&dir.join("manifest.json"), &serde_json::to_vec_pretty(&m)?)?;
         return Ok(m.status);
@@ -407,12 +414,13 @@ fn install_plan(
             .replace("{{relay}}", &relay.to_string_lossy())
     };
     let mut changes = Vec::new();
-    add_change(&mut changes, relay.clone(), RELAY.as_bytes().to_vec())?;
+    add_change(&mut changes, relay.clone(), RELAY.as_bytes().to_vec(), previous.as_ref())?;
     for a in &plan.assets {
         add_change(
             &mut changes,
             relative(&assets, &a.name)?,
             render(&a.content).into_bytes(),
+            previous.as_ref(),
         )?;
     }
     for a in &plan.global_assets {
@@ -421,12 +429,12 @@ fn install_plan(
             &a.relative_path,
         )?;
         // An unrelated existing standalone plugin is never adopted or overwritten.
-        if bytes(&path)?.is_some() {
+        if original_bytes(&path, previous.as_ref())?.is_some() {
             return Err(err(
                 "global notification asset already exists without ownership",
             ));
         }
-        add_change(&mut changes, path, render(&a.content).into_bytes())?;
+        add_change(&mut changes, path, render(&a.content).into_bytes(), previous.as_ref())?;
     }
     for r in &plan.json_registrations {
         let path = relative(
@@ -436,7 +444,7 @@ fn install_plan(
         let existing = changes.iter().position(|c| c.path == path);
         let original = match existing {
             Some(i) => Some(changes[i].after.clone()),
-            None => bytes(&path)?,
+            None => original_bytes(&path, previous.as_ref())?,
         };
         let mut value = match original.as_deref() {
             Some(b) => serde_json::from_slice(b)
@@ -488,12 +496,14 @@ fn install_plan(
         if let Some(i) = existing {
             changes[i].after = after;
         } else {
-            add_change(&mut changes, path, after)?;
+            add_change(&mut changes, path, after, previous.as_ref())?;
         }
     }
-    for c in &changes {
-        if bytes(&c.path)? != c.before {
-            return Err(err("notification config changed concurrently"));
+    if previous.is_none() {
+        for c in &changes {
+            if bytes(&c.path)? != c.before {
+                return Err(err("notification config changed concurrently"));
+            }
         }
     }
     // Write-ahead ownership journal permits safe rollback after interruption.
@@ -519,6 +529,7 @@ fn install_plan(
         events: plan.events.clone(),
         detail: plan.detail.clone(),
         checked_at: Utc::now(),
+        update_available: false,
     };
     let manifest = Manifest {
         version: 1,
@@ -528,6 +539,10 @@ fn install_plan(
         plan,
         changes,
     };
+    if let Some(previous) = &previous {
+        upgrade::commit(&dir, previous, &manifest, &relay)?;
+        return Ok(status);
+    }
     atomic(
         &dir.join("pending.json"),
         &serde_json::to_vec_pretty(&manifest)?,
@@ -573,11 +588,35 @@ fn install_plan(
     result?;
     Ok(status)
 }
+fn plan_hash(plan: &IntegrationPlan) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(serde_json::to_vec(plan)?);
+    digest.update(RELAY.as_bytes());
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+/// Read-only maintenance assessment against already detected capabilities.
+/// No probe, runtime command, or configuration write is performed here.
+pub fn list_status_with_installs(paths: &AppPaths, installs: &[AdapterInstall]) -> Result<Vec<NotificationSetup>> {
+    let mut statuses = list_status(paths)?;
+    for status in &mut statuses {
+        let Some(install) = installs.iter().find(|i| i.agent_type == status.agent) else { continue };
+        let dir = base(paths, status.agent);
+        let Some(manifest) = load(&dir)? else { continue };
+        if verify(&manifest).is_err() || bytes(&dir.join("upgrade.json"))?.is_some() { continue; }
+        let Some(plan) = providers_pi::plan(install).or_else(|| providers_cli::plan(install)) else { continue };
+        status.update_available = manifest.source_hash != plan_hash(&plan)?
+            || manifest.capability_hash != install.capability_hash;
+    }
+    Ok(statuses)
+}
+
 pub fn list_status(paths: &AppPaths) -> Result<Vec<NotificationSetup>> {
     AgentType::all().iter().filter(|a|**a!=AgentType::Shell).map(|&a|{
         if let Some(data)=bytes(&base(paths,a).join("failure.json"))? { return serde_json::from_slice(&data).map_err(Into::into); }
         let Some(m)=load(&base(paths,a))? else {return Ok(unavailable(a,"Not configured; probe the agent to prepare notifications"));};
-        let mut s=m.status.clone();if verify(&m).is_err(){s.state=SetupState::Failed;s.detail="Installed notification files changed or are missing; rollback/retry requires resolving the conflict".into();}Ok(s)
+        let mut s=m.status.clone();if bytes(&base(paths,a).join("upgrade.json"))?.is_some(){s.state=SetupState::Failed;s.detail="Notification upgrade was interrupted; retry setup to recover safely before upgrading".into();}else if verify(&m).is_err(){s.state=SetupState::Failed;s.detail="Installed notification files changed or are missing; rollback/retry requires resolving the conflict".into();}Ok(s)
     }).collect()
 }
 pub fn apply_to_launch(paths: &AppPaths, agent: AgentType, launch: &mut LaunchPlan) -> Result<()> {
@@ -591,7 +630,8 @@ pub fn apply_to_launch(paths: &AppPaths, agent: AgentType, launch: &mut LaunchPl
 }
 fn apply_verified(paths: &AppPaths, agent: AgentType, launch: &mut LaunchPlan) -> Result<()> {
     let dir = base(paths, agent);
-    if bytes(&dir.join("failure.json"))?.is_some() || bytes(&dir.join("pending.json"))?.is_some() {
+    if bytes(&dir.join("failure.json"))?.is_some() || bytes(&dir.join("pending.json"))?.is_some()
+        || bytes(&dir.join("upgrade.json"))?.is_some() {
         return Err(err("notification integration is not verified; retry setup"));
     }
     let Some(m) = load(&dir)? else {
@@ -626,6 +666,7 @@ fn apply_verified(paths: &AppPaths, agent: AgentType, launch: &mut LaunchPlan) -
 pub fn rollback(paths: &AppPaths, agent: AgentType) -> Result<NotificationSetup> {
     let dir = base(paths, agent);
     let _lock = lock(&dir)?;
+    upgrade::recover(&dir)?;
     let pending = bytes(&dir.join("pending.json"))?;
     let m = match load(&dir)? {
         Some(m) => m,

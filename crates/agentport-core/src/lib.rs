@@ -21,6 +21,7 @@ pub mod models;
 pub mod native_backup;
 pub mod native_cleanup;
 pub mod notify;
+pub mod notification_policy;
 pub mod notification_setup;
 pub mod paths;
 pub mod pi_storage;
@@ -29,6 +30,7 @@ pub mod redact;
 pub mod search;
 pub mod secrets;
 pub mod state;
+pub mod screen_detection;
 pub mod timeline;
 
 pub use error::{CoreError, Result};

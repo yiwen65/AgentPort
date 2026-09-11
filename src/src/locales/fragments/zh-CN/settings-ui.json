@@ -99,7 +99,7 @@
     "notifications": {
       "description": "控制状态变化提醒。会话正文由 Agent 原生日志保存。",
       "systemLabel": "系统通知",
-      "systemHint": "状态变化时发送系统通知（应用内未读始终生效）",
+      "systemHint": "延迟 1 秒复核后提醒；已解决的请求、被新一轮工作取代的完成，以及当前聚焦会话不弹系统通知。历史和未读记录不变。",
       "permissionHintMacos": "若通知未出现，请在“系统设置 → 通知 → AgentPort”中允许通知。应用内未读标记不受影响。",
       "permissionHintLinux": "若通知未出现，请确认桌面通知服务可用且 notify-send 已安装。应用内未读标记不受影响。",
       "logLimitLabel": "日志上限（20–2048 MiB）",
@@ -111,7 +111,7 @@
     "notificationSetup": {
       "title": "Agent 通知集成",
       "description": "CLI 可用与通知就绪分别显示。探测时会为 AgentPort 托管 Session 准备支持的 Hook 或插件，必要时合并全局注册，保留已有设置并支持回滚；配置失败不会阻止基本启动。",
-      "nextStart": "配置变更在下次启动或重启 Session 时生效，不会自动重启已有 Session；通知渠道及开关保持不变，集成就绪不代表已获系统通知授权。",
+      "nextStart": "这里显示安装就绪情况，不代表已有会话已加载集成。配置在下次启动或重启会话时生效，不会自动重启现有会话。探测会安全升级未被修改的受管集成；系统通知权限需单独允许。",
       "table": "Agent CLI 可用性与通知就绪状态",
       "cli": "CLI 状态",
       "notifications": "通知",
@@ -130,6 +130,8 @@
       "strategy": "集成策略",
       "technicalDetail": "技术详情",
       "checkedAt": "最近检查",
+      "updateAvailable": "通知集成有可用更新。可安全升级未被修改的受管文件，配置冲突不会被覆盖。",
+      "update": "安全更新集成",
       "retry": "探测并配置",
       "retryAgent": "探测并配置 {{agent}} 通知",
       "busy": "处理中…",

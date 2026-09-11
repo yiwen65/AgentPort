@@ -22,9 +22,10 @@ use agentport_core::native_cleanup::{
     execute_native_cleanup, plan_native_cleanup, NativeCleanupPlan,
 };
 use agentport_core::notify::{
-    notification_for_state_change, test_notification, Notification, NotificationDeduper, Notifier,
+    notification_for_state_change, test_notification, NotificationDeduper, Notifier,
 };
 use agentport_core::paths::{normalize_abs, AppPaths};
+use agentport_core::notification_policy::NotificationWatermark;
 use agentport_core::protocol::{normalize_host_frame, HostFrame};
 use agentport_core::search::SearchIndex;
 use agentport_core::secrets::CredentialBroker;
@@ -69,7 +70,8 @@ struct AppState {
     notifier: Mutex<Notifier>,
     /// Bounded, non-blocking handoff to one delivery worker. Native
     /// authorization can wait for the OS and must never stall Host readers.
-    notification_tx: SyncSender<Notification>,
+    notification_tx: SyncSender<StatusEvent>,
+    notification_session: Mutex<Option<String>>,
     /// Status notifications may arrive through both the durable monitor and
     /// an attached renderer, or as near-simultaneous Hook/PTY observations.
     notification_deduper: Mutex<NotificationDeduper>,
@@ -137,21 +139,54 @@ where
     .map_err(|error| format!("backend worker failed: {error}"))?
 }
 
-fn start_notification_worker() -> SyncSender<Notification> {
-    let (tx, rx) = mpsc::sync_channel::<Notification>(NOTIFICATION_QUEUE_CAPACITY);
+fn start_notification_worker(app: AppHandle, rx: mpsc::Receiver<StatusEvent>) {
     let spawned = std::thread::Builder::new()
         .name("agentport-notifications".into())
         .spawn(move || {
-            while let Ok(notification) = rx.recv() {
-                if let Err(error) = notifications::send(&notification) {
-                    tracing::warn!(error = %error, "system notification failed");
+            use agentport_core::notification_policy::{is_current, is_focused_target, PendingNotifications};
+            let mut pending = PendingNotifications::default();
+            loop {
+                match rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(event) => pending.push(event, std::time::Instant::now()),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+                for event in pending.take_due(std::time::Instant::now()) {
+                    let state = app.state::<AppState>();
+                    let db = &state.db;
+                    let Ok(latest) = db.latest_status(&event.session_id) else { continue };
+                    let Ok(run) = db.latest_session_run(&event.session_id) else { continue };
+                    if run.is_some_and(|run| run.run_id != event.run_id || run.run_ordinal != event.run_ordinal)
+                        || !is_current(&event, latest.as_ref()) {
+                        continue;
+                    }
+                    let selected = state.notification_session.lock().unwrap().clone();
+                    let focused = is_focused_target(&event, selected.as_deref(),
+                        app.get_webview_window("main").is_some_and(|window| window.is_focused().unwrap_or(false)));
+                    if focused { continue; }
+                    let Ok(session) = db.get_session(&event.session_id) else { continue };
+                    if session.archived_at.is_some() { continue; }
+                    let (enabled, language) = {
+                        let notifier = state.notifier.lock().unwrap();
+                        (notifier.enabled(), notifier.language())
+                    };
+                    if !enabled { continue; }
+                    if let Some(notification) = notification_for_state_change(language, &session.title, &event) {
+                        if let Err(error) = notifications::send(&notification) {
+                            tracing::warn!(error = %error, "system notification failed");
+                        }
+                    }
                 }
             }
         });
     if let Err(error) = spawned {
         tracing::warn!(error = %error, "could not start system notification worker");
     }
-    tx
+}
+
+#[tauri::command]
+fn set_notification_session(state: State<'_, AppState>, session_id: Option<String>) {
+    *state.notification_session.lock().unwrap() = session_id;
 }
 
 fn changes_session_state_for_session(db: &Db, event: &StatusEvent) -> bool {
@@ -183,19 +218,14 @@ fn notify_status_once(app: &AppHandle, db: &Db, event: &StatusEvent) {
     {
         return;
     }
-    let title = db
-        .get_session(&event.session_id)
-        .map(|session| session.title)
-        .unwrap_or_else(|_| event.session_id.clone());
-    let (enabled, language) = {
-        let notifier = state.notifier.lock().unwrap();
-        (notifier.enabled(), notifier.language())
-    };
-    if !enabled {
+    // Replayed history remains durable/unread but is not a fresh OS alert.
+    if !state.notifier.lock().unwrap().enabled()
+        || Utc::now().signed_duration_since(event.occurred_at) > chrono::Duration::seconds(30)
+    {
         return;
     }
-    if let Some(notification) = notification_for_state_change(language, &title, event) {
-        match state.notification_tx.try_send(notification) {
+    if event.attention_kind().is_some() {
+        match state.notification_tx.try_send(event.clone()) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
                 tracing::warn!("system notification queue is full; dropping duplicate UI signal")
@@ -980,7 +1010,10 @@ async fn notification_setups(
 ) -> std::result::Result<Vec<agentport_core::notification_setup::NotificationSetup>, String> {
     let paths = state.paths.clone();
     run_backend_blocking(move || {
-        agentport_core::notification_setup::list_status(&paths).map_err(|error| error.to_string())
+        let db = Db::open(&paths).map_err(|error| error.to_string())?;
+        let installs = db.list_adapters().map_err(|error| error.to_string())?;
+        agentport_core::notification_setup::list_status_with_installs(&paths, &installs)
+            .map_err(|error| error.to_string())
     })
     .await
 }
@@ -1574,6 +1607,8 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
             } else if info.protocol == agentport_core::protocol::LEGACY_PROTOCOL_VERSION {
                 let _ = client.request_status();
             }
+            let mut notification_watermark = NotificationWatermark::new(info.current_status.as_ref(),
+                info.protocol == agentport_core::protocol::LEGACY_PROTOCOL_VERSION);
             let mut stream_ended = false;
             loop {
                 let frame = match client.read_frame() {
@@ -1618,7 +1653,7 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
                                 log_cursor,
                                 occurred_at,
                             },
-                            true,
+                            notification_watermark.accept(sequence),
                         );
                     }
                     HostFrame::Heartbeat { log_cursor, .. } => {
@@ -1766,6 +1801,8 @@ async fn attach_session(
     if let Some(status) = info.current_status.as_ref() {
         project_monitor_status(&app, &state.db, status, false);
     }
+    let notification_watermark = NotificationWatermark::new(info.current_status.as_ref(),
+        info.protocol == agentport_core::protocol::LEGACY_PROTOCOL_VERSION);
     let HostClient { reader, writer, .. } = client;
     let writer = Arc::new(Mutex::new(writer));
     let attachment_id = state.next_attachment_id.fetch_add(1, Ordering::Relaxed);
@@ -1842,6 +1879,7 @@ async fn attach_session(
             attachment_id,
             host,
             writer,
+            notification_watermark,
         );
     });
     Ok(attach_info)
@@ -1858,6 +1896,7 @@ fn watch_loop(
     attachment_id: u64,
     host: HostIdentity,
     writer: HostWriter,
+    mut notification_watermark: NotificationWatermark,
 ) {
     loop {
         match agentport_core::protocol::read_frame::<HostFrame>(&mut reader) {
@@ -2015,7 +2054,9 @@ fn watch_loop(
                             }));
                         }
                         let _ = app.emit("session-state", status_value(&ev));
-                        notify_status_once(&app, &db, &ev);
+                        if notification_watermark.accept(ev.sequence) {
+                            notify_status_once(&app, &db, &ev);
+                        }
                         let _ = channel.send(json!({"t": "state", "event": status_value(&ev)}));
                     }
                     HostFrame::AgentSession {
@@ -4329,6 +4370,7 @@ fn main() {
         initial_settings.notifications_enabled,
         initial_settings.ui_language,
     );
+    let (notification_tx, notification_rx) = mpsc::sync_channel(NOTIFICATION_QUEUE_CAPACITY);
     let state = AppState {
         paths,
         db,
@@ -4339,15 +4381,17 @@ fn main() {
         cleanup_scheduler_started: AtomicBool::new(false),
         branch_reconcile_started: AtomicBool::new(false),
         notifier: Mutex::new(notifier),
-        notification_tx: start_notification_worker(),
+        notification_tx,
+        notification_session: Mutex::new(None),
         notification_deduper: Mutex::new(NotificationDeduper::default()),
     };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .setup(move |app| {
             notifications::install(app.handle());
+            start_notification_worker(app.handle().clone(), notification_rx);
             relay::start_on_app_launch(app.handle());
             // The sidebar glass is pure CSS now: the window stays
             // transparent (tauri.conf.json) and `.sidebar` owns blur,
@@ -4369,6 +4413,7 @@ fn main() {
             probe_agents,
             probe_agent,
             notification_setups,
+            set_notification_session,
             rollback_notification_setup,
             list_supported_agents,
             add_project,

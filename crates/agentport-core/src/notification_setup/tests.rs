@@ -43,6 +43,92 @@ fn plan() -> IntegrationPlan {
     }
 }
 #[test]
+fn upgrade_removes_retired_assets_and_restores_original_json_on_rollback() {
+    let tmp = temporary();
+    let home = tmp.path().join("home");
+    let paths = AppPaths::new(tmp.path().join("data"));
+    fs::create_dir_all(home.join(".fixture")).unwrap();
+    let config = home.join(".fixture/settings.json");
+    let original = b"{\n  \"custom\": true, \"hooks\": {\"Stop\": [{\"command\":\"user\"}]}\n}\n";
+    fs::write(&config, original).unwrap();
+    let install = fixture();
+    install_plan(&paths, &install, Some(&home), plan()).unwrap();
+    let mut upgraded = plan();
+    upgraded.global_assets.clear();
+    upgraded.json_registrations[0].entries = vec![serde_json::json!({"command":"new"})];
+    install_plan(&paths, &install, Some(&home), upgraded).unwrap();
+    assert!(!home.join(".fixture/plugins/agentport.js").exists());
+    let json: serde_json::Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    assert_eq!(json["hooks"]["Stop"], serde_json::json!([{"command":"user"}, {"command":"new"}]));
+    rollback(&paths, install.agent_type).unwrap();
+    assert_eq!(fs::read(config).unwrap(), original);
+}
+
+#[test]
+fn upgrade_preflight_preserves_user_edits_and_missing_runtime_preserves_old_version() {
+    let tmp = temporary();
+    let home = tmp.path().join("home");
+    let paths = AppPaths::new(tmp.path().join("data"));
+    let install = fixture();
+    install_plan(&paths, &install, Some(&home), plan()).unwrap();
+    let config = home.join(".fixture/settings.json");
+    let old_config = fs::read(&config).unwrap();
+    let plugin = home.join(".fixture/plugins/agentport.js");
+    let manifest = base(&paths, install.agent_type).join("manifest.json");
+    let old_manifest = fs::read(&manifest).unwrap();
+    let mut upgraded = plan();
+    upgraded.global_assets[0].content = "new".into();
+    fs::write(&config, b"user changed this").unwrap();
+    assert!(install_plan(&paths, &install, Some(&home), upgraded.clone()).is_err());
+    assert_eq!(fs::read(&plugin).unwrap(), b"managed");
+    assert_eq!(fs::read(&config).unwrap(), b"user changed this");
+    fs::write(&config, old_config).unwrap();
+    upgraded.required_commands = vec!["agentport-nonexistent-runtime-fixture".into()];
+    assert!(install_plan(&paths, &install, Some(&home), upgraded).is_err());
+    assert_eq!(fs::read(&plugin).unwrap(), b"managed");
+    assert_eq!(fs::read(&manifest).unwrap(), old_manifest);
+}
+
+#[test]
+fn failed_upgrade_self_test_restores_all_pre_upgrade_bytes() {
+    let tmp = temporary();
+    let paths = AppPaths::new(tmp.path().join("data"));
+    let home = tmp.path().join("home");
+    let install = fixture();
+    install_plan(&paths, &install, Some(&home), plan()).unwrap();
+    let dir = base(&paths, install.agent_type);
+    let old = load(&dir).unwrap().unwrap();
+    let manifest_bytes = fs::read(dir.join("manifest.json")).unwrap();
+    let mut new = old.clone();
+    let relay = dir.join("assets/relay.sh");
+    new.changes.iter_mut().find(|c| c.path == relay).unwrap().after = b"exit 1\n".to_vec();
+    assert!(upgrade::commit(&dir, &old, &new, &relay).is_err());
+    verify(&old).unwrap();
+    assert_eq!(fs::read(dir.join("manifest.json")).unwrap(), manifest_bytes);
+    assert!(!dir.join("upgrade.json").exists());
+}
+
+#[test]
+fn read_only_status_reports_available_provider_update() {
+    let tmp = temporary();
+    let home = tmp.path().join("home");
+    let paths = AppPaths::new(tmp.path().join("data"));
+    let install = fixture();
+    setup_inner(&paths, &install, Some(&home)).unwrap();
+    let file = base(&paths, install.agent_type).join("manifest.json");
+    let mut manifest = load(&base(&paths, install.agent_type)).unwrap().unwrap();
+    manifest.source_hash = "old".into();
+    atomic(&file, &serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let before = fs::read(&file).unwrap();
+    let statuses = list_status_with_installs(&paths, &[install.clone()]).unwrap();
+    assert!(statuses.iter().find(|s| s.agent == install.agent_type).unwrap().update_available);
+    assert_eq!(fs::read(&file).unwrap(), before);
+    setup_inner(&paths, &install, Some(&home)).unwrap();
+    assert!(!list_status_with_installs(&paths, &[install.clone()]).unwrap().iter()
+        .find(|s| s.agent == install.agent_type).unwrap().update_available);
+}
+
+#[test]
 fn isolated_install_repeat_rollback_preserves_exact_existing_bytes() {
     let tmp = temporary();
     let home = tmp.path().join("home");
@@ -185,28 +271,33 @@ fn rollback_recovers_interrupted_install_and_refuses_lock_contention() {
 }
 
 #[test]
-fn changed_provider_assets_never_reuse_cached_readiness() {
+fn changed_provider_assets_upgrade_without_losing_original_backups() {
     let tmp = temporary();
     let home = tmp.path().join("home");
     let paths = AppPaths::new(tmp.path().join("data"));
     let mut install = fixture();
     install_plan(&paths, &install, Some(&home), plan()).unwrap();
     let plugin = home.join(".fixture/plugins/agentport.js");
-    let original = fs::read(&plugin).unwrap();
     let mut changed = plan();
     changed.global_assets[0].content = "updated observer".into();
-    let error = install_plan(&paths, &install, Some(&home), changed).unwrap_err();
-    assert!(error.to_string().contains("Roll back"));
-    assert_eq!(fs::read(&plugin).unwrap(), original);
+    changed.json_registrations[0].entries = vec![serde_json::json!({"command":"updated"})];
+    install_plan(&paths, &install, Some(&home), changed.clone()).unwrap();
+    assert_eq!(fs::read(&plugin).unwrap(), b"updated observer");
+    let config = home.join(".fixture/settings.json");
+    let json: serde_json::Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    assert_eq!(json["hooks"]["Stop"], serde_json::json!([{"command":"updated"}]));
     install.capability_hash = "different version".into();
-    assert!(install_plan(&paths, &install, Some(&home), plan()).is_err());
-    assert_eq!(fs::read(&plugin).unwrap(), original);
+    install_plan(&paths, &install, Some(&home), changed.clone()).unwrap();
+    let once = fs::read(&config).unwrap();
+    install_plan(&paths, &install, Some(&home), changed).unwrap();
+    assert_eq!(fs::read(&config).unwrap(), once);
     rollback(&paths, install.agent_type).unwrap();
-    install_plan(&paths, &install, Some(&home), plan()).unwrap();
+    assert!(!plugin.exists());
+    assert!(!config.exists());
 }
 
 #[test]
-fn legacy_manifest_requires_reprobe_after_safe_rollback() {
+fn legacy_manifest_can_upgrade_after_ownership_verification() {
     let tmp = temporary();
     let home = tmp.path().join("home");
     let paths = AppPaths::new(tmp.path().join("data"));
@@ -216,7 +307,8 @@ fn legacy_manifest_requires_reprobe_after_safe_rollback() {
     let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
     value.as_object_mut().unwrap().remove("source_hash");
     fs::write(&file, serde_json::to_vec(&value).unwrap()).unwrap();
-    assert!(install_plan(&paths, &install, Some(&home), plan()).is_err());
+    install_plan(&paths, &install, Some(&home), plan()).unwrap();
+    assert!(!load(&base(&paths, install.agent_type)).unwrap().unwrap().source_hash.is_empty());
     rollback(&paths, install.agent_type).unwrap();
     assert!(!home.join(".fixture/plugins/agentport.js").exists());
 }
