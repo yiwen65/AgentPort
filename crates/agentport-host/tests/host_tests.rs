@@ -1282,23 +1282,16 @@ fn pi_pty_session_jsonl_inherits_completed_resume_and_emits_only_new_turn_ends()
     let mut conn = connect(&ctx, &ctx.session_id, TOKEN, 0);
     conn.expect_hello_ok();
     let old = conn.collect_until(Duration::from_millis(700), |_| false);
-    assert!(
-        !old.iter().any(|frame| matches!(
-            frame,
-            HostFrame::State {
-                source: StateSource::Adapter,
-                ..
-            }
-        )),
-        "pre-spawn Pi history was replayed as a fresh turn: {old:?}"
-    );
+    assert!(old.iter().filter(|frame| matches!(frame,
+        HostFrame::State { source: StateSource::Adapter, .. })).count() <= 1,
+        "pre-spawn Pi history produced repeated adapter states: {old:?}");
 
     let mut file = std::fs::OpenOptions::new()
         .append(true)
         .open(&session_file)
         .unwrap();
     file.write_all(
-        b"{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\"}}\n",
+        b"{\"type\":\"message\",\"message\":{\"role\":\"user\"}}\n{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\"}}\n",
     )
     .unwrap();
     file.flush().unwrap();
@@ -2073,6 +2066,26 @@ fn hook_poller_updates_a_hint_when_claude_starts_a_new_native_session() {
         std::fs::read_to_string(ctx.dir.join("agent_session_id")).unwrap(),
         NEW_NATIVE_ID
     );
+}
+
+#[test]
+fn resumed_completed_pi_run_publishes_idle_without_replaying_completion() {
+    let ctx = make_pi_pty_ctx("sleep 60");
+    let session_dir = ctx.dir.join("pi");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    std::fs::write(session_dir.join("pi-session.jsonl"),
+        b"{\"type\":\"session\",\"id\":\"pi-native-test-id\"}\n{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\"}}\n").unwrap();
+
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut client = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    client.expect_hello_ok();
+    let frames = client.collect_until(Duration::from_secs(3), |frames| frames.iter().any(|frame|
+        matches!(frame, HostFrame::State { state: AgentState::Idle, source: StateSource::Adapter, evidence: Some(e), .. } if e == "adapter:pi:TurnEnd")));
+    assert!(frames.iter().any(|frame| matches!(frame,
+        HostFrame::State { state: AgentState::Idle, source: StateSource::Adapter, evidence: Some(e), .. } if e == "adapter:pi:TurnEnd")), "{frames:?}");
+    assert_eq!(frames.iter().filter(|frame| matches!(frame,
+        HostFrame::State { state: AgentState::Idle, source: StateSource::Adapter, .. })).count(), 1);
 }
 
 #[test]
