@@ -4,27 +4,25 @@ import { describe, expect, it } from "vitest";
 
 const styles = readFileSync("src/styles.css", "utf8");
 
-function classSpecificity(selector: string): number {
-  return (selector.match(/\.[\w-]+|\[[^\]]+\]|:[\w-]+/g) ?? []).length;
-}
+describe("sidebar reading surface", () => {
+  it("uses opaque backgrounds in every theme, independent of wallpaper", () => {
+    const surfaces = [...styles.matchAll(/--sidebar-glass:\s*([^;]+);/g)];
+    expect(surfaces.length).toBeGreaterThanOrEqual(2);
+    for (const [, color] of surfaces) expect(color).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(styles).not.toMatch(/--sidebar-glass-layers:\s*linear-gradient/);
+  });
 
-describe("sidebar window-drag rendering", () => {
-  it("lets the drag override disable the themed backdrop filter", () => {
-    const themedSelector =
-      ':root[data-vibrancy="on"][data-theme="dark"] .sidebar';
-    const dragSelector =
-      ':root[data-vibrancy="on"] body.is-window-dragging .sidebar';
+  it("avoids backdrop recomposition during window dragging and text halos", () => {
+    const sidebarRules = [...styles.matchAll(/(?:^|\n)([^{}]*\.sidebar)\s*\{([^}]*)\}/g)];
+    for (const [, , rule] of sidebarRules) {
+      expect(rule).not.toMatch(/backdrop-filter:\s*(?!none)[a-z]+\(/);
+    }
+    expect(styles).toMatch(/\.sidebar-scroll\s*\{\s*text-shadow: none;/);
+    expect(styles).not.toMatch(/text-shadow:\s*0 0\.5px/);
+  });
 
-    expect(styles).toContain(themedSelector);
-    expect(styles).toContain(dragSelector);
-    expect(classSpecificity(dragSelector)).toBeGreaterThanOrEqual(
-      classSpecificity(themedSelector),
-    );
-
-    const dragRule = styles.match(
-      /:root\[data-vibrancy="on"\] body\.is-window-dragging \.sidebar\s*\{([^}]*)\}/,
-    )?.[1];
-    expect(dragRule).toContain("backdrop-filter: none");
-    expect(dragRule).toContain("-webkit-backdrop-filter: none");
+  it("gives session titles more room without making metadata bold", () => {
+    expect(styles).toMatch(/\.tree-row\.session\s*\{[^}]*min-height: 30px;[^}]*font-size: 14px;/);
+    expect(styles).toMatch(/\.session-age\s*\{[^}]*font-weight: 400;[^}]*font-variant-numeric: tabular-nums;/);
   });
 });

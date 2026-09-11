@@ -72,38 +72,14 @@
   --segment-selected-bg: #4f6fd6;
   --segment-selected-text: #ffffff;
   --unread: #60a5fa;
-  /* Frosted source list: a single CSS glass layer over the transparent
-     window — backdrop-filter supplies the desktop blur, the veil owns the
-     tone: a heavy smoked tint, so the column stays deep glass whatever the
-     wallpaper, while the blur underneath supplies soft shapes. Layered
-     gradient adds depth: a light catch under the window chrome, gently
-     deepening toward the footer. `--sidebar-border` is the hairline
-     divider, `--sidebar-chip` the frosted quick-action pill. Platforms
-     without the glass stack override --sidebar-glass with a solid color
-     (see the data-vibrancy rules after the theme blocks). */
-  --sidebar-glass: rgba(13, 13, 19, 0.65);
-  --sidebar-glass-layers:
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.05) 0%,
-      rgba(255, 255, 255, 0) 22%
-    ),
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.01) 0%,
-      rgba(0, 0, 0, 0.3) 100%
-    );
+  /* Stable reading surface: wallpaper must not change list contrast. */
+  --sidebar-glass: #24262b;
+  --sidebar-glass-layers: none;
   --sidebar-border: rgba(255, 255, 255, 0.075);
   --sidebar-chip: rgba(32, 32, 39, 0.78);
-  /* Frosted selection chip: inset top highlight + accent hairline ring, so
-     the active row reads as glass resting on glass instead of a flat fill. */
+  /* A single accent outline identifies the selected session. */
   --sidebar-active-ring: rgba(140, 166, 255, 0.32);
-  --sidebar-active-highlight: rgba(255, 255, 255, 0.13);
-  --sidebar-footer-frost: linear-gradient(
-    180deg,
-    rgba(0, 0, 0, 0) 0%,
-    rgba(0, 0, 0, 0.18) 100%
-  );
+  --sidebar-footer-frost: none;
   --terminal-scroll-thumb: rgba(243, 245, 251, 0.28);
   /* Sidebar hierarchy (dark): L1 repo name > session label > L2 branch /
      context row > L3 hint/age. Icons inherit their row's tier color so
@@ -188,31 +164,13 @@
   --segment-selected-bg: #006edc;
   --segment-selected-text: #ffffff;
   --unread: #34c759;
-  /* Frosted source list (light): milky white veil kept thin so the crisp
-     desktop-blur material stays visible, with a porcelain-top to
-     misted-footer depth gradient; see the dark block and data-vibrancy
-     fallback notes. */
-  --sidebar-glass: rgba(250, 250, 253, 0.55);
-  --sidebar-glass-layers:
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.32) 0%,
-      rgba(255, 255, 255, 0) 24%
-    ),
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0) 55%,
-      rgba(196, 201, 218, 0.38) 100%
-    );
+  /* Neutral, opaque list surface keeps CJK strokes clear at small sizes. */
+  --sidebar-glass: #f5f6f8;
+  --sidebar-glass-layers: none;
   --sidebar-border: rgba(17, 18, 23, 0.08);
   --sidebar-chip: rgba(255, 255, 255, 0.75);
   --sidebar-active-ring: rgba(0, 122, 255, 0.26);
-  --sidebar-active-highlight: rgba(255, 255, 255, 0.55);
-  --sidebar-footer-frost: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0) 0%,
-    rgba(206, 210, 224, 0.32) 100%
-  );
+  --sidebar-footer-frost: none;
   --terminal-scroll-thumb: rgba(17, 18, 23, 0.075);
   /* Sidebar hierarchy (light): same stepping logic as dark — L1 > session
      > L2 > L3, icons inherit the row tier, states reuse the accent family. */
@@ -584,38 +542,13 @@ button {
   box-shadow: none;
 }
 
-/* The sidebar glass stays identical whether the pointer is inside or
-   outside: with the transparent window, backdrop-filter blurs the desktop
-   directly — no native material underlay (two glass layers only read as
-   fog). Theme-specific brightness protects text contrast while saturation
-   stays moderate so vivid wallpaper noise does not compete with rows. */
-:root[data-vibrancy="on"][data-theme="dark"] .sidebar {
-  backdrop-filter: blur(28px) saturate(1.4) brightness(0.82);
-  -webkit-backdrop-filter: blur(28px) saturate(1.4) brightness(0.82);
+/* Do not halo small list text with fractional-pixel shadows. */
+.sidebar-scroll {
+  text-shadow: none;
 }
 
-:root[data-vibrancy="on"][data-theme="light"] .sidebar {
-  backdrop-filter: blur(28px) saturate(1.4) brightness(1.08);
-  -webkit-backdrop-filter: blur(28px) saturate(1.4) brightness(1.08);
-}
-
-/* Hairline text separation from the blurred backdrop — the difference
-   between "printed on glass" and "floating in fog". */
-:root[data-vibrancy="on"][data-theme="dark"] .sidebar-scroll {
-  text-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.42);
-}
-
-:root[data-vibrancy="on"][data-theme="light"] .sidebar-scroll {
-  text-shadow: 0 0.5px 1px rgba(255, 255, 255, 0.5);
-}
-
-/* WKWebView recomputes the backdrop blur every frame while the window
-   moves, and the glass edge shimmers against the opaque workspace layer.
-Drop the filter mid-drag (body.is-window-dragging): the smoked tint
-alone carries the look for those few hundred milliseconds. The :root
-prefix gives this rule specificity (0,4,1), above the themed glass
-rules at (0,4,0), so source order cannot silently disable it. */
-:root[data-vibrancy="on"] body.is-window-dragging .sidebar {
+/* An opaque reading surface needs no desktop blur, even during dragging. */
+.sidebar {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
@@ -758,12 +691,7 @@ body.is-project-dragging .tree-row.project {
 
 .tree-row.active {
   background: var(--sidebar-row-active);
-  /* Frosted chip on glass: accent hairline ring + top light catch. */
-  box-shadow:
-    inset 0 0 0 1px var(--sidebar-active-ring),
-    inset 0 1px 0 var(--sidebar-active-highlight);
-  backdrop-filter: saturate(1.3);
-  -webkit-backdrop-filter: saturate(1.3);
+  box-shadow: inset 0 0 0 1px var(--sidebar-active-ring);
 }
 
 .tree-row.active .tree-label {
@@ -777,8 +705,8 @@ body.is-project-dragging .tree-row.project {
   min-height: 30px;
   padding-left: 7px;
   padding-right: 7px;
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 600;
   color: var(--sidebar-text-strong);
   cursor: grab;
   touch-action: none;
@@ -1015,8 +943,10 @@ body.is-project-dragging .tree-row.project {
 
 .tree-row.session {
   padding-left: 10px;
+  min-height: 30px;
   color: var(--sidebar-text);
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 20px;
   font-weight: 400;
 }
 
@@ -1146,9 +1076,9 @@ body.is-project-dragging .tree-row.project {
   margin-left: auto;
   min-width: 24px;
   color: var(--sidebar-text-faint);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
   text-align: right;
 }
 
