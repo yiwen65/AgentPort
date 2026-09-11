@@ -48,11 +48,11 @@ function ExplorerToggleButton() {
 function IconSidebarToggle({ collapsed }: { collapsed: boolean }) {
   return (
     <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-      {collapsed ? (
-        <path d="M4 4.25h12v11.5H4zM8 4.75v10.5m4.5-7.25 2 1.75-2 1.75" stroke="currentColor" strokeWidth="1.45" strokeLinecap="round" strokeLinejoin="round" />
-      ) : (
-        <path d="M4 4.25h12v11.5H4zM8 4.75v10.5m4.5-1.75-2-1.75 2-1.75" stroke="currentColor" strokeWidth="1.45" strokeLinecap="round" strokeLinejoin="round" />
-      )}
+      {!collapsed ? (
+        <path d="M4.5 4h3.25v12H4.5A1.5 1.5 0 0 1 3 14.5v-9A1.5 1.5 0 0 1 4.5 4Z" fill="currentColor" opacity=".28" />
+      ) : null}
+      <rect x="3" y="4" width="14" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.45" />
+      <path d="M7.75 4v12" stroke="currentColor" strokeWidth="1.45" />
     </svg>
   );
 }
