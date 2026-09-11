@@ -15,7 +15,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       <fieldset className="terminal-appearance-settings" aria-describedby="interface-appearance-hint">
         <legend>{t("settings.interfaceTitle")}</legend>
         <p id="interface-appearance-hint">{t("settings.interfaceHint")}</p>
-        <div className="interface-theme-swatch" aria-hidden="true"><span />{t("settings.forest")}</div>
+        <div className="interface-theme-swatch" aria-hidden="true"><span />{t("settings.mosaic")}</div>
         <span className="terminal-appearance-label" id="interface-mode-label">{t("settings.interfaceMode")}</span>
         <div className="terminal-mode-options" role="radiogroup" aria-labelledby="interface-mode-label">
           {MOBILE_THEME_MODES.map(mode => <label key={mode}>

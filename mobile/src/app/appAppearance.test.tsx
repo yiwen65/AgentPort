@@ -14,11 +14,11 @@ function Controls() {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 beforeEach(() => localStorage.clear());
 describe("independent interface appearance", () => {
-  it("defaults to forest dark without migrating or overwriting terminal preferences", () => {
+  it("defaults to mosaic dark without migrating or overwriting terminal preferences", () => {
     localStorage.setItem(TERMINAL_KEY, '{"theme":"ember","mode":"light"}');
     render(<Controls />);
     expect(screen.getByRole("status")).toHaveTextContent("dark:dark:ember:light");
-    expect(document.documentElement).toHaveAttribute("data-theme-family", "forest");
+    expect(document.documentElement).toHaveAttribute("data-theme-family", "mosaic");
     const background = document.documentElement.style.getPropertyValue("--bg");
     fireEvent.click(screen.getByText("terminal"));
     expect(document.documentElement.style.getPropertyValue("--bg")).toBe(background);

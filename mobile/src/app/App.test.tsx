@@ -109,7 +109,7 @@ describe("AgentPort Mobile V2 shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
     fireEvent.click(within(screen.getByRole("group", { name: "Interface appearance" })).getByRole("radio", { name: "Light" }));
-    expect(document.documentElement.style.getPropertyValue("--bg")).toBe("#f2f7f1");
+    expect(document.documentElement.style.getPropertyValue("--bg")).toBe("#f5f6f2");
     expect(document.documentElement.style.getPropertyValue("--terminal-bg")).toBe("");
     expect(document.body).not.toHaveClass("terminal-visible");
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
@@ -250,8 +250,8 @@ describe("AgentPort Mobile V2 shell", () => {
     fireEvent.click(terminalSettings.getByRole("radio", { name: "Aurora" }));
     expect(renderer).toHaveAttribute("data-terminal-theme", "aurora");
     expect(renderer).toHaveAttribute("data-terminal-theme-mode", "light");
-    expect(document.documentElement).toHaveAttribute("data-theme-family", "forest");
-    expect(document.documentElement.style.getPropertyValue("--bg")).toBe("#0f1b13");
+    expect(document.documentElement).toHaveAttribute("data-theme-family", "mosaic");
+    expect(document.documentElement.style.getPropertyValue("--bg")).toBe("#080a10");
     expect((renderer as HTMLElement).style.getPropertyValue("--panel")).not.toBe("");
     fireEvent.click(within(screen.getByRole("group", { name: "Interface appearance" })).getByRole("radio", { name: "Light" }));
     expect(renderer).toHaveAttribute("data-terminal-theme-mode", "light");
@@ -259,7 +259,7 @@ describe("AgentPort Mobile V2 shell", () => {
     act(() => { systemDark = true; systemListeners.forEach(listener => listener()); });
     expect(document.documentElement).toHaveAttribute("data-app-theme", "light");
     expect(renderer).toHaveAttribute("data-terminal-theme-mode", "dark");
-    expect(document.documentElement.style.getPropertyValue("--bg")).toBe("#f2f7f1");
+    expect(document.documentElement.style.getPropertyValue("--bg")).toBe("#f5f6f2");
     expect(container.querySelector(".session-workspace")).toBe(renderer);
     expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(1);
     expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.detach")).toHaveLength(0);

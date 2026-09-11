@@ -97,7 +97,7 @@ export const resources = {
           credentialRequired: "请先安全保存密码、导入私钥或生成密钥。",
         },
       },
-      settings: { title: "设置", interfaceTitle: "主界面外观", interfaceHint: "独立设置界面明暗，不影响终端配色。", interfaceMode: "界面深浅模式", forest: "森绿" },
+      settings: { title: "设置", interfaceTitle: "主界面外观", interfaceHint: "独立设置界面明暗，不影响终端配色。", interfaceMode: "界面深浅模式", mosaic: "拼贴" },
       dashboard: {
         states: { creating: "启动中", working: "运行中", needs_input: "等待输入", idle: "空闲", exited: "已结束", interrupted: "已中断", stopped: "已停止", unknown: "状态未知", cached: "上次状态" },
         currentDevice: "当前设备",
@@ -268,7 +268,7 @@ export const resources = {
           credentialRequired: "Store a password, import a private key, or generate a key first.",
         },
       },
-      settings: { title: "Settings", interfaceTitle: "Interface appearance", interfaceHint: "Choose the interface mode independently of terminal colors.", interfaceMode: "Interface mode", forest: "Forest" },
+      settings: { title: "Settings", interfaceTitle: "Interface appearance", interfaceHint: "Choose the interface mode independently of terminal colors.", interfaceMode: "Interface mode", mosaic: "Mosaic" },
       dashboard: {
         states: { creating: "Starting", working: "Working", needs_input: "Needs input", idle: "Idle", exited: "Ended", interrupted: "Interrupted", stopped: "Stopped", unknown: "Unknown", cached: "Last known" },
         currentDevice: "Current device",
