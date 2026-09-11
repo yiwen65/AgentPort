@@ -30,9 +30,10 @@ impl ScreenDetector {
                 || (recent.contains("esc to cancel") && (recent.contains("enter to confirm") || recent.contains("enter to select"))))
         {
             Some("screen:v1:input-control:last-line")
-        } else if self.working.is_match(last_line.trim()) || recent.contains("esc to interrupt") {
+        } else if self.working.is_match(last_line.trim()) {
             Some("screen:v1:working-control")
-        } else if self.idle.is_match(last_line) && !recent.contains("esc to cancel")
+        } else if lines.iter().rev().take(8).any(|line| self.idle.is_match(line))
+            && !recent.contains("esc to cancel")
             && !recent.contains("enter to select") && !recent.contains("tab/arrow keys") {
             Some("screen:v1:claude-prompt-box")
         } else { None };
@@ -56,8 +57,11 @@ mod tests {
         let mut detector = ScreenDetector::default();
         assert!(matches!(detector.detect("assistant output\n❯", true), Some(Observation::PtyIdlePattern(_))));
         assert!(detector.detect("assistant output\n❯", true).is_none());
+        // Historical transcript text must not keep a fresh prompt working.
+        let mut fresh = ScreenDetector::default();
+        assert!(matches!(fresh.detect("old output: esc to interrupt\n❯", true), Some(Observation::PtyIdlePattern(_))));
         assert!(matches!(detector.detect("esc to interrupt", true), Some(Observation::PtyWorkingPattern(_))));
-        assert!(detector.detect("esc to interrupt\n❯", true).is_none());
+        assert!(matches!(detector.detect("esc to interrupt\n❯", true), Some(Observation::PtyIdlePattern(_))));
         assert!(matches!(detector.detect("esc to cancel\nenter to confirm\n❯", true), Some(Observation::PtyNeedsInputPattern(_))));
         assert!(detector.detect("enter to select\n❯ 1. Yes\n❯", true).is_none());
     }
