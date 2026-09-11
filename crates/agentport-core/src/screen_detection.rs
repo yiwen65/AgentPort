@@ -35,14 +35,14 @@ impl ScreenDetector {
         } else if lines.iter().rev().take(8).any(|line| self.idle.is_match(line))
             && !recent.contains("esc to cancel")
             && !recent.contains("enter to select") && !recent.contains("tab/arrow keys") {
-            Some("screen:v1:claude-prompt-box")
+            Some("screen:v1:agent-prompt-box")
         } else { None };
         if self.last == rule { return None; }
         self.last = rule;
         match rule {
             Some("screen:v1:input-control:last-line") => Some(Observation::PtyNeedsInputPattern(rule?.into())),
             Some("screen:v1:working-control") => Some(Observation::PtyWorkingPattern(rule?.into())),
-            Some("screen:v1:claude-prompt-box") => Some(Observation::PtyIdlePattern(rule?.into())),
+            Some("screen:v1:agent-prompt-box") => Some(Observation::PtyIdlePattern(rule?.into())),
             None => None,
             _ => None,
         }
@@ -56,6 +56,8 @@ mod tests {
     fn claude_prompt_becomes_idle_but_menus_and_working_controls_do_not() {
         let mut detector = ScreenDetector::default();
         assert!(matches!(detector.detect("assistant output\n❯", true), Some(Observation::PtyIdlePattern(_))));
+        let mut qoder = ScreenDetector::default();
+        assert!(matches!(qoder.detect("Qoder ready\n❯", true), Some(Observation::PtyIdlePattern(_))));
         assert!(detector.detect("assistant output\n❯", true).is_none());
         // Historical transcript text must not keep a fresh prompt working.
         let mut fresh = ScreenDetector::default();

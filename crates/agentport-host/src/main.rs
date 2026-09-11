@@ -1453,7 +1453,7 @@ fn control_loop(
             let generation = shared.log_bytes.load(Ordering::Relaxed);
             if screen_generation != Some(generation)
                 && shared.cfg.transport == AgentTransport::Pty
-                && shared.cfg.adapter_type == "claude" {
+                && matches!(shared.cfg.adapter_type.as_str(), "claude" | "qoder") {
                 screen_generation = Some(generation);
                 let text = {
                     let _serial = shared.output_serial.lock().unwrap();
