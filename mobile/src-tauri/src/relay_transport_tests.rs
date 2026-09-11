@@ -136,6 +136,51 @@ async fn native_relay_bridge_hello_and_owner_cancellation_do_not_need_ssh() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn image_upload_native_sender_preserves_raw_bytes_and_generation() {
+    use sha2::{Digest, Sha256};
+    let app = tauri::test::mock_builder().build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
+    let state = RemoteConnections::default();
+    let (client, mut server) = tokio::io::duplex(256 * 1024);
+    let writer: Arc<AsyncMutex<Box<dyn AsyncWrite + Send + Unpin>>> = Arc::new(AsyncMutex::new(Box::new(client)));
+    let pending = Arc::new(Mutex::new(HashMap::new()));
+    let lease = tokio::spawn(std::future::pending::<()>());
+    let snapshot = ConnectionSnapshot { profile_id: "image-fixture".into(), protocol_major: 1, protocol_minor: 1, agentport_version: "fixture".into(), platform: "test".into(), capabilities: vec![] };
+    state.inner.connections.lock().await.insert("image-fixture".into(), Connection { generation:"image-generation".into(), snapshot, writer:writer.clone(), pending:pending.clone(), transport:Transport::Relay(RelayLease(lease.abort_handle())) });
+    assert!(state.image_upload_connection("image-fixture").await.err().unwrap().contains("Update"));
+    state.inner.connections.lock().await.get_mut("image-fixture").unwrap().snapshot.capabilities.push(json!({"name":"image.upload_v1","enabled":true}));
+    let (_, ImageUploadConnection::Relay(relay)) = state.image_upload_connection("image-fixture").await.unwrap() else { panic!("expected Relay"); };
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec(); bytes.extend((0..150_000).map(|n| (n % 256) as u8));
+    let expected = bytes.clone();
+    let response_pending = pending.clone();
+    let worker = tokio::spawn(async move {
+        let mut received = Vec::new();
+        loop {
+            let frame = read_frame(&mut server).await.unwrap().unwrap();
+            let (header, bytes) = if frame[0] == 0 { agentport_remote_protocol::image::decode_chunk(&frame).unwrap() } else { (&frame[..], &[][..]) };
+            let request: Value = serde_json::from_slice(header).unwrap();
+            let method = request["method"].as_str().unwrap();
+            let response = match method {
+                "image.begin" => { assert_eq!(request["params"]["size"], expected.len()); json!({"uploadId":"test-image"}) },
+                "image.chunk" => { assert_eq!(request["params"]["offset"], received.len()); received.extend_from_slice(bytes); json!({"offset":received.len()}) },
+                "image.finish" => { assert_eq!(received, expected); assert_eq!(request["params"]["sha256"], format!("{:x}", Sha256::digest(&received))); json!({"path":"/home/fixture/.cache/agentport/image-test.png"}) },
+                _ => panic!("unexpected image method"),
+            };
+            response_pending.lock().unwrap().remove(request["requestId"].as_str().unwrap()).unwrap().response.send(Ok(response)).unwrap();
+            if method == "image.finish" { break; }
+        }
+    });
+    let path = std::env::temp_dir().join(format!("agentport-relay-image-native-{}", uuid::Uuid::new_v4()));
+    std::fs::write(&path, bytes).unwrap();
+    let result = crate::sftp::image::upload_relay_image(app.handle(), &state, "image-fixture", &relay, &path).await.unwrap();
+    assert_eq!(result, "/home/fixture/.cache/agentport/image-test.png");
+    worker.await.unwrap();
+    state.inner.connections.lock().await.remove("image-fixture");
+    assert!(relay.request(app.handle(), &state, "image-fixture", "image.begin", json!({}), None).await.unwrap_err().contains("changed"));
+    assert!(pending.lock().unwrap().is_empty());
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn relay_authentication_and_identity_failures_never_enter_availability_retry() {
     for error in [

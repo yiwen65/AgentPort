@@ -1,6 +1,8 @@
 //! Stdio-only Remote Bridge adapter. Protocol bytes use stdin/stdout; bounded
 //! diagnostics use stderr. This crate contains no listener or daemon path.
 
+mod image;
+
 use agentport_remote_protocol::{
     borrow_request, classify_method, negotiate_version, read_frame, write_frame,
     AgentPreferencesReplaceParams, AgentProbeAllParams, AgentProbeParams, AttentionPollParams,
@@ -344,6 +346,7 @@ fn serve_after_hello<R: Read, E: Write, S: RemoteService + Sync>(
         .collect();
     enqueue(writer, ServerEnvelope::Hello(hello_result))?;
 
+    let mut images = image::ImageUploads::new();
     let mut server_sequence = 0_u64;
     let mut connection = ConnectionState {
         push_enabled,
@@ -357,14 +360,23 @@ fn serve_after_hello<R: Read, E: Write, S: RemoteService + Sync>(
             Ok(None) => break Ok(CloseReason::EndOfInput),
             Err(error) => break Err(error.into()),
         };
-        let kind: MessageKind = match serde_json::from_slice(frame.as_bytes()) {
+        let (header, image_bytes) = if frame.as_bytes().first() == Some(&0) {
+            if !connection.enabled_capabilities.contains(agentport_remote_protocol::image::CAPABILITY) {
+                break Err(BridgeError::UnexpectedMessage);
+            }
+            match agentport_remote_protocol::image::decode_chunk(frame.as_bytes()) {
+                Ok(parts) => parts,
+                Err(_) => break Err(BridgeError::UnexpectedMessage),
+            }
+        } else { (frame.as_bytes(), &[][..]) };
+        let kind: MessageKind = match serde_json::from_slice(header) {
             Ok(kind) => kind,
             Err(error) => break Err(ProtocolError::InvalidJson(error).into()),
         };
         if kind.message_type != "request" {
             break Err(BridgeError::UnexpectedMessage);
         }
-        let request = match borrow_request(frame.as_bytes()) {
+        let request = match borrow_request(header) {
             Ok(request) => request,
             Err(error) => break Err(error.into()),
         };
@@ -372,6 +384,27 @@ fn serve_after_hello<R: Read, E: Write, S: RemoteService + Sync>(
             break Err(BridgeError::UnexpectedMessage);
         }
         server_sequence = server_sequence.saturating_add(1);
+        if matches!(request.method, "image.begin" | "image.chunk" | "image.finish" | "image.abort") {
+            let outcome = if !connection.enabled_capabilities.contains(agentport_remote_protocol::image::CAPABILITY) {
+                Err("Image upload capability was not negotiated.".to_owned())
+            } else if (request.method == "image.chunk") != !image_bytes.is_empty() {
+                Err("Image chunks require binary framing.".to_owned())
+            } else {
+                match serde_json::from_str(request.params.get()) {
+                    Ok(params) => images.request(request.method, &params, image_bytes),
+                    Err(_) => Err("Invalid image upload parameters.".into()),
+                }
+            };
+            let (status, value, error) = match outcome {
+                Ok(value) => (ResultStatus::Succeeded, Some(value), None),
+                Err(message) => (ResultStatus::Failed, None, Some(RemoteError { code: "image_upload_failed".into(), message })),
+            };
+            if let Err(error) = write_result(writer, request.request_id, None, status, RetryClass::NonIdempotentWrite, value, error) {
+                break Err(error);
+            }
+            continue;
+        }
+        if !image_bytes.is_empty() { break Err(BridgeError::UnexpectedMessage); }
         if let Err(error) = handle_request(
             writer,
             diagnostics,
@@ -434,6 +467,9 @@ fn hello_result(
         })
         .collect();
 
+    if requested.iter().any(|name| name == agentport_remote_protocol::image::CAPABILITY) {
+        capabilities.push(Capability { name: agentport_remote_protocol::image::CAPABILITY.into(), enabled: true, disabled_reason: None });
+    }
     for requested_name in requested {
         if !capabilities
             .iter()

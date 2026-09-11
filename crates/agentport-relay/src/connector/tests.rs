@@ -61,12 +61,15 @@ impl Fixture {
             ),
         )
         .unwrap();
+        if let Some(real_bridge) = real_bridge {
+            fs::write(&bridge, format!("#!/bin/sh\nexport HOME='{}'\nexec '{}' \"$@\"\n", temp.path().display(), real_bridge.display().to_string().replace('\'', "'\"'\"'"))).unwrap();
+        }
         fs::set_permissions(&bridge, fs::Permissions::from_mode(0o700)).unwrap();
         let vault = Arc::new(MemoryVault::default());
         let runtime = Runtime::open(
             Store::open(&temp.path().join("state")).unwrap(),
             vault.clone(),
-            real_bridge.unwrap_or(bridge),
+            bridge,
             temp.path().to_path_buf(),
             Some(temp.path().join("host-sockets")),
         )
@@ -591,12 +594,45 @@ async fn real_bridge_hello_and_read_only_request_traverse_relay_in_isolated_data
         .await
         .unwrap()
     }
-    let hello = exchange(&mut stream, serde_json::json!({"type":"hello", "protocol":{"major":1,"minor":1}, "client":{"name":"isolated-relay-check","version":"1"}, "requestedCapabilities":["session.read"]})).await;
+    let hello = exchange(&mut stream, serde_json::json!({"type":"hello", "protocol":{"major":1,"minor":1}, "client":{"name":"isolated-relay-check","version":"1"}, "requestedCapabilities":["session.read","image.upload_v1"]})).await;
     assert_eq!(hello["type"], "hello");
     let response = exchange(&mut stream, serde_json::json!({"type":"request", "requestId":"isolated-read", "method":"project.list", "params":{}})).await;
     assert_eq!(response["type"], "result");
     assert_eq!(response["status"], "succeeded");
     assert_eq!(response["value"], serde_json::json!([]));
+    assert!(hello["capabilities"].as_array().unwrap().iter().any(|cap| cap["name"] == "image.upload_v1" && cap["enabled"] == true));
+    use sha2::{Digest, Sha256};
+    for extension in ["png", "jpg"] {
+        let mut image = if extension == "png" { b"\x89PNG\r\n\x1a\n".to_vec() } else { vec![255, 216, 255] };
+        image.extend((0..200_000).map(|n| (n % 256) as u8));
+        let begin = exchange(&mut stream, serde_json::json!({"type":"request","requestId":"image-begin","method":"image.begin","params":{"size":image.len(),"extension":extension}})).await;
+        assert_eq!(begin["status"], "succeeded");
+        let id = begin["value"]["uploadId"].clone();
+        let mut offset = 0;
+        for chunk in image.chunks(agentport_remote_protocol::image::MAX_CHUNK_BYTES) {
+            let header = serde_json::to_vec(&serde_json::json!({"type":"request","requestId":"image-chunk","method":"image.chunk","params":{"uploadId":id,"offset":offset}})).unwrap();
+            let packet = agentport_remote_protocol::image::encode_chunk(&header, chunk).unwrap();
+            stream.write_u32(packet.len() as u32).await.unwrap();
+            stream.write_all(&packet).await.unwrap();
+            stream.flush().await.unwrap();
+            let length = stream.read_u32().await.unwrap();
+            assert!(length < 4096);
+            let mut response = vec![0; length as usize];
+            stream.read_exact(&mut response).await.unwrap();
+            let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+            offset += chunk.len();
+            assert_eq!(response["status"], "succeeded");
+            assert_eq!(response["value"]["offset"], offset);
+            // A normal Bridge request can run between upload chunks.
+            let read = exchange(&mut stream, serde_json::json!({"type":"request","requestId":"interleaved-read","method":"project.list","params":{}})).await;
+            assert_eq!(read["status"], "succeeded");
+        }
+        let finish = exchange(&mut stream, serde_json::json!({"type":"request","requestId":"image-finish","method":"image.finish","params":{"uploadId":id,"sha256":format!("{:x}",Sha256::digest(&image))}})).await;
+        assert_eq!(finish["status"], "succeeded");
+        let path = PathBuf::from(finish["value"]["path"].as_str().unwrap());
+        assert!(path.starts_with(fixture.temp.path()));
+        assert_eq!(fs::read(&path).unwrap(), image);
+    }
     fixture.runtime.revoke(&phone.public_key()).await.unwrap();
     let mut byte = [0; 1];
     assert_eq!(

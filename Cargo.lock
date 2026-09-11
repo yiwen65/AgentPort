@@ -157,6 +157,7 @@ dependencies = [
 name = "agentport-relay"
 version = "0.1.0"
 dependencies = [
+ "agentport-remote-protocol",
  "base64 0.22.1",
  "futures-util",
  "getrandom 0.2.17",
@@ -185,6 +186,7 @@ dependencies = [
  "agentport-service",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
 ]
 

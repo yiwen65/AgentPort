@@ -104,6 +104,49 @@ struct Connection {
     transport: Transport,
 }
 
+pub(crate) enum ImageUploadConnection {
+    Ssh(Arc<ssh::AuthenticatedSsh>),
+    Relay(RelayImageConnection),
+}
+
+pub(crate) struct RelayImageConnection {
+    writer: Arc<AsyncMutex<Box<dyn AsyncWrite + Send + Unpin>>>,
+    pending: Arc<Mutex<HashMap<String, PendingRequest>>>,
+}
+
+impl RelayImageConnection {
+    pub(crate) async fn request<R: Runtime>(&self, app: &AppHandle<R>, state: &RemoteConnections, profile_id: &str, method: &str, params: Value, bytes: Option<&[u8]>) -> Result<Value, String> {
+        if !state.inner.connections.lock().await.get(profile_id).is_some_and(|connection| Arc::ptr_eq(&connection.pending, &self.pending)) {
+            return Err("The connection changed; the image upload was not replayed.".into());
+        }
+        let request_id = format!("image_{}", uuid::Uuid::new_v4().simple());
+        let header = serde_json::to_vec(&json!({"type":"request", "requestId":request_id, "method":method, "params":params})).map_err(|_| "Invalid image request.")?;
+        let payload = Zeroizing::new(match bytes {
+            Some(bytes) => agentport_remote_protocol::image::encode_chunk(&header, bytes)?,
+            None => header,
+        });
+        let (sender, receiver) = oneshot::channel();
+        self.pending.lock().map_err(|_| "Connection state is unavailable.")?.insert(request_id.clone(), PendingRequest { accepted: false, is_read: false, response: sender });
+        let outcome = tokio::time::timeout(Duration::from_secs(15), async {
+            let mut writer = self.writer.lock().await;
+            writer.write_all(&(payload.len() as u32).to_be_bytes()).await.map_err(|_| "Image frame write failed.")?;
+            writer.write_all(&payload).await.map_err(|_| "Image frame write failed.")?;
+            writer.flush().await.map_err(|_| "Image frame write failed.")?;
+            drop(writer);
+            Ok::<_, String>(receiver.await.map_err(|_| "Image connection closed.")?)
+        }).await;
+        self.pending.lock().ok().map(|mut pending| pending.remove(&request_id));
+        match outcome {
+            Ok(Ok(result)) => result.map_err(|error| error.message),
+            other => {
+                // A canceled write may leave half a frame; never reuse or replay it.
+                retire_connection(app, state, profile_id, &self.pending).await;
+                match other { Ok(Err(error)) => Err(error), _ => Err("Image request timed out; reconnect before trying again.".into()) }
+            }
+        }
+    }
+}
+
 enum Transport {
     Ssh(Arc<ssh::AuthenticatedSsh>),
     Relay(RelayLease),
@@ -141,14 +184,20 @@ impl RemoteConnections {
     pub(crate) async fn image_upload_connection(
         &self,
         profile_id: &str,
-    ) -> Result<(String, Arc<ssh::AuthenticatedSsh>), String> {
+    ) -> Result<(String, ImageUploadConnection), String> {
         let connections = self.inner.connections.lock().await;
         let connection = connections.get(profile_id)
-            .ok_or("Connect to the SSH host before uploading an image.")?;
-        match &connection.transport {
-            Transport::Ssh(ssh) => Ok((connection.generation.clone(), ssh.clone())),
-            Transport::Relay(_) => Err("Image upload requires an SSH connection; Relay is not supported.".into()),
-        }
+            .ok_or("Connect to the host before uploading an image.")?;
+        let transport = match &connection.transport {
+            Transport::Ssh(ssh) => ImageUploadConnection::Ssh(ssh.clone()),
+            Transport::Relay(_) => {
+                if !connection.snapshot.capabilities.iter().any(|capability| capability["name"] == agentport_remote_protocol::image::CAPABILITY && capability["enabled"] == true) {
+                    return Err("This Relay host does not support image upload. Update the remote Bridge and reconnect.".into());
+                }
+                ImageUploadConnection::Relay(RelayImageConnection { writer: connection.writer.clone(), pending: connection.pending.clone() })
+            }
+        };
+        Ok((connection.generation.clone(), transport))
     }
 
     pub(crate) async fn image_upload_connection_is_current(&self, profile_id: &str, generation: &str) -> bool {
@@ -418,7 +467,7 @@ async fn bridge_hello<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             "type": "hello",
             "protocol": {"major": 1, "minor": 1},
             "client": {"name": "agentport-mobile", "version": env!("CARGO_PKG_VERSION")},
-            "requestedCapabilities": ["session.event_push", "terminal.geometry_v1"]
+            "requestedCapabilities": ["session.event_push", "terminal.geometry_v1", "image.upload_v1"]
         }),
     )
     .await

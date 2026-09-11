@@ -2,6 +2,8 @@
 //!
 //! This crate deliberately has no dependency on Core, Tauri, SSH, or Mosh.
 
+pub mod image;
+
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{value::RawValue, Value};
@@ -20,6 +22,7 @@ pub const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
 /// list so an additive method cannot become callable without an explicit
 /// replay policy. Classified-but-not-yet-dispatched future slices stay out.
 pub const METHOD_REGISTRY: &[&str] = &[
+    "image.begin", "image.chunk", "image.finish", "image.abort",
     "boot",
     "session.list",
     "session.poll",
@@ -330,6 +333,7 @@ impl RetryClass {
 /// be reads, because doing so could make a future write automatically replay.
 pub fn classify_method(method: &str) -> RetryClass {
     match method {
+        "image.begin" | "image.chunk" | "image.finish" | "image.abort" => RetryClass::NonIdempotentWrite,
         "boot"
         | "session.list"
         | "session.status"
