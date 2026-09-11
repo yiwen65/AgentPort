@@ -24,7 +24,8 @@ python3 scripts/restart-debug-app.py --dry-run
 - **不要**用裸 `cargo build -p agentport` 的产物替换 .app 二进制——没有 `tauri/custom-protocol` feature 时按 `devUrl`（localhost:1420）加载前端，没有 dev server 就是白屏。
 - 调试构建使用由 checkout 绝对路径派生的唯一 Bundle ID；不得改回发布版的 `com.agentport.desktop`，否则 macOS 可能把系统通知点击路由到另一个 AgentPort 实例。
 - 调试包显示名包含 checkout 名（例如 `AgentPort Debug - AgentSessions`），用于在通知来源、系统设置和多实例窗口中区分目标。
-- 手动替换 `.app/Contents/MacOS` 下的主程序或 `agentport-host` 后，必须对整个 `.app` 执行上面的 ad-hoc `codesign`；否则 macOS 会以 `SIGKILL` 终止 Host，表现为 `host exited during startup`。
+- 调试构建必须使用 `.env` 中配置的固定 `AGENTPORT_DEBUG_SIGN_IDENTITY` 证书，不能用环境变量 `AGENTPORT_DEBUG_SIGN_IDENTITY=-` 覆盖它：ad-hoc 签名按二进制哈希识别 App，重编译会导致录屏等 TCC 授权反复失效。证书不可用时应报错并修复签名配置；只有明确接受权限重置的临时包才可设置 `AGENTPORT_DEBUG_ALLOW_ADHOC=1`。
+- 手动替换 `.app/Contents/MacOS` 下的主程序或 `agentport-host` 后，必须通过上述统一脚本重新签名整个 `.app`；否则 macOS 会以 `SIGKILL` 终止 Host，表现为 `host exited during startup`。
 - Session 由独立的 `agentport-host` 进程承载。**重启必须使用上述统一脚本，不得自行拼接查杀命令。** 禁止 `pgrep -f "$APP"` / `pkill -f` / `killall`：GUI 路径也是 `agentport-host`、`agentport-connector` 等程序的前缀，会误杀 Session 并切断手机连接。只有精确关闭 GUI 才不会中断现有 Session。
 - 重启后截图确认窗口正常渲染（非空白）再交付。
 - 若同时存在 `dist-release/macos/AgentPort.app`，**不得**关闭它、任何 `agentport-host` 或 `agentport-connector`。统一脚本通过 `ps` 的可执行路径完全匹配当前 checkout 的旧 GUI，并在发送信号前再次核验 PID；关闭失败会报错，不会升级为强制查杀。

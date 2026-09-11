@@ -3,7 +3,8 @@
 # checkout. macOS routes notification clicks by Bundle ID, so sharing the
 # release identity can activate another running AgentPort instance.
 # Set AGENTPORT_DEBUG_SIGN_IDENTITY in the repository .env file or process
-# environment to preserve macOS TCC grants; otherwise use ad-hoc signing.
+# environment to preserve macOS TCC grants. Ad-hoc signing requires explicit
+# opt-in because its hash-based identity invalidates grants after rebuilds.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -19,7 +20,18 @@ RELEASE_BUNDLE_ID="com.agentport.desktop"
 DEBUG_HASH="$(printf '%s' "$ROOT" | shasum -a 256 | awk '{print substr($1, 1, 12)}')"
 DEBUG_BUNDLE_ID="com.agentport.desktop.debug.${DEBUG_HASH}"
 DEBUG_DISPLAY_NAME="AgentPort Debug - $(basename "$ROOT")"
-DEBUG_SIGN_IDENTITY="${AGENTPORT_DEBUG_SIGN_IDENTITY:--}"
+DEBUG_SIGN_IDENTITY="${AGENTPORT_DEBUG_SIGN_IDENTITY:-}"
+
+if [ -z "$DEBUG_SIGN_IDENTITY" ] || [ "$DEBUG_SIGN_IDENTITY" = "-" ]; then
+  if [ "${AGENTPORT_DEBUG_ALLOW_ADHOC:-0}" != "1" ]; then
+    echo "ERROR: stable debug signing identity required to preserve macOS permissions." >&2
+    echo "Set AGENTPORT_DEBUG_SIGN_IDENTITY to a codesigning certificate in .env." >&2
+    echo "For disposable builds only, set AGENTPORT_DEBUG_ALLOW_ADHOC=1 (permissions may reset)." >&2
+    exit 2
+  fi
+  DEBUG_SIGN_IDENTITY="-"
+  echo "WARNING: ad-hoc debug signing; macOS permissions may reset after rebuilds." >&2
+fi
 
 if [ ! -f "$PLIST" ]; then
   echo "ERROR: debug App bundle is missing: $APP" >&2
