@@ -1,10 +1,10 @@
-/* The runtime projects every color from the shared terminal theme catalog. */
+/* Interface semantics are independent of the terminal palette. */
 :root {
   color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
   font-synthesis: none;
   --terminal-bg: #282c34;
-  background: var(--bg, #282c34);
+  background: var(--bg, #080e0b);
   color: var(--text, #abb2bf);
 }
 :root[data-app-theme="light"] { color-scheme: light; }
@@ -41,7 +41,7 @@ h1 { margin: 0; font-size: clamp(27px, 8vw, 38px); letter-spacing: -0.045em; }
 .section-heading p { margin: 9px 0 0; max-width: 44ch; color: var(--muted); line-height: 1.5; }
 .heading-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .heading-actions > button:not(.primary-button) { min-height: 44px; border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; background: var(--panel); }
-.primary-button { border: 0; border-radius: 14px; padding: 11px 14px; min-height: 44px; color: var(--primary-fg); font-weight: 700; background: var(--accent); box-shadow: 0 8px 22px rgba(10, 132, 255, 0.24); }
+.primary-button { border: 0; border-radius: 14px; padding: 11px 14px; min-height: 44px; color: var(--primary-fg); font-weight: 700; background: linear-gradient(110deg, var(--primary-start), var(--primary-end)); box-shadow: 0 4px 16px #00000018; }
 .primary-button.wide { min-width: 150px; }
 .state-card, .empty-card { margin-top: 34px; border: 1px solid var(--line); border-radius: 26px; background: var(--panel); box-shadow: var(--shadow); }
 .state-card { padding: 22px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
@@ -97,7 +97,7 @@ textarea { resize: vertical; overflow-wrap: anywhere; }
 .button-row { margin-top: 12px; }
 .button-row button, .modal-actions > button { min-height: 44px; border: 1px solid var(--line); border-radius: 12px; padding: 9px 14px; background: transparent; }
 .modal-actions { margin-top: 22px; }
-.modal-actions > .primary-button { border: 0; background: var(--accent); }
+.modal-actions > .primary-button { border: 0; background: linear-gradient(110deg, var(--primary-start), var(--primary-end)); }
 .danger-button { color: white !important; border-color: var(--danger-fill, var(--danger)) !important; background: var(--danger-fill, var(--danger)) !important; font-weight: 700; }
 .fingerprint { display: block; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); overflow-wrap: anywhere; -webkit-user-select: all; user-select: all; -webkit-touch-callout: default; }
 .file-field { display: grid; gap: 8px; margin-top: 14px; color: var(--muted); font-size: 15px; font-weight: 600; }
@@ -182,24 +182,26 @@ textarea { resize: vertical; overflow-wrap: anywhere; }
 .terminal-actions-sheet > header h2 { font-size: 20px; }
 .terminal-actions-sheet > header p { margin-top: 5px; color: var(--muted); font-size: 13px; }
 .terminal-appearance-settings { min-width: 0; margin: 20px 0 0; padding: 0; border: 0; }
+.interface-theme-swatch { display: flex; align-items: center; gap: 10px; color: var(--text); font-weight: 600; }
+.interface-theme-swatch > span { width: 44px; height: 28px; border: 1px solid #58735f; border-radius: 8px; background: linear-gradient(110deg, #101c15 50%, #9aef75 50%, #d0fa59); }
 .terminal-appearance-settings legend { padding: 0; color: var(--text); font-size: 15px; font-weight: 700; }
 .terminal-appearance-settings > p { margin: 5px 0 16px; color: var(--muted); font-size: 13px; line-height: 1.4; }
 .terminal-appearance-label { display: block; margin: 14px 0 7px; color: var(--muted); font-size: 13px; font-weight: 600; }
 .terminal-mode-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 4px; border: 1px solid var(--line-soft); border-radius: 14px; background: var(--panel-strong); }
 .terminal-mode-options label { min-width: 0; }
 .terminal-mode-options label > span { min-height: 44px; display: grid; place-items: center; border: 1px solid transparent; border-radius: 10px; color: var(--muted); font-size: 15px; font-weight: 600; }
-.terminal-mode-options input:checked + span { border-color: var(--terminal-accent); background: var(--terminal-selection); color: var(--text); }
+.terminal-mode-options input:checked + span { border-color: var(--accent); background: var(--content-active); color: var(--text); }
 .session-workspace button:focus-visible { outline: 3px solid var(--terminal-accent); outline-offset: 3px; }
-.terminal-mode-options input:focus-visible + span, .mobile-terminal-theme-choice input:focus-visible + .mobile-terminal-theme-choice-body { outline: 3px solid var(--terminal-accent); outline-offset: 2px; }
+.terminal-mode-options input:focus-visible + span, .mobile-terminal-theme-choice input:focus-visible + .mobile-terminal-theme-choice-body { outline: 3px solid var(--accent); outline-offset: 2px; }
 .mobile-terminal-theme-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
 .mobile-terminal-theme-choice { min-width: 0; cursor: pointer; }
 .mobile-terminal-theme-choice-body { min-height: 78px; display: grid; gap: 8px; padding: 8px; border: 1px solid var(--line-soft); border-radius: 13px; background: var(--panel-strong); }
-.mobile-terminal-theme-choice input:checked + .mobile-terminal-theme-choice-body { border-color: var(--terminal-accent); box-shadow: inset 0 0 0 1px var(--terminal-accent); }
+.mobile-terminal-theme-choice input:checked + .mobile-terminal-theme-choice-body { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .mobile-terminal-theme-preview { min-width: 0; height: 34px; display: grid; grid-template-columns: repeat(6, 1fr); align-items: end; gap: 3px; padding: 18px 6px 5px; overflow: hidden; border-radius: 7px; }
 .mobile-terminal-theme-preview > span { height: 4px; border-radius: 999px; }
 .mobile-terminal-theme-copy { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px; color: var(--text); }
 .mobile-terminal-theme-copy strong { min-width: 0; font-size: 14px; font-weight: 650; line-height: 1.2; overflow-wrap: anywhere; }
-.mobile-terminal-theme-copy > span { width: 18px; flex: 0 0 18px; color: var(--terminal-accent); font-weight: 800; text-align: center; }
+.mobile-terminal-theme-copy > span { width: 18px; flex: 0 0 18px; color: var(--accent); font-weight: 800; text-align: center; }
 .terminal-action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .terminal-action-grid button { min-height: 50px; border: 1px solid var(--line-soft); border-radius: 12px; background: var(--panel-strong); font-size: 16px; }
 @keyframes status-spin { to { transform: rotate(360deg); } }

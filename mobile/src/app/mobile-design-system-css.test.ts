@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { getAppThemeVariables } from "./appAppearance";
-import { getMobileTerminalPalette, MOBILE_TERMINAL_THEME_IDS, MOBILE_TERMINAL_THEME_MODES } from "../terminal/terminalThemes";
+
 
 const styles = readFileSync("src/app/styles.css", "utf8");
 const dashboardStyles = readFileSync("src/features/sessions/dashboard.css", "utf8");
@@ -49,23 +49,21 @@ describe("mobile semantic design system", () => {
     expect(modalStyles).toContain("grid-template-columns: minmax(0, 1fr) 36px 36px");
   });
 
-  it("derives app colors from all six terminal palettes, without a separate app palette", () => {
+  it("keeps readable interface colors independent of terminal palettes", () => {
     expect(styles).not.toContain("--bg: #edf3f9");
     expect(styles).not.toContain("--bg: #080f1d");
     expect(dashboardStyles).toContain("grid-template-rows: 0fr");
     expect(dashboardStyles).toContain("grid-template-rows: 1fr");
     expect(dashboardStyles).toContain("prefers-reduced-motion: reduce");
-    for (const theme of MOBILE_TERMINAL_THEME_IDS) for (const mode of MOBILE_TERMINAL_THEME_MODES) {
-      const palette = getMobileTerminalPalette(theme, mode);
-      const variables = getAppThemeVariables(theme, mode);
-      expect(variables["--bg"]).toBe(palette.xterm.background);
-      expect(variables["--panel"]).toBe(palette.workspace.raisedBackground);
-      expect(variables["--fill"]).toBe(palette.workspace.codeBackground);
+    const theme = "forest";
+    for (const mode of ["light", "dark"] as const) {
+      const variables = getAppThemeVariables(mode);
+      expect(Object.keys(variables).some(key => key.startsWith("--terminal-"))).toBe(false);
       for (const bg of ["--bg", "--panel", "--fill"]) {
         for (const fg of ["--text", "--muted"]) expect(contrast(variables[fg], variables[bg]), `${theme}/${mode} ${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);
         for (const fg of ["--accent", "--mark-cyan", "--mark-blue", "--mark-violet", "--mark-dot"]) expect(contrast(variables[fg], variables[bg]), `${theme}/${mode} ${fg} on ${bg}`).toBeGreaterThanOrEqual(3);
       }
-      expect(contrast(variables["--primary-fg"], variables["--accent"])).toBeGreaterThanOrEqual(4.5);
+      for (const bg of ["--primary-start", "--primary-end"]) expect(contrast(variables["--primary-fg"], variables[bg])).toBeGreaterThanOrEqual(4.5);
     }
   });
 

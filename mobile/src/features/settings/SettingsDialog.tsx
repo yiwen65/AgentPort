@@ -1,15 +1,29 @@
 import { Fragment, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { Modal } from "../../components/Modal";
+import { useAppAppearance } from "../../app/appAppearance";
 import { useMobileTerminalAppearance } from "../../terminal/terminalAppearance";
 import { getMobileTerminalPalette, getMobileTerminalWorkspaceVariables, MOBILE_TERMINAL_THEME_IDS, MOBILE_THEME_MODES } from "../../terminal/terminalThemes";
 
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const [terminalAppearance, setTerminalAppearance, resolvedMode] = useMobileTerminalAppearance();
+  const [interfaceMode, setInterfaceMode] = useAppAppearance();
 
   return (
     <Modal title={t("settings.title", { defaultValue: "Settings" })} onClose={onClose} className="mobile-settings">
+      <fieldset className="terminal-appearance-settings" aria-describedby="interface-appearance-hint">
+        <legend>{t("settings.interfaceTitle")}</legend>
+        <p id="interface-appearance-hint">{t("settings.interfaceHint")}</p>
+        <div className="interface-theme-swatch" aria-hidden="true"><span />{t("settings.forest")}</div>
+        <span className="terminal-appearance-label" id="interface-mode-label">{t("settings.interfaceMode")}</span>
+        <div className="terminal-mode-options" role="radiogroup" aria-labelledby="interface-mode-label">
+          {MOBILE_THEME_MODES.map(mode => <label key={mode}>
+            <input className="visually-hidden" type="radio" name="mobile-interface-mode" value={mode} checked={interfaceMode === mode} onChange={() => setInterfaceMode(mode)} />
+            <span>{t(`session.appearance.modes.${mode}`)}</span>
+          </label>)}
+        </div>
+      </fieldset>
       <fieldset className="terminal-appearance-settings" aria-describedby="terminal-appearance-hint">
         <legend>{t("session.appearance.title")}</legend>
         <p id="terminal-appearance-hint">{t("session.appearance.hint")}</p>

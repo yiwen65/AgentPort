@@ -39,7 +39,7 @@ function updateAppearance(patch: Partial<MobileTerminalAppearance>) {
   apply(next);
 }
 
-/** One persisted Theme for all surfaces; system mode resolves without rewriting the preference. */
+/** Persisted terminal and immersive Session theme, independent of the main interface. */
 export function useMobileTerminalAppearance() {
   const appearance = useSyncExternalStore(subscribe, getSnapshot);
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);

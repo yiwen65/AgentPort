@@ -97,7 +97,7 @@ export const resources = {
           credentialRequired: "请先安全保存密码、导入私钥或生成密钥。",
         },
       },
-      settings: { title: "设置" },
+      settings: { title: "设置", interfaceTitle: "主界面外观", interfaceHint: "独立设置界面明暗，不影响终端配色。", interfaceMode: "界面深浅模式", forest: "森绿" },
       dashboard: {
         states: { creating: "启动中", working: "运行中", needs_input: "等待输入", idle: "空闲", exited: "已结束", interrupted: "已中断", stopped: "已停止", unknown: "状态未知", cached: "上次状态" },
         currentDevice: "当前设备",
@@ -140,8 +140,8 @@ export const resources = {
         remove: "Remove", removeBody: "永久删除此 Session 的历史和关联数据？运行中的进程将先停止。此操作不可撤销，但不会删除项目源码。", archiveBody: "停止此 Session 并归档？历史将保留，可从归档中恢复。", removeArchived: "会话已归档，但永久删除失败，可重试删除。", restartAvailable: "此 Session 已停止。你可以选择 Restart 重新启动。", retryAttach: "重试连接终端",
         restorePhoneSize: "恢复手机尺寸",
         appearance: {
-          title: "主题",
-          hint: "统一应用于主界面和终端，切换立即生效并保存在此设备。",
+          title: "终端外观",
+          hint: "应用于终端与 Session 外层，保持沉浸式体验，不影响主界面。设置保存在此设备。",
           mode: "深浅模式",
           colors: "主题色",
           modes: { dark: "深色", light: "浅色", system: "跟随系统" },
@@ -268,7 +268,7 @@ export const resources = {
           credentialRequired: "Store a password, import a private key, or generate a key first.",
         },
       },
-      settings: { title: "Settings" },
+      settings: { title: "Settings", interfaceTitle: "Interface appearance", interfaceHint: "Choose the interface mode independently of terminal colors.", interfaceMode: "Interface mode", forest: "Forest" },
       dashboard: {
         states: { creating: "Starting", working: "Working", needs_input: "Needs input", idle: "Idle", exited: "Ended", interrupted: "Interrupted", stopped: "Stopped", unknown: "Unknown", cached: "Last known" },
         currentDevice: "Current device",
@@ -311,8 +311,8 @@ export const resources = {
         remove: "Remove", removeBody: "Permanently delete this session history and associated data? Any running process will be stopped first. This cannot be undone. Project source files will not be deleted.", archiveBody: "Stop and archive this session? Its history is retained and can be restored from archives.", removeArchived: "The session was archived, but permanent deletion failed. You can retry removal.", restartAvailable: "This session has stopped. Choose Restart to start it again.", retryAttach: "Retry terminal connection",
         restorePhoneSize: "Restore phone size",
         appearance: {
-          title: "Theme",
-          hint: "One theme for the app and terminal. Changes apply immediately and are saved on this device.",
+          title: "Terminal appearance",
+          hint: "Applies to the terminal and immersive Session surfaces, not the main interface. Saved on this device.",
           mode: "Appearance mode",
           colors: "Color theme",
           modes: { dark: "Dark", light: "Light", system: "System" },

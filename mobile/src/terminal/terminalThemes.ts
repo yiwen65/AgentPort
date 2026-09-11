@@ -637,7 +637,7 @@ function withAlpha(color: string, alpha: string): string {
 }
 
 /**
- * Palette aliases used by the terminal and by the app-wide Theme projection.
+ * Palette aliases for the terminal and its immersive Session surfaces.
  * Keep xterm colors exact; semantic text roles account for raised UI surfaces.
  */
 export function getMobileTerminalWorkspaceVariables(
@@ -682,6 +682,10 @@ export function getMobileTerminalWorkspaceVariables(
     "--terminal-control-active-border": withAlpha(xterm.foreground, "3d"),
     "--terminal-control-active-bg": withAlpha(xterm.foreground, "21"),
     "--terminal-control-active-inset": withAlpha(xterm.foreground, "2e"),
+    "--bg": xterm.background,
+    "--primary-start": xterm.blue,
+    "--primary-end": xterm.blue,
+    "--primary-fg": contrastRatio("#ffffff", xterm.blue) >= 4.5 ? "#ffffff" : "#000000",
     "--text": workspace.headingForeground,
     "--muted": mutedForeground,
     "--tertiary-text": mutedForeground,
