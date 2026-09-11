@@ -36,7 +36,7 @@ export function useAppAppearance() {
 export function getAppThemeVariables(mode: "light" | "dark"): Record<string, string> {
   const dark = mode === "dark";
   return {
-    "--bg": dark ? "#101c15" : "#f2f7f1",
+    "--bg": dark ? "#0f1b13" : "#f2f7f1",
     "--panel": dark ? "#101c15" : "#ffffff",
     "--panel-strong": dark ? "#18271d" : "#e7efe5",
     "--text": dark ? "#f1f6ef" : "#16281b",
@@ -52,7 +52,6 @@ export function getAppThemeVariables(mode: "light" | "dark"): Record<string, str
     "--primary-end": "#d0fa59",
     "--primary-fg": "#10230e",
     "--folder-glow": dark ? "#c4f47c" : "#28642c",
-    "--launcher-glow": dark ? "#8ff076" : "#28642c",
     "--success": dark ? "#8bddab" : "#176b42",
     "--warning": dark ? "#ffd166" : "#6f4b00",
     "--danger": dark ? "#ff9a96" : "#b4232f",

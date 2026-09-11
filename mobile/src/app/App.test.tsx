@@ -251,7 +251,7 @@ describe("AgentPort Mobile V2 shell", () => {
     expect(renderer).toHaveAttribute("data-terminal-theme", "aurora");
     expect(renderer).toHaveAttribute("data-terminal-theme-mode", "light");
     expect(document.documentElement).toHaveAttribute("data-theme-family", "forest");
-    expect(document.documentElement.style.getPropertyValue("--bg")).toBe("#101c15");
+    expect(document.documentElement.style.getPropertyValue("--bg")).toBe("#0f1b13");
     expect((renderer as HTMLElement).style.getPropertyValue("--panel")).not.toBe("");
     fireEvent.click(within(screen.getByRole("group", { name: "Interface appearance" })).getByRole("radio", { name: "Light" }));
     expect(renderer).toHaveAttribute("data-terminal-theme-mode", "light");
