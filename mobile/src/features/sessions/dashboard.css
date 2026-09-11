@@ -20,7 +20,7 @@
 .session-dashboard .project-toggle { min-height: 48px; gap: 10px; padding-inline: 0; letter-spacing: -.015em; }
 .session-dashboard .project-toggle .ui-icon { flex-shrink: 0; }
 .session-dashboard .project-toggle .ui-icon-folder { width: 27px; height: 27px; color: var(--project-color, var(--folder-glow)); stroke-width: 2; }
-.session-dashboard .project-launch-button { display: grid; place-items: center; width: 46px; height: 46px; flex: 0 0 46px; padding: 8px; border: 0; border-radius: 14px; background: linear-gradient(145deg, color-mix(in srgb, var(--project-color, var(--accent)) 18%, transparent), transparent); transition: transform 120ms ease, background-color 180ms ease, border-color 180ms ease; }
+.session-dashboard .project-launch-button { display: grid; place-items: center; width: 46px; height: 46px; flex: 0 0 46px; padding: 8px; border: 0; border-radius: 14px; background: transparent; transition: transform 120ms ease, background-color 180ms ease; }
 .agentport-mark { width: 30px; height: 30px; overflow: visible; }
 .agentport-mark .mark-cyan { stop-color: var(--mark-cyan); }
 .agentport-mark .mark-blue { stop-color: var(--mark-blue); }

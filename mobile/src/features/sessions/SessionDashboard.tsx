@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useId, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useId, useRef, useState, type CSSProperties } from "react";
 import { AgentPortMark } from "../../components/AgentPortMark";
 import { SessionRowActions } from "./SessionRowActions";
 import { useForegroundRecovery } from "../../protocol/useForegroundRecovery";
@@ -558,7 +558,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     <section ref={dashboardRef} className="session-dashboard mobile-session-sidebar" aria-labelledby="dashboard-title">
       <h1 className="visually-hidden" id="dashboard-title">{t("dashboard.title")}</h1>
       <header className="mobile-sidebar-toolbar">
-        <button type="button" className="toolbar-icon-button" onClick={onManageDevices} aria-label={t("hosts.manage")} aria-haspopup="dialog">
+        <button type="button" className="toolbar-icon-button" style={{ "--toolbar-color": "#a8b8ff" } as CSSProperties} onClick={onManageDevices} aria-label={t("hosts.manage")} aria-haspopup="dialog">
           <Icon name="computer" />
         </button>
         <label className="compact-device-picker">
@@ -572,18 +572,19 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
           </select>
         </label>
         <span className="toolbar-spacer" />
-        <button type="button" className="toolbar-icon-button" disabled={!selectedHost} onClick={() => updateWorkspace({ ...workspace, recentOpen: true })} aria-label={t("dashboard.recent")}><Icon name="clock" />{recent.length > 0 ? <span className="toolbar-attention" aria-hidden="true" /> : null}</button>
-        <button type="button" className="toolbar-icon-button toolbar-refresh" disabled={!selectedDeviceId || updateBusy} aria-busy={updateBusy} onClick={() => void updateSelectedDevice()} aria-label={t("dashboard.refresh")}><Icon name="refresh" /></button>
+        <button type="button" className="toolbar-icon-button" style={{ "--toolbar-color": "#f7c66a" } as CSSProperties} disabled={!selectedHost} onClick={() => updateWorkspace({ ...workspace, recentOpen: true })} aria-label={t("dashboard.recent")}><Icon name="clock" />{recent.length > 0 ? <span className="toolbar-attention" aria-hidden="true" /> : null}</button>
+        <button type="button" className="toolbar-icon-button toolbar-refresh" style={{ "--toolbar-color": "#71e6d1" } as CSSProperties} disabled={!selectedDeviceId || updateBusy} aria-busy={updateBusy} onClick={() => void updateSelectedDevice()} aria-label={t("dashboard.refresh")}><Icon name="refresh" /></button>
         <button
           type="button"
           className={`toolbar-icon-button activity-toggle${workspace.layout === "active" ? " is-active" : ""}`}
+          style={{ "--toolbar-color": "#d7a0e8" } as CSSProperties}
           aria-label={workspace.layout === "projects" ? t("dashboard.showActivity") : t("dashboard.showProjects")}
           aria-pressed={workspace.layout === "active"}
           onClick={() => updateWorkspace({ ...workspace, layout: workspace.layout === "projects" ? "active" : "projects" })}
         >
           <Icon name="bell" />
         </button>
-        <button type="button" className="toolbar-icon-button" onClick={onOpenSettings} disabled={!onOpenSettings} aria-label={t("settings.title", { defaultValue: "Settings" })} aria-haspopup="dialog"><Icon name="settings" /></button>
+        <button type="button" className="toolbar-icon-button" style={{ "--toolbar-color": "#9fd88c" } as CSSProperties} onClick={onOpenSettings} disabled={!onOpenSettings} aria-label={t("settings.title", { defaultValue: "Settings" })} aria-haspopup="dialog"><Icon name="settings" /></button>
       </header>
 
       <div className="visually-hidden" aria-live="polite">
