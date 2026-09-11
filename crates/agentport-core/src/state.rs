@@ -97,6 +97,8 @@ pub enum Observation {
     PtyNeedsInputPattern(String),
     /// Output tail matched an adapter working pattern.
     PtyWorkingPattern(String),
+    /// Current live screen shows an explicit idle prompt.
+    PtyIdlePattern(String),
 }
 
 const DEBOUNCE_MS: i64 = 300;
@@ -230,6 +232,9 @@ impl StateMachine {
             Observation::PtyWorkingPattern(p) => {
                 (Working, Pty, Medium, Some(format!("pty:pattern:{p}")))
             }
+            Observation::PtyIdlePattern(p) => {
+                (Idle, Pty, Medium, Some(format!("pty:pattern:{p}")))
+            }
         };
         Some(classified)
     }
@@ -313,7 +318,7 @@ impl StateMachine {
         // neither may be swallowed merely because an activity frame arrived
         // in the same output burst.
         if source == StateSource::Pty && state != AgentState::NeedsInput
-            && !matches!(obs, Observation::PtyWorkingPattern(_))
+            && !matches!(obs, Observation::PtyWorkingPattern(_) | Observation::PtyIdlePattern(_))
         {
             if let Some(t) = self.last_emitted_at {
                 if Utc::now() - t < Duration::milliseconds(DEBOUNCE_MS) && self.last.is_some() {

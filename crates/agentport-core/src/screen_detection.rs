@@ -1,49 +1,49 @@
-//! Conservative v1 live-screen rules. No text is exported as event evidence.
-//! These supplement lifecycle integrations; no match means no observation.
+//! Conservative live-screen rules. These supplement lifecycle integrations.
 use crate::state::Observation;
 use regex::Regex;
 
 pub struct ScreenDetector {
     needs_input: Regex,
     working: Regex,
+    idle: Regex,
     last: Option<&'static str>,
 }
 impl Default for ScreenDetector {
     fn default() -> Self {
         Self {
-            // Restrict generic matching to the last nonempty line and an
-            // explicit interactive suffix, not incidental transcript prose.
             needs_input: Regex::new(r"(?i)^(?:.*\b(?:proceed|continue|confirm|approve|allow)[^\n]*\([yY]/[nN]\)\s*[:?]?|press enter to (?:confirm|continue)[.!]?)\s*$").expect("static input rule"),
-            working: Regex::new(r"(?i)^\s*(?:esc to interrupt|thinking\.{3}|running\.{3})\s*$").expect("static working rule"),
+            working: Regex::new(r"(?i)^\s*(?:[⏸⏵]\s*.*esc to interrupt|[*·✦✶✻✽]\s+\S.*…(?:\s+\(\d+[smh])?|esc to interrupt|thinking\.\.\.|running\.\.\.)\s*$|^\s*(?:esc to interrupt|thinking\.{3}|running\.{3})\s*$").expect("static working rule"),
+            // Claude Code's prompt box uses a leading ❯. Keep this to the
+            // last non-empty line and exclude menus/permission forms.
+            idle: Regex::new(r"^\s*❯\s*$").expect("static idle rule"),
             last: None,
         }
     }
 }
 impl ScreenDetector {
     pub fn detect(&mut self, text: &str, needs_input_enabled: bool) -> Option<Observation> {
-        let last_line = text
-            .lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("");
-        let rule = if needs_input_enabled && self.needs_input.is_match(last_line.trim()) {
+        let lines: Vec<_> = text.lines().collect();
+        let last_line = lines.iter().rev().find(|line| !line.trim().is_empty()).copied().unwrap_or("");
+        let recent = text;
+        let rule = if needs_input_enabled
+            && (self.needs_input.is_match(last_line.trim())
+                || (recent.contains("esc to cancel") && (recent.contains("enter to confirm") || recent.contains("enter to select"))))
+        {
             Some("screen:v1:input-control:last-line")
-        } else if self.working.is_match(last_line.trim()) {
-            Some("screen:v1:working-control:last-line")
-        } else {
-            None
-        };
-        let changed = self.last != rule;
+        } else if self.working.is_match(last_line.trim()) || recent.contains("esc to interrupt") {
+            Some("screen:v1:working-control")
+        } else if self.idle.is_match(last_line) && !recent.contains("esc to cancel")
+            && !recent.contains("enter to select") && !recent.contains("tab/arrow keys") {
+            Some("screen:v1:claude-prompt-box")
+        } else { None };
+        if self.last == rule { return None; }
         self.last = rule;
-        if !changed {
-            return None;
-        }
         match rule {
-            Some("screen:v1:input-control:last-line") => {
-                Some(Observation::PtyNeedsInputPattern(rule?.into()))
-            }
-            Some(_) => Some(Observation::PtyWorkingPattern(rule?.into())),
+            Some("screen:v1:input-control:last-line") => Some(Observation::PtyNeedsInputPattern(rule?.into())),
+            Some("screen:v1:working-control") => Some(Observation::PtyWorkingPattern(rule?.into())),
+            Some("screen:v1:claude-prompt-box") => Some(Observation::PtyIdlePattern(rule?.into())),
             None => None,
+            _ => None,
         }
     }
 }
@@ -52,27 +52,20 @@ impl ScreenDetector {
 mod tests {
     use super::*;
     #[test]
-    fn requires_current_control_and_never_infers_completion() {
+    fn claude_prompt_becomes_idle_but_menus_and_working_controls_do_not() {
         let mut detector = ScreenDetector::default();
-        assert!(detector
-            .detect("Do you want to proceed? (y/n)", true)
-            .is_some());
-        assert!(detector
-            .detect("Do you want to proceed? (y/n)", true)
-            .is_none());
-        assert!(detector
-            .detect("Do you want to proceed? (y/n)\nReady for new input", true)
-            .is_none());
-        assert!(detector.detect("", true).is_none());
-        assert!(detector
-            .detect("Do you want to proceed? (y/n)", false)
-            .is_none());
-        assert!(matches!(
-            detector.detect("Esc to interrupt", true),
-            Some(Observation::PtyWorkingPattern(_))
-        ));
-        assert!(detector
-            .detect("The documentation mentions allow this and approve?", true)
-            .is_none());
+        assert!(matches!(detector.detect("assistant output\n❯", true), Some(Observation::PtyIdlePattern(_))));
+        assert!(detector.detect("assistant output\n❯", true).is_none());
+        assert!(matches!(detector.detect("esc to interrupt", true), Some(Observation::PtyWorkingPattern(_))));
+        assert!(detector.detect("esc to interrupt\n❯", true).is_none());
+        assert!(matches!(detector.detect("esc to cancel\nenter to confirm\n❯", true), Some(Observation::PtyNeedsInputPattern(_))));
+        assert!(detector.detect("enter to select\n❯ 1. Yes\n❯", true).is_none());
+    }
+    #[test]
+    fn generic_approval_rule_remains_conservative() {
+        let mut detector = ScreenDetector::default();
+        assert!(detector.detect("Do you want to proceed? (y/n)", true).is_some());
+        assert!(detector.detect("Do you want to proceed? (y/n)", true).is_none());
+        assert!(detector.detect("documentation mentions approve?", true).is_none());
     }
 }

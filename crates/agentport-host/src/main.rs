@@ -1451,7 +1451,9 @@ fn control_loop(
         if now >= next_screen_tick {
             next_screen_tick = now + Duration::from_millis(300);
             let generation = shared.log_bytes.load(Ordering::Relaxed);
-            if screen_generation != Some(generation) && shared.cfg.transport == AgentTransport::Pty {
+            if screen_generation != Some(generation)
+                && shared.cfg.transport == AgentTransport::Pty
+                && shared.cfg.adapter_type == "claude" {
                 screen_generation = Some(generation);
                 let text = {
                     let _serial = shared.output_serial.lock().unwrap();
