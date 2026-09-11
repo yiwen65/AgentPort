@@ -50,7 +50,7 @@ describe("Settings language preference", () => {
     vi.restoreAllMocks();
   });
 
-  it("refreshes notification readiness after full probing without dropping a CLI on setup failure", async () => {
+  it("refreshes notification readiness after missing-agent discovery without dropping a CLI on setup failure", async () => {
     const install: AdapterInstall = {
       agentType: "claude", executablePath: "/fixture/claude", versionText: "test", capabilityHash: "sha256:test",
       exactResume: true, hookStatus: "supported", approvalModel: "native_prompts", defaultTransport: "pty",
@@ -61,14 +61,15 @@ describe("Settings language preference", () => {
       events: { completed: "unavailable", needsInput: "heuristic", failed: "process" }, checkedAt: "2026-09-10T00:00:00Z",
     };
     const statuses = vi.spyOn(api, "notificationSetups").mockResolvedValueOnce([]).mockResolvedValue([notificationSetup]);
-    vi.spyOn(api, "probeAgents").mockResolvedValue([{
+    vi.spyOn(api, "listSupportedAgents").mockResolvedValue([{ agent: "claude", displayName: "Claude Code", commandNames: ["claude"] }]);
+    vi.spyOn(api, "probeAgent").mockResolvedValue({
       agent: "claude", displayName: "Claude Code", state: "available", reason: null,
       candidates: [], install, notificationSetup,
-    }]);
+    });
     render(<SettingsDialog />);
     fireEvent.click(screen.getByRole("button", { name: "Agent 适配器" }));
     await waitFor(() => expect(screen.queryByText("正在读取通知配置…")).toBeNull());
-    fireEvent.click(screen.getByRole("button", { name: "重新自动检测" }));
+    fireEvent.click(screen.getByRole("button", { name: "探测缺失的 Agent" }));
     await waitFor(() => expect(screen.getByText("配置失败")).toBeTruthy());
     expect(statuses).toHaveBeenCalledTimes(2);
     expect(getState().adapters).toEqual([install]);

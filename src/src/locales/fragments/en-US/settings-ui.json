@@ -144,25 +144,25 @@
       "source": { "hook": "Hook", "native": "Native event", "process": "Process event", "heuristic": "Heuristic (not exact)", "unavailable": "Unavailable" }
     },
     "adapters": {
-      "description": "AgentPort scans your interactive shell, version managers, and common install directories, then selects the best path that passes validation. Only current working results appear below.",
+      "description": "All detected Agents stay listed. Turning one off hides its launch entry without removing configuration or stopping existing Sessions. Automatic detection checks only missing Agents, preserving existing paths, order, and enabled states.",
       "empty": "No working Agent was found. Open advanced options to inspect failures or choose a path manually.",
       "tableAriaLabel": "Agent adapter list",
       "columns": {
         "agent": "Agent",
         "selection": "Automatic selection",
-        "order": "Order"
+        "order": "Order",
+        "enabled": "Enabled"
       },
       "moveUp": "Move {{agent}} up",
       "moveDown": "Move {{agent}} down",
-      "remove": "Remove {{agent}}",
-      "restore": "Restore {{agent}}",
-      "hiddenLabel": "Removed:",
+      "enabledLabel": "Enable {{agent}}",
+      "nothingMissing": "All supported Agents are already detected; no repeat probing is needed.",
       "probing": "Checking…",
-      "reprobeAll": "Run automatic detection again",
+      "reprobeAll": "Detect missing Agents",
       "manage": "Advanced options",
-      "probePassed_one": "Automatically selected {{count}} working Agent",
-      "probePassed_other": "Automatically selected {{count}} working Agents",
-      "probeNone": "No working Agent was found. Open advanced options for details.",
+      "probePassed_one": "Found {{count}} new working Agent",
+      "probePassed_other": "Found {{count}} new working Agents",
+      "probeNone": "No new working Agents found; existing configuration is unchanged.",
       "reprobeFailed": "Could not check Agents again: {{detail}}"
     },
     "commitAi": {

@@ -144,25 +144,25 @@
       "source": { "hook": "Hook 事件", "native": "原生事件", "process": "进程事件", "heuristic": "启发式（非精确）", "unavailable": "不可用" }
     },
     "adapters": {
-      "description": "AgentPort 会自动扫描交互式 Shell、版本管理器和常见安装目录，并选用通过验证的最佳路径。下方仅显示当前可用结果。",
+      "description": "下方保留所有已探测到的 Agent。关闭仅隐藏启动入口，不删除配置或停止现有会话。自动探测只检查尚未发现的 Agent，保留已有路径、排序与启用状态。",
       "empty": "尚未发现可用 Agent；打开高级选项可查看失败原因或手动指定路径。",
       "tableAriaLabel": "Agent 适配器列表",
       "columns": {
         "agent": "Agent",
         "selection": "自动选择结果",
-        "order": "排序"
+        "order": "排序",
+        "enabled": "启用"
       },
       "moveUp": "上移 {{agent}}",
       "moveDown": "下移 {{agent}}",
-      "remove": "移除 {{agent}}",
-      "restore": "恢复 {{agent}}",
-      "hiddenLabel": "已移除：",
+      "enabledLabel": "启用 {{agent}}",
+      "nothingMissing": "所有支持的 Agent 均已探测到，无需重复探测。",
       "probing": "探测中…",
-      "reprobeAll": "重新自动检测",
+      "reprobeAll": "探测缺失的 Agent",
       "manage": "高级选项",
-      "probePassed_one": "已自动选择 {{count}} 个可用 Agent",
-      "probePassed_other": "已自动选择 {{count}} 个可用 Agent",
-      "probeNone": "没有找到可用 Agent；请打开高级选项查看详情。",
+      "probePassed_one": "新发现 {{count}} 个可用 Agent",
+      "probePassed_other": "新发现 {{count}} 个可用 Agent",
+      "probeNone": "没有发现新的可用 Agent；已有配置保持不变。",
       "reprobeFailed": "无法重新检测 Agent：{{detail}}"
     },
     "commitAi": {

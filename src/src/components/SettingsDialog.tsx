@@ -22,14 +22,14 @@ import {
   secretBackendZh,
 } from "../format";
 import { applyUiLanguage, currentUiLanguage, i18n } from "../i18n";
-import { orderAgentIds, visibleAgentIds } from "../agentOrder";
+import { orderAgentIds } from "../agentOrder";
 import { applyTerminalLanguage } from "../terminals";
 import { getTerminalPalette, TERMINAL_THEME_IDS } from "../terminalThemes";
 import { AgentIcon } from "./AgentIcons";
 import NotificationSetupPanel from "./NotificationSetupPanel";
 import ShellIcon from "./ShellIcon";
 import { PairingSection } from "./PairingSection";
-import { closeDialog, confirmDialog, setState, toast, useStore } from "../store";
+import { closeDialog, confirmDialog, getState, setState, toast, useStore } from "../store";
 import type {
   AdapterInstall,
   ArchivedSessionView,
@@ -548,12 +548,10 @@ function AdapterSection({
   const [busy, setBusy] = useState(false);
   const [setupBusy, setSetupBusy] = useState(false);
   const [notificationRevision, setNotificationRevision] = useState(0);
-  const orderedAgentIds = visibleAgentIds(
-    orderAgentIds(
-      agentOrder,
-      s.adapters.map((adapter) => adapter.agentType),
-    ),
-    agentHidden,
+  // Disabled adapters stay in this management table so they can be enabled again.
+  const orderedAgentIds = orderAgentIds(
+    agentOrder,
+    s.adapters.map((adapter) => adapter.agentType),
   );
   const orderedAdapters = orderedAgentIds
     .map((agent) => s.adapters.find((adapter) => adapter.agentType === agent))
@@ -569,25 +567,41 @@ function AdapterSection({
     [next[from], next[to]] = [next[to], next[from]];
     onAgentOrderChange(next);
   };
-  const hideAgent = (agent: string) => {
-    if (orderedAdapters.length <= 1) return;
-    onAgentHiddenChange([...agentHidden, agent]);
-  };
-  const restoreAgent = (agent: string) => {
-    onAgentHiddenChange(agentHidden.filter((id) => id !== agent));
+  const toggleAgent = (agent: string) => {
+    onAgentHiddenChange(agentHidden.includes(agent)
+      ? agentHidden.filter((id) => id !== agent)
+      : [...agentHidden, agent]);
   };
   const reprobe = async () => {
     setBusy(true);
     try {
-      const outcomes = await api.probeAgents();
-      const installs = outcomes
-        .map((o) => o.install)
-        .filter((x): x is AdapterInstall => x !== null);
-      setState({ adapters: installs });
+      const supported = await api.listSupportedAgents();
+      const missing = supported.filter(({ agent }) =>
+        !getState().adapters.some((adapter) => adapter.agentType === agent));
+      if (missing.length === 0) {
+        toast(t("settings:ui.adapters.nothingMissing"), "success");
+        return;
+      }
+      let added = 0;
+      const failures: string[] = [];
+      for (const { agent } of missing) {
+        // Another view may have configured this adapter while discovery awaited.
+        if (getState().adapters.some((adapter) => adapter.agentType === agent)) continue;
+        try {
+          const outcome = await api.probeAgent(agent, null);
+          if (outcome.install && !getState().adapters.some((adapter) => adapter.agentType === agent)) {
+            setState({ adapters: [...getState().adapters, outcome.install] });
+            added += 1;
+          }
+        } catch (error) {
+          failures.push(`${agentDisplay(agent)}: ${errorText(error)}`);
+        }
+      }
       setNotificationRevision((value) => value + 1);
-      if (installs.length > 0) {
-        toast(t("settings:ui.adapters.probePassed", { count: installs.length }), "success");
-      } else {
+      if (added > 0) toast(t("settings:ui.adapters.probePassed", { count: added }), "success");
+      if (failures.length > 0) {
+        toast(t("settings:ui.adapters.reprobeFailed", { detail: failures.join("; ") }), "error");
+      } else if (added === 0) {
         toast(t("settings:ui.adapters.probeNone"), "error");
       }
     } catch (e) {
@@ -614,7 +628,7 @@ function AdapterSection({
               <th>{t("settings:ui.adapters.columns.agent")}</th>
               <th>{t("settings:ui.adapters.columns.selection")}</th>
               <th>{t("settings:ui.adapters.columns.order")}</th>
-              <th />
+              <th>{t("settings:ui.adapters.columns.enabled")}</th>
             </tr>
           </thead>
           <tbody>
@@ -659,37 +673,20 @@ function AdapterSection({
                 <td>
                   <button
                     type="button"
-                    className="btn small ghost"
-                    disabled={orderedAdapters.length <= 1}
-                    onClick={() => hideAgent(a.agentType)}
-                    aria-label={t("settings:ui.adapters.remove", {
+                    className="adapter-enabled-switch"
+                    role="switch"
+                    aria-checked={!agentHidden.includes(a.agentType)}
+                    onClick={() => toggleAgent(a.agentType)}
+                    aria-label={t("settings:ui.adapters.enabledLabel", {
                       agent: agentDisplay(a.agentType),
                     })}
-                  >
-                    ×
-                  </button>
+                  />
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
-      {agentHidden.length > 0 ? (
-        <div className="control" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <span className="dim">{t("settings:ui.adapters.hiddenLabel")}</span>
-          {agentHidden.map((agent) => (
-            <button
-              key={agent}
-              type="button"
-              className="btn small ghost"
-              onClick={() => restoreAgent(agent)}
-              aria-label={t("settings:ui.adapters.restore", { agent: agentDisplay(agent) })}
-            >
-              {agentDisplay(agent)} ↩
-            </button>
-          ))}
-        </div>
-      ) : null}
       <div className="control" style={{ display: "flex", gap: 8 }}>
         <button className="btn small" disabled={busy || setupBusy} onClick={() => void reprobe()}>
           {busy ? t("settings:ui.adapters.probing") : t("settings:ui.adapters.reprobeAll")}
