@@ -109,6 +109,10 @@
       "terminalCommandHint": "填写终端可执行文件名或绝对路径；不解析参数，以目标项目目录作为工作目录启动。"
     },
     "notificationSetup": {
+      "automaticHint": "探测 Agent 时自动安装通知集成。这里只显示已探测到的 Agent。",
+      "emptyDetected": "在上方探测 Agent，即可自动配置通知。",
+      "details": "详情",
+      "repair": "修复",
       "title": "Agent 通知集成",
       "description": "CLI 可用与通知就绪分别显示。探测时会为 AgentPort 托管 Session 准备支持的 Hook 或插件，必要时合并全局注册，保留已有设置并支持回滚；配置失败不会阻止基本启动。",
       "nextStart": "这里显示安装就绪情况，不代表已有会话已加载集成。配置在下次启动或重启会话时生效，不会自动重启现有会话。探测会安全升级未被修改的受管集成；系统通知权限需单独允许。",

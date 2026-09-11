@@ -6,7 +6,6 @@ import { agentDisplay } from "../format";
 import { confirmDialog, getState, setState, useStore } from "../store";
 import type { NotificationSetup } from "../types";
 
-const agents = DEFAULT_AGENT_ORDER.filter((agent) => agent !== "shell");
 const events = ["completed", "needsInput", "failed"] as const;
 const eventLabels = {
   completed: "ui.notificationSetup.completed",
@@ -68,9 +67,8 @@ export default function NotificationSetupPanel({ refreshKey = 0, disabled = fals
       // A failed notification setup is independent from this usable CLI result.
       // A failed CLI reprobe must also not silently delete the user's selection.
       if (outcome.install) {
-        setState({ adapters: [
-          ...getState().adapters.filter((item) => item.agentType !== agent), outcome.install,
-        ] });
+        setState({ adapters: getState().adapters.map(item =>
+          item.agentType === agent ? outcome.install! : item) });
       }
       if (outcome.notificationSetup) replaceSetup(outcome.notificationSetup);
       else setSetups(await api.notificationSetups());
@@ -98,19 +96,20 @@ export default function NotificationSetupPanel({ refreshKey = 0, disabled = fals
     }
   };
   const busy = disabled || pending !== null;
+  const agents = DEFAULT_AGENT_ORDER.filter(agent => agent !== "shell"
+    && adapters.some(install => install.agentType === agent));
 
   return (
     <section className="notification-setup-panel" aria-labelledby="notification-setup-title">
       <h3 className="section-title" id="notification-setup-title">{t("ui.notificationSetup.title")}</h3>
-      <p className="dim">{t("ui.notificationSetup.description")}</p>
-      <p className="dim">{t("ui.notificationSetup.nextStart")}</p>
+      <p className="dim">{t("ui.notificationSetup.automaticHint")}</p>
       {error ? <div className="error-bar" role="alert">{error}</div> : null}
       {loading ? <p role="status">{t("ui.notificationSetup.loading")}</p> : null}
-      <div className="notification-setup-table-wrap">
+      {!loading && agents.length === 0 ? <p className="dim">{t("ui.notificationSetup.emptyDetected")}</p> : null}
+      {agents.length > 0 ? <div className="notification-setup-table-wrap">
         <table className="table notification-setup-table" aria-label={t("ui.notificationSetup.table")}>
           <thead><tr>
             <th scope="col">Agent</th>
-            <th scope="col">{t("ui.notificationSetup.cli")}</th>
             <th scope="col">{t("ui.notificationSetup.notifications")}</th>
           </tr></thead>
           <tbody>{agents.map((agent) => {
@@ -120,15 +119,19 @@ export default function NotificationSetupPanel({ refreshKey = 0, disabled = fals
             return (
               <tr key={agent} data-agent={agent}>
                 <th scope="row">{agentDisplay(agent)}</th>
-                <td>{t(install ? "ui.notificationSetup.available" : "ui.notificationSetup.notDetected")}</td>
                 <td>
                   <span className={`notification-setup-state ${state}`}>
                     {t(`ui.notificationSetup.state.${state}`)}
                   </span>
-                  {setup?.updateAvailable ? <p className="dim">{t("ui.notificationSetup.updateAvailable")}</p> : null}
-                  <details open={state === "failed"}>
+                  {(state === "failed" || state === "unavailable" || setup?.updateAvailable) && !loading ? <button
+                    type="button" className="btn small ghost" disabled={busy}
+                    aria-label={t("ui.notificationSetup.retryAgent", { agent: agentDisplay(agent) })}
+                    onClick={() => void retry(agent)}>
+                    {pending === agent ? t("ui.notificationSetup.busy") : t(setup?.updateAvailable ? "ui.notificationSetup.update" : "ui.notificationSetup.repair")}
+                  </button> : null}
+                  <details>
                     <summary aria-label={t("ui.notificationSetup.coverageAgent", { agent: agentDisplay(agent) })}>
-                      {t("ui.notificationSetup.coverage")}
+                      {t("ui.notificationSetup.details")}
                     </summary>
                     <dl className="notification-setup-coverage">
                       {events.map((event) => <div key={event}>
@@ -136,31 +139,31 @@ export default function NotificationSetupPanel({ refreshKey = 0, disabled = fals
                         <dd>{t(`ui.notificationSetup.source.${install ? setup?.events[event] ?? "unavailable" : "unavailable"}`)}</dd>
                       </div>)}
                     </dl>
-                    {!install ? <p className="dim">{t("ui.notificationSetup.notInstalled")}</p> : null}
+                    <p className="dim">{t("ui.notificationSetup.nextStart")}</p>
                     {!setup ? <p className="dim">{t("ui.notificationSetup.notPrepared")}</p> : <>
                       <p><span className="dim">{t("ui.notificationSetup.strategy")}: </span><code>{setup.strategy}</code></p>
                       {setup.detail ? <p className="notification-setup-detail"><span className="dim">{t("ui.notificationSetup.technicalDetail")}: </span>{setup.detail}</p> : null}
                       <p className="dim">{t("ui.notificationSetup.checkedAt")}: <time dateTime={setup.checkedAt}>{setup.checkedAt}</time></p>
                     </>}
-                  </details>
                   <div className="notification-setup-actions">
-                    <button type="button" className="btn small" disabled={busy}
+                    {state !== "failed" && state !== "unavailable" && !setup?.updateAvailable ? <button type="button" className="btn small" disabled={busy}
                       aria-label={t("ui.notificationSetup.retryAgent", { agent: agentDisplay(agent) })}
                       onClick={() => void retry(agent)}>
                       {pending === agent ? t("ui.notificationSetup.busy") : t(setup?.updateAvailable ? "ui.notificationSetup.update" : "ui.notificationSetup.retry")}
-                    </button>
+                    </button> : null}
                     {setup && (setup.state !== "unavailable" || setup.strategy !== "none") ? <button type="button" className="btn small ghost" disabled={busy}
                       aria-label={t("ui.notificationSetup.rollbackAgent", { agent: agentDisplay(agent) })}
                       onClick={() => void rollback(agent)}>{t("ui.notificationSetup.rollback")}</button> : null}
                   </div>
+                  </details>
                 </td>
               </tr>
             );
           })}</tbody>
         </table>
-      </div>
-      <button type="button" className="btn small ghost" disabled={busy || loading}
-        onClick={() => setReloadKey((value) => value + 1)}>{t("ui.notificationSetup.reload")}</button>
+      </div> : null}
+      {error ? <button type="button" className="btn small ghost" disabled={busy || loading}
+        onClick={() => setReloadKey((value) => value + 1)}>{t("ui.notificationSetup.reload")}</button> : null}
     </section>
   );
 }

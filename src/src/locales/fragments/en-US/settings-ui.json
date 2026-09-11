@@ -109,6 +109,10 @@
       "terminalCommandHint": "Enter a terminal executable name or absolute path. Arguments are not parsed; the target project directory is used as the working directory."
     },
     "notificationSetup": {
+      "automaticHint": "Notification integrations are installed automatically during Agent detection. Only detected Agents are listed.",
+      "emptyDetected": "Detect an Agent above to configure notifications automatically.",
+      "details": "Details",
+      "repair": "Repair",
       "title": "Agent notification integration",
       "description": "CLI availability and notification readiness are separate. Probing prepares supported hooks or plugins only for AgentPort-managed Sessions, merging global registration when needed while preserving existing settings and supporting rollback. Setup failure does not prevent basic startup.",
       "nextStart": "This shows installation readiness, not whether an existing Session loaded the integration. Changes apply to newly started or restarted Sessions. Existing Sessions are not restarted. Probing safely upgrades unmodified managed integrations. System notification permission is separate.",

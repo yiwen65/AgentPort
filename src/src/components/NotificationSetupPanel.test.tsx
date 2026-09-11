@@ -44,7 +44,7 @@ describe("Agent notification readiness", () => {
     vi.mocked(api.notificationSetups).mockResolvedValue([{ ...setup(), updateAvailable: true }]);
     render(<NotificationSetupPanel />);
     const button = await screen.findByText("Safely update integration");
-    expect(screen.getByText(/Integration update available/)).toBeTruthy();
+    expect(screen.getByText(/installed automatically during Agent detection/)).toBeTruthy();
     fireEvent.click(button);
     await waitFor(() => expect(api.probeAgent).toHaveBeenCalledWith("claude", "/chosen/claude"));
     await waitFor(() => expect(screen.queryByText("Safely update integration")).toBeNull());
@@ -52,18 +52,21 @@ describe("Agent notification readiness", () => {
     expect(getState().adapters).toEqual([install]);
   });
 
-  it("shows all fourteen Agents, separate CLI availability, and three event sources", async () => {
+  it("shows only detected Agents with collapsed diagnostic details", async () => {
     render(<NotificationSetupPanel />);
     await waitFor(() => expect(within(claudeRow()).getByText("Ready")).toBeTruthy());
-    expect(screen.getAllByRole("row")).toHaveLength(15);
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+    expect(claudeRow().querySelector("details")?.open).toBe(false);
+    expect(claudeRow().querySelector(".notification-setup-actions")?.closest("details")).toBeTruthy();
+    expect(api.probeAgent).not.toHaveBeenCalled();
     expect(screen.queryByRole("rowheader", { name: "Shell" })).toBeNull();
-    expect(within(claudeRow()).getByText("Available")).toBeTruthy();
+    expect(within(claudeRow()).queryByText("Available")).toBeNull();
     expect(within(claudeRow()).getByText("Hook")).toBeTruthy();
     expect(within(claudeRow()).getByText("Native event")).toBeTruthy();
     expect(within(claudeRow()).getByText("Process event")).toBeTruthy();
     expect(within(claudeRow()).getByText(/fixture technical detail/)).toBeTruthy();
     expect(screen.getByText(/Existing Sessions are not restarted/)).toBeTruthy();
-    expect(screen.getAllByText("Not detected")).toHaveLength(13);
+    expect(screen.queryByText("Not detected")).toBeNull();
   });
 
   it("shows partial coverage honestly and does not equate heuristics with exact events", async () => {
@@ -77,9 +80,9 @@ describe("Agent notification readiness", () => {
     setState({ adapters: [] });
     render(<NotificationSetupPanel />);
     await waitFor(() => expect(screen.queryByText("Reading notification setup…")).toBeNull());
-    expect(within(claudeRow()).queryByText("Ready")).toBeNull();
-    expect(within(claudeRow()).getByText("Not detected")).toBeTruthy();
-    expect(within(claudeRow()).getByRole("button", { name: /Roll back/ })).toBeTruthy();
+    expect(screen.queryByRole("rowheader", { name: "Claude Code" })).toBeNull();
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.getByText(/Detect an Agent above/)).toBeTruthy();
   });
 
   it("retries the selected executable without hiding an available CLI on setup failure", async () => {
@@ -94,9 +97,10 @@ describe("Agent notification readiness", () => {
     await waitFor(() => expect(within(claudeRow()).getByText("Setup failed")).toBeTruthy());
     expect(api.probeAgent).toHaveBeenCalledWith("claude", "/chosen/claude");
     expect(getState().adapters).toEqual([install]);
-    expect(within(claudeRow()).getByText("Available")).toBeTruthy();
+    expect(within(claudeRow()).queryByText("Available")).toBeNull();
     expect(within(claudeRow()).getByText(/Permission denied/)).toBeTruthy();
-    expect(claudeRow().querySelector("details")?.open).toBe(true);
+    expect(claudeRow().querySelector("details")?.open).toBe(false);
+    expect(within(claudeRow()).getByText("Repair")).toBeTruthy();
     expect(onBusyChange).toHaveBeenCalledWith(true);
     expect(onBusyChange).toHaveBeenLastCalledWith(false);
   });
@@ -104,6 +108,7 @@ describe("Agent notification readiness", () => {
   it("preserves the CLI selection after a probe exception and offers retry", async () => {
     vi.mocked(api.probeAgent).mockRejectedValue(new Error("probe timeout"));
     render(<NotificationSetupPanel />);
+    await waitFor(() => expect(within(claudeRow()).getByText("Ready")).toBeTruthy());
     fireEvent.click(within(claudeRow()).getByRole("button", { name: /Probe and configure/ }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("probe timeout"));
     expect(getState().adapters).toEqual([install]);
@@ -155,8 +160,10 @@ describe("Agent notification readiness", () => {
 
   it("does not let a stale status request overwrite a newer successful setup", async () => {
     let resolveOld!: (setups: NotificationSetup[]) => void;
+    const view = render(<NotificationSetupPanel />);
+    await waitFor(() => expect(within(claudeRow()).getByText("Ready")).toBeTruthy());
     vi.mocked(api.notificationSetups).mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve; }));
-    render(<NotificationSetupPanel />);
+    view.rerender(<NotificationSetupPanel refreshKey={1} />);
     fireEvent.click(within(claudeRow()).getByRole("button", { name: /Probe and configure/ }));
     await waitFor(() => expect(within(claudeRow()).getByText("Ready")).toBeTruthy());
     await act(async () => resolveOld([setup("failed")]));
