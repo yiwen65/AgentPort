@@ -1810,7 +1810,7 @@ function PaneGroupNode({ group, projects }: { group: PaneLayout; projects: Proje
     return session ? [session] : [];
   });
   const title = sessions.map((session) => session.title).join(" · ");
-  const label = group.name || t("sidebarGroups.unnamed");
+  const label = group.name ?? "";
   const rename = async () => {
     const name = await promptDialog({
       title: t("sidebarGroups.rename"), label: t("sidebarGroups.name"),
@@ -1837,6 +1837,7 @@ function PaneGroupNode({ group, projects }: { group: PaneLayout; projects: Proje
           <IconChevron dir={expanded ? "down" : "right"} />
         </button>
         <button type="button" className="tree-row project sidebar-group-open" title={label}
+          aria-label={`${label || t("sidebarGroups.unnamed")} ${sessions.length}`}
           onDoubleClick={() => void rename()}
           onKeyDown={(event) => { if (event.key === "F2") { event.preventDefault(); void rename(); } }}
           onClick={() => selectSession(group.focusedSessionId ?? sessions[0].id)}>
@@ -1937,7 +1938,6 @@ export default function Sidebar({
       >
         {showGroups ? (
           <div className="sidebar-groups-page">
-            <div className="sidebar-groups-caption">{t("shell:sidebarGroups.groups")}</div>
             {groups.length ? groups.map((group) => (
               <PaneGroupNode key={[...orderedLayoutSessionIds(group)].sort().join("/")} group={group} projects={projects} />
             )) : <div className="empty-state"><div>{t("shell:sidebarGroups.empty")}</div><p>{t("shell:sidebarGroups.hint")}</p></div>}

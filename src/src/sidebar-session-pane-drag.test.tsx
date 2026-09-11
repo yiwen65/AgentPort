@@ -154,6 +154,12 @@ describe("sidebar Session pane drag", () => {
     const view = render(<Sidebar collapsed={false} width={296} />);
     fireEvent.click(view.getByRole("button", { name: "分屏分组" }));
     expect(view.container.querySelectorAll(".sidebar-pane-group")).toHaveLength(2);
+    expect(view.container.querySelector(".sidebar-groups-caption")).toBeNull();
+    const groupPage = view.container.querySelector(".sidebar-groups-page")!;
+    expect(groupPage.firstElementChild?.classList.contains("sidebar-pane-group")).toBe(true);
+    for (const label of groupPage.querySelectorAll(".sidebar-group-open .tree-label")) {
+      expect(label.textContent).toBe("");
+    }
     expect(view.container.querySelectorAll(".tree-row.session")).toHaveLength(4);
     fireEvent.click(view.getAllByRole("button", { name: "未命名分组 2" })[1]);
     expect(selectSessionMock).toHaveBeenCalledWith(getState().terminalLayoutGroups[1].focusedSessionId);
