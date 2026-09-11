@@ -327,6 +327,62 @@ describe("MobileTerminal input accessory", () => {
     expect(document.activeElement).toBe(terminalHarness.helper);
   });
 
+  it("uploads one image and uses existing paste without Enter, even after picker focus loss", async () => {
+    let resolve!: (path: string | null) => void;
+    const onUploadImage = vi.fn(() => new Promise<string | null>(done => { resolve = done; }));
+    const onInput = vi.fn();
+    render(<MobileTerminal onInput={onInput} onUploadImage={onUploadImage} imageUploadTarget="host/session/run" showProbeOutput={false} />);
+    terminalHarness.helper!.focus();
+    const button = await screen.findByRole("button", { name: "Upload image" });
+    fireEvent.mouseDown(button);
+    expect(onUploadImage).not.toHaveBeenCalled();
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(onUploadImage).toHaveBeenCalledTimes(1);
+    expect(button).toBeDisabled();
+    terminalHarness.helper!.blur();
+    const path = "/home/test/.cache/agentport/image-1726031234.png";
+    await act(async () => resolve(path));
+    expect(terminalHarness.pastes).toEqual([path]);
+    expect(onInput).toHaveBeenCalledExactlyOnceWith(path);
+    expect(navigator.clipboard.readText).not.toHaveBeenCalled();
+    expect(button).toBeEnabled();
+  });
+
+  it.each(["cancel", "failure"])("does not insert a path on image %s", async outcome => {
+    const onInput = vi.fn();
+    const onUploadImage = outcome === "cancel" ? vi.fn().mockResolvedValue(null)
+      : vi.fn().mockRejectedValue("SFTP unavailable");
+    render(<MobileTerminal onInput={onInput} onUploadImage={onUploadImage} showProbeOutput={false} />);
+    terminalHarness.helper!.focus();
+    const button = await screen.findByRole("button", { name: "Upload image" });
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(onInput).not.toHaveBeenCalled();
+    expect(terminalHarness.pastes).toEqual([]);
+    if (outcome === "failure") expect(screen.getByRole("alert")).toHaveTextContent("SFTP unavailable");
+    else expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it.each(["reset", "unmount", "hide", "target", "switch-back"])("does not misroute an uploaded image after %s", async boundary => {
+    let resolve!: (path: string) => void;
+    const onUploadImage = vi.fn(() => new Promise<string>(done => { resolve = done; }));
+    const ref = createRef<MobileTerminalHandle>();
+    const onInput = vi.fn();
+    const props = { onInput, onUploadImage, showProbeOutput: false, imageUploadTarget: "original" };
+    const view = render(<MobileTerminal ref={ref} {...props} />);
+    terminalHarness.helper!.focus();
+    fireEvent.click(await screen.findByRole("button", { name: "Upload image" }));
+    if (boundary === "reset") act(() => ref.current?.reset());
+    if (boundary === "unmount") view.unmount();
+    if (boundary === "hide") view.rerender(<MobileTerminal ref={ref} {...props} obscured />);
+    if (boundary === "target" || boundary === "switch-back") view.rerender(<MobileTerminal ref={ref} {...props} imageUploadTarget="other" />);
+    if (boundary === "switch-back") view.rerender(<MobileTerminal ref={ref} {...props} />);
+    await act(async () => resolve("/home/test/.cache/agentport/image.png"));
+    expect(onInput).not.toHaveBeenCalled();
+    expect(terminalHarness.pastes).toEqual([]);
+  });
+
   it("reads the clipboard on the completed click, not before WebKit grants user activation", async () => {
     const onInput = vi.fn();
     render(<MobileTerminal onInput={onInput} showProbeOutput={false} />);

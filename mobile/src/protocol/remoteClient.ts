@@ -64,6 +64,8 @@ export interface RemoteClient {
   listHostProfiles(): Promise<HostProfileSummary[]>;
   connect(profileId: string, signal?: AbortSignal): Promise<RemoteConnectionSnapshot>;
   disconnect(profileId: string): Promise<void>;
+  /** System picker -> current SSH SFTP -> remote path; null means cancelled. */
+  uploadImage?(profileId: string): Promise<string | null>;
   request<T>(
     profileId: string,
     method: string,

@@ -41,7 +41,8 @@ pub fn run() {
         .manage(relay_pairing::RelayPairings::default())
         .manage(mosh::MoshSessions::default());
     #[cfg(mobile)]
-    let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
+    let builder = builder.plugin(tauri_plugin_barcode_scanner::init())
+        .plugin(tauri_plugin_image_picker::init());
     builder
         .invoke_handler(tauri::generate_handler![
             mobile_scaffold_status,
@@ -73,6 +74,7 @@ pub fn run() {
             remote::mobile_subscribe,
             remote::mobile_unsubscribe,
             sftp::mobile_sftp_spike,
+            sftp::image::mobile_upload_image,
             mosh::bootstrap::mobile_mosh_bootstrap_start,
             mosh::mobile_mosh_start,
             mosh::mobile_mosh_input,

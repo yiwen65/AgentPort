@@ -105,7 +105,7 @@ struct Connection {
 }
 
 enum Transport {
-    Ssh(ssh::AuthenticatedSsh),
+    Ssh(Arc<ssh::AuthenticatedSsh>),
     Relay(RelayLease),
 }
 struct RelayLease(tokio::task::AbortHandle);
@@ -136,6 +136,26 @@ pub struct RemoteConnections {
 }
 
 impl RemoteConnections {
+    /// Clone only ownership of the authenticated transport; never hold the
+    /// connection-table lock while a picker or file transfer is in progress.
+    pub(crate) async fn image_upload_connection(
+        &self,
+        profile_id: &str,
+    ) -> Result<(String, Arc<ssh::AuthenticatedSsh>), String> {
+        let connections = self.inner.connections.lock().await;
+        let connection = connections.get(profile_id)
+            .ok_or("Connect to the SSH host before uploading an image.")?;
+        match &connection.transport {
+            Transport::Ssh(ssh) => Ok((connection.generation.clone(), ssh.clone())),
+            Transport::Relay(_) => Err("Image upload requires an SSH connection; Relay is not supported.".into()),
+        }
+    }
+
+    pub(crate) async fn image_upload_connection_is_current(&self, profile_id: &str, generation: &str) -> bool {
+        self.inner.connections.lock().await.get(profile_id)
+            .is_some_and(|connection| connection.generation == generation)
+    }
+
     pub(crate) fn connection_state(&self, profile_id: &str) -> &'static str {
         self.inner
             .phases
@@ -327,7 +347,7 @@ async fn establish(
         })?;
     let (ssh, reader, writer, snapshot) =
         establish_with_secrets(profile, jump_profile.as_ref(), secret, jump_secret).await?;
-    Ok((Transport::Ssh(ssh), reader, writer, snapshot))
+    Ok((Transport::Ssh(Arc::new(ssh)), reader, writer, snapshot))
 }
 
 pub(crate) async fn establish_with_secrets(
@@ -1107,7 +1127,7 @@ async fn close_transport(transport: Transport) {
         match transport {
             Transport::Ssh(ssh) => {
                 let _ = ssh.session.disconnect(Disconnect::ByApplication, "connection retired", "en").await;
-                if let Some(jump) = ssh.jump_session {
+                if let Some(jump) = &ssh.jump_session {
                     let _ = jump.disconnect(Disconnect::ByApplication, "connection retired", "en").await;
                 }
             }

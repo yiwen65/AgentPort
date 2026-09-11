@@ -22,6 +22,12 @@ describe("TauriRemoteClient ordered input submission", () => {
     tauri.inputListener = undefined;
   });
 
+  it.each(["/home/test/.cache/agentport/image-123.png", null])("keeps image bytes and picker cache paths out of the web bridge (%s)", async result => {
+    tauri.invoke.mockResolvedValue(result);
+    await expect(new TauriRemoteClient().uploadImage("host-1")).resolves.toBe(result);
+    expect(tauri.invoke).toHaveBeenCalledExactlyOnceWith("mobile_upload_image", { profileId: "host-1" });
+  });
+
   it("cancels an in-flight local wait and ignores its late reply without claiming a mutation was cancelled", async () => {
     let complete!: (value: unknown) => void;
     tauri.invoke.mockImplementation(() => new Promise(resolve => { complete = resolve; }));

@@ -16,6 +16,7 @@ import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { installIosImeRouting, isIosKeyboard } from "./iosIme";
 import { readClipboardText } from "../platform/clipboard";
+import { remoteErrorMessage } from "../protocol/remoteError";
 import { selectionMenuPosition } from "./selectionMenu";
 import { ShortcutIcon, SHORTCUT_NAMES, ShortcutSettingsIcon } from "./ShortcutIcon";
 import { ShortcutSettings } from "./ShortcutSettings";
@@ -27,6 +28,9 @@ export interface MobileTerminalProps {
   onInput?: (data: string) => void;
   onResize?: (cols: number, rows: number) => void;
   onRelease?: (terminal: MobileTerminalHandle) => void;
+  onUploadImage?: () => Promise<string | null>;
+  /** Session/run/attachment identity, including whether this tab is active. */
+  imageUploadTarget?: string;
   /** Forces a fresh size report after the remote attachment/owner changes. */
   resizeEpoch?: unknown;
   fontSize?: number;
@@ -54,6 +58,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   onInput,
   onResize,
   onRelease,
+  onUploadImage,
+  imageUploadTarget,
   resizeEpoch,
   fontSize = 14,
   theme = MOBILE_TERMINAL_THEMES.one.dark.xterm,
@@ -99,6 +105,16 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const shortcutActionsRef = useRef<Record<string, () => void>>({});
   const [hasSelection, setHasSelection] = useState(false);
   const [pasteFailed, setPasteFailed] = useState(false);
+  const [imageUploading, setImageUploading] = useState(false);
+  const [imageError, setImageError] = useState("");
+  const imagePending = useRef(false);
+  const imageGeneration = useRef(0);
+  const imageTarget = useRef(imageUploadTarget);
+  imageTarget.current = imageUploadTarget;
+  useLayoutEffect(() => {
+    imageGeneration.current += 1;
+    setImageError("");
+  }, [imageUploadTarget]);
   const pasteGeneration = useRef(0);
   const pastePending = useRef(false);
   const cancelPendingPaste = () => { pasteGeneration.current += 1; pastePending.current = false; };
@@ -172,6 +188,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     },
     reset() {
       cancelPendingPaste();
+      imageGeneration.current += 1;
       invalidateIosImeRef.current();
       const terminal = terminalRef.current;
       if (!terminal) return;
@@ -215,6 +232,36 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     else terminal?.write(data === "\r" ? "\r\n$ " : data);
   };
 
+  const pasteText = (terminal: Terminal, data: string) => {
+    invalidateIosImeRef.current();
+    clearModifiers();
+    // The existing xterm path normalizes text and honors bracketed paste.
+    terminal.paste(data);
+  };
+
+  const uploadImage = () => {
+    const terminal = terminalRef.current;
+    if (!terminal || obscured || recovering || imagePending.current || !onUploadImage) return;
+    const generation = imageGeneration.current;
+    const target = imageTarget.current;
+    const current = () => generation === imageGeneration.current
+      && target === imageTarget.current && terminalRef.current === terminal;
+    imagePending.current = true;
+    setImageUploading(true);
+    setImageError("");
+    clearModifiers();
+    void onUploadImage().then(path => {
+      if (!current() || !path) return;
+      pasteText(terminal, path);
+      terminal.focus();
+    }).catch(error => {
+      if (current()) setImageError(remoteErrorMessage(error));
+    }).finally(() => {
+      imagePending.current = false;
+      if (terminalRef.current === terminal) setImageUploading(false);
+    });
+  };
+
   const paste = () => {
     const terminal = terminalRef.current;
     if (!terminal || obscured || pastePending.current) return;
@@ -225,13 +272,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     const generation = ++pasteGeneration.current;
     void readClipboardText().then(data => {
       if (generation !== pasteGeneration.current || terminalRef.current !== terminal || !data) return;
-      invalidateIosImeRef.current();
-      // Authorization can take time; modifiers toggled while waiting must
-      // not turn literal clipboard text into Ctrl-C or another command.
-      clearModifiers();
-      // Let xterm normalize newlines and honor the application's bracketed
-      // paste mode, rather than treating pasted text as raw keystrokes.
-      terminal.paste(data);
+      // Authorization can take time; don't apply subsequently toggled modifiers.
+      pasteText(terminal, data);
     }).catch(() => {
       if (generation === pasteGeneration.current) setPasteFailed(true);
     }).finally(() => {
@@ -616,6 +658,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     fitRef.current = fit;
     return () => {
       cancelPendingPaste();
+      imageGeneration.current += 1;
       fitRef.current = null;
       scheduleFitRef.current = () => undefined;
       cancelRestoreRender.current?.();
@@ -667,7 +710,10 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   }, []); // The terminal is a long-lived renderer; callback refs carry changing handlers.
 
   useLayoutEffect(() => {
-    if (obscured) cancelPendingPaste();
+    if (obscured) {
+      cancelPendingPaste();
+      imageGeneration.current += 1;
+    }
   }, [obscured]);
 
   useLayoutEffect(() => {
@@ -761,6 +807,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
         {copyFailed ? <span role="alert">Unable to copy. Try again.</span> : null}
       </div> : null}
       {pasteFailed && inputActive && !obscured ? <p className="mobile-terminal-paste-error" role="alert">Unable to paste. Check clipboard access and try again.</p> : null}
+      {imageError && !obscured ? <p className="mobile-terminal-paste-error" role="alert">{imageError}</p> : null}
       <div ref={keysRef} className="mobile-terminal-keys" data-horizontal-scroll aria-label="Terminal special keys" hidden={!inputActive}>
         <div className="mobile-terminal-key-scroll" data-horizontal-scroll>
           {shortcutLayout.items.filter(item => item.visible).map(item => {
@@ -768,6 +815,9 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
             const label = isCustomShortcut(item) ? item.label : t(`shortcuts.names.${item.id}`, { defaultValue: SHORTCUT_NAMES[item.id] });
             return <button key={item.id} className={pressed ? "is-active" : ""} type="button" aria-label={label} title={label} aria-pressed={pressed} {...shortcutHandlers(item.id, shortcutActionsRef.current[item.id])}><ShortcutIcon item={item} /></button>;
           })}
+          {onUploadImage ? <button type="button" aria-label={t("session.uploadImage")} title={t("session.uploadImage")} disabled={imageUploading || recovering} aria-busy={imageUploading || undefined} {...shortcutHandlers("upload-image", uploadImage)}>
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="3" /><circle cx="8" cy="8" r="1.5" /><path d="m3 17 5-5 4 4 4-6 5 7" /></svg>
+          </button> : null}
           <button className="mobile-terminal-shortcut-settings" type="button" aria-label={t("shortcuts.title", { defaultValue: "Terminal shortcuts" })} aria-haspopup="dialog" onMouseDown={event => event.preventDefault()} onClick={() => { clearModifiers(); setShortcutsOpen(true); }}><ShortcutSettingsIcon /></button>
         </div>
       </div>

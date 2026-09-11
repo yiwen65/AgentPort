@@ -782,6 +782,8 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
         ref={terminal}
         resizeEpoch={attachmentId}
         onInput={sendInput}
+        onUploadImage={client.uploadImage ? () => client.uploadImage!(open.hostProfileId) : undefined}
+        imageUploadTarget={JSON.stringify([open.hostProfileId, open.session.id, open.session.latestStatus?.runId, attachmentId, active, connectionLabel === "live"])}
         onResize={requestTerminalResize}
         fontSize={fontSize}
         theme={terminalPalette.xterm}

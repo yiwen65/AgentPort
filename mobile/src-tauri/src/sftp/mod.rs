@@ -1,3 +1,5 @@
+pub mod image;
+
 use crate::credentials::load_credential;
 use crate::ssh::{connect_authenticated_with_jump, validate, AuthenticatedSsh, SshProbeRequest};
 use base64::Engine as _;
@@ -321,11 +323,12 @@ mod tests {
         std::fs::write(
             &config_path,
             format!(
-                "HostKey {}\nPort {}\nListenAddress 127.0.0.1\nPidFile {}/sshd.pid\nAuthorizedKeysFile {}\nPubkeyAuthentication yes\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nStrictModes no\nSubsystem sftp internal-sftp\nLogLevel ERROR\n",
+                "HostKey {}\nPort {}\nListenAddress 127.0.0.1\nPidFile {}/sshd.pid\nAuthorizedKeysFile {}\nPubkeyAuthentication yes\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nStrictModes no\nSubsystem sftp internal-sftp -d {}\nLogLevel ERROR\n",
                 host_key_path.display(),
                 port,
                 root.display(),
-                authorized_keys_path.display()
+                authorized_keys_path.display(),
+                root.display()
             ),
         )
         .unwrap();
@@ -411,6 +414,43 @@ mod tests {
             payload
         );
 
+        // Keep one authenticated SSH and a live PTY while opening a temporary
+        // SFTP subsystem. Its home is the isolated fixture root, not the user's.
+        let ssh = connect_authenticated_with_jump(&connection(), private_key.as_slice(), None).await.map_err(|failure| failure.reason).unwrap();
+        let mut pty = ssh.session.channel_open_session().await.unwrap();
+        pty.request_pty(true, "xterm", 80, 24, 0, 0, &[]).await.unwrap();
+        pty.exec(true, "read value; printf 'AFTER_%s' \"$value\"").await.unwrap();
+        let channel = ssh.session.channel_open_session().await.unwrap();
+        channel.request_subsystem(true, "sftp").await.unwrap();
+        let sftp = SftpSession::new(channel.into_stream()).await.unwrap();
+        for (bytes, extension) in [(&b"\x89PNG\r\n\x1a\nfixture"[..], ".png"), (&b"\xff\xd8\xff\xe0JPEG fixture"[..], ".jpg")] {
+            let local = root.join("picked-image");
+            std::fs::write(&local, bytes).unwrap();
+            let remote = image::upload_image_file(&sftp, &local).await.unwrap();
+            // Agent image readers open this path directly, without shell tilde expansion.
+            let uploaded = std::path::PathBuf::from(&remote);
+            assert!(uploaded.is_absolute(), "Agent image path must be absolute: {remote}");
+            assert_eq!(uploaded.parent().unwrap(), root.canonicalize().unwrap().join(".cache/agentport"));
+            assert!(uploaded.file_name().unwrap().to_str().unwrap().starts_with("image-"));
+            assert!(remote.ends_with(extension));
+            assert_eq!(std::fs::read(&uploaded).unwrap(), bytes);
+            assert_eq!(std::fs::metadata(uploaded).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let invalid = root.join("unsupported");
+        std::fs::write(&invalid, b"GIF89a unsupported").unwrap();
+        assert!(image::upload_image_file(&sftp, &invalid).await.unwrap_err().contains("PNG and JPEG"));
+        assert_eq!(std::fs::read_dir(root.join(".cache/agentport")).unwrap().count(), 2);
+        sftp.close().await.unwrap();
+        pty.data(&b"image-upload-ok\n"[..]).await.unwrap();
+        let output = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut output = Vec::new();
+            while let Some(message) = pty.wait().await {
+                if let russh::ChannelMsg::Data { data } = message { output.extend_from_slice(&data); }
+            }
+            output
+        }).await.unwrap();
+        assert!(String::from_utf8_lossy(&output).contains("AFTER_image-upload-ok"));
+        ssh.session.disconnect(Disconnect::ByApplication, "fixture complete", "en").await.unwrap();
         drop(guard);
         std::fs::remove_dir_all(root).unwrap();
     }

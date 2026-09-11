@@ -111,6 +111,10 @@ export class TauriRemoteClient implements RemoteClient {
     return invoke("mobile_disconnect_host", { profileId });
   }
 
+  uploadImage(profileId: string): Promise<string | null> {
+    return invoke("mobile_upload_image", { profileId });
+  }
+
   request<T>(
     profileId: string,
     method: string,

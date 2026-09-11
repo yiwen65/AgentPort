@@ -23,7 +23,7 @@ russh = "=0.62.7"
 russh-sftp = "=2.4.0"
 agentport-relay = { path = "../../crates/agentport-relay" }
 agentport-remote-protocol = { path = "../../crates/agentport-remote-protocol" }
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 base64 = "0.22"
 sha2 = "0.10"
 zeroize = { version = "1", features = ["derive", "serde"] }
@@ -35,6 +35,7 @@ libc = "0.2"
 
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
 tauri-plugin-barcode-scanner = "=2.4.6"
+tauri-plugin-image-picker = { path = "../plugins/tauri-plugin-image-picker" }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6.4"
