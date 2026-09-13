@@ -104,6 +104,16 @@ try {
   assert.ok(redraw.before > 0, 'Fixture must restore history before native scroll');
   assert.equal(redraw.after, redraw.base, `Kimi redraw jumped to history top: ${JSON.stringify(redraw)}`);
   await wait(100);
+  // DEC 2026 spans transport frames on a Kimi resize. Keep the last complete
+  // screen painted until the end marker even though the parser keeps draining.
+  const completeScreen = await evaluate(`document.querySelector('.xterm-rows').textContent`);
+  await evaluate(`new Promise(r => term.write('\\x1b[?2026h\\x1b[3J\\x1b[2J\\x1b[Hpartial redraw', r))`);
+  await wait(100);
+  assert.equal(await evaluate(`document.querySelector('.xterm-rows').textContent`), completeScreen,
+    'A synchronized redraw painted its incomplete screen');
+  await evaluate(`new Promise(r => term.write('\\x1b[2J\\x1b[H'+Array.from({length:200}, (_,i) => 'log '+i+' hello 中文').join('\\r\\n')+'\\x1b[?2026l', r))`);
+  await wait(100);
+  assert.ok(await evaluate(`document.querySelector('.xterm-rows').textContent.includes('log 199')`), 'Completed synchronized frame was not painted');
   const before = await evaluate('term.buffer.active.viewportY');
   await touch('touchStart', 100, 300);
   for (let y = 320; y <= 600; y += 20) { await touch('touchMove', 100, y); await wait(20); }

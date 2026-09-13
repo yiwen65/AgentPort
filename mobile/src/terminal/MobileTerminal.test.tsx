@@ -54,6 +54,7 @@ vi.mock("@xterm/addon-serialize", () => ({
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
+    _core = { _renderService: { _renderRows() {}, _renderer: { value: { renderRows() {} } } } };
     parser = { registerCsiHandler: () => ({ dispose() {} }), registerEscHandler: () => ({ dispose() {} }) };
     resize(cols: number, rows: number) { terminalHarness.cols = cols; terminalHarness.rows = rows; }
     get cols() { return terminalHarness.cols; }

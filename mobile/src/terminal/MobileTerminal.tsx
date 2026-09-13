@@ -22,6 +22,7 @@ import { ShortcutIcon, SHORTCUT_NAMES, ShortcutSettingsIcon } from "./ShortcutIc
 import { ShortcutSettings } from "./ShortcutSettings";
 import { applyShortcutModifiers, encodeShortcutKey, isCustomShortcut, loadShortcuts, saveShortcuts, type ShortcutLayout } from "./shortcuts";
 import { MOBILE_TERMINAL_THEMES } from "./terminalThemes";
+import { installSynchronizedOutput } from "./synchronizedOutput";
 import "./terminalFonts.css";
 import "./mobile-terminal.css";
 
@@ -358,6 +359,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       terminal.parser.registerEscHandler({ final: "c" }, () => { mouseEncoding.current = 0; return false; }),
     ];
     terminal.open(container);
+    const disposeSynchronizedOutput = installSynchronizedOutput(terminal);
     // xterm 5.5 defers its DOM viewport refresh to rAF. After a TUI clears
     // scrollback and streams a redraw, an older native scroll event can map
     // DOM row 0 back onto the rebuilt buffer before that frame runs. Flush
@@ -723,6 +725,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       cancelLongPress();
       if (selectionFrame !== undefined) window.cancelAnimationFrame(selectionFrame);
       positionSelectionMenuRef.current = () => undefined;
+      disposeSynchronizedOutput();
       parsedViewport.dispose();
       selectionScrolled.dispose();
       selectionChanged.dispose();
