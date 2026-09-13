@@ -4,6 +4,7 @@ mod credentials;
 mod hosts;
 mod mosh;
 mod remote;
+mod rotation;
 mod sftp;
 mod ssh;
 
@@ -43,6 +44,8 @@ pub fn run() {
     #[cfg(mobile)]
     let builder = builder.plugin(tauri_plugin_barcode_scanner::init())
         .plugin(tauri_plugin_image_picker::init());
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tauri_plugin_screen_rotation::init());
     builder
         .invoke_handler(tauri::generate_handler![
             mobile_scaffold_status,
@@ -53,6 +56,7 @@ pub fn run() {
             relay_pairing::mobile_relay_pairing_cancel,
             relay_pairing::mobile_relay_pairing_reconcile,
             appearance::mobile_set_terminal_immersive,
+            rotation::mobile_set_terminal_rotation,
             hosts::mobile_list_host_profiles,
             hosts::mobile_get_host_profile,
             hosts::mobile_save_host_profile,

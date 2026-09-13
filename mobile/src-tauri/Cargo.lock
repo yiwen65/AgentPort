@@ -103,6 +103,7 @@ dependencies = [
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-image-picker",
  "tauri-plugin-keyring-store",
+ "tauri-plugin-screen-rotation",
  "tokio",
  "uuid",
  "zeroize",
@@ -5210,6 +5211,16 @@ dependencies = [
  "thiserror 2.0.20",
  "windows-native-keyring-store",
  "zeroize",
+]
+
+[[package]]
+name = "tauri-plugin-screen-rotation"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

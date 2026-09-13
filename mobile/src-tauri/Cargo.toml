@@ -37,6 +37,9 @@ libc = "0.2"
 tauri-plugin-barcode-scanner = "=2.4.6"
 tauri-plugin-image-picker = { path = "../plugins/tauri-plugin-image-picker" }
 
+[target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-screen-rotation = { path = "../plugins/tauri-plugin-screen-rotation" }
+
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6.4"
 

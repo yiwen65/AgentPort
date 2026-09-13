@@ -15,7 +15,7 @@ afterEach(async () => {
 });
 
 describe("native terminal immersion", () => {
-  it("restores system chrome on dashboard navigation and unmount, in submission order", async () => {
+  it("restores system chrome and rotation on dashboard navigation and unmount, in submission order", async () => {
     let finish!: () => void;
     native.invoke.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
     const { rerender, unmount } = render(<Route visible />);
@@ -24,19 +24,32 @@ describe("native terminal immersion", () => {
     rerender(<Route visible />);
     expect(native.invoke).toHaveBeenCalledOnce();
     await act(async () => { finish(); });
-    await waitFor(() => expect(native.invoke).toHaveBeenLastCalledWith("mobile_set_terminal_immersive", { immersive: true }));
-    expect(native.invoke.mock.calls.map(call => call[1].immersive)).toEqual([true, false, false, false, true]);
+    expect(native.invoke.mock.calls.map(call => [call[0], call[1]])).toEqual([
+      ["mobile_set_terminal_immersive", { immersive: true }],
+      ["mobile_set_terminal_rotation", { rotationAllowed: true }],
+      // Each transition queues the cleanup and the next effect value.
+      ["mobile_set_terminal_immersive", { immersive: false }],
+      ["mobile_set_terminal_rotation", { rotationAllowed: false }],
+      ["mobile_set_terminal_immersive", { immersive: false }],
+      ["mobile_set_terminal_rotation", { rotationAllowed: false }],
+      ["mobile_set_terminal_immersive", { immersive: false }],
+      ["mobile_set_terminal_rotation", { rotationAllowed: false }],
+      ["mobile_set_terminal_immersive", { immersive: true }],
+      ["mobile_set_terminal_rotation", { rotationAllowed: true }],
+    ]);
     unmount();
-    await waitFor(() => expect(native.invoke).toHaveBeenLastCalledWith("mobile_set_terminal_immersive", { immersive: false }));
+    await waitFor(() => expect(native.invoke).toHaveBeenLastCalledWith("mobile_set_terminal_rotation", { rotationAllowed: false }));
+    expect(native.invoke.mock.calls[native.invoke.mock.calls.length - 2]).toEqual(["mobile_set_terminal_immersive", { immersive: false }]);
   });
 
-  it("continues restoring after a native failure without an unhandled rejection", async () => {
+  it("still updates rotation after a native chrome failure without an unhandled rejection", async () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
     native.invoke.mockRejectedValueOnce(new Error("unsupported controller"));
     const { rerender } = render(<Route visible />);
-    await waitFor(() => expect(warning).toHaveBeenCalledOnce());
+    await waitFor(() => expect(native.invoke).toHaveBeenLastCalledWith("mobile_set_terminal_rotation", { rotationAllowed: true }));
+    expect(warning).toHaveBeenCalledOnce();
     rerender(<Route visible={false} />);
-    await waitFor(() => expect(native.invoke).toHaveBeenLastCalledWith("mobile_set_terminal_immersive", { immersive: false }));
+    await waitFor(() => expect(native.invoke).toHaveBeenLastCalledWith("mobile_set_terminal_rotation", { rotationAllowed: false }));
     warning.mockRestore();
   });
 

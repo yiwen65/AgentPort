@@ -1,0 +1,3 @@
+.tauri/
+android/build/
+android/.gradle/
