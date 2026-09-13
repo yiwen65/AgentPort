@@ -34,6 +34,7 @@ try {
         return true;
       };
     `, resolveDir: root, loader: 'tsx' },
+    loader: { '.ttf': 'dataurl', '.otf': 'dataurl' },
     outfile: resolve(dir, 'fixture.js'), bundle: true, minify: true, jsx: 'automatic',
     define: { 'process.env.NODE_ENV': '"production"' },
   });
@@ -86,12 +87,32 @@ try {
   await call('Page.navigate', { url: `http://127.0.0.1:${server.address().port}` });
   for (let i = 0; i < 100 && !await evaluate('Boolean(window.ready)'); i++) await wait(30);
   await evaluate('ready()');
+  // Kimi clears scrollback on resize, then streams its redraw in later chunks.
+  // Deliver the queued native scroll before xterm's next animation-frame refresh.
+  await evaluate(`new Promise(r => term.write('\\x1b[3J\\x1b[2J\\x1b[H', r))`);
+  await wait(100);
+  const redraw = await evaluate(`new Promise(resolve => {
+    const sub = term.onWriteParsed(() => {
+      sub.dispose();
+      const viewport = term.element.querySelector('.xterm-viewport');
+      const before = term.buffer.active.viewportY;
+      viewport.dispatchEvent(new Event('scroll'));
+      resolve({before, after: term.buffer.active.viewportY, base: term.buffer.active.baseY});
+    });
+    term.write(Array.from({length:200}, (_,i) => 'log '+i+' hello 中文').join('\\r\\n'));
+  })`);
+  assert.ok(redraw.before > 0, 'Fixture must restore history before native scroll');
+  assert.equal(redraw.after, redraw.base, `Kimi redraw jumped to history top: ${JSON.stringify(redraw)}`);
+  await wait(100);
   const before = await evaluate('term.buffer.active.viewportY');
   await touch('touchStart', 100, 300);
   for (let y = 320; y <= 600; y += 20) { await touch('touchMove', 100, y); await wait(20); }
   await touch('touchEnd'); await wait(250);
   const after = await evaluate('term.buffer.active.viewportY');
   assert.ok(before - after >= 15, `Swipe lost after renderer replacement: ${before} -> ${after}`);
+  await evaluate(`new Promise(r => term.write('\\r\\nbackground output', r))`);
+  await wait(100);
+  assert.equal(await evaluate('term.buffer.active.viewportY'), after, 'Background output stole the history position');
   await touch('touchStart', 100, 300); await wait(650);
   await touch('touchMove', 200, 340); await touch('touchEnd'); await wait(100);
   const selection = await evaluate('term.getSelection()');
@@ -183,7 +204,7 @@ try {
   assert.deepEqual(await evaluate('input'), [], 'Opening settings sent input');
   await evaluate(`document.querySelector('[role="dialog"] .modal-close-button').click()`); await wait(300);
   assert.equal(await evaluate(`Boolean(document.querySelector('[role="dialog"]'))`), false);
-  console.log(JSON.stringify({ scroll: { before, after }, selection, copied: true, mouseReporting: true, pastedOnce: true, shortcutSwipe: true, modifiers: true, settings: true }));
+  console.log(JSON.stringify({ redraw, scroll: { before, after }, selection, copied: true, mouseReporting: true, pastedOnce: true, shortcutSwipe: true, modifiers: true, settings: true }));
 } finally {
   ws?.close();
   if (chrome?.pid && chrome.exitCode === null) {

@@ -358,6 +358,17 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       terminal.parser.registerEscHandler({ final: "c" }, () => { mouseEncoding.current = 0; return false; }),
     ];
     terminal.open(container);
+    // xterm 5.5 defers its DOM viewport refresh to rAF. After a TUI clears
+    // scrollback and streams a redraw, an older native scroll event can map
+    // DOM row 0 back onto the rebuilt buffer before that frame runs. Flush
+    // xterm's own geometry/scroll bookkeeping at the parser boundary; preserve
+    // its current viewport (including a user's history position), not the tail.
+    const parsedViewport = terminal.onWriteParsed(() => {
+      const core = (terminal as unknown as {
+        _core: { viewport: { syncScrollArea(immediate: boolean): void } };
+      })._core;
+      core.viewport.syncScrollArea(true);
+    });
     const disposeIosIme = isIosKeyboard() && terminal.textarea
       ? installIosImeRouting(container, terminal.textarea, text => {
         iosEmissionRef.current = true;
@@ -712,6 +723,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       cancelLongPress();
       if (selectionFrame !== undefined) window.cancelAnimationFrame(selectionFrame);
       positionSelectionMenuRef.current = () => undefined;
+      parsedViewport.dispose();
       selectionScrolled.dispose();
       selectionChanged.dispose();
       input.dispose();

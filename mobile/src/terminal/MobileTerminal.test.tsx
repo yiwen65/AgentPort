@@ -94,6 +94,7 @@ vi.mock("@xterm/xterm", () => ({
       if (terminalHarness.queued) terminalHarness.writesQueue.push(parse); else parse();
     }
     reset() { terminalHarness.resets += 1; }
+    onWriteParsed() { return { dispose() {} }; }
     onRender(callback: () => void) { terminalHarness.renderListeners.add(callback); return { dispose() { terminalHarness.renderListeners.delete(callback); } }; }
     refresh() { terminalHarness.refreshes += 1; }
     paste(data: string) { terminalHarness.pastes.push(data); terminalHarness.input(data); }
