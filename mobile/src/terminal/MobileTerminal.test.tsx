@@ -11,6 +11,8 @@ const terminalHarness = vi.hoisted(() => ({
   screen: undefined as HTMLDivElement | undefined,
   screenHeight: 240,
   baseY: 0,
+  viewportY: 0,
+  viewport: undefined as HTMLDivElement | undefined,
   selection: "selected output",
   selects: [] as number[][],
   clears: 0,
@@ -57,7 +59,8 @@ vi.mock("@xterm/xterm", () => ({
     get cols() { return terminalHarness.cols; }
     get rows() { return terminalHarness.rows; }
     get modes() { return { applicationCursorKeysMode: terminalHarness.applicationCursor, mouseTrackingMode: terminalHarness.mouseTracking }; }
-    buffer = { active: { get type() { return terminalHarness.bufferType; }, cursorY: 20, viewportY: 0, get baseY() { return terminalHarness.baseY; }, getLine: () => ({ getCell: () => ({ getChars: () => "a", getWidth: () => 1 }) }) } };
+    buffer = { active: { get type() { return terminalHarness.bufferType; }, cursorY: 20, get viewportY() { return terminalHarness.viewportY; }, get baseY() { return terminalHarness.baseY; }, getLine: () => ({ getCell: () => ({ getChars: () => "a", getWidth: () => 1 }) }) } };
+    element: HTMLElement | undefined;
     options: { fontSize?: number; fontFamily?: string; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown };
     constructor(options: { fontSize?: number; fontFamily?: string; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown } = {}) {
       this.options = { ...options };
@@ -66,6 +69,11 @@ vi.mock("@xterm/xterm", () => ({
     }
     loadAddon() { /* deterministic no-op */ }
     open(container: HTMLElement) {
+      this.element = container;
+      terminalHarness.viewport = document.createElement("div");
+      terminalHarness.viewport.className = "xterm-viewport";
+      Object.defineProperties(terminalHarness.viewport, { scrollHeight: { value: 20000 }, clientHeight: { value: 700 } });
+      container.append(terminalHarness.viewport);
       terminalHarness.screen = document.createElement("div");
       terminalHarness.screen.className = "xterm-screen";
       terminalHarness.screen.getBoundingClientRect = () => ({
@@ -91,6 +99,7 @@ vi.mock("@xterm/xterm", () => ({
     paste(data: string) { terminalHarness.pastes.push(data); terminalHarness.input(data); }
     scrollLines(rows: number) { terminalHarness.scrolledLines.push(rows); }
     scrollToTop() { terminalHarness.scrollToTopCalls += 1; }
+    scrollToBottom() { terminalHarness.viewportY = terminalHarness.baseY; }
     dispose() { /* deterministic no-op */ }
     selectAll() { /* deterministic no-op */ }
     getSelection() { return terminalHarness.selection; }
@@ -163,6 +172,34 @@ describe("MobileTerminal input accessory", () => {
     await waitFor(() => expect(terminalHarness.fitCalls).toBeGreaterThan(fits));
   });
 
+  it("synchronizes restored log geometry and the native tail before returning to the event loop", async () => {
+    const ref = createRef<MobileTerminalHandle>();
+    render(<MobileTerminal ref={ref} showProbeOutput={false} />);
+    await act(async () => ref.current!.restore({ content: "snapshot", cols: 160, rows: 50, pending: [] }));
+    terminalHarness.baseY = 651;
+    terminalHarness.viewportY = 651;
+    const fits = terminalHarness.fitCalls;
+    act(() => ref.current!.finishRestore());
+    expect(terminalHarness.fitCalls).toBeGreaterThan(fits);
+    expect(terminalHarness.viewportY).toBe(651);
+    expect(terminalHarness.viewport!.scrollTop).toBe(19300);
+    // A later reading gesture must not be overwritten by a queued tail repair.
+    terminalHarness.viewportY = 300;
+    terminalHarness.viewport!.scrollTop = 9000;
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(terminalHarness.viewportY).toBe(300);
+    expect(terminalHarness.viewport!.scrollTop).toBe(9000);
+  });
+
+  it("does not force a live scrollback reader to the tail at a replay barrier", () => {
+    const ref = createRef<MobileTerminalHandle>();
+    render(<MobileTerminal ref={ref} showProbeOutput={false} />);
+    terminalHarness.baseY = 651;
+    terminalHarness.viewportY = 300;
+    act(() => ref.current!.finishRestore());
+    expect(terminalHarness.viewportY).toBe(300);
+  });
+
   beforeEach(() => {
     localStorage.clear();
     terminalHarness.applicationCursor = false;
@@ -181,6 +218,8 @@ describe("MobileTerminal input accessory", () => {
     terminalHarness.screen = undefined;
     terminalHarness.screenHeight = 240;
     terminalHarness.baseY = 0;
+    terminalHarness.viewportY = 0;
+    terminalHarness.viewport = undefined;
     terminalHarness.fitCalls = 0;
     terminalHarness.cols = 80;
     terminalHarness.rows = 24;

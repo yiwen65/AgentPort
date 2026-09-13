@@ -98,6 +98,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const lastReportedSize = useRef<{ cols: number; rows: number }>();
   const pendingRemoteReport = useRef(false);
   const scheduleFitRef = useRef<(reportRemote?: boolean) => void>(() => undefined);
+  const fitTerminalRef = useRef<(reportRemote: boolean) => void>(() => undefined);
   const cancelRestoreRender = useRef<(() => void) | undefined>(undefined);
   const inputHandlerRef = useRef<(data: string) => void>(() => undefined);
   const invalidateIosImeRef = useRef<() => void>(() => undefined);
@@ -172,11 +173,26 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       });
     },
     finishRestore(onRendered) {
+      const wasRestoring = restoring.current;
       restoring.current = false;
       lastReportedSize.current = undefined;
       cancelRestoreRender.current?.();
-      scheduleFitRef.current(true);
       const terminal = terminalRef.current;
+      const followTail = terminal?.buffer.active.type === "normal"
+        && (wasRestoring || terminal.buffer.active.viewportY >= terminal.buffer.active.baseY);
+      // Finish geometry in this parser transaction. A deferred fit lets the
+      // reset viewport's scroll event map DOM row 0 onto the restored log.
+      if (resizeFrameRef.current !== undefined) window.cancelAnimationFrame(resizeFrameRef.current);
+      resizeFrameRef.current = undefined;
+      pendingRemoteReport.current = false;
+      fitTerminalRef.current(true);
+      if (terminal && followTail && terminal.buffer.active.type === "normal") {
+        terminal.scrollToBottom();
+        // xterm 5.5 can report the buffer tail before its native viewport has
+        // caught up. Reconcile both synchronously, before another scroll event.
+        const viewport = terminal.element?.querySelector<HTMLElement>(".xterm-viewport");
+        if (viewport) viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+      }
       if (terminal && onRendered) {
         const subscription = terminal.onRender(() => {
           subscription.dispose();
@@ -389,6 +405,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       });
     };
     scheduleFitRef.current = scheduleFit;
+    fitTerminalRef.current = fitTerminal;
     fitTerminal(true);
     if (showProbeOutput) {
       terminal.write("\u001b[1;36mAgentPort transport spike\u001b[0m\r\n");
@@ -665,6 +682,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       imageGeneration.current += 1;
       fitRef.current = null;
       scheduleFitRef.current = () => undefined;
+      fitTerminalRef.current = () => undefined;
       cancelRestoreRender.current?.();
       cancelRestoreRender.current = undefined;
       pendingRemoteReport.current = false;
