@@ -31,13 +31,18 @@ export function useAttentionInbox(client: RemoteClient, hosts: HostProfileSummar
     for (const id of boxes.current.keys()) if (!retained.has(id)) {
       boxes.current.delete(id); titles.current.delete(id); errors.current.delete(id);
     }
+    const pollingHosts = visible ? hosts.filter(item => item.connectionState === "connected") : [];
+    // A newly started connected polling lifecycle supersedes failures from its
+    // predecessor. Do not keep presenting an old failure while the first fresh
+    // poll is in flight; a failure in this lifecycle reports again.
+    for (const host of pollingHosts) errors.current.delete(host.id);
     setError([...errors.current.values()][0] ?? "");
     for (const host of hosts) { try { box(host.id); } catch (failure) { report(host.id, failure); } }
     publish();
     if (!visible) return;
     const controller = new AbortController();
     const timers = new Set<ReturnType<typeof setTimeout>>();
-    for (const host of hosts.filter(item => item.connectionState === "connected")) {
+    for (const host of pollingHosts) {
       let idle = 0, failures = 0;
       const poll = async () => {
         let delay = 5_000;

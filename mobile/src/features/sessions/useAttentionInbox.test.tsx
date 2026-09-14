@@ -14,6 +14,22 @@ describe("bounded metadata notification reception", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(result.current.error).toBe("Request timed out");
   });
+  it("clears a stale polling error when the host reconnects", async () => {
+    const client = makeClient();
+    vi.mocked(client.request)
+      .mockRejectedValueOnce({ code: "request_timeout", message: "Request timed out" })
+      .mockImplementation(() => new Promise(() => {}));
+    const connected = hosts[0];
+    const { result, rerender } = renderHook(({ host }) => useAttentionInbox(client, [host], true), { initialProps: { host: connected } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current.error).toBe("Request timed out");
+
+    rerender({ host: { ...connected, connectionState: "failed" } });
+    rerender({ host: connected });
+
+    expect(result.current.error).toBe("");
+    expect(client.request).toHaveBeenCalledTimes(2);
+  });
   it("covers all connected hosts with idle backoff, no Session list polling and no hidden work", async () => {
     const client = makeClient();
     const { rerender } = renderHook(({ visible }) => useAttentionInbox(client, hosts, visible), { initialProps: { visible: true } });
