@@ -25,7 +25,6 @@ import type {
   HistoryPage,
   LegacyDeleteReport,
   LegacyLogInventory,
-  RecoveryLogContext,
   PermissionStr,
   Preset,
   ProbeOutcome,
@@ -278,8 +277,7 @@ export const api = {
     replayTailBytes: number,
     channel: Channel<ChannelMsg>,
     resumeFrom: LogCursorView | null = null,
-    recoveryTarget: LogCursorView | null = null,
-  ) => invoke<AttachInfo>("attach_session", { sessionId, replayTailBytes, channel, resumeFrom, recoveryTarget }),
+  ) => invoke<AttachInfo>("attach_session", { sessionId, replayTailBytes, channel, resumeFrom }),
   detachSession: (sessionId: string, attachmentId: number) =>
     invoke<void>("detach_session", { sessionId, attachmentId }),
   markSessionSeen: (sessionId: string, cursor: StatusCursorView | null = null) =>
@@ -578,9 +576,6 @@ export const api = {
     invoke<{ imported: string[]; skipped: string[]; nativeCoverage: NativeCoverageSummary }>("backup_restore", { path, agent }),
   search: (query: string, limit: number | null) =>
     invoke<SearchResult>("search", { query, limit }),
-  /** Full persisted output for one Session, including text outside xterm's scrollback. */
-  searchSessionLog: (sessionId: string, query: string, limit: number | null) =>
-    invoke<SearchResult>("search_session_log", { sessionId, query, limit }),
   getNativeHistory: (sessionId: string, cursor: string | null, limit = 200) =>
     invoke<HistoryPage>("get_native_history", { sessionId, cursor, limit }),
   getLegacyLogInventory: () =>
@@ -621,8 +616,6 @@ export const api = {
   secretDelete: (id: string) => invoke<void>("secret_delete", { id }),
   notifyTest: () => invoke<void>("notify_test"),
   takePendingNotificationSession: () => invoke<string | null>("take_pending_notification_session"),
-  readRecoveryLogContext: (sessionId: string, cursor: LogCursorView) =>
-    invoke<RecoveryLogContext>("read_recovery_log_context", { sessionId, cursor }),
   revealInFileManager: (path: string) => invoke<void>("reveal_in_file_manager", { path }),
   openInSystemTerminal: (path: string) => invoke<void>("open_in_system_terminal", { path }),
   openExternalUrl: (url: string) => invoke<void>("open_external_url", { url }),

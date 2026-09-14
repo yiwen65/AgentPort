@@ -175,9 +175,9 @@
       }
     },
     "terminalSearch": {
-      "regionLabel": "终端历史搜索",
-      "placeholder": "搜索完整终端历史（不会发送给 Agent）",
-      "inputLabel": "搜索终端历史",
+      "regionLabel": "终端缓冲区搜索",
+      "placeholder": "搜索当前终端缓冲区（不会发送给 Agent）",
+      "inputLabel": "搜索当前终端缓冲区",
       "currentBuffer": "当前缓冲",
       "currentScreen": "当前屏幕",
       "matchPosition_one": "{{scope}} {{current}}/{{count}}",
@@ -185,18 +185,7 @@
       "noCurrentBufferResults": "当前缓冲：无结果",
       "previousMatch": "上一个匹配",
       "nextMatch": "下一个匹配",
-      "close": "关闭搜索",
-      "fullHistory": "完整历史",
-      "bufferMatch": "{{scope}}：{{snippet}}",
-      "noResultsInCurrentBuffer": "当前缓冲中无结果",
-      "searchingPersistedLog": "正在按需搜索 Agent 原生日志…",
-      "fullHistoryUnavailable": "完整历史不可用",
-      "loadedHits_one": "（已载入 {{count}} 条）",
-      "loadedHits_other": "（已载入 {{count}} 条）",
-      "logMatchPosition_one": "{{current}}/{{count}}{{loaded}}：{{snippet}}",
-      "logMatchPosition_other": "{{current}}/{{count}}{{loaded}}：{{snippet}}",
-      "noResults": "无结果",
-      "searchFailed": "无法搜索完整终端历史：{{detail}}"
+      "close": "关闭搜索"
     },
     "workspace": {
       "label": "终端工作区"

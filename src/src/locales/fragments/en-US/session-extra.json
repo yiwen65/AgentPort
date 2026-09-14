@@ -55,7 +55,6 @@
   },
   "flow": {
     "timelineLoadFailed": "Could not load the Recovery Timeline: {{detail}}",
-    "locateRecoveryFailed": "Could not locate the recovery output: {{detail}}",
     "stopped": "Session stopped and its process group was cleaned up",
     "stopFailed": "Could not stop the Session: {{detail}}",
     "restartTitle": "Restart “{{title}}”?",
@@ -83,13 +82,7 @@
     "operationFailed": "Operation failed: {{detail}}"
   },
   "timeline": {
-    "outputRotated": "Older terminal output has rotated; the Agent's native context is unaffected",
-    "noVerifiedPosition": "This event has no verified output position",
-    "generationUnverified": "The retained output generation could not be verified",
-    "logLocation": "Log {{runId}} / generation {{generation}} / offset {{offset}}",
-    "sessionMissing": "This Session no longer exists, so its output cannot be opened",
-    "openedWithoutLocation": "Session opened; {{reason}}",
-    "locatable": "Output available",
+    "sessionMissing": "This Session no longer exists, so it cannot be opened",
     "newOutputWhileClosed": "New output while AgentPort was closed",
     "hostInterrupted": "Host interrupted unexpectedly",
     "title": "Recovery Timeline",
@@ -106,16 +99,11 @@
   "terminal": {
     "historyTail": "Showing only the most recent {{shown}} of {{total}}",
     "logReadFailed": "Could not read the log: {{detail}}",
-    "returnedToLatest": "Returned from the recovery event to the latest output",
     "outputGap": "The output stream has a gap; resynchronizing",
     "outputRotated": "Older terminal output has rotated; the Agent's native context is unaffected",
-    "recoveryLocation": "Recovery event location",
     "resynced": "Output resynchronized: {{reason}}",
     "stateAnnouncement": "Session {{title}} is now {{state}}",
     "sessionError": "Session error: {{detail}}",
-    "restartMarker": "Restart",
-    "sessionMissing": "This Session no longer exists",
-    "locatedRecovery": "Located output near the recovery event ({{total}} verified log)",
-    "locateRecoveryFailed": "Could not locate recovery output: {{detail}}"
+    "restartMarker": "Restart"
   }
 }

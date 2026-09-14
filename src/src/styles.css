@@ -4394,8 +4394,7 @@ body.is-resizing-split .doc-panel-resize::after {
   background: var(--bg-panel);
 }
 
-.term-search-main,
-.term-search-history {
+.term-search-main {
   min-width: 0;
   display: flex;
   align-items: center;
@@ -4414,34 +4413,6 @@ body.is-resizing-split .doc-panel-resize::after {
   text-align: center;
 }
 
-.term-search-buffer-status,
-.term-search-log-status {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-dim);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.term-search-history {
-  min-height: 18px;
-  padding-left: 2px;
-  color: var(--text-dim);
-}
-
-.term-search-history-label {
-  flex: none;
-  color: var(--text-faint);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.term-search-history .term-search-log-status {
-  flex: 2;
-  color: var(--text);
-}
 
 /* Empty workspace */
 .workspace-empty {

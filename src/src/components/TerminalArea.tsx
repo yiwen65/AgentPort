@@ -16,7 +16,6 @@ import {
 } from "react";
 import { watchEndedSessions } from "../endedSessionRefresh";
 import {
-  api,
   copyText,
   errorText,
   readClipboardText,
@@ -84,7 +83,7 @@ import {
   readSessionPaneDragPayload,
 } from "../paneSessionDrag";
 import { agentDisplay, precisionLabel } from "../format";
-import type { SearchHit, SearchResult, SessionView } from "../types";
+import type { SessionView } from "../types";
 import { AgentIcon } from "./AgentIcons";
 import ShellIcon from "./ShellIcon";
 import PiStructuredTimeline from "./PiStructuredTimeline";
@@ -456,12 +455,6 @@ function TermSearchBar({ sessionId }: { sessionId: string }) {
   const [searchPosition, setSearchPosition] = useState<TerminalSearchPosition>(
     EMPTY_TERMINAL_SEARCH_POSITION,
   );
-  const [logResult, setLogResult] = useState<SearchResult | null>(null);
-  const [logSearching, setLogSearching] = useState(false);
-  const [logError, setLogError] = useState<string | null>(null);
-  const [logIndex, setLogIndex] = useState(0);
-  const logTimer = useRef<number | null>(null);
-  const logRequest = useRef(0);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -494,42 +487,6 @@ function TermSearchBar({ sessionId }: { sessionId: string }) {
     };
   }, [sessionId]);
 
-  // Agent-native history can predate the bounded xterm attach tail. Query it
-  // separately without copying the transcript into the terminal buffer.
-  useEffect(() => {
-    if (logTimer.current !== null) window.clearTimeout(logTimer.current);
-    const query = q.trim();
-    const request = ++logRequest.current;
-    if (query.length < 2) {
-      setLogResult(null);
-      setLogSearching(false);
-      setLogError(null);
-      setLogIndex(0);
-      return;
-    }
-    setLogSearching(true);
-    logTimer.current = window.setTimeout(() => {
-      api
-        .searchSessionLog(sessionId, query, 1_000)
-        .then((result) => {
-          if (request !== logRequest.current) return;
-          setLogResult(result);
-          setLogIndex(0);
-          setLogError(null);
-        })
-        .catch((e) => {
-          if (request !== logRequest.current) return;
-          setLogResult(null);
-          setLogError(t("ui.terminalSearch.searchFailed", { detail: errorText(e) }));
-        })
-        .finally(() => {
-          if (request === logRequest.current) setLogSearching(false);
-        });
-    }, 180);
-    return () => {
-      if (logTimer.current !== null) window.clearTimeout(logTimer.current);
-    };
-  }, [q, sessionId]);
 
   const find = (query: string, dir: "next" | "prev", incremental = false) => {
     const h = getHandle(sessionId);
@@ -546,9 +503,6 @@ function TermSearchBar({ sessionId }: { sessionId: string }) {
     else h.search.findPrevious(needle, opts);
   };
 
-  const logHits = (logResult?.hits ?? []).filter((hit) => hit.kind === "terminal");
-  const totalLogHits = logResult?.totalHits ?? logHits.length;
-  const selectedLogHit: SearchHit | null = logHits[logIndex] ?? null;
   const hasBufferResult = searchPosition.resultCount > 0;
   const bufferScope =
     searchPosition.buffer === "normal"
@@ -565,13 +519,6 @@ function TermSearchBar({ sessionId }: { sessionId: string }) {
 
   const navigate = (dir: "next" | "prev") => {
     find(q, dir);
-    if (logHits.length > 1) {
-      setLogIndex((current) =>
-        dir === "next"
-          ? (current + 1) % logHits.length
-          : (current - 1 + logHits.length) % logHits.length,
-      );
-    }
   };
 
   const close = () => {
@@ -630,30 +577,6 @@ function TermSearchBar({ sessionId }: { sessionId: string }) {
           ✕
         </button>
       </div>
-      {q.trim() ? (
-        <div className="term-search-history" aria-live="polite">
-          <span className="term-search-history-label">{t("ui.terminalSearch.fullHistory")}</span>
-          <span className="term-search-buffer-status">
-            {bufferPosition ?? t("ui.terminalSearch.noResultsInCurrentBuffer")}
-          </span>
-          <span className="term-search-log-status">
-            {logSearching
-              ? t("ui.terminalSearch.searchingPersistedLog")
-              : logError
-                ? t("ui.terminalSearch.fullHistoryUnavailable")
-                : selectedLogHit
-                  ? t("ui.terminalSearch.logMatchPosition", {
-                      current: logIndex + 1,
-                      count: totalLogHits,
-                      loaded: totalLogHits > logHits.length
-                        ? t("ui.terminalSearch.loadedHits", { count: logHits.length })
-                        : "",
-                      snippet: selectedLogHit.snippet,
-                    })
-                  : t("ui.terminalSearch.noResults")}
-          </span>
-        </div>
-      ) : null}
     </div>
   );
 }

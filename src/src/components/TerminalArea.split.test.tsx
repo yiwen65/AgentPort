@@ -60,7 +60,7 @@ vi.mock("../actions", () => ({
 }));
 
 vi.mock("../api", () => ({
-  api: { searchSessionLog: vi.fn() },
+  api: {},
   copyText: vi.fn().mockResolvedValue(true),
   errorText: (error: unknown) => String(error),
   readClipboardText: vi.fn().mockResolvedValue("paste"),

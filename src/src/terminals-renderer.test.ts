@@ -24,7 +24,6 @@ const rendererMocks = vi.hoisted(() => {
     copyText: vi.fn().mockResolvedValue(true),
     getNativeHistory: vi.fn(),
     openExternalUrl: vi.fn().mockResolvedValue(undefined),
-    readRecoveryLogContext: vi.fn(),
     resizePty: vi.fn().mockResolvedValue(undefined),
     sendInput: vi.fn().mockResolvedValue(undefined),
     listProjects: vi.fn(),
@@ -287,7 +286,6 @@ import {
   getHandle,
   hasWarmTerminalPreview,
   isTerminalPreviewRendered,
-  jumpToRecoveryOutput,
   loadOlderNativeHistory,
   mountTerminal,
   releaseTerminal,
@@ -403,6 +401,17 @@ describe("terminal renderer", () => {
       64 * 1024,
       expect.anything(),
       null,
+    );
+  });
+
+  it("keeps the 4 MiB cold replay window for ordinary Shell Sessions", async () => {
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+
+    expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledWith(
+      "renderer-test",
+      4 * 1024 * 1024,
+      expect.anything(),
       null,
     );
   });
@@ -1662,140 +1671,6 @@ describe("terminal renderer", () => {
     );
   });
 
-  it("reveals the selected recovery marker after ended-session context is parsed", async () => {
-    await applyUiLanguage("zh-CN", { persistHint: false });
-    const container = document.createElement("div");
-    mountTerminal("renderer-test", container);
-    await vi.waitFor(() =>
-      expect(getState().runtime["renderer-test"]?.attached).toBe(true),
-    );
-    setState({
-      projects: getState().projects.map((project) => ({
-        ...project,
-        sessions: project.sessions.map((session) =>
-          session.id === "renderer-test"
-            ? { ...session, lifecycle: "exited" as const }
-            : session,
-        ),
-      })),
-    });
-    rendererMocks.apiMock.readRecoveryLogContext.mockResolvedValueOnce({
-      data: "YmVmb3JlYWZ0ZXI=",
-      offset: 0,
-      total: 11,
-      cursor: {
-        runId: "run_1",
-        runOrdinal: 1,
-        generation: 0,
-        offset: 6,
-      },
-    });
-    const terminal =
-      rendererMocks.terminals[rendererMocks.terminals.length - 1];
-    const writeCountBeforeJump = terminal.write.mock.calls.length;
-
-    await jumpToRecoveryOutput("renderer-test", {
-      runId: "run_1",
-      runOrdinal: 1,
-      generation: 0,
-      offset: 6,
-    });
-
-    const recoveryWrites = terminal.write.mock.calls.slice(writeCountBeforeJump);
-    const markerWrite = recoveryWrites.find(
-      ([data]) => typeof data === "string" && data.includes("恢复事件定位处"),
-    );
-    const revealWrite = recoveryWrites.find(
-      ([data, callback]) => data === "" && typeof callback === "function",
-    );
-    invokeWriteCallback(markerWrite);
-    invokeWriteCallback(revealWrite);
-
-    expect(terminal.registerMarker).toHaveBeenCalledWith(-1);
-    expect(terminal.scrollToLine).toHaveBeenCalledWith(123);
-    expect(terminal.marker.dispose).toHaveBeenCalledOnce();
-
-    terminal.scrollToLine.mockClear();
-    rendererMocks.apiMock.readRecoveryLogContext.mockResolvedValueOnce({
-      data: "YmVmb3JlYWZ0ZXI=",
-      offset: 0,
-      total: 11,
-      cursor: {
-        runId: "run_1",
-        runOrdinal: 1,
-        generation: 0,
-        offset: 6,
-      },
-    });
-    const writeCountBeforeCancelledJump = terminal.write.mock.calls.length;
-    await jumpToRecoveryOutput("renderer-test", {
-      runId: "run_1",
-      runOrdinal: 1,
-      generation: 0,
-      offset: 6,
-    });
-    const cancelledWrites = terminal.write.mock.calls.slice(
-      writeCountBeforeCancelledJump,
-    );
-    const cancelledMarkerWrite = cancelledWrites.find(
-      ([data]) => typeof data === "string" && data.includes("恢复事件定位处"),
-    );
-    const cancelledRevealWrite = cancelledWrites.find(
-      ([data, callback]) => data === "" && typeof callback === "function",
-    );
-    invokeWriteCallback(cancelledMarkerWrite);
-    container.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
-    invokeWriteCallback(cancelledRevealWrite);
-
-    expect(terminal.scrollToLine).not.toHaveBeenCalled();
-    expect(terminal.marker.dispose).toHaveBeenCalledTimes(2);
-  });
-
-  it("preserves a structured recovery rejection for later language changes", async () => {
-    await applyUiLanguage("zh-CN", { persistHint: false });
-    mountTerminal("renderer-test", document.createElement("div"));
-    await vi.waitFor(() =>
-      expect(getState().runtime["renderer-test"]?.attached).toBe(true),
-    );
-    setState({
-      projects: getState().projects.map((project) => ({
-        ...project,
-        sessions: project.sessions.map((session) =>
-          session.id === "renderer-test"
-            ? { ...session, lifecycle: "exited" as const }
-            : session,
-        ),
-      })),
-    });
-    rendererMocks.apiMock.readRecoveryLogContext.mockRejectedValueOnce({
-      code: "recovery_log_changed",
-      params: {},
-      technicalDetail: "log generation changed",
-      message: "读取期间输出日志发生变化，无法安全定位；请重试",
-    });
-
-    await expect(
-      jumpToRecoveryOutput("renderer-test", {
-        runId: "run_1",
-        runOrdinal: 1,
-        generation: 0,
-        offset: 10,
-      }),
-    ).rejects.toBeTruthy();
-    expect(getState().runtime["renderer-test"]?.historyMessage?.code).toBe(
-      "recovery_log_changed",
-    );
-    expect(getState().runtime["renderer-test"]?.historyNote).toBe(
-      "读取期间输出日志发生变化，无法安全定位；请重试。",
-    );
-
-    await applyUiLanguage("en-US", { persistHint: false });
-    applyTerminalLanguage();
-    expect(getState().runtime["renderer-test"]?.historyNote).toBe(
-      "The output log changed while it was being read. Try again.",
-    );
-  });
-
   it("forwards native repeat keydowns even when xterm does not emit their input", async () => {
     const container = document.createElement("div");
     mountTerminal("renderer-test", container);
@@ -2629,7 +2504,6 @@ describe("terminal renderer", () => {
       t: "replay_done",
       offset: 1,
       cursor: { runId: "run_1", runOrdinal: 1, generation: 0, offset: 1 },
-      partialContext: false,
     });
 
     expect(getState().runtime["renderer-test"]?.replayDone).toBe(false);
@@ -2683,7 +2557,6 @@ describe("terminal renderer", () => {
       t: "replay_done",
       offset: 0,
       cursor: null,
-      partialContext: false,
     });
     const replayBoundary =
       terminal.write.mock.calls[terminal.write.mock.calls.length - 1];
@@ -2713,7 +2586,6 @@ describe("terminal renderer", () => {
       t: "replay_done",
       offset: 0,
       cursor: null,
-      partialContext: false,
     });
     const staleBoundary =
       terminal.write.mock.calls[terminal.write.mock.calls.length - 1];
@@ -2937,7 +2809,6 @@ describe("terminal renderer", () => {
       t: "replay_done",
       offset: first.length,
       cursor: replayCursor,
-      partialContext: false,
     });
 
     expect(terminal.write).not.toHaveBeenCalled();
@@ -3370,7 +3241,6 @@ describe("terminal renderer", () => {
       expect.any(Number),
       expect.anything(),
       null,
-      null,
     );
   });
 
@@ -3416,7 +3286,6 @@ describe("terminal renderer", () => {
       expect.any(Number),
       expect.anything(),
       expect.objectContaining({ offset: 1 }),
-      null,
     );
     expect(localStorage.getItem(legacyKey)).toBeNull();
     expect(JSON.parse(localStorage.getItem(currentKey) ?? "null")).toMatchObject({
@@ -3544,7 +3413,6 @@ describe("terminal renderer", () => {
       expect.any(Number),
       expect.anything(),
       expect.objectContaining({ offset: 1 }),
-      null,
     );
     localStorage.removeItem(key);
   });
@@ -4028,7 +3896,6 @@ describe("terminal renderer", () => {
       t: "replay_done",
       offset: 0,
       cursor: null,
-      partialContext: false,
     });
     const warning = new TextEncoder().encode(
       `\x1b[33mWarning: No project session found with id '${nativeSessionId}'; creating a new session with that id.\x1b[39m\r\n`,

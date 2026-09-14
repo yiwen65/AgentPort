@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
   apiMock,
   attachHandleMock,
-  jumpToRecoveryOutputMock,
   releaseTerminalMock,
   resetForRestartMock,
 } = vi.hoisted(() => ({
@@ -17,7 +16,6 @@ const {
     stopSession: vi.fn(),
   },
   attachHandleMock: vi.fn(),
-  jumpToRecoveryOutputMock: vi.fn(),
   releaseTerminalMock: vi.fn(),
   resetForRestartMock: vi.fn(),
 }));
@@ -33,7 +31,6 @@ vi.mock("./terminals", () => ({
   attachHandle: attachHandleMock,
   clearUnreadOutputTracking: vi.fn(),
   disposeHandle: vi.fn(),
-  jumpToRecoveryOutput: jumpToRecoveryOutputMock,
   MAX_PERSISTENT_TERMINALS: 1,
   pruneHandles: vi.fn(),
   releaseTerminal: releaseTerminalMock,
@@ -110,7 +107,6 @@ describe("selectSession", () => {
     // unrelated background request pending so each test owns every snapshot
     // it resolves and cannot leak work into the next case.
     apiMock.markSessionSeen.mockReturnValue(new Promise(() => undefined));
-    jumpToRecoveryOutputMock.mockResolvedValue(undefined);
     setState({
       projects: projectWith(oldSession),
       activeSessionId: "ses_old",
@@ -143,7 +139,7 @@ describe("selectSession", () => {
     );
     setState({ expandedProjects: { prj_1: false } });
 
-    selectSession("ses_old", null, { revealInSidebar: false });
+    selectSession("ses_old", { revealInSidebar: false });
 
     expect(getState().activeSessionId).toBe("ses_old");
     expect(getState().expandedProjects.prj_1).toBe(false);
@@ -168,50 +164,15 @@ describe("selectSession", () => {
     expect(releaseTerminalMock).toHaveBeenCalledWith("ses_old");
   });
 
-  it("keeps structured recovery on the JSON-RPC renderer instead of opening xterm", () => {
-    const recoveryTarget = {
-      runId: "run_1",
-      runOrdinal: 1,
-      generation: 0,
-      offset: 128,
-    };
-    setState({ projects: projectWith(oldSession, rpcSession) });
-
-    selectSession("ses_rpc", recoveryTarget);
-
-    expect(getState().activeSessionId).toBe("ses_rpc");
-    expect(jumpToRecoveryOutputMock).not.toHaveBeenCalled();
-  });
-
-  it("still opens xterm recovery for PTY Sessions", () => {
-    const recoveryTarget = {
-      runId: "run_1",
-      runOrdinal: 1,
-      generation: 0,
-      offset: 128,
-    };
-
-    selectSession("ses_old", recoveryTarget);
-
-    expect(jumpToRecoveryOutputMock).toHaveBeenCalledWith("ses_old", recoveryTarget);
-  });
-
   it("keeps ended PTY Sessions in the single xterm renderer", () => {
     const ended = { ...oldSession, id: "ses_ended", lifecycle: "stopped" as const };
-    const recoveryTarget = {
-      runId: "run_1",
-      runOrdinal: 1,
-      generation: 0,
-      offset: 128,
-    };
     setState({ projects: projectWith(oldSession, ended), attachedIds: [oldSession.id] });
 
-    selectSession(ended.id, recoveryTarget);
+    selectSession(ended.id);
 
     expect(getState().activeSessionId).toBe(ended.id);
     expect(getState().attachedIds).toEqual([ended.id]);
     expect(releaseTerminalMock).toHaveBeenCalledWith(oldSession.id);
-    expect(jumpToRecoveryOutputMock).not.toHaveBeenCalled();
   });
 
   it("stops directly without confirmation and ignores duplicate in-flight requests", async () => {

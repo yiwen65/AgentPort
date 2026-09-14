@@ -362,7 +362,6 @@ export type ChannelMsg =
       t: "replay_done";
       offset?: number;
       cursor?: LogCursorView;
-      partialContext?: boolean;
     }
   | { t: "resync_required"; earliest: LogCursorView; reason: string }
   | { t: "state"; event: StatusEventView }
@@ -865,16 +864,6 @@ export interface GitStateInvalidated {
   observedAt: string;
 }
 
-/** Bounded binary log slice returned by recovery diagnostics. */
-export interface LogTail {
-  /** base64 of the tail bytes */
-  data: string;
-  /** byte offset of data[0] within the current log generation */
-  offset: number;
-  /** total log size in bytes */
-  total: number;
-}
-
 export type HistoryRole = "user" | "assistant" | "tool" | "system";
 
 export interface HistoryEvent {
@@ -925,11 +914,6 @@ export interface LegacyLogInventory {
 export interface LegacyDeleteReport {
   deleted: string[];
   bytesReclaimed: number;
-}
-
-/** Bounded, generation-validated bytes surrounding a recovery cursor. */
-export interface RecoveryLogContext extends LogTail {
-  cursor: LogCursorView;
 }
 
 /** read_session_document response: text content for the in-app viewer. */

@@ -7,21 +7,15 @@ const {
   hasWarmTerminalPreviewMock,
   isTerminalPreviewRenderedMock,
   loadOlderNativeHistoryMock,
-  locateTerminalBufferMatchMock,
   noteTerminalScrollIntentMock,
   scrollTerminalViewportMock,
-  searchTerminalBuffersMock,
 } = vi.hoisted(() => ({
   getHandleMock: vi.fn(),
   hasWarmTerminalPreviewMock: vi.fn(() => false),
   isTerminalPreviewRenderedMock: vi.fn(() => false),
   loadOlderNativeHistoryMock: vi.fn().mockResolvedValue(false),
-  locateTerminalBufferMatchMock: vi.fn(),
   noteTerminalScrollIntentMock: vi.fn(),
   scrollTerminalViewportMock: vi.fn(),
-  searchTerminalBuffersMock: vi.fn(
-    (): Array<{ buffer: "normal" | "alternate"; row: number; snippet: string }> => [],
-  ),
 }));
 
 vi.mock("../actions", () => ({
@@ -38,13 +32,11 @@ vi.mock("../terminals", () => ({
   hasWarmTerminalPreview: hasWarmTerminalPreviewMock,
   isTerminalPreviewRendered: isTerminalPreviewRenderedMock,
   loadOlderNativeHistory: loadOlderNativeHistoryMock,
-  locateTerminalBufferMatch: locateTerminalBufferMatchMock,
   mountTerminal: vi.fn(),
   noteTerminalScrollIntent: noteTerminalScrollIntentMock,
   scrollTerminalViewport: scrollTerminalViewportMock,
   scrollToBottom: vi.fn(),
   setTerminalActive: vi.fn(),
-  searchTerminalBuffers: searchTerminalBuffersMock,
 }));
 
 import { patchRuntime, setState } from "../store";
@@ -312,10 +304,6 @@ describe("PTY Session native history stays inside xterm", () => {
 describe("terminal search navigation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    searchTerminalBuffersMock.mockReturnValue([
-      { buffer: "normal", row: 10, snippet: "first x" },
-      { buffer: "normal", row: 20, snippet: "second x" },
-    ]);
   });
 
   afterEach(() => {
@@ -365,15 +353,13 @@ describe("terminal search navigation", () => {
       }],
     });
     const { container } = render(<TerminalArea />);
-    const input = screen.getByRole("textbox", { name: "搜索终端历史" });
+    const input = screen.getByRole("textbox", { name: "搜索当前终端缓冲区" });
 
     fireEvent.change(input, { target: { value: "x" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
     expect(search.findNext).toHaveBeenCalledTimes(2);
     expect(noteTerminalScrollIntentMock).toHaveBeenCalledTimes(2);
-    expect(searchTerminalBuffersMock).not.toHaveBeenCalled();
-    expect(locateTerminalBufferMatchMock).not.toHaveBeenCalled();
     expect(container.querySelector(".term-search .count")?.textContent).toContain("2/2");
   });
 });

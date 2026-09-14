@@ -175,9 +175,9 @@
       }
     },
     "terminalSearch": {
-      "regionLabel": "Terminal history search",
-      "placeholder": "Search full terminal history (never sent to the Agent)",
-      "inputLabel": "Search terminal history",
+      "regionLabel": "Terminal buffer search",
+      "placeholder": "Search current terminal buffer (never sent to the Agent)",
+      "inputLabel": "Search current terminal buffer",
       "currentBuffer": "Current buffer",
       "currentScreen": "Current screen",
       "matchPosition_one": "{{scope}} {{current}}/{{count}}",
@@ -185,18 +185,7 @@
       "noCurrentBufferResults": "Current buffer: no results",
       "previousMatch": "Previous match",
       "nextMatch": "Next match",
-      "close": "Close search",
-      "fullHistory": "Full history",
-      "bufferMatch": "{{scope}}: {{snippet}}",
-      "noResultsInCurrentBuffer": "No results in the current buffer",
-      "searchingPersistedLog": "Searching the agent-native log on demand…",
-      "fullHistoryUnavailable": "Full history unavailable",
-      "loadedHits_one": " ({{count}} result loaded)",
-      "loadedHits_other": " ({{count}} results loaded)",
-      "logMatchPosition_one": "{{current}}/{{count}}{{loaded}}: {{snippet}}",
-      "logMatchPosition_other": "{{current}}/{{count}}{{loaded}}: {{snippet}}",
-      "noResults": "No results",
-      "searchFailed": "Could not search full terminal history: {{detail}}"
+      "close": "Close search"
     },
     "workspace": {
       "label": "Terminal workspace"

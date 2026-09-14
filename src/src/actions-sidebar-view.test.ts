@@ -13,7 +13,6 @@ vi.mock("./terminals", () => ({
   attachHandle: vi.fn(),
   clearUnreadOutputTracking: vi.fn(),
   disposeHandle: vi.fn(),
-  jumpToRecoveryOutput: vi.fn(),
   pruneHandles: vi.fn(),
   releaseTerminal: vi.fn(),
   resetForRestart: vi.fn(),

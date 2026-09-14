@@ -55,7 +55,6 @@
   },
   "flow": {
     "timelineLoadFailed": "恢复时间线读取失败：{{detail}}",
-    "locateRecoveryFailed": "无法定位恢复输出：{{detail}}",
     "stopped": "已停止 Session（进程组已清理）",
     "stopFailed": "停止失败：{{detail}}",
     "restartTitle": "重启“{{title}}”？",
@@ -83,13 +82,7 @@
     "operationFailed": "操作失败：{{detail}}"
   },
   "timeline": {
-    "outputRotated": "较早的终端输出已轮转；不影响 Agent 原生上下文",
-    "noVerifiedPosition": "此事件没有可验证的输出位置",
-    "generationUnverified": "无法确认当前保留的输出代际",
-    "logLocation": "日志 {{runId}} / 代际 {{generation}} / 偏移 {{offset}}",
-    "sessionMissing": "该 Session 已不存在，无法打开对应输出",
-    "openedWithoutLocation": "已打开 Session；{{reason}}",
-    "locatable": "可定位输出",
+    "sessionMissing": "该 Session 已不存在，无法打开",
     "newOutputWhileClosed": "关闭期间新增输出",
     "hostInterrupted": "Host 异常中断",
     "title": "恢复时间线",
@@ -106,16 +99,11 @@
   "terminal": {
     "historyTail": "仅显示最后 {{shown}}（日志共 {{total}}）",
     "logReadFailed": "日志读取失败：{{detail}}",
-    "returnedToLatest": "已从恢复事件附近跳回最新输出",
     "outputGap": "输出流出现间隙，正在重新同步",
     "outputRotated": "较早的终端输出已轮转，不影响 Agent 原生上下文",
-    "recoveryLocation": "恢复事件定位处",
     "resynced": "输出已重新同步：{{reason}}",
     "stateAnnouncement": "Session {{title}} 状态变为{{state}}",
     "sessionError": "Session 错误：{{detail}}",
-    "restartMarker": "重启",
-    "sessionMissing": "该 Session 已不存在",
-    "locatedRecovery": "已定位到恢复事件附近输出（{{total}} 已验证日志）",
-    "locateRecoveryFailed": "无法定位恢复输出：{{detail}}"
+    "restartMarker": "重启"
   }
 }

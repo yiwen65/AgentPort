@@ -124,12 +124,6 @@ export function runtimeMessageText(envelope: RuntimeMessageEnvelope): string {
       return i18n.t("session:terminal.resynced", {
         reason: String(envelope.params?.reason ?? detail),
       });
-    case "terminal_located_recovery":
-      return i18n.t("session:terminal.locatedRecovery", {
-        total: formatBytes(Number(envelope.params?.total ?? 0)),
-      });
-    case "terminal_locate_recovery_failed":
-      return i18n.t("session:terminal.locateRecoveryFailed", { detail });
     case "terminal_output_gap":
       return i18n.t("session:terminal.outputGap");
     case "host_status_journal_failed":
@@ -152,18 +146,6 @@ export function runtimeMessageText(envelope: RuntimeMessageEnvelope): string {
       return i18n.t("runtime:errors.host.handshakeRejected");
     case "host_error":
       return i18n.t("runtime:errors.host.generic", { detail });
-    case "recovery_context_failed":
-      return i18n.t("runtime:errors.recovery.contextFailed", { detail });
-    case "recovery_generation_unavailable":
-      return i18n.t("runtime:errors.recovery.generationUnavailable");
-    case "recovery_output_rotated":
-      return i18n.t("runtime:errors.recovery.outputRotated");
-    case "recovery_log_missing":
-      return i18n.t("runtime:errors.recovery.logMissing");
-    case "recovery_log_incomplete":
-      return i18n.t("runtime:errors.recovery.logIncomplete");
-    case "recovery_log_changed":
-      return i18n.t("runtime:errors.recovery.logChanged");
     case "project_path_missing":
       return i18n.t("runtime:errors.projectPathMissing", {
         path: String(envelope.params?.path ?? ""),

@@ -35,7 +35,6 @@ import {
   attachHandle,
   clearUnreadOutputTracking,
   disposeHandle,
-  jumpToRecoveryOutput,
   pruneHandles,
   releaseTerminal,
   resetForRestart,
@@ -65,7 +64,6 @@ import {
   type PaneSplitDirection,
 } from "./paneLayout";
 import type {
-  LogCursorView,
   ProjectLayoutEntry,
   ProjectRemovalPreflight,
   ProjectView,
@@ -488,7 +486,6 @@ function commitPaneLayout(
 
 export function selectSession(
   id: string,
-  recoveryTarget: LogCursorView | null = null,
   options: { revealInSidebar?: boolean } = {},
 ) {
   const intent = ++sessionSelectionIntent;
@@ -502,13 +499,12 @@ export function selectSession(
         intent === sessionSelectionIntent &&
         findSession(getState().projects, id)
       ) {
-        selectSession(id, recoveryTarget, options);
+        selectSession(id, options);
       }
     });
     return;
   }
   const ses = findSession(s.projects, id);
-  const sessionLive = ses?.lifecycle === "creating" || ses?.lifecycle === "running";
   const currentGroups = rememberedPaneGroups(s);
   const rememberedGroup = paneLayoutGroupContaining(currentGroups, id);
   const terminalLayout = rememberedGroup
@@ -547,16 +543,6 @@ export function selectSession(
   persistPaneGroups(terminalLayoutGroups, terminalLayout);
   releaseIdsOutside(s.attachedIds, attachedIds);
   acknowledgeSession(id);
-  if (recoveryTarget && ses?.transport === "pty" && sessionLive) {
-    void jumpToRecoveryOutput(id, recoveryTarget).catch((error) => {
-      toast(
-        i18n.t("session:flow.locateRecoveryFailed", {
-          detail: errorText(error),
-        }),
-        "error",
-      );
-    });
-  }
 }
 
 export function openSplitSessionDialog(

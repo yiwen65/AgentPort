@@ -1735,7 +1735,6 @@ async fn attach_session(
     session_id: String,
     replay_tail_bytes: u64,
     resume_from: Option<LogCursor>,
-    recovery_target: Option<LogCursor>,
     channel: tauri::ipc::Channel<Value>,
 ) -> std::result::Result<Value, Value> {
     let socket = state
@@ -1758,13 +1757,12 @@ async fn attach_session(
     // Cap replay independently of frontend input so a malformed IPC request
     // cannot make a Host read an unbounded log tail into memory.
     const MAX_REPLAY_BYTES: u64 = 4 * 1024 * 1024;
-    let (mut client, info) = HostClient::connect_with_recovery_target(
+    let (mut client, info) = HostClient::connect_with_resume(
         &socket,
         &session_id,
         &token,
         replay_tail_bytes.min(MAX_REPLAY_BYTES),
         resume_from,
-        recovery_target,
         true,
     )
     .map_err(|error| {
@@ -3412,43 +3410,6 @@ async fn search(
     .await
 }
 
-/// Search one agent-owned native transcript without a persistent body index.
-#[tauri::command]
-async fn search_session_log(
-    state: State<'_, AppState>,
-    session_id: String,
-    query: String,
-    limit: Option<usize>,
-) -> std::result::Result<Value, String> {
-    let paths = state.paths.clone();
-    run_backend_blocking(move || {
-        let db = Db::open(&paths).map_err(|error| error.to_string())?;
-        let session = map_err!(db.get_session(&session_id))?;
-        let r = map_err!(NativeHistory::new(&paths).search_session(
-            &session,
-            &query,
-            limit.unwrap_or(1_000).min(1_000),
-        ))?;
-        Ok(json!({
-            "partial": false,
-            "totalHits": r.total_hits,
-            "sourceStatus": r.source_status,
-            "hits": r.hits.iter().map(|h| json!({
-                "kind": "terminal",
-                "sessionId": h.session_id,
-                "projectId": session.project_id,
-                "title": session.title,
-                "snippet": h.snippet,
-                "eventId": h.event.id,
-                "provider": h.event.provider,
-                "logOffset": Value::Null,
-                "rotatedAway": false,
-            })).collect::<Vec<_>>(),
-        }))
-    })
-    .await
-}
-
 #[tauri::command]
 async fn get_native_history(
     state: State<'_, AppState>,
@@ -3660,108 +3621,6 @@ async fn notify_test(state: State<'_, AppState>) -> std::result::Result<(), Stri
 #[tauri::command]
 fn take_pending_notification_session() -> Option<String> {
     notifications::take_pending_session()
-}
-
-/// Read bounded context around an event-level recovery cursor for a terminal
-/// that no longer has a live Host. The database's latest verified cursor is
-/// the generation fence; `Session::log_path` alone is intentionally not one.
-#[tauri::command]
-async fn read_recovery_log_context(
-    state: State<'_, AppState>,
-    session_id: String,
-    cursor: LogCursor,
-) -> std::result::Result<Value, Value> {
-    use base64::Engine as _;
-    const BEFORE: u64 = 128 * 1024;
-    const AFTER: u64 = 256 * 1024;
-    let session = state.db.get_session(&session_id).map_err(|error| {
-        runtime_command_error(
-            "recovery_context_failed",
-            json!({}),
-            error.to_string(),
-            error.to_string(),
-        )
-    })?;
-    let latest = state
-        .db
-        .get_latest_log_cursor(&session_id)
-        .map_err(|error| {
-            runtime_command_error(
-                "recovery_context_failed",
-                json!({}),
-                error.to_string(),
-                error.to_string(),
-            )
-        })?
-        .ok_or_else(|| {
-            let message = "无法确认当前保留的输出代际；输出可能已轮转";
-            runtime_command_error(
-                "recovery_generation_unavailable",
-                json!({}),
-                message,
-                message,
-            )
-        })?;
-    if cursor.run_id != latest.run_id
-        || cursor.run_ordinal != latest.run_ordinal
-        || cursor.generation != latest.generation
-        || cursor.offset < 0
-        || cursor.offset > latest.offset
-    {
-        let message = "输出已轮转或不属于当前保留日志，无法安全定位";
-        return Err(runtime_command_error(
-            "recovery_output_rotated",
-            json!({}),
-            message,
-            message,
-        ));
-    }
-    let path = std::path::PathBuf::from(&session.log_path);
-    let len = std::fs::metadata(&path)
-        .map_err(|error| {
-            runtime_command_error(
-                "recovery_log_missing",
-                json!({}),
-                error.to_string(),
-                "输出日志已不存在或已轮转",
-            )
-        })?
-        .len();
-    if latest.offset < 0 || len < latest.offset as u64 {
-        let message = "输出已轮转或不再完整保留，无法安全定位";
-        return Err(runtime_command_error(
-            "recovery_log_incomplete",
-            json!({}),
-            message,
-            message,
-        ));
-    }
-    let target = cursor.offset as u64;
-    let start = target.saturating_sub(BEFORE);
-    let end = (target.saturating_add(AFTER)).min(latest.offset as u64);
-    let data = agentport_core::logs::read_range(&path, start, end - start).map_err(|error| {
-        runtime_command_error(
-            "recovery_context_failed",
-            json!({}),
-            error.to_string(),
-            error.to_string(),
-        )
-    })?;
-    if data.len() as u64 != end - start {
-        let message = "读取期间输出日志发生变化，无法安全定位；请重试";
-        return Err(runtime_command_error(
-            "recovery_log_changed",
-            json!({}),
-            message,
-            message,
-        ));
-    }
-    Ok(json!({
-        "data": base64::engine::general_purpose::STANDARD.encode(&data),
-        "offset": start,
-        "total": latest.offset,
-        "cursor": cursor,
-    }))
 }
 
 fn require_existing_path(path: &str) -> std::result::Result<(), String> {
@@ -4774,7 +4633,6 @@ fn main() {
             backup_verify,
             backup_restore,
             search,
-            search_session_log,
             get_native_history,
             get_legacy_log_inventory,
             delete_legacy_logs,
@@ -4792,7 +4650,6 @@ fn main() {
             secret_delete,
             notify_test,
             take_pending_notification_session,
-            read_recovery_log_context,
             reveal_in_file_manager,
             open_in_system_terminal,
             open_external_url,

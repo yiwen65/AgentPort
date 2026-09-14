@@ -200,7 +200,7 @@ describe("system notification navigation", () => {
     render(<App />);
 
     await waitFor(() =>
-      expect(mocks.selectSession).toHaveBeenCalledWith(interruptedTarget.id, null, {
+      expect(mocks.selectSession).toHaveBeenCalledWith(interruptedTarget.id, {
         revealInSidebar: false,
       }),
     );
@@ -234,10 +234,10 @@ describe("system notification navigation", () => {
 
     await waitFor(() => expect(getState().ready).toBe(true));
     expect(getState().activeSessionId).toBe(targetSession.id);
-    expect(mocks.selectSession).not.toHaveBeenCalledWith("ses_outside", null, {
+    expect(mocks.selectSession).not.toHaveBeenCalledWith("ses_outside", {
       revealInSidebar: false,
     });
-    expect(mocks.selectSession).not.toHaveBeenCalledWith(firstSession.id, null, {
+    expect(mocks.selectSession).not.toHaveBeenCalledWith(firstSession.id, {
       revealInSidebar: false,
     });
   });
@@ -250,7 +250,7 @@ describe("system notification navigation", () => {
 
     render(<App />);
     await waitFor(() =>
-      expect(mocks.selectSession).toHaveBeenCalledWith("ses_first", null, {
+      expect(mocks.selectSession).toHaveBeenCalledWith("ses_first", {
         revealInSidebar: false,
       }),
     );
@@ -270,7 +270,7 @@ describe("system notification navigation", () => {
 
     render(<App />);
     await waitFor(() =>
-      expect(mocks.selectSession).toHaveBeenCalledWith("ses_first", null, {
+      expect(mocks.selectSession).toHaveBeenCalledWith("ses_first", {
         revealInSidebar: false,
       }),
     );
@@ -289,7 +289,7 @@ describe("system notification navigation", () => {
 
     render(<App />);
     await waitFor(() =>
-      expect(mocks.selectSession).toHaveBeenCalledWith("ses_first", null, {
+      expect(mocks.selectSession).toHaveBeenCalledWith("ses_first", {
         revealInSidebar: false,
       }),
     );

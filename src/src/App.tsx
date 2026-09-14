@@ -245,7 +245,7 @@ function useBoot() {
           first &&
           !hasPersistedTerminalLayout()
         ) {
-          selectSession(rememberedSession?.id ?? first.id, null, {
+          selectSession(rememberedSession?.id ?? first.id, {
             revealInSidebar: false,
           });
         }

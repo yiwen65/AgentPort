@@ -816,11 +816,6 @@ export interface TermHandle {
   pendingOutputBytes: number;
   peakPendingOutputBytes: number;
   lastOutputParseLatencyMs: number;
-  /** A recovery click loaded a bounded historical window, so the next live
-   * frame may legitimately begin at the Host's newer high-water offset. */
-  allowRecoveryGap: boolean;
-  /** Marker inserted once the bounded replay crosses the selected event. */
-  recoveryTarget: LogCursorView | null;
   container: HTMLDivElement | null;
   resizeObserver: ResizeObserver | null;
   active: boolean;
@@ -1199,8 +1194,8 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     drawBoldTextInBrightColors: false,
     rescaleOverlappingGlyphs: false,
     cursorBlink: true,
-    // Bound xterm's cell buffer independently of the persisted log. Full
-    // history remains available through persisted-log search and export.
+    // Bound xterm's cell buffer independently of retained output. Supported
+    // agents can page native history; Shell cold recovery uses the replay tail.
     scrollback: 10_000,
     screenReaderMode: settings?.screenReaderMode ?? false,
     allowProposedApi: true,
@@ -1276,8 +1271,6 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     pendingOutputBytes: 0,
     peakPendingOutputBytes: 0,
     lastOutputParseLatencyMs: 0,
-    allowRecoveryGap: false,
-    recoveryTarget: null,
     container: null,
     resizeObserver: null,
     active: getState().activeSessionId === sessionId,
@@ -1547,41 +1540,6 @@ function writeTerminalOutput(handle: TermHandle, bytes: Uint8Array) {
 function finishTerminalStartupFilter(handle: TermHandle) {
   const visible = handle.piStartupNoticeFilter?.finish();
   if (visible?.length) handle.writes.writeOutput(visible);
-}
-
-/**
- * Queue the recovery marker now and return a finalizer that reveals it after
- * all surrounding context writes have drained through xterm. IMarker tracks
- * the row while later output appends or trims scrollback.
- */
-function queueRecoveryLocationMarker(handle: TermHandle): () => void {
-  const generation = handle.generation;
-  const viewportIntentRevision = handle.viewport.beginLocate();
-  let marker: IMarker | undefined;
-  handle.writes.write(
-    `\r\n\x1b[2m── ${i18n.t("session:terminal.recoveryLocation")} ──\x1b[0m\r\n`,
-    () => {
-      if (
-        handles.get(handle.sessionId) !== handle ||
-        handle.generation !== generation
-      )
-        return;
-      marker = handle.term.registerMarker(-1);
-    },
-  );
-  return () => {
-    handle.writes.drain(
-      "recovery-reveal",
-      () => {
-        const line = marker?.line ?? -1;
-        if (line >= 0 && handle.term.buffer.active.type === "normal") {
-          handle.viewport.revealLine(line, viewportIntentRevision);
-        }
-        marker?.dispose();
-      },
-      { onDiscard: () => marker?.dispose() },
-    );
-  };
 }
 
 const MAX_INPUT_FRAME_BYTES = 256 * 1024;
@@ -2744,7 +2702,7 @@ function scheduleAttachmentRetry(handle: TermHandle) {
   handle.reconnectTimer = window.setTimeout(() => {
     handle.reconnectTimer = null;
     if (generation !== handle.generation || !shouldRetryAttachment(handle)) return;
-    void attachHandle(handle.sessionId, null, true);
+    void attachHandle(handle.sessionId, true);
   }, delay);
 }
 
@@ -2822,7 +2780,6 @@ function activateAttachment(handle: TermHandle, info: AttachInfo): boolean {
 /** Attach (or re-attach) the backend channel and replay the log tail. */
 export async function attachHandle(
   sessionId: string,
-  recoveryTarget: LogCursorView | null = null,
   preserveErrorDuringAttach = false,
 ): Promise<void> {
   const handle = getOrCreateHandle(sessionId);
@@ -2845,7 +2802,7 @@ export async function attachHandle(
     armPiStartupReadyTimeout(handle);
   }
   resetRenderObservation(handle);
-  const resumeFrom = recoveryTarget ? null : handle.logCursor;
+  const resumeFrom = handle.logCursor;
   patchRuntime(sessionId, {
     attaching: true,
     replayDone: false,
@@ -2859,7 +2816,7 @@ export async function attachHandle(
     onChannelMsg(handle, msg);
   };
   try {
-    const replayTailBytes = !recoveryTarget && session?.adapter === "pi" && session.transport === "pty"
+    const replayTailBytes = session?.adapter === "pi" && session.transport === "pty"
       ? FULLSCREEN_PI_REPLAY_TAIL_BYTES
       : REPLAY_TAIL_BYTES;
     const info = await api.attachSession(
@@ -2867,7 +2824,6 @@ export async function attachHandle(
       replayTailBytes,
       channel,
       resumeFrom,
-      recoveryTarget,
     );
     if (handles.get(sessionId) !== handle || generation !== handle.generation) {
       // The backend may have completed after this renderer was evicted or
@@ -2995,13 +2951,7 @@ function applyOutputFrame(
     } else if (incoming.generation === current.generation) {
       const end = incoming.offset + original.length;
       if (end <= current.offset) return; // complete replay duplicate
-      if (incoming.offset > current.offset && handle.allowRecoveryGap) {
-        handle.writes.write(
-          `\r\n\x1b[2m── ${i18n.t("session:terminal.returnedToLatest")} ──\x1b[0m\r\n`,
-        );
-        handle.logCursor = { ...incoming, offset: incoming.offset };
-        handle.allowRecoveryGap = false;
-      } else if (incoming.offset > current.offset) {
+      if (incoming.offset > current.offset) {
         // This should be impossible for v2's catch-up handshake. Recover
         // explicitly instead of joining unrelated terminal bytes together.
         const attachmentId = handle.attachmentId;
@@ -3028,7 +2978,7 @@ function applyOutputFrame(
             .detachSession(sessionId, attachmentId)
             .catch(() => undefined);
         }
-        void attachHandle(sessionId, null, true);
+        void attachHandle(sessionId, true);
         return;
       }
       if (incoming.offset < current.offset) {
@@ -3043,27 +2993,7 @@ function applyOutputFrame(
   }
 
   if (bytes.length === 0) return;
-  const target = handle.recoveryTarget;
-  if (
-    target &&
-    sameRun(target, incoming) &&
-    target.generation === incoming.generation &&
-    target.offset >= incoming.offset &&
-    target.offset <= incoming.offset + original.length
-  ) {
-    const markerAt = Math.max(
-      0,
-      Math.min(bytes.length, target.offset - incoming.offset),
-    );
-    if (markerAt > 0) writeTerminalOutput(handle, bytes.slice(0, markerAt));
-    const revealMarker = queueRecoveryLocationMarker(handle);
-    if (markerAt < bytes.length)
-      writeTerminalOutput(handle, bytes.slice(markerAt));
-    revealMarker();
-    handle.recoveryTarget = null;
-  } else {
-    writeTerminalOutput(handle, bytes);
-  }
+  writeTerminalOutput(handle, bytes);
   handle.logCursor = {
     ...incoming,
     offset: incoming.offset + original.length,
@@ -3113,7 +3043,6 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
         handle.logCursor = msg.cursor;
         queueRenderedLogObservation(handle, msg.cursor);
       }
-      handle.allowRecoveryGap = msg.partialContext === true;
       // This marks only the replay/live transport boundary. A newly launched
       // Pi can print its first-session notice just after an empty replay, so
       // keep the first-line filter active until output actually arrives. The
@@ -3271,8 +3200,6 @@ export function resetForRestart(sessionId: string) {
     handle.displayRenderPending = false;
     handle.logCursor = null;
     handle.rotationNoticeShown = false;
-    handle.allowRecoveryGap = false;
-    handle.recoveryTarget = null;
     handle.historyLoaded = false;
     handle.historyLoading = false;
     if (startupPending) armPiStartupReadyTimeout(handle);
@@ -3295,98 +3222,6 @@ export function resetForRestart(sessionId: string) {
     historyMessage: null,
   });
   writeMarker(sessionId, i18n.t("session:terminal.restartMarker"));
-}
-
-/**
- * Open the precise output context selected from a recovery timeline entry.
- * Live Hosts validate and replay a bounded target window; ended Sessions use
- * the same DB generation fence through a read-only backend command.
- */
-export async function jumpToRecoveryOutput(
-  sessionId: string,
-  cursor: LogCursorView,
-): Promise<void> {
-  const session = getState()
-    .projects.flatMap((project) => project.sessions)
-    .find((item) => item.id === sessionId);
-  if (!session) throw new Error(i18n.t("session:terminal.sessionMissing"));
-  const handle = getOrCreateHandle(sessionId);
-  const previousAttachment = handle.attachmentId;
-  handle.generation += 1;
-  resetRenderObservation(handle);
-  handle.attachmentId = null;
-  handle.attached = false;
-  handle.attaching = false;
-  handle.pendingAttachInput = [];
-  resetNativeHistory(handle);
-  resetTerminal(handle);
-  handle.displayReady = false;
-  handle.displayRenderPending = false;
-  clearTerminalSnapshot(sessionId);
-  handle.logCursor = null;
-  handle.allowRecoveryGap = false;
-  handle.recoveryTarget = cursor;
-  handle.historyLoaded = false;
-  handle.historyLoading = false;
-  if (previousAttachment !== null) {
-    void api
-      .detachSession(sessionId, previousAttachment)
-      .catch(() => undefined);
-  }
-  const ended =
-    session.lifecycle === "exited" ||
-    session.lifecycle === "stopped" ||
-    session.lifecycle === "interrupted";
-  if (ended) {
-    const generation = handle.generation;
-    try {
-      const context = await api.readRecoveryLogContext(sessionId, cursor);
-      if (handles.get(sessionId) !== handle || handle.generation !== generation)
-        return;
-      const bytes = b64ToBytes(context.data);
-      const markerAt = Math.max(
-        0,
-        Math.min(bytes.length, cursor.offset - context.offset),
-      );
-      if (markerAt > 0) writeTerminalOutput(handle, bytes.slice(0, markerAt));
-      const revealMarker = queueRecoveryLocationMarker(handle);
-      if (markerAt < bytes.length)
-        writeTerminalOutput(handle, bytes.slice(markerAt));
-      handle.recoveryTarget = null;
-      finishTerminalStartupFilter(handle);
-      revealMarker();
-      handle.historyLoaded = true;
-      handle.logCursor = { ...cursor, offset: context.offset + bytes.length };
-      queueReplayParsed(handle);
-      const historyMessage: RuntimeMessageEnvelope = {
-        code: "terminal_located_recovery",
-        params: { total: context.total },
-      };
-      patchRuntime(sessionId, {
-        replayDone: true,
-        historyNote: runtimeMessageText(historyMessage),
-        historyMessage,
-      });
-    } catch (error) {
-      if (
-        handles.get(sessionId) === handle &&
-        handle.generation === generation
-      ) {
-        const historyMessage = runtimeMessageEnvelope(error) ?? {
-          code: "terminal_locate_recovery_failed",
-          technicalDetail: errorText(error),
-        };
-        patchRuntime(sessionId, {
-          replayDone: true,
-          historyNote: runtimeMessageText(historyMessage),
-          historyMessage,
-        });
-      }
-      throw error;
-    }
-  } else {
-    await attachHandle(sessionId, cursor);
-  }
 }
 
 /** Apply font/a11y settings to all live terminals. */

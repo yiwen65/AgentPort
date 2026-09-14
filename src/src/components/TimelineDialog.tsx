@@ -1,5 +1,5 @@
 // Recovery timeline (PRD 3.6 / 4.4.1): three-line summary + event list,
-// click jumps to the session, "全部已读" acknowledges.
+// click opens the Session at its latest output, "全部已读" acknowledges.
 
 import Modal from "./Modal";
 import { useTranslation } from "react-i18next";
@@ -14,39 +14,19 @@ function EntryRow({ entry }: { entry: TimelineEntry }) {
   const s = useStore();
   const session = findSession(s.projects, entry.sessionId);
   const exists = Boolean(session);
-  const sessionLive = session?.lifecycle === "creating" || session?.lifecycle === "running";
-  // Exact byte locations exist only in the bounded live Host tail. Ended
-  // Sessions open normalized agent-native history instead of a saved PTY log.
-  const canLocate = sessionLive && Boolean(entry.logCursor) && !entry.rotatedAway;
   const outputOnly = entry.evidence === "recovery:output-during-gui-closed";
   const hostInterrupted = entry.evidence?.startsWith("host:interrupted:") ?? false;
-  const legacyReason = entry.locationUnavailableReason;
-  const unavailable = legacyReason === "no_verified_output_position"
-    ? t("timeline.noVerifiedPosition")
-    : legacyReason === "output_generation_unverified"
-      ? t("timeline.generationUnverified")
-    : legacyReason === "output_rotated"
-      ? t("timeline.outputRotated")
-      : legacyReason ?? (entry.rotatedAway ? t("timeline.outputRotated") : t("timeline.noVerifiedPosition"));
   return (
     <button
       className="timeline-row"
       aria-disabled={!exists}
-      data-tip={canLocate
-        ? t("timeline.logLocation", {
-            runId: entry.logCursor?.runId ?? "",
-            generation: entry.logCursor?.generation ?? 0,
-            offset: entry.logCursor?.offset ?? 0,
-          })
-        : unavailable}
       onClick={() => {
         if (!exists) {
           toast(t("timeline.sessionMissing"), "error");
           return;
         }
         closeDialog();
-        selectSession(entry.sessionId, canLocate ? entry.logCursor : null);
-        if (!canLocate) toast(t("timeline.openedWithoutLocation", { reason: unavailable }), "info");
+        selectSession(entry.sessionId);
       }}
     >
       <span className="timeline-time">{formatTimelineTime(entry.occurredAt)}</span>
@@ -54,10 +34,7 @@ function EntryRow({ entry }: { entry: TimelineEntry }) {
         <div className="timeline-title">
           {agentDisplay(entry.adapterType)} · {entry.sessionTitle}
         </div>
-        <div className="timeline-sub">
-          {entry.projectName}
-          {` · ${canLocate ? t("timeline.locatable") : unavailable}`}
-        </div>
+        <div className="timeline-sub">{entry.projectName}</div>
       </span>
       <span className="dim" style={{ flex: "none", fontSize: 12 }}>
         {outputOnly
