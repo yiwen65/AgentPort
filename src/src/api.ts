@@ -634,6 +634,13 @@ export const api = {
     invoke<DocumentDirListing>("list_document_directory", { path }),
   createDocumentEntry: (path: string, kind: "file" | "dir") =>
     invoke<{ path: string }>("create_document_entry", { path, kind }),
+  renameDocumentEntry: (oldPath: string, newPath: string) =>
+    invoke<{ path: string }>("rename_document_entry", { oldPath, newPath }),
+  duplicateDocumentEntry: (path: string) =>
+    invoke<{ path: string }>("duplicate_document_entry", { path }),
+  deleteDocumentEntry: (path: string) =>
+    invoke<void>("delete_document_entry", { path }),
+  openInVsCode: (path: string) => invoke<void>("open_in_vs_code", { path }),
   openWithDefaultApp: (path: string) => invoke<void>("open_with_default_app", { path }),
   pickDirectory: () => invoke<string | null>("pick_directory"),
   pickSavePath: (defaultName: string) =>

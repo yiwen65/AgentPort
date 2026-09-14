@@ -5,10 +5,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { api, errorText } from "../api";
-import { openDocumentTarget } from "../documents";
+import { api, copyText, errorText } from "../api";
+import { closeDocument, openDocumentTarget } from "../documents";
 import { writeDragPayload } from "../terminalDrop";
-import { useStore } from "../store";
+import { confirmDialog, openContextMenu, toast, useStore } from "../store";
 import type { DocumentDirEntry } from "../types";
 
 interface DirState {
@@ -116,6 +116,9 @@ export default function DocumentTree() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [createBusy, setCreateBusy] = useState(false);
   const createInputRef = useRef<HTMLInputElement>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameError, setRenameError] = useState<string | null>(null);
 
   const createBaseDir = activeDir ?? root;
 
@@ -175,11 +178,120 @@ export default function DocumentTree() {
     }
   };
 
-  const startCreate = (kind: "file" | "dir") => {
-    if (!createBaseDir) return;
+  const startCreate = (kind: "file" | "dir", baseDir?: string) => {
+    const base = baseDir ?? createBaseDir;
+    if (!base) return;
+    setActiveDir(base);
+    setRenaming(null);
     setCreating(kind);
     setNameDraft("");
     setCreateError(null);
+  };
+
+  /** Error toast wrapper for fire-and-forget menu actions. */
+  const runAction = async (fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+    } catch (e) {
+      toast(t("ui.document.entryActionFailed", { detail: errorText(e) }), "error");
+    }
+  };
+
+  const startRename = (entry: DocumentDirEntry) => {
+    setCreating(null);
+    setRenaming(entry.path);
+    setRenameDraft(entry.name);
+    setRenameError(null);
+  };
+
+  const submitRename = async () => {
+    if (!renaming) return;
+    const name = renameDraft.trim();
+    if (!name || name === baseName(renaming)) {
+      setRenaming(null);
+      return;
+    }
+    // Rename stays in the same directory; nested paths are not a rename.
+    if (name.includes("/") || name === "." || name === "..") {
+      setRenameError(t("ui.document.createInvalidName"));
+      return;
+    }
+    const parent = parentDir(renaming);
+    const newPath = `${parent === "/" ? "" : parent}/${name}`;
+    try {
+      const result = await api.renameDocumentEntry(renaming, newPath);
+      const oldPath = renaming;
+      setRenaming(null);
+      loadDir(parent, true);
+      // Keep the viewer pointed at the renamed file.
+      if (openPath === oldPath) openDocumentTarget({ path: result.path, line: null });
+    } catch (e) {
+      setRenameError(errorText(e));
+    }
+  };
+
+  const confirmDelete = async (entry: DocumentDirEntry) => {
+    const ok = await confirmDialog({
+      title: t(entry.isDir ? "ui.document.deleteDirTitle" : "ui.document.deleteFileTitle"),
+      body: t(entry.isDir ? "ui.document.deleteDirBody" : "ui.document.deleteFileBody", {
+        name: entry.name,
+      }),
+      confirmLabel: t("ui.document.deleteEntry"),
+      danger: true,
+    });
+    if (!ok) return;
+    await runAction(async () => {
+      await api.deleteDocumentEntry(entry.path);
+      loadDir(parentDir(entry.path), true);
+      // The viewer must not keep a deleted file (or one inside a deleted
+      // directory) on screen.
+      if (openPath === entry.path || openPath?.startsWith(`${entry.path}/`)) {
+        closeDocument();
+      }
+    });
+  };
+
+  /** VSCode-style row context menu (see design reference in the PR review). */
+  const openEntryMenu = (event: React.MouseEvent, entry: DocumentDirEntry) => {
+    event.preventDefault();
+    const parent = entry.isDir ? entry.path : parentDir(entry.path);
+    setActiveDir(parent);
+    const relative =
+      root && entry.path.startsWith(`${root}/`)
+        ? entry.path.slice(root.length + 1)
+        : entry.path;
+    openContextMenu(event.clientX, event.clientY, [
+      { label: t("ui.document.newFile"), action: () => startCreate("file", parent) },
+      { label: t("ui.document.newDir"), action: () => startCreate("dir", parent) },
+      { label: "", separator: true },
+      {
+        label: t("ui.document.openInVsCode"),
+        action: () => void runAction(() => api.openInVsCode(entry.path)),
+      },
+      { label: "", separator: true },
+      { label: t("ui.document.copyPath"), action: () => void copyText(entry.path) },
+      { label: t("ui.document.copyRelativePath"), action: () => void copyText(relative) },
+      {
+        label: t("ui.document.reveal"),
+        action: () => void runAction(() => api.revealInFileManager(entry.path)),
+      },
+      { label: "", separator: true },
+      { label: t("ui.document.rename"), action: () => startRename(entry) },
+      {
+        label: t("ui.document.duplicate"),
+        action: () =>
+          void runAction(async () => {
+            await api.duplicateDocumentEntry(entry.path);
+            loadDir(parent, true);
+          }),
+      },
+      { label: "", separator: true },
+      {
+        label: t("ui.document.deleteEntry"),
+        danger: true,
+        action: () => void confirmDelete(entry),
+      },
+    ]);
   };
 
   const submitCreate = async () => {
@@ -222,11 +334,45 @@ export default function DocumentTree() {
       const selected = !entry.isDir && openPath === entry.path;
       return (
         <div key={entry.path}>
+          {renaming === entry.path ? (
+            <div
+              className={`doc-tree-row${entry.isDir ? " dir" : " file"}`}
+              style={{ paddingLeft: 6 + depth * 16 }}
+            >
+              <span className="doc-tree-icon" aria-hidden="true">
+                {entry.isDir ? <IconChevron expanded={expanded} /> : null}
+              </span>
+              <span className={`doc-tree-kind${entry.isDir ? " dir" : " file"}`} aria-hidden="true">
+                {entry.isDir ? <IconFolder /> : <IconFile />}
+              </span>
+              <input
+                className="doc-tree-rename-input"
+                value={renameDraft}
+                aria-label={t("ui.document.rename")}
+                autoFocus
+                onChange={(event) => {
+                  setRenameDraft(event.target.value);
+                  setRenameError(null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void submitRename();
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    setRenaming(null);
+                  }
+                }}
+                onBlur={() => setRenaming(null)}
+              />
+            </div>
+          ) : (
           <button
             className={`doc-tree-row${entry.isDir ? " dir" : " file"}${selected ? " selected" : ""}`}
             style={{ paddingLeft: 6 + depth * 16 }}
             data-tip={entry.path}
             draggable
+            onContextMenu={(event) => openEntryMenu(event, entry)}
             onDragStart={(event) => {
               writeDragPayload(event.dataTransfer, { path: entry.path, isDir: entry.isDir });
             }}
@@ -247,6 +393,16 @@ export default function DocumentTree() {
             </span>
             <span className="doc-tree-name">{entry.name}</span>
           </button>
+          )}
+          {renaming === entry.path && renameError ? (
+            <div
+              className="doc-tree-create-error"
+              role="alert"
+              style={{ paddingLeft: 12 + depth * 16 }}
+            >
+              {renameError}
+            </div>
+          ) : null}
           {entry.isDir && expanded ? (
             <div
               className="doc-tree-children"

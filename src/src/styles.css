@@ -3399,6 +3399,21 @@ body.is-resizing-pane {
   color: var(--warn, #d19a66);
 }
 
+/* Inline rename reuses the create-row input language, tightened to row
+   height. */
+.doc-tree-rename-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--bg-term);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  padding: 1px 5px;
+  outline: none;
+}
+
 /* Expanded viewer: the terminal stack leaves the flex flow untouched (no
    xterm resize/refit churn) and the panel takes the whole terminal page. */
 .term-body.doc-expanded .term-stack {
