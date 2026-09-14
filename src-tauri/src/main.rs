@@ -4234,6 +4234,247 @@ async fn create_document_entry(path: String, kind: String) -> std::result::Resul
     create_document_entry_impl(&path, &kind)
 }
 
+fn rename_document_entry_impl(old_path: &str, new_path: &str) -> std::result::Result<Value, Value> {
+    let reject = |code: &str, message: String| {
+        runtime_command_error(
+            code,
+            json!({ "path": old_path }),
+            message.clone(),
+            message,
+        )
+    };
+
+    let raw_old = std::path::Path::new(old_path);
+    let raw_new = std::path::Path::new(new_path);
+    if !raw_old.is_absolute() || !raw_new.is_absolute() {
+        return Err(reject(
+            "document_path_relative",
+            format!("只能重命名绝对路径的文件或目录：{old_path} -> {new_path}"),
+        ));
+    }
+    // The tree joins names onto a listed directory; never let it escape.
+    let escapes = |p: &std::path::Path| p
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir));
+    if escapes(raw_old) || escapes(raw_new) {
+        return Err(reject(
+            "document_rename_failed",
+            format!("路径不允许包含 .. 片段：{old_path} -> {new_path}"),
+        ));
+    }
+    if !raw_old.exists() {
+        return Err(reject(
+            "document_not_found",
+            format!("文件或目录不存在：{old_path}"),
+        ));
+    }
+    if raw_new.exists() {
+        return Err(reject(
+            "document_entry_exists",
+            format!("同名文件或目录已存在：{new_path}"),
+        ));
+    }
+    // Rename only: the tree cannot represent cross-directory moves.
+    if raw_old.parent() != raw_new.parent() {
+        return Err(reject(
+            "document_rename_failed",
+            format!("只能在原目录中重命名：{old_path} -> {new_path}"),
+        ));
+    }
+    std::fs::rename(raw_old, raw_new).map_err(|e| {
+        reject(
+            "document_rename_failed",
+            format!("无法重命名：{old_path} -> {new_path}（{e}）"),
+        )
+    })?;
+
+    let canonical = std::fs::canonicalize(raw_new)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| new_path.to_string());
+    Ok(json!({ "path": canonical }))
+}
+
+#[tauri::command]
+async fn rename_document_entry(
+    old_path: String,
+    new_path: String,
+) -> std::result::Result<Value, Value> {
+    rename_document_entry_impl(&old_path, &new_path)
+}
+
+/// VSCode-style duplicate naming: `foo.md` -> `foo copy.md`, then
+/// `foo copy 2.md`, … Directories and extensionless names append the suffix
+/// to the whole name (`foo` -> `foo copy 2`).
+fn duplicate_target_path(path: &std::path::Path) -> std::path::PathBuf {
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("/"));
+    let (stem, extension) = if path.is_dir() {
+        (
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            None,
+        )
+    } else {
+        (
+            path.file_stem()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            path.extension().map(|e| e.to_string_lossy().into_owned()),
+        )
+    };
+    let candidate = |suffix: &str| {
+        let name = match &extension {
+            Some(ext) => format!("{stem}{suffix}.{ext}"),
+            None => format!("{stem}{suffix}"),
+        };
+        parent.join(name)
+    };
+    let first = candidate(" copy");
+    if !first.exists() {
+        return first;
+    }
+    for index in 2u32.. {
+        let next = candidate(&format!(" copy {index}"));
+        if !next.exists() {
+            return next;
+        }
+    }
+    unreachable!()
+}
+
+fn copy_directory_recursive(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> std::io::Result<()> {
+    // create_dir (not create_dir_all): dst's parent is the source's listed
+    // parent, which already exists, and dst itself must not.
+    std::fs::create_dir(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_directory_recursive(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+fn duplicate_document_entry_impl(path: &str) -> std::result::Result<Value, Value> {
+    let reject = |code: &str, message: String| {
+        runtime_command_error(code, json!({ "path": path }), message.clone(), message)
+    };
+
+    let raw = std::path::Path::new(path);
+    if !raw.is_absolute() {
+        return Err(reject(
+            "document_path_relative",
+            format!("只能复制绝对路径的文件或目录：{path}"),
+        ));
+    }
+    if raw
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(reject(
+            "document_duplicate_failed",
+            format!("路径不允许包含 .. 片段：{path}"),
+        ));
+    }
+    if !raw.exists() {
+        return Err(reject(
+            "document_not_found",
+            format!("文件或目录不存在：{path}"),
+        ));
+    }
+
+    let target = duplicate_target_path(raw);
+    let result = if raw.is_dir() {
+        copy_directory_recursive(raw, &target).map(|_| ())
+    } else {
+        std::fs::copy(raw, &target).map(|_| ())
+    };
+    if let Err(e) = result {
+        // The target did not exist before we started, so a leftover is a
+        // partial copy we made; best-effort remove it.
+        if target.is_dir() {
+            let _ = std::fs::remove_dir_all(&target);
+        } else {
+            let _ = std::fs::remove_file(&target);
+        }
+        return Err(reject(
+            "document_duplicate_failed",
+            format!("无法复制：{path}（{e}）"),
+        ));
+    }
+
+    let canonical = std::fs::canonicalize(&target)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| target.to_string_lossy().into_owned());
+    Ok(json!({ "path": canonical }))
+}
+
+#[tauri::command]
+async fn duplicate_document_entry(path: String) -> std::result::Result<Value, Value> {
+    duplicate_document_entry_impl(&path)
+}
+
+fn delete_document_entry_impl(path: &str) -> std::result::Result<Value, Value> {
+    let reject = |code: &str, message: String| {
+        runtime_command_error(code, json!({ "path": path }), message.clone(), message)
+    };
+
+    let raw = std::path::Path::new(path);
+    if !raw.is_absolute() {
+        return Err(reject(
+            "document_path_relative",
+            format!("只能删除绝对路径的文件或目录：{path}"),
+        ));
+    }
+    if raw
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(reject(
+            "document_delete_failed",
+            format!("路径不允许包含 .. 片段：{path}"),
+        ));
+    }
+    // The filesystem root has no parent; refuse to delete it outright.
+    if raw.parent().is_none() {
+        return Err(reject(
+            "document_delete_failed",
+            format!("不允许删除根目录：{path}"),
+        ));
+    }
+    // symlink_metadata: a symlink (even to a directory) is unlinked, never
+    // traversed into.
+    let metadata = std::fs::symlink_metadata(raw).map_err(|_| {
+        reject(
+            "document_not_found",
+            format!("文件或目录不存在：{path}"),
+        )
+    })?;
+    let result = if metadata.is_dir() {
+        std::fs::remove_dir_all(raw)
+    } else {
+        std::fs::remove_file(raw)
+    };
+    result.map_err(|e| {
+        reject(
+            "document_delete_failed",
+            format!("无法删除：{path}（{e}）"),
+        )
+    })?;
+    Ok(json!({}))
+}
+
+#[tauri::command]
+async fn delete_document_entry(path: String) -> std::result::Result<Value, Value> {
+    delete_document_entry_impl(&path)
+}
+
 /// Opens a local file with the system's default application (Preview for a
 /// PDF, an image viewer for a PNG, …). This is the escape hatch the document
 /// viewer offers for files it cannot display itself.
@@ -4280,6 +4521,52 @@ async fn open_with_default_app(path: String) -> std::result::Result<(), Value> {
             json!({}),
             e.to_string(),
             e.to_string(),
+        )),
+    }
+}
+
+/// Opens a file or directory in Visual Studio Code so the user can keep
+/// editing documents the viewer only previews.
+#[tauri::command]
+async fn open_in_vs_code(path: String) -> std::result::Result<Value, Value> {
+    let reject = |code: &str, message: String| {
+        runtime_command_error(code, json!({ "path": path }), message.clone(), message)
+    };
+    let raw = std::path::Path::new(&path);
+    if !raw.is_absolute() {
+        return Err(reject(
+            "document_path_relative",
+            format!("只能打开绝对路径的文件或目录：{path}"),
+        ));
+    }
+    if !raw.exists() {
+        return Err(reject(
+            "document_not_found",
+            format!("文件或目录不存在：{path}"),
+        ));
+    }
+    let status = if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+            .args(["-a", "Visual Studio Code"])
+            .arg(&path)
+            .status()
+    } else if cfg!(target_os = "linux") {
+        std::process::Command::new("code").arg(&path).status()
+    } else {
+        return Err(reject(
+            "editor_not_available",
+            format!("未检测到 Visual Studio Code，无法打开：{path}"),
+        ));
+    };
+    match status {
+        Ok(result) if result.success() => Ok(json!({})),
+        Ok(result) => Err(reject(
+            "editor_not_available",
+            format!("未检测到 Visual Studio Code，无法打开：{path}（{result}）"),
+        )),
+        Err(e) => Err(reject(
+            "editor_not_available",
+            format!("未检测到 Visual Studio Code，无法打开：{path}（{e}）"),
         )),
     }
 }
@@ -4513,7 +4800,11 @@ fn main() {
             write_session_document,
             list_document_directory,
             create_document_entry,
+            rename_document_entry,
+            duplicate_document_entry,
+            delete_document_entry,
             open_with_default_app,
+            open_in_vs_code,
             pick_directory,
             pick_save_path,
             pick_file,
@@ -4943,6 +5234,182 @@ mod cleanup_tests {
         let missing = read_session_document_impl(temp.path().join("missing.pdf").to_str().unwrap())
             .unwrap_err();
         assert_eq!(missing["code"], "document_not_found");
+    }
+
+    #[test]
+    fn rename_document_entry_renames_within_same_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("old.md");
+        std::fs::write(&file, "x").unwrap();
+        let renamed = temp.path().join("new.md");
+
+        let value = rename_document_entry_impl(
+            file.to_str().unwrap(),
+            renamed.to_str().unwrap(),
+        )
+        .unwrap();
+        assert!(!file.exists());
+        assert_eq!(std::fs::read_to_string(&renamed).unwrap(), "x");
+        let canonical = std::fs::canonicalize(&renamed).unwrap();
+        assert_eq!(value["path"], canonical.to_string_lossy().as_ref());
+
+        // Directories rename the same way.
+        let dir = temp.path().join("dir-a");
+        std::fs::create_dir(&dir).unwrap();
+        let dir_renamed = temp.path().join("dir-b");
+        rename_document_entry_impl(dir.to_str().unwrap(), dir_renamed.to_str().unwrap()).unwrap();
+        assert!(!dir.exists());
+        assert!(dir_renamed.is_dir());
+    }
+
+    #[test]
+    fn rename_document_entry_rejects_invalid_and_conflicting_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("a.md");
+        std::fs::write(&file, "x").unwrap();
+        let target = temp.path().join("b.md");
+        std::fs::write(&target, "y").unwrap();
+
+        let relative_old = rename_document_entry_impl("tmp/a.md", target.to_str().unwrap()).unwrap_err();
+        assert_eq!(relative_old["code"], "document_path_relative");
+        let relative_new = rename_document_entry_impl(file.to_str().unwrap(), "tmp/b.md").unwrap_err();
+        assert_eq!(relative_new["code"], "document_path_relative");
+
+        let traversal = rename_document_entry_impl(
+            file.to_str().unwrap(),
+            temp.path().join("..").join("escape.md").to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(traversal["code"], "document_rename_failed");
+
+        let missing = rename_document_entry_impl(
+            temp.path().join("missing.md").to_str().unwrap(),
+            temp.path().join("c.md").to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(missing["code"], "document_not_found");
+
+        let exists = rename_document_entry_impl(file.to_str().unwrap(), target.to_str().unwrap())
+            .unwrap_err();
+        assert_eq!(exists["code"], "document_entry_exists");
+
+        // Renames must stay inside the listed directory; moves are rejected.
+        let other_dir = temp.path().join("sub");
+        std::fs::create_dir(&other_dir).unwrap();
+        let moved = rename_document_entry_impl(
+            file.to_str().unwrap(),
+            other_dir.join("a.md").to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(moved["code"], "document_rename_failed");
+    }
+
+    #[test]
+    fn duplicate_document_entry_names_copy_with_incrementing_suffix() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("foo.md");
+        std::fs::write(&file, "x").unwrap();
+
+        let first = duplicate_document_entry_impl(file.to_str().unwrap()).unwrap();
+        let first_path = temp.path().join("foo copy.md");
+        assert_eq!(std::fs::read_to_string(&first_path).unwrap(), "x");
+        let canonical = std::fs::canonicalize(&first_path).unwrap();
+        assert_eq!(first["path"], canonical.to_string_lossy().as_ref());
+
+        let second = duplicate_document_entry_impl(file.to_str().unwrap()).unwrap();
+        let second_path = temp.path().join("foo copy 2.md");
+        assert!(second_path.is_file());
+        let canonical = std::fs::canonicalize(&second_path).unwrap();
+        assert_eq!(second["path"], canonical.to_string_lossy().as_ref());
+        assert!(file.is_file());
+
+        // Extensionless files append the suffix to the whole name.
+        let plain = temp.path().join("LICENSE");
+        std::fs::write(&plain, "x").unwrap();
+        duplicate_document_entry_impl(plain.to_str().unwrap()).unwrap();
+        assert!(temp.path().join("LICENSE copy").is_file());
+    }
+
+    #[test]
+    fn duplicate_document_entry_copies_directories_recursively() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("site");
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("index.md"), "home").unwrap();
+        std::fs::write(dir.join("assets/logo.txt"), "logo").unwrap();
+
+        let value = duplicate_document_entry_impl(dir.to_str().unwrap()).unwrap();
+        let copy = temp.path().join("site copy");
+        assert_eq!(std::fs::read_to_string(copy.join("index.md")).unwrap(), "home");
+        assert_eq!(
+            std::fs::read_to_string(copy.join("assets/logo.txt")).unwrap(),
+            "logo"
+        );
+        let canonical = std::fs::canonicalize(&copy).unwrap();
+        assert_eq!(value["path"], canonical.to_string_lossy().as_ref());
+
+        // Duplicating a directory name containing a dot keeps the full name.
+        let dotted = temp.path().join("v1.2");
+        std::fs::create_dir(&dotted).unwrap();
+        duplicate_document_entry_impl(dotted.to_str().unwrap()).unwrap();
+        assert!(temp.path().join("v1.2 copy").is_dir());
+    }
+
+    #[test]
+    fn duplicate_document_entry_rejects_relative_and_missing_paths() {
+        let relative = duplicate_document_entry_impl("tmp/a.md").unwrap_err();
+        assert_eq!(relative["code"], "document_path_relative");
+
+        let temp = tempfile::tempdir().unwrap();
+        let missing = duplicate_document_entry_impl(
+            temp.path().join("missing.md").to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(missing["code"], "document_not_found");
+
+        let traversal = duplicate_document_entry_impl(
+            temp.path().join("..").join("a.md").to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(traversal["code"], "document_duplicate_failed");
+    }
+
+    #[test]
+    fn delete_document_entry_removes_files_and_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("a.md");
+        std::fs::write(&file, "x").unwrap();
+        let value = delete_document_entry_impl(file.to_str().unwrap()).unwrap();
+        assert_eq!(value, json!({}));
+        assert!(!file.exists());
+
+        let dir = temp.path().join("tree");
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        std::fs::write(dir.join("nested/b.md"), "y").unwrap();
+        delete_document_entry_impl(dir.to_str().unwrap()).unwrap();
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn delete_document_entry_rejects_relative_root_and_missing_paths() {
+        let relative = delete_document_entry_impl("tmp/a.md").unwrap_err();
+        assert_eq!(relative["code"], "document_path_relative");
+
+        let root = delete_document_entry_impl("/").unwrap_err();
+        assert_eq!(root["code"], "document_delete_failed");
+
+        let temp = tempfile::tempdir().unwrap();
+        let missing = delete_document_entry_impl(
+            temp.path().join("missing.md").to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(missing["code"], "document_not_found");
+
+        let traversal = delete_document_entry_impl(
+            temp.path().join("..").join("a.md").to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(traversal["code"], "document_delete_failed");
     }
 
     fn insert_attachment_test_session(paths: &AppPaths, db: &Db) -> String {

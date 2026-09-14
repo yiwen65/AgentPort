@@ -91,6 +91,22 @@
     "无法创建文件：{path}（{e}）",
     "不支持的创建类型：{kind}",
     "只能打开绝对路径的文件：{path}",
-    "文件不存在或无法访问：{path}"
+    "文件不存在或无法访问：{path}",
+    "只能重命名绝对路径的文件或目录：{old_path} -> {new_path}",
+    "路径不允许包含 .. 片段：{old_path} -> {new_path}",
+    "文件或目录不存在：{old_path}",
+    "同名文件或目录已存在：{new_path}",
+    "只能在原目录中重命名：{old_path} -> {new_path}",
+    "无法重命名：{old_path} -> {new_path}（{e}）",
+    "只能复制绝对路径的文件或目录：{path}",
+    "文件或目录不存在：{path}",
+    "无法复制：{path}（{e}）",
+    "只能删除绝对路径的文件或目录：{path}",
+    "不允许删除根目录：{path}",
+    "无法删除：{path}（{e}）",
+    "只能打开绝对路径的文件或目录：{path}",
+    "未检测到 Visual Studio Code，无法打开：{path}",
+    "未检测到 Visual Studio Code，无法打开：{path}（{result}）",
+    "未检测到 Visual Studio Code，无法打开：{path}（{e}）"
   ]
 }
