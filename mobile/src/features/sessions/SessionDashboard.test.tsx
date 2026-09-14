@@ -443,6 +443,34 @@ describe("V2 Session workspace", () => {
     expect(within(dialog).queryByRole("button", { name: "Dead agent" })).not.toBeInTheDocument();
   });
 
+  it("clears an old Recent-opening error when retrying successfully", async () => {
+    new AttentionInbox("host-1").ingest({ events: [{ sessionId: "attention", runId: "run", kind: "approval_requested",
+      cursor: { sessionId: "attention", runOrdinal: 1, sequence: 1, occurredAt: "2026-09-02T00:02:00Z" } }] }, new Map([["attention", "Approval task"]]));
+    const remote = client();
+    const base = vi.mocked(remote.request).getMockImplementation()!;
+    let rejectOpening = false;
+    vi.mocked(remote.request).mockImplementation((...args) => {
+      if (rejectOpening && args[1] === "session.list") {
+        rejectOpening = false;
+        return Promise.reject({ code: "request_timeout", message: "Request timed out" });
+      }
+      return base(...args);
+    });
+    const onOpenSession = vi.fn();
+    render(<SessionDashboard client={remote} onOpenSession={onOpenSession} />);
+    await screen.findByRole("button", { name: "Approval task" });
+    fireEvent.click(screen.getByRole("button", { name: "Recent sessions" }));
+    const recent = screen.getByRole("button", { name: /Approval task.*Approval requested/ });
+
+    rejectOpening = true;
+    fireEvent.click(recent);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Request timed out");
+    fireEvent.click(recent);
+
+    await waitFor(() => expect(onOpenSession).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("clears Recent only after successful opening, survives stale snapshots, and admits newer attention", async () => {
     const remote = client();
     const base = remote.request;

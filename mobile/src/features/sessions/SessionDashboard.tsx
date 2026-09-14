@@ -331,6 +331,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     manualUpdates.current.add(deviceId);
     setUpdatingHosts(new Set(manualUpdates.current));
     setUpdateErrorHost(undefined);
+    setActionError("");
     try {
       if (phase !== "connected") {
         await client.connect(deviceId);
@@ -372,6 +373,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     }).then(value => { if (cancelled) void value(); else unsubscribe = value; });
     void client.listHostProfiles().then(profiles => {
       if (cancelled) return;
+      setActionError("");
       setHosts(profiles.map(profile => ({ ...profile, connectionState: phases.get(profile.id) ?? profile.connectionState })));
       setSelectedDeviceId(current => preferredHostId && profiles.some(profile => profile.id === preferredHostId)
         ? preferredHostId : profiles.some(profile => profile.id === current) ? current : profiles[0]?.id ?? "");
@@ -395,6 +397,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     recoveringDevice.current = undefined;
     setRecoveringHost(undefined);
     setUpdateErrorHost(undefined);
+    setActionError("");
     setRowActions(undefined);
   }, [selectedDeviceId]);
 
@@ -490,6 +493,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     const host = hosts.find(item => item.id === entry.hostId);
     if (!host || host.connectionState !== "connected" || recentOpening.current) return;
     recentOpening.current = true;
+    setActionError("");
     setOpeningRecent(`${entry.hostId}:${entry.sessionId}`);
     try {
       const current = await client.request<SessionSummary[]>(entry.hostId, "session.list", { includeArchived: false });
