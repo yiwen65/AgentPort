@@ -385,6 +385,28 @@ describe("terminal renderer", () => {
     expect(terminal.unicode.activeVersion).toBe("11");
   });
 
+  it("bounds fullscreen Pi cold replay to one Host frame", async () => {
+    setState({
+      projects: getState().projects.map(project => ({
+        ...project,
+        sessions: project.sessions.map(session => session.id === "renderer-test"
+          ? { ...session, adapter: "pi" }
+          : session),
+      })),
+    });
+
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+
+    expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledWith(
+      "renderer-test",
+      64 * 1024,
+      expect.anything(),
+      null,
+      null,
+    );
+  });
+
   it("bounds in-memory scrollback independently of the persisted log", () => {
     mountTerminal("renderer-test", document.createElement("div"));
     const terminal =
