@@ -1,12 +1,36 @@
-# iPhone 本地开发分发（免费 Personal Team）
+# iPhone 本地开发分发（免费 Personal Team / 付费长期证书）
 
 此流程是 **Apple Development 签名**，不是付费 Apple Developer Program 的 Ad Hoc、TestFlight、App Store 或企业分发。免费 Apple ID 的 Personal Team 通常只有约 **7 天**的 profile/App 有效期，且有设备、App ID 和能力数量限制；以 Apple 实际签发的 profile 为准。IPA 不是任何 iPhone 都能安装的通用安装包，也不能通过企业/Ad Hoc OTA 链接绕过 Apple 限制。
 
+## 付费长期证书（Apple Developer Program 会员）
+
+开通付费会员后改用付费 Team 的 **Apple Development 签名**，profile 有效期约 **1 年**，替代免费 Personal Team 的 7 天证书。下文的准备、包装、安装流程不变，仅以下几点不同：
+
+- **Team ID 会变**：同一 Apple ID 开通会员后，付费团队的 Team ID 与原个人团队不同；钥匙串会签发新证书（CN 可能仍带旧个人团队后缀，以证书 OU/自动签名实际匹配的 team 为准）。先用 `security find-identity -v -p codesigning` 确认可用证书，`APPLE_DEVELOPMENT_TEAM` 传付费 Team ID，不要再沿用已失效的旧个人团队 ID。真实 Team ID 仍只保存在本机。
+- **Xcode 必须已登录会员账号**：未登录时 xcodebuild 报 `No Accounts: Add a new account in Accounts settings`；在 Xcode → Settings → Accounts 登录，必要时同意新的开发者计划协议。
+- **先让本机拿到含目标设备的长期 profile**：官方脚本不带 `-allowProvisioningUpdates`，无法注册新设备或创建 profile。先用一次性 xcodebuild 触发（profile 会缓存到 `~/Library/Developer/Xcode/UserData/Provisioning Profiles/`）：
+
+  ```bash
+  cd mobile
+  CONFIG="$(mktemp)"
+  printf 'DEVELOPMENT_TEAM = <付费 Team ID>\nCODE_SIGN_STYLE = Automatic\nCODE_SIGN_IDENTITY = Apple Development\nCODE_SIGNING_ALLOWED = YES\nCODE_SIGNING_REQUIRED = YES\n' > "$CONFIG"
+  XCODE_XCCONFIG_FILE="$CONFIG" xcodebuild archive \
+    -project src-tauri/gen/apple/agentport-mobile.xcodeproj \
+    -scheme agentport-mobile_iOS -configuration Debug \
+    -destination 'platform=iOS,id=<iPhone hardware UDID>' \
+    -archivePath src-tauri/gen/apple/build/agentport-mobile_iOS.xcarchive \
+    -allowProvisioningUpdates -allowProvisioningDeviceRegistration
+  ```
+
+  这次 archive 在 provisioning 之后会因 Rust 阶段失败（见下一条），属预期；只要 profile 已签发即可。若生成了 `build/agentport-mobile_iOS.xcarchive` 残留，按前文移开后再跑官方脚本。
+- **不能绕过 tauri CLI 直接完整构建**：生成工程的 `Build Rust Code` 阶段回调 `tauri ios xcode-script`，它依赖 `tauri ios build` 启动的本地参数服务；直接调 xcodebuild 会在该阶段 panic（WebSocket `Connection refused`）。完整构建仍走上面的官方脚本。
+- **验证与续期**：打包输出的 `manifest.json` 中 `profile_expires_utc` 应约为一年后，且 `provisioned_device_count` 覆盖目标设备。到期前重跑本节流程即可；覆盖安装保留 App 数据。
+
 ## 本机准备
 
-按 [BUILDING.md](BUILDING.md) 安装依赖、`npm ci`、Rust iOS target，并先构建真机 Mosh/protobuf 静态库。需要完整 Xcode、Python 3、已登录 Xcode 的免费 Apple ID，以及本机钥匙串中的 Apple Development 证书和私钥。连接、信任 iPhone，在 Xcode 的 Devices and Simulators 完成配对；iOS 16+ 开启开发者模式。
+按 [BUILDING.md](BUILDING.md) 安装依赖、`npm ci`、Rust iOS target，并先构建真机 Mosh/protobuf 静态库。需要完整 Xcode、Python 3、已登录 Xcode 的 Apple ID（免费 Personal Team 或付费会员团队），以及本机钥匙串中的 Apple Development 证书和私钥。连接、信任 iPhone，在 Xcode 的 Devices and Simulators 完成配对；iOS 16+ 开启开发者模式。
 
-在 Xcode 选择 **Personal Team** 和自动开发签名，允许 Xcode 为自己的设备注册/签发 profile；必要时先在 Xcode 完成签名配置。免费团队不支持的 entitlement 需要先解决，不能改用 distribution profile 掩盖失败。机器未准备好 profile 时 CLI 可能失败；回 Xcode 修复后重试，不假定 CLI 自动登录或注册成功。
+在 Xcode 选择目标 Team（免费 Personal Team 或付费团队）和自动开发签名，允许 Xcode 为自己的设备注册/签发 profile；必要时先在 Xcode 完成签名配置。免费团队不支持的 entitlement 需要先解决，不能改用 distribution profile 掩盖失败。机器未准备好 profile 时 CLI 可能失败；回 Xcode 修复后重试，不假定 CLI 自动登录或注册成功。
 
 现有生成 Xcode 工程中的 Team ID 只是本机状态，**不得提交真实 Team ID**、生成签名改动、profile、证书或钥匙串。脚本使用临时 xcconfig 覆盖生成工程签名设置，不编辑生成工程。以下变量仅在本机 shell 中设置，不写入版本控制：
 
