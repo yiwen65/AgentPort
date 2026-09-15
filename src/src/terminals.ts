@@ -67,6 +67,7 @@ const REPLAY_TAIL_BYTES = 4 * 1024 * 1024;
 // renderer behind live output even though input remains writable. One bounded
 // Host frame retains many complete redraws plus the Host's terminal-mode seed.
 const FULLSCREEN_PI_REPLAY_TAIL_BYTES = 64 * 1024;
+const FULLSCREEN_PI_ADAPTERS = new Set(["pi", "easy_pi", "omp"]);
 const PI_STARTUP_READY_OSC = 6973;
 const PI_STARTUP_READY_PAYLOAD = "startup-ready";
 const PI_STARTUP_READY_TIMEOUT_MS = 15_000;
@@ -2816,7 +2817,7 @@ export async function attachHandle(
     onChannelMsg(handle, msg);
   };
   try {
-    const replayTailBytes = session?.adapter === "pi" && session.transport === "pty"
+    const replayTailBytes = session?.transport === "pty" && FULLSCREEN_PI_ADAPTERS.has(session.adapter)
       ? FULLSCREEN_PI_REPLAY_TAIL_BYTES
       : REPLAY_TAIL_BYTES;
     const info = await api.attachSession(

@@ -383,26 +383,29 @@ describe("terminal renderer", () => {
     expect(terminal.unicode.activeVersion).toBe("11");
   });
 
-  it("bounds fullscreen Pi cold replay to one Host frame", async () => {
-    setState({
-      projects: getState().projects.map(project => ({
-        ...project,
-        sessions: project.sessions.map(session => session.id === "renderer-test"
-          ? { ...session, adapter: "pi" }
-          : session),
-      })),
-    });
+  it.each(["pi", "easy_pi", "omp"] as const)(
+    "bounds fullscreen %s cold replay to one Host frame",
+    async (adapter) => {
+      setState({
+        projects: getState().projects.map(project => ({
+          ...project,
+          sessions: project.sessions.map(session => session.id === "renderer-test"
+            ? { ...session, adapter }
+            : session),
+        })),
+      });
 
-    mountTerminal("renderer-test", document.createElement("div"));
-    await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+      mountTerminal("renderer-test", document.createElement("div"));
+      await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
 
-    expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledWith(
-      "renderer-test",
-      64 * 1024,
-      expect.anything(),
-      null,
-    );
-  });
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledWith(
+        "renderer-test",
+        64 * 1024,
+        expect.anything(),
+        null,
+      );
+    },
+  );
 
   it("keeps the 4 MiB cold replay window for ordinary Shell Sessions", async () => {
     mountTerminal("renderer-test", document.createElement("div"));
