@@ -272,14 +272,14 @@
 - Prevention: Resume regressions must separately assert timer inheritance, no duplicate TurnEnd event, mismatched native IDs, incomplete records, and later user activity cancellation.
 - Verified by: Session `ses_01M1182N3M0YMGTB` remained idle for over 15 hours with no run-local TurnEnd although its exact transcript ended in assistant `stop`; the integration regression confirms a resumed completed transcript arms the timer without replaying old state.
 
-## `xterm remote input` — a committed InputEvent ends synthetic key hold
+## `xterm remote input` — do not infer key hold from a lone keydown
 
-- Wrong approach: Arm an unbounded local key-repeat timer on every printable `keydown` and rely on a matching `keyup`, blur, or later keydown to cancel it even when a remote/mobile keyboard also commits text through `InputEvent`.
-- Why it failed: The committed input could take the “xterm already forwarded this keydown” de-duplication return without stopping the timer; if the remote path omitted the matching keyup, the interval then sent the final character every 40 ms indefinitely.
-- Recognition signal: Typing through remote control works initially, then the last character repeats after the 500 ms hold delay until another cancellation event occurs.
-- Correct approach: For a non-composing `insertText` commit with data, stop synthetic repeat before any forwarding/de-duplication branch; leave keydown-only local holds on the existing repeat path.
-- Prevention: Keep regressions for both xterm-forwarded and fallback-forwarded remote commits with no keyup, plus a neighboring local keydown-only hold that still repeats until keyup.
-- Verified by: Both remote event-sequence tests repeated after 550 ms before the fix and passed afterward; the complete terminal renderer suite passes 89/89 and the packaged Debug App renders normally.
+- Wrong approach: Synthesize macOS key hold from every initial printable `keydown`, assuming a matching `keyup`, blur, `InputEvent`, or later keydown will always cancel the unbounded timer.
+- Why it failed: UU Remote's phone keyboard emitted one trusted `keydown` per character, reported every character as physical `KeyA`, and emitted neither `keyup` nor `InputEvent`. That stream is indistinguishable in WebKit from a physical key held down, so the 500 ms timer repeated the final character every 40 ms forever.
+- Recognition signal: Remote text is correct while typing, then its final character begins repeating after exactly the synthetic hold delay; DOM metadata shows keydown-only text followed by internal repeat ticks.
+- Correct approach: Never infer hold from the absence of keyup. Forward xterm's ordinary keydown once and use only observed `KeyboardEvent.repeat=true` events for repeat fallback; accept that WebKit configurations suppressing native repeats no longer get speculative hold synthesis.
+- Prevention: Keep the exact UU regression of several keydown-only characters sharing one physical code, alongside native-repeat, third-party IME, de-duplication, and disposal coverage.
+- Verified by: A metadata-only trace captured three keydowns and no release/input before the synthetic timer started; the regression failed with one extra final character before the fix, 89/89 renderer tests pass afterward, and the same UU path changed from repeated output to exactly `abc` in the rebuilt Debug App.
 
 ## `review pairing portal` — align Referrer-Policy with strict form Origin validation
 
