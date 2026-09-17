@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.agentport.desktop",
   "build": {
-    "beforeDevCommand": "bash src-tauri/scripts/build-sidecar.sh debug && npm --prefix src run dev",
+    "beforeDevCommand": "bash -c 'cd \"$(git rev-parse --show-toplevel)\" && bash src-tauri/scripts/build-sidecar.sh debug && npm --prefix src run dev'",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bash src-tauri/scripts/build-sidecar.sh release && npm --prefix src run build",
+    "beforeBuildCommand": "bash -c 'cd \"$(git rev-parse --show-toplevel)\" && bash src-tauri/scripts/build-sidecar.sh release && npm --prefix src run build'",
     "frontendDist": "../src/dist"
   },
   "app": {
