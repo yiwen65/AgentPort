@@ -24,6 +24,7 @@ esac
 for binary in agentport-host agentport-remote-bridge agentport-mosh-attach agentport-connector; do
   source_path="$source_directory/$binary"
   target_path="$repo_root/src-tauri/binaries/$binary-$target_triple"
+  mkdir -p "$repo_root/src-tauri/binaries"
   cp "$source_path" "$target_path"
   chmod +x "$target_path"
 done

@@ -57,6 +57,8 @@ jobs:
       - name: Stage universal sidecars
         run: |
           set -euo pipefail
+          # src-tauri/binaries is gitignored; a fresh checkout has no directory.
+          mkdir -p src-tauri/binaries
           for target in aarch64-apple-darwin x86_64-apple-darwin; do
             cargo build --release -p agentport-host -p agentport-remote-bridge \
               -p agentport-mosh-attach -p agentport-relay \
