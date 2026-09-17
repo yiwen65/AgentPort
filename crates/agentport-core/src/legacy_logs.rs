@@ -207,7 +207,7 @@ mod tests {
     use chrono::Utc;
     use tempfile::TempDir;
 
-    fn session(paths: &AppPaths, lifecycle: Lifecycle) -> Session {
+    fn session(_paths: &AppPaths, lifecycle: Lifecycle) -> Session {
         Session {
             id: "ses_legacy".into(),
             project_id: "prj".into(),
@@ -221,11 +221,6 @@ mod tests {
             lifecycle,
             agent_session_id: None,
             resume_precision: ResumePrecision::Unavailable,
-            log_path: paths
-                .session_dir("ses_legacy")
-                .join("runs/run-1/output.log")
-                .to_string_lossy()
-                .into_owned(),
             adapter_type: AgentType::Shell,
             transport: AgentTransport::Pty,
             command: vec![],

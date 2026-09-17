@@ -823,7 +823,7 @@ mod tests {
         }
     }
 
-    fn session(paths: &AppPaths, provider: AgentType, native_id: Option<&str>) -> Session {
+    fn session(_paths: &AppPaths, provider: AgentType, native_id: Option<&str>) -> Session {
         Session {
             id: format!("ses_{}", provider.as_str()),
             project_id: "prj_1".into(),
@@ -837,11 +837,6 @@ mod tests {
             lifecycle: Lifecycle::Stopped,
             agent_session_id: native_id.map(str::to_string),
             resume_precision: ResumePrecision::Exact,
-            log_path: paths
-                .root()
-                .join("removed.log")
-                .to_string_lossy()
-                .into_owned(),
             adapter_type: provider,
             transport: AgentTransport::Pty,
             command: Vec::new(),

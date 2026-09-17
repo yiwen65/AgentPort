@@ -250,11 +250,6 @@ fn session_locator_resolves_its_exact_worktree_and_only_live_sessions_warn() {
         lifecycle,
         agent_session_id: None,
         resume_precision: ResumePrecision::Unavailable,
-        log_path: fixture
-            .workspace()
-            .join(format!("{id}.log"))
-            .to_string_lossy()
-            .into_owned(),
         adapter_type: AgentType::Shell,
         transport: AgentTransport::Pty,
         command: Vec::new(),

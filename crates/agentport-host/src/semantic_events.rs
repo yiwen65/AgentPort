@@ -683,7 +683,6 @@ mod tests {
             transport: AgentTransport::Pty,
             socket_path: dir.path().join("sock").to_string_lossy().into_owned(),
             session_dir: dir.path().join("stable").to_string_lossy().into_owned(),
-            log_path: dir.path().join("output.log").to_string_lossy().into_owned(),
             host_log_path: dir.path().join("host.log").to_string_lossy().into_owned(),
             hook_events_path: dir.path().join("events.jsonl").to_string_lossy().into_owned(),
             log_limit_bytes: 1024,

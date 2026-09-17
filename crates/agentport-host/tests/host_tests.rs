@@ -218,7 +218,6 @@ fn make_ctx(command: Vec<String>, log_limit: u64, secret_env_names: Vec<String>)
         transport: AgentTransport::Pty,
         socket_path: d.join("h.sock").to_string_lossy().into_owned(),
         session_dir: d.to_string_lossy().into_owned(),
-        log_path: d.join("output.log").to_string_lossy().into_owned(),
         host_log_path: d.join("host.log").to_string_lossy().into_owned(),
         hook_events_path: d.join("events.jsonl").to_string_lossy().into_owned(),
         log_limit_bytes: log_limit,

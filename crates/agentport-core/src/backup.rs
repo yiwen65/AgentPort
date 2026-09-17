@@ -1148,7 +1148,6 @@ mod tests {
             lifecycle: Lifecycle::Stopped,
             agent_session_id: None,
             resume_precision: ResumePrecision::Unavailable,
-            log_path: paths.log_path("ses_1").to_string_lossy().into_owned(),
             adapter_type: AgentType::Shell,
             transport: crate::models::AgentTransport::Pty,
             command: vec!["sh".into()],
@@ -1179,7 +1178,6 @@ mod tests {
                 lifecycle: Lifecycle::Stopped,
                 agent_session_id: native_id.map(str::to_owned),
                 resume_precision: ResumePrecision::Exact,
-                log_path: fx.paths.log_path(id).to_string_lossy().into_owned(),
                 adapter_type: provider,
                 transport: crate::models::AgentTransport::Pty,
                 command: Vec::new(),
@@ -1277,7 +1275,6 @@ mod tests {
         assert_eq!(db.list_sessions(None, true).unwrap().len(), 1);
         let session = db.get_session("ses_1").unwrap();
         assert_eq!(session.project_id, "existing_project");
-        assert_eq!(session.log_path, target.log_path("ses_1").to_string_lossy());
         assert!(session.host_pid.is_none());
         assert_eq!(db.list_projects().unwrap()[0].name, "keep current name");
         assert_eq!(

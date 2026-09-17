@@ -300,7 +300,10 @@ fn repository_file_lock_child_probe() {
 #[test]
 fn timeout_kills_git_descendants_that_keep_output_pipes_open() {
     let started = Instant::now();
-    let output = GitRunner::new(Duration::from_millis(40))
+    // 200 ms is still far below the 3 s descendant sleep, but leaves a loaded
+    // machine enough time to actually run `printf` before the timeout fires;
+    // 40 ms lost that race under a full-suite run.
+    let output = GitRunner::new(Duration::from_millis(200))
         .run(
             None,
             [
@@ -312,7 +315,10 @@ fn timeout_kills_git_descendants_that_keep_output_pipes_open() {
         .unwrap();
     let elapsed = started.elapsed();
     assert!(output.timed_out);
-    assert!(output.stdout_lossy().contains("before-timeout"));
+    assert!(
+        output.stdout_lossy().contains("before-timeout"),
+        "pre-timeout output was lost: {output:?}"
+    );
     assert!(
         elapsed < Duration::from_secs(1),
         "timeout returned after {elapsed:?}; a descendant likely retained Git's output pipe"

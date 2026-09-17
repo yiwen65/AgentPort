@@ -415,7 +415,7 @@ mod tests {
         add_session_wt(db, id, project, log, None)
     }
 
-    fn add_session_wt(db: &Db, id: &str, project: &str, log: &Path, wt: Option<&str>) -> Session {
+    fn add_session_wt(db: &Db, id: &str, project: &str, _log: &Path, wt: Option<&str>) -> Session {
         let s = Session {
             id: id.into(),
             project_id: project.into(),
@@ -429,7 +429,6 @@ mod tests {
             lifecycle: Lifecycle::Running,
             agent_session_id: None,
             resume_precision: ResumePrecision::Unavailable,
-            log_path: log.to_string_lossy().into_owned(),
             adapter_type: AgentType::Kimi,
             transport: AgentTransport::Pty,
             command: vec![],

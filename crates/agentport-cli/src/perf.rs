@@ -138,7 +138,6 @@ fn start_session(
         lifecycle: Lifecycle::Creating,
         agent_session_id: None,
         resume_precision: ResumePrecision::Unavailable,
-        log_path: ctx.paths.log_path(&sid).to_string_lossy().into_owned(),
         adapter_type: AgentType::Shell,
         transport: agentport_core::models::AgentTransport::Pty,
         command: argv.clone(),

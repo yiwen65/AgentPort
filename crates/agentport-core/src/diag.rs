@@ -247,7 +247,7 @@ mod tests {
         .unwrap();
     }
 
-    fn add_session(db: &Db, id: &str, log: &Path) -> Session {
+    fn add_session(db: &Db, id: &str, _log: &Path) -> Session {
         let s = Session {
             id: id.into(),
             project_id: "prj_1".into(),
@@ -261,7 +261,6 @@ mod tests {
             lifecycle: Lifecycle::Running,
             agent_session_id: None,
             resume_precision: ResumePrecision::Unavailable,
-            log_path: log.to_string_lossy().into_owned(),
             adapter_type: AgentType::Kimi,
             transport: crate::models::AgentTransport::Pty,
             command: vec![],

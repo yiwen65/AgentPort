@@ -300,7 +300,6 @@ mod tests {
             lifecycle: Lifecycle::Exited,
             agent_session_id: native_id.map(str::to_string),
             resume_precision: ResumePrecision::Exact,
-            log_path: root.join("legacy.log").to_string_lossy().into_owned(),
             adapter_type: provider,
             transport: crate::models::AgentTransport::Pty,
             command: vec![],
