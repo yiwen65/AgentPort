@@ -1,7 +1,7 @@
 {
   "manifestVersion": 1,
-  "appVersion": "0.1.0",
-  "generatedAt": "2026-07-26T14:28:34.924375+00:00",
+  "appVersion": "0.1.1",
+  "generatedAt": "2026-09-17T09:56:34.195231+00:00",
   "deliveryScope": "p0_p2",
   "platforms": [
     {
@@ -9,17 +9,18 @@
       "versionOrSnapshot": "26.5.1",
       "arch": "arm64 (universal: scripted, see knownLimitations)",
       "tier": "official",
-      "artifact": "dist-release/macos/AgentPort_0.1.0_aarch64.dmg",
-      "sha256": "e5710f5a271d248e884aaf502b6a8ff06a70b2082ab4951bec3d27f5ab9c4afb",
+      "artifact": "dist-release/macos/AgentPort_0.1.1_universal.dmg",
+      "sha256": "9a99d56ad47e6417a661a3ca441c5e10d02da0fc12b43e718f880cb1922cbf59",
       "webviewVersion": "",
       "tested": [
-        "build",
+        "ci-build (GitHub Actions, universal)",
+        "updater-install (0.1.0 -> 0.1.1 on this machine)",
         "launch-smoke",
-        "window-render",
         "db-init"
       ],
       "notes": [
-        "local ad-hoc bundle signature applied; Developer ID signing/notarization not performed"
+        "artifact is the CI-built universal DMG from release v0.1.1; ad-hoc/linker signature only — no Developer ID signing or notarization",
+        "pixel-level window capture of this artifact was not possible at generation time (display locked/TCC); the bundle launched, initialised its database and was installed over 0.1.0 by the in-app updater"
       ]
     },
     {
@@ -27,8 +28,8 @@
       "versionOrSnapshot": "22.04",
       "arch": "x86_64",
       "tier": "official",
-      "artifact": "dist-release/ubuntu2204/AgentPort_0.1.0_amd64.deb",
-      "sha256": "08ea4bd068b82fb68f547c352cb8defa8dd09d785b1f3c6190d1c36b3bf87d71",
+      "artifact": "dist-release/ubuntu2204/AgentPort_0.1.1_amd64.deb",
+      "sha256": "346b70f18a9a32beb0ea259ccac0fa899f24ac6e8a2d385d62040c94ab19503d",
       "tested": [
         "docker-build",
         "container-install",
@@ -37,7 +38,8 @@
         "uninstall"
       ],
       "notes": [
-        "release baseline: built on Ubuntu 22.04"
+        "release baseline: built in the Ubuntu 22.04 container (CI)",
+        "scripts/linux/verify-in-container.sh ran against this exact .deb: install, embedded sidecars, Remote Bridge smoke, PTY roundtrip with the installed agentport-host, xvfb GUI launch, uninstall"
       ]
     },
     {
@@ -45,8 +47,8 @@
       "versionOrSnapshot": "24.04",
       "arch": "x86_64",
       "tier": "official",
-      "artifact": "dist-release/ubuntu2204/AgentPort_0.1.0_amd64.deb",
-      "sha256": "08ea4bd068b82fb68f547c352cb8defa8dd09d785b1f3c6190d1c36b3bf87d71",
+      "artifact": "dist-release/ubuntu2204/AgentPort_0.1.1_amd64.deb",
+      "sha256": "346b70f18a9a32beb0ea259ccac0fa899f24ac6e8a2d385d62040c94ab19503d",
       "tested": [
         "docker-build",
         "container-install",
@@ -64,12 +66,13 @@
       "arch": "x86_64",
       "tier": "community",
       "artifact": "dist-release/fedora/agentport-fedora-x86_64.tar.gz",
-      "sha256": "8161cb7b17e325cc4e69c1a62b97a17368cedd2c93fe779c990f004e855e0efb",
+      "sha256": "4ff1ab1748cdf5cf48e3c1bf44d90a06934268b10acd27538a1e3299738bf9d3",
       "tested": [
         "docker-build"
       ],
       "notes": [
-        "community-verified tier; package format = tarball"
+        "community-verified tier; package format = tarball",
+        "built in the Fedora container by CI"
       ]
     },
     {
@@ -78,12 +81,13 @@
       "arch": "x86_64",
       "tier": "community",
       "artifact": "dist-release/arch/agentport-arch-x86_64.tar.gz",
-      "sha256": "a5012d6cc51fc3631a8c5e2065f4fb920bc37ffbc1ffedbd9676e729c1669d6e",
+      "sha256": "915d481fe1a562acd6377a398eb19c422e87239b9d6a3c2000617c78c0ded9c4",
       "tested": [
         "docker-build"
       ],
       "notes": [
-        "community-verified tier; package format = tarball"
+        "community-verified tier; package format = tarball",
+        "built in the Arch container by CI"
       ]
     },
     {
@@ -103,47 +107,47 @@
     {
       "agent": "claude",
       "executablePath": "/Users/w/.local/bin/claude",
-      "versionText": "2.1.220 (Claude Code)",
-      "capabilityHash": "sha256:5a414045db4f30de",
+      "versionText": "2.1.274 (Claude Code)",
+      "capabilityHash": "sha256:83b304218a5baee2",
       "exactResume": true,
       "hookStatus": "supported",
-      "verifiedAt": "2026-07-26T14:26:32.212Z"
+      "verifiedAt": "2026-09-17T09:54:50.125Z"
     },
     {
       "agent": "codex",
       "executablePath": "/Users/w/.local/bin/codex",
-      "versionText": "codex-cli 0.145.0",
-      "capabilityHash": "sha256:337afd7a6c53ba17",
+      "versionText": "codex-cli 0.154.0",
+      "capabilityHash": "sha256:f7ad282c8e2e8ba5",
       "exactResume": true,
       "hookStatus": "supported",
-      "verifiedAt": "2026-07-26T14:26:32.579Z"
+      "verifiedAt": "2026-09-17T09:54:50.501Z"
     },
     {
       "agent": "kimi",
       "executablePath": "/Users/w/.kimi-code/bin/kimi",
-      "versionText": "0.29.1",
-      "capabilityHash": "sha256:e1bf1747d06580b8",
+      "versionText": "0.42.0",
+      "capabilityHash": "sha256:661d0f49e6f54d09",
       "exactResume": true,
       "hookStatus": "degraded",
-      "verifiedAt": "2026-07-26T14:26:33.473Z"
+      "verifiedAt": "2026-09-17T09:54:51.520Z"
     },
     {
       "agent": "pi",
       "executablePath": "/Users/w/.local/share/fnm/node-versions/v24.15.0/installation/bin/pi",
-      "versionText": "0.82.1",
-      "capabilityHash": "sha256:eddedef972fc2503",
+      "versionText": "0.84.2",
+      "capabilityHash": "sha256:8ebccf8044a91fff",
       "exactResume": true,
       "hookStatus": "unavailable",
-      "verifiedAt": "2026-07-26T14:26:34.522Z"
+      "verifiedAt": "2026-09-17T09:54:52.788Z"
     },
     {
       "agent": "qoder",
-      "executablePath": "/Users/w/.local/bin/qodercli",
-      "versionText": "1.1.4",
-      "capabilityHash": "sha256:39b92155f05600cd",
+      "executablePath": "/Users/w/.local/share/fnm/node-versions/v24.15.0/installation/bin/qodercli",
+      "versionText": "1.1.49",
+      "capabilityHash": "sha256:91e83c2e0568e842",
       "exactResume": true,
       "hookStatus": "supported",
-      "verifiedAt": "2026-07-26T14:26:35.679Z"
+      "verifiedAt": "2026-09-17T09:54:57.803Z"
     },
     {
       "agent": "shell",
@@ -152,16 +156,16 @@
       "capabilityHash": "sha256:fef18104984383af",
       "exactResume": false,
       "hookStatus": "unavailable",
-      "verifiedAt": "2026-07-26T14:26:35.990Z"
+      "verifiedAt": "2026-09-17T09:54:58.221Z"
     }
   ],
   "tests": [
     {
       "suite": "cargo test --workspace --all-targets",
-      "result": "pass",
-      "passedSuites": 17,
-      "failedSuites": 0,
-      "evidence": "local run, see docs/acceptance-report.md"
+      "result": "fail",
+      "passedSuites": 20,
+      "failedSuites": 1,
+      "evidence": "local run on 2026-09-17; 2 agentport-host Pi semantic tests fail (resumed_completed_pi_run_publishes_idle_without_replaying_completion, pi_rpc_pipe_accepts_prompt_abort_and_persists_structured_events) — pre-existing on main since 63565ec (2026-09-11), unrelated to this release (no crates/ changes)"
     },
     {
       "suite": "npm test",
@@ -175,16 +179,20 @@
     },
     {
       "suite": "e2e/wave1.sh (PTY/reconnect/cleanup/log-sha256)",
-      "result": "pass"
+      "result": "fail",
+      "evidence": "pre-existing harness drift: wave1.sh (last changed 2026-07-23) expects runs/<uuid>/output.log and fails to find it"
     },
     {
       "suite": "e2e/wave2.sh (export/search/timeline/secret-leak-scan)",
-      "result": "pass"
+      "result": "fail",
+      "evidence": "pre-existing harness drift: wave2.sh (last changed 2026-07-23) fails against the current session log layout"
     }
   ],
   "knownLimitations": [
-    "macOS Universal (x86_64+arm64) build requires rustup toolchains; this machine used Homebrew rust (arm64 only).",
+    "cargo test --workspace --all-targets: 2 agentport-host Pi semantic tests fail on main (see tests[0].evidence); they predate this release and the release artifacts do not touch crates/.",
+    "e2e/wave1.sh and e2e/wave2.sh fail against the current session log layout (scripts last changed 2026-07-23) and need updating before they can gate a release again.",
     "Developer ID signing/notarization and clean-VM interactive runs (IME/Orca/VoiceOver) are manual steps, listed in docs/acceptance-report.md.",
-    "FTS5 trigram search index stores text+postings (measured ~3.6x source size); PRD's 0.35 ratio would require a contentless index redesign."
+    "FTS5 trigram search index stores text+postings (measured ~3.6x source size); PRD's 0.35 ratio would require a contentless index redesign.",
+    "AppImage remains unpublished (linuxdeploy download failure); reproducible via scripts/build-linux.sh appimage."
   ]
 }
