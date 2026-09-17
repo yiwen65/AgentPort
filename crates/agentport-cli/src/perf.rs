@@ -333,8 +333,17 @@ pub fn crash_recovery(ctx: &PerfCtx) -> Result<()> {
         let marker2 = format!("after-{marker}");
         c.send_input(format!("echo {marker2}\n").as_bytes())?;
         std::thread::sleep(Duration::from_millis(400));
-        let log = std::fs::read(&s.log_path).unwrap_or_default();
-        let text = String::from_utf8_lossy(&log);
+        // The Host keeps no PTY body copy any more (docs/user-guide.md), so
+        // continuity is proven by a reconnect read rather than the run log.
+        let out = std::process::Command::new(&exe)
+            .args([
+                "session", "read", &s.id, "--until", &marker2, "--timeout", "10",
+                "--tail-bytes", "1048576", "--json",
+            ])
+            .env("AGENTPORT_DATA_DIR", ctx.paths.root())
+            .env("AGENTPORT_SOCKET_DIR", ctx.paths.socket_dir())
+            .output()?;
+        let text = String::from_utf8_lossy(&out.stdout);
         if text.contains(&marker) && text.contains(&marker2) {
             passes += 1;
         }
@@ -403,8 +412,6 @@ pub fn throughput(ctx: &PerfCtx) -> Result<()> {
     let secs = first_at.map(|f| f.elapsed().as_secs_f64()).unwrap_or(1.0);
     let mib = received as f64 / 1048576.0;
     let rate = mib / secs;
-    // Log consistency: file tail sha256 == what we received (approximate via size).
-    let log_len = std::fs::metadata(&s.log_path).map(|m| m.len()).unwrap_or(0);
     let _ = stop_session(ctx, &s.id);
     emit(
         ctx,
@@ -414,7 +421,7 @@ pub fn throughput(ctx: &PerfCtx) -> Result<()> {
             unit: "MiB/s",
             samples: vec![rate, max_gap_ms],
             pass: rate >= 0.95 && max_gap_ms <= 250.0,
-            notes: format!("received {mib:.1} MiB in {secs:.1}s; max client gap {max_gap_ms:.0}ms; log_bytes={log_len} received={received}"),
+            notes: format!("received {mib:.1} MiB in {secs:.1}s; max client gap {max_gap_ms:.0}ms; received={received}"),
         },
     );
     Ok(())
@@ -608,14 +615,9 @@ pub fn diag_zip_perf(ctx: &PerfCtx) -> Result<()> {
     let preset = shell_preset(ctx)?;
     let s = start_session(ctx, &project, &preset, None)?;
     let _ = stop_session(ctx, &s.id);
-    let log = std::path::PathBuf::from(&s.log_path);
-    {
-        let mut f = std::fs::File::create(&log)?;
-        let chunk = [b'x'; 1024 * 1024];
-        for _ in 0..200 {
-            f.write_all(&chunk)?;
-        }
-    }
+    // The diagnostics zip packs status events and diagnostics only: the
+    // terminal body copy this scenario used to plant (200 MiB of `x`) is no
+    // longer part of the bundle, so the fixture would measure nothing.
     let exporter = agentport_core::export::Exporter {
         paths: &ctx.paths,
         db: &ctx.db,
@@ -632,13 +634,12 @@ pub fn diag_zip_perf(ctx: &PerfCtx) -> Result<()> {
     emit(
         ctx,
         Rec {
-            scenario: "diag_zip_200MiB",
+            scenario: "diag_zip_no_terminal_body",
             target: "<= 15s per export".into(),
             unit: "s",
             samples,
             pass: max <= 15.0,
-            notes: "terminal.log inside zip is capped at last 2 MiB by design; 200 MiB source log"
-                .into(),
+            notes: "packs status events + diagnostics; no terminal body (docs/user-guide.md)".into(),
         },
     );
     Ok(())
@@ -702,47 +703,6 @@ pub fn worktree_perf(ctx: &PerfCtx) -> Result<()> {
             samples,
             pass: p95 <= 8.0,
             notes: "20k files, 100 dirs; create+remove each iteration".into(),
-        },
-    );
-    Ok(())
-}
-
-/// PRD: 日志上限轮转 (200 MiB default, <= +5 MiB error).
-pub fn log_rotation_perf(ctx: &PerfCtx) -> Result<()> {
-    let project = make_project(ctx)?;
-    let preset = shell_preset(ctx)?;
-    let s = start_session(ctx, &project, &preset, None)?;
-    // 210 MiB through the PTY at high speed (yes | tr, big lines).
-    let script = "yes 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab | head -c 230000000; echo ROTDONE";
-    let mut c = client_for(ctx, &s)?;
-    c.send_input(format!("{script}\n").as_bytes())?;
-    let limit = ctx.db.load_settings()?.log_limit_mib * 1024 * 1024;
-    let start = Instant::now();
-    let mut done = false;
-    while start.elapsed() < Duration::from_secs(300) && !done {
-        match c.read_frame() {
-            Ok(Some(HostFrame::Output { data, .. }))
-            | Ok(Some(HostFrame::TransientOutput { data, .. }))
-                if data.windows(7).any(|w| w == b"ROTDONE") =>
-            {
-                done = true;
-            }
-            Ok(Some(HostFrame::Exit { .. })) => break,
-            Ok(None) => break,
-            _ => {}
-        }
-    }
-    let on_disk = std::fs::metadata(&s.log_path).map(|m| m.len()).unwrap_or(0);
-    let _ = stop_session(ctx, &s.id);
-    emit(
-        ctx,
-        Rec {
-            scenario: "log_rotation_200MiB",
-            target: "disk <= limit + 5 MiB after 220 MiB written".into(),
-            unit: "MiB",
-            samples: vec![on_disk as f64 / 1048576.0],
-            pass: done && on_disk <= limit + 5 * 1024 * 1024,
-            notes: format!("on_disk={} bytes limit={limit} done={done}", on_disk),
         },
     );
     Ok(())
@@ -883,7 +843,6 @@ pub fn run_all(ctx: &PerfCtx) -> Result<()> {
     secret_perf(ctx)?;
     diag_zip_perf(ctx)?;
     worktree_perf(ctx)?;
-    log_rotation_perf(ctx)?;
     Ok(())
 }
 
@@ -903,7 +862,6 @@ pub fn run(ctx: &PerfCtx, name: &str) -> Result<()> {
         "secret" => secret_perf(ctx),
         "diag_zip" => diag_zip_perf(ctx),
         "worktree" => worktree_perf(ctx),
-        "log_rotation" => log_rotation_perf(ctx),
         other => Err(CoreError::Validation(format!(
             "unknown perf scenario {other}"
         ))),
