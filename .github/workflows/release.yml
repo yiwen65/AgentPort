@@ -260,6 +260,9 @@ jobs:
           mapfile -t files < <(find . -type f \( -name '*.deb' -o -name '*.tar.gz' \) | sort)
           [ "${#files[@]}" -gt 0 ] || { echo "no Linux artifacts found" >&2; exit 1; }
           printf '%s\n' "${files[@]}"
-          for f in "${files[@]}"; do sha256sum "$f" | sed 's| \./| |'; done > SHA256SUMS-linux
+          # Plain file names: the download directory is not part of the release.
+          for f in "${files[@]}"; do
+            echo "$(sha256sum "$f" | awk '{print $1}')  $(basename "$f")"
+          done > SHA256SUMS-linux
           cat SHA256SUMS-linux
           gh release upload "$TAG" --repo "$REPO" --clobber "${files[@]}" SHA256SUMS-linux

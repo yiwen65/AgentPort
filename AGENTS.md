@@ -38,5 +38,6 @@ python3 scripts/restart-debug-app.py --dry-run
 - 升级流程由 Rust 拥有（`src-tauri/src/updater.rs`）：检查 → 后台下载 → 用户点「退出并更新」→ `stop_live_sessions_for_update` 优雅停止并复核所有 Session Host → `Update::install` → `app.restart()`。任何 Session 无法证明进程组已清理都必须中止安装并保留旧版本。
 - Debug/开发构建永远不访问正式 feed（`cfg!(debug_assertions)` 或 `AGENTPORT_UPDATER_DISABLED=1`），调试包不会被自动升级。
 - Tauri Updater 签名（`TAURI_SIGNING_PRIVATE_KEY`，私钥在 `~/.tauri/agentport-updater.key`，切勿提交）与 macOS/Windows 代码签名是两套机制，不得互相替代。发布与密钥细节见 `docs/updater.md`。
-- 发布：`scripts/set-version.sh` → 提交 → `git tag vX.Y.Z && git push origin vX.Y.Z`，由 `.github/workflows/release.yml` 构建 macOS（universal）并生成 `latest.json`（应用内更新当前仅 macOS；Linux 走包管理器）。本地 `scripts/build-macos.sh` 在没有密钥时会以 `createUpdaterArtifacts=false` 跳过 updater 产物，这类 DMG 不能作为更新源发布。
+- 发布：`scripts/set-version.sh` → 提交 → `git tag vX.Y.Z && git push origin vX.Y.Z`。`.github/workflows/release.yml` 在同一个 tag 上发布 macOS（universal + `latest.json`）与 Linux（deb + Fedora/Arch tarball + `SHA256SUMS-linux`）；应用内更新仅 macOS，Linux 走包管理器。补发某个平台不要移动 tag，用 `gh workflow run release.yml -f tag=vX.Y.Z -f platforms=linux`。本地 `scripts/build-macos.sh` 在没有密钥时会以 `createUpdaterArtifacts=false` 跳过 updater 产物，这类 DMG 不能作为更新源发布。
+- **本地不要直接往上发布**：本机上行到 `uploads.github.com` 的大文件 POST 会静默失败（只留 `state=starter` 占位），发布一律走 CI；判断资产是否真的上传成功要看 API 的 `state=uploaded`，不能只看 size。
 - **承载更新 feed 的仓库必须匿名可读**：客户端拉取 `latest.json` 不带凭据，私有仓库的 Release 资产返回 404，更新会静默失败。发布后用未认证 `curl` 校验 `latest.json`（期望 302）与安装包（200）。

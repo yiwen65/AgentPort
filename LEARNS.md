@@ -388,3 +388,21 @@
 - Correct approach: 在构建前用 `gh release create "$GITHUB_REF_NAME" --verify-tag`（或 `gh release view` 复用）先建好 release，tauri-action 之后只做上传与 `latest.json` 合并。
 - Prevention: 把 release 创建放在昂贵的构建之前，权限问题会在几秒内暴露，而不是等 10 分钟构建结束。
 - Verified by: 加入预建步骤后同一 tag 的 run 35182159184 全绿，产出 DMG、`.app.tar.gz`、`.sig` 与 `latest.json`。
+
+## `gh 在无 checkout 的 job` — 必须显式给仓库
+
+- Wrong approach: 在只做上传的 job（没有 `actions/checkout`）里直接 `gh release view "$TAG"` / `gh release upload "$TAG" ...`。
+- Why it failed: gh 需要 git 仓库上下文来推断 `owner/repo`，没有 checkout 时报 `failed to run git: fatal: not a git repository`；重试循环因此空转 20 次后失败，而三个 Linux 构建 job 都已经成功。
+- Recognition signal: 上传 job 的日志里全是 `waiting for release <tag>`，最后紧跟 `fatal: not a git repository`。
+- Correct approach: 每个 gh 调用都带 `--repo "$GITHUB_REPOSITORY"`（或补一个 checkout）。
+- Prevention: 任何"只读/只写远端"的 job 都当作没有仓库上下文来写；本地跑通不代表 CI 能跑通。
+- Verified by: run 35205952385 修正后 `Attach Linux assets: success`，v0.1.1 Release 同时具备 macOS 与 Linux 资产。
+
+## `Release 资产上传` — 以 `state` 为准，且本机大文件上传不可靠
+
+- Wrong approach: 用 `gh release upload` / `curl` 从本机往 `uploads.github.com` 传 5–23 MB 的资产，并把"API 里能看到该名字 + size 相同"当作上传成功。
+- Why it failed: 该端点在本机上行链路上会静默停滞（约 41 KB/s，最终 `0 bytes received`），服务端只留下 `state=starter` 的占位记录（size 是请求声明的值），`releases/download/...` 下载返回 404；绕开本机代理（127.0.0.1:7890）直连同样失败，而 `git push` 到 `github.com`、下载 CDN 都正常。
+- Recognition signal: 资产列表里 `state=starter`；`curl -sSL .../releases/download/<tag>/<asset>` 得到 9 字节的 404；客户端只看到 size 相同就以为成功。
+- Correct approach: 发布走 CI（GitHub runner 上传自己家的资产）；需要补发历史 tag 时用 `gh workflow run release.yml -f tag=<tag> -f platforms=linux` 重建并上传，不要从本机硬传；判成功看 `GET /releases/{id}/assets` 的 `state == uploaded`。
+- Prevention: 资产校验脚本里禁止用 size 作为成功判据；上传后必须回读下载 URL（匿名）并核对 sha256。
+- Verified by: 同一批资产本地直传 40 分钟未成功（starter），CI 重跑后三个资产全部 `state=uploaded`，匿名下载 sha256 与 `SHA256SUMS-linux` 完全一致。

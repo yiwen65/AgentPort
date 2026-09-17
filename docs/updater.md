@@ -60,6 +60,8 @@ Rust 命令：
 | `update_download` | 后台下载并校验签名，进度通过同一事件推送 |
 | `update_install` | 停止 Host → 复核 → `Update::install` → `app.restart()` |
 
+平台范围：应用内更新只对 **macOS** 生效（Tauri 的 Linux 载荷只能由 AppImage 产出，而本项目暂不发布 AppImage）。Linux 的 `.deb`/tarball 由包管理器升级，`update_status` 在非 AppImage 的 Linux 上直接返回 `disabled`；Windows 不在分发范围内。
+
 配置（`src-tauri/tauri.conf.json`）：
 
 ```json
@@ -99,15 +101,25 @@ WebView **没有** `updater:*` 权限（`src-tauri/capabilities/default.json` �
    git tag v0.2.0 && git push origin main v0.2.0
    ```
 
-3. GitHub Actions（`.github/workflows/release.yml`）在 tag 上构建 macOS（universal），由 `tauri-action` 上传 Release 资产，并生成 `latest.json`：
+3. GitHub Actions（`.github/workflows/release.yml`）在 tag 上构建 **macOS 与 Linux**，并发布到同一个 Release：
 
    ```
    AgentPort_0.2.0_universal.dmg
    AgentPort.app.tar.gz      + AgentPort.app.tar.gz.sig
    latest.json               （darwin-aarch64 / darwin-x86_64 指向同一个 universal 包）
+   AgentPort_0.2.0_amd64.deb            # Ubuntu 22.04 基线，22.04/24.04 共用
+   agentport-fedora-x86_64.tar.gz        # 社区验证档：CLI + sidecar
+   agentport-arch-x86_64.tar.gz
+   SHA256SUMS-linux
    ```
 
-   Linux 仍走既有手工/容器流程（`scripts/build-linux.sh`），由包管理器升级。
+   Linux 由 CI 在各自的发行版容器里构建（`scripts/linux/Dockerfile.*`，与本地 `scripts/build-linux.sh` 同一份配方），发布时用包管理器升级，因此没有应用内 updater 载荷。
+
+   已发布的 tag 可以在**不移动 tag** 的前提下重跑某一平台（例如补发 Linux 资产）：
+
+   ```bash
+   gh workflow run release.yml -f tag=v0.2.0 -f platforms=linux   # all | macos | linux
+   ```
 
 4. 客户端下一次启动时通过 `latest.json` 发现更新。
 
