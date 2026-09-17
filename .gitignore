@@ -1,9 +1,29 @@
-/target
-/src/node_modules
-/src/dist
+# Rust / Tauri 构建产物
+**/target/
 /src-tauri/binaries
+/dist-release
+/tmp-build
+
+# Node / 前端
+**/node_modules/
+/src/dist
+
+# 本机配置与凭据（仓库只应有 .env.example 这类模板）
+/.env
+/.env.*
+!/.env.example
+
+# UI 走查 / 对比截图与临时素材（正式素材放 docs/assets/）
+/ui-audit*/
+/ui-verification*/
+/design-qa*
+/*.png
+/*.jpg
+/*.jpeg
+
+# 运行期与系统垃圾
 **/*.log
 .DS_Store
-/tmp-build
-/dist-release
-/.env
+._*
+__pycache__/
+*.pyc
