@@ -47,7 +47,6 @@ pub const METHOD_REGISTRY: &[&str] = &[
     "session.output.unread.mark",
     "attention.poll",
     "session.auto_title",
-    "session.recovery_context.read",
     "agent.supported",
     "agent.probe",
     "agent.probe_all",
@@ -342,7 +341,6 @@ pub fn classify_method(method: &str) -> RetryClass {
         | "attention.poll"
         | "session.archives.list"
         | "session.status.history"
-        | "session.recovery_context.read"
         | "search"
         | "diag"
         | "agent.supported"
@@ -818,13 +816,6 @@ impl SessionStructuredPromptParams {
     pub fn expose_text(&self) -> &str {
         self.text.as_str()
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SessionRecoveryContextParams {
-    pub session_id: String,
-    pub cursor: RunCursor,
 }
 
 #[derive(Serialize, Deserialize)]

@@ -9,10 +9,10 @@ use agentport_remote_protocol::{
     Capability, CommitAiConfigSaveParams, DocumentWriteParams, Event, Hello, HelloResult, Limits,
     Precondition, PresetListParams, ProjectAddParams, ProjectIdParams, ProjectLayoutReplaceParams,
     ProjectRemoveParams, ProjectRenameParams, ProtocolError, ProtocolVersion, RemoteError,
-    RequestType, ResultStatus, RetryClass, RunCursor, SecretAddParams, SecretDeleteParams,
+    RequestType, ResultStatus, RetryClass, SecretAddParams, SecretDeleteParams,
     ServerEnvelope, ServerIdentity, SessionAttachParams, SessionAutoTitleParams,
     SessionControlParams, SessionCreateParams, SessionDetachParams, SessionIdParams,
-    SessionInputParams, SessionPinParams, SessionPollParams, SessionRecoveryContextParams,
+    SessionInputParams, SessionPinParams, SessionPollParams,
     SessionRenameParams, SessionRestartParams, SessionSeenParams, SessionStopParams,
     SessionStructuredPromptParams, SessionUnreadParams, WorktreeCreateParams, WorktreeIdParams,
     WorktreePreviewParams, WorktreeProjectParams, CAPABILITY_SESSION_EVENT_PUSH, EVENT_PUSH_MINOR,
@@ -138,7 +138,6 @@ enum PreparedRequest {
     SessionOutputUnreadMark(SessionUnreadParams),
     AttentionPoll(AttentionPollParams),
     SessionAutoTitle(SessionAutoTitleParams),
-    SessionRecoveryContextRead(SessionRecoveryContextParams),
     SecretAdd(SecretAddParams),
 }
 
@@ -806,9 +805,6 @@ fn handle_request<E: Write, S: RemoteService + Sync>(
         PreparedRequest::SessionAutoTitle(params) => service
             .auto_title_session(params)
             .and_then(|value| serialize_service_value(value, ResultStatus::Succeeded)),
-        PreparedRequest::SessionRecoveryContextRead(params) => service
-            .read_recovery_context(params)
-            .and_then(|value| serialize_service_value(value, ResultStatus::Succeeded)),
         PreparedRequest::SecretAdd(params) => service
             .add_secret(params)
             .and_then(|value| serialize_service_value(value, ResultStatus::Succeeded)),
@@ -1110,9 +1106,6 @@ fn prepare_request(
         "session.auto_title" => PreparedRequest::SessionAutoTitle(
             serde_json::from_str(params).map_err(ProtocolError::InvalidJson)?,
         ),
-        "session.recovery_context.read" => PreparedRequest::SessionRecoveryContextRead(
-            serde_json::from_str(params).map_err(ProtocolError::InvalidJson)?,
-        ),
         "secret.add" => PreparedRequest::SecretAdd(
             serde_json::from_str(params).map_err(ProtocolError::InvalidJson)?,
         ),
@@ -1242,7 +1235,7 @@ fn write_result(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentport_remote_protocol::{read_frame, HelloType, METHOD_REGISTRY};
+    use agentport_remote_protocol::{read_frame, HelloType, RunCursor, METHOD_REGISTRY};
     use serde_json::json;
     use std::io::Cursor;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -1544,7 +1537,6 @@ mod tests {
             json!({"type":"request","requestId":"s11","method":"session.seen.mark","params":{"sessionId":"ses_1","cursor":{"runId":"run_1","runOrdinal":1,"sequence":2}}}),
             json!({"type":"request","requestId":"s12","method":"session.output.unread.mark","params":{"sessionId":"ses_1","cursor":{"runId":"run_1","runOrdinal":1,"generation":0,"offset":3,"statusSequence":2}}}),
             json!({"type":"request","requestId":"s13","method":"session.auto_title","params":{"sessionId":"ses_1","input":"AUTO_TITLE_DO_NOT_ECHO"}}),
-            json!({"type":"request","requestId":"s14","method":"session.recovery_context.read","params":{"sessionId":"ses_1","cursor":{"runId":"run_1","runOrdinal":1,"generation":0,"offset":3,"statusSequence":2}}}),
         ];
         let mut input_bytes = Vec::new();
         append(&mut input_bytes, &hello(ProtocolVersion::V1));

@@ -37,7 +37,7 @@ use agentport_remote_protocol::{
     ProjectRenameParams, RemoteAgentType, RunCursor, SecretAddParams, SecretDeleteParams,
     SessionAttachParams, SessionAutoTitleParams, SessionControlKind, SessionControlParams,
     SessionCreateParams, SessionDetachParams, SessionIdParams, SessionInputParams,
-    SessionPinParams, SessionPollParams, SessionRecoveryContextParams, SessionRenameParams,
+    SessionPinParams, SessionPollParams, SessionRenameParams,
     SessionRestartParams, SessionSeenParams, SessionStopParams, SessionStructuredPromptParams,
     SessionUnreadParams, WorktreeCreateParams, WorktreeIdParams, WorktreePreviewParams,
     WorktreeProjectParams,
@@ -499,15 +499,6 @@ pub struct SessionLaunchResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RecoveryContextResult {
-    pub data_base64: String,
-    pub offset: u64,
-    pub total: u64,
-    pub cursor: RunCursor,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SessionInputResult {
     pub batch_id: String,
     pub server_sequence: u64,
@@ -696,12 +687,6 @@ pub trait RemoteService {
         Err(ServiceError::InvalidRequest)
     }
     fn auto_title_session(&self, _params: SessionAutoTitleParams) -> Result<bool> {
-        Err(ServiceError::InvalidRequest)
-    }
-    fn read_recovery_context(
-        &self,
-        _params: SessionRecoveryContextParams,
-    ) -> Result<RecoveryContextResult> {
         Err(ServiceError::InvalidRequest)
     }
     fn attach_session(&self, params: SessionAttachParams) -> Result<SessionAttachResult>;
@@ -2477,49 +2462,6 @@ impl RemoteService for CoreService {
         self.db
             .auto_rename_session_from_first_input(&params.session_id, params.expose_input())
             .map_err(Into::into)
-    }
-
-    fn read_recovery_context(
-        &self,
-        params: SessionRecoveryContextParams,
-    ) -> Result<RecoveryContextResult> {
-        const BEFORE: u64 = 128 * 1024;
-        const AFTER: u64 = 256 * 1024;
-        let session = self.db.get_session(&params.session_id)?;
-        let cursor = remote_cursor_to_core(&params.cursor)?;
-        let latest = self
-            .db
-            .get_latest_log_cursor(&params.session_id)?
-            .ok_or(ServiceError::PreconditionFailed)?;
-        if cursor.run_id != latest.run_id
-            || cursor.run_ordinal != latest.run_ordinal
-            || cursor.generation != latest.generation
-            || cursor.offset > latest.offset
-        {
-            return Err(ServiceError::PreconditionFailed);
-        }
-        let path = std::path::PathBuf::from(&session.log_path);
-        let length = std::fs::metadata(&path)
-            .map_err(agentport_core::CoreError::Io)?
-            .len();
-        let latest_offset =
-            u64::try_from(latest.offset).map_err(|_| ServiceError::InvalidRequest)?;
-        if length < latest_offset {
-            return Err(ServiceError::PreconditionFailed);
-        }
-        let target = u64::try_from(cursor.offset).map_err(|_| ServiceError::InvalidRequest)?;
-        let start = target.saturating_sub(BEFORE);
-        let end = target.saturating_add(AFTER).min(latest_offset);
-        let data = agentport_core::logs::read_range(&path, start, end - start)?;
-        if data.len() as u64 != end - start {
-            return Err(ServiceError::PreconditionFailed);
-        }
-        Ok(RecoveryContextResult {
-            data_base64: base64::engine::general_purpose::STANDARD.encode(data),
-            offset: start,
-            total: latest_offset,
-            cursor: params.cursor,
-        })
     }
 
     fn attach_session(&self, params: SessionAttachParams) -> Result<SessionAttachResult> {
@@ -4998,47 +4940,6 @@ mod tests {
             })
             .unwrap();
         assert!(pinned.pinned_at.is_some());
-
-        let cursor = LogCursor {
-            run_id: "run-facade".into(),
-            run_ordinal: 1,
-            generation: 2,
-            offset: 10,
-        };
-        service
-            .db
-            .set_latest_log_cursor(session_id, &cursor)
-            .unwrap();
-        let context = service
-            .read_recovery_context(SessionRecoveryContextParams {
-                session_id: session_id.into(),
-                cursor: RunCursor {
-                    run_id: cursor.run_id.clone(),
-                    run_ordinal: 1,
-                    generation: 2,
-                    offset: 5,
-                    status_sequence: 0,
-                },
-            })
-            .unwrap();
-        assert_eq!(context.offset, 0);
-        assert_eq!(context.total, 10);
-        assert_eq!(
-            base64::engine::general_purpose::STANDARD
-                .decode(context.data_base64)
-                .unwrap(),
-            b"0123456789"
-        );
-        assert!(matches!(
-            service.read_recovery_context(SessionRecoveryContextParams {
-                session_id: session_id.into(),
-                cursor: RunCursor {
-                    generation: 3,
-                    ..context.cursor
-                },
-            }),
-            Err(ServiceError::PreconditionFailed)
-        ));
 
         service
             .archive_session(SessionIdParams {
