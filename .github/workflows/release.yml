@@ -65,6 +65,14 @@ jobs:
               --features agentport-relay/connector --target "$target"
           done
           for binary in agentport-host agentport-remote-bridge agentport-mosh-attach agentport-connector; do
+            # Per-arch copies: tauri-build resolves externalBin for each cargo
+            # target of the universal build; the lipo'd file covers bundling.
+            cp "target/aarch64-apple-darwin/release/$binary" \
+              "src-tauri/binaries/$binary-aarch64-apple-darwin"
+            cp "target/x86_64-apple-darwin/release/$binary" \
+              "src-tauri/binaries/$binary-x86_64-apple-darwin"
+            chmod +x "src-tauri/binaries/$binary-aarch64-apple-darwin" \
+              "src-tauri/binaries/$binary-x86_64-apple-darwin"
             lipo -create \
               "target/aarch64-apple-darwin/release/$binary" \
               "target/x86_64-apple-darwin/release/$binary" \

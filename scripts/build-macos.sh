@@ -62,10 +62,16 @@ if [ "$UNIVERSAL" = 1 ]; then
   cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-relay --features agentport-relay/connector --target aarch64-apple-darwin
   cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-relay --features agentport-relay/connector --target x86_64-apple-darwin
   for binary in agentport-host agentport-remote-bridge agentport-mosh-attach agentport-connector; do
+    # Per-arch copies: tauri-build resolves externalBin for each cargo target
+    # of the universal build, not only for the lipo'd file.
+    cp "target/aarch64-apple-darwin/release/$binary" "src-tauri/binaries/$binary-aarch64-apple-darwin"
+    cp "target/x86_64-apple-darwin/release/$binary" "src-tauri/binaries/$binary-x86_64-apple-darwin"
+    chmod +x "src-tauri/binaries/$binary-aarch64-apple-darwin" "src-tauri/binaries/$binary-x86_64-apple-darwin"
     lipo -create \
       "target/aarch64-apple-darwin/release/$binary" \
       "target/x86_64-apple-darwin/release/$binary" \
       -output "src-tauri/binaries/$binary-universal-apple-darwin"
+    chmod +x "src-tauri/binaries/$binary-universal-apple-darwin"
   done
   (cd src-tauri && ../src/node_modules/.bin/tauri build --ci --target universal-apple-darwin "${UPDATER_ARGS[@]+"${UPDATER_ARGS[@]}"}")
 else
