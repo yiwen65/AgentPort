@@ -19,30 +19,8 @@ use std::path::{Path, PathBuf};
 pub const EXPORT_FORMAT_VERSION: u32 = 1;
 pub const DIAG_ZIP_VERSION: u32 = 1;
 
-/// Per-session terminal log cap inside diagnostics zips: the newest evidence
-/// lives at the tail, so only the last 2 MiB per session is packed. Keeps the
-/// zip bounded even when a session log sits at its configured rotation limit.
-
 /// Redaction rule string declared in manifest.json (mirrors redact.rs).
 const REDACTION_RULE: &str = "exact-byte-match:fixed-mask";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogRange {
-    All,
-    LastLines(u32),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AnsiMode {
-    Keep,
-    Strip,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MdBlocks {
-    All,
-    Last(u32),
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,102 +47,6 @@ pub struct Exporter<'a> {
 }
 
 impl<'a> Exporter<'a> {
-    /// Raw terminal log (.log). `dest` is the final file; write temp+rename.
-    pub fn export_log(
-        &self,
-        session_id: &str,
-        dest: &Path,
-        range: LogRange,
-        ansi: AnsiMode,
-        secrets: &[Vec<u8>],
-    ) -> Result<PathBuf> {
-        refuse_overwrite(dest)?;
-        let session = self.db.get_session(session_id)?;
-        // Logs are capped at their configured rotation limit, so a full
-        // in-memory read is bounded; binary-safe byte handling throughout.
-        let raw = std::fs::read(&session.log_path)?;
-        let sliced: &[u8] = match range {
-            LogRange::All => &raw,
-            LogRange::LastLines(n) => tail_lines(&raw, n as usize),
-        };
-        // Strip BEFORE redacting: a secret printed with escape sequences between
-        // its bytes becomes contiguous only after stripping. (AnsiMode::Keep is
-        // raw preservation by definition — such split secrets stay as printed.)
-        let cleaned = match ansi {
-            AnsiMode::Keep => sliced.to_vec(),
-            AnsiMode::Strip => strip_ansi_escapes::strip(sliced),
-        };
-        // redact_bytes is total (infallible); a future fallible redactor must
-        // abort the export here instead of emitting unredacted bytes (3.6 C).
-        let (out, hits) = crate::redact::redact_bytes(&cleaned, secrets);
-        self.db.record_redaction_hits(session_id, hits)?;
-        atomic_write_new(self.paths, dest, &out)?;
-        Ok(dest.to_path_buf())
-    }
-
-    /// Markdown with header: session, agent, project, branch, time range (8.1).
-    pub fn export_markdown(
-        &self,
-        session_id: &str,
-        dest: &Path,
-        blocks: MdBlocks,
-        secrets: &[Vec<u8>],
-    ) -> Result<PathBuf> {
-        refuse_overwrite(dest)?;
-        let session = self.db.get_session(session_id)?;
-        let project = self.db.get_project(&session.project_id)?;
-        let worktree = match &session.worktree_id {
-            Some(id) => self.db.get_worktree(id).ok(),
-            None => None,
-        };
-        let raw = std::fs::read(&session.log_path)?;
-        // Markdown is the human/paste format: always strip ANSI, decode lossy.
-        let text = String::from_utf8_lossy(&strip_ansi_escapes::strip(&raw)).into_owned();
-        let all = visible_blocks(&text);
-        let selected: &[String] = match blocks {
-            MdBlocks::All => &all,
-            MdBlocks::Last(n) => &all[all.len().saturating_sub(n as usize)..],
-        };
-        let body = selected.join("\n\n");
-        let fence = fence_for(&body);
-
-        let mut md = String::with_capacity(body.len() + 512);
-        md.push_str("---\n");
-        md.push_str(&format!("session: {}\n", header_value(&session.id)));
-        md.push_str(&format!("title: {}\n", header_value(&session.title)));
-        md.push_str(&format!(
-            "agent: {}\n",
-            header_value(session.adapter_type.display_name())
-        ));
-        md.push_str(&format!("project: {}\n", header_value(&project.name)));
-        md.push_str(&format!("cwd: {}\n", header_value(&session.cwd)));
-        if let Some(w) = &worktree {
-            md.push_str(&format!("branch: {}\n", header_value(&w.branch)));
-        }
-        md.push_str(&format!("created: {}\n", session.created_at.to_rfc3339()));
-        md.push_str(&format!("updated: {}\n", session.updated_at.to_rfc3339()));
-        md.push_str(&format!("lifecycle: {}\n", session.lifecycle.as_str()));
-        md.push_str(&format!("exported: {}\n", Utc::now().to_rfc3339()));
-        md.push_str("---\n\n");
-        md.push_str(&fence);
-        md.push('\n');
-        md.push_str(&body);
-        md.push('\n');
-        md.push_str(&fence);
-        md.push('\n');
-
-        // Redact the assembled document — the header (title/cwd) is user data
-        // too, so masking only the body would leave a leak path.
-        let (out, hits) = crate::redact::redact_bytes(md.as_bytes(), secrets);
-        self.db.record_redaction_hits(session_id, hits)?;
-        atomic_write_new(self.paths, dest, &out)?;
-        Ok(dest.to_path_buf())
-    }
-
-    /// Redacted diagnostics ZIP (P1, 8.2 structure):
-    /// manifest.json, sessions/*.md|.log|status-events.json,
-    /// worktrees/*-git-status.txt, diagnostics/{app-version,platform,adapter-capabilities}.
-    /// Default: NO env values, NO model credentials. Atomic; temp cleanup on failure.
     pub fn export_diagnostics_zip(
         &self,
         session_ids: &[String],
@@ -324,20 +206,6 @@ fn refuse_overwrite(dest: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write `data` to `dest` atomically: temp file under exports/ (written +
-/// fsynced), then rename onto `dest`. The guard deletes the temp file on any
-/// failure; after a successful rename the path is gone and drop is a no-op.
-fn atomic_write_new(paths: &AppPaths, dest: &Path, data: &[u8]) -> Result<()> {
-    let exports = paths.exports_dir();
-    std::fs::create_dir_all(&exports)?;
-    let tmp = exports.join(format!(".export-{}", crate::ids::new_id("tmp")));
-    let _guard = TempFileGuard::new(tmp.clone());
-    let mut f = private_create(&tmp)?;
-    f.write_all(data)?;
-    f.sync_all()?;
-    drop(f);
-    publish(&tmp, dest)
-}
 
 /// Create a fresh file with owner-only permissions. Exports contain terminal
 /// output and must never inherit the process umask's group/world readability,
@@ -393,71 +261,9 @@ pub fn publish_backup(staging: &Path, dest: &Path) -> Result<()> {
     publish(staging, dest)
 }
 
-/// Byte-oriented "last n lines": scan for `\n` from the tail, no UTF-8
-/// assumption. One trailing newline is ignored so `tail_lines("a\nb\n", 1)`
-/// yields "b\n" (tail(1) semantics); fewer lines than `n` yields everything.
-fn tail_lines(data: &[u8], n: usize) -> &[u8] {
-    if n == 0 {
-        return &[];
-    }
-    let end = if data.last() == Some(&b'\n') {
-        data.len() - 1
-    } else {
-        data.len()
-    };
-    let mut seen = 0usize;
-    for i in (0..end).rev() {
-        if data[i] == b'\n' {
-            seen += 1;
-            if seen == n {
-                return &data[i + 1..];
-            }
-        }
-    }
-    data
-}
 
-/// Split stripped terminal text into "visible output blocks": paragraphs
-/// separated by blank (empty or whitespace-only) lines; empty blocks dropped.
-fn visible_blocks(text: &str) -> Vec<String> {
-    let mut blocks = Vec::new();
-    let mut cur: Vec<&str> = Vec::new();
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            if !cur.is_empty() {
-                blocks.push(cur.join("\n"));
-                cur.clear();
-            }
-        } else {
-            cur.push(line.trim_end());
-        }
-    }
-    if !cur.is_empty() {
-        blocks.push(cur.join("\n"));
-    }
-    blocks
-}
 
-/// Backtick fence one longer than any backtick run inside `content` (min 3),
-/// so terminal output containing ``` cannot break out of the fence.
-fn fence_for(content: &str) -> String {
-    let mut max_run = 0usize;
-    let mut run = 0usize;
-    for c in content.chars() {
-        if c == '`' {
-            run += 1;
-            max_run = max_run.max(run);
-        } else {
-            run = 0;
-        }
-    }
-    "`".repeat((max_run + 1).max(3))
-}
 
-/// One-line header value: CR/LF would break the YAML-style header block.
-fn header_value(s: &str) -> String {
-    s.replace(['\r', '\n'], " ")
-}
 
 /// Post-redaction assertion: scan for any secret byte sequence still present
 /// in an export payload. The error message deliberately carries NO secret
@@ -680,157 +486,6 @@ mod tests {
         s
     }
 
-    // -- 1. export_log -------------------------------------------------------
-
-    #[test]
-    fn export_log_ranges_strip_and_conflict() {
-        let fx = fx();
-        add_project(&fx.db, "prj_1", "demo");
-        let log = write_log(&fx, "out.log", b"l1\nl2\n\x1b[31ml3\x1b[0m\n");
-        add_session(&fx.db, "ses_1", "prj_1", &log);
-        let ex = Exporter {
-            paths: &fx.paths,
-            db: &fx.db,
-        };
-        let secrets: Vec<Vec<u8>> = vec![];
-
-        // All + Keep: byte-exact copy.
-        let dest = fx.dir.path().join("all.log");
-        let p = ex
-            .export_log("ses_1", &dest, LogRange::All, AnsiMode::Keep, &secrets)
-            .unwrap();
-        assert_eq!(p, dest);
-        assert_eq!(
-            std::fs::read(&dest).unwrap(),
-            b"l1\nl2\n\x1b[31ml3\x1b[0m\n"
-        );
-
-        // Existing destination -> Conflict, never silent overwrite (8.3).
-        assert!(matches!(
-            ex.export_log("ses_1", &dest, LogRange::All, AnsiMode::Keep, &secrets),
-            Err(CoreError::Conflict(_))
-        ));
-        assert_eq!(
-            std::fs::read(&dest).unwrap(),
-            b"l1\nl2\n\x1b[31ml3\x1b[0m\n"
-        );
-
-        // LastLines(2) from the tail.
-        let dest2 = fx.dir.path().join("tail.log");
-        ex.export_log(
-            "ses_1",
-            &dest2,
-            LogRange::LastLines(2),
-            AnsiMode::Keep,
-            &secrets,
-        )
-        .unwrap();
-        assert_eq!(std::fs::read(&dest2).unwrap(), b"l2\n\x1b[31ml3\x1b[0m\n");
-
-        // Strip leaves no ESC bytes anywhere.
-        let dest3 = fx.dir.path().join("strip.log");
-        ex.export_log("ses_1", &dest3, LogRange::All, AnsiMode::Strip, &secrets)
-            .unwrap();
-        let out = std::fs::read(&dest3).unwrap();
-        assert_eq!(out, b"l1\nl2\nl3\n");
-        assert!(!out.contains(&0x1b));
-
-        // Binary-safe tailing: invalid UTF-8 / NUL bytes pass through untouched.
-        let log2 = write_log(&fx, "bin.log", b"a\n\xff\xfe\x00\nb\n");
-        add_session(&fx.db, "ses_2", "prj_1", &log2);
-        let dest4 = fx.dir.path().join("bin-tail.log");
-        ex.export_log(
-            "ses_2",
-            &dest4,
-            LogRange::LastLines(2),
-            AnsiMode::Keep,
-            &secrets,
-        )
-        .unwrap();
-        assert_eq!(std::fs::read(&dest4).unwrap(), b"\xff\xfe\x00\nb\n");
-
-        // Redaction is applied and the hit is recorded in the audit table.
-        let log3 = write_log(&fx, "secret.log", b"token=hunter2-token-abcdef ok\n");
-        add_session(&fx.db, "ses_3", "prj_1", &log3);
-        let dest5 = fx.dir.path().join("redacted.log");
-        ex.export_log(
-            "ses_3",
-            &dest5,
-            LogRange::All,
-            AnsiMode::Keep,
-            &[SECRET.to_vec()],
-        )
-        .unwrap();
-        let out = std::fs::read(&dest5).unwrap();
-        assert_eq!(out, b"token=[redacted] ok\n");
-        assert_eq!(fx.db.redaction_hits_total("ses_3").unwrap(), 1);
-
-        // No temp artifacts left behind in exports/.
-        let leftovers: Vec<_> = std::fs::read_dir(fx.paths.exports_dir())
-            .map(|it| it.collect())
-            .unwrap_or_default();
-        assert!(leftovers.is_empty(), "temp leftovers: {leftovers:?}");
-    }
-
-    // -- 2. export_markdown --------------------------------------------------
-
-    #[test]
-    fn export_markdown_header_blocks_and_redaction() {
-        let fx = fx();
-        add_project(&fx.db, "prj_1", "main-api");
-        add_worktree(
-            &fx.db,
-            "wt_1",
-            "prj_1",
-            "agent/fix-login",
-            Path::new("/tmp/wt-x"),
-        );
-        let log = write_log(
-            &fx,
-            "md.log",
-            b"block one\n\nblock two\n\nblock three hunter2-token-abcdef\n",
-        );
-        add_session_wt(&fx.db, "ses_1", "prj_1", &log, Some("wt_1"));
-
-        let ex = Exporter {
-            paths: &fx.paths,
-            db: &fx.db,
-        };
-        let dest = fx.dir.path().join("out.md");
-        ex.export_markdown("ses_1", &dest, MdBlocks::Last(2), &[SECRET.to_vec()])
-            .unwrap();
-        let md = std::fs::read_to_string(&dest).unwrap();
-
-        // Header fields (8.1): session, title, agent, project, cwd, branch,
-        // created/updated, lifecycle, export time.
-        for needle in [
-            "session: ses_1",
-            "title: title of ses_1",
-            "agent: Kimi Code",
-            "project: main-api",
-            "cwd: /tmp/cwd",
-            "branch: agent/fix-login",
-            "created: ",
-            "updated: ",
-            "lifecycle: running",
-            "exported: ",
-        ] {
-            assert!(md.contains(needle), "header missing {needle:?}:\n{md}");
-        }
-
-        // Last(2) keeps the last two visible blocks; block one is gone.
-        assert!(!md.contains("block one"));
-        assert!(md.contains("block two"));
-        assert!(md.contains("block three"));
-        // single fence pair around the body
-        assert_eq!(md.matches("```").count(), 2, "fence count:\n{md}");
-
-        // Secret masked in the body and hit recorded.
-        assert!(md.contains("[redacted]"));
-        assert!(!md.contains(std::str::from_utf8(SECRET).unwrap()));
-        assert_eq!(fx.db.redaction_hits_total("ses_1").unwrap(), 1);
-    }
-
     // -- 3+4. diagnostics zip: structure, redaction, manifest hygiene --------
 
     /// Two sessions: ses_a has a worktree on a real git repo, status events and
@@ -998,23 +653,5 @@ mod tests {
 
     // -- helpers unit checks --------------------------------------------------
 
-    #[test]
-    fn tail_lines_byte_semantics() {
-        assert_eq!(tail_lines(b"a\nb\nc\n", 2), b"b\nc\n");
-        assert_eq!(tail_lines(b"a\nb\nc\n", 1), b"c\n");
-        assert_eq!(tail_lines(b"a\nb", 1), b"b");
-        assert_eq!(tail_lines(b"a\nb", 9), b"a\nb");
-        assert_eq!(tail_lines(b"no-newline", 3), b"no-newline");
-        assert_eq!(tail_lines(b"a\nb\n", 0), b"");
-        assert_eq!(tail_lines(b"", 3), b"");
-    }
 
-    #[test]
-    fn visible_blocks_split_and_drop_empty() {
-        // Leading indentation is terminal content and survives; only trailing
-        // whitespace is trimmed.
-        let blocks = visible_blocks("one\n\n\n two \n\nthree\nstill three\n\n");
-        assert_eq!(blocks, vec!["one", " two", "three\nstill three"]);
-        assert!(visible_blocks("\n\n\n").is_empty());
-    }
 }
