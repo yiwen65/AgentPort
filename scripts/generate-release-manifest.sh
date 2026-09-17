@@ -12,7 +12,15 @@ CLI=./target/debug/agentport-cli
 [ -x ./target/release/agentport-cli ] && CLI=./target/release/agentport-cli
 export AGENTPORT_DATA_DIR="${AGENTPORT_DATA_DIR:-$(mktemp -d /tmp/agentport-manifest.XXXXXX)}"
 GATE_LOG_DIR=$(mktemp -d /tmp/agentport-release-gates.XXXXXX)
-trap 'rm -r -- "$GATE_LOG_DIR"' EXIT
+# Keep the logs when a gate fails: a recorded failure nobody can inspect is
+# useless. Successful runs clean up after themselves.
+cleanup_gate_logs() {
+  [ "${GATE_FAILURE:-0}" -eq 0 ] && rm -r -- "$GATE_LOG_DIR" || {
+    echo "gate logs kept at $GATE_LOG_DIR" >&2
+    grep -h -A 2 "test result: FAILED\|^error" "$GATE_LOG_DIR"/*.log 2>/dev/null | head -20 >&2 || true
+  }
+}
+trap cleanup_gate_logs EXIT
 GATE_FAILURE=0
 
 # Probe the real CLIs on this machine for the manifest. When multiple
