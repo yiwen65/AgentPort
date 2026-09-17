@@ -34,6 +34,23 @@ jobs:
             exit 1
           fi
 
+      - name: Ensure the GitHub release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Create the release before the build: tauri-action uploads into it
+          # afterwards, and a token that cannot write releases fails here in
+          # seconds instead of after a full build.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "AgentPort $GITHUB_REF_NAME" \
+              --notes "See the assets below. Desktop updates are delivered in-app via the Tauri updater (docs/updater.md)." \
+              --verify-tag
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
