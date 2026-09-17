@@ -493,6 +493,10 @@ pub struct Session {
     pub lifecycle: Lifecycle,
     pub agent_session_id: Option<String>,
     pub resume_precision: ResumePrecision,
+    /// Run-scoped legacy path, retained for compatibility only: the Host keeps
+    /// a bounded in-memory tail and no longer writes a PTY body copy
+    /// (docs/user-guide.md, "不保存正文索引"). Read output through the Host
+    /// socket; read ended history through the Agent's native logs.
     pub log_path: String,
     pub adapter_type: AgentType,
     #[serde(default = "default_agent_transport")]

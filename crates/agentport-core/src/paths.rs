@@ -72,6 +72,8 @@ impl AppPaths {
     pub fn session_dir(&self, session_id: &str) -> PathBuf {
         self.sessions_dir().join(session_id)
     }
+    /// Legacy session-level output path. Only kept so old records and the
+    /// legacy-log inventory can be resolved; nothing writes this file now.
     pub fn log_path(&self, session_id: &str) -> PathBuf {
         self.session_dir(session_id).join("output.log")
     }
@@ -81,6 +83,7 @@ impl AppPaths {
     pub fn run_dir(&self, session_id: &str, run_id: &str) -> PathBuf {
         self.session_dir(session_id).join("runs").join(run_id)
     }
+    /// Legacy per-run output path (same caveat as [`Self::log_path`]).
     pub fn run_log_path(&self, session_id: &str, run_id: &str) -> PathBuf {
         self.run_dir(session_id, run_id).join("output.log")
     }

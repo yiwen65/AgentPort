@@ -1,7 +1,7 @@
 {
   "manifestVersion": 1,
   "appVersion": "0.1.1",
-  "generatedAt": "2026-09-17T10:34:58.431884+00:00",
+  "generatedAt": "2026-09-17T11:11:56.017188+00:00",
   "deliveryScope": "p0_p2",
   "platforms": [
     {
@@ -111,7 +111,7 @@
       "capabilityHash": "sha256:83b304218a5baee2",
       "exactResume": true,
       "hookStatus": "supported",
-      "verifiedAt": "2026-09-17T10:32:48.376Z"
+      "verifiedAt": "2026-09-17T11:09:43.495Z"
     },
     {
       "agent": "codex",
@@ -120,7 +120,16 @@
       "capabilityHash": "sha256:f7ad282c8e2e8ba5",
       "exactResume": true,
       "hookStatus": "supported",
-      "verifiedAt": "2026-09-17T10:32:48.743Z"
+      "verifiedAt": "2026-09-17T11:09:43.868Z"
+    },
+    {
+      "agent": "kimi",
+      "executablePath": "/Users/w/.kimi-code/bin/kimi",
+      "versionText": "2.0.0",
+      "capabilityHash": "sha256:28c9a754ab23347b",
+      "exactResume": true,
+      "hookStatus": "degraded",
+      "verifiedAt": "2026-09-17T11:09:45.036Z"
     },
     {
       "agent": "pi",
@@ -129,7 +138,7 @@
       "capabilityHash": "sha256:8ebccf8044a91fff",
       "exactResume": true,
       "hookStatus": "unavailable",
-      "verifiedAt": "2026-09-17T10:32:52.411Z"
+      "verifiedAt": "2026-09-17T11:09:46.335Z"
     },
     {
       "agent": "qoder",
@@ -138,7 +147,7 @@
       "capabilityHash": "sha256:91e83c2e0568e842",
       "exactResume": true,
       "hookStatus": "supported",
-      "verifiedAt": "2026-09-17T10:32:54.872Z"
+      "verifiedAt": "2026-09-17T11:09:48.365Z"
     },
     {
       "agent": "shell",
@@ -147,7 +156,7 @@
       "capabilityHash": "sha256:fef18104984383af",
       "exactResume": false,
       "hookStatus": "unavailable",
-      "verifiedAt": "2026-09-17T10:32:55.286Z"
+      "verifiedAt": "2026-09-17T11:09:48.791Z"
     }
   ],
   "tests": [
@@ -183,6 +192,7 @@
     "Developer ID signing/notarization and clean-VM interactive runs (IME/Orca/VoiceOver) are manual steps, listed in docs/acceptance-report.md.",
     "FTS5 trigram search index stores text+postings (measured ~3.6x source size); PRD's 0.35 ratio would require a contentless index redesign.",
     "AppImage remains unpublished (linuxdeploy download failure); reproducible via scripts/build-linux.sh appimage.",
-    "Legacy run-scoped output.log surfaces are still referenced (sessions.log_path, the remote recovery-context reader, the diag log byte count) although the Host no longer writes a PTY body copy; consumers must move to native logs before those paths can be removed."
+    "Legacy output.log surfaces removed in this round: Exporter::export_log/export_markdown and the remote session.recovery_context.read capability are gone, and diag hosts reports emitted bytes from the durable log cursor. Still to retire (dead but harmless, needs one migration-sized change): sessions.log_path plus the CLI's logPath output, and SearchIndex's FTS body index/rebuild/query.",
+    "Probe budget for read-only CLI probes is 5 s (was 2 s): the old value timed out on a loaded machine and on cold node-based CLIs."
   ]
 }

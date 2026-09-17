@@ -442,3 +442,21 @@
 - Correct approach: 把断言重新表述为当前契约（重连读取字节连续、raw 导出显式报错、md/json 说明缺原生历史、诊断包只带状态事件、CLI 检索只覆盖原生日志），内容级导出/检索继续由 core 的原生历史集成测试用 fixture 覆盖。
 - Prevention: 删除或替换某个持久化产物时，同一提交里搜索并更新 e2e/脚本中的引用（`rg 'output\\.log|export log' e2e scripts`）。
 - Verified by: wave1/wave2 重新基线后双双 PASS，发布清单五项门禁全绿。
+
+## `移除 PTY 日志后的遗留面` — 先删“会读它的活路径”，再谈字段
+
+- Wrong approach: 架构改成"不保存 PTY 正文副本"后，只删掉写日志的代码，把读它的路径（导出、远端能力、诊断字节数）留着，认为"反正文件不存在，报错就报错"。
+- Why it failed: 这些路径不是无害的空转——`Exporter::export_log/export_markdown` 会 `std::fs::read` 一个永不存在的文件并在 CLI/Service 之外仍可被调用；远端 `session.recovery_context.read` 永久失败（`metadata` NotFound）；`diag hosts` 的 `logBytes` 永远 0；`perf` 的 crash-recovery 场景把空文件当"输出连续"的证据，log_rotation 场景整个前提消失。
+- Recognition signal: 调用方是测试自己写出来的产物（`index_session_log`、`rebuild_all`、`query` 只有单测调用），或实现里出现 `unwrap_or_default()`/`unwrap_or(0)` 掩盖"读不到"的事实。
+- Correct approach: 先用 `rg 'log_path|output\.log'` 列出全部读写点并逐个判定：活路径 → 改读真实来源（Host socket / 原生日志 / durable cursor）；纯死代码 → 连同测试删除；仅剩兼容字段 → 注释标明"legacy、只读不写"并记录待清理。
+- Prevention: 删除任何持久化产物时，同一任务里搜索并处理 `read/export/metadata/perf` 四类消费者；不确定是否可达时，用"该函数是否有非测试调用方"作为判据（`rg '\.func\(' --glob '!*test*'`）。
+- Verified by: 删除后 workspace 全绿（30 套件），`npm test` 683/683，两条 e2e PASS；`diag hosts` 的 logBytes 改为 durable cursor（其单测改为写入 cursor 而非文件）。
+
+## `探针超时 2s` — 负载下的假阴性比慢更贵
+
+- Wrong approach: 把只读 CLI 探测（`--version`/`--help`）的硬超时定为 2s，并用固定绝对时间（`elapsed < 6s`）写测试断言。
+- Why it failed: 满负载套件运行时，连 `#!/bin/sh` + `echo` 这样的小脚本都可能超过 2s（实测 `Timeout("… --version exceeded 2s")`），于是"可用 CLI"被判为不可用；同类断言还会随常量调整一起失效。
+- Recognition signal: 单测单独跑稳定通过、全量运行时随机失败，且失败信息是 `Timeout(... exceeded 2s)`；断言里出现与常量无关的硬编码秒数。
+- Correct approach: 把探针预算提到 5s（对 node 系 CLI 冷启动也更真实），并把测试断言写成 `PROBE_TIMEOUT + slack` 的形式。
+- Prevention: 超时相关断言永远引用常量；评估超时时把"负载机器 + 冷启动 CLI"作为默认场景，而不是理想情况。
+- Verified by: `cargo test --workspace --all-targets` 连续两轮 EXIT=0（修复前每轮约 1 个 adapter 探针失败）。
