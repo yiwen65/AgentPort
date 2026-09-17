@@ -2,6 +2,11 @@ name: release
 
 # Tag-driven release: one tag = one version for the Tauri shell, the embedded
 # frontend dist and every bundled sidecar. See docs/updater.md.
+#
+# macOS only: the Tauri updater's Linux payload can only be produced from an
+# AppImage bundle, which this project does not publish yet (see
+# release-manifest.json). Linux artifacts keep their existing manual flow
+# (scripts/build-linux.sh) and are upgraded by the system package manager.
 on:
   push:
     tags: ["v*"]
@@ -11,21 +16,9 @@ permissions:
   contents: write
 
 jobs:
-  desktop:
-    name: AgentPort (${{ matrix.platform }})
-    runs-on: ${{ matrix.platform }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Universal macOS: tauri-action publishes the same .app.tar.gz under
-          # both darwin-aarch64 and darwin-x86_64 in latest.json.
-          - platform: macos-latest
-            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
-            tauri-args: --target universal-apple-darwin
-          - platform: ubuntu-22.04
-            rust-targets: ""
-            tauri-args: ""
+  macos:
+    name: AgentPort (macOS universal)
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -49,26 +42,19 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.rust-targets }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
 
-      - name: Linux build dependencies
-        if: startsWith(matrix.platform, 'ubuntu')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev patchelf build-essential libssl-dev git
-
       - name: Frontend dependencies
         run: npm --prefix src ci
 
-      # Mirrors the sidecar staging in scripts/build-macos.sh: externalBin
-      # inputs must exist for the exact target being bundled.
-      - name: Stage macOS universal sidecars
-        if: startsWith(matrix.platform, 'macos')
+      # Mirrors the sidecar staging in scripts/build-macos.sh --universal:
+      # tauri-build resolves externalBin entries for the exact target triple,
+      # so `*-universal-apple-darwin` must exist before the bundler runs.
+      - name: Stage universal sidecars
         run: |
           set -euo pipefail
           for target in aarch64-apple-darwin x86_64-apple-darwin; do
@@ -84,18 +70,15 @@ jobs:
             chmod +x "src-tauri/binaries/$binary-universal-apple-darwin"
           done
 
-      - name: Stage Linux sidecars
-        if: startsWith(matrix.platform, 'ubuntu')
-        run: bash src-tauri/scripts/build-sidecar.sh release
-
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Updater signing (verify-only public key lives in tauri.conf.json).
+          # Updater signing; only the matching public key in tauri.conf.json is
+          # accepted by clients, and it is never a substitute for OS signing.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Optional macOS Developer ID signing / notarization; empty values
-          # keep the documented ad-hoc local-signing behavior.
+          # Optional Developer ID signing / notarization. Empty values keep the
+          # documented ad-hoc local-signing behavior (docs/install.md).
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -108,6 +91,6 @@ jobs:
           releaseBody: "See the assets below. Desktop updates are delivered in-app via the Tauri updater (docs/updater.md)."
           releaseDraft: false
           prerelease: false
-          # latest.json is generated and merged across matrix jobs by the action.
           includeUpdaterJson: true
-          args: ${{ matrix.tauri-args }}
+          # `app` is required: the macOS updater payload is the archived .app.
+          args: --target universal-apple-darwin --bundles app,dmg

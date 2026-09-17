@@ -38,4 +38,4 @@ python3 scripts/restart-debug-app.py --dry-run
 - 升级流程由 Rust 拥有（`src-tauri/src/updater.rs`）：检查 → 后台下载 → 用户点「退出并更新」→ `stop_live_sessions_for_update` 优雅停止并复核所有 Session Host → `Update::install` → `app.restart()`。任何 Session 无法证明进程组已清理都必须中止安装并保留旧版本。
 - Debug/开发构建永远不访问正式 feed（`cfg!(debug_assertions)` 或 `AGENTPORT_UPDATER_DISABLED=1`），调试包不会被自动升级。
 - Tauri Updater 签名（`TAURI_SIGNING_PRIVATE_KEY`，私钥在 `~/.tauri/agentport-updater.key`，切勿提交）与 macOS/Windows 代码签名是两套机制，不得互相替代。发布与密钥细节见 `docs/updater.md`。
-- 发布：`scripts/set-version.sh` → 提交 → `git tag vX.Y.Z && git push origin vX.Y.Z`，由 `.github/workflows/release.yml` 构建并生成 `latest.json`。本地 `scripts/build-macos.sh` 在没有密钥时会以 `createUpdaterArtifacts=false` 跳过 updater 产物，这类 DMG 不能作为更新源发布。
+- 发布：`scripts/set-version.sh` → 提交 → `git tag vX.Y.Z && git push origin vX.Y.Z`，由 `.github/workflows/release.yml` 构建 macOS（universal）并生成 `latest.json`（应用内更新当前仅 macOS；Linux 走包管理器）。本地 `scripts/build-macos.sh` 在没有密钥时会以 `createUpdaterArtifacts=false` 跳过 updater 产物，这类 DMG 不能作为更新源发布。

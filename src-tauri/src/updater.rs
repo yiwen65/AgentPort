@@ -116,9 +116,28 @@ impl UpdateState {
     }
 }
 
+/// Platforms whose bundle the Tauri updater can replace in place. Linux
+/// deb/rpm/tarball installs are owned by the system package manager, and the
+/// release pipeline does not publish Linux updater payloads (the bundler only
+/// produces them from an AppImage, which is currently blocked), so those
+/// installs stay on the manual upgrade path instead of failing a download.
+fn platform_supports_updater() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        return std::env::var_os("APPIMAGE").is_some();
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
 /// Whether this build may contact the release feed.
 pub fn updater_enabled() -> bool {
     if cfg!(debug_assertions) {
+        return false;
+    }
+    if !platform_supports_updater() {
         return false;
     }
     std::env::var_os("AGENTPORT_UPDATER_DISABLED").is_none()
@@ -466,5 +485,12 @@ mod tests {
     fn debug_builds_never_contact_the_release_feed() {
         std::env::remove_var("AGENTPORT_UPDATER_DISABLED");
         assert!(!updater_enabled());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn bundle_formats_the_updater_can_replace_are_supported() {
+        std::env::remove_var("AGENTPORT_UPDATER_DISABLED");
+        assert!(platform_supports_updater());
     }
 }

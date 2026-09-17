@@ -17,6 +17,8 @@ Tauri bundle → 安装包 → Tauri Updater 整包更新
 
 ## 用户可见流程
 
+> 平台范围：应用内更新当前只对 **macOS** 生效。Linux 的 `.deb`/tarball 由系统包管理器升级（bundler 只能用 AppImage 产出 Linux updater 载荷，而 AppImage 尚未发布），Windows 不在本项目分发范围内；其他平台 `update_status` 直接返回 `disabled`，不产生网络请求。
+
 ```
 启动 → 后台 check()
    ├── 无更新：静默（Settings 不改动）
@@ -97,14 +99,15 @@ WebView **没有** `updater:*` 权限（`src-tauri/capabilities/default.json` �
    git tag v0.2.0 && git push origin main v0.2.0
    ```
 
-3. GitHub Actions（`.github/workflows/release.yml`）在 tag 上构建 macOS（universal）与 Linux（deb），由 `tauri-action` 上传 Release 资产，并生成/合并 `latest.json`：
+3. GitHub Actions（`.github/workflows/release.yml`）在 tag 上构建 macOS（universal），由 `tauri-action` 上传 Release 资产，并生成 `latest.json`：
 
    ```
    AgentPort_0.2.0_universal.dmg
    AgentPort.app.tar.gz      + AgentPort.app.tar.gz.sig
-   AgentPort_0.2.0_amd64.deb + .deb.sig
-   latest.json
+   latest.json               （darwin-aarch64 / darwin-x86_64 指向同一个 universal 包）
    ```
+
+   Linux 仍走既有手工/容器流程（`scripts/build-linux.sh`），由包管理器升级。
 
 4. 客户端下一次启动时通过 `latest.json` 发现更新。
 
