@@ -21,7 +21,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-pub const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// Budget for one read-only probe (`--version`, `--help`, …). Two seconds was
+/// too tight: a loaded machine can exceed it for a trivial shell script (the
+/// full test suite reproduced `Timeout("… --version exceeded 2s")`), and real
+/// CLIs such as node-based `claude`/`pi` take seconds to boot cold — either
+/// case wrongly reports a usable CLI as unavailable. The trade-off is bounded:
+/// a hanging candidate costs up to this budget per probe.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Timeout for the login-shell PATH lookup (separate from the probe timeout).
 pub const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_PROBE_OUTPUT: usize = 256 * 1024; // 256 KiB
@@ -842,8 +848,11 @@ mod tests {
         let err = run_readonly_probe(&exe).unwrap_err();
         let elapsed = start.elapsed();
         assert!(matches!(err, CoreError::Timeout(_)), "got {err:?}");
-        // 2s 超时即返回，远小于脚本的 10s
-        assert!(elapsed < Duration::from_secs(6), "elapsed {elapsed:?}");
+        // PROBE_TIMEOUT 即返回，远小于脚本的 10s；留出负载余量
+        assert!(
+            elapsed < PROBE_TIMEOUT + Duration::from_secs(3),
+            "elapsed {elapsed:?}"
+        );
         // 子进程已被 kill+reap：按唯一路径 pgrep 不应有残留
         let out = Command::new("pgrep")
             .args(["-f", exe.to_str().unwrap()])
@@ -880,7 +889,12 @@ mod tests {
 
         assert_eq!(version, "1.1.5");
         assert!(help.contains("Usage: qodercli"));
-        assert!(start.elapsed() < Duration::from_secs(6));
+        // One cold-start timeout plus the successful retry, with slack for load.
+        assert!(
+            start.elapsed() < PROBE_TIMEOUT + Duration::from_secs(3),
+            "cold-start retry took {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]
@@ -970,7 +984,13 @@ mod tests {
             &path_env,
         );
 
-        assert_eq!(outcome.state, ProbeState::Available);
+        assert_eq!(
+            outcome.state,
+            ProbeState::Available,
+            "usable candidate was not selected: reason={:?} detail={:?}",
+            outcome.reason,
+            outcome.reason_detail
+        );
         assert_eq!(
             outcome.install.as_ref().unwrap().executable_path,
             usable.to_string_lossy()
