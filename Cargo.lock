@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "agentport"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "agentport-core",
  "agentport-relay",
@@ -74,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "agentport-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "agentport-core",
  "chrono",
@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "agentport-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "agentport-host"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "agentport-core",
  "chrono",
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "agentport-mosh-attach"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "agentport-remote-protocol",
  "agentport-service",
