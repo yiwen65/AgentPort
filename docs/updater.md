@@ -129,6 +129,19 @@ Updater 密钥只用于签 `.sig`，**不会**让 macOS 信任 App；反之 OS �
 
 本地构建（`scripts/build-macos.sh`）在没有密钥时自动以 `--config '{"bundle":{"createUpdaterArtifacts":false}}'` 跳过 updater 产物，避免“配置了 pubkey 却没有私钥”导致构建失败；这种 DMG 可以手工安装，但不能作为更新源发布。
 
+### feed 必须匿名可读
+
+客户端拉取 `latest.json` 时不带任何凭据，**私有仓库的 Release 资产对匿名请求返回 404**，`check()` 只会以
+“update endpoint did not respond with a successful status code”失败（应用界面保持静默）。因此：
+
+- 承载 feed 的仓库必须公开（本仓库 v0.1.0 起为 public）；
+- 若必须保留源码私有，请另建 public 的 releases-only 仓库，把 `latest.json` 与安装包发到那里，并同步修改 `plugins.updater.endpoints` 与 `.github/workflows/release.yml` 的发布目标；
+- 每次发布后用未认证请求自检：
+
+  ```bash
+  curl -o /dev/null -w '%{http_code}\n' https://github.com/<owner>/<repo>/releases/latest/download/latest.json   # 期望 302
+  ```
+
 ## 故障排查
 
 | 现象 | 原因 / 处理 |

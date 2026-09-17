@@ -334,3 +334,57 @@
 - Correct approach: Open a separate read-only connection, begin a read transaction and perform a read to pin its WAL view, then copy bounded page batches without sleeping on successful progress. Bound lock retries and report phase/count/elapsed status.
 - Prevention: Test sustained writes from a second connection, monotonic snapshot progress, exclusion of post-snapshot writes, an available GUI mutex during copying, and lock-deadline failure. Include a real busy-database read-only probe when validating backup changes.
 - Verified by: The sustained-writer regression failed before the fix and passed after it. The unpinned live probe restarted three times in three seconds; the corrected Rust snapshot copied 11,699 pages in 0.269 seconds with integrity OK. The packaged GUI subsequently published and verified the Codex archive and released its buttons.
+
+## `Tauri before* commands` — 运行目录既不是仓库根也不是配置目录
+
+- Wrong approach: 假设 `beforeDevCommand` / `beforeBuildCommand` 在仓库根执行，写成 `bash src-tauri/scripts/build-sidecar.sh release && npm --prefix src run build`，并且只在 `cd src-tauri && tauri build` 这一种入口下验证过。
+- Why it failed: Tauri 自己推导执行目录：在仓库根执行 `tauri build` 时实测落在 `<repo>/mobile`，在 CI runner（tauri-action，全局 CLI）上落在没有 `src-tauri` 的目录，两条路径都报 `bash: src-tauri/scripts/build-sidecar.sh: No such file or directory`（exit 127）。
+- Recognition signal: 本地 `cd src-tauri && tauri build` 正常，但从仓库根或 CI 触发时 beforeBuildCommand 立即 127；把 beforeBuildCommand 临时换成 `bash -c "echo $(pwd)"` 就能打印真实目录。
+- Correct approach: 让命令自己定位 checkout：`bash -c 'cd "$(git rev-parse --show-toplevel)" && …'`（已应用于 `src-tauri/tauri.conf.json` 的 beforeDev/beforeBuildCommand）。
+- Prevention: 任何 before*/构建脚本都不得依赖调用者目录；改动后用 `--config '{"build":{"beforeBuildCommand":"bash -c \"echo CWD=$(pwd); exit 7\""}}'` 在**仓库根**与 `src-tauri` 两个入口各验证一次。
+- Verified by: 本地两个入口都打印 `/Users/w/Projects/AgentSessions`；CI v0.1.0 发布在修正后通过了 sidecar 暂存步骤。
+
+## `Tauri universal bundle` — externalBin 需要每个 cargo target 各一份
+
+- Wrong approach: 只为 `universal-apple-darwin` 准备 lipo 合并后的 sidecar（`agentport-host-universal-apple-darwin`）。
+- Why it failed: `--target universal-apple-darwin` 会分两次编译（`x86_64-apple-darwin`、`aarch64-apple-darwin`），tauri-build 按**当前 cargo target** 解析 externalBin，报 `resource path binaries/agentport-host-x86_64-apple-darwin doesn't exist`。
+- Recognition signal: 构建日志出现 `TAURI_ENV_TARGET_TRIPLE=x86_64-apple-darwin` 紧跟 `resource path ... doesn't exist`，而 `-universal-apple-darwin` 文件确实存在。
+- Correct approach: 同时暂存每个架构的副本（`-aarch64-apple-darwin`、`-x86_64-apple-darwin`）**和** lipo 合并的 `-universal-apple-darwin`（`scripts/build-macos.sh --universal` 与 `.github/workflows/release.yml` 均已如此）。
+- Prevention: 改动 universal 打包流程时，先确认 `src-tauri/binaries/` 同时具备每架构与 universal 三种命名。
+- Verified by: CI 在补齐每架构副本后完成 universal 构建并产出 `AgentPort_universal.app.tar.gz`（lipo -info 显示 x86_64 + arm64）。
+
+## `GitHub Actions Apple 签名变量` — 缺失的 secret 是空字符串，不是“未设置”
+
+- Wrong approach: 在 tauri-action 步骤里无条件写 `APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}` 等，认为没配置 secret 就等同于没有该环境变量。
+- Why it failed: 未配置的 secret 会展开为空字符串，变量依然存在；Tauri 看到 `APPLE_CERTIFICATE` 就尝试导入证书，失败于 `security: SecKeychainItemImport: One or more parameters passed to a function were not valid`，整个打包中止。
+- Recognition signal: 未做任何 macOS 签名的仓库在 bundling 后立刻出现 `failed to import keychain certificate`。
+- Correct approach: 用一个准备步骤把非空值写进 `$GITHUB_ENV`（`emit name value` 跳过空值），tauri-action 步骤本身不再直接引用这些 secret。
+- Prevention: 任何“可选签名/公证”secret 都必须经过“非空才导出”的一层，禁止直接 `env: X: ${{ secrets.X }}`。
+- Verified by: 修正后 CI 通过 bundling、生成 `AgentPort.app.tar.gz.sig` 并完成发布（run 35182159184）。
+
+## `updater feed` — 私有仓库的 Release 资产匿名拉不到
+
+- Wrong approach: 把 `https://github.com/<owner>/<repo>/releases/latest/download/latest.json` 当作公开 feed，同时在私有仓库里发布。
+- Why it failed: 私有仓库的 Release 资产对未认证请求返回 404，客户端 `check()` 报 `update endpoint did not respond with a successful status code`（app.log 里可见），应用内更新永远失败。
+- Recognition signal: `curl -o /dev/null -w '%{http_code}' <feed>` 得到 404，而 `gh release view` 里资产齐全。
+- Correct approach: feed 所在仓库必须匿名可读（本仓库 v0.1.0 起已设为 public）；若必须保留源码私有，就另建 public 的 releases-only 仓库并在 workflow 里发布到那里。
+- Prevention: 每次发布后用未认证 curl 校验 `latest.json` 与安装包均为 200/302，再宣布可用。
+- Verified by: 仓库转 public 后匿名 `latest.json` 302、DMG 200，本地 0.0.9 客户端从真实 feed 升级到 0.1.0 成功。
+
+## `macOS 更新安装路径` — 符号链接路径会被 updater 拒绝
+
+- Wrong approach: 把待升级的 `AgentPort.app` 放在 `/tmp`（或任何含符号链接的路径）里测试应用内升级。
+- Why it failed: `/tmp` 是 `/private/tmp` 的符号链接，插件定位安装路径时报 `StartingBinary found current_exe() that contains a symlink on a non-allowed platform: /tmp`，check 阶段即失败。
+- Recognition signal: `update endpoint…` 之前先出现 current_exe 符号链接错误；换到 `~/…` 后立刻正常。
+- Correct approach: 用真实路径（`/Applications`、`~/AgentPortE2E` 等）验证升级；正式分发本就不应从 DMG 或符号链接目录直接运行。
+- Prevention: 复现应用内升级前先 `python3 -c "import os;print(os.path.realpath(<path>))"` 确认路径无符号链接。
+- Verified by: 同一二进制在 `/tmp` 下失败、在 `~/AgentPortE2E` 下完成下载→校验→安装→重启全过程。
+
+## `tauri-action release creation` — 用 gh 预建 release 绕过 403
+
+- Wrong approach: 完全交给 `tauri-action` 在 tag push 时创建 Release（`releaseDraft: false`）。
+- Why it failed: 同一 workflow 声明了 `permissions: contents: write`，用相同 token 手工 `POST /releases`（以及 `gh release create`）都能成功，但 tauri-action 的创建调用返回 `Resource not accessible by integration`（根因未定位）。
+- Recognition signal: 构建、updater 签名、资产收集全部成功后，日志停在 `Couldn't find release with tag <tag>. Creating one.` 紧跟 403。
+- Correct approach: 在构建前用 `gh release create "$GITHUB_REF_NAME" --verify-tag`（或 `gh release view` 复用）先建好 release，tauri-action 之后只做上传与 `latest.json` 合并。
+- Prevention: 把 release 创建放在昂贵的构建之前，权限问题会在几秒内暴露，而不是等 10 分钟构建结束。
+- Verified by: 加入预建步骤后同一 tag 的 run 35182159184 全绿，产出 DMG、`.app.tar.gz`、`.sig` 与 `latest.json`。

@@ -39,3 +39,4 @@ python3 scripts/restart-debug-app.py --dry-run
 - Debug/开发构建永远不访问正式 feed（`cfg!(debug_assertions)` 或 `AGENTPORT_UPDATER_DISABLED=1`），调试包不会被自动升级。
 - Tauri Updater 签名（`TAURI_SIGNING_PRIVATE_KEY`，私钥在 `~/.tauri/agentport-updater.key`，切勿提交）与 macOS/Windows 代码签名是两套机制，不得互相替代。发布与密钥细节见 `docs/updater.md`。
 - 发布：`scripts/set-version.sh` → 提交 → `git tag vX.Y.Z && git push origin vX.Y.Z`，由 `.github/workflows/release.yml` 构建 macOS（universal）并生成 `latest.json`（应用内更新当前仅 macOS；Linux 走包管理器）。本地 `scripts/build-macos.sh` 在没有密钥时会以 `createUpdaterArtifacts=false` 跳过 updater 产物，这类 DMG 不能作为更新源发布。
+- **承载更新 feed 的仓库必须匿名可读**：客户端拉取 `latest.json` 不带凭据，私有仓库的 Release 资产返回 404，更新会静默失败。发布后用未认证 `curl` 校验 `latest.json`（期望 302）与安装包（200）。
