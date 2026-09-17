@@ -29,7 +29,7 @@ trap cleanup EXIT
 "$CLI" probe shell --path /bin/sh >/dev/null
 PROJ=$("$CLI" project add "$GITREPO" --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 
-say "worktree：Base Ref 创建 + dirty 阻止删除"
+say "worktree：Base Ref 创建 + dirty 健康度 + 删除"
 WT=$("$CLI" worktree create --project "$PROJ" --task "fix-login timeout" --base-ref HEAD~1 --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 WTPATH=$("$CLI" worktree list --project "$PROJ" --json | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["path"])')
 WTHEAD=$(git -C "$WTPATH" rev-parse HEAD)
@@ -37,28 +37,27 @@ MAINHEAD=$(git -C "$GITREPO" rev-parse HEAD)
 [ "$WTHEAD" = "$(git -C "$GITREPO" rev-parse HEAD~1)" ] && ok "worktree 落在 HEAD~1（Base Ref 生效）" || bad "base ref wrong: $WTHEAD"
 [ "$WTHEAD" != "$MAINHEAD" ] && ok "主 checkout 未移动" || bad "main checkout moved"
 echo dirty > "$WTPATH/dirty.txt"
-"$CLI" worktree remove "$WT" >/dev/null 2>&1 && bad "dirty worktree 被删除（应阻止）" || ok "dirty 删除被阻止"
+# CLI 的 remove 是已确认的破坏性操作：脏工作区是清理输入而不是阻断条件
+# （确认流程在 GUI 的 delete preflight 里）。这里验证 dirty 能被删掉、
+# Git 注册被清掉、主 checkout 不受影响。
 "$CLI" worktree health "$WT" --json | grep -q '"health": "dirty"' && ok "health=dirty" || bad "health wrong"
-rm "$WTPATH/dirty.txt"
-"$CLI" worktree remove "$WT" >/dev/null && ok "清理后删除成功" || bad "clean remove failed"
+"$CLI" worktree remove "$WT" >/dev/null && ok "dirty worktree 删除成功（CLI 无需二次确认）" || bad "remove failed"
 git -C "$GITREPO" worktree list --porcelain | grep -q "$WTPATH" && bad "worktree 仍注册" || ok "git worktree list 已消失"
 [ "$(cat "$GITREPO/a.txt")" = "v2" ] && ok "主 checkout 内容不变" || bad "main checkout changed"
 
-say "session + export（log/md 与源一致）"
+say "export：raw 日志导出已移除；正文导出走 Agent 原生日志"
 SES1=$("$CLI" session new --project "$PROJ" --agent shell --title "w2-export" --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 M="w2-export-$RANDOM"
 "$CLI" session input "$SES1" --data "echo $M; echo done-$M\\n" >/dev/null
 "$CLI" session read "$SES1" --until "done-$M" --timeout 10 --json >/dev/null
-"$CLI" export log --session "$SES1" --out "$AGENTPORT_DATA_DIR/e.log" --json >/dev/null
-grep -q "$M" "$AGENTPORT_DATA_DIR/e.log" && ok "export log 含输出" || bad "export log missing"
-LOG1=$(session_log_path "$SES1")
-python3 - "$LOG1" "$AGENTPORT_DATA_DIR/e.log" <<'PY' && ok "export log 与源 sha256 一致" || bad "export sha mismatch"
-import sys, hashlib
-a = open(sys.argv[1],'rb').read(); b = open(sys.argv[2],'rb').read()
-assert hashlib.sha256(a).hexdigest() == hashlib.sha256(b).hexdigest(), "sha mismatch"
-PY
-"$CLI" export md --session "$SES1" --out "$AGENTPORT_DATA_DIR/e.md" --json >/dev/null
-grep -q "w2-export" "$AGENTPORT_DATA_DIR/e.md" && grep -q '```' "$AGENTPORT_DATA_DIR/e.md" && ok "markdown 导出含头部与代码块" || bad "md export wrong"
+# 已移除的能力必须明确报错，不能静默成功。
+ERR=$("$CLI" export log --session "$SES1" --out "$AGENTPORT_DATA_DIR/e.log" 2>&1)
+echo "$ERR" | grep -q 'raw terminal log export was removed' && ok "export log 明确报错（能力已移除）" || bad "export log: $ERR"
+# shell 适配器没有原生历史，md/json 导出必须说明原因而不是产出空文件。
+ERR=$("$CLI" export md --session "$SES1" --out "$AGENTPORT_DATA_DIR/e.md" 2>&1)
+echo "$ERR" | grep -q 'native history is unavailable' && ok "md 导出说明缺少原生历史" || bad "export md: $ERR"
+# 正文导出/搜索的内容级覆盖在 core 的原生历史集成测试里（带 fixture），
+# e2e 只负责进程级契约。
 
 say "诊断 ZIP：结构、manifest、脱敏"
 "$CLI" export zip --session "$SES1" --out "$AGENTPORT_DATA_DIR/diag.zip" --json >/dev/null
@@ -67,7 +66,8 @@ import sys, zipfile, json
 z = zipfile.ZipFile(sys.argv[1]); names = z.namelist(); ses = sys.argv[2]
 m = json.loads(z.read("manifest.json"))
 assert m["formatVersion"] == 1 and ses in m["sessions"], "manifest"
-assert any(n.endswith("-terminal.log") for n in names), "terminal log"
+# 诊断包不含终端正文（没有 PTY 副本可打包），但必须带状态日志与能力清单。
+assert not any(n.endswith("-terminal.log") for n in names), "terminal log must not be packaged"
 assert any(n.endswith("-status-events.json") for n in names), "status events"
 assert any("adapter-capabilities" in n for n in names), "capabilities"
 assert "token" not in json.dumps(m).lower() or "hostToken" not in json.dumps(m)
@@ -83,9 +83,8 @@ SES2=$("$CLI" session new --project "$PROJ" --agent shell --preset pre_shell_saf
 "$CLI" session input "$SES2" --data 'X=sec; echo "val=$AP_E2E_SECRET"; echo ${X}-done\n' >/dev/null
 OUT=$("$CLI" session read "$SES2" --until "sec-done" --timeout 10 --json)
 echo "$OUT" | grep -q "$SECRET_VAL" && bad "前端输出含 secret 原值" || ok "输出已脱敏（客户端只见 [redacted]）"
-LOG2=$(session_log_path "$SES2")
-grep -q "$SECRET_VAL" "$LOG2" && bad "日志含 secret" || ok "日志无明文 secret"
-grep -q "\[redacted\]" "$LOG2" && ok "日志含固定掩码" || bad "掩码缺失"
+LOG2="$AGENTPORT_DATA_DIR/sessions/$SES2/status-events.jsonl"
+grep -a "$SECRET_VAL" "$LOG2" >/dev/null 2>&1 && bad "状态日志含 secret" || ok "状态日志无明文 secret"
 grep -a "$SECRET_VAL" "$AGENTPORT_DATA_DIR/agentport.db" >/dev/null 2>&1 && bad "SQLite 含 secret" || ok "SQLite 无 secret"
 grep -a "$SECRET_VAL" "$AGENTPORT_DATA_DIR/sessions/$SES2/host.json" >/dev/null 2>&1 && bad "host.json 含 secret" || ok "host.json 仅含变量名"
 "$CLI" export zip --session "$SES2" --out "$AGENTPORT_DATA_DIR/diag2.zip" --json >/dev/null
@@ -97,15 +96,17 @@ assert sys.argv[2].encode() not in blob, "secret leaked into zip"
 PY
 "$CLI" diag hosts --json >/dev/null && ok "diag hosts 可用"
 
-say "search：已关闭 session 的关键词可检索"
+say "search：元数据命中；正文检索走原生日志"
 KW="w2kw$RANDOM"
 "$CLI" session input "$SES1" --data "echo $KW\\n" >/dev/null
 "$CLI" session read "$SES1" --until "$KW" --timeout 8 --json >/dev/null
 "$CLI" session stop "$SES1" >/dev/null
 sleep 0.3
+# CLI 的 search 只按需扫描 Agent 原生日志（docs/user-guide.md）；GUI 的
+# 元数据+正文混合检索由 core 的 search 单测覆盖（query_hits_metadata_and_terminal）。
 RES=$("$CLI" search "$KW" --json)
-echo "$RES" | grep -q "$SES1" && ok "terminal 全文命中已停止 session" || { bad "search miss"; echo "$RES" | head -5; }
-"$CLI" search "w2-secret" --json | grep -q "w2-secret" && ok "metadata 命中 session 标题" || bad "metadata search miss"
+echo "$RES" | grep -q "$SES1" && bad "shell 会话不应有正文命中" || ok "无 PTY 正文索引（正文检索改走原生日志）"
+echo "$RES" | grep -q '"partial": true' && bad "shell 会话查询不应是 partial" || ok "查询结果完整（无降级）"
 
 say "timeline：离开期间事件与已读"
 "$CLI" session stop "$SES2" >/dev/null

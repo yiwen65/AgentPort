@@ -47,18 +47,18 @@ OUT2=$("$CLI" session read "$SES" --until "$M2" --timeout 10 --tail-bytes 104857
 echo "$OUT2" | grep -q "$M2" && ok "output continues after client exit/reconnect" || bad "lost output"
 echo "$OUT2" | grep -q "$M1" && ok "replay includes pre-death bytes" || bad "replay gap"
 
-say "日志与客户端收到字节 SHA-256 一致"
-# The authoritative log path lives in the Session record (run-scoped since v3):
-# never reconstruct it from a hardcoded layout, which silently goes stale.
-LOG=$("$CLI" session status "$SES" --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["session"]["logPath"])')
-[ -f "$LOG" ] && ok "log path resolves: $LOG" || { bad "log missing at $LOG"; exit 1; }
-python3 - "$LOG" "$OUT2" <<'PY' && ok "sha256(log tail) == sha256(received tail)" || bad "sha mismatch"
-import sys, json, hashlib
-log = open(sys.argv[1], 'rb').read()
-received = json.loads(sys.argv[2])['output'].encode()
-# received is the last len(received) bytes of the log (tail replay of 1MiB)
-assert log.endswith(received), "log tail != received bytes"
-assert hashlib.sha256(log[-len(received):]).hexdigest() == hashlib.sha256(received).hexdigest()
+say "重连读取与 Host 内存 tail 一致（无丢失）"
+# Live Sessions keep no PTY body copy: the Host owns a bounded in-memory tail,
+# and history/search/export read the Agent's native logs (docs/user-guide.md,
+# "不保存正文索引"). The run-scoped output.log this script used to diff is no
+# longer written, so verify the invariant that still matters: the reconnected
+# read is a byte-continuous continuation of the pre-death read.
+python3 - "$OUT" "$OUT2" <<'PY' && ok "reconnect read contains every pre-death byte" || bad "bytes lost across reconnect"
+import sys, json
+first = json.loads(sys.argv[1])['output']
+second = json.loads(sys.argv[2])['output']
+assert first, "first read was empty"
+assert first in second, "second read does not contain the first read bytes"
 PY
 
 say "心跳/状态在线"
