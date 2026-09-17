@@ -239,6 +239,47 @@ impl StateMachine {
         Some(classified)
     }
 
+    /// Publish the state of a freshly resumed run whose provider transcript
+    /// already ended a turn, without recording it as a transition of this run.
+    ///
+    /// The inherited completion is durable status so clients do not stay on
+    /// `process:spawn` after a resume, and it claims precise lifecycle
+    /// authority so repaints cannot downgrade it. It must NOT seed the
+    /// state+source dedupe baseline: a real turn end of this run carries the
+    /// same (idle, adapter) pair, and seeding it would swallow that run's first
+    /// completion — no completion event and no notification for the user's
+    /// next turn.
+    pub fn publish_inherited_turn_end(&mut self, adapter: &str) -> Option<StatusEvent> {
+        if self.exited {
+            return None;
+        }
+        let state = AgentState::Idle;
+        let source = StateSource::Adapter;
+        let lifecycle_changed = self.lifecycle != Some(state);
+        self.lifecycle = Some(state);
+        if !lifecycle_changed {
+            return None;
+        }
+        self.sequence += 1;
+        let occurred_at = Utc::now();
+        let ev = StatusEvent {
+            session_id: self.session_id.clone(),
+            run_id: self.run_id.clone(),
+            run_ordinal: self.run_ordinal,
+            sequence: self.sequence,
+            state,
+            source,
+            confidence: Confidence::High,
+            evidence: Some(format!("adapter:{adapter}:TurnEnd")),
+            log_cursor: None,
+            occurred_at,
+        };
+        // Deliberately leaves `last`, `last_evidence` and `last_completion`
+        // untouched: the inherited snapshot is not this run's completion.
+        self.last_emitted_at = Some(occurred_at);
+        Some(ev)
+    }
+
     /// Feed an observation; returns Some(StatusEvent) when a transition should be recorded.
     pub fn observe(&mut self, obs: Observation) -> Option<StatusEvent> {
         if self.exited {
@@ -705,6 +746,35 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(320));
         let e = sm.observe(Observation::PtySilence { ms: 3000 }).unwrap();
         assert_eq!(e.sequence, 2);
+    }
+
+    #[test]
+    fn inherited_turn_end_does_not_swallow_the_runs_first_completion() {
+        let mut sm = StateMachine::new("ses_inherited");
+        assert!(sm.observe(Observation::ProcessSpawned).is_some());
+
+        let inherited = sm.publish_inherited_turn_end("pi").unwrap();
+        assert_eq!(inherited.state, AgentState::Idle);
+        assert_eq!(inherited.source, StateSource::Adapter);
+        assert_eq!(inherited.evidence.as_deref(), Some("adapter:pi:TurnEnd"));
+        // Publishing the inherited snapshot twice is not a second transition.
+        assert!(sm.publish_inherited_turn_end("pi").is_none());
+
+        // The run's own turn end carries the same idle+adapter pair; it must
+        // still be reported so the client sees a completion for this turn.
+        let completed = sm
+            .observe(Observation::AdapterTurnEnd {
+                adapter: "pi".into(),
+            })
+            .expect("first real turn end after an inherited resume");
+        assert_eq!(completed.evidence.as_deref(), Some("adapter:pi:TurnEnd"));
+        assert_eq!(completed.sequence, inherited.sequence + 1);
+        // A repeated identical turn end is still deduped.
+        assert!(sm
+            .observe(Observation::AdapterTurnEnd {
+                adapter: "pi".into(),
+            })
+            .is_none());
     }
 
     #[test]

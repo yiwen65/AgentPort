@@ -2078,14 +2078,30 @@ fn resumed_completed_pi_run_publishes_idle_without_replaying_completion() {
 
     let _guard = spawn_host(&ctx, &[]);
     wait_socket(&ctx);
+    // The inherited idle state is published once, before a client can attach,
+    // so ask for the durable current status instead of racing the broadcast.
+    wait_for(
+        || {
+            std::fs::read_to_string(&ctx.host_log)
+                .is_ok_and(|log| log.contains("idle shutdown armed (idle state published)"))
+        },
+        Duration::from_secs(3),
+        "resuming a completed Pi transcript to publish idle",
+    );
     let mut client = connect(&ctx, &ctx.session_id, TOKEN, 0);
     client.expect_hello_ok();
+    client.send(&ClientFrame::StatusRequest {
+        session_id: ctx.session_id.clone(),
+    });
     let frames = client.collect_until(Duration::from_secs(3), |frames| frames.iter().any(|frame|
         matches!(frame, HostFrame::State { state: AgentState::Idle, source: StateSource::Adapter, evidence: Some(e), .. } if e == "adapter:pi:TurnEnd")));
-    assert!(frames.iter().any(|frame| matches!(frame,
-        HostFrame::State { state: AgentState::Idle, source: StateSource::Adapter, evidence: Some(e), .. } if e == "adapter:pi:TurnEnd")), "{frames:?}");
-    assert_eq!(frames.iter().filter(|frame| matches!(frame,
-        HostFrame::State { state: AgentState::Idle, source: StateSource::Adapter, .. })).count(), 1);
+    let inherited = frames.iter().filter(|frame| matches!(frame,
+        HostFrame::State { state: AgentState::Idle, source: StateSource::Adapter, evidence: Some(e), .. } if e == "adapter:pi:TurnEnd")).count();
+    assert_eq!(inherited, 1, "inherited idle state not reported exactly once: {frames:?}");
+    // …and it stays a snapshot: no later completion replay without new input.
+    let later = client.collect_until(Duration::from_millis(700), |_| false);
+    assert!(!later.iter().any(|frame| matches!(frame,
+        HostFrame::State { source: StateSource::Adapter, .. })), "inherited completion was replayed: {later:?}");
 }
 
 #[test]

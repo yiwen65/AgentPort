@@ -1437,10 +1437,10 @@ fn control_loop(
         // The completed transcript is an inherited snapshot, not a new
         // completion notification. Publish the new Host run's current state
         // as idle so clients do not remain at process:spawn/working after
-        // resume, while avoiding a duplicate attention event.
-        if let Some(ev) = sm.observe(Observation::AdapterTurnEnd {
-            adapter: shared.cfg.adapter_type.clone(),
-        }) {
+        // resume, while avoiding a duplicate attention event — and without
+        // claiming this run's first real turn end (see
+        // StateMachine::publish_inherited_turn_end).
+        if let Some(ev) = sm.publish_inherited_turn_end(&shared.cfg.adapter_type) {
             emit_event(shared, &mut status_file, ev);
         }
         info!(adapter = %shared.cfg.adapter_type, "resumed completed turn; idle shutdown armed (idle state published)");
