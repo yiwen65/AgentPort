@@ -80,6 +80,34 @@ jobs:
             chmod +x "src-tauri/binaries/$binary-universal-apple-darwin"
           done
 
+      # Empty secrets still export empty variables, and Tauri treats a present
+      # APPLE_CERTIFICATE as "sign with it", so only export what exists.
+      - name: Optional macOS Developer ID signing
+        env:
+          INPUT_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          INPUT_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          INPUT_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          INPUT_APPLE_ID: ${{ secrets.APPLE_ID }}
+          INPUT_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          INPUT_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          emit() {
+            local name="$1" value="$2"
+            [ -n "$value" ] || return 0
+            {
+              echo "$name<<__AGENTPORT_EOF__"
+              echo "$value"
+              echo "__AGENTPORT_EOF__"
+            } >> "$GITHUB_ENV"
+          }
+          emit APPLE_CERTIFICATE "$INPUT_CERTIFICATE"
+          emit APPLE_CERTIFICATE_PASSWORD "$INPUT_CERTIFICATE_PASSWORD"
+          emit APPLE_SIGNING_IDENTITY "$INPUT_SIGNING_IDENTITY"
+          emit APPLE_ID "$INPUT_APPLE_ID"
+          emit APPLE_PASSWORD "$INPUT_APPLE_PASSWORD"
+          emit APPLE_TEAM_ID "$INPUT_APPLE_TEAM_ID"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -87,14 +115,6 @@ jobs:
           # accepted by clients, and it is never a substitute for OS signing.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Optional Developer ID signing / notarization. Empty values keep the
-          # documented ad-hoc local-signing behavior (docs/install.md).
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "AgentPort ${{ github.ref_name }}"
