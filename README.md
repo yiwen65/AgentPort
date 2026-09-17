@@ -6,7 +6,7 @@ AgentPort 是 macOS 与 Linux 上的本地 AI CLI 工作台：把 Claude Code、
 
 ![AgentPort 主界面：一个窗口内四个 Agent 会话分屏运行](docs/assets/hero.png)
 
-<sub>左侧是项目与 Session 侧栏，右侧工作区同时监看四个会话 —— Claude Code、easy-pi、Codex、Kimi 各占一个窗格，互不干扰。</sub>
+<sub>左侧是项目与 Session 侧栏，右侧工作区同时监看四个会话 —— Claude Code、easy-pi、Codex、Kimi 各占一个窗格，互不干扰；左上角是当前聚焦的分屏。</sub>
 
 [![Release](https://img.shields.io/github/v/release/yiwen65/AgentPort)](https://github.com/yiwen65/AgentPort/releases/latest)
 
