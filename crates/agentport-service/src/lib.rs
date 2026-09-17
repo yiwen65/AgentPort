@@ -2087,11 +2087,6 @@ impl RemoteService for CoreService {
             } else {
                 plan.resume_precision
             },
-            log_path: self
-                .paths
-                .log_path(&session_id)
-                .to_string_lossy()
-                .into_owned(),
             adapter_type: agent,
             transport: plan.transport,
             pinned_at: None,
@@ -4612,20 +4607,19 @@ mod tests {
             }).unwrap();
             let id = "ses_live_status";
             let socket = root.path().join("host.sock");
-            let log = root.path().join("output.log").to_string_lossy().into_owned();
             service.db.insert_session(&Session {
                 id: id.into(), project_id: project.project.id, worktree_id: None,
                 preset_id: "pre_codex_bypass".into(), title: "Mobile-created".into(),
                 cwd: root.path().to_string_lossy().into_owned(), host_pid: None,
                 host_socket: None, host_token: "fixture-only-token".into(), lifecycle: Lifecycle::Creating,
                 agent_session_id: None, resume_precision: ResumePrecision::Unavailable,
-                log_path: log.clone(), adapter_type: AgentType::Codex,
+                adapter_type: AgentType::Codex,
                 transport: AgentTransport::Pty, command: Vec::new(),
                 permission_mode: PermissionMode::Bypass, pinned_at: None,
                 created_at: Utc::now(), updated_at: Utc::now(), archived_at: None,
             }).unwrap();
             let run = service.db.create_session_run(id, "current-run").unwrap();
-            service.db.claim_session_run(id, &run.run_id, run.run_ordinal, &log).unwrap();
+            service.db.claim_session_run(id, &run.run_id, run.run_ordinal).unwrap();
             service.db.bind_session_host_for_run(id, &run.run_id, run.run_ordinal,
                 i64::from(std::process::id()), &socket.to_string_lossy()).unwrap();
             service.db.update_session_lifecycle(id, Lifecycle::Running).unwrap();
@@ -4700,20 +4694,19 @@ mod tests {
             let id = "ses_restart_fixture";
             let dir = service.paths.session_dir(id);
             std::fs::create_dir_all(&dir).unwrap();
-            let log = dir.join("output.log").to_string_lossy().into_owned();
             service.db.insert_session(&Session {
                 id: id.into(), project_id: project.project.id, worktree_id: None,
                 preset_id: "pre_codex_bypass".into(), title: case.into(),
                 cwd: root.path().to_string_lossy().into_owned(), host_pid: None,
                 host_socket: None, host_token: "fixture-only-token".into(), lifecycle,
                 agent_session_id: None, resume_precision: ResumePrecision::Unavailable,
-                log_path: log.clone(), adapter_type: AgentType::Codex,
+                adapter_type: AgentType::Codex,
                 transport: AgentTransport::Pty, command: Vec::new(),
                 permission_mode: PermissionMode::Bypass, pinned_at: None,
                 created_at: Utc::now(), updated_at: Utc::now(), archived_at: None,
             }).unwrap();
             let run = service.db.create_session_run(id, "current-run").unwrap();
-            service.db.claim_session_run(id, &run.run_id, run.run_ordinal, &log).unwrap();
+            service.db.claim_session_run(id, &run.run_id, run.run_ordinal).unwrap();
             let pid = if alive { i64::from(std::process::id()) } else { i64::from(i32::MAX) };
             if lifecycle == Lifecycle::Running {
                 assert!(service.db.bind_session_host_for_run(id, &run.run_id, run.run_ordinal, pid, "/tmp/not-a-real-host.sock").unwrap());
@@ -4767,10 +4760,6 @@ mod tests {
                 lifecycle: Lifecycle::Exited,
                 agent_session_id: None,
                 resume_precision: ResumePrecision::Unavailable,
-                log_path: archived_dir
-                    .join("output.log")
-                    .to_string_lossy()
-                    .into_owned(),
                 adapter_type: AgentType::Shell,
                 transport: AgentTransport::Pty,
                 command: Vec::new(),
@@ -4846,11 +4835,6 @@ mod tests {
                 lifecycle: Lifecycle::Running,
                 agent_session_id: None,
                 resume_precision: ResumePrecision::Unavailable,
-                log_path: root
-                    .path()
-                    .join("output.log")
-                    .to_string_lossy()
-                    .into_owned(),
                 adapter_type: AgentType::Shell,
                 transport: AgentTransport::Pty,
                 command: Vec::new(),
@@ -4914,7 +4898,6 @@ mod tests {
                 lifecycle: Lifecycle::Exited,
                 agent_session_id: None,
                 resume_precision: ResumePrecision::Unavailable,
-                log_path: log_path.to_string_lossy().into_owned(),
                 adapter_type: AgentType::Shell,
                 transport: AgentTransport::Pty,
                 command: Vec::new(),
@@ -6072,7 +6055,6 @@ mod tests {
                 lifecycle: Lifecycle::Running,
                 agent_session_id: None,
                 resume_precision: ResumePrecision::Unavailable,
-                log_path: "/private/output.log".into(),
                 adapter_type: AgentType::Shell,
                 transport: AgentTransport::Pty,
                 command: vec!["secret-command".into()],

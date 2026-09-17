@@ -503,10 +503,8 @@ pub struct HostConfig {
     pub transport: AgentTransport,
     pub socket_path: String,
     /// Stable Session root for host-state and append-only status journal.
-    /// Older configs derive it from `log_path` for compatibility.
     #[serde(default)]
     pub session_dir: String,
-    pub log_path: String,
     pub host_log_path: String,
     pub hook_events_path: String,
     /// Rotation limit in bytes from the saved application settings.

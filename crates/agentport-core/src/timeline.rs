@@ -150,7 +150,6 @@ impl<'a> Timeline<'a> {
                     .get(session.id.as_str())
                     .and_then(|v| v.as_ref())
                     .map(|v| &v.0),
-                &session.log_path,
             );
             let project_name = match project_names.get(&session.project_id) {
                 Some(n) => n.clone(),
@@ -206,7 +205,7 @@ impl<'a> Timeline<'a> {
                 continue;
             }
             let (target, rotated_away, reason) =
-                event_log_target(Some(unread), Some(latest), &session.log_path);
+                event_log_target(Some(unread), Some(latest));
             let project_name = match project_names.get(&session.project_id) {
                 Some(n) => n.clone(),
                 None => {
@@ -304,10 +303,14 @@ impl<'a> Timeline<'a> {
 /// Return a jump only after proving that the event/first-unread cursor belongs
 /// to the same retained run *and log generation* as the last Host observation.
 /// The mutable current log path is never enough on its own.
+/// Whether a timeline entry's output position can still be located.
+///
+/// The Host keeps no PTY body copy (docs/user-guide.md), so there is no file to
+/// stat: the durable cursor tuple is the only evidence, and a matching
+/// run/generation/offset is reported as locatable in the retained tail.
 fn event_log_target(
     target: Option<&LogCursor>,
     latest: Option<&LogCursor>,
-    log_path: &str,
 ) -> (Option<LogCursor>, bool, Option<String>) {
     let Some(target) = target else {
         return (None, false, Some("no_verified_output_position".into()));
@@ -323,12 +326,7 @@ fn event_log_target(
     {
         return (None, true, Some("output_rotated".into()));
     }
-    let offset = target.offset as u64;
-    let Ok(metadata) = std::fs::metadata(log_path) else {
-        return (None, true, Some("output_rotated".into()));
-    };
-    let len = metadata.len();
-    if latest.offset < 0 || len < latest.offset as u64 || offset > len {
+    if latest.offset < 0 || target.offset > latest.offset {
         (None, true, Some("output_rotated".into()))
     } else {
         (Some(target.clone()), false, None)
@@ -401,7 +399,7 @@ mod tests {
         }
     }
 
-    fn session(id: &str, project_id: &str, title: &str, adapter: AgentType, log: &str) -> Session {
+    fn session(id: &str, project_id: &str, title: &str, adapter: AgentType, _log: &str) -> Session {
         Session {
             id: id.into(),
             project_id: project_id.into(),
@@ -415,7 +413,6 @@ mod tests {
             lifecycle: Lifecycle::Running,
             agent_session_id: None,
             resume_precision: ResumePrecision::Unavailable,
-            log_path: log.into(),
             adapter_type: adapter,
             transport: AgentTransport::Pty,
             command: vec![],

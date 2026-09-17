@@ -268,14 +268,12 @@ impl<'a> HostManager<'a> {
         // writing host.json so every Host-side fact has a durable namespace
         // even though its local state sequence starts at one.
         let run = self.db.create_session_run(&id, &ids::new_uuid())?;
-        let run_log_path = self.paths.run_log_path(&id, &run.run_id);
-        let run_log_path_str = run_log_path.to_string_lossy().into_owned();
         // Claim this generation before touching the socket or spawning. The
         // claim is the ownership fence for failures that occur before a PID is
         // available, and prevents an old reaper from terminally updating this
         // Session during replacement startup.
         self.db
-            .claim_session_run(&id, &run.run_id, run.run_ordinal, &run_log_path_str)?;
+            .claim_session_run(&id, &run.run_id, run.run_ordinal)?;
         let socket_path = self.paths.socket_path(&id);
         let socket_str = socket_path.to_string_lossy().into_owned();
         let config_path = self.paths.host_config_path(&id);
@@ -385,7 +383,6 @@ impl<'a> HostManager<'a> {
                 transport: session.transport,
                 socket_path: socket_str.clone(),
                 session_dir: self.paths.session_dir(&id).to_string_lossy().into_owned(),
-                log_path: run_log_path_str.clone(),
                 host_log_path: self.paths.host_log_path(&id).to_string_lossy().into_owned(),
                 hook_events_path: self
                     .paths
@@ -1928,7 +1925,6 @@ mod tests {
             lifecycle,
             agent_session_id: None,
             resume_precision: ResumePrecision::Unavailable,
-            log_path: format!("/tmp/{id}.log"),
             adapter_type: AgentType::Shell,
             transport: AgentTransport::Pty,
             command: vec!["/bin/sh".into()],
@@ -2259,14 +2255,8 @@ mod tests {
         running.host_socket = Some(socket.to_string_lossy().into_owned());
         db.insert_session(&running).unwrap();
         let run = db.create_session_run(&sid, &ids::new_uuid()).unwrap();
-        let log_path = paths.run_log_path(&sid, &run.run_id);
-        db.claim_session_run(
-            &sid,
-            &run.run_id,
-            run.run_ordinal,
-            &log_path.to_string_lossy(),
-        )
-        .unwrap();
+        db.claim_session_run(&sid, &run.run_id, run.run_ordinal)
+            .unwrap();
         let host_pid = std::process::id() as i64;
         db.bind_session_host_for_run(
             &sid,
@@ -2324,14 +2314,8 @@ mod tests {
         db.insert_session(&session(&sid, "prj_launching_unbound", Lifecycle::Creating))
             .unwrap();
         let run = db.create_session_run(&sid, &ids::new_uuid()).unwrap();
-        let log_path = paths.run_log_path(&sid, &run.run_id);
-        db.claim_session_run(
-            &sid,
-            &run.run_id,
-            run.run_ordinal,
-            &log_path.to_string_lossy(),
-        )
-        .unwrap();
+        db.claim_session_run(&sid, &run.run_id, run.run_ordinal)
+            .unwrap();
 
         let mgr = HostManager {
             paths: &paths,
@@ -2415,7 +2399,6 @@ mod tests {
         );
         assert!(
             dead_sock.exists(),
-            "stable path is retained for a possible replacement host"
         );
         assert_eq!(
             db.get_session(&live).unwrap().lifecycle,
@@ -2477,8 +2460,7 @@ mod tests {
             .unwrap();
         let run = db.create_session_run(&id, "run_dead_event").unwrap();
         let socket = paths.socket_path(&id);
-        let log = paths.run_log_path(&id, &run.run_id);
-        db.claim_session_run(&id, &run.run_id, run.run_ordinal, &log.to_string_lossy())
+        db.claim_session_run(&id, &run.run_id, run.run_ordinal)
             .unwrap();
         db.bind_session_host_for_run(
             &id,
@@ -2577,14 +2559,8 @@ mod tests {
             .unwrap();
 
         let first = db.create_session_run(&sid, "run_first").unwrap();
-        let first_log = paths.run_log_path(&sid, &first.run_id);
-        db.claim_session_run(
-            &sid,
-            &first.run_id,
-            first.run_ordinal,
-            &first_log.to_string_lossy(),
-        )
-        .unwrap();
+        db.claim_session_run(&sid, &first.run_id, first.run_ordinal)
+            .unwrap();
         let child = std::process::Command::new("/bin/sh")
             .args(["-c", "sleep 0.05"])
             .spawn()
@@ -2645,14 +2621,8 @@ mod tests {
         // The old reaper will later observe a valid terminal host-state file,
         // but its PID/run CAS must not alter this newer run.
         let second = db.create_session_run(&sid, "run_second").unwrap();
-        let second_log = paths.run_log_path(&sid, &second.run_id);
-        db.claim_session_run(
-            &sid,
-            &second.run_id,
-            second.run_ordinal,
-            &second_log.to_string_lossy(),
-        )
-        .unwrap();
+        db.claim_session_run(&sid, &second.run_id, second.run_ordinal)
+            .unwrap();
         db.bind_session_host_for_run(
             &sid,
             &second.run_id,
@@ -2686,7 +2656,6 @@ mod tests {
         assert_eq!(
             db.get_session(&sid).unwrap().lifecycle,
             Lifecycle::Running,
-            "old reaper must not overwrite the replacement run"
         );
         assert_eq!(
             db.session_host_binding(&sid).unwrap(),

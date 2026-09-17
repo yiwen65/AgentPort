@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level data model version (PRD ch.5 `version`). Bump when the schema
 /// changes in a way the migrator must handle; SQLite user_version tracks the same.
-pub const DATA_MODEL_VERSION: i64 = 15;
+pub const DATA_MODEL_VERSION: i64 = 16;
 pub const APP_ID: &str = "agentport.local";
 pub const DELIVERY_SCOPE: &str = "p0_p2";
 
@@ -493,11 +493,6 @@ pub struct Session {
     pub lifecycle: Lifecycle,
     pub agent_session_id: Option<String>,
     pub resume_precision: ResumePrecision,
-    /// Run-scoped legacy path, retained for compatibility only: the Host keeps
-    /// a bounded in-memory tail and no longer writes a PTY body copy
-    /// (docs/user-guide.md, "不保存正文索引"). Read output through the Host
-    /// socket; read ended history through the Agent's native logs.
-    pub log_path: String,
     pub adapter_type: AgentType,
     #[serde(default = "default_agent_transport")]
     pub transport: AgentTransport,

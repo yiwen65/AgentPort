@@ -787,11 +787,10 @@ fn run() -> i32 {
     }
     info!(session_id = %cfg.session_id, adapter = %cfg.adapter_type, "agentport-host starting");
 
+    // The Session root is authoritative; older configs that only carried a log
+    // path are gone with the PTY body copy (docs/user-guide.md).
     let session_dir = if cfg.session_dir.trim().is_empty() {
-        Path::new(&cfg.log_path)
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."))
+        PathBuf::from(".")
     } else {
         PathBuf::from(&cfg.session_dir)
     };

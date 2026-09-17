@@ -473,7 +473,6 @@ struct SessionView {
     resume_precision: String,
     permission_mode: String,
     transport: String,
-    log_path: String,
     unread: bool,
     status: Option<Value>,
     /// RFC3339 pin timestamp; `None` means unpinned. Latest pin sorts first.
@@ -590,7 +589,6 @@ fn session_view_from_parts(s: &Session, latest: Option<&StatusEvent>, unread: bo
         resume_precision: s.resume_precision.as_str().into(),
         permission_mode: s.permission_mode.as_str().into(),
         transport: s.transport.as_str().into(),
-        log_path: s.log_path.clone(),
         unread,
         status: latest.map(status_value),
         pinned_at: s.pinned_at.map(|t| t.to_rfc3339()),
@@ -5395,7 +5393,6 @@ mod cleanup_tests {
             lifecycle: Lifecycle::Running,
             agent_session_id: None,
             resume_precision: ResumePrecision::Unavailable,
-            log_path: paths.log_path(&session_id).to_string_lossy().into_owned(),
             adapter_type: AgentType::Shell,
             transport: AgentTransport::Pty,
             command: vec!["/bin/sh".into()],
@@ -5409,16 +5406,10 @@ mod cleanup_tests {
         session_id
     }
 
-    fn bind_attachment_test_host(paths: &AppPaths, db: &Db, session_id: &str) -> HostIdentity {
+    fn bind_attachment_test_host(db: &Db, session_id: &str) -> HostIdentity {
         let run = db.create_session_run(session_id, &ids::new_uuid()).unwrap();
-        let log_path = paths.run_log_path(session_id, &run.run_id);
-        db.claim_session_run(
-            session_id,
-            &run.run_id,
-            run.run_ordinal,
-            &log_path.to_string_lossy(),
-        )
-        .unwrap();
+        db.claim_session_run(session_id, &run.run_id, run.run_ordinal)
+            .unwrap();
         assert!(db
             .bind_session_host_for_run(
                 session_id,
@@ -5492,14 +5483,8 @@ mod cleanup_tests {
         let run = db
             .create_session_run(&session_id, &ids::new_uuid())
             .unwrap();
-        let log_path = paths.run_log_path(&session_id, &run.run_id);
-        db.claim_session_run(
-            &session_id,
-            &run.run_id,
-            run.run_ordinal,
-            &log_path.to_string_lossy(),
-        )
-        .unwrap();
+        db.claim_session_run(&session_id, &run.run_id, run.run_ordinal)
+            .unwrap();
         assert!(db
             .bind_session_host_for_run(
                 &session_id,
@@ -5570,7 +5555,6 @@ mod cleanup_tests {
             lifecycle: Lifecycle::Stopped,
             agent_session_id: None,
             resume_precision: ResumePrecision::Unavailable,
-            log_path: paths.log_path(&session_id).to_string_lossy().into_owned(),
             adapter_type: AgentType::Shell,
             transport: AgentTransport::Pty,
             command: vec!["/bin/sh".into()],
@@ -5624,7 +5608,6 @@ mod cleanup_tests {
             lifecycle: Lifecycle::Stopped,
             agent_session_id: Some("native-id-1".into()),
             resume_precision: ResumePrecision::Exact,
-            log_path: paths.log_path(&session_id).to_string_lossy().into_owned(),
             adapter_type: AgentType::Claude,
             transport: AgentTransport::Pty,
             command: vec!["claude".into()],
@@ -5722,7 +5705,7 @@ mod cleanup_tests {
         let paths = AppPaths::new(temp.path().join("agentport"));
         let db = Db::open(&paths).unwrap();
         let session_id = insert_attachment_test_session(&paths, &db);
-        let host = bind_attachment_test_host(&paths, &db, &session_id);
+        let host = bind_attachment_test_host(&db, &session_id);
         let latest = LogCursor {
             run_id: host.run_id.clone(),
             run_ordinal: host.run_ordinal,
@@ -5756,7 +5739,7 @@ mod cleanup_tests {
         let paths = AppPaths::new(temp.path().join("agentport"));
         let db = Db::open(&paths).unwrap();
         let session_id = insert_attachment_test_session(&paths, &db);
-        let host = bind_attachment_test_host(&paths, &db, &session_id);
+        let host = bind_attachment_test_host(&db, &session_id);
         let renderer = LogCursor {
             run_id: host.run_id.clone(),
             run_ordinal: host.run_ordinal,

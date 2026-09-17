@@ -191,7 +191,7 @@ impl Db {
                 )],
             )?;
             for id in &ids {
-                tx.execute("UPDATE sessions SET host_pid=NULL,host_socket=NULL,host_token='',host_run_id=NULL,host_run_ordinal=NULL,log_path=?2,lifecycle=CASE WHEN lifecycle IN ('creating','running') THEN 'interrupted' ELSE lifecycle END WHERE id=?1", params![id, paths.log_path(id).to_string_lossy()])?;
+                tx.execute("UPDATE sessions SET host_pid=NULL,host_socket=NULL,host_token='',host_run_id=NULL,host_run_ordinal=NULL,lifecycle=CASE WHEN lifecycle IN ('creating','running') THEN 'interrupted' ELSE lifecycle END WHERE id=?1", params![id])?;
             }
             for table in [
                 "session_runs",

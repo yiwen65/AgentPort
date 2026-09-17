@@ -358,6 +358,13 @@ pub mod schema {
           (evidence GLOB 'process:signal:[0-9]*' AND substr(evidence,16) NOT GLOB '*[^0-9]*' AND CAST(substr(evidence,16) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(evidence,16) AS INTEGER) NOT IN (2,15))
         ));
         "#,
+        // v15 -> v16: the Host keeps no PTY body copy (docs/user-guide.md), so
+        // the recorded per-session output path is retired. Nothing reads or
+        // writes it any more, and the path it named was never created.
+        r#"
+        ALTER TABLE sessions DROP COLUMN log_path;
+        "#,
+
     ];
 }
 
@@ -666,7 +673,6 @@ fn row_session(r: &Row) -> rusqlite::Result<Session> {
         agent_session_id: r.get("agent_session_id")?,
         resume_precision: resume_precision(&r.get::<_, String>("resume_precision")?)
             .unwrap_or(ResumePrecision::Unavailable),
-        log_path: r.get("log_path")?,
         adapter_type: agent_type(&r.get::<_, String>("adapter_type")?).unwrap_or(AgentType::Shell),
         command: serde_json::from_str(&r.get::<_, String>("command_json")?).unwrap_or_default(),
         permission_mode: permission_mode(&r.get::<_, String>("permission_mode")?)
@@ -2184,8 +2190,8 @@ impl Db {
             }
         }
         tx.execute(
-            "INSERT INTO sessions(id,project_id,worktree_id,preset_id,title,cwd,host_pid,host_socket,host_token,lifecycle,agent_session_id,resume_precision,log_path,adapter_type,command_json,permission_mode,transport,created_at,updated_at,archived_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+            "INSERT INTO sessions(id,project_id,worktree_id,preset_id,title,cwd,host_pid,host_socket,host_token,lifecycle,agent_session_id,resume_precision,adapter_type,command_json,permission_mode,transport,created_at,updated_at,archived_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
             params![
                 s.id,
                 s.project_id,
@@ -2199,7 +2205,6 @@ impl Db {
                 s.lifecycle.as_str(),
                 s.agent_session_id,
                 s.resume_precision.as_str(),
-                s.log_path,
                 s.adapter_type.as_str(),
                 serde_json::to_string(&s.command)?,
                 s.permission_mode.as_str(),
@@ -2423,14 +2428,8 @@ impl Db {
         id: &str,
         run_id: &str,
         run_ordinal: i64,
-        log_path: &str,
     ) -> Result<()> {
         validate_run_identity(run_id, run_ordinal)?;
-        if log_path.is_empty() {
-            return Err(CoreError::Validation(
-                "session log path must not be empty".into(),
-            ));
-        }
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let archived_at: Option<String> = match tx.query_row(
@@ -2469,9 +2468,9 @@ impl Db {
             "UPDATE sessions
              SET host_pid=NULL, host_socket=NULL,
                  host_run_id=?2, host_run_ordinal=?3,
-                 log_path=?4, lifecycle='creating', updated_at=?5
+                 lifecycle='creating', updated_at=?4
              WHERE id=?1 AND archived_at IS NULL",
-            params![id, run_id, run_ordinal, log_path, dt_str(&Utc::now())],
+            params![id, run_id, run_ordinal, dt_str(&Utc::now())],
         )?;
         if claimed == 0 {
             return Err(CoreError::Blocked(format!(
@@ -2795,20 +2794,6 @@ impl Db {
         Ok(())
     }
 
-    /// Point a Session at the output log for its current Host run. Historical
-    /// runs keep their own immutable paths under the Session directory; this
-    /// field is intentionally only the active tail/search target.
-    pub fn update_session_log_path(&self, id: &str, log_path: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let n = conn.execute(
-            "UPDATE sessions SET log_path=?2, updated_at=?3 WHERE id=?1",
-            params![id, log_path, dt_str(&Utc::now())],
-        )?;
-        if n == 0 {
-            return Err(CoreError::NotFound(format!("session {id}")));
-        }
-        Ok(())
-    }
 
     pub fn update_session_agent_id(
         &self,
@@ -4729,7 +4714,6 @@ mod tests {
             lifecycle: Lifecycle::Creating,
             agent_session_id: None,
             resume_precision: ResumePrecision::Unavailable,
-            log_path: format!("/tmp/{id}.log"),
             adapter_type: AgentType::Shell,
             transport: AgentTransport::Pty,
             command: vec!["/bin/sh".into()],
@@ -5150,7 +5134,6 @@ mod tests {
             "ses_existing",
             &reserved.run_id,
             reserved.run_ordinal,
-            "/tmp/before-removal.log",
         )
         .unwrap();
         db.begin_project_removal("prj_1").unwrap();
@@ -5163,8 +5146,7 @@ mod tests {
             db.claim_session_run(
                 "ses_existing",
                 &reserved.run_id,
-                reserved.run_ordinal,
-                "/tmp/removal.log"
+                reserved.run_ordinal
             ),
             Err(CoreError::Blocked(_))
         ));
@@ -5457,14 +5439,11 @@ mod tests {
             .unwrap();
         db.update_session_host("ses_1", Some(4242), Some("/tmp/ses_1.sock"))
             .unwrap();
-        db.update_session_log_path("ses_1", "/tmp/ses_1-r2.log")
-            .unwrap();
         db.update_session_agent_id("ses_1", "01HZABC", ResumePrecision::Exact)
             .unwrap();
         let s = db.get_session("ses_1").unwrap();
         assert_eq!(s.lifecycle, Lifecycle::Running);
         assert_eq!(s.host_pid, Some(4242));
-        assert_eq!(s.log_path, "/tmp/ses_1-r2.log");
         assert_eq!(s.agent_session_id.as_deref(), Some("01HZABC"));
         assert_eq!(s.resume_precision, ResumePrecision::Exact);
         assert!(s.updated_at >= s0.updated_at);
@@ -5485,7 +5464,6 @@ mod tests {
             "ses_cas",
             &first.run_id,
             first.run_ordinal,
-            "/tmp/ses_cas-first.log",
         )
         .unwrap();
         assert!(db
@@ -5511,7 +5489,6 @@ mod tests {
             "ses_cas",
             &second.run_id,
             second.run_ordinal,
-            "/tmp/ses_cas-second.log",
         )
         .unwrap();
         assert!(db
@@ -5650,8 +5627,7 @@ mod tests {
             db.claim_session_run(
                 "ses_reserved",
                 &reserved.run_id,
-                reserved.run_ordinal,
-                "/tmp/run.log"
+                reserved.run_ordinal
             ),
             Err(CoreError::Blocked(_))
         ));
@@ -5670,7 +5646,6 @@ mod tests {
             "ses_claimed",
             &claimed.run_id,
             claimed.run_ordinal,
-            "/tmp/claimed.log",
         )
         .unwrap();
         db.archive_session("ses_claimed").unwrap();
@@ -6873,7 +6848,6 @@ mod tests {
             "ses_existing",
             &reserved.run_id,
             reserved.run_ordinal,
-            "/tmp/before-removal.log",
         )
         .unwrap();
         db.begin_worktree_removal("wt_1").unwrap();
@@ -6888,8 +6862,7 @@ mod tests {
             db.claim_session_run(
                 "ses_existing",
                 &reserved.run_id,
-                reserved.run_ordinal,
-                "/tmp/removal.log"
+                reserved.run_ordinal
             ),
             Err(CoreError::Blocked(_))
         ));

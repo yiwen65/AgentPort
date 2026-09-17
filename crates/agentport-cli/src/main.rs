@@ -586,11 +586,6 @@ fn launch_session(
         } else {
             plan.resume_precision
         },
-        log_path: ctx
-            .paths
-            .log_path(&session_id)
-            .to_string_lossy()
-            .into_owned(),
         adapter_type: agent,
         transport: plan.transport,
         command: plan.argv.clone(),
@@ -827,7 +822,6 @@ fn session_json(ctx: &Ctx, s: &Session) -> Value {
         "resumePrecision": s.resume_precision.as_str(),
         "permissionMode": s.permission_mode.as_str(),
         "transport": s.transport.as_str(),
-        "logPath": s.log_path,
         "createdAt": s.created_at,
         "status": latest.map(|e| json!({
             "state": e.state.as_str(),
