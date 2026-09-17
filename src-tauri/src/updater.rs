@@ -181,6 +181,11 @@ fn live_session_count(core: &AppState) -> usize {
 pub async fn startup_check(app: AppHandle) {
     let state = app.state::<UpdateState>();
     if !updater_enabled() {
+        tracing::info!(
+            debug = cfg!(debug_assertions),
+            platform = std::env::consts::OS,
+            "updater disabled for this build"
+        );
         commit(&app, &state, |snapshot| {
             snapshot.phase = UpdatePhase::Disabled;
         });
@@ -216,6 +221,7 @@ async fn check(
             let version = update.version.clone();
             let notes = update.body.clone();
             let date = update.date.map(|date| date.to_string());
+            tracing::info!(version = %version, current = %update.current_version, "update available");
             *state.pending.lock().unwrap() = Some(update);
             // A re-check invalidates any previously downloaded payload.
             state.payload.lock().unwrap().take();
@@ -231,6 +237,7 @@ async fn check(
             }))
         }
         Ok(None) => Ok(commit(app, state, |snapshot| {
+            tracing::info!(current = %snapshot.current_version, "no update available");
             snapshot.phase = UpdatePhase::UpToDate;
             snapshot.version = None;
             snapshot.notes = None;
@@ -242,6 +249,7 @@ async fn check(
         })),
         Err(error) => {
             let message = error.to_string();
+            tracing::warn!(error = %message, "update check failed");
             Ok(commit(app, state, |snapshot| {
                 snapshot.phase = UpdatePhase::Error;
                 snapshot.error = Some(message);
@@ -307,6 +315,10 @@ async fn download_inner(
     match payload {
         Ok(bytes) => {
             let size = bytes.len() as u64;
+            tracing::info!(
+                bytes = size,
+                "update payload downloaded and signature verified"
+            );
             *state.payload.lock().unwrap() = Some(bytes);
             Ok(commit(app, state, |snapshot| {
                 snapshot.phase = UpdatePhase::Ready;
@@ -318,6 +330,7 @@ async fn download_inner(
         }
         Err(error) => {
             let message = error.to_string();
+            tracing::warn!(error = %message, "update download failed");
             commit(app, state, |snapshot| {
                 snapshot.phase = UpdatePhase::Available;
                 snapshot.downloaded = 0;
