@@ -16,16 +16,17 @@ ENV PATH=/root/.cargo/bin:$PATH
 
 WORKDIR /src
 COPY . .
-RUN cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-cli
+RUN cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-cli \
+ && cargo build --release -p agentport-relay --features agentport-relay/connector
 RUN mkdir -p src-tauri/binaries \
- && for binary in agentport-host agentport-remote-bridge agentport-mosh-attach; do \
+ && for binary in agentport-host agentport-remote-bridge agentport-mosh-attach agentport-connector; do \
       cp "target/release/$binary" "src-tauri/binaries/$binary-$(uname -m)-unknown-linux-gnu"; \
       chmod +x "src-tauri/binaries/$binary-$(uname -m)-unknown-linux-gnu"; \
     done
 RUN cd src && npm ci && npm run build
-RUN cd src-tauri && ../src/node_modules/.bin/tauri build --bundles deb
+RUN cd src-tauri && ../src/node_modules/.bin/tauri build --bundles deb --config '{"bundle":{"createUpdaterArtifacts":false}}'
 RUN mkdir -p /out \
  && cp target/release/bundle/deb/*.deb /out/ 2>/dev/null || true \
- && cp target/release/agentport-cli target/release/agentport-host target/release/agentport-remote-bridge target/release/agentport-mosh-attach /out/
+ && cp target/release/agentport-cli target/release/agentport-host target/release/agentport-remote-bridge target/release/agentport-mosh-attach target/release/agentport-connector /out/
 WORKDIR /out
 CMD ["ls", "-la", "/out"]

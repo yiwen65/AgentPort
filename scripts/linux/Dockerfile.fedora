@@ -11,9 +11,10 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --pr
 ENV PATH=/root/.cargo/bin:$PATH
 WORKDIR /src
 COPY . .
-RUN cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-cli
+RUN cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-cli \
+ && cargo build --release -p agentport-relay --features agentport-relay/connector
 RUN mkdir -p /out \
- && cp target/release/agentport-cli target/release/agentport-host target/release/agentport-remote-bridge target/release/agentport-mosh-attach /out/ \
- && tar -czf /out/agentport-fedora-$(uname -m).tar.gz -C /out agentport-cli agentport-host agentport-remote-bridge agentport-mosh-attach
+ && cp target/release/agentport-cli target/release/agentport-host target/release/agentport-remote-bridge target/release/agentport-mosh-attach target/release/agentport-connector /out/ \
+ && tar -czf /out/agentport-fedora-$(uname -m).tar.gz -C /out agentport-cli agentport-host agentport-remote-bridge agentport-mosh-attach agentport-connector
 WORKDIR /out
 CMD ["ls", "-la", "/out"]

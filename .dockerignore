@@ -1,9 +1,16 @@
-target/
-node_modules/
-src/dist/
+# Docker matches these patterns per path component: a bare `target/` only
+# matched the repository root, so mobile/src-tauri/target (50 GB) plus the
+# generated iOS/Android trees were sent with every build context. `**/` makes
+# them match at any depth.
+**/target/
+**/node_modules/
+**/dist/
 dist-release/
-src-tauri/binaries/
+**/src-tauri/binaries/
 src/src/assets/agent-icons/*.dmg
 .git/
 .gitignore
 **/*.log
+# No Linux image builds the mobile app; its gen/ and native/mosh trees are
+# several GB of generated Xcode/Gradle and vendored build output.
+mobile/
