@@ -47,7 +47,16 @@ impl<'a> Diagnostics<'a> {
             // Lightweight handshake; is_alive short-circuits when no socket is
             // recorded and connect() fails fast on a stale/dead socket path.
             let alive = hosts.is_alive(&s.id);
-            let log_bytes = std::fs::metadata(&s.log_path).map(|m| m.len()).unwrap_or(0);
+            // The Host keeps no PTY body copy (docs/user-guide.md, "不保存正文索引"),
+            // so count what this run actually emitted instead of stat-ing a file
+            // that is never written.
+            let log_bytes = self
+                .db
+                .get_latest_log_cursor(&s.id)
+                .ok()
+                .flatten()
+                .map(|cursor| u64::try_from(cursor.offset).unwrap_or(0))
+                .unwrap_or(0);
             out.push(HostInfo {
                 session_id: s.id,
                 title: s.title,
@@ -202,8 +211,8 @@ fn human_bytes(n: u64) -> String {
 mod tests {
     use super::*;
     use crate::models::{
-        AdapterInstall, AgentType, HookStatus, Lifecycle, PermissionMode, Project, ResumePrecision,
-        SecretBackend, SecretRef, Session,
+        AdapterInstall, AgentType, HookStatus, Lifecycle, LogCursor, PermissionMode, Project,
+        ResumePrecision, SecretBackend, SecretRef, Session,
     };
     use chrono::Utc;
     use std::path::Path;
@@ -356,11 +365,22 @@ mod tests {
         let fx = fx();
         add_project(&fx.db);
         let log = fx.dir.path().join("h.log");
-        std::fs::write(&log, b"12345").unwrap();
-
         // Session whose recorded socket path is stale (host long gone):
         // connect() fails fast -> alive=false.
         let mut s1 = add_session(&fx.db, "ses_dead", &log);
+        // The reported size is what the Host emitted (durable cursor), not a
+        // file: the run-scoped PTY body copy is no longer written.
+        fx.db
+            .set_latest_log_cursor(
+                "ses_dead",
+                &LogCursor {
+                    run_id: crate::ids::new_id("run"),
+                    run_ordinal: 1,
+                    generation: 0,
+                    offset: 5,
+                },
+            )
+            .unwrap();
         fx.db
             .update_session_host(
                 "ses_dead",
