@@ -15,7 +15,6 @@ const session = (state: SessionView["status"]): SessionView => ({
   resumePrecision: "unavailable",
   permissionMode: "native",
   transport: "pty",
-  logPath: "/tmp/status-dot.log",
   unread: false,
   status: state,
   pinnedAt: null,

@@ -80,7 +80,6 @@ const firstSession: SessionView = {
   resumePrecision: "unavailable",
   permissionMode: "native",
   transport: "pty",
-  logPath: "/tmp/first.log",
   unread: false,
   status: null,
   pinnedAt: null,

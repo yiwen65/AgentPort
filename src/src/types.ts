@@ -92,7 +92,6 @@ export interface SessionView {
   resumePrecision: ResumePrecisionStr;
   permissionMode: PermissionStr;
   transport: AgentTransportStr;
-  logPath: string;
   unread: boolean;
   status: StatusEventView | null;
   /** RFC3339 pin timestamp; null means unpinned. Latest pin sorts first. */

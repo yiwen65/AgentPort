@@ -62,7 +62,6 @@ function session(
     resumePrecision: "unavailable",
     permissionMode: "native",
     transport,
-    logPath: `/tmp/${id}.log`,
     unread: false,
     status: null,
     pinnedAt: null,

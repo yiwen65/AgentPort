@@ -73,7 +73,6 @@ const oldSession = {
   resumePrecision: "unavailable" as const,
   permissionMode: "native" as const,
   transport: "pty" as const,
-  logPath: "/tmp/old.log",
   unread: false,
   status: null,
   pinnedAt: null,

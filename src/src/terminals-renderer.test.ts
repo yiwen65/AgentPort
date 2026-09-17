@@ -361,7 +361,6 @@ describe("terminal renderer", () => {
               resumePrecision: "unavailable",
               permissionMode: "native",
               transport: "pty",
-              logPath: "/tmp/renderer.log",
               unread: false,
               status: null,
               pinnedAt: null,

@@ -72,7 +72,6 @@ describe("DocumentPanel", () => {
           resumePrecision: "unavailable",
           permissionMode: "native",
           transport: "pty",
-          logPath: "/tmp/demo.log",
           unread: false,
           status: null,
           pinnedAt: null,

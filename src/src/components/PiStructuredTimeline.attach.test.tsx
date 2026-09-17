@@ -62,7 +62,6 @@ const session: SessionView = {
   resumePrecision: "unavailable",
   permissionMode: "native",
   transport: "json_rpc",
-  logPath: "/tmp/pi.log",
   unread: false,
   status: null,
   pinnedAt: null,

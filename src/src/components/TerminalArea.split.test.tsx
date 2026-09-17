@@ -120,7 +120,6 @@ const ptyA: SessionView = {
   resumePrecision: "unavailable",
   permissionMode: "native",
   transport: "pty",
-  logPath: "/tmp/a.log",
   unread: false,
   status: null,
   pinnedAt: null,

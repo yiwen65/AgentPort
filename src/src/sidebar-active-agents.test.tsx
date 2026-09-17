@@ -75,7 +75,6 @@ function session(
     resumePrecision: "unavailable",
     permissionMode: "native",
     transport: "pty",
-    logPath: `/tmp/${id}.log`,
     unread: false,
     status: state
       ? {

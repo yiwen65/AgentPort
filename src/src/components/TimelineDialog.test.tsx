@@ -28,7 +28,6 @@ const session: SessionView = {
   resumePrecision: "unavailable",
   permissionMode: "native",
   transport: "pty",
-  logPath: "/tmp/output.log",
   unread: true,
   status: null,
   pinnedAt: null,

@@ -45,7 +45,6 @@ const targetSession: SessionView = {
   resumePrecision: "unavailable",
   permissionMode: "native",
   transport: "pty",
-  logPath: "/tmp/target.log",
   unread: false,
   status: null,
   pinnedAt: null,
@@ -57,7 +56,6 @@ const createdSession: SessionView = {
   title: "Codex",
   adapter: "codex",
   permissionMode: "bypass",
-  logPath: "/tmp/created.log",
 };
 
 function projectWith(...sessions: SessionView[]) {

@@ -118,7 +118,6 @@ function sessionView(
     resumePrecision: "unavailable" as const,
     permissionMode: "native" as const,
     transport: "pty" as const,
-    logPath: `/tmp/${id}.log`,
     unread: false,
     status: null,
     pinnedAt: null,
