@@ -460,3 +460,21 @@
 - Correct approach: 把探针预算提到 5s（对 node 系 CLI 冷启动也更真实），并把测试断言写成 `PROBE_TIMEOUT + slack` 的形式。
 - Prevention: 超时相关断言永远引用常量；评估超时时把"负载机器 + 冷启动 CLI"作为默认场景，而不是理想情况。
 - Verified by: `cargo test --workspace --all-targets` 连续两轮 EXIT=0（修复前每轮约 1 个 adapter 探针失败）。
+
+## `并发 cargo 与目标目录` — 同一 target 上的并行构建会把缓存打坏
+
+- Wrong approach: 在一个长跑的后台 `cargo test --workspace` 还没结束时，又并行执行 `cargo check` / `cargo test`，并在发现报错后直接 `cargo clean`。
+- Why it failed: 两个 cargo 进程同时写 `target/`，随后出现 `extern location for serde_core does not exist`、`found possibly newer version of crate bitflags`、`failed to remove file … No such file or directory`（clean 与仍在运行的构建互相踩）。
+- Recognition signal: 报错指向 **registry 依赖**（bitflags/serde/zerofrom 等）而不是自己的代码；同一命令重跑结果不同；`cargo clean` 自身失败并报"文件不存在"。
+- Correct approach: 先确认没有 cargo/rustc 在跑（`pgrep -fl cargo`），必要时 `pkill -f 'cargo (test|check|build)'`，再 `cargo clean` 后串行重建；**一次只跑一个 cargo**。
+- Prevention: 长测试放后台时不要再起第二个构建命令；把 `cargo` 的并发交给 `cargo test` 内部的 test 线程，而不是多进程。
+- Verified by: 并发损坏后 `cargo clean` 失败；清干净进程、串行 `cargo clean && cargo check --workspace --all-targets` 后恢复，最终 30 套件全绿。
+
+## `跨文件删除字段` — 用编译器逐条驱动，别用全局正则
+
+- Wrong approach: 为了退役 `Session.log_path`，用脚本按 `^\s*log_path: .*,$` 删行、并用宽松正则删 `claim_session_run(..., path)` 的第四个参数。
+- Why it failed: 正则跨行匹配吞掉了相邻代码——删掉了 `format!` 的参数（`let sql = format!();`）、删掉了 `assert_eq!` 的期望值行、把 `adapter_type` 与 `log_path` 同行的那一行整体删除、还给无关的 `insert_pending_branch_operation` 去掉了一个参数。
+- Recognition signal: 编译器报"必须有格式字符串""意外的宏结束""缺少字段 adapter_type"等与本任务无关的错误；`git diff` 里出现与目标字段无关的行。
+- Correct approach: 一次只改一处、anchor 必须唯一且**断言出现次数**（`assert count == 1`）；结构体字面量里的字段用**精确的整块 old/new**替换（含相邻字段做锚点），删除函数用花括号配对而不是正则；每改一处立刻 `cargo check`。若已经改坏，直接 `git checkout HEAD -- <file>` 重来比修补更快。
+- Prevention: 批量删除前先枚举全部引用点（`rg -F -n`）并分类（列定义 / 字段 / fixture / SQL / 断言），对"多行表达式 + 同行多字段"两类单独手改。
+- Verified by: 重做后 `cargo check --workspace --all-targets` 与 `cargo test --workspace --all-targets` 全绿（30 套件），且迁移测试覆盖 v15→v16 的 `DROP COLUMN`。

@@ -17,7 +17,7 @@
 8. **Generic Shell 无恢复**：重启 shell session 总是新进程并明示"不可恢复"，绝不伪装。
 9. **job control 之外的更深逃逸**（子进程自己 `setsid` 守护化）不在进程组清理范围内；清理按 session leader + ppid 树快照实现（macOS `ps` 的 sess 列恒 0，无法按 session id 归组）。
 10. **Generic Shell 结束后无历史**：Shell 没有可验证的 Agent 原生日志；AgentPort 只提供运行期 4 MiB 内存尾部，不另行保存终端正文。
-11. **旧 `output.log` 相关面已移除，但仍有死引用待清理**：Host 不再写 PTY 正文日志（本文件第 10 条），本次已删除读取它的 `Exporter::export_log/export_markdown`、远端 `session.recovery_context.read` 能力与其无生产者的错误码，并把 `diag hosts` 的 `logBytes` 改为本运行已输出的字节数（durable log cursor）。仍未清理：`sessions.log_path` 字段（含 CLI 建会话时写入的旧约定路径、`session status` 的 `logPath` 输出）、`SearchIndex` 的 FTS 正文索引与 `rebuild_all`/`query`（无生产调用方，仅保留 `purge_*` 清理路径）、`perf` 中已重基线的场景历史命名。删除这些面需要一次带迁移的单独改动。
+11. **旧 `output.log` 面已彻底退役（v15→v16 迁移）**：Host 不再写 PTY 正文日志，本轮删除了读它的导出、远端能力与诊断字节数，并进一步退役 `sessions.log_path` 列（`ALTER TABLE sessions DROP COLUMN log_path`，随 `Db::open` 迁移执行）、`Session.log_path` 字段、HostConfig 的同名字段、CLI `session status` 的 `logPath` 输出与前端 `SessionView.logPath`。README/`docs/user-guide.md` 描述的"正文只在 Agent 原生日志"是唯一正确的读取路径；`SearchIndex` 仅保留 `purge_*` 清理入口（正文索引与重建/查询代码已删除）。**未知用户旧数据**：迁移在打开旧库时自动执行，已由 `db` 的迁移测试覆盖，但未在真实用户库副本上人工演练。
 12. **备份原生覆盖可能不完整**：v2 只归档能按原生 Session ID（及 Provider 可用的 CWD 绑定）唯一验证的文件；来源缺失或歧义时仍可生成通过完整性校验的备份，但 UI/Manifest 会将 `nativeCoverage` 标为不完整。Generic Shell 记为不支持，v1 旧版备份不含原生正文合同。备份 ZIP 不加密；恢复目标是当前配置的 Provider home，遇到同路径不同内容会中止而不覆盖。
 
 ## 验证缺口（如实标记）
