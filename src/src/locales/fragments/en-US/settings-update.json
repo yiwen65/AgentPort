@@ -1,0 +1,19 @@
+{
+  "update": {
+    "description": "AgentPort checks for a new version at launch and downloads it in the background. Installing closes running sessions, so it always asks first.",
+    "currentVersion": "Current version",
+    "versionValue": "AgentPort {{version}}",
+    "checkLabel": "Updates",
+    "checkButton": "Check for updates",
+    "checking": "Checking…",
+    "idle": "Updates are checked when AgentPort starts.",
+    "upToDate": "AgentPort {{version}} is up to date.",
+    "available": "AgentPort {{version}} is available.",
+    "downloading": "Downloading AgentPort {{version}}…",
+    "downloadingProgress": "Downloading AgentPort {{version}}… {{percent}}% ({{size}})",
+    "ready": "AgentPort {{version}} is downloaded. Use “Quit and update” in the prompt at the bottom left.",
+    "installing": "Stopping running sessions and installing the update…",
+    "failed": "Update failed: {{detail}}",
+    "disabled": "This build never checks for updates (development build or updates disabled)."
+  }
+}

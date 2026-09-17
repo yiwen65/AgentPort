@@ -16,7 +16,9 @@ import runtimeExtraZhCN from "./fragments/zh-CN/runtime-extra.json";
 import sessionUiEnUS from "./fragments/en-US/session-ui.json";
 import sessionUiZhCN from "./fragments/zh-CN/session-ui.json";
 import settingsUiEnUS from "./fragments/en-US/settings-ui.json";
+import settingsUpdateEnUS from "./fragments/en-US/settings-update.json";
 import settingsUiZhCN from "./fragments/zh-CN/settings-ui.json";
+import settingsUpdateZhCN from "./fragments/zh-CN/settings-update.json";
 import shellUiEnUS from "./fragments/en-US/shell-ui.json";
 import shellUpdateEnUS from "./fragments/en-US/shell-update.json";
 import shellUiZhCN from "./fragments/zh-CN/shell-ui.json";
@@ -39,7 +41,7 @@ export const resources = {
     shell: { ...shellZhCN, ...shellExtraZhCN, ...shellUiZhCN, ...shellUpdateZhCN },
     session: { ...sessionZhCN, ...sessionExtraZhCN, ...sessionUiZhCN },
     worktree: { ...worktreeZhCN, ...worktreeExtraZhCN, ...worktreeUiZhCN },
-    settings: { ...settingsZhCN, ...settingsUiZhCN },
+    settings: { ...settingsZhCN, ...settingsUiZhCN, ...settingsUpdateZhCN },
     runtime: { ...runtimeZhCN, ...runtimeExtraZhCN },
     git: gitZhCN,
   },
@@ -48,7 +50,7 @@ export const resources = {
     shell: { ...shellEnUS, ...shellExtraEnUS, ...shellUiEnUS, ...shellUpdateEnUS },
     session: { ...sessionEnUS, ...sessionExtraEnUS, ...sessionUiEnUS },
     worktree: { ...worktreeEnUS, ...worktreeExtraEnUS, ...worktreeUiEnUS },
-    settings: { ...settingsEnUS, ...settingsUiEnUS },
+    settings: { ...settingsEnUS, ...settingsUiEnUS, ...settingsUpdateEnUS },
     runtime: { ...runtimeEnUS, ...runtimeExtraEnUS },
     git: gitEnUS,
   },

@@ -17,6 +17,7 @@
   "settings:ui.appearance.terminalTheme.options.one.name",
   "settings:ui.appearance.terminalTheme.options.sakura.name",
   "settings:ui.authorCredit",
+  "settings:update.versionValue",
   "shell:ui.sidebar.worktreeScope",
   "shell:ui.terminalSearch.matchPosition_one",
   "shell:ui.terminalSearch.matchPosition_other"

@@ -1,0 +1,19 @@
+{
+  "update": {
+    "description": "AgentPort 在启动时检查新版本并在后台下载。安装会关闭正在运行的 Session，因此始终先征求你的确认。",
+    "currentVersion": "当前版本",
+    "versionValue": "AgentPort {{version}}",
+    "checkLabel": "更新",
+    "checkButton": "检查更新",
+    "checking": "检查中…",
+    "idle": "AgentPort 启动时会自动检查更新。",
+    "upToDate": "AgentPort {{version}} 已是最新版本。",
+    "available": "发现新版本 AgentPort {{version}}。",
+    "downloading": "正在下载 AgentPort {{version}}…",
+    "downloadingProgress": "正在下载 AgentPort {{version}}… {{percent}}%（{{size}}）",
+    "ready": "AgentPort {{version}} 已下载，请点击左下角提示中的「退出并更新」。",
+    "installing": "正在停止运行中的 Session 并安装更新…",
+    "failed": "更新失败：{{detail}}",
+    "disabled": "当前构建不检查更新（开发构建或已禁用更新）。"
+  }
+}

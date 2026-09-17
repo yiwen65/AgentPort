@@ -3,9 +3,10 @@
 // component only mirrors the published state and requires an explicit click
 // before the install step stops running Sessions.
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { api, errorText, onUpdateState, type UpdatePhase, type UpdateSnapshot } from "../api";
+import { api, errorText, type UpdatePhase, type UpdateSnapshot } from "../api";
+import { useUpdateState } from "../updateState";
 
 /** States that need no user-visible surface. */
 const QUIET_PHASES: UpdatePhase[] = ["disabled", "idle", "checking", "upToDate"];
@@ -22,40 +23,12 @@ function formatBytes(bytes: number): string {
 
 export default function UpdateBanner() {
   const { t } = useTranslation("shell");
-  const [snapshot, setSnapshot] = useState<UpdateSnapshot | null>(null);
+  const snapshot = useUpdateState();
   // Dismissal is bound to the announced version, so re-emitted progress never
   // resurrects a postponed card while a newer release still gets its prompt.
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    let unlisten: (() => void) | undefined;
-    void onUpdateState((next) => {
-      if (!active) return;
-      setActionError(null);
-      setSnapshot(next);
-    })
-      .then((off) => {
-        if (active) unlisten = off;
-        else off();
-      })
-      .catch(() => undefined);
-    // A GUI reload can miss earlier events; the command is the resync source.
-    // Never let the reply overwrite a newer event.
-    void api
-      .updateStatus()
-      .then((initial) => {
-        if (!active) return;
-        setSnapshot((current) => current ?? initial);
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-      unlisten?.();
-    };
-  }, []);
 
   if (!snapshot || QUIET_PHASES.includes(snapshot.phase)) return null;
   // A failed probe with no announced release is noise: the app works offline

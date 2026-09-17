@@ -18,7 +18,8 @@
       "secrets": "Secret 管理",
       "archive": "归档 Session",
       "backup": "备份与恢复",
-      "pairing": "手机配对"
+      "pairing": "手机配对",
+      "about": "关于"
     },
     "appearance": {
       "description": "应用主题、终端配色、语言、字体、动效与辅助功能",
@@ -146,8 +147,19 @@
       "rollbackTitle": "回滚 {{agent}} 通知集成？",
       "rollbackBody": "仅移除 AgentPort 托管的通知改动，并在安全时恢复保留的设置，不覆盖用户后续修改。CLI 和已有 Session 仍然可用；之后重新探测可再次配置通知。",
       "rollbackFailed": "无法回滚 {{agent}} 通知集成：{{detail}}",
-      "state": { "ready": "就绪", "degraded": "部分覆盖 / 已降级", "failed": "配置失败", "unavailable": "不可用" },
-      "source": { "hook": "Hook 事件", "native": "原生事件", "process": "进程事件", "heuristic": "启发式（非精确）", "unavailable": "不可用" }
+      "state": {
+        "ready": "就绪",
+        "degraded": "部分覆盖 / 已降级",
+        "failed": "配置失败",
+        "unavailable": "不可用"
+      },
+      "source": {
+        "hook": "Hook 事件",
+        "native": "原生事件",
+        "process": "进程事件",
+        "heuristic": "启发式（非精确）",
+        "unavailable": "不可用"
+      }
     },
     "adapters": {
       "description": "下方保留所有已探测到的 Agent。关闭仅隐藏启动入口，不删除配置或停止现有会话。自动探测只检查尚未发现的 Agent，保留已有路径、排序与启用状态。",

@@ -29,6 +29,7 @@ import { AgentIcon } from "./AgentIcons";
 import NotificationSetupPanel from "./NotificationSetupPanel";
 import ShellIcon from "./ShellIcon";
 import { PairingSection } from "./PairingSection";
+import UpdateSection from "./UpdateSection";
 import { closeDialog, confirmDialog, getState, setState, toast, useStore } from "../store";
 import type {
   AdapterInstall,
@@ -1234,7 +1235,8 @@ type SettingsSection =
   | "secrets"
   | "archive"
   | "backup"
-  | "pairing";
+  | "pairing"
+  | "about";
 
 const SETTINGS_SECTIONS = [
   { id: "appearance", labelKey: "settings:ui.sections.appearance" },
@@ -1245,6 +1247,7 @@ const SETTINGS_SECTIONS = [
   { id: "archive", labelKey: "settings:ui.sections.archive" },
   { id: "backup", labelKey: "settings:ui.sections.backup" },
   { id: "pairing", labelKey: "settings:ui.sections.pairing" },
+  { id: "about", labelKey: "settings:ui.sections.about" },
 ] as const satisfies ReadonlyArray<{ id: SettingsSection; labelKey: string }>;
 
 export default function SettingsDialog() {
@@ -1684,6 +1687,7 @@ export default function SettingsDialog() {
     archive: <ArchiveSection />,
     backup: <BackupSection />,
     pairing: <PairingSection />,
+    about: <UpdateSection />,
   }[section];
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {

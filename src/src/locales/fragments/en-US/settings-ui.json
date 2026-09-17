@@ -18,7 +18,8 @@
       "secrets": "Secret Management",
       "archive": "Archived Sessions",
       "backup": "Backup & Restore",
-      "pairing": "Phone Pairing"
+      "pairing": "Phone Pairing",
+      "about": "About"
     },
     "appearance": {
       "description": "App theme, terminal colors, language, typography, motion, and assistive features",
@@ -146,8 +147,19 @@
       "rollbackTitle": "Roll back {{agent}} notification integration?",
       "rollbackBody": "Remove only AgentPort-managed notification changes, restoring preserved settings where safe. Later user edits will not be overwritten. The CLI and existing Sessions remain available; a future probe can configure integration again.",
       "rollbackFailed": "Could not roll back {{agent}} notification integration: {{detail}}",
-      "state": { "ready": "Ready", "degraded": "Partial / degraded", "failed": "Setup failed", "unavailable": "Unavailable" },
-      "source": { "hook": "Hook", "native": "Native event", "process": "Process event", "heuristic": "Heuristic (not exact)", "unavailable": "Unavailable" }
+      "state": {
+        "ready": "Ready",
+        "degraded": "Partial / degraded",
+        "failed": "Setup failed",
+        "unavailable": "Unavailable"
+      },
+      "source": {
+        "hook": "Hook",
+        "native": "Native event",
+        "process": "Process event",
+        "heuristic": "Heuristic (not exact)",
+        "unavailable": "Unavailable"
+      }
     },
     "adapters": {
       "description": "All detected Agents stay listed. Turning one off hides its launch entry without removing configuration or stopping existing Sessions. Automatic detection checks only missing Agents, preserving existing paths, order, and enabled states.",
