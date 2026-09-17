@@ -1272,7 +1272,10 @@ fn cmd_worktree(ctx: &Ctx, args: &[String]) -> Result<()> {
                 .iter()
                 .filter(|session| host_manager.stop(&session.id, 3_000).is_err())
                 .count();
-            let outcome = mgr.remove(id)?;
+            // The CLI takes the cross-process fence here so Sessions are stopped
+            // before any directory disappears; `remove()` would try to take the
+            // same fence again and always fail with "already in progress".
+            let outcome = mgr.remove_after_fence(id)?;
             for (session, native_plan) in sessions.iter().zip(&native_plans) {
                 let _ = execute_native_cleanup(native_plan);
                 let _ = std::fs::remove_dir_all(ctx.paths.session_dir(&session.id));
