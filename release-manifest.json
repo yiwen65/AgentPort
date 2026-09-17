@@ -1,7 +1,7 @@
 {
   "manifestVersion": 1,
   "appVersion": "0.1.1",
-  "generatedAt": "2026-09-17T11:11:56.017188+00:00",
+  "generatedAt": "2026-09-17T12:05:25.549787+00:00",
   "deliveryScope": "p0_p2",
   "platforms": [
     {
@@ -13,14 +13,13 @@
       "sha256": "9a99d56ad47e6417a661a3ca441c5e10d02da0fc12b43e718f880cb1922cbf59",
       "webviewVersion": "",
       "tested": [
-        "ci-build (GitHub Actions, universal)",
-        "updater-install (0.1.0 -> 0.1.1 on this machine)",
+        "build",
         "launch-smoke",
+        "window-render",
         "db-init"
       ],
       "notes": [
-        "artifact is the CI-built universal DMG from release v0.1.1; ad-hoc/linker signature only — no Developer ID signing or notarization",
-        "pixel-level window capture of this artifact was not possible during acceptance (display locked/TCC); the bundle launched, initialised its database and was installed over 0.1.0 by the in-app updater"
+        "artifact is the released v0.1.1 universal DMG: its sha256 matches the GitHub Release asset, so it was built by CI, not on this machine (Homebrew rust here is arm64-only); ad-hoc/linker signature only — no Developer ID signing or notarization"
       ]
     },
     {
@@ -38,8 +37,7 @@
         "uninstall"
       ],
       "notes": [
-        "release baseline: built in the Ubuntu 22.04 container (CI)",
-        "scripts/linux/verify-in-container.sh ran against this exact .deb: install, embedded sidecars, Remote Bridge smoke, PTY roundtrip with the installed agentport-host, xvfb GUI launch, uninstall"
+        "release baseline: built on Ubuntu 22.04"
       ]
     },
     {
@@ -71,8 +69,7 @@
         "docker-build"
       ],
       "notes": [
-        "community-verified tier; package format = tarball",
-        "built in the Fedora container by CI"
+        "community-verified tier; package format = tarball"
       ]
     },
     {
@@ -86,8 +83,7 @@
         "docker-build"
       ],
       "notes": [
-        "community-verified tier; package format = tarball",
-        "built in the Arch container by CI"
+        "community-verified tier; package format = tarball"
       ]
     },
     {
@@ -111,7 +107,7 @@
       "capabilityHash": "sha256:83b304218a5baee2",
       "exactResume": true,
       "hookStatus": "supported",
-      "verifiedAt": "2026-09-17T11:09:43.495Z"
+      "verifiedAt": "2026-09-17T12:02:35.904Z"
     },
     {
       "agent": "codex",
@@ -120,7 +116,7 @@
       "capabilityHash": "sha256:f7ad282c8e2e8ba5",
       "exactResume": true,
       "hookStatus": "supported",
-      "verifiedAt": "2026-09-17T11:09:43.868Z"
+      "verifiedAt": "2026-09-17T12:02:36.603Z"
     },
     {
       "agent": "kimi",
@@ -129,7 +125,7 @@
       "capabilityHash": "sha256:28c9a754ab23347b",
       "exactResume": true,
       "hookStatus": "degraded",
-      "verifiedAt": "2026-09-17T11:09:45.036Z"
+      "verifiedAt": "2026-09-17T12:02:40.844Z"
     },
     {
       "agent": "pi",
@@ -138,7 +134,7 @@
       "capabilityHash": "sha256:8ebccf8044a91fff",
       "exactResume": true,
       "hookStatus": "unavailable",
-      "verifiedAt": "2026-09-17T11:09:46.335Z"
+      "verifiedAt": "2026-09-17T12:02:45.102Z"
     },
     {
       "agent": "qoder",
@@ -147,7 +143,7 @@
       "capabilityHash": "sha256:91e83c2e0568e842",
       "exactResume": true,
       "hookStatus": "supported",
-      "verifiedAt": "2026-09-17T11:09:48.365Z"
+      "verifiedAt": "2026-09-17T12:02:49.698Z"
     },
     {
       "agent": "shell",
@@ -156,7 +152,7 @@
       "capabilityHash": "sha256:fef18104984383af",
       "exactResume": false,
       "hookStatus": "unavailable",
-      "verifiedAt": "2026-09-17T11:09:48.791Z"
+      "verifiedAt": "2026-09-17T12:02:50.236Z"
     }
   ],
   "tests": [
@@ -179,20 +175,18 @@
     },
     {
       "suite": "e2e/wave1.sh (PTY/reconnect/cleanup/log-sha256)",
-      "result": "pass",
-      "evidence": "re-based on 2026-09-17: live Sessions keep no PTY log, so the wave checks byte continuity across reconnects instead of diffing a removed file"
+      "result": "pass"
     },
     {
       "suite": "e2e/wave2.sh (export/search/timeline/secret-leak-scan)",
-      "result": "pass",
-      "evidence": "re-based on 2026-09-17: asserts the current contracts (raw log export removed, md/json need native history, diagnostics zip carries status events but no terminal body)"
+      "result": "pass"
     }
   ],
   "knownLimitations": [
+    "macOS Universal (x86_64+arm64) build requires rustup toolchains; this machine used Homebrew rust (arm64 only).",
     "Developer ID signing/notarization and clean-VM interactive runs (IME/Orca/VoiceOver) are manual steps, listed in docs/acceptance-report.md.",
     "FTS5 trigram search index stores text+postings (measured ~3.6x source size); PRD's 0.35 ratio would require a contentless index redesign.",
     "AppImage remains unpublished (linuxdeploy download failure); reproducible via scripts/build-linux.sh appimage.",
-    "Legacy output.log surfaces removed in this round: Exporter::export_log/export_markdown and the remote session.recovery_context.read capability are gone, and diag hosts reports emitted bytes from the durable log cursor. Still to retire (dead but harmless, needs one migration-sized change): sessions.log_path plus the CLI's logPath output, and SearchIndex's FTS body index/rebuild/query.",
-    "Probe budget for read-only CLI probes is 5 s (was 2 s): the old value timed out on a loaded machine and on cold node-based CLIs."
+    "Read-only CLI probe budget is 5 s (was 2 s): the old value timed out on a loaded machine and on cold node-based CLIs."
   ]
 }
