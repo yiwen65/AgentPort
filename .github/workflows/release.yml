@@ -3,50 +3,99 @@ name: release
 # Tag-driven release: one tag = one version for the Tauri shell, the embedded
 # frontend dist and every bundled sidecar. See docs/updater.md.
 #
-# macOS only: the Tauri updater's Linux payload can only be produced from an
-# AppImage bundle, which this project does not publish yet (see
-# release-manifest.json). Linux artifacts keep their existing manual flow
-# (scripts/build-linux.sh) and are upgraded by the system package manager.
+# macOS and Linux ship together: macOS produces the universal .app + DMG and
+# the updater payload (in-app updates are macOS-only — the bundler can only
+# build a Linux updater payload from an AppImage, which this project does not
+# publish yet), Linux produces the .deb plus the Fedora/Arch tarballs from the
+# same Dockerfiles used locally (scripts/linux/Dockerfile.*).
+#
+# A published tag can be re-processed without moving it:
+#   gh workflow run release.yml -f tag=v0.1.1 -f platforms=linux
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build assets for (defaults to the pushed tag)
+        required: false
+      platforms:
+        description: Which platform assets to (re)build and attach
+        required: false
+        default: all
+        type: choice
+        options: [all, macos, linux]
 
 permissions:
   contents: write
 
 jobs:
+  meta:
+    name: Resolve target
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      macos: ${{ steps.resolve.outputs.macos }}
+      linux: ${{ steps.resolve.outputs.linux }}
+    steps:
+      - name: Resolve tag and platforms
+        id: resolve
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          platforms="${INPUT_PLATFORMS:-all}"
+          case "$platforms" in
+            all) macos=true; linux=true ;;
+            macos) macos=true; linux=false ;;
+            linux) macos=false; linux=true ;;
+            *) echo "unknown platforms: $platforms" >&2; exit 2 ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "macos=$macos" >> "$GITHUB_OUTPUT"
+          echo "linux=$linux" >> "$GITHUB_OUTPUT"
+          echo "release $tag (macos=$macos linux=$linux)"
+
   macos:
-    name: AgentPort (macOS universal)
+    name: macOS universal
+    needs: meta
+    if: needs.meta.outputs.macos == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
 
       - name: Version sync gate (shell = frontend dist = sidecars)
         run: scripts/check-version-sync.sh
 
       - name: Tag matches the app version
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
         run: |
           version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          if [ "v$version" != "${GITHUB_REF_NAME}" ]; then
-            echo "tag ${GITHUB_REF_NAME} does not match app version ${version}" >&2
-            echo "run scripts/set-version.sh ${GITHUB_REF_NAME#v} before tagging" >&2
+          if [ "v$version" != "$TAG" ]; then
+            echo "tag $TAG does not match app version $version" >&2
+            echo "run scripts/set-version.sh ${TAG#v} before tagging" >&2
             exit 1
           fi
 
       - name: Ensure the GitHub release exists
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.meta.outputs.tag }}
         run: |
           set -euo pipefail
           # Create the release before the build: tauri-action uploads into it
           # afterwards, and a token that cannot write releases fails here in
           # seconds instead of after a full build.
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "release $GITHUB_REF_NAME already exists"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists"
           else
-            gh release create "$GITHUB_REF_NAME" \
-              --title "AgentPort $GITHUB_REF_NAME" \
+            gh release create "$TAG" \
+              --title "AgentPort $TAG" \
               --notes "See the assets below. Desktop updates are delivered in-app via the Tauri updater (docs/updater.md)." \
               --verify-tag
           fi
@@ -70,11 +119,10 @@ jobs:
 
       # Mirrors the sidecar staging in scripts/build-macos.sh --universal:
       # tauri-build resolves externalBin entries for the exact target triple,
-      # so `*-universal-apple-darwin` must exist before the bundler runs.
+      # so both per-arch copies and the lipo'd file must exist before bundling.
       - name: Stage universal sidecars
         run: |
           set -euo pipefail
-          # src-tauri/binaries is gitignored; a fresh checkout has no directory.
           mkdir -p src-tauri/binaries
           for target in aarch64-apple-darwin x86_64-apple-darwin; do
             cargo build --release -p agentport-host -p agentport-remote-bridge \
@@ -82,8 +130,6 @@ jobs:
               --features agentport-relay/connector --target "$target"
           done
           for binary in agentport-host agentport-remote-bridge agentport-mosh-attach agentport-connector; do
-            # Per-arch copies: tauri-build resolves externalBin for each cargo
-            # target of the universal build; the lipo'd file covers bundling.
             cp "target/aarch64-apple-darwin/release/$binary" \
               "src-tauri/binaries/$binary-aarch64-apple-darwin"
             cp "target/x86_64-apple-darwin/release/$binary" \
@@ -133,11 +179,85 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "AgentPort ${{ github.ref_name }}"
+          tagName: ${{ needs.meta.outputs.tag }}
+          releaseName: "AgentPort ${{ needs.meta.outputs.tag }}"
           releaseBody: "See the assets below. Desktop updates are delivered in-app via the Tauri updater (docs/updater.md)."
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
           # `app` is required: the macOS updater payload is the archived .app.
           args: --target universal-apple-darwin --bundles app,dmg
+
+  linux:
+    name: Linux (${{ matrix.name }})
+    needs: meta
+    if: needs.meta.outputs.linux == 'true'
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Official tier: Ubuntu 22.04 baseline .deb (22.04 and 24.04 share it).
+          - name: ubuntu2204
+            dockerfile: scripts/linux/Dockerfile.ubuntu2204
+            pattern: "*.deb"
+          # Community-verified tiers: CLI + sidecar tarballs.
+          - name: fedora
+            dockerfile: scripts/linux/Dockerfile.fedora
+            pattern: "*fedora*.tar.gz"
+          - name: arch
+            dockerfile: scripts/linux/Dockerfile.arch
+            pattern: "*arch*.tar.gz"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+
+      # The Dockerfiles are the single source of truth for Linux builds: the
+      # same images run locally via scripts/build-linux.sh and in CI here, so a
+      # release artifact is reproducible from either path.
+      - name: Build in the distro container
+        run: |
+          set -euo pipefail
+          docker build -f "${{ matrix.dockerfile }}" -t "agentport-${{ matrix.name }}" .
+          mkdir -p "dist-release/${{ matrix.name }}"
+          container=$(docker create "agentport-${{ matrix.name }}")
+          docker cp "$container":/out/. "dist-release/${{ matrix.name }}/"
+          docker rm "$container"
+          ls -la "dist-release/${{ matrix.name }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.name }}
+          path: dist-release/${{ matrix.name }}/${{ matrix.pattern }}
+          if-no-files-found: error
+
+  publish-linux:
+    name: Attach Linux assets
+    needs: [meta, linux]
+    if: needs.meta.outputs.linux == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: linux-artifacts
+
+      - name: Upload to the release with checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # A re-run must not race the macOS job's release creation.
+          for attempt in $(seq 1 20); do
+            gh release view "$TAG" >/dev/null 2>&1 && break
+            echo "waiting for release $TAG (attempt $attempt)"; sleep 15
+          done
+          gh release view "$TAG" >/dev/null
+          cd linux-artifacts
+          mapfile -t files < <(find . -type f \( -name '*.deb' -o -name '*.tar.gz' \) | sort)
+          [ "${#files[@]}" -gt 0 ] || { echo "no Linux artifacts found" >&2; exit 1; }
+          printf '%s\n' "${files[@]}"
+          for f in "${files[@]}"; do sha256sum "$f" | sed 's| \./| |'; done > SHA256SUMS-linux
+          cat SHA256SUMS-linux
+          gh release upload "$TAG" "${files[@]}" SHA256SUMS-linux --clobber
