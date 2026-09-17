@@ -74,13 +74,24 @@ fn read_before(stream: &mut TcpStream, mut bytes: &mut [u8], deadline: Instant) 
         // Whole milliseconds avoid Darwin rejecting a timeval whose rounded
         // fractional microseconds become 1_000_000 just below a whole second.
         let socket_timeout = Duration::from_millis(remaining.as_millis().max(1) as u64);
-        stream
-            .set_read_timeout(Some(socket_timeout))
-            .map_err(|error| format!("Cannot configure pairing deadline: {error}"))?;
+        // Refining SO_RCVTIMEO per chunk is an optimisation, not the deadline:
+        // the loop re-checks the deadline between reads, so a rejected or
+        // ineffective timeout cannot turn a slow sender into a dropped pairing.
+        let _ = stream.set_read_timeout(Some(socket_timeout));
         match stream.read(bytes) {
             Ok(0) => return Err("Pairing connection interrupted".into()),
             Ok(count) => bytes = &mut bytes[count..],
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            // A short read window expiring is not a protocol error: retry until
+            // the deadline above decides.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue
+            }
             Err(_) => return Err("Pairing connection interrupted or timed out".into()),
         }
     }
@@ -135,8 +146,19 @@ impl PairingServer {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         connections += 1;
-                        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                        let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+                        // macOS/BSD give the accepted socket the listener's
+                        // non-blocking flag, so every read returned EAGAIN the
+                        // moment the client's bytes had not landed yet and the
+                        // timeouts below never applied: the request was dropped
+                        // (the client saw a reset connection) whenever the
+                        // connect/write was even slightly delayed. Linux returns
+                        // a blocking socket here, which is why this only showed
+                        // up on macOS or under load.
+                        let _ = stream.set_nonblocking(false);
+                        // Upper bound for one request/reply round trip; the
+                        // protocol deadline inside read_message is tighter.
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+                        let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
                         let result = read_message(&mut stream)
                             .and_then(|body| handle(&server, &body))
                             .and_then(|reply| server.invitation.seal("reply", &reply))
@@ -264,16 +286,20 @@ pub fn exchange(invitation: &Invitation, request: &PairingRequest) -> Result<Pai
         .map_err(|_| "Cannot resolve the pairing computer")?;
     let mut connected = None;
     for address in addresses.take(4) {
-        if let Ok(stream) = TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
+        if let Ok(stream) = TcpStream::connect_timeout(&address, Duration::from_secs(5)) {
             connected = Some(stream);
             break;
         }
     }
     let mut stream =
         connected.ok_or("Cannot reach the pairing computer; check Wi-Fi/VPN and firewall")?;
+    // Generous on purpose: a loaded machine (or a busy CI box running this
+    // suite next to every other one) needs more than the few seconds the
+    // in-process server takes when idle. Timing this out aborts the bootstrapping
+    // client's read and the server then observes EOF ("connection interrupted").
     stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .and_then(|_| stream.set_write_timeout(Some(Duration::from_secs(3))))
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .and_then(|_| stream.set_write_timeout(Some(Duration::from_secs(15))))
         .map_err(|_| "Cannot configure pairing connection")?;
     write_message(&mut stream, &invitation.seal("request", request)?)?;
     let reply: PairingReply = invitation.open("reply", &read_message(&mut stream)?)?;
