@@ -18,7 +18,9 @@ import sessionUiZhCN from "./fragments/zh-CN/session-ui.json";
 import settingsUiEnUS from "./fragments/en-US/settings-ui.json";
 import settingsUiZhCN from "./fragments/zh-CN/settings-ui.json";
 import shellUiEnUS from "./fragments/en-US/shell-ui.json";
+import shellUpdateEnUS from "./fragments/en-US/shell-update.json";
 import shellUiZhCN from "./fragments/zh-CN/shell-ui.json";
+import shellUpdateZhCN from "./fragments/zh-CN/shell-update.json";
 import worktreeUiEnUS from "./fragments/en-US/worktree-ui.json";
 import worktreeUiZhCN from "./fragments/zh-CN/worktree-ui.json";
 import commonZhCN from "./zh-CN/common.json";
@@ -34,7 +36,7 @@ export const namespaces = ["common", "shell", "session", "worktree", "settings",
 export const resources = {
   "zh-CN": {
     common: commonZhCN,
-    shell: { ...shellZhCN, ...shellExtraZhCN, ...shellUiZhCN },
+    shell: { ...shellZhCN, ...shellExtraZhCN, ...shellUiZhCN, ...shellUpdateZhCN },
     session: { ...sessionZhCN, ...sessionExtraZhCN, ...sessionUiZhCN },
     worktree: { ...worktreeZhCN, ...worktreeExtraZhCN, ...worktreeUiZhCN },
     settings: { ...settingsZhCN, ...settingsUiZhCN },
@@ -43,7 +45,7 @@ export const resources = {
   },
   "en-US": {
     common: commonEnUS,
-    shell: { ...shellEnUS, ...shellExtraEnUS, ...shellUiEnUS },
+    shell: { ...shellEnUS, ...shellExtraEnUS, ...shellUiEnUS, ...shellUpdateEnUS },
     session: { ...sessionEnUS, ...sessionExtraEnUS, ...sessionUiEnUS },
     worktree: { ...worktreeEnUS, ...worktreeExtraEnUS, ...worktreeUiEnUS },
     settings: { ...settingsEnUS, ...settingsUiEnUS },

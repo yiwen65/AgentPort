@@ -640,7 +640,40 @@ export const api = {
     invoke<string | null>("pick_save_path", { defaultName }),
   pickFile: (filterName: string | null) =>
     invoke<string | null>("pick_file", { filterName }),
+  updateStatus: () => invoke<UpdateSnapshot>("update_status"),
+  updateCheck: () => invoke<UpdateSnapshot>("update_check"),
+  updateDownload: () => invoke<UpdateSnapshot>("update_download"),
+  updateInstall: () => invoke<void>("update_install"),
 };
+
+// ---------------------------------------------------------------------------
+// in-app updates (src-tauri/src/updater.rs)
+// ---------------------------------------------------------------------------
+
+export type UpdatePhase =
+  | "disabled"
+  | "idle"
+  | "checking"
+  | "upToDate"
+  | "available"
+  | "downloading"
+  | "ready"
+  | "installing"
+  | "error";
+
+/** Mirrors `UpdateSnapshot` in src-tauri/src/updater.rs. */
+export interface UpdateSnapshot {
+  phase: UpdatePhase;
+  currentVersion: string;
+  version: string | null;
+  notes: string | null;
+  date: string | null;
+  downloaded: number;
+  total: number | null;
+  error: string | null;
+  /** Live Sessions the install step would stop. */
+  liveSessions: number;
+}
 
 // ---------------------------------------------------------------------------
 // app-level events
@@ -720,6 +753,11 @@ export function onGitStateInvalidated(
   cb: (event: GitStateInvalidated) => void,
 ): Promise<UnlistenFn> {
   return listen<GitStateInvalidated>("git-state-invalidated", (event) => cb(event.payload));
+}
+
+/** Update lifecycle changes, including download progress and install failures. */
+export function onUpdateState(cb: (snapshot: UpdateSnapshot) => void): Promise<UnlistenFn> {
+  return listen<UpdateSnapshot>("update-state", (event) => cb(event.payload));
 }
 
 // ---------------------------------------------------------------------------

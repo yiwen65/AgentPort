@@ -47,6 +47,7 @@ mod git_commands;
 mod git_workspace_commands;
 mod notifications;
 mod relay;
+mod updater;
 
 // ---------------------------------------------------------------------------
 // App state
@@ -2699,6 +2700,91 @@ fn cleanup_purged_sessions(state: &AppState, session_ids: &[String]) {
     let _ = run_due_cleanup_jobs(&state.paths, &state.db);
 }
 
+/// Stop every live Session Host before an in-app update replaces the desktop
+/// bundle — the sidecars (`agentport-host`, ...) live inside it, so a running
+/// Host would keep executing the previous binary and hold the files being
+/// replaced. Bounded and verified: Sessions whose process-group cleanup cannot
+/// be proven abort the install while the current version keeps running.
+fn stop_live_sessions_for_update(state: &AppState) -> std::result::Result<usize, String> {
+    const STOP_CONCURRENCY: usize = 4;
+    const STOP_GRACE_MS: u64 = 3_000;
+    const STOP_DEADLINE: Duration = Duration::from_secs(60);
+
+    let live: Vec<String> = state
+        .db
+        .list_sessions(None, false)
+        .map_err(|error| format!("could not list Sessions: {error}"))?
+        .into_iter()
+        .filter(|session| live_session(session.lifecycle))
+        .map(|session| session.id)
+        .collect();
+    if live.is_empty() {
+        return Ok(0);
+    }
+
+    let manager = HostManager {
+        paths: &state.paths,
+        db: &state.db,
+    };
+    let started = std::time::Instant::now();
+    let mut failures: Vec<String> = Vec::new();
+    for batch in live.chunks(STOP_CONCURRENCY) {
+        if started.elapsed() > STOP_DEADLINE {
+            failures.push(format!(
+                "stopping Sessions exceeded {}s",
+                STOP_DEADLINE.as_secs()
+            ));
+            break;
+        }
+        let batch_failures = Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            let batch_failures = &batch_failures;
+            let manager = &manager;
+            for session_id in batch {
+                scope.spawn(move || {
+                    if let Err(error) = manager.stop(session_id, STOP_GRACE_MS) {
+                        batch_failures
+                            .lock()
+                            .unwrap()
+                            .push(format!("{session_id}: {error}"));
+                    }
+                });
+            }
+        });
+        failures.extend(batch_failures.into_inner().unwrap());
+        for session_id in batch {
+            detach_session_writer(state, session_id);
+        }
+    }
+
+    if !failures.is_empty() {
+        tracing::warn!(
+            failures = %failures.join("; "),
+            "update aborted: Session Host cleanup could not be proven"
+        );
+        return Err(format!(
+            "Update aborted because running Sessions could not be stopped safely: {}",
+            failures.join("; ")
+        ));
+    }
+
+    let remaining: Vec<String> = state
+        .db
+        .list_sessions(None, false)
+        .map_err(|error| format!("could not re-list Sessions: {error}"))?
+        .into_iter()
+        .filter(|session| live_session(session.lifecycle))
+        .map(|session| session.id)
+        .collect();
+    if !remaining.is_empty() {
+        return Err(format!(
+            "Update aborted because Sessions are still running: {}",
+            remaining.join(", ")
+        ));
+    }
+    Ok(live.len())
+}
+
 /// Build native-artifact cleanup plans for Sessions that are about to be
 /// purged. Plans must be built before the purge commits: the hook-events
 /// evidence lives in AgentPort's session directory and the Session rows are
@@ -4535,10 +4621,18 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        // The Rust commands own the whole update flow; the WebView gets no
+        // updater permission, so a compromised frontend cannot point the
+        // updater at another endpoint or install on its own.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             notifications::install(app.handle());
             start_notification_worker(app.handle().clone(), notification_rx);
             relay::start_on_app_launch(app.handle());
+            let update_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                updater::startup_check(update_handle).await;
+            });
             // The sidebar glass is pure CSS now: the window stays
             // transparent (tauri.conf.json) and `.sidebar` owns blur,
             // saturation, and tint via backdrop-filter. A native
@@ -4549,6 +4643,7 @@ fn main() {
         })
         .manage(state)
         .manage(relay::DesktopRelay::default())
+        .manage(updater::UpdateState::default())
         .invoke_handler(tauri::generate_handler![
             relay::desktop_relay_status,
             relay::desktop_relay_start,
@@ -4650,6 +4745,10 @@ fn main() {
             secret_delete,
             notify_test,
             take_pending_notification_session,
+            updater::update_status,
+            updater::update_check,
+            updater::update_download,
+            updater::update_install,
             reveal_in_file_manager,
             open_in_system_terminal,
             open_external_url,

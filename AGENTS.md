@@ -31,3 +31,11 @@ python3 scripts/restart-debug-app.py --dry-run
 - 若同时存在 `dist-release/macos/AgentPort.app`，**不得**关闭它、任何 `agentport-host` 或 `agentport-connector`。统一脚本通过 `ps` 的可执行路径完全匹配当前 checkout 的旧 GUI，并在发送信号前再次核验 PID；关闭失败会报错，不会升级为强制查杀。
 - 不要以窗口标题判断启动目标（两个实例都叫 AgentPort）。交付前必须用 `ps` 确认新 GUI 进程的可执行路径为 `target/debug/bundle/macos/AgentPort.app/Contents/MacOS/agentport`；随后截图确认该窗口非白屏。
 - 开发期想走热更新就用 `tauri dev`（1420 端口），不适用上面的替换流程。
+
+## 版本与自动更新
+
+- **一个 Release 只有一个版本**：`Cargo.toml [workspace.package]`、`src-tauri/tauri.conf.json`、`src/package.json` 必须一致；`agentport-host` 等 Sidecar 通过 `bundle.externalBin` 随 App 一起升级，**不要**为 Sidecar 单独做下载/替换。改动版本用 `scripts/set-version.sh <x.y.z>`，提交前跑 `scripts/check-version-sync.sh`。
+- 升级流程由 Rust 拥有（`src-tauri/src/updater.rs`）：检查 → 后台下载 → 用户点「退出并更新」→ `stop_live_sessions_for_update` 优雅停止并复核所有 Session Host → `Update::install` → `app.restart()`。任何 Session 无法证明进程组已清理都必须中止安装并保留旧版本。
+- Debug/开发构建永远不访问正式 feed（`cfg!(debug_assertions)` 或 `AGENTPORT_UPDATER_DISABLED=1`），调试包不会被自动升级。
+- Tauri Updater 签名（`TAURI_SIGNING_PRIVATE_KEY`，私钥在 `~/.tauri/agentport-updater.key`，切勿提交）与 macOS/Windows 代码签名是两套机制，不得互相替代。发布与密钥细节见 `docs/updater.md`。
+- 发布：`scripts/set-version.sh` → 提交 → `git tag vX.Y.Z && git push origin vX.Y.Z`，由 `.github/workflows/release.yml` 构建并生成 `latest.json`。本地 `scripts/build-macos.sh` 在没有密钥时会以 `createUpdaterArtifacts=false` 跳过 updater 产物，这类 DMG 不能作为更新源发布。

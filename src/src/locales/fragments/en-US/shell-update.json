@@ -1,0 +1,15 @@
+{
+  "update": {
+    "available": "AgentPort {{version}} is available",
+    "downloading": "Downloading AgentPort {{version}}…",
+    "downloadingProgress": "Downloading AgentPort {{version}}… {{percent}}% ({{size}})",
+    "ready": "AgentPort {{version}} is ready to install",
+    "installing": "Stopping running sessions and installing the update…",
+    "failed": "Update failed: {{detail}}",
+    "sessionWarning": "Installing stops {{count}} running session(s); you can restart them afterwards.",
+    "sessionWarningNone": "Installing restarts AgentPort.",
+    "later": "Later",
+    "retry": "Retry",
+    "restart": "Quit and update"
+  }
+}

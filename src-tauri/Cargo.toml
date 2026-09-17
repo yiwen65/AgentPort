@@ -13,6 +13,12 @@ sha2 = { workspace = true }
 tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
+# v2 updater artifacts only: the v1-compatible `zip` feature is unused, and
+# the WebView never gets updater permissions (Rust owns the whole flow).
+tauri-plugin-updater = { version = "2", default-features = false, features = [
+    "rustls-tls",
+    "system-proxy",
+] }
 agentport-relay = { path = "../crates/agentport-relay", features = ["connector"] }
 tokio = { version = "1", features = ["sync", "time"] }
 libc = { workspace = true }

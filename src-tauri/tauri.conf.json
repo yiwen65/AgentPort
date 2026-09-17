@@ -31,6 +31,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": ["icons/icon-runtime-8bit.png", "icons/icon.icns"],
     "externalBin": ["binaries/agentport-host", "binaries/agentport-remote-bridge", "binaries/agentport-mosh-attach", "binaries/agentport-connector"],
     "resources": [],
@@ -42,6 +43,17 @@
       "deb": {
         "depends": ["git"],
         "recommends": ["libnotify-bin", "xdg-utils", "xterm"]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/yiwen65/AgentPort/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI5RUQyQjY2MkZFNUYwMEYKUldRUDhPVXZaaXZ0S1Z4QUtrSEVRdjhDZ0pHeW9BSzMrcmp2SGlBNnRScGNtTU9LV0pVNWV3K20K",
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

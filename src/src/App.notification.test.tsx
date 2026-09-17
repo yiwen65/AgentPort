@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   api: {
+    updateStatus: vi.fn().mockResolvedValue({ phase: "disabled" }),
     boot: vi.fn(),
     markSessionSeen: vi.fn().mockReturnValue(new Promise(() => undefined)),
     probeAgents: vi.fn().mockResolvedValue([]),
@@ -15,6 +16,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("./api", () => ({
+  onUpdateState: vi.fn().mockResolvedValue(vi.fn()),
   api: mocks.api,
   errorText: (error: unknown) => String(error),
   onNotificationActivated: mocks.onNotificationActivated,

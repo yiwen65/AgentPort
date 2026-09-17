@@ -61,6 +61,7 @@ import TopBar from "./components/TopBar";
 import Sidebar from "./components/Sidebar";
 import TooltipHost from "./components/Tooltip";
 import Toasts from "./components/Toasts";
+import UpdateBanner from "./components/UpdateBanner";
 import ContextMenuHost from "./components/ContextMenu";
 import { ConfirmDialogHost, PromptDialogHost } from "./components/Dialogs";
 import { applyUiLanguage, i18n } from "./i18n";
@@ -681,6 +682,7 @@ export default function App() {
       <PromptDialogHost />
       <ContextMenuHost />
       <TooltipHost />
+      <UpdateBanner />
       <Toasts />
       {showOnboarding ? (
         <Suspense fallback={null}>

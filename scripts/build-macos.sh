@@ -18,6 +18,7 @@ esac
 
 python3 scripts/test-install-remote-bridge.py
 python3 scripts/verify-installed-remote-bridge.py --self-test
+scripts/check-version-sync.sh
 
 echo "== cargo test (workspace all-targets gate) =="
 cargo test --workspace --all-targets --quiet
@@ -27,6 +28,21 @@ echo "== frontend test gate =="
 
 echo "== release build =="
 cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-cli -p agentport-relay --features agentport-relay/connector
+
+# Updater artifacts are signed with the updater key, never with the OS code
+# signing identity. Without a key the bundler refuses to build as soon as
+# `plugins > updater > pubkey` is configured, so opt out explicitly: this DMG
+# stays installable by hand but cannot be published as an update source.
+UPDATER_ARGS=()
+if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+  if [ -f "$HOME/.tauri/agentport-updater.key" ]; then
+    export TAURI_SIGNING_PRIVATE_KEY="$HOME/.tauri/agentport-updater.key"
+  else
+    echo "note: no updater signing key (set TAURI_SIGNING_PRIVATE_KEY or create ~/.tauri/agentport-updater.key)" >&2
+    echo "      building without updater artifacts; do not publish this build as an update source" >&2
+    UPDATER_ARGS=(--config '{"bundle":{"createUpdaterArtifacts":false}}')
+  fi
+fi
 
 TRIPLE=$(rustc -vV | awk '/^host:/ {print $2}')
 mkdir -p src-tauri/binaries
@@ -51,9 +67,9 @@ if [ "$UNIVERSAL" = 1 ]; then
       "target/x86_64-apple-darwin/release/$binary" \
       -output "src-tauri/binaries/$binary-universal-apple-darwin"
   done
-  (cd src-tauri && ../src/node_modules/.bin/tauri build --ci --target universal-apple-darwin)
+  (cd src-tauri && ../src/node_modules/.bin/tauri build --ci --target universal-apple-darwin "${UPDATER_ARGS[@]+"${UPDATER_ARGS[@]}"}")
 else
-  (cd src-tauri && ../src/node_modules/.bin/tauri build --ci)
+  (cd src-tauri && ../src/node_modules/.bin/tauri build --ci "${UPDATER_ARGS[@]+"${UPDATER_ARGS[@]}"}")
 fi
 
 RELEASE_DIR=target/release
@@ -105,6 +121,11 @@ rm -rf "$OUT/AgentPort.app"
 rm -f "$OUT"/*.dmg "$OUT/sha256.txt"
 cp -R "$APP_BUNDLE" "$OUT/"
 cp "$DMG_DIR"/*.dmg "$OUT/"
+# Updater payloads produced next to the bundle (when a key was available).
+for artifact in "$RELEASE_DIR"/bundle/macos/*.app.tar.gz "$RELEASE_DIR"/bundle/macos/*.app.tar.gz.sig; do
+  [ -f "$artifact" ] || continue
+  cp "$artifact" "$OUT/"
+done
 cp scripts/install-remote-bridge.py scripts/verify-installed-remote-bridge.py docs/install.md "$OUT/"
 (
   cd "$OUT"

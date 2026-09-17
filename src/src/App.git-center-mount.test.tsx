@@ -6,12 +6,14 @@ const mocks = vi.hoisted(() => ({
   mounts: 0,
   unmounts: 0,
   api: {
+    updateStatus: vi.fn().mockResolvedValue({ phase: "disabled" }),
     boot: vi.fn(() => new Promise(() => undefined)),
     takePendingNotificationSession: vi.fn().mockResolvedValue(null),
   },
 }));
 
 vi.mock("./api", () => ({
+  onUpdateState: vi.fn().mockResolvedValue(vi.fn()),
   api: mocks.api,
   errorText: (error: unknown) => String(error),
   onGitStateInvalidated: vi.fn().mockResolvedValue(vi.fn()),

@@ -139,6 +139,12 @@ Beta 意味着它不作为正式支持基线；在 Ubuntu 上请优先使用 `.d
 
 可以用 `AGENTPORT_DATA_DIR` 覆盖应用数据目录（测试或多实例场景），用 `AGENTPORT_SOCKET_DIR` 覆盖 Socket 目录。
 
+## 应用内更新
+
+已安装的 AgentPort 会在启动后检查新版本，并在后台下载；下载完成后窗口内会出现「AgentPort vX.Y.Z 已准备好」，点「退出并更新」即可整包升级。安装前 AgentPort 会优雅停止正在运行的 Session（Sidecar 与 Shell 属于同一个包，必须一起替换），升级后这些 Session 以 `interrupted` 状态保留历史，可自行 Restart。
+
+升级包由 Tauri Updater 校验签名，来源为本仓库的 GitHub Releases（`latest.json`）；也可以通过系统包管理器（`.deb`）自行升级。开发构建（`tauri dev`、checkout 内的调试包）不会触发正式更新。细节与发布流程见 `docs/updater.md`。
+
 ## 首次启动之后
 
 首次启动会进入 CLI 探测向导：AgentPort 依次读取系统 PATH、登录 Shell 的 PATH 和常见安装目录，找到 Claude Code / Codex / Kimi Code 后做只读版本探测，由你确认每个 CLI 的绝对路径。找不到的 Agent 可以跳过；GUI 的 PATH 与终端不一致时可手动选择路径。详见 `docs/user-guide.md` 的"首次启动：CLI 探测"。

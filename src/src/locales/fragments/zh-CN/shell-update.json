@@ -1,0 +1,15 @@
+{
+  "update": {
+    "available": "发现新版本 AgentPort {{version}}",
+    "downloading": "正在下载 AgentPort {{version}}…",
+    "downloadingProgress": "正在下载 AgentPort {{version}}… {{percent}}%（{{size}}）",
+    "ready": "AgentPort {{version}} 已准备好",
+    "installing": "正在停止运行中的 Session 并安装更新…",
+    "failed": "更新失败：{{detail}}",
+    "sessionWarning": "安装会停止 {{count}} 个运行中的 Session，升级后可重新启动。",
+    "sessionWarningNone": "安装会重启 AgentPort。",
+    "later": "稍后",
+    "retry": "重试",
+    "restart": "退出并更新"
+  }
+}

@@ -6204,6 +6204,50 @@ textarea:focus {
 }
 
 /* ------------------------------------------------------------------ */
+/* In-app updates                                                      */
+/* ------------------------------------------------------------------ */
+
+/* Bottom-left card: toasts own the bottom-right corner. The card is the only
+   place that can ask for the update-install consent that stops Sessions. */
+.update-banner {
+  position: fixed;
+  left: 14px;
+  bottom: 40px;
+  z-index: 901;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 360px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  padding: 10px 12px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.update-banner .update-hint {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.update-banner .update-error {
+  color: var(--red);
+  font-weight: 400;
+  word-break: break-word;
+}
+
+.update-banner .update-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ------------------------------------------------------------------ */
 /* Toasts                                                              */
 /* ------------------------------------------------------------------ */
 
