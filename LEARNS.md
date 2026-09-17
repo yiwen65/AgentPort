@@ -406,3 +406,39 @@
 - Correct approach: 发布走 CI（GitHub runner 上传自己家的资产）；需要补发历史 tag 时用 `gh workflow run release.yml -f tag=<tag> -f platforms=linux` 重建并上传，不要从本机硬传；判成功看 `GET /releases/{id}/assets` 的 `state == uploaded`。
 - Prevention: 资产校验脚本里禁止用 size 作为成功判据；上传后必须回读下载 URL（匿名）并核对 sha256。
 - Verified by: 同一批资产本地直传 40 分钟未成功（starter），CI 重跑后三个资产全部 `state=uploaded`，匿名下载 sha256 与 `SHA256SUMS-linux` 完全一致。
+
+## `Pi 恢复后的首个 turn end` — 不能把继承的 idle 写进去重基线
+
+- Wrong approach: 恢复已完成 Pi 回合时，用常规观察路径（`sm.observe(Observation::AdapterTurnEnd)`）发布 idle，然后靠"状态+来源相同则去重"抑制重复通知。
+- Why it failed: 该发布把状态机的去重基线设成 `(Idle, Adapter)`，而本次运行真正的回合结束携带的是同一对值，于是被当作重复丢掉：没有完成事件，也就没有"回合完成"通知（RPC 路径没有 TurnStart 来打断去重）。
+- Recognition signal: 恢复了已完成 Pi 回合的会话，用户下一轮输入结束后 Host 只发 Heartbeat，无 `adapter:pi:TurnEnd` 的 State 帧。
+- Correct approach: 用 `StateMachine::publish_inherited_turn_end` 发布继承快照：照常写持久状态与精确生命周期权威（`lifecycle=Idle`），但**不写** `last`/`last_evidence`/`last_completion`。
+- Prevention: 任何"合成的状态发布"都必须与"本次运行真实观察到的状态"区分开，回归测试同时断言"首个真实完成会被上报"和"重复完成仍被去重"。
+- Verified by: `pi_rpc_pipe_accepts_prompt_abort_and_persists_structured_events` 与新增的 `inherited_turn_end_does_not_swallow_the_runs_first_completion` 通过；host 集成 42/42、core 状态 19/19。
+
+## `macOS accept()` — 继承的 non-blocking 会吞掉超时语义
+
+- Wrong approach: 只对 listener 调 `set_nonblocking(true)` 做轮询 accept，然后给 accepted socket 设 `set_read_timeout` 就以为读会阻塞到超时。
+- Why it failed: macOS/BSD 上 accepted socket 继承 listener 的 O_NONBLOCK（Linux 不会），read 立即返回 EAGAIN；客户端字节稍晚到达就被判定为超时并关闭连接（客户端只看到 `Pairing connection interrupted`）。20 次套件运行中复现 2 次。
+- Recognition signal: `read_before` 的首个 read 立即 `WouldBlock (os error 35)`，`remaining` 仍是 ~3s；负载越高越容易出现；Linux 上从不复现。
+- Correct approach: accept 之后显式 `stream.set_nonblocking(false)`；并把 `WouldBlock`/`TimedOut` 当作"继续等协议 deadline"，而不是连接级错误。
+- Prevention: 任何"轮询 accept + 阻塞式读写"的服务器都要在 accept 后显式设置阻塞模式；跨平台服务必须在本机（macOS）与 CI（Linux）两端各跑一遍带负载的循环验证。
+- Verified by: 修复后 40/40 连续套件运行全绿（修复前 20 次里失败 2 次）。
+
+## `worktree remove` — 同一道栅栏不能被取两次
+
+- Wrong approach: CLI 先 `db.begin_worktree_removal(id)` 再调用 `WorktreeManager::remove(id)`（后者内部又取一次同一道栅栏）。
+- Why it failed: 第二次取栅栏必然失败，于是 `worktree remove` 对**任何**工作区都返回 "removal is already in progress"；GUI 走的是 `remove_after_fence`，所以只有 CLI 受影响，长期无人发现。
+- Recognition signal: 新建的干净 worktree 立刻删除也报 "already in progress"；`git worktree list` 仍注册该目录。
+- Correct approach: 已持有栅栏的调用方必须走 `remove_after_fence`（service 层是这样做的）。
+- Prevention: 凡是"先占栅栏再委托"的流程，委托函数要显式区分"自己取栅栏"和"沿用调用方栅栏"两个入口，并为 CLI 这类少走的路径保留一个最小回归（create → health → remove）。
+- Verified by: 修复后 create（`--base-ref`）→ health=dirty → remove 成功，`git worktree list` 条目消失，主 checkout 内容不变。
+
+## `e2e harness 漂移` — 断言已移除的产物会让门禁长期红灯
+
+- Wrong approach: 把 e2e 断言绑在具体实现产物上（`runs/<id>/output.log`、`export log`、诊断包里的 terminal 正文），架构改成"不保存 PTY 正文副本"后没有同步。
+- Why it failed: 每次重跑必然失败，失败原因还指向错误的层（看起来像导出/搜索坏了，其实是断言过期）；同时掩盖了真正的产品缺陷（例如同一轮里发现的 `worktree remove` 与 pairing 缺陷）。
+- Recognition signal: 失败信息显示文件/成员/命令"不存在或被移除"，而对应能力在文档里已明确删除（docs/user-guide.md 的"不保存正文索引"、"raw terminal log export was removed"）。
+- Correct approach: 把断言重新表述为当前契约（重连读取字节连续、raw 导出显式报错、md/json 说明缺原生历史、诊断包只带状态事件、CLI 检索只覆盖原生日志），内容级导出/检索继续由 core 的原生历史集成测试用 fixture 覆盖。
+- Prevention: 删除或替换某个持久化产物时，同一提交里搜索并更新 e2e/脚本中的引用（`rg 'output\\.log|export log' e2e scripts`）。
+- Verified by: wave1/wave2 重新基线后双双 PASS，发布清单五项门禁全绿。
