@@ -23,4 +23,4 @@ AgentPort 桌面端（本仓库）采用 [PolyForm Noncommercial License 1.0.0](
 
 - 本协议**不是** OSI 认可的开源许可：它限制使用领域，因此本项目属于「源码可见（source-available）」而非「开源」。历史版本（v0.1.0、v0.1.1）曾以 MIT 声明发布，已经获得的副本仍按当时条款有效，不能收回；本协议适用于此后发布的版本。
 - 第三方组件（Tauri、React、xterm.js 等 Rust/npm 依赖）与随包分发的资源（Agent 图标、字体、xterm 快照引擎）仍适用其各自许可，不受本协议影响：图标归属见 `docs/agent-icon-sources.md`，xterm 许可见 `crates/agentport-host/assets/terminal-snapshot/LICENSE.xterm`，其余以各依赖自带许可证为准。
-- 移动端 App 是**独立的私有子项目**，不在本仓库内，采用专有许可（保留所有权利）；本仓库只包含桌面端。
+- 移动端 App（`mobile/`）**不在本许可范围内**：它采用 GPL-3.0-only，**不禁止商用**，分发时按 GPLv3 提供对应源码即可（它链接的上游 Mosh 也是 GPLv3）。

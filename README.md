@@ -61,7 +61,7 @@ AgentPort 是 macOS 与 Linux 上的本地 AI CLI 工作台：把 Claude Code、
 
 - **手机配对**：在「设置 → 手机配对」配置自部署 Relay 地址，生成短时一次性二维码，扫码后与手机核对验证码与设备名再授权，已授权设备可随时撤销。
 - **SSH Bridge（可选）**：把手机 SSH 入口安装到稳定路径，用手机 SSH 客户端连接桌面端会话；不安装则不监听任何入口。
-- 移动客户端本身仍在开发中（见 [`mobile/README.md`](mobile/README.md)）。
+- 移动客户端本身仍在开发中（见 [`mobile/README.md`](mobile/README.md)），采用 GPL-3.0-only，允许商用。
 
 ## 界面使用方式
 
@@ -177,4 +177,6 @@ bash scripts/build-linux.sh ubuntu2204         # Ubuntu .deb（Docker）
 
 桌面端 AgentPort 采用 [PolyForm Noncommercial License 1.0.0](LICENSE)：个人使用、非商业组织使用、为非商业目的修改与再分发都免费；**任何商业用途必须先取得作者书面授权**（1053909200@qq.com）。这是源码可见（source-available）许可，不是 OSI 开源许可，边界与历史版本说明见 [LICENSING.md](LICENSING.md)。
 
-第三方组件（Tauri、React、xterm.js 等依赖）与随包资源（Agent 图标、字体、xterm 快照引擎）继续适用各自许可，不受本项目许可影响。移动端 App 是独立私有子项目，不包含在本仓库内。
+第三方组件（Tauri、React、xterm.js 等依赖）与随包资源（Agent 图标、字体、xterm 快照引擎）继续适用各自许可，不受本项目许可影响。
+
+移动端 App（`mobile/`）采用 **GPL-3.0-only**，不受上述限制：它不禁止商用，但按 GPLv3 分发时必须提供对应源码（它链接的上游 Mosh 同样是 GPLv3）。

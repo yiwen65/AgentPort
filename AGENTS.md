@@ -41,3 +41,10 @@ python3 scripts/restart-debug-app.py --dry-run
 - 发布：`scripts/set-version.sh` → 提交 → `git tag vX.Y.Z && git push origin vX.Y.Z`。`.github/workflows/release.yml` 在同一个 tag 上发布 macOS（universal + `latest.json`）与 Linux（deb + Fedora/Arch tarball + `SHA256SUMS-linux`）；应用内更新仅 macOS，Linux 走包管理器。补发某个平台不要移动 tag，用 `gh workflow run release.yml -f tag=vX.Y.Z -f platforms=linux`。本地 `scripts/build-macos.sh` 在没有密钥时会以 `createUpdaterArtifacts=false` 跳过 updater 产物，这类 DMG 不能作为更新源发布。
 - **本地不要直接往上发布**：本机上行到 `uploads.github.com` 的大文件 POST 会静默失败（只留 `state=starter` 占位），发布一律走 CI；判断资产是否真的上传成功要看 API 的 `state=uploaded`，不能只看 size。
 - **承载更新 feed 的仓库必须匿名可读**：客户端拉取 `latest.json` 不带凭据，私有仓库的 Release 资产返回 404，更新会静默失败。发布后用未认证 `curl` 校验 `latest.json`（期望 302）与安装包（200）。
+
+## 许可边界（2026-09-18 确认）
+
+- **桌面端**（Rust workspace + `src/` + `src-tauri/`）采用 **PolyForm Noncommercial License 1.0.0**（`LICENSE`，中文说明 `LICENSING.md`）：个人与非商业组织使用免费，**任何商业用途必须先取得作者书面授权（1053909200@qq.com）**。新增代码或资源不得引入与本许可冲突的条款，也不得在仓库根重新声明整仓 MIT。
+- **移动端**（`mobile/`）采用 **GPL-3.0-only**（`mobile/COPYING`），**不禁止商用**：分发时按 GPLv3 提供对应源码与许可证文本即可。它链接的上游 Mosh 同样是 GPLv3。不要把它改成专有/闭源许可，也不要在桌面 crates 里链接 GPL 代码。
+- 快照引擎：`scripts/build-terminal-snapshot.mjs` 依赖仓库内 `mobile/` 的 xterm 与 `mobile/src/terminal/hostSnapshotEngine.ts` 生成 `crates/agentport-host/assets/terminal-snapshot/`；改引擎或升级 xterm 后重跑该脚本（`--check` 是漂移门禁）。
+- 历史说明：2026-09-18 曾把移动端拆成私有子项目并重写公开历史，同日按用户决定撤销——历史已恢复到重写前的 `9142341` 与原始 tag，桌面许可改动作为新提交叠加。再次做类似拆分或历史重写前，先确认仍然需要。
