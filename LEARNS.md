@@ -550,3 +550,12 @@
 - Correct approach: Always quote space-bearing values in `.env` (`VAR="a b"`); extraction with `sed 's/^VAR=//' | tr -d '"'` strips them again.
 - Prevention: Keep `.env` lines in `KEY=value` (no spaces) or `KEY="value with spaces"` form only; `bash -c 'source .env'` smoke-check after editing.
 - Verified by: `source .env` now yields both identities cleanly and `restart-debug-app.py` completes.
+
+## `src-tauri/tauri.conf.json` — the repo's toolchain does not accept `//` comments
+
+- Wrong approach: Writing `//` comment lines inside `src-tauri/tauri.conf.json` (e.g. to explain a `resources` entry).
+- Why it failed: `tauri-build` parses the config as strict JSON (`unable to parse JSON Tauri config file ... because key must be a string at line X column Y`), and `src/src/terminal-drag-drop-config.test.mjs` reads the same file with `JSON.parse` — one comment breaks both the Rust build and that frontend test at once.
+- Recognition signal: Debug/release build dies in the tauri build script with "key must be a string at line X column Y", or the frontend suite shows exactly one failure: `Expected double-quoted property name in JSON` in terminal-drag-drop-config.test.mjs.
+- Correct approach: Keep explanations out of the JSON (commit message or docs/ instead). When such a parse error appears, first run `git diff src-tauri/tauri.conf.json` — the cause may be someone's uncommitted WIP in the shared working tree, not your own change.
+- Prevention: Before committing, syntax-check with `python3 -c "import json; json.load(open('src-tauri/tauri.conf.json'))"`; when a build/test fails on a config you did not touch, `git status` the repo before debugging the toolchain.
+- Verified by: On 2026-09-18 the debug build failed on an uncommitted `//` comment at line 43 while the same file made terminal-drag-drop-config.test.mjs the single failure out of 731 frontend tests; stashing the file made both the build and the suite pass.
