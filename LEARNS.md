@@ -478,3 +478,12 @@
 - Correct approach: 一次只改一处、anchor 必须唯一且**断言出现次数**（`assert count == 1`）；结构体字面量里的字段用**精确的整块 old/new**替换（含相邻字段做锚点），删除函数用花括号配对而不是正则；每改一处立刻 `cargo check`。若已经改坏，直接 `git checkout HEAD -- <file>` 重来比修补更快。
 - Prevention: 批量删除前先枚举全部引用点（`rg -F -n`）并分类（列定义 / 字段 / fixture / SQL / 断言），对"多行表达式 + 同行多字段"两类单独手改。
 - Verified by: 重做后 `cargo check --workspace --all-targets` 与 `cargo test --workspace --all-targets` 全绿（30 套件），且迁移测试覆盖 v15→v16 的 `DROP COLUMN`。
+
+## `Linux deb desktop icon` — hicolor index stops at 512x512; bundler maps PNG dims to size dirs
+
+- Wrong approach: Shipping only the 1024x1024 master PNG in `bundle.icon` and assuming the launcher will downscale it.
+- Why it failed: tauri-bundler (`freedesktop::list_icon_files`) installs each configured PNG at `usr/share/icons/hicolor/<W>x<H>/apps/<bin>.png` using the file's actual pixel dimensions. The hicolor `index.theme` only indexes up to `512x512` (+ `scalable`); `1024x1024/apps` is not listed, so every GTK/KDE launcher lookup misses and shows the generic placeholder.
+- Recognition signal: Installed deb contains exactly `usr/share/icons/hicolor/1024x1024/apps/agentport.png`; `grep '^\[1024x1024/apps\]$' index.theme` is empty; `Gtk.IconTheme.lookup_icon('agentport', size, 0)` returns None at 16–256 while the file exists on disk.
+- Correct approach: Provide standard sizes in `src-tauri/tauri.conf.json` `bundle.icon` — `32x32.png`, `128x128.png`, `128x128@2x.png` (256px, `@2x` stem → `@2` scale dir), `512x512.png` — generated from `icons/icon-runtime-8bit.png` with `magick -filter Lanczos`. Keep the largest PNG first: tauri-codegen embeds the first `.png` in the list as the runtime window icon (`find_icon(... ends_with(".png") ...)`).
+- Prevention: `scripts/linux/verify-in-container.sh` now fails the release verification unless at least one installed `hicolor/<size>/apps/agentport.png` sits in a size dir listed by `index.theme`.
+- Verified by: Ubuntu 24.04 container on the published 0.1.1 deb: GTK lookup NOT FOUND at 16/24/32/48/64/128/256 (bug reproduced); after installing the new set at bundler-computed paths, lookup resolves and loads pixbufs at every size; the new gate flags the old deb as FAIL.

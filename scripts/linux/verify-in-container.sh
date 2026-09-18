@@ -31,6 +31,27 @@ if [ -z "$MOSH_ATTACH" ] || [ ! -x "$MOSH_ATTACH" ]; then
   exit 1
 fi
 echo "Mosh attach sidecar embedded: OK"
+
+echo "== desktop icon installed at an indexed hicolor size =="
+# Icon-theme lookups only search size directories listed in the theme index
+# (hicolor stops at 512x512). A lone 1024x1024 icon is invisible to launchers.
+apt-get install -y -qq hicolor-icon-theme >/dev/null
+ICON_INDEX=/usr/share/icons/hicolor/index.theme
+ICON_HIT=""
+while IFS= read -r icon_path; do
+  size_dir="${icon_path#*/icons/hicolor/}"
+  size_dir="${size_dir%%/apps/*}"
+  if grep -q "^\[${size_dir}/apps\]$" "$ICON_INDEX"; then
+    ICON_HIT="$icon_path"
+    break
+  fi
+done < <(dpkg -L agent-port | grep '/icons/hicolor/.*/apps/agentport\.png$' || true)
+if [ -z "$ICON_HIT" ]; then
+  echo "no agentport icon in any hicolor size dir listed in index.theme: FAIL" >&2
+  dpkg -L agent-port | grep '/icons/' >&2 || true
+  exit 1
+fi
+echo "desktop icon lookup-visible at: $ICON_HIT"
 CLI=/artifacts/agentport-cli
 chmod +x /artifacts/agentport-cli /artifacts/agentport-host /artifacts/agentport-remote-bridge /artifacts/agentport-mosh-attach 2>/dev/null || true
 
