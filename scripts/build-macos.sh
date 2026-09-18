@@ -33,6 +33,26 @@ cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-
 # signing identity. Without a key the bundler refuses to build as soon as
 # `plugins > updater > pubkey` is configured, so opt out explicitly: this DMG
 # stays installable by hand but cannot be published as an update source.
+# Optional stable release signing identity. Default ad-hoc signatures change
+# cdhash on every build, so macOS TCC treats each update as a new app and
+# re-asks every folder permission (Documents/Desktop/Downloads/...). A stable
+# certificate keeps those grants across updates. CI receives
+# APPLE_SIGNING_IDENTITY from secrets; local builds may set it directly or via
+# AGENTPORT_RELEASE_SIGN_IDENTITY in .env (same pattern as the debug build).
+if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+  identity="${AGENTPORT_RELEASE_SIGN_IDENTITY:-}"
+  if [ -z "$identity" ] && [ -f .env ]; then
+    identity=$(sed -n 's/^AGENTPORT_RELEASE_SIGN_IDENTITY=//p' .env | tail -1 | tr -d '\"')
+  fi
+  if [ -n "$identity" ]; then
+    export APPLE_SIGNING_IDENTITY="$identity"
+    echo "release signing identity: $identity"
+  else
+    echo "note: no APPLE_SIGNING_IDENTITY configured; building ad-hoc signed," >&2
+    echo "      which resets all macOS folder-permission grants on every update" >&2
+  fi
+fi
+
 UPDATER_ARGS=()
 if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
   if [ -f "$HOME/.tauri/agentport-updater.key" ]; then

@@ -514,3 +514,39 @@
 - Correct approach: Use wry positions as CSS pixels directly (comment cites per-backend coordinate spaces from wry 0.55.1 sources). For the ghost, `dataTransfer.setDragImage(<shared 1px transparent element>, 0, 0)` on Linux only — wry consumes the native drag there anyway, so targeting runs through `sessionNativeDrag` forwarding and the ghost carries no information.
 - Prevention: Regression test stubs `devicePixelRatio=2` and asserts `elementFromPoint` receives the RAW position (200,100), not the halved one; ghost suppression asserts Linux swaps the image while macOS/unknown platforms keep the native one. When a platform quirk needs a predicate, keep it in `store.ts` (tests mock `./actions` wholesale). Apply a dragstart workaround to EVERY drag entry point — the tree drag (`terminalDrop.writeDragPayload`) was missed until a later audit; embed the suppression in the shared payload writer where it has a single caller.
 - Verified by: Frontend 693/693, production build green; coordinate spaces confirmed against wry 0.55.1 `webkitgtk/drag_drop.rs` (gtk drag-motion widget coords), `wkwebview/drag_drop.rs` (NSView points), `webview2/drag_drop.rs` (physical). Real HiDPI-Linux hardware verification remains pending (no local device).
+
+## `macOS TCC grants vs app updates` — ad-hoc cdhash resets every folder permission; sign releases with a stable certificate
+
+- Wrong approach: Shipping Release builds with the default ad-hoc signature and treating repeated "AgentPort 想访问文稿/桌面/下载文件夹" prompts as an app bug in directory-scanning code.
+- Why it failed: TCC matches grants by designated requirement. Ad-hoc DR = `cdhash H"..."` which changes on EVERY build, so each update makes macOS treat the app as brand new (`tccd` log: `Failed to match existing code requirement for subject com.agentport.desktop`) and every previously granted folder permission re-prompts. The actual disk access came from terminals' child processes (an easy-pi agent's `find ~` at 11:18 hit Documents/Desktop/Downloads and produced a prompt cascade — attribution rolls up to the app), which is legitimate and unfixable app-side; the bug was that grants never survived an update.
+- Recognition signal: `codesign -dv /Applications/AgentPort.app` → `Signature=adhoc`; TCC log `AUTHREQ_ATTRIBUTION` shows `binary_path=/usr/bin/find` or `/bin/bash` with `responsible_path=.../AgentPort.app`; the same "permission prompts come back after every update" complaint.
+- Correct approach: Sign releases with a long-lived certificate so DR becomes `certificate leaf = H"<cert hash>"` (stable across builds). A 10-year self-signed codesigning cert is strictly better than ad-hoc (same Gatekeeper trust, TCC-stable); material lives in `~/.agentport-release-signing/` + CI secrets `APPLE_CERTIFICATE`/`APPLE_CERTIFICATE_PASSWORD`/`APPLE_SIGNING_IDENTITY` (`release.yml` already gates on their presence). First stable-signed update still re-prompts once (DR changes from cdhash to cert hash), then never again. Declare `NSDocumentsFolderUsageDescription` etc. in `src-tauri/Info.plist` so the prompt explains terminal/agent access.
+- Prevention: Local release builds pick the identity via `.env` `AGENTPORT_RELEASE_SIGN_IDENTITY` (read by `scripts/build-macos.sh`, exported as `APPLE_SIGNING_IDENTITY` — honored by `tauri build` per Tauri v2 env docs). Never publish ad-hoc releases; check `codesign -d -r-` shows `certificate leaf =` not `cdhash` before tagging.
+- Verified by: Fresh keychain + p12 import + `codesign -s "AgentPort Release Signing"` produces `designated => identifier ... and certificate leaf = H"ca6e4e1d..."`; same DR across two independently signed binaries.
+
+## `security find-identity` — "0 valid identities found" is a false negative for imported identities
+
+- Wrong approach: Concluding a LibreSSL-generated p12 "cannot pair cert+key on macOS" because `security find-identity -v -p codesigning <custom.keychain>` lists nothing, and rebuilding cert generation (certtool, native APIs) to fix a non-existent pairing bug.
+- Why it failed: The identity was correctly formed all along — `SecIdentityCreateWithCertificate` returned OK and `codesign -s <name>` signed successfully with the expected DR. `security find-identity` simply does not list these identities (custom keychain/import-path quirk), sending the investigation down a certtool/p12-attribute rabbit hole.
+- Recognition signal: `security import` says "1 identity imported" yet `find-identity` shows none; the same name still resolves in `codesign -s`.
+- Correct approach: Verify identities by USE, not by listing: import into a throwaway keychain (`security create-keychain` + `import` + add to `list-keychains -s`), then `codesign -s <name> --force /usr/bin/true-copy` and inspect `codesign -d -r-`.
+- Prevention: Same rule as LEARNS screenshot helpers — trust the end-to-end operation over the enumeration API whenever the two disagree.
+- Verified by: p12 imported into `/tmp/ap-verify.keychain` signed `/tmp/sigtest4` with `certificate leaf = H"ca6e..."` despite `find-identity` reporting 0.
+
+## `rebuild-debug-app.sh bundle reuse` — Resources/icon.icns and new Info.plist keys never refresh
+
+- Wrong approach: Assuming editing `src-tauri/icons/*` or adding keys to `src-tauri/Info.plist` reaches the debug App on the next `restart-debug-app.py`.
+- Why it failed: the script reuses the already-generated `target/debug/bundle/macos/AgentPort.app` and only swaps `Contents/MacOS/*` binaries — `Contents/Resources/icon.icns` and `Info.plist` keep whatever the last full `tauri build` produced (the icon regression fix initially shipped into the bundle as the old square icon; bundled-icns corner pixels stayed opaque).
+- Recognition signal: `iconutil -c iconset` on the BUNDLED icns disagrees with `src-tauri/icons/icon.icns`; bundled plist lacks a key present in the source plist.
+- Correct approach: The script now syncs `src-tauri/icons/icon.icns` (when changed) and the `NS*UsageDescription` keys before re-signing. Release builds are unaffected (full `tauri build` re-bundles every time).
+- Prevention: When adding bundle resources (icons, plist keys, entitlements), check the sync list in `scripts/rebuild-debug-app.sh`; icon artwork itself is guarded by `python3 src-tauri/scripts/generate-icons.py --check` (transparent corners — full-bleed square masters render as the "rectangle icon" regression from 836b697).
+- Verified by: After the sync, bundled icns corner alpha = 0 and Finder renders the rounded icon; before, corners were opaque dark.
+
+## `.env sourced by bash` — quote values containing spaces
+
+- Wrong approach: Adding `AGENTPORT_RELEASE_SIGN_IDENTITY=AgentPort Release Signing` unquoted to `.env`.
+- Why it failed: `rebuild-debug-app.sh` does `source .env`, so the unquoted line executed `Release` as a command (`line 2: Release: command not found`, exit 127) and the whole debug rebuild/restart failed.
+- Recognition signal: A previously green restart script dying with `command not found` naming a word from the new .env value.
+- Correct approach: Always quote space-bearing values in `.env` (`VAR="a b"`); extraction with `sed 's/^VAR=//' | tr -d '"'` strips them again.
+- Prevention: Keep `.env` lines in `KEY=value` (no spaces) or `KEY="value with spaces"` form only; `bash -c 'source .env'` smoke-check after editing.
+- Verified by: `source .env` now yields both identities cleanly and `restart-debug-app.py` completes.

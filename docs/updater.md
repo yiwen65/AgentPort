@@ -132,6 +132,20 @@ WebView **没有** `updater:*` 权限（`src-tauri/capabilities/default.json` �
 
 Updater 密钥只用于签 `.sig`，**不会**让 macOS 信任 App；反之 OS 签名也不会让 Updater 接受更新包。
 
+### macOS 代码签名与 TCC 授权稳定性
+
+macOS TCC（文稿/桌面/下载等文件夹授权）按 App 的 designated requirement 记住授权。ad-hoc 签名时 DR 是二进制的 **cdhash**——**每次构建都会变**，因此每次更新后 macOS 把 App 当成“新 App”，全部文件夹授权作废、重新弹窗（终端里跑 Agent 的 App 尤其明显：`find ~` 一类命令会连续触发文稿/桌面/下载三串弹窗）。系统日志里的特征行：`Failed to match existing code requirement for subject com.agentport.desktop`。
+
+对策：Release 用**长期稳定的证书**签名，DR 变为 `certificate leaf = H"<证书哈希>"`，授权跨版本保留。
+
+- 2026-09 起 CI 配置了自签证书 **“AgentPort Release Signing”**（有效期 10 年，仅用于 codesigning；GitHub Secrets：`APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` / `APPLE_SIGNING_IDENTITY`）。`release.yml` 只在 secrets 存在时注入签名环境变量，缺失时退回 ad-hoc 并丧失上述稳定性。
+- 自签证书与 ad-hoc 在 Gatekeeper 面前等价（都无法公证、首次打开都要右键放行），但换来 TCC 稳定性；若将来取得 Apple **Developer ID Application** 证书，直接替换同名 secrets 即可（换来公证能力，TCC 授权会因 DR 变更**重置一次**后再次稳定）。
+- 本机材料在 `~/.agentport-release-signing/`（p12、私钥、随机口令），login 钥匙串已导入；本地 `scripts/build-macos.sh` 会自动从 `.env` 的 `AGENTPORT_RELEASE_SIGN_IDENTITY` 读取并导出 `APPLE_SIGNING_IDENTITY`。
+- 轮换或重建证书的流程：生成 RSA 私钥与自签证书（`openssl req -x509 -newkey rsa:2048 -days 3650 -subj "/CN=AgentPort Release Signing"` `-addext extendedKeyUsage=codeSigning`），导出 p12（务必带 `-name "AgentPort Release Signing"`），更新三个 secrets，并在需要本机签名时导入 login 钥匙串。
+- 用户侧影响：首个带稳定签名的版本仍会弹一次授权（DR 从旧 ad-hoc cdhash 变为证书哈希），之后更新不再重置。
+
+相关：`src-tauri/Info.plist` 声明了 `NSDocumentsFolderUsageDescription` 等三条用途说明，弹窗里会解释“终端会话与 AI Agent 可能需要访问该文件夹”。
+
 ### Updater 密钥
 
 - 私钥：本机 `~/.tauri/agentport-updater.key`（不要提交、不要放进 Release）。

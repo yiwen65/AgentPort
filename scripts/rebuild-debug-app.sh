@@ -85,11 +85,25 @@ done
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $DEBUG_BUNDLE_ID" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $DEBUG_DISPLAY_NAME" "$PLIST"
 
-# This script reuses the generated bundle; carry the pairing usage description
-# from the source plist as well as the binary's embedded front-end resources.
-PAIRING_USAGE="$(/usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$ROOT/src-tauri/Info.plist")"
-/usr/libexec/PlistBuddy -c "Set :NSLocalNetworkUsageDescription $PAIRING_USAGE" "$PLIST" 2>/dev/null ||
-  /usr/libexec/PlistBuddy -c "Add :NSLocalNetworkUsageDescription string $PAIRING_USAGE" "$PLIST"
+# This script reuses the generated bundle; carry the usage descriptions from
+# the source plist as well as the binary's embedded front-end resources.
+sync_usage_description() {
+  local key="$1" value
+  value="$(/usr/libexec/PlistBuddy -c "Print :$key" "$ROOT/src-tauri/Info.plist")" || return 0
+  /usr/libexec/PlistBuddy -c "Set :$key $value" "$PLIST" 2>/dev/null ||
+    /usr/libexec/PlistBuddy -c "Add :$key string $value" "$PLIST"
+}
+sync_usage_description NSLocalNetworkUsageDescription
+sync_usage_description NSDocumentsFolderUsageDescription
+sync_usage_description NSDesktopFolderUsageDescription
+sync_usage_description NSDownloadsFolderUsageDescription
+
+# The reused bundle also keeps the icon from whatever full `tauri build` last
+# produced; sync the current artwork so icon changes reach the debug App.
+if ! cmp -s "$ROOT/src-tauri/icons/icon.icns" "$APP/Contents/Resources/icon.icns"; then
+  cp "$ROOT/src-tauri/icons/icon.icns" "$APP/Contents/Resources/icon.icns"
+  touch "$APP"
+fi
 
 codesign --force --deep --sign "$DEBUG_SIGN_IDENTITY" "$APP"
 codesign --verify --deep --strict "$APP"

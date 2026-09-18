@@ -4,6 +4,16 @@
 <dict>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Allow your phone to pair with this Mac and securely access AgentPort sessions.</string>
+  <!-- Terminals and AI agents run inside AgentPort sessions; commands they
+       execute may touch these folders and macOS attributes the access to
+       AgentPort. Explaining that up front keeps the prompt from looking
+       suspicious. -->
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Terminal sessions and AI agents running in AgentPort may need to work with files in your Documents folder.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Terminal sessions and AI agents running in AgentPort may need to work with files on your Desktop.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Terminal sessions and AI agents running in AgentPort may need to work with files in your Downloads folder.</string>
   <!-- Preserve terminal-style key repeat instead of macOS's accent picker. -->
   <key>ApplePressAndHoldEnabled</key>
   <false/>
