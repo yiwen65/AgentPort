@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { readMock, writeMock, revealMock, openUrlMock, openDefaultMock, insertMock, listMock, createMock } =
@@ -34,7 +34,13 @@ vi.mock("../terminals", () => ({
   insertTextIntoTerminal: insertMock,
 }));
 
-import { getState, setState } from "../store";
+import {
+  openDocumentTarget,
+  openDocumentTargetToSide,
+  pinDocumentTab,
+  resetDocumentTabRuntimes,
+} from "../documents";
+import { getState, resolveConfirm, setState } from "../store";
 import DocumentPanel from "./DocumentPanel";
 
 const DEMO_DOC = {
@@ -44,13 +50,18 @@ const DEMO_DOC = {
   sizeBytes: 12,
 };
 
+function openDemo(line: number | null = null) {
+  openDocumentTarget({ path: DEMO_DOC.path, line });
+}
+
 describe("DocumentPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     readMock.mockResolvedValue({ ...DEMO_DOC });
     writeMock.mockResolvedValue({ path: DEMO_DOC.path, sizeBytes: 20 });
     setState({
-      openDocument: { path: DEMO_DOC.path, line: null },
+      docGroups: [],
+      activeDocGroupIndex: 0,
       docPanelExpanded: false,
       activeSessionId: "ses_quote",
       projects: [{
@@ -79,11 +90,20 @@ describe("DocumentPanel", () => {
         }],
       }],
     });
+    openDemo();
   });
 
   afterEach(() => {
     cleanup();
-    setState({ openDocument: null, docPanelExpanded: false, explorerOpen: false, docTreeWidth: 184 });
+    setState({
+      docGroups: [],
+      activeDocGroupIndex: 0,
+      docPanelExpanded: false,
+      explorerOpen: false,
+      docTreeWidth: 184,
+      confirm: null,
+    });
+    resetDocumentTabRuntimes();
   });
 
   async function findRawEditor() {
@@ -115,7 +135,7 @@ describe("DocumentPanel", () => {
 
   it("shows only the tree when the explorer opens without a file", async () => {
     listMock.mockResolvedValue({ path: "/tmp/demo", truncated: false, entries: [] });
-    setState({ openDocument: null, explorerOpen: true, explorerRoot: "/tmp/demo" });
+    setState({ docGroups: [], explorerOpen: true, explorerRoot: "/tmp/demo" });
     const { container } = render(<DocumentPanel />);
     await waitFor(() => expect(listMock).toHaveBeenCalled());
     // Tree-only: no editor column, sash visible for tree-width dragging,
@@ -129,7 +149,7 @@ describe("DocumentPanel", () => {
     expect(panelStyle).toContain("--doc-tree-width: 184px");
 
     // Picking a file brings the editor area back alongside the tree.
-    act(() => setState({ openDocument: { path: DEMO_DOC.path, line: null } }));
+    act(() => openDemo());
     await waitFor(() => {
       expect(container.querySelector(".doc-editor-column")).not.toBeNull();
     });
@@ -139,7 +159,7 @@ describe("DocumentPanel", () => {
 
   it("drags the sash to resize the tree in tree-only mode", async () => {
     listMock.mockResolvedValue({ path: "/tmp/demo", truncated: false, entries: [] });
-    setState({ openDocument: null, explorerOpen: true, explorerRoot: "/tmp/demo", docTreeWidth: 184 });
+    setState({ docGroups: [], explorerOpen: true, explorerRoot: "/tmp/demo", docTreeWidth: 184 });
     const { container } = render(<DocumentPanel />);
     const sash = container.querySelector(".doc-panel-resize");
     expect(sash).not.toBeNull();
@@ -177,9 +197,7 @@ describe("DocumentPanel", () => {
   });
 
   it("does not jump back to a path:line target after saving", async () => {
-    setState({
-      openDocument: { path: DEMO_DOC.path, line: 1 },
-    });
+    act(() => openDemo(1));
     render(<DocumentPanel />);
     const editor = (await findRawEditor()) as HTMLTextAreaElement;
     editor.scrollTop = 140;
@@ -199,18 +217,12 @@ describe("DocumentPanel", () => {
   });
 
   it("reveals the same path:line again for a new open request", async () => {
-    setState({
-      openDocument: { path: DEMO_DOC.path, line: 3 },
-    });
+    act(() => openDemo(3));
     render(<DocumentPanel />);
     const editor = (await findRawEditor()) as HTMLTextAreaElement;
     editor.scrollTop = 140;
 
-    act(() => {
-      setState({
-        openDocument: { path: DEMO_DOC.path, line: 3 },
-      });
-    });
+    act(() => openDemo(3));
 
     await waitFor(() => expect(editor.scrollTop).not.toBe(140));
     expect(editor.selectionStart).toBe(DEMO_DOC.content.indexOf("正文"));
@@ -231,8 +243,8 @@ describe("DocumentPanel", () => {
   });
 
   it("falls back to a punctuation-trimmed path when the link target is missing", async () => {
-    setState({
-      openDocument: { path: "/tmp/demo/报告.md，包含说明", line: null },
+    act(() => {
+      openDocumentTarget({ path: "/tmp/demo/报告.md，包含说明", line: null });
     });
     readMock.mockImplementation((path: string) => {
       if (path.includes("包含")) {
@@ -268,8 +280,8 @@ describe("DocumentPanel", () => {
       technicalDetail: "二进制文件不支持在文档查看器中预览",
       message: "二进制文件不支持在文档查看器中预览",
     });
-    setState({
-      openDocument: { path: "/tmp/demo/AI工具安装.pdf", line: null },
+    act(() => {
+      openDocumentTarget({ path: "/tmp/demo/AI工具安装.pdf", line: null });
     });
 
     render(<DocumentPanel />);
@@ -290,8 +302,8 @@ describe("DocumentPanel", () => {
       technicalDetail: "missing",
       message: "missing",
     });
-    setState({
-      openDocument: { path: "/tmp/demo/gone.md", line: null },
+    act(() => {
+      openDocumentTarget({ path: "/tmp/demo/gone.md", line: null });
     });
 
     render(<DocumentPanel />);
@@ -384,5 +396,99 @@ describe("DocumentPanel", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /* ------------------------- tabs and splits ------------------------- */
+
+  it("renders open files as tabs with the preview tab in italic", async () => {
+    render(<DocumentPanel />);
+    const tab = await screen.findByRole("tab", { name: "报告.md" });
+    expect(tab.className).toContain("preview");
+    expect(tab.className).toContain("active");
+
+    // The next plain open replaces the preview tab instead of adding one.
+    act(() => {
+      openDocumentTarget({ path: "/tmp/demo/第二.md", line: null });
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "第二.md" }).className).toContain("preview");
+    });
+    expect(screen.queryByRole("tab", { name: "报告.md" })).toBeNull();
+    expect(getState().docGroups[0]?.tabs).toHaveLength(1);
+  });
+
+  it("pins a preview tab on edit and keeps its draft across tab switches", async () => {
+    render(<DocumentPanel />);
+    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: "# 标题\n\n正文\n改动\n" } });
+
+    // Editing pinned the tab, so the next open appends instead of replacing.
+    expect(getState().docGroups[0]?.tabs[0]?.pinned).toBe(true);
+    act(() => {
+      openDocumentTarget({ path: "/tmp/demo/第二.md", line: null });
+    });
+    expect(getState().docGroups[0]?.tabs.map((tab) => tab.path)).toEqual([
+      DEMO_DOC.path,
+      "/tmp/demo/第二.md",
+    ]);
+
+    // Switch back to the first tab: the unsaved draft is still there.
+    fireEvent.click(await screen.findByRole("tab", { name: "报告.md" }));
+    const restored = (await screen.findByLabelText("文档内容编辑")) as HTMLTextAreaElement;
+    expect(restored.value).toBe("# 标题\n\n正文\n改动\n");
+  });
+
+  it("pins a preview tab on double-click", async () => {
+    render(<DocumentPanel />);
+    const tab = await screen.findByRole("tab", { name: "报告.md" });
+    expect(tab.className).toContain("preview");
+    fireEvent.doubleClick(tab);
+    expect(getState().docGroups[0]?.tabs[0]?.pinned).toBe(true);
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "报告.md" }).className).not.toContain("preview");
+    });
+  });
+
+  it("asks before closing a dirty tab from the tab strip", async () => {
+    render(<DocumentPanel />);
+    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: "改动\n" } });
+
+    fireEvent.click(await screen.findByLabelText("关闭标签"));
+    await waitFor(() => expect(getState().confirm).not.toBeNull());
+
+    // Cancel keeps the tab; confirming drops it.
+    act(() => resolveConfirm(false));
+    await Promise.resolve();
+    expect(screen.getByRole("tab", { name: "报告.md" })).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("关闭标签"));
+    await waitFor(() => expect(getState().confirm).not.toBeNull());
+    act(() => resolveConfirm(true));
+    await waitFor(() => {
+      expect(screen.queryByRole("tab", { name: "报告.md" })).toBeNull();
+    });
+    expect(getState().docGroups).toEqual([]);
+  });
+
+  it("splits into two groups and collapses when the second group empties", async () => {
+    act(() => pinDocumentTab(DEMO_DOC.path));
+    act(() => {
+      openDocumentTargetToSide({ path: "/tmp/demo/第二.md", line: null });
+    });
+    const { container } = render(<DocumentPanel />);
+    await waitFor(() => {
+      expect(container.querySelectorAll(".doc-group")).toHaveLength(2);
+    });
+    expect(getState().activeDocGroupIndex).toBe(1);
+
+    // Close the side group's only tab: the split collapses to one group.
+    const sideTab = await screen.findByRole("tab", { name: "第二.md" });
+    fireEvent.click(within(sideTab).getByLabelText("关闭标签"));
+    await waitFor(() => {
+      expect(container.querySelectorAll(".doc-group")).toHaveLength(1);
+    });
+    expect(getState().docGroups).toHaveLength(1);
+    expect(getState().docGroups[0]?.tabs.map((tab) => tab.path)).toEqual([DEMO_DOC.path]);
   });
 });

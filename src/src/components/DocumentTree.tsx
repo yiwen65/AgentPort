@@ -6,9 +6,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api, copyText, errorText } from "../api";
-import { closeDocument, openDocumentTarget } from "../documents";
+import {
+  closeDocumentTabsUnder,
+  openDocumentTarget,
+  openDocumentTargetToSide,
+  updateDocumentTabPath,
+} from "../documents";
 import { writeDragPayload } from "../terminalDrop";
-import { confirmDialog, openContextMenu, toast, useStore } from "../store";
+import {
+  confirmDialog,
+  getActiveDocumentTab,
+  openContextMenu,
+  toast,
+  useStore,
+} from "../store";
 import type { DocumentDirEntry } from "../types";
 
 interface DirState {
@@ -107,7 +118,7 @@ function IconNewFolder() {
 export default function DocumentTree() {
   const { t } = useTranslation("shell");
   const root = useStore((state) => state.explorerRoot);
-  const openPath = useStore((state) => state.openDocument?.path ?? null);
+  const openPath = useStore((state) => getActiveDocumentTab(state)?.path ?? null);
   const [dirs, setDirs] = useState<Map<string, DirState>>(new Map());
   const [refreshToken, setRefreshToken] = useState(0);
   const [activeDir, setActiveDir] = useState<string | null>(null);
@@ -223,8 +234,8 @@ export default function DocumentTree() {
       const oldPath = renaming;
       setRenaming(null);
       loadDir(parent, true);
-      // Keep the viewer pointed at the renamed file.
-      if (openPath === oldPath) openDocumentTarget({ path: result.path, line: null });
+      // Keep an open tab pointed at the renamed file.
+      updateDocumentTabPath(oldPath, result.path);
     } catch (e) {
       setRenameError(errorText(e));
     }
@@ -245,9 +256,7 @@ export default function DocumentTree() {
       loadDir(parentDir(entry.path), true);
       // The viewer must not keep a deleted file (or one inside a deleted
       // directory) on screen.
-      if (openPath === entry.path || openPath?.startsWith(`${entry.path}/`)) {
-        closeDocument();
-      }
+      closeDocumentTabsUnder(entry.path);
     });
   };
 
@@ -264,6 +273,14 @@ export default function DocumentTree() {
       { label: t("ui.document.newFile"), action: () => startCreate("file", parent) },
       { label: t("ui.document.newDir"), action: () => startCreate("dir", parent) },
       { label: "", separator: true },
+      ...(entry.isDir
+        ? []
+        : [
+            {
+              label: t("ui.document.openToSide"),
+              action: () => openDocumentTargetToSide({ path: entry.path, line: null }),
+            },
+          ]),
       {
         label: t("ui.document.openInVsCode"),
         action: () => void runAction(() => api.openInVsCode(entry.path)),
@@ -382,6 +399,12 @@ export default function DocumentTree() {
               } else {
                 setActiveDir(parentDir(entry.path));
                 openDocumentTarget({ path: entry.path, line: null });
+              }
+            }}
+            onDoubleClick={() => {
+              if (!entry.isDir) {
+                // Double-click opens a pinned (kept) tab, VSCode-style.
+                openDocumentTarget({ path: entry.path, line: null }, { pinned: true });
               }
             }}
           >

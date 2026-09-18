@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 const applyMock = vi.hoisted(() => ({ apply: vi.fn() }));
 vi.mock("./terminals", () => ({ applyTerminalSettings: applyMock.apply }));
 
+import { openDocumentTarget } from "./documents";
 import { getState, setState } from "./store";
 import {
   MAX_FONT_SCALE,
@@ -48,7 +49,7 @@ describe("font zoom key handling", () => {
     setState({
       termFontScale: 1,
       docFontScale: 1,
-      openDocument: null,
+      docGroups: [],
       explorerOpen: false,
     });
     document.documentElement.style.removeProperty("--doc-font-scale");
@@ -81,7 +82,7 @@ describe("font zoom key handling", () => {
     document.body.appendChild(panel);
     inner.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
 
-    setState({ openDocument: { path: "/tmp/a.md", line: null } });
+    openDocumentTarget({ path: "/tmp/a.md", line: null });
     expect(handleFontZoomKey(zoomKey("-"))).toBe(true);
     expect(getState().docFontScale).toBe(0.9);
     expect(getState().termFontScale).toBe(1);
@@ -103,7 +104,7 @@ describe("font zoom key handling", () => {
     document.body.appendChild(workspace);
 
     // Preview divs never fire focusin; the pointerdown must classify them.
-    setState({ openDocument: { path: "/tmp/a.md", line: null } });
+    openDocumentTarget({ path: "/tmp/a.md", line: null });
     preview.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
     expect(handleFontZoomKey(zoomKey("="))).toBe(true);
     expect(getState().docFontScale).toBe(1.1);
@@ -118,7 +119,7 @@ describe("font zoom key handling", () => {
     workspace.appendChild(timeline);
     document.body.appendChild(workspace);
 
-    setState({ openDocument: { path: "/tmp/a.md", line: null } });
+    openDocumentTarget({ path: "/tmp/a.md", line: null });
     timeline.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
     adjustFontZoom(0.1);
     expect(getState().termFontScale).toBe(1.1);
@@ -149,7 +150,7 @@ describe("font zoom key handling", () => {
     workspace.appendChild(timeline);
     document.body.appendChild(workspace);
 
-    setState({ openDocument: { path: "/tmp/a.md", line: null } });
+    openDocumentTarget({ path: "/tmp/a.md", line: null });
     inner.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
     adjustFontZoom(0.1);
     expect(getState().termFontScale).toBe(1.1);

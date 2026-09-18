@@ -24,6 +24,7 @@ import {
   findSession,
   getRuntime,
   getState,
+  hasOpenDocuments,
   openContextMenu,
   openDialog,
   setState,
@@ -1309,7 +1310,7 @@ export default function TerminalArea() {
   );
   const hasProjects = useStore((state) => state.projects.length > 0);
   const docExpanded = useStore(
-    (state) => state.docPanelExpanded && state.openDocument !== null,
+    (state) => state.docPanelExpanded && hasOpenDocuments(state),
   );
   // A Session outside the remembered split is shown as a temporary singleton.
   // The stored tree remains intact and reappears when one of its leaves is

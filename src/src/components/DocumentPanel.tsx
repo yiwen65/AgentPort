@@ -1,23 +1,56 @@
-// In-app document viewer, opened from document links in terminal output.
-// Sits beside the terminal like a VSCode editor split: the raw view is an
-// editor with a line-number gutter (⌘S saves back to disk), while the
-// preview view renders Markdown or wrapped prose read-only.
+// In-app document viewer with VSCode-style tabs and up to two side-by-side
+// editor groups (splits). Single clicks open italic preview tabs that the
+// next preview open replaces; editing or double-clicking pins a tab. Per-tab
+// state (draft, mode, load status) lives in the documents.ts runtime map so
+// it survives tab switches and split moves; the shared toolbar acts on the
+// active group's active tab. The raw view is an editor with a line-number
+// gutter (⌘S saves back to disk); the preview view renders Markdown or
+// wrapped prose read-only.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { api, errorText } from "../api";
 import {
-  closeDocument,
+  clearDocumentPendingLine,
+  closeDocumentTab,
   documentPathFallbacks,
+  ensureDocumentTabRuntime,
+  getDocumentTabRuntime,
+  isDocumentTabDirty,
   isMarkdownPath,
-  registerDocumentDirtyChecker,
+  moveDocumentTab,
+  pinDocumentTab,
+  setActiveDocumentGroup,
+  setActiveDocumentTab,
+  subscribeDocumentRuntime,
+  updateDocumentTabRuntime,
+  type DocumentTabRuntime,
 } from "../documents";
 import { MarkdownView } from "../markdown";
+import { i18n } from "../i18n";
 import { runtimeMessageEnvelope } from "../runtimeMessages";
 import { insertTextIntoTerminal } from "../terminals";
 import { computeLineRange, formatSelectionReference } from "../terminalDrop";
-import { confirmDialog, findSession, setState, toast, useStore } from "../store";
-import type { SessionDocument } from "../types";
+import {
+  confirmDialog,
+  findSession,
+  getActiveDocumentTab,
+  openContextMenu,
+  setState,
+  toast,
+  useStore,
+  type MenuItem,
+} from "../store";
+import type { DocumentGroup, DocumentTab } from "../store";
+import type { SessionView } from "../types";
 import DocumentTree from "./DocumentTree";
 
 const MIN_DOC_PANEL_WIDTH = 320;
@@ -27,6 +60,9 @@ const MAX_DOC_TREE_WIDTH = 420;
 /* In dual mode the editor column never gets squeezed below this by a wide
    tree. */
 const MIN_DOC_EDITOR_WIDTH = 280;
+
+/** dataTransfer type for tab drags (reorder, cross-group move, split). */
+const TAB_DND_TYPE = "application/x-agentport-doc-tab";
 
 function fileName(path: string): string {
   return path.split("/").pop() ?? path;
@@ -72,9 +108,9 @@ function caretOffsetAt(text: string, row: number, col: number): number {
   return Math.min(offset + col, lineEnd);
 }
 
-/* Compact preview-mode glyph: the mode tab strip shares the header with the
-   file name and action buttons, so the wide "Preview" label truncated on
-   narrow panels. The eye reads as "rendered view" at any width. */
+/* Compact preview-mode glyph: the mode tab strip shares the toolbar with the
+   action buttons, so the wide "Preview" label truncated on narrow panels.
+   The eye reads as "rendered view" at any width. */
 function IconEye() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -147,76 +183,411 @@ function UnsupportedFileNotice({
   );
 }
 
-export default function DocumentPanel() {
-  const { t } = useTranslation("shell");
-  const target = useStore((state) => state.openDocument);
-  const width = useStore((state) => state.docPanelWidth);
-  const treeWidth = useStore((state) => state.docTreeWidth);
-  const expanded = useStore((state) => state.docPanelExpanded);
-  const explorerOpen = useStore((state) => state.explorerOpen);
-  const [doc, setDoc] = useState<SessionDocument | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [errorCode, setErrorCode] = useState<string | null>(null);
-  const [selection, setSelection] = useState<{
-    text: string;
-    startLine: number | null;
-    endLine: number | null;
-  } | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [reloadToken, setReloadToken] = useState(0);
-  const [mode, setMode] = useState<"raw" | "preview">("raw");
-  const [draft, setDraft] = useState("");
-  const [saving, setSaving] = useState(false);
-  const editorRef = useRef<HTMLTextAreaElement>(null);
-  const gutterRef = useRef<HTMLDivElement>(null);
-  const loadedRequestPathRef = useRef<string | null>(null);
-  const revealedTargetRef = useRef<object | null>(null);
-  const dragStart = useRef<{ x: number; width: number; tree: boolean } | null>(null);
+/** Snapshot returned when a tab's runtime is already dropped (the tab is
+ * being closed and this render is the last one before unmount). */
+const EMPTY_RUNTIME: DocumentTabRuntime = {
+  doc: null,
+  draft: "",
+  loading: false,
+  error: null,
+  errorCode: null,
+  mode: "raw",
+  reloadToken: 0,
+  saving: false,
+  selection: null,
+  loadedPath: null,
+  loadedToken: -1,
+};
 
-  const markdown = target ? isMarkdownPath(target.path) : false;
-  const targetPath = target?.path ?? null;
-  const targetLine = target?.line ?? null;
-  const activeSession = useStore((state) =>
-    findSession(state.projects, state.activeSessionId),
+/** Saves the tab's draft back to disk, preserving the file's original
+ * line-ending style. Shared by the toolbar button and the editor's ⌘S. */
+async function saveDocumentTab(tabId: string): Promise<void> {
+  const runtime = getDocumentTabRuntime(tabId);
+  if (!runtime || !runtime.doc || runtime.saving || runtime.draft === runtime.doc.content) {
+    return;
+  }
+  const savedDraft = runtime.draft;
+  updateDocumentTabRuntime(tabId, { saving: true });
+  try {
+    const payload = runtime.doc.content.includes("\r\n")
+      ? savedDraft.replace(/\n/g, "\r\n")
+      : savedDraft;
+    const result = await api.writeSessionDocument(runtime.doc.path, payload);
+    const current = getDocumentTabRuntime(tabId);
+    if (current?.doc) {
+      // Mark the saved draft as clean; keystrokes that landed during the
+      // write keep the tab dirty, so a racing edit is never silently lost.
+      updateDocumentTabRuntime(tabId, {
+        doc: { ...current.doc, content: savedDraft, sizeBytes: result.sizeBytes },
+        saving: false,
+      });
+    }
+    toast(i18n.t("shell:ui.document.saved"), "success");
+  } catch (e) {
+    updateDocumentTabRuntime(tabId, { saving: false });
+    toast(i18n.t("shell:ui.document.saveFailed", { detail: errorText(e) }), "error");
+  }
+}
+
+/** Confirms discarding unsaved edits of the tab (reload / external flows). */
+function confirmDiscardTab(tabId: string): Promise<boolean> {
+  if (!isDocumentTabDirty(tabId)) return Promise.resolve(true);
+  return confirmDialog({
+    title: i18n.t("shell:ui.document.unsavedTitle"),
+    body: i18n.t("shell:ui.document.unsavedBody"),
+    confirmLabel: i18n.t("shell:ui.document.unsavedDiscard"),
+    danger: true,
+  });
+}
+
+/** Shared toolbar: bound to the active group's active tab. The file name
+ * lives on the tab itself, so this row keeps only the view-mode switch and
+ * the per-tab actions. */
+function DocToolbar({
+  tab,
+  expanded,
+  activeSession,
+}: {
+  tab: DocumentTab | null;
+  expanded: boolean;
+  activeSession: SessionView | null;
+}) {
+  const { t } = useTranslation("shell");
+  const tabId = tab?.id ?? null;
+  const mode = useSyncExternalStore(subscribeDocumentRuntime, () =>
+    tabId ? (getDocumentTabRuntime(tabId)?.mode ?? "raw") : "raw",
+  );
+  const dirty = useSyncExternalStore(subscribeDocumentRuntime, () =>
+    tabId ? isDocumentTabDirty(tabId) : false,
+  );
+  const saving = useSyncExternalStore(subscribeDocumentRuntime, () =>
+    tabId ? (getDocumentTabRuntime(tabId)?.saving ?? false) : false,
+  );
+  const selection = useSyncExternalStore(subscribeDocumentRuntime, () =>
+    tabId ? (getDocumentTabRuntime(tabId)?.selection ?? null) : null,
   );
 
-  // Selections belong to a specific file; drop them when switching documents.
-  useEffect(() => {
-    setSelection(null);
-  }, [targetPath]);
+  if (!tab || !tabId) return null;
+  const effectivePath = getDocumentTabRuntime(tabId)?.doc?.path ?? tab.path;
+  const selectionLineCount = selection ? selection.text.split("\n").length : 0;
 
-  // Default to the rendered preview for Markdown documents and the raw view
-  // for everything else, re-evaluated for each newly opened file.
-  useEffect(() => {
-    setMode(targetPath && isMarkdownPath(targetPath) ? "preview" : "raw");
-  }, [targetPath]);
+  return (
+    <div className="doc-panel-header">
+      <div className="doc-panel-modes" role="tablist" aria-label={t("ui.document.modeLabel")}>
+        <button
+          role="tab"
+          aria-selected={mode === "raw"}
+          className={`doc-mode ${mode === "raw" ? "active" : ""}`}
+          onClick={() => updateDocumentTabRuntime(tabId, { mode: "raw" })}
+        >
+          {t("ui.document.raw")}
+        </button>
+        <button
+          role="tab"
+          aria-selected={mode === "preview"}
+          className={`doc-mode doc-mode-icon ${mode === "preview" ? "active" : ""}`}
+          data-tip={t("ui.document.preview")}
+          aria-label={t("ui.document.preview")}
+          onClick={() => updateDocumentTabRuntime(tabId, { mode: "preview" })}
+        >
+          <IconEye />
+        </button>
+      </div>
+      <span className="spacer" />
+      {selection && activeSession?.transport === "pty" ? (
+        <button
+          className="btn small primary doc-quote"
+          data-tip={t("ui.document.quoteSelectionTip")}
+          onClick={() => {
+            const text = formatSelectionReference({
+              path: effectivePath,
+              startLine: selection.startLine,
+              endLine: selection.endLine,
+            });
+            if (!insertTextIntoTerminal(activeSession.id, text)) {
+              toast(t("ui.document.dropFailed"), "error");
+            }
+          }}
+        >
+          {t("ui.document.quoteSelection", { count: selectionLineCount })}
+        </button>
+      ) : null}
+      {dirty ? (
+        <button
+          className="btn small primary doc-save"
+          data-tip={t("ui.document.saveTip")}
+          onClick={() => void saveDocumentTab(tabId)}
+          disabled={saving}
+        >
+          {t("ui.document.save")}
+        </button>
+      ) : null}
+      <button
+        className="btn small ghost"
+        data-tip={expanded ? t("ui.document.collapseTip") : t("ui.document.expandTip")}
+        aria-label={expanded ? t("ui.document.collapse") : t("ui.document.expand")}
+        onClick={() => setState({ docPanelExpanded: !expanded })}
+      >
+        {expanded ? "⤡" : "⤢"}
+      </button>
+      <button
+        className="btn small ghost"
+        data-tip={t("ui.document.reloadTip")}
+        aria-label={t("ui.document.reload")}
+        onClick={() =>
+          void confirmDiscardTab(tabId).then((ok) => {
+            if (!ok) return;
+            const runtime = getDocumentTabRuntime(tabId);
+            if (runtime) {
+              updateDocumentTabRuntime(tabId, { reloadToken: runtime.reloadToken + 1 });
+            }
+          })
+        }
+      >
+        ⟳
+      </button>
+      <button
+        className="btn small ghost"
+        data-tip={t("ui.document.revealTip")}
+        aria-label={t("ui.document.reveal")}
+        onClick={() => void api.revealInFileManager(effectivePath).catch(() => {})}
+      >
+        ⌂
+      </button>
+      <button
+        className="btn small ghost"
+        data-tip={t("ui.document.closeActiveTab")}
+        aria-label={t("ui.document.closeActiveTab")}
+        onClick={() => closeDocumentTab(tabId)}
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
 
+/** One tab in a group's strip. Preview tabs render italic; a dirty tab shows
+ * the dot in place of the close button (VSCode style). */
+function DocTab({
+  tab,
+  groupIndex,
+  active,
+  dropBefore,
+  setDragTabId,
+  setDropTarget,
+}: {
+  tab: DocumentTab;
+  groupIndex: number;
+  active: boolean;
+  dropBefore: boolean;
+  setDragTabId: (tabId: string | null) => void;
+  setDropTarget: (
+    target: { groupIndex: number; beforeTabId: string | null } | null,
+  ) => void;
+}) {
+  const { t } = useTranslation("shell");
+  const dirty = useSyncExternalStore(subscribeDocumentRuntime, () =>
+    isDocumentTabDirty(tab.id),
+  );
+  const groupCount = useStore((state) => state.docGroups.length);
+
+  const openTabMenu = (event: React.MouseEvent) => {
+    event.preventDefault();
+    const items: MenuItem[] = [];
+    if (!tab.pinned) {
+      items.push({ label: t("ui.document.pin"), action: () => pinDocumentTab(tab.id) });
+    }
+    items.push({
+      label:
+        groupCount > 1
+          ? t("ui.document.moveToOtherGroup")
+          : t("ui.document.openToSide"),
+      action: () => moveDocumentTab(tab.id, groupIndex === 0 ? 1 : 0),
+    });
+    items.push({ label: "", separator: true });
+    items.push({
+      label: t("ui.document.closeTab"),
+      action: () => closeDocumentTab(tab.id),
+    });
+    openContextMenu(event.clientX, event.clientY, items);
+  };
+
+  return (
+    <div
+      role="tab"
+      aria-selected={active}
+      aria-label={fileName(tab.path)}
+      tabIndex={0}
+      className={`doc-tab${active ? " active" : ""}${dirty ? " dirty" : ""}${tab.pinned ? "" : " preview"}${
+        dropBefore ? " drop-before" : ""
+      }`}
+      data-tip={tab.path}
+      draggable
+      onClick={() => setActiveDocumentTab(tab.id)}
+      onDoubleClick={() => pinDocumentTab(tab.id)}
+      onAuxClick={(event) => {
+        if (event.button === 1) {
+          event.preventDefault();
+          closeDocumentTab(tab.id);
+        }
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          setActiveDocumentTab(tab.id);
+        }
+      }}
+      onDragStart={(event) => {
+        event.dataTransfer.setData(TAB_DND_TYPE, tab.id);
+        event.dataTransfer.effectAllowed = "move";
+        setDragTabId(tab.id);
+      }}
+      onDragEnd={() => {
+        setDragTabId(null);
+        setDropTarget(null);
+      }}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes(TAB_DND_TYPE)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        const rect = event.currentTarget.getBoundingClientRect();
+        // Left half inserts before this tab; right half appends after it
+        // (the strip maps null to the end position).
+        const beforeTabId = event.clientX < rect.left + rect.width / 2 ? tab.id : null;
+        setDropTarget({ groupIndex, beforeTabId });
+      }}
+      onContextMenu={openTabMenu}
+    >
+      <span className="doc-tab-name">{fileName(tab.path)}</span>
+      <span className="doc-tab-status">
+        {dirty ? (
+          <span className="doc-dirty-dot" aria-label={t("ui.document.unsaved")} />
+        ) : null}
+        <button
+          className="doc-tab-close"
+          data-tip={t("ui.document.closeTab")}
+          aria-label={t("ui.document.closeTab")}
+          onClick={(event) => {
+            event.stopPropagation();
+            closeDocumentTab(tab.id);
+          }}
+        >
+          ✕
+        </button>
+      </span>
+    </div>
+  );
+}
+
+/** A group's tab strip: also the drop target for reordering and for moves
+ * arriving from the other group. */
+function DocTabStrip({
+  group,
+  groupIndex,
+  dragTabId,
+  setDragTabId,
+  dropTarget,
+  setDropTarget,
+}: {
+  group: DocumentGroup;
+  groupIndex: number;
+  dragTabId: string | null;
+  setDragTabId: (tabId: string | null) => void;
+  dropTarget: { groupIndex: number; beforeTabId: string | null } | null;
+  setDropTarget: (
+    target: { groupIndex: number; beforeTabId: string | null } | null,
+  ) => void;
+}) {
+  const { t } = useTranslation("shell");
+  return (
+    <div
+      className="doc-tabs"
+      role="tablist"
+      aria-label={t("ui.document.tabs")}
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes(TAB_DND_TYPE)) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+        }
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        const tabId = event.dataTransfer.getData(TAB_DND_TYPE) || dragTabId;
+        const target = dropTarget?.groupIndex === groupIndex ? dropTarget : null;
+        setDragTabId(null);
+        setDropTarget(null);
+        if (tabId) moveDocumentTab(tabId, groupIndex, target?.beforeTabId ?? null);
+      }}
+    >
+      {group.tabs.map((tab) => (
+        <DocTab
+          key={tab.id}
+          tab={tab}
+          groupIndex={groupIndex}
+          active={tab.id === group.activeTabId}
+          dropBefore={dropTarget?.groupIndex === groupIndex && dropTarget.beforeTabId === tab.id}
+          setDragTabId={setDragTabId}
+          setDropTarget={setDropTarget}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** The raw editor / rendered preview for one tab. Every tab of a group stays
+ * mounted (inactive ones are hidden) so DOM scroll and caret survive tab
+ * switches; everything else lives in the runtime map. */
+function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) {
+  const { t } = useTranslation("shell");
+  useMemo(() => ensureDocumentTabRuntime(tab), [tab.id]);
+  const runtime = useSyncExternalStore(
+    subscribeDocumentRuntime,
+    () => getDocumentTabRuntime(tab.id) ?? EMPTY_RUNTIME,
+  );
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const gutterRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+
+  // Load the file (with punctuation-trimmed fallbacks for link targets
+  // printed inside prose). Loads are guarded by (path, reloadToken) recorded
+  // in the runtime, so a remount after a split move neither refetches nor
+  // loses an in-flight load.
   useEffect(() => {
-    if (!targetPath) {
-      loadedRequestPathRef.current = null;
-      revealedTargetRef.current = null;
-      setDoc(null);
-      setError(null);
-      setErrorCode(null);
+    const current = getDocumentTabRuntime(tab.id);
+    if (!current) return;
+    if (
+      current.loadedPath === tab.path &&
+      current.loadedToken === current.reloadToken
+    ) {
       return;
     }
-    let stale = false;
-    setLoading(true);
-    setError(null);
-    setErrorCode(null);
-    // Try the literal link target first, then punctuation-trimmed fallbacks:
-    // agents print paths inside prose, so a link can carry trailing sentence
-    // characters that are not part of the real file name.
-    (async () => {
+    const token = current.reloadToken;
+    const isCurrent = () => {
+      const latest = getDocumentTabRuntime(tab.id);
+      return (
+        latest !== null && latest.loadedToken === token && latest.loadedPath === tab.path
+      );
+    };
+    updateDocumentTabRuntime(tab.id, {
+      loading: true,
+      error: null,
+      errorCode: null,
+      loadedPath: tab.path,
+      loadedToken: token,
+    });
+    void (async () => {
       let lastError: unknown = null;
-      for (const candidate of [targetPath, ...documentPathFallbacks(targetPath)]) {
+      for (const candidate of [tab.path, ...documentPathFallbacks(tab.path)]) {
         try {
           const result = await api.readSessionDocument(candidate);
-          if (!stale) {
-            loadedRequestPathRef.current = targetPath;
-            setDoc(result);
-            setDraft(result.content);
-          }
+          if (!isCurrent()) return;
+          updateDocumentTabRuntime(tab.id, {
+            doc: result,
+            draft: result.content,
+            loading: false,
+            error: null,
+            errorCode: null,
+          });
           return;
         } catch (e) {
           lastError = e;
@@ -225,41 +596,35 @@ export default function DocumentPanel() {
           if (runtimeMessageEnvelope(e)?.code !== "document_not_found") break;
         }
       }
-      if (stale) return;
-      setDoc(null);
-      setError(errorText(lastError));
-      setErrorCode(runtimeMessageEnvelope(lastError)?.code ?? null);
-    })().finally(() => {
-      if (!stale) setLoading(false);
-    });
-    return () => {
-      stale = true;
-    };
-  }, [targetPath, reloadToken]);
+      if (!isCurrent()) return;
+      updateDocumentTabRuntime(tab.id, {
+        doc: null,
+        loading: false,
+        error: errorText(lastError),
+        errorCode: runtimeMessageEnvelope(lastError)?.code ?? null,
+      });
+    })();
+  }, [tab.id, tab.path, runtime.reloadToken]);
 
-  // Reveal the `path:line` target in the raw editor once content is in:
-  // place the caret at the line start and scroll it into view.
+  // Reveal a `path:line` target in the raw editor once the content is
+  // visible: caret to the line start, scrolled into view, then the one-shot
+  // request is consumed.
   useEffect(() => {
-    if (
-      mode !== "raw" ||
-      !target ||
-      !targetLine ||
-      !doc ||
-      loadedRequestPathRef.current !== targetPath ||
-      revealedTargetRef.current === target
-    )
+    if (!visible || runtime.mode !== "raw" || tab.pendingLine == null || !runtime.doc) {
       return;
+    }
     const textarea = editorRef.current;
     if (!textarea) return;
+    const targetLine = tab.pendingLine;
+    clearDocumentPendingLine(tab.id);
     let offset = 0;
     let line = 1;
     while (line < targetLine) {
-      const next = doc.content.indexOf("\n", offset);
-      if (next === -1) return;
+      const next = runtime.doc.content.indexOf("\n", offset);
+      if (next === -1) return; // Line past EOF: consumed, nothing to reveal.
       offset = next + 1;
       line += 1;
     }
-    revealedTargetRef.current = target;
     textarea.focus();
     textarea.setSelectionRange(offset, offset);
     const lineHeight = Number.parseFloat(getComputedStyle(textarea).lineHeight) || 18;
@@ -267,59 +632,19 @@ export default function DocumentPanel() {
       0,
       (targetLine - 1) * lineHeight - textarea.clientHeight / 2,
     );
-  }, [mode, target, targetPath, targetLine, doc]);
+  }, [visible, runtime.mode, runtime.doc, tab.pendingLine, tab.id]);
 
-  useEffect(() => {
-    const onMove = (event: PointerEvent) => {
-      const start = dragStart.current;
-      if (!start) return;
-      const next = start.width + (start.x - event.clientX);
-      if (start.tree) {
-        setState({
-          docTreeWidth: Math.round(
-            Math.min(MAX_DOC_TREE_WIDTH, Math.max(MIN_DOC_TREE_WIDTH, next)),
-          ),
-        });
-        return;
-      }
-      const viewportMax = Math.floor(window.innerWidth * MAX_DOC_PANEL_RATIO);
-      setState({
-        docPanelWidth: Math.round(
-          Math.min(viewportMax, Math.max(MIN_DOC_PANEL_WIDTH, next)),
-        ),
-      });
-    };
-    const onEnd = () => {
-      dragStart.current = null;
-      document.body.classList.remove("is-resizing-split");
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onEnd);
-    window.addEventListener("pointercancel", onEnd);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onEnd);
-      window.removeEventListener("pointercancel", onEnd);
-    };
-  }, []);
-
-  const openMarkdownLink = useCallback(
-    (href: string) => {
-      void api.openExternalUrl(href).catch((e) => {
-        toast(t("ui.sidebar.openFailed", { detail: errorText(e) }), "error");
+  const syncEditorSelection = useCallback(
+    (el: HTMLTextAreaElement) => {
+      const text = el.value.slice(el.selectionStart, el.selectionEnd);
+      updateDocumentTabRuntime(tab.id, {
+        selection: text
+          ? { text, ...computeLineRange(el.value, el.selectionStart, el.selectionEnd) }
+          : null,
       });
     },
-    [t],
+    [tab.id],
   );
-
-  const syncEditorSelection = useCallback((el: HTMLTextAreaElement) => {
-    const text = el.value.slice(el.selectionStart, el.selectionEnd);
-    setSelection(
-      text
-        ? { text, ...computeLineRange(el.value, el.selectionStart, el.selectionEnd) }
-        : null,
-    );
-  }, []);
 
   /* Drag-select auto-scroll. WKWebView never autoscrolls the raw editor
      while a selection drag leaves its bounds — and the panel sits flush
@@ -443,85 +768,257 @@ export default function DocumentPanel() {
     [syncEditorSelection],
   );
 
-  // Switching files or modes unmounts the textarea mid-drag; drop the
-  // tracking listeners with it.
-  useEffect(() => () => selectDragCleanupRef.current?.(), [mode, targetPath]);
-
-  const dirty = doc !== null && draft !== doc.content;
-  // Report unsaved edits so a document-link click can ask before replacing
-  // this file (documents.ts owns the confirmation flow).
-  useEffect(() => {
-    registerDocumentDirtyChecker(() => dirty);
-    return () => registerDocumentDirtyChecker(null);
-  }, [dirty]);
-
-  const save = useCallback(async () => {
-    if (!doc || saving || draft === doc.content) return;
-    setSaving(true);
-    try {
-      // Preserve the file's original line-ending style.
-      const payload = doc.content.includes("\r\n")
-        ? draft.replace(/\n/g, "\r\n")
-        : draft;
-      const result = await api.writeSessionDocument(doc.path, payload);
-      setDoc({ ...doc, content: draft, sizeBytes: result.sizeBytes });
-      toast(t("ui.document.saved"), "success");
-    } catch (e) {
-      toast(t("ui.document.saveFailed", { detail: errorText(e) }), "error");
-    } finally {
-      setSaving(false);
-    }
-  }, [doc, draft, saving, t]);
-
-  const confirmDiscard = useCallback(
-    () =>
-      dirty
-        ? confirmDialog({
-            title: t("ui.document.unsavedTitle"),
-            body: t("ui.document.unsavedBody"),
-            confirmLabel: t("ui.document.unsavedDiscard"),
-            danger: true,
-          })
-        : Promise.resolve(true),
-    [dirty, t],
-  );
-
-  const gutterLines = useMemo(() => (doc ? draft.split("\n").length : 0), [doc, draft]);
-
-  const previewRef = useRef<HTMLDivElement>(null);
+  // Switching modes or closing the tab unmounts the textarea mid-drag; drop
+  // the tracking listeners with it.
+  useEffect(() => () => selectDragCleanupRef.current?.(), [runtime.mode, tab.id]);
 
   const capturePreviewSelection = useCallback(() => {
     const sel = window.getSelection();
     const text = sel?.toString() ?? "";
     if (text && sel?.anchorNode && previewRef.current?.contains(sel.anchorNode)) {
-      setSelection({ text, startLine: null, endLine: null });
+      updateDocumentTabRuntime(tab.id, {
+        selection: { text, startLine: null, endLine: null },
+      });
     } else if (!text) {
-      setSelection((current) => (current?.startLine === null ? null : current));
+      const current = getDocumentTabRuntime(tab.id);
+      if (current?.selection?.startLine === null) {
+        updateDocumentTabRuntime(tab.id, { selection: null });
+      }
     }
-  }, []);
+  }, [tab.id]);
 
-  const insertSelection = useCallback(() => {
-    if (!selection || !activeSession) return;
-    const text = formatSelectionReference({
-      path: doc?.path ?? target?.path ?? "",
-      startLine: selection.startLine,
-      endLine: selection.endLine,
-    });
-    if (!insertTextIntoTerminal(activeSession.id, text)) {
-      toast(t("ui.document.dropFailed"), "error");
-    }
-  }, [selection, activeSession, doc, target, t]);
-
-  const selectionLineCount = selection ? selection.text.split("\n").length : 0;
-
-  if (!target && !explorerOpen) return null;
+  const gutterLines = useMemo(
+    () => (runtime.doc ? runtime.draft.split("\n").length : 0),
+    [runtime.doc, runtime.draft],
+  );
 
   // Prefer the backend-canonical path (also reflects a fallback hit).
-  const effectivePath = doc?.path ?? target?.path ?? "";
+  const effectivePath = runtime.doc?.path ?? tab.path;
+  const markdown = isMarkdownPath(tab.path);
+
+  return (
+    <div className="doc-tab-body" hidden={!visible}>
+      {runtime.doc?.truncated ? (
+        <div className="banner info" role="status">
+          <span>{t("ui.document.truncated")}</span>
+        </div>
+      ) : null}
+      <div className="doc-panel-body">
+        {runtime.loading ? (
+          <div className="doc-panel-status">{t("ui.document.loading")}</div>
+        ) : runtime.error ? (
+          <UnsupportedFileNotice
+            code={runtime.errorCode}
+            detail={runtime.error}
+            path={effectivePath}
+          />
+        ) : runtime.doc ? (
+          runtime.mode === "preview" ? (
+            <div
+              ref={previewRef}
+              className="doc-preview-host"
+              onMouseUp={capturePreviewSelection}
+            >
+              {markdown ? (
+                <MarkdownView
+                  source={runtime.doc.content}
+                  onLinkClick={(href) =>
+                    void api.openExternalUrl(href).catch((e) => {
+                      toast(t("ui.sidebar.openFailed", { detail: errorText(e) }), "error");
+                    })
+                  }
+                />
+              ) : (
+                <div className="doc-prose">{runtime.doc.content}</div>
+              )}
+            </div>
+          ) : (
+            <div className="doc-editor">
+              <div className="doc-editor-gutter" ref={gutterRef} aria-hidden="true">
+                {Array.from({ length: gutterLines }, (_, index) => (
+                  <span key={index} className="doc-editor-gutter-line">
+                    {index + 1}
+                  </span>
+                ))}
+              </div>
+              <textarea
+                ref={editorRef}
+                className="doc-editor-textarea"
+                value={runtime.draft}
+                readOnly={runtime.doc.truncated}
+                wrap="off"
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                aria-label={t("ui.document.editorLabel")}
+                onChange={(event) => {
+                  // Editing a preview tab pins it (VSCode semantics), so a
+                  // dirty tab is never silently replaced by the next click.
+                  if (!tab.pinned) pinDocumentTab(tab.id);
+                  updateDocumentTabRuntime(tab.id, { draft: event.target.value });
+                }}
+                onMouseDown={armSelectDrag}
+                onSelect={(event) => syncEditorSelection(event.currentTarget)}
+                onScroll={(event) => {
+                  if (gutterRef.current) {
+                    gutterRef.current.scrollTop = event.currentTarget.scrollTop;
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+                    event.preventDefault();
+                    void saveDocumentTab(tab.id);
+                    return;
+                  }
+                  // Keep Tab inside the editor instead of moving focus.
+                  if (event.key === "Tab" && !runtime.doc?.truncated) {
+                    event.preventDefault();
+                    const el = event.currentTarget;
+                    el.setRangeText("\t", el.selectionStart, el.selectionEnd, "end");
+                    if (!tab.pinned) pinDocumentTab(tab.id);
+                    updateDocumentTabRuntime(tab.id, { draft: el.value });
+                  }
+                }}
+              />
+            </div>
+          )
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** One editor group: tab strip + stacked tab bodies, plus the split drop
+ * hint while a tab is dragged over the panel's right edge. */
+function DocGroupView({
+  group,
+  groupIndex,
+  isActive,
+  single,
+  dragTabId,
+  setDragTabId,
+  dropTarget,
+  setDropTarget,
+  splitHot,
+  setSplitHot,
+}: {
+  group: DocumentGroup;
+  groupIndex: number;
+  isActive: boolean;
+  single: boolean;
+  dragTabId: string | null;
+  setDragTabId: (tabId: string | null) => void;
+  dropTarget: { groupIndex: number; beforeTabId: string | null } | null;
+  setDropTarget: (
+    target: { groupIndex: number; beforeTabId: string | null } | null,
+  ) => void;
+  splitHot: boolean;
+  setSplitHot: (hot: boolean) => void;
+}) {
+  return (
+    <section
+      className={`doc-group${isActive ? " active" : ""}`}
+      onPointerDown={() => setActiveDocumentGroup(groupIndex)}
+    >
+      <DocTabStrip
+        group={group}
+        groupIndex={groupIndex}
+        dragTabId={dragTabId}
+        setDragTabId={setDragTabId}
+        dropTarget={dropTarget}
+        setDropTarget={setDropTarget}
+      />
+      <div className="doc-group-body">
+        {group.tabs.map((tab) => (
+          <DocTabEditor key={tab.id} tab={tab} visible={tab.id === group.activeTabId} />
+        ))}
+      </div>
+      {single && dragTabId ? (
+        <div
+          className={`doc-split-hint${splitHot ? " hot" : ""}`}
+          aria-hidden="true"
+          onDragOver={(event) => {
+            if (event.dataTransfer.types.includes(TAB_DND_TYPE)) {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+              setSplitHot(true);
+            }
+          }}
+          onDragLeave={() => setSplitHot(false)}
+          onDrop={(event) => {
+            event.preventDefault();
+            const tabId = event.dataTransfer.getData(TAB_DND_TYPE) || dragTabId;
+            setSplitHot(false);
+            setDragTabId(null);
+            setDropTarget(null);
+            if (tabId) moveDocumentTab(tabId, 1);
+          }}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+export default function DocumentPanel() {
+  const { t } = useTranslation("shell");
+  const groups = useStore((state) => state.docGroups);
+  const activeGroupIndex = useStore((state) => state.activeDocGroupIndex);
+  const width = useStore((state) => state.docPanelWidth);
+  const treeWidth = useStore((state) => state.docTreeWidth);
+  const expanded = useStore((state) => state.docPanelExpanded);
+  const explorerOpen = useStore((state) => state.explorerOpen);
+  const activeTab = useStore((state) => getActiveDocumentTab(state));
+  const activeSession = useStore((state) =>
+    findSession(state.projects, state.activeSessionId),
+  );
+  const [dragTabId, setDragTabId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{
+    groupIndex: number;
+    beforeTabId: string | null;
+  } | null>(null);
+  const [splitHot, setSplitHot] = useState(false);
+  const dragStart = useRef<{ x: number; width: number; tree: boolean } | null>(null);
+
+  useEffect(() => {
+    const onMove = (event: PointerEvent) => {
+      const start = dragStart.current;
+      if (!start) return;
+      const next = start.width + (start.x - event.clientX);
+      if (start.tree) {
+        setState({
+          docTreeWidth: Math.round(
+            Math.min(MAX_DOC_TREE_WIDTH, Math.max(MIN_DOC_TREE_WIDTH, next)),
+          ),
+        });
+        return;
+      }
+      const viewportMax = Math.floor(window.innerWidth * MAX_DOC_PANEL_RATIO);
+      setState({
+        docPanelWidth: Math.round(
+          Math.min(viewportMax, Math.max(MIN_DOC_PANEL_WIDTH, next)),
+        ),
+      });
+    };
+    const onEnd = () => {
+      dragStart.current = null;
+      document.body.classList.remove("is-resizing-split");
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onEnd);
+    window.addEventListener("pointercancel", onEnd);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+    };
+  }, []);
+
+  const hasDocs = groups.length > 0;
+  if (!hasDocs && !explorerOpen) return null;
 
   // Tree-only mode (explorer open, no file picked yet): show just the tree
   // column — the editor area appears once a file opens.
-  const treeOnly = !target;
+  const treeOnly = !hasDocs;
   // Tree column width: user-draggable via the sash; in dual mode the editor
   // keeps at least MIN_DOC_EDITOR_WIDTH regardless of the stored tree width.
   const treeBasis = treeOnly
@@ -556,170 +1053,27 @@ export default function DocumentPanel() {
           }}
         />
       )}
-      {target ? (
-      <div className="doc-editor-column">
-        <>
-            <div className="doc-panel-header">
-        <span className="doc-panel-name" data-tip={effectivePath}>
-          {fileName(effectivePath)}
-          {dirty ? <span className="doc-dirty-dot" aria-label={t("ui.document.unsaved")} /> : null}
-        </span>
-        <div className="doc-panel-modes" role="tablist" aria-label={t("ui.document.modeLabel")}>
-          <button
-            role="tab"
-            aria-selected={mode === "raw"}
-            className={`doc-mode ${mode === "raw" ? "active" : ""}`}
-            onClick={() => setMode("raw")}
-          >
-            {t("ui.document.raw")}
-          </button>
-          <button
-            role="tab"
-            aria-selected={mode === "preview"}
-            className={`doc-mode doc-mode-icon ${mode === "preview" ? "active" : ""}`}
-            data-tip={t("ui.document.preview")}
-            aria-label={t("ui.document.preview")}
-            onClick={() => setMode("preview")}
-          >
-            <IconEye />
-          </button>
-        </div>
-        <span className="spacer" />
-        {selection && activeSession?.transport === "pty" ? (
-          <button
-            className="btn small primary doc-quote"
-            data-tip={t("ui.document.quoteSelectionTip")}
-            onClick={insertSelection}
-          >
-            {t("ui.document.quoteSelection", { count: selectionLineCount })}
-          </button>
-        ) : null}
-        {dirty ? (
-          <button
-            className="btn small primary doc-save"
-            data-tip={t("ui.document.saveTip")}
-            onClick={() => void save()}
-            disabled={saving}
-          >
-            {t("ui.document.save")}
-          </button>
-        ) : null}
-        <button
-          className="btn small ghost"
-          data-tip={expanded ? t("ui.document.collapseTip") : t("ui.document.expandTip")}
-          aria-label={expanded ? t("ui.document.collapse") : t("ui.document.expand")}
-          onClick={() => setState({ docPanelExpanded: !expanded })}
-        >
-          {expanded ? "⤡" : "⤢"}
-        </button>
-        <button
-          className="btn small ghost"
-          data-tip={t("ui.document.reloadTip")}
-          aria-label={t("ui.document.reload")}
-          onClick={() =>
-            void confirmDiscard().then((ok) => {
-              if (ok) setReloadToken((token) => token + 1);
-            })
-          }
-        >
-          ⟳
-        </button>
-        <button
-          className="btn small ghost"
-          data-tip={t("ui.document.revealTip")}
-          aria-label={t("ui.document.reveal")}
-          onClick={() => void api.revealInFileManager(effectivePath).catch(() => {})}
-        >
-          ⌂
-        </button>
-        <button
-          className="btn small ghost"
-          data-tip={t("ui.document.closeTip")}
-          aria-label={t("ui.document.close")}
-          onClick={() =>
-            void confirmDiscard().then((ok) => {
-              if (ok) closeDocument();
-            })
-          }
-        >
-          ✕
-        </button>
-      </div>
-      {doc?.truncated ? (
-        <div className="banner info" role="status">
-          <span>{t("ui.document.truncated")}</span>
-        </div>
-      ) : null}
-          <div className="doc-panel-body">
-            {loading ? (
-              <div className="doc-panel-status">{t("ui.document.loading")}</div>
-            ) : error ? (
-              <UnsupportedFileNotice
-                code={errorCode}
-                detail={error}
-                path={effectivePath}
+      {hasDocs ? (
+        <div className="doc-editor-column">
+          <DocToolbar tab={activeTab} expanded={expanded} activeSession={activeSession} />
+          <div className="doc-groups">
+            {groups.map((group, index) => (
+              <DocGroupView
+                key={index}
+                group={group}
+                groupIndex={index}
+                isActive={index === activeGroupIndex}
+                single={groups.length === 1}
+                dragTabId={dragTabId}
+                setDragTabId={setDragTabId}
+                dropTarget={dropTarget}
+                setDropTarget={setDropTarget}
+                splitHot={splitHot}
+                setSplitHot={setSplitHot}
               />
-            ) : doc ? (
-              mode === "preview" ? (
-                <div
-                  ref={previewRef}
-                  className="doc-preview-host"
-                  onMouseUp={capturePreviewSelection}
-                >
-                  {markdown ? (
-                    <MarkdownView source={doc.content} onLinkClick={openMarkdownLink} />
-                  ) : (
-                    <div className="doc-prose">{doc.content}</div>
-                  )}
-                </div>
-              ) : (
-                <div className="doc-editor">
-                  <div className="doc-editor-gutter" ref={gutterRef} aria-hidden="true">
-                    {Array.from({ length: gutterLines }, (_, index) => (
-                      <span key={index} className="doc-editor-gutter-line">
-                        {index + 1}
-                      </span>
-                    ))}
-                  </div>
-                  <textarea
-                    ref={editorRef}
-                    className="doc-editor-textarea"
-                    value={draft}
-                    readOnly={doc.truncated}
-                    wrap="off"
-                    spellCheck={false}
-                    autoCapitalize="off"
-                    autoCorrect="off"
-                    aria-label={t("ui.document.editorLabel")}
-                    onChange={(event) => setDraft(event.target.value)}
-                    onMouseDown={armSelectDrag}
-                    onSelect={(event) => syncEditorSelection(event.currentTarget)}
-                    onScroll={(event) => {
-                      if (gutterRef.current) {
-                        gutterRef.current.scrollTop = event.currentTarget.scrollTop;
-                      }
-                    }}
-                    onKeyDown={(event) => {
-                      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-                        event.preventDefault();
-                        void save();
-                        return;
-                      }
-                      // Keep Tab inside the editor instead of moving focus.
-                      if (event.key === "Tab" && !doc.truncated) {
-                        event.preventDefault();
-                        const el = event.currentTarget;
-                        el.setRangeText("\t", el.selectionStart, el.selectionEnd, "end");
-                        setDraft(el.value);
-                      }
-                    }}
-                  />
-                </div>
-              )
-            ) : null}
+            ))}
           </div>
-          </>
-      </div>
+        </div>
       ) : null}
       {explorerOpen ? <DocumentTree /> : null}
     </aside>

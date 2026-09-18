@@ -29,7 +29,14 @@ vi.mock("../api", () => ({
 }));
 
 import { act } from "@testing-library/react";
-import { getState, resolveConfirm, setState } from "../store";
+import { openDocumentTarget } from "../documents";
+import { getActiveDocumentTab, getState, resolveConfirm, setState } from "../store";
+
+/** Active viewer tab as `{path, line}` (mirrors the old `openDocument`). */
+function openedDoc() {
+  const tab = getActiveDocumentTab(getState());
+  return tab ? { path: tab.path, line: tab.pendingLine } : null;
+}
 import DocumentTree from "./DocumentTree";
 
 const ROOT = "/tmp/demo";
@@ -59,12 +66,12 @@ describe("DocumentTree", () => {
       }
       return Promise.resolve(listing(path, []));
     });
-    setState({ explorerRoot: ROOT, explorerOpen: true, openDocument: null });
+    setState({ explorerRoot: ROOT, explorerOpen: true, docGroups: [] });
   });
 
   afterEach(() => {
     cleanup();
-    setState({ explorerRoot: null, explorerOpen: false, openDocument: null, contextMenu: null, confirm: null });
+    setState({ explorerRoot: null, explorerOpen: false, docGroups: [], activeDocGroupIndex: 0, contextMenu: null, confirm: null });
   });
 
   function menuItems() {
@@ -78,6 +85,7 @@ describe("DocumentTree", () => {
     expect(labels).toEqual([
       "新建文件",
       "新建文件夹",
+      "在右侧分栏打开",
       "在 VS Code 中打开",
       "复制路径",
       "复制相对路径",
@@ -101,7 +109,7 @@ describe("DocumentTree", () => {
 
   it("renames inline via the menu and repoints the open document", async () => {
     renameMock.mockResolvedValue({ path: `${ROOT}/读我.md` });
-    setState({ openDocument: { path: `${ROOT}/README.md`, line: null } });
+    openDocumentTarget({ path: `${ROOT}/README.md`, line: null });
     render(<DocumentTree />);
     fireEvent.contextMenu(await screen.findByText("README.md"));
     menuItems().find((item) => item.label === "重命名")?.action?.();
@@ -111,7 +119,7 @@ describe("DocumentTree", () => {
     await waitFor(() =>
       expect(renameMock).toHaveBeenCalledWith(`${ROOT}/README.md`, `${ROOT}/读我.md`),
     );
-    await waitFor(() => expect(getState().openDocument?.path).toBe(`${ROOT}/读我.md`));
+    await waitFor(() => expect(openedDoc()?.path).toBe(`${ROOT}/读我.md`));
   });
 
   it("duplicates an entry and reloads the parent directory", async () => {
@@ -127,7 +135,7 @@ describe("DocumentTree", () => {
   });
 
   it("deletes an entry after danger confirmation and closes the open document", async () => {
-    setState({ openDocument: { path: `${ROOT}/README.md`, line: null } });
+    openDocumentTarget({ path: `${ROOT}/README.md`, line: null });
     render(<DocumentTree />);
     fireEvent.contextMenu(await screen.findByText("README.md"));
     menuItems().find((item) => item.label === "删除")?.action?.();
@@ -135,7 +143,7 @@ describe("DocumentTree", () => {
     expect(getState().confirm?.danger).toBe(true);
     act(() => resolveConfirm(true));
     await waitFor(() => expect(deleteMock).toHaveBeenCalledWith(`${ROOT}/README.md`));
-    expect(getState().openDocument).toBeNull();
+    expect(getState().docGroups).toEqual([]);
   });
 
   it("loads the root directory and expands directories lazily", async () => {
@@ -155,7 +163,7 @@ describe("DocumentTree", () => {
   it("opens files into the document viewer", async () => {
     render(<DocumentTree />);
     fireEvent.click(await screen.findByText("README.md"));
-    expect(getState().openDocument).toEqual({
+    expect(openedDoc()).toEqual({
       path: `${ROOT}/README.md`,
       line: null,
     });
@@ -184,7 +192,7 @@ describe("DocumentTree", () => {
     });
     // Parent listing reloads and the new file opens in the editor.
     expect(listMock).toHaveBeenCalledWith(`${ROOT}/docs`);
-    expect(getState().openDocument).toEqual({
+    expect(openedDoc()).toEqual({
       path: `${ROOT}/docs/notes/周会.md`,
       line: null,
     });
@@ -202,7 +210,7 @@ describe("DocumentTree", () => {
     await waitFor(() => {
       expect(createMock).toHaveBeenCalledWith(`${ROOT}/backups`, "dir");
     });
-    expect(getState().openDocument).toBeNull();
+    expect(getState().docGroups).toEqual([]);
   });
 
   it("rejects invalid names without calling the backend", async () => {

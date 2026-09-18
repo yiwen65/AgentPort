@@ -298,6 +298,15 @@ import {
 import { bytesToB64 } from "./api";
 import { applyUiLanguage } from "./i18n";
 import { applyProjectsSnapshot, emptyRuntime, getState, setState } from "./store";
+
+/** Active document-viewer tab as `{path, line}`, mirroring the old
+ * single-target `openDocument` shape for link-routing assertions. */
+function openedDoc(): { path: string; line: number | null } | null {
+  const state = getState();
+  const group = state.docGroups[state.activeDocGroupIndex];
+  const tab = group?.tabs.find((candidate) => candidate.id === group.activeTabId);
+  return tab ? { path: tab.path, line: tab.pendingLine } : null;
+}
 import type { AttachInfo, Settings } from "./types";
 
 let resizeObserverCallbacks: Array<() => void> = [];
@@ -1110,12 +1119,12 @@ describe("terminal renderer", () => {
       "file:///Users/w/project/docs/%E6%8A%A5%E5%91%8A.md:12",
     );
 
-    expect(getState().openDocument).toEqual({
+    expect(openedDoc()).toEqual({
       path: "/Users/w/project/docs/报告.md",
       line: 12,
     });
     expect(rendererMocks.apiMock.openExternalUrl).not.toHaveBeenCalled();
-    setState({ openDocument: null });
+    setState({ docGroups: [] });
   });
 
   it("links plain-text absolute paths and skips URL path segments", () => {
@@ -1146,11 +1155,11 @@ describe("terminal renderer", () => {
     expect(collect(2)).toEqual([]);
 
     lineOne[0]?.activate(new MouseEvent("click"), lineOne[0].text);
-    expect(getState().openDocument).toEqual({
+    expect(openedDoc()).toEqual({
       path: "/Users/w/project/docs/report.md",
       line: 5,
     });
-    setState({ openDocument: null });
+    setState({ docGroups: [] });
   });
 
   it("links relative paths from their first segment and resolves them from the session cwd", () => {
@@ -1183,11 +1192,11 @@ describe("terminal renderer", () => {
 
     const relativeLink = collect(1)[0];
     relativeLink?.activate(new MouseEvent("click"), relativeLink.text);
-    expect(getState().openDocument).toEqual({
+    expect(openedDoc()).toEqual({
       path: "/tmp/renderer/src/src/components/DocumentPanel.tsx",
       line: null,
     });
-    setState({ openDocument: null });
+    setState({ docGroups: [] });
   });
 
   it("stops plain-path links before prose punctuation", () => {

@@ -3511,17 +3511,6 @@ body.is-resizing-split .doc-panel-resize::after {
   flex: 0 0 auto;
 }
 
-.doc-panel-name {
-  flex: 0 1 auto;
-  min-width: 0;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--term-heading);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .doc-panel-modes {
   display: inline-flex;
   /* Never shrink-clip the tabs: on tight headers the file name truncates
@@ -3562,6 +3551,185 @@ body.is-resizing-split .doc-panel-resize::after {
 
 .doc-panel-header .spacer {
   flex: 1;
+}
+
+/* Editor groups row: one column per split (max two). */
+.doc-groups {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.doc-group {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  /* The 2px top strip is the active-group marker (VSCode style); keeping
+     it transparent on inactive groups avoids a layout shift on focus. */
+  border-top: 2px solid transparent;
+}
+
+.doc-group + .doc-group {
+  border-left: 1px solid var(--term-border);
+}
+
+.doc-group.active {
+  border-top-color: var(--term-accent);
+}
+
+/* Tab strip: horizontally scrollable so many tabs stay reachable inside
+   the panel's capped width. */
+.doc-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-bottom: 1px solid var(--term-border);
+  scrollbar-width: thin;
+}
+
+.doc-tab {
+  position: relative;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 180px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px 6px 12px;
+  border-right: 1px solid var(--term-border);
+  color: var(--term-muted);
+  font-size: 12px;
+  line-height: 1.35;
+  cursor: pointer;
+  white-space: nowrap;
+  /* Tabs are drag sources: without this a drag starts a text-selection of
+     the label instead of the element's drag payload. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.doc-tab:hover {
+  color: var(--term-heading);
+}
+
+.doc-tab.active {
+  color: var(--term-heading);
+  background: color-mix(in srgb, var(--term-accent) 10%, transparent);
+  box-shadow: inset 0 -2px 0 var(--term-accent);
+}
+
+/* Preview (kept-unless-edited) tabs read as temporary, VSCode style. */
+.doc-tab.preview .doc-tab-name {
+  font-style: italic;
+}
+
+.doc-tab-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Status slot at the tab's trailing edge: a dirty tab shows the dot there
+   (VSCode style); hovering swaps the dot for the close button, and a clean
+   tab shows the button on hover or while active. */
+.doc-tab-status {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.doc-tab-status .doc-dirty-dot {
+  margin: 0;
+}
+
+.doc-tab-close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  position: absolute;
+  inset: 0;
+  margin: auto;
+}
+
+.doc-tab:hover .doc-tab-close,
+.doc-tab.active:not(.dirty) .doc-tab-close,
+.doc-tab-close:focus-visible {
+  opacity: 0.75;
+}
+
+.doc-tab.dirty:hover .doc-dirty-dot {
+  opacity: 0;
+}
+
+.doc-tab-close:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--term-heading) 14%, transparent);
+}
+
+/* Drop-insertion marker while dragging a tab over the strip. */
+.doc-tab.drop-before::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--term-accent);
+}
+
+.doc-group-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* Every tab of a group stays mounted; inactive bodies are hidden so DOM
+   scroll and caret survive tab switches. */
+.doc-tab-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.doc-tab-body[hidden] {
+  display: none;
+}
+
+/* Split drop hint: overlays the right side of a single group while a tab is
+   dragged; dropping there creates the second split. */
+.doc-split-hint {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 42%;
+  z-index: 6;
+  background: color-mix(in srgb, var(--term-accent) 8%, transparent);
+  border-left: 2px dashed color-mix(in srgb, var(--term-accent) 45%, transparent);
+}
+
+.doc-split-hint.hot {
+  background: color-mix(in srgb, var(--term-accent) 18%, transparent);
+  border-left-style: solid;
 }
 
 .doc-panel-body {

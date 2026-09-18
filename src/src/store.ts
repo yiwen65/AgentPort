@@ -304,8 +304,11 @@ export interface AppState {
   projectsAuthorityRevision: number;
   /** Terminal search bar visibility for the active session. */
   termSearchOpen: boolean;
-  /** In-app document viewer target opened from a terminal link. */
-  openDocument: OpenDocumentTarget | null;
+  /** Open document viewer tab groups (one group per split column, max two).
+   * An empty array means no file is open; groups always hold ≥1 tab. */
+  docGroups: DocumentGroup[];
+  /** Index into docGroups of the group the shared toolbar acts on. */
+  activeDocGroupIndex: number;
   /** Whether the VSCode-like file tree is visible in the document panel. */
   explorerOpen: boolean;
   /** Root directory of the file tree (captured from the active session). */
@@ -331,11 +334,36 @@ export interface AppState {
   gitCenter: GitCenterState;
 }
 
-export interface OpenDocumentTarget {
-  /** Canonical absolute path reported by the backend. */
+export interface DocumentTab {
+  /** Stable identity; the canonical absolute path (tabs dedupe by path). */
+  id: string;
   path: string;
-  /** One-based line to reveal in the raw view, from `path:line` links. */
-  line: number | null;
+  /** false = VSCode-style preview tab (italic, replaced by the next preview
+   * open); editing or double-clicking pins it. */
+  pinned: boolean;
+  /** One-shot line reveal request from `path:line` links, consumed by the
+   * raw editor once the content is visible. */
+  pendingLine: number | null;
+}
+
+export interface DocumentGroup {
+  tabs: DocumentTab[];
+  activeTabId: string | null;
+}
+
+/** Whether any document tab is open in any group. */
+export function hasOpenDocuments(
+  state: Pick<AppState, "docGroups">,
+): boolean {
+  return state.docGroups.length > 0;
+}
+
+/** The active group's active tab, or null when no file is open. */
+export function getActiveDocumentTab(
+  state: Pick<AppState, "docGroups" | "activeDocGroupIndex">,
+): DocumentTab | null {
+  const group = state.docGroups[state.activeDocGroupIndex];
+  return group?.tabs.find((tab) => tab.id === group.activeTabId) ?? null;
 }
 
 export const COLLAPSED_PROJECTS_STORAGE_KEY =
@@ -433,7 +461,8 @@ const initialState: AppState = {
   projectLayoutSaving: false,
   projectsAuthorityRevision: 0,
   termSearchOpen: false,
-  openDocument: null,
+  docGroups: [],
+  activeDocGroupIndex: 0,
   explorerOpen: false,
   explorerRoot: null,
   docPanelWidth: 480,

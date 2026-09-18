@@ -3,7 +3,7 @@
 // transient (not persisted to settings) and applies to whichever surface last
 // had focus, so the two areas scale independently.
 
-import { getState, setState } from "./store";
+import { getState, hasOpenDocuments, setState } from "./store";
 import { applyTerminalSettings } from "./terminals";
 
 export type ZoomArea = "terminal" | "doc";
@@ -49,7 +49,7 @@ function applyAreaScale(area: ZoomArea, scale: number): void {
 /** Adjust the focused surface's font zoom. Delta 0 resets to 100%. */
 export function adjustFontZoom(delta: number): void {
   const s = getState();
-  const docPanelVisible = s.openDocument !== null || s.explorerOpen;
+  const docPanelVisible = hasOpenDocuments(s) || s.explorerOpen;
   const area = resolveZoomArea(docPanelVisible);
   const current = area === "doc" ? s.docFontScale : s.termFontScale;
   const next = delta === 0 ? 1 : nextFontScale(current, delta);

@@ -203,7 +203,7 @@ function installLayout() {
       [ptyB.id]: { attached: true, replayDone: true },
     } as never,
     termSearchOpen: false,
-    openDocument: null,
+    docGroups: [],
     docPanelExpanded: false,
   });
 }
