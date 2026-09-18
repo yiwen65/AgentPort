@@ -172,3 +172,9 @@ bash scripts/build-linux.sh ubuntu2204         # Ubuntu .deb（Docker）
 无头客户端 `agentport-cli` 覆盖界面的全部核心能力（探测、建会话、输入输出、Worktree、Secret、搜索、时间线、导出诊断包），E2E 与验收脚本都基于它，命令一览见[用户指南附录](docs/user-guide.md)。
 
 </details>
+
+## 许可证
+
+桌面端 AgentPort 采用 [PolyForm Noncommercial License 1.0.0](LICENSE)：个人使用、非商业组织使用、为非商业目的修改与再分发都免费；**任何商业用途必须先取得作者书面授权**（1053909200@qq.com）。这是源码可见（source-available）许可，不是 OSI 开源许可，边界与历史版本说明见 [LICENSING.md](LICENSING.md)。
+
+第三方组件（Tauri、React、xterm.js 等依赖）与随包资源（Agent 图标、字体、xterm 快照引擎）继续适用各自许可，不受本项目许可影响。移动端 App 是独立私有子项目，不包含在本仓库内。

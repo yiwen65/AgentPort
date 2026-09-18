@@ -1,6 +1,6 @@
 # AgentPort Mobile v1.0 技术架构决策
 
-> 状态：Accepted for implementation<br>
+> 状态：Accepted for implementation（移动端代码已移出本公开仓库，成为私有子项目；本文保留其架构与许可决策记录）<br>
 > 日期：2026-09-01<br>
 > 产品输入：`docs/mobile-app-prd.md`<br>
 > 执行权威：`docs/tasks/2026-09-01-agentport-mobile-v1-task.md`
@@ -9,14 +9,14 @@
 
 AgentPort Mobile 采用**独立 Tauri 2 Mobile + React 应用**，位于 `mobile/`。电脑端新增 Tauri-free 的 `agentport-service` 应用服务层、版本化 `agentport-remote-protocol` 协议 crate，以及只通过 SSH stdio 启动的 `agentport-remote-bridge` 二进制。
 
-- 桌面、Core、Service、Bridge、共享协议：MIT。
-- 独立移动 App 及其链接的 Mosh 组件：GPL-3.0-only；移动目录提供完整许可证、源码构建说明和第三方声明。
+- 桌面、Core、Service、Bridge、共享协议：PolyForm Noncommercial 1.0.0（非商业免费，商业用途需作者书面授权，见仓库根 `LICENSE`/`LICENSING.md`）。
+- 独立移动 App：私有子项目、专有许可（保留所有权利），代码不在本仓库；它链接的 Mosh 组件仍是 GPLv3 上游代码。
 - 手机不编译 `agentport-core`，不拥有电脑端 SQLite、Git、Secret、PTY 或 Agent 进程；只持有主机配置、凭据引用、最小缓存和远程 view model。
 - SSH/SFTP 由移动 Tauri Rust 层实现，候选为 `russh`/`russh-sftp`；固定版本只能在双端 target 编译与 fixture 通过后写入 lockfile。
 - Mosh 由独立原生 Tauri plugin 封装 GPLv3 客户端代码；Mosh 只承载实时终端，控制和业务请求继续走 SSH Bridge。
 - 终端继续使用 xterm.js，并以移动 touch/IME/selection/special-key/a11y spike 作为进入完整功能开发的门禁。
 
-该许可划分是用户确认的工程策略，不是法律意见。任何对外分发前仍应完成许可证审查。
+该许可划分是用户确认的工程策略，不是法律意见。**移动端仍然链接 GPLv3 Mosh，因此在移除该组件之前，移动产品不得对外分发**（GPLv3 不允许在整包上附加专有条款）；任何对外分发前仍应完成许可证审查。
 
 ## 2. 证据与选项
 
@@ -40,7 +40,7 @@ AgentPort Mobile 采用**独立 Tauri 2 Mobile + React 应用**，位于 `mobile
 ## 3. 代码与许可边界
 
 ```text
-Cargo workspace (MIT)
+Cargo workspace (PolyForm-Noncommercial-1.0.0)
 ├─ crates/agentport-core                 # 现有 domain/infrastructure
 ├─ crates/agentport-host                 # 现有 PTY/process owner
 ├─ crates/agentport-service              # 新：Tauri-free use-case facade
@@ -50,7 +50,7 @@ Cargo workspace (MIT)
 ├─ crates/agentport-cli                  # 逐步改接 service
 └─ src-tauri                             # desktop adapter, 逐步改接 service
 
-mobile/ (GPL-3.0-only app boundary)
+mobile/ (私有专有子项目，已移出本仓库；其内链接 GPLv3 Mosh)
 ├─ COPYING
 ├─ THIRD_PARTY_LICENSES.md
 ├─ package.json / package-lock.json
@@ -64,11 +64,11 @@ mobile/ (GPL-3.0-only app boundary)
 
 规则：
 
-1. MIT crates 不链接 GPL Mosh；GPL 代码只进入 `mobile/` 产物。
+1. 桌面 crates 不链接 GPL Mosh；GPL 代码只存在于私有 `mobile/` 产物中。
 2. `agentport-remote-protocol` 只含 wire DTO、能力和 framing，不依赖 Core、Tauri、SSH 或 Mosh。
 3. `agentport-service` 可以依赖 Core，但不能依赖 Tauri；桌面、CLI、Bridge 使用同一业务语义。
 4. Bridge 不把 Host Token、私有 Socket path 或 Secret 原值发送给客户端。Secret 新增是唯一允许客户端向 Bridge 发送 Secret 原值的 write-only RPC，适用第 5.6 节的专用内存与日志规则。
-5. 移动目录构建脚本必须能从源码重建所链接的 Mosh 组件，并保留上游 notice/许可证。
+5. 移动目录构建脚本必须能从源码重建所链接的 Mosh 组件，并保留上游 notice/许可证；在移除 Mosh 之前，移动产物不得对外分发。
 
 ## 4. 电脑端服务分层
 
@@ -235,7 +235,7 @@ Mobile GPL Mosh client
                             └─ existing Agent PTY
 ```
 
-- SSH bootstrap 通过 Bridge/service 请求启动 `mosh-server`，remote command 为 MIT 的 `agentport-mosh-attach`；手机只接收 Mosh connection key/UDP 参数和 public Session ID，永不接收 Host Token/socket path。
+- SSH bootstrap 通过 Bridge/service 请求启动 `mosh-server`，remote command 为不含 GPL 代码的 `agentport-mosh-attach`；手机只接收 Mosh connection key/UDP 参数和 public Session ID，永不接收 Host Token/socket path。
 - `agentport-mosh-attach` 以 SSH 同一 OS 用户运行，在电脑本机通过 Core/HostManager 解析当前 run 与 Host credential，附加 output，并把 stdin 按 bounded batch 写入 Host FIFO；所有 output 仍先经过 Host redactor。
 - attach adapter 监听 outer PTY resize 并调用 Host resize；Host stale run、wrong binding、gap 或 disconnect 必须显式退出，不连接旧 PID。
 - Mosh 可靠状态同步负责终端字节交付；同一 attach 进程为其 input batches 分配严格递增 local sequence。SSH 控制通道继续承载状态、生命周期和所有非终端写操作，并用于 reconcile；Mosh 网络恢复不得新建第二个 attach writer。
