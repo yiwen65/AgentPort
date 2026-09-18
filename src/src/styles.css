@@ -3498,7 +3498,33 @@ body.is-resizing-pane {
 }
 
 .doc-panel-resize:hover::after,
-body.is-resizing-split .doc-panel-resize::after {
+.doc-panel-resize.active::after {
+  background: var(--accent);
+}
+
+/* Inner sash between the editor column and the file tree (dual mode only):
+   in-flow so it tracks the tree's left edge, same hover/drag accent as the
+   panel sash. */
+.doc-tree-resize {
+  flex: 0 0 5px;
+  position: relative;
+  z-index: 5;
+  cursor: col-resize;
+}
+
+.doc-tree-resize::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: 0;
+  bottom: 0;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.doc-tree-resize:hover::after,
+.doc-tree-resize.active::after {
   background: var(--accent);
 }
 

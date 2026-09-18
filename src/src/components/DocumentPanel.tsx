@@ -978,6 +978,10 @@ export default function DocumentPanel() {
   } | null>(null);
   const [splitHot, setSplitHot] = useState(false);
   const dragStart = useRef<{ x: number; width: number; tree: boolean } | null>(null);
+  // Which sash is being dragged (drives the accent line); the drag math
+  // itself lives in the ref above so the window-level move handler never
+  // goes stale.
+  const [activeSash, setActiveSash] = useState<"panel" | "tree" | null>(null);
 
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
@@ -1001,6 +1005,7 @@ export default function DocumentPanel() {
     };
     const onEnd = () => {
       dragStart.current = null;
+      setActiveSash(null);
       document.body.classList.remove("is-resizing-split");
     };
     window.addEventListener("pointermove", onMove);
@@ -1037,7 +1042,7 @@ export default function DocumentPanel() {
     >
       {expanded ? null : (
         <div
-          className="doc-panel-resize"
+          className={`doc-panel-resize${activeSash === "panel" ? " active" : ""}`}
           role="separator"
           aria-orientation="vertical"
           aria-label={t("ui.document.resize")}
@@ -1049,6 +1054,7 @@ export default function DocumentPanel() {
               width: treeOnly ? treeWidth : width,
               tree: treeOnly,
             };
+            setActiveSash("panel");
             document.body.classList.add("is-resizing-split");
           }}
         />
@@ -1074,6 +1080,22 @@ export default function DocumentPanel() {
             ))}
           </div>
         </div>
+      ) : null}
+      {hasDocs && explorerOpen && !expanded ? (
+        <div
+          className={`doc-tree-resize${activeSash === "tree" ? " active" : ""}`}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={t("ui.document.resizeTree")}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            // Dual mode: this inner sash drives the tree column directly.
+            dragStart.current = { x: event.clientX, width: treeWidth, tree: true };
+            setActiveSash("tree");
+            document.body.classList.add("is-resizing-split");
+          }}
+        />
       ) : null}
       {explorerOpen ? <DocumentTree /> : null}
     </aside>

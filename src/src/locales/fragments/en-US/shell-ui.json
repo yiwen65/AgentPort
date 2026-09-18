@@ -155,6 +155,7 @@
       "reloadTip": "Read the file from disk again",
       "rename": "Rename",
       "resize": "Resize the document viewer",
+      "resizeTree": "Resize the file tree",
       "reveal": "Reveal in file manager",
       "revealTip": "Show this file in the system file manager",
       "save": "Save",

@@ -188,6 +188,41 @@ describe("DocumentPanel", () => {
     });
   });
 
+  it("drags the inner sash to resize the tree column in dual mode", async () => {
+    listMock.mockResolvedValue({ path: "/tmp/demo", truncated: false, entries: [] });
+    setState({ explorerOpen: true, explorerRoot: "/tmp/demo", docTreeWidth: 184 });
+    const { container } = render(<DocumentPanel />);
+    // Dual mode (file + tree): the inner sash appears between them.
+    await screen.findByRole("tab", { name: "报告.md" });
+    const sash = container.querySelector(".doc-tree-resize");
+    expect(sash).not.toBeNull();
+
+    act(() => {
+      (sash as Element).dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 500 }),
+      );
+    });
+    expect(container.querySelector(".doc-tree-resize")?.className).toContain("active");
+    // Dragging left widens the tree (it docks to the panel's right edge).
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 460 }));
+    });
+    expect(getState().docTreeWidth).toBe(224);
+    // Clamped to [160, 420] like the tree-only sash.
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 0 }));
+    });
+    expect(getState().docTreeWidth).toBe(420);
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 900 }));
+    });
+    expect(getState().docTreeWidth).toBe(160);
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+    });
+    expect(container.querySelector(".doc-tree-resize")?.className).not.toContain("active");
+  });
+
   it("keeps an accessible name and tooltip on the icon-only preview tab", async () => {
     render(<DocumentPanel />);
     await screen.findByText("原始文本");
