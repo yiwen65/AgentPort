@@ -435,6 +435,41 @@ button {
   color: var(--text);
 }
 
+/* Frameless Linux chrome: native decorations are disabled for Linux release
+   builds (src-tauri/tauri.linux.conf.json), so the TopBar owns
+   minimize/maximize/close and fixed edge zones drive the WM resize grab. */
+.window-sys-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 8px;
+}
+
+.window-control.sys-close:hover {
+  background: rgba(228, 77, 82, 0.85);
+  color: #fff;
+}
+
+.app[data-window-chrome="frameless"] .topbar {
+  /* The default left padding reserves space for macOS traffic lights. */
+  padding-left: 22px;
+}
+
+.resize-handle {
+  position: fixed;
+  z-index: 500;
+  background: transparent;
+}
+
+.resize-handle-n { top: 0; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
+.resize-handle-s { bottom: 0; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
+.resize-handle-e { right: 0; top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
+.resize-handle-w { left: 0; top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
+.resize-handle-ne { top: 0; right: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+.resize-handle-nw { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+.resize-handle-se { bottom: 0; right: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+.resize-handle-sw { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+
 .window-title {
   position: absolute;
   /* Center over the terminal pane, not over the entire window. */

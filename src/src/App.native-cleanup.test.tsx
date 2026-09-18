@@ -72,6 +72,7 @@ const bootInfo: BootInfo = {
     arch: "arm64",
     webview: "system",
     appVersion: "0.1.0",
+    windowDecorated: true,
   },
   settings: {
     logLimitMib: 200,

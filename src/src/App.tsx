@@ -40,6 +40,7 @@ import {
   flattenSessions,
   getState,
   invalidateProjectsSnapshotRequests,
+  isLinuxFramelessChrome,
   openDialog,
   patchSession,
   setState,
@@ -58,6 +59,7 @@ import { piTerminalShortcutSequence } from "./piTerminalShortcuts";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import TopBar from "./components/TopBar";
+import WindowResizeHandles from "./components/WindowResizeHandles";
 import Sidebar from "./components/Sidebar";
 import TooltipHost from "./components/Tooltip";
 import Toasts from "./components/Toasts";
@@ -570,6 +572,7 @@ export default function App() {
   const { t } = useTranslation(["shell", "common"]);
   const ready = useStore((state) => state.ready);
   const bootError = useStore((state) => state.bootError);
+  const platform = useStore((state) => state.platform);
   const workspaceState = useStore((state) => {
     const activeSession = findSession(state.projects, state.activeSessionId);
     if (!activeSession) return "empty";
@@ -647,6 +650,7 @@ export default function App() {
       className="app"
       data-workspace-state={workspaceState}
       data-sidebar-anim={sidebarAnim ?? undefined}
+      data-window-chrome={isLinuxFramelessChrome(platform) ? "frameless" : undefined}
       style={
         {
           "--sidebar-width": sidebarCollapsed ? "0px" : `${sidebarWidth}px`,
@@ -684,6 +688,7 @@ export default function App() {
       <TooltipHost />
       <UpdateBanner />
       <Toasts />
+      <WindowResizeHandles />
       {showOnboarding ? (
         <Suspense fallback={null}>
           <Onboarding />

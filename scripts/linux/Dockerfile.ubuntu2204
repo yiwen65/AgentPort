@@ -24,6 +24,7 @@ RUN mkdir -p src-tauri/binaries \
       chmod +x "src-tauri/binaries/$binary-$(uname -m)-unknown-linux-gnu"; \
     done
 RUN cd src && npm ci && npm run build
+RUN node scripts/linux/check-linux-window-config.mjs
 RUN cd src-tauri && ../src/node_modules/.bin/tauri build --bundles deb --config '{"bundle":{"createUpdaterArtifacts":false}}'
 RUN mkdir -p /out \
  && cp target/release/bundle/deb/*.deb /out/ 2>/dev/null || true \

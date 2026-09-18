@@ -811,7 +811,7 @@ async fn boot(state: State<'_, AppState>, app: AppHandle) -> std::result::Result
     }
 
     let snapshot_paths = state.paths.clone();
-    let (platform, settings, adapters, projects, timeline, timeline_error, timeline_message) =
+    let (mut platform, settings, adapters, projects, timeline, timeline_error, timeline_message) =
         run_backend_blocking(move || {
             let db = Db::open(&snapshot_paths).map_err(|error| error.to_string())?;
             let timeline = Timeline { db: &db }
@@ -854,6 +854,17 @@ async fn boot(state: State<'_, AppState>, app: AppHandle) -> std::result::Result
             ))
         })
         .await?;
+
+    // Linux release builds run without native window decorations
+    // (tauri.linux.conf.json); the frontend draws its own window chrome only
+    // when the WM provides none, so it needs the real decoration state.
+    let window_decorated = app
+        .get_webview_window("main")
+        .and_then(|window| window.is_decorated().ok())
+        .unwrap_or(true);
+    if let Some(object) = platform.as_object_mut() {
+        object.insert("windowDecorated".to_string(), json!(window_decorated));
+    }
 
     Ok(BootInfo {
         platform,

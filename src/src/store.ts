@@ -210,6 +210,15 @@ export function emptyGitCenterState(): GitCenterState {
   };
 }
 
+/**
+ * True when the window has no native title bar on Linux (release builds merge
+ * tauri.linux.conf.json with decorations:false). The frontend then owns the
+ * window chrome: TopBar min/max/close buttons, drag, and edge resize zones.
+ */
+export function isLinuxFramelessChrome(platform: PlatformInfo | null): boolean {
+  return platform?.os === "linux" && platform.windowDecorated === false;
+}
+
 export type DialogState =
   | {
       kind: "newSession";

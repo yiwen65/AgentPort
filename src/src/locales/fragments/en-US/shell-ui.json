@@ -30,7 +30,11 @@
       "showProjectsTip": "Return to projects and Sessions",
       "explorer": "Project files",
       "explorerTip": "Show/hide the project file tree to view and edit files",
-      "workspaceMenu": "Workspace menu"
+      "workspaceMenu": "Workspace menu",
+      "minimize": "Minimize",
+      "maximize": "Maximize",
+      "restore": "Restore",
+      "closeWindow": "Close"
     },
     "sidebar": {
       "label": "Projects and Sessions",

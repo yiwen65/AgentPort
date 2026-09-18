@@ -196,6 +196,12 @@ export interface PlatformInfo {
   arch: string;
   webview: string | null;
   appVersion: string;
+  /**
+   * Whether the WM draws a native title bar. Linux release builds run
+   * frameless (tauri.linux.conf.json), so the frontend draws its own window
+   * chrome (drag/min/max/close + edge resize) only when this is false.
+   */
+  windowDecorated: boolean;
 }
 
 export interface TimelineEntry {

@@ -1133,6 +1133,7 @@ describe("terminal renderer", () => {
         arch: "x86_64",
         webview: "WebKitGTK",
         appVersion: "0.1.0",
+        windowDecorated: true,
       },
     });
 
@@ -1168,6 +1169,7 @@ describe("terminal renderer", () => {
         arch: "x86_64",
         webview: "WebKitGTK",
         appVersion: "0.1.0",
+        windowDecorated: true,
       },
     });
 
@@ -1187,6 +1189,7 @@ describe("terminal renderer", () => {
         arch: "aarch64",
         webview: "WebKit",
         appVersion: "0.1.0",
+        windowDecorated: true,
       },
     });
 

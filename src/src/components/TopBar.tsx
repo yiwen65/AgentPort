@@ -3,13 +3,14 @@
 
 import {
   findSession,
+  isLinuxFramelessChrome,
   openContextMenu,
   openDialog,
   useStore,
   type MenuItem,
 } from "../store";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { toggleActiveAgentsView, toggleSidebarCollapsed } from "../actions";
 import { toggleExplorer } from "../documents";
@@ -104,6 +105,39 @@ function IconBell() {
   );
 }
 
+function IconMinimize() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <path d="M4.5 10h11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconMaximize() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <rect x="4.5" y="4.5" width="11" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function IconRestore() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <rect x="6.5" y="6.5" width="9" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M13.5 6.5v-1A1.5 1.5 0 0 0 12 4H5.5A1.5 1.5 0 0 0 4 5.5V12a1.5 1.5 0 0 0 1.5 1.5h1" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function IconClose() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <path d="m5.5 5.5 9 9m0-9-9 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export default function TopBar() {
   const { t } = useTranslation(["shell", "common", "git"]);
   const activeSession = useStore((state) =>
@@ -160,6 +194,51 @@ export default function TopBar() {
     void getCurrentWindow().startDragging().catch(() => undefined);
   };
 
+  // Frameless Linux (release builds disable native decorations): the TopBar
+  // owns minimize/maximize/close and double-click maximize.
+  const frameless = isLinuxFramelessChrome(useStore((state) => state.platform));
+  const [maximized, setMaximized] = useState(false);
+  useEffect(() => {
+    if (!frameless) return;
+    const win = getCurrentWindow();
+    let disposed = false;
+    const syncMaximized = () => {
+      void win
+        .isMaximized()
+        .then((value) => {
+          if (!disposed) setMaximized(value);
+        })
+        .catch(() => undefined);
+    };
+    syncMaximized();
+    const unlisten = win.onResized(syncMaximized).catch(() => undefined);
+    return () => {
+      disposed = true;
+      void unlisten.then((unlistenFn) => unlistenFn?.());
+    };
+  }, [frameless]);
+
+  const minimizeWindow = () => {
+    void getCurrentWindow().minimize().catch(() => undefined);
+  };
+  const toggleMaximizeWindow = () => {
+    const win = getCurrentWindow();
+    void win
+      .toggleMaximize()
+      .then(() => win.isMaximized())
+      .then((value) => setMaximized(value))
+      .catch(() => undefined);
+  };
+  const closeWindow = () => {
+    void getCurrentWindow().close().catch(() => undefined);
+  };
+  const maximizeOnDoubleClick = (event: ReactMouseEvent<HTMLElement>) => {
+    if (!frameless || event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    if (target.closest('[data-tauri-drag-region="false"]')) return;
+    toggleMaximizeWindow();
+  };
+
   const openSurfaceMenu = (anchor: HTMLElement) => {
     const rect = anchor.getBoundingClientRect();
     const items: MenuItem[] = [
@@ -185,7 +264,12 @@ export default function TopBar() {
   };
 
   return (
-    <header className="topbar" data-tauri-drag-region onMouseDown={startWindowDrag}>
+    <header
+      className="topbar"
+      data-tauri-drag-region
+      onMouseDown={startWindowDrag}
+      onDoubleClick={maximizeOnDoubleClick}
+    >
       <div className="topbar-leading" data-tauri-drag-region="false">
         <button
           className="window-control sidebar-toggle"
@@ -248,6 +332,41 @@ export default function TopBar() {
           <span className="window-control-divider" aria-hidden="true" />
           <IconChevron />
         </button>
+        {frameless ? (
+          <div className="window-sys-controls" data-tauri-drag-region="false">
+            <button
+              className="window-control sys-control"
+              onClick={minimizeWindow}
+              aria-label={t("shell:ui.topBar.minimize")}
+              data-tip={t("shell:ui.topBar.minimize")}
+              data-tauri-drag-region="false"
+            >
+              <IconMinimize />
+            </button>
+            <button
+              className="window-control sys-control"
+              onClick={toggleMaximizeWindow}
+              aria-label={maximized
+                ? t("shell:ui.topBar.restore")
+                : t("shell:ui.topBar.maximize")}
+              data-tip={maximized
+                ? t("shell:ui.topBar.restore")
+                : t("shell:ui.topBar.maximize")}
+              data-tauri-drag-region="false"
+            >
+              {maximized ? <IconRestore /> : <IconMaximize />}
+            </button>
+            <button
+              className="window-control sys-control sys-close"
+              onClick={closeWindow}
+              aria-label={t("shell:ui.topBar.closeWindow")}
+              data-tip={t("shell:ui.topBar.closeWindow")}
+              data-tauri-drag-region="false"
+            >
+              <IconClose />
+            </button>
+          </div>
+        ) : null}
       </div>
     </header>
   );

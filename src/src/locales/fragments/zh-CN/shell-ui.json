@@ -30,7 +30,11 @@
       "showProjectsTip": "返回项目与 Session",
       "explorer": "项目文件",
       "explorerTip": "显示/隐藏项目目录树，查看并编辑文件",
-      "workspaceMenu": "工作区菜单"
+      "workspaceMenu": "工作区菜单",
+      "minimize": "最小化",
+      "maximize": "最大化",
+      "restore": "还原",
+      "closeWindow": "关闭"
     },
     "sidebar": {
       "label": "项目与 Session",
