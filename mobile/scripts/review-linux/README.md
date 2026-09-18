@@ -65,7 +65,7 @@ docker run -d --name agentport-review-linux --restart unless-stopped --init \
   --tmpfs /tmp:rw,nosuid,nodev,mode=1777,size=128m \
   --mount type=volume,src=agentport-review-home,dst=/home/agentportreview \
   -p 127.0.0.1:43867:43869 -p 127.0.0.1:43868:43868 \
-  -e REVIEW_ORIGIN=https://linux.tailbb155a.ts.net \
+  -e REVIEW_ORIGIN=https://<review-host>.ts.net \
   --log-opt max-size=5m --log-opt max-file=2 agentport-review-linux:20260909
 ```
 

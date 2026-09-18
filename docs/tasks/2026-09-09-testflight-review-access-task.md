@@ -186,7 +186,7 @@
   - 审核资料指向已验收的新入口；Mac 不再承担审核流量。
 - Verification method:
   - ASC 保存后重新读取、HTTPS/WSS 探针与旧入口关闭确认。
-- Validation evidence: ASC build 0.1.0 (1) 仍 Waiting for Review；What to Test 更新为 https://linux.tailbb155a.ts.net，专用网站账号不变。Save 显示 Saved，刷新页面后通过 Chrome AXTextArea 重新读取并与预期 1230 字符说明精确比较通过；未撤回审核。确认 Mac Funnel 443 仅有任务两条路由后关闭，No serve config、旧 HTTPS 探针 000；撤销旧演示设备 1→0。仅停止 Mac 的任务 gateway 和 caffeinate，未停止任何 Host/原有 Session。Linux HTTPS 匿名 401、connector connected，旧 Mac 不再承担审核流量。
+- Validation evidence: ASC build 0.1.0 (1) 仍 Waiting for Review；What to Test 更新为 https://<review-host>.ts.net，专用网站账号不变。Save 显示 Saved，刷新页面后通过 Chrome AXTextArea 重新读取并与预期 1230 字符说明精确比较通过；未撤回审核。确认 Mac Funnel 443 仅有任务两条路由后关闭，No serve config、旧 HTTPS 探针 000；撤销旧演示设备 1→0。仅停止 Mac 的任务 gateway 和 caffeinate，未停止任何 Host/原有 Session。Linux HTTPS 匿名 401、connector connected，旧 Mac 不再承担审核流量。
 - Blocker: None.
 - Unblock condition: None.
 
@@ -223,5 +223,5 @@
 - Evidence: T-001、T-002、T-003、T-005 通过；gateway 23 项测试、用户配对/连接、独立身份实际撤销和公网入口恢复均有证据。用户确认正常后明确授权审核提交，并自行补齐联系信息。2026-09-09 16:03 CST，App Store Connect external 组显示 1 Build，0.1.0 (1) 为 Waiting for Review；尚非审核通过。
 - Submission details: 补齐英文 Beta App Description、What to Test（含 HTTPS 入口和 120 秒粘贴配对流程），专用网站账号只填入 Sign-In Information。电话按 Apple 错误提示补中国 +86 国际格式后提交成功。未提供 macOS 密码、私人 Host 或 Relay token；未开启公开邀请链接，组内仍为 0 Testers。提交前 demo connector connected、HTTPS 匿名 401。
 - Resubmission result: 用户随后明确授权撤回并重新提交；2026-09-09 17:41 CST，已使用 Linux 审核说明和核对过的专用网站凭据重新提交同一 build 0.1.0 (1)，状态 Waiting for Review。不是审核通过，可能重新排队。
-- Migration result: T-006、T-007 已完成。Linux 入口 https://linux.tailbb155a.ts.net 已保存到 Apple 审核说明；原公网 WSS 端到端探针验证真实终端输出，容器重启后配对身份保留。Mac 可正常休眠/关机，不再承担审核环境服务。部署目录为 Linux 的 ~/agentport-review-deploy，容器 agentport-review-linux，持久化卷 agentport-review-home；操作说明见 mobile/scripts/review-linux/README.md。
+- Migration result: T-006、T-007 已完成。Linux 入口 https://<review-host>.ts.net 已保存到 Apple 审核说明；原公网 WSS 端到端探针验证真实终端输出，容器重启后配对身份保留。Mac 可正常休眠/关机，不再承担审核环境服务。部署目录为 Linux 的 ~/agentport-review-deploy，容器 agentport-review-linux，持久化卷 agentport-review-home；操作说明见 mobile/scripts/review-linux/README.md。
 - Limitations: T-004 仍未明确原 iPhone 蜂窝网络条件，本次 Linux 由 Mac 经公网 HTTPS/WSS 进行原生端到端验收，不宣称新的真机蜂窝测试。已提交的是 Apple 外部测试审核而非公开发布。Linux Docker/tailscaled 已启用开机启动，容器恢复已测，未整机重启（避免打断现有服务）。新网页有效期至 2026-09-16 16:40:22 CST，最多 3 个设备、30 次发码尝试；需在审核延迟时人工续期。已配对设备不会因网页过期自动撤销。旧手机 Mac 配对已撤销，测试新环境须重新取码配对。
