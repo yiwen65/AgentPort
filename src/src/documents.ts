@@ -210,6 +210,11 @@ function commitGroups(groups: DocumentGroup[], active: DocumentGroup | null): vo
   setState({
     docGroups: kept,
     activeDocGroupIndex: active ? Math.max(0, kept.indexOf(active)) : 0,
+    // Closing the last tab also leaves expanded mode (the pre-tabs
+    // closeDocument did the same): a tree-only panel keeping the expanded
+    // flex class stretches full-width and leaves a blank area beside the
+    // tree.
+    ...(kept.length === 0 ? { docPanelExpanded: false } : {}),
   });
 }
 

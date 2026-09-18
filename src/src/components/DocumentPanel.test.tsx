@@ -471,6 +471,26 @@ describe("DocumentPanel", () => {
     expect(getState().docGroups).toEqual([]);
   });
 
+  it("leaves expanded mode when the last tab closes beside the tree", async () => {
+    // Regression: an expanded tree-only panel kept the flex-fill class and
+    // stretched into a blank area to the right of the tree.
+    listMock.mockResolvedValue({ path: "/tmp/demo", truncated: false, entries: [] });
+    setState({ docPanelExpanded: true, explorerOpen: true, explorerRoot: "/tmp/demo" });
+    const { container } = render(<DocumentPanel />);
+    await screen.findByRole("tab", { name: "报告.md" });
+    expect(container.querySelector(".doc-panel")?.className).toContain("expanded");
+
+    fireEvent.click(screen.getByLabelText("关闭当前标签"));
+    await waitFor(() => {
+      const panel = container.querySelector(".doc-panel");
+      expect(panel?.className).not.toContain("expanded");
+      expect(panel?.className).toContain("tree-only");
+    });
+    const panelStyle = container.querySelector(".doc-panel")?.getAttribute("style") ?? "";
+    expect(panelStyle).toContain("width: 185px");
+    expect(getState().docPanelExpanded).toBe(false);
+  });
+
   it("splits into two groups and collapses when the second group empties", async () => {
     act(() => pinDocumentTab(DEMO_DOC.path));
     act(() => {

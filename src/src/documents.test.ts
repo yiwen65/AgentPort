@@ -284,6 +284,17 @@ describe("document tab groups", () => {
     expect(getDocumentTabRuntime("/new.md")?.doc?.path).toBe("/new.md");
   });
 
+  it("leaves expanded mode when the last tab closes", () => {
+    // Regression: the old closeDocument() reset docPanelExpanded together
+    // with the document; without that a tree-only panel keeps the expanded
+    // flex class and stretches into a blank area beside the tree.
+    openDocumentTarget({ path: "/a.md", line: null });
+    setState({ docPanelExpanded: true });
+    closeDocumentTab("/a.md");
+    expect(getState().docGroups).toEqual([]);
+    expect(getState().docPanelExpanded).toBe(false);
+  });
+
   it("consumes a pending line reveal once", () => {
     openDocumentTarget({ path: "/a.md", line: 5 });
     expect(getActiveDocumentTab(getState())?.pendingLine).toBe(5);
