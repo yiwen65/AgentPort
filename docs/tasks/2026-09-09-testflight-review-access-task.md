@@ -215,6 +215,7 @@
 - 2026-09-09: 用户报告 Invalid request origin。捕获 Origin:null、无同源 Referer；根因是 no-referrer 与严格表单 Origin 校验冲突。新增响应策略回归先失败，改 same-origin 后通过。用户重试使发码计数 1→2，随后 devices=1/activeChannels=1。禁止 null Origin 和 CSRF 校验均保留；T-003 done。
 - 2026-09-09: 当前 23 项测试通过。独立原生撤销探针验证成功，不撤销用户手机；探针私钥确认撤销后删除，临时示例源码已移出仓库。新增本地 review_access_control.py，不对 HTTP 开放管理操作。
 - 2026-09-09: 公网入口关停/恢复已测试；恢复有传播延迟，之后 HTTPS 401 恢复。用户手机授权仍保留，可刷新重连。T-004 blocked，等待用户确认终端显示/输入及网络条件。
+- 2026-09-18: 为 build 0.1.0 (3) 的外部审核续期审阅入口。网站访问已于 2026-09-16 16:40:22 CST 到期（网关按 `now >= expires_at` 返回 410，Tailscale Funnel 路由本身未动）。在容器卷内将 `expires_at` 由 2026-09-16T08:40:22Z 延长至 2026-09-25T03:27:35Z（+7 天），`max_devices=3`、`max_invitations=30` 与已用发码预算不变，旧配置备份为卷内 `gateway.json.bak-20260918032735`；重启容器加载新配置（此前 devices=0、activeChannels=0，无在途配对，未打断任何 Host/Session）。验证：匿名 HTTPS 401、错误凭据 401、Basic 认证 GET 200（含 CSRF）、`POST /invite` 200 且 connector 进入 `pairingPhase=waiting`、公网 `/v1/relay` 真实 WebSocket 握手 101。发码预算 1→2，设备仍为 0（邀请 120 秒后自然过期，未产生新配对）。若 2026-09-25 仍未完成审核，按同一方式再次延长；结束审核时按 `mobile/REVIEW_ACCESS.md` 先 `revoke-all` 再只移除任务自有的 Funnel 路由。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
