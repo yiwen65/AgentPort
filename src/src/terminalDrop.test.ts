@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   computeLineRange,
   formatSelectionReference,
@@ -8,6 +9,8 @@ import {
   writeDragPayload,
   TREE_DND_MIME,
 } from "./terminalDrop";
+import { setState } from "./store";
+import type { PlatformInfo } from "./types";
 
 function fakeDataTransfer(): DataTransfer {
   const store = new Map<string, string>();
@@ -73,6 +76,46 @@ describe("tree drag payload round-trip", () => {
     const textDrop = fakeDataTransfer();
     textDrop.setData("text/plain", "hello");
     expect(mustHandleTerminalDrop(textDrop)).toBe(false);
+  });
+});
+
+const treePlatform = (os: string): PlatformInfo => ({
+  os,
+  osVersion: "24.04",
+  arch: "x86_64",
+  webview: "WebKitGTK",
+  appVersion: "0.1.0",
+  windowDecorated: false,
+});
+
+describe("tree drag image suppression (WebKitGTK HiDPI ghost)", () => {
+  afterEach(() => {
+    setState({ platform: null });
+  });
+
+  it("swaps the drag image for a transparent 1px element on Linux", () => {
+    setState({ platform: treePlatform("linux") });
+    const dt = fakeDataTransfer();
+    const setDragImage = vi.fn();
+    dt.setDragImage = setDragImage;
+
+    writeDragPayload(dt, { path: "/tmp/a.txt", isDir: false });
+
+    expect(setDragImage).toHaveBeenCalledTimes(1);
+    expect((setDragImage.mock.calls[0][0] as HTMLElement).style.opacity).toBe("0");
+  });
+
+  it("keeps the native drag image on macOS and unknown platforms", () => {
+    for (const info of [treePlatform("macos"), null] as Array<PlatformInfo | null>) {
+      setState({ platform: info });
+      const dt = fakeDataTransfer();
+      const setDragImage = vi.fn();
+      dt.setDragImage = setDragImage;
+
+      writeDragPayload(dt, { path: "/tmp/a.txt", isDir: false });
+
+      expect(setDragImage).not.toHaveBeenCalled();
+    }
   });
 });
 

@@ -5,6 +5,7 @@
 
 import { insertTextIntoTerminal } from "./terminals";
 import { i18n } from "./i18n";
+import { suppressOversizedDragImage } from "./paneSessionDrag";
 import { toast } from "./store";
 
 export const TREE_DND_MIME = "application/x-agentport-tree-entry";
@@ -16,6 +17,9 @@ export interface TreeDragPayload {
 
 export function writeDragPayload(dt: DataTransfer, payload: TreeDragPayload): void {
   dt.setData(TREE_DND_MIME, JSON.stringify(payload));
+  // WebKitGTK balloons the default drag snapshot on HiDPI (see
+  // paneSessionDrag); the tree drag is covered by the same workaround.
+  suppressOversizedDragImage(dt);
   // Plain-text fallback so drags also work into external apps.
   dt.setData("text/plain", payload.path);
   // Present the entry as a real file as well: native terminals (Ghostty,
