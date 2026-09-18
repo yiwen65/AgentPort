@@ -40,7 +40,7 @@
       "icons/icon.icns"
     ],
     "externalBin": ["binaries/agentport-host", "binaries/agentport-remote-bridge", "binaries/agentport-mosh-attach", "binaries/agentport-connector"],
-    "resources": [],
+    "resources": {"gen/icon-car/Assets.car": "Assets.car"},
     "macOS": {
       "minimumSystemVersion": "13.0",
       "infoPlist": "Info.plist"

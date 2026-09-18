@@ -1,0 +1,27 @@
+{
+  "fill": {
+    "linear-gradient": [
+      "srgb:0.063,0.118,0.204,1.0",
+      "srgb:0.043,0.075,0.141,1.0"
+    ]
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "hidden": false,
+          "image-name": "logo.png",
+          "name": "orbit",
+          "opacity": 1,
+          "position": {
+            "scale": 1,
+            "translation-in-points": [0, 0]
+          }
+        }
+      ]
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}

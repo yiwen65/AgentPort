@@ -97,11 +97,18 @@ sync_usage_description NSLocalNetworkUsageDescription
 sync_usage_description NSDocumentsFolderUsageDescription
 sync_usage_description NSDesktopFolderUsageDescription
 sync_usage_description NSDownloadsFolderUsageDescription
+sync_usage_description CFBundleIconName
 
 # The reused bundle also keeps the icon from whatever full `tauri build` last
 # produced; sync the current artwork so icon changes reach the debug App.
 if ! cmp -s "$ROOT/src-tauri/icons/icon.icns" "$APP/Contents/Resources/icon.icns"; then
   cp "$ROOT/src-tauri/icons/icon.icns" "$APP/Contents/Resources/icon.icns"
+  touch "$APP"
+fi
+# macOS 26 Liquid Glass icon (CFBundleIconName) lives in Assets.car.
+if [ -f "$ROOT/src-tauri/gen/icon-car/Assets.car" ] &&
+  ! cmp -s "$ROOT/src-tauri/gen/icon-car/Assets.car" "$APP/Contents/Resources/Assets.car"; then
+  cp "$ROOT/src-tauri/gen/icon-car/Assets.car" "$APP/Contents/Resources/Assets.car"
   touch "$APP"
 fi
 

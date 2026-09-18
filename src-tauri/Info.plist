@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <!-- macOS 26 (Tahoe) prefers the layered Liquid Glass icon in Assets.car;
+       older macOS keeps using CFBundleIconFile (icons/icon.icns). -->
+  <key>CFBundleIconName</key>
+  <string>AgentPort</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Allow your phone to pair with this Mac and securely access AgentPort sessions.</string>
   <!-- Terminals and AI agents run inside AgentPort sessions; commands they
