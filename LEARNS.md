@@ -1,5 +1,14 @@
 # Project Learnings
 
+## `fullscreen Pi attach` — a bounded replay tail cannot rebuild a differential screen
+
+- Wrong approach: Bounding the fullscreen Pi replay tail to 64 KiB and treating any live byte stream as sufficient to reconstruct the pane on a cold/resume-failed attach.
+- Why it failed: Pi brackets every redraw in DEC mode 2026 and repaints DIFFERENTIALLY — an idle "Working" tail touches only the spinner/status rows (measured: 291 complete frames in 64 KiB touched rows 29/30/32 only, zero full repaints). A cold xterm therefore paints exactly those rows on an empty alternate screen: blank pane with only "Working...", or a hollow editor box. An unchanged-geometry resize is a Host no-op (no SIGWINCH), so nothing repaints until the user actually changes the window size.
+- Recognition signal: A live fullscreen Session shows only the spinner/status rows (or a partial editor) until a window resize; the Host's `terminal_geometry` revision is unchanged across the blank attach; the 64 KiB tail replayed into a fresh xterm leaves most rows empty.
+- Correct approach: For `pty` Sessions in `FULLSCREEN_PI_ADAPTERS`, attach with `screen_snapshot=true` and replace the renderer from the Host's authoritative mirror (`terminal_snapshot_v1`): queue reset+resize, serialized content, parser-state poke, then pending prefix bytes through the write coordinator so the replay_done drain/live frames keep transport order. Mobile already restores this way; the desktop Tauri attach previously hardcoded `screen_snapshot=false`.
+- Prevention: Bisect render-blank bugs at the wire first — a 30-line python socket client can dump the exact replay/snapshot frames; verify xterm-buffer correctness with the real `@xterm/xterm` in vitest before suspecting Canvas. Any future bound on the replay tail must be checked against "does this window still contain a full repaint".
+- Verified by: The captured live tail rebuilt only 3 of 38 rows in a real xterm while the served snapshot rebuilt the complete screen (chat, editor box, status bar); wiped-WebKit debug-GUI cold start with unchanged geometry rev rendered the full Session before any resize. Frontend 707/707, Tauri 60/60, Host/Core suites green.
+
 ## `macOS debug App restart` — match the GUI executable exactly
 
 - Wrong approach: Selecting PIDs with a substring match on `.../Contents/MacOS/agentport` before restarting the debug GUI.

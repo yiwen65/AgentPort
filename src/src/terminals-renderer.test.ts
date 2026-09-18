@@ -402,6 +402,7 @@ describe("terminal renderer", () => {
         64 * 1024,
         expect.anything(),
         null,
+        true,
       );
     },
   );
@@ -415,7 +416,99 @@ describe("terminal renderer", () => {
       4 * 1024 * 1024,
       expect.anything(),
       null,
+      false,
     );
+  });
+
+  function validSnapshotState(rows: number) {
+    const attr = { fg: 0, bg: 0, extended: { _ext: 0, _urlId: 0 } };
+    const buffer = { x: 0, y: 0, base: 0, savedX: 0, savedY: 0,
+      savedCurAttrData: attr, scrollTop: 0, scrollBottom: rows - 1, tabs: {} };
+    return { version: 1, normal: { ...buffer }, alt: { ...buffer }, modes: {},
+      dec: {}, charset: { glevel: 0, _charsets: [null, null, null, null] },
+      current: attr, mouseProtocol: "ANY", mouseEncoding: "SGR" };
+  }
+
+  it.each(["pi", "easy_pi", "omp"] as const)(
+    "restores the authoritative Host screen snapshot for fullscreen %s",
+    async (adapter) => {
+      setState({
+        projects: getState().projects.map(project => ({
+          ...project,
+          sessions: project.sessions.map(session => session.id === "renderer-test"
+            ? { ...session, adapter }
+            : session),
+        })),
+      });
+      const content = "\x1b[?1049h\x1b[2J\x1b[HFULL SCREEN";
+      const snapshot = { content, cols: 131, rows: 38, pending: [0x1b, 0x5b],
+        state: validSnapshotState(38) };
+      rendererMocks.apiMock.attachSession.mockReset().mockResolvedValue({
+        attachmentId: 1, childAlive: true, hostPid: 42, logBytes: 0, status: null,
+        agentSessionId: null, runId: "run_1", runOrdinal: 1,
+        logCursor: { runId: "run_1", runOrdinal: 1, generation: 0, offset: 10 },
+        screenSnapshot: snapshot,
+      });
+
+      mountTerminal("renderer-test", document.createElement("div"));
+      await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalledWith(
+        "renderer-test",
+        64 * 1024,
+        expect.anything(),
+        null,
+        true,
+      );
+      const terminal =
+        rendererMocks.terminals[rendererMocks.terminals.length - 1];
+      await vi.waitFor(() =>
+        expect(terminal.write.mock.calls.some(call => call[0] === content)).toBe(true),
+      );
+
+      const calls = terminal.write.mock.calls;
+      const barrierIndex = calls.findIndex(call => call[0] === "");
+      const contentIndex = calls.findIndex(call => call[0] === content);
+      expect(barrierIndex).toBeGreaterThanOrEqual(0);
+      expect(contentIndex).toBeGreaterThan(barrierIndex);
+      // The reset/resize transaction runs once the write barrier drains.
+      invokeWriteCallback(calls[barrierIndex]);
+      expect(terminal.reset).toHaveBeenCalled();
+      expect(terminal.resize).toHaveBeenCalledWith(131, 38);
+      // Parser state is poked after the serialized content drained; a fake
+      // terminal without xterm internals must not break the restore chain.
+      invokeWriteCallback(calls[contentIndex]);
+      const pendingCall = calls.find(call => call[0] instanceof Uint8Array);
+      expect(Array.from(pendingCall?.[0] as Uint8Array)).toEqual([0x1b, 0x5b]);
+    },
+  );
+
+  it("keeps the warm preview when the served snapshot fails validation", async () => {
+    setState({
+      projects: getState().projects.map(project => ({
+        ...project,
+        sessions: project.sessions.map(session => session.id === "renderer-test"
+          ? { ...session, adapter: "pi" }
+          : session),
+      })),
+    });
+    rendererMocks.apiMock.attachSession.mockReset().mockResolvedValue({
+      attachmentId: 1, childAlive: true, hostPid: 42, logBytes: 0, status: null,
+      agentSessionId: null, runId: "run_1", runOrdinal: 1,
+      logCursor: { runId: "run_1", runOrdinal: 1, generation: 0, offset: 10 },
+      screenSnapshot: { bogus: true },
+    });
+
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    await vi.waitFor(() => expect(terminal.write).toHaveBeenCalled());
+    expect(terminal.reset).not.toHaveBeenCalled();
+    expect(
+      terminal.write.mock.calls.every(
+        call => typeof call[0] !== "string" || !call[0].includes("FULL SCREEN"),
+      ),
+    ).toBe(true);
   });
 
   it("bounds in-memory scrollback independently of the persisted log", () => {
@@ -3246,6 +3339,7 @@ describe("terminal renderer", () => {
       expect.any(Number),
       expect.anything(),
       null,
+      true,
     );
   });
 
@@ -3291,6 +3385,7 @@ describe("terminal renderer", () => {
       expect.any(Number),
       expect.anything(),
       expect.objectContaining({ offset: 1 }),
+      true,
     );
     expect(localStorage.getItem(legacyKey)).toBeNull();
     expect(JSON.parse(localStorage.getItem(currentKey) ?? "null")).toMatchObject({
@@ -3418,6 +3513,7 @@ describe("terminal renderer", () => {
       expect.any(Number),
       expect.anything(),
       expect.objectContaining({ offset: 1 }),
+      false,
     );
     localStorage.removeItem(key);
   });

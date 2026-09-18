@@ -277,7 +277,8 @@ export const api = {
     replayTailBytes: number,
     channel: Channel<ChannelMsg>,
     resumeFrom: LogCursorView | null = null,
-  ) => invoke<AttachInfo>("attach_session", { sessionId, replayTailBytes, channel, resumeFrom }),
+    screenSnapshot = false,
+  ) => invoke<AttachInfo>("attach_session", { sessionId, replayTailBytes, channel, resumeFrom, screenSnapshot }),
   detachSession: (sessionId: string, attachmentId: number) =>
     invoke<void>("detach_session", { sessionId, attachmentId }),
   markSessionSeen: (sessionId: string, cursor: StatusCursorView | null = null) =>

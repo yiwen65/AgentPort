@@ -48,6 +48,7 @@ import { openDocumentTarget, parseDocumentLinkTarget } from "./documents";
 import { runtimeMessageEnvelope, runtimeMessageText } from "./runtimeMessages";
 import { getTerminalPalette } from "./terminalThemes";
 import { shouldPublishAutomaticDesktopResize } from "./terminalGeometryPrompt";
+import { isTerminalSnapshot, restoreSnapshotState } from "./terminalSnapshot";
 import type {
   AttachInfo,
   ChannelMsg,
@@ -781,6 +782,9 @@ export interface TermHandle {
   generation: number;
   /** Backend-issued capability; only this renderer may detach it. */
   attachmentId: number | null;
+  /** Attachment whose authoritative Host screen snapshot was already
+   * restored; both readiness entry points see the same AttachInfo. */
+  restoredSnapshotAttachment: number | null;
   /** Host identity is known at handshake, even before the first output byte. */
   runIdentity: SessionRun | null;
   /** A checkpoint or completed replay has drained through xterm and can be
@@ -928,6 +932,66 @@ function clearTerminalForTailReplay(handle: TermHandle) {
     return;
   }
   resetTerminal(handle);
+}
+
+function snapshotMouseEncoding(encoding: string): TerminalMouseEncoding {
+  return encoding === "SGR"
+    ? "sgr"
+    : encoding === "SGR_PIXELS"
+      ? "sgr-pixels"
+      : "default";
+}
+
+/** Replace the renderer with the Host's authoritative screen mirror. A
+ * bounded replay tail cannot reconstruct a fullscreen differential TUI (its
+ * recent frames may touch only a few rows), so when a snapshot is served the
+ * Host skips the byte tail entirely and this restore is the ONLY complete
+ * screen the renderer receives before live output resumes. Everything is
+ * queued through the write coordinator so the following replay_done drain and
+ * live frames keep their transport order; the parser-state restore runs after
+ * the serialized content drained, mirroring the mobile restore transaction. */
+function restoreHostScreenSnapshot(handle: TermHandle, value: unknown) {
+  if (!isTerminalSnapshot(value)) {
+    // A skewed Host/frontend pair can serve a shape this build cannot apply.
+    // Keep the warm preview plus live differential stream (the pre-snapshot
+    // behavior) rather than wiping the pane for a restore that may corrupt.
+    return;
+  }
+  const snapshot = value;
+  const sessionId = handle.sessionId;
+  const generation = handle.generation;
+  const fence = () =>
+    handles.get(sessionId) === handle && handle.generation === generation;
+  handle.displayReady = false;
+  handle.displayRenderPending = false;
+  handle.writes.write("", () => {
+    if (!fence()) return;
+    resetTerminal(handle);
+    if (
+      handle.term.cols !== snapshot.cols ||
+      handle.term.rows !== snapshot.rows
+    ) {
+      handle.term.resize(snapshot.cols, snapshot.rows);
+    }
+  });
+  handle.writes.write(snapshot.content, () => {
+    if (!fence()) return;
+    try {
+      restoreSnapshotState(handle.term, snapshot.state);
+      handle.mouseEncoding = snapshotMouseEncoding(
+        snapshot.state.mouseEncoding,
+      );
+    } catch {
+      // The serialized screen already landed; only internal mode fidelity
+      // (mouse reporting, charset, saved cursor) is lost on a renderer whose
+      // internals do not match this snapshot format.
+    }
+  });
+  // A partial escape prefix at the snapshot boundary is not part of the
+  // serialized content; re-feed it so the parser continues mid-sequence.
+  if (snapshot.pending.length > 0) {
+    handle.writes.write(new Uint8Array(snapshot.pending));
+  }
 }
 
 /**
@@ -1252,6 +1316,7 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     reconnectAttempt: 0,
     generation: 0,
     attachmentId: null,
+    restoredSnapshotAttachment: null,
     runIdentity: null,
     displayReady: false,
     displayRenderPending: false,
@@ -1343,7 +1408,9 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
   const sessionLive =
     session?.lifecycle === "creating" || session?.lifecycle === "running";
   const fullscreenPi =
-    sessionLive && session?.adapter === "pi" && session.transport === "pty";
+    sessionLive &&
+    (session?.adapter === "pi" || session?.adapter === "easy_pi") &&
+    session.transport === "pty";
   let snapshot = sessionLive ? readTerminalSnapshot(sessionId) : null;
   if (fullscreenPi && snapshot && !snapshot.content.includes("\x1b[?1049h")) {
     // A prior renderer may have snapshotted Pi after losing its alternate
@@ -2738,6 +2805,14 @@ function activateAttachment(handle: TermHandle, info: AttachInfo): boolean {
     return false;
   }
 
+  if (info.screenSnapshot && handle.restoredSnapshotAttachment !== info.attachmentId) {
+    // Served in place of the byte-tail replay: restore before the channel's
+    // replay_done drain (queued next on this same channel) can reveal, and
+    // before any live differential frame is applied on top.
+    handle.restoredSnapshotAttachment = info.attachmentId;
+    restoreHostScreenSnapshot(handle, info.screenSnapshot);
+  }
+
   const newlyWritable =
     !handle.attached || handle.attachmentId !== info.attachmentId;
   handle.attachmentId = info.attachmentId;
@@ -2817,7 +2892,9 @@ export async function attachHandle(
     onChannelMsg(handle, msg);
   };
   try {
-    const replayTailBytes = session?.transport === "pty" && FULLSCREEN_PI_ADAPTERS.has(session.adapter)
+    const fullscreenPi =
+      session?.transport === "pty" && FULLSCREEN_PI_ADAPTERS.has(session.adapter);
+    const replayTailBytes = fullscreenPi
       ? FULLSCREEN_PI_REPLAY_TAIL_BYTES
       : REPLAY_TAIL_BYTES;
     const info = await api.attachSession(
@@ -2825,6 +2902,9 @@ export async function attachHandle(
       replayTailBytes,
       channel,
       resumeFrom,
+      // A differential fullscreen TUI cannot be reconstructed from the bounded
+      // tail; ask the Host for its authoritative screen mirror instead.
+      fullscreenPi,
     );
     if (handles.get(sessionId) !== handle || generation !== handle.generation) {
       // The backend may have completed after this renderer was evicted or

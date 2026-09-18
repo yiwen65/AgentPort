@@ -1745,6 +1745,7 @@ async fn attach_session(
     session_id: String,
     replay_tail_bytes: u64,
     resume_from: Option<LogCursor>,
+    screen_snapshot: Option<bool>,
     channel: tauri::ipc::Channel<Value>,
 ) -> std::result::Result<Value, Value> {
     let socket = state
@@ -1767,13 +1768,18 @@ async fn attach_session(
     // Cap replay independently of frontend input so a malformed IPC request
     // cannot make a Host read an unbounded log tail into memory.
     const MAX_REPLAY_BYTES: u64 = 4 * 1024 * 1024;
-    let (mut client, info) = HostClient::connect_with_resume(
+    // A differential fullscreen TUI cannot be reconstructed from the bounded
+    // tail; the renderer asks for the Host's authoritative screen mirror,
+    // which pre-`terminal_snapshot_v1` Hosts simply ignore (serde default).
+    let (mut client, info) = HostClient::connect_with_snapshot(
         &socket,
         &session_id,
         &token,
         replay_tail_bytes.min(MAX_REPLAY_BYTES),
         resume_from,
+        None,
         true,
+        screen_snapshot.unwrap_or(false),
     )
     .map_err(|error| {
         // A failed renderer attach must reconcile durable exit/PID facts before
@@ -1845,6 +1851,7 @@ async fn attach_session(
         "status": info.current_status.as_ref().map(status_value),
         "logCursor": info.log_cursor,
         "terminalGeometry": info.terminal_geometry,
+        "screenSnapshot": info.screen_snapshot,
     });
     // Publish the writable capability before the watch thread can flood the
     // WebView with retained replay frames. Warm previews can receive focus

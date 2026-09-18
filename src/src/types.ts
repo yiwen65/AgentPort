@@ -354,6 +354,9 @@ export interface AttachInfo {
   logCursor: LogCursorView;
   /** Missing when attaching to an already-running pre-geometry Host. */
   terminalGeometry?: TerminalGeometry | null;
+  /** Authoritative Host screen mirror (`terminal_snapshot_v1`). Present only
+   * when requested and served; it replaces the bounded byte-tail replay. */
+  screenSnapshot?: unknown;
 }
 
 /** Messages pushed by the backend over the attach Channel (watch_loop). */
