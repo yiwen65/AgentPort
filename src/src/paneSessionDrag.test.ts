@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   hasSessionPaneDragPayload,
   readSessionPaneDragPayload,
   SESSION_PANE_DND_MIME,
+  suppressOversizedDragImage,
   writeSessionPaneDragPayload,
 } from "./paneSessionDrag";
+import { setState } from "./store";
+import type { PlatformInfo } from "./types";
 
 function transfer() {
   const values = new Map<string, string>();
@@ -46,5 +50,49 @@ describe("Session pane drag payload", () => {
     expect(readSessionPaneDragPayload(dataTransfer)).toBeNull();
     values.set(SESSION_PANE_DND_MIME, JSON.stringify({ sessionId: "" }));
     expect(readSessionPaneDragPayload(dataTransfer)).toBeNull();
+  });
+});
+
+describe("suppressOversizedDragImage (WebKitGTK HiDPI ghost workaround)", () => {
+  afterEach(() => {
+    setState({ platform: null });
+  });
+
+  const platform = (os: string): PlatformInfo => ({
+    os,
+    osVersion: "24.04",
+    arch: "x86_64",
+    webview: "WebKitGTK",
+    appVersion: "0.1.0",
+    windowDecorated: false,
+  });
+
+  it("swaps the drag image for a transparent 1px element on Linux", () => {
+    setState({ platform: platform("linux") });
+    const { dataTransfer } = transfer();
+    const setDragImage = vi.fn();
+    dataTransfer.setDragImage = setDragImage;
+
+    suppressOversizedDragImage(dataTransfer);
+    suppressOversizedDragImage(dataTransfer);
+
+    expect(setDragImage).toHaveBeenCalledTimes(2);
+    const firstImage = setDragImage.mock.calls[0][0] as HTMLElement;
+    expect(firstImage.style.opacity).toBe("0");
+    // One shared element is reused across drags (nothing accumulates).
+    expect(setDragImage.mock.calls[1][0]).toBe(firstImage);
+  });
+
+  it("keeps the native drag image on macOS and unknown platforms", () => {
+    for (const info of [platform("macos"), null] as Array<PlatformInfo | null>) {
+      setState({ platform: info });
+      const { dataTransfer } = transfer();
+      const setDragImage = vi.fn();
+      dataTransfer.setDragImage = setDragImage;
+
+      suppressOversizedDragImage(dataTransfer);
+
+      expect(setDragImage).not.toHaveBeenCalled();
+    }
   });
 });

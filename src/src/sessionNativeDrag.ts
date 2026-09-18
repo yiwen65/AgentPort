@@ -47,9 +47,13 @@ export function forwardNativeSessionDrag(event: NativeDrag): boolean {
     sessionId = null;
     return true;
   }
-  const scale = window.devicePixelRatio || 1;
-  const x = event.position.x / scale;
-  const y = event.position.y / scale;
+  // wry reports drag positions in logical (CSS) pixels on macOS and Linux
+  // (NSView points / GTK widget coordinates; only webview2 uses physical
+  // pixels, and this app ships no Windows build). elementFromPoint takes CSS
+  // pixels, so the position is used as-is — dividing by devicePixelRatio
+  // here mis-targets every drop on HiDPI displays.
+  const x = event.position.x;
+  const y = event.position.y;
   const target = document.elementFromPoint(x, y);
   if (previousTarget !== target) {
     if (previousTarget) dispatch(previousTarget, "dragleave", x, y, target);

@@ -65,7 +65,10 @@ import {
   persistTerminalLayouts,
   type PaneLayout,
 } from "../paneLayout";
-import { writeSessionPaneDragPayload } from "../paneSessionDrag";
+import {
+  suppressOversizedDragImage,
+  writeSessionPaneDragPayload,
+} from "../paneSessionDrag";
 import { beginNativeSessionDrag } from "../sessionNativeDrag";
 import {
   moveProjectInLayout,
@@ -785,6 +788,7 @@ function SessionRow({
           return;
         }
         writeSessionPaneDragPayload(event.dataTransfer, ses.id);
+        suppressOversizedDragImage(event.dataTransfer);
         beginNativeSessionDrag(ses.id);
         setDraggingPaneSession(true);
       }}

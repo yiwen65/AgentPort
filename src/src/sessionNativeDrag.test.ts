@@ -9,7 +9,7 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-it("routes intercepted native Session drags to DOM split zones at CSS coordinates", () => {
+it("routes intercepted native Session drags to DOM split zones at wry's logical coordinates", () => {
   class Transfer {
     values = new Map<string, string>();
     setData(key: string, value: string) { this.values.set(key, value); }
@@ -24,6 +24,9 @@ it("routes intercepted native Session drags to DOM split zones at CSS coordinate
   }
   vi.stubGlobal("DataTransfer", Transfer);
   vi.stubGlobal("DragEvent", Drag);
+  // wry reports drag positions in logical (CSS) pixels on macOS and Linux.
+  // DPR 2 guards the regression: the position must NOT be divided by
+  // devicePixelRatio, or every drop on HiDPI displays misses its target.
   vi.stubGlobal("devicePixelRatio", 2);
   const pane = document.createElement("div");
   const zone = document.createElement("div");
@@ -39,7 +42,7 @@ it("routes intercepted native Session drags to DOM split zones at CSS coordinate
   beginNativeSessionDrag("source");
   expect(forwardNativeSessionDrag({ type: "over", position: { x: 200, y: 100 } })).toBe(true);
   expect(enter).toHaveBeenCalledOnce();
-  expect(hit).toHaveBeenCalledWith(100, 50);
+  expect(hit).toHaveBeenCalledWith(200, 100);
   window.dispatchEvent(new Event("dragend"));
   forwardNativeSessionDrag({ type: "drop", position: { x: 200, y: 100 } });
   expect(dropped).toHaveBeenCalledOnce();

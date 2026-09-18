@@ -86,9 +86,10 @@ const BranchPickerDialog = lazy(() => import("./components/BranchPickerDialog"))
 const Onboarding = lazy(() => import("./components/Onboarding"));
 const GitCenter = lazy(() => import("./components/GitCenter"));
 
-function terminalSessionAtPhysicalPosition(position: { x: number; y: number }): string | null {
-  const scale = window.devicePixelRatio || 1;
-  const element = document.elementFromPoint(position.x / scale, position.y / scale);
+// wry reports native drop positions in logical (CSS) pixels on macOS and
+// Linux (see sessionNativeDrag.ts), so no devicePixelRatio scaling is applied.
+function terminalSessionAtPosition(position: { x: number; y: number }): string | null {
+  const element = document.elementFromPoint(position.x, position.y);
   const pane = element?.closest<HTMLElement>("[data-terminal-session-id]");
   return pane?.dataset.terminalSessionId ?? null;
 }
@@ -598,7 +599,7 @@ export default function App() {
     void getCurrentWebview().onDragDropEvent((event) => {
       if (forwardNativeSessionDrag(event.payload)) return;
       if (event.payload.type !== "drop") return;
-      const sessionId = terminalSessionAtPhysicalPosition(event.payload.position);
+      const sessionId = terminalSessionAtPosition(event.payload.position);
       if (!sessionId) return;
       const session = findSession(getState().projects, sessionId);
       const paths = event.payload.paths.filter((path) => path.startsWith("/"));
