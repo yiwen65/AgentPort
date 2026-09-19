@@ -27,6 +27,17 @@ An edit is only mapped while no sent character sits behind the edited region,
 because the terminal is append-only. A declined edit still drops ownership
 rather than erasing text it could not map.
 
+One shape sends the closer before the caret can prove anything: the method
+appends the whole pair while the caret is still at the end (measured on device),
+then moves the caret back inside without a DOM edit. `lastPadding` keeps the
+closer's range, and the first input that lands exactly in front of it retracts
+that one character from the terminal (DEL), keeps it as untyped text, and then
+sends what the user typed. A key that leaves through xterm retracts it the same
+way first, so `(` followed by Enter sends the typed bracket and the Enter only.
+The open half of a pair is never retracted: it is the typed half. A single
+appended closer counts as padding too, because that is how the same padding
+arrives when the method emits it as its own edit.
+
 ## Physical-device diagnosis (opt-in)
 
 In Safari's remote Web Inspector for the actual iOS webview:

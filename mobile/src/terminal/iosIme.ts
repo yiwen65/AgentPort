@@ -18,6 +18,25 @@
 // Do not infer erase counts for combining sequences, emoji or other graphemes.
 const erasableScalars = /^[\x20-\x7e\u00a0\p{Unified_Ideograph}\p{P}]*$/u;
 
+// What an auto-pairing input method appends for one keystroke: the close of an
+// open/close pair (or the closer alone when it arrives as its own edit). Text
+// like this is padding the user never typed, which only gets erased from the
+// terminal once their own input proves it by landing in front of it.
+const pairedClosers: Record<string, string> = {
+  "(": ")", "[": "]", "{": "}", "<": ">", "\u0022": "\u0022", "'": "'",
+  "\uff08": "\uff09", "\u3010": "\u3011", "\u3014": "\u3015", "\u300c": "\u300d", "\u300e": "\u300f",
+  "\u300a": "\u300b", "\u3008": "\u3009", "\u201c": "\u201d", "\u2018": "\u2019",
+  "\u00ab": "\u00bb", "\u2039": "\u203a",
+};
+const paddingClosers = new Set(Object.values(pairedClosers));
+
+/** True for a whole edit that is one keystroke's padding, not typed text. */
+function isPaddingRun(run: string) {
+  const scalars = Array.from(run);
+  if (scalars.length === 1) return paddingClosers.has(scalars[0]);
+  return scalars.length === 2 && pairedClosers[scalars[0]] === scalars[1];
+}
+
 // WebKit represents a typed trailing space as NBSP, then changes it back to
 // SP when the next character arrives. This is not an edit to terminal history.
 const sameSpaceRepresentation = (a: string, b: string) =>
@@ -46,6 +65,10 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
   // It was never sent, so it is never erased from the terminal and never makes
   // an edit in front of it unprovable. Offsets are into `observed`.
   let ghosts: Array<[number, number]> = [];
+  // Padding tail of the last keyed insertion (text the method added for that
+  // keystroke). It is only erased from the terminal once the user's own input
+  // proves it by landing right in front of it.
+  let lastPadding: { start: number; end: number } | undefined;
   let hardware = false;
   let unidentifiedKey = false;
   let before: { value: string; start: number; end: number } | undefined;
@@ -62,9 +85,13 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
   const snapshot = () => ({ value: textarea.value, start: textarea.selectionStart, end: textarea.selectionEnd });
   const invalidate = () => {
     clearTimeout(timer); pending = false; composing = false; unidentifiedKey = false;
-    observed = textarea.value; ownedStart = observed.length; ghosts = [];
+    observed = textarea.value; ownedStart = observed.length; ghosts = []; lastPadding = undefined;
     before = compositionBefore = undefined;
   };
+  const addGhost = (from: number, length: number) => { if (length > 0) ghosts = [...ghosts, [from, from + length]]; };
+  // The last keystroke's padding, when the caret stands right in front of it.
+  const paddingBeforeCaret = (caret: number) => lastPadding && caret === lastPadding.start
+    ? observed.slice(lastPadding.start, lastPadding.end) : "";
   const inGhost = (index: number) => ghosts.some(([start, end]) => index >= start && index < end);
   // An edit can be mapped onto the terminal only while no sent character sits
   // after the edited region: the terminal is append-only, and everything after
@@ -139,6 +166,9 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
     let output = "";
     let reason = "unchanged";
     let handled = true;
+    // The padding marker is consumed by the edit it is checked against.
+    const pendingPadding = lastPadding;
+    lastPadding = undefined;
     if (value !== base) {
       const witnessedEndInsertion = atEnd && previous?.value === base
         && previous.start === base.length && previous.end === base.length;
@@ -157,6 +187,15 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
         if (witnessedEndInsertion && edit?.inputType === "insertText" && typeof edit.data === "string"
           && output !== edit.data && sameSpaceRepresentation(output, edit.data)) {
           output = edit.data; reason = "space-normalized-append";
+        }
+        // A keyed insertion that is exactly an auto-paired closer (or the closer
+        // alone) carries the method's own padding in its tail. It is sent, but
+        // that tail is retracted as soon as the user's input lands in front of
+        // it. In a pair the open bracket is the typed half, never the padding.
+        if (witnessedEndInsertion && edit?.inputType === "insertText" && isPaddingRun(output)) {
+          const head = Array.from(output).length === 2 ? Array.from(output)[0].length : 0;
+          lastPadding = { start: base.length + head, end: base.length + output.length };
+          reason = "append-maybe-padding";
         }
       } else if (ghosts.length === 0 && atEnd && previous?.value === base
         && previous.start === base.length && previous.end === base.length
@@ -189,15 +228,23 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
         } else { handled = false; reason = "unsupported-grapheme"; }
       } else {
         const insertion = atPoint ? insertionAt(base, value, previous) : undefined;
-        if (insertion && insertion.at <= caret && caret <= insertion.at + insertion.length
-          && caret >= insertion.at && !hasSentAfter(base, insertion.at)) {
-          // The method inserted a run at the caret, e.g. an auto-paired close
-          // bracket behind a typed open one. Send only the part the caret moved
-          // past; the rest was inserted by the method and stays unsent.
+        // The tail of the last keyed insertion is proven untyped when the user
+        // starts typing right in front of it. Erase what was already sent and
+        // keep that tail unsent, so the caret stays usable and the closer stays
+        // out of the terminal.
+        const untyped = insertion && pendingPadding && insertion.at === pendingPadding.start
+          ? base.slice(pendingPadding.start, pendingPadding.end) : "";
+        if (insertion && (untyped === "" || erasableScalars.test(untyped))
+          && insertion.at <= caret && caret <= insertion.at + insertion.length
+          && !hasSentAfter(base, insertion.at + untyped.length)) {
+          // Send only the part the caret moved past; the rest was inserted by the
+          // method and stays unsent.
           const typed = caret - insertion.at;
-          output = value.slice(insertion.at, caret);
+          output = "\x7f".repeat(Array.from(untyped).length) + value.slice(insertion.at, caret);
           moveGhostsForInsertion(insertion.at, insertion.length, typed);
-          reason = typed === 0 ? "untyped-insert" : typed === insertion.length ? "typed-insert" : "typed-before-untyped";
+          if (untyped) addGhost(insertion.at + insertion.length, untyped.length);
+          reason = untyped ? "untyped-tail-retracted"
+            : typed === 0 ? "untyped-insert" : typed === insertion.length ? "typed-insert" : "typed-before-untyped";
         } else if (atPoint && previous?.value === base && previous.start === previous.end
           && previous.start > caret && value.length < base.length
           && previous.start - caret === base.length - value.length
@@ -262,6 +309,16 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
       hardware = false; event.stopImmediatePropagation();
     } else if (![16, 17, 18, 20].includes(event.keyCode)) {
       finish();
+      // A key that leaves through xterm goes last: first retract the padding of
+      // the last keystroke when the caret still stands in front of it, so the
+      // closer never reaches the terminal and Backspace sees a proven sent tail.
+      const padding = paddingBeforeCaret(textarea.selectionStart);
+      if (padding && erasableScalars.test(padding)) {
+        send("\x7f".repeat(Array.from(padding).length));
+        addGhost(textarea.selectionStart, padding.length);
+        lastPadding = undefined;
+        record(event, 0, "untyped-tail-retracted");
+      }
       if (event.keyCode === 8 && !composing && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
         && textarea.value === observed && textarea.selectionStart === textarea.selectionEnd
         && textarea.selectionStart > ownedStart

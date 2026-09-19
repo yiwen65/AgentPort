@@ -614,6 +614,57 @@ describe("iOS IME text the user never typed", () => {
     expect(sent).toEqual(["("]);
   });
 
+  // Measured on iPhone with Doubao: the pair arrives in full (the caret was at
+  // the end while it was inserted) and the method then stands the caret inside
+  // it without any DOM edit. Everything typed after that used to be dropped.
+  it("keeps typing when the method appends a pair and then stands the caret inside it", () => {
+    const { textarea, sent } = setup();
+    pointEdit(textarea, "\uff08\uff09", 2, "\uff08");
+    expect(sent).toEqual(["\uff08\uff09"]);
+    textarea.setSelectionRange(1, 1);
+    pointEdit(textarea, "\uff08a\uff09", 2, "a");
+    expect(sent).toEqual(["\uff08\uff09", "\x7fa"]);
+    pointEdit(textarea, "\uff08ab\uff09", 3, "b");
+    expect(sent).toEqual(["\uff08\uff09", "\x7fa", "b"]);
+    expect(textarea.value).toBe("\uff08ab\uff09");
+  });
+
+  it("keeps typing when the closer arrives as its own keyed edit and the caret stands in front of it", () => {
+    const { textarea, sent } = setup();
+    pointEdit(textarea, "\uff08", 1, "\uff08");
+    pointEdit(textarea, "\uff08\uff09", 2, "\uff09");
+    expect(sent).toEqual(["\uff08", "\uff09"]);
+    textarea.setSelectionRange(1, 1);
+    pointEdit(textarea, "\uff08a\uff09", 2, "a");
+    expect(sent).toEqual(["\uff08", "\uff09", "\x7fa"]);
+  });
+
+  it("retracts the closer before a key that xterm owns", () => {
+    const { textarea, sent } = setup();
+    pointEdit(textarea, "\uff08\uff09", 2, "\uff08");
+    textarea.setSelectionRange(1, 1);
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter", keyCode: 13 }));
+    expect(sent).toEqual(["\uff08\uff09", "\x7f", "\r"]);
+  });
+
+  it("retracts the closer before taking a Backspace from the DOM", () => {
+    const { textarea, sent } = setup();
+    pointEdit(textarea, "\uff08\uff09", 2, "\uff08");
+    textarea.setSelectionRange(1, 1);
+    backspace(textarea);
+    pointEdit(textarea, "\uff09", 0, "", "deleteContentBackward");
+    expect(sent).toEqual(["\uff08\uff09", "\x7f", "\x7f"]);
+  });
+
+  it("never retracts the typed half of a pair when the user taps in front of it", () => {
+    const { textarea, sent } = setup();
+    pointEdit(textarea, "\uff08\uff09", 2, "\uff08");
+    textarea.setSelectionRange(0, 0);
+    pointEdit(textarea, "x\uff08\uff09", 1, "x");
+    expect(sent).toEqual(["\uff08\uff09"]);
+    expect(textarea.value).toBe("x\uff08\uff09");
+  });
+
   it("declines an ambiguous split instead of guessing a pair", () => {
     const { textarea, sent } = setup();
     insert(textarea, "aa");
