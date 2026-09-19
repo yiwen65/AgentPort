@@ -30,6 +30,13 @@ describe("document tree sidebar design language", () => {
     expect(ruleBody(".doc-tree-rename-input")).toContain("font-size: 13px");
   });
 
+  it("aligns sibling names with one shared leading slot width", () => {
+    // Chevron slot (dirs) and type-icon slot (files) must be identical —
+    // otherwise file names stair-step right of directory names.
+    expect(ruleBody(".doc-tree-icon")).toContain("flex: 0 0 14px");
+    expect(ruleBody(".doc-tree-kind")).toContain("flex: 0 0 14px");
+  });
+
   it("keeps directories icon-free (chevron only) and file icons neutral", () => {
     // Directory rows render no kind icon at all — the chevron alone marks
     // them — so no folder-color rule may creep back in.

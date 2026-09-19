@@ -200,10 +200,14 @@ describe("DocumentTree", () => {
   it("renders directories with only the chevron (no folder icon) and no path tooltip", async () => {
     const { container } = render(<DocumentTree />);
     const dirRow = (await screen.findByText("docs")).closest("button");
-    // Directories have no kind icon; files keep their type icon.
+    // Directories: chevron in the leading slot, no kind icon.
     expect(dirRow?.querySelector(".doc-tree-kind")).toBeNull();
+    expect(dirRow?.querySelector(".doc-tree-icon svg")).not.toBeNull();
+    // Files: type icon in the same leading slot, no empty chevron slot —
+    // sibling names start at an identical x.
     const fileRow = (await screen.findByText("README.md")).closest("button");
     expect(fileRow?.querySelector(".doc-tree-kind.file svg")).not.toBeNull();
+    expect(fileRow?.querySelector(".doc-tree-icon")).toBeNull();
     // No full-path tooltip on hover anywhere.
     expect(dirRow?.getAttribute("data-tip")).toBeNull();
     expect(fileRow?.getAttribute("data-tip")).toBeNull();

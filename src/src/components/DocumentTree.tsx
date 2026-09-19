@@ -413,10 +413,13 @@ export default function DocumentTree() {
               className={`doc-tree-row${entry.isDir ? " dir" : " file"}${gitClass}`}
               style={{ paddingLeft: 6 + depth * 16 }}
             >
-              <span className="doc-tree-icon" aria-hidden="true">
-                {entry.isDir ? <IconChevron expanded={expanded} /> : null}
-              </span>
-              {entry.isDir ? null : (
+              {/* One leading slot for both kinds: chevron for dirs, type
+                 icon for files — sibling names stay flush. */}
+              {entry.isDir ? (
+                <span className="doc-tree-icon" aria-hidden="true">
+                  <IconChevron expanded={expanded} />
+                </span>
+              ) : (
                 <span className="doc-tree-kind file" aria-hidden="true">
                   <DocFileIcon name={entry.name} />
                 </span>
@@ -466,10 +469,11 @@ export default function DocumentTree() {
               }
             }}
           >
-            <span className="doc-tree-icon" aria-hidden="true">
-              {entry.isDir ? <IconChevron expanded={expanded} /> : null}
-            </span>
-            {entry.isDir ? null : (
+            {entry.isDir ? (
+              <span className="doc-tree-icon" aria-hidden="true">
+                <IconChevron expanded={expanded} />
+              </span>
+            ) : (
               <span className="doc-tree-kind file" aria-hidden="true">
                 <DocFileIcon name={entry.name} />
               </span>
@@ -504,7 +508,7 @@ export default function DocumentTree() {
           {entry.isDir && expanded ? (
             <div
               className="doc-tree-children"
-              style={{ "--guide-x": `${11 + depth * 16}px` } as React.CSSProperties}
+              style={{ "--guide-x": `${13 + depth * 16}px` } as React.CSSProperties}
             >
               {child?.error ? (
                 <div className="doc-tree-note" style={{ paddingLeft: 34 + depth * 16 }}>
