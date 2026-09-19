@@ -3227,7 +3227,7 @@ body.is-resizing-pane {
    design family across themes and vibrancy modes. Column width comes from
    the panel's --doc-tree-width (sash-draggable, 184px default). */
 .doc-tree {
-  flex: 0 0 var(--doc-tree-width, 184px);
+  flex: 0 0 var(--doc-tree-width, 240px);
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -3360,10 +3360,6 @@ body.is-resizing-pane {
   justify-content: center;
 }
 
-.doc-tree-kind.dir {
-  color: var(--sidebar-icon);
-}
-
 .doc-tree-kind.file {
   color: var(--sidebar-text-faint);
 }
@@ -3371,6 +3367,8 @@ body.is-resizing-pane {
 .doc-tree-row.selected .doc-tree-kind {
   color: var(--sidebar-text-strong);
 }
+
+/* Directory rows are icon-free: the chevron alone marks them. */
 
 .doc-tree-name {
   overflow: hidden;

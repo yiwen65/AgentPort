@@ -25,11 +25,13 @@ describe("document tree sidebar design language", () => {
     expect(selected).not.toContain("inset 2px 0 0");
   });
 
-  it("keeps entry icons neutral (no loud amber folders)", () => {
-    expect(ruleBody(".doc-tree-kind.dir")).toContain("color: var(--sidebar-icon)");
-    expect(ruleBody(".doc-tree-kind.dir")).not.toContain("--amber");
+  it("keeps directories icon-free (chevron only) and file icons neutral", () => {
+    // Directory rows render no kind icon at all — the chevron alone marks
+    // them — so no folder-color rule may creep back in.
+    expect(ruleBody(".doc-tree-kind.dir")).toBeUndefined();
     expect(ruleBody(".doc-tree-kind.file")).toContain(
       "color: var(--sidebar-text-faint)",
     );
+    expect(ruleBody(".doc-tree-kind.file")).not.toContain("--amber");
   });
 });

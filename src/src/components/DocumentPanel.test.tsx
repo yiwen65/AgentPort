@@ -100,7 +100,7 @@ describe("DocumentPanel", () => {
       activeDocGroupIndex: 0,
       docPanelExpanded: false,
       explorerOpen: false,
-      docTreeWidth: 184,
+      docTreeWidth: 240,
       confirm: null,
     });
     resetDocumentTabRuntimes();
@@ -139,14 +139,14 @@ describe("DocumentPanel", () => {
     const { container } = render(<DocumentPanel />);
     await waitFor(() => expect(listMock).toHaveBeenCalled());
     // Tree-only: no editor column, sash visible for tree-width dragging,
-    // panel hugs the default 184px tree + 1px separator.
+    // panel hugs the default 240px tree + 1px separator.
     expect(container.querySelector(".doc-tree")).not.toBeNull();
     expect(container.querySelector(".doc-editor-column")).toBeNull();
     expect(container.querySelector(".doc-panel-resize")).not.toBeNull();
     expect(container.querySelector(".doc-panel")?.className).toContain("tree-only");
     const panelStyle = container.querySelector(".doc-panel")?.getAttribute("style") ?? "";
-    expect(panelStyle).toContain("width: 185px");
-    expect(panelStyle).toContain("--doc-tree-width: 184px");
+    expect(panelStyle).toContain("width: 241px");
+    expect(panelStyle).toContain("--doc-tree-width: 240px");
 
     // Picking a file brings the editor area back alongside the tree.
     act(() => openDemo());
@@ -555,7 +555,7 @@ describe("DocumentPanel", () => {
       expect(panel?.className).toContain("tree-only");
     });
     const panelStyle = container.querySelector(".doc-panel")?.getAttribute("style") ?? "";
-    expect(panelStyle).toContain("width: 185px");
+    expect(panelStyle).toContain("width: 241px");
     expect(getState().docPanelExpanded).toBe(false);
   });
 

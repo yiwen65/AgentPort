@@ -197,6 +197,19 @@ describe("DocumentTree", () => {
     expect(getState().docGroups).toEqual([]);
   });
 
+  it("renders directories with only the chevron (no folder icon) and no path tooltip", async () => {
+    const { container } = render(<DocumentTree />);
+    const dirRow = (await screen.findByText("docs")).closest("button");
+    // Directories have no kind icon; files keep their type icon.
+    expect(dirRow?.querySelector(".doc-tree-kind")).toBeNull();
+    const fileRow = (await screen.findByText("README.md")).closest("button");
+    expect(fileRow?.querySelector(".doc-tree-kind.file svg")).not.toBeNull();
+    // No full-path tooltip on hover anywhere.
+    expect(dirRow?.getAttribute("data-tip")).toBeNull();
+    expect(fileRow?.getAttribute("data-tip")).toBeNull();
+    expect(container.querySelector(".doc-tree-root")?.getAttribute("data-tip")).toBeNull();
+  });
+
   it("loads the root directory and expands directories lazily", async () => {
     render(<DocumentTree />);
     // Dirs first, then files (backend order is preserved).

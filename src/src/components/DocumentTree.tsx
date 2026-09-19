@@ -21,7 +21,7 @@ import {
   type DocGitDecoration,
   type DocGitIndex,
 } from "../docTreeGit";
-import { DocFileIcon, IconFolder } from "./docTreeIcons";
+import { DocFileIcon } from "./docTreeIcons";
 import { writeDragPayload } from "../terminalDrop";
 import {
   confirmDialog,
@@ -399,9 +399,11 @@ export default function DocumentTree() {
               <span className="doc-tree-icon" aria-hidden="true">
                 {entry.isDir ? <IconChevron expanded={expanded} /> : null}
               </span>
-              <span className={`doc-tree-kind${entry.isDir ? " dir" : " file"}`} aria-hidden="true">
-                {entry.isDir ? <IconFolder /> : <DocFileIcon name={entry.name} />}
-              </span>
+              {entry.isDir ? null : (
+                <span className="doc-tree-kind file" aria-hidden="true">
+                  <DocFileIcon name={entry.name} />
+                </span>
+              )}
               <input
                 className="doc-tree-rename-input"
                 value={renameDraft}
@@ -427,7 +429,6 @@ export default function DocumentTree() {
           <button
             className={`doc-tree-row${entry.isDir ? " dir" : " file"}${selected ? " selected" : ""}${gitClass}}`}
             style={{ paddingLeft: 6 + depth * 16 }}
-            data-tip={entry.path}
             draggable
             onContextMenu={(event) => openEntryMenu(event, entry)}
             onDragStart={(event) => {
@@ -451,9 +452,11 @@ export default function DocumentTree() {
             <span className="doc-tree-icon" aria-hidden="true">
               {entry.isDir ? <IconChevron expanded={expanded} /> : null}
             </span>
-            <span className={`doc-tree-kind${entry.isDir ? " dir" : " file"}`} aria-hidden="true">
-              {entry.isDir ? <IconFolder /> : <DocFileIcon name={entry.name} />}
-            </span>
+            {entry.isDir ? null : (
+              <span className="doc-tree-kind file" aria-hidden="true">
+                <DocFileIcon name={entry.name} />
+              </span>
+            )}
             <span className="doc-tree-name">{entry.name}</span>
             {deco?.badge ? (
               <span
@@ -508,7 +511,7 @@ export default function DocumentTree() {
   return (
     <div className="doc-tree" aria-label={t("ui.document.treeLabel")}>
       <div className="doc-tree-header">
-        <span className="doc-tree-root" data-tip={root ?? ""}>
+        <span className="doc-tree-root">
           {root ? baseName(root) : t("ui.document.treeLabel")}
         </span>
         <span className="spacer" />
@@ -561,7 +564,7 @@ export default function DocumentTree() {
       <div className="doc-tree-body" role="tree">
         {creating && createBaseDir ? (
           <div className="doc-tree-create">
-            <span className="doc-tree-create-base" data-tip={createBaseDir}>
+            <span className="doc-tree-create-base">
               {creating === "dir" ? "📁" : "📄"} {baseName(createBaseDir)}/
             </span>
             <input

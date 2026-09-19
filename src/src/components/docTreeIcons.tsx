@@ -369,20 +369,6 @@ export function IconFile() {
   );
 }
 
-/** Generic folder icon (unchanged from the original tree). */
-export function IconFolder() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path
-        d="M2 4.25a1 1 0 0 1 1-1h2.6l1.4 1.6h6a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.25Z"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 /** Renders the mapped type icon, or the generic file icon when unmapped. */
 export function DocFileIcon({ name }: { name: string }) {
   const spec = fileIconSpec(name);

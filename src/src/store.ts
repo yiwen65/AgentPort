@@ -466,7 +466,7 @@ const initialState: AppState = {
   explorerOpen: false,
   explorerRoot: null,
   docPanelWidth: 480,
-  docTreeWidth: 184,
+  docTreeWidth: 240,
   docPanelExpanded: false,
   termFontScale: 1,
   docFontScale: 1,
