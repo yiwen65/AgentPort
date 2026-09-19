@@ -577,3 +577,12 @@
 - Correct approach: `xattr -dr com.apple.quarantine /opt/homebrew/Caskroom/<cask>` (Apple-signed bundles: `xattr -cr <app>`), then re-probe; no assessment is needed afterwards, so `--version` returns immediately and sessions render. `brew upgrade`/`reinstall` re-adds the attribute — repeat after each upgrade. If the timeout survives the cleanup, that path carries an unfinished assessment: move to a fresh path (new version directory) or reboot.
 - Prevention: the probe failure reason now names the attribute and the path to clean (`capability.rs` → `quarantine_origin` checks the executable plus 6 ancestors and reports the outermost quarantined path), and `docs/troubleshooting.md` has the symptom→cause→fix entry. For any agent CLI that starts nowhere and prints nothing, check `xattr -r` before blaming AgentPort.
 - Verified by: `agentport-cli probe codex` went unavailable (5 s timeout) → available (`codex-cli 0.155.0`), and a codex session went from 0 bytes to a rendered TUI banner after the cleanup; the next `brew upgrade --cask codex` (0.155.1) re-quarantined the tree and needed the same one-liner.
+
+## `iOS IME text the user never typed` — 归属模型必须把"未发送文本"当成一等状态
+
+- Wrong approach: 把"终端收不到输入"当作传输/Host 问题，或把适配层的"无法证明就不发"当成安全默认值 —— 只要每次拒绝都顺带清空归属，用户看到的就是"以后什么都打不进去"，而不是"这一次没发"。
+- Why it failed: `iosIme.ts` 的 `reconcile()` 只用 `atEnd`（光标在 textarea 末尾）判定追加/删除。输入法自动补全（打 `(` 补出 `()`、智能引号补成对）会把光标留在自己补出的字符**前面**，`atEnd` 从此永不成立，之后每次编辑都判 `unproven-edit` 且 `input` 仍在捕获阶段 `stopImmediatePropagation`，xterm 兜底也拿不到事件。真实 xterm + 合成事件复现：配对后 `sent=[]`（一次事件插入）或 `sent=["("]` 之后全空（两次编辑），且该状态下退格会由 xterm 发出一个 DEL —— 抹掉终端没收到过的字符。
+- Correct approach: 在适配层跟踪 `ghosts`（输入法插入、用户没敲过的区间，偏移基于基线）：一次插入中光标越过的前缀算用户输入，其余登记为 ghost；ghost 永不发送、永不计入 DEL；只有"编辑区域之后没有已发送字符"（终端是追加式的）时才映射这次编辑。切分有歧义时拒绝猜测；无法映射的编辑仍放弃归属，但不再因此停止映射后续编辑。配对插入没有 `beforeinput` 时，只有 `(base, value)` 切分唯一才接受。
+- Recognition signal: 用户报告"输入 `()`/引号后打不进去"；`iosImeDiagnostics.snapshot()` 里连续 `unproven-edit` 且 `selection` 停在 `[1,1]` 这类非末尾位置；编辑后 `textarea.value` 比已发送内容多出字符（自动补出的收尾符号）。
+- Prevention: 给探针本身先做自测再交给真人复现 —— 第一版真机字节记录程序在收到第一块数据后就因 `bytes.endswith("\r")` 混用 `str` 崩溃，只留下一条证据。用 `pty.openpty()` + 写入全角字符串自测一次（含 stop 路径）成本几十秒。
+- Verified by: 新增 `iOS IME text the user never typed` 8 项回归中 6 项在修复前实现上失败（含两处为未发送字符发 DEL），修复后 Mobile 455 项、真实 Chrome 渲染回归与 `npm run build` 全通过；真机字节探针已实测全角 `（）` 一次整块到达 Host（两个字符都被发送，未卡死），半角 `(` 与直引号一路仍待真机复测（见 `mobile/IME_PAIRED_PUNCTUATION.md`）。

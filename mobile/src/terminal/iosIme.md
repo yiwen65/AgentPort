@@ -17,6 +17,16 @@ DEL. Arbitrary raw/full-screen applications cannot offer a universal replacement
 protocol. Complex graphemes or unproven destructive changes are not sent; this can
 omit a correction rather than corrupt unrelated terminal contents.
 
+Some input methods insert text the user never typed: typing `(` can leave an
+auto-paired closer behind the caret, and smart quotes do the same. Those ranges
+are tracked as ghosts (offsets into the routing baseline). They are never sent,
+never counted as DEL targets, and never make an edit in front of them
+unprovable: an insertion at the caret is mapped by its inserted run, with the
+part the caret moved past treated as typed and the rest registered as ghost.
+An edit is only mapped while no sent character sits behind the edited region,
+because the terminal is append-only. A declined edit still drops ownership
+rather than erasing text it could not map.
+
 ## Physical-device diagnosis (opt-in)
 
 In Safari's remote Web Inspector for the actual iOS webview:
@@ -36,6 +46,9 @@ necessarily contains input, but the diagnostic buffer never does.
 
 Tests open installed xterm and exercise synthetic DOM sequences. They do not
 simulate WebKit's native keyboard pipeline or certify physical Doubao behavior.
+The paired-punctuation regression (`iOS IME text the user never typed`) fails on
+the pre-ghost implementation, including two cases where that version sent a DEL
+for text it had never sent.
 No real Doubao trace is available. If a keyboard really inserts the phrase twice
 as two DOM edits, both are preserved: distinguishing that from intentional repeats
 requires evidence, not string/time dedup. A compositionend whose DOM never reaches

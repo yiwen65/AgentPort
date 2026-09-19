@@ -537,3 +537,87 @@ describe("iOS edit routing against a real opened xterm 5.5", () => {
     expect(sent).toEqual([]);
   });
 });
+
+// Input methods can insert text the user never typed (an auto-paired close
+// bracket or smart quote). The adapter must keep sending what the user types in
+// front of it, must never send that text, and must never erase it.
+describe("iOS IME text the user never typed", () => {
+  function pointEdit(ta: HTMLTextAreaElement, value: string, caret: number, data: string,
+    inputType = "insertText", witnessed = true) {
+    if (witnessed) ta.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, inputType, data }));
+    ta.value = value;
+    ta.setSelectionRange(caret, caret);
+    ta.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType, data }));
+  }
+  const backspace = (ta: HTMLTextAreaElement) =>
+    ta.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Backspace", keyCode: 8 }));
+
+  it("sends the typed half of a pair inserted in one edit and keeps typing", () => {
+    const { textarea, sent } = setup();
+    pointEdit(textarea, "()", 1, "(");
+    expect(sent).toEqual(["("]);
+    pointEdit(textarea, "(a)", 2, "a");
+    pointEdit(textarea, "(ab)", 3, "b");
+    expect(sent).toEqual(["(", "a", "b"]);
+    expect(textarea.value).toBe("(ab)");
+  });
+
+  it("keeps typing when the closer arrives as a second edit behind the caret", () => {
+    const { textarea, sent } = setup();
+    insert(textarea, "(");
+    expect(sent).toEqual(["("]);
+    pointEdit(textarea, "()", 1, ")");
+    expect(sent).toEqual(["("]);
+    pointEdit(textarea, "(x)", 2, "x");
+    expect(sent).toEqual(["(", "x"]);
+  });
+
+  it("sends the typed prefix when the caret stops inside the pair", () => {
+    const { textarea, sent } = setup();
+    pointEdit(textarea, "\u201c\u201d", 1, "\u201c");
+    pointEdit(textarea, "\u201chi\u201d", 3, "hi");
+    expect(sent).toEqual(["\u201c", "hi"]);
+    expect(textarea.value).toBe("\u201chi\u201d");
+  });
+
+  it("erases only sent scalars in front of the inserted closer", () => {
+    const { textarea, sent } = setup();
+    pointEdit(textarea, "()", 1, "(");
+    pointEdit(textarea, "(a)", 2, "a");
+    backspace(textarea);
+    pointEdit(textarea, "()", 1, "", "deleteContentBackward");
+    expect(sent).toEqual(["(", "a", "\x7f"]);
+  });
+
+  it("does not erase the inserted closer when the caret passed it", () => {
+    const { textarea, sent } = setup();
+    pointEdit(textarea, "()", 1, "(");
+    textarea.setSelectionRange(2, 2); // the method moves the caret over its own closer
+    backspace(textarea);
+    pointEdit(textarea, "(", 1, "", "deleteContentBackward");
+    expect(sent).toEqual(["("]);
+  });
+
+  it("keeps sending after the caret passes the inserted closer", () => {
+    const { textarea, sent } = setup();
+    insert(textarea, "(");
+    pointEdit(textarea, "()", 1, ")");
+    textarea.setSelectionRange(2, 2);
+    pointEdit(textarea, "()x", 3, "x");
+    expect(sent).toEqual(["(", "x"]);
+    expect(textarea.value).toBe("()x");
+  });
+
+  it("accepts a unique pair insertion that arrives without beforeinput", () => {
+    const { textarea, sent } = setup();
+    pointEdit(textarea, "()", 1, "(", "insertText", false);
+    expect(sent).toEqual(["("]);
+  });
+
+  it("declines an ambiguous split instead of guessing a pair", () => {
+    const { textarea, sent } = setup();
+    insert(textarea, "aa");
+    pointEdit(textarea, "aaa", 1, "a", "insertText", false);
+    expect(sent).toEqual(["aa"]);
+  });
+});

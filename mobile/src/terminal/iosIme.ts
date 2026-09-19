@@ -6,8 +6,13 @@
  * DOM deltas identify edits, never event.data alone or a time/string dedup
  * window. A witnessed append can use event.data to disambiguate SP/NBSP only.
  * Terminal input is not a document editor: destructive changes require a proven
- * owned suffix and beforeinput selection. DEL assumes normal terminal erase
+ * owned suffix and selection evidence. DEL assumes normal terminal erase
  * semantics; complex graphemes are deliberately not rewritten.
+ *
+ * Some input methods insert text the user never typed (an auto-paired close
+ * bracket or smart quote behind the caret). Those ranges are tracked as
+ * `ghosts`: never sent, never erased, and never a reason to stop mapping the
+ * edits the user keeps typing in front of them.
  */
 // These scalars (including dictation punctuation) each need one terminal erase.
 // Do not infer erase counts for combining sequences, emoji or other graphemes.
@@ -37,6 +42,10 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
   let timer: ReturnType<typeof setTimeout> | undefined;
   let observed = textarea.value;
   let ownedStart = observed.length;
+  // Text an input method inserted on its own (auto-paired closer, smart quote).
+  // It was never sent, so it is never erased from the terminal and never makes
+  // an edit in front of it unprovable. Offsets are into `observed`.
+  let ghosts: Array<[number, number]> = [];
   let hardware = false;
   let unidentifiedKey = false;
   let before: { value: string; start: number; end: number } | undefined;
@@ -53,27 +62,95 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
   const snapshot = () => ({ value: textarea.value, start: textarea.selectionStart, end: textarea.selectionEnd });
   const invalidate = () => {
     clearTimeout(timer); pending = false; composing = false; unidentifiedKey = false;
-    observed = textarea.value; ownedStart = observed.length; before = compositionBefore = undefined;
+    observed = textarea.value; ownedStart = observed.length; ghosts = [];
+    before = compositionBefore = undefined;
+  };
+  const inGhost = (index: number) => ghosts.some(([start, end]) => index >= start && index < end);
+  // An edit can be mapped onto the terminal only while no sent character sits
+  // after the edited region: the terminal is append-only, and everything after
+  // that region is either still pending (untyped) or already displayed.
+  const hasSentAfter = (value: string, index: number) => {
+    for (let cursor = index; cursor < value.length; cursor++) if (!inGhost(cursor)) return true;
+    return false;
+  };
+  // Split the region an edit replaced into the scalars that were sent and the
+  // ones the input method inserted, so a DEL is only counted for sent text.
+  const sentScalarsIn = (value: string, from: number, length: number) => {
+    let sent = "";
+    let index = from;
+    for (const scalar of Array.from(value.slice(from, from + length))) {
+      if (!inGhost(index)) sent += scalar;
+      index += scalar.length;
+    }
+    return sent;
+  };
+  const moveGhostsForInsertion = (at: number, inserted: number, typed: number) => {
+    const next: Array<[number, number]> = [];
+    for (const [start, end] of ghosts) {
+      if (end <= at) next.push([start, end]);
+      else if (start >= at) next.push([start + inserted, end + inserted]);
+      else { next.push([start, at]); next.push([at + inserted, end + inserted]); }
+    }
+    if (typed < inserted) next.push([at + typed, at + inserted]);
+    ghosts = next;
+  };
+  const moveGhostsForDeletion = (from: number, to: number) => {
+    const removed = to - from;
+    const next: Array<[number, number]> = [];
+    for (const [start, end] of ghosts) {
+      if (Math.min(end, from) > start) next.push([start, Math.min(end, from)]);
+      const tail = Math.max(start, to);
+      if (tail < end) next.push([tail - removed, end - removed]);
+    }
+    ghosts = next;
+  };
+  // A witnessed insertion of one run at one caret position: either the browser
+  // told us where it happened, or (base, value) splits that way exactly once.
+  // Repeated text can make the split ambiguous; ambiguity is declined, not
+  // guessed. This is the same evidence standard as a witnessed tail append.
+  const insertionAt = (base: string, value: string, previous?: { value: string; start: number; end: number }) => {
+    const length = value.length - base.length;
+    if (length <= 0) return undefined;
+    const at = previous?.value === base && previous.start === previous.end ? previous.start : -1;
+    const fits = (position: number) => position >= 0 && position <= base.length
+      && value.slice(0, position) === base.slice(0, position)
+      && value.slice(position + length) === base.slice(position);
+    if (at >= 0) return fits(at) ? { at, length } : undefined;
+    let found: { at: number; length: number } | undefined;
+    for (let position = 0; position <= base.length; position++) {
+      if (value.slice(0, position) !== base.slice(0, position)) break;
+      if (!fits(position)) continue;
+      if (found) return undefined;
+      found = { at: position, length };
+    }
+    return found;
   };
   const reconcile = (event?: Event, previous = before) => {
     const value = textarea.value;
     // A witnessed browser/xterm reset is a new document epoch, not repetition.
     if (previous && previous.value !== observed) {
-      observed = previous.value; ownedStart = observed.length;
+      observed = previous.value; ownedStart = observed.length; ghosts = [];
     }
     const base = observed;
-    const atEnd = textarea.selectionStart === value.length && textarea.selectionEnd === value.length;
+    const caret = textarea.selectionStart;
+    const collapsed = textarea.selectionStart === textarea.selectionEnd;
+    const atEnd = collapsed && caret === value.length;
+    const edit = event as InputEvent | undefined;
     let output = "";
     let reason = "unchanged";
+    let handled = true;
     if (value !== base) {
       const witnessedEndInsertion = atEnd && previous?.value === base
         && previous.start === base.length && previous.end === base.length;
       const normalizedPrefix = witnessedEndInsertion && value.length > base.length
         && sameSpaceRepresentation(value.slice(0, base.length), base);
+      // One edit at one position. The terminal is append-only, so it can only
+      // follow while no sent character sits behind the edited region; text the
+      // method inserted by itself sits there as `ghosts` and is never sent.
+      const atPoint = collapsed && caret >= ownedStart;
       if (atEnd && (value.startsWith(base) || normalizedPrefix)) {
         output = value.slice(base.length);
         reason = value.startsWith(base) ? "append" : "space-normalized-append";
-        const edit = event as InputEvent | undefined;
         // Only choose the input's space representation when its entire data
         // matches the witnessed DOM insertion (apart from SP/NBSP). Preserve
         // intentional NBSP; never echo a full-word or unchanged notification.
@@ -81,9 +158,9 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
           && output !== edit.data && sameSpaceRepresentation(output, edit.data)) {
           output = edit.data; reason = "space-normalized-append";
         }
-      } else if (atEnd && previous?.value === base
+      } else if (ghosts.length === 0 && atEnd && previous?.value === base
         && previous.start === base.length && previous.end === base.length
-        && (event as InputEvent | undefined)?.inputType === "deleteContentBackward"
+        && edit?.inputType === "deleteContentBackward"
         && value.length < base.length && value.length >= ownedStart
         && sameSpaceRepresentation(base.slice(0, value.length), value)) {
         // WebKit also converts retained SP -> NBSP while retracting dictation.
@@ -94,10 +171,10 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
         if (erasableScalars.test(removed)) {
           output = "\x7f".repeat(Array.from(removed).length);
           reason = base.startsWith(value) ? "suffix-replacement" : "space-normalized-delete";
-        } else reason = "unsupported-grapheme";
-      } else if (atEnd && previous?.value === base && previous.start >= ownedStart
+        } else { handled = false; reason = "unsupported-grapheme"; }
+      } else if (ghosts.length === 0 && atEnd && previous?.value === base && previous.start >= ownedStart
         && previous.end === base.length && (value.startsWith(base.slice(0, previous.start))
-          || ((event as InputEvent | undefined)?.inputType === "deleteContentBackward"
+          || (edit?.inputType === "deleteContentBackward"
             && previous.start === previous.end && base.startsWith(value) && value.length >= ownedStart))) {
         // Compare Unicode scalars, not UTF-16 units (never split a surrogate).
         const old = Array.from(base.slice(ownedStart));
@@ -109,10 +186,40 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
         if (erasableScalars.test(removed)
           && !/^[\p{M}\u200d\ufe0f]/u.test(next.slice(common).join(""))) {
           output = "\x7f".repeat(old.length - common) + next.slice(common).join(""); reason = "suffix-replacement";
-        } else reason = "unsupported-grapheme";
-      } else reason = "unproven-edit";
+        } else { handled = false; reason = "unsupported-grapheme"; }
+      } else {
+        const insertion = atPoint ? insertionAt(base, value, previous) : undefined;
+        if (insertion && insertion.at <= caret && caret <= insertion.at + insertion.length
+          && caret >= insertion.at && !hasSentAfter(base, insertion.at)) {
+          // The method inserted a run at the caret, e.g. an auto-paired close
+          // bracket behind a typed open one. Send only the part the caret moved
+          // past; the rest was inserted by the method and stays unsent.
+          const typed = caret - insertion.at;
+          output = value.slice(insertion.at, caret);
+          moveGhostsForInsertion(insertion.at, insertion.length, typed);
+          reason = typed === 0 ? "untyped-insert" : typed === insertion.length ? "typed-insert" : "typed-before-untyped";
+        } else if (atPoint && previous?.value === base && previous.start === previous.end
+          && previous.start > caret && value.length < base.length
+          && previous.start - caret === base.length - value.length
+          && !hasSentAfter(base, previous.start)
+          && value.slice(0, caret) === base.slice(0, caret)
+          && value.slice(caret) === base.slice(previous.start)
+          && typeof edit?.inputType === "string" && edit.inputType.startsWith("delete")) {
+          // Backward deletion in front of untyped text: erase only the scalars
+          // that were sent. Removing text the method inserted emits nothing.
+          const removed = base.slice(caret, previous.start);
+          const sent = sentScalarsIn(base, caret, removed.length);
+          if (sent === "" || erasableScalars.test(sent)) {
+            output = "\x7f".repeat(Array.from(sent).length);
+            reason = sent === "" ? "untyped-delete" : "sent-delete";
+            moveGhostsForDeletion(caret, previous.start);
+          } else { handled = false; reason = "unsupported-grapheme"; }
+        } else { handled = false; reason = "unproven-edit"; }
+      }
       observed = value;
-      if (!output) ownedStart = value.length;
+      // A declined edit keeps no ownership: never erase from a region we could
+      // not map. A handled edit keeps the suffix, including its untyped text.
+      if (!handled) { ownedStart = value.length; ghosts = []; }
     }
     before = undefined;
     record(event, output.length, reason);
@@ -156,12 +263,15 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
     } else if (![16, 17, 18, 20].includes(event.keyCode)) {
       finish();
       if (event.keyCode === 8 && !composing && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
-        && textarea.value === observed && ownedStart < observed.length
-        && textarea.selectionStart === observed.length && textarea.selectionEnd === observed.length
-        && erasableScalars.test(observed.slice(ownedStart))) {
+        && textarea.value === observed && textarea.selectionStart === textarea.selectionEnd
+        && textarea.selectionStart > ownedStart
+        && !hasSentAfter(observed, textarea.selectionStart)
+        && erasableScalars.test(sentScalarsIn(observed, ownedStart, observed.length - ownedStart))) {
         // Real iPhone Doubao retraction: ONE Backspace wraps MANY native
         // deleteContentBackward edits. xterm would send one DEL, cancel the
         // first DOM deletion and invalidate the suffix for all remaining edits.
+        // The same applies in front of untyped text: only sent scalars may be
+        // erased, and the caret may sit before text the input method inserted.
         // Keep the browser default action; reconcile EACH witnessed DOM edit.
         hardware = false; event.stopImmediatePropagation();
         record(event, 0, "dom-backspace");
