@@ -330,6 +330,34 @@ describe("DocumentTree", () => {
     expect(container.querySelector(".doc-tree-row.git-modified")).toBeNull();
   });
 
+  it("keeps expanded directories open across a manual refresh", async () => {
+    render(<DocumentTree />);
+    fireEvent.click(await screen.findByText("docs"));
+    await screen.findByText("报告.md");
+
+    // The next read sees a new file in docs/.
+    listMock.mockImplementation((path: string) => {
+      if (path === ROOT) {
+        return Promise.resolve(listing(ROOT, [["src", true], ["docs", true], ["README.md", false]]));
+      }
+      if (path === `${ROOT}/docs`) {
+        return Promise.resolve(listing(`${ROOT}/docs`, [["报告.md", false], ["新增.md", false]]));
+      }
+      return Promise.resolve(listing(path, []));
+    });
+    const docsReadsBefore = listMock.mock.calls.filter(([p]) => p === `${ROOT}/docs`).length;
+
+    fireEvent.click(screen.getByLabelText("刷新目录树"));
+
+    // Expanded state survives: docs/ children stay visible, and the reload
+    // actually re-read the directory (the new file appears).
+    await screen.findByText("新增.md");
+    expect(screen.getByText("报告.md")).toBeTruthy();
+    expect(
+      listMock.mock.calls.filter(([p]) => p === `${ROOT}/docs`).length,
+    ).toBeGreaterThan(docsReadsBefore);
+  });
+
   it("collapses all expanded directories while keeping the root open", async () => {
     render(<DocumentTree />);
     fireEvent.click(await screen.findByText("docs"));

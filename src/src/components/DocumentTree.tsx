@@ -138,7 +138,10 @@ export default function DocumentTree() {
     return own?.index ?? null;
   }, [treeGit, gcSnapshot]);
   const [dirs, setDirs] = useState<Map<string, DirState>>(new Map());
-  const [refreshToken, setRefreshToken] = useState(0);
+  // Lets the manual-refresh handler reload every loaded directory without
+  // routing the whole map through an effect (which would loop on `dirs`).
+  const dirsRef = useRef(dirs);
+  dirsRef.current = dirs;
   const [activeDir, setActiveDir] = useState<string | null>(null);
   const [creating, setCreating] = useState<"file" | "dir" | null>(null);
   const [nameDraft, setNameDraft] = useState("");
@@ -186,7 +189,21 @@ export default function DocumentTree() {
     setDirs(new Map());
     loadDir(root, true);
     void refreshTreeGit(root);
-  }, [root, refreshToken, loadDir]);
+  }, [root, loadDir]);
+
+  /** Manual refresh: re-read every directory that was ever loaded while
+   * keeping each one's expanded/collapsed state (a refresh must not fold
+   * the tree). Directories never expanded stay lazy. */
+  const refreshAll = useCallback(() => {
+    if (!root) return;
+    const snapshot = dirsRef.current;
+    if (snapshot.size === 0) {
+      loadDir(root, true);
+    } else {
+      for (const [path, state] of snapshot) loadDir(path, state.expanded);
+    }
+    void refreshTreeGit(root);
+  }, [root, loadDir]);
 
   // Coming back to the window repaints decorations (a commit or branch
   // switch may have happened elsewhere); best-effort, never blocking.
@@ -537,7 +554,7 @@ export default function DocumentTree() {
           className="btn small ghost"
           data-tip={t("ui.document.refreshTreeTip")}
           aria-label={t("ui.document.refreshTree")}
-          onClick={() => setRefreshToken((token) => token + 1)}
+          onClick={refreshAll}
         >
           ⟳
         </button>
