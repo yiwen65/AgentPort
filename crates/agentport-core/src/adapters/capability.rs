@@ -33,6 +33,11 @@ pub const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_PROBE_OUTPUT: usize = 256 * 1024; // 256 KiB
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_VERSIONED_RUNTIME_DIRS: usize = 8;
+/// How far up from an executable the macOS quarantine check walks: the file
+/// itself plus 6 ancestors. A quarantined download normally marks the version
+/// directory it was extracted into, so this stays inside the install tree
+/// instead of sweeping system directories.
+const MAX_QUARANTINE_ANCESTORS: usize = 7;
 
 #[derive(Debug, Clone)]
 pub struct ProbeOutcome {
@@ -493,6 +498,78 @@ fn probe_install(
     Ok(install)
 }
 
+/// macOS Gatekeeper blocks an executable that carries `com.apple.quarantine`
+/// (on the file or on a directory it is installed under) *before* `main` runs,
+/// so a read-only probe only ever observes a timeout: the process neither
+/// writes output nor exits. Naming the attribute and the path that owns it
+/// turns that opaque timeout into a reason the user can act on.
+///
+/// Returns the highest quarantined path found (the install directory is more
+/// useful to clean than the binary inside it), or `None` when nothing in the
+/// bounded ancestor walk is quarantined.
+fn quarantine_origin(exe: &Path) -> Option<PathBuf> {
+    let resolved = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+    topmost_quarantined(&resolved, &is_quarantined)
+}
+
+/// Pure core of [`quarantine_origin`]: the highest of the executable and its
+/// bounded ancestors that `is_quarantined` reports. `ancestors` yields
+/// deepest-first, so the last match is the outermost one.
+fn topmost_quarantined(exe: &Path, is_quarantined: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+    exe.ancestors()
+        .take(MAX_QUARANTINE_ANCESTORS)
+        .filter(|candidate| is_quarantined(candidate))
+        .last()
+        .map(Path::to_path_buf)
+}
+
+/// Probe failure text for one candidate. The raw `--version` timeout says
+/// nothing about *why* the CLI never started; when the file is quarantined the
+/// Gatekeeper block is the actionable part of the message.
+fn candidate_error_message(exe: &Path, error: &CoreError) -> String {
+    with_quarantine_hint(
+        format!("{}: {error}", exe.display()),
+        quarantine_origin(exe).as_deref(),
+    )
+}
+
+fn with_quarantine_hint(message: String, quarantine: Option<&Path>) -> String {
+    match quarantine {
+        Some(blocked) => format!(
+            "{message}；该可执行文件带 macOS 隔离属性（com.apple.quarantine），Gatekeeper 会在进程启动前拦截它，探测只能看到超时。请在终端执行 `xattr -dr com.apple.quarantine {}` 后重新检测。",
+            blocked.display()
+        ),
+        None => message,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn is_quarantined(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    const ATTRIBUTE: &[u8] = b"com.apple.quarantine\0";
+    let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // Size query only: a zero-size buffer still reports whether the attribute
+    // exists, so no value buffer is needed.
+    unsafe {
+        libc::getxattr(
+            c_path.as_ptr(),
+            ATTRIBUTE.as_ptr().cast(),
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+        ) >= 0
+    }
+}
+
+/// Other platforms have no quarantine attribute; the hint never applies.
+#[cfg(not(target_os = "macos"))]
+fn is_quarantined(_path: &Path) -> bool {
+    false
+}
+
 fn probe_agent_with_candidates(
     t: AgentType,
     confirmed_path: Option<&Path>,
@@ -547,7 +624,7 @@ fn probe_agent_with_candidates(
                 )
             }
             Err(error) => {
-                let detail = error.to_string();
+                let detail = candidate_error_message(&selected, &error);
                 mk(
                     ProbeState::Unavailable,
                     None,
@@ -593,7 +670,7 @@ fn probe_agent_with_candidates(
                     candidates,
                 );
             }
-            Err(error) => errors.push(format!("{}: {error}", exe.display())),
+            Err(error) => errors.push(candidate_error_message(&exe, &error)),
         }
     }
 
@@ -1035,5 +1112,51 @@ mod tests {
         let outcome = probe_agent(AgentType::Claude, Some(Path::new("/nonexistent/cli")));
         assert_eq!(outcome.state, ProbeState::Unavailable);
         assert!(outcome.reason.unwrap().contains("探测失败"));
+    }
+
+    #[test]
+    fn topmost_quarantined_reports_the_installing_directory() {
+        // Homebrew 的隔离属性通常落在解包目录上，而不是二进制本身；用户需要
+        // 清理的是整个目录，所以祖先中最外层的那一个是正确的提示对象。
+        let exe = Path::new("/opt/homebrew/Caskroom/codex/0.155.0/bin/codex");
+        let marked = [
+            "/opt/homebrew/Caskroom/codex/0.155.0/bin/codex",
+            "/opt/homebrew/Caskroom/codex/0.155.0/bin",
+            "/opt/homebrew/Caskroom/codex/0.155.0",
+        ];
+        let found = topmost_quarantined(exe, &|candidate| {
+            marked.contains(&candidate.to_string_lossy().as_ref())
+        });
+        assert_eq!(
+            found.as_deref(),
+            Some(Path::new("/opt/homebrew/Caskroom/codex/0.155.0"))
+        );
+
+        // 干净的路径必须报 None，否则每次探测超时都会挂上无关的提示。
+        assert_eq!(topmost_quarantined(exe, &|_| false), None);
+    }
+
+    #[test]
+    fn quarantine_hint_names_the_path_to_clean() {
+        let hinted = with_quarantine_hint(
+            "探测超时".to_string(),
+            Some(Path::new("/opt/homebrew/Caskroom/codex/0.155.0")),
+        );
+        assert!(hinted.starts_with("探测超时"));
+        assert!(hinted.contains("com.apple.quarantine"));
+        assert!(hinted.contains("xattr -dr com.apple.quarantine /opt/homebrew/Caskroom/codex/0.155.0"));
+        // 没有隔离属性时消息保持原样，不制造与超时无关的噪音。
+        assert_eq!(with_quarantine_hint("探测超时".to_string(), None), "探测超时");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn freshly_written_executable_is_not_quarantined() {
+        // 只有下载而来的文件会带 com.apple.quarantine；普通文件不应误报，
+        // 否则失败的探测会给出误导性的 Gatekeeper 提示。
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = write_exe(tmp.path(), "codex", "#!/bin/sh\nexit 0\n");
+        assert!(!is_quarantined(&exe));
+        assert_eq!(quarantine_origin(&exe), None);
     }
 }

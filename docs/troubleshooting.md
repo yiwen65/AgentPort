@@ -12,6 +12,17 @@
   3. 路径已变化时用"选择文件"手动指定新的绝对路径；
   4. 探测超时的 CLI 会被标记"不可用"，可"复制诊断信息"后修复再重新检测。某个 Agent 不可用不阻塞其他 Agent。
 
+## CLI 带 macOS 隔离属性（Gatekeeper）导致探测超时、会话空白
+
+- **现象**：某 Agent 长期"不可用"，探测原因是 `--version` 超时；从 AgentPort 打开该 Agent 的会话后终端一直没有内容（进程在，但没有任何输出）。同样地，在终端里手敲该命令也不返回。
+- **原因**：Homebrew 等下载渠道会给 CLI 打上 `com.apple.quarantine`（落在二进制上或其安装目录上）。macOS 在进程进入 `main` 之前先做 Gatekeeper 评估，评估完成前进程停在动态链接阶段——既不输出也不退出，AgentPort 的只读探测只能看到 5 秒超时（本机 2026-09 实测首次评估耗时 5 分 41 秒才放行，之后同一文件被标记为已放行，启动变回即时）。macOS 的评估服务卡住时（例如 `spctl --master-disable` 关闭了评估），等待时间可能长到无法接受。
+- **处理**：
+  1. 确认属性：`xattr -r "$(command -v codex)"`（路径也会出现在探测失败原因里）；
+  2. 清理二进制及其安装目录：`xattr -dr com.apple.quarantine /opt/homebrew/Caskroom/codex`（Apple 签名的 App 可用 `xattr -cr`）；
+  3. 回到设置页/诊断中心点"重新检测"——清理后不再需要评估，`--version` 立即返回；此后从 AgentPort 启动的会话会正常渲染。
+  4. 若清理后仍超时：这条路径上可能留下了未完成的评估记录，换用新的路径（例如 `brew upgrade --cask <cask>` 装到新的版本目录）或重启系统后再试。探测超时的原因里现在会直接写明隔离属性与待清理路径，不再只有一个裸超时。
+- **注意**：`brew upgrade` / `brew reinstall` 会重新带上隔离属性，升级后请重复第 2 步。
+
 ## GUI 的 PATH 与终端不一致
 
 - **现象**：终端里 `claude`/`kimi` 可用，但 AgentPort 探测不到。
