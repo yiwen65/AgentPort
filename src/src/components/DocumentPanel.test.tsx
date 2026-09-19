@@ -223,6 +223,39 @@ describe("DocumentPanel", () => {
     expect(container.querySelector(".doc-tree-resize")?.className).not.toContain("active");
   });
 
+  it("still offers the tree sash in expanded mode and honors the dragged width", async () => {
+    listMock.mockResolvedValue({ path: "/tmp/demo", truncated: false, entries: [] });
+    setState({
+      explorerOpen: true,
+      explorerRoot: "/tmp/demo",
+      docTreeWidth: 184,
+      docPanelExpanded: true,
+    });
+    const { container } = render(<DocumentPanel />);
+    await screen.findByRole("tab", { name: "报告.md" });
+
+    // Expanded over the whole terminal page: the tree column must remain
+    // resizable (only the panel-width sash is meaningless there).
+    const sash = container.querySelector(".doc-tree-resize");
+    expect(sash).not.toBeNull();
+    act(() => {
+      (sash as Element).dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 500 }),
+      );
+    });
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 384 }));
+    });
+    expect(getState().docTreeWidth).toBe(300);
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+    });
+    // The expanded panel is window-wide, so the tree is not capped by the
+    // stored docked-panel width (480 − 280 = 200 would clip 300).
+    const panelStyle = container.querySelector(".doc-panel")?.getAttribute("style") ?? "";
+    expect(panelStyle).toContain("--doc-tree-width: 300px");
+  });
+
   it("keeps an accessible name and tooltip on the icon-only preview tab", async () => {
     render(<DocumentPanel />);
     await screen.findByText("原始文本");
