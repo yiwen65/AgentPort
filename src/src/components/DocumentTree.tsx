@@ -3,7 +3,7 @@
 // the panel's editor through the same path as terminal document links, and
 // the header buttons create new files/directories below the active row.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { api, copyText, errorText } from "../api";
 import {
@@ -12,6 +12,16 @@ import {
   openDocumentTargetToSide,
   updateDocumentTabPath,
 } from "../documents";
+import {
+  buildDocGitIndex,
+  decorateDocPath,
+  getTreeGitState,
+  refreshTreeGit,
+  subscribeTreeGit,
+  type DocGitDecoration,
+  type DocGitIndex,
+} from "../docTreeGit";
+import { DocFileIcon, IconFolder } from "./docTreeIcons";
 import { writeDragPayload } from "../terminalDrop";
 import {
   confirmDialog,
@@ -60,26 +70,13 @@ function IconChevron({ expanded }: { expanded: boolean }) {
   );
 }
 
-function IconFolder() {
+function IconCollapseAll() {
   return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
       <path
-        d="M2 4.25a1 1 0 0 1 1-1h2.6l1.4 1.6h6a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.25Z"
+        d="M3.5 7.2 8 2.7l4.5 4.5M3.5 12.3 8 7.8l4.5 4.5"
         stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function IconFile() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path
-        d="M9 1.75H4.5a1 1 0 0 0-1 1v10.5a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5.25L9 1.75Zm0 0v3.5h3.5"
-        stroke="currentColor"
-        strokeWidth="1.2"
+        strokeWidth="1.3"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
@@ -119,6 +116,27 @@ export default function DocumentTree() {
   const { t } = useTranslation("shell");
   const root = useStore((state) => state.explorerRoot);
   const openPath = useStore((state) => getActiveDocumentTab(state)?.path ?? null);
+  const treeGit = useSyncExternalStore(subscribeTreeGit, () =>
+    getTreeGitState(root ?? ""),
+  );
+  // A Git Center snapshot for the same checkout supersedes ours when newer
+  // (stage/discard there must repaint the tree without a manual refresh).
+  const checkoutRoot = treeGit?.checkoutRoot ?? null;
+  const gcSnapshot = useStore((state) => {
+    if (!checkoutRoot) return null;
+    for (const cache of Object.values(state.gitCenter.caches)) {
+      const snapshot = cache.changes;
+      if (snapshot?.context.checkoutRoot === checkoutRoot) return snapshot;
+    }
+    return null;
+  });
+  const gitIndex = useMemo<DocGitIndex | null>(() => {
+    const own = treeGit && treeGit.phase !== "unavailable" ? treeGit : null;
+    if (gcSnapshot && (!own?.observedAt || gcSnapshot.observedAt > own.observedAt)) {
+      return buildDocGitIndex(gcSnapshot);
+    }
+    return own?.index ?? null;
+  }, [treeGit, gcSnapshot]);
   const [dirs, setDirs] = useState<Map<string, DirState>>(new Map());
   const [refreshToken, setRefreshToken] = useState(0);
   const [activeDir, setActiveDir] = useState<string | null>(null);
@@ -162,12 +180,22 @@ export default function DocumentTree() {
       });
   }, []);
 
-  // Load (or reload) the root directory.
+  // Load (or reload) the root directory and its git decorations.
   useEffect(() => {
     if (!root) return;
     setDirs(new Map());
     loadDir(root, true);
+    void refreshTreeGit(root);
   }, [root, refreshToken, loadDir]);
+
+  // Coming back to the window repaints decorations (a commit or branch
+  // switch may have happened elsewhere); best-effort, never blocking.
+  useEffect(() => {
+    if (!root) return;
+    const onFocus = () => void refreshTreeGit(root);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [root]);
 
   const toggleDir = (path: string) => {
     setActiveDir(path);
@@ -349,18 +377,30 @@ export default function DocumentTree() {
       const child = dirs.get(entry.path);
       const expanded = child?.expanded ?? false;
       const selected = !entry.isDir && openPath === entry.path;
+      const deco: DocGitDecoration | null = gitIndex
+        ? decorateDocPath(gitIndex, entry.path, entry.isDir)
+        : null;
+      const gitClass = deco
+        ? `${deco.dimmed ? " git-dimmed" : ""}${deco.status ? ` git-${deco.status}` : ""}`
+        : "";
+      const gitStatus = deco?.status ?? deco?.dirStatus;
+      const gitLabel = gitStatus
+        ? t(`ui.document.gitStatus.${gitStatus}`)
+        : deco?.dimmed
+          ? t("ui.document.gitStatus.ignored")
+          : undefined;
       return (
         <div key={entry.path}>
           {renaming === entry.path ? (
             <div
-              className={`doc-tree-row${entry.isDir ? " dir" : " file"}`}
+              className={`doc-tree-row${entry.isDir ? " dir" : " file"}${gitClass}`}
               style={{ paddingLeft: 6 + depth * 16 }}
             >
               <span className="doc-tree-icon" aria-hidden="true">
                 {entry.isDir ? <IconChevron expanded={expanded} /> : null}
               </span>
               <span className={`doc-tree-kind${entry.isDir ? " dir" : " file"}`} aria-hidden="true">
-                {entry.isDir ? <IconFolder /> : <IconFile />}
+                {entry.isDir ? <IconFolder /> : <DocFileIcon name={entry.name} />}
               </span>
               <input
                 className="doc-tree-rename-input"
@@ -385,7 +425,7 @@ export default function DocumentTree() {
             </div>
           ) : (
           <button
-            className={`doc-tree-row${entry.isDir ? " dir" : " file"}${selected ? " selected" : ""}`}
+            className={`doc-tree-row${entry.isDir ? " dir" : " file"}${selected ? " selected" : ""}${gitClass}}`}
             style={{ paddingLeft: 6 + depth * 16 }}
             data-tip={entry.path}
             draggable
@@ -412,9 +452,24 @@ export default function DocumentTree() {
               {entry.isDir ? <IconChevron expanded={expanded} /> : null}
             </span>
             <span className={`doc-tree-kind${entry.isDir ? " dir" : " file"}`} aria-hidden="true">
-              {entry.isDir ? <IconFolder /> : <IconFile />}
+              {entry.isDir ? <IconFolder /> : <DocFileIcon name={entry.name} />}
             </span>
             <span className="doc-tree-name">{entry.name}</span>
+            {deco?.badge ? (
+              <span
+                className={`doc-tree-git-badge git-${deco.status}`}
+                data-tip={gitLabel}
+              >
+                {deco.badge}
+              </span>
+            ) : null}
+            {deco?.dirChanged ? (
+              <span
+                className={`doc-tree-git-dot git-${deco.dirStatus}`}
+                data-tip={gitLabel}
+                aria-label={gitLabel}
+              />
+            ) : null}
           </button>
           )}
           {renaming === entry.path && renameError ? (
@@ -482,6 +537,25 @@ export default function DocumentTree() {
           onClick={() => setRefreshToken((token) => token + 1)}
         >
           ⟳
+        </button>
+        <button
+          className="btn small ghost"
+          data-tip={t("ui.document.collapseAllTip")}
+          aria-label={t("ui.document.collapseAll")}
+          onClick={() => {
+            // Collapse every loaded directory except the root itself.
+            setDirs((current) => {
+              const next = new Map(current);
+              for (const [path, dirState] of next) {
+                if (path !== root && dirState.expanded) {
+                  next.set(path, { ...dirState, expanded: false });
+                }
+              }
+              return next;
+            });
+          }}
+        >
+          <IconCollapseAll />
         </button>
       </div>
       <div className="doc-tree-body" role="tree">

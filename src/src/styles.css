@@ -3234,6 +3234,11 @@ body.is-resizing-pane {
   border-left: 1px solid var(--sidebar-border);
   background-color: var(--sidebar-glass);
   background-image: var(--sidebar-glass-layers, none);
+  /* Git decoration palette: mid-saturation hues that read on both themes
+     (VSCode icon themes also keep one fixed palette). */
+  --doc-git-modified: #d8b26e;
+  --doc-git-added: #6fbf73;
+  --doc-git-conflict: #e5534b;
 }
 
 /* Tree-only mode: the panel hugs the tree column (inline width = tree + 1px
@@ -3370,6 +3375,77 @@ body.is-resizing-pane {
 .doc-tree-name {
   overflow: hidden;
   text-overflow: ellipsis;
+  /* The name truncates first so the git badge/dot stays visible. */
+  min-width: 0;
+}
+
+/* Git decorations (VSCode explorer style): colored names for changed
+   files, a letter badge on the row's right edge, a dot for directories
+   containing changes, dimmed ignored entries. */
+.doc-tree-row.git-modified .doc-tree-name,
+.doc-tree-row.git-renamed .doc-tree-name {
+  color: var(--doc-git-modified);
+}
+
+.doc-tree-row.git-added .doc-tree-name,
+.doc-tree-row.git-untracked .doc-tree-name {
+  color: var(--doc-git-added);
+}
+
+.doc-tree-row.git-conflict .doc-tree-name,
+.doc-tree-row.git-deleted .doc-tree-name {
+  color: var(--doc-git-conflict);
+}
+
+.doc-tree-row.git-dimmed {
+  opacity: 0.55;
+}
+
+.doc-tree-git-badge {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding-left: 8px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.doc-tree-git-badge.git-modified,
+.doc-tree-git-badge.git-renamed {
+  color: var(--doc-git-modified);
+}
+
+.doc-tree-git-badge.git-added,
+.doc-tree-git-badge.git-untracked {
+  color: var(--doc-git-added);
+}
+
+.doc-tree-git-badge.git-conflict,
+.doc-tree-git-badge.git-deleted {
+  color: var(--doc-git-conflict);
+}
+
+.doc-tree-git-dot {
+  margin-left: auto;
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-right: 2px;
+  border-radius: 50%;
+}
+
+.doc-tree-git-dot.git-modified,
+.doc-tree-git-dot.git-renamed {
+  background: var(--doc-git-modified);
+}
+
+.doc-tree-git-dot.git-added,
+.doc-tree-git-dot.git-untracked {
+  background: var(--doc-git-added);
+}
+
+.doc-tree-git-dot.git-conflict,
+.doc-tree-git-dot.git-deleted {
+  background: var(--doc-git-conflict);
 }
 
 /* Indent guide: a hairline running through the parent's chevron center, so

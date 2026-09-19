@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { listMock, createMock, renameMock, duplicateMock, deleteMock, vscodeMock, revealMock, copyMock } =
+const { listMock, createMock, renameMock, duplicateMock, deleteMock, vscodeMock, revealMock, copyMock, gitMock } =
   vi.hoisted(() => ({
     listMock: vi.fn(),
     createMock: vi.fn(),
@@ -12,6 +12,7 @@ const { listMock, createMock, renameMock, duplicateMock, deleteMock, vscodeMock,
     vscodeMock: vi.fn(),
     revealMock: vi.fn(),
     copyMock: vi.fn(),
+    gitMock: vi.fn(),
   }));
 
 vi.mock("../api", () => ({
@@ -23,6 +24,7 @@ vi.mock("../api", () => ({
     deleteDocumentEntry: deleteMock,
     openInVsCode: vscodeMock,
     revealInFileManager: revealMock,
+    getGitChanges: gitMock,
   },
   copyText: copyMock,
   errorText: (error: unknown) => String(error),
@@ -30,7 +32,9 @@ vi.mock("../api", () => ({
 
 import { act } from "@testing-library/react";
 import { openDocumentTarget } from "../documents";
+import { resetTreeGitForTests } from "../docTreeGit";
 import { getActiveDocumentTab, getState, resolveConfirm, setState } from "../store";
+import type { GitChangeEntry, GitChangeKind } from "../types";
 
 /** Active viewer tab as `{path, line}` (mirrors the old `openDocument`). */
 function openedDoc() {
@@ -71,8 +75,55 @@ describe("DocumentTree", () => {
 
   afterEach(() => {
     cleanup();
-    setState({ explorerRoot: null, explorerOpen: false, docGroups: [], activeDocGroupIndex: 0, contextMenu: null, confirm: null });
+    setState({ explorerRoot: null, explorerOpen: false, docGroups: [], activeDocGroupIndex: 0, contextMenu: null, confirm: null, projects: [] });
+    resetTreeGitForTests();
   });
+
+  function gitProject() {
+    setState({
+      projects: [{
+        id: "prj_git",
+        name: "Demo",
+        rootPath: ROOT,
+        gitRootPath: null,
+        pinned: false,
+        worktrees: [],
+        sessions: [],
+      }],
+    });
+  }
+
+  function gitEntry(path: string, kind: GitChangeKind): GitChangeEntry {
+    return {
+      entryToken: `t-${path}`,
+      pathToken: `p-${path}`,
+      displayPath: path,
+      oldPathToken: null,
+      displayOldPath: null,
+      indexStatus: null,
+      worktreeStatus: null,
+      conflictCode: null,
+      kind,
+      submoduleState: null,
+      staged: false,
+      unstaged: false,
+      untracked: kind === "untracked",
+      ignored: kind === "ignored",
+      conflicted: kind === "conflict",
+    };
+  }
+
+  function gitSnapshot(entries: GitChangeEntry[]) {
+    return {
+      context: { checkoutRoot: ROOT },
+      statusToken: "tok",
+      complete: true,
+      partialReason: null,
+      counts: { staged: 0, unstaged: 0, untracked: 0, ignored: 0, conflict: 0, renamed: 0, submodule: 0 },
+      entries,
+      observedAt: "2026-09-19T00:00:00Z",
+    };
+  }
 
   function menuItems() {
     return (getState().contextMenu?.items ?? []).filter((item) => !item.separator);
@@ -211,6 +262,71 @@ describe("DocumentTree", () => {
       expect(createMock).toHaveBeenCalledWith(`${ROOT}/backups`, "dir");
     });
     expect(getState().docGroups).toEqual([]);
+  });
+
+  it("decorates rows with git colors, badges, directory dots and dimming", async () => {
+    listMock.mockImplementation((path: string) => {
+      if (path === ROOT) {
+        return Promise.resolve(listing(ROOT, [["src", true], ["node_modules", true], ["README.md", false]]));
+      }
+      if (path === `${ROOT}/src`) {
+        return Promise.resolve(listing(`${ROOT}/src`, [["app.ts", false]]));
+      }
+      return Promise.resolve(listing(path, []));
+    });
+    gitMock.mockResolvedValue(gitSnapshot([
+      gitEntry("README.md", "modified"),
+      gitEntry("src/app.ts", "untracked"),
+      gitEntry("node_modules/", "ignored"),
+    ]));
+    gitProject();
+    const { container } = render(<DocumentTree />);
+
+    await waitFor(() => expect(gitMock).toHaveBeenCalled());
+    // Modified file: gold name class + M badge.
+    const readmeRow = (await screen.findByText("README.md")).closest("button");
+    expect(readmeRow?.className).toContain("git-modified");
+    const badge = container.querySelector(".doc-tree-git-badge");
+    expect(badge?.textContent).toBe("M");
+    expect(badge?.className).toContain("git-modified");
+
+    // Directory containing an untracked file: dot with the untracked hue.
+    const srcRow = (await screen.findByText("src")).closest("button");
+    const dot = srcRow?.querySelector(".doc-tree-git-dot");
+    expect(dot?.className).toContain("git-untracked");
+
+    // Ignored directory is dimmed.
+    const nmRow = (await screen.findByText("node_modules")).closest("button");
+    expect(nmRow?.className).toContain("git-dimmed");
+
+    // Expanding src shows the untracked file itself.
+    fireEvent.click(screen.getByText("src"));
+    const appRow = (await screen.findByText("app.ts")).closest("button");
+    expect(appRow?.className).toContain("git-untracked");
+    expect(appRow?.querySelector(".doc-tree-git-badge")?.textContent).toBe("U");
+  });
+
+  it("stays silent when the tree root is not a git repository", async () => {
+    gitMock.mockRejectedValue(new Error("not a git repository"));
+    gitProject();
+    const { container } = render(<DocumentTree />);
+    await waitFor(() => expect(gitMock).toHaveBeenCalled());
+    await screen.findByText("README.md");
+    expect(container.querySelector(".doc-tree-git-badge")).toBeNull();
+    expect(container.querySelector(".doc-tree-git-dot")).toBeNull();
+    expect(container.querySelector(".doc-tree-row.git-modified")).toBeNull();
+  });
+
+  it("collapses all expanded directories while keeping the root open", async () => {
+    render(<DocumentTree />);
+    fireEvent.click(await screen.findByText("docs"));
+    await screen.findByText("报告.md");
+
+    fireEvent.click(screen.getByLabelText("折叠全部"));
+    expect(screen.queryByText("报告.md")).toBeNull();
+    // Root entries remain visible.
+    expect(screen.getByText("docs")).toBeTruthy();
+    expect(screen.getByText("README.md")).toBeTruthy();
   });
 
   it("rejects invalid names without calling the backend", async () => {
