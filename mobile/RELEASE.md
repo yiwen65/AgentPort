@@ -78,6 +78,20 @@ xcrun devicectl device process launch --device '<devicectl device identifier>' c
 
 有效期到达后 App 通常无法启动。重新连接设备，在 Xcode 刷新 Personal Team profile，用新的开发签名重新 archive、验证和安装；单纯重新压缩旧 `.app` **不会续期**。保持 bundle ID/team 并覆盖安装通常保留数据，不保证系统永远保留；先备份重要数据，不要默认卸载。新增设备必须重新签发包含该 UDID 的 profile 并重建。
 
+### 无线安装的前置条件（实测）
+
+`devicectl` 可以走网络安装，但设备必须先在无线调试通道上可被发现。2026-09-20
+在 iPhone 17 Pro Max（iOS 27.0）上实测：**插着数据线（充电）且唤醒时**
+`dns-sd -B _remoted._tcp local.` 能看到设备广播（`Add … _remoted._tcp ncm`），
+拔线后同一命令不再有 `Add`，`devicectl list devices` 显示 `unavailable`，
+安装报 `CoreDeviceService was unable to locate a device`（error 1011）。因此：
+
+- 想用无线安装：先把设备接到**任意**电源、保持唤醒、连同一 Wi-Fi，再用
+  `dns-sd -B _remoted._tcp local.` 确认出现广播，然后才执行 `devicectl`；
+- 没有广播时**不要**反复重试 devicectl，直接走数据线（本文档推荐路径）；
+- 首次建立无线调试仍需在 Xcode → Window → Devices and Simulators 选中设备并勾选
+  `Connect via network`（该勾选需要设备先被看到一次）。
+
 ## 验证边界
 
 ```bash
