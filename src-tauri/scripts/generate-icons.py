@@ -13,8 +13,8 @@ Sources of truth:
   - src-tauri/icons/AgentPort.icon/ — the macOS 26 (Tahoe) Liquid Glass
     layered icon. Without it, Tahoe renders the app ~20% smaller on a gray
     "icon jail" background. Its foreground layer (Assets/logo.png) is
-    cropped to full-bleed galaxy artwork, with masking left to the OS. This
-    opaque variant is also the mobile source, avoiding a dark backing border.
+    extended into transparent padding without cropping or scaling the artwork.
+    This opaque variant is also the mobile source, avoiding a dark backing border.
 
 Outputs (all derived from the master, Lanczos):
   32x32.png, 128x128.png, 128x128@2x.png (256px), 512x512.png  (bundle.icon /
@@ -38,7 +38,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageFilter
 
 ROOT = Path(__file__).resolve().parent.parent
 ICONS = ROOT / "icons"
@@ -64,15 +64,33 @@ def transparent_corners(path: Path) -> bool:
 
 
 def derive_logo(master: Image.Image) -> Image.Image:
-    """Remove the baked-in outer rim for platforms that apply their own mask."""
+    """Fill only transparent padding; retain the mark's original coordinates."""
     w, h = master.size
-    inset = round(min(w, h) * 0.14)
-    content = master.crop((inset, inset, w - inset, h - inset))
-    # The supplied image has slightly translucent interior pixels (alpha ~252).
-    # Discard that alpha rather than blending the galaxy against black/navy.
-    if content.getchannel("A").getextrema()[0] < 240:
-        raise ValueError("Full-bleed crop still contains transparent outer padding")
-    return content.convert("RGB").resize(master.size, Image.Resampling.LANCZOS)
+    rgb = master.convert("RGB")
+    alpha = master.getchannel("A")
+    solid = alpha.point(lambda a: 255 if a >= 240 else 0)
+    background = rgb.copy()
+    rows = []
+    for y in range(h):
+        bounds = solid.crop((0, y, w, y + 1)).getbbox()
+        if bounds is None:
+            continue
+        left, _, right, _ = bounds
+        rows.append(y)
+        background.paste(rgb.getpixel((left, y)), (0, y, left, y + 1))
+        background.paste(rgb.getpixel((right - 1, y)), (right, y, w, y + 1))
+    if not rows:
+        raise ValueError("Icon contains no solid artwork")
+    for y in range(h):
+        if y not in rows:
+            nearest = min(rows, key=lambda row: abs(row - y))
+            background.paste(background.crop((0, nearest, w, nearest + 1)), (0, y))
+    background = background.filter(ImageFilter.GaussianBlur(w / 32))
+    # Lift the source's slightly translucent interior to opaque without changing
+    # any RGB pixel or position. Only the antialiased outer edge is composited.
+    mask = alpha.point(lambda a: min(255, round(a * 255 / 240)))
+    background.paste(rgb, (0, 0), mask)
+    return background
 
 
 def resize_icon(master: Image.Image, size: int) -> Image.Image:

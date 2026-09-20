@@ -488,6 +488,15 @@
 - Prevention: 批量删除前先枚举全部引用点（`rg -F -n`）并分类（列定义 / 字段 / fixture / SQL / 断言），对"多行表达式 + 同行多字段"两类单独手改。
 - Verified by: 重做后 `cargo check --workspace --all-targets` 与 `cargo test --workspace --all-targets` 全绿（30 套件），且迁移测试覆盖 v15→v16 的 `DROP COLUMN`。
 
+## `macOS/mobile icon padding` — removing dark edges must not zoom the artwork
+
+- Wrong approach: Crop 14% from each side of the master and resize to 1024px to eliminate transparent padding.
+- Why it failed: The shared Tahoe/mobile artwork enlarged the central C by 1.388×, violating the supplied image's proportions.
+- Recognition signal: User reports an oversized C; original-coordinate RGB comparison fails on solid artwork pixels.
+- Correct approach: Keep source coordinates and colors; extend edge colors only into transparent padding for opaque platform assets. Retain the transparent macOS ICNS master.
+- Prevention: Run `python3 src-tauri/scripts/test-generate-icons.py` before regeneration; inspect opaque and masked previews, not just asset dimensions.
+- Verified by: The pixel-preservation regression failed on the crop implementation and passed after edge extension; both icon generators' checks passed.
+
 ## `Linux deb desktop icon` — hicolor index stops at 512x512; bundler maps PNG dims to size dirs
 
 - Wrong approach: Shipping only the 1024x1024 master PNG in `bundle.icon` and assuming the launcher will downscale it.
