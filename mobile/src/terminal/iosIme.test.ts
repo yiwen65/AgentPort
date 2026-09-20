@@ -661,8 +661,37 @@ describe("iOS IME text the user never typed", () => {
     pointEdit(textarea, "\uff08\uff09", 2, "\uff08");
     textarea.setSelectionRange(0, 0);
     pointEdit(textarea, "x\uff08\uff09", 1, "x");
-    expect(sent).toEqual(["\uff08\uff09"]);
+    // The typed character is forwarded (a terminal is a stream); the opener is
+    // never erased, so no DEL is emitted.
+    expect(sent).toEqual(["\uff08\uff09", "x"]);
+    expect(sent.join("")).not.toContain("\x7f");
     expect(textarea.value).toBe("x\uff08\uff09");
+  });
+
+  // A modified shortcut (Ctrl-C) or a reset invalidates the adapter's ownership
+  // while the field keeps its text. That stale text used to silence every later
+  // keystroke; the typed characters must still be forwarded.
+  it("keeps forwarding typed text after a modified shortcut left stale text", () => {
+    const { textarea, sent, dispose } = setup();
+    pointEdit(textarea, "\uff08\uff09", 1, "\uff08");
+    pointEdit(textarea, "\uff08a\uff09", 2, "a");
+    expect(sent).toEqual(["\uff08", "a"]);
+    dispose.invalidate(); // Ctrl-C in the shortcut bar
+    pointEdit(textarea, "\uff08ax\uff09", 3, "x");
+    expect(sent).toEqual(["\uff08", "a", "x"]);
+    pointEdit(textarea, "\uff08axy\uff09", 4, "y");
+    expect(sent).toEqual(["\uff08", "a", "x", "y"]);
+  });
+
+  it("keeps forwarding typed text after the field content was replaced out of band", () => {
+    const { textarea, sent, dispose } = setup();
+    insert(textarea, "abc");
+    expect(sent).toEqual(["abc"]);
+    textarea.value = "abc\u00a0";
+    dispose.invalidate();
+    textarea.setSelectionRange(1, 1);
+    pointEdit(textarea, "aZbc\u00a0", 2, "Z");
+    expect(sent).toEqual(["abc", "Z"]);
   });
 
   it("declines an ambiguous split instead of guessing a pair", () => {

@@ -174,10 +174,11 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
         && previous.start === base.length && previous.end === base.length;
       const normalizedPrefix = witnessedEndInsertion && value.length > base.length
         && sameSpaceRepresentation(value.slice(0, base.length), base);
-      // One edit at one position. The terminal is append-only, so it can only
-      // follow while no sent character sits behind the edited region; text the
-      // method inserted by itself sits there as `ghosts` and is never sent.
-      const atPoint = collapsed && caret >= ownedStart;
+      // One edit at one position. Text the method inserted by itself sits behind
+      // the caret as `ghosts` and is never sent; text the adapter cannot own
+      // (stale field content from a modified shortcut, paste or blur) must not
+      // silence the user either.
+      const atOwned = collapsed && caret >= ownedStart;
       if (atEnd && (value.startsWith(base) || normalizedPrefix)) {
         output = value.slice(base.length);
         reason = value.startsWith(base) ? "append" : "space-normalized-append";
@@ -227,16 +228,18 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
           output = "\x7f".repeat(old.length - common) + next.slice(common).join(""); reason = "suffix-replacement";
         } else { handled = false; reason = "unsupported-grapheme"; }
       } else {
-        const insertion = atPoint ? insertionAt(base, value, previous) : undefined;
+        const insertion = collapsed ? insertionAt(base, value, previous) : undefined;
         // The tail of the last keyed insertion is proven untyped when the user
         // starts typing right in front of it. Erase what was already sent and
         // keep that tail unsent, so the caret stays usable and the closer stays
-        // out of the terminal.
+        // out of the terminal. Erasing needs that tail to be the last thing the
+        // terminal got; sending the user's own text never needs it.
         const untyped = insertion && pendingPadding && insertion.at === pendingPadding.start
           ? base.slice(pendingPadding.start, pendingPadding.end) : "";
-        if (insertion && (untyped === "" || erasableScalars.test(untyped))
-          && insertion.at <= caret && caret <= insertion.at + insertion.length
-          && !hasSentAfter(base, insertion.at + untyped.length)) {
+        const erasesSafely = untyped === "" || Boolean(insertion
+          && erasableScalars.test(untyped) && !hasSentAfter(base, insertion.at + untyped.length));
+        if (insertion && erasesSafely
+          && insertion.at <= caret && caret <= insertion.at + insertion.length) {
           // Send only the part the caret moved past; the rest was inserted by the
           // method and stays unsent.
           const typed = caret - insertion.at;
@@ -245,7 +248,7 @@ export function installIosImeRouting(container: HTMLElement, textarea: HTMLTextA
           if (untyped) addGhost(insertion.at + insertion.length, untyped.length);
           reason = untyped ? "untyped-tail-retracted"
             : typed === 0 ? "untyped-insert" : typed === insertion.length ? "typed-insert" : "typed-before-untyped";
-        } else if (atPoint && previous?.value === base && previous.start === previous.end
+        } else if (atOwned && previous?.value === base && previous.start === previous.end
           && previous.start > caret && value.length < base.length
           && previous.start - caret === base.length - value.length
           && !hasSentAfter(base, previous.start)
