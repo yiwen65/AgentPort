@@ -2,8 +2,9 @@
 """Sync launcher assets from the desktop master. Requires Pillow (pip install Pillow).
 
 Run from any directory; --check verifies committed pixels and iOS catalog sizes.
-iOS uses opaque RGB, leaving masking to the OS. Android adaptive layers use the
-108dp canvas; the desktop mark already occupies its central ~66dp safe circle.
+iOS uses opaque RGB on a dark background, leaving masking to the OS. Android
+adaptive layers fit the artwork inside the central 66dp safe region of a 108dp
+transparent canvas so launcher masks do not clip the mark.
 """
 import argparse
 import json
@@ -16,7 +17,9 @@ MOBILE = ROOT / "mobile/src-tauri"
 
 
 def assets():
-    master = Image.open(ROOT / "src-tauri/icons/icon.png").convert("RGB")
+    artwork = Image.open(ROOT / "src-tauri/icons/icon.png").convert("RGBA")
+    background = Image.new("RGBA", artwork.size, (13, 22, 41, 255))
+    master = Image.alpha_composite(background, artwork).convert("RGB")
     yield MOBILE / "icons/icon.png", master.convert("RGBA")
     catalog = MOBILE / "gen/apple/Assets.xcassets/AppIcon.appiconset"
     for entry in json.loads((catalog / "Contents.json").read_text())["images"]:
@@ -35,7 +38,13 @@ def assets():
         rounded.putalpha(mask.resize((size, size), Image.Resampling.LANCZOS))
         yield folder / "ic_launcher_round.png", rounded
         size = round(108 * scale)
-        yield folder / "ic_launcher_foreground.png", master.resize((size, size), Image.Resampling.LANCZOS)
+        # Keep the central C mark within the adaptive icon's 66dp safe circle.
+        mark_size = round(66 * scale)
+        foreground = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        mark = artwork.resize((mark_size, mark_size), Image.Resampling.LANCZOS)
+        inset = (size - mark_size) // 2
+        foreground.alpha_composite(mark, (inset, inset))
+        yield folder / "ic_launcher_foreground.png", foreground
 
 
 def main():

@@ -13,9 +13,8 @@ Sources of truth:
   - src-tauri/icons/AgentPort.icon/ — the macOS 26 (Tahoe) Liquid Glass
     layered icon. Without it, Tahoe renders the app ~20% smaller on a gray
     "icon jail" background. Its foreground layer (Assets/logo.png) is
-    derived from the master here: the dark background is keyed out, the
-    glow is radially trimmed, and mids are gamma-lifted to compensate the
-    glass material's darkening. The document background carries the gradient.
+    copied from the master without color keying or radial trimming, preserving
+    the supplied galaxy artwork and its rounded border.
 
 Outputs (all derived from the master, Lanczos):
   32x32.png, 128x128.png, 128x128@2x.png (256px), 512x512.png  (bundle.icon /
@@ -33,7 +32,6 @@ Requires Pillow (`python3 -m pip install Pillow`).
 from __future__ import annotations
 
 import json
-import math
 import shutil
 import subprocess
 import sys
@@ -56,7 +54,6 @@ ICONSET = {
 ICON_DOC = ICONS / "AgentPort.icon"
 LOGO = ICON_DOC / "Assets" / "logo.png"
 CAR = ROOT / "gen" / "icon-car" / "Assets.car"
-BG = (13, 23, 44)  # master background navy
 
 
 def transparent_corners(path: Path) -> bool:
@@ -67,50 +64,31 @@ def transparent_corners(path: Path) -> bool:
 
 
 def derive_logo(master: Image.Image) -> Image.Image:
-    """Key out the dark background, radially trim the halo, lift mids."""
-    im = master.convert("RGBA")
-    w, h = im.size
-    px = im.load()
-    cx, cy = w // 2, h // 2 + 8
-    out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    po = out.load()
+    """Preserve the complete supplied artwork, including its colors and border."""
+    return master.convert("RGBA")
 
-    def boost(v: int) -> int:
-        x = v / 255.0
-        y = 1.0 - (1.0 - x) ** 0.62
-        return int(min(1.0, y * 1.18) * 255)
 
-    for y in range(h):
-        for x in range(w):
-            r, g, b, a = px[x, y]
-            if a == 0:
-                continue
-            d = math.sqrt((r - BG[0]) ** 2 + (g - BG[1]) ** 2 + (b - BG[2]) ** 2)
-            if d < 24:
-                continue
-            alpha = a if d >= 72 else int(a * (d - 24) / 48)
-            rad = math.hypot(x - cx, y - cy)
-            if rad > 400:
-                continue
-            if rad > 340:
-                alpha = int(alpha * (400 - rad) / 60)
-            if alpha > 0:
-                po[x, y] = (boost(r), boost(g), boost(b), alpha)
-    return out
+def resize_icon(master: Image.Image, size: int) -> Image.Image:
+    image = master.resize((size, size), Image.Resampling.LANCZOS)
+    # Lanczos ringing can leave faint alpha in the 16px icon's outer corners.
+    for point in [(0, 0), (size - 1, 0), (0, size - 1), (size - 1, size - 1)]:
+        image.putpixel(point, (0, 0, 0, 0))
+    return image
 
 
 def generate() -> None:
     master = Image.open(MASTER).convert("RGBA")
     if master.size != (1024, 1024):
         raise SystemExit(f"{MASTER} must be 1024x1024, got {master.size}")
+    master.save(ICONS / "icon-runtime-8bit.png")
     for name, size in SIZES:
-        master.resize((size, size), Image.LANCZOS).save(ICONS / name)
+        resize_icon(master, size).save(ICONS / name)
         print(f"wrote {ICONS / name}")
     with tempfile.TemporaryDirectory() as tmp:
         iconset = Path(tmp) / "agentport.iconset"
         iconset.mkdir()
         for name, size in ICONSET.items():
-            master.resize((size, size), Image.LANCZOS).save(iconset / name)
+            resize_icon(master, size).save(iconset / name)
         subprocess.run(["iconutil", "-c", "icns", "-o", str(ICONS / "icon.icns"), str(iconset)], check=True)
         print(f"wrote {ICONS / 'icon.icns'}")
     LOGO.parent.mkdir(parents=True, exist_ok=True)
