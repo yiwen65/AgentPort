@@ -2,9 +2,9 @@
 """Sync launcher assets from the desktop master. Requires Pillow (pip install Pillow).
 
 Run from any directory; --check verifies committed pixels and iOS catalog sizes.
-iOS uses opaque RGB on a dark background, leaving masking to the OS. Android
-adaptive layers fit the artwork inside the central 66dp safe region of a 108dp
-transparent canvas so launcher masks do not clip the mark.
+iOS uses the desktop generator's opaque full-bleed artwork, with no dark mat.
+Android places that artwork in the central 72dp viewport of its 108dp canvas
+and extends edge pixels into the overscan region, leaving masking to the OS.
 """
 import argparse
 import json
@@ -17,9 +17,7 @@ MOBILE = ROOT / "mobile/src-tauri"
 
 
 def assets():
-    artwork = Image.open(ROOT / "src-tauri/icons/icon.png").convert("RGBA")
-    background = Image.new("RGBA", artwork.size, (13, 22, 41, 255))
-    master = Image.alpha_composite(background, artwork).convert("RGB")
+    master = Image.open(ROOT / "src-tauri/icons/AgentPort.icon/Assets/logo.png").convert("RGB")
     yield MOBILE / "icons/icon.png", master.convert("RGBA")
     catalog = MOBILE / "gen/apple/Assets.xcassets/AppIcon.appiconset"
     for entry in json.loads((catalog / "Contents.json").read_text())["images"]:
@@ -38,12 +36,21 @@ def assets():
         rounded.putalpha(mask.resize((size, size), Image.Resampling.LANCZOS))
         yield folder / "ic_launcher_round.png", rounded
         size = round(108 * scale)
-        # Keep the central C mark within the adaptive icon's 66dp safe circle.
-        mark_size = round(66 * scale)
-        foreground = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        mark = artwork.resize((mark_size, mark_size), Image.Resampling.LANCZOS)
+        mark_size = round(72 * scale)
         inset = (size - mark_size) // 2
-        foreground.alpha_composite(mark, (inset, inset))
+        mark = master.resize((mark_size, mark_size), Image.Resampling.LANCZOS)
+        foreground = Image.new("RGB", (size, size))
+        # Extend all four edges and corners, never exposing a black background
+        # during adaptive masking/parallax. The central mark is not stretched.
+        source = [0, 1, mark_size - 1, mark_size]
+        target = [0, inset, inset + mark_size, size]
+        for row in range(3):
+            for col in range(3):
+                box = (source[col], source[row], source[col + 1], source[row + 1])
+                tile_size = (target[col + 1] - target[col], target[row + 1] - target[row])
+                tile = mark.crop(box).resize(tile_size, Image.Resampling.NEAREST)
+                foreground.paste(tile, (target[col], target[row]))
+        foreground.paste(mark, (inset, inset))
         yield folder / "ic_launcher_foreground.png", foreground
 
 

@@ -13,8 +13,8 @@ Sources of truth:
   - src-tauri/icons/AgentPort.icon/ — the macOS 26 (Tahoe) Liquid Glass
     layered icon. Without it, Tahoe renders the app ~20% smaller on a gray
     "icon jail" background. Its foreground layer (Assets/logo.png) is
-    copied from the master without color keying or radial trimming, preserving
-    the supplied galaxy artwork and its rounded border.
+    cropped to full-bleed galaxy artwork, with masking left to the OS. This
+    opaque variant is also the mobile source, avoiding a dark backing border.
 
 Outputs (all derived from the master, Lanczos):
   32x32.png, 128x128.png, 128x128@2x.png (256px), 512x512.png  (bundle.icon /
@@ -64,8 +64,15 @@ def transparent_corners(path: Path) -> bool:
 
 
 def derive_logo(master: Image.Image) -> Image.Image:
-    """Preserve the complete supplied artwork, including its colors and border."""
-    return master.convert("RGBA")
+    """Remove the baked-in outer rim for platforms that apply their own mask."""
+    w, h = master.size
+    inset = round(min(w, h) * 0.14)
+    content = master.crop((inset, inset, w - inset, h - inset))
+    # The supplied image has slightly translucent interior pixels (alpha ~252).
+    # Discard that alpha rather than blending the galaxy against black/navy.
+    if content.getchannel("A").getextrema()[0] < 240:
+        raise ValueError("Full-bleed crop still contains transparent outer padding")
+    return content.convert("RGB").resize(master.size, Image.Resampling.LANCZOS)
 
 
 def resize_icon(master: Image.Image, size: int) -> Image.Image:
@@ -125,6 +132,8 @@ def check() -> None:
         for image in images:
             if not (ICON_DOC / "Assets" / image).exists():
                 bad.append(f"AgentPort.icon/Assets/{image} (missing)")
+    if not LOGO.exists() or Image.open(LOGO).tobytes() != derive_logo(Image.open(MASTER).convert("RGBA")).tobytes():
+        bad.append("AgentPort.icon/Assets/logo.png (stale full-bleed artwork)")
     if not CAR.exists():
         bad.append("gen/icon-car/Assets.car (missing; run src-tauri/scripts/build-icon-car.sh)")
     if bad:
