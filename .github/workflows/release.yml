@@ -166,7 +166,16 @@ jobs:
           }
           emit APPLE_CERTIFICATE "$INPUT_CERTIFICATE"
           emit APPLE_CERTIFICATE_PASSWORD "$INPUT_CERTIFICATE_PASSWORD"
-          emit APPLE_SIGNING_IDENTITY "$INPUT_SIGNING_IDENTITY"
+          # With APPLE_CERTIFICATE present Tauri derives the signing identity
+          # from the imported certificate. Forwarding a separate
+          # APPLE_SIGNING_IDENTITY hard-fails the bundle unless it is a
+          # substring of that certificate's name ("does not match provided
+          # identity"), which is how a well-meaning but differently formatted
+          # secret broke the v0.1.2 build. Only use it when no certificate is
+          # imported (that identity must then already exist in the keychain).
+          if [ -z "$INPUT_CERTIFICATE" ]; then
+            emit APPLE_SIGNING_IDENTITY "$INPUT_SIGNING_IDENTITY"
+          fi
           emit APPLE_ID "$INPUT_APPLE_ID"
           emit APPLE_PASSWORD "$INPUT_APPLE_PASSWORD"
           emit APPLE_TEAM_ID "$INPUT_APPLE_TEAM_ID"
