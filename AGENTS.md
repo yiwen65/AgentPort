@@ -40,6 +40,7 @@ python3 scripts/restart-debug-app.py --dry-run
 - Tauri Updater 签名（`TAURI_SIGNING_PRIVATE_KEY`，私钥在 `~/.tauri/agentport-updater.key`，切勿提交）与 macOS/Windows 代码签名是两套机制，不得互相替代。发布与密钥细节见 `docs/updater.md`。
 - 发布：`scripts/set-version.sh` → 提交 → `git tag vX.Y.Z && git push origin vX.Y.Z`。`.github/workflows/release.yml` 在同一个 tag 上发布 macOS（universal + `latest.json`）与 Linux（deb + Fedora/Arch tarball + `SHA256SUMS-linux`）；应用内更新仅 macOS，Linux 走包管理器。补发某个平台不要移动 tag，用 `gh workflow run release.yml -f tag=vX.Y.Z -f platforms=linux`。本地 `scripts/build-macos.sh` 在没有密钥时会以 `createUpdaterArtifacts=false` 跳过 updater 产物，这类 DMG 不能作为更新源发布。
 - **本地不要直接往上发布**：本机上行到 `uploads.github.com` 的大文件 POST 会静默失败（只留 `state=starter` 占位），发布一律走 CI；判断资产是否真的上传成功要看 API 的 `state=uploaded`，不能只看 size。
+- **推送走 SSH**：本机直连 github.com 被封，HTTPS 必须经本地代理（127.0.0.1:7890），而该代理上行只有 60–500 KB/s 且约 20% 完全停住。本仓库已设置 `git remote set-url --push origin git@github.com:yiwen65/AgentPort.git`（fetch 仍 HTTPS），并全局启用 `http.lowSpeedLimit=1000` / `http.lowSpeedTime=45` 让 HTTPS 传输停住时 45s 内失败；推送循环务必带看门狗（macOS 无 `timeout`）。
 - **承载更新 feed 的仓库必须匿名可读**：客户端拉取 `latest.json` 不带凭据，私有仓库的 Release 资产返回 404，更新会静默失败。发布后用未认证 `curl` 校验 `latest.json`（期望 302）与安装包（200）。
 
 ## 许可边界（2026-09-18 确认）

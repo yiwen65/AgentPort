@@ -616,3 +616,12 @@
 - Correct approach: 确认 `APPLE_CERTIFICATE` 里的证书 CN 属于上述前缀之一（例如 `Developer ID Application: <名字> (<TEAMID>)`）；不属于就先修证书/换证书。发布不能被它卡住时，用 `gh workflow run release.yml -f tag=… -f platforms=macos -f skip_macos_signing=true` 先发 ad-hoc 包（应用内更新只校验 Tauri 签名）。
 - Prevention: 本地先 `security find-identity -v -p codesigning | rg 'Developer ID Application|Apple Development'` 看 CN 形态，再往 CI 塞 secret。
 - Verified by: 两次 macOS job（带 identity / 不带 identity）都在同一处失败；`skip_macos_signing=true` 的第三次运行成功产出 DMG + updater 载荷 + latest.json。
+
+## `HTTPS push 挂死的量化与修法` — 上传慢 100 倍，且约 20% 直接停住
+
+- Wrong approach: 只看"SSH 能推就算修好了"，或者反复重试同一个 HTTPS 推送；把挂死当成 git 配置错误去调（`http.version=HTTP/1.1`、`http.postBuffer`）。
+- Why it failed: 本机直连 github.com 被封（`ping -D` 对 1200–1472 字节全丢），必须走 127.0.0.1:7890 的本地代理；该代理下行 4.9 MB/s，但**上行只有 60–500 KB/s**，实测 5 MiB 推送 5 次耗时 85s / 停住 / 10s / 15s / 10s —— 约 20% 完全停住（CONNECT 或数据阶段），不是 git 配置问题。
+- Recognition signal: `GIT_CURL_VERBOSE=1` 显示 CONNECT 200 正常、HTTP/2 请求发出，随后长时间无进展；同一时刻 `git ls-remote`（HTTPS 下行）与 `ssh -T git@github.com` 都正常。
+- Correct approach: ① 本仓库 push 改走 SSH（`git remote set-url --push origin git@github.com:…`，fetch 保持 HTTPS）；② 全局加低速保护 `git config --global http.lowSpeedLimit 1000` + `http.lowSpeedTime 45`，让数据阶段的停住 45s 内失败而不是无限等；CONNECT/TLS 阶段由 libcurl 的 300s 默认上限兜底（实测假代理下 300s 报 `Proxy CONNECT aborted due to timeout`）。
+- Prevention: 发布/推送前先 `ssh -T git@github.com` 探活；推送循环必须带看门狗（macOS 无 `timeout`，用后台 `sleep` + `kill`）；见到 "Everything up-to-date" 也算作已连通（它会走一遍远端 ref 交换）。
+- Verified by: 5 MiB × 5 次 HTTPS 推送测量（85s/停/10s/15s/10s），假代理 300s 超时验证，改配置后 `git push origin main`（SSH）4s 完成、`git ls-remote`（HTTPS）1s 完成。
