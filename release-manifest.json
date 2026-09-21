@@ -1,7 +1,7 @@
 {
   "manifestVersion": 1,
-  "appVersion": "0.1.1",
-  "generatedAt": "2026-09-17T12:08:39.577844+00:00",
+  "appVersion": "0.1.2",
+  "generatedAt": "2026-09-21T05:17:53.417170+00:00",
   "deliveryScope": "p0_p2",
   "platforms": [
     {
@@ -9,18 +9,18 @@
       "versionOrSnapshot": "26.5.1",
       "arch": "arm64 (universal: scripted, see knownLimitations)",
       "tier": "official",
-      "artifact": "dist-release/macos/AgentPort_0.1.1_universal.dmg",
-      "sha256": "9a99d56ad47e6417a661a3ca441c5e10d02da0fc12b43e718f880cb1922cbf59",
+      "artifact": "dist-release/macos/AgentPort_0.1.2_universal.dmg",
+      "sha256": "d0ada2c7c9ef33dc7f50dd033aa94278f641ea4b4275ffc739ab9d7085a2a680",
       "webviewVersion": "",
       "tested": [
-        "ci-build (GitHub Actions, universal)",
-        "updater-install (0.1.0 -> 0.1.1 on this machine)",
+        "ci-build (GitHub Actions, universal, ad-hoc signature)",
+        "updater-delivery (published 0.1.1 detects, downloads and verifies 0.1.2)",
         "launch-smoke",
         "db-init"
       ],
       "notes": [
-        "artifact is the CI-built universal DMG from release v0.1.1; ad-hoc/linker signature only — no Developer ID signing or notarization",
-        "pixel-level window capture of this artifact was not possible during acceptance (display locked/TCC); the bundle launched, initialised its database and was installed over 0.1.0 by the in-app updater"
+        "artifact is the CI-built universal DMG from release v0.1.2, built with skip_macos_signing=true: ad-hoc/linker signature only, no Developer ID signing or notarization",
+        "Developer ID signing is blocked on the APPLE_CERTIFICATE secret: Tauri imports it ('1 identity imported') but cannot resolve an identity because the certificate name does not match any of the prefixes tauri-macos-sign recognises (Developer ID Application:, Apple Distribution:, Apple Development:, …)"
       ]
     },
     {
@@ -28,8 +28,8 @@
       "versionOrSnapshot": "22.04",
       "arch": "x86_64",
       "tier": "official",
-      "artifact": "dist-release/ubuntu2204/AgentPort_0.1.1_amd64.deb",
-      "sha256": "346b70f18a9a32beb0ea259ccac0fa899f24ac6e8a2d385d62040c94ab19503d",
+      "artifact": "dist-release/ubuntu2204/AgentPort_0.1.2_amd64.deb",
+      "sha256": "b0bb7f938dafbb128b55a277faa67556cfd2abc4b6265a4fe68ea90100f161b8",
       "tested": [
         "docker-build",
         "container-install",
@@ -39,7 +39,7 @@
       ],
       "notes": [
         "release baseline: built in the Ubuntu 22.04 container (CI)",
-        "scripts/linux/verify-in-container.sh ran against this exact .deb: install, embedded sidecars, Remote Bridge smoke, PTY roundtrip with the installed agentport-host, xvfb GUI launch, uninstall"
+        "sha256 matches SHA256SUMS-linux published with the release"
       ]
     },
     {
@@ -47,8 +47,8 @@
       "versionOrSnapshot": "24.04",
       "arch": "x86_64",
       "tier": "official",
-      "artifact": "dist-release/ubuntu2204/AgentPort_0.1.1_amd64.deb",
-      "sha256": "346b70f18a9a32beb0ea259ccac0fa899f24ac6e8a2d385d62040c94ab19503d",
+      "artifact": "dist-release/ubuntu2204/AgentPort_0.1.2_amd64.deb",
+      "sha256": "b0bb7f938dafbb128b55a277faa67556cfd2abc4b6265a4fe68ea90100f161b8",
       "tested": [
         "docker-build",
         "container-install",
@@ -66,7 +66,7 @@
       "arch": "x86_64",
       "tier": "community",
       "artifact": "dist-release/fedora/agentport-fedora-x86_64.tar.gz",
-      "sha256": "4ff1ab1748cdf5cf48e3c1bf44d90a06934268b10acd27538a1e3299738bf9d3",
+      "sha256": "09e74fed370400f52315c87ae9f5b0d20beab2747eae0f948eb101f93d567419",
       "tested": [
         "docker-build"
       ],
@@ -81,7 +81,7 @@
       "arch": "x86_64",
       "tier": "community",
       "artifact": "dist-release/arch/agentport-arch-x86_64.tar.gz",
-      "sha256": "915d481fe1a562acd6377a398eb19c422e87239b9d6a3c2000617c78c0ded9c4",
+      "sha256": "4a614c64007d1ad9c15e319a6ece92d5c9a64a820b2a9557b8bd8b2828cae280",
       "tested": [
         "docker-build"
       ],
@@ -107,20 +107,20 @@
     {
       "agent": "claude",
       "executablePath": "/Users/w/.local/bin/claude",
-      "versionText": "2.1.274 (Claude Code)",
-      "capabilityHash": "sha256:83b304218a5baee2",
+      "versionText": "2.1.278 (Claude Code)",
+      "capabilityHash": "sha256:782d5931a340b1aa",
       "exactResume": true,
       "hookStatus": "supported",
-      "verifiedAt": "2026-09-17T12:05:31.269Z"
+      "verifiedAt": "2026-09-21T05:15:38.014Z"
     },
     {
       "agent": "codex",
       "executablePath": "/Users/w/.local/bin/codex",
-      "versionText": "codex-cli 0.154.0",
-      "capabilityHash": "sha256:f7ad282c8e2e8ba5",
+      "versionText": "codex-cli 0.155.1",
+      "capabilityHash": "sha256:a33997f46d2ce762",
       "exactResume": true,
       "hookStatus": "supported",
-      "verifiedAt": "2026-09-17T12:05:31.631Z"
+      "verifiedAt": "2026-09-21T05:15:38.385Z"
     },
     {
       "agent": "kimi",
@@ -129,7 +129,7 @@
       "capabilityHash": "sha256:28c9a754ab23347b",
       "exactResume": true,
       "hookStatus": "degraded",
-      "verifiedAt": "2026-09-17T12:05:32.796Z"
+      "verifiedAt": "2026-09-21T05:15:39.352Z"
     },
     {
       "agent": "pi",
@@ -138,7 +138,7 @@
       "capabilityHash": "sha256:8ebccf8044a91fff",
       "exactResume": true,
       "hookStatus": "unavailable",
-      "verifiedAt": "2026-09-17T12:05:34.531Z"
+      "verifiedAt": "2026-09-21T05:15:40.315Z"
     },
     {
       "agent": "qoder",
@@ -147,7 +147,7 @@
       "capabilityHash": "sha256:91e83c2e0568e842",
       "exactResume": true,
       "hookStatus": "supported",
-      "verifiedAt": "2026-09-17T12:05:38.564Z"
+      "verifiedAt": "2026-09-21T05:15:42.141Z"
     },
     {
       "agent": "shell",
@@ -156,7 +156,7 @@
       "capabilityHash": "sha256:fef18104984383af",
       "exactResume": false,
       "hookStatus": "unavailable",
-      "verifiedAt": "2026-09-17T12:05:38.985Z"
+      "verifiedAt": "2026-09-21T05:15:42.565Z"
     }
   ],
   "tests": [
@@ -179,19 +179,17 @@
     },
     {
       "suite": "e2e/wave1.sh (PTY/reconnect/cleanup/log-sha256)",
-      "result": "pass",
-      "evidence": "re-based on 2026-09-17: live Sessions keep no PTY log, so the wave checks byte continuity across reconnects instead of diffing a removed file"
+      "result": "pass"
     },
     {
       "suite": "e2e/wave2.sh (export/search/timeline/secret-leak-scan)",
-      "result": "pass",
-      "evidence": "re-based on 2026-09-17: asserts the current contracts (raw log export removed, md/json need native history, diagnostics zip carries status events but no terminal body)"
+      "result": "pass"
     }
   ],
   "knownLimitations": [
-    "Developer ID signing/notarization and clean-VM interactive runs (IME/Orca/VoiceOver) are manual steps, listed in docs/acceptance-report.md.",
+    "macOS Developer ID signing/notarization is not applied: the APPLE_CERTIFICATE secret imports but its certificate name is outside the prefixes tauri-macos-sign resolves, so v0.1.2 shipped ad-hoc signed (the in-app updater verifies the Tauri signature, not the Apple one). Fix the certificate or drop APPLE_SIGNING_IDENTITY; re-dispatch with `gh workflow run release.yml -f tag=vX.Y.Z -f platforms=macos` once it resolves.",
     "AppImage remains unpublished (linuxdeploy download failure); reproducible via scripts/build-linux.sh appimage.",
-    "The retired output.log surfaces are now gone end to end (log-based exports, the remote recovery-context capability, the diag byte count, sessions.log_path via migration v15 -> v16, HostConfig.log_path, CLI logPath, SessionView.logPath; SearchIndex is purge-only). The migration is covered by db tests but has not been replayed on a copy of a real user database.",
+    "The retired output.log surfaces are gone end to end (log-based exports, the remote recovery-context capability, the diag byte count, sessions.log_path via migration v15 -> v16, HostConfig.log_path, CLI logPath, SessionView.logPath; SearchIndex is purge-only). A 0.1.1 install that cannot open its migrated v16 database must be updated to 0.1.2 (or the column re-added and user_version reverted to 15).",
     "Several timing-sensitive suites were hardened instead of the product: read-only CLI probes now get 5 s (was 2 s), the pairing server accepts blocking sockets again, and two load-race assertions reference the constant they depend on."
   ]
 }

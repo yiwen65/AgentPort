@@ -598,3 +598,21 @@
 - Correct approach (second half): 字节证据不足以推断 DOM 形状。真机第二轮实测显示：配对字符**整段已经发出**（插入时光标还在末尾），输入法随后把光标移进括号内且不发 DOM 事件 —— 此时只跟踪"未发送文本"没用，因为收尾符已经在终端里。必须再记 `lastPadding`（该按键插入的收尾符区间），当且仅当用户的下一次输入**正好落在它前面**（或按键离开适配层前光标停在它前面）时，先发一个 DEL 撤回它、把它登记为 ghost，再发用户文本；配对里的开括号永不撤回。`input.data` 与 DOM 插入长度是否一致仍未验证 —— 该修复不依赖这个差异。
 - Verified by（真机）: 付费团队签名 archive + `devicectl device install app` 装到 iPhone 17 Pro Max（iOS 27.0）后按同一组步骤复测：修复前台账为“配对整段到达→之后文本零字节→回车仍有效”，修复后台账为“配对整段到达→用户一打字先发 `\x7f` 撤回补出字符再发用户文本”，另一形状下补出字符作为 ghost 从未发出；两种形状均覆盖（`/tmp/ime-probe/fix-verify*.jsonl`，见 `mobile/IME_PAIRED_PUNCTUATION.md`）。
 - Verified by（回归）: 新增 `iOS IME text the user never typed` 15 项回归：6 项在最初实现上失败（含两处为未发送字符发 DEL），另有 4 项（整段发出后的输入、按键前撤回）在"只修 ghost"的第一版修复上失败；最终 Mobile 460 项、真实 Chrome 渲染回归与 `npm run build` 全通过。真机字节探针两轮实测：全角 `（）`、弯引号 `“”` 均整块到达 Host，其后用户输入的文本**一个字节都没到**而回车照常到达（会话 `.zsh_history` 亦记录到完整命令行），与适配层复现的第一处分歧一致（见 `mobile/IME_PAIRED_PUNCTUATION.md`）。
+
+## `HTTPS push 卡死` — 本机推 GitHub 用 SSH
+
+- Wrong approach: 反复用 HTTPS 远端（`origin` = https://github.com/…）推送 release 提交，失败后只是重试同一个协议，甚至用 `--config http.version=HTTP/1.1` 再试。
+- Why it failed: 本机上行到 github.com 的 HTTPS 推送会挂住（实测单次 10+ 分钟无进展，多个提交/小体积也一样），而同一时刻 `api.github.com` 请求、下行下载与 SSH 都正常；`uploads.github.com` 早前也是同类症状。
+- Recognition signal: `git push` 长时间无输出（可 `git ls-remote` 看到远端未更新），`ps` 里 `git remote-https` 一直存在，但 `curl` 小请求 1s 内返回。
+- Correct approach: 走 SSH —— `git push git@github.com:<owner>/<repo>.git main`（本机 key 已验证可用，实测瞬间完成）；需要时给 push 加看门狗（后台 sleep 90s 后 kill 再重试），因为 macOS 没有 `timeout`。
+- Prevention: 发布流程里先 `ssh -T git@github.com` 探活；HTTPS 推送连续两次无进展就切 SSH，不要无限重试。
+- Verified by: v0.1.2 的 main 与 tag 在 HTTPS 连续 4 次挂住后，SSH 一次推送成功（`MAIN_OK` + `[new tag] v0.1.2`）。
+
+## `macOS codesign 身份解析` — 证书名必须落在 Tauri 认的前缀里
+
+- Wrong approach: 先怀疑 `APPLE_SIGNING_IDENTITY` 值不对，改成"有证书就不转发 identity"（让 Tauri 从证书推导），然后重跑期望通过。
+- Why it failed: Tauri 的推导同样会失败——`tauri-macos-sign` 只用 7 个固定前缀（`iOS Distribution:`、`Apple Distribution:`、`Developer ID Application:`、`Mac App Distribution:`、`Apple Development:`、`iOS App Development:`、`Mac Development:`）去 `security find-certificate -c <prefix>` 枚举，命中为空即 `ResolveSigningIdentity`；证书即使导入成功（日志 `1 identity imported.`）也会在这个环节失败。
+- Recognition signal: 失败信息是 `failed to bundle project: failed codesign application: failed to resolve signing identity`，紧跟在 `1 identity imported.` 与一段 keychain dump 之后；把 `APPLE_SIGNING_IDENTITY` 去掉后仍然如此。
+- Correct approach: 确认 `APPLE_CERTIFICATE` 里的证书 CN 属于上述前缀之一（例如 `Developer ID Application: <名字> (<TEAMID>)`）；不属于就先修证书/换证书。发布不能被它卡住时，用 `gh workflow run release.yml -f tag=… -f platforms=macos -f skip_macos_signing=true` 先发 ad-hoc 包（应用内更新只校验 Tauri 签名）。
+- Prevention: 本地先 `security find-identity -v -p codesigning | rg 'Developer ID Application|Apple Development'` 看 CN 形态，再往 CI 塞 secret。
+- Verified by: 两次 macOS job（带 identity / 不带 identity）都在同一处失败；`skip_macos_signing=true` 的第三次运行成功产出 DMG + updater 载荷 + latest.json。
