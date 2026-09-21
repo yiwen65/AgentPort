@@ -25,6 +25,11 @@ on:
         default: all
         type: choice
         options: [all, macos, linux]
+      skip_macos_signing:
+        description: Build the macOS bundle with an ad-hoc signature instead of the Apple secrets
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -147,6 +152,7 @@ jobs:
       # APPLE_CERTIFICATE as "sign with it", so only export what exists.
       - name: Optional macOS Developer ID signing
         env:
+          SKIP_SIGNING: ${{ inputs.skip_macos_signing }}
           INPUT_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           INPUT_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           INPUT_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -155,6 +161,14 @@ jobs:
           INPUT_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
+          # Explicit escape hatch: an unsigned (ad-hoc) macOS build is still a
+          # valid release — the in-app updater verifies the Tauri signature, not
+          # the Apple one — and it keeps a signing-secret problem from blocking
+          # every other platform's assets.
+          if [ "${SKIP_SIGNING:-false}" = "true" ]; then
+            echo "macOS Developer ID signing skipped for this run"
+            exit 0
+          fi
           emit() {
             local name="$1" value="$2"
             [ -n "$value" ] || return 0
