@@ -1993,7 +1993,9 @@ function repeatableInput(e: KeyboardEvent): string | null {
 
 const IME_KEYDOWN_WINDOW_MS = 1000;
 
-function installInputCompatibility(
+/** Input compatibility layer for third-party IMEs and remote keyboards.
+ * Exported so the real-xterm regressions can exercise it directly. */
+export function installInputCompatibility(
   term: Terminal,
   container: HTMLElement,
 ): () => void {
@@ -2018,6 +2020,25 @@ function installInputCompatibility(
       }, 0);
       fallbackTimers.add(timer);
     });
+  };
+
+  // WebKitGTK's GTK input context commits fcitx5/Rime text without ever
+  // announcing a composition: the page only sees beforeinput/input with
+  // inputType "insertFromComposition" followed by compositionend. xterm's
+  // CompositionHelper therefore never records a composition start offset, and
+  // on that compositionend it forwards everything still sitting in its scratch
+  // textarea - including the text earlier commits already sent, which re-typed
+  // the whole line. Ignore that unannounced compositionend and let the
+  // verified-fill path below decide the bytes instead.
+  let compositionAnnounced = false;
+  const onCompositionStart = () => {
+    compositionAnnounced = true;
+  };
+  const onCompositionEnd = (event: CompositionEvent) => {
+    const announced = compositionAnnounced;
+    compositionAnnounced = false;
+    if (announced) return;
+    event.stopImmediatePropagation();
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
@@ -2049,8 +2070,14 @@ function installInputCompatibility(
 
   const onInput = (event: Event) => {
     if (!(event instanceof InputEvent)) return;
-    if (!event.data || event.inputType !== "insertText" || event.isComposing)
-      return;
+    if (!event.data) return;
+    // A commit the platform never announced as a composition, whose
+    // compositionend is suppressed above so no xterm path forwards it.
+    const unannouncedCommit =
+      event.inputType === "insertFromComposition" && !compositionAnnounced;
+    if (!unannouncedCommit) {
+      if (event.inputType !== "insertText" || event.isComposing) return;
+    }
     const data = event.data;
     const generationAtInput = forwardedGeneration;
     const keyDown = pendingKeyDown;
@@ -2061,16 +2088,21 @@ function installInputCompatibility(
       event.timeStamp - keyDown.timeStamp <= IME_KEYDOWN_WINDOW_MS;
     if (followsKeyDown && generationAtInput !== keyDown.generation) return;
     // Some third-party macOS IMEs commit English text only through a composed
-    // input event. xterm ignores it after seeing keydown even when that
-    // keydown produced no onData, so fill only the verified missing input.
+    // input event; WebKitGTK commits Rime text the same way but flags the
+    // event as composing. xterm ignores or mis-slices both after seeing a
+    // keydown even when that keydown produced no onData, so fill only the
+    // verified missing input.
     deferFallback(data, generationAtInput);
   };
 
   // Observe from an ancestor in the capture phase: xterm's own textarea
   // handlers stop propagation, so listeners on the textarea itself never
-  // fire. Shift+Tab only cancels WebView focus traversal; no event is stopped.
+  // fire. Shift+Tab only cancels WebView focus traversal; the unannounced
+  // compositionend above is the only event this layer stops.
   container.addEventListener("keydown", onKeyDown, true);
   container.addEventListener("input", onInput, true);
+  container.addEventListener("compositionstart", onCompositionStart, true);
+  container.addEventListener("compositionend", onCompositionEnd, true);
   return () => {
     disposed = true;
     for (const timer of fallbackTimers) window.clearTimeout(timer);
@@ -2078,6 +2110,8 @@ function installInputCompatibility(
     forwarded.dispose();
     container.removeEventListener("keydown", onKeyDown, true);
     container.removeEventListener("input", onInput, true);
+    container.removeEventListener("compositionstart", onCompositionStart, true);
+    container.removeEventListener("compositionend", onCompositionEnd, true);
   };
 }
 
