@@ -214,6 +214,61 @@ function installLayout() {
   });
 }
 
+function paneLeaf(container: HTMLElement, sessionId: string): HTMLElement {
+  const pane = container.querySelector<HTMLElement>(
+    `[data-pane-session-id="${sessionId}"]`,
+  );
+  if (!pane) throw new Error(`pane ${sessionId} missing`);
+  return pane;
+}
+
+function stubPaneRect(
+  pane: HTMLElement,
+  width = 900,
+  height = 600,
+  left = 0,
+  top = 0,
+): void {
+  Object.defineProperty(pane, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({
+      width,
+      height,
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      x: left,
+      y: top,
+    }),
+  });
+}
+
+/**
+ * jsdom has no DragEvent, so `fireEvent.dragEnter/dragLeave/drop` fall back to
+ * a plain Event that silently drops the pointer coordinates the pane drop
+ * logic reads (clientX/clientY). Build the MouseEvent explicitly.
+ */
+function paneDragEvent(
+  type: "dragenter" | "dragleave" | "drop",
+  init: {
+    dataTransfer: DataTransfer;
+    clientX?: number;
+    clientY?: number;
+    relatedTarget?: EventTarget | null;
+  },
+): Event {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    clientX: init.clientX ?? 0,
+    clientY: init.clientY ?? 0,
+    relatedTarget: init.relatedTarget ?? null,
+  });
+  Object.defineProperty(event, "dataTransfer", { value: init.dataTransfer });
+  return event;
+}
+
 describe("TerminalArea recursive panes", () => {
   it("attaches when an external snapshot changes a visible ended pane to running", async () => {
     act(() => setState({ projects: getState().projects.map(project => ({ ...project, sessions: project.sessions.map(session => session.id === ptyA.id ? { ...session, lifecycle: "stopped" as const } : session) })) }));
@@ -459,30 +514,107 @@ describe("TerminalArea recursive panes", () => {
     }
   });
 
-  it("shows two Session drop zones and routes the chosen direction", () => {
-    const { container, getByText } = render(<TerminalArea />);
-    const pane = container.querySelector<HTMLElement>(
-      `[data-pane-session-id="${ptyA.id}"]`,
-    );
-    if (!pane) throw new Error("pane missing");
-    Object.defineProperty(pane, "getBoundingClientRect", {
-      configurable: true,
-      value: () => ({ width: 900, height: 600, left: 0, top: 0, right: 900, bottom: 600 }),
-    });
+  it("keeps the Session drop indicator while WebKit reports a dragleave inside the pane", () => {
+    // WebKit fires dragleave with a null relatedTarget whenever the element
+    // under the cursor is replaced mid-drag (the overlay mounting, a banner
+    // appearing, …). Treating that as a real leave strobed the overlay on
+    // Linux and let the drop fall through to the terminal surface.
+    const { container } = render(<TerminalArea />);
+    const pane = paneLeaf(container, ptyB.id);
+    stubPaneRect(pane);
+
+    fireEvent(pane, paneDragEvent("dragenter", { dataTransfer: transfer(rpc.id), clientX: 400, clientY: 300 }));
+    expect(pane.querySelector(".pane-drop-overlay")).not.toBeNull();
+
+    fireEvent(pane, paneDragEvent("dragleave", {
+      dataTransfer: transfer(rpc.id),
+      clientX: 400,
+      clientY: 300,
+      relatedTarget: null,
+    }));
+    expect(pane.querySelector(".pane-drop-overlay")).not.toBeNull();
+  });
+
+  it("drops the indicator once the pointer really left the pane", () => {
+    const { container } = render(<TerminalArea />);
+    const pane = paneLeaf(container, ptyB.id);
+    stubPaneRect(pane, 900, 600, 100, 50);
+
+    fireEvent(pane, paneDragEvent("dragenter", { dataTransfer: transfer(rpc.id), clientX: 400, clientY: 300 }));
+    expect(pane.querySelector(".pane-drop-overlay")).not.toBeNull();
+
+    fireEvent(pane, paneDragEvent("dragleave", {
+      dataTransfer: transfer(rpc.id),
+      clientX: 20,
+      clientY: 40,
+      relatedTarget: null,
+    }));
+    expect(pane.querySelector(".pane-drop-overlay")).toBeNull();
+  });
+
+  it("splits by drop position when a Session lands on the pane surface", () => {
+    // The drop arrives on the terminal surface, not on the indicator, because
+    // the indicator is inert (`pointer-events: none`) and the pane leaf owns
+    // the stable drop surface on every platform.
+    const { container } = render(<TerminalArea />);
+    const pane = paneLeaf(container, ptyB.id);
+    stubPaneRect(pane);
+
     const dataTransfer = transfer(rpc.id);
     expect(dataTransfer.types).toContain(SESSION_PANE_DND_MIME);
 
-    fireEvent.dragEnter(pane, { dataTransfer });
-    const right = getByText("放到右侧").closest<HTMLElement>(".pane-drop-zone");
-    expect(right).not.toBeNull();
-    if (!right) return;
-    fireEvent.drop(right, { dataTransfer });
+    fireEvent(pane, paneDragEvent("drop", { dataTransfer, clientX: 100, clientY: 300 }));
+    expect(splitSessionIntoPaneMock).toHaveBeenCalledWith(ptyB.id, rpc.id, "right");
 
-    expect(splitSessionIntoPaneMock).toHaveBeenCalledWith(
-      ptyA.id,
-      rpc.id,
-      "right",
-    );
+    fireEvent(pane, paneDragEvent("drop", { dataTransfer: transfer(rpc.id), clientX: 800, clientY: 300 }));
+    expect(splitSessionIntoPaneMock).toHaveBeenLastCalledWith(ptyB.id, rpc.id, "down");
+  });
+
+  it("clears the indicator when the drag gesture ends without a drop", () => {
+    const { container } = render(<TerminalArea />);
+    const pane = paneLeaf(container, ptyB.id);
+    stubPaneRect(pane);
+
+    fireEvent(pane, paneDragEvent("dragenter", { dataTransfer: transfer(rpc.id), clientX: 400, clientY: 300 }));
+    expect(pane.querySelector(".pane-drop-overlay")).not.toBeNull();
+
+    act(() => {
+      window.dispatchEvent(new Event("dragend"));
+    });
+    expect(pane.querySelector(".pane-drop-overlay")).toBeNull();
+  });
+
+  it("clears the indicator once the drag enters another element", () => {
+    // WebKit reports entering the sidebar or a neighbouring pane but often no
+    // leave for this pane, so entering outside the leaf ends the hover.
+    const { container } = render(<TerminalArea />);
+    const pane = paneLeaf(container, ptyB.id);
+    stubPaneRect(pane);
+
+    fireEvent(pane, paneDragEvent("dragenter", { dataTransfer: transfer(rpc.id), clientX: 400, clientY: 300 }));
+    expect(pane.querySelector(".pane-drop-overlay")).not.toBeNull();
+
+    act(() => {
+      document.body.dispatchEvent(
+        paneDragEvent("dragenter", { dataTransfer: transfer(rpc.id), clientX: 10, clientY: 10 }),
+      );
+    });
+    expect(pane.querySelector(".pane-drop-overlay")).toBeNull();
+  });
+
+  it("renders both Session drop directions as an inert overlay", () => {
+    const { container, getByText } = render(<TerminalArea />);
+    const pane = paneLeaf(container, ptyB.id);
+    stubPaneRect(pane);
+
+    fireEvent.dragEnter(pane, { dataTransfer: transfer(rpc.id) });
+    const right = getByText("放到右侧").closest<HTMLElement>(".pane-drop-zone");
+    const down = getByText("放到下方").closest<HTMLElement>(".pane-drop-zone");
+
+    expect(right).not.toBeNull();
+    expect(down).not.toBeNull();
+    expect(right?.getAttribute("aria-disabled")).toBe("false");
+    expect(down?.getAttribute("aria-disabled")).toBe("false");
   });
 
   it("exposes keyboard-operable split separators", () => {

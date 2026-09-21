@@ -1,5 +1,14 @@
 # Project Learnings
 
+## `pane drop overlay` — an indicator that mounts under the cursor becomes WebKit's drag target
+
+- Wrong approach: Letting the drop-zone overlay own the drop targets and deciding "the drag left this pane" from `dragleave`'s `relatedTarget`.
+- Why it failed: WebKit fires `dragleave` with a null `relatedTarget` whenever the element under the cursor is replaced mid-drag — here because the overlay itself mounted over the terminal. The pane leaf read that as a real leave and unmounted the overlay, the terminal came back under the cursor, and the next dragover remounted it: a strobe measured at 17 mounts + 17 unmounts in ~1 s of pointer motion (user's real Wayland session: ~1 cycle per 10-25 ms). WebKit also dispatches `drop` to the element hit-tested at the LAST drag-motion, so the flickering overlay left the drop pointing at the terminal canvas, whose drop handler ignores Session payloads — the split never happened (0 `drop` events, no layout change in the captured drag).
+- Recognition signal: On Linux the pane drop zones blink for as long as the pointer moves during a Session drag, and releasing over the pane does nothing; the browser log shows `OVERLAY +`/`OVERLAY -` pairs tens of times per second and no `drop`.
+- Correct approach: Give the pane leaf the stable drop surface and keep the overlay pure decoration (`pointer-events: none`); derive the split direction from the drop position (`clientX` against the pane rect midpoint, matching the two columns the overlay paints). Track the gesture's real boundaries explicitly: an in-pane dragleave only counts when the pointer actually left the pane rect, a `dragenter` that lands outside the leaf ends the hover, and window `dragend`/`drop` clears it.
+- Prevention: Never let a drop *indicator* take part in hit testing. Regress it at both levels — a CSS contract that `.pane-drop-overlay` keeps `pointer-events: none`, and component tests replaying WebKit's event order (dragenter on the terminal surface → spurious null-relatedTarget dragleave → drop on that surface) with explicit clientX/clientY, because jsdom has no DragEvent and `fireEvent.drop` silently drops coordinates.
+- Verified by: Xephyr + XTEST real drags with identical input: pre-fix 17 mounts/17 unmounts, 0 drop events, no split; fixed 1 mount/0 unmounts, 1 drop, split created (`direction: "right"`). Frontend 770/770, tsc and production build green.
+
 ## `fullscreen Pi attach` — a bounded replay tail cannot rebuild a differential screen
 
 - Wrong approach: Bounding the fullscreen Pi replay tail to 64 KiB and treating any live byte stream as sufficient to reconstruct the pane on a cold/resume-failed attach.

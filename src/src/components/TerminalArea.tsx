@@ -979,13 +979,28 @@ function paneContextItems(
   return items;
 }
 
-function PaneDropOverlay({
-  ses,
-  onDone,
-}: {
-  ses: SessionView;
-  onDone: () => void;
-}) {
+/**
+ * Split direction for a Session dropped on a pane, from the drop position.
+ *
+ * The overlay paints `right` and `down` as two side-by-side columns (see
+ * `.pane-drop-overlay`), so the left half splits the dragged Session to the
+ * right of this pane and the right half splits it below.
+ */
+function paneDropDirection(rect: DOMRect, clientX: number): PaneSplitDirection {
+  return clientX - rect.left < rect.width / 2 ? "right" : "down";
+}
+
+/**
+ * Pane-relative drop indicator.
+ *
+ * The overlay is deliberately inert (`pointer-events: none`): it used to own
+ * the drop targets, but mounting it under the pointer changed WebKit's drag
+ * target mid-gesture, which made GTK fire dragleave for the element that was
+ * covered (with a null `relatedTarget`) and strobed the overlay on/off until
+ * the pointer left. The split is now decided by the pane leaf that owns the
+ * stable drop surface, and this only shows where the Session will land.
+ */
+function PaneDropOverlay({ ses }: { ses: SessionView }) {
   const { t } = useTranslation("shell");
   const zone = (direction: PaneSplitDirection) => {
     const allowed = canSplitSessionPane(ses.id, direction);
@@ -993,24 +1008,6 @@ function PaneDropOverlay({
       <div
         className={`pane-drop-zone ${direction}${allowed ? "" : " disabled"}`}
         aria-disabled={!allowed}
-        onDragOver={(event) => {
-          if (!hasSessionPaneDragPayload(event.dataTransfer)) return;
-          event.preventDefault();
-          event.stopPropagation();
-          event.dataTransfer.dropEffect = allowed ? "move" : "none";
-        }}
-        onDrop={(event) => {
-          if (!hasSessionPaneDragPayload(event.dataTransfer)) return;
-          event.preventDefault();
-          event.stopPropagation();
-          const payload = readSessionPaneDragPayload(event.dataTransfer);
-          if (allowed && payload) {
-            splitSessionIntoPane(ses.id, payload.sessionId, direction);
-          } else if (!allowed) {
-            toast(t("pane.tooSmall"), "info");
-          }
-          onDone();
-        }}
       >
         <span>{t(direction === "right" ? "pane.dropRight" : "pane.dropDown")}</span>
       </div>
@@ -1043,13 +1040,38 @@ function SessionPaneLeaf({
   const ses = useStore((state) => findSession(state.projects, initialSession.id)) ?? initialSession;
   const termSearchOpen = useStore((state) => state.termSearchOpen);
   const [sessionDragActive, setSessionDragActive] = useState(false);
+  const leafRef = useRef<HTMLDivElement | null>(null);
   const ended = ["stopped", "exited", "interrupted"].includes(ses.lifecycle);
   useEffect(() => {
     if (visible && ended) return watchEndedSessions();
   }, [visible, ended]);
+  // The indicator survives WebKit's spurious dragleave bursts, so the gesture's
+  // real boundaries are tracked explicitly: a drop or a cancelled drag anywhere
+  // ends it, and WebKit reliably reports entering another element (the sidebar,
+  // a neighbouring pane, the pane divider) even when it never reports leaving
+  // this pane.
+  useEffect(() => {
+    if (!sessionDragActive) return;
+    const clear = () => setSessionDragActive(false);
+    const onEnter = (event: DragEvent) => {
+      const target = event.target as Node | null;
+      const leaf = leafRef.current;
+      if (!leaf || !target || leaf.contains(target)) return;
+      setSessionDragActive(false);
+    };
+    window.addEventListener("dragend", clear, { once: true });
+    window.addEventListener("drop", clear, { once: true });
+    window.addEventListener("dragenter", onEnter, true);
+    return () => {
+      window.removeEventListener("dragend", clear);
+      window.removeEventListener("drop", clear);
+      window.removeEventListener("dragenter", onEnter, true);
+    };
+  }, [sessionDragActive]);
 
   return (
     <div
+      ref={leafRef}
       className={
         "session-pane-leaf" +
         (focused ? " focused" : "") +
@@ -1086,12 +1108,35 @@ function SessionPaneLeaf({
       }}
       onDragLeave={(event) => {
         const next = event.relatedTarget as Node | null;
-        if (!next || !event.currentTarget.contains(next)) setSessionDragActive(false);
+        if (next && event.currentTarget.contains(next)) return;
+        // WebKit reports a null relatedTarget and fires dragleave whenever the
+        // element under the cursor is replaced during a drag (the drop
+        // overlay mounting, a banner appearing, the terminal repainting), so
+        // the pointer position — not relatedTarget — decides whether the
+        // gesture really left this pane.
+        const rect = event.currentTarget.getBoundingClientRect();
+        const inside =
+          event.clientX >= rect.left &&
+          event.clientX < rect.right &&
+          event.clientY >= rect.top &&
+          event.clientY < rect.bottom;
+        if (!inside) setSessionDragActive(false);
       }}
       onDrop={(event) => {
         if (!hasSessionPaneDragPayload(event.dataTransfer)) return;
         event.preventDefault();
         setSessionDragActive(false);
+        const payload = readSessionPaneDragPayload(event.dataTransfer);
+        if (!payload) return;
+        const direction = paneDropDirection(
+          event.currentTarget.getBoundingClientRect(),
+          event.clientX,
+        );
+        if (canSplitSessionPane(ses.id, direction)) {
+          splitSessionIntoPane(ses.id, payload.sessionId, direction);
+        } else {
+          toast(t("shell:pane.tooSmall"), "info");
+        }
       }}
     >
       {multiPane ? (
@@ -1117,10 +1162,7 @@ function SessionPaneLeaf({
         )}
       </div>
       {sessionDragActive && visible ? (
-        <PaneDropOverlay
-          ses={ses}
-          onDone={() => setSessionDragActive(false)}
-        />
+        <PaneDropOverlay ses={ses} />
       ) : null}
     </div>
   );
