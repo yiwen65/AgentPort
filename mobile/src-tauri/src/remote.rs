@@ -3,7 +3,7 @@ use crate::hosts::{
     self, AuthenticationKind as ProfileAuthentication, HostProfile, PreferredTransport,
 };
 use crate::ssh::{self, AuthenticationKind, JumpHostRequest, SshProbeRequest};
-use agentport_relay::{crypto::Identity, endpoint::connect_session_realtime as connect_session};
+use agentport_relay::{crypto::Identity, endpoint::{connect_session_realtime as connect_session, register_push_token, PushEnvironment}};
 use agentport_remote_protocol::{classify_method, RetryClass, ServerEnvelope, PROTOCOL_MAJOR};
 use russh::Disconnect;
 use serde::{Deserialize, Serialize};
@@ -1183,6 +1183,38 @@ async fn close_transport(transport: Transport) {
             Transport::Relay(lease) => drop(lease),
         }
     }).await;
+}
+
+/// Bind the OS-issued token to the authenticated, approved Relay phone key.
+/// The Connector verifies the key before persisting; SSH-only profiles have no
+/// comparable device identity and cannot register for push.
+#[tauri::command]
+pub async fn mobile_register_push_token(
+    app: AppHandle,
+    profile_id: String,
+    token: String,
+    environment: PushEnvironment,
+) -> Result<(), String> {
+    if !cfg!(target_os = "ios") {
+        return Err("APNs registration requires iOS".into());
+    }
+    let profile = hosts::get_profile(&app, &profile_id)?;
+    let relay = profile.relay.as_ref().ok_or("Push requires a paired Relay host")?;
+    if !profile.enabled || !relay.approved || profile.jump.is_some()
+        || !matches!(profile.preferred_transport, PreferredTransport::Relay)
+    {
+        return Err("Push requires an enabled, approved Relay host".into());
+    }
+    relay.validate().map_err(|_| "Relay identity is invalid")?;
+    let secret = load_credential(&app, &profile.credential_id)?;
+    let identity = Identity::from_private(secret).map_err(|_| "Relay credential is invalid")?;
+    if relay.device_public_key.as_deref() != Some(identity.public_key().as_str()) {
+        return Err("Relay device identity has changed".into());
+    }
+    tokio::time::timeout(Duration::from_secs(15), register_push_token(&identity, &relay.peer, token, environment))
+        .await
+        .map_err(|_| "Push registration timed out")?
+        .map_err(|_| "Push registration was not accepted".to_string())
 }
 
 #[tauri::command]

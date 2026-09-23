@@ -89,6 +89,7 @@ dependencies = [
  "agentport-remote-protocol",
  "argon2 0.5.3",
  "base64 0.22.1",
+ "cc",
  "libc",
  "objc2",
  "rand 0.10.2",

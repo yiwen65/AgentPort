@@ -4,6 +4,7 @@ import { HostManager } from "../features/hosts-auth/HostManager";
 import type { HostAuthClient } from "../features/hosts-auth/types";
 import { useTerminalImmersion } from "./terminalImmersion";
 import { useApplyAppAppearance } from "./appAppearance";
+import { usePushAlerts } from "./usePushAlerts";
 import { SettingsDialog } from "../features/settings/SettingsDialog";
 import { SessionDashboard } from "../features/sessions/SessionDashboard";
 import type { OpenSession } from "../features/sessions/types";
@@ -43,6 +44,7 @@ export function App({ client, hostAuthClient }: AppProps) {
     setSelectedSession(session);
     setTerminalVisible(true);
   }, []);
+  usePushAlerts(client, hostAuthClient, hostProfilesEpoch, openSession);
 
   const handleSessionChanged = (next?: OpenSession) => {
     setSelectedSession(next);

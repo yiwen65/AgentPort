@@ -1,6 +1,9 @@
 use super::*;
 use crate::{
-    endpoint::{connect_session, connect_session_realtime, PairingConnection},
+    endpoint::{
+        connect_push_registration, connect_session, connect_session_realtime, register_push_token,
+        PairingConnection, PushEnvironment, PushRegistrationReply,
+    },
     server,
 };
 use std::{fs, os::unix::fs::PermissionsExt, sync::Mutex as SyncMutex};
@@ -62,7 +65,15 @@ impl Fixture {
         )
         .unwrap();
         if let Some(real_bridge) = real_bridge {
-            fs::write(&bridge, format!("#!/bin/sh\nexport HOME='{}'\nexec '{}' \"$@\"\n", temp.path().display(), real_bridge.display().to_string().replace('\'', "'\"'\"'"))).unwrap();
+            fs::write(
+                &bridge,
+                format!(
+                    "#!/bin/sh\nexport HOME='{}'\nexec '{}' \"$@\"\n",
+                    temp.path().display(),
+                    real_bridge.display().to_string().replace('\'', "'\"'\"'")
+                ),
+            )
+            .unwrap();
         }
         fs::set_permissions(&bridge, fs::Permissions::from_mode(0o700)).unwrap();
         let vault = Arc::new(MemoryVault::default());
@@ -136,6 +147,127 @@ async fn approve(runtime: &Runtime, phone: &Identity) -> Peer {
         .unwrap();
     pairing.wait().await.unwrap();
     invitation.peer.clone()
+}
+
+#[test]
+fn legacy_device_without_push_registration_still_loads() {
+    let json = r#"{"publicKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","name":"Phone","approvedAt":1}"#;
+    let device: Device = serde_json::from_str(json).unwrap();
+    assert!(device.push.is_none());
+    assert_eq!(serde_json::to_string(&device).unwrap(), json);
+}
+
+#[tokio::test]
+async fn push_registration_requires_approved_identity_valid_token_and_durable_store() {
+    let fixture = Fixture::new().await;
+    let phone = Identity::generate().unwrap();
+    let peer = fixture.runtime.invite().await.unwrap().peer.clone();
+    let valid = "a1".repeat(32);
+    assert!(connect_push_registration(&phone, &peer).await.is_err());
+    assert!(fixture.runtime.push_targets().await.is_empty());
+    let peer = approve(&fixture.runtime, &phone).await;
+    let wrong = Identity::generate().unwrap();
+    assert!(connect_push_registration(&wrong, &peer).await.is_err());
+    let mut socket = net::join(&peer, Mode::Session).await.unwrap();
+    let mut noise = Handshake::session(&phone, &peer, true).unwrap();
+    net::send_packet(&mut socket, noise.write(b"unknown-offer-v1").unwrap())
+        .await
+        .unwrap();
+    assert!(net::receive_packet(&mut socket).await.is_err());
+    for token in [
+        "A1".repeat(32),
+        "gg".repeat(32),
+        "a".repeat(31),
+        "ab".repeat(129),
+    ] {
+        assert!(
+            register_push_token(&phone, &peer, token, PushEnvironment::Sandbox)
+                .await
+                .is_err()
+        );
+    }
+    // Direct encrypted malformed message is also rejected by Connector, not
+    // just the endpoint's local validator.
+    let mut channel = connect_push_registration(&phone, &peer).await.unwrap();
+    channel
+        .send(&serde_json::json!({"token":"BAD!","environment":"sandbox"}))
+        .await
+        .unwrap();
+    assert!(matches!(
+        channel.receive::<PushRegistrationReply>().await.unwrap(),
+        PushRegistrationReply::Rejected
+    ));
+    assert!(fixture.runtime.push_targets().await.is_empty());
+    register_push_token(&phone, &peer, valid.clone(), PushEnvironment::Sandbox)
+        .await
+        .unwrap();
+    let targets = fixture.runtime.push_targets().await;
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].registration.token, valid);
+    let first_registration = targets[0].registered_at_ms.expect("registration baseline");
+    register_push_token(&phone, &peer, valid.clone(), PushEnvironment::Sandbox).await.unwrap();
+    assert_eq!(fixture.runtime.push_targets().await[0].registered_at_ms, Some(first_registration));
+    assert_eq!(
+        targets[0].registration.environment,
+        PushEnvironment::Sandbox
+    );
+    assert!(fixture.runtime.is_push_target_authorized(&targets[0]).await);
+    assert!(fixture.runtime.status().await.devices[0].push.is_none());
+    assert!(!serde_json::to_string(&fixture.runtime.status().await)
+        .unwrap()
+        .contains(&valid));
+    let persisted: Persistent = fixture.runtime.store.read().unwrap().unwrap();
+    assert_eq!(persisted.devices[0].push.as_ref().unwrap().token, valid);
+    let replacement = "b2".repeat(32);
+    register_push_token(
+        &phone,
+        &peer,
+        replacement.clone(),
+        PushEnvironment::Production,
+    )
+    .await
+    .unwrap();
+    assert!(!fixture.runtime.is_push_target_authorized(&targets[0]).await);
+    assert_eq!(
+        fixture.runtime.push_targets().await[0].registration.token,
+        replacement
+    );
+    assert!(fixture.runtime.push_targets().await[0].registered_at_ms.is_some());
+    assert_eq!(fixture.spawns(), 0); // No Bridge opened by registration.
+    fixture.runtime.revoke(&phone.public_key()).await.unwrap();
+    assert!(fixture.runtime.push_targets().await.is_empty());
+    assert!(!fixture.runtime.is_push_target_authorized(&targets[0]).await);
+    let persisted: Persistent = fixture.runtime.store.read().unwrap().unwrap();
+    assert!(persisted.devices.is_empty());
+    assert!(connect_push_registration(&phone, &peer).await.is_err());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn push_registration_storage_failure_never_acknowledges_or_publishes() {
+    let fixture = Fixture::new().await;
+    let phone = Identity::generate().unwrap();
+    let peer = approve(&fixture.runtime, &phone).await;
+    fs::set_permissions(
+        fixture.temp.path().join("state/state.json"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    assert!(
+        register_push_token(&phone, &peer, "ab".repeat(32), PushEnvironment::Sandbox)
+            .await
+            .is_err()
+    );
+    assert!(fixture.runtime.push_targets().await.is_empty());
+    assert_eq!(fixture.runtime.status().await.phase, Phase::StorageFailed);
+    fs::set_permissions(
+        fixture.temp.path().join("state/state.json"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let persisted: Persistent = fixture.runtime.store.read().unwrap().unwrap();
+    assert!(persisted.devices[0].push.is_none());
+    fixture.shutdown().await;
 }
 
 #[tokio::test]
@@ -600,10 +732,18 @@ async fn real_bridge_hello_and_read_only_request_traverse_relay_in_isolated_data
     assert_eq!(response["type"], "result");
     assert_eq!(response["status"], "succeeded");
     assert_eq!(response["value"], serde_json::json!([]));
-    assert!(hello["capabilities"].as_array().unwrap().iter().any(|cap| cap["name"] == "image.upload_v1" && cap["enabled"] == true));
+    assert!(hello["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|cap| cap["name"] == "image.upload_v1" && cap["enabled"] == true));
     use sha2::{Digest, Sha256};
     for extension in ["png", "jpg"] {
-        let mut image = if extension == "png" { b"\x89PNG\r\n\x1a\n".to_vec() } else { vec![255, 216, 255] };
+        let mut image = if extension == "png" {
+            b"\x89PNG\r\n\x1a\n".to_vec()
+        } else {
+            vec![255, 216, 255]
+        };
         image.extend((0..200_000).map(|n| (n % 256) as u8));
         let begin = exchange(&mut stream, serde_json::json!({"type":"request","requestId":"image-begin","method":"image.begin","params":{"size":image.len(),"extension":extension}})).await;
         assert_eq!(begin["status"], "succeeded");

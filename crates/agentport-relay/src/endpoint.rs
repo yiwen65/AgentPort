@@ -102,6 +102,82 @@ impl PairingConnection {
 
 pub(crate) const WSS_STREAM_OFFER: &[u8] = b"wss-stream-v1";
 pub(crate) const WSS_STREAM_ACCEPTED: &[u8] = b"accepted:wss-stream-v1";
+pub(crate) const PUSH_REGISTER_OFFER: &[u8] = b"push.register.v1";
+pub(crate) const PUSH_REGISTER_ACCEPTED: &[u8] = b"accepted:push.register.v1";
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PushEnvironment {
+    Sandbox,
+    Production,
+}
+
+// A token is a credential: never derive Debug or include it in diagnostics.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PushRegistration {
+    pub token: String,
+    pub environment: PushEnvironment,
+}
+impl std::fmt::Debug for PushRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PushRegistration")
+            .field("token", &"[redacted]")
+            .field("environment", &self.environment)
+            .finish()
+    }
+}
+impl PushRegistration {
+    pub fn validate(&self) -> Result<()> {
+        let token = self.token.as_bytes();
+        if !(32..=256).contains(&token.len())
+            || token.len() % 2 != 0
+            || !token
+                .iter()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(c))
+        {
+            return Err(Error::Invalid("APNs token encoding"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum PushRegistrationReply {
+    Registered,
+    Rejected,
+}
+
+/// Dedicated end-to-end encrypted control channel; never fall back to a
+/// regular Bridge session if an older Connector does not understand this offer.
+pub async fn connect_push_registration(identity: &Identity, peer: &Peer) -> Result<SecureChannel> {
+    let mut socket = net::join(peer, Mode::Session).await?;
+    let mut noise = Handshake::session(identity, peer, true)?;
+    net::send_packet(&mut socket, noise.write(PUSH_REGISTER_OFFER)?).await?;
+    let response = noise.read(&net::receive_packet(&mut socket).await?)?;
+    if response.as_slice() != PUSH_REGISTER_ACCEPTED {
+        return Err(Error::Unauthorized);
+    }
+    Ok(SecureChannel::new(socket, noise.finish()?))
+}
+
+/// Replace the previous token for this authenticated, approved phone identity.
+pub async fn register_push_token(
+    identity: &Identity,
+    peer: &Peer,
+    token: String,
+    environment: PushEnvironment,
+) -> Result<()> {
+    let registration = PushRegistration { token, environment };
+    registration.validate()?;
+    let mut channel = connect_push_registration(identity, peer).await?;
+    channel.send(&registration).await?;
+    match channel.receive::<PushRegistrationReply>().await? {
+        PushRegistrationReply::Registered => Ok(()),
+        PushRegistrationReply::Rejected => Err(Error::Invalid("APNs registration rejected")),
+    }
+}
 
 pub async fn connect_session(identity: &Identity, peer: &Peer) -> Result<EncryptedStream> {
     connect_session_mode(identity, peer, false).await

@@ -1,9 +1,11 @@
 //! Independent desktop authorization/Bridge owner. GUI uses protected local IPC.
+pub mod apns;
 pub mod ipc;
+pub mod push_worker;
 mod storage;
 use crate::{
     crypto::{Handshake, Identity},
-    endpoint::{PairHello, PairReply},
+    endpoint::{PairHello, PairReply, PushEnvironment, PushRegistration, PushRegistrationReply},
     net::{self, SecureChannel, Socket},
     protocol::*,
     Error, Result,
@@ -57,6 +59,19 @@ pub struct Device {
     pub public_key: String,
     pub name: String,
     pub approved_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push: Option<PushRegistration>,
+    /// Connector-owned baseline for first delivery; repeated registration of
+    /// the same token never resets it or skips intervening messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_registered_at_ms: Option<i64>,
+}
+/// A point-in-time snapshot of authorized targets; recheck before each send.
+#[derive(Clone, Debug)]
+pub struct PushTarget {
+    pub public_key: String,
+    pub registration: PushRegistration,
+    pub registered_at_ms: Option<i64>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -71,6 +86,25 @@ struct Persistent {
     version: u8,
     settings: Option<Settings>,
     devices: Vec<Device>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    apns: Option<ApnsSettings>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApnsSettings {
+    key_account: String,
+    key_id: String,
+    team_id: String,
+    topic: String,
+    environment: PushEnvironment,
+}
+/// Key material is loaded only from the Keychain and never serialized into state or status.
+pub struct ApnsCredentials {
+    pub key_p8_pem: Zeroizing<Vec<u8>>,
+    pub key_id: String,
+    pub team_id: String,
+    pub topic: String,
+    pub environment: PushEnvironment,
 }
 impl Default for Persistent {
     fn default() -> Self {
@@ -78,6 +112,7 @@ impl Default for Persistent {
             version: VERSION,
             settings: None,
             devices: Vec::new(),
+            apns: None,
         }
     }
 }
@@ -94,11 +129,20 @@ impl Persistent {
             decode::<16>(&settings.identity_account)?;
             decode::<16>(&settings.token_account)?;
         }
+        if let Some(apns) = &self.apns {
+            decode::<16>(&apns.key_account).map_err(|_| Error::Storage)?;
+            if !valid_apns_metadata(&apns.key_id, &apns.team_id, &apns.topic) {
+                return Err(Error::Storage);
+            }
+        }
         let mut seen = std::collections::HashSet::new();
         for device in &self.devices {
             validate_name(&device.name)?;
             if decode::<32>(&device.public_key)? == [0; 32] || !seen.insert(&device.public_key) {
                 return Err(Error::Storage);
+            }
+            if let Some(push) = &device.push {
+                push.validate().map_err(|_| Error::Storage)?;
             }
         }
         Ok(())
@@ -123,6 +167,53 @@ fn load_settings(settings: &Settings, vault: &dyn Vault) -> Result<Configured> {
         identity,
         token,
         peer: settings.peer.clone(),
+    })
+}
+fn apns_environment(environment: PushEnvironment) -> apns::Environment {
+    match environment {
+        PushEnvironment::Sandbox => apns::Environment::Sandbox,
+        PushEnvironment::Production => apns::Environment::Production,
+    }
+}
+fn valid_apns_metadata(key_id: &str, team_id: &str, topic: &str) -> bool {
+    let apple_id = |value: &str| {
+        value.len() == 10
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+    };
+    let topic_part = |part: &str| {
+        !part.is_empty()
+            && part.len() <= 63
+            && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    };
+    apple_id(key_id)
+        && apple_id(team_id)
+        && (3..=255).contains(&topic.len())
+        && topic.contains('.')
+        && topic.split('.').all(topic_part)
+}
+fn load_apns(settings: &ApnsSettings, vault: &dyn Vault) -> Result<ApnsCredentials> {
+    let pem = vault.load(&settings.key_account)?;
+    if pem.is_empty()
+        || pem.len() > 8192
+        || apns::ApnsSender::new(
+            &pem,
+            &settings.key_id,
+            &settings.team_id,
+            &settings.topic,
+            apns_environment(settings.environment),
+        )
+        .is_err()
+    {
+        return Err(Error::Credential);
+    }
+    Ok(ApnsCredentials {
+        key_p8_pem: pem,
+        key_id: settings.key_id.clone(),
+        team_id: settings.team_id.clone(),
+        topic: settings.topic.clone(),
+        environment: settings.environment,
     })
 }
 fn validate_token(token: &str) -> Result<()> {
@@ -181,10 +272,15 @@ pub struct Status {
     pub devices: Vec<Device>,
     pub pairing: Option<PairStatus>,
     pub active_channels: usize,
+    pub apns_configured: bool,
+    #[serde(default)]
+    pub apns_delivery_active: bool,
 }
 struct Inner {
     durable: Persistent,
     configured: Option<Arc<Configured>>,
+    apns_available: bool,
+    apns_delivery_active: bool,
     phase: Phase,
     pairing: Option<Pairing>,
     channels: HashMap<String, Vec<JoinHandle<Result<()>>>>,
@@ -223,6 +319,15 @@ impl Runtime {
         })
         .await
         .map_err(|_| Error::Credential)?;
+        let apns_settings = durable.apns.clone();
+        let apns_vault = vault.clone();
+        let apns_available = tokio::task::spawn_blocking(move || {
+            apns_settings
+                .as_ref()
+                .is_some_and(|s| load_apns(s, apns_vault.as_ref()).is_ok())
+        })
+        .await
+        .map_err(|_| Error::Credential)?;
         let (configured, phase) = match loaded {
             Ok(Some(configured)) => (Some(Arc::new(configured)), Phase::Connecting),
             Ok(None) => (None, Phase::Unconfigured),
@@ -234,6 +339,8 @@ impl Runtime {
             inner: Mutex::new(Inner {
                 durable,
                 configured,
+                apns_available,
+                apns_delivery_active: false,
                 phase,
                 pairing: None,
                 channels: HashMap::new(),
@@ -265,10 +372,102 @@ impl Runtime {
             version: VERSION,
             phase: inner.phase.clone(),
             peer: inner.durable.settings.as_ref().map(|s| s.peer.clone()),
-            devices: inner.durable.devices.clone(),
+            devices: inner
+                .durable
+                .devices
+                .iter()
+                .cloned()
+                .map(|mut device| {
+                    device.push = None; // Local IPC status must not disclose APNs tokens.
+                    device.push_registered_at_ms = None;
+                    device
+                })
+                .collect(),
             pairing: inner.pairing.as_ref().map(|p| p.status.clone()),
             active_channels: inner.channels.values().map(Vec::len).sum(),
+            apns_configured: inner.apns_available,
+            apns_delivery_active: inner.apns_delivery_active,
         }
+    }
+    /// Reflect actual worker liveness in same-user IPC; credentials alone do
+    /// not mean pushes are being attempted.
+    pub async fn set_apns_delivery_active(&self, active: bool) {
+        self.inner.lock().await.apns_delivery_active = active;
+    }
+    /// Import the APNs signing key into the same-user Keychain, then persist
+    /// only the new account identifier and nonsecret metadata atomically.
+    pub async fn configure_apns(
+        &self,
+        key_p8_pem: Zeroizing<String>,
+        key_id: String,
+        team_id: String,
+        topic: String,
+        environment: PushEnvironment,
+    ) -> Result<()> {
+        if key_p8_pem.is_empty()
+            || key_p8_pem.len() > 8192
+            || !valid_apns_metadata(&key_id, &team_id, &topic)
+        {
+            return Err(Error::Invalid("APNs configuration"));
+        }
+        let mut inner = self.inner.lock().await;
+        if inner.stopping || inner.phase == Phase::StorageFailed {
+            return Err(Error::Storage);
+        }
+        let vault = self.vault.clone();
+        let settings = tokio::task::spawn_blocking(move || {
+            apns::ApnsSender::new(
+                key_p8_pem.as_bytes(),
+                &key_id,
+                &team_id,
+                &topic,
+                apns_environment(environment),
+            )
+            .map_err(|_| Error::Invalid("APNs configuration"))?;
+            let key_account = vault.create(key_p8_pem.as_bytes())?;
+            let settings = ApnsSettings {
+                key_account,
+                key_id,
+                team_id,
+                topic,
+                environment,
+            };
+            load_apns(&settings, vault.as_ref())?;
+            Ok::<_, Error>(settings)
+        })
+        .await
+        .map_err(|_| Error::Credential)??;
+        let mut next = inner.durable.clone();
+        next.apns = Some(settings);
+        if self.store.write(&next).is_err() {
+            inner.apns_available = false;
+            inner.phase = Phase::StorageFailed;
+            inner.configured = None;
+            self.changed.send_modify(|n| *n += 1);
+            return Err(Error::Storage);
+        }
+        inner.durable = next;
+        inner.apns_available = true;
+        Ok(())
+    }
+    /// An absent or unavailable Keychain account never produces signing material.
+    pub async fn apns_credentials(&self) -> Result<Option<ApnsCredentials>> {
+        let inner = self.inner.lock().await;
+        if inner.stopping || inner.phase == Phase::StorageFailed {
+            return Ok(None);
+        }
+        let Some(settings) = inner.durable.apns.clone() else {
+            return Ok(None);
+        };
+        if !inner.apns_available {
+            return Err(Error::Credential);
+        }
+        let vault = self.vault.clone();
+        drop(inner);
+        tokio::task::spawn_blocking(move || load_apns(&settings, vault.as_ref()))
+            .await
+            .map_err(|_| Error::Credential)?
+            .map(Some)
     }
     pub async fn configure(
         &self,
@@ -407,6 +606,8 @@ impl Runtime {
                 public_key: candidate.public_key,
                 name: candidate.name,
                 approved_at: now(),
+                push: None,
+                push_registered_at_ms: None,
             });
             if self.store.write(&next).is_err() {
                 inner.phase = Phase::StorageFailed;
@@ -427,6 +628,36 @@ impl Runtime {
             PairPhase::Denied
         };
         Ok(())
+    }
+    /// Snapshot only approved devices with a valid registered token. Never use
+    /// this as authorization after revocation; check immediately before delivery.
+    pub async fn push_targets(&self) -> Vec<PushTarget> {
+        let inner = self.inner.lock().await;
+        if inner.stopping || inner.phase == Phase::StorageFailed || inner.configured.is_none() {
+            return Vec::new();
+        }
+        inner
+            .durable
+            .devices
+            .iter()
+            .filter_map(|device| {
+                device.push.clone().map(|registration| PushTarget {
+                    public_key: device.public_key.clone(),
+                    registration,
+                    registered_at_ms: device.push_registered_at_ms,
+                })
+            })
+            .collect()
+    }
+    pub async fn is_push_target_authorized(&self, target: &PushTarget) -> bool {
+        let inner = self.inner.lock().await;
+        !inner.stopping
+            && inner.phase != Phase::StorageFailed
+            && inner.configured.is_some()
+            && inner.durable.devices.iter().any(|device| {
+                device.public_key == target.public_key
+                    && device.push.as_ref() == Some(&target.registration)
+            })
     }
     pub async fn revoke(&self, public_key: &str) -> Result<()> {
         decode::<32>(public_key)?;
@@ -611,7 +842,8 @@ impl Runtime {
                 let mut noise = Handshake::session(&configured.identity, &configured.peer, false)?;
                 let offer = noise.read(&net::receive_packet(&mut socket).await?)?;
                 let realtime = offer.as_slice() == crate::endpoint::WSS_STREAM_OFFER;
-                if !offer.is_empty() && !realtime {
+                let push_registration = offer.as_slice() == crate::endpoint::PUSH_REGISTER_OFFER;
+                if !offer.is_empty() && !realtime && !push_registration {
                     return Err(Error::Protocol);
                 }
                 let key = encode(&noise.remote_key()?);
@@ -639,27 +871,67 @@ impl Runtime {
                 // Revoke aborts AND joins this task, dropping socket/Bridge before ack.
                 inner
                     .channels
-                    .entry(key)
+                    .entry(key.clone())
                     .or_default()
                     .push(tokio::spawn(async move {
                         let _slot = slot;
-                        let response = if realtime {
+                        let response = if push_registration {
+                            crate::endpoint::PUSH_REGISTER_ACCEPTED
+                        } else if realtime {
                             crate::endpoint::WSS_STREAM_ACCEPTED
                         } else {
                             b"accepted"
                         };
                         net::send_packet(&mut socket, noise.write(response)?).await?;
                         let established = noise.finish()?;
-                        let stream = if realtime {
-                            net::EncryptedStream::authenticated_wss(socket)
+                        if push_registration {
+                            runtime
+                                .register_push(SecureChannel::new(socket, established), &key)
+                                .await
                         } else {
-                            SecureChannel::new(socket, established).into_stream()
-                        };
-                        runtime.bridge(stream).await
+                            let stream = if realtime {
+                                net::EncryptedStream::authenticated_wss(socket)
+                            } else {
+                                SecureChannel::new(socket, established).into_stream()
+                            };
+                            runtime.bridge(stream).await
+                        }
                     }));
                 Ok(())
             }
         }
+    }
+    async fn register_push(&self, mut channel: SecureChannel, public_key: &str) -> Result<()> {
+        let registration: PushRegistration = channel.receive().await?;
+        if registration.validate().is_err() {
+            channel.send(&PushRegistrationReply::Rejected).await?;
+            return Err(Error::Invalid("APNs registration"));
+        }
+        let mut inner = self.inner.lock().await;
+        if inner.stopping || inner.phase == Phase::StorageFailed || inner.configured.is_none() {
+            return Err(Error::Unauthorized);
+        }
+        let mut next = inner.durable.clone();
+        let device = next
+            .devices
+            .iter_mut()
+            .find(|d| d.public_key == public_key)
+            .ok_or(Error::Unauthorized)?;
+        if device.push.as_ref() != Some(&registration) || device.push_registered_at_ms.is_none() {
+            device.push_registered_at_ms = Some(chrono::Utc::now().timestamp_millis());
+        }
+        device.push = Some(registration);
+        // Keep authorization lock across the atomic write. Revoke cannot race
+        // registration's success acknowledgement or leave an orphaned token.
+        if self.store.write(&next).is_err() {
+            inner.phase = Phase::StorageFailed;
+            inner.configured = None;
+            self.changed.send_modify(|n| *n += 1);
+            return Err(Error::Storage);
+        }
+        inner.durable = next;
+        drop(inner);
+        channel.send(&PushRegistrationReply::Registered).await
     }
     async fn pair(
         &self,
@@ -795,6 +1067,177 @@ async fn close_channels(handles: Vec<JoinHandle<Result<()>>>) {
     }
     for handle in handles {
         let _ = handle.await;
+    }
+}
+
+#[cfg(test)]
+mod apns_configuration_tests {
+    use super::*;
+    use base64::Engine as _;
+    use ring::{
+        rand::SystemRandom,
+        signature::{EcdsaKeyPair, ECDSA_P256_SHA256_FIXED_SIGNING},
+    };
+    use std::{fs, sync::Mutex as SyncMutex};
+
+    #[derive(Default)]
+    struct MemoryVault(SyncMutex<HashMap<String, Zeroizing<Vec<u8>>>>);
+    impl Vault for MemoryVault {
+        fn load(&self, account: &str) -> Result<Zeroizing<Vec<u8>>> {
+            self.0
+                .lock()
+                .unwrap()
+                .get(account)
+                .cloned()
+                .ok_or(Error::Credential)
+        }
+        fn create(&self, secret: &[u8]) -> Result<String> {
+            let account = identifier()?;
+            self.0
+                .lock()
+                .unwrap()
+                .insert(account.clone(), Zeroizing::new(secret.to_vec()));
+            Ok(account)
+        }
+    }
+    #[tokio::test]
+    async fn apns_import_persists_only_account_and_handles_missing_key_after_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let bridge = temp.path().join("bridge");
+        fs::write(&bridge, "fixture").unwrap();
+        let vault = Arc::new(MemoryVault::default());
+        let path = temp.path().join("state");
+        let runtime = Runtime::open(
+            Store::open(&path).unwrap(),
+            vault.clone(),
+            bridge.clone(),
+            temp.path().to_path_buf(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!runtime.status().await.apns_configured);
+        assert!(runtime.apns_credentials().await.unwrap().is_none());
+        assert!(runtime
+            .configure_apns(
+                Zeroizing::new("not-a-key".into()),
+                "ABCDEFGHI1".into(),
+                "TEAMABCDE1".into(),
+                "com.agentport.mobile".into(),
+                PushEnvironment::Sandbox
+            )
+            .await
+            .is_err());
+        let rng = SystemRandom::new();
+        let der = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+        let pem = format!(
+            "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
+            base64::engine::general_purpose::STANDARD.encode(der.as_ref())
+        );
+        runtime
+            .configure_apns(
+                Zeroizing::new(pem.clone()),
+                "ABCDEFGHI1".into(),
+                "TEAMABCDE1".into(),
+                "com.agentport.mobile".into(),
+                PushEnvironment::Sandbox,
+            )
+            .await
+            .unwrap();
+        assert!(runtime.status().await.apns_configured);
+        assert!(runtime.apns_credentials().await.unwrap().is_some());
+        let persisted = fs::read_to_string(path.join("state.json")).unwrap();
+        assert!(!persisted.contains(&pem));
+        assert!(!persisted.contains("PRIVATE KEY"));
+        let account = runtime
+            .inner
+            .lock()
+            .await
+            .durable
+            .apns
+            .as_ref()
+            .unwrap()
+            .key_account
+            .clone();
+        drop(runtime);
+        let restarted = Runtime::open(
+            Store::open(&path).unwrap(),
+            vault.clone(),
+            bridge.clone(),
+            temp.path().to_path_buf(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(restarted.status().await.apns_configured);
+        drop(restarted);
+        vault.0.lock().unwrap().remove(&account);
+        let missing = Runtime::open(
+            Store::open(&path).unwrap(),
+            vault,
+            bridge,
+            temp.path().to_path_buf(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!missing.status().await.apns_configured);
+        assert!(matches!(
+            missing.apns_credentials().await,
+            Err(Error::Credential)
+        ));
+    }
+
+    #[tokio::test]
+    async fn private_ipc_import_does_not_disclose_key_in_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let bridge = temp.path().join("bridge");
+        fs::write(&bridge, "fixture").unwrap();
+        let runtime = Runtime::open(
+            Store::open(&temp.path().join("state")).unwrap(),
+            Arc::new(MemoryVault::default()),
+            bridge,
+            temp.path().to_path_buf(),
+            None,
+        )
+        .await
+        .unwrap();
+        let directory = temp.path().join("ipc");
+        let server = tokio::spawn({
+            let runtime = runtime.clone();
+            let directory = directory.clone();
+            async move { ipc::serve(&directory, runtime).await.unwrap() }
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !directory.join("control.sock").exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let der =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+                .unwrap();
+        let pem = format!(
+            "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
+            base64::engine::general_purpose::STANDARD.encode(der.as_ref())
+        );
+        let request = ipc::Request::ConfigureApns {
+            key_p8_pem: Zeroizing::new(pem.clone()),
+            key_id: "ABCDEFGHI1".into(),
+            team_id: "TEAMABCDE1".into(),
+            topic: "com.agentport.mobile".into(),
+            environment: PushEnvironment::Sandbox,
+        };
+        assert!(matches!(
+            ipc::call(&directory, &request).await.unwrap(),
+            ipc::Response::Ok
+        ));
+        let status = ipc::call(&directory, &ipc::Request::Status).await.unwrap();
+        assert!(matches!(&status, ipc::Response::Status { status } if status.apns_configured));
+        assert!(!serde_json::to_string(&status).unwrap().contains(&pem));
+        runtime.stop().await;
+        server.await.unwrap();
     }
 }
 

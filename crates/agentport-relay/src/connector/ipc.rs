@@ -1,5 +1,6 @@
 //! Bounded same-user Unix IPC. Socket lives in an owned 0700 directory; no TCP.
 use super::{private_directory, Candidate, Runtime, Status, Store};
+use crate::endpoint::PushEnvironment;
 use crate::{
     protocol::{host_id, Invitation, VERSION},
     Error, Result,
@@ -18,6 +19,7 @@ use tokio::{
     task::JoinSet,
 };
 use zeroize::Zeroizing;
+// APNs PEM itself is capped at 8KiB; the whole IPC frame remains 8KiB.
 const MAX_REQUEST: usize = 8192;
 const MAX_RESPONSE: usize = 65536;
 
@@ -30,6 +32,13 @@ pub enum Request {
         relay_url: String,
         name: String,
         token: Zeroizing<String>,
+    },
+    ConfigureApns {
+        key_p8_pem: Zeroizing<String>,
+        key_id: String,
+        team_id: String,
+        topic: String,
+        environment: PushEnvironment,
     },
     Invite,
     InviteAutomatic,
@@ -205,6 +214,17 @@ async fn dispatch(runtime: &Runtime, request: Request) -> Result<Response> {
             name,
             token,
         } => runtime.configure(relay_url, name, token).await?,
+        Request::ConfigureApns {
+            key_p8_pem,
+            key_id,
+            team_id,
+            topic,
+            environment,
+        } => {
+            runtime
+                .configure_apns(key_p8_pem, key_id, team_id, topic, environment)
+                .await?
+        }
         Request::InviteAutomatic => {
             return Ok(Response::Invitation {
                 invitation: runtime.invite_automatic().await?,

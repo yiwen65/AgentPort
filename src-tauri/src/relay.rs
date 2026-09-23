@@ -201,6 +201,8 @@ mod tests {
                     devices: vec![],
                     pairing: None,
                     active_channels: 0,
+                    apns_configured: false,
+                    apns_delivery_active: false,
                 },
             };
             let bytes = serde_json::to_vec(&response).unwrap();

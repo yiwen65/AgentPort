@@ -5,6 +5,17 @@ fn main() {
 
     let target = std::env::var("TARGET").unwrap_or_default();
     if target.contains("apple-ios") {
+        // Compile the native push delegate into the Rust library itself: Cargo
+        // also links a cdylib during `tauri ios build`, before Xcode links main.mm.
+        let mut push = cc::Build::new();
+        push.file("ios/PushBridge.mm").flag("-fobjc-arc");
+        if std::env::var("PROFILE").as_deref() == Ok("debug") {
+            push.define("DEBUG", None);
+        }
+        push.compile("agentport_push_bridge");
+        println!("cargo:rustc-link-lib=framework=UserNotifications");
+        println!("cargo:rustc-link-lib=framework=UIKit");
+        println!("cargo:rerun-if-changed=ios/PushBridge.mm");
         let (directory, script) = match target.as_str() {
             "aarch64-apple-ios" => ("ios-device-arm64", "build-ios-device.sh"),
             "aarch64-apple-ios-sim" => ("ios-simulator-arm64", "build-ios-simulator.sh"),

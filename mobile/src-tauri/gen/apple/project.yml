@@ -25,6 +25,7 @@ targetTemplates:
       groups: [app]
 targets:
   agentport-mobile_iOS:
+    productName: AgentPort
     type: application
     platform: iOS
     sources:
@@ -54,8 +55,12 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: 0.1.0
         CFBundleVersion: "0.1.0"
+        NSCameraUsageDescription: Scan the short-lived AgentPort pairing code on your computer.
+        NSLocalNetworkUsageDescription: Pair with and connect securely to your AgentPort computer.
     entitlements:
       path: agentport-mobile_iOS/agentport-mobile_iOS.entitlements
+      properties:
+        aps-environment: $(AGENTPORT_APNS_ENVIRONMENT)
     scheme:
       environmentVariables:
         RUST_BACKTRACE: full
@@ -68,7 +73,13 @@ targets:
         LIBRARY_SEARCH_PATHS[arch=x86_64]: $(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
         LIBRARY_SEARCH_PATHS[arch=arm64]: $(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
         ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: true
+        DEVELOPMENT_TEAM: GACM96NWQ2
         EXCLUDED_ARCHS[sdk=iphoneos*]: x86_64
+      configs:
+        debug:
+          AGENTPORT_APNS_ENVIRONMENT: development
+        release:
+          AGENTPORT_APNS_ENVIRONMENT: production
       groups: [app]
     dependencies:
       - framework: libapp.a
@@ -80,6 +91,7 @@ targets:
       - sdk: Security.framework
       - sdk: libz.tbd
       - sdk: UIKit.framework
+      - sdk: UserNotifications.framework
       - sdk: WebKit.framework
     preBuildScripts:
       - script: npm run -- tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths "${FRAMEWORK_SEARCH_PATHS:?}" --header-search-paths "${HEADER_SEARCH_PATHS:?}" --gcc-preprocessor-definitions "${GCC_PREPROCESSOR_DEFINITIONS:-}" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}

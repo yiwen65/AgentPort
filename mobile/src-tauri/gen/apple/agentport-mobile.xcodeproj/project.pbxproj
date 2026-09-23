@@ -15,6 +15,7 @@
 		680F596A42FB2B8985C2745E /* libz.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = FEDCF93BC06228F896570D1C /* libz.tbd */; };
 		6C1A0CAE7335BE5018EEA7AB /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1B163CDDA8916AEC54003261 /* UIKit.framework */; };
 		70AE4E4F6D2ED6807364A814 /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = FC0237452EB6A0EDC91305AD /* libapp.a */; };
+		738EDEDF753B5FEC03AFBB99 /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CC681745E5D4129EC64F3AF9 /* UserNotifications.framework */; };
 		960BA263463DE9029823A8FB /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 165B07D31D2321F51386E551 /* QuartzCore.framework */; };
 		B5034ABC2192CF3D90497E3A /* assets in Resources */ = {isa = PBXBuildFile; fileRef = D0E2A0D3EAD284003A8C434A /* assets */; };
 		C48838DC6AD492B2B1855208 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 456BD12DE57824742918C206 /* Security.framework */; };
@@ -40,6 +41,7 @@
 		9A6487549F05E310818A3D2F /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		BDC1390BB6ECDE3160513161 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
 		C7A1FBA3B7E7E1C2F38D3DFA /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
+		CC681745E5D4129EC64F3AF9 /* UserNotifications.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotifications.framework; path = System/Library/Frameworks/UserNotifications.framework; sourceTree = SDKROOT; };
 		D067E43CE9D14324A2CDD3DE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		D0A561B1A01FB7EF8AE16515 /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
 		D0E2A0D3EAD284003A8C434A /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
@@ -65,6 +67,7 @@
 				C48838DC6AD492B2B1855208 /* Security.framework in Frameworks */,
 				680F596A42FB2B8985C2745E /* libz.tbd in Frameworks */,
 				6C1A0CAE7335BE5018EEA7AB /* UIKit.framework in Frameworks */,
+				738EDEDF753B5FEC03AFBB99 /* UserNotifications.framework in Frameworks */,
 				464D23738BD8281DC645D4BA /* WebKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -83,6 +86,7 @@
 				165B07D31D2321F51386E551 /* QuartzCore.framework */,
 				456BD12DE57824742918C206 /* Security.framework */,
 				1B163CDDA8916AEC54003261 /* UIKit.framework */,
+				CC681745E5D4129EC64F3AF9 /* UserNotifications.framework */,
 				9A6487549F05E310818A3D2F /* WebKit.framework */,
 			);
 			name = Frameworks;
@@ -448,6 +452,7 @@
 		8A64386F747A72C7703A0CE4 /* debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				AGENTPORT_APNS_ENVIRONMENT = development;
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -490,6 +495,7 @@
 		D2683B1468DDAF42B6700B63 /* release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				AGENTPORT_APNS_ENVIRONMENT = production;
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;

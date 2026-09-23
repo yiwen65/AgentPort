@@ -2,6 +2,7 @@ mod appearance;
 mod relay_pairing;
 mod credentials;
 mod hosts;
+mod ios_push;
 mod mosh;
 mod remote;
 mod rotation;
@@ -46,9 +47,17 @@ pub fn run() {
         .plugin(tauri_plugin_image_picker::init());
     #[cfg(target_os = "android")]
     let builder = builder.plugin(tauri_plugin_screen_rotation::init());
+    #[cfg(target_os = "ios")]
+    let builder = builder.setup(|app| {
+        ios_push::install(app.handle());
+        Ok(())
+    });
     builder
         .invoke_handler(tauri::generate_handler![
             mobile_scaffold_status,
+            ios_push::mobile_push_register,
+            ios_push::mobile_push_take_state,
+            ios_push::mobile_push_ack_tap,
             relay_pairing::mobile_relay_pairing_preview,
             relay_pairing::mobile_relay_pairing_prepare,
             relay_pairing::mobile_relay_pairing_begin,
@@ -75,6 +84,7 @@ pub fn run() {
             remote::mobile_disconnect_host,
             remote::mobile_remote_request,
             remote::mobile_remote_submit_input,
+            remote::mobile_register_push_token,
             remote::mobile_subscribe,
             remote::mobile_unsubscribe,
             sftp::mobile_sftp_spike,
