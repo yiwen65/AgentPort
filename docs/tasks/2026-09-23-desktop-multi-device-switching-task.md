@@ -3,7 +3,7 @@
 - Created: 2026-09-23
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: pending
+- Overall status: done
 - Source: 用户在会话中确认的需求简报（clarify-requirements 流程，2026-09-23 确认）
 
 <!-- task-doc-section:background-goal -->
@@ -371,9 +371,9 @@ device_pairing_link(): Promise<string>                   // 受控端：InviteAu
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-013 — 文档与里程碑提交
+### [x] T-013 — 文档与里程碑提交
 
-- Status: pending
+- Status: done
 - Owner: coordinator
 - Objective: 用户文档增补（docs/user-guide.md 设备切换章节）；按里程碑创建 commit（仅本任务相关改动）；任务文档最终校验与收尾。
 - Inputs and prerequisites: T-012；AGENTS.md 提交规则。
@@ -386,7 +386,7 @@ device_pairing_link(): Promise<string>                   // 受控端：InviteAu
   3. task_document.py validate；填写 final validation。
 - Acceptance criteria: 提交仅含本任务改动；validate 通过；final validation = passed。
 - Verification method: `git show --stat` 逐提交核对；validator 输出。
-- Validation evidence: Not run.
+- Validation evidence: 4 个提交：b888d0e（Rust 远程客户端栈+设备注册表+配对+通知钩子+E2E，20 文件 +6402）、df1dd5f（前端调度/切换/终端/事件/UI/门控/i18n，67 文件 +10525）、c85aed3（user-guide 多设备章节+任务文档）、4888120（LEARNS 三条）。每次提交前对应套件复绿（cargo 119/119、npm 971/971 已在前序验证）。工作树干净。
 - Blocker: None.
 - Unblock condition: None.
 
@@ -428,10 +428,11 @@ device_pairing_link(): Promise<string>                   // 受控端：InviteAu
 - 2026-09-23: T-008 完成并复核（cargo 119/119、npm 971/971）。注意：cargo 复跑曾现 1 次偶发失败未复现，T-011 重点观察。Batch D 启动：T-011 全量回归。
 - 2026-09-23: T-011 完成（workspace cargo exit 0、npm 971/971、build 绿、新代码 clippy 干净、版本同步 ok）。
 - 2026-09-23: T-012 完成。被控端环境：Docker（OrbStack）Ubuntu 24.04 aarch64 容器，构建 host/bridge/connector/relay-server（补 libdbus-1-3 运行时依赖），sshd+git fixture。SSH 路径一次走通（初因容器缺 libdbus 运行时库失败，修后通过）。relay 路径排障：①connector `--data-dir` 不存在时 canonicalize 报误导性 Transport 错（需先 mkdir）；②Linux keychain 需 gnome-keyring+dbus 会话（真实桌面标准配置）；③connector 注册是异步的，invite 前须等 phase=connected。GUI 证据经 AX（System Events）驱动 AXPopUpButton「设备切换」完成真实切换。E2E 测试固化于 src-tauri/src/remote/e2e_linux.rs（#[ignore]，AGENTPORT_E2E=1 启用）。
+- 2026-09-23: T-013 完成：user-guide 多设备章节、LEARNS 三条（connector 启动三连坑、GUI E2E AX 驱动与 WebKit 共享存储、macOS UnixStream timeout EINVAL）、4 个里程碑提交（b888d0e/df1dd5f/c85aed3/4888120）。任务收尾，final validation=passed。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
-- Result: not_run
-- Evidence: Not run.
-- Limitations: 待 T-011/T-012 完成后填写。
+- Result: passed
+- Evidence: T-001…T-013 全部 done。`cargo test --workspace --all-targets` exit 0；`cargo test -p agentport` 119/119（含真 bridge loopback 与 in-process relay E2E）；`npm test` 971/971（113→117 文件）；`npm run build` 绿；新代码 clippy/rustfmt 干净；`scripts/check-version-sync.sh` ok。真机验收（macOS 控制端↔Linux aarch64 容器被控端）：SSH 与 relay 双通道栈级 E2E 均 PASS；GUI 级 AX 驱动完成 本机→远程→本机 真实切换，截图证实远程项目/会话/终端渲染与切回恢复；调试 GUI 经统一脚本重建签名重启，ps 路径核验 + 非白屏截图。验收标准 1–6 全部有直接证据（见 T-012 Validation evidence）。
+- Limitations: ①被控端为 Ubuntu 24.04(aarch64) 容器而非实体 Linux 桌面——验收组合中被控端无需运行 GUI，不影响结论；②偶发测试失败 1 次（T-008 复跑，未复现，已记录观察）；③主调试 GUI 在 E2E 期间无报告退出一次，已通过统一脚本重启验证无碍；④E2E 实例与主调试实例共享 bundle id 的 WebKit localStorage，最终态 active-device-id=local，残余影响仅限启动预选会话键；⑤UI 点击级自动化仅覆盖设备选择器路径，设置页设备管理与配对区靠组件测试 + 对话框截图佐证。
