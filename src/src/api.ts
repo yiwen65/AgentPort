@@ -76,6 +76,8 @@ import type {
   WorktreeView,
 } from "./types";
 import { runtimeMessageEnvelope, runtimeMessageText } from "./runtimeMessages";
+import { createRoutedApi } from "./remote/dispatch";
+import type { RemoteAttentionNotifyInput } from "./remote/types";
 
 // ---------------------------------------------------------------------------
 // base64 helpers (send_input / channel output are base64 payloads)
@@ -243,7 +245,7 @@ export type BackupVerifyResult = {
   nativeCoverage: NativeCoverageSummary;
 };
 
-export const api = {
+export const localApi = {
   boot: () => invoke<BootInfo>("boot"),
   listProjects: (activeSession: string | null) =>
     invoke<ProjectView[]>("list_projects", { activeSession }),
@@ -279,13 +281,13 @@ export const api = {
     resumeFrom: LogCursorView | null = null,
     screenSnapshot = false,
   ) => invoke<AttachInfo>("attach_session", { sessionId, replayTailBytes, channel, resumeFrom, screenSnapshot }),
-  detachSession: (sessionId: string, attachmentId: number) =>
+  detachSession: (sessionId: string, attachmentId: number | string) =>
     invoke<void>("detach_session", { sessionId, attachmentId }),
   markSessionSeen: (sessionId: string, cursor: StatusCursorView | null = null) =>
     invoke<void>("mark_session_seen", { sessionId, cursor }),
   markSessionLogRendered: (
     sessionId: string,
-    attachmentId: number,
+    attachmentId: number | string,
     cursor: LogCursorView,
   ) => invoke<void>("mark_session_log_rendered", { sessionId, attachmentId, cursor }),
   markSessionOutputUnread: (
@@ -645,7 +647,17 @@ export const api = {
   updateCheck: () => invoke<UpdateSnapshot>("update_check"),
   updateDownload: () => invoke<UpdateSnapshot>("update_download"),
   updateInstall: () => invoke<void>("update_install"),
+  // Local-only command: fires a LOCAL macOS notification for a remote-device
+  // attention item polled by the remote sync engine (remote/remoteSync.ts).
+  // Unclassified members default to local routing in dispatch.ts.
+  remoteAttentionNotify: (input: RemoteAttentionNotifyInput) =>
+    invoke<boolean>("remote_attention_notify", { input }),
 };
+
+// Desktop multi-device switching: route remote-capable members to the active
+// device (remote/dispatch.ts). Local-device calls are passed through by
+// identity, so existing behavior and tests are unchanged.
+export const api = createRoutedApi(localApi);
 
 // ---------------------------------------------------------------------------
 // in-app updates (src-tauri/src/updater.rs)

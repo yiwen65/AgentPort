@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import { applyUiLanguage } from "../i18n";
-import { getState, resolveConfirm, setState } from "../store";
+import { getState, resolveConfirm, setActiveDevice, setState } from "../store";
 import type { AdapterInstall, NotificationSetup } from "../types";
 import NotificationSetupPanel from "./NotificationSetupPanel";
 
@@ -25,6 +25,7 @@ function claudeRow() {
 
 beforeEach(async () => {
   await applyUiLanguage("en-US", { persistHint: false });
+  setActiveDevice({ kind: "local" });
   setState({ adapters: [install], confirm: null });
   vi.spyOn(api, "notificationSetups").mockResolvedValue([setup()]);
   vi.spyOn(api, "probeAgent").mockResolvedValue({
@@ -169,5 +170,17 @@ describe("Agent notification readiness", () => {
     await act(async () => resolveOld([setup("failed")]));
     expect(within(claudeRow()).getByText("Ready")).toBeTruthy();
     expect(within(claudeRow()).queryByText("Setup failed")).toBeNull();
+  });
+
+  it("disables rollback with an explanation while a remote device is active", async () => {
+    setActiveDevice({ kind: "remote", deviceId: "dev_1", deviceName: "Linux box", capabilities: [] });
+    render(<NotificationSetupPanel />);
+    const rollback = await within(claudeRow()).findByRole("button", { name: /Roll back/ });
+    expect(rollback).toHaveProperty("disabled", true);
+    expect(rollback.getAttribute("title")).toBe("Rollback is unavailable on a remote device");
+    fireEvent.click(rollback);
+    expect(api.rollbackNotificationSetup).not.toHaveBeenCalled();
+    expect(getState().confirm).toBeNull();
+    setActiveDevice({ kind: "local" });
   });
 });

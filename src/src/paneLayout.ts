@@ -1,9 +1,25 @@
+import { scopedStorageKey } from "./deviceContext";
+
 export const MIN_PANE_WIDTH = 320;
 export const MIN_PANE_HEIGHT = 180;
 export const DEFAULT_SPLIT_RATIO = 0.5;
 export const MAX_PANE_LAYOUT_DEPTH = 32;
 export const TERMINAL_LAYOUT_VERSION = 2;
 export const TERMINAL_LAYOUT_STORAGE_KEY = "agentport-terminal-layout";
+
+/** Active-device-scoped storage key (local device keeps the legacy key). */
+function terminalLayoutStorageKey(): string {
+  return scopedStorageKey(TERMINAL_LAYOUT_STORAGE_KEY);
+}
+
+/** True when a terminal layout is persisted for the ACTIVE device. */
+export function hasPersistedTerminalLayout(): boolean {
+  try {
+    return window.localStorage.getItem(terminalLayoutStorageKey()) !== null;
+  } catch {
+    return false;
+  }
+}
 
 export type PaneSplitDirection = "right" | "down";
 
@@ -862,13 +878,13 @@ export function readPersistedTerminalWorkspace(
   if (!storage) return empty;
   const discardInvalidValue = () => {
     try {
-      storage.removeItem(TERMINAL_LAYOUT_STORAGE_KEY);
+      storage.removeItem(terminalLayoutStorageKey());
     } catch {
       // Storage can become unavailable between getItem and cleanup.
     }
   };
   try {
-    const encoded = storage.getItem(TERMINAL_LAYOUT_STORAGE_KEY);
+    const encoded = storage.getItem(terminalLayoutStorageKey());
     if (!encoded) return empty;
     const parsed: unknown = JSON.parse(encoded);
     if (!isRecord(parsed)) {
@@ -971,7 +987,7 @@ export function persistTerminalLayouts(
     activeLayout: sanitizedActive,
   };
   try {
-    storage.setItem(TERMINAL_LAYOUT_STORAGE_KEY, JSON.stringify(value));
+    storage.setItem(terminalLayoutStorageKey(), JSON.stringify(value));
     return true;
   } catch {
     // Pane operations remain usable when WebView storage is unavailable.

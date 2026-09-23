@@ -40,6 +40,7 @@ import { runtimeMessageEnvelope } from "../runtimeMessages";
 import { insertTextIntoTerminal } from "../terminals";
 import { computeLineRange, formatSelectionReference } from "../terminalDrop";
 import {
+  canUseLocalOsIntegration,
   confirmDialog,
   findSession,
   getActiveDocumentTab,
@@ -138,6 +139,7 @@ function UnsupportedFileNotice({
   path: string;
 }) {
   const { t } = useTranslation("shell");
+  const osIntegration = useStore(canUseLocalOsIntegration);
   const binary = code === "document_binary";
   const title = binary
     ? t("ui.document.unsupported.binaryTitle")
@@ -163,6 +165,8 @@ function UnsupportedFileNotice({
         <div className="doc-unsupported-actions">
           <button
             className="btn small primary"
+            disabled={!osIntegration}
+            title={osIntegration ? undefined : t("ui.document.remoteOsIntegration")}
             onClick={() =>
               void api.openWithDefaultApp(path).catch((e) => {
                 toast(t("ui.sidebar.openFailed", { detail: errorText(e) }), "error");
@@ -173,6 +177,8 @@ function UnsupportedFileNotice({
           </button>
           <button
             className="btn small ghost"
+            disabled={!osIntegration}
+            title={osIntegration ? undefined : t("ui.document.remoteOsIntegration")}
             onClick={() => void api.revealInFileManager(path).catch(() => {})}
           >
             {t("ui.document.unsupported.reveal")}
@@ -253,6 +259,7 @@ function DocToolbar({
   activeSession: SessionView | null;
 }) {
   const { t } = useTranslation("shell");
+  const osIntegration = useStore(canUseLocalOsIntegration);
   const tabId = tab?.id ?? null;
   const mode = useSyncExternalStore(subscribeDocumentRuntime, () =>
     tabId ? (getDocumentTabRuntime(tabId)?.mode ?? "raw") : "raw",
@@ -348,8 +355,9 @@ function DocToolbar({
       </button>
       <button
         className="btn small ghost"
-        data-tip={t("ui.document.revealTip")}
+        data-tip={osIntegration ? t("ui.document.revealTip") : t("ui.document.remoteOsIntegration")}
         aria-label={t("ui.document.reveal")}
+        disabled={!osIntegration}
         onClick={() => void api.revealInFileManager(effectivePath).catch(() => {})}
       >
         ⌂

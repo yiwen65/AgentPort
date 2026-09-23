@@ -15,6 +15,17 @@
       "empty": "No available Agents. Enable one in Settings."
     },
     "topBar": {
+      "devices": {
+        "label": "Device switcher",
+        "tip": "Choose which computer this window controls",
+        "local": "This computer",
+        "localTarget": "Local device",
+        "empty": "No paired computers yet",
+        "add": "Add device…",
+        "manage": "Manage devices…",
+        "switching": "Switching…",
+        "switchFailed": "Switch failed: {{detail}}"
+      },
       "commandPalette": "Command Palette",
       "recoveryTimeline": "Recovery Timeline",
       "recoveryTimelineCount_one": "Recovery Timeline ({{count}})",
@@ -103,7 +114,8 @@
         "back": "Back to the main Session list",
         "empty": "No Worktrees yet",
         "unavailable": "This directory is not a Git repository, so Worktrees are unavailable"
-      }
+      },
+      "remoteOsIntegration": "Only available on this computer (a remote device is active)"
     },
     "terminal": {
       "scrollbarLabel": "Session history scroll position",
@@ -192,7 +204,10 @@
         "genericTitle": "This file could not be opened",
         "openDefault": "Open with default app",
         "reveal": "Reveal in file manager"
-      }
+      },
+      "remoteOsIntegration": "Only available on this computer (a remote device is active)",
+      "remoteMutationUnavailable": "This document operation is not available on a remote device",
+      "remoteActionUnavailable": "This action is unavailable on a remote device"
     },
     "terminalSearch": {
       "regionLabel": "Terminal buffer search",

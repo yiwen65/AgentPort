@@ -24,12 +24,16 @@ import {
 import { DocFileIcon } from "./docTreeIcons";
 import { writeDragPayload } from "../terminalDrop";
 import {
+  canMutateDocumentEntries,
+  canUseLocalOsIntegration,
   confirmDialog,
   getActiveDocumentTab,
+  getState,
   openContextMenu,
   toast,
   useStore,
 } from "../store";
+import { isRemoteUnavailableError } from "../remote/errors";
 import type { DocumentDirEntry } from "../types";
 
 interface DirState {
@@ -249,6 +253,12 @@ export default function DocumentTree() {
     try {
       await fn();
     } catch (e) {
+      // Safety net for menu items gated off remotely: a structured notice,
+      // not an unhandled failure.
+      if (isRemoteUnavailableError(e)) {
+        toast(t("ui.document.remoteActionUnavailable"), "info");
+        return;
+      }
       toast(t("ui.document.entryActionFailed", { detail: errorText(e) }), "error");
     }
   };
@@ -310,6 +320,10 @@ export default function DocumentTree() {
     event.preventDefault();
     const parent = entry.isDir ? entry.path : parentDir(entry.path);
     setActiveDir(parent);
+    // OS-integration and mutating entry actions are gated off while a remote
+    // device is active (protocol has no equivalent for them).
+    const osIntegration = canUseLocalOsIntegration(getState());
+    const entryMutation = canMutateDocumentEntries(getState());
     const relative =
       root && entry.path.startsWith(`${root}/`)
         ? entry.path.slice(root.length + 1)
@@ -328,6 +342,8 @@ export default function DocumentTree() {
           ]),
       {
         label: t("ui.document.openInVsCode"),
+        disabled: !osIntegration,
+        tip: osIntegration ? undefined : t("ui.document.remoteOsIntegration"),
         action: () => void runAction(() => api.openInVsCode(entry.path)),
       },
       { label: "", separator: true },
@@ -335,12 +351,21 @@ export default function DocumentTree() {
       { label: t("ui.document.copyRelativePath"), action: () => void copyText(relative) },
       {
         label: t("ui.document.reveal"),
+        disabled: !osIntegration,
+        tip: osIntegration ? undefined : t("ui.document.remoteOsIntegration"),
         action: () => void runAction(() => api.revealInFileManager(entry.path)),
       },
       { label: "", separator: true },
-      { label: t("ui.document.rename"), action: () => startRename(entry) },
+      {
+        label: t("ui.document.rename"),
+        disabled: !entryMutation,
+        tip: entryMutation ? undefined : t("ui.document.remoteMutationUnavailable"),
+        action: () => startRename(entry),
+      },
       {
         label: t("ui.document.duplicate"),
+        disabled: !entryMutation,
+        tip: entryMutation ? undefined : t("ui.document.remoteMutationUnavailable"),
         action: () =>
           void runAction(async () => {
             await api.duplicateDocumentEntry(entry.path);
@@ -350,6 +375,8 @@ export default function DocumentTree() {
       { label: "", separator: true },
       {
         label: t("ui.document.deleteEntry"),
+        disabled: !entryMutation,
+        tip: entryMutation ? undefined : t("ui.document.remoteMutationUnavailable"),
         danger: true,
         action: () => void confirmDelete(entry),
       },

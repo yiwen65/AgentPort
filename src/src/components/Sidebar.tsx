@@ -33,6 +33,7 @@ import {
   openDialog,
   openWorktreeView,
   persistProjectExpansion,
+  canUseLocalOsIntegration,
   getState,
   promptDialog,
   toast,
@@ -566,6 +567,10 @@ function projectMenu(
     },
     {
       label: t("shell:ui.sidebar.projectMenu.revealInFileManager"),
+      disabled: !canUseLocalOsIntegration(getState()),
+      tip: canUseLocalOsIntegration(getState())
+        ? undefined
+        : t("shell:ui.sidebar.remoteOsIntegration"),
       action: () =>
         void api
           .revealInFileManager(p.rootPath)
@@ -620,6 +625,10 @@ function worktreeMenu(
     },
     {
       label: t("shell:ui.sidebar.worktreeMenu.openInSystemTerminal"),
+      disabled: !canUseLocalOsIntegration(getState()),
+      tip: canUseLocalOsIntegration(getState())
+        ? undefined
+        : t("shell:ui.sidebar.remoteOsIntegration"),
       action: () =>
         void api
           .openInSystemTerminal(w.path)

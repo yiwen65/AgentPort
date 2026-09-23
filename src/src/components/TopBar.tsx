@@ -13,6 +13,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { toggleActiveAgentsView, toggleSidebarCollapsed } from "../actions";
+import DevicePicker from "./DevicePicker";
 import { toggleExplorer } from "../documents";
 import { closeGitCenter, openGitCenter } from "../gitCenter";
 
@@ -320,6 +321,7 @@ export default function TopBar() {
         ) : null}
       </div>
       <div className="topbar-trailing" data-tauri-drag-region="false">
+        <DevicePicker />
         <ExplorerToggleButton />
         <button
           className="window-control terminal-menu"

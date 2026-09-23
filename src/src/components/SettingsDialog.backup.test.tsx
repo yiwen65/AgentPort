@@ -40,7 +40,7 @@ vi.mock("../terminals", () => ({
   applyTerminalLanguage: vi.fn(),
 }));
 
-import { getState, setState } from "../store";
+import { getState, setActiveDevice, setState } from "../store";
 import { BackupSection } from "./SettingsDialog";
 import type { AdapterInstall } from "../types";
 
@@ -254,5 +254,46 @@ describe("Settings backup native coverage", () => {
     fireEvent.click(screen.getByRole("button", { name: "校验" }));
 
     expect(await screen.findByText(/有效的 v1 旧版备份/)).toBeTruthy();
+  });
+});
+
+describe("Settings backup remote-device gating", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    progressMock.mockResolvedValue(unlistenMock);
+    setState({ exportsDir: "/tmp/agentport/exports", toasts: [], adapters: [installedAgent("codex")] });
+  });
+
+  afterEach(() => {
+    cleanup();
+    setActiveDevice({ kind: "local" });
+  });
+
+  it("annotates server-side destinations and disables restore/open-directory remotely", async () => {
+    setActiveDevice({ kind: "remote", deviceId: "dev_1", deviceName: "Linux box", capabilities: [] });
+    renderBackupSection();
+
+    await screen.findByText("backup.zip");
+    await screen.findByText(/当前指向远程设备：备份在其磁盘上列出与创建/);
+
+    const restore = screen.getByRole("button", { name: "恢复 Codex" });
+    expect(restore).toHaveProperty("disabled", true);
+    expect(restore.getAttribute("title")).toBe("远程设备上不可恢复备份（恢复语义不同）");
+
+    const openDir = screen.getByRole("button", { name: "打开备份目录" });
+    expect(openDir).toHaveProperty("disabled", true);
+    expect(openDir.getAttribute("title")).toBe("备份目录位于远程设备上，无法在本机打开");
+
+    // Create/list stay available remotely (protocol-covered).
+    expect(screen.getByRole("button", { name: "备份 Codex" })).toHaveProperty("disabled", false);
+  });
+
+  it("keeps restore and open-directory enabled locally without annotation", async () => {
+    renderBackupSection();
+
+    await screen.findByText("backup.zip");
+    expect(screen.queryByText(/当前指向远程设备/)).toBeNull();
+    expect(screen.getByRole("button", { name: "恢复 Codex" })).toHaveProperty("disabled", false);
+    expect(screen.getByRole("button", { name: "打开备份目录" })).toHaveProperty("disabled", false);
   });
 });

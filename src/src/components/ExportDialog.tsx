@@ -5,10 +5,20 @@ import { useTranslation } from "react-i18next";
 import Modal from "./Modal";
 import { api, errorText } from "../api";
 import { copyTextWithToast } from "../actions";
-import { closeDialog, findSession, getState, toast, useStore } from "../store";
+import {
+  closeDialog,
+  destinationsAreRemote,
+  findSession,
+  getState,
+  toast,
+  useStore,
+} from "../store";
+import { isRemoteUnavailableError } from "../remote/errors";
 
-function defaultDest(sessionId: string, kind: "md" | "json"): string {
-  const base = getState().exportsDir || "/tmp";
+function defaultDest(sessionId: string, kind: "md" | "json", remote: boolean): string {
+  // exportsDir belongs to this computer; a remote export lands on the remote
+  // device's filesystem, so fall back to a neutral server-side default.
+  const base = remote ? "/tmp" : getState().exportsDir || "/tmp";
   return `${base}/agentport-${sessionId}.${kind}`;
 }
 
@@ -21,8 +31,9 @@ export default function ExportDialog({
 }) {
   const { t } = useTranslation(["runtime", "common"]);
   const s = useStore();
+  const remote = useStore(destinationsAreRemote);
   const ses = findSession(s.projects, sessionId);
-  const [dest, setDest] = useState(defaultDest(sessionId, exportKind));
+  const [dest, setDest] = useState(defaultDest(sessionId, exportKind, remote));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [donePath, setDonePath] = useState<string | null>(null);
@@ -36,13 +47,19 @@ export default function ExportDialog({
         sessionId,
         kind: exportKind,
         dest: dest.trim(),
+        // The remote protocol has no last/stripAnsi options; the backend
+        // rejects them, so remote exports keep escape sequences (annotated).
         last: null,
-        stripAnsi: true,
+        stripAnsi: remote ? false : true,
       });
       setDonePath(p);
       toast(t("runtime:export.complete"), "success");
     } catch (e) {
-      setError(t("runtime:export.failed", { detail: errorText(e) }));
+      if (isRemoteUnavailableError(e)) {
+        setError(t("runtime:export.remoteFailed", { detail: errorText(e) }));
+      } else {
+        setError(t("runtime:export.failed", { detail: errorText(e) }));
+      }
     } finally {
       setBusy(false);
     }
@@ -90,6 +107,11 @@ export default function ExportDialog({
       ) : (
         <>
           <p className="form-hint">{t("runtime:export.markdownHint")}</p>
+          {remote ? (
+            <p className="form-hint" role="note">
+              {t("runtime:export.remoteDestinationHint")} {t("runtime:export.remoteAnsiHint")}
+            </p>
+          ) : null}
           <div className="form-row">
             <label htmlFor="ex-dest">{t("runtime:export.destination")}</label>
             <div className="inline-form">
@@ -103,6 +125,8 @@ export default function ExportDialog({
               <button
                 className="btn"
                 type="button"
+                disabled={remote}
+                title={remote ? t("runtime:export.remoteBrowseUnavailable") : undefined}
                 onClick={() =>
                   void api
                     .pickSavePath(`agentport-${sessionId}.${exportKind}`)

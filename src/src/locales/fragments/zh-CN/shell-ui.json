@@ -15,6 +15,17 @@
       "empty": "没有可用的 Agent，请先在设置中启用。"
     },
     "topBar": {
+      "devices": {
+        "label": "设备切换",
+        "tip": "选择此窗口指向的电脑",
+        "local": "本机",
+        "localTarget": "这台电脑",
+        "empty": "还没有已配对的电脑",
+        "add": "添加设备…",
+        "manage": "管理设备…",
+        "switching": "正在切换…",
+        "switchFailed": "切换失败：{{detail}}"
+      },
       "commandPalette": "命令面板",
       "recoveryTimeline": "恢复时间线",
       "recoveryTimelineCount_one": "恢复时间线（{{count}}）",
@@ -103,7 +114,8 @@
         "back": "返回主 Session 列表",
         "empty": "还没有 Worktree",
         "unavailable": "该目录不是 Git 仓库，无法使用 Worktree"
-      }
+      },
+      "remoteOsIntegration": "仅本机可用（当前指向远程设备）"
     },
     "terminal": {
       "scrollbarLabel": "Session 历史滚动位置",
@@ -192,7 +204,10 @@
         "genericTitle": "无法打开这个文件",
         "openDefault": "用默认应用打开",
         "reveal": "在文件管理器中显示"
-      }
+      },
+      "remoteOsIntegration": "仅本机可用（当前指向远程设备）",
+      "remoteMutationUnavailable": "远程设备上暂不支持该文档操作",
+      "remoteActionUnavailable": "该操作在远程设备上不可用"
     },
     "terminalSearch": {
       "regionLabel": "终端缓冲区搜索",

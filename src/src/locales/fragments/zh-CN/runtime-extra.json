@@ -102,7 +102,11 @@
     "stripAnsi": "去除 ANSI 控制序列",
     "markdownHint": "Markdown 导出包含 Session、Agent、项目、分支和时间头。",
     "destination": "保存到（绝对路径）",
-    "redactionHint": "导出前自动脱敏：已知 Secret 值会被固定掩码替换。"
+    "redactionHint": "导出前自动脱敏：已知 Secret 值会被固定掩码替换。",
+    "remoteDestinationHint": "文件将写入远程设备上的该路径。",
+    "remoteAnsiHint": "远程导出保留终端转义序列（远程协议不支持去除）。",
+    "remoteBrowseUnavailable": "浏览只能选择本机路径；请直接输入远程设备上的路径",
+    "remoteFailed": "远程设备上不可用：{{detail}}"
   },
   "pi": {
     "toolEvent": "工具 · {{type}}",

@@ -4028,4 +4028,33 @@ describe("terminal renderer", () => {
       .join("");
     expect(rendered).not.toContain("No project session found");
   });
+
+  it("activates a remote-shaped attachment (string id, null Host facts) without corrupting runtime numerics", async () => {
+    rendererMocks.apiMock.attachSession.mockReset().mockResolvedValue({
+      remote: true,
+      attachmentId: "att-remote-1",
+      sessionId: "renderer-test",
+      hostPid: null,
+      protocol: null,
+      childAlive: true,
+      logBytes: null,
+      status: null,
+      agentSessionId: null,
+      runId: "run_remote",
+      runOrdinal: 1,
+      logCursor: null,
+      terminalGeometry: null,
+      features: [],
+    });
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(getState().runtime["renderer-test"]?.attached).toBe(true),
+    );
+    const runtime = getState().runtime["renderer-test"]!;
+    expect(runtime.hostPid).toBeNull();
+    // The remote attach result omits logBytes; the runtime counter must stay
+    // numeric (heartbeat events refresh it) instead of becoming null.
+    expect(typeof runtime.logBytes).toBe("number");
+    expect(getHandle("renderer-test")?.attachmentId).toBe("att-remote-1");
+  });
 });

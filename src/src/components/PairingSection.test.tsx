@@ -3,8 +3,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { i18n } from "../i18n";
 import { PairingSection } from "./PairingSection";
-const mocks = vi.hoisted(() => ({ invoke: vi.fn(), qr: vi.fn() }));
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), qr: vi.fn(), clipboard: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: mocks.clipboard }));
 vi.mock("qrcode", () => ({ default: { toDataURL: mocks.qr } }));
 const candidate = { requestId: "phone-request", name: "Temporary phone", publicKey: "phone-key", verificationCode: "1234-ABCD" };
 let status: any;
@@ -72,4 +73,25 @@ it("does not replay an uncertain automatic invitation", async () => {
   render(<PairingSection />); await loaded(); fireEvent.click(screen.getByRole("button", { name: "Generate pairing code" }));
   await screen.findByText("unknown delivery");
   expect(mocks.invoke.mock.calls.filter(([, args]) => args?.request?.kind === "invite_automatic")).toHaveLength(1);
+});
+it("copies the exact QR bearer payload as a pairing link for another computer", async () => {
+  mocks.clipboard.mockResolvedValue(undefined);
+  render(<PairingSection />); await loaded();
+  fireEvent.click(screen.getByRole("button", { name: "Generate pairing code" }));
+  const copy = await screen.findByRole("button", { name: "Copy pairing link" });
+  fireEvent.click(copy);
+  await waitFor(() => expect(mocks.clipboard).toHaveBeenCalledTimes(1));
+  const text = mocks.clipboard.mock.calls[0][0] as string;
+  // Same payload as the QR code, and it never lingers in the DOM as text.
+  expect(text).toBe(JSON.stringify({ id: "invitation", expiresAt: status.pairing.expiresAt, secret: "ephemeral-only" }));
+  expect(screen.queryByText("ephemeral-only")).toBeNull();
+  await screen.findByRole("button", { name: "Copied" });
+});
+it("drops the pairing link together with the invitation", async () => {
+  render(<PairingSection />); await loaded();
+  fireEvent.click(screen.getByRole("button", { name: "Generate pairing code" }));
+  await screen.findByRole("button", { name: "Copy pairing link" });
+  fireEvent.click(screen.getByRole("button", { name: "Close pairing" }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Copy pairing link" })).toBeNull());
+  expect(mocks.clipboard).not.toHaveBeenCalled();
 });

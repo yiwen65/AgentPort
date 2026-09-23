@@ -7,18 +7,20 @@ import Modal from "./Modal";
 import { api, errorText } from "../api";
 import { copyTextWithToast } from "../actions";
 import { formatBytes } from "../format";
-import { closeDialog, getState, toast, useStore } from "../store";
+import { closeDialog, destinationsAreRemote, getState, toast, useStore } from "../store";
 import type { HostInfo } from "../types";
 
 export default function DiagnosticsDialog() {
   const { t } = useTranslation(["runtime", "common"]);
   const s = useStore();
+  const remote = useStore(destinationsAreRemote);
   const [hosts, setHosts] = useState<HostInfo[]>([]);
   const [caps, setCaps] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [zipSession, setZipSession] = useState(s.activeSessionId ?? "");
   const [zipDest, setZipDest] = useState(
-    `${getState().exportsDir || "/tmp"}/agentport-diagnostics.zip`,
+    // A remote export lands on the remote device's filesystem.
+    `${remote ? "/tmp" : getState().exportsDir || "/tmp"}/agentport-diagnostics.zip`,
   );
   const [zipResult, setZipResult] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -120,27 +122,29 @@ export default function DiagnosticsDialog() {
           <thead>
             <tr>
               <th>Session</th>
-              <th>PID</th>
+              {remote ? null : <th>PID</th>}
               <th>{t("runtime:diagnostics.online")}</th>
               <th>{t("runtime:diagnostics.lifecycle")}</th>
               <th>{t("runtime:diagnostics.log")}</th>
-              <th>Socket</th>
+              {remote ? null : <th>Socket</th>}
             </tr>
           </thead>
           <tbody>
             {hosts.map((h) => (
               <tr key={h.sessionId}>
                 <td>{h.title}</td>
-                <td className="mono">{h.hostPid ?? "—"}</td>
+                {remote ? null : <td className="mono">{h.hostPid ?? "—"}</td>}
                 <td>
                   <span className={`status-light ${h.alive ? "on" : "off"}`} aria-hidden="true" />{" "}
                   {h.alive ? t("runtime:diagnostics.online") : t("runtime:diagnostics.offline")}
                 </td>
                 <td>{lifecycleLabel(h.lifecycle)}</td>
                 <td>{formatBytes(h.logBytes)}</td>
-                <td className="mono dim" style={{ wordBreak: "break-all", maxWidth: 200 }}>
-                  {h.socketPath ?? "—"}
-                </td>
+                {remote ? null : (
+                  <td className="mono dim" style={{ wordBreak: "break-all", maxWidth: 200 }}>
+                    {h.socketPath ?? "—"}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -218,6 +222,8 @@ export default function DiagnosticsDialog() {
           <button
             className="btn"
             type="button"
+            disabled={remote}
+            title={remote ? t("runtime:export.remoteBrowseUnavailable") : undefined}
             onClick={() =>
               void api
                 .pickSavePath("agentport-diagnostics.zip")

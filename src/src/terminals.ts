@@ -16,6 +16,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Channel } from "@tauri-apps/api/core";
+import { scopedStorageKey } from "./deviceContext";
 import {
   api,
   b64ToBytes,
@@ -781,10 +782,10 @@ export interface TermHandle {
   /** Bumped per attach — stale channels from previous attaches are ignored. */
   generation: number;
   /** Backend-issued capability; only this renderer may detach it. */
-  attachmentId: number | null;
+  attachmentId: number | string | null;
   /** Attachment whose authoritative Host screen snapshot was already
    * restored; both readiness entry points see the same AttachInfo. */
-  restoredSnapshotAttachment: number | null;
+  restoredSnapshotAttachment: number | string | null;
   /** Host identity is known at handshake, even before the first output byte. */
   runIdentity: SessionRun | null;
   /** A checkpoint or completed replay has drained through xterm and can be
@@ -1641,12 +1642,16 @@ interface TerminalSnapshot {
   mouseEncoding: TerminalMouseEncoding;
 }
 
-function snapshotKey(sessionId: string) {
-  return `agentport:terminal-snapshot:v${TERMINAL_SNAPSHOT_VERSION}:${sessionId}`;
+/** @internal exported for device-scoping tests. */
+export function snapshotKey(sessionId: string) {
+  return scopedStorageKey(
+    `agentport:terminal-snapshot:v${TERMINAL_SNAPSHOT_VERSION}:${sessionId}`,
+  );
 }
 
-function legacySnapshotKey(sessionId: string) {
-  return `agentport:terminal-snapshot:v1:${sessionId}`;
+/** @internal exported for device-scoping tests. */
+export function legacySnapshotKey(sessionId: string) {
+  return scopedStorageKey(`agentport:terminal-snapshot:v1:${sessionId}`);
 }
 
 function readTerminalSnapshot(sessionId: string): TerminalSnapshot | null {
@@ -2828,7 +2833,10 @@ function activateAttachment(handle: TermHandle, info: AttachInfo): boolean {
     attaching: false,
     detached: false,
     hostPid: info.hostPid,
-    logBytes: info.logBytes,
+    // Remote attachments deliberately omit local-Host facts; keep the last
+    // observed byte count (heartbeat events refresh it) instead of writing
+    // null into a numeric runtime field.
+    ...(info.logBytes !== null ? { logBytes: info.logBytes } : {}),
     error: null,
     errorMessage: null,
     exit: null,

@@ -3,6 +3,13 @@
 // imperative, non-serializable and must survive tab switches).
 
 import { useSyncExternalStore } from "react";
+import {
+  activeDeviceContext,
+  isDeviceScopedStorageKey,
+  scopedStorageKey,
+  setDeviceContext,
+  type DeviceContext,
+} from "./deviceContext";
 import { staleSessionRun, type SessionRun } from "./sessionRun";
 import {
   emptyPaneLayout,
@@ -244,12 +251,89 @@ export type DialogState =
   | { kind: "export"; sessionId: string; exportKind: "md" | "json" }
   | null;
 
+/** True while the window is pointed at a remote device. */
+export function isRemoteDevice(
+  state: Pick<AppState, "activeDevice">,
+): boolean {
+  return state.activeDevice.kind === "remote";
+}
+
+/** Negotiated protocol capabilities of the active remote device ([] locally). */
+export function activeDeviceCapabilities(
+  state: Pick<AppState, "activeDevice">,
+): string[] {
+  return state.activeDevice.kind === "remote"
+    ? state.activeDevice.capabilities
+    : [];
+}
+
+/**
+ * OS-integration actions (reveal in file manager, open in system terminal /
+ * VS Code / default app) act on paths of THIS computer; they are meaningless
+ * while the window points at a remote device.
+ */
+export function canUseLocalOsIntegration(
+  state: Pick<AppState, "activeDevice">,
+): boolean {
+  return state.activeDevice.kind === "local";
+}
+
+/** Document rename/duplicate/delete have no remote-protocol equivalent. */
+export function canMutateDocumentEntries(
+  state: Pick<AppState, "activeDevice">,
+): boolean {
+  return state.activeDevice.kind === "local";
+}
+
+/**
+ * Remote backup.restore writes into a server-side directory and refuses the
+ * live data root, unlike the local in-place merge restore.
+ */
+export function canRestoreBackups(
+  state: Pick<AppState, "activeDevice">,
+): boolean {
+  return state.activeDevice.kind === "local";
+}
+
+/** Notification-setup rollback has no remote-protocol equivalent. */
+export function canRollbackNotificationSetup(
+  state: Pick<AppState, "activeDevice">,
+): boolean {
+  return state.activeDevice.kind === "local";
+}
+
+/**
+ * True while export/backup destination paths refer to the (remote) active
+ * device's filesystem rather than this computer's.
+ */
+export function destinationsAreRemote(
+  state: Pick<AppState, "activeDevice">,
+): boolean {
+  return state.activeDevice.kind === "remote";
+}
+
+/**
+ * Local backend events (tauri listeners) describe the LOCAL device only.
+ * While a remote device is active they must not mutate the visible tree.
+ */
+export function shouldApplyLocalBackendEvent(
+  state: Pick<AppState, "activeDevice">,
+): boolean {
+  return state.activeDevice.kind === "local";
+}
+
 export type EffectiveTheme = "dark" | "light";
 export type SidebarViewMode = "projects" | "activeAgents";
 
 export interface AppState {
   ready: boolean;
   bootError: string | null;
+  /** Which device this window currently shows (local Mac or a remote PC). */
+  activeDevice: DeviceContext;
+  /** True while a device switch is in flight (teardown → connect → boot). */
+  deviceSwitching: boolean;
+  /** Last device-switch/connect failure detail; cleared on a clean switch. */
+  deviceError: string | null;
   platform: PlatformInfo | null;
   settings: Settings | null;
   adapters: AdapterInstall[];
@@ -372,7 +456,9 @@ export const COLLAPSED_PROJECTS_STORAGE_KEY =
 /** Restore collapsed Projects while keeping unknown/new Projects expanded. */
 export function readPersistedProjectExpansion(): Record<string, boolean> {
   try {
-    const value = window.localStorage.getItem(COLLAPSED_PROJECTS_STORAGE_KEY);
+    const value = window.localStorage.getItem(
+      scopedStorageKey(COLLAPSED_PROJECTS_STORAGE_KEY),
+    );
     if (!value) return {};
     const ids: unknown = JSON.parse(value);
     if (!Array.isArray(ids)) return {};
@@ -390,7 +476,12 @@ const LEGACY_TERMINAL_SNAPSHOT_STORAGE_PREFIX =
 function reclaimObsoleteTerminalSnapshots() {
   for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
     const key = window.localStorage.key(index);
-    if (key?.startsWith(LEGACY_TERMINAL_SNAPSHOT_STORAGE_PREFIX)) {
+    // Never reclaim another device's snapshots: device-scoped keys belong to
+    // that device's namespace even when they look like legacy local keys.
+    if (
+      key?.startsWith(LEGACY_TERMINAL_SNAPSHOT_STORAGE_PREFIX) &&
+      !isDeviceScopedStorageKey(key)
+    ) {
       window.localStorage.removeItem(key);
     }
   }
@@ -402,15 +493,16 @@ export function persistProjectExpansion(expandedProjects: Record<string, boolean
     .map(([id]) => id)
     .sort();
   const encoded = JSON.stringify(collapsedIds);
+  const storageKey = scopedStorageKey(COLLAPSED_PROJECTS_STORAGE_KEY);
   try {
-    window.localStorage.setItem(COLLAPSED_PROJECTS_STORAGE_KEY, encoded);
+    window.localStorage.setItem(storageKey, encoded);
   } catch {
     try {
       // Terminal snapshots share WKWebView's small LocalStorage quota. Old v1
       // snapshots are only a crash-time optimization and can safely fall back
       // to Host replay; reclaim them before retrying compact UI state.
       reclaimObsoleteTerminalSnapshots();
-      window.localStorage.setItem(COLLAPSED_PROJECTS_STORAGE_KEY, encoded);
+      window.localStorage.setItem(storageKey, encoded);
     } catch {
       // Expansion remains usable when WebView storage is unavailable.
     }
@@ -423,6 +515,9 @@ const persistedTerminalLayout = persistedTerminalWorkspace.activeLayout;
 const initialState: AppState = {
   ready: false,
   bootError: null,
+  activeDevice: activeDeviceContext(),
+  deviceSwitching: false,
+  deviceError: null,
   platform: null,
   settings: null,
   adapters: [],
@@ -562,6 +657,13 @@ export function markRepositoryStatusUnavailable(projectId: string) {
     delete repositoryStatuses[projectId];
     return { repositoryStatuses };
   });
+}
+
+export function setActiveDevice(context: DeviceContext) {
+  // deviceContext is the synchronous routing source for api.ts/storage keys;
+  // AppState.activeDevice is the reactive mirror for components.
+  setDeviceContext(context);
+  setState({ activeDevice: context });
 }
 
 export function subscribe(l: () => void): () => void {

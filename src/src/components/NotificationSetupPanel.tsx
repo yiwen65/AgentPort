@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { api, errorText } from "../api";
 import { DEFAULT_AGENT_ORDER } from "../agentOrder";
 import { agentDisplay } from "../format";
-import { confirmDialog, getState, setState, useStore } from "../store";
+import { canRollbackNotificationSetup, confirmDialog, getState, setState, useStore } from "../store";
 import type { NotificationSetup } from "../types";
 
 const events = ["completed", "needsInput", "failed"] as const;
@@ -21,6 +21,7 @@ export default function NotificationSetupPanel({ refreshKey = 0, disabled = fals
 }) {
   const { t } = useTranslation("settings");
   const adapters = useStore((state) => state.adapters);
+  const rollbackAllowed = useStore(canRollbackNotificationSetup);
   const [setups, setSetups] = useState<NotificationSetup[]>([]);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<string | null>(null);
@@ -151,7 +152,8 @@ export default function NotificationSetupPanel({ refreshKey = 0, disabled = fals
                       onClick={() => void retry(agent)}>
                       {pending === agent ? t("ui.notificationSetup.busy") : t(setup?.updateAvailable ? "ui.notificationSetup.update" : "ui.notificationSetup.retry")}
                     </button> : null}
-                    {setup && (setup.state !== "unavailable" || setup.strategy !== "none") ? <button type="button" className="btn small ghost" disabled={busy}
+                    {setup && (setup.state !== "unavailable" || setup.strategy !== "none") ? <button type="button" className="btn small ghost" disabled={busy || !rollbackAllowed}
+                      title={rollbackAllowed ? undefined : t("ui.notificationSetup.remoteRollbackUnavailable")}
                       aria-label={t("ui.notificationSetup.rollbackAgent", { agent: agentDisplay(agent) })}
                       onClick={() => void rollback(agent)}>{t("ui.notificationSetup.rollback")}</button> : null}
                   </div>

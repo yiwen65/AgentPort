@@ -323,7 +323,8 @@ export interface TerminalGeometry {
   rows: number;
   sourceKind: "desktop" | "mobile";
   sourceDeviceId?: string | null;
-  attachmentId?: number | null;
+  /** Numeric from a local Host; string from a remote attachment. */
+  attachmentId?: number | string | null;
   orientation?: string | null;
   revision: number;
   updatedAt: string;
@@ -331,7 +332,8 @@ export interface TerminalGeometry {
 
 export interface TerminalGeometryEvent {
   sessionId: string;
-  attachmentId: number;
+  /** Numeric for a local Host attachment; the remote bridge issues strings. */
+  attachmentId: number | string;
   geometry: TerminalGeometry;
 }
 
@@ -341,22 +343,29 @@ export interface TerminalResizeAck extends TerminalGeometryEvent {
 }
 
 export interface AttachInfo {
-  /** Server-issued capability for this renderer attachment. */
-  attachmentId: number;
-  hostPid: number;
-  protocol: number;
+  /** Server-issued capability for this renderer attachment. Numeric from a
+   * local Host; the remote bridge issues string attachment ids. */
+  attachmentId: number | string;
+  /** Local-Host facts: always present for a local attach, null from a remote
+   * device (no local process/socket exists for this renderer). */
+  hostPid: number | null;
+  protocol: number | null;
   childAlive: boolean;
-  logBytes: number;
+  logBytes: number | null;
   agentSessionId: string | null;
   runId: string;
   runOrdinal: number;
   status: StatusEventView | null;
-  logCursor: LogCursorView;
+  /** Null from a remote attach that resumed without an explicit cursor. */
+  logCursor: LogCursorView | null;
   /** Missing when attaching to an already-running pre-geometry Host. */
   terminalGeometry?: TerminalGeometry | null;
   /** Authoritative Host screen mirror (`terminal_snapshot_v1`). Present only
    * when requested and served; it replaces the bounded byte-tail replay. */
   screenSnapshot?: unknown;
+  /** Present only for a remote-device attach (see remote/mapping.ts). */
+  remote?: boolean;
+  features?: string[];
 }
 
 /** Messages pushed by the backend over the attach Channel (watch_loop). */

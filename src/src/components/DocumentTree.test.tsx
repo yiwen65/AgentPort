@@ -33,7 +33,8 @@ vi.mock("../api", () => ({
 import { act } from "@testing-library/react";
 import { openDocumentTarget } from "../documents";
 import { resetTreeGitForTests } from "../docTreeGit";
-import { getActiveDocumentTab, getState, resolveConfirm, setState } from "../store";
+import { getActiveDocumentTab, getState, resolveConfirm, setActiveDevice, setState } from "../store";
+import { RemoteUnavailableError } from "../remote/errors";
 import type { GitChangeEntry, GitChangeKind } from "../types";
 
 /** Active viewer tab as `{path, line}` (mirrors the old `openDocument`). */
@@ -75,6 +76,7 @@ describe("DocumentTree", () => {
 
   afterEach(() => {
     cleanup();
+    setActiveDevice({ kind: "local" });
     setState({ explorerRoot: null, explorerOpen: false, docGroups: [], activeDocGroupIndex: 0, contextMenu: null, confirm: null, projects: [] });
     resetTreeGitForTests();
   });
@@ -385,5 +387,52 @@ describe("DocumentTree", () => {
 
     await screen.findByText("名称无效：不能包含空片段、. 或 ..");
     expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("disables OS-integration and mutating entry items while a remote device is active", async () => {
+    setActiveDevice({
+      kind: "remote",
+      deviceId: "dev_1",
+      deviceName: "Linux box",
+      capabilities: [],
+    });
+    render(<DocumentTree />);
+    fireEvent.contextMenu(await screen.findByText("README.md"));
+    const items = menuItems();
+    const osTip = "仅本机可用（当前指向远程设备）";
+    const mutationTip = "远程设备上暂不支持该文档操作";
+    for (const label of ["在 VS Code 中打开", "在文件管理器中显示"]) {
+      const item = items.find((entry) => entry.label === label);
+      expect(item?.disabled).toBe(true);
+      expect(item?.tip).toBe(osTip);
+    }
+    for (const label of ["重命名", "创建副本", "删除"]) {
+      const item = items.find((entry) => entry.label === label);
+      expect(item?.disabled).toBe(true);
+      expect(item?.tip).toBe(mutationTip);
+    }
+    // Read-only actions stay available remotely.
+    for (const label of ["新建文件", "新建文件夹", "复制路径", "复制相对路径"]) {
+      expect(items.find((entry) => entry.label === label)?.disabled).toBeFalsy();
+    }
+  });
+
+  it("turns a RemoteUnavailableError into an info notice instead of an error toast", async () => {
+    setActiveDevice({
+      kind: "remote",
+      deviceId: "dev_1",
+      deviceName: "Linux box",
+      capabilities: [],
+    });
+    vscodeMock.mockRejectedValue(new RemoteUnavailableError("os.openInVsCode"));
+    render(<DocumentTree />);
+    fireEvent.contextMenu(await screen.findByText("README.md"));
+    // Invoke the action directly (race: menu built before the device switched).
+    menuItems().find((entry) => entry.label === "在 VS Code 中打开")?.action?.();
+    await waitFor(() => {
+      const toasts = getState().toasts;
+      expect(toasts.some((entry) => entry.kind === "info" && entry.text === "该操作在远程设备上不可用")).toBe(true);
+    });
+    expect(getState().toasts.some((entry) => entry.kind === "error")).toBe(false);
   });
 });

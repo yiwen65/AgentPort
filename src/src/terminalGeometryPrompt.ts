@@ -1,4 +1,5 @@
 import type { TerminalGeometry } from "./types";
+import { scopedStorageKey } from "./deviceContext";
 
 export interface TerminalGeometryPromptState {
   visible: boolean;
@@ -29,7 +30,9 @@ export function shouldPublishAutomaticDesktopResize(
 }
 
 function dismissalKey(sessionId: string, runId: string): string {
-  return `agentport:phone-geometry-dismissed:v1:${sessionId}:${runId}`;
+  return scopedStorageKey(
+    `agentport:phone-geometry-dismissed:v1:${sessionId}:${runId}`,
+  );
 }
 
 export function readDismissedGeometryRevision(

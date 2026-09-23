@@ -27,10 +27,21 @@ import { applyTerminalLanguage } from "../terminals";
 import { getTerminalPalette, TERMINAL_THEME_IDS } from "../terminalThemes";
 import { AgentIcon } from "./AgentIcons";
 import NotificationSetupPanel from "./NotificationSetupPanel";
+import DeviceSettings from "./DeviceSettings";
 import ShellIcon from "./ShellIcon";
 import { PairingSection } from "./PairingSection";
 import UpdateSection from "./UpdateSection";
-import { closeDialog, confirmDialog, getState, setState, toast, useStore } from "../store";
+import {
+  canRestoreBackups,
+  canUseLocalOsIntegration,
+  closeDialog,
+  confirmDialog,
+  destinationsAreRemote,
+  getState,
+  setState,
+  toast,
+  useStore,
+} from "../store";
 import type {
   AdapterInstall,
   ArchivedSessionView,
@@ -730,6 +741,9 @@ export function nativeCoverageComplete(coverage: NativeCoverageSummary): boolean
 export function BackupSection() {
   const { t } = useTranslation(["settings", "common"]);
   const s = useStore();
+  const remoteDestinations = useStore(destinationsAreRemote);
+  const restoreAllowed = useStore(canRestoreBackups);
+  const osIntegration = useStore(canUseLocalOsIntegration);
   const dataRoot = s.exportsDir.replace(/\/exports$/, "");
   const backupsDir = `${dataRoot}/backups`;
   const [items, setItems] = useState<BackupItem[]>([]);
@@ -890,6 +904,11 @@ export function BackupSection() {
         <strong>{t("settings:ui.backup.dataBoundaryTitle")}</strong>
         <p className="form-hint">{t("settings:ui.backup.dataBoundaryBody")}</p>
       </div>
+      {remoteDestinations ? (
+        <div className="info-box backup-remote-boundary" role="note">
+          <p className="form-hint">{t("settings:ui.backup.remoteServerSideHint")}</p>
+        </div>
+      ) : null}
       {creating ? <div className="info-box backup-progress">
         <strong role="status">{agentDisplay(creating)} · {t(`settings:ui.backup.phases.${backupProgress?.phase ?? "preparing"}`)}
           {backupProgress && backupProgress.total > 0 ? ` · ${backupProgress.completed} / ${backupProgress.total}` : ""}
@@ -910,7 +929,8 @@ export function BackupSection() {
               onClick={() => void create(agent)}>
               {creating === agent ? t("settings:ui.backup.creating") : t("settings:ui.backup.createNow")}
             </button>
-            <button className="btn" disabled={busy}
+            <button className="btn" disabled={busy || !restoreAllowed}
+              title={restoreAllowed ? undefined : t("settings:ui.backup.remoteRestoreUnavailable")}
               aria-label={t("settings:ui.backup.restoreAgent", { agent: agentDisplay(agent) })}
               onClick={() => void restore(agent)}>
               {restoring === agent ? t("settings:ui.backup.restoring") : t("settings:ui.backup.mergeRestore")}
@@ -919,7 +939,9 @@ export function BackupSection() {
         ))}
       </div>
       <p className="form-hint">{t("settings:ui.backup.createHint")}</p>
-      <button className="btn small ghost" onClick={() =>
+      <button className="btn small ghost" disabled={!osIntegration}
+        title={osIntegration ? undefined : t("settings:ui.backup.remoteOpenDirectoryUnavailable")}
+        onClick={() =>
         void api.revealInFileManager(backupsDir).catch((e) =>
           toast(t("settings:ui.backup.openDirectoryFailed", { detail: errorText(e) }), "error"))}>
         {t("settings:ui.backup.openDirectory")}
@@ -1235,6 +1257,7 @@ type SettingsSection =
   | "secrets"
   | "archive"
   | "backup"
+  | "devices"
   | "pairing"
   | "about";
 
@@ -1246,6 +1269,7 @@ const SETTINGS_SECTIONS = [
   { id: "secrets", labelKey: "settings:ui.sections.secrets" },
   { id: "archive", labelKey: "settings:ui.sections.archive" },
   { id: "backup", labelKey: "settings:ui.sections.backup" },
+  { id: "devices", labelKey: "settings:ui.sections.devices" },
   { id: "pairing", labelKey: "settings:ui.sections.pairing" },
   { id: "about", labelKey: "settings:ui.sections.about" },
 ] as const satisfies ReadonlyArray<{ id: SettingsSection; labelKey: string }>;
@@ -1686,6 +1710,7 @@ export default function SettingsDialog() {
     secrets: <SecretSection />,
     archive: <ArchiveSection />,
     backup: <BackupSection />,
+    devices: <DeviceSettings />,
     pairing: <PairingSection />,
     about: <UpdateSection />,
   }[section];

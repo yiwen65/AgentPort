@@ -114,7 +114,7 @@ export default function PiStructuredTimeline({ ses }: { ses: SessionView }) {
 
   useEffect(() => {
     let cancelled = false;
-    let attachmentId: number | null = null;
+    let attachmentId: number | string | null = null;
     let attachmentEnded = false;
     replaying.current = true;
     replayBuffer.current = "";

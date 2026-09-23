@@ -21,7 +21,6 @@ import {
   isMac,
   openNewSessionDialog,
   openSplitAgentPicker,
-  readLastSelectedSessionId,
   refreshProjectsSoon,
   restartSessionFlow,
   toggleSidebarCollapsed,
@@ -37,23 +36,26 @@ import {
   applyProjectsSnapshot,
   applyRepositoryStatusSnapshot,
   findSession,
-  flattenSessions,
   getState,
   invalidateProjectsSnapshotRequests,
   isLinuxFramelessChrome,
   openDialog,
   patchSession,
   setState,
+  shouldApplyLocalBackendEvent,
   toast,
   useStore,
 } from "./store";
 import {
-  applyTerminalLanguage,
   getHandle,
   insertTextIntoTerminal,
   pruneHandles,
   scrollToBottom,
 } from "./terminals";
+import { applyBootInfo } from "./bootApply";
+import { cacheLocalBootBase } from "./remoteBoot";
+import { startupRestoreTarget, switchDevice } from "./deviceSwitch";
+import { registerDeviceSwitchHandler } from "./devicesStore";
 import { handleFontZoomKey, initFontZoom } from "./fontZoom";
 import { piTerminalShortcutSequence } from "./piTerminalShortcuts";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -66,8 +68,7 @@ import Toasts from "./components/Toasts";
 import UpdateBanner from "./components/UpdateBanner";
 import ContextMenuHost from "./components/ContextMenu";
 import { ConfirmDialogHost, PromptDialogHost } from "./components/Dialogs";
-import { applyUiLanguage, i18n } from "./i18n";
-import { TERMINAL_LAYOUT_STORAGE_KEY } from "./paneLayout";
+import { i18n } from "./i18n";
 import { paneShortcutAction } from "./paneShortcuts";
 import { formatTerminalReference } from "./terminalDrop";
 
@@ -92,14 +93,6 @@ function terminalSessionAtPosition(position: { x: number; y: number }): string |
   const element = document.elementFromPoint(position.x, position.y);
   const pane = element?.closest<HTMLElement>("[data-terminal-session-id]");
   return pane?.dataset.terminalSessionId ?? null;
-}
-
-function hasPersistedTerminalLayout(): boolean {
-  try {
-    return window.localStorage.getItem(TERMINAL_LAYOUT_STORAGE_KEY) !== null;
-  } catch {
-    return false;
-  }
 }
 
 // While the window is dragged, WKWebView recomputes the sidebar's backdrop
@@ -128,6 +121,9 @@ function useWindowDragClass() {
 
 function useBoot() {
   useEffect(() => {
+    // Device UI affordances (picker, pair success) delegate the real switch
+    // to this flow; register before any component can request one.
+    registerDeviceSwitchHandler(switchDevice);
     let cancelled = false;
     const unlistens: Array<() => void> = [];
     let booted = false;
@@ -146,6 +142,7 @@ function useBoot() {
         const listenerResults = await Promise.allSettled([
           onProjectsChanged((projects) => {
             applyWhenBooted(() => {
+              if (!shouldApplyLocalBackendEvent(getState())) return;
               invalidateProjectsSnapshotRequests();
               applyProjectsSnapshot(projects);
               pruneHandles();
@@ -153,14 +150,19 @@ function useBoot() {
           }),
           onRepositoryStateChanged((status) => {
             applyWhenBooted(() => {
+              if (!shouldApplyLocalBackendEvent(getState())) return;
               applyRepositoryStatusSnapshot(status);
             });
           }),
           onGitStateInvalidated((event) => {
-            applyWhenBooted(() => handleGitStateInvalidation(event));
+            applyWhenBooted(() => {
+              if (!shouldApplyLocalBackendEvent(getState())) return;
+              handleGitStateInvalidation(event);
+            });
           }),
           onSessionState((ev) => {
             applyWhenBooted(() => {
+              if (!shouldApplyLocalBackendEvent(getState())) return;
               // Receiving an event is not proof that the user saw it. The
               // backend decides whether it is actionable, and selecting the
               // Session is the explicit acknowledgement boundary.
@@ -170,6 +172,7 @@ function useBoot() {
           }),
           onSessionExit(({ sessionId, reason, runId, runOrdinal }) => {
             applyWhenBooted(() => {
+              if (!shouldApplyLocalBackendEvent(getState())) return;
               patchSession(sessionId, {
                 lifecycle: reason === "user_stop" ? "stopped" : "exited",
                 hostAlive: false,
@@ -179,6 +182,7 @@ function useBoot() {
           }),
           onSessionAgentId(({ sessionId, agentSessionId }) => {
             applyWhenBooted(() => {
+              if (!shouldApplyLocalBackendEvent(getState())) return;
               patchSession(sessionId, { agentSessionId, resumePrecision: "exact" });
             });
           }),
@@ -212,71 +216,33 @@ function useBoot() {
         unlistens.push(...listeners);
 
         const info = await api.boot();
+        cacheLocalBootBase(info);
         const notificationSessionId = await api
           .takePendingNotificationSession()
           .catch(() => null);
         if (cancelled) return;
-        await applyUiLanguage(info.settings.uiLanguage);
-        applyTerminalLanguage();
-        if (cancelled) return;
-        applyProjectsSnapshot(info.projects);
-        setState({
-          ready: true,
-          platform: info.platform,
-          settings: info.settings,
-          adapters: info.adapters,
-          timeline: info.timeline,
-          timelineError: info.timelineMessage ? null : info.timelineError,
-          timelineMessage: info.timelineMessage ?? null,
-          secretBackend: info.secretBackend,
-          indexState: info.indexState,
-          exportsDir: info.exportsDir,
-          showOnboarding: info.adapters.length === 0,
-        });
-        applyThemeSettings();
-        booted = true;
-        for (const applyEvent of pendingEvents.splice(0)) applyEvent();
-        const first = flattenSessions(getState().projects)[0];
-        const notificationSession = findSession(getState().projects, notificationSessionId);
-        const rememberedSession = findSession(
-          getState().projects,
-          readLastSelectedSessionId(),
-        );
-        if (notificationSession) selectSession(notificationSession.id);
-        else if (
-          !notificationActivationPending &&
-          !getState().activeSessionId &&
-          first &&
-          !hasPersistedTerminalLayout()
-        ) {
-          selectSession(rememberedSession?.id ?? first.id, {
-            revealInSidebar: false,
+        const restore = startupRestoreTarget();
+        if (restore) {
+          // Startup device restore: the switch connects and applies its own
+          // boot (or rolls back to local internally). Notification routing is
+          // skipped — a notification targets a LOCAL Session, and restoring
+          // deliberately leaves the local device. Buffered events replay
+          // below; the local-backend-event guards make them no-ops while the
+          // window points at the remote device.
+          await switchDevice(restore);
+          if (cancelled) return;
+          booted = true;
+          for (const applyEvent of pendingEvents.splice(0)) applyEvent();
+        } else {
+          await applyBootInfo(info, {
+            isCancelled: () => cancelled,
+            afterStateApplied: () => {
+              booted = true;
+              for (const applyEvent of pendingEvents.splice(0)) applyEvent();
+            },
+            notificationSessionId,
+            suppressFallbackSelection: () => notificationActivationPending,
           });
-        }
-        if (info.adapters.length > 0) {
-          void api
-            // Refresh metadata without replacing an executable path the user
-            // explicitly selected in onboarding. A full manual re-probe still
-            // auto-selects candidates via probeAgents() with the default flag.
-            .probeAgents(true)
-            .then((outcomes) => {
-              if (cancelled) return;
-              const installs = outcomes.flatMap((outcome) =>
-                outcome.install ? [outcome.install] : [],
-              );
-              if (installs.length > 0) {
-                const refreshed = new Map(installs.map((install) => [install.agentType, install]));
-                const current = getState().adapters;
-                const currentAgents = new Set(current.map((adapter) => adapter.agentType));
-                setState({
-                  adapters: [
-                    ...current.map((adapter) => refreshed.get(adapter.agentType) ?? adapter),
-                    ...installs.filter((install) => !currentAgents.has(install.agentType)),
-                  ],
-                });
-              }
-            })
-            .catch(() => undefined);
         }
       } catch (e) {
         if (!cancelled) {

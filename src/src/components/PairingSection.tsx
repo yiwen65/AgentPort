@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import QRCode from "qrcode";
+import { copyText } from "../api";
 import "./pairing.css";
+import "./devices.css";
 
 interface Invitation { id: string; expiresAt: number }
 interface Peer { name: string; relayUrl: string; publicKey: string; hostId: string }
@@ -21,6 +23,8 @@ export function PairingSection() {
   const [token, setToken] = useState("");
   const [status, setStatus] = useState<Status | null>(null);
   const [image, setImage] = useState("");
+  const [link, setLink] = useState("");
+  const [copied, setCopied] = useState(false);
   const [revoke, setRevoke] = useState<Device>();
   const [stopConfirm, setStopConfirm] = useState(false);
   const [error, setError] = useState("");
@@ -44,7 +48,7 @@ export function PairingSection() {
   };
   const close = async () => {
     const previous = current.current; current.current = undefined;
-    if (alive.current) setImage("");
+    if (alive.current) { setImage(""); setLink(""); setCopied(false); }
     if (previous) await control({ kind: "close_invitation", invitation_id: previous.id });
   };
   useEffect(() => {
@@ -90,9 +94,22 @@ export function PairingSection() {
     current.current = { id: value.id, expiresAt: value.expiresAt };
     try {
       const data = await QRCode.toDataURL(JSON.stringify(value), { errorCorrectionLevel: "M", width: 360, margin: 4 });
-      if (alive.current && current.current?.id === value.id) setImage(data);
+      if (alive.current && current.current?.id === value.id) {
+        setImage(data);
+        // Same bearer payload as the QR, offered as copyable text so another
+        // AgentPort computer (no camera) can redeem it. Never persist/log.
+        setLink(JSON.stringify(value));
+      }
     } catch (cause) { await close(); throw cause; }
   });
+  const copyLink = async () => {
+    if (!link) return;
+    const ok = await copyText(link);
+    if (alive.current && ok) {
+      setCopied(true);
+      setTimeout(() => { if (alive.current) setCopied(false); }, 2000);
+    }
+  };
   const pair = status?.pairing;
   return <section className="pairing-section">
     <p>{t("settings:ui.pairing.description")}</p>
@@ -118,6 +135,10 @@ export function PairingSection() {
       <button className="btn btn-danger" disabled={busy} onClick={() => void run(async () => { await close(); await control({ kind: "stop" }); if (alive.current) setStopConfirm(false); })}>{t("settings:ui.pairing.confirmStop")}</button>
     </div></div> : null}
     {image && seconds > 0 ? <img className="pairing-qr" src={image} alt={t("settings:ui.pairing.qrAlt")} /> : null}
+    {link && seconds > 0 ? <div className="pairing-link-row">
+      <button className="btn" disabled={busy} onClick={() => void copyLink()}>{copied ? t("settings:ui.pairing.linkCopied") : t("settings:ui.pairing.copyLink")}</button>
+      <span className="form-hint">{t("settings:ui.pairing.linkHint")}</span>
+    </div> : null}
     {pair ? <p role="status">{t(`settings:ui.pairing.states.${pair.phase}`)} · {t("settings:ui.pairing.expires", { seconds })}</p> : null}
     {pair?.candidate ? <div className="pairing-candidate">
       <strong>{pair.candidate.name}</strong><code className="pairing-fingerprint">{pair.candidate.publicKey}</code>

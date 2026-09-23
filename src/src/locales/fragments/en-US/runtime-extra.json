@@ -102,7 +102,11 @@
     "stripAnsi": "Remove ANSI control sequences",
     "markdownHint": "Markdown exports include Session, Agent, project, branch, and timestamp headers.",
     "destination": "Save to (absolute path)",
-    "redactionHint": "Exports are redacted automatically: known Secret values are replaced with a fixed mask."
+    "redactionHint": "Exports are redacted automatically: known Secret values are replaced with a fixed mask.",
+    "remoteDestinationHint": "The file is written at this path on the remote device.",
+    "remoteAnsiHint": "Remote exports keep terminal escape sequences (the remote protocol cannot strip them).",
+    "remoteBrowseUnavailable": "Browse only picks local paths; type a path on the remote device",
+    "remoteFailed": "Unavailable on the remote device: {{detail}}"
   },
   "pi": {
     "toolEvent": "Tool · {{type}}",

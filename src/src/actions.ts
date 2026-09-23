@@ -2,6 +2,7 @@
 // Components stay declarative; side effects live here.
 
 import { api, copyText, errorText } from "./api";
+import { scopedStorageKey } from "./deviceContext";
 import { setTheme as setNativeTheme } from "@tauri-apps/api/app";
 import { localizedNotices } from "./runtimeMessages";
 import { isAddedAgent, quickStartPermission } from "./agentCapabilities";
@@ -95,7 +96,7 @@ const ACTIVE_SESSION_STORAGE_KEY = "agentport-active-session-id";
 
 export function readLastSelectedSessionId(): string | null {
   try {
-    return window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
+    return window.localStorage.getItem(scopedStorageKey(ACTIVE_SESSION_STORAGE_KEY));
   } catch {
     return null;
   }
@@ -103,7 +104,10 @@ export function readLastSelectedSessionId(): string | null {
 
 function rememberSelectedSessionId(sessionId: string) {
   try {
-    window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, sessionId);
+    window.localStorage.setItem(
+      scopedStorageKey(ACTIVE_SESSION_STORAGE_KEY),
+      sessionId,
+    );
   } catch {
     // Selection must remain usable when WebView storage is unavailable.
   }
