@@ -47,6 +47,7 @@ mod git_commands;
 mod git_workspace_commands;
 mod notifications;
 mod relay;
+mod remote;
 mod updater;
 
 // ---------------------------------------------------------------------------
@@ -4619,6 +4620,24 @@ fn main() {
         initial_settings.ui_language,
     );
     let (notification_tx, notification_rx) = mpsc::sync_channel(NOTIFICATION_QUEUE_CAPACITY);
+    let remote_manager = std::sync::Arc::new(
+        remote::RemoteConnectionManager::new(&paths).expect("remote connection manager"),
+    );
+    let device_credentials: std::sync::Arc<dyn remote::credentials::DeviceCredentialStore> =
+        std::sync::Arc::new(remote::credentials::KeychainCredentialStore);
+    let device_registry_path = paths.root().join("devices").join("devices.json");
+    let device_registry = remote::registry::DeviceRegistry::open(
+        device_registry_path.clone(),
+        device_credentials.clone(),
+    )
+    .unwrap_or_else(|error| {
+        // A corrupt registry was quarantined by the first open; retrying
+        // starts empty instead of failing app startup.
+        tracing::warn!(error = %error, "device registry recovered from a corrupt file");
+        remote::registry::DeviceRegistry::open(device_registry_path, device_credentials)
+            .expect("device registry must open after quarantine")
+    });
+    remote_manager.set_resolver(device_registry.clone());
     let state = AppState {
         paths,
         db,
@@ -4658,12 +4677,25 @@ fn main() {
             Ok(())
         })
         .manage(state)
+        .manage(remote_manager.clone())
+        .manage(device_registry)
         .manage(relay::DesktopRelay::default())
         .manage(updater::UpdateState::default())
         .invoke_handler(tauri::generate_handler![
             relay::desktop_relay_status,
             relay::desktop_relay_start,
             relay::desktop_relay_control,
+            remote::commands::remote_connect,
+            remote::commands::remote_disconnect,
+            remote::commands::remote_request,
+            remote::commands::remote_subscribe,
+            remote::commands::device_pair_redeem,
+            remote::commands::device_pairing_link,
+            remote::commands::remote_attention_notify,
+            remote::commands::device_list,
+            remote::commands::device_add_ssh,
+            remote::commands::device_remove,
+            remote::commands::device_rename,
             boot,
             list_projects,
             list_archived_sessions,

@@ -20,7 +20,11 @@ tauri-plugin-updater = { version = "2", default-features = false, features = [
     "system-proxy",
 ] }
 agentport-relay = { path = "../crates/agentport-relay", features = ["connector"] }
-tokio = { version = "1", features = ["sync", "time"] }
+tokio = { version = "1", features = ["sync", "time", "rt", "io-util"] }
+russh = "=0.62.7"
+keyring = { version = "3", features = ["apple-native", "sync-secret-service"] }
+zeroize = { version = "1", features = ["serde"] }
+thiserror = { workspace = true }
 libc = { workspace = true }
 agentport-core = { path = "../crates/agentport-core" }
 agentport-service = { path = "../crates/agentport-service" }
@@ -58,3 +62,6 @@ objc2-user-notifications = { version = "0.3", default-features = false, features
 
 [dev-dependencies]
 tempfile = { workspace = true }
+agentport-remote-bridge = { path = "../crates/agentport-remote-bridge" }
+# Relay E2E tests stand up an in-process relay server next to the connector.
+agentport-relay = { path = "../crates/agentport-relay", features = ["server", "connector"] }

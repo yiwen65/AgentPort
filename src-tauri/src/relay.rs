@@ -155,6 +155,33 @@ pub async fn desktop_relay_control(
     }
 }
 
+/// Desktop-to-desktop pairing: surfaces this machine's one-time InviteAutomatic
+/// invitation as serialized text (the same Invitation JSON the phone QR flow
+/// encodes), starting/reusing the connector exactly like `desktop_relay_start`.
+/// The invitation is a short-lived bearer credential; it is returned to the
+/// frontend for display/copy and never logged here.
+pub async fn invite_automatic_text(
+    data: &std::path::Path,
+    relay: &DesktopRelay,
+) -> Result<String, String> {
+    {
+        let mut launch = relay.0.lock().await;
+        launch.claim_startup();
+        start_or_reuse(data).await?;
+    }
+    let (_, socket) = locations(data)?;
+    match ipc::call(&socket, &ipc::Request::InviteAutomatic)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        ipc::Response::Invitation { invitation } => {
+            serde_json::to_string(&invitation).map_err(|error| error.to_string())
+        }
+        ipc::Response::Error { message } => Err(message),
+        _ => Err("Unexpected Relay connector response".into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
