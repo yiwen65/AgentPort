@@ -625,3 +625,30 @@
 - Correct approach: ① 本仓库 push 改走 SSH（`git remote set-url --push origin git@github.com:…`，fetch 保持 HTTPS）；② 全局加低速保护 `git config --global http.lowSpeedLimit 1000` + `http.lowSpeedTime 45`，让数据阶段的停住 45s 内失败而不是无限等；CONNECT/TLS 阶段由 libcurl 的 300s 默认上限兜底（实测假代理下 300s 报 `Proxy CONNECT aborted due to timeout`）。
 - Prevention: 发布/推送前先 `ssh -T git@github.com` 探活；推送循环必须带看门狗（macOS 无 `timeout`，用后台 `sleep` + `kill`）；见到 "Everything up-to-date" 也算作已连通（它会走一遍远端 ref 交换）。
 - Verified by: 5 MiB × 5 次 HTTPS 推送测量（85s/停/10s/15s/10s），假代理 300s 超时验证，改配置后 `git push origin main`（SSH）4s 完成、`git ls-remote`（HTTPS）1s 完成。
+
+## `Linux 被控端 connector` — 启动三连坑：data-dir 必须存在、系统密钥环必须可用、注册是异步的
+
+- Wrong approach: 在全新 Linux 环境直接 `agentport-connector --data-dir <新路径>` 并立刻 invite；把报错 `Relay connection interrupted or unavailable` 当成网络问题排查 relay。
+- Why it failed: ①connector 启动即 `canonicalize(data-dir)`，目录不存在时 ENOENT 被 `From<io::Error>` 一律映射成 `Error::Transport`（文案与真实原因完全无关）；②`Configure` 需要把注册密钥写入系统密钥环——无 D-Bus/secret-service 的容器或最小系统返回 `Credential`（`no plaintext fallback`）；③`Configure` 返回 ok 只代表配置已存，注册握手是后台异步的，此刻 `InviteAutomatic` 仍会报 `Offline`（`The computer is not connected to the relay`）。
+- Recognition signal: strace 显示进程零 `connect()` 调用、`readlinkat(<data-dir>) = ENOENT`；或 configure 响应 `{'kind':'error','message':'Relay secure credential storage is unavailable'}`；或 status `phase=connecting` 时 invite 报 Offline。
+- Correct approach: 先 `mkdir -p <data-dir>` 再启动；Linux 桌面外环境用 `dbus-run-session` + `gnome-keyring-daemon --unlock --components=secrets` 提供 secret-service（真实桌面发行版默认已有）；invite 前轮询 IPC `Status` 直到 `phase == "connected"`。Ubuntu 镜像还需运行时 `libdbus-1-3`（agentport 二进制动态链接，缺了 exec 直接 127）。
+- Prevention: 评估 agentport 二进制的启动失败时先 strace 定位真实 syscall 错误，勿信 Transport 文案；容器/CI 复现 Linux 被控端时把「目录预建 + 密钥环 + phase 等待」写成固定三步。
+- Verified by: 2026-09-23 T-012 排障全程（strace 定位 ENOENT→mkdir 后启动成功；gnome-keyring 起后 configure ok；轮询 connected 后 invite 成功），最终 relay E2E 全链路 PASS（macOS↔Linux 容器）。
+
+## `调试 GUI 端到端证据` — /tmp 副本共享 WebKit 存储；AX 驱动比坐标点击可靠
+
+- Wrong approach: 复制调试 .app 到 /tmp 当隔离实例做 GUI E2E，以为它有独立的 WebKit localStorage；用 System Events `click at {x,y}` 点 React 按钮。
+- Why it failed: 调试包的 bundle id 在构建期由 checkout 路径派生并嵌入二进制，/tmp 副本与原调试实例**同 bundle id、同 WebKit 默认数据存储**——副本写入的 localStorage 会污染真实调试实例（本次靠最终值 `active-device-id=local` 才无害）。`click at` 解析到的是命中点的 AX 组（如「终端工作区」group），不是按钮，点击无效。
+- Recognition signal: 副本与原实例显示名相同（`AgentPort Debug - <checkout>`）；`click at` 返回某个 AXGroup 路径而非按钮。
+- Correct approach: 用 System Events 遍历 `entire contents` 按 `description`/`name` 定位元素（WKWebView 暴露完整 AX 树，设备选择器是 `AXPopUpButton|设备切换`），`perform action "AXPress"` 打开下拉再 AXPress `AXMenuItem`；截图前必须把目标进程 `set frontmost`（未激活的透明窗截图必黑），窗口 `AXMinimized=true` 时先还原再截。
+- Prevention: 需要真隔离的 GUI 实例要改路径重出调试包（bundle id 随路径变），不能靠复制；任何 localStorage 种子操作前确认目标实例的 bundle id 归属；截图断言先看 luma/distinct colors，黑图先查激活与最小化，再怀疑渲染。
+- Verified by: 2026-09-23 T-012：AX 驱动完成 本机→e2e-linux-relay→本机 真实切换并截图取证（远程终端渲染 GUI_SEED_MARK_42）；未激活截图 luma=0.0，激活并取消最小化后同窗口 luma=38 正常。
+
+## `macOS UnixStream read timeout` — 设过 SO_RCVTIMEO 后 set_read_timeout(None) 返回 EINVAL
+
+- Wrong approach: 在 macOS 上对 `UnixStream` 先 `set_read_timeout(Some(_))`，稍后以 `set_read_timeout(None)` 清除超时并期望回到纯阻塞读。
+- Why it failed: macOS（BSD）上清除 `SO_RCVTIMEO` 语义与 Linux 不同，同一线程序列下 `set_read_timeout(None)` 返回 `EINVAL`；握手期间的 IO 因此被错误判失败。
+- Recognition signal: 仅 macOS 复现（Linux 同代码通过）；错误发生在第二次 timeout 设置点而非读写点。
+- Correct approach: 不要在 socket 上切换超时语义——握手/截止时间用通道侧超时（mpsc recv_timeout / 线程外计时）实现，socket 保持一贯阻塞模式。
+- Prevention: 跨平台 socket 代码把「超时语义只设一次」当约束写进实现；macOS 特有的 setsockopt 行为差异要在 mac 上实测，不能以 Linux 结果外推。
+- Verified by: 2026-09-23 T-001 独立脚本复现 EINVAL；改为通道超时后 `cargo test -p agentport remote` 20/20 通过。
