@@ -441,6 +441,9 @@
       "stopBackground": "停止后台连接",
       "stopConfirm": "关闭所有 Relay 通道并停止后台连接？Session Host 将继续运行。",
       "confirmStop": "确认停止",
+      "reset": "重置配对配置",
+      "resetConfirm": "清除已保存的 Relay 配置、本机配对身份和全部已授权手机？重新连接需要 Relay 注册凭据，手机也必须重新扫码配对。请在系统 Keychain 中凭据丢失、或重复保存仍失败时使用。",
+      "confirmReset": "确认重置",
       "invalidReply": "Relay 后台响应异常",
       "background": {
         "unconfigured": "后台已启动 · 请配置 Relay",

@@ -641,6 +641,66 @@ async fn storage_failure_never_claims_success_and_missing_key_never_rotates_iden
 }
 
 #[tokio::test]
+async fn explicit_reset_recovers_from_credential_loss_with_a_fresh_identity() {
+    let fixture = Fixture::new().await;
+    let phone = Identity::generate().unwrap();
+    let old_peer = approve(&fixture.runtime, &phone).await;
+    // The system keychain losing every secret must not be silently repaired.
+    fixture.vault.0.lock().unwrap().clear();
+    assert!(matches!(
+        fixture
+            .runtime
+            .configure(
+                fixture.url.clone(),
+                "Same".into(),
+                Zeroizing::new(TOKEN.into())
+            )
+            .await,
+        Err(Error::Credential)
+    ));
+    fixture.runtime.reset().await.unwrap();
+    let status = fixture.runtime.status().await;
+    assert_eq!(status.phase, Phase::Unconfigured);
+    assert!(status.peer.is_none());
+    assert!(status.devices.is_empty());
+    // Only an explicit reconfiguration anchors a freshly generated identity.
+    fixture
+        .runtime
+        .configure(
+            fixture.url.clone(),
+            "Same".into(),
+            Zeroizing::new(TOKEN.into())
+        )
+        .await
+        .unwrap();
+    wait_connected(&fixture.runtime).await;
+    let new_peer = fixture.runtime.status().await.peer.unwrap();
+    assert_ne!(new_peer.public_key, old_peer.public_key);
+    // The abandoned device grants stay cleared across a durable reload.
+    let state = fixture.temp.path().join("state");
+    let bridge = fixture.temp.path().join("bridge-fixture");
+    fixture.runtime.stop().await;
+    fixture.run.await.unwrap();
+    drop(fixture.runtime); // Release lifetime store lock; same durable state/key vault.
+    let runtime = Runtime::open(
+        Store::open(&state).unwrap(),
+        fixture.vault.clone(),
+        bridge,
+        fixture.temp.path().to_path_buf(),
+        None,
+    )
+    .await
+    .unwrap();
+    let run = tokio::spawn(runtime.clone().run());
+    wait_connected(&runtime).await;
+    assert!(runtime.status().await.devices.is_empty());
+    runtime.stop().await;
+    run.await.unwrap();
+    fixture.relay_stop.unwrap().send(()).unwrap();
+    fixture.relay.await.unwrap();
+}
+
+#[tokio::test]
 async fn ipc_is_bounded_and_status_never_contains_private_credentials() {
     let fixture = Fixture::new().await;
     let directory = fixture.temp.path().join("ipc");

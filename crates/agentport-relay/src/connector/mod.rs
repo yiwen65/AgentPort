@@ -687,6 +687,35 @@ impl Runtime {
         close_channels(channels).await;
         result.map_err(|_| Error::Storage)
     }
+    /// Explicit recovery from lost credentials: abandons the durable
+    /// configuration, identity anchor, and every device grant. A fresh
+    /// identity is created only by a later explicit configure, never here.
+    pub async fn reset(&self) -> Result<()> {
+        let mut inner = self.inner.lock().await;
+        if inner.stopping || inner.phase == Phase::StorageFailed {
+            return Err(Error::Storage);
+        }
+        let mut next = inner.durable.clone();
+        // Devices are anchored to the same identity as the settings and are
+        // invalid without them (validate forbids devices without settings).
+        next.settings = None;
+        next.devices = Vec::new();
+        if self.store.write(&next).is_err() {
+            inner.phase = Phase::StorageFailed;
+            inner.configured = None;
+            self.changed.send_modify(|n| *n += 1);
+            return Err(Error::Storage);
+        }
+        inner.durable = next;
+        inner.configured = None;
+        inner.pairing = None;
+        inner.phase = Phase::Unconfigured;
+        let channels = std::mem::take(&mut inner.channels);
+        self.changed.send_modify(|n| *n += 1);
+        drop(inner);
+        close_channels(channels.into_values().flatten().collect()).await;
+        Ok(())
+    }
     pub async fn stop(&self) {
         let mut inner = self.inner.lock().await;
         inner.stopping = true;

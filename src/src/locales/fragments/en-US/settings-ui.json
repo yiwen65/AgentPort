@@ -441,6 +441,9 @@
       "stopBackground": "Stop background connector",
       "stopConfirm": "Close all Relay channels and stop the background connector? Session Hosts will keep running.",
       "confirmStop": "Confirm stop",
+      "reset": "Reset pairing configuration",
+      "resetConfirm": "Clear the saved Relay configuration, this computer’s pairing identity, and every authorized phone? Reconnecting requires the Relay registration token, and phones must scan a new code. Use this when the stored credentials were lost from the system keychain or saving them keeps failing.",
+      "confirmReset": "Confirm reset",
       "invalidReply": "Unexpected Relay connector response",
       "background": {
         "unconfigured": "Background running · configuration required",

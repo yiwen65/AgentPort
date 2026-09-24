@@ -27,6 +27,7 @@ export function PairingSection() {
   const [copied, setCopied] = useState(false);
   const [revoke, setRevoke] = useState<Device>();
   const [stopConfirm, setStopConfirm] = useState(false);
+  const [resetConfirm, setResetConfirm] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [seconds, setSeconds] = useState(0);
@@ -129,10 +130,15 @@ export function PairingSection() {
       {!status || status.phase === "stopped" ? <button className="btn" disabled={busy} onClick={() => void run(async () => { await invoke("desktop_relay_start"); })}>{t("settings:ui.pairing.startBackground")}</button> : <button className="btn" disabled={busy} onClick={() => setStopConfirm(true)}>{t("settings:ui.pairing.stopBackground")}</button>}
       <button className="btn btn-primary" disabled={busy || status?.phase !== "connected" || url.trim() !== status.peer?.relayUrl || name.trim() !== status.peer?.name} onClick={() => void generate()}>{t("settings:ui.pairing.generate")}</button>
       {current.current ? <button className="btn" disabled={busy} onClick={() => void run(close)}>{t("settings:ui.pairing.close")}</button> : null}
+      {status?.phase === "authentication_failed" ? <button className="btn" disabled={busy} onClick={() => setResetConfirm(true)}>{t("settings:ui.pairing.reset")}</button> : null}
     </div>
     {stopConfirm ? <div role="alert"><p>{t("settings:ui.pairing.stopConfirm")}</p><div className="pairing-buttons">
       <button className="btn" onClick={() => setStopConfirm(false)} disabled={busy}>{t("common:actions.cancel")}</button>
       <button className="btn btn-danger" disabled={busy} onClick={() => void run(async () => { await close(); await control({ kind: "stop" }); if (alive.current) setStopConfirm(false); })}>{t("settings:ui.pairing.confirmStop")}</button>
+    </div></div> : null}
+    {resetConfirm ? <div role="alert"><p>{t("settings:ui.pairing.resetConfirm")}</p><div className="pairing-buttons">
+      <button className="btn" onClick={() => setResetConfirm(false)} disabled={busy}>{t("common:actions.cancel")}</button>
+      <button className="btn btn-danger" disabled={busy} onClick={() => void run(async () => { await close(); await control({ kind: "reset" }); if (alive.current) setResetConfirm(false); })}>{t("settings:ui.pairing.confirmReset")}</button>
     </div></div> : null}
     {image && seconds > 0 ? <img className="pairing-qr" src={image} alt={t("settings:ui.pairing.qrAlt")} /> : null}
     {link && seconds > 0 ? <div className="pairing-link-row">

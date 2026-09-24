@@ -64,6 +64,22 @@ it("sends the registration credential only to native configuration and clears it
   expect((screen.getByLabelText("Relay registration token") as HTMLInputElement).value).toBe("");
   expect(mocks.qr).not.toHaveBeenCalled();
 });
+it("resets a dead credential configuration only after explicit confirmation", async () => {
+  status.phase = "authentication_failed";
+  const previous = mocks.invoke.getMockImplementation()!;
+  mocks.invoke.mockImplementation((command: string, args: any) => {
+    if (args?.request?.kind === "reset") { status.phase = "unconfigured"; status.peer = null; status.devices = []; }
+    return previous(command, args);
+  });
+  render(<PairingSection />);
+  await screen.findByText("Registration or Keychain access failed · check credentials");
+  fireEvent.click(screen.getByRole("button", { name: "Reset pairing configuration" }));
+  expect(mocks.invoke.mock.calls.some(([, args]) => args?.request?.kind === "reset")).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Confirm reset" }));
+  await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("desktop_relay_control", { request: { kind: "reset" } }));
+  await screen.findByText("Background running · configuration required");
+  expect(screen.queryByRole("button", { name: "Reset pairing configuration" })).toBeNull();
+});
 it("does not replay an uncertain automatic invitation", async () => {
   const previous = mocks.invoke.getMockImplementation()!;
   mocks.invoke.mockImplementation((command: string, args: any) => {

@@ -53,6 +53,7 @@ pub enum Request {
     Revoke {
         public_key: String,
     },
+    Reset,
     Stop,
 }
 #[derive(Serialize, Deserialize)]
@@ -253,6 +254,7 @@ async fn dispatch(runtime: &Runtime, request: Request) -> Result<Response> {
             runtime.close_invitation(&invitation_id).await
         }
         Request::Revoke { public_key } => runtime.revoke(&public_key).await?,
+        Request::Reset => runtime.reset().await?,
         Request::Stop => {} // Flush acknowledgement first, then terminate IPC.
     }
     Ok(Response::Ok)
