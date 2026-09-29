@@ -8,6 +8,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 
 import DeviceSettings from "./DeviceSettings";
 import { resetDevicesStoreForTests, setDevicesInvokerForTests } from "../devicesStore";
+import { getState } from "../store";
 
 const devices = [
   {
@@ -132,12 +133,13 @@ it("test-connect reports latency on success and structured errors on failure", a
   await screen.findByText(/Failed: bad credentials/);
 });
 
-it("opens the add-device modal from the section action", async () => {
+it("opens the add-device dialog at the app layer from the section action", async () => {
   render(<DeviceSettings />);
   await loaded();
   fireEvent.click(screen.getByRole("button", { name: "Add device" }));
-  await screen.findByText("Pairing code");
-  expect(screen.getByText("Manual SSH")).toBeTruthy();
+  // The PairDevice modal mounts through the app dialog router (never nested
+  // in this section), so the section only records dialog state.
+  expect(getState().dialog).toEqual({ kind: "pairDevice" });
 });
 
 it("shows the empty state when no devices exist", async () => {

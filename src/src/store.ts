@@ -243,6 +243,7 @@ export type DialogState =
   | { kind: "newWorktree"; projectId: string }
   | { kind: "branchPicker"; projectId: string }
   | { kind: "settings" }
+  | { kind: "pairDevice" }
   | { kind: "diagnostics" }
   | { kind: "timeline" }
   | { kind: "palette" }

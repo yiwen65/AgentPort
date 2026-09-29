@@ -117,17 +117,32 @@ it("shows the empty state when no devices are paired", async () => {
   await screen.findByText("No paired computers yet");
 });
 
-it("opens the add-device modal and the settings dialog from footer actions", async () => {
+it("opens the add-device dialog at the app layer and the settings dialog from footer actions", async () => {
   render(<DevicePicker />);
   await openMenu();
   fireEvent.click(screen.getByText("Add device…"));
-  await screen.findByText("Pairing code");
-  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-  await waitFor(() => expect(screen.queryByText("Pairing code")).toBeNull());
+  // The PairDevice modal mounts through the app dialog router (never inside
+  // the topbar's stacking trap), so the picker only records dialog state.
+  expect(getState().dialog).toEqual({ kind: "pairDevice" });
+  act(() => setActiveDevice({ kind: "local" }));
   fireEvent.click(screen.getByRole("button", { name: "Device switcher" }));
   fireEvent.click(await screen.findByText("Manage devices…"));
   expect(getState().dialog).toEqual({ kind: "settings" });
   act(() => setActiveDevice({ kind: "local" }));
+});
+
+it("portals the menu to document.body, outside the topbar stacking context", async () => {
+  render(<DevicePicker />);
+  await openMenu();
+  const menu = screen.getByRole("menu");
+  // Regression for click-through: inside .topbar (isolation + z-index) the
+  // menu shared the bar's stacking slot and higher-z pane chrome swallowed
+  // clicks. The menu must live at body level (fixed, ctx-menu z-layer).
+  expect(menu.closest(".topbar")).toBeNull();
+  expect(menu.parentElement).toBe(document.body);
+  // Outside-click still closes the portaled menu.
+  fireEvent.pointerDown(document.body);
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
 });
 
 it("tracks switching state in the trigger label", async () => {

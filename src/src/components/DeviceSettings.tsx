@@ -4,19 +4,16 @@
 
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { DeviceContext } from "../deviceContext";
+import { openDialog } from "../store";
 import {
   deviceTargetSummary,
   refreshDevices,
   removeDevice,
   renameDevice,
-  requestDeviceSwitch,
   testDeviceConnection,
   useDevicesStore,
   type DeviceProfile,
-  type DeviceSwitchHandler,
 } from "../devicesStore";
-import PairDevice from "./PairDevice";
 import "./devices.css";
 
 function formatConnectedAt(
@@ -34,16 +31,12 @@ function formatConnectedAt(
   });
 }
 
-export default function DeviceSettings(props: {
-  onSwitchDevice?: DeviceSwitchHandler;
-}) {
+export default function DeviceSettings() {
   const { t, i18n } = useTranslation(["settings", "common"]);
-  const onSwitchDevice = props.onSwitchDevice ?? requestDeviceSwitch;
   const devices = useDevicesStore((state) => state.devices);
   const loading = useDevicesStore((state) => state.loading);
   const loadError = useDevicesStore((state) => state.error);
   const testing = useDevicesStore((state) => state.testing);
-  const [pairing, setPairing] = useState(false);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [removing, setRemoving] = useState<DeviceProfile | null>(null);
   const [deleteCredentials, setDeleteCredentials] = useState(true);
@@ -117,7 +110,7 @@ export default function DeviceSettings(props: {
         <button
           className="btn primary"
           disabled={busy}
-          onClick={() => setPairing(true)}
+          onClick={() => openDialog({ kind: "pairDevice" })}
         >
           {t("settings:ui.devices.add")}
         </button>
@@ -270,12 +263,6 @@ export default function DeviceSettings(props: {
             </label>
           </div>
         </div>
-      ) : null}
-      {pairing ? (
-        <PairDevice
-          onClose={() => setPairing(false)}
-          onSwitchDevice={(target: DeviceContext) => onSwitchDevice(target)}
-        />
       ) : null}
     </section>
   );

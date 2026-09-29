@@ -40,6 +40,7 @@ import {
   invalidateProjectsSnapshotRequests,
   isLinuxFramelessChrome,
   openDialog,
+  closeDialog,
   patchSession,
   setState,
   shouldApplyLocalBackendEvent,
@@ -84,6 +85,7 @@ const AddProjectDialog = lazy(() => import("./components/AddProjectDialog"));
 const ExportDialog = lazy(() => import("./components/ExportDialog"));
 const CommandPalette = lazy(() => import("./components/CommandPalette"));
 const BranchPickerDialog = lazy(() => import("./components/BranchPickerDialog"));
+const PairDeviceDialog = lazy(() => import("./components/PairDevice"));
 const Onboarding = lazy(() => import("./components/Onboarding"));
 const GitCenter = lazy(() => import("./components/GitCenter"));
 
@@ -437,6 +439,11 @@ function DialogRouter() {
       return <NewWorktreeDialog projectId={d.projectId} />;
     case "branchPicker":
       return <BranchPickerDialog projectId={d.projectId} />;
+    case "pairDevice":
+      // Mounted at the app dialog layer (never inside .topbar): the topbar's
+      // isolated stacking context would trap the modal below higher-z pane
+      // chrome and let clicks fall through to the terminal workspace.
+      return <PairDeviceDialog onClose={closeDialog} />;
     case "settings":
       return <SettingsDialog />;
     case "diagnostics":

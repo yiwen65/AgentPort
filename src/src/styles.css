@@ -390,7 +390,13 @@ button {
      overlay: only its controls and the drag region live here. */
   background: transparent;
   position: relative;
-  z-index: 3;
+  /* Must clear every workspace child (pane headers, scrollbar edge targets,
+     statuslines, drop overlays reach z-40): the workspace column underlaps
+     this bar, and while the bar sits in an isolated z-3 slot, higher-z pane
+     elements invisibly intercept clicks aimed at bar controls — the device
+     switcher trigger/menu reproduced this as "clicks fall through to the
+     terminal". 50 keeps the bar below menus/settings (700+) and toasts. */
+  z-index: 50;
   isolation: isolate;
   user-select: none;
 }

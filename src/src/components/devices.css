@@ -37,10 +37,12 @@
 }
 
 .device-picker-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 60;
+  /* Portaled to document.body: inside .topbar (isolation: isolate, z-index
+     50) the menu would be trapped in the bar's stacking slot and lose hit
+     testing to higher-z pane chrome — clicks appeared to fall through to the
+     terminal. Fixed + 800 matches the context-menu layer. */
+  position: fixed;
+  z-index: 800;
   min-width: 240px;
   max-width: 320px;
   padding: 4px;

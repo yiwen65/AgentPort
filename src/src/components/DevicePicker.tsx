@@ -5,6 +5,7 @@
 // New desktop code (desktop multi-device switching).
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { openDialog, useStore } from "../store";
 import type { DeviceContext } from "../deviceContext";
@@ -16,7 +17,6 @@ import {
   type DeviceProfile,
   type DeviceSwitchHandler,
 } from "../devicesStore";
-import PairDevice from "./PairDevice";
 import "./devices.css";
 
 function IconDevices() {
@@ -74,9 +74,10 @@ export default function DevicePicker(props: {
   const switchingTo = useDevicesStore((state) => state.switchingTo);
   const switchError = useDevicesStore((state) => state.switchError);
   const [open, setOpen] = useState(false);
-  const [pairing, setPairing] = useState(false);
   const [pending, setPending] = useState(false);
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   // Refresh the device list every time the menu opens (cheap command, keeps
   // rename/remove from other surfaces in sync); never on closed render.
@@ -87,7 +88,12 @@ export default function DevicePicker(props: {
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      // The menu is portaled to document.body (it must escape the topbar's
+      // isolated stacking context), so containment has to cover both roots.
+      if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) {
+        setOpen(false);
+      }
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -163,7 +169,18 @@ export default function DevicePicker(props: {
         aria-label={t("shell:ui.topBar.devices.label")}
         data-tip={t("shell:ui.topBar.devices.tip")}
         disabled={switching}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          if (!open && rootRef.current) {
+            // Fixed-position anchoring for the portaled menu (recomputed each
+            // open; the topbar does not move while the menu is up).
+            const rect = rootRef.current.getBoundingClientRect();
+            setMenuPos({
+              top: rect.bottom + 6,
+              right: window.innerWidth - rect.right,
+            });
+          }
+          setOpen((value) => !value);
+        }}
         data-tauri-drag-region="false"
       >
         <IconDevices />
@@ -174,8 +191,15 @@ export default function DevicePicker(props: {
         </span>
         <IconChevronSmall />
       </button>
-      {open ? (
-        <div className="device-picker-menu" role="menu" aria-label={t("shell:ui.topBar.devices.label")}>
+      {open && menuPos
+        ? createPortal(
+            <div
+              className="device-picker-menu"
+              role="menu"
+              aria-label={t("shell:ui.topBar.devices.label")}
+              ref={menuRef}
+              style={{ top: menuPos.top, right: menuPos.right }}
+            >
           <button
             className="device-picker-row"
             role="menuitemradio"
@@ -214,7 +238,7 @@ export default function DevicePicker(props: {
               role="menuitem"
               onClick={() => {
                 setOpen(false);
-                setPairing(true);
+                openDialog({ kind: "pairDevice" });
               }}
             >
               {t("shell:ui.topBar.devices.add")}
@@ -235,14 +259,10 @@ export default function DevicePicker(props: {
               {t("shell:ui.topBar.devices.switchFailed", { detail: switchError })}
             </div>
           ) : null}
-        </div>
-      ) : null}
-      {pairing ? (
-        <PairDevice
-          onClose={() => setPairing(false)}
-          onSwitchDevice={onSwitchDevice}
-        />
-      ) : null}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

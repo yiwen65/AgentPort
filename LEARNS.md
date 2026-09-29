@@ -652,3 +652,12 @@
 - Correct approach: 不要在 socket 上切换超时语义——握手/截止时间用通道侧超时（mpsc recv_timeout / 线程外计时）实现，socket 保持一贯阻塞模式。
 - Prevention: 跨平台 socket 代码把「超时语义只设一次」当约束写进实现；macOS 特有的 setsockopt 行为差异要在 mac 上实测，不能以 Linux 结果外推。
 - Verified by: 2026-09-23 T-001 独立脚本复现 EINVAL；改为通道超时后 `cargo test -p agentport remote` 20/20 通过。
+
+## `topbar 层叠上下文` — isolation/z-index 陷阱让浮层“穿透点击”
+
+- Wrong approach: 在 `.topbar`（`isolation: isolate; z-index: 3`）的 DOM 子树里直接渲染下拉菜单与 `position:fixed; z-index:1100` 的 Modal backdrop，以为 fixed+高 z-index 必然位于工作区之上。
+- Why it failed: fixed 元素仍按 DOM 祖先参与层叠——`.topbar` 的 isolated 层叠上下文把子树整体压进 z-3 槽位；工作区列以 -48px 上延 underlap 顶栏，pane chrome/滚动条命中条/状态条/拖拽层（z-4..40）在顶栏带与其下方区域叠在菜单与 Modal 之上，坐标点击命中不可见的 pane 元素（真实表现：点击“穿透到背景终端区域”）。是否触发取决于 pane 布局与重叠位置，表现为“有时候”。
+- Recognition signal: 同一窗口相邻两个顶栏控件，一个可点一个不可点；AXPress（不走命中测试）有效而坐标点击无效；AX 命中栈里同时出现目标控件与跨越顶栏带的 workspace group。
+- Correct approach: 浮层一律逃出 `.topbar` 层叠上下文——Modal 走 App 根部的 DialogRouter（既有模式，`openDialog({kind})`），下拉菜单 `createPortal` 到 `document.body`（fixed + inline 锚点坐标 + z-index 800 对齐 ctx-menu 层）；并把 `.topbar` 自身提到 z-50（透明底不影响视觉、带内命中归窗口拖拽区），保证触发器永不被 pane chrome 覆盖。outside-click 判定要同时覆盖 trigger ref 与 portaled menu ref。
+- Prevention: 新浮层先问“挂在哪个层叠上下文里”；仓库里所有 `isolation: isolate`/transform/backdrop-filter 的祖先都是候选陷阱。命中类回归用结构断言（`menu.closest('.topbar') === null`）+ CSS 契约测试（z-index 下限+原因注释），真机验证用 AX 取坐标 + System Events 合成点击（已验证可行）。
+- Verified by: 2026-09-29 复现链（Workspace menu 可点 vs Device switcher 不可点、菜单行/Modal Cancel 坐标点击失败）→ 修复后同三处坐标点击全部通过；前端 974/974、构建绿、`topbar-stacking-css.test.ts` 锁定契约。
