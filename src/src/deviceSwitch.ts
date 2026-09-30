@@ -62,13 +62,17 @@ export function startupRestoreTarget(): DeviceContext | null {
 }
 
 async function doSwitchDevice(target: DeviceContext): Promise<void> {
-  const previous = activeDeviceContext();
-  if (sameDevice(previous, target)) return;
+  // At cold startup the context already holds the persisted device for scoped
+  // storage, but no device has been booted yet. It is not a live connection to
+  // skip or tear down, and a failed restore must fall back to the local device.
+  const initialized = getState().ready;
+  const previous = initialized ? activeDeviceContext() : LOCAL_DEVICE_CONTEXT;
+  if (initialized && sameDevice(previous, target)) return;
   const generation = ++switchGeneration;
   const stale = () => generation !== switchGeneration;
   setState({ deviceSwitching: true });
   try {
-    await switchTeardown(previous);
+    if (initialized) await switchTeardown(previous);
     const boot = await connectAndBoot(target);
     await applyBootInfo(boot, {
       isCancelled: stale,

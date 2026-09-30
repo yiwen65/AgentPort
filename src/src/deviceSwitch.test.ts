@@ -181,7 +181,7 @@ beforeEach(() => {
   terminalsMock.releaseTerminal.mockResolvedValue(undefined);
   setActiveDevice(LOCAL_DEVICE_CONTEXT);
   setState({
-    ready: false,
+    ready: true,
     projects: [],
     activeSessionId: null,
     attachedIds: [],
@@ -346,6 +346,57 @@ describe("switchDevice", () => {
     const s = getState();
     expect((s.activeDevice as { deviceId: string }).deviceId).toBe("dev_2");
   });
+});
+
+describe("cold startup restore", () => {
+  it.each(["connected", "connect-failed", "boot-failed"])(
+    "boots a persisted remote instead of treating it as connected: %s",
+    async (outcome) => {
+      window.localStorage.setItem(ACTIVE_DEVICE_STORAGE_KEY, "dev_restore");
+      vi.resetModules();
+      const context = await import("./deviceContext");
+      const store = await import("./store");
+      const remoteBoot = await import("./remoteBoot");
+      const switching = await import("./deviceSwitch");
+      expect(context.activeDeviceContext()).toEqual(remoteContext("dev_restore"));
+      expect(store.getState().ready).toBe(false);
+      // App caches native boot before attempting the persisted device restore.
+      remoteBoot.cacheLocalBootBase(localBoot);
+      const backend = makeBackend();
+      if (outcome === "connect-failed") {
+        backend.client.connect.mockRejectedValue(new Error("restore unavailable"));
+      } else if (outcome === "boot-failed") {
+        backend.boot.mockRejectedValue(new Error("restore unavailable"));
+      }
+      runtimeMock.remoteBackendFor.mockReturnValue(backend);
+
+      await switching.switchDevice(switching.startupRestoreTarget()!);
+
+      expect(backend.client.connect).toHaveBeenCalledTimes(1);
+      expect(backend.client.disconnect).not.toHaveBeenCalled();
+      expect(terminalsMock.releaseTerminal).not.toHaveBeenCalled();
+      expect(store.getState().ready).toBe(true);
+      expect(store.getState().deviceSwitching).toBe(false);
+      if (outcome === "connected") {
+        expect(store.getState().projects.map((p) => p.id)).toEqual(["prj_remote"]);
+        expect(store.getState().activeDevice).toMatchObject({
+          kind: "remote", deviceId: "dev_restore", deviceName: "Linux Box",
+        });
+        expect(remoteSyncMock.startRemoteSync).toHaveBeenCalledWith("dev_restore");
+        expect(apiMock.boot).not.toHaveBeenCalled();
+        // Once actually booted, a repeat selection remains a no-op.
+        await switching.switchDevice(switching.startupRestoreTarget()!);
+        expect(backend.client.connect).toHaveBeenCalledTimes(1);
+      } else {
+        expect(store.getState().activeDevice).toEqual(LOCAL_DEVICE_CONTEXT);
+        expect(store.getState().projects.map((p) => p.id)).toEqual(["prj_local"]);
+        expect(store.getState().deviceError).toContain("restore unavailable");
+        expect(apiMock.boot).toHaveBeenCalledTimes(1);
+        expect(remoteSyncMock.startRemoteSync).not.toHaveBeenCalled();
+        expect(window.localStorage.getItem(ACTIVE_DEVICE_STORAGE_KEY)).toBe("local");
+      }
+    },
+  );
 });
 
 describe("startupRestoreTarget", () => {
