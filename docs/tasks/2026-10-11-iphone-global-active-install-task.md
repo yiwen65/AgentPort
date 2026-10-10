@@ -3,8 +3,8 @@
 - Created: 2026-10-11
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: blocked
-- Source: 用户明确要求“安装到 iphone”；沿用禁止 computer 的约束。
+- Overall status: in_progress
+- Source: 用户要求“安装到 iphone”，并于原生启动失败后明确授权“执行修复”；沿用禁止 computer 的约束。
 
 <!-- task-doc-section:background-goal -->
 ## Background and goal
@@ -16,7 +16,8 @@
 
 - 使用既有 Apple Development 配置和官方 Tauri 真机 archive/包装脚本。
 - 保持 bundle ID/team，移开旧 archive 防止误用；不卸载、不清除 App 数据。
-- 仅安装实体 iPhone，不操作模拟器或 Apple Watch；不发布 TestFlight/App Store、不变更版本/源码、不使用 computer。
+- 仅交付目标实体 iPhone，不操作 Apple Watch；不发布 TestFlight/App Store、不变更版本、不使用 computer。
+- 新授权允许修复 iOS Scene lifecycle 配置及直接受影响的原生生命周期适配、添加回归测试；不改 Active Session 业务，不绕过 UIKit 检查、不伪造 SDK、不升级无关依赖。
 - 构建日志、profile、Team ID、UDID、签名产物留在私有本机目录，不提交。
 
 <!-- task-doc-section:facts-evidence -->
@@ -36,7 +37,7 @@
 ## Assumptions and open questions
 
 - Assumption: 唯一可用实体 iPhone 即用户目标，未发现需选择的第二台实体手机。
-- Open question: 新包原生启动崩溃，原安装范围不含产品源修改；需用户决定修复原生生命周期兼容，或恢复旧包。设备信任/签名可用，不是锁屏或安装失败。
+- Open question: 无阻塞授权问题。用户已选择修复新包，而非恢复旧包。设备信任/签名可用，不是锁屏或安装失败。
 - Hypothesis: SDK 从 26.5 升到 27.0 触发未采用 Scene lifecycle 的原生兼容限制；堆栈/元数据支持，但未做修复或控制变量运行，不宣称已完成因果修复。
 
 <!-- task-doc-section:acceptance-criteria -->
@@ -78,9 +79,9 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-002 — 覆盖安装并启动
+### [x] T-002 — 覆盖安装并启动
 
-- Status: blocked
+- Status: done
 - Owner: coordinator
 - Objective: 在目标实体 iPhone 覆盖安装新包并启动。
 - Inputs and prerequisites: T-001 新签名 archive 验证通过，设备仍可用。
@@ -95,18 +96,18 @@
   - 安装与启动明确成功；不清除数据；保留验证边界。
 - Verification method:
   - devicectl install/launch JSON、info apps/processes；容器对比。
-- Validation evidence: devicectl 安装 6 秒成功，install/after-apps JSON outcome=success，bundle/version正确；launch outcome=success 仅证明派发启动。两次只读 process 查询均未找到启动 PID 或 AgentPort。目标新二进制 UUID 与 ips slice_uuid 完全匹配；报告显示 UIKit ___UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption_block_invoke 在主线程触发 EXC_BREAKPOINT/SIGTRAP，约71ms退出。数据容器路径发生迁移，但旧 WebKit 存储条目仍在且含 2026-09-06 时间戳；没有执行卸载/数据清除，未逐条核验用户数据。
-- Blocker: 新安装包不能持续运行；原生 Scene lifecycle 兼容修复超出本安装任务约定的“不改产品源”范围。
-- Unblock condition: 用户授权原生兼容修复并重新构建/安装后持续运行验收通过，或明确要求恢复此前旧 archive；不得盲目重复安装/启动。
+- Validation evidence: 原SDK27坏基线安装成功、launch派发成功但PID消失，匹配UUID的ips在UIKit NoSceneLifecycleAdoption处约71ms SIGTRAP。修复包仅新的一次覆盖安装/启动，scene-fix-install/launch JSON success；只读进程查询确认同一PID21312在3s与60s均存活，bundle/version仍com.agentport.mobile/0.1.0。crash文件最新时间00:54早于修复启动01:11，无修复后新记录。签名/SDK/实际配置已经T-004核验。未卸载/清数据，迁移后的旧WebKit存储仍在；未逐条核验数据。CLI截图尝试因iOS27 screenshotr服务Invalid service失败，不重试，不当作非空白UI证据。
+- Blocker: None.
+- Unblock condition: None.
 
-### [ ] T-003 — 交付记录与文档提交
+### [ ] T-003 — 修复提交与交付收敛
 
-- Status: pending
+- Status: in_progress
 - Owner: coordinator
 - Objective: 收敛实际证据、说明未验证的真机业务行为并提交安装记录。
 - Inputs and prerequisites: T-001/T-002 结果。
-- Scope or files: 本任务文档；Git 状态核对。
-- Expected output: 完成的安装记录，必要时明确 blocker；仅文档 commit。
+- Scope or files: 本任务修复/测试/构建文档及LEARN记录；Git状态核对，不含本机签名/设备/产物。
+- Expected output: 修复 commit、完成的安装执行记录及清楚的未验证边界。
 - Dependencies: T-002
 - Execution steps:
   1. 核对构建没有意外修改产品源/生成签名配置。
@@ -119,31 +120,32 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-004 — 新发现的原生启动故障处置（待后续授权）
+### [x] T-004 — iOS Scene lifecycle 最小兼容修复
 
-- Status: blocked
+- Status: done
 - Owner: coordinator
-- Objective: 收集并界定原生启动失败，等待明确处置授权后修复或恢复可运行的 App。
-- Inputs and prerequisites: T-001 新 archive；实体 iPhone 崩溃报告；需扩大原安装任务范围的明确授权。
-- Scope or files: 当前仅私有只读 crash/归档元数据；原生源/依赖或旧包恢复均尚未获本任务授权，不擅自执行。
-- Expected output: 明确处置范围以及可持续运行的目标包；不是单纯 launch 派发成功。
+- Objective: 以已捕获的 SIGTRAP 坏基线定位 Scene opt-in，修复后交付可持续运行的新包。
+- Inputs and prerequisites: T-001 新 archive；匹配 UUID 的实体崩溃报告；用户“执行修复”授权；Tao 0.35.3 已具备 scenes 实现。
+- Scope or files: mobile/src-tauri/Info.ios.plist、现有生成 Info.plist/project.yml、mobile 独立 Cargo.toml/Cargo.lock 的兼容 Tao 上游 pin；mobile/src/app/ios-packaging.test.ts、语义 plist 验证/包装脚本测试、mobile/BUILDING.md；本计划。APNs bridge 不需要修改；只改本故障及直接回归相关文件。
+- Expected output: 完整非空 Scene manifest、TaoSceneDelegate 正确注册、相关原生回归保护，以及新版签名 archive；不是单纯 launch 派发成功。
 - Dependencies: T-001
 - Execution steps:
   1. 只读核对 crash UUID、堆栈、SDK 与 Scene manifest，界定新包原生失败。
-  2. 等待修复兼容或恢复旧包的明确后续授权，记录允许的产品修改/设备操作。
-  3. 按授权处置并完成构建、安装、持续运行验证。
+  2. 为完整 Scene manifest 写失败回归；复用当前 Tao 的场景实现，不替换 UIApplicationDelegate 或打私有 UIKit 补丁。
+  3. 做最小配置/直接生命周期适配，检查 native startup、通知权限及窗口附着；定向/full mobile 测试和新 archive 验证。
+  4. 只读子代理研究公开上游，coordinator 独占编辑、构建/签名和真机操作；完成后交给 T-002 安装与持续运行验证。
 - Acceptance criteria:
-  - 安全边界明确，原生启动阻塞被可复现实验证明解决；未授权时不改源或回滚。
+  - 保持权限/APNs/方向与业务行为，Scene manifest 配置与依赖 runtime 名称一致；自动回归、新包验签和实际归档配置通过；目标设备启动/持续运行最终证明由 T-002 完成。
 - Verification method:
   - ips/二进制 UUID/SDK 比较；处置后的真实进程与业务验收。
-- Validation evidence: 只读报告显示匹配新包二进制 UUID 的 UIKit NoSceneLifecycleAdoption SIGTRAP；当前 Xcode/SDK27.0 与旧包 SDK26.5 均缺 Scene manifest。重复运行来自设备已有 crash，不重放 launch；仅明确阻塞，未验证修复。
-- Blocker: 解决原生 Scene lifecycle 兼容或恢复旧包超出原约定安装范围；当前尚无明确后续处置授权。
-- Unblock condition: 用户明确授权兼容修复，或明确要求恢复之前旧包；再据此更新执行范围。
+- Validation evidence: 已有真机坏基线 UUID/堆栈明确；新增配置语义测试在修复前两个 plist 因 manifest=None 失败，修复后10个Python测试通过，完整Mobile41文件/498测试通过；旧SDK27坏archive被包装guard明确拒绝。新SDK27原生archive24秒完成，实际Info包含完整TaoScene/TaoSceneDelegate配置并经签名/profile/arm64验证；新UUID=CAFDCA9C-2404-3D8D-BF03-D9AC70B336C2，SDK未降级。公开上游git源核对compatible0.35.3 pin中iOS仅改为autorelease_ptr；APNs/方向配置不动。真机持续运行由T-002验证，不把archive成功当成运行成功。
+- Blocker: None.
+- Unblock condition: None.
 
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
 
-无需重复修改/重测已通过的产品代码；Tauri beforeBuildCommand 会重新执行 TypeScript/Vite build。包装工具检查 arm64/iPhoneOS、CMS/profile 有效性、目标设备、开发 entitlements、签名及 IPA 解包 round-trip。安装前后查询 bundle/version/数据容器；安装与启动各独立确认，再读取设备进程。没有 computer 或真机 UI 自动化，因此业务交互/非空白 UI 不冒充已验证。
+为 Scene manifest/直接生命周期适配添加失败前基线与回归保护，跑定向及全 mobile 测试；Tauri beforeBuildCommand 重新执行 TypeScript/Vite build。包装工具检查 arm64/iPhoneOS、CMS/profile 有效性、目标设备、开发 entitlements、签名及 IPA 解包 round-trip。安装前后查询 bundle/version/数据容器；安装与启动各独立确认，再读取设备进程。没有 computer 或真机 UI 自动化，因此业务交互/非空白 UI 不冒充已验证。
 
 <!-- task-doc-section:risks-blockers -->
 ## Risks and blockers
@@ -159,9 +161,18 @@
 - 2026-10-11: 旧 archive 移到私有备份，新 archive/IPA 构建和包装验证成功；只读检查新前端资源嵌入、摘要与签名通过。T-001 done，实体 iPhone 再次确认为 available/paired，T-002 in_progress，开始一次覆盖安装。
 - 2026-10-11 00:41: 覆盖安装明确成功。启动命令报告 success，但两次只读进程复核不见 App；读取 crash 后确认匹配本次新二进制，UIKit 原生 Scene lifecycle 检查处 SIGTRAP。当前 SDK27 vs旧SDK26.5；未重放启动/安装，未改源码或回滚。T-002 blocked，等待修复/回滚决定。新增 T-004 记录已做的只读故障界定与授权阻塞，不将必要工作隐藏在日志中。
 
+- 2026-10-11: 用户明确授权执行修复；T-004 blocked -> in_progress，取消源码修改授权 blocker，保持 T-002 等待新包。只读查看锁定的 Tao0.35.3 已有 TaoSceneDelegate/窗口绑定，正在确认 manifest 激活条件；委派只读上游研究，编辑和真机由 coordinator 串行负责。
+
+- 2026-10-11: 新 plist 语义回归先在 canonical/generated 两处因 manifest=None 失败；完整配置修复后 10 个 Python 测试通过，旧 SDK27 崩溃 archive 被新包装 guard 拒绝，plutil通过。497 Mobile 测试通过。只读研究确认 Tao0.35 的布尔门槛与配置返回悬空指针，保持既有 APNs delegate。
+- 2026-10-11: 正式0.35.4不存在，最新0.37.1不满足runtime约束，拒绝升级不兼容minor或修改registry。通过公开上游 Git 核对 PR1245不可变commit c84a010...仍为0.35.3，iOS源码只改变 as_ptr->autorelease_ptr；仅 mobile pin 该兼容修复。Cargo仅替换 tao及其git宏来源，其他93依赖未升级。iPad多场景行为保留为未验证边界，不声称新业务窗口功能已验收。
+
+- 2026-10-11 01:10: 新SDK27 archive/包装验证成功，10个Python/498个Mobile测试通过，Info实际Scene配置与新UUID核对通过。T-004 done（源码与新包验证）；T-002 blocked -> in_progress，仅对已验证的修复新包重新覆盖安装与启动，不重放此前未确定操作。
+
+- 2026-10-11 01:12: 修复包安装/启动成功，PID21312在3s/60s实际查询均存活；最新crash00:54早于修复启动01:11。T-002 done，T-003 in_progress。CLI截图服务Invalid service，保留未验证pixels边界，不使用computer，不再重试截图。补记录一条已验证的SDK27/Scene部署经验，开始任务专属commit。
+
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
-- Result: blocked
-- Evidence: T-001 真机 archive/签名/新前端嵌入验证通过；T-002 安装已成功，但启动后崩溃，经运行进程查询与匹配二进制 UUID 的 ips 确认；不得报告可正常使用。
-- Limitations: 未验证真机 UI/多电脑业务操作；原生 Scene lifecycle 兼容尚未修复。旧包已私有备份，可按用户明确决定恢复；禁止 computer 的约束保持。
+- Result: partial
+- Evidence: 原生修复、新SDK27 archive签名/完整Scene配置、10Python与498Mobile测试通过；实体iPhone覆盖安装/启动成功，同一PID存活60秒，无修复后新crash。T-001/T-004/T-002 done，T-003提交/文档闭环进行中。
+- Limitations: 未验证真机pixels、VoiceOver、最低iOS16、iPad多窗口、Release优化下运行、APNs/深链与终端后台业务。screenshotr不可用，禁止computer；旧desktop capture仍未核实且与本任务无依赖。签名包/报告都仅保留私有目录，不发布。

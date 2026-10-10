@@ -3,6 +3,7 @@
 import copy
 import datetime as dt
 import importlib.util
+import plistlib
 from pathlib import Path
 import unittest
 
@@ -83,6 +84,60 @@ class ProfileTests(unittest.TestCase):
         self.assertTrue(p.allowed(["TESTPREFIX.group"], ["TESTPREFIX.*"]))
         self.assertFalse(p.allowed(["OTHER.group"], ["TESTPREFIX.*"]))
         self.assertFalse(p.allowed(True, 1))
+
+
+class SceneManifestTests(unittest.TestCase):
+    def scene_info(self):
+        root = Path(__file__).resolve().parents[1] / "src-tauri"
+        info = plistlib.loads((root / "Info.ios.plist").read_bytes())
+        info["DTSDKName"] = "iphoneos27.0"
+        return info
+
+    def test_sdk27_requires_complete_tao_scene_configuration(self):
+        p.validate_scene_manifest(self.scene_info())
+        for manifest in [None, {}, {"UIApplicationSupportsMultipleScenes": True},
+                         {"UIApplicationSupportsMultipleScenes": True, "UISceneConfigurations": {}},
+                         {"UIApplicationSupportsMultipleScenes": True, "UISceneConfigurations": {
+                             "UIWindowSceneSessionRoleApplication": []}}]:
+            with self.subTest(manifest=manifest):
+                info = self.scene_info()
+                info["UIApplicationSceneManifest"] = manifest
+                with self.assertRaises(p.ValidationError):
+                    p.validate_scene_manifest(info)
+
+    def test_rejects_false_untyped_boolean_or_wrong_delegate(self):
+        for value in (False, 1, "true"):
+            info = self.scene_info()
+            info["UIApplicationSceneManifest"]["UIApplicationSupportsMultipleScenes"] = value
+            with self.subTest(value=value), self.assertRaises(p.ValidationError):
+                p.validate_scene_manifest(info)
+        for field, value in (("UISceneDelegateClassName", "WrongDelegate"), ("UISceneConfigurationName", "")):
+            info = self.scene_info()
+            scene = info["UIApplicationSceneManifest"]["UISceneConfigurations"]["UIWindowSceneSessionRoleApplication"][0]
+            scene[field] = value
+            with self.subTest(field=field), self.assertRaises(p.ValidationError):
+                p.validate_scene_manifest(info)
+
+    def test_legacy_archive_is_supported_but_unknown_sdk_is_not(self):
+        p.validate_scene_manifest({"DTSDKName": "iphoneos26.5"})
+        for sdk in (None, "iphonesimulator27.0", "unknown"):
+            with self.subTest(sdk=sdk), self.assertRaises(p.ValidationError):
+                p.validate_scene_manifest({"DTSDKName": sdk})
+
+    def test_canonical_and_generated_scene_manifest_match_tao_runtime(self):
+        root = Path(__file__).resolve().parents[1] / "src-tauri"
+        for relative in ("Info.ios.plist", "gen/apple/agentport-mobile_iOS/Info.plist"):
+            with self.subTest(path=relative):
+                info = plistlib.loads((root / relative).read_bytes())
+                manifest = info.get("UIApplicationSceneManifest")
+                self.assertIsInstance(manifest, dict)
+                # Tao 0.35 requires this true boolean for delegate registration,
+                # deferred app readiness and attaching windows to their scene.
+                self.assertIs(manifest.get("UIApplicationSupportsMultipleScenes"), True)
+                configs = manifest.get("UISceneConfigurations", {}).get("UIWindowSceneSessionRoleApplication", [])
+                self.assertEqual(len(configs), 1)
+                self.assertEqual(configs[0].get("UISceneConfigurationName"), "TaoScene")
+                self.assertEqual(configs[0].get("UISceneDelegateClassName"), "TaoSceneDelegate")
 
 
 if __name__ == "__main__":

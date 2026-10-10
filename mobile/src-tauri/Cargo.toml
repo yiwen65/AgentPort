@@ -52,5 +52,11 @@ custom-protocol = ["tauri/custom-protocol"]
 tauri = { version = "2", features = ["test"] }
 agentport-relay = { path = "../../crates/agentport-relay", features = ["server"] }
 
+# Tao 0.35's Scene callback returned a dangling UISceneConfiguration pointer.
+# Pin the API-compatible upstream fix (#1245) until tauri-runtime-wry supports
+# a released Tao version containing it. This patch affects only mobile.
+[patch.crates-io]
+tao = { git = "https://github.com/tauri-apps/tao", rev = "c84a010d546c7fdf716bb6be97cc2038bdc62070" }
+
 # The GPL mobile app is an intentional workspace boundary from the MIT root.
 [workspace]

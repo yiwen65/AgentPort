@@ -670,3 +670,12 @@
 - Correct approach: Bound the Active grid with `grid-template-columns: minmax(0, 1fr)`, keep the title wrapper shrinkable, and allow long device labels to wrap.
 - Prevention: Check actual list-row and timestamp `getBoundingClientRect().right` against viewport width, plus screenshots; root overflow alone is not a layout oracle. Keep the mobile design-system CSS contract test.
 - Verified by: 2026-10-10 Chrome smoke at 320/390 CSS px showed clipping before the grid fix; after it, row/time bounds, screenshots, mixed-device routing, failure/retry and reconnection checks passed (`docs/tasks/2026-10-10-mobile-global-active-sessions-task.md`).
+
+## `iOS SDK 27 / Tao scenes` — signed installation is not a startup check
+
+- Wrong approach: Rebuild the legacy generated plist with Xcode 27 and treat successful signing, installation or launch dispatch as a usable App.
+- Why it failed: The archive had no UIApplicationSceneManifest; UIKit trapped at NoSceneLifecycleAdoption before the webview ran. Tao 0.35 only registers its Scene callback and binds windows when SupportsMultipleScenes is a true plist Boolean; an empty manifest is not sufficient. Its published 0.35.3 callback also returns a Retained configuration via as_ptr, exposing an ownership defect once scenes activate.
+- Recognition signal: devicectl launch reports success, but its PID disappears; matching executable UUID in ips shows UIKit NoSceneLifecycleAdoption / SIGTRAP.
+- Correct approach: Keep a complete TaoScene/TaoSceneDelegate configuration in canonical and generated plist/spec, pin the API-compatible upstream autorelease_ptr fix in the mobile workspace, and validate the final signed archive rather than source alone. Do not fake SDK metadata or edit registry cache.
+- Prevention: Run package/profile and Scene semantic tests; the packager rejects incomplete SDK27+ manifests. After installation, check the exact launched PID at startup and after a delay; separately verify pixels/business behavior when available.
+- Verified by: 2026-10-11 native crash with matching UUID before repair; manifest regression failed in both source plists, then 10 Python/498 mobile tests and a same-SDK27 signed rebuild passed. Reinstalled PID remained alive at 3s/60s and no later crash report appeared. iPad/release/APNs interactions and pixels were not claimed verified (`docs/tasks/2026-10-11-iphone-global-active-install-task.md`).

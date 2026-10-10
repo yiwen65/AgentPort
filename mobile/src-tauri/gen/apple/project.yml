@@ -53,6 +53,12 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: TaoScene
+                UISceneDelegateClassName: TaoSceneDelegate
         CFBundleShortVersionString: 0.1.0
         CFBundleVersion: "0.1.0"
         NSCameraUsageDescription: Scan the short-lived AgentPort pairing code on your computer.

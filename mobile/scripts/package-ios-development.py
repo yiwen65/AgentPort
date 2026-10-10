@@ -66,6 +66,26 @@ def validate_profile(profile, info, entitlements, team, bundle, devices, now=Non
             "validated_device_count": len(set(devices)), "signing": "development", "platform": "iPhoneOS"}
 
 
+def validate_scene_manifest(info):
+    """SDK 27 rejects legacy UIKit apps; Tao 0.35 needs an explicit scene opt-in."""
+    sdk = info.get("DTSDKName")
+    match = re.fullmatch(r"iphoneos(\d+)(?:\.\d+)*", sdk) if isinstance(sdk, str) else None
+    require(match is not None, "Cannot verify compiled iPhoneOS SDK metadata")
+    if int(match.group(1)) < 27:
+        return
+    manifest = info.get("UIApplicationSceneManifest")
+    require(isinstance(manifest, dict), "SDK 27 requires UIApplicationSceneManifest")
+    require(manifest.get("UIApplicationSupportsMultipleScenes") is True,
+            "Tao 0.35 requires a true UIApplicationSupportsMultipleScenes boolean")
+    configurations = manifest.get("UISceneConfigurations")
+    require(isinstance(configurations, dict), "Missing UISceneConfigurations")
+    scenes = configurations.get("UIWindowSceneSessionRoleApplication")
+    require(isinstance(scenes, list) and scenes, "Missing application Scene configuration")
+    require(any(isinstance(scene, dict) and scene.get("UISceneConfigurationName") == "TaoScene"
+                and scene.get("UISceneDelegateClassName") == "TaoSceneDelegate" for scene in scenes),
+            "Scene configuration must select TaoScene / TaoSceneDelegate")
+
+
 def run(*args):
     # Do not echo tool output: it can contain local signing identifiers or UDIDs.
     result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -81,6 +101,7 @@ def validate_app(app, args, work):
     require(profile_path.is_file(), "Missing embedded.mobileprovision")
     profile = plistlib.loads(run("security", "cms", "-D", "-i", str(profile_path)))
     info = plistlib.loads((app / "Info.plist").read_bytes())
+    validate_scene_manifest(info)
     run("codesign", "--verify", "--deep", "--strict", str(app))
     entitlements = plistlib.loads(run("codesign", "-d", "--entitlements", ":-", str(app)))
     metadata = validate_profile(profile, info, entitlements, args.team_id, args.bundle_id,

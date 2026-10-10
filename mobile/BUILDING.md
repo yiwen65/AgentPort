@@ -53,6 +53,18 @@ xcrun devicectl device process launch --device "<device-id>" com.agentport.mobil
 
 Xcode 必须登录 Apple ID 并允许开发签名配置；手机必须信任 Mac、开启开发者模式。首次安装后，可能还需在手机「设置 → 通用 → VPN 与设备管理」信任开发者 App。安装成功不等于启动/业务验收通过。此流程保留 App 数据，不先卸载。真机库输出为 `native/mosh/build/ios-device-arm64`，模拟器仍为 `ios-simulator-arm64`。
 
+### Xcode / iOS SDK 27 的 Scene 生命周期
+
+当前锁定的 Tao 0.35 已实现 `TaoSceneDelegate`，但需要明确的 plist opt-in。用 SDK 27 构建时，缺少 Scene manifest 会在 UIKit 的 `NoSceneLifecycleAdoption` 检查处触发启动 `SIGTRAP`，不能用安装成功或 launch 派发成功代替运行验收。
+
+- `src-tauri/Info.ios.plist` 是补充配置来源；已有生成工程的 `Info.plist` 与 `project.yml` 同步保留完整 `UIApplicationSceneManifest`。
+- `UIApplicationSupportsMultipleScenes` 必须为真正的 `true` 布尔值：当前 Tao 用它开启 delegate 注册、延迟 app-ready 和窗口/scene 绑定。仅加空 manifest 或设为 false 不够。
+- `UISceneConfigurations.UIWindowSceneSessionRoleApplication` 包含 `TaoScene` / `TaoSceneDelegate`，不另写 UIApplicationDelegate、不替换既有 APNs 回调，也不伪造 SDK 版本。
+- Mobile 单独 pin Tao 上游 [#1245](https://github.com/tauri-apps/tao/pull/1245) 的不可变 commit `c84a010d546c7fdf716bb6be97cc2038bdc62070`（仍为兼容的 0.35.3）：Scene configuration 以 `Retained::autorelease_ptr` 返回，避免开启 scenes 后的悬空指针。不要改本机 registry cache；未来更换为含修复的正式版本时检查 tauri-runtime-wry 兼容性。
+- `scripts/package-ios-development.py` 会拒绝 SDK 27+ 下缺失或不完整的配置，旧 SDK 26 真机 archive 仍可验证；先运行 `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-package-ios-development.py` 和 iOS packaging Vitest。
+
+本配置不改变最低部署版本 16.0；本次目标为实体 iPhone，业务仍仅创建一个主窗口。当前 Tao 以 true 开启 scenes，也会声明 iPad 多场景能力；实际 iPad 多窗口行为与最低版本运行仍需对应设备验收，不宣称已验证。
+
 最低版本验收需要 iPhone / iOS 16 runtime；最新版本另行使用当前 Xcode runtime。可用官方命令检查 catalog：
 
 ```bash

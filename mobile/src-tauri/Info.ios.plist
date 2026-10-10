@@ -2,6 +2,26 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <!-- Tao 0.35 uses this true boolean to enable its Scene lifecycle, including
+       attaching UIWindow to UIWindowScene. An empty configuration is not enough
+       for SDK 27; use Tao's existing runtime delegate, not a second AppDelegate. -->
+  <key>UIApplicationSceneManifest</key>
+  <dict>
+    <key>UIApplicationSupportsMultipleScenes</key>
+    <true/>
+    <key>UISceneConfigurations</key>
+    <dict>
+      <key>UIWindowSceneSessionRoleApplication</key>
+      <array>
+        <dict>
+          <key>UISceneConfigurationName</key>
+          <string>TaoScene</string>
+          <key>UISceneDelegateClassName</key>
+          <string>TaoSceneDelegate</string>
+        </dict>
+      </array>
+    </dict>
+  </dict>
   <key>NSCameraUsageDescription</key>
   <string>Scan the short-lived AgentPort pairing code on your computer.</string>
   <key>NSLocalNetworkUsageDescription</key>

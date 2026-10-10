@@ -29,6 +29,18 @@ it("generates visible APNs entitlement, framework and native callbacks without l
   expect(build).toContain('push.file("ios/PushBridge.mm")');
 });
 
+it("pins the API-compatible Tao Scene configuration ownership fix", () => {
+  const manifest = readFileSync("src-tauri/Cargo.toml", "utf8");
+  const lock = readFileSync("src-tauri/Cargo.lock", "utf8");
+  expect(manifest).toContain('rev = "c84a010d546c7fdf716bb6be97cc2038bdc62070"');
+  expect(lock).toMatch(/name = "tao"\nversion = "0\.35\.3"\nsource = "git\+https:\/\/github\.com\/tauri-apps\/tao\?rev=c84a010d546c7fdf716bb6be97cc2038bdc62070#c84a010d546c7fdf716bb6be97cc2038bdc62070"/);
+});
+
+it("preserves Tao's complete Scene lifecycle configuration when regenerating the Xcode project", () => {
+  const spec = readFileSync("src-tauri/gen/apple/project.yml", "utf8");
+  expect(spec).toMatch(/UIApplicationSceneManifest:\n\s+UIApplicationSupportsMultipleScenes: true\n\s+UISceneConfigurations:\n\s+UIWindowSceneSessionRoleApplication:\n\s+- UISceneConfigurationName: TaoScene\n\s+UISceneDelegateClassName: TaoSceneDelegate/);
+});
+
 it("keeps bundle-level iPhone orientations unlocked while the primary screen is locked at runtime", () => {
   // Dropping landscape from the plist re-hides terminal rotation (df6fe42 had
   // to restore it); portrait-on-primary is enforced by the Tao view controller
