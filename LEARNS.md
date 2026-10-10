@@ -679,3 +679,12 @@
 - Correct approach: Keep a complete TaoScene/TaoSceneDelegate configuration in canonical and generated plist/spec, pin the API-compatible upstream autorelease_ptr fix in the mobile workspace, and validate the final signed archive rather than source alone. Do not fake SDK metadata or edit registry cache.
 - Prevention: Run package/profile and Scene semantic tests; the packager rejects incomplete SDK27+ manifests. After installation, check the exact launched PID at startup and after a delay; separately verify pixels/business behavior when available.
 - Verified by: 2026-10-11 native crash with matching UUID before repair; manifest regression failed in both source plists, then 10 Python/498 mobile tests and a same-SDK27 signed rebuild passed. Reinstalled PID remained alive at 3s/60s and no later crash report appeared. iPad/release/APNs interactions and pixels were not claimed verified (`docs/tasks/2026-10-11-iphone-global-active-install-task.md`).
+
+## `mobile Active polling` — first-read readiness is not request busy
+
+- Wrong approach: Use any per-host snapshot.loading to show the global initial-loading notice during five-second polling.
+- Why it failed: Every refresh sets loading=true, including known data, known empty results and known errors; the notice repeatedly reappears and shifts the list. Array length cannot distinguish an uninitialized host from a valid empty result.
+- Recognition signal: “Loading active sessions from devices…” flashes every timer tick after the first read has completed.
+- Correct approach: Track whether each current host lifecycle completed a read (success or failure), publish initialLoading separately from refreshing/snapshot.loading, and use only readiness for the global notice/empty state. Cancelled/late reads do not establish readiness; reconnection resets it.
+- Prevention: Test while deferred poll promises are pending, not only after they resolve; cover cached rows, empty results, errors, manual refresh, return to foreground and reconnect while asserting reads still run.
+- Verified by: Three delayed-poll UI guards failed before repair and passed afterward; 32 targeted/504 full mobile tests and 10 packaging tests passed, and the new signed frontend was installed on the iPhone (`docs/tasks/2026-10-11-active-session-loading-flash-task.md`).

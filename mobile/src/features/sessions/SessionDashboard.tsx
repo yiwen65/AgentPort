@@ -234,7 +234,9 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   const globalActivity = workspace.layout === "active";
   const activity = useActiveSessionSnapshots(client, hosts, visible && globalActivity);
   const connectedHosts = hosts.filter(host => host.connectionState === "connected");
-  const activityLoading = connectedHosts.some(host => !activity.snapshots.has(host.id) || activity.snapshots.get(host.id)?.loading);
+  // A pending refresh must not turn known data (including an empty/error result)
+  // back into an initial-loading screen or move the rows every five seconds.
+  const activityLoading = activity.initialLoading || connectedHosts.some(host => !activity.snapshots.has(host.id));
   const selectedHost = hosts.find((host) => host.id === selectedDeviceId);
   const { entries: recent, error: notificationError, acknowledge, clearAll } = useAttentionInbox(client, hosts.map(host => host.id === recoveringHost
     ? { ...host, connectionState: "reconnecting" as const } : host), pageVisible);

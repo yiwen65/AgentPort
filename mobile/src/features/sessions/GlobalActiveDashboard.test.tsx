@@ -143,6 +143,45 @@ describe("Global mobile Active Sessions", () => {
     expect(screen.queryByRole("button", { name: "Studio shell" })).not.toBeInTheDocument();
   });
 
+  it.each(["populated", "empty", "failed"])("does not repeat the initial loading notice during background polls (%s result)", async result => {
+    vi.useFakeTimers();
+    localStorage.setItem("agentport-mobile-v2:selected-device", "host-1");
+    localStorage.setItem("agentport-mobile-v2:workspace:host-1", JSON.stringify({ layout: "active" }));
+    const { remote } = setup(); const base = vi.mocked(remote.request).getMockImplementation()!;
+    vi.mocked(remote.request).mockImplementation((...args) => args[1] !== "session.list" ? base(...args)
+      : result === "failed" ? Promise.reject(new Error("Read unavailable"))
+        : result === "empty" ? Promise.resolve([]) : base(...args));
+    const view = render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.queryByText("Loading active sessions from devices…")).not.toBeInTheDocument();
+    if (result === "empty") expect(screen.getByText("No active sessions on connected devices.")).toBeInTheDocument();
+    if (result === "populated") expect(screen.getByRole("button", { name: "Laptop task" })).toBeInTheDocument();
+    if (result === "failed") expect(screen.getByText("Laptop: status unconfirmed; actions unavailable.")).toBeInTheDocument();
+
+    const initial = vi.mocked(remote.request).getMockImplementation()!;
+    const pending: (() => void)[] = [];
+    vi.mocked(remote.request).mockImplementation((...args) => args[1] === "session.list"
+      ? new Promise(resolve => { pending.push(() => resolve(initial(...args))); }) : initial(...args));
+    for (let cycle = 0; cycle < 3; cycle++) {
+      vi.mocked(remote.request).mockClear();
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(lists(remote).map(([id]) => id).sort()).toEqual(["host-1", "host-2"]);
+      expect(screen.getByRole("button", { name: "Refresh" })).toHaveAttribute("aria-busy", "true");
+      expect(screen.queryByText("Loading active sessions from devices…")).not.toBeInTheDocument();
+      if (result === "empty") expect(screen.getByText("No active sessions on connected devices.")).toBeInTheDocument();
+      await act(async () => { pending.splice(0).forEach(finish => finish()); });
+      expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(screen.queryByText("Loading active sessions from devices…")).not.toBeInTheDocument();
+    await act(async () => { pending.splice(0).forEach(finish => finish()); });
+    view.rerender(<SessionDashboard client={remote} onOpenSession={vi.fn()} active={false} />);
+    view.rerender(<SessionDashboard client={remote} onOpenSession={vi.fn()} active />);
+    expect(pending).toHaveLength(2);
+    expect(screen.queryByText("Loading active sessions from devices…")).not.toBeInTheDocument();
+    await act(async () => { pending.splice(0).forEach(finish => finish()); });
+  });
+
   it("refreshes every connected host once and pauses all list reads offscreen", async () => {
     vi.useFakeTimers(); const { remote } = setup(); const props = { client: remote, onOpenSession: vi.fn() };
     const view = render(<SessionDashboard {...props} />);

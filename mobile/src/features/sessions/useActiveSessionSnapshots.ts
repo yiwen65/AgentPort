@@ -21,6 +21,7 @@ interface PendingRead extends Completion {
 
 interface HostReads {
   pending?: PendingRead;
+  hasResult: boolean;
 }
 
 function completion(): Completion {
@@ -42,6 +43,8 @@ function invalidate(host: HostReads) {
 export function useActiveSessionSnapshots(client: RemoteClient, hosts: readonly HostProfileSummary[], active: boolean): {
   snapshots: ReadonlyMap<string, ActiveSessionSnapshot>;
   refreshing: boolean;
+  /** A connected host has not completed its first read (including a failure). */
+  initialLoading: boolean;
   refresh: (hostId?: string, afterPending?: boolean) => Promise<void>;
 } {
   const store = useRef({
@@ -51,14 +54,15 @@ export function useActiveSessionSnapshots(client: RemoteClient, hosts: readonly 
     hosts: new Map<string, HostReads>(),
     snapshots: new Map<string, ActiveSessionSnapshot>(),
   });
-  const [view, setView] = useState<{ snapshots: ReadonlyMap<string, ActiveSessionSnapshot>; refreshing: boolean }>({
-    snapshots: new Map(), refreshing: false,
+  const [view, setView] = useState<{ snapshots: ReadonlyMap<string, ActiveSessionSnapshot>; refreshing: boolean; initialLoading: boolean }>({
+    snapshots: new Map(), refreshing: false, initialLoading: false,
   });
   const publish = useCallback(() => {
     const state = store.current;
     if (state.mounted) setView({
       snapshots: new Map(state.snapshots),
       refreshing: [...state.hosts.values()].some(host => !!host.pending),
+      initialLoading: [...state.hosts.values()].some(host => !host.hasResult),
     });
   }, []);
 
@@ -83,6 +87,7 @@ export function useActiveSessionSnapshots(client: RemoteClient, hosts: readonly 
         // An aborted request may finish after reactivation/reconnection. It must
         // never clear the newer lifecycle's lock or publish its stale reply.
         if (current()) {
+          host.hasResult = true;
           host.pending = undefined;
           pending.resolve();
           if (pending.trailing) void readHost(id, host).then(pending.trailing.resolve);
@@ -138,7 +143,7 @@ export function useActiveSessionSnapshots(client: RemoteClient, hosts: readonly 
     }
     for (const id of connected) {
       const added = !state.hosts.has(id);
-      if (added) state.hosts.set(id, {});
+      if (added) state.hosts.set(id, { hasResult: false });
       if (active && (added || resumed || replaced)) void read(id, state.hosts.get(id)!);
     }
     publish();

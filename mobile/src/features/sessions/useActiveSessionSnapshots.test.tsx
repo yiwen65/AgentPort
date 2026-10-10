@@ -30,6 +30,52 @@ beforeEach(() => { vi.useFakeTimers(); });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe("connected-host Active Session snapshots", () => {
+  it.each(["empty", "failed"])("distinguishes first-read readiness from pending refreshes after a %s result", async value => {
+    const client = makeClient();
+    const first = deferred<SessionSummary[]>(), refresh = deferred<SessionSummary[]>();
+    vi.mocked(client.request).mockReturnValueOnce(first.promise).mockReturnValueOnce(refresh.promise);
+    const { result } = renderHook(() => useActiveSessionSnapshots(client, hosts.slice(0, 1), true));
+    expect(result.current.initialLoading).toBe(true);
+    expect(result.current.refreshing).toBe(true);
+    await act(async () => {
+      if (value === "empty") first.resolve([]); else first.reject(new Error("Read failed"));
+    });
+    expect(result.current.initialLoading).toBe(false);
+    expect(result.current.refreshing).toBe(false);
+    if (value === "failed") expect(result.current.snapshots.get("one")?.error).toBe("Read failed");
+    act(() => { void result.current.refresh("one", false); });
+    expect(result.current.initialLoading).toBe(false);
+    expect(result.current.refreshing).toBe(true);
+    expect(result.current.snapshots.get("one")?.loading).toBe(true);
+    await act(async () => { refresh.resolve([session("updated")]); });
+    expect(result.current.snapshots.get("one")?.sessions).toEqual([session("updated")]);
+    expect(result.current.initialLoading).toBe(false);
+    expect(result.current.refreshing).toBe(false);
+  });
+
+  it("preserves unknown first-read state across cancellation, but resets it after reconnection", async () => {
+    const client = makeClient();
+    const old = deferred<SessionSummary[]>(), first = deferred<SessionSummary[]>(), reconnected = deferred<SessionSummary[]>();
+    vi.mocked(client.request).mockReturnValueOnce(old.promise).mockReturnValueOnce(first.promise).mockReturnValueOnce(reconnected.promise);
+    const { result, rerender } = renderHook(({ active, profiles }) => useActiveSessionSnapshots(client, profiles, active), {
+      initialProps: { active: true, profiles: hosts.slice(0, 1) },
+    });
+    rerender({ active: false, profiles: hosts.slice(0, 1) });
+    await act(async () => { old.resolve([]); });
+    expect(result.current.refreshing).toBe(false);
+    expect(result.current.initialLoading).toBe(true); // Aborted reads never establish data readiness.
+    rerender({ active: true, profiles: hosts.slice(0, 1) });
+    expect(result.current.initialLoading).toBe(true);
+    await act(async () => { first.resolve([]); });
+    expect(result.current.initialLoading).toBe(false);
+    rerender({ active: true, profiles: [host("one", "disconnected")] });
+    expect(result.current.initialLoading).toBe(false);
+    rerender({ active: true, profiles: hosts.slice(0, 1) });
+    expect(result.current.initialLoading).toBe(true);
+    await act(async () => { reconnected.resolve([]); });
+    expect(result.current.initialLoading).toBe(false);
+  });
+
   it("reads all connected hosts at 5s without metadata, probes, connection changes or reference-driven restarts", async () => {
     const client = makeClient();
     const profiles = [...hosts, ...(["disconnected", "connecting", "reconnecting", "stale", "failed"] as const)
