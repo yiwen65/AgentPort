@@ -3,7 +3,7 @@
 - Created: 2026-10-10
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: in_progress
+- Overall status: done
 - Source: 用户已确认需求基线，并授权“编写计划并实施，完成该功能交付”。
 
 <!-- task-doc-section:background-goal -->
@@ -26,11 +26,11 @@ Mobile Active Session 同时展示所有手机已连接设备的活动会话，�
 
 | ID | Confirmed fact | Evidence |
 | --- | --- | --- |
-| F-001 | Active 目前使用单一 selectedDeviceId/snapshot | mobile/src/features/sessions/SessionDashboard.tsx |
+| F-001 | 初始 Active 使用单一 selectedDeviceId/snapshot | mobile/src/features/sessions/SessionDashboard.tsx |
 | F-002 | 活动包含活着且未归档的 Shell，现有排序可复用 | mobile/src/features/sessions/sessionModel.ts 和 sessionModel.test.ts |
 | F-003 | RemoteClient 支持按 profileId 请求和连接事件，connected 是本次在线边界 | mobile/src/protocol/remoteClient.ts；用户确认 |
 | F-004 | Dashboard 既有 Projects 恢复、移除、通知与前台恢复回归覆盖 | mobile/src/features/sessions/SessionDashboard.test.tsx |
-| F-005 | App 返回焦点目前只匹配 sessionId，跨设备同 ID 需补设备维度 | mobile/src/app/App.tsx |
+| F-005 | 初始 App 返回焦点只匹配 sessionId，跨设备同 ID 需补设备维度 | mobile/src/app/App.tsx |
 | F-006 | 工作区开始时 git status --short 为空 | 2026-10-10 初始检查 |
 
 <!-- task-doc-section:assumptions-questions -->
@@ -123,9 +123,9 @@ Mobile Active Session 同时展示所有手机已连接设备的活动会话，�
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-004 — 状态收敛与提交交付
+### [x] T-004 — 状态收敛与提交交付
 
-- Status: in_progress
+- Status: done
 - Owner: coordinator
 - Objective: 启动调试窗口并核验精确目标，收敛验证证据与限制，完成计划和任务专属 Git commit；遵守用户后续禁止 computer 的约束。
 - Inputs and prerequisites: T-003 验证通过。
@@ -139,7 +139,7 @@ Mobile Active Session 同时展示所有手机已连接设备的活动会话，�
   - 改动验证且提交；调试 GUI 精确路径已核对并保持打开；已有 mobile 浏览器截图正常；未完成的桌面截图与真机验证明确披露。
 - Verification method:
   - 统一脚本、ps、已有 mobile 截图与窗口结构证据；task_document.py validate；git status/show。
-- Validation evidence: python3 scripts/restart-debug-app.py 成功构建、固定证书签名并仅重启精确 GUI；ps 两次核对 PID 300 的 executable=/Users/w/Projects/AgentSessions/target/debug/bundle/macos/AgentPort.app/Contents/MacOS/agentport。用户禁止 computer 前已观察到 Project tree/Session 页面非空的 AXWebArea，截图调用因中断保持 paused、结果未核实且不重放。mobile 实际 Chrome 渲染截图已完成（T-003）。临时 harness 和两个自建服务已清理；diff/计划校验通过。任务 Git commit 待完成。
+- Validation evidence: python3 scripts/restart-debug-app.py 成功构建、固定证书签名并仅重启精确 GUI；ps 两次核对 PID 300 的 executable=/Users/w/Projects/AgentSessions/target/debug/bundle/macos/AgentPort.app/Contents/MacOS/agentport。用户禁止 computer 前已观察到 Project tree/Session 页面非空的 AXWebArea，截图调用因中断保持 paused、结果未核实且不重放。mobile 实际 Chrome 渲染截图已完成（T-003）。临时 harness 和两个自建服务已清理；diff/计划校验通过。功能 commit 76cdeac 已创建；git show 确认仅本任务 13 个文件，提交后 git status --short 为空。
 - Blocker: None.
 - Unblock condition: None.
 
@@ -167,10 +167,11 @@ Mobile Active Session 同时展示所有手机已连接设备的活动会话，�
 - 2026-10-11 00:07: 连续复核发现已加载快照下安装 pending scroll 未触发 layout effect；新增用例先失败（期望75实际0），补 workspace 依赖修复，避免下一轮 poll 突然覆盖用户滚动。
 - 2026-10-11 00:08: 最终 mobile 496/496 与 build 通过，Chrome smoke 通过，diff/版本检查通过；T-003 done。T-004 in_progress，记录一条已验证 grid 经验并开始调试包/提交交付。
 - 2026-10-11: 统一脚本完成 debug build/sign/reopen，ps 核对 GUI PID 300 的精确路径。已观察窗口 AX 内容非空；用户随后禁止 computer，立即停止该工具。暂停的 capture 结果未确认，不当作成功、不重放；桌面截图保留为明确验证限制。清理临时 mock 页面与自建 Chrome/Vite 服务。
+- 2026-10-11: 创建功能 commit 76cdeac，git show 确认 13 个任务相关文件，提交后工作区干净。T-004 done；计划收敛为 passed（限定以下验证边界），文档状态闭环单独提交。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
-- Result: not_run
-- Evidence: Not run.
-- Limitations: 真实 iOS 多电脑传输尚未验证；后续记录实际验证结果。
+- Result: passed
+- Evidence: T-001 至 T-004 全部完成。mobile 41 文件/496 测试、TypeScript/Vite build、版本同步、diff 检查和受控 Chrome 多设备/窄屏 smoke 通过；重要审查问题均经失败基线与回归修复。功能 commit 76cdeac 已只读核验；调试包重启、固定签名验证及精确 GUI 路径核对成功。新增 LEARNS.md 一条窄屏 grid 验证经验。
+- Limitations: 未运行真实 iOS 多电脑传输、真机 VoiceOver/大字号验证；浏览器数据为受控 fixtures，非真机证据。桌面 capture 在用户禁止 computer 前已 dispatch，但结果仍未核实，不标记成功、不重复，不影响已通过的 mobile 渲染验收。未发布或安装移动端生产包。
