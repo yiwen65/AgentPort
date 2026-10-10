@@ -3,7 +3,7 @@
 - Created: 2026-10-11
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: in_progress
+- Overall status: done
 - Source: 用户要求“安装到 iphone”，并于原生启动失败后明确授权“执行修复”；沿用禁止 computer 的约束。
 
 <!-- task-doc-section:background-goal -->
@@ -30,15 +30,15 @@
 | F-003 | 已安装 com.agentport.mobile 0.1.0 | devicectl device info apps；私有 before-apps.json |
 | F-004 | 旧 archive 是 0.1.0 真机开发包，profile 包含目标设备且有效到 2027-09-23；本机两份有效签名身份、真机 Mosh 库及 Rust target 就绪 | 只读 plist/CMS 与 rustup 检查；未记录身份值 |
 | F-005 | 官方脚本拒绝旧 archive，使用临时 xcconfig，不可直接绕过 Tauri 参数服务构建 | mobile/BUILDING.md、RELEASE.md、scripts/build-ios-personal-team.sh |
-| F-006 | 当前 Xcode/SDK 为 27.0，旧包 SDK 为 26.5；新旧 Info.plist 都没有 UIApplicationSceneManifest | xcodebuild/xcrun 与归档 Info.plist 只读比较 |
-| F-007 | 新包安装成功但启动后没有持续运行；匹配新二进制 UUID 的真机 crash 在 UIKit NoSceneLifecycleAdoption 检查处 SIGTRAP | install/launch JSON、两次 process 查询、只读复制的 ips、dwarfdump UUID |
+| F-006 | 首次失败构建 Xcode/SDK 为 27.0，旧包 SDK 为 26.5；当时新旧 Info.plist 都没有 UIApplicationSceneManifest | xcodebuild/xcrun 与归档 Info.plist 只读比较 |
+| F-007 | 首次失败包安装成功但启动后没有持续运行；匹配其二进制 UUID 的真机 crash 在 UIKit NoSceneLifecycleAdoption 检查处 SIGTRAP | install/launch JSON、两次 process 查询、只读复制的 ips、dwarfdump UUID |
 
 <!-- task-doc-section:assumptions-questions -->
 ## Assumptions and open questions
 
 - Assumption: 唯一可用实体 iPhone 即用户目标，未发现需选择的第二台实体手机。
 - Open question: 无阻塞授权问题。用户已选择修复新包，而非恢复旧包。设备信任/签名可用，不是锁屏或安装失败。
-- Hypothesis: SDK 从 26.5 升到 27.0 触发未采用 Scene lifecycle 的原生兼容限制；堆栈/元数据支持，但未做修复或控制变量运行，不宣称已完成因果修复。
+- 已验证故障链：SDK27下无Scene manifest导致UIKit启动检查SIGTRAP；当前Tao要求显式true及完整配置才能注册delegate、绑定window/scene。修复仍使用SDK27，完整配置与兼容ownership pin后同一实体设备新PID持续运行、无新crash。ownership缺陷由直接源码/upstream修复证实，未单独在真机制造悬空指针失败。
 
 <!-- task-doc-section:acceptance-criteria -->
 ## Acceptance criteria
@@ -100,9 +100,9 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-003 — 修复提交与交付收敛
+### [x] T-003 — 修复提交与交付收敛
 
-- Status: in_progress
+- Status: done
 - Owner: coordinator
 - Objective: 收敛实际证据、说明未验证的真机业务行为并提交安装记录。
 - Inputs and prerequisites: T-001/T-002 结果。
@@ -116,7 +116,7 @@
   - 记录与工具结果一致，无敏感值/产物入 Git。
 - Verification method:
   - git status/diff --check；task_document.py validate；git commit/show。
-- Validation evidence: Not run.
+- Validation evidence: 修复commit75e9596已创建并git show复核仅11个任务文件，无签名/设备/产物；提交后worktree干净。mobile498测试、Python10测试、SDK27签名构建/实际Scene配置、版本同步及diff门禁均通过，追加一条已验证LEARN。收尾只读再查同一iPhone PID仍在，说明native60s并非最后一瞬观测。当前文档闭环单独提交。
 - Blocker: None.
 - Unblock condition: None.
 
@@ -170,9 +170,11 @@
 
 - 2026-10-11 01:12: 修复包安装/启动成功，PID21312在3s/60s实际查询均存活；最新crash00:54早于修复启动01:11。T-002 done，T-003 in_progress。CLI截图服务Invalid service，保留未验证pixels边界，不使用computer，不再重试截图。补记录一条已验证的SDK27/Scene部署经验，开始任务专属commit。
 
+- 2026-10-11: 修复commit75e9596创建成功，git show核对11个相关文件，工作区干净；只读最终复核同一iPhone PID仍运行。T-003 done，任务passed限定于native启动与已记录验证，pixels/业务边界不扩大。安装记录最终闭环单独提交。
+
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
-- Result: partial
-- Evidence: 原生修复、新SDK27 archive签名/完整Scene配置、10Python与498Mobile测试通过；实体iPhone覆盖安装/启动成功，同一PID存活60秒，无修复后新crash。T-001/T-004/T-002 done，T-003提交/文档闭环进行中。
+- Result: passed
+- Evidence: T-001/T-004/T-002/T-003全部done。原生修复、SDK27 archive签名/完整Scene配置、10Python及498Mobile测试通过；实体iPhone覆盖安装/启动成功，同一PID在3s/60s及提交后复核均在，无修复后新crash。修复commit75e9596已实际核验，只含任务文件，无敏感产物。
 - Limitations: 未验证真机pixels、VoiceOver、最低iOS16、iPad多窗口、Release优化下运行、APNs/深链与终端后台业务。screenshotr不可用，禁止computer；旧desktop capture仍未核实且与本任务无依赖。签名包/报告都仅保留私有目录，不发布。
