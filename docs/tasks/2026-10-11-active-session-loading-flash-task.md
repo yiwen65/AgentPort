@@ -3,7 +3,7 @@
 - Created: 2026-10-11
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: in_progress
+- Overall status: done
 - Source: 用户报告“Loading active sessions from devices...”自动反复出现，授权排查修复。
 
 <!-- task-doc-section:background-goal -->
@@ -95,9 +95,9 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-003 — 提交与状态收敛
+### [x] T-003 — 提交与状态收敛
 
-- Status: in_progress
+- Status: done
 - Owner: coordinator
 - Objective: 只提交已验证修复，记录准确验收与限制。
 - Inputs and prerequisites: T-002结果。
@@ -111,7 +111,7 @@
   - 验证结果真实、已提交且无混入其他工作。
 - Verification method:
   - task_document.py validate；git diff --check、commit/show/status。
-- Validation evidence: Not run.
+- Validation evidence: 修复commit f126989已创建，git show只读复核仅6个任务文件；提交后工作区干净。计划validator/diff与版本门禁通过，无签名/设备/原生产物入Git。记录一条经失败前/后与部署验证的Active polling学习；最终计划闭环单独提交。
 - Blocker: None.
 - Unblock condition: None.
 
@@ -136,9 +136,11 @@
 
 - 2026-10-11: 全套504/504、Python10/10通过；新原生build/签名/SDK27Scene验证通过，新前端resource及initialLoading代码实际嵌入新binary。手机覆盖安装/启动成功，PID21375在3s/60s均存活。T-002 done，T-003 in_progress，开始最终diff/学习记录/任务提交。
 
+- 2026-10-11: 创建修复commit f126989，git show/status核对6个任务文件与干净工作区。T-003 done；整体passed限定于回归/构建/安装和启动证据，真机UI边界不扩大。最终计划状态另行提交。
+
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
-- Result: partial
-- Evidence: T-001/T-002完成：三种状态的轮询坏基线已复现并修复，32定向/504完整Mobile/10Python测试、TypeScript/Vite/真机SDK27签名构建通过，新包已覆盖安装并启动60s存活。T-003提交闭环进行中。
+- Result: passed
+- Evidence: T-001/T-002/T-003全部done。三种状态轮询坏基线已复现并修复，32定向/504完整Mobile/10Python测试、TypeScript/Vite/真机SDK27签名构建通过，新资源已嵌入并覆盖安装，手机PID21375在3s/60s实际存活。修复commit f126989已创建并只读复核，工作区干净。
 - Limitations: 手机UI/真实跨电脑网络行为未直接自动验收；提示行为由deferred-read UI回归验证，手机已部署对应新资源。禁止computer/已知截图服务不可用，不把进程存活当作像素或业务交互验收。
