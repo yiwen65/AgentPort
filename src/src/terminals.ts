@@ -27,6 +27,7 @@ import {
   readClipboardText,
 } from "./api";
 import { PiStartupNoticeFilter } from "./piStartupNotice";
+import { installTerminalMouseSelection } from "./terminalMouseSelection";
 import { newerSessionRun, staleSessionRun, type SessionRun } from "./sessionRun";
 import {
   announce,
@@ -2120,6 +2121,11 @@ export function installClipboardCompatibility(
   container: HTMLElement,
 ): () => void {
   let disposed = false;
+  const disposeMouseSelection = installTerminalMouseSelection(
+    term,
+    container,
+    () => getState().platform?.os === "linux",
+  );
   const onKeyDown = (event: KeyboardEvent) => {
     if (
       getState().platform?.os !== "linux" ||
@@ -2229,6 +2235,7 @@ export function installClipboardCompatibility(
   container.addEventListener("contextmenu", onContextMenu, true);
   return () => {
     disposed = true;
+    disposeMouseSelection();
     container.removeEventListener("keydown", onKeyDown, true);
     container.removeEventListener("copy", onCopy, true);
     container.removeEventListener("paste", onPaste, true);
