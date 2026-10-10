@@ -178,6 +178,32 @@ describe("AgentPort Mobile V2 shell", () => {
     } finally { raf.mockRestore(); }
   });
 
+  it("returns focus to the source device when global active rows share a Session ID", async () => {
+    await i18n.changeLanguage("en-US");
+    const { remote, sessions } = focusTestClient();
+    const list = vi.mocked(remote.listHostProfiles);
+    list.mockResolvedValue([
+      { id: "host-1", name: "Studio", connectionState: "connected" },
+      { id: "host-2", name: "Laptop", connectionState: "connected" },
+    ] as Awaited<ReturnType<RemoteClient["listHostProfiles"]>>);
+    const original = vi.mocked(remote.request).getMockImplementation()!;
+    vi.mocked(remote.request).mockImplementation((...args) => args[1] === "session.list"
+      ? Promise.resolve([{ ...sessions[0], title: args[0] === "host-1" ? "Studio task" : "Laptop task" }]) : original(...args));
+    const { container } = render(<App client={remote} hostAuthClient={hostAuthClient} />);
+    await screen.findByRole("button", { name: "Studio task" });
+    fireEvent.click(screen.getByRole("button", { name: "Show active sessions" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Laptop task" }));
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    await settleFocusFrames();
+    expect(remote.request).toHaveBeenCalledWith("host-2", "session.attach", expect.anything());
+    const shell = container.querySelector(".app-shell")!;
+    fireEvent.touchStart(shell, { touches: [{ clientX: 40, clientY: 220 }] });
+    fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 160, clientY: 224 }] });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Laptop task" })).toHaveFocus());
+    expect(screen.getByRole("button", { name: "Studio task" })).not.toHaveFocus();
+    expect(screen.getByText("All connected devices · 2")).toBeInTheDocument();
+  });
+
   it("does not move dashboard focus when a hidden Session receives a state update", async () => {
     await i18n.changeLanguage("en-US");
     const { remote, emitState } = focusTestClient();

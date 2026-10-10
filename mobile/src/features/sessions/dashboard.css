@@ -8,6 +8,16 @@
 .session-dashboard .compact-device-picker { min-width: 64px; flex: 1 1 64px; }
 .session-dashboard .compact-device-picker select { min-height: 44px; width: 100%; min-width: 0; }
 .session-dashboard .toolbar-spacer { display: none; }
+.session-dashboard .global-device-scope { flex: 1 1 130px; min-width: 0; padding: 8px 4px; color: var(--text); font-size: 13px; overflow-wrap: anywhere; }
+/* Long row titles must not widen the grid beyond the clipped mobile scroller. */
+.session-dashboard .active-agent-list { grid-template-columns: minmax(0, 1fr); }
+.active-agent-list .session-row-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.active-agent-list .session-row-device { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.active-agent-list .v2-session-row > button:disabled { opacity: 1; }
+.activity-device-error { display: flex; align-items: center; gap: 12px; margin: 12px 14px; color: var(--muted); font-size: 13px; }
+.activity-device-error > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.activity-device-error > button { min-width: 44px; min-height: 44px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--panel); color: var(--text); }
+.activity-device-error > button:disabled { opacity: .5; }
 .session-dashboard .dense-project-tree { padding-top: 12px; }
 .session-dashboard .project-group { margin: 0 14px 13px; border: 0; border-radius: 24px; background: linear-gradient(150deg, color-mix(in srgb, var(--project-color, var(--accent)) 16%, var(--panel)), var(--panel) 58%); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--project-color, var(--accent)) 14%, transparent), 0 12px 28px #00000014; }
 .session-dashboard .project-group[data-project-tone="0"] { --project-color: #c8f16d; }

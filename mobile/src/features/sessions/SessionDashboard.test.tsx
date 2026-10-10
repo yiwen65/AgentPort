@@ -607,7 +607,7 @@ describe("V2 Session workspace", () => {
     render(<SessionDashboard client={remote} onOpenSession={onOpenSession} />);
     expect(await screen.findByRole("button", { name: /Approval task/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Show active sessions" }));
-    expect(screen.getByRole("button", { name: /Approval task/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Approval task/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Shell" }));
     expect(onOpenSession).toHaveBeenCalledWith(expect.objectContaining({
       session: expect.objectContaining({ id: "shell", adapterType: "shell" }),
@@ -651,6 +651,7 @@ describe("V2 Session workspace", () => {
     expect(button.querySelector(".session-state .visually-hidden")).not.toBeNull();
     expect(button).toHaveAccessibleDescription(/Unknown/);
     fireEvent.click(screen.getByRole("button", { name: "Show active sessions" }));
+    await screen.findByRole("button", { name: "Shell" });
     expect(container.querySelector(".active-agent-list")?.children.length).toBeGreaterThan(0);
   });
 

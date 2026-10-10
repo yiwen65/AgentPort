@@ -661,3 +661,12 @@
 - Correct approach: 浮层一律逃出 `.topbar` 层叠上下文——Modal 走 App 根部的 DialogRouter（既有模式，`openDialog({kind})`），下拉菜单 `createPortal` 到 `document.body`（fixed + inline 锚点坐标 + z-index 800 对齐 ctx-menu 层）；并把 `.topbar` 自身提到 z-50（透明底不影响视觉、带内命中归窗口拖拽区），保证触发器永不被 pane chrome 覆盖。outside-click 判定要同时覆盖 trigger ref 与 portaled menu ref。
 - Prevention: 新浮层先问“挂在哪个层叠上下文里”；仓库里所有 `isolation: isolate`/transform/backdrop-filter 的祖先都是候选陷阱。命中类回归用结构断言（`menu.closest('.topbar') === null`）+ CSS 契约测试（z-index 下限+原因注释），真机验证用 AX 取坐标 + System Events 合成点击（已验证可行）。
 - Verified by: 2026-09-29 复现链（Workspace menu 可点 vs Device switcher 不可点、菜单行/Modal Cancel 坐标点击失败）→ 修复后同三处坐标点击全部通过；前端 974/974、构建绿、`topbar-stacking-css.test.ts` 锁定契约。
+
+## `mobile Active grid` — root overflow checks can miss clipped list content
+
+- Wrong approach: Rely on `document.documentElement.scrollWidth <= innerWidth` to certify a long-title Active list at 320 CSS px.
+- Why it failed: `.main-content` clips horizontal overflow, while the implicit grid column's min-content width still pushes row borders and timestamps outside the visible viewport. The root check passed even though the screenshot was visibly clipped.
+- Recognition signal: Root width is correct, but a Session card has no visible right border/time at the narrowest supported width.
+- Correct approach: Bound the Active grid with `grid-template-columns: minmax(0, 1fr)`, keep the title wrapper shrinkable, and allow long device labels to wrap.
+- Prevention: Check actual list-row and timestamp `getBoundingClientRect().right` against viewport width, plus screenshots; root overflow alone is not a layout oracle. Keep the mobile design-system CSS contract test.
+- Verified by: 2026-10-10 Chrome smoke at 320/390 CSS px showed clipping before the grid fix; after it, row/time bounds, screenshots, mixed-device routing, failure/retry and reconnection checks passed (`docs/tasks/2026-10-10-mobile-global-active-sessions-task.md`).

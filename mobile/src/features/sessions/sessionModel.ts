@@ -15,18 +15,20 @@ export function activeSessionPriority(session: SessionSummary): number {
   return 3;
 }
 
+export function compareActiveSessions(a: SessionSummary, b: SessionSummary): number {
+  const priority = activeSessionPriority(a) - activeSessionPriority(b);
+  if (priority !== 0) return priority;
+  const pinned = Number(Boolean(b.pinnedAt)) - Number(Boolean(a.pinnedAt));
+  if (pinned !== 0) return pinned;
+  const recent = time(b.latestStatus?.occurredAt ?? b.createdAt) - time(a.latestStatus?.occurredAt ?? a.createdAt);
+  return recent || a.id.localeCompare(b.id);
+}
+
 /** Active Sessions includes live, unarchived agents and shells with shared ordering. */
 export function activeAgentSessions(sessions: readonly SessionSummary[]): SessionSummary[] {
   return sessions
     .filter((session) => session.hostAlive === true && !session.archivedAt)
-    .sort((a, b) => {
-      const priority = activeSessionPriority(a) - activeSessionPriority(b);
-      if (priority !== 0) return priority;
-      const pinned = Number(Boolean(b.pinnedAt)) - Number(Boolean(a.pinnedAt));
-      if (pinned !== 0) return pinned;
-      const recent = time(b.latestStatus?.occurredAt ?? b.createdAt) - time(a.latestStatus?.occurredAt ?? a.createdAt);
-      return recent || a.id.localeCompare(b.id);
-    });
+    .sort(compareActiveSessions);
 }
 
 export function orderedVisibleAgents(

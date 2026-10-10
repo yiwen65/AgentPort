@@ -77,6 +77,12 @@ describe("mobile semantic design system", () => {
     expect(styles).not.toContain(".session-row-meta");
   });
 
+  it("allows global Active rows to shrink inside the mobile scroller with long source names", () => {
+    expect(dashboardStyles).toMatch(/\.session-dashboard \.active-agent-list\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
+    expect(dashboardStyles).toMatch(/\.active-agent-list \.session-row-title\s*\{[^}]*min-width:\s*0;/s);
+    expect(dashboardStyles).toMatch(/\.active-agent-list \.session-row-device\s*\{[^}]*overflow-wrap:\s*anywhere;/s);
+  });
+
   it("places immersive chrome out of flow and keeps logs just below the cutout", () => {
     expect(terminalStyles).toMatch(/\.terminal-chrome-reveal,\s*\.session-workspace-header \{[^}]*position: absolute;[^}]*top: 0;/s);
     expect(terminalStyles).toContain("grid-template-columns: minmax(0, 1fr) 40% minmax(0, 1fr)");

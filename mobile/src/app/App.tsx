@@ -97,7 +97,7 @@ export function App({ client, hostAuthClient }: AppProps) {
       if (document.querySelector("[role=dialog]")) return;
       const target = terminalVisible
         ? document.querySelector<HTMLElement>(".session-stage .session-workspace")
-        : [...document.querySelectorAll<HTMLElement>("[data-session-id]")].find((element) => element.dataset.sessionId === selectedSessionId);
+        : [...document.querySelectorAll<HTMLElement>("[data-session-id]")].find((element) => element.dataset.sessionId === selectedSessionId && element.dataset.hostId === selectedHostProfileId);
       if (target) {
         // A tap can focus the terminal input before this navigation frame runs.
         // Keep that descendant's focus instead of dismissing the iOS keyboard.
