@@ -2115,11 +2115,31 @@ export function installInputCompatibility(
   };
 }
 
-function installClipboardCompatibility(
+export function installClipboardCompatibility(
   term: Terminal,
   container: HTMLElement,
 ): () => void {
   let disposed = false;
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (
+      getState().platform?.os !== "linux" ||
+      event.target !== term.textarea ||
+      event.isComposing ||
+      !event.ctrlKey ||
+      event.altKey ||
+      event.metaKey ||
+      event.key.toLowerCase() !== "c"
+    ) return;
+    const selection = term.getSelection();
+    if (!selection) return; // Bare Ctrl+C must still interrupt the Agent.
+
+    // WebKitGTK does not turn Ctrl+Shift+C into a copy event, and xterm
+    // translates Ctrl+C into ETX even with selected text. Handle selected
+    // text here before xterm, without relying on the WebView's bindings.
+    void copyText(selection);
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
   const onCopy = (event: ClipboardEvent) => {
     const selection = term.getSelection();
     if (!selection) return;
@@ -2203,11 +2223,13 @@ function installClipboardCompatibility(
     ];
     openContextMenu(event.clientX, event.clientY, items);
   };
+  container.addEventListener("keydown", onKeyDown, true);
   container.addEventListener("copy", onCopy, true);
   container.addEventListener("paste", onPaste, true);
   container.addEventListener("contextmenu", onContextMenu, true);
   return () => {
     disposed = true;
+    container.removeEventListener("keydown", onKeyDown, true);
     container.removeEventListener("copy", onCopy, true);
     container.removeEventListener("paste", onPaste, true);
     container.removeEventListener("contextmenu", onContextMenu, true);
