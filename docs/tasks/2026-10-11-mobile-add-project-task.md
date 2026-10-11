@@ -3,7 +3,7 @@
 - Created: 2026-10-11
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: in_progress
+- Overall status: done
 - Source: 用户确认 New Project 需求后授权「开始实施，完成功能交付」。
 
 <!-- task-doc-section:background-goal -->
@@ -271,9 +271,9 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-011 — 解除阻塞后的交付收尾
+### [x] T-011 — 解除阻塞后的交付收尾
 
-- Status: in_progress
+- Status: done
 - Owner: coordinator
 - Objective: 更新最终SDK/平台交付记录及已验证教训，保持更新后的debug窗口打开并提交仅本次修复。
 - Inputs and prerequisites: T-008/T-009构建修复与T-010真机安装通过。
@@ -288,7 +288,7 @@
   - 本机SDK误报不再阻塞；模拟器与用户授权手机已更新且真实渲染；只提交本次相关文件。
 - Verification method:
   - task validator、git diff --check、版本同步、debug进程/签名/截图、手机PID、git show/status。
-- Validation evidence: root已检查两项已验证LEARN与source/fixture差异；原图SDK/compiler/runtimetarget明确分开。24fixture及实际sim构建最终通过，手机PID22448最后复查仍指向新安装App；实体截图实时终端正常。python3 scripts/restart-debug-app.py --skip-build仅重启签名有效当前GUI，newPID97983精确路径由ps确认，desktop-debug-final.png正常非白屏。diff/版本门禁通过，本次Git提交尚未创建。
+- Validation evidence: root已检查两项已验证LEARN与source/fixture差异；原图SDK/compiler/runtimetarget明确分开。24fixture及实际sim构建最终通过，手机PID22448最后复查仍指向新安装App；实体截图实时终端正常。python3 scripts/restart-debug-app.py --skip-build仅重启签名有效当前GUI，newPID97983精确路径由ps确认，desktop-debug-final.png正常非白屏。diff/版本/计划门禁通过；修复commit0ed58de已创建，git show确认仅6个本次文件，提交后工作区干净。
 - Blocker: None.
 - Unblock condition: None.
 
@@ -337,10 +337,11 @@
 - 2026-10-11 continuation: T-009先16cases11fail+1error后24/24通过，coordinator独立24/24及完整actual sim archive复验通过；3项独立review的continuity复查无actionable。T-009/T-008转done，原始npm入口不再SDK误报。
 - 2026-10-11 continuation: 用户授权的手机device archive正常签名/授权profile/SDK27/min16/Scene校验通过；更新安装launch PID22448，延迟存活与实际1320x2868截图证明实时终端正常渲染且当前Session保留。T-010转done，T-011交付收尾开始。
 - 2026-10-11 continuation: 最后手机PID22448仍运行；桌面统一--skip-build重启后GUI97983路径准确，正常渲染截图已读取。LEARN追加已验证SDK/runtime误判与私有进程组ownership两项，未写未证实假设；diff/版本检查通过，仅本次6文件待commit。
+- 2026-10-11 continuation: 修复commit0ed58de创建成功，git show仅6个任务相关文件，工作区干净。T-011转done，SDK阻塞、sim验证与用户授权真机安装全部结束；任务最终passed。剩余最低OS/完整原生交互边界明确保留，不发布/推送。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
-- Result: partial
-- Evidence: 原功能commit fdcdc2b/570af5a及此前Rust82/native9/browser集成证据保留。本轮SDK/runtime阻塞已解：源版本与真实SDK27/runtime26.5定界，原入口成功；24工作流fixtures先红后绿并coordinator独立复验，mobile572/572（maxWorkers2）+TS/Vite通过。独立review三项生命周期/版本问题修复后复查无actionable。实际signedsim App已安装并正常渲染新入口；用户明确授权实体iPhone新signedSDK27/min16/Scene正确App已更新，PID22448持续存活，实际终端截图正常；桌面debugGUI97983正常。T-001至T-010全部done，仅T-011待本次修复commit。
+- Result: passed
+- Evidence: 原功能commit fdcdc2b/570af5a及此前Rust82/native9/browser集成证据保留。本轮SDK/runtime阻塞已解：源版本与真实SDK27/runtime26.5定界，原入口成功；24工作流fixtures先红后绿并coordinator独立复验，mobile572/572（maxWorkers2）+TS/Vite通过。独立review三项生命周期/版本问题修复后复查无actionable。实际signedsim App已安装并正常渲染新入口；用户明确授权实体iPhone新signedSDK27/min16/Scene正确App已更新，PID22448持续存活，实际终端截图正常；桌面debugGUI97983正常。修复commit0ed58de已创建，T-001至T-011全部done，无剩余阻塞。
 - Limitations: 本机原无Simulator GUI，sim项目布局由仅UI偏好seed并截图，不声称原生触控/键盘/辅助技术完整验收；本轮没有在实体机提交新项目。最低iOS16、Android/Windows/Linux运行未新增验收；iOS26.5sim与当前实体机存活/像素不是这些边界的替代。SIGKILL/断电无法运行cleanup；有意detach成新session的后代不属于同私有组；文件系统rollback失败保留可恢复产物但需手动恢复。版本helper不支持覆盖/path/prerelease版本已明确拒绝。未发布或推送。
