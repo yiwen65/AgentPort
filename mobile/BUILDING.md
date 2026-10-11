@@ -29,7 +29,13 @@ npm run tauri -- ios init --ci --skip-targets-install
 npm run build:ios-simulator
 ```
 
-需要 XcodeGen、CocoaPods 和 libimobiledevice；Tauri CLI 会检查这些工具。`build:ios-simulator` 只清理生成的 simulator `.app` 目的目录，再执行 Xcode 的本地 simulator 签名构建；不能传 `--no-sign`，否则 Keychain backend 在 simulator 中不可用。这也避免 Tauri 2.11 重复构建时在有效 archive 之后报 `Directory not empty (os error 66)`。团队签名值通过生成工程的 build setting 或 `signing/ios.xcconfig.template` 注入；不得把真实 Team ID、证书或 profile 提交到仓库。
+需要 XcodeGen、CocoaPods 和 libimobiledevice；Tauri CLI 会检查这些工具。`build:ios-simulator` 先用 Tauri 的 `ios build --debug --open` 准备当前前端和 production/custom-protocol 编译选项，并在归档期间保持其 options server 存活，再由 Xcode 对 `generic/platform=iOS Simulator` 执行本地签名归档。该准备步骤会打开 Xcode，但不需要启动前端 dev server；脚本在结束/失败时只停止本次创建的 CLI/构建进程，不关闭 Xcode 或任何 Session Host/Connector。
+
+CLI 2.11.4 的 cargo-mobile2 0.22.4 将 SDK 版本与模拟器 **runtime** 版本比较：例如已安装 SDK 27、runtime 26.5 时误报 `Xcode Simulator SDK 27.0 is not installed`。上述流程仍使用真实 SDK 和标准 Xcode prebuild，不修改 SDK/registry/node_modules 元数据，不伪造 runtime，也不要求下载同版本 runtime。每次构建使用独立临时目录传递 Tauri options，避免读到另一个 dev/build 的选项。CLI 和构建命令由本次创建的私有 supervisor 保留进程组所有权；命令提前退出或取消时，先清理同组后代再回收 supervisor，不按进程名查杀。
+
+入口支持 `--features` 和 `--build-number N`（或 `--build-number=N`）：后者按 Tauri 的数字 `bundle.iOS.bundleVersion`（默认 `version`）追加构建号，并通过 `agvtool` 同步、校验最终 plist。当前 helper 仅支持仓库使用的数字 `major.minor.patch` 版本；`--config`/`-c`、额外 `tauri.ios.conf.*`、`--` runner 参数、路径/预发布版本配置等不能正确合并的形式会明确拒绝，不会静默生成不同配置的产物。
+
+不能传 `--no-sign`，否则 Keychain backend 在 simulator 中不可用。归档签名与 Bundle ID/平台/最低版本检查通过后才替换 `src-tauri/gen/apple/build/arm64-sim/AgentPort.app`，失败时保留最后有效产物，也避免重复构建的 `Directory not empty (os error 66)`。回归检查：`PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-build-ios-simulator.py`。团队签名值仍由生成工程的 build setting 或 `signing/ios.xcconfig.template` 注入；不得把真实 Team ID、证书或 profile 提交到仓库。
 
 ### 免费 Personal Team 开发 IPA
 

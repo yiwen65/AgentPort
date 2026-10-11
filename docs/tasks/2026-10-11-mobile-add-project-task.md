@@ -3,7 +3,7 @@
 - Created: 2026-10-11
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: blocked
+- Overall status: in_progress
 - Source: 用户确认 New Project 需求后授权「开始实施，完成功能交付」。
 
 <!-- task-doc-section:background-goal -->
@@ -51,7 +51,7 @@
 <!-- task-doc-section:dependencies-batches -->
 ## Dependencies and parallel batches
 
-- Dependency graph: T-001、T-002、T-003 基于已锁定接口独立开发并行；T-001/T-002 完成后 -> T-005；审查发现补充 T-006（依赖 T-002），T-003 最终验收等待 T-006；T-001/T-002/T-003/T-007 完成后 -> T-004；附加 T-005 受本机 SDK 探测阻塞，单独披露而不伪装通过。
+- Dependency graph: 原功能T-001/T-002/T-003/T-006/T-007→T-004已完成。continuation解除原T-005阻塞：T-009生命周期修复→T-008构建入口最终验证；T-005模拟器完成后→用户授权T-010真机；T-008/T-009/T-010→T-011最终提交。所有实际sim/device构建串行，只有纯fixture/read-only工作并行。
 - Parallel batches: 后端 agent mobile-project-backend 独占 crates 协议/服务/bridge；前端 agent mobile-project-dialog 独占 mobile/src/features/projects 与 mobile/src/i18n/resources.ts；coordinator 独占 Dashboard 集成及专属测试，不写上述独占文件，直至移交。完整 T-003 验证等待 T-001/T-002 产物可用。
 - Serialization constraints: authority 文档仅 coordinator 写；review 阶段使用仅 read 工具隔离审查；构建与 App 重启串行，防资源竞争及 shared 输出冲突。
 
@@ -142,9 +142,9 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-005 — 更新 iOS 模拟器调试窗口（附加平台验证）
+### [x] T-005 — 更新 iOS 模拟器调试窗口（附加平台验证）
 
-- Status: blocked
+- Status: done
 - Owner: coordinator
 - Objective: 将移动端新功能嵌入原生调试包并在本机已有 iOS 模拟器打开，确认非空白渲染。
 - Inputs and prerequisites: T-001/T-002 经 coordinator 检查且 mobile tests/build 通过；本机 booted iPhone 17 Pro / iOS 26.5。
@@ -159,9 +159,9 @@
   - iOS 模拟器运行更新后的 UI，入口或离线禁用状态可见；明确不代替真机/最低 iOS/Android 验收。
 - Verification method:
   - iOS simulator build、simctl install/launch、simctl io screenshot、read 图片及 git status。
-- Validation evidence: npm run build:ios-simulator 和单变量 IPHONEOS_DEPLOYMENT_TARGET=16.0 重试均在完成前端 build 后失败：Tauri 报 Xcode Simulator SDK 27.0 is not installed。xcodebuild -showsdks、xcrun --sdk iphonesimulator --show-sdk-path/version 与 SDKSettings.json 均显示真实 SDK27.0 已安装；xcodebuild -showdestinations 可识别 booted iPhone17 Pro/iOS26.5。未替换/安装现有模拟器 App，不能宣称更新后原生渲染通过。未下载 SDK/runtime、未修改本机 Xcode 或上游 CLI。
-- Blocker: Tauri iOS simulator SDK 探测拒绝本机已安装 SDK27.0；具体根因未证明，现有 runtime 仅26.5。
-- Unblock condition: 在支持的 Xcode/SDK/Tauri 组合中通过同一 build 命令，随后安装启动截屏；此附加验证不是已确认功能实现的前置条件，但交付必须披露限制。
+- Validation evidence: continuation中同一npm入口成功，以真实iphonesimulator27.0 SDK签名archive，Bundle ID不变、MinimumOSVersion16.0、完整Scene manifest。simctl install保留数据后launch PID32234持续存活且截图正常Active视图。为展示新入口，在无Simulator GUI可用情况下仅将当前workspace.layout偏好seed为projects（备份原值，不改主机/凭据/其他键），重启PID64135持续存活；mobile-simulator-projects.png显示新添加项目图标及明确offline状态。无dev server，当前新App实际渲染，未宣称触控/Keychain存取/SSH业务已跑。证据/tmp/agentport-ios-sdk-unblock/；未下载runtime或修改SDK/缓存。
+- Blocker: None.
+- Unblock condition: None.
 
 ### [x] T-006 — 修复独立审查发现的取消与恢复竞态
 
@@ -206,6 +206,92 @@
 - Blocker: None.
 - Unblock condition: None.
 
+### [x] T-008 — 修复 SDK/runtime 混淆导致的模拟器构建阻塞
+
+- Status: done
+- Owner: coordinator
+- Objective: 保持真实 SDK、签名、production/custom-protocol 前端及最低 iOS16，不伪造元数据，通过有效的 Xcode generic simulator 构建路径绕开上游错误的 runtime-version gate。
+- Inputs and prerequisites: 用户授权「解决阻塞并继续」；工作区570af5a干净；安装CLI2.11.4的二进制字符串确认cargo-mobile2=0.22.4；精确版本公共源码validate_sdk将available runtime.version与SDKSettings.Version比较，本机runtime26.5 < SDK27.0。
+- Scope or files: mobile/scripts/build-ios-simulator.sh；必要Python/Node构建helper与tests；mobile/BUILDING.md；本任务文档；验证后LEARNS.md。不修改XcodeSDK/registry/node_modules缓存，不安装额外大型runtime、不跳过签名、不改Bundle ID/Team/最低版本。
+- Expected output: 有回归门禁的可重用模拟器构建入口，原始构建命令通过；保留最后有效bundle，正确清理自建构建进程。
+- Dependencies: T-009.
+- Execution steps:
+  1. 刷新原始失败baseline，精确版本source/实际runtime与SDK校验定界。
+  2. 比较安全替代路径：Tauri build --open 保留真实production options server，Xcode用真实SDK generic simulator archive；验证原生Xcode script必须读取该server，不能裸cargo/猜默认features。
+  3. 编码脚本/生命周期/签名/生产前端与失败保留bundle的回归，先红后绿。
+  4. 原命令构建成功并校验签名与frontend资源，交T-005安装启动渲染。
+- Acceptance criteria:
+  - 无SDK/version伪造和签名绕过；使用实际SDK27编译仍能运行现有runtime26.5，App正常启动且嵌入新UI。
+  - 清理仅自己的CLI/Xcodebuild进程，保持已有Host/Connector/release与手机数据；构建失败保留最后有效产物。
+- Verification method:
+  - 原始npm run build:ios-simulator；helper单元/脚本集成fixture；codesign/plist校验；mobile test/build；T-005模拟器检查。
+- Validation evidence: 原始入口明确复现SDK27误报(exit1)，安装CLI二进制含cargo-mobile2-0.22.4，精确版本source将runtime版本同SDK版本比较；实际RPC显示dev=false/custom-protocol。相同真实SDK27在generic archive中成功，初始4workflowfixtures先4红后4绿；T-009进一步24fixtures经coordinator独立重跑24/24，原npm入口最终again ARCHIVE SUCCEEDED + strict签名/ID/版本/min16检查，无SDK/runtime/registry/node_modules伪造或下载。全mobile572/572（maxWorkers2）与TS/Vite通过；独立只读review三项问题修复后continuity确认无新actionable。
+- Blocker: None.
+- Unblock condition: None.
+
+### [x] T-009 — 构建工作流的取消/子进程/版本回归
+
+- Status: done
+- Owner: ios-build-lifecycle-fix
+- Objective: 修复独立审查发现的发布取消窗口、已退出leader留下构建后代、build-number被忽略问题。
+- Inputs and prerequisites: 新build helper已通过实际SDK27genericarchive及4workflowfixtures；read-only review给出三个具体因果发现。
+- Scope or files: mobile/scripts/build-ios-simulator.py；mobile/scripts/test-build-ios-simulator.py。coordinator独占doc、BUILDING.md与后续安装。
+- Expected output: 先失败后通过的取消/后代/版本fixtures与局部修复；不信号任何非本次创建的进程，不改SDK/缓存/全局工具链。
+- Dependencies: None.
+- Execution steps:
+  1. 复现backup rename后取消导致旧产物丢失，保护完整事务及回滚。
+  2. 复现helper/native leader早退和TERM-surviving child；保留明确ownership anchor到整个私有组清理完成，不能向已回收PID盲发信号。
+  3. 明确处理/校验配置bundleVersion与build-number，遵循现有Tauri语义并保持本任务版本不变。
+- Acceptance criteria:
+  - 取消后至少一个已验证bundle存在；私有同组后代均清理，PGID不可误路由；版本参数不会静默忽略。
+- Verification method:
+  - 新增fixtures先红后绿；原4fixtures仍绿；Python语法与完整nativebuild、签名/元数据验证由coordinator复跑。
+- Validation evidence: coordinator读取before.log确认16cases中11fail+1error（真实rename取消、早退/TERM-surviving后代、stale版本）；作者最终24/24，coordinator完整独立复验24/24(76.665s)，原4cases保持绿；read-only delta审查确认三条因果修复均解决。最终actual signed SDK27模拟器archive通过，process anchors先TERM/KILL后reap，无名称查杀。数字version/bundleVersion/build-number正向校验与不支持覆盖显式拒绝已记录BUILDING.md。
+- Blocker: None.
+- Unblock condition: None.
+
+### [x] T-010 — 更新已配对实体 iPhone 并验收启动
+
+- Status: done
+- Owner: coordinator
+- Objective: 将添加项目功能安装到当前已配对实体iPhone，保留数据/配对，使用正确device平台库与现有开发签名。
+- Inputs and prerequisites: 用户结构化确认「更新实体iPhone」；现有connected/paired iPhone且已安装同ID开发App；T-005实际sim构建已结束，设备构建与后续sim重建串行，避免共享Externals/arm64缓存覆盖。
+- Scope or files: mobile设备构建/签名产物；当前已配对iPhone的com.agentport.mobile；本任务记录。不卸载、不改签名Team/Bundle ID、不发布/上传、不停止远程Host/Connector。
+- Expected output: 新签名device archive、本机验证、devicectl安装/启动与PID存活证据；可取得时界面证据。
+- Dependencies: T-005.
+- Execution steps:
+  1. 验证当前device App/签名配置，使用aarch64设备target正常Tauri签名archive；不能复用simulator库。
+  2. 检查SDK27 Scene及签名/最低版本/平台，devicectl install更新，不先卸载。
+  3. launch并延迟复查实际PID/新crash；保留更新后的App打开。
+- Acceptance criteria:
+  - 安装到用户确认的当前手机，数据保留，启动不是仅派发成功而是实际存活；明确像素/业务未跑项目。
+- Verification method:
+  - device archive、签名/plist/Scene检查、devicectl install/launch/process信息；可用界面截图/检查。
+- Validation evidence: 用户已确认authority；普通Tauri aarch64 device archive成功（没有复用sim库），strict签名/SDKiphoneos27.0/min16/Scene真布尔检查通过；embedded profile未过期且包含用户确认的当前设备，Team/应用ID一致。devicectl install更新而非卸载，launch实际PID22448，后续process info仍指向新安装468C...App并存活；devicectl capture screenshot1320x2868实际显示原有实时终端Session（不是白屏），已有界面/会话保留。此轮没有在实体机提交新项目或做完整键盘/辅助技术测试。证据/tmp/agentport-ios-sdk-unblock/iphone-*.json/png。
+- Blocker: None.
+- Unblock condition: None.
+
+### [ ] T-011 — 解除阻塞后的交付收尾
+
+- Status: in_progress
+- Owner: coordinator
+- Objective: 更新最终SDK/平台交付记录及已验证教训，保持更新后的debug窗口打开并提交仅本次修复。
+- Inputs and prerequisites: T-008/T-009构建修复与T-010真机安装通过。
+- Scope or files: mobile/BUILDING.md；LEARNS.md；本任务文档；本次Git commit。桌面debug GUI仅统一restart脚本，不改Host/Connector/release。
+- Expected output: 最终passed任务记录、debug窗口渲染截图及相关修复commit。
+- Dependencies: T-008, T-009, T-010.
+- Execution steps:
+  1. 汇总SDK/runtimerootcause、fixture先红后绿、实际双平台build/install、PID与截图证据。
+  2. 统一debug --skip-build重启已签名当前bundle，精确ps与截图；保持手机新App运行。
+  3. diff/版本/计划validator，only task files commit，记录剩余minimum-OS/a11y验收边界。
+- Acceptance criteria:
+  - 本机SDK误报不再阻塞；模拟器与用户授权手机已更新且真实渲染；只提交本次相关文件。
+- Verification method:
+  - task validator、git diff --check、版本同步、debug进程/签名/截图、手机PID、git show/status。
+- Validation evidence: root已检查两项已验证LEARN与source/fixture差异；原图SDK/compiler/runtimetarget明确分开。24fixture及实际sim构建最终通过，手机PID22448最后复查仍指向新安装App；实体截图实时终端正常。python3 scripts/restart-debug-app.py --skip-build仅重启签名有效当前GUI，newPID97983精确路径由ps确认，desktop-debug-final.png正常非白屏。diff/版本门禁通过，本次Git提交尚未创建。
+- Blocker: None.
+- Unblock condition: None.
+
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
 
@@ -242,10 +328,19 @@
 - 2026-10-11: 后端parallel一次既有noisy_attachment try_recv失败，限定检查揭示未同步等待noisy dispatcher的测试竞态；不改非本任务代码，隔离3/3及完整串行82/82通过。T-007已完成Core约束核对和新增恢复契约测试，第三条LEARN记录已证实的误判。
 - 2026-10-11: 最终再次统一debug重建/固定签名/精确重启成功，GUI34687、窗口10754及debug-app-final.png非白屏证据已检查。代码验证结束，T-004仅待相关改动Git提交。
 - 2026-10-11: 功能commit fdcdc2b创建成功，仅18个任务相关文件；git show/status复核通过。T-004转done，执行计划最终partial仅因附加平台T-005 blocked。本次文件完整交付，无推送/发布或手机安装声明。
+- 2026-10-11 continuation: 用户授权解除阻塞；刷新工作区仍干净，复用原任务文档。T-005 blocked→in_progress，新增T-008。源码精确匹配安装CLI：cargo-mobile2-0.22.4::Target.validate_sdk读SDK版本却要求runtime>=该版本，因此误报SDK未装。隔离仅read调查子任务ios-sdk-path-check验证安全路径；所有编辑由coordinator负责。
+- 2026-10-11 continuation: 原npm命令复现SDK27误报(exit1)，Tauri production --open的实际RPC返回dev=false、tauri/custom-protocol；相同真实SDK27的generic signed archive成功。封装4workflowfixtures在旧脚本4失败，新helper4通过，原始npm入口实际构建成功且签名/ID/SDK27/最低16/Scene布尔检查通过；未安装runtime。
+- 2026-10-11 continuation: 独立只读审查指出发布backup move取消、leader已退但后代仍跑、build-number静默忽略三个具体问题，新增T-009由独占脚本文件的子任务先复现后修复。全mobile测试在默认并发一次旧GlobalActive测试失败；限定2worker重跑处理中，不改应用源码掩盖环境问题。
+- 2026-10-11 continuation: 当前实际SDK27产物已通过strict签名/ID/min16/Scene及构建检查，T-005输入可用，模拟器运行验收可与T-009纯fixture脚本修复并行；子任务不会构建或修改当前产物。T-008最终验证仍等待T-009。
+- 2026-10-11 continuation: 模拟器新App已安装并launch，PID32234持续存活，截图显示正常Active视图（旧布局偏好保留），没有dev server。默认并发旧GlobalActive测试孤立17/17、限制2worker全572/572及build复验通过。用户结构化授权更新当前已配对实体iPhone，新增T-010；手机构建安装与sim构建串行。
+- 2026-10-11 continuation: 原新sim App安装/实际进程/新入口截图验收通过，T-005转done（仅UI布局偏好seed，不声称触控业务）。确认当前实体手机已有同Bundle ID的开发App0.1.0，T-010转in_progress；它使用普通device archive，不依赖sim helper的纯fixture生命周期修复，实际构建保持串行。
+- 2026-10-11 continuation: T-009先16cases11fail+1error后24/24通过，coordinator独立24/24及完整actual sim archive复验通过；3项独立review的continuity复查无actionable。T-009/T-008转done，原始npm入口不再SDK误报。
+- 2026-10-11 continuation: 用户授权的手机device archive正常签名/授权profile/SDK27/min16/Scene校验通过；更新安装launch PID22448，延迟存活与实际1320x2868截图证明实时终端正常渲染且当前Session保留。T-010转done，T-011交付收尾开始。
+- 2026-10-11 continuation: 最后手机PID22448仍运行；桌面统一--skip-build重启后GUI97983路径准确，正常渲染截图已读取。LEARN追加已验证SDK/runtime误判与私有进程组ownership两项，未写未证实假设；diff/版本检查通过，仅本次6文件待commit。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: partial
-- Evidence: 功能代码完成：Rust后端82测试（最终串行；先前parallel81通过，后续已有noisy_attachment测试一次调度竞态，孤立3/3复验通过）、coordinator后端21复验、native mobile远程9测试、全部mobile572测试与TS/Vite构建通过；独立审查两问题先红后绿修复且复查通过；真实browser/Bridge隔离DB全流程与小屏明暗截图通过；更新后的签名debug GUI正常渲染。功能commit fdcdc2b已创建，T-001/T-002/T-003/T-004/T-006/T-007全部done；仅T-005附加原生平台验证blocked。
-- Limitations: iOS simulator打包被Tauri SDK27探测失败阻塞；没有更新或安装手机/模拟器App，不宣称iOS16/Android/真机或真实手机键盘/辅助技术已通过。430px视口模拟仅证明浏览器压缩高度时控件可通过滚动操作。Windows隐藏属性分支和Linux运行未实测。未发布或推送。
+- Evidence: 原功能commit fdcdc2b/570af5a及此前Rust82/native9/browser集成证据保留。本轮SDK/runtime阻塞已解：源版本与真实SDK27/runtime26.5定界，原入口成功；24工作流fixtures先红后绿并coordinator独立复验，mobile572/572（maxWorkers2）+TS/Vite通过。独立review三项生命周期/版本问题修复后复查无actionable。实际signedsim App已安装并正常渲染新入口；用户明确授权实体iPhone新signedSDK27/min16/Scene正确App已更新，PID22448持续存活，实际终端截图正常；桌面debugGUI97983正常。T-001至T-010全部done，仅T-011待本次修复commit。
+- Limitations: 本机原无Simulator GUI，sim项目布局由仅UI偏好seed并截图，不声称原生触控/键盘/辅助技术完整验收；本轮没有在实体机提交新项目。最低iOS16、Android/Windows/Linux运行未新增验收；iOS26.5sim与当前实体机存活/像素不是这些边界的替代。SIGKILL/断电无法运行cleanup；有意detach成新session的后代不属于同私有组；文件系统rollback失败保留可恢复产物但需手动恢复。版本helper不支持覆盖/path/prerelease版本已明确拒绝。未发布或推送。

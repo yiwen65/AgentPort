@@ -715,3 +715,21 @@
 - Correct approach: Inspect the shared Db constraint, retain validation before writing, and let the user supply a short explicit name for a long directory basename.
 - Prevention: Trace default values through service and Db before claiming desktop compatibility; keep the overlong_directory_basename_requires_a_short_explicit_name_before_writing contract test.
 - Verified by: The two diagnostic runs rejected the permissive-name hypothesis at service and Core boundaries; the authoritative constraint is in crates/agentport-core/src/db/mod.rs::add_project.
+
+## `Tauri simulator SDK/runtime gate` — an installed SDK can be rejected because its runtime is older
+
+- Wrong approach: Treat CLI 2.11.4's `Xcode Simulator SDK 27.0 is not installed` as an SDK installation problem, or retry with a different deployment target.
+- Why it failed: cargo-mobile2 0.22.4 reads the SDK's Version but compares it against installed simulator runtime versions; SDK27 with runtime26.5 fails before Xcode compilation. The deployment target does not change that check.
+- Recognition signal: xcrun reports a real SDK27 path, simctl lists available runtime26.5, and the version-matched validate_sdk source rejects runtime<SDK.
+- Correct approach: Use the repository simulator build entry: retain Tauri's production `ios build --debug --open` options server in a private TMPDIR, then invoke a signed generic simulator archive with the actual SDK and normal xcode-script. Do not fake SDK metadata, skip signing or assume standalone xcode-script has an options fallback.
+- Prevention: Compare SDK, runtime and deployment target separately; run scripts/test-build-ios-simulator.py, verify real bundle platform/version/signature, and install/launch on the actual available runtime.
+- Verified by: The original command failed; the same SDK27 produced a signed min-iOS16 archive through the new entry, and iOS26.5 rendered the new project toolbar without a dev server. The signed device build also installed and rendered normally on the authorized iPhone.
+
+## `private build-process ownership` — a command's exit does not mean its descendants are gone
+
+- Wrong approach: Call Popen.poll/wait on a command leader, skip cleanup after its exit, or later signal its already-reaped PGID.
+- Why it failed: Frontend/native hooks can leave same-group children alive after their parent fails; a TERM-resistant child survives waiting only for its leader. Reaping the leader also releases the identity before late signalling.
+- Recognition signal: Failed preparation/archive leaves fixture children running, or cancellation cleanup ignores a child after its leader exits. macOS may return EPERM for an unreaped zombie-only group, not ESRCH.
+- Correct approach: Retain a private supervisor anchor independently of command status, signal only recorded start_new_session groups, TERM/grace/KILL before reaping, and keep cancellation deferred across ownership and publication transactions. Classify zombie-only EPERM while the anchor remains reserved; never suppress a live-member permission failure.
+- Prevention: Keep early-exit, TERM-resistant descendant, unrelated-session, fatal-supervisor, idempotent-cleanup and rename-cancellation fixtures. Do not infer family cleanup from one PID's completion.
+- Verified by: The lifecycle regressions failed with live orphan children/lost old bundles before the repair; all24 fixtures passed afterward and on coordinator rerun, with an unrelated private session left alive.
