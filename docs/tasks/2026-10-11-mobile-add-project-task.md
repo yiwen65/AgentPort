@@ -3,7 +3,7 @@
 - Created: 2026-10-11
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: in_progress
+- Overall status: blocked
 - Source: 用户确认 New Project 需求后授权「开始实施，完成功能交付」。
 
 <!-- task-doc-section:background-goal -->
@@ -121,9 +121,9 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-004 — 渲染、调试交付与提交
+### [x] T-004 — 渲染、调试交付与提交
 
-- Status: in_progress
+- Status: done
 - Owner: coordinator
 - Objective: 更新调试 App 并观察实际渲染，记录平台/网络验证边界，仅提交本任务文件。
 - Inputs and prerequisites: T-003 验证通过。
@@ -138,7 +138,7 @@
   - 提供真实渲染证据和可打开的更新调试窗口；提交只包含本任务；未运行的平台检查诚实列出。
 - Verification method:
   - 浏览器 smoke/截图；统一 debug restart；ps executable/codesign；git show --stat/status；task 文档 validator。
-- Validation evidence: 最终实际 Chrome + 实际 Bridge 隔离 DB smoke passed（13检查，异常0）；读取明暗320 CSS px、390 CSS px 添加结果及430px短视口截图，滚动后提交控件可操作。python3 scripts/restart-debug-app.py 成功重建、固定证书签名并仅关闭旧 GUI12288、打开新 GUI9804；ps两次确认 exact executable=/Users/w/Projects/AgentSessions/target/debug/bundle/macos/AgentPort.app/Contents/MacOS/agentport；codesign --verify --deep --strict 通过。激活精确PID并读取CGWindow10745，screencapture PNG显示正常sidebar及workspace，非白屏。证据 /tmp/agentport-mobile-add-project-smoke/。临时Vite、Chrome、隔离Bridge已停止，harness已移至/tmp；host cargo test生成的非本任务ACL变更（移除mobile插件项）经差异检查恢复。版本/diff检查通过；Git提交尚未完成。
+- Validation evidence: 最终实际 Chrome + 实际 Bridge 隔离 DB smoke passed（13检查，异常0）；读取明暗320 CSS px、390 CSS px 添加结果及430px短视口截图，滚动后提交控件可操作。python3 scripts/restart-debug-app.py 成功重建、固定证书签名并仅关闭旧 GUI12288、打开新 GUI9804；ps两次确认 exact executable=/Users/w/Projects/AgentSessions/target/debug/bundle/macos/AgentPort.app/Contents/MacOS/agentport；codesign --verify --deep --strict 通过。激活精确PID并读取CGWindow10745，screencapture PNG显示正常sidebar及workspace，非白屏。证据 /tmp/agentport-mobile-add-project-smoke/。临时Vite、Chrome、隔离Bridge已停止，harness已移至/tmp；host cargo test生成的非本任务ACL变更（移除mobile插件项）经差异检查恢复。版本/diff检查通过。最后重建的新GUI34687、窗口10754与debug-app-final.png再次确认；功能commit fdcdc2b已创建，git show确认仅18个本任务文件，提交后工作区干净。
 - Blocker: None.
 - Unblock condition: None.
 
@@ -241,10 +241,11 @@
 - 2026-10-11: 最小实验原guard返回InvalidRequest，移除guard仍被Core Db::add_project拒绝(1-80chars)，证明初始假设错误。恢复guard，不放宽Core或修改桌面；新增正确契约测试（过长默认名写前拒绝、短自定义名可恢复），仅增加guard解释。记录可复用教训，复跑套件与debug构建。
 - 2026-10-11: 后端parallel一次既有noisy_attachment try_recv失败，限定检查揭示未同步等待noisy dispatcher的测试竞态；不改非本任务代码，隔离3/3及完整串行82/82通过。T-007已完成Core约束核对和新增恢复契约测试，第三条LEARN记录已证实的误判。
 - 2026-10-11: 最终再次统一debug重建/固定签名/精确重启成功，GUI34687、窗口10754及debug-app-final.png非白屏证据已检查。代码验证结束，T-004仅待相关改动Git提交。
+- 2026-10-11: 功能commit fdcdc2b创建成功，仅18个任务相关文件；git show/status复核通过。T-004转done，执行计划最终partial仅因附加平台T-005 blocked。本次文件完整交付，无推送/发布或手机安装声明。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: partial
-- Evidence: 功能代码完成：Rust后端82测试（最终串行；先前parallel81通过，后续已有noisy_attachment测试一次调度竞态，孤立3/3复验通过）、coordinator后端21复验、native mobile远程9测试、全部mobile572测试与TS/Vite构建通过；独立审查两问题先红后绿修复且复查通过；真实browser/Bridge隔离DB全流程与小屏明暗截图通过；更新后的签名debug GUI正常渲染。T-004待Git提交，T-005附加原生平台验证blocked。
+- Evidence: 功能代码完成：Rust后端82测试（最终串行；先前parallel81通过，后续已有noisy_attachment测试一次调度竞态，孤立3/3复验通过）、coordinator后端21复验、native mobile远程9测试、全部mobile572测试与TS/Vite构建通过；独立审查两问题先红后绿修复且复查通过；真实browser/Bridge隔离DB全流程与小屏明暗截图通过；更新后的签名debug GUI正常渲染。功能commit fdcdc2b已创建，T-001/T-002/T-003/T-004/T-006/T-007全部done；仅T-005附加原生平台验证blocked。
 - Limitations: iOS simulator打包被Tauri SDK27探测失败阻塞；没有更新或安装手机/模拟器App，不宣称iOS16/Android/真机或真实手机键盘/辅助技术已通过。430px视口模拟仅证明浏览器压缩高度时控件可通过滚动操作。Windows隐藏属性分支和Linux运行未实测。未发布或推送。
