@@ -3455,12 +3455,12 @@ export async function releaseTerminal(sessionId: string): Promise<void> {
   }
 }
 
-/** Drop terminals whose session vanished from the project tree. */
+/** Release hidden Sessions' renderers and attachments without stopping Hosts. */
 export function pruneHandles() {
   const s = getState();
   const alive = new Set(s.projects.flatMap((p) => p.sessions.map((x) => x.id)));
   for (const id of [...handles.keys()]) {
-    if (!alive.has(id)) disposeHandle(id);
+    if (!alive.has(id)) void releaseTerminal(id);
   }
   setState({ attachedIds: s.attachedIds.filter((id) => alive.has(id)) });
 }

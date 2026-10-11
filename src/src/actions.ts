@@ -1081,19 +1081,12 @@ export async function removeProjectFlow(projectId: string) {
 
   const ok = await confirmDialog({
     title: i18n.t("shell:project.removeTitle", { name: proj.name }),
-    body: i18n.t("shell:project.removeBody", {
-      sessions: preflight.sessionCount,
-      worktrees: preflight.worktreeCount,
-      operations:
-        preflight.recoverableOperationCount +
-        preflight.pendingCommitOperationCount,
-    }),
+    body: i18n.t("shell:project.removeBody"),
     confirmLabel: i18n.t("common:actions.remove"),
-    danger: true,
   });
   if (!ok) return;
   try {
-    const outcome = await api.removeProject(preflight);
+    await api.removeProject(preflight);
     if (
       findProjectOf(getState().projects, getState().activeSessionId)?.id ===
       projectId
@@ -1101,10 +1094,6 @@ export async function removeProjectFlow(projectId: string) {
       setState({ activeSessionId: null });
     }
     await refreshProjects();
-    const warnings = outcome.stopWarnings + outcome.cleanupWarnings;
-    if (warnings > 0) {
-      toast(i18n.t("shell:project.removePartial", { count: warnings }), "info");
-    }
   } catch (e) {
     toast(
       i18n.t("shell:project.removeFailed", { detail: errorText(e) }),

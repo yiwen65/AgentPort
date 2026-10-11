@@ -266,8 +266,8 @@ fn cmd_project(ctx: &Ctx, args: &[String]) -> Result<()> {
             let path = positional(args, 1)?;
             let norm = normalize_abs(path)?;
             if let Some(existing) = ctx.db.find_project_by_path(&norm)? {
-                // Duplicate path: focus the existing project (PRD 3.2.e).
-                ctx.out(json!({"id": existing.id, "name": existing.name, "rootPath": existing.root_path, "focusedExisting": true}));
+                let restored = ctx.db.restore_project(&existing.id)?;
+                ctx.out(json!({"id": existing.id, "name": existing.name, "rootPath": existing.root_path, "focusedExisting": !restored}));
                 return Ok(());
             }
             let name = flag(args, "name").unwrap_or_else(|| {
@@ -288,7 +288,17 @@ fn cmd_project(ctx: &Ctx, args: &[String]) -> Result<()> {
                 pinned: false,
                 sort_order: 0,
             };
-            ctx.db.add_project(&p)?;
+            if let Err(error) = ctx.db.add_project(&p) {
+                // Another connection may have registered the canonical path.
+                if matches!(&error, CoreError::Conflict(_)) {
+                    if let Some(existing) = ctx.db.find_project_by_path(&p.root_path)? {
+                        let restored = ctx.db.restore_project(&existing.id)?;
+                        ctx.out(json!({"id": existing.id, "name": existing.name, "rootPath": existing.root_path, "focusedExisting": !restored}));
+                        return Ok(());
+                    }
+                }
+                return Err(error);
+            }
             ctx.out(json!({"id": p.id, "name": p.name, "rootPath": p.root_path, "gitRootPath": p.git_root_path}));
             Ok(())
         }
@@ -310,43 +320,11 @@ fn cmd_project(ctx: &Ctx, args: &[String]) -> Result<()> {
         }
         Some("remove") => {
             let id = positional(args, 1)?;
-            ctx.db.begin_project_removal(id)?;
-            let sessions = ctx.db.list_sessions(Some(id), true)?;
-            let host_manager = HostManager {
-                paths: &ctx.paths,
-                db: &ctx.db,
-            };
-            let native_plans = sessions
-                .iter()
-                .map(|session| plan_native_cleanup(&ctx.paths, session))
-                .collect::<Vec<_>>();
-            let stop_warnings = sessions
-                .iter()
-                .filter(|session| host_manager.stop(&session.id, 3_000).is_err())
-                .count();
-            let manager = WorktreeManager {
-                paths: &ctx.paths,
-                db: &ctx.db,
-            };
-            let mut cleanup_warnings = 0usize;
-            for worktree in ctx.db.list_worktrees(id)? {
-                // Filesystem/Git cleanup is best-effort by contract; the
-                // database cascade below must not be blocked by stale files.
-                cleanup_warnings += match manager.remove(&worktree.id) {
-                    Ok(outcome) => outcome.cleanup_warnings,
-                    Err(_) => 1,
-                };
-            }
             ctx.db.remove_project(id)?;
-            for (session, native_plan) in sessions.iter().zip(&native_plans) {
-                let _ = execute_native_cleanup(native_plan);
-                let _ = std::fs::remove_dir_all(ctx.paths.session_dir(&session.id));
-                let _ = std::fs::remove_file(ctx.paths.socket_path(&session.id));
-            }
             ctx.out(json!({
                 "ok": true,
-                "stopWarnings": stop_warnings,
-                "cleanupWarnings": cleanup_warnings,
+                "stopWarnings": 0,
+                "cleanupWarnings": 0,
             }));
             Ok(())
         }
@@ -1657,6 +1635,98 @@ fn cmd_settings(ctx: &Ctx, args: &[String]) -> Result<()> {
             Ok(())
         }
         _ => Err(CoreError::Validation("settings get|set".into())),
+    }
+}
+
+#[cfg(test)]
+mod project_tests {
+    use super::*;
+
+    #[test]
+    fn remove_and_reopen_preserves_project_identity_and_sessions() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(root.path().join("app"));
+        paths.ensure_layout().unwrap();
+        let db = Db::open_memory().unwrap();
+        db.seed_builtin_presets().unwrap();
+        let ctx = Ctx {
+            paths,
+            db,
+            json: true,
+        };
+        let project_path = root.path().to_string_lossy().into_owned();
+        cmd_project(
+            &ctx,
+            &[
+                "add".into(),
+                project_path.clone(),
+                "--name".into(),
+                "Original".into(),
+            ],
+        )
+        .unwrap();
+        let original = ctx.db.list_projects().unwrap().pop().unwrap();
+        let running = Session {
+            id: "ses_cli_running".into(),
+            project_id: original.id.clone(),
+            worktree_id: None,
+            preset_id: "pre_shell_safe".into(),
+            title: "running".into(),
+            cwd: original.root_path.clone(),
+            host_pid: None,
+            host_socket: None,
+            host_token: "fixture-token".into(),
+            lifecycle: Lifecycle::Running,
+            agent_session_id: Some("native-running".into()),
+            resume_precision: ResumePrecision::Exact,
+            adapter_type: AgentType::Shell,
+            transport: AgentTransport::Pty,
+            command: vec!["shell".into()],
+            permission_mode: PermissionMode::Native,
+            pinned_at: Some(Utc::now()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            archived_at: None,
+        };
+        ctx.db.insert_session(&running).unwrap();
+        let mut archived = running.clone();
+        archived.id = "ses_cli_archived".into();
+        archived.lifecycle = Lifecycle::Exited;
+        archived.archived_at = Some(Utc::now());
+        ctx.db.insert_session(&archived).unwrap();
+        let sessions = ctx.db.list_sessions(Some(&original.id), true).unwrap();
+        let directory = ctx.paths.session_dir(&archived.id);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("marker"), b"preserved").unwrap();
+        let socket = ctx.paths.socket_path(&running.id);
+        std::fs::write(&socket, b"socket marker").unwrap();
+
+        cmd_project(&ctx, &["remove".into(), original.id.clone()]).unwrap();
+        assert!(ctx.db.list_projects().unwrap().is_empty());
+        assert!(ctx.db.get_project(&original.id).is_ok());
+        assert_eq!(
+            serde_json::to_value(ctx.db.list_sessions(Some(&original.id), true).unwrap()).unwrap(),
+            serde_json::to_value(&sessions).unwrap(),
+        );
+        assert_eq!(std::fs::read(directory.join("marker")).unwrap(), b"preserved");
+        assert_eq!(std::fs::read(&socket).unwrap(), b"socket marker");
+
+        let alias = root.path().join(".").to_string_lossy().into_owned();
+        cmd_project(
+            &ctx,
+            &["add".into(), alias, "--name".into(), "Do not rename".into()],
+        )
+        .unwrap();
+        let reopened = ctx.db.list_projects().unwrap();
+        assert_eq!(reopened.len(), 1);
+        assert_eq!(reopened[0].id, original.id);
+        assert_eq!(reopened[0].name, original.name);
+        assert_eq!(
+            serde_json::to_value(ctx.db.list_sessions(Some(&original.id), true).unwrap()).unwrap(),
+            serde_json::to_value(&sessions).unwrap(),
+        );
+        cmd_project(&ctx, &["add".into(), project_path]).unwrap();
+        assert_eq!(ctx.db.list_projects().unwrap().len(), 1);
     }
 }
 

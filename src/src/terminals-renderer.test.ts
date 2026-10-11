@@ -288,6 +288,7 @@ import {
   isTerminalPreviewRendered,
   loadOlderNativeHistory,
   mountTerminal,
+  pruneHandles,
   releaseTerminal,
   resetForRestart,
   restoreDesktopTerminalSize,
@@ -342,6 +343,7 @@ describe("terminal renderer", () => {
     rendererMocks.apiMock.attachSession.mockReset().mockResolvedValue({
       attachmentId: 1, childAlive: true, hostPid: 42, logBytes: 0, status: null, agentSessionId: null,
     });
+    rendererMocks.apiMock.detachSession.mockReset().mockResolvedValue(undefined);
     rendererMocks.apiMock.listProjects.mockReset();
     vi.mocked(bytesToB64).mockReturnValue("encoded-input");
     rendererMocks.apiMock.clipboardHasImage.mockResolvedValue(false);
@@ -742,6 +744,7 @@ describe("terminal renderer", () => {
 
   afterEach(() => {
     disposeHandle("renderer-test");
+    disposeHandle("renderer-visible-test");
     setState({ settings: null });
     vi.useRealTimers();
     vi.unstubAllGlobals();
@@ -3526,6 +3529,125 @@ describe("terminal renderer", () => {
     );
     localStorage.removeItem(key);
   });
+
+  it("prunes hidden Project attachments once across repeated snapshots and retains visible Sessions", async () => {
+    const hiddenProject = getState().projects[0];
+    const visibleProject = {
+      ...hiddenProject,
+      id: "prj_visible",
+      sessions: [{
+        ...hiddenProject.sessions[0],
+        id: "renderer-visible-test",
+        projectId: "prj_visible",
+      }],
+    };
+    setState({ projects: [hiddenProject, visibleProject] });
+    mountTerminal("renderer-test", document.createElement("div"));
+    mountTerminal("renderer-visible-test", document.createElement("div"));
+    await vi.waitFor(() => {
+      expect(getHandle("renderer-test")?.attached).toBe(true);
+      expect(getHandle("renderer-visible-test")?.attached).toBe(true);
+    });
+    const hiddenHandle = getHandle("renderer-test")!;
+    const visibleHandle = getHandle("renderer-visible-test")!;
+    let finishDetach!: () => void;
+    rendererMocks.apiMock.detachSession.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { finishDetach = resolve; }),
+    );
+
+    applyProjectsSnapshot([visibleProject]);
+    setState({ attachedIds: ["renderer-test", "renderer-visible-test"] });
+    pruneHandles();
+    pruneHandles();
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.detachSession.mock.calls).toEqual([
+        ["renderer-test", 1],
+      ]),
+    );
+    pruneHandles();
+    finishDetach();
+    await vi.waitFor(() => expect(getHandle("renderer-test")).toBeUndefined());
+    await Promise.resolve();
+
+    expect(rendererMocks.apiMock.detachSession.mock.calls).toEqual([
+      ["renderer-test", 1],
+    ]);
+    expect(hiddenHandle.term.dispose).toHaveBeenCalledOnce();
+    expect(getHandle("renderer-visible-test")).toBe(visibleHandle);
+    expect(visibleHandle.attached).toBe(true);
+    expect(visibleHandle.term.dispose).not.toHaveBeenCalled();
+    expect(getState().attachedIds).toEqual(["renderer-visible-test"]);
+    expect(getState().projects).toEqual([visibleProject]);
+  });
+
+  it.each(["snapshot", "detach"] as const)(
+    "keeps a fast restored attachment alive when the old prune is awaiting %s",
+    async (phase) => {
+      const projects = getState().projects;
+      mountTerminal("renderer-test", document.createElement("div"));
+      await vi.waitFor(() => expect(getHandle("renderer-test")?.attached).toBe(true));
+      const handle = getHandle("renderer-test")!;
+      const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+      const oldChannel = rendererMocks.channels[0];
+      if (phase === "snapshot") {
+        handle.logCursor = {
+          runId: "run_prune",
+          runOrdinal: 1,
+          generation: 0,
+          offset: 42,
+        };
+        handle.displayReady = true;
+      }
+      let finishDetach!: () => void;
+      rendererMocks.apiMock.detachSession.mockImplementationOnce(
+        () => new Promise<void>((resolve) => { finishDetach = resolve; }),
+      );
+      rendererMocks.apiMock.attachSession.mockResolvedValueOnce({
+        attachmentId: 2,
+        childAlive: true,
+        hostPid: 42,
+        logBytes: 0,
+        status: null,
+        agentSessionId: null,
+      });
+
+      applyProjectsSnapshot([]);
+      pruneHandles();
+      const snapshotBoundary = phase === "snapshot"
+        ? terminal.write.mock.calls[terminal.write.mock.calls.length - 1]
+        : undefined;
+      if (phase === "detach") {
+        await vi.waitFor(() =>
+          expect(rendererMocks.apiMock.detachSession).toHaveBeenCalledWith("renderer-test", 1),
+        );
+      }
+      applyProjectsSnapshot(projects);
+      setState({ activeSessionId: "renderer-test" });
+      await attachHandle("renderer-test");
+      await vi.waitFor(() =>
+        expect(rendererMocks.apiMock.detachSession).toHaveBeenCalledWith("renderer-test", 1),
+      );
+      finishDetach();
+      await Promise.resolve();
+      await Promise.resolve();
+      if (snapshotBoundary) invokeWriteCallback(snapshotBoundary);
+      oldChannel.onmessage?.({ t: "detached" });
+
+      expect(rendererMocks.apiMock.detachSession.mock.calls).toEqual([
+        ["renderer-test", 1],
+      ]);
+      expect(getHandle("renderer-test")).toBe(handle);
+      expect(handle.attachmentId).toBe(2);
+      expect(handle.attached).toBe(true);
+      expect(terminal.dispose).not.toHaveBeenCalled();
+      expect(getState().runtime["renderer-test"]?.attached).toBe(true);
+      expect(getState().projects).toEqual(projects);
+      terminal.emitData("still attached");
+      await vi.waitFor(() =>
+        expect(rendererMocks.apiMock.sendInput).toHaveBeenCalledWith("renderer-test", "encoded-input"),
+      );
+    },
+  );
 
   it("persists a parser-drained checkpoint before releasing the sole renderer", async () => {
     const key = "agentport:terminal-snapshot:v2:renderer-test";

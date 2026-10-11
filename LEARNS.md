@@ -733,3 +733,12 @@
 - Correct approach: Retain a private supervisor anchor independently of command status, signal only recorded start_new_session groups, TERM/grace/KILL before reaping, and keep cancellation deferred across ownership and publication transactions. Classify zombie-only EPERM while the anchor remains reserved; never suppress a live-member permission failure.
 - Prevention: Keep early-exit, TERM-resistant descendant, unrelated-session, fatal-supervisor, idempotent-cleanup and rename-cancellation fixtures. Do not infer family cleanup from one PID's completion.
 - Verified by: The lifecycle regressions failed with live orphan children/lost old bundles before the repair; all24 fixtures passed afterward and on coordinator rerun, with an unrelated private session left alive.
+
+## `hidden Project terminal pruning` — renderer disposal is not transport detachment
+
+- Wrong approach: Preserve running Hosts when removing a Project but keep `pruneHandles()` calling `disposeHandle()` for its now-hidden Sessions.
+- Why it failed: Disposal clears the attachment ID without `detachSession`; the Rust writer/watch loop is not closed just because xterm disappears.
+- Recognition signal: A filtered project snapshot removes a live terminal handle, but the captured attachment never receives a detach call.
+- Correct approach: Prune via `releaseTerminal()`, which checkpoints parsed output, detaches the captured capability, and disposes only its own object/generation without stopping the Host.
+- Prevention: Cover repeated event/refresh pruning and fast reopen while snapshot/detach awaits; an old release must not close or dispose a replacement attachment.
+- Verified by: Three real-handle renderer regressions failed with zero detach calls before the fix; all 127 renderer tests passed after direct reuse of `releaseTerminal`, including one-shot detach and usable restored input. Transport/xterm are mocked in these tests; the backend watcher lifetime was established by source inspection.

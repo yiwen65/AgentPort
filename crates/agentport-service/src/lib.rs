@@ -1318,9 +1318,10 @@ impl RemoteService for CoreService {
             .find_project_by_path(&root_path)
             .map_err(ServiceError::NotExecutedCore)?
         {
+            let restored = self.db.restore_project(&existing.id)?;
             return Ok(ProjectAddResult {
                 project: existing.into(),
-                focused_existing: true,
+                focused_existing: !restored,
             });
         }
         let name = params
@@ -1353,12 +1354,13 @@ impl RemoteService for CoreService {
         };
         if let Err(error) = self.db.add_project(&project) {
             // The canonical-path UNIQUE constraint is the cross-connection
-            // arbiter. A concurrent winner is focused, never renamed.
+            // arbiter. Reuse the winner's identity, restoring it if hidden.
             if matches!(&error, agentport_core::CoreError::Conflict(_)) {
                 if let Some(existing) = self.db.find_project_by_path(&root_path)? {
+                    let restored = self.db.restore_project(&existing.id)?;
                     return Ok(ProjectAddResult {
                         project: existing.into(),
-                        focused_existing: true,
+                        focused_existing: !restored,
                     });
                 }
             }
@@ -1401,53 +1403,14 @@ impl RemoteService for CoreService {
     fn remove_project(&self, params: ProjectRemoveParams) -> Result<ProjectRemoveResult> {
         let expected = core_project_snapshot(params)?;
         self.db
-            .begin_project_removal_confirmed(&expected)
+            .remove_project_confirmed(&expected)
             .map_err(|_| ServiceError::PreconditionFailed)?;
-        let sessions = expected
-            .sessions
-            .iter()
-            .map(|session| self.db.get_session(&session.id))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let native_plans = sessions
-            .iter()
-            .map(|session| plan_native_cleanup(&self.paths, session))
-            .collect::<Vec<_>>();
-        for session in &sessions {
-            if let Err(stop_error) = (HostManager {
-                paths: &self.paths,
-                db: &self.db,
-            })
-            .stop(&session.id, 3_000)
-            {
-                // `HostManager::stop` failing means process-group cleanup was
-                // not authoritatively proven. Preserve Session/Project
-                // authority and every file/DB row; only release the temporary
-                // cross-process fence so the user can reconcile and retry.
-                self.db.cancel_project_removal(&expected.project_id)?;
-                return Err(ServiceError::Core(stop_error));
-            }
-        }
-        let manager = WorktreeManager {
-            paths: &self.paths,
-            db: &self.db,
-        };
-        let mut cleanup_warnings = 0;
-        for worktree_id in &expected.worktree_ids {
-            match manager.remove(worktree_id) {
-                Ok(outcome) => cleanup_warnings += outcome.cleanup_warnings,
-                Err(_) => cleanup_warnings += 1,
-            }
-        }
-        self.db.remove_project(&expected.project_id)?;
-        let native_cleanup_warnings = native_plans
-            .iter()
-            .filter(|plan| execute_native_cleanup(plan).has_failures())
-            .count();
-        cleanup_confirmed_sessions(&self.paths, &self.db, &expected.sessions);
+        // Removing a Project only hides its list entry. Session authority,
+        // running Hosts, worktrees, and native history remain untouched.
         Ok(ProjectRemoveResult {
             stop_warnings: 0,
-            cleanup_warnings,
-            native_cleanup_warnings,
+            cleanup_warnings: 0,
+            native_cleanup_warnings: 0,
         })
     }
 
@@ -4825,9 +4788,13 @@ mod tests {
     }
 
     #[test]
-    fn project_facade_requires_echoed_preflight_and_cascades_metadata() {
-        let service = CoreService::memory().unwrap();
+    fn project_facade_requires_echoed_preflight_and_restores_preserved_data() {
         let root = tempfile::tempdir().unwrap();
+        let service = CoreService::open(
+            AppPaths::new(root.path().join("app"))
+                .with_pi_sessions_root(root.path().join(".epi/agent/sessions")),
+        )
+        .unwrap();
         let added = service
             .add_project(ProjectAddParams {
                 path: root.path().to_string_lossy().into_owned(),
@@ -4839,13 +4806,29 @@ mod tests {
         let archived_id = "ses_remote_archived";
         let archived_dir = service.paths.session_dir(archived_id);
         std::fs::create_dir_all(&archived_dir).unwrap();
-        std::fs::write(archived_dir.join("marker"), b"cleanup").unwrap();
+        std::fs::write(archived_dir.join("marker"), b"preserved").unwrap();
+        let socket = service.paths.socket_path(archived_id);
+        std::fs::write(&socket, b"socket marker").unwrap();
+        let worktree_dir = root.path().join("worktree");
+        std::fs::create_dir_all(&worktree_dir).unwrap();
+        std::fs::write(worktree_dir.join("marker"), b"worktree content").unwrap();
+        let worktree = Worktree {
+            id: "wt_preserved".into(),
+            project_id: added.project.id.clone(),
+            branch: "agent/preserved".into(),
+            base_commit: "fixture-base".into(),
+            base_ref: Some("main".into()),
+            path: worktree_dir.to_string_lossy().into_owned(),
+            health: agentport_core::models::WorktreeHealth::Dirty,
+            created_at: Utc::now(),
+        };
+        service.db.insert_worktree(&worktree).unwrap();
         service
             .db
             .insert_session(&Session {
                 id: archived_id.into(),
                 project_id: added.project.id.clone(),
-                worktree_id: None,
+                worktree_id: Some(worktree.id.clone()),
                 preset_id: "pre_shell_safe".into(),
                 title: "archived".into(),
                 cwd: root.path().to_string_lossy().into_owned(),
@@ -4853,25 +4836,66 @@ mod tests {
                 host_socket: None,
                 host_token: "fixture-only-token".into(),
                 lifecycle: Lifecycle::Exited,
-                agent_session_id: None,
-                resume_precision: ResumePrecision::Unavailable,
-                adapter_type: AgentType::Shell,
+                agent_session_id: Some("native-preserved".into()),
+                resume_precision: ResumePrecision::Exact,
+                adapter_type: AgentType::Pi,
                 transport: AgentTransport::Pty,
-                command: Vec::new(),
+                command: vec!["pi".into()],
                 permission_mode: PermissionMode::Native,
-                pinned_at: None,
+                pinned_at: Some(Utc::now()),
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 archived_at: Some(Utc::now()),
             })
             .unwrap();
+        let legacy_native = archived_dir.join("pi");
+        std::fs::create_dir_all(&legacy_native).unwrap();
+        let transcript = b"{\"type\":\"session\",\"version\":3,\"id\":\"native-preserved\"}\n";
+        std::fs::write(legacy_native.join("native-preserved.jsonl"), transcript).unwrap();
+        let mut plan = adapters::LaunchPlan {
+            argv: vec![
+                "pi".into(),
+                "--session-id".into(),
+                "native-preserved".into(),
+                "--session-dir".into(),
+                legacy_native.to_string_lossy().into_owned(),
+            ],
+            env: Vec::new(),
+            assigned_agent_session_id: Some("native-preserved".into()),
+            resume_precision: ResumePrecision::Exact,
+            hook_status: agentport_core::models::HookStatus::Unavailable,
+            transport: AgentTransport::Pty,
+            helper_files: Vec::new(),
+            notices: Vec::new(),
+        };
+        agentport_core::pi_storage::prepare_launch(&service.paths, archived_id, &mut plan).unwrap();
+        let native_dir =
+            agentport_core::pi_storage::read_directory(&service.paths, archived_id).unwrap();
+        assert!(native_dir.starts_with(service.paths.pi_sessions_root().unwrap()));
+        let mut active = service.db.get_session(archived_id).unwrap();
+        active.id = "ses_remote_active".into();
+        active.archived_at = None;
+        active.lifecycle = Lifecycle::Stopped;
+        active.agent_session_id = Some("native-active".into());
+        service.db.insert_session(&active).unwrap();
+        let sessions_before = service
+            .db
+            .list_sessions(Some(&added.project.id), true)
+            .unwrap();
+        let worktrees_before = service.db.list_worktrees(&added.project.id).unwrap();
+        let archived_runs = service.db.list_session_runs(archived_id).unwrap();
+        let active_runs = service.db.list_session_runs(&active.id).unwrap();
         let preflight = service
             .project_remove_preflight(ProjectIdParams {
                 project_id: added.project.id.clone(),
             })
             .unwrap();
         assert_eq!(preflight.archived_session_count, 1);
-        assert_eq!(preflight.sessions[0].session_id, archived_id);
+        assert_eq!(preflight.sessions.len(), 2);
+        assert!(preflight
+            .sessions
+            .iter()
+            .any(|session| session.session_id == archived_id));
         assert_eq!(
             preflight.revision,
             service
@@ -4892,21 +4916,86 @@ mod tests {
             service.remove_project(stale),
             Err(ServiceError::PreconditionFailed)
         ));
-        service
+        assert_eq!(service.list_projects().unwrap(), vec![added.project.clone()]);
+        let result = service
             .remove_project(preflight_to_params(&preflight))
             .unwrap();
+        assert_eq!(result.stop_warnings, 0);
+        assert_eq!(result.cleanup_warnings, 0);
+        assert_eq!(result.native_cleanup_warnings, 0);
         assert!(service.list_projects().unwrap().is_empty());
-        assert!(!archived_dir.exists());
+        assert_eq!(
+            ProjectSummary::from(service.db.get_project(&added.project.id).unwrap()),
+            added.project
+        );
+        let assert_preserved = || {
+            assert_eq!(
+                serde_json::to_value(
+                    service
+                        .db
+                        .list_sessions(Some(&added.project.id), true)
+                        .unwrap()
+                )
+                .unwrap(),
+                serde_json::to_value(&sessions_before).unwrap(),
+            );
+            assert_eq!(
+                service.db.get_session(archived_id).unwrap().host_token,
+                "fixture-only-token"
+            );
+            assert_eq!(service.db.list_session_runs(archived_id).unwrap(), archived_runs);
+            assert_eq!(service.db.list_session_runs(&active.id).unwrap(), active_runs);
+            assert_eq!(
+                serde_json::to_value(service.db.list_worktrees(&added.project.id).unwrap()).unwrap(),
+                serde_json::to_value(&worktrees_before).unwrap(),
+            );
+            assert_eq!(std::fs::read(archived_dir.join("marker")).unwrap(), b"preserved");
+            assert_eq!(std::fs::read(&socket).unwrap(), b"socket marker");
+            assert_eq!(
+                std::fs::read(worktree_dir.join("marker")).unwrap(),
+                b"worktree content"
+            );
+            assert_eq!(
+                std::fs::read(legacy_native.join("native-preserved.jsonl")).unwrap(),
+                transcript
+            );
+            assert_eq!(
+                std::fs::read(native_dir.join("native-preserved.jsonl")).unwrap(),
+                transcript
+            );
+        };
+        assert_preserved();
+        let reopened = service
+            .add_project(ProjectAddParams {
+                path: root.path().join(".").to_string_lossy().into_owned(),
+                name: Some("Do not rename".into()),
+            })
+            .unwrap();
+        assert_eq!(reopened.project, added.project);
+        assert!(!reopened.focused_existing);
+        assert_eq!(service.list_projects().unwrap(), vec![added.project.clone()]);
+        assert_preserved();
+        let duplicate = service
+            .add_project(ProjectAddParams {
+                path: root.path().to_string_lossy().into_owned(),
+                name: None,
+            })
+            .unwrap();
+        assert_eq!(duplicate.project.id, added.project.id);
+        assert!(duplicate.focused_existing);
     }
 
     #[test]
-    fn project_removal_preserves_authority_when_host_cleanup_is_unproven() {
-        let service = CoreService::memory().unwrap();
+    fn project_removal_preserves_running_host_without_contact_or_fence() {
         let root = tempfile::tempdir().unwrap();
+        let service = CoreService::open(AppPaths::new(root.path().join("app"))).unwrap();
+        let socket = root.path().join("host.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
         let added = service
             .add_project(ProjectAddParams {
                 path: root.path().to_string_lossy().into_owned(),
-                name: Some("Fail Closed".into()),
+                name: Some("Running Project".into()),
             })
             .unwrap();
         let running_id = "ses_unverified_stop";
@@ -4920,12 +5009,7 @@ mod tests {
                 title: "running".into(),
                 cwd: root.path().to_string_lossy().into_owned(),
                 host_pid: Some(std::process::id() as i64),
-                host_socket: Some(
-                    root.path()
-                        .join("missing.sock")
-                        .to_string_lossy()
-                        .into_owned(),
-                ),
+                host_socket: Some(socket.to_string_lossy().into_owned()),
                 host_token: "0123456789abcdef0123456789abcdef".into(),
                 lifecycle: Lifecycle::Running,
                 agent_session_id: None,
@@ -4946,20 +5030,57 @@ mod tests {
             })
             .unwrap();
 
-        assert!(matches!(
-            service.remove_project(preflight_to_params(&preflight)),
-            Err(ServiceError::Core(agentport_core::CoreError::Host(_)))
-        ));
+        let before = service.db.get_session(running_id).unwrap();
+        let runs_before = service.db.list_session_runs(running_id).unwrap();
+        let binding_before = service.db.session_host_binding(running_id).unwrap();
+        let result = service
+            .remove_project(preflight_to_params(&preflight))
+            .unwrap();
+        assert_eq!(result.stop_warnings, 0);
+        assert_eq!(result.cleanup_warnings, 0);
+        assert_eq!(result.native_cleanup_warnings, 0);
+        assert!(service.list_projects().unwrap().is_empty());
         assert!(service.db.get_project(&added.project.id).is_ok());
-        assert!(service.db.get_session(running_id).is_ok());
-        // The failed attempt releases only its temporary fence, so authority
-        // remains usable and a later reconcile/retry is possible.
-        let mut another = service.db.get_session(running_id).unwrap();
-        another.id = "ses_after_abort".into();
+        let after = service.db.get_session(running_id).unwrap();
+        assert_eq!(
+            serde_json::to_value(&after).unwrap(),
+            serde_json::to_value(&before).unwrap()
+        );
+        assert_eq!(after.host_token, before.host_token);
+        assert_eq!(service.db.list_session_runs(running_id).unwrap(), runs_before);
+        let binding_after = service.db.session_host_binding(running_id).unwrap();
+        assert_eq!(binding_after, binding_before);
+        assert!(socket.exists());
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+        // Hiding must not install a removal fence: existing Hosts retain
+        // authority and can publish more metadata while the Project is hidden.
+        service
+            .db
+            .create_session_run(running_id, "after-hide")
+            .unwrap();
+        let mut another = after;
+        another.id = "ses_after_hide".into();
         another.lifecycle = Lifecycle::Stopped;
         another.host_pid = None;
         another.host_socket = None;
         service.db.insert_session(&another).unwrap();
+        let reopened = service
+            .add_project(ProjectAddParams {
+                path: root.path().to_string_lossy().into_owned(),
+                name: None,
+            })
+            .unwrap();
+        assert_eq!(reopened.project.id, added.project.id);
+        assert!(!reopened.focused_existing);
+        assert_eq!(
+            service.db.get_session(running_id).unwrap().lifecycle,
+            Lifecycle::Running
+        );
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
     }
 
     #[test]

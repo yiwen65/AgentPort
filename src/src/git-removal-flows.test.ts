@@ -9,6 +9,8 @@ const { apiMock } = vi.hoisted(() => ({
     worktreeDeletePreflight: vi.fn(),
     removeWorktree: vi.fn(),
     listProjects: vi.fn(),
+    pickDirectory: vi.fn(),
+    addProject: vi.fn(),
   },
 }));
 
@@ -30,16 +32,52 @@ vi.mock("./terminals", () => ({
   resetForRestart: vi.fn(),
 }));
 
-import { removeProjectFlow, removeWorktreeFlow } from "./actions";
+import {
+  addProjectFromPickerFlow,
+  removeProjectFlow,
+  removeWorktreeFlow,
+} from "./actions";
+import { i18n } from "./i18n";
+import { emptyPaneLayout } from "./paneLayout";
 import { getState, resolveConfirm, setState } from "./store";
+import type { ProjectView, SessionView } from "./types";
 
-const project = {
+const runningSession: SessionView = {
+  id: "ses_2",
+  projectId: "prj_mock",
+  worktreeId: "wt_mock",
+  title: "Running Session",
+  adapter: "shell",
+  cwd: "/mock-worktree",
+  lifecycle: "running",
+  hostAlive: true,
+  agentSessionId: null,
+  resumePrecision: "unavailable",
+  permissionMode: "native",
+  transport: "pty",
+  unread: false,
+  status: null,
+  pinnedAt: null,
+  createdAt: "2026-10-11T00:00:00Z",
+};
+
+const stoppedSession: SessionView = {
+  ...runningSession,
+  id: "ses_3",
+  worktreeId: null,
+  title: "Stopped Session",
+  cwd: "/mock",
+  lifecycle: "stopped",
+  hostAlive: false,
+};
+
+const project: ProjectView = {
   id: "prj_mock",
   name: "Mock",
   rootPath: "/mock",
   gitRootPath: "/mock",
   pinned: false,
-  sessions: [],
+  sessions: [runningSession, stoppedSession],
   worktrees: [
     {
       id: "wt_mock",
@@ -58,12 +96,13 @@ const projectPreflight = {
   sessions: [
     { id: "ses_1", archiveGeneration: 101, archived: true },
     { id: "ses_2", archiveGeneration: 0, archived: false },
+    { id: "ses_3", archiveGeneration: 0, archived: false },
   ],
   worktreeIds: ["wt_mock"],
   recoverableOperationIds: ["op_branch"],
   pendingCommitOperationIds: ["op_commit"],
-  sessionCount: 2,
-  activeSessionCount: 1,
+  sessionCount: 3,
+  activeSessionCount: 2,
   archivedSessionCount: 1,
   archivedSessions: [{ id: "ses_1", archiveGeneration: 101 }],
   worktreeCount: 1,
@@ -89,12 +128,17 @@ const worktreePreflight = {
   blockers: ["ignored_local_files", "session_references"],
 };
 
-describe("destructive Git removal flows", () => {
-  beforeEach(() => {
+describe("Project and Worktree removal flows", () => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    await i18n.changeLanguage("zh-CN");
     setState({
       projects: [project],
       activeSessionId: null,
+      terminalLayout: emptyPaneLayout(),
+      terminalLayoutGroups: [],
+      attachedIds: [],
+      expandedProjects: {},
       confirm: null,
       toasts: [],
     });
@@ -112,6 +156,7 @@ describe("destructive Git removal flows", () => {
     await vi.waitFor(() => expect(getState().confirm).not.toBeNull());
     expect(getState().confirm?.details?.join("\n")).toContain(".env");
     expect(getState().confirm?.details?.join("\n")).toContain("Session");
+    expect(getState().confirm?.danger).toBe(true);
     resolveConfirm(true);
     await flow;
 
@@ -161,7 +206,33 @@ describe("destructive Git removal flows", () => {
     expect(apiMock.removeWorktree).toHaveBeenCalledWith("wt_mock");
   });
 
-  it("confirms once and removes a Project with all dependencies", async () => {
+  it.each([
+    {
+      language: "zh-CN",
+      titleFragment: "从项目列表中移除",
+      bodyFragments: [
+        "仅移除项目列表入口",
+        "所有 Session 数据（包括归档 Session）、Worktree、文件和本地改动都会保留",
+        "正在运行的 Session 不会停止",
+        "重新添加同一项目路径，即可恢复显示原有 Session",
+      ],
+    },
+    {
+      language: "en-US",
+      titleFragment: "from the project list",
+      bodyFragments: [
+        "Only the project list entry will be removed",
+        "All Session data (including archived Sessions), Worktrees, files and local changes will be kept",
+        "running Sessions will not be stopped",
+        "Add the same project path again to restore its Sessions",
+      ],
+    },
+  ])("confirms non-destructive Project removal in $language", async ({
+    language,
+    titleFragment,
+    bodyFragments,
+  }) => {
+    await i18n.changeLanguage(language);
     apiMock.projectRemovePreflight.mockResolvedValue(projectPreflight);
     apiMock.removeProject.mockResolvedValue({
       stopWarnings: 0,
@@ -170,17 +241,24 @@ describe("destructive Git removal flows", () => {
 
     const flow = removeProjectFlow("prj_mock");
     await vi.waitFor(() => expect(getState().confirm).not.toBeNull());
-    expect(getState().confirm?.body).toContain("2 个 Session");
-    expect(getState().confirm?.body).toContain("1 个托管 Worktree");
-    expect(getState().confirm?.body).toContain("2 个未完成 Git 操作");
+    expect(getState().confirm?.title).toContain(titleFragment);
+    for (const fragment of bodyFragments) {
+      expect(getState().confirm?.body).toContain(fragment);
+    }
+    expect(getState().confirm?.danger).not.toBe(true);
     resolveConfirm(true);
     await flow;
 
-    expect(apiMock.deleteProjectArchivedSessions).not.toHaveBeenCalled();
+    expect(apiMock.projectRemovePreflight).toHaveBeenCalledWith("prj_mock");
+    expect(apiMock.removeProject).toHaveBeenCalledOnce();
     expect(apiMock.removeProject).toHaveBeenCalledWith(projectPreflight);
+    expect(apiMock.deleteProjectArchivedSessions).not.toHaveBeenCalled();
+    expect(apiMock.removeWorktree).not.toHaveBeenCalled();
+    expect(getState().toasts).toEqual([]);
   });
 
-  it("keeps the destructive confirmation cancellable", async () => {
+  it("keeps Project removal cancellable without changing the list or selection", async () => {
+    setState({ activeSessionId: runningSession.id });
     apiMock.projectRemovePreflight.mockResolvedValue(projectPreflight);
 
     const flow = removeProjectFlow("prj_mock");
@@ -189,5 +267,106 @@ describe("destructive Git removal flows", () => {
     await flow;
 
     expect(apiMock.removeProject).not.toHaveBeenCalled();
+    expect(apiMock.deleteProjectArchivedSessions).not.toHaveBeenCalled();
+    expect(apiMock.listProjects).not.toHaveBeenCalled();
+    expect(getState().projects).toEqual([project]);
+    expect(getState().activeSessionId).toBe(runningSession.id);
+  });
+
+  it("clears the active Session when it belongs to the removed Project", async () => {
+    setState({ activeSessionId: runningSession.id });
+    apiMock.projectRemovePreflight.mockResolvedValue(projectPreflight);
+    apiMock.removeProject.mockResolvedValue({
+      stopWarnings: 0,
+      cleanupWarnings: 0,
+    });
+
+    const flow = removeProjectFlow("prj_mock");
+    await vi.waitFor(() => expect(getState().confirm).not.toBeNull());
+    resolveConfirm(true);
+    await flow;
+
+    expect(apiMock.listProjects).toHaveBeenCalledWith(null);
+    expect(getState().projects).toEqual([]);
+    expect(getState().activeSessionId).toBeNull();
+  });
+
+  it("retains an unrelated active Session selected while confirmation is open", async () => {
+    const otherSession: SessionView = {
+      ...runningSession,
+      id: "ses_other",
+      projectId: "prj_other",
+      worktreeId: null,
+      cwd: "/other",
+    };
+    const otherProject: ProjectView = {
+      ...project,
+      id: "prj_other",
+      name: "Other",
+      rootPath: "/other",
+      gitRootPath: "/other",
+      sessions: [otherSession],
+      worktrees: [],
+    };
+    setState({
+      projects: [project, otherProject],
+      activeSessionId: runningSession.id,
+    });
+    apiMock.projectRemovePreflight.mockResolvedValue(projectPreflight);
+    apiMock.removeProject.mockResolvedValue({
+      stopWarnings: 0,
+      cleanupWarnings: 0,
+    });
+    apiMock.listProjects.mockResolvedValue([otherProject]);
+
+    const flow = removeProjectFlow("prj_mock");
+    await vi.waitFor(() => expect(getState().confirm).not.toBeNull());
+    setState({ activeSessionId: otherSession.id });
+    resolveConfirm(true);
+    await flow;
+
+    expect(apiMock.listProjects).toHaveBeenCalledWith(otherSession.id);
+    expect(getState().activeSessionId).toBe(otherSession.id);
+    expect(getState().projects).toEqual([otherProject]);
+  });
+
+  it("restores Sessions and Worktrees and expands the same Project when its path is re-added", async () => {
+    setState({
+      activeSessionId: runningSession.id,
+      expandedProjects: { [project.id]: false },
+    });
+    apiMock.projectRemovePreflight.mockResolvedValue(projectPreflight);
+    apiMock.removeProject.mockResolvedValue({
+      stopWarnings: 0,
+      cleanupWarnings: 0,
+    });
+    apiMock.listProjects
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([project]);
+    apiMock.pickDirectory.mockResolvedValue(project.rootPath);
+    apiMock.addProject.mockResolvedValue({
+      id: project.id,
+      name: project.name,
+      focusedExisting: false,
+    });
+
+    const flow = removeProjectFlow(project.id);
+    await vi.waitFor(() => expect(getState().confirm).not.toBeNull());
+    resolveConfirm(true);
+    await flow;
+    expect(getState().projects).toEqual([]);
+
+    await addProjectFromPickerFlow();
+
+    expect(apiMock.addProject).toHaveBeenCalledWith(project.rootPath, null);
+    expect(getState().projects).toEqual([project]);
+    expect(getState().projects[0].sessions).toEqual([
+      runningSession,
+      stoppedSession,
+    ]);
+    expect(getState().projects[0].worktrees).toEqual(project.worktrees);
+    expect(getState().expandedProjects[project.id]).toBe(true);
+    expect(apiMock.deleteProjectArchivedSessions).not.toHaveBeenCalled();
+    expect(apiMock.removeWorktree).not.toHaveBeenCalled();
   });
 });

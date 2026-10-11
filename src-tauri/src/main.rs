@@ -1074,10 +1074,9 @@ fn probe_outcome_json(t: AgentType, o: &capability::ProbeOutcome) -> Value {
 // ---------------------------------------------------------------------------
 // Projects / presets
 // ---------------------------------------------------------------------------
-// These desktop commands retain AppHandle emissions, writer detachment, and
-// native-cleanup warning UX that a Tauri-free service cannot own. The remote
-// facade delegates to the same Core preflight/fence/cascade APIs and tests the
-// confirmed dependency snapshot against the same in-memory Db fixtures.
+// Project removal only hides the list entry, preserving Sessions and their
+// running Hosts. Desktop and remote commands share Core's confirmed snapshot
+// and restore the same Project identity when its checkout path is reopened.
 
 #[tauri::command]
 async fn add_project(
@@ -1087,7 +1086,12 @@ async fn add_project(
 ) -> std::result::Result<Value, String> {
     let norm = map_err!(normalize_abs(&path))?;
     if let Some(existing) = map_err!(state.db.find_project_by_path(&norm))? {
-        return Ok(json!({"id": existing.id, "focusedExisting": true}));
+        let restored = map_err!(state.db.restore_project(&existing.id))?;
+        return Ok(json!({
+            "id": existing.id,
+            "name": existing.name,
+            "focusedExisting": !restored,
+        }));
     }
     let name = name.unwrap_or_else(|| {
         std::path::Path::new(&norm)
@@ -1167,70 +1171,11 @@ async fn remove_project(
     preflight: ConfirmedProjectRemovalPreflight,
 ) -> std::result::Result<Value, String> {
     let preflight = ProjectRemovalSnapshot::try_from(preflight)?;
-    let id = preflight.project_id.clone();
-    map_err!(state.db.begin_project_removal_confirmed(&preflight))?;
-    let sessions = match preflight
-        .sessions
-        .iter()
-        .map(|session| state.db.get_session(&session.id))
-        .collect::<agentport_core::Result<Vec<_>>>()
-    {
-        Ok(sessions) => sessions,
-        Err(error) => {
-            let _ = state.db.cancel_project_removal(&id);
-            return Err(error.to_string());
-        }
-    };
-    let session_ids = preflight
-        .sessions
-        .iter()
-        .map(|session| session.id.clone())
-        .collect::<Vec<_>>();
-    let native_plans = sessions
-        .iter()
-        .map(|session| {
-            (
-                session.id.clone(),
-                plan_native_cleanup(&state.paths, session),
-            )
-        })
-        .collect::<Vec<_>>();
-    if let Err(error) = stop_sessions_for_project_removal(&state, &session_ids) {
-        let _ = state.db.cancel_project_removal(&id);
-        return Err(error);
-    }
-
-    // Remove every managed Worktree directory before dropping the Project
-    // row. Individual cleanup failures are logged by the manager and never
-    // turn stale files or Git metadata into a deletion blocker.
-    let worktree_ids = preflight.worktree_ids;
-    let manager = WorktreeManager {
-        paths: &state.paths,
-        db: &state.db,
-    };
-    let mut cleanup_warnings = 0usize;
-    for worktree_id in worktree_ids {
-        match manager.remove(&worktree_id) {
-            Ok(outcome) => cleanup_warnings += outcome.cleanup_warnings,
-            Err(error) => {
-                cleanup_warnings += 1;
-                tracing::warn!(
-                    project = %id,
-                    worktree = %worktree_id,
-                    error = %error,
-                    "Worktree cleanup failed during Project removal; continuing cascade"
-                );
-            }
-        }
-    }
-
-    map_err!(state.db.remove_project(&id))?;
-    run_native_cleanups(&app, &native_plans);
-    cleanup_purged_sessions(&state, &session_ids);
+    map_err!(state.db.remove_project_confirmed(&preflight))?;
     emit_sessions_changed(&app, &state, None);
     Ok(json!({
         "stopWarnings": 0,
-        "cleanupWarnings": cleanup_warnings,
+        "cleanupWarnings": 0,
     }))
 }
 

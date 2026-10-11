@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level data model version (PRD ch.5 `version`). Bump when the schema
 /// changes in a way the migrator must handle; SQLite user_version tracks the same.
-pub const DATA_MODEL_VERSION: i64 = 16;
+pub const DATA_MODEL_VERSION: i64 = 17;
 pub const APP_ID: &str = "agentport.local";
 pub const DELIVERY_SCOPE: &str = "p0_p2";
 
@@ -338,7 +338,7 @@ pub struct ProjectLayoutEntry {
     pub pinned: bool,
 }
 
-/// One exact Session dependency in a confirmed Project cascade. Active and
+/// One exact Session dependency in a confirmed Project removal. Active and
 /// archived rows both carry their persisted archive generation so an
 /// archive/unarchive race changes the preflight revision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,8 +349,8 @@ pub struct ProjectRemovalSession {
     pub archived: bool,
 }
 
-/// Complete destructive Project preflight. Callers must echo all fields; Core
-/// re-reads and compares them before publishing the cross-process fence.
+/// Complete Project removal preflight. Callers must echo all fields; Core
+/// re-reads and compares them before hiding the list entry without cleanup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectRemovalSnapshot {
