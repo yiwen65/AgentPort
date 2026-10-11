@@ -54,6 +54,8 @@ pub const METHOD_REGISTRY: &[&str] = &[
     "agent.preferences.replace",
     "preset.list",
     "project.list",
+    "project.directory.list",
+    "project.directory.resolve",
     "project.add",
     "project.rename",
     "project.layout.replace",
@@ -142,6 +144,9 @@ pub const MOBILE_V2_METHOD_ALLOWLIST: &[&str] = &[
     "agent.supported",
     "agent.preferences",
     "project.list",
+    "project.directory.list",
+    "project.directory.resolve",
+    "project.add",
 ];
 
 #[derive(Debug, Error)]
@@ -347,6 +352,8 @@ pub fn classify_method(method: &str) -> RetryClass {
         | "agent.preferences"
         | "preset.list"
         | "project.list"
+        | "project.directory.list"
+        | "project.directory.resolve"
         | "project.remove.preflight"
         | "worktree.preview"
         | "worktree.list"
@@ -557,6 +564,21 @@ pub struct AgentPreferencesReplaceParams {
 pub struct PresetListParams {
     #[serde(default)]
     pub agent: Option<RemoteAgentType>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectDirectoryListParams {
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub show_hidden: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectDirectoryResolveParams {
+    pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1221,6 +1243,27 @@ mod tests {
             .unwrap(),
             ProtocolVersion { major: 1, minor: 1 }
         );
+    }
+
+    #[test]
+    fn mobile_directory_contract_keeps_browsing_read_only_and_add_non_replayable() {
+        for method in ["project.directory.list", "project.directory.resolve"] {
+            assert!(METHOD_REGISTRY.contains(&method));
+            assert!(MOBILE_V2_METHOD_ALLOWLIST.contains(&method));
+            assert_eq!(classify_method(method), RetryClass::Read);
+            assert!(classify_method(method).allows_automatic_retry());
+        }
+        assert!(MOBILE_V2_METHOD_ALLOWLIST.contains(&"project.add"));
+        assert_eq!(classify_method("project.add"), RetryClass::NonIdempotentWrite);
+        assert!(!classify_method("project.add").allows_automatic_retry());
+        let defaults: ProjectDirectoryListParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults, ProjectDirectoryListParams::default());
+        let explicit: ProjectDirectoryListParams =
+            serde_json::from_str(r#"{"path":"/remote/home","showHidden":true}"#).unwrap();
+        assert_eq!(explicit.path.as_deref(), Some("/remote/home"));
+        assert!(explicit.show_hidden);
+        assert!(serde_json::from_str::<ProjectDirectoryListParams>(r#"{"create":true}"#).is_err());
+        assert!(serde_json::from_str::<ProjectDirectoryResolveParams>("{}").is_err());
     }
 
     #[test]

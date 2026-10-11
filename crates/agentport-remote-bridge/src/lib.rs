@@ -7,7 +7,8 @@ use agentport_remote_protocol::{
     borrow_request, classify_method, negotiate_version, read_frame, write_frame,
     AgentPreferencesReplaceParams, AgentProbeAllParams, AgentProbeParams, AttentionPollParams,
     Capability, CommitAiConfigSaveParams, DocumentWriteParams, Event, Hello, HelloResult, Limits,
-    Precondition, PresetListParams, ProjectAddParams, ProjectIdParams, ProjectLayoutReplaceParams,
+    Precondition, PresetListParams, ProjectAddParams, ProjectDirectoryListParams,
+    ProjectDirectoryResolveParams, ProjectIdParams, ProjectLayoutReplaceParams,
     ProjectRemoveParams, ProjectRenameParams, ProtocolError, ProtocolVersion, RemoteError,
     RequestType, ResultStatus, RetryClass, SecretAddParams, SecretDeleteParams,
     ServerEnvelope, ServerIdentity, SessionAttachParams, SessionAutoTitleParams,
@@ -97,6 +98,8 @@ enum PreparedRequest {
     AgentPreferencesReplace(AgentPreferencesReplaceParams, u64),
     PresetList(PresetListParams),
     ProjectList,
+    ProjectDirectoryList(ProjectDirectoryListParams),
+    ProjectDirectoryResolve(ProjectDirectoryResolveParams),
     ProjectAdd(ProjectAddParams),
     ProjectRename(ProjectRenameParams),
     ProjectLayoutReplace(ProjectLayoutReplaceParams),
@@ -683,6 +686,12 @@ fn handle_request<E: Write, S: RemoteService + Sync>(
         PreparedRequest::ProjectList => service
             .list_projects()
             .and_then(|value| serialize_service_value(value, ResultStatus::Succeeded)),
+        PreparedRequest::ProjectDirectoryList(params) => service
+            .list_project_directories(params)
+            .and_then(|value| serialize_service_value(value, ResultStatus::Succeeded)),
+        PreparedRequest::ProjectDirectoryResolve(params) => service
+            .resolve_project_directory(params)
+            .and_then(|value| serialize_service_value(value, ResultStatus::Succeeded)),
         PreparedRequest::ProjectAdd(params) => service
             .add_project(params)
             .and_then(|value| serialize_service_value(value, ResultStatus::Succeeded)),
@@ -924,6 +933,12 @@ fn prepare_request(
             empty()?;
             PreparedRequest::ProjectList
         }
+        "project.directory.list" => PreparedRequest::ProjectDirectoryList(
+            serde_json::from_str(params).map_err(ProtocolError::InvalidJson)?,
+        ),
+        "project.directory.resolve" => PreparedRequest::ProjectDirectoryResolve(
+            serde_json::from_str(params).map_err(ProtocolError::InvalidJson)?,
+        ),
         "project.add" => PreparedRequest::ProjectAdd(
             serde_json::from_str(params).map_err(ProtocolError::InvalidJson)?,
         ),
@@ -1171,7 +1186,10 @@ fn finish_service_error<E: Write>(
         None,
         Some(RemoteError {
             code: code.into(),
-            message: "request failed on the remote host".into(),
+            message: match &error {
+                ServiceError::ProjectDirectory(error) => error.to_string(),
+                _ => "request failed on the remote host".into(),
+            },
         }),
     )
 }
@@ -1181,6 +1199,7 @@ fn service_error_result(
     retry_class: &RetryClass,
 ) -> (ResultStatus, &'static str) {
     match error {
+        ServiceError::ProjectDirectory(error) => (ResultStatus::NotExecuted, error.code()),
         ServiceError::AttachmentNotFound
         | ServiceError::NotExecutedCore(_)
         | ServiceError::InvalidRequest
@@ -1247,6 +1266,20 @@ mod tests {
     impl RemoteService for FixtureService {
         fn service_snapshot(&self) -> ServiceSnapshot {
             ServiceSnapshot::default()
+        }
+
+        fn list_project_directories(
+            &self,
+            params: ProjectDirectoryListParams,
+        ) -> agentport_service::Result<agentport_service::ProjectDirectoryListResult> {
+            Err(directory_fixture_error(params.path.as_deref().unwrap_or("")))
+        }
+
+        fn add_project(
+            &self,
+            params: ProjectAddParams,
+        ) -> agentport_service::Result<agentport_service::ProjectAddResult> {
+            Err(directory_fixture_error(&params.path))
         }
 
         fn boot(&self) -> agentport_service::Result<agentport_service::BootSnapshot> {
@@ -1330,6 +1363,64 @@ mod tests {
             _params: SecretAddParams,
         ) -> agentport_service::Result<agentport_service::SecretAddResult> {
             Err(ServiceError::InvalidRequest)
+        }
+    }
+
+    fn directory_fixture_error(code: &str) -> ServiceError {
+        use agentport_service::ProjectDirectoryError;
+        let error = match code {
+            "path_not_found" => ProjectDirectoryError::PathNotFound,
+            "not_directory" => ProjectDirectoryError::NotDirectory,
+            "permission_denied" => ProjectDirectoryError::PermissionDenied,
+            "invalid_path" => ProjectDirectoryError::InvalidPath,
+            "directory_read_failed" => ProjectDirectoryError::DirectoryReadFailed,
+            _ => return ServiceError::InvalidRequest,
+        };
+        error.into()
+    }
+
+    #[test]
+    fn directory_error_codes_survive_framing_and_write_preflight_is_not_unknown() {
+        let codes = [
+            "path_not_found",
+            "not_directory",
+            "permission_denied",
+            "invalid_path",
+            "directory_read_failed",
+        ];
+        for method in ["project.directory.list", "project.add"] {
+            let mut input = Vec::new();
+            append(&mut input, &hello(ProtocolVersion::V1));
+            for code in codes {
+                append(
+                    &mut input,
+                    &json!({
+                        "type":"request", "requestId":code, "method":method, "params":{"path":code}
+                    }),
+                );
+            }
+            let mut output = Vec::new();
+            serve(
+                &mut Cursor::new(input),
+                &mut output,
+                &mut Vec::new(),
+                &FixtureService,
+            )
+            .unwrap();
+            let messages = frames(&SharedOutput(Arc::new(Mutex::new(output))));
+            let results = messages
+                .into_iter()
+                .filter_map(|message| match message {
+                    ServerEnvelope::Result { status, error, .. } => Some((status, error.unwrap())),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(results.len(), codes.len());
+            for ((status, error), code) in results.iter().zip(codes) {
+                assert_eq!(*status, ResultStatus::NotExecuted);
+                assert_eq!(error.code, code);
+                assert_ne!(error.message, "request failed on the remote host");
+            }
         }
     }
 

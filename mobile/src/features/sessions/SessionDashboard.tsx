@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useId, useRef, useState, type CSSProperties } from "react";
 import { AgentPortMark } from "../../components/AgentPortMark";
 import { SessionRowActions } from "./SessionRowActions";
+import { AddProjectDialog } from "../projects/AddProjectDialog";
 import { useForegroundRecovery } from "../../protocol/useForegroundRecovery";
 import { remoteErrorMessage } from "../../protocol/remoteError";
 import { useAttentionInbox } from "./useAttentionInbox";
@@ -23,6 +24,7 @@ interface DeviceSnapshot {
   deviceId: string;
   sessions: SessionSummary[];
   projects: ProjectSummary[];
+  projectsLoaded: boolean;
   agents: SupportedAgent[];
   preferences?: AgentPreferences;
   cached: boolean;
@@ -90,8 +92,9 @@ function relativeTime(value: string): string {
   return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function Icon({ name }: { name: "computer" | "bell" | "refresh" | "clock" | "folder" | "chevron" | "settings" }) {
+function Icon({ name }: { name: "computer" | "bell" | "refresh" | "clock" | "folder" | "chevron" | "settings" | "addProject" }) {
   const paths = {
+    addProject: <><path d="M3 8V6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v3M3 8v10a2 2 0 0 0 2 2h6" /><path d="M17 14v8M13 18h8" /></>,
     settings: <><circle cx="12" cy="12" r="3" /><path d="m9 3-1 3-3 1-2 5 2 5 3 1 1 3h6l1-3 3-1 2-5-2-5-3-1-1-3z" /></>,
     computer: <><rect x="3" y="4" width="18" height="14" rx="2" /><path d="M8 21h8M12 18v3" /></>,
     bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></>,
@@ -223,6 +226,10 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   selectedDeviceRef.current = selectedDeviceId;
   pickerRef.current = picker;
   const [actionError, setActionError] = useState("");
+  const [projectDialog, setProjectDialog] = useState<{ hostId: string }>();
+  const projectDialogRef = useRef(projectDialog);
+  projectDialogRef.current = projectDialog;
+  const pendingProjectFocus = useRef<{ hostId: string; projectId: string }>();
   const mounted = useRef(true);
   const dashboardRef = useRef<HTMLElement>(null);
   const pendingScroll = useRef<{ deviceId: string; top: number }>();
@@ -262,6 +269,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         deviceId,
         sessions,
         projects: current?.deviceId === deviceId ? current.projects : [],
+        projectsLoaded: current?.deviceId === deviceId && current.projectsLoaded,
         agents: current?.deviceId === deviceId ? current.agents : [],
         preferences: current?.deviceId === deviceId ? current.preferences : undefined,
         cached: false,
@@ -271,13 +279,14 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
       if (!metadata.ok) throw metadata.error;
       if (!mounted.current || deviceId !== selectedDeviceRef.current || epoch !== refreshEpoch.current) return;
       const [projects, agents, preferences] = metadata.value;
-      setSnapshot({ deviceId, sessions, projects, agents, preferences, cached: false });
+      setSnapshot({ deviceId, sessions, projects, projectsLoaded: true, agents, preferences, cached: false });
     } catch (error) {
       if (!mounted.current || deviceId !== selectedDeviceRef.current || epoch !== refreshEpoch.current) return;
       setSnapshot((current) => ({
         deviceId,
         sessions: current?.deviceId === deviceId ? current.sessions : [],
         projects: current?.deviceId === deviceId ? current.projects : [],
+        projectsLoaded: current?.deviceId === deviceId && current.projectsLoaded,
         agents: current?.deviceId === deviceId ? current.agents : [],
         preferences: current?.deviceId === deviceId ? current.preferences : undefined,
         cached: true,
@@ -593,6 +602,67 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     }
   };
 
+  const closeProjectDialog = () => {
+    projectDialogRef.current = undefined;
+    setProjectDialog(undefined);
+  };
+
+  useEffect(() => { closeProjectDialog(); pendingProjectFocus.current = undefined; }, [selectedDeviceId, globalActivity]);
+
+  const openProjectDialog = () => {
+    if (!selectedHost || selectedHost.connectionState !== "connected" || updateBusy || globalActivity) return;
+    closePicker();
+    const target = { hostId: selectedHost.id };
+    projectDialogRef.current = target;
+    setProjectDialog(target);
+  };
+
+  const projectAdded = async (result: { project: ProjectSummary; focusedExisting: boolean }) => {
+    const target = projectDialog;
+    if (!target) return;
+    const isCurrent = () => mounted.current && selectedDeviceRef.current === target.hostId
+      && workspaceRef.current.layout === "projects" && projectDialogRef.current === target;
+    if (!isCurrent()) return;
+    // A confirmed write is not undone by a failed metadata read. Keep its row
+    // visible and invalidate reads that started before this mutation.
+    refreshEpoch.current += 1;
+    setSnapshot(current => ({
+      deviceId: target.hostId,
+      sessions: current?.deviceId === target.hostId ? current.sessions : [],
+      projects: [...(current?.deviceId === target.hostId ? current.projects.filter(project => project.id !== result.project.id) : []), result.project],
+      projectsLoaded: current?.deviceId === target.hostId && current.projectsLoaded,
+      agents: current?.deviceId === target.hostId ? current.agents : [],
+      preferences: current?.deviceId === target.hostId ? current.preferences : undefined,
+      cached: current?.cached ?? false,
+    }));
+    const current = workspaceRef.current;
+    const expanded = current.projectExpansionInitialized ? current.expandedProjects
+      : [...new Set([...(snapshotRef.current?.projects.map(project => project.id) ?? []), ...sessions.map(session => session.projectId)])];
+    const next = { ...current, expandedProjects: [...new Set([...expanded, result.project.id])], projectExpansionInitialized: true };
+    workspaceRef.current = next;
+    updateWorkspace(next);
+    pendingProjectFocus.current = { hostId: target.hostId, projectId: result.project.id };
+    try {
+      const latest = await client.request<ProjectSummary[]>(target.hostId, "project.list", {});
+      if (!isCurrent()) return;
+      if (!latest.some(project => project.id === result.project.id)) throw new Error(t("project.refreshMissing"));
+      setSnapshot(current => current?.deviceId === target.hostId ? { ...current, projects: latest, projectsLoaded: true } : current);
+    } catch (error) {
+      if (isCurrent()) throw error;
+    }
+  };
+
+  useLayoutEffect(() => {
+    const pending = pendingProjectFocus.current;
+    if (projectDialog || !pending || globalActivity || pending.hostId !== selectedDeviceId) return;
+    const node = [...(dashboardRef.current?.querySelectorAll<HTMLElement>("[data-project-id]") ?? [])]
+      .find(element => element.dataset.projectId === pending.projectId);
+    if (!node) return;
+    pendingProjectFocus.current = undefined;
+    node.scrollIntoView?.({ block: "nearest" });
+    node.querySelector<HTMLButtonElement>(".project-toggle")?.focus({ preventScroll: true });
+  }, [projectDialog, snapshot, workspace, selectedDeviceId, globalActivity]);
+
   const toggleProject = (projectId: string) => {
     const expanded = new Set(workspace.projectExpansionInitialized
       ? workspace.expandedProjects
@@ -619,6 +689,9 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
           </select>
         </label>}
         <span className="toolbar-spacer" />
+        {!globalActivity ? <button type="button" className="toolbar-icon-button" style={{ "--toolbar-color": "#83d8ae" } as CSSProperties}
+          aria-label={t("project.add")} aria-haspopup="dialog" title={selectedHost?.connectionState === "connected" ? t("project.add") : t("project.offline")}
+          disabled={!selectedHost || selectedHost.connectionState !== "connected" || updateBusy} onClick={openProjectDialog}><Icon name="addProject" /></button> : null}
         <button type="button" className="toolbar-icon-button" style={{ "--toolbar-color": "#f7c66a" } as CSSProperties} disabled={!selectedHost} onClick={() => updateWorkspace({ ...workspace, recentOpen: true })} aria-label={t("dashboard.recent")}><Icon name="clock" />{recent.length > 0 ? <span className="toolbar-attention" aria-hidden="true" /> : null}</button>
         <button type="button" className="toolbar-icon-button toolbar-refresh" style={{ "--toolbar-color": "#71e6d1" } as CSSProperties} disabled={globalActivity ? connectedHosts.length === 0 || activity.refreshing : !selectedDeviceId || updateBusy} aria-busy={globalActivity ? activity.refreshing : updateBusy} onClick={() => globalActivity ? void activity.refresh(undefined, false) : void updateSelectedDevice()} aria-label={t("dashboard.refresh")}><Icon name="refresh" /></button>
         <button
@@ -641,7 +714,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
 
       {loading ? <div className="state-card" role="status">{t("dashboard.loading")}</div> : null}
       {!loading && hosts.length === 0 ? <div className="state-card" role="status">{t("dashboard.noHosts")}</div> : null}
-      {!globalActivity && selectedHost && selectedHost.connectionState !== "connected" && !updateFailed && !updateBusy ? <div className="state-note" role="status">{t(`status.${selectedHost.connectionState as ConnectionState}`)} — {t("dashboard.cached")}</div> : null}
+      {!globalActivity && selectedHost && selectedHost.connectionState !== "connected" && !updateFailed && !updateBusy ? <div className="state-note" role="status">{t(`status.${selectedHost.connectionState as ConnectionState}`)} — {t("dashboard.cached")}. {t("project.offline")}</div> : null}
       {!globalActivity && updateFailed && !updateBusy ? <p className="dashboard-refresh-error" role="alert"><button type="button" onClick={() => void updateSelectedDevice()}>{t("dashboard.updateFailed")}</button></p> : null}
       {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
       {notificationError && !recoveringHost ? <p className="state-note" role="status">{notificationError}</p> : null}
@@ -652,7 +725,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
           const expanded = workspace.projectExpansionInitialized
             ? workspace.expandedProjects.includes(project.id)
             : true;
-          return <section className="project-group" data-project-tone={projectTone(project.id)} key={project.id}>
+          return <section className="project-group" data-project-id={project.id} data-project-tone={projectTone(project.id)} key={project.id}>
             <header>
               <button type="button" className="project-toggle" aria-expanded={expanded} onClick={() => toggleProject(project.id)}><Icon name="folder" /><strong>{project.name}</strong></button>
               <button type="button" className="project-launch-button" aria-haspopup="dialog" aria-label={t("dashboard.launchIn", { defaultValue: "Start agent in {{project}}", project: project.name })} onClick={() => {
@@ -684,7 +757,14 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         {connectedHosts.length > 0 && !activityLoading && !activityFailed && active.length === 0 ? <div className="compact-empty" role="status">{t("dashboard.noGlobalActivity")}</div> : null}
       </div>}
 
-      {!globalActivity && snapshot && sessions.length === 0 ? <div className="state-card" role="status">{t("dashboard.noSessions")}</div> : null}
+      {!globalActivity && !loading && selectedHost && snapshot?.deviceId === selectedDeviceId && snapshot.projectsLoaded && !snapshot.error && projects.length === 0 ? <div className="state-card project-empty-state">
+        <span><strong>{t("project.empty")}</strong>{selectedHost.connectionState !== "connected" ? <small>{t("project.offline")}</small> : null}</span>
+        <button type="button" aria-haspopup="dialog" disabled={selectedHost.connectionState !== "connected" || updateBusy} onClick={openProjectDialog}>{t("project.add")}</button>
+      </div> : null}
+      {!globalActivity && snapshot && projects.length > 0 && sessions.length === 0 ? <div className="state-card" role="status">{t("dashboard.noSessions")}</div> : null}
+
+      {!globalActivity && projectDialog?.hostId === selectedDeviceId && selectedHost ? <AddProjectDialog key={selectedDeviceId} client={client} host={selectedHost}
+        onClose={closeProjectDialog} onAdded={projectAdded} /> : null}
 
       {picker && picker.hostId === selectedDeviceId ? <Modal title={t("dashboard.chooseAgent", { defaultValue: "Choose an agent" })} onClose={closePicker} className="agent-picker">
         <p className="agent-picker-project">{t("dashboard.launchTarget", { defaultValue: "Project: {{project}}", project: picker.project.name })}</p>

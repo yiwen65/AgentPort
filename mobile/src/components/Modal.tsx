@@ -4,11 +4,13 @@ import { useTranslation } from "react-i18next";
 import "./modal.css";
 
 /** Portaled so background inertness covers the app without hiding the dialog. */
-export function Modal({ title, onClose, children, className = "", titleContent, blurBackdrop = true }: {
+export function Modal({ title, onClose, onDismiss, children, className = "", titleContent, blurBackdrop = true }: {
   title: string;
   titleContent?: ReactNode;
   blurBackdrop?: boolean;
   onClose: () => void;
+  /** Immediate dismissal notification; onClose still waits for the exit animation. */
+  onDismiss?: () => void;
   children: ReactNode;
   className?: string;
 }) {
@@ -20,9 +22,12 @@ export function Modal({ title, onClose, children, className = "", titleContent, 
   const exiting = useRef(false);
   const close = useRef(onClose);
   close.current = onClose;
+  const dismissed = useRef(onDismiss);
+  dismissed.current = onDismiss;
 
   const requestClose = () => {
     if (exiting.current) return;
+    dismissed.current?.();
     const node = sheet.current;
     if (!node?.animate || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
       close.current(); return;

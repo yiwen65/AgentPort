@@ -87,6 +87,26 @@ describe("Modal", () => {
     expect(trigger).toHaveFocus();
   });
 
+  it.each(["header", "Escape", "backdrop"])("notifies animated %s dismissal immediately and only once, while deferring onClose", dismissal => {
+    const animations: { cancel: ReturnType<typeof vi.fn>; onfinish: (() => void) | null }[] = [];
+    vi.stubGlobal("matchMedia", () => ({ matches: false }));
+    Object.defineProperty(HTMLElement.prototype, "animate", { configurable: true, writable: true, value: () => {
+      const animation = { cancel: vi.fn(), onfinish: null };
+      animations.push(animation);
+      return animation as unknown as Animation;
+    } });
+    const onDismiss = vi.fn(), onClose = vi.fn();
+    render(<Modal title="Choices" onDismiss={onDismiss} onClose={onClose}><button>First</button></Modal>);
+    if (dismissal === "header") fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    else if (dismissal === "Escape") fireEvent.keyDown(document, { key: "Escape" });
+    else fireEvent.click(screen.getByRole("dialog").parentElement!);
+    expect(onDismiss).toHaveBeenCalledTimes(1); expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onDismiss).toHaveBeenCalledTimes(1); expect(animations).toHaveLength(4);
+    act(() => animations[3].onfinish?.());
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("skips movement and delayed dismissal when reduced motion is requested", () => {
     vi.stubGlobal("matchMedia", () => ({ matches: true }));
     Object.defineProperty(HTMLElement.prototype, "animate", { configurable: true, value: () => undefined, writable: true });

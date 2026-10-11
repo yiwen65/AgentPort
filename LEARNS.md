@@ -688,3 +688,30 @@
 - Correct approach: Track whether each current host lifecycle completed a read (success or failure), publish initialLoading separately from refreshing/snapshot.loading, and use only readiness for the global notice/empty state. Cancelled/late reads do not establish readiness; reconnection resets it.
 - Prevention: Test while deferred poll promises are pending, not only after they resolve; cover cached rows, empty results, errors, manual refresh, return to foreground and reconnect while asserting reads still run.
 - Verified by: Three delayed-poll UI guards failed before repair and passed afterward; 32 targeted/504 full mobile tests and 10 packaging tests passed, and the new signed frontend was installed on the iPhone (`docs/tasks/2026-10-11-active-session-loading-flash-task.md`).
+
+## `mobile Modal mutation preflight` — dismissal starts before animated onClose
+
+- Wrong approach: Invalidate an Add Project preflight only in Modal's onClose callback.
+- Why it failed: Animated header/Escape/backdrop dismissal delays onClose by 130ms; a resolve response inside that interval still sees a live view and submits project.add after the user began cancelling.
+- Recognition signal: Footer cancellation prevents writes, but animated header/Escape/backdrop cancellation does not when validation resolves before exit completion.
+- Correct approach: Use Modal's immediate optional onDismiss to invalidate presentation/preflight; keep delayed onClose for animation and preserve durable receipts for writes already submitted.
+- Prevention: Mock a real animation lifecycle and resolve preflight between dismissal request and animation completion for all three dismissal paths; separately test late success for an already-invoked write.
+- Verified by: Three animated AddProjectDialog regressions failed with one project.add instead of zero, then passed after the immediate dismissal boundary; full mobile suite 572/572 passes.
+
+## `mobile confirmed-add recovery` — receipt deduplication must not suppress refresh retries
+
+- Wrong approach: Reuse the delivered-receipt guard for reconnect/check recovery after an added project's list refresh fails.
+- Why it failed: checkResult replaced refreshFailed with checking, then the delivered-id guard skipped onAdded; its finally block returned to idle and removed the only actionable refresh retry.
+- Recognition signal: Add succeeded, refresh failed, and disconnect/reconnect leaves a locked confirmed record whose Check action does nothing until close/reopen.
+- Correct approach: Retry only the read/refresh callback for confirmed receipts, single-flight it with a separate refreshing guard, and retain the journal until recovery succeeds; never resubmit project.add.
+- Prevention: Test add-success → refresh-failure → disconnect/reconnect, repeated refresh failure, duplicate receipts and concurrent checks; assert one write total and a usable recovery action.
+- Verified by: The reconnect regression failed with one onAdded call instead of two before the fix, then passed; callback single-flight and explicit retry tests plus full mobile 572/572 pass.
+
+## `service project-name preflight` — default basenames still obey the Core Db limit
+
+- Wrong approach: Infer from the desktop command's basename fallback that only explicitly typed project names need the 80-character limit, then remove the service's default-name preflight.
+- Why it failed: Db::add_project enforces 1–80 characters for every stored name. An 81-character basename still failed inside Core; the Bridge classifies generic Core errors on project.add as unknown, losing the safe preflight failure boundary.
+- Recognition signal: Removing the guard changes InvalidRequest into Core Validation("project name must be 1-80 chars"), without making the add succeed.
+- Correct approach: Inspect the shared Db constraint, retain validation before writing, and let the user supply a short explicit name for a long directory basename.
+- Prevention: Trace default values through service and Db before claiming desktop compatibility; keep the overlong_directory_basename_requires_a_short_explicit_name_before_writing contract test.
+- Verified by: The two diagnostic runs rejected the permissive-name hypothesis at service and Core boundaries; the authoritative constraint is in crates/agentport-core/src/db/mod.rs::add_project.

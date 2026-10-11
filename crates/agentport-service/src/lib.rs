@@ -3,6 +3,10 @@
 //! listing without exposing Host credentials or private socket paths.
 
 mod commit_ai;
+mod project_directory;
+#[cfg(test)]
+mod project_tests;
+pub use project_directory::ProjectDirectoryError;
 use agentport_core::terminal_seed;
 
 use agentport_core::adapters::{self, capability, LaunchContext, ResumeContext};
@@ -25,7 +29,7 @@ use agentport_core::models::{
     SecretRef, Session, Settings, StatusEvent, TerminalTheme, Theme, UiLanguage, Worktree,
 };
 use agentport_core::native_cleanup::{execute_native_cleanup, plan_native_cleanup};
-use agentport_core::paths::{normalize_abs, AppPaths};
+use agentport_core::paths::AppPaths;
 use agentport_core::protocol::{normalize_host_frame, HostFrame, InputBatchAckPhase};
 use agentport_core::search::SearchIndex;
 use agentport_core::secrets::{load_preset_secrets, BackendStatus, CredentialBroker, SecretValue};
@@ -33,8 +37,9 @@ use agentport_core::timeline::{RecoveryAckSnapshot, Timeline};
 use agentport_remote_protocol::{
     AgentPreferencesReplaceParams, AgentProbeAllParams, AgentProbeParams, AttentionPollParams,
     CommitAiConfigSaveParams, ConfirmedProjectSession, DocumentWriteParams, PresetListParams,
-    ProjectAddParams, ProjectIdParams, ProjectLayoutReplaceParams, ProjectRemoveParams,
-    ProjectRenameParams, RemoteAgentType, RunCursor, SecretAddParams, SecretDeleteParams,
+    ProjectAddParams, ProjectDirectoryListParams, ProjectDirectoryResolveParams, ProjectIdParams,
+    ProjectLayoutReplaceParams, ProjectRemoveParams, ProjectRenameParams, RemoteAgentType, RunCursor,
+    SecretAddParams, SecretDeleteParams,
     SessionAttachParams, SessionAutoTitleParams, SessionControlKind, SessionControlParams,
     SessionCreateParams, SessionDetachParams, SessionIdParams, SessionInputParams,
     SessionPinParams, SessionPollParams, SessionRenameParams,
@@ -61,6 +66,8 @@ pub enum ServiceError {
     AttachmentNotFound,
     #[error("remote request is invalid")]
     InvalidRequest,
+    #[error(transparent)]
+    ProjectDirectory(#[from] ProjectDirectoryError),
     #[error("terminal input outcome is unknown")]
     InputOutcomeUnknown,
     #[error("remote attachment table is unavailable")]
@@ -163,6 +170,16 @@ impl Default for ServiceSnapshot {
                     disabled_reason: None,
                 },
                 ServiceCapability {
+                    name: "project.directory.read".into(),
+                    enabled: true,
+                    disabled_reason: None,
+                },
+                ServiceCapability {
+                    name: "project.write".into(),
+                    enabled: true,
+                    disabled_reason: None,
+                },
+                ServiceCapability {
                     name: "secret.metadata".into(),
                     enabled: true,
                     disabled_reason: None,
@@ -193,6 +210,29 @@ pub struct ProjectSummary {
     pub created_at: String,
     pub pinned: bool,
     pub sort_order: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDirectoryEntry {
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDirectoryListResult {
+    pub path: String,
+    pub home_path: String,
+    pub parent_path: Option<String>,
+    pub entries: Vec<ProjectDirectoryEntry>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDirectoryResolveResult {
+    pub path: String,
 }
 
 impl From<Project> for ProjectSummary {
@@ -570,6 +610,18 @@ pub trait RemoteService {
         Err(ServiceError::InvalidRequest)
     }
     fn list_projects(&self) -> Result<Vec<ProjectSummary>> {
+        Err(ServiceError::InvalidRequest)
+    }
+    fn list_project_directories(
+        &self,
+        _params: ProjectDirectoryListParams,
+    ) -> Result<ProjectDirectoryListResult> {
+        Err(ServiceError::InvalidRequest)
+    }
+    fn resolve_project_directory(
+        &self,
+        _params: ProjectDirectoryResolveParams,
+    ) -> Result<ProjectDirectoryResolveResult> {
         Err(ServiceError::InvalidRequest)
     }
     fn add_project(&self, _params: ProjectAddParams) -> Result<ProjectAddResult> {
@@ -1243,20 +1295,51 @@ impl RemoteService for CoreService {
             .collect())
     }
 
+    fn list_project_directories(
+        &self,
+        params: ProjectDirectoryListParams,
+    ) -> Result<ProjectDirectoryListResult> {
+        project_directory::list(params).map_err(Into::into)
+    }
+
+    fn resolve_project_directory(
+        &self,
+        params: ProjectDirectoryResolveParams,
+    ) -> Result<ProjectDirectoryResolveResult> {
+        Ok(ProjectDirectoryResolveResult {
+            path: project_directory::resolve(&params.path)?,
+        })
+    }
+
     fn add_project(&self, params: ProjectAddParams) -> Result<ProjectAddResult> {
-        let root_path = normalize_abs(&params.path)?;
-        if let Some(existing) = self.db.find_project_by_path(&root_path)? {
+        let root_path = project_directory::resolve(&params.path)?;
+        if let Some(existing) = self
+            .db
+            .find_project_by_path(&root_path)
+            .map_err(ServiceError::NotExecutedCore)?
+        {
             return Ok(ProjectAddResult {
                 project: existing.into(),
                 focused_existing: true,
             });
         }
-        let name = params.name.unwrap_or_else(|| {
-            std::path::Path::new(&root_path)
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "project".into())
-        });
+        let name = params
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                std::path::Path::new(&root_path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "project".into())
+            });
+        // Defaults obey the same Db limit as explicit names. Reject before the
+        // write so a long basename is not reported as an unknown write outcome.
+        if name.chars().count() > 80 {
+            return Err(ServiceError::InvalidRequest);
+        }
         let project = Project {
             id: agentport_core::ids::new_id("prj"),
             name,
@@ -1268,7 +1351,19 @@ impl RemoteService for CoreService {
             pinned: false,
             sort_order: 0,
         };
-        self.db.add_project(&project)?;
+        if let Err(error) = self.db.add_project(&project) {
+            // The canonical-path UNIQUE constraint is the cross-connection
+            // arbiter. A concurrent winner is focused, never renamed.
+            if matches!(&error, agentport_core::CoreError::Conflict(_)) {
+                if let Some(existing) = self.db.find_project_by_path(&root_path)? {
+                    return Ok(ProjectAddResult {
+                        project: existing.into(),
+                        focused_existing: true,
+                    });
+                }
+            }
+            return Err(error.into());
+        }
         Ok(ProjectAddResult {
             project: self.db.get_project(&project.id)?.into(),
             focused_existing: false,
