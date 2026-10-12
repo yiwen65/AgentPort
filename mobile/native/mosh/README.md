@@ -22,6 +22,13 @@ The Mosh client itself is always compiled from commit
   Android's UTF-8 locale contract. Mosh's thread-local selector state is built
   with the global-dynamic TLS model because Android loads APK libraries through
   `dlopen`; local-exec/initial-exec TLS either fails to link or fails to load.
+- All platforms also apply `patches/mobile-safety.patch`. The private bridge uses
+  the versioned `agentport_mosh_main_v2` ABI: Rust owns a packed atomic geometry
+  snapshot, while plain winsize storage belongs solely to the native event loop.
+  Signal registration uses `pthread_sigmask`; Rust blocks stop/resize signals
+  before publishing a native thread and retains allocations through drain/join.
+  Old archives are not ABI-compatible and must be rebuilt; symbol checks reject
+  the old bridge rather than silently interpreting the wrong pointer type.
 
 ## Build
 
@@ -32,6 +39,10 @@ From the repository root on macOS:
 PROTOC=/opt/homebrew/opt/protobuf@21/bin/protoc \
   bash mobile/native/mosh/build-ios-simulator.sh
 
+# Physical iPhone libraries are separate from simulator libraries.
+PROTOC=/opt/homebrew/opt/protobuf@21/bin/protoc \
+  bash mobile/native/mosh/build-ios-device.sh
+
 # Requires an installed Android NDK; defaults to the newest common SDK path.
 bash mobile/native/mosh/build-android-arm64.sh
 ```
@@ -41,11 +52,25 @@ script also installs ignored copies into the generated Gradle project's
 `jniLibs/arm64-v8a` directory. `mobile/src-tauri/build.rs` refuses an iOS build
 when the required local archives are missing.
 
+## Safety checks
+
+```bash
+python3 mobile/native/mosh/tests/test-mobile-safety.py
+MOSH_SAFETY_SANITIZER=thread python3 mobile/native/mosh/tests/test-mobile-safety.py
+MOSH_SAFETY_SANITIZER=address python3 mobile/native/mosh/tests/test-mobile-safety.py
+```
+
+These compile temporary pinned-source harnesses for concurrent atomic geometry
+and early stop delivery using the native Select implementation. They do not
+modify shared artifacts, and do not replace iOS/Android Mosh UDP, background or
+network-switch runtime validation.
+
 ## Corresponding source and licenses
 
 The exact corresponding Mosh source is obtained by cloning the repository and
-checking out `MOSH_COMMIT` from `versions.env`, then applying the tracked patch
-for Android. `COPYING` and `COPYING.iOS` are preserved from that revision.
+checking out `MOSH_COMMIT` from `versions.env`, then applying the tracked
+`mobile-safety.patch` on all platforms; Android applies `android-mobile.patch`
+first. `COPYING` and `COPYING.iOS` are preserved from that revision.
 Dependency license files are contained in their pinned source/archive inputs;
 a release source bundle must include those inputs, this build directory, and
 the complete Mobile source needed to rebuild the linked application.

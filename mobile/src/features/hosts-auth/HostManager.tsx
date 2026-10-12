@@ -14,6 +14,7 @@ interface HostManagerProps {
   remoteClient: RemoteClient;
   authClient: HostAuthClient;
   onPairedConnected?: (profileId: string) => void;
+  onOpenTerminal?: (host: HostProfileSummary) => void;
 }
 
 interface TrustPrompt {
@@ -47,7 +48,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function HostManager({ remoteClient, authClient, onPairedConnected }: HostManagerProps) {
+export function HostManager({ remoteClient, authClient, onPairedConnected, onOpenTerminal }: HostManagerProps) {
   const { t } = useTranslation();
   const [pairing, setPairing] = useState(false);
   const [paired, setPaired] = useState(false);
@@ -282,6 +283,7 @@ export function HostManager({ remoteClient, authClient, onPairedConnected }: Hos
           <span className="visually-hidden">{t(`status.${displayedState}`)}</span>
         </button>
         <div className="host-actions" aria-label={t("hosts.actions", { name: host.name })}>
+          {host.preferredTransport !== "relay" && onOpenTerminal ? <button className="generic-terminal-entry" type="button" onClick={() => onOpenTerminal(host)} aria-label={t("genericTerminal.openHost", { name: host.name })}>{t("genericTerminal.title")}</button> : null}
           <button type="button" className="host-connection-action" data-connected={isConnected} disabled={busy && connectingId !== host.id}
             aria-label={connectingId === host.id ? t("hosts.cancelConnect") : isConnected ? t("hosts.disconnect") : t("hosts.connect")}
             title={connectingId === host.id ? t("hosts.cancelConnect") : isConnected ? t("hosts.disconnect") : t("hosts.connect")}
@@ -305,6 +307,13 @@ export function HostManager({ remoteClient, authClient, onPairedConnected }: Hos
             <label>{t("hosts.form.port")}<input required type="number" min="1" max="65535" value={editing.port} onChange={(event) => patch("port", Number(event.target.value))} /></label>
             <label>{t("hosts.form.username")}<input required maxLength={128} value={editing.username} onChange={(event) => patch("username", event.target.value)} /></label>
             <label>{t("hosts.form.authentication")}<select value={editing.authentication} onChange={(event) => setEditing((current) => current ? { ...current, authentication: event.target.value as "password" | "private_key", credentialId: "" } : current)}><option value="password">{t("hosts.form.password")}</option><option value="private_key">{t("hosts.form.privateKey")}</option></select></label>
+            <label>{t("hosts.form.jumpHost")}<select value={editing.jump?.hostProfileId ?? ""} onChange={(event) => patch("jump", event.target.value ? { hostProfileId: event.target.value } : undefined)}>
+              <option value="">{t("hosts.form.noJumpHost")}</option>
+              {state.kind === "ready" ? state.hosts.filter(host => host.id !== editing.id && host.preferredTransport !== "relay").map(host => <option key={host.id} value={host.id}>{host.name}</option>) : null}
+            </select></label>
+            <label>{t("hosts.form.moshPortStart")}<input type="number" min="1" max="65535" required={editing.moshUdpPortEnd !== undefined} value={editing.moshUdpPortStart ?? ""} onChange={(event) => patch("moshUdpPortStart", event.target.value ? Number(event.target.value) : undefined)} /></label>
+            <label>{t("hosts.form.moshPortEnd")}<input type="number" min={editing.moshUdpPortStart ?? 1} max="65535" required={editing.moshUdpPortStart !== undefined} value={editing.moshUdpPortEnd ?? ""} onChange={(event) => patch("moshUdpPortEnd", event.target.value ? Number(event.target.value) : undefined)} /></label>
+            <p>{t("genericTerminal.udpDirect")}</p>
             </>}
           </div>
           {editing.relay ? <div><p>{t(editing.relay.approved ? "pairing.relayManaged" : "pairing.retained")}</p>

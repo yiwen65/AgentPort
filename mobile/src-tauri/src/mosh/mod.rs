@@ -7,6 +7,7 @@ use std::ffi::{c_char, c_int, c_void, CString};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::FromRawFd;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use tauri::State;
@@ -19,41 +20,41 @@ const MAX_CONCURRENT_SESSIONS: usize = 16;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MoshStartRequest {
-    ip: String,
-    port: u16,
-    key: Zeroizing<String>,
-    cols: u16,
-    rows: u16,
+    pub(crate) ip: String,
+    pub(crate) port: u16,
+    pub(crate) key: Zeroizing<String>,
+    pub(crate) cols: u16,
+    pub(crate) rows: u16,
     #[serde(default = "default_prediction_mode")]
-    prediction_mode: String,
+    pub(crate) prediction_mode: String,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MoshInputRequest {
-    session_id: String,
-    data_base64: Zeroizing<String>,
+    pub(crate) session_id: String,
+    pub(crate) data_base64: Zeroizing<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MoshResizeRequest {
-    session_id: String,
-    cols: u16,
-    rows: u16,
+    pub(crate) session_id: String,
+    pub(crate) cols: u16,
+    pub(crate) rows: u16,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MoshStartResult {
-    session_id: String,
+    pub(crate) session_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MoshPollResult {
-    data_base64: String,
-    running: bool,
+    pub(crate) data_base64: String,
+    pub(crate) running: bool,
     exit_code: Option<i32>,
 }
 
@@ -61,13 +62,27 @@ fn default_prediction_mode() -> String {
     "adaptive".into()
 }
 
-struct SharedWinsize(Box<libc::winsize>);
+// Versioned native ABI reads a packed atomic snapshot into event-loop-owned
+// winsize storage. No plain winsize pointer is shared across threads.
+fn packed_size(cols: u16, rows: u16) -> u32 {
+    ((cols as u32) << 16) | rows as u32
+}
 
-// The pinned Blink Mosh bridge intentionally accepts a winsize pointer that
-// its event-loop thread reads after SIGWINCH. We update it before signalling
-// that same thread and keep the allocation stable until the Session is dropped.
-unsafe impl Send for SharedWinsize {}
-unsafe impl Sync for SharedWinsize {}
+// Block before publishing pthread_self. Select installs its process handler
+// later, then pselect's empty mask safely delivers any queued early stop.
+fn block_native_signals() -> Result<(), String> {
+    unsafe {
+        let mut signals: libc::sigset_t = std::mem::zeroed();
+        if libc::sigemptyset(&mut signals) != 0
+            || libc::sigaddset(&mut signals, libc::SIGTERM) != 0
+            || libc::sigaddset(&mut signals, libc::SIGWINCH) != 0
+            || libc::pthread_sigmask(libc::SIG_BLOCK, &signals, std::ptr::null_mut()) != 0
+        {
+            return Err("Mosh thread signal setup failed".into());
+        }
+    }
+    Ok(())
+}
 
 struct MoshOutput {
     receiver: Receiver<Vec<u8>>,
@@ -78,7 +93,7 @@ struct MoshOutput {
 struct MoshSession {
     input: Mutex<File>,
     output: Mutex<MoshOutput>,
-    winsize: Mutex<SharedWinsize>,
+    winsize: Box<AtomicU32>,
     native_thread: libc::pthread_t,
     exit_code: Arc<Mutex<Option<i32>>>,
     native_join: Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -91,13 +106,12 @@ pub struct MoshSessions {
 
 impl Drop for MoshSessions {
     fn drop(&mut self) {
-        if let Ok(sessions) = self.sessions.get_mut() {
-            for session in sessions.values() {
-                unsafe {
-                    libc::pthread_kill(session.native_thread, libc::SIGTERM);
-                }
-            }
-            sessions.clear();
+        let sessions = self
+            .sessions
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (_, session) in sessions.drain() {
+            retire_session(session);
         }
     }
 }
@@ -106,7 +120,7 @@ type StateCallback = unsafe extern "C" fn(*const c_void, *const c_void, usize);
 type MoshMain = unsafe extern "C" fn(
     *mut libc::FILE,
     *mut libc::FILE,
-    *mut libc::winsize,
+    *const u32,
     Option<StateCallback>,
     *mut c_void,
     *const c_char,
@@ -120,11 +134,11 @@ type MoshMain = unsafe extern "C" fn(
 
 #[cfg(any(target_os = "ios", target_os = "android"))]
 unsafe extern "C" {
-    #[link_name = "mosh_main"]
+    #[link_name = "agentport_mosh_main_v2"]
     fn linked_mosh_main(
         input: *mut libc::FILE,
         output: *mut libc::FILE,
-        winsize: *mut libc::winsize,
+        winsize: *const u32,
         state_callback: Option<StateCallback>,
         state_callback_context: *mut c_void,
         ip: *const c_char,
@@ -253,17 +267,18 @@ pub fn mobile_mosh_start(
         }
     });
 
-    let mut winsize = SharedWinsize(Box::new(libc::winsize {
-        ws_row: request.rows,
-        ws_col: request.cols,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    }));
-    let winsize_ptr = (&mut *winsize.0) as *mut libc::winsize as usize;
+    let winsize = Box::new(AtomicU32::new(packed_size(request.cols, request.rows)));
+    let winsize_ptr = (&*winsize) as *const AtomicU32 as usize;
     let exit_code = Arc::new(Mutex::new(None));
     let thread_exit = exit_code.clone();
     let (thread_tx, thread_rx) = mpsc::sync_channel(1);
     let native_join = std::thread::spawn(move || unsafe {
+        if block_native_signals().is_err() {
+            libc::close(input_reader_fd);
+            libc::close(output_writer_fd);
+            *thread_exit.lock().unwrap() = Some(1);
+            return;
+        }
         let native_thread = libc::pthread_self();
         let _ = thread_tx.send(native_thread);
         let input = libc::fdopen(input_reader_fd, c"r".as_ptr());
@@ -286,7 +301,7 @@ pub fn mobile_mosh_start(
         let code = mosh_main(
             input,
             output,
-            winsize_ptr as *mut libc::winsize,
+            winsize_ptr as *const u32,
             None,
             std::ptr::null_mut(),
             ip.as_ptr(),
@@ -314,7 +329,7 @@ pub fn mobile_mosh_start(
                 pending: VecDeque::new(),
                 disconnected: false,
             }),
-            winsize: Mutex::new(winsize),
+            winsize,
             native_thread,
             exit_code,
             native_join: Mutex::new(Some(native_join)),
@@ -363,18 +378,33 @@ pub fn mobile_mosh_resize(
         return Err("invalid terminal size".into());
     }
     let session = session(&sessions, &request.session_id)?;
-    {
-        let mut winsize = session
-            .winsize
-            .lock()
-            .map_err(|_| "Mosh resize state is unavailable")?;
-        winsize.0.ws_col = request.cols;
-        winsize.0.ws_row = request.rows;
-    }
-    if unsafe { libc::pthread_kill(session.native_thread, libc::SIGWINCH) } != 0 {
-        return Err("Mosh resize failed".into());
+    session
+        .winsize
+        .store(packed_size(request.cols, request.rows), Ordering::Release);
+    if !signal_native(&session, libc::SIGWINCH)? {
+        return Err("Mosh session has exited".into());
     }
     Ok(())
+}
+
+// Joining releases pthread_t for reuse. Every signal holds the same lock as
+// every join, so an in-flight resize/stop can never target a reaped thread ID.
+fn signal_native(session: &MoshSession, signal: c_int) -> Result<bool, String> {
+    let join = session
+        .native_join
+        .lock()
+        .map_err(|_| "Mosh thread state is unavailable")?;
+    let exited = session
+        .exit_code
+        .lock()
+        .map_err(|_| "Mosh exit state is unavailable")?;
+    if join.is_none() || exited.is_some() {
+        return Ok(false);
+    }
+    if unsafe { libc::pthread_kill(session.native_thread, signal) } != 0 {
+        return Err("Mosh signal delivery failed".into());
+    }
+    Ok(true)
 }
 
 fn drain_output(state: &mut MoshOutput, cap: usize) -> Vec<u8> {
@@ -401,6 +431,10 @@ fn drain_output(state: &mut MoshOutput, cap: usize) -> Vec<u8> {
     output
 }
 
+fn output_running(exit_code: Option<i32>, drained: bool) -> bool {
+    exit_code.is_none() || !drained
+}
+
 #[tauri::command]
 pub fn mobile_mosh_poll(
     sessions: State<'_, MoshSessions>,
@@ -420,7 +454,8 @@ pub fn mobile_mosh_poll(
         .map_err(|_| "Mosh exit state is unavailable")?;
     let result = MoshPollResult {
         data_base64: base64::engine::general_purpose::STANDARD.encode(output),
-        running: exit_code.is_none(),
+        // The consumer must keep polling after exit until final bytes drain.
+        running: output_running(exit_code, drained),
         exit_code,
     };
     if exit_code.is_some() && drained {
@@ -447,25 +482,46 @@ pub fn mobile_mosh_stop(
     session_id: String,
 ) -> Result<(), String> {
     let session = session(&sessions, &session_id)?;
-    if session
-        .exit_code
-        .lock()
-        .map_err(|_| "Mosh exit state is unavailable")?
-        .is_some()
-    {
-        return Ok(());
-    }
-    if unsafe { libc::pthread_kill(session.native_thread, libc::SIGTERM) } != 0 {
-        // The native thread may have exited between the check and signal.
-        if session
-            .exit_code
-            .lock()
-            .map_err(|_| "Mosh exit state is unavailable")?
-            .is_some()
-        {
-            return Ok(());
+    signal_native(&session, libc::SIGTERM)?;
+    Ok(())
+}
+
+/// Every ownership exit retains the allocation until the native thread stops.
+/// Discarding output keeps its pipe writer from preventing shutdown.
+fn retire_session(session: Arc<MoshSession>) {
+    let _ = signal_native(&session, libc::SIGTERM);
+    std::thread::spawn(move || {
+        loop {
+            if let Ok(mut output) = session.output.lock() {
+                let _ = drain_output(&mut output, MAX_POLL_BYTES);
+            }
+            if session
+                .exit_code
+                .lock()
+                .map(|code| code.is_some())
+                .unwrap_or(false)
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        return Err("Mosh stop failed".into());
+        if let Ok(mut join) = session.native_join.lock() {
+            if let Some(join) = join.take() {
+                let _ = join.join();
+            }
+        }
+    });
+}
+
+/// Generic close is idempotent after polling already reaped a native session.
+pub(crate) fn discard_after_stop(sessions: &MoshSessions, id: &str) -> Result<(), String> {
+    let removed = sessions
+        .sessions
+        .lock()
+        .map_err(|_| "Mosh session state is unavailable")?
+        .remove(id);
+    if let Some(session) = removed {
+        retire_session(session);
     }
     Ok(())
 }
@@ -483,6 +539,150 @@ mod tests {
             rows: 24,
             prediction_mode: "adaptive".into(),
         }
+    }
+
+    #[test]
+    fn reaped_thread_ids_are_never_signalled() {
+        let (input, reader) = pipe_pair().unwrap();
+        unsafe {
+            libc::close(reader);
+        }
+        let (_tx, receiver) = mpsc::sync_channel(1);
+        let session = MoshSession {
+            input: Mutex::new(input),
+            output: Mutex::new(MoshOutput {
+                receiver,
+                pending: VecDeque::new(),
+                disconnected: false,
+            }),
+            winsize: Box::new(AtomicU32::new(packed_size(80, 24))),
+            native_thread: unsafe { libc::pthread_self() },
+            // Even an unavailable exit status must not make a joined ID usable.
+            exit_code: Arc::new(Mutex::new(None)),
+            native_join: Mutex::new(None),
+        };
+        assert!(!signal_native(&session, libc::SIGWINCH).unwrap());
+        *session.exit_code.lock().unwrap() = Some(0);
+        assert!(!signal_native(&session, libc::SIGTERM).unwrap());
+    }
+
+    #[test]
+    fn startup_cancel_and_store_drop_retain_size_until_join() {
+        const CHILD: &str = "AGENTPORT_MOSH_EARLY_CANCEL_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // A regression in the startup signal mask must not kill the suite.
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "mosh::tests::startup_cancel_and_store_drop_retain_size_until_join",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "early-cancel subprocess failed: {status}");
+            return;
+        }
+        let winsize = Box::new(AtomicU32::new(packed_size(80, 24)));
+        let pointer = (&*winsize) as *const AtomicU32 as usize;
+        let exit_code = Arc::new(Mutex::new(None));
+        let exit = exit_code.clone();
+        let (publish, published) = mpsc::sync_channel(1);
+        let (observed, observation) = mpsc::sync_channel(1);
+        let (finish, finished) = mpsc::sync_channel(1);
+        let join = std::thread::spawn(move || {
+            block_native_signals().unwrap();
+            publish.send(unsafe { libc::pthread_self() }).unwrap();
+            // Model mosh_main startup before Select installs its handlers.
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            assert_eq!(
+                unsafe { (*(pointer as *const AtomicU32)).load(Ordering::Acquire) },
+                packed_size(80, 24)
+            );
+            unsafe {
+                let mut mask: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut mask);
+                libc::sigaddset(&mut mask, libc::SIGTERM);
+                let mut signal = 0;
+                assert_eq!(libc::sigwait(&mask, &mut signal), 0);
+                assert_eq!(signal, libc::SIGTERM);
+            }
+            *exit.lock().unwrap() = Some(0);
+            observed.send(()).unwrap();
+            // Exit status alone is not proof the pointer may be freed: the
+            // retaining reaper must join before releasing its final Arc.
+            finished.recv().unwrap();
+        });
+        let native_thread = published.recv().unwrap();
+        let (_output_tx, receiver) = mpsc::channel();
+        let session = Arc::new(MoshSession {
+            input: Mutex::new(
+                std::fs::File::options()
+                    .write(true)
+                    .open("/dev/null")
+                    .unwrap(),
+            ),
+            output: Mutex::new(MoshOutput {
+                receiver,
+                pending: VecDeque::new(),
+                disconnected: false,
+            }),
+            winsize,
+            native_thread,
+            exit_code,
+            native_join: Mutex::new(Some(join)),
+        });
+        let weak = Arc::downgrade(&session);
+        let sessions = MoshSessions::default();
+        sessions
+            .sessions
+            .lock()
+            .unwrap()
+            .insert("fixture".into(), session);
+        drop(sessions); // sends early TERM; frees map but must retain allocation
+        observation
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert!(weak.upgrade().is_some(), "pointer freed before native join");
+        finish.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while weak.upgrade().is_some() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            weak.upgrade().is_none(),
+            "retaining reaper did not finish join"
+        );
+    }
+
+    #[test]
+    fn abandoning_an_already_reaped_mosh_session_is_idempotent() {
+        discard_after_stop(&MoshSessions::default(), "already-reaped").unwrap();
+    }
+
+    #[test]
+    fn exited_output_remains_running_until_all_bytes_drain() {
+        let (tx, receiver) = mpsc::channel();
+        let expected = vec![0xff; MAX_POLL_BYTES + 123];
+        tx.send(expected.clone()).unwrap();
+        drop(tx);
+        let mut output = MoshOutput {
+            receiver,
+            pending: VecDeque::new(),
+            disconnected: false,
+        };
+        let mut data = drain_output(&mut output, MAX_POLL_BYTES);
+        assert_eq!(data.len(), MAX_POLL_BYTES);
+        assert!(output_running(
+            Some(0),
+            output.disconnected && output.pending.is_empty()
+        ));
+        data.extend(drain_output(&mut output, MAX_POLL_BYTES));
+        assert_eq!(data, expected);
+        assert!(!output_running(
+            Some(0),
+            output.disconnected && output.pending.is_empty()
+        ));
     }
 
     #[test]

@@ -77,7 +77,7 @@ fn bootstrap_command(mode: MoshBootstrapMode, session_id: Option<&str>) -> Resul
     }
 }
 
-fn parse_connect(output: &[u8]) -> Result<(u16, Zeroizing<String>), String> {
+pub(crate) fn parse_connect(output: &[u8]) -> Result<(u16, Zeroizing<String>), String> {
     let text =
         std::str::from_utf8(output).map_err(|_| "Mosh bootstrap output is invalid".to_string())?;
     if text.lines().any(|line| line.trim() == MISSING_SERVER) {

@@ -86,6 +86,20 @@ describe("AgentPort Mobile V2 shell", () => {
     await i18n.changeLanguage("zh-CN");
   });
 
+  it("opens an independent generic terminal from host management without Bridge", async () => {
+    await i18n.changeLanguage("en-US");
+    const remote = client({ listHostProfiles: vi.fn().mockResolvedValue([{ id: "ssh-host", name: "SSH only", hostname: "host", port: 22, username: "user", preferredTransport: "ssh", connectionState: "disconnected" }]) });
+    const terminalClient = { list: vi.fn().mockResolvedValue([]), create: vi.fn(), connect: vi.fn(), input: vi.fn(), resize: vi.fn(), poll: vi.fn(), disconnect: vi.fn(), end: vi.fn() };
+    render(<App client={remote} hostAuthClient={hostAuthClient} terminalClient={terminalClient} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Manage devices" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open generic terminals on SSH only" }));
+    expect(await screen.findByText(/No terminals yet/)).toBeInTheDocument();
+    expect(terminalClient.list).toHaveBeenCalledWith("ssh-host"); expect(remote.connect).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Project files" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Back to hosts" }));
+    expect(await screen.findByRole("dialog", { name: "Computers" })).toBeInTheDocument();
+  });
+
   it("opens on Sessions without the V1 tab bar or product probes", async () => {
     render(<App client={client()} hostAuthClient={hostAuthClient} />);
     expect(await screen.findByRole("heading", { name: "Session" })).toBeInTheDocument();

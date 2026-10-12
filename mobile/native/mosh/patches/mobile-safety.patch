@@ -1,0 +1,133 @@
+diff --git a/src/frontend/iosclient.h b/src/frontend/iosclient.h
+--- a/src/frontend/iosclient.h
++++ b/src/frontend/iosclient.h
+@@ -34,6 +34,7 @@
+ #define IOS_CLIENT_HPP
+
+ #include <string>
++#include "src/frontend/agentport-size.h"
+ #include <sys/ioctl.h>
+ #include <termios.h>
+
+@@ -60,6 +61,8 @@
+
+   struct termios saved_termios, raw_termios;
+
++  const uint32_t* packed_window_size;
++  struct winsize window_size_storage;
+   struct winsize* window_size;
+
+   void ( *state_callback )( const void*, const void*, size_t );
+@@ -93,7 +96,7 @@
+ public:
+   iOSClient( int s_in_fd,
+              FILE* s_out_fd,
+-             struct winsize* s_window_size,
++             const uint32_t* s_window_size,
+              void ( *s_state_callback )( const void*, const void*, size_t ),
+              void* s_state_callback_context,
+              const char* s_ip,
+@@ -104,7 +107,8 @@
+              const char* predict_overwrite )
+     : in_fd( s_in_fd ), out_fd( s_out_fd ), ip( s_ip ), port( s_port ), key( s_key ), escape_key( 0x1E ),
+       escape_pass_key( '^' ), escape_pass_key2( '^' ), escape_requires_lf( false ), escape_key_help( L"?" ),
+-      saved_termios(), raw_termios(), window_size( s_window_size ), state_callback( s_state_callback ),
++      saved_termios(), raw_termios(), packed_window_size( s_window_size ), window_size_storage(),
++      window_size( &window_size_storage ), state_callback( s_state_callback ),
+       state_callback_context( s_state_callback_context ), local_framebuffer( 1, 1 ), new_state( 1, 1 ), overlays(),
+       network(), display( true ), /* use TERM environment var to initialize display */
+       connecting_notification(), repaint_requested( false ), lf_entered( false ), quit_sequence_started( false ),
+diff --git a/src/frontend/iosclient.cc b/src/frontend/iosclient.cc
+--- a/src/frontend/iosclient.cc
++++ b/src/frontend/iosclient.cc
+@@ -243,6 +243,7 @@
+
+ void iOSClient::main_init( const std::string encoded_state )
+ {
++  window_size_storage = agentport_read_size( packed_window_size );
+
+   /* local state */
+   local_framebuffer = Terminal::Framebuffer( window_size->ws_col, window_size->ws_row );
+@@ -483,6 +484,7 @@
+
+ bool iOSClient::process_resize( void )
+ {
++  window_size_storage = agentport_read_size( packed_window_size );
+   /* get new size */
+   // if ( ioctl( in_fd, TIOCGWINSZ, &window_size ) < 0 ) {
+   //   perror( "ioctl TIOCGWINSZ" );
+diff --git a/src/frontend/moshiosbridge.h b/src/frontend/moshiosbridge.h
+--- a/src/frontend/moshiosbridge.h
++++ b/src/frontend/moshiosbridge.h
+@@ -2,13 +2,14 @@
+ #define MOSHIOSBRIDGE_HPP
+
+ #include <stdio.h>
++#include <stdint.h>
+ #include <sys/ioctl.h>
+
+ #if __cplusplus
+ extern "C"
+ #endif
+-int mosh_main(
+-    FILE *f_in, FILE *f_out, struct winsize *window_size,
++int agentport_mosh_main_v2(
++    FILE *f_in, FILE *f_out, const uint32_t *window_size,
+     void (*state_callback)(const void *, const void *, size_t),
+     void *state_callback_context,
+     const char *ip, const char *port, const char *key, const char *predict_mode,
+diff --git a/src/frontend/moshiosbridge.cc b/src/frontend/moshiosbridge.cc
+--- a/src/frontend/moshiosbridge.cc
++++ b/src/frontend/moshiosbridge.cc
+@@ -2,9 +2,9 @@
+ #include "src/frontend/moshiosbridge.h"
+ #include "src/util/locale_utils.h"
+
+-extern "C" int mosh_main( FILE* f_in,
++extern "C" int agentport_mosh_main_v2( FILE* f_in,
+                           FILE* f_out,
+-                          struct winsize* window_size,
++                          const uint32_t* window_size,
+                           void ( *state_callback )( const void*, const void*, size_t ),
+                           void* state_callback_context,
+                           const char* ip,
+diff --git a/src/frontend/agentport-size.h b/src/frontend/agentport-size.h
+new file mode 100644
+--- /dev/null
++++ b/src/frontend/agentport-size.h
+@@ -0,0 +1,15 @@
++// SPDX-License-Identifier: GPL-3.0-only
++#ifndef AGENTPORT_SIZE_H
++#define AGENTPORT_SIZE_H
++#include <stdint.h>
++#include <sys/ioctl.h>
++// Rust owns a stable AtomicU32. Only this atomic load crosses the thread
++// boundary; plain winsize fields belong exclusively to the Mosh event loop.
++inline struct winsize agentport_read_size(const uint32_t* packed) {
++  const uint32_t value = __atomic_load_n(packed, __ATOMIC_ACQUIRE);
++  struct winsize size = {};
++  size.ws_col = static_cast<unsigned short>(value >> 16);
++  size.ws_row = static_cast<unsigned short>(value & 0xffff);
++  return size;
++}
++#endif
+diff --git a/src/util/select.h b/src/util/select.h
+--- a/src/util/select.h
++++ b/src/util/select.h
+@@ -39,6 +39,7 @@
+ #include <cstring>
+
+ #include <sys/select.h>
++#include <pthread.h>
+
+ #include "src/util/fatal_assert.h"
+ #include "src/util/timestamp.h"
+@@ -107,7 +108,7 @@
+     sigset_t to_block;
+     fatal_assert( 0 == sigemptyset( &to_block ) );
+     fatal_assert( 0 == sigaddset( &to_block, signum ) );
+-    fatal_assert( 0 == sigprocmask( SIG_BLOCK, &to_block, NULL ) );
++    fatal_assert( 0 == pthread_sigmask( SIG_BLOCK, &to_block, NULL ) );
+
+     /* Register a handler, which will only be called when pselect()
+        is interrupted by a (possibly queued) signal. */

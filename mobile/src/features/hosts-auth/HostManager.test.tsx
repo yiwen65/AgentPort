@@ -46,6 +46,31 @@ function clients() {
 }
 
 describe("host authentication manager", () => {
+  it("opens generic terminals on disconnected SSH hosts but never Relay", async () => {
+    const { remote, auth } = clients();
+    const host = { ...profile, connectionState: "disconnected" as const, lastConnectedAt: null, lastError: null };
+    vi.mocked(remote.listHostProfiles).mockResolvedValue([host, { ...host, id: "relay", name: "Relay", preferredTransport: "relay" }]);
+    const open = vi.fn();
+    render(<HostManager remoteClient={remote} authClient={auth} onOpenTerminal={open} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open generic terminals on Studio" }));
+    expect(open).toHaveBeenCalledWith(host);
+    expect(screen.queryByRole("button", { name: "Open generic terminals on Relay" })).not.toBeInTheDocument();
+    expect(remote.connect).not.toHaveBeenCalled();
+  });
+  it("configures one saved SSH jump and a Mosh UDP range without offering Relay or self", async () => {
+    const { remote, auth } = clients();
+    const summary = { ...profile, connectionState: "disconnected" as const, lastConnectedAt: null, lastError: null };
+    vi.mocked(remote.listHostProfiles).mockResolvedValue([summary, { ...summary, id: "jump_1", name: "Bastion" }, { ...summary, id: "relay_1", name: "Relay", preferredTransport: "relay" }]);
+    render(<HostManager remoteClient={remote} authClient={auth} />);
+    fireEvent.click(await screen.findByText("Studio"));
+    const jump = await screen.findByLabelText(/Single jump host/);
+    expect([...((jump as HTMLSelectElement).options)].map(option => option.value)).toEqual(["", "jump_1"]);
+    fireEvent.change(jump, { target: { value: "jump_1" } });
+    fireEvent.change(screen.getByLabelText("Mosh UDP start port"), { target: { value: "60010" } });
+    fireEvent.change(screen.getByLabelText("Mosh UDP end port"), { target: { value: "60020" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(auth.saveProfile).toHaveBeenCalledWith(expect.objectContaining({ jump: { hostProfileId: "jump_1" }, moshUdpPortStart: 60010, moshUdpPortEnd: 60020 })));
+  });
   it("connects the exact approved profile after scanning without a Connect tap", async () => {
     const { remote, auth } = clients();
     const connected = vi.fn();

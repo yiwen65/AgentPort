@@ -2,6 +2,7 @@ mod appearance;
 mod relay_pairing;
 mod credentials;
 mod hosts;
+mod generic_terminal;
 mod ios_push;
 mod mosh;
 mod remote;
@@ -41,7 +42,8 @@ pub fn run() {
         )
         .manage(remote::RemoteConnections::default())
         .manage(relay_pairing::RelayPairings::default())
-        .manage(mosh::MoshSessions::default());
+        .manage(mosh::MoshSessions::default())
+        .manage(generic_terminal::TerminalConnections::default());
     #[cfg(mobile)]
     let builder = builder.plugin(tauri_plugin_barcode_scanner::init())
         .plugin(tauri_plugin_image_picker::init());
@@ -55,6 +57,14 @@ pub fn run() {
     builder
         .invoke_handler(tauri::generate_handler![
             mobile_scaffold_status,
+            generic_terminal::mobile_terminal_list,
+            generic_terminal::mobile_terminal_create,
+            generic_terminal::mobile_terminal_connect,
+            generic_terminal::mobile_terminal_input,
+            generic_terminal::mobile_terminal_resize,
+            generic_terminal::mobile_terminal_poll,
+            generic_terminal::mobile_terminal_disconnect,
+            generic_terminal::mobile_terminal_end,
             ios_push::mobile_push_register,
             ios_push::mobile_push_take_state,
             ios_push::mobile_push_ack_tap,

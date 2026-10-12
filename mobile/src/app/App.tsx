@@ -8,7 +8,10 @@ import { usePushAlerts } from "./usePushAlerts";
 import { SettingsDialog } from "../features/settings/SettingsDialog";
 import { SessionDashboard } from "../features/sessions/SessionDashboard";
 import type { OpenSession } from "../features/sessions/types";
-import type { RemoteClient } from "../protocol/remoteClient";
+import type { HostProfileSummary, RemoteClient } from "../protocol/remoteClient";
+import type { GenericTerminalClient } from "../protocol/genericTerminalClient";
+import { genericTerminalClient } from "../platform/tauriGenericTerminalClient";
+import { GenericTerminal } from "../features/generic-terminal/GenericTerminal";
 
 const SessionWorkspace = lazy(() => import("../features/sessions/SessionWorkspace").then((module) => ({
   default: module.SessionWorkspace,
@@ -23,16 +26,18 @@ type SessionPage = "list" | "terminal" | "files";
 interface AppProps {
   client: RemoteClient;
   hostAuthClient: HostAuthClient;
+  terminalClient?: GenericTerminalClient;
 }
 
-export function App({ client, hostAuthClient }: AppProps) {
+export function App({ client, hostAuthClient, terminalClient = genericTerminalClient }: AppProps) {
   useApplyAppAppearance();
   const { t } = useTranslation();
   const [openedSession, setOpenedSession] = useState<{ open: OpenSession; token: number }>();
   const handleSessionOpened = useCallback((open: OpenSession) => setOpenedSession(previous => ({ open, token: (previous?.token ?? 0) + 1 })), []);
   const [selectedSession, setSelectedSession] = useState<OpenSession>();
+  const [genericHost, setGenericHost] = useState<HostProfileSummary>();
   const [page, setPage] = useState<SessionPage>("list");
-  const terminalVisible = page === "terminal";
+  const terminalVisible = page === "terminal" && !genericHost;
   const [filesVisited, setFilesVisited] = useState(false);
   useTerminalImmersion(terminalVisible);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -66,7 +71,7 @@ export function App({ client, hostAuthClient }: AppProps) {
 
   const onTouchStart = (event: TouchEvent) => {
     swipeStart.current = undefined;
-    if (settingsOpen || deviceManagerOpen || event.touches.length !== 1 || document.querySelector(".mobile-modal-portal")) return;
+    if (settingsOpen || deviceManagerOpen || genericHost || event.touches.length !== 1 || document.querySelector(".mobile-modal-portal")) return;
     if (window.getSelection()?.toString()) return;
     const target = event.target as HTMLElement;
     if (target.closest("[role=dialog], .modal-backdrop, .centered-modal-backdrop")) return;
@@ -91,7 +96,7 @@ export function App({ client, hostAuthClient }: AppProps) {
   const onTouchEnd = (event: TouchEvent) => {
     const start = swipeStart.current;
     swipeStart.current = undefined;
-    if (settingsOpen || deviceManagerOpen || document.querySelector(".mobile-modal-portal") || !start || event.changedTouches.length !== 1) return;
+    if (settingsOpen || deviceManagerOpen || genericHost || document.querySelector(".mobile-modal-portal") || !start || event.changedTouches.length !== 1) return;
     const touch = event.changedTouches[0];
     const dx = touch.clientX - start.x;
     const dy = touch.clientY - start.y;
@@ -170,10 +175,10 @@ export function App({ client, hostAuthClient }: AppProps) {
   return (
     <div className="app-shell" data-page={page} onTouchStart={onTouchStart} onTouchMoveCapture={onTouchMove}
       onTouchEnd={onTouchEnd} onTouchCancel={() => { swipeStart.current = undefined; }}>
-      <main className="main-content" id="main-content" aria-hidden={page !== "list"} {...(page !== "list" ? { inert: "" } : {})}>
+      <main className="main-content" id="main-content" aria-hidden={page !== "list" || !!genericHost} {...(page !== "list" || genericHost ? { inert: "" } : {})}>
         <SessionDashboard
           client={client}
-          active={page === "list" && !deviceManagerOpen && !settingsOpen}
+          active={page === "list" && !deviceManagerOpen && !settingsOpen && !genericHost}
           onOpenSession={openSession}
           openedSession={openedSession}
           hostProfilesEpoch={hostProfilesEpoch}
@@ -209,6 +214,9 @@ export function App({ client, hostAuthClient }: AppProps) {
         </div>
       ) : null}
 
+      {genericHost ? <GenericTerminal key={genericHost.id} host={genericHost} client={terminalClient} authClient={hostAuthClient}
+        onBack={() => { setGenericHost(undefined); setDeviceManagerOpen(true); }} /> : null}
+
       {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
 
       {deviceManagerOpen ? (
@@ -217,7 +225,8 @@ export function App({ client, hostAuthClient }: AppProps) {
         }}>
           <section className="modal-sheet device-manager-sheet" role="dialog" aria-modal="true" aria-label={t("hosts.title")}>
             <button className="device-manager-close" type="button" onClick={closeDeviceManager} aria-label={t("common.close")}>×</button>
-            <HostManager remoteClient={client} authClient={hostAuthClient} onPairedConnected={pairedConnected} />
+            <HostManager remoteClient={client} authClient={hostAuthClient} onPairedConnected={pairedConnected}
+              onOpenTerminal={host => { setGenericHost(host); setDeviceManagerOpen(false); }} />
           </section>
         </div>
       ) : null}

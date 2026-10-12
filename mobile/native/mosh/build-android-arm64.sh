@@ -63,6 +63,7 @@ git -C "$MOSH_SRC" fetch --depth 1 origin "$MOSH_COMMIT"
 git -C "$MOSH_SRC" reset --hard "$MOSH_COMMIT"
 git -C "$MOSH_SRC" clean -fdx
 git -C "$MOSH_SRC" apply "$ROOT/patches/android-mobile.patch"
+git -C "$MOSH_SRC" apply "$ROOT/patches/mobile-safety.patch"
 
 LIBDIR="$DEPS/static/arm64-v8a"
 PROTOBUF_LIBS=(
@@ -111,7 +112,7 @@ rm -f "$JNI/libagentport_mosh.so" "$JNI/libc++_shared.so"
 install -m 755 "$OUTPUT/libagentport_mosh.so" "$JNI/libagentport_mosh.so"
 install -m 755 "$OUTPUT/libc++_shared.so" "$JNI/libc++_shared.so"
 "$TOOLCHAIN/llvm-readelf" -Ws "$OUTPUT/libagentport_mosh.so" > "$OUTPUT/symbols.txt"
-grep -q ' mosh_main$' "$OUTPUT/symbols.txt"
+grep -q ' agentport_mosh_main_v2$' "$OUTPUT/symbols.txt"
 rm "$OUTPUT/symbols.txt"
 "$TOOLCHAIN/llvm-readelf" -d "$OUTPUT/libagentport_mosh.so" > "$OUTPUT/dynamic.txt"
 grep NEEDED "$OUTPUT/dynamic.txt"
