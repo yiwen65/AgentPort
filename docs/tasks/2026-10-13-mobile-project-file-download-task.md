@@ -117,9 +117,9 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-004 — 跨层审查、回归构建与提交
+### [x] T-004 — 跨层审查、回归构建与提交
 
-- Status: in_progress
+- Status: done
 - Owner: coordinator
 - Objective: 接收审查并验证集成，独立提交任务。
 - Inputs and prerequisites: T-001/T-002/T-003完成。
@@ -133,7 +133,7 @@
   - 自动化通过，无未审查安全/正确性阻塞，证据不夸大，提交不混无关工作。
 - Verification method:
   - Cargo/NPM、两平台构建、git diff --check、check-version-sync、task document validator及截图。
-- Validation evidence: 主机64+20+13单元/3集成含完整1GiB传输，手机Rust60项通过；mobile最终全量784项/生产构建、真实Chrome文件树下载交互fixture回归通过。最终iOS模拟器签名归档、Android APK构建、安装启动和非空白截图通过；Desktop统一脚本重启签名包成功，ps精确GUI路径与截图确认。版本同步/diff检查通过。外部目标残留警告优先级回归加入并通过；最终iOS/Android顺序重建、安装启动及ios-delivery.png/android-delivery.png截图确认正常渲染。Git commit待创建。
+- Validation evidence: 主机64+20+13单元/3集成含完整1GiB传输，手机Rust60项通过；mobile最终全量784项/生产构建、真实Chrome文件树下载交互fixture回归通过。最终iOS模拟器签名归档、Android APK构建、安装启动和非空白截图通过；Desktop统一脚本重启签名包成功，ps精确GUI路径与截图确认。版本同步/diff检查通过。外部目标残留警告优先级回归加入并通过；最终iOS/Android顺序重建、安装启动及ios-delivery.png/android-delivery.png截图确认正常渲染。功能commit a37112d已创建（45个相关文件，无无关改动）。
 - Blocker: None.
 - Unblock condition: None.
 
@@ -182,10 +182,11 @@
 - 2026-10-13: T-005转blocked：物理手机不可用、iOS本地SSH缺失、Android无配置主机。只完成两平台启动，不宣称真实目录保存。新增错误警告优先级测试，避免重试清理错误再次掩盖外部残留文件提示；最终回归/产物刷新后独立提交。
 - 2026-10-13: LEARNS.md合并已存在的iOS工具链教训为mobile工具链并新增Android已验证证据；新增可复用下载缓存初始化隔离教训。构建自动schema仅新增file-export空权限manifest，无其他权限变化。
 - 2026-10-13: 最终前端784/784、TypeScript/Vite、扩展Chrome回归通过。最终iOS与Android顺序构建成功，保留数据安装并启动，审看两平台最终截图为正常离线/无主机界面。桌面调试GUI路径已核验、窗口非空白。尚未具备系统另存为真实连接条件，最终结果保持partial。准备只提交本任务已验证文件。
+- 2026-10-13: 功能commit a37112d创建，45个相关文件；暂存前确认索引为空、HEAD未漂移、所有路径均在任务范围，未提交构建二进制/生成工程个人配置。T-004 done。T-005仍blocked，final validation partial，等待真实已授权连接补端到端系统保存验收。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: partial
-- Evidence: T-001至T-003完成；T-004最终自动化/两平台构建和启动验证已通过，等待提交。T-005因实际连接缺失blocked。证据日志见执行记录；截图 /tmp/agentport-download-evidence/，含下载操作/进度/返回终端（fixture）及原生启动（不冒充保存验收）。
+- Evidence: T-001至T-003完成；T-004最终自动化/两平台构建和启动验证通过并完成commit a37112d；T-001至T-004 done。T-005因实际连接缺失blocked。证据日志见执行记录；截图 /tmp/agentport-download-evidence/，含下载操作/进度/返回终端（fixture）及原生启动（不冒充保存验收）。
 - Limitations: 未验证真实iOS/Android系统目标写入、云提供方、设备1GiB保存/空间不足、无障碍或Linux实机主机。1GiB在macOS服务实际分块传输验证；Swift/Kotlin均编译，手机Rust字节与状态测试通过，不代表所有提供方行为已验收。
