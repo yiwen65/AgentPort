@@ -9,8 +9,8 @@ function time(value: string | undefined): number {
 }
 
 export function activeSessionPriority(session: SessionSummary): number {
-  if (session.unreadAttention || session.latestStatus?.state === "needs_input") return 0;
-  if (session.lifecycle === "creating" || session.latestStatus?.state === "working") return 1;
+  if (session.lifecycle === "creating" || session.latestStatus?.state === "working") return 0;
+  if (session.unreadAttention || session.latestStatus?.state === "needs_input") return 1;
   if (session.latestStatus?.state === "idle") return 2;
   return 3;
 }

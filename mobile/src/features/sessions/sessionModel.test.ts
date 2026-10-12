@@ -34,7 +34,20 @@ describe("V2 session model", () => {
       session("dead", { hostAlive: false }),
       session("archived", { archivedAt: "2026-09-02T00:03:00Z" }),
     ]);
-    expect(result.map((item) => item.id)).toEqual(["attention", "working", "idle", "shell"]);
+    expect(result.map((item) => item.id)).toEqual(["working", "attention", "idle", "shell"]);
+  });
+
+  it("keeps working and creating sessions ahead of pinned attention and idle sessions", () => {
+    const status = (state: string) => ({ runId: "r", runOrdinal: 1, sequence: 1, state, source: "hook", confidence: "high", occurredAt: "2026-09-02T00:02:00Z" } as NonNullable<SessionSummary["latestStatus"]>);
+    const result = activeAgentSessions([
+      session("attention", { unreadAttention: true, pinnedAt: "2026-09-02T00:03:00Z" }),
+      session("needs-input", { latestStatus: status("needs_input"), pinnedAt: "2026-09-02T00:03:00Z" }),
+      session("idle", { latestStatus: status("idle"), pinnedAt: "2026-09-02T00:03:00Z" }),
+      session("creating", { lifecycle: "creating" }),
+      session("working", { latestStatus: status("working") }),
+      session("working-unread", { latestStatus: status("working"), unreadAttention: true }),
+    ]);
+    expect(result.map(item => item.id)).toEqual(["working", "working-unread", "creating", "needs-input", "attention", "idle"]);
   });
 
   it("orders and hides installed quick-launch agents using desktop preferences", () => {
