@@ -27,6 +27,7 @@ function remote() {
       if (method === "project.directory.resolve") return { path: params.path };
       if (method === "project.add") return { project: project(params.path), focusedExisting: false };
       if (method === "project.list") return [];
+      if (method === "document.list") throw { code: "unknown_method", status: "not_executed" };
       throw new Error(`Unexpected method ${method}`);
     }),
   };
@@ -90,7 +91,7 @@ describe("Add project dialog", () => {
     mount(client); await ready();
     fireEvent.click(screen.getByRole("checkbox", { name: "Show hidden directories" }));
     await screen.findByRole("button", { name: "Open directory .private" });
-    expect(screen.getByText(/Only part of this large directory/)).toBeInTheDocument();
+    expect(screen.getByText(i18n.t("project.truncated"))).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open directory work" }));
     await waitFor(() => expect(pathInput()).toHaveValue("/home/dev/work"));
     fireEvent.click(screen.getByRole("button", { name: "Up" }));
@@ -117,12 +118,164 @@ describe("Add project dialog", () => {
     expect(calls(client, "project.directory.list")).toHaveLength(1);
   });
 
+  it("browses the installed Ubuntu legacy document API instead of downgrading to manual-only", async () => {
+    const { client } = remote(); const base = vi.mocked(client.request).getMockImplementation()!;
+    vi.mocked(client.request).mockImplementation((...args) => {
+      if (args[1].startsWith("project.directory.")) return Promise.reject({ code: "unknown_method", status: "not_executed" });
+      if (args[1] === "document.list") {
+        const path = (args[2] as { path: string }).path;
+        return Promise.resolve({ path: path === "/alias" ? "/canonical/plain" : path, truncated: false,
+          entries: path === "/" ? [{ name: "home", path: "/home", isDir: true }, { name: ".private", path: "/.private", isDir: true }, { name: "file", path: "/file", isDir: false }] : [] });
+      }
+      return base(...args);
+    });
+    const { onAdded } = mount(client);
+    await screen.findByRole("button", { name: "Open directory home" });
+    expect(pathInput()).toHaveValue("/");
+    expect(screen.queryByText(i18n.t("project.manualFallback"))).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Root" })).toBeInTheDocument();
+    expect(screen.getByText(i18n.t("project.legacyBrowsing"))).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open directory file" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open directory .private" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show hidden directories" }));
+    await screen.findByRole("button", { name: "Open directory .private" });
+    fireEvent.change(pathInput(), { target: { value: "/alias" } });
+    fireEvent.click(add());
+    await waitFor(() => expect(onAdded).toHaveBeenCalled());
+    expect(calls(client, "project.add")[0][2]).toEqual({ path: "/canonical/plain", name: null });
+    expect(readPendingProjectAdd(host.id)).toBeNull();
+  });
+
+  it("keeps legacy permission/service failures as errors and never submits an unvalidated directory", async () => {
+    const { client } = remote(); const base = vi.mocked(client.request).getMockImplementation()!;
+    vi.mocked(client.request).mockImplementation((...args) => {
+      if (args[1].startsWith("project.directory.")) return Promise.reject({ code: "unknown_method", status: "not_executed" });
+      if (args[1] === "document.list") {
+        const path = (args[2] as { path: string }).path;
+        if (path === "/denied") return Promise.reject({ code: "service_error", status: "failed", message: "request failed on the remote host" });
+        return Promise.resolve({ path, truncated: false, entries: [] });
+      }
+      return base(...args);
+    });
+    mount(client);
+    await screen.findByText(i18n.t("project.legacyBrowsing"));
+    fireEvent.change(pathInput(), { target: { value: "/denied" } });
+    fireEvent.click(screen.getByRole("button", { name: "Go" }));
+    await screen.findByRole("alert");
+    expect(add()).toBeDisabled();
+    expect(screen.queryByLabelText("Current directory")).not.toBeInTheDocument();
+    expect(screen.queryByText(i18n.t("project.manualFallback"))).not.toBeInTheDocument();
+    fireEvent.change(pathInput(), { target: { value: "/edit" } });
+    fireEvent.change(pathInput(), { target: { value: "/denied" } });
+    fireEvent.submit(add().closest("form")!);
+    await waitFor(() => expect(calls(client, "project.directory.resolve")).toHaveLength(1));
+    await act(async () => {});
+    expect(calls(client, "project.add")).toHaveLength(0);
+    expect(readPendingProjectAdd(host.id)).toBeNull();
+    expect(pathInput()).toHaveValue("/denied");
+  });
+
+  it("persists the legacy canonical path and reconciles an unknown write without another add", async () => {
+    const { client } = remote(); const base = vi.mocked(client.request).getMockImplementation()!;
+    let found = false;
+    vi.mocked(client.request).mockImplementation((...args) => {
+      if (args[1].startsWith("project.directory.")) return Promise.reject({ code: "unknown_method", status: "not_executed" });
+      if (args[1] === "document.list") return Promise.resolve({ path: (args[2] as { path: string }).path === "/alias" ? "/canonical" : "/", truncated: false, entries: [] });
+      if (args[1] === "project.add") return Promise.reject({ code: "request_timeout", status: "unknown" });
+      if (args[1] === "project.list") return Promise.resolve(found ? [project("/canonical")] : []);
+      return base(...args);
+    });
+    const first = mount(client);
+    await screen.findByText(i18n.t("project.legacyBrowsing"));
+    fireEvent.change(pathInput(), { target: { value: "/alias" } });
+    fireEvent.click(add());
+    await screen.findByText(/original request may still be running/);
+    expect(readPendingProjectAdd(host.id)?.canonicalPath).toBe("/canonical");
+    first.unmount(); found = true;
+    const next = mount(client);
+    await waitFor(() => expect(next.onAdded).toHaveBeenCalledWith({ project: project("/canonical"), focusedExisting: true }));
+    expect(calls(client, "project.add")).toHaveLength(1);
+    expect(readPendingProjectAdd(host.id)).toBeNull();
+  });
+
+  it("never writes an ambiguous legacy canonical path into a replacement-character sibling", async () => {
+    const { client } = remote(); const base = vi.mocked(client.request).getMockImplementation()!;
+    vi.mocked(client.request).mockImplementation((...args) => {
+      if (args[1].startsWith("project.directory.")) return Promise.reject({ code: "unknown_method", status: "not_executed" });
+      if (args[1] === "document.list") return Promise.resolve({ path: (args[2] as { path: string }).path === "/alias" ? "/work\uFFFD" : "/", truncated: false, entries: [] });
+      return base(...args);
+    });
+    mount(client);
+    await screen.findByText(i18n.t("project.legacyBrowsing"));
+    fireEvent.change(pathInput(), { target: { value: "/alias" } });
+    fireEvent.click(add());
+    await screen.findByRole("alert");
+    expect(calls(client, "project.add")).toHaveLength(0);
+    expect(readPendingProjectAdd(host.id)).toBeNull();
+    expect(pathInput()).toHaveValue("/alias");
+  });
+
+  it("does not submit a directory preflight from a previous connection generation", async () => {
+    const { client, emit } = remote(); const base = vi.mocked(client.request).getMockImplementation()!;
+    const validation = deferred<{ path: string }>();
+    vi.mocked(client.request).mockImplementation((...args) => args[1] === "project.directory.resolve" ? validation.promise : base(...args));
+    mount(client); await ready();
+    fireEvent.click(add());
+    await waitFor(() => expect(calls(client, "project.directory.resolve")).toHaveLength(1));
+    await act(async () => emit("disconnected"));
+    await act(async () => emit("connected"));
+    await act(async () => validation.resolve({ path: "/old-connection-directory" }));
+    expect(calls(client, "project.add")).toHaveLength(0);
+    expect(readPendingProjectAdd(host.id)).toBeNull();
+  });
+
+  it("does not let a stale unsupported preflight disable resolution on the fresh connection", async () => {
+    const { client, emit } = remote(); const base = vi.mocked(client.request).getMockImplementation()!;
+    const validation = deferred<{ path: string }>(); let resolutions = 0;
+    vi.mocked(client.request).mockImplementation((...args) => {
+      if (args[1] === "project.directory.resolve") return ++resolutions === 1 ? validation.promise
+        : Promise.reject({ code: "permission_denied", status: "not_executed" });
+      return base(...args);
+    });
+    mount(client); await ready();
+    fireEvent.click(add());
+    await waitFor(() => expect(resolutions).toBe(1));
+    await act(async () => emit("disconnected"));
+    await act(async () => emit("connected"));
+    await act(async () => validation.reject({ code: "unknown_method", status: "not_executed" }));
+    expect(calls(client, "project.add")).toHaveLength(0);
+    fireEvent.click(add());
+    await screen.findByRole("alert");
+    expect(resolutions).toBe(2);
+    expect(calls(client, "project.add")).toHaveLength(0);
+    expect(readPendingProjectAdd(host.id)).toBeNull();
+  });
+
+  it("reprobes native directory capabilities after a legacy host reconnects", async () => {
+    const { client, emit } = remote(); const base = vi.mocked(client.request).getMockImplementation()!;
+    let upgraded = false;
+    vi.mocked(client.request).mockImplementation((...args) => {
+      if (args[1].startsWith("project.directory.") && !upgraded) return Promise.reject({ code: "unknown_method", status: "not_executed" });
+      if (args[1] === "document.list") return Promise.resolve({ path: "/", truncated: false, entries: [] });
+      return base(...args);
+    });
+    mount(client);
+    await screen.findByText(i18n.t("project.legacyBrowsing"));
+    await act(async () => emit("disconnected"));
+    upgraded = true;
+    await act(async () => emit("connected"));
+    await screen.findByRole("button", { name: "Home" });
+    expect(screen.queryByText(i18n.t("project.legacyBrowsing"))).not.toBeInTheDocument();
+    expect(calls(client, "project.directory.list")).toHaveLength(2);
+    expect(calls(client, "project.add")).toHaveLength(0);
+  });
+
   it.each(["unknown_method", "capability_disabled"])("downgrades only explicit unsupported %s to absolute manual paths", async code => {
     const { client } = remote();
     const base = vi.mocked(client.request).getMockImplementation()!;
     vi.mocked(client.request).mockImplementation((...args) => args[1].startsWith("project.directory.") ? Promise.reject({ code, status: "not_executed" }) : base(...args));
     const { onAdded } = mount(client);
-    await screen.findByText(/does not support directory browsing or resolution/);
+    await screen.findByText(i18n.t("project.manualFallback"));
     fireEvent.change(pathInput(), { target: { value: "/plain/non-git" } });
     fireEvent.click(add());
     await waitFor(() => expect(onAdded).toHaveBeenCalled());
@@ -134,7 +287,7 @@ describe("Add project dialog", () => {
     vi.mocked(client.request).mockRejectedValue({ code, message: "read unavailable" });
     mount(client);
     await screen.findByRole("alert");
-    expect(screen.queryByText(/does not support directory browsing or resolution/)).not.toBeInTheDocument();
+    expect(screen.queryByText(i18n.t("project.manualFallback"))).not.toBeInTheDocument();
     expect(add()).toBeDisabled();
     expect(screen.getByRole("button", { name: "Home" })).toBeEnabled();
     expect(calls(client, "project.add")).toHaveLength(0);
@@ -418,7 +571,7 @@ describe("Add project dialog", () => {
     mount(client); await ready(); fireEvent.click(add());
     await screen.findByRole("alert");
     expect(calls(client, "project.add")).toHaveLength(0); expect(readPendingProjectAdd(host.id)).toBeNull();
-    expect(screen.queryByText(/does not support directory browsing or resolution/)).not.toBeInTheDocument();
+    expect(screen.queryByText(i18n.t("project.manualFallback"))).not.toBeInTheDocument();
     expect(pathInput()).toHaveValue("/home/dev"); expect(add()).toBeEnabled();
   });
 
@@ -464,7 +617,8 @@ describe("Add project dialog", () => {
     await screen.findByText(/original request may still be running/);
     expect(readPendingProjectAdd(host.id)).toMatchObject({ path: "/alias", state: "pending" });
     expect(add()).toBeDisabled(); expect(calls(client, "project.add")).toHaveLength(0);
-    expect(screen.getByText(/does not support directory browsing or resolution/)).toBeInTheDocument();
+    // Resolution failure alone does not prove that both browsers are unavailable.
+    expect(screen.queryByText(i18n.t("project.manualFallback"))).not.toBeInTheDocument();
   });
 
   it("focuses an existing project without replacing its name", async () => {

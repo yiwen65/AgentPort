@@ -151,6 +151,8 @@ pub const MOBILE_V2_METHOD_ALLOWLIST: &[&str] = &[
     "project.directory.list",
     "project.directory.resolve",
     "project.add",
+    // Read-only directory compatibility for Bridges predating project.directory.*.
+    "document.list",
 ];
 
 #[derive(Debug, Error)]
@@ -1256,6 +1258,7 @@ mod tests {
         for method in [
             "project.directory.list",
             "project.directory.resolve",
+            "document.list",
             "session.files.list",
             "session.files.read",
         ] {

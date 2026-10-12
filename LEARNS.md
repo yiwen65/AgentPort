@@ -751,3 +751,21 @@
 - Correct approach: 三层修复——①xterm 开启 `macOptionClickForcesSelection: true`（macOS 上 ⌥+drag 强制选择）；②**选区冻结**：mousedown 起把实时 PTY 输出在写协调器内按序缓冲（2MiB 溢出强制释放、30s 硬上限），无选区的点击立即释放、有选区则保持到选区被清除，重绘无法触碰进行中的选区；③**选区捕获兜底**：每次非空选区记录文本+时间戳，菜单 Copy 在实时选区被抹后用 30s 内的捕获值（`resolveCopySelection`），并在无选区且鼠标被 TUI 独占时显示手势提示（i18n）。
 - Prevention: 涉及 xterm 选区的改动必须同时在「空闲 shell」「活跃全屏 TUI」两类会话验证；xterm 的强制选择修饰键有平台差异（mac=Alt+选项门控，其他=Shift）；GUI 自动化验证用「选区状态写 localStorage + 读 WebKit SQLite」做探针最稳，菜单级探针可直接写进 `paneContextItems` 临时验证后移除。
 - Verified by: 2026-10-12 探针链（selprobe/menuprobe）：修复前 `mouse:"any"` 下拖拽 len=0、Shift+drag len=0、重绘后 liveLen=0；修复后 ⌥+drag len=9、冻结保持（frozen=true）、menuprobe resolved=9、Copy 按下后剪贴板取得 9 字节。前端 992/992（含冻结三测：缓冲/保持/溢出释放），构建绿。
+
+## `legacy Project directory identity` — lossy canonical strings are not safe mutation targets
+
+- Wrong approach: Accept every absolute canonical path returned by old `document.list` and validate all child names as selectable paths before filtering files/hidden rows.
+- Why it failed: Old Bridge serializes paths with `to_string_lossy`; an alias to a raw-byte directory can return U+FFFD and redirect an add to a different UTF-8 sibling. Legal newline/tab names in unrelated files also incorrectly invalidated an otherwise safe directory.
+- Recognition signal: Legacy resolve returns a replacement-character path, or listing/resolve fails only because an unrelated child has a control character.
+- Correct approach: Reject ambiguous legacy canonical U+FFFD paths, omit unsafe visible directory rows with an incomplete-list notice, and separate wire-shape validity from UI selectability. Keep native legitimate UTF-8 U+FFFD allowed.
+- Prevention: Test alias-to-raw-byte versus real UTF-8 sibling, visible/hidden control-name directories, ordinary control-name files and malformed wire fields separately; never downgrade invalid responses into raw-path writes.
+- Verified by: 2026-10-12 ten focused reader guards failed 9/10 before repair and passed 10/10 after; the UI alias guard changed from Project added to no write/no journal. Complete mobile suite 731/731 passed.
+
+## `iOS Rust toolchain selection` — rustup targets do not apply to Homebrew rustc
+
+- Wrong approach: Run Tauri's iOS archive with Homebrew cargo/rustc first in PATH and treat rustup's installed iOS target as proof the active compiler can use it.
+- Why it failed: rustup reported the target up to date, but Xcode's cargo hook selected Homebrew rustc, whose sysroot had no iOS core crate.
+- Recognition signal: `can't find crate for core` follows a successful rustup target check; `which rustc` points to Homebrew while rustup reports another toolchain.
+- Correct approach: Prepend `$HOME/.cargo/bin` for the build invocation, as `mobile/scripts/build-ios-personal-team.sh` already does; do not repeatedly install targets or change source.
+- Prevention: Check `which cargo rustc`, `rustc -vV` and `rustup show` in the actual build environment before an iOS archive.
+- Verified by: 2026-10-12 the unchanged device archive failed with Homebrew1.95, then passed with rustup1.98 after only the invocation PATH changed; final iPhoneOS27/min16 bundle signature and profile checks passed.

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Modal } from "../../components/Modal";
 import type { HostProfileSummary, RemoteClient, Unsubscribe } from "../../protocol/remoteClient";
@@ -9,7 +9,10 @@ import {
   readPendingProjectAdd, updatePendingProjectAdd,
   type AddedProjectResult, type PendingProjectAdd,
 } from "./pendingProjectAdd";
+import { createProjectDirectoryReader, isAbsoluteProjectPath, type ProjectDirectoryListing } from "./projectDirectory";
 import "./add-project-dialog.css";
+
+export { isAbsoluteProjectPath } from "./projectDirectory";
 
 export type { AddedProjectResult } from "./pendingProjectAdd";
 export interface AddProjectDialogProps {
@@ -18,22 +21,12 @@ export interface AddProjectDialogProps {
   onClose: () => void;
   onAdded: (result: AddedProjectResult) => Promise<void>;
 }
-interface DirectoryListing {
-  path: string;
-  homePath: string;
-  parentPath: string | null;
-  entries: { name: string; path: string }[];
-  truncated: boolean;
-}
 type Phase = "idle" | "validating" | "submitting" | "checking" | "added" | "refreshFailed";
 const pathErrors = new Set(["path_not_found", "not_directory", "permission_denied", "invalid_path", "directory_read_failed"]);
 const codeOf = (error: unknown) => error && typeof error === "object" && "code" in error ? String(error.code) : "";
 const unsupported = (error: unknown) => ["unknown_method", "capability_disabled"].includes(codeOf(error));
 const knownFailed = (error: unknown) => error && typeof error === "object" && "status" in error
   && (error.status === "failed" || error.status === "not_executed");
-export function isAbsoluteProjectPath(path: string): boolean {
-  return !/[\u0000-\u001f]/.test(path) && (path.startsWith("/") || /^[a-z]:[\\/]/i.test(path) || /^\\\\[^\\]+\\[^\\]+/.test(path));
-}
 
 /** A host change is a new lifetime; no old response can call the new host's callback. */
 export function AddProjectDialog(props: AddProjectDialogProps) {
@@ -45,7 +38,9 @@ function HostAddProjectDialog({ client, host, onClose, onAdded }: AddProjectDial
   const id = useId();
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
-  const [directory, setDirectory] = useState<DirectoryListing>();
+  const directoryReader = useMemo(() => ({ current: createProjectDirectoryReader(client, host.id) }), [client, host.id]);
+  const [directory, setDirectory] = useState<ProjectDirectoryListing>();
+  const [legacyBrowsing, setLegacyBrowsing] = useState(false);
   const [showHidden, setShowHidden] = useState(false);
   const [manualOnly, setManualOnly] = useState(false);
   const [online, setOnline] = useState(host.connectionState === "connected");
@@ -74,6 +69,13 @@ function HostAddProjectDialog({ client, host, onClose, onAdded }: AddProjectDial
   const errorText = (cause: unknown) => pathErrors.has(codeOf(cause))
     ? t(`project.errors.${codeOf(cause)}`) : t("project.requestFailed", { error: remoteErrorMessage(cause) });
   const manualFallback = () => { manualRef.current = true; setManualOnly(true); };
+  const resetDirectoryReader = () => {
+    directoryReader.current = createProjectDirectoryReader(client, host.id);
+    resolveUnsupported.current = false;
+    manualRef.current = false;
+    setManualOnly(false);
+    setLegacyBrowsing(false);
+  };
   const dismiss = () => {
     alive.current = false;
     generation.current++;
@@ -134,14 +136,18 @@ function HostAddProjectDialog({ client, host, onClose, onAdded }: AddProjectDial
         if (!target) throw { code: "invalid_path" };
         let canonical = target;
         if (!resolveUnsupported.current) {
-          try { canonical = (await client.request<{ path: string }>(host.id, "project.directory.resolve", { path: target })).path; }
-          catch (cause) { if (!unsupported(cause)) throw cause; resolveUnsupported.current = true; }
+          try { canonical = await directoryReader.current.resolve(target); }
+          catch (cause) {
+            if (!alive.current || turn !== generation.current || !onlineRef.current) return;
+            if (!unsupported(cause)) throw cause;
+            resolveUnsupported.current = true;
+          }
         }
         if (alive.current && turn === generation.current && onlineRef.current) { setInputPath(canonical); setCandidate(true); }
       } else {
-        const result = await client.request<DirectoryListing>(host.id, "project.directory.list", { ...(target === undefined ? {} : { path: target }), showHidden: hiddenRef.current });
+        const result = await directoryReader.current.list(target, hiddenRef.current);
         if (!alive.current || turn !== generation.current || !onlineRef.current) return;
-        setDirectory(result); setInputPath(result.path); setCandidate(true);
+        setDirectory(result); setLegacyBrowsing(result.compatibility === "legacy"); setInputPath(result.path); setCandidate(true);
       }
     } catch (cause) {
       if (!alive.current || turn !== generation.current) return;
@@ -164,13 +170,13 @@ function HostAddProjectDialog({ client, host, onClose, onAdded }: AddProjectDial
       let resolutionError: unknown;
       if (!record.canonicalPath && !resolveUnsupported.current) {
         try {
-          const result = await client.request<{ path: string }>(host.id, "project.directory.resolve", { path: record.path });
+          const canonicalPath = await directoryReader.current.resolve(record.path);
           if (!alive.current || turn !== generation.current || !onlineRef.current) return;
-          record = { ...record, canonicalPath: result.path };
+          record = { ...record, canonicalPath };
           updatePendingProjectAdd(host.id, record);
         } catch (cause) {
           if (!alive.current || turn !== generation.current || !onlineRef.current) return;
-          if (unsupported(cause)) { resolveUnsupported.current = true; manualFallback(); }
+          if (unsupported(cause)) { resolveUnsupported.current = true; }
           else resolutionError = cause;
         }
       }
@@ -196,6 +202,7 @@ function HostAddProjectDialog({ client, host, onClose, onAdded }: AddProjectDial
 
   useEffect(() => {
     alive.current = true;
+    resetDirectoryReader();
     let disposed = false;
     let unsubscribe: Unsubscribe | undefined;
     const stopObserving = observePendingProjectAdd(host.id, () => {
@@ -224,6 +231,7 @@ function HostAddProjectDialog({ client, host, onClose, onAdded }: AddProjectDial
         setPhase(current => current === "checking" ? "idle" : current);
       }
       if (reconnected) {
+        resetDirectoryReader();
         try {
           if (loadPending()) void checkRef.current();
           else void browseRef.current(pathRef.current || undefined);
@@ -246,6 +254,7 @@ function HostAddProjectDialog({ client, host, onClose, onAdded }: AddProjectDial
       setPhase(current => current === "checking" ? "idle" : current);
     }
     else {
+      resetDirectoryReader();
       try { if (loadPending()) void checkRef.current(); else void browseRef.current(pathRef.current || undefined); }
       catch { /* Storage failure blocks writes. */ }
     }
@@ -256,6 +265,7 @@ function HostAddProjectDialog({ client, host, onClose, onAdded }: AddProjectDial
   const submit = async () => {
     if (active.current || checking.current || !alive.current || !onlineRef.current || !candidate || browsing || pending || storageFailed) return;
     active.current = true; // Before the first await: React's disabled state alone cannot guard a double tap.
+    const turn = generation.current;
     const submittedPath = pathRef.current;
     const submittedName = name.trim() || null;
     setError(""); setPhase("validating");
@@ -267,14 +277,14 @@ function HostAddProjectDialog({ client, host, onClose, onAdded }: AddProjectDial
       if (loadPending()) { setPhase("idle"); return; }
       let canonicalPath: string | undefined;
       if (!resolveUnsupported.current) {
-        try { canonicalPath = (await client.request<{ path: string }>(host.id, "project.directory.resolve", { path: submittedPath })).path; }
+        try { canonicalPath = await directoryReader.current.resolve(submittedPath); }
         catch (cause) {
+          if (!alive.current || turn !== generation.current || !onlineRef.current) return;
           if (!unsupported(cause)) throw cause;
           resolveUnsupported.current = true;
-          if (alive.current) manualFallback();
         }
       }
-      if (!alive.current || !onlineRef.current) return; // Closing a read/preflight still means no write.
+      if (!alive.current || !onlineRef.current || turn !== generation.current) return; // A closed/replaced read preflight must not write.
       record = { id: crypto.randomUUID(), path: submittedPath, canonicalPath, name: submittedName, state: "pending" };
       let began: boolean;
       try { began = beginPendingProjectAdd(host.id, record); }
@@ -297,7 +307,7 @@ function HostAddProjectDialog({ client, host, onClose, onAdded }: AddProjectDial
             setPhase("idle"); setError(unsupported(cause) ? t("project.upgradeRequired") : errorText(cause));
           }
         } else if (alive.current) { setPhase("idle"); setUnconfirmed(true); setError(errorText(cause)); }
-      } else if (alive.current) {
+      } else if (alive.current && turn === generation.current) {
         setPhase("idle"); setError(codeOf(cause) === "invalid_name" ? t("project.invalidName") : errorText(cause));
         // A storage failure occurs before invocation; keep the form, but block all writes.
         try { readPendingProjectAdd(host.id); } catch { setStorageFailed(true); setError(t("project.storageFailed")); }
@@ -314,7 +324,7 @@ function HostAddProjectDialog({ client, host, onClose, onAdded }: AddProjectDial
     <p className="add-project-host">{t("project.target", { name: host.name })}</p>
     <p className="add-project-hint">{t("project.hint")}</p>
     {!online ? <p role="status" className="add-project-notice">{t("project.offline")}</p> : null}
-    {manualOnly ? <p role="status" className="add-project-notice">{t("project.manualFallback")}</p> : null}
+    {manualOnly ? <p role="status" className="add-project-notice">{t("project.manualFallback")}</p> : legacyBrowsing ? <p role="status" className="add-project-notice">{t("project.legacyBrowsing")}</p> : null}
     <form onSubmit={event => { event.preventDefault(); void submit(); }}>
       <label htmlFor={`${id}-path`}>{t("project.path")}</label>
       <div className="add-project-path-row">
@@ -327,7 +337,7 @@ function HostAddProjectDialog({ client, host, onClose, onAdded }: AddProjectDial
       {!manualOnly ? <>
         <div className="add-project-navigation">
           <button type="button" disabled={!online || locked || !directory?.parentPath} onClick={() => void browse(directory?.parentPath ?? undefined)}>{t("project.up")}</button>
-          <button type="button" disabled={!online || locked} onClick={() => void browse()}>{t("project.home")}</button>
+          <button type="button" disabled={!online || locked} onClick={() => void browse()}>{t(legacyBrowsing ? "project.root" : "project.home")}</button>
           <label className="add-project-hidden"><input type="checkbox" checked={showHidden} disabled={!online || locked} onChange={event => {
             hiddenRef.current = event.target.checked; setShowHidden(event.target.checked);
             void browse(directory?.path ?? (pathRef.current || undefined));
