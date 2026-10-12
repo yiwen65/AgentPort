@@ -3,7 +3,7 @@
 - Created: 2026-10-12
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: in_progress
+- Overall status: blocked
 - Source: 用户确认需求后要求“编写计划并实施，完成该功能交付”。
 
 <!-- task-doc-section:background-goal -->
@@ -49,7 +49,7 @@
 <!-- task-doc-section:dependencies-batches -->
 ## Dependencies and parallel batches
 
-- Dependency graph: T-001、T-002、T-003 按固定接口契约并行；T-004 依赖前三项。
+- Dependency graph: T-001、T-002、T-003 按固定接口契约并行；T-004 依赖前三项；T-005 依赖T-004且需可用真机/已授权连接。
 - Parallel batches: 第一批后端限定接口、独立文件浏览组件、协调者导航集成；第二批跨层验证交付。
 - Serialization constraints: 后端仅拥有 service/bridge/protocol 及必要 Cargo 锁文件；前端子任务仅拥有 features/files、i18n、mobile package/lock/third-party licenses；协调者拥有 App、SessionWorkspace、终端手势、文档。不并行写同一文件；本文件仅协调者维护。
 
@@ -113,9 +113,9 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-004 — 运行验证、审查与提交交付
+### [x] T-004 — 运行验证、审查与提交交付
 
-- Status: in_progress
+- Status: done
 - Owner: coordinator
 - Objective: 验证跨层功能，启动更新调试包，记录覆盖并提交。
 - Inputs and prerequisites: T-003 完成。
@@ -130,9 +130,28 @@
   - 自动化门禁通过，运行证据真实，diff 无无关改动，形成 Git commit。
 - Verification method:
   - mobile npm test/build、定向 Rust tests、scripts/check-version-sync.sh、git diff --check、调试窗口截图。
-- Validation evidence: 最终定向前端145/145、service串行56/56、bridge19/19、protocol13/13通过；mobile生产构建、真实Chrome文件页触摸脚本及既有terminal-touch脚本通过。最终签名iOS模拟器包安装启动及桌面调试包重启均成功，并复核精确GUI路径及非空白截图。版本同步与diff检查通过。待创建本任务专属提交；最后共享全量测试716/717，唯一失败在外部并行改动的AddProjectDialog测试，不纳入本任务修复。
+- Validation evidence: 最终定向前端145/145、service串行56/56、bridge19/19、protocol13/13通过；mobile生产构建、真实Chrome文件页触摸脚本及既有terminal-touch脚本通过。最终签名iOS模拟器包安装启动及桌面调试包重启均成功，并复核精确GUI路径及非空白截图。版本同步与diff检查通过。功能已独立提交 fde7c2c（25文件）；最后共享全量测试716/717，唯一失败在外部并行改动的AddProjectDialog测试，不纳入本任务修复。
 - Blocker: None.
 - Unblock condition: None.
+
+### [ ] T-005 — 真机与真实连接端到端验收
+
+- Status: blocked
+- Owner: coordinator
+- Objective: 补足设备/真实连接验收，不把模拟数据触摸回归当作真机证据。
+- Inputs and prerequisites: 已提交功能与签名构建包、可连接的手机或已配置授权的模拟器SSH服务。
+- Scope or files: iOS/Android设备交互、真实主机连接及任务验证记录；不擅自更改密钥。
+- Expected output: 真机终端左滑、目录展开、真实文本/Markdown预览、返回终端及软键盘/选择无冲突的证据。
+- Dependencies: T-004.
+- Execution steps:
+  1. 设备可用后安装已验证构建，连接用户已授权主机，完成实际文件只读浏览路径并记录截图。
+- Acceptance criteria:
+  - 真实连接读取的是该Session的cwd，边界与手势/返回状态符合需求；如需新授权先取得用户同意。
+- Verification method:
+  - 原生设备操作与真实服务返回对照，不使用fixture替代。
+- Validation evidence: xcrun devicectl list devices 显示物理手机 unavailable；iOS26.5模拟器已安装启动，但已有127.0.0.1:51222配置返回ssh connection failed，lsof无监听且launchctl找不到本地调试SSH服务。未更改密钥或自动新增授权。
+- Blocker: 当前没有可用的真实手机连接，模拟器也没有现成可用的本地授权服务。
+- Unblock condition: 用户连接并信任开发手机，或明确授权配置本地模拟器调试SSH连接；之后继续此任务文档，不重新规划功能。
 
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
@@ -160,10 +179,12 @@
 - 2026-10-12: 全量 mobile 首次600/600通过；后续发现并行外部任务正在修改 AddProjectDialog、projectDirectory 和 resources.project，出现对应测试失败（序列重跑604/607）；不修改或提交其工作，待其稳定后复核。Rust service曾出现既有Host input计时用例一次失败，隔离及串行全量56/56通过。
 - 2026-10-12: 将非Unix的通用read_failed改为明确unsupported_platform并本地化，补充第32项文件组件测试；新增mobile/SESSION_FILES.md说明协议、行为、支持边界与回归入口。
 - 2026-10-12: 最终定向145/145、Rust56+19+13通过；mobile生产构建与文件/终端两个真实Chrome脚本通过。最后共享全量716/717，唯一失败归于并行AddProjectDialog兼容任务。最终iOS模拟器重建安装启动通过；桌面统一脚本重启GUI PID12929，ps路径及debug-app-final.png确认目标正确。T-004 剩余动作是只提交本任务文件及共享文件中的本任务片段，不包含外部任务document.list allowlist/resources.project改动。
+- 2026-10-12: 功能提交 fde7c2c 已创建（25文件）。暂存前确认索引为空，对resources及protocol从HEAD重建仅本任务增量并检查未纳入外部片段。T-004 done，交付含明确真机/端到端验证限制，最终验证结果保持partial而非宣称全平台通过。
+- 2026-10-12: 新增T-005以显式追踪实际发生的设备验收阻塞；整体blocked仅代表该验收未闭环，代码、自动化、构建和功能提交已完成。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: partial
-- Evidence: T-001/T-002/T-003 已完成；T-004 验证已完成，待提交。最终本任务定向145项和Rust88项通过，生产构建、2个真实Chrome触摸脚本、iOS模拟器签名构建/启动、桌面调试重启截图通过。截图在 /tmp/agentport-files-evidence/；实际命令和结果见T-004及执行日志。
+- Evidence: T-001 至 T-004 完成，T-005因设备/连接环境受阻，功能提交 fde7c2c；共享文件按片段暂存，仅包含本任务改动，外部项目目录兼容改动保留在工作区。最终本任务定向145项和Rust88项通过，生产构建、2个真实Chrome触摸脚本、iOS模拟器签名构建/启动、桌面调试重启截图通过。截图在 /tmp/agentport-files-evidence/；实际命令和结果见T-004及执行日志。
 - Limitations: 未完成真实手机/Android/VoiceOver及真实网络端到端文件浏览（手机不可连接，模拟器已有本地SSH服务缺失，未擅自配置密钥）。Unix安全接口在macOS运行验证，Linux未实机验证；非Unix明确unsupported_platform。共享全量最后716/717，剩余失败来自外部并行旧主机兼容任务；不宣称全量通过。
