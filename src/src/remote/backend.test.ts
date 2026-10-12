@@ -553,11 +553,33 @@ describe("agents/presets/worktrees/branches", () => {
     });
   });
 
-  it("getRepositoryStatus extracts the status field from branch.status", async () => {
-    const status = { projectId: "prj_1", snapshotToken: "tok" };
-    request.mockResolvedValueOnce({ status, branches: [], autoStashes: [] });
-    const backend = makeBackend();
-    await expect(backend.getRepositoryStatus("prj_1")).resolves.toEqual(status);
+  it("maps the Bridge's raw BranchSnapshot to the desktop repository status", async () => {
+    // Exact serde shape of core::git::BranchSnapshot, NOT LocalBranchesResponse.
+    request.mockImplementation(async (method) => {
+      if (method === "branch.status") return {
+        repositoryRoot: "/remote/project", repoKey: "remote-repo",
+        status: {
+          checkout: { kind: "branch", value: "main" },
+          paths: [{ path: "file.ts", staged: true, unstaged: false,
+            untracked: false, unmerged: false, submoduleDirty: false }],
+          staged: true, unstaged: false, untracked: false, unmerged: false,
+          dirtySubmodule: false, operationState: null,
+        },
+        branches: [{ name: "main", oid: "a".repeat(40), current: true, occupiedWorktree: null }],
+      };
+      if (method === "git.context.resolve") return { liveSessionIds: ["ses_1"] };
+      if (method === "branch.autostash.list") return [{ operationId: "stash-1" }];
+      throw new Error(`Unexpected ${method}`);
+    });
+    const status = await makeBackend().getRepositoryStatus("prj_1");
+    expect(status).toMatchObject({
+      projectId: "prj_1", isGitRepository: true,
+      checkoutRoot: "/remote/project", repoKey: "remote-repo",
+      head: { kind: "branch", branch: "main", oid: "a".repeat(40), shortOid: "a".repeat(12) },
+      changes: { staged: 1, unstaged: 0, untracked: 0, unmerged: 0, dirtySubmodules: 0 },
+      liveSessionIds: ["ses_1"], pendingAutoStashes: 1,
+    });
+    expect(status.snapshotToken).toBeTruthy();
     expect(request).toHaveBeenCalledWith("branch.status", { projectId: "prj_1" });
   });
 

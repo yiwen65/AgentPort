@@ -769,3 +769,12 @@
 - Correct approach: Prepend `$HOME/.cargo/bin` for the build invocation, as `mobile/scripts/build-ios-personal-team.sh` already does; do not repeatedly install targets or change source.
 - Prevention: Check `which cargo rustc`, `rustc -vV` and `rustup show` in the actual build environment before an iOS archive.
 - Verified by: 2026-10-12 the unchanged device archive failed with Homebrew1.95, then passed with rustup1.98 after only the invocation PATH changed; final iPhoneOS27/min16 bundle signature and profile checks passed.
+
+## `remote Git status` — Core snapshot is not the desktop command DTO
+
+- Wrong approach: Cast `branch.status` to desktop `LocalBranchesResponse` and return `.status`; mock that same desktop shape in tests.
+- Why it failed: Bridge serializes Core `BranchSnapshot` directly (`status.checkout`/paths/dirty flags). It does not carry desktop `projectId`, `isGitRepository` or `head`; the store therefore cannot key the status by project and TopBar keeps Git Center disabled.
+- Recognition signal: Remote branch names/status requests succeed, but the Git button stays disabled; the payload has `repositoryRoot`, `repoKey`, `status.checkout.kind/value` rather than desktop status fields.
+- Correct approach: Explicitly map the Core snapshot to `RepositoryStatus`; obtain checkout-scoped live Session ids and pending stash count from the remote endpoints. Keep the UI snapshot-change token separate from server-issued Git mutation preconditions.
+- Prevention: Verify each remote method's actual service serializer before using a desktop return type. Regression fixtures must use the Rust wire shape and exercise its downstream store/UI consumer, not just a self-consistent mock.
+- Verified by: Raw-snapshot adapter test and TopBar button test failed before/passed after; remote routing integration covers Git Center + commit review/execute with server tokens; frontend 998/998 and build passed; actual paired Linux device opened Git Center with changes and the commit composer (no user files staged or committed).

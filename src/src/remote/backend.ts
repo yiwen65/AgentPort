@@ -117,6 +117,10 @@ import type {
   RemoteWorktreeSummary,
 } from "./types";
 import type { AttentionCursor } from "./types";
+import {
+  remoteBranchSnapshotToRepositoryStatus,
+  type RemoteBranchSnapshot,
+} from "./repositoryStatus";
 
 /** terminal.geometry_v1 gates revisioned resize metadata on the bridge. */
 const CAPABILITY_TERMINAL_GEOMETRY = "terminal.geometry_v1";
@@ -867,12 +871,23 @@ export class RemoteBackend {
   // branches (git_commands surface)
   // -----------------------------------------------------------------------
 
-  /** branch.status returns the full branch list payload; status is one field. */
   async getRepositoryStatus(projectId: string): Promise<RepositoryStatus> {
-    const value = await this.request<LocalBranchesResponse>("branch.status", {
+    const snapshot = await this.request<RemoteBranchSnapshot>("branch.status", {
       projectId,
     });
-    return value.status;
+    // These are desktop-only additions to Core's BranchSnapshot. Resolve live
+    // sessions against the actual checkout (not just the project id), and use
+    // the remote stash inventory rather than pretending it is empty.
+    const [context, stashes] = await Promise.all([
+      this.resolveGitContext({ kind: "projectMain", projectId }),
+      this.request<unknown[]>("branch.autostash.list", { projectId }),
+    ]);
+    return remoteBranchSnapshotToRepositoryStatus(
+      projectId,
+      snapshot,
+      context.liveSessionIds,
+      stashes.length,
+    );
   }
 
   listLocalBranches(projectId: string): Promise<LocalBranchesResponse> {

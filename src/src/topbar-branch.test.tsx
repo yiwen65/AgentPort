@@ -18,7 +18,9 @@ vi.mock("./gitCenter", () => ({
 import TopBar from "./components/TopBar";
 import { toggleActiveAgentsView } from "./actions";
 import { closeGitCenter, openGitCenter } from "./gitCenter";
-import { emptyGitCenterState, setState } from "./store";
+import { applyRepositoryStatusSnapshot, emptyGitCenterState, setState } from "./store";
+import { RemoteBackend } from "./remote/backend";
+import type { RemoteClient } from "./remote/client";
 import type { ProjectView, RepositoryStatus, SessionView } from "./types";
 
 const session = (worktreeId: string | null): SessionView => ({
@@ -116,6 +118,32 @@ describe("topbar project branch", () => {
       kind: "session",
       sessionId: current.id,
     });
+  });
+
+  it("enables the Git button from an actual remote BranchSnapshot", async () => {
+    const current = session(null);
+    setState({ projects: [project(current)], repositoryStatuses: {} });
+    const request = vi.fn(async (method: string) => {
+      if (method === "branch.status") return {
+        repositoryRoot: "/remote/project", repoKey: "remote-repo",
+        status: { checkout: { kind: "branch", value: "remote/main" }, paths: [],
+          staged: false, unstaged: false, untracked: false, unmerged: false,
+          dirtySubmodule: false, operationState: null },
+        branches: [{ name: "remote/main", oid: "a".repeat(40), current: true, occupiedWorktree: null }],
+      };
+      if (method === "git.context.resolve") return { liveSessionIds: [current.id] };
+      if (method === "branch.autostash.list") return [];
+      throw new Error(`Unexpected ${method}`);
+    });
+    const backend = new RemoteBackend({ request, addEventListener: () => () => undefined } as unknown as RemoteClient);
+    const status = await backend.getRepositoryStatus(current.projectId);
+    applyRepositoryStatusSnapshot(status);
+    render(<TopBar />);
+    const button = screen.getByRole("button", { name: "打开 Git Center" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    expect(screen.getByText("remote/main")).toBeTruthy();
+    button.click();
+    expect(openGitCenter).toHaveBeenCalledWith({ kind: "session", sessionId: current.id });
   });
 
   it("closes Git Center when its active top-bar button is clicked again", () => {
