@@ -32,6 +32,7 @@ import {
   useStore,
   type MenuItem,
 } from "../store";
+import { resolveCopySelection } from "../copySelection";
 import {
   attachHandle,
   fitSession,
@@ -901,7 +902,19 @@ function paneContextItems(
   const items: MenuItem[] = [];
   if (ses.transport === "pty") {
     const handle = getHandle(ses.id);
-    const selection = handle?.term.getSelection() ?? "";
+    const selection = resolveCopySelection(handle);
+    const mouseOwned =
+      !!handle &&
+      (handle.term.modes?.mouseTrackingMode ?? "none") !== "none";
+    if (!selection && mouseOwned) {
+      // A fullscreen TUI owns the mouse, so plain drags never form a
+      // selection; tell the user the only working gesture instead of leaving
+      // a silently-disabled Copy.
+      items.push({
+        label: t("shell:terminal.copySelectHint"),
+        disabled: true,
+      });
+    }
     items.push(
       {
         label: t("shell:terminal.copy"),

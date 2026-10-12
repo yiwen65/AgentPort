@@ -349,6 +349,8 @@ class TerminalWriteCoordinator {
   private outputBatchBytes = 0;
   private flushingOutputBatch = false;
   private processingOutput = false;
+  private freezeBuffer: Uint8Array[] | null = null;
+  private freezeBytes = 0;
 
   constructor(
     private readonly term: Terminal,
@@ -372,6 +374,14 @@ class TerminalWriteCoordinator {
 
   /** Feed raw PTY bytes while preserving DEC 2026 markers byte-for-byte. */
   writeOutput(data: Uint8Array) {
+    if (this.freezeBuffer) {
+      this.freezeBuffer.push(data.slice());
+      this.freezeBytes += data.byteLength;
+      if (this.freezeBytes > SELECTION_FREEZE_MAX_BUFFER_BYTES) {
+        this.setSelectionFreeze(false);
+      }
+      return;
+    }
     // Channel delivery is synchronous, so one call owns this batch. Output
     // separated by a deferred parser action is flushed before that action.
     this.outputBatch = [];
@@ -389,6 +399,37 @@ class TerminalWriteCoordinator {
         if (this.deferredOutput) this.armDeferredOutputTimeout();
       }
     }
+  }
+
+  /** Freeze live PTY output during a selection gesture. Live TUIs repaint
+   * constantly and xterm drops in-progress/completed selections on redraw;
+   * buffered bytes replay in order on release so no output is lost, while an
+   * overflow guard force-releases to keep the terminal responsive. */
+  setSelectionFreeze(frozen: boolean) {
+    if (frozen) {
+      if (!this.freezeBuffer) {
+        this.freezeBuffer = [];
+        this.freezeBytes = 0;
+      }
+      return;
+    }
+    const chunks = this.freezeBuffer;
+    this.freezeBuffer = null;
+    this.freezeBytes = 0;
+    if (!chunks || chunks.length === 0) return;
+    let total = 0;
+    for (const chunk of chunks) total += chunk.byteLength;
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    this.writeOutput(merged);
+  }
+
+  get selectionFrozen(): boolean {
+    return this.freezeBuffer !== null;
   }
 
   private processOutput(data: Uint8Array) {
@@ -760,6 +801,8 @@ class TerminalWriteCoordinator {
     this.discardDeferredOutput();
     for (const pending of [...this.allDrains]) this.discardDrain(pending);
     this.pendingDrains.clear();
+    this.freezeBuffer = null;
+    this.freezeBytes = 0;
   }
 }
 
@@ -771,6 +814,11 @@ export interface TermHandle {
   fit: FitAddon;
   search: SearchAddon;
   serialize: SerializeAddon;
+  /** Last non-empty selection text with its timestamp. Live TUIs repaint
+   * continuously and xterm drops the selection as soon as a redraw touches
+   * it; the context menu falls back to this capture so Copy still works. */
+  lastSelectionText: string | null;
+  lastSelectionAt: number;
   /** Mouse report encoding is not exposed by Terminal.modes and xterm's
    * SerializeAddon omits it, so preserve it explicitly with crash snapshots. */
   mouseEncoding: TerminalMouseEncoding;
@@ -1274,6 +1322,11 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
       allowNonHttpProtocols: true,
     },
     macOptionIsMeta: true,
+    // Mouse-owning TUIs (fullscreen agents with mouse reporting on) otherwise
+    // leave no way to select text on macOS: xterm's force-selection modifier
+    // is Alt on Mac and gated behind this flag. With it, ⌥+drag selects even
+    // while the application holds mouse reporting.
+    macOptionClickForcesSelection: true,
     allowTransparency: false,
     theme: getTerminalPalette(settings?.terminalTheme ?? "one", s.themeEffective).xterm,
   });
@@ -1309,6 +1362,8 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     fit,
     search,
     serialize,
+    lastSelectionText: null,
+    lastSelectionAt: 0,
     mouseEncoding: "default",
     opened: false,
     attached: false,
@@ -1403,6 +1458,17 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     updateScrolledUp(handle);
   });
   handles.set(sessionId, handle);
+  // Capture every completed selection: live TUIs repaint constantly and
+  // xterm drops the selection when a redraw touches it, so the context menu
+  // falls back to this snapshot (see paneContextItems / resolveCopySelection).
+  // Optional call: renderer test stubs do not implement onSelectionChange.
+  term.onSelectionChange?.(() => {
+    const text = term.getSelection();
+    if (text) {
+      handle.lastSelectionText = text;
+      handle.lastSelectionAt = Date.now();
+    }
+  });
   if (getState().runtime[sessionId]?.startupPending) {
     armPiStartupReadyTimeout(handle);
   }
@@ -2128,6 +2194,63 @@ function installViewportIntentTracking(
 const inputCompatibilityDisposers = new Map<string, () => void>();
 const clipboardCompatibilityDisposers = new Map<string, () => void>();
 const viewportIntentDisposers = new Map<string, () => void>();
+const selectionFreezeDisposers = new Map<string, () => void>();
+
+/** Cap on live bytes buffered while a selection gesture freezes repaints. */
+const SELECTION_FREEZE_MAX_BUFFER_BYTES = 2 * 1024 * 1024;
+/** Failsafe: never hold live output longer than this for one gesture. */
+const SELECTION_FREEZE_HARD_CAP_MS = 30_000;
+
+/** Freeze live PTY output while a selection gesture is in progress (and while
+ * a selection survives) so live-TUI repaints cannot destroy it mid-gesture.
+ * See TerminalWriteCoordinator.setSelectionFreeze for the buffering half. */
+function installSelectionFreeze(handle: TermHandle, container: HTMLDivElement) {
+  const { term } = handle;
+  let capTimer: number | null = null;
+  let pollTimer: number | null = null;
+  const clearTimers = () => {
+    if (capTimer !== null) {
+      window.clearTimeout(capTimer);
+      capTimer = null;
+    }
+    if (pollTimer !== null) {
+      window.clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  };
+  const release = () => {
+    clearTimers();
+    if (handles.get(handle.sessionId) === handle) {
+      handle.writes.setSelectionFreeze(false);
+    }
+  };
+  const onMouseDown = (event: MouseEvent) => {
+    if (event.button !== 0) return;
+    handle.writes.setSelectionFreeze(true);
+    if (capTimer !== null) window.clearTimeout(capTimer);
+    capTimer = window.setTimeout(release, SELECTION_FREEZE_HARD_CAP_MS);
+  };
+  const onMouseUp = () => {
+    if (!handle.writes.selectionFrozen) return;
+    // A plain click (no selection) releases immediately so the pane never
+    // visibly pauses; a completed selection holds until the user clears it.
+    if (!term.getSelection()) {
+      release();
+      return;
+    }
+    pollTimer ??= window.setInterval(() => {
+      if (!term.getSelection()) release();
+    }, 400);
+  };
+  container.addEventListener("mousedown", onMouseDown, true);
+  document.addEventListener("mouseup", onMouseUp, true);
+  return () => {
+    clearTimers();
+    container.removeEventListener("mousedown", onMouseDown, true);
+    document.removeEventListener("mouseup", onMouseUp, true);
+    handle.writes.setSelectionFreeze(false);
+  };
+}
 
 function bindTerminalContainer(handle: TermHandle, container: HTMLDivElement) {
   handle.container = container;
@@ -2145,6 +2268,11 @@ function bindTerminalContainer(handle: TermHandle, container: HTMLDivElement) {
   viewportIntentDisposers.set(
     handle.sessionId,
     installViewportIntentTracking(handle, container),
+  );
+  selectionFreezeDisposers.get(handle.sessionId)?.();
+  selectionFreezeDisposers.set(
+    handle.sessionId,
+    installSelectionFreeze(handle, container),
   );
   handle.resizeObserver?.disconnect();
   handle.resizeObserver = new ResizeObserver(() => {
@@ -3387,6 +3515,8 @@ export function disposeHandle(sessionId: string) {
   clipboardCompatibilityDisposers.delete(sessionId);
   viewportIntentDisposers.get(sessionId)?.();
   viewportIntentDisposers.delete(sessionId);
+  selectionFreezeDisposers.get(sessionId)?.();
+  selectionFreezeDisposers.delete(sessionId);
   const resizeTimer = resizeTimers.get(sessionId);
   if (resizeTimer !== undefined) {
     window.clearTimeout(resizeTimer);

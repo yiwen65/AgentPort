@@ -4179,4 +4179,83 @@ describe("terminal renderer", () => {
     expect(typeof runtime.logBytes).toBe("number");
     expect(getHandle("renderer-test")?.attachmentId).toBe("att-remote-1");
   });
+
+  describe("selection freeze (live-TUI repaint protection)", () => {
+    const output = (text: string) => {
+      rendererMocks.channels[0].onmessage?.({
+        t: "output",
+        data: btoa(text),
+        offset: 0,
+        cursor: { runId: "run_1", runOrdinal: 1, generation: 0, offset: 1 },
+      });
+    };
+
+    const writtenText = (terminal: { write: ReturnType<typeof vi.fn> }) =>
+      terminal.write.mock.calls
+        .map((call) =>
+          new TextDecoder().decode(
+            call[0] instanceof Uint8Array ? call[0] : new TextEncoder().encode(String(call[0])),
+          ),
+        )
+        .join("");
+
+    it("buffers live output during a gesture and flushes it on plain click release", async () => {
+      const container = document.createElement("div");
+      mountTerminal("renderer-test", container);
+      await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+      const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1]!;
+      const before = writtenText(terminal);
+
+      container.dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }));
+      expect(getHandle("renderer-test")?.writes.selectionFrozen).toBe(true);
+      output("FROZEN-CHUNK");
+      expect(writtenText(terminal)).toBe(before);
+
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      expect(writtenText(terminal)).toContain("FROZEN-CHUNK");
+      expect(getHandle("renderer-test")?.writes.selectionFrozen).toBe(false);
+    });
+
+    it("holds the freeze while a selection exists and releases after it clears", async () => {
+      vi.useFakeTimers();
+      const container = document.createElement("div");
+      mountTerminal("renderer-test", container);
+      await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+      const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1]!;
+      terminal.selectionText = "selected-text";
+      const before = writtenText(terminal);
+
+      container.dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }));
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      expect(getHandle("renderer-test")?.writes.selectionFrozen).toBe(true);
+      output("HELD-CHUNK");
+      expect(writtenText(terminal)).toBe(before);
+
+      // Selection clears (user clicked elsewhere): the watchdog poll releases
+      // and replays the buffered bytes in order.
+      terminal.selectionText = "";
+      vi.advanceTimersByTime(500);
+      expect(writtenText(terminal)).toContain("HELD-CHUNK");
+      expect(getHandle("renderer-test")?.writes.selectionFrozen).toBe(false);
+      vi.useRealTimers();
+    });
+
+    it("force-releases on buffer overflow instead of growing unbounded", async () => {
+      const container = document.createElement("div");
+      mountTerminal("renderer-test", container);
+      await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+      const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1]!;
+      const writesBefore = terminal.write.mock.calls.length;
+
+      container.dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }));
+      const overflow = "x".repeat(2 * 1024 * 1024 + 8);
+      rendererMocks.channels[0].onmessage?.({
+        t: "output",
+        data: btoa(overflow),
+        offset: 0,
+        cursor: { runId: "run_1", runOrdinal: 1, generation: 0, offset: 1 },
+      });
+      expect(terminal.write.mock.calls.length).toBeGreaterThan(writesBefore);
+    });
+  });
 });

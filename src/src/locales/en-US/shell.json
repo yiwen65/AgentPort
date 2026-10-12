@@ -16,6 +16,7 @@
     "promptLabel": "Terminal input",
     "tooMuchOutput": "Some output was omitted from screen reader announcements",
     "copy": "Copy",
+    "copySelectHint": "Hold ⌥ and drag to select, then copy",
     "paste": "Paste",
     "selectAll": "Select All",
     "search": "Find…"

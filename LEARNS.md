@@ -742,3 +742,12 @@
 - Correct approach: Prune via `releaseTerminal()`, which checkpoints parsed output, detaches the captured capability, and disposes only its own object/generation without stopping the Host.
 - Prevention: Cover repeated event/refresh pruning and fast reopen while snapshot/detach awaits; an old release must not close or dispose a replacement attachment.
 - Verified by: Three real-handle renderer regressions failed with zero detach calls before the fix; all 127 renderer tests passed after direct reuse of `releaseTerminal`, including one-shot detach and usable restored input. Transport/xterm are mocked in these tests; the backend watcher lifetime was established by source inspection.
+
+## `TUI 会话终端复制` — 鼠标上报与重绘双重绞杀选区
+
+- Wrong approach: 把「copy 按钮灰」当作远程模式专属 bug 排查远程事件流；或只修「选不出」不修「选完即丢」。
+- Why it failed: 全屏 Agent TUI（Pi 等）开启鼠标上报（`mouseTrackingMode:"any"`）后 xterm 把拖拽事件转发给 TUI，不产生选区；macOS 上 xterm 的强制选择修饰键是 **Alt** 且被 `macOptionClickForcesSelection`（默认 false）门控——本应用未开启，导致 macOS 下没有任何修饰键能强制选择（Shift+drag 是 Linux/Windows 的约定）。即便选出了，活 TUI 的整屏重绘会在选中行上反复覆写，xterm 的选区在下一次重绘即被清掉（忙碌会话里选区存活 ~1s），右键打开菜单时 `getSelection()` 已为空。
+- Recognition signal: 探针显示 `mouse:"any"`；拖拽 `len=0`；菜单打开时 `liveLen=0` 但选区捕获有内容；空闲 TUI 可选、忙碌 TUI 不可选。
+- Correct approach: 三层修复——①xterm 开启 `macOptionClickForcesSelection: true`（macOS 上 ⌥+drag 强制选择）；②**选区冻结**：mousedown 起把实时 PTY 输出在写协调器内按序缓冲（2MiB 溢出强制释放、30s 硬上限），无选区的点击立即释放、有选区则保持到选区被清除，重绘无法触碰进行中的选区；③**选区捕获兜底**：每次非空选区记录文本+时间戳，菜单 Copy 在实时选区被抹后用 30s 内的捕获值（`resolveCopySelection`），并在无选区且鼠标被 TUI 独占时显示手势提示（i18n）。
+- Prevention: 涉及 xterm 选区的改动必须同时在「空闲 shell」「活跃全屏 TUI」两类会话验证；xterm 的强制选择修饰键有平台差异（mac=Alt+选项门控，其他=Shift）；GUI 自动化验证用「选区状态写 localStorage + 读 WebKit SQLite」做探针最稳，菜单级探针可直接写进 `paneContextItems` 临时验证后移除。
+- Verified by: 2026-10-12 探针链（selprobe/menuprobe）：修复前 `mouse:"any"` 下拖拽 len=0、Shift+drag len=0、重绘后 liveLen=0；修复后 ⌥+drag len=9、冻结保持（frozen=true）、menuprobe resolved=9、Copy 按下后剪贴板取得 9 字节。前端 992/992（含冻结三测：缓冲/保持/溢出释放），构建绿。
