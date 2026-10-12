@@ -627,7 +627,8 @@ describe("MobileTerminal input accessory", () => {
     vi.useFakeTimers();
     try {
       const onInput = vi.fn();
-      render(<MobileTerminal onInput={onInput} showProbeOutput={false} />);
+      const onPageSwipe = vi.fn();
+      render(<div onTouchEnd={onPageSwipe}><MobileTerminal onInput={onInput} showProbeOutput={false} /></div>);
       const wheel = vi.fn();
       terminalHarness.screen!.addEventListener("wheel", wheel);
       fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 40 }] });
@@ -636,6 +637,7 @@ describe("MobileTerminal input accessory", () => {
       fireEvent.touchMove(terminalHarness.screen!, { touches: [{ clientX: 80, clientY: 60 }] });
       expect(terminalHarness.selects.at(-1)).toEqual([0, 4, 181]);
       fireEvent.touchEnd(terminalHarness.screen!, { changedTouches: [{ clientX: 80, clientY: 60 }] });
+      expect(onPageSwipe).not.toHaveBeenCalled();
       expect(wheel).not.toHaveBeenCalled();
       expect(onInput).not.toHaveBeenCalled();
       expect(document.activeElement).not.toBe(terminalHarness.helper);

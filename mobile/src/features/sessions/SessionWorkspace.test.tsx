@@ -843,6 +843,22 @@ describe("SessionWorkspace", () => {
     expect(request.mock.calls.filter(([, method, params]) => method === "session.control" && params.control === "resize")).toHaveLength(1);
   });
 
+  it("does not resize the host while files cover the terminal, and applies the latest size on return", async () => {
+    const { client, request } = setupClient();
+    const callbacks = { onClose: vi.fn(), onSessionChanged: vi.fn() };
+    const view = render(<SessionWorkspace open={open} client={client} {...callbacks} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    view.rerender(<SessionWorkspace open={open} client={client} active={false} {...callbacks} />);
+    act(() => terminalHarness.props!.onResize!(52, 24));
+    await act(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    expect(request.mock.calls.filter(([, method, params]) => method === "session.control" && params.control === "resize")).toHaveLength(0);
+    act(() => terminalHarness.props!.onResize!(52, 40));
+    view.rerender(<SessionWorkspace open={open} client={client} active {...callbacks} />);
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.control", expect.objectContaining({ cols: 52, rows: 40 })));
+    expect(request.mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(1);
+    expect(request.mock.calls.filter(([, method]) => method === "session.detach")).toHaveLength(0);
+  });
+
   it("serializes keyboard animation resizes and publishes the final rows with the acknowledged revision", async () => {
     const { client, request } = setupClient();
     const original = request.getMockImplementation()!;

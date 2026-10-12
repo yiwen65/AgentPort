@@ -35,6 +35,14 @@ button:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
 .main-content { width: min(100%, 560px); height: 100%; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: none; margin: 0 auto; padding: 0; background: transparent; }
 .session-stage { position: fixed; z-index: 8; inset: 0; overflow: hidden; overscroll-behavior: none; transform: translate3d(100%, 0, 0); visibility: hidden; pointer-events: none; background: var(--terminal-bg); transition: transform 220ms cubic-bezier(.2, .8, .2, 1), visibility 0s linear 220ms; }
 .session-stage.is-visible { transform: translate3d(0, 0, 0); visibility: visible; pointer-events: auto; transition-delay: 0s; }
+.session-stage.is-before-files { transform: translate3d(-100%, 0, 0); }
+.app-shell:not([data-page="list"]) > .main-content { visibility: hidden; pointer-events: none; }
+.files-stage { position: fixed; z-index: 9; inset: 0; overflow: hidden; background: var(--bg); transform: translate3d(100%, 0, 0); visibility: hidden; pointer-events: none; transition: transform 220ms cubic-bezier(.2, .8, .2, 1), visibility 0s linear 220ms; }
+.files-stage.is-visible { transform: translate3d(0, 0, 0); visibility: visible; pointer-events: auto; transition-delay: 0s; }
+/* Preview code needs native horizontal panning; the tree retains page swipes. */
+html.files-visible, body.files-visible, body.files-visible #root, .app-shell[data-page="files"] { touch-action: pan-x pan-y; }
+.files-stage .files-tree-page { touch-action: pan-y; }
+@media (prefers-reduced-motion: reduce) { .session-stage, .files-stage { transition: none; } }
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
 .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 h1 { margin: 0; font-size: clamp(27px, 8vw, 38px); letter-spacing: -0.045em; }

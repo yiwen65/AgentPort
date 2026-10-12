@@ -15,5 +15,9 @@ chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 reqwest = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+# Descriptor-relative, no-follow reads keep session file access race-safe.
+rustix = { version = "1", features = ["fs"] }
+
 [dev-dependencies]
 tempfile = "3"

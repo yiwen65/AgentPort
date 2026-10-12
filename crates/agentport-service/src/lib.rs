@@ -4,6 +4,8 @@
 
 mod commit_ai;
 mod project_directory;
+mod session_files;
+pub use session_files::SessionFilesError;
 #[cfg(test)]
 mod project_tests;
 pub use project_directory::ProjectDirectoryError;
@@ -68,6 +70,8 @@ pub enum ServiceError {
     InvalidRequest,
     #[error(transparent)]
     ProjectDirectory(#[from] ProjectDirectoryError),
+    #[error(transparent)]
+    SessionFiles(#[from] SessionFilesError),
     #[error("terminal input outcome is unknown")]
     InputOutcomeUnknown,
     #[error("remote attachment table is unavailable")]
@@ -1965,6 +1969,24 @@ impl RemoteService for CoreService {
                 let previous =
                     agentport_core::backup::restore(absolute_path(&params.path)?, &target)?;
                 serde_json::json!({"restored": target, "previousKeptAt": previous})
+            }
+            "session.files.list" | "session.files.read" => {
+                let params: session_files::Params = serde_json::from_value(params)
+                    .map_err(|_| SessionFilesError::InvalidPath)?;
+                if params.session_id.trim().is_empty() {
+                    return Err(SessionFilesError::InvalidPath.into());
+                }
+                let session = self.db.get_session(&params.session_id).map_err(|error| match error {
+                    agentport_core::CoreError::NotFound(_) => {
+                        ServiceError::from(SessionFilesError::SessionNotFound)
+                    }
+                    other => ServiceError::Core(other),
+                })?;
+                session_files::execute(
+                    &session.cwd,
+                    params.path.as_deref(),
+                    method == "session.files.list",
+                )?
             }
             "document.read" => {
                 let params: PathParams = parse_extended(params)?;

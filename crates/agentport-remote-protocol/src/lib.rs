@@ -25,6 +25,8 @@ pub const METHOD_REGISTRY: &[&str] = &[
     "image.begin", "image.chunk", "image.finish", "image.abort",
     "boot",
     "session.list",
+    "session.files.list",
+    "session.files.read",
     "session.poll",
     "session.attach",
     "session.detach",
@@ -132,6 +134,8 @@ pub const METHOD_REGISTRY: &[&str] = &[
 pub const MOBILE_V2_METHOD_ALLOWLIST: &[&str] = &[
     "boot",
     "session.list",
+    "session.files.list",
+    "session.files.read",
     "session.attach",
     "session.detach",
     "session.control",
@@ -380,6 +384,8 @@ pub fn classify_method(method: &str) -> RetryClass {
         | "diagnostics.capabilities"
         | "backup.list"
         | "backup.verify"
+        | "session.files.list"
+        | "session.files.read"
         | "document.read"
         | "document.list"
         | "secret.list" => RetryClass::Read,
@@ -1247,7 +1253,12 @@ mod tests {
 
     #[test]
     fn mobile_directory_contract_keeps_browsing_read_only_and_add_non_replayable() {
-        for method in ["project.directory.list", "project.directory.resolve"] {
+        for method in [
+            "project.directory.list",
+            "project.directory.resolve",
+            "session.files.list",
+            "session.files.read",
+        ] {
             assert!(METHOD_REGISTRY.contains(&method));
             assert!(MOBILE_V2_METHOD_ALLOWLIST.contains(&method));
             assert_eq!(classify_method(method), RetryClass::Read);

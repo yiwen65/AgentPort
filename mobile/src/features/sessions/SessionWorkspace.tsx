@@ -38,12 +38,13 @@ function errorText(error: unknown): string {
   return String(error);
 }
 
-export function SessionWorkspace({ open, client, active = true, onClose, onSessionChanged, onOpened }: {
+export function SessionWorkspace({ open, client, active = true, onClose, onOpenFiles, onSessionChanged, onOpened }: {
   open: OpenSession;
   active?: boolean;
   onOpened?: (session: OpenSession) => void;
   client: RemoteClient;
   onClose: () => void;
+  onOpenFiles?: () => void;
   onSessionChanged: (next?: OpenSession) => void;
 }) {
   const { t } = useTranslation();
@@ -582,7 +583,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
   const flushResize = useCallback((): void => {
     resizeFrame.current = undefined;
     const size = pendingResize.current;
-    if (replayPending || !attachmentId || !size || !resizeOwnershipEnabled.current || resizeInFlight.current === attachmentId) return;
+    if (!activeRef.current || replayPending || !attachmentId || !size || !resizeOwnershipEnabled.current || resizeInFlight.current === attachmentId) return;
     if (lastResize.current?.attachmentId === attachmentId
       && lastResize.current.cols === size.cols
       && lastResize.current.rows === size.rows) return;
@@ -640,6 +641,10 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
     lastResize.current = undefined;
     if (attachmentId && pendingResize.current) requestTerminalResize(pendingResize.current.cols, pendingResize.current.rows);
   }, [attachmentId, requestTerminalResize]);
+
+  useEffect(() => {
+    if (active && pendingResize.current) requestTerminalResize(pendingResize.current.cols, pendingResize.current.rows);
+  }, [active, requestTerminalResize]);
 
   useEffect(() => () => {
     if (resizeFrame.current !== undefined) window.cancelAnimationFrame(resizeFrame.current);
@@ -755,6 +760,9 @@ export function SessionWorkspace({ open, client, active = true, onClose, onSessi
       <header id="session-chrome" className="session-workspace-header" hidden={!chromeVisible}
         onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); hideChrome(); } }}>
         <h1 id="session-title" title={open.session.title}><button className="terminal-title-back" type="button" aria-label={t("session.back")} onClick={onClose}>{open.session.title}</button></h1>
+        {onOpenFiles ? <button className="terminal-more-button" type="button" aria-label={t("files.open")} onClick={onOpenFiles}>
+          <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z" /></svg>
+        </button> : null}
         <button ref={actionsTrigger} className="terminal-more-button" type="button" aria-label={t("session.actions")} aria-haspopup="dialog" onClick={() => setActionsOpen(true)}>•••</button>
       </header>
       {otherClientInput || notice || error ? <div className="terminal-status-stack">

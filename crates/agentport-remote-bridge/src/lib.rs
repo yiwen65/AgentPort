@@ -1027,6 +1027,8 @@ fn prepare_request(
         | "backup.list"
         | "backup.verify"
         | "backup.restore"
+        | "session.files.list"
+        | "session.files.read"
         | "document.read"
         | "document.list"
         | "document.create") => PreparedRequest::Extended(
@@ -1188,6 +1190,7 @@ fn finish_service_error<E: Write>(
             code: code.into(),
             message: match &error {
                 ServiceError::ProjectDirectory(error) => error.to_string(),
+                ServiceError::SessionFiles(error) => error.to_string(),
                 _ => "request failed on the remote host".into(),
             },
         }),
@@ -1200,6 +1203,7 @@ fn service_error_result(
 ) -> (ResultStatus, &'static str) {
     match error {
         ServiceError::ProjectDirectory(error) => (ResultStatus::NotExecuted, error.code()),
+        ServiceError::SessionFiles(error) => (ResultStatus::NotExecuted, error.code()),
         ServiceError::AttachmentNotFound
         | ServiceError::NotExecutedCore(_)
         | ServiceError::InvalidRequest
@@ -1264,6 +1268,32 @@ mod tests {
     struct FixtureService;
 
     impl RemoteService for FixtureService {
+        fn extended_facade(&self, method: &str, params: Value) -> agentport_service::Result<Value> {
+            use agentport_service::SessionFilesError;
+            if !matches!(method, "session.files.list" | "session.files.read") {
+                return Err(ServiceError::InvalidRequest);
+            }
+            assert_eq!(params["sessionId"], "session-fixture");
+            let path = params["path"].as_str().unwrap_or(".");
+            let error = match path {
+                "outside_root" => Some(SessionFilesError::OutsideRoot),
+                "unsupported_file" => Some(SessionFilesError::UnsupportedFile),
+                "path_not_found" => Some(SessionFilesError::PathNotFound),
+                "permission_denied" => Some(SessionFilesError::PermissionDenied),
+                "not_directory" => Some(SessionFilesError::NotDirectory),
+                "invalid_path" => Some(SessionFilesError::InvalidPath),
+                "read_failed" => Some(SessionFilesError::ReadFailed),
+                "session_not_found" => Some(SessionFilesError::SessionNotFound),
+                _ => None,
+            };
+            if let Some(error) = error { return Err(error.into()); }
+            Ok(if method == "session.files.list" {
+                json!({"rootPath":"/fixture", "path":path, "entries":[{"name":"note", "path":"note", "isDir":false}], "truncated":false})
+            } else {
+                json!({"rootPath":"/fixture", "path":path, "content":"hello", "sizeBytes":5, "truncated":false})
+            })
+        }
+
         fn service_snapshot(&self) -> ServiceSnapshot {
             ServiceSnapshot::default()
         }
@@ -1420,6 +1450,42 @@ mod tests {
                 assert_eq!(*status, ResultStatus::NotExecuted);
                 assert_eq!(error.code, code);
                 assert_ne!(error.message, "request failed on the remote host");
+            }
+        }
+    }
+
+    #[test]
+    fn session_files_dispatch_and_errors_survive_framing_as_reads() {
+        let codes = ["outside_root", "unsupported_file", "path_not_found", "permission_denied",
+            "not_directory", "invalid_path", "read_failed", "session_not_found"];
+        for method in ["session.files.list", "session.files.read"] {
+            let mut input = Vec::new();
+            append(&mut input, &hello(ProtocolVersion::V1));
+            for path in std::iter::once("note").chain(codes) {
+                append(&mut input, &json!({"type":"request", "requestId":path,
+                    "method":method, "params":{"sessionId":"session-fixture", "path":path}}));
+            }
+            let mut output = Vec::new();
+            serve(&mut Cursor::new(input), &mut output, &mut Vec::new(), &FixtureService).unwrap();
+            let results = frames(&SharedOutput(Arc::new(Mutex::new(output)))).into_iter()
+                .filter_map(|message| match message {
+                    ServerEnvelope::Result { status, retry_class, value, error, .. } => Some((status, retry_class, value, error)),
+                    _ => None,
+                }).collect::<Vec<_>>();
+            assert_eq!(results.len(), codes.len() + 1);
+            assert_eq!(results[0].0, ResultStatus::Succeeded);
+            assert_eq!(results[0].1, RetryClass::Read);
+            let success = results[0].2.as_ref().unwrap();
+            assert_eq!(success["rootPath"], "/fixture");
+            assert_eq!(success["path"], "note");
+            if method.ends_with("read") { assert_eq!(success["content"], "hello"); }
+            else { assert_eq!(success["entries"][0]["path"], "note"); }
+            for ((status, retry_class, value, error), code) in results.iter().skip(1).zip(codes) {
+                assert_eq!(*status, ResultStatus::NotExecuted);
+                assert_eq!(*retry_class, RetryClass::Read);
+                assert!(value.is_none());
+                assert_eq!(error.as_ref().unwrap().code, code);
+                assert_ne!(error.as_ref().unwrap().message, "request failed on the remote host");
             }
         }
     }

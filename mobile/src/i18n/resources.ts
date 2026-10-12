@@ -1,6 +1,16 @@
 export const resources = {
   "zh-CN": {
     translation: {
+      files: {
+        open: "项目文件", preview: "只读预览", backToTerminal: "终端", backToTree: "文件树", refresh: "刷新", retry: "重试",
+        readOnly: "仅浏览 · 以当前 Session 工作目录为根 · 隐藏 .git", directory: "目录", file: "文件", empty: "此目录为空。", loading: "正在读取…",
+        offline: "电脑未连接。已加载内容仅为缓存；连接后自动刷新。", cached: "显示上次读取的内容，尚未确认最新状态。",
+        upgradeRequired: "此电脑版本不支持安全的 Session 文件浏览。请升级电脑上的 AgentPort 后重试。",
+        requestFailed: "读取失败：{{error}}", directoryTruncated: "目录列表不完整，最多显示 2000 项。", fileTruncated: "文件共 {{size}} 字节，仅预览前 1 MiB 文本；复制也仅包含当前片段。",
+        copyPath: "复制相对路径", copyContent: "复制内容", copyVisible: "复制当前片段", copied: "已复制。", copyFailed: "复制失败。请检查剪贴板权限后重试。",
+        showSource: "查看源码", showRendered: "渲染 Markdown", markdownSafety: "安全预览：不加载图片、HTML 或外部资源。仅可打开项目内相对文件链接。", imageBlocked: "图片未加载", linkBlocked: "链接已禁用",
+        errors: { unsupported_platform: "此电脑的操作系统暂不支持安全的 Session 文件浏览。", path_not_found: "路径不存在，可能已被移动或删除。", not_directory: "此路径不再是目录。", permission_denied: "电脑上的服务账户无权读取此路径。", invalid_path: "无效的项目相对路径。", outside_root: "此路径位于 Session 工作目录之外，无法访问。", unsupported_file: "仅支持普通 UTF-8 文本文件，无法预览二进制或特殊文件。", read_failed: "无法读取此路径，请检查电脑状态后重试。", session_not_found: "Session 已不存在，请返回列表刷新。" },
+      },
       shortcuts: {
         title: "终端快捷键", hint: "选择显示的按键并调整顺序。设置不会向终端发送内容。", show: "显示 {{name}}", earlier: "前移 {{name}}", later: "后移 {{name}}",
         edit: "编辑 {{name}}", remove: "删除 {{name}}", add: "添加快捷键", update: "更新快捷键", label: "名称", kind: "类型", text: "文本", combination: "组合键", content: "发送文本", key: "按键", character: "字符", modifiers: "修饰键",
@@ -196,6 +206,16 @@ export const resources = {
   },
   "en-US": {
     translation: {
+      files: {
+        open: "Project files", preview: "Read-only preview", backToTerminal: "Terminal", backToTree: "File tree", refresh: "Refresh", retry: "Retry",
+        readOnly: "Read only · Session working directory · .git hidden", directory: "Directory", file: "File", empty: "This directory is empty.", loading: "Loading…",
+        offline: "Computer disconnected. Loaded content is cached; it refreshes after reconnection.", cached: "Showing previously loaded content; not yet confirmed current.",
+        upgradeRequired: "This computer does not support safe Session file browsing. Upgrade AgentPort on the computer and retry.",
+        requestFailed: "Could not read: {{error}}", directoryTruncated: "Directory listing is incomplete (up to 2000 entries).", fileTruncated: "File size: {{size}} bytes. Only the first 1 MiB of text is shown; copying includes only this excerpt.",
+        copyPath: "Copy relative path", copyContent: "Copy content", copyVisible: "Copy excerpt", copied: "Copied.", copyFailed: "Copy failed. Check clipboard access and try again.",
+        showSource: "View source", showRendered: "Render Markdown", markdownSafety: "Safe preview: images, HTML and external resources are not loaded. Only relative file links within this project can be opened.", imageBlocked: "Image not loaded", linkBlocked: "Link disabled",
+        errors: { unsupported_platform: "Secure Session file browsing is not yet supported on this computer's operating system.", path_not_found: "Path not found. It may have been moved or deleted.", not_directory: "This path is no longer a directory.", permission_denied: "The service account on this computer cannot read this path.", invalid_path: "Invalid project-relative path.", outside_root: "This path is outside the Session working directory and cannot be accessed.", unsupported_file: "Only regular UTF-8 text files can be previewed, not binary or special files.", read_failed: "Could not read this path. Check the computer and retry.", session_not_found: "This Session no longer exists. Return to the list and refresh." },
+      },
       shortcuts: {
         title: "Terminal shortcuts", hint: "Choose visible keys and their order. Editing settings never sends terminal input.", show: "Show {{name}}", earlier: "Move {{name}} earlier", later: "Move {{name}} later",
         edit: "Edit {{name}}", remove: "Delete {{name}}", add: "Add shortcut", update: "Update shortcut", label: "Name", kind: "Type", text: "Text", combination: "Key combination", content: "Text to send", key: "Key", character: "Character", modifiers: "Modifiers",

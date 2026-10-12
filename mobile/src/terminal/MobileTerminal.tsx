@@ -625,6 +625,9 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     const finishTouch = (event: TouchEvent) => {
       cancelLongPress();
       if (!touchGesture) return;
+      // A selection drag belongs to xterm even if its final displacement looks
+      // like a page swipe. Do not let App navigate on this touchend.
+      if (touchGesture.selection) event.stopPropagation();
       // Forward completed taps through xterm's own mouse protocol encoder. Do
       // not forward drags/long presses or cancelled touches as application clicks.
       if (event.type === "touchend" && !touchGesture.moved && !touchGesture.selection

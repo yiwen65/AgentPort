@@ -58,6 +58,8 @@ function focusTestClient() {
       if (method === "agent.preferences") return Promise.resolve({ revision: 1, agentOrder: [], agentHidden: [] });
       if (method === "attention.poll") return Promise.resolve({ events: [] });
       if (method === "session.attach") return Promise.resolve({ attachmentId: `att-${params.sessionId}`, sessionId: params.sessionId, childAlive: true, runId: `run-${params.sessionId}`, runOrdinal: 1, features: [] });
+      if (method === "session.files.list") return Promise.resolve({ rootPath: "/repo", path: ".", entries: [{ name: "README.md", path: "README.md", isDir: false }], truncated: false });
+      if (method === "session.files.read") return Promise.resolve({ rootPath: "/repo", path: "README.md", content: "# Project notes", sizeBytes: 15, truncated: false });
       return Promise.resolve({});
     }),
     subscribe: vi.fn().mockImplementation(async (_profileId, _topics, listener) => {
@@ -220,6 +222,66 @@ describe("AgentPort Mobile V2 shell", () => {
     act(() => emitState("ses-1", 1, "working"));
     await settleFocusFrames();
     expect(otherRow).toHaveFocus();
+  });
+
+  it("opens Session files by swipe and button without replacing or detaching the terminal", async () => {
+    await i18n.changeLanguage("en-US");
+    const { remote } = focusTestClient();
+    const { container } = render(<App client={remote} hostAuthClient={hostAuthClient} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Active task/ }));
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    await settleFocusFrames();
+    const renderer = container.querySelector(".session-workspace")!;
+    const input = screen.getByRole("textbox", { name: "Terminal input" });
+    act(() => input.focus());
+    const shell = container.querySelector(".app-shell")!;
+    fireEvent.touchStart(shell, { touches: [{ clientX: 230, clientY: 220 }] });
+    fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 80, clientY: 223 }] });
+    await screen.findByText("README.md");
+    expect(shell).toHaveAttribute("data-page", "files");
+    expect(input).not.toHaveFocus();
+    expect(container.querySelector(".session-stage")).toHaveAttribute("inert");
+    expect(container.querySelector(".main-content")).toHaveAttribute("inert");
+    expect(remote.request).toHaveBeenCalledWith("host-1", "session.files.list", expect.objectContaining({ sessionId: "ses-1" }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    const files = container.querySelector(".session-files")!;
+    fireEvent.touchStart(files, { touches: [{ clientX: 70, clientY: 220 }] });
+    fireEvent.touchEnd(files, { changedTouches: [{ clientX: 220, clientY: 222 }] });
+    await settleFocusFrames();
+    expect(shell).toHaveAttribute("data-page", "terminal");
+    expect(container.querySelector(".session-workspace")).toBe(renderer);
+    expect(input).not.toHaveFocus();
+    fireEvent.click(container.querySelector(".terminal-chrome-reveal")!);
+    fireEvent.click(screen.getByRole("button", { name: "Project files" }));
+    expect(shell).toHaveAttribute("data-page", "files");
+    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(1);
+    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.detach")).toHaveLength(0);
+  });
+
+  it("does not navigate on cancelled, multi-touch, vertical-first or excluded-control gestures", async () => {
+    await i18n.changeLanguage("en-US");
+    const { remote } = focusTestClient();
+    const { container } = render(<App client={remote} hostAuthClient={hostAuthClient} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Active task/ }));
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    const shell = container.querySelector(".app-shell")!;
+    const start = (target: Element = shell) => fireEvent.touchStart(target, { touches: [{ clientX: 230, clientY: 220 }] });
+    const end = (target: Element = shell) => fireEvent.touchEnd(target, { changedTouches: [{ clientX: 80, clientY: 223 }] });
+    start(); fireEvent.touchCancel(shell); end();
+    expect(shell).toHaveAttribute("data-page", "terminal");
+    start();
+    fireEvent.touchMove(shell, { touches: [{ clientX: 230, clientY: 250 }, { clientX: 250, clientY: 250 }] });
+    end();
+    expect(shell).toHaveAttribute("data-page", "terminal");
+    start(); fireEvent.touchMove(shell, { touches: [{ clientX: 230, clientY: 250 }] }); end();
+    expect(shell).toHaveAttribute("data-page", "terminal");
+    const input = screen.getByRole("textbox", { name: "Terminal input" });
+    start(input); end(input);
+    expect(shell).toHaveAttribute("data-page", "terminal");
+    for (const marker of ["data-horizontal-scroll", "data-no-page-swipe"]) {
+      const control = document.createElement("div"); control.setAttribute(marker, ""); shell.append(control);
+      start(control); end(control); control.remove();
+      expect(shell).toHaveAttribute("data-page", "terminal");
+    }
   });
 
   it("swipes between the persistent list and the selected full-screen terminal", async () => {
