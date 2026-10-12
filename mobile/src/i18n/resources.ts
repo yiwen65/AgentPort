@@ -166,6 +166,7 @@ export const resources = {
       },
       session: {
         back: "返回 Session 列表", facts: "Session 状态详情", openSessions: "已打开的 Session", closeTab: "关闭 {{title}} 标签",
+        showKeyboard: "显示键盘",
         uploadImage: "上传图片", actions: "Session 操作", showControls: "显示 Session 标题和操作",
         view: "Session 视图", conversation: "对话", terminal: "终端", fullTerminal: "完整终端", terminalDescription: "实时 PTY；触摸选择、粘贴或使用特殊键栏。",
         search: "在当前输出中搜索", history: "原生历史", moreHistory: "加载更多历史", waitingForOutput: "正在等待输出…", message: "发送文本", send: "发送",
@@ -372,6 +373,7 @@ export const resources = {
       },
       session: {
         back: "Back to sessions", facts: "Session status details", openSessions: "Open sessions", closeTab: "Close {{title}} tab",
+        showKeyboard: "Show keyboard",
         uploadImage: "Upload image", actions: "Session actions", showControls: "Show session title and actions",
         view: "Session view", conversation: "Conversation", terminal: "Terminal", fullTerminal: "Full terminal", terminalDescription: "Live PTY; touch-select, paste, or use the special-key row.",
         search: "Search current output", history: "Native history", moreHistory: "Load more history", waitingForOutput: "Waiting for output…", message: "Send text", send: "Send",

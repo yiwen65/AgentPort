@@ -89,6 +89,7 @@ vi.mock("@xterm/xterm", () => ({
     onScroll(callback: (viewportY: number) => void) { terminalHarness.scrolled = callback; return { dispose() {} }; }
     getSelectionPosition() { return { start: { x: 0, y: 4 }, end: { x: 10, y: 4 } }; }
     onData(handler: (data: string) => void) { terminalHarness.input = handler; return { dispose() { /* deterministic no-op */ } }; }
+    get textarea() { return terminalHarness.helper; }
     focus() { terminalHarness.helper?.focus(); }
     write(data: string | Uint8Array, callback?: () => void) {
       const parse = () => { if (data) terminalHarness.writes.push(data); callback?.(); };
@@ -112,6 +113,160 @@ vi.mock("@xterm/xterm", () => ({
 }));
 
 describe("MobileTerminal input accessory", () => {
+  it("offers an independent keyboard entry and focuses without sending input or clearing selection", () => {
+    const onInput = vi.fn();
+    render(<MobileTerminal showProbeOutput={false} onInput={onInput} />);
+    const button = screen.getByRole("button", { name: "Show keyboard" });
+    expect(button).toBeVisible();
+    expect(screen.getByLabelText("Terminal special keys")).not.toBeVisible();
+    fireEvent.click(button);
+    expect(document.activeElement).toBe(terminalHarness.helper);
+    expect(onInput).not.toHaveBeenCalled();
+    expect(terminalHarness.clears).toBe(0);
+    // Focus with an external keyboard must not hide the entry.
+    expect(button).toBeVisible();
+    const blur = vi.spyOn(terminalHarness.helper!, "blur");
+    fireEvent.click(button);
+    expect(blur).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(terminalHarness.helper);
+    expect(onInput).not.toHaveBeenCalled();
+  });
+
+  it("tracks keyboard viewport changes even without a Session workspace or a focus change", () => {
+    vi.stubGlobal("innerHeight", 844);
+    vi.stubGlobal("screen", { width: 390, height: 844, orientation: { type: "portrait-primary" } });
+    const viewport = Object.assign(new EventTarget(), { height: 844, offsetTop: 0, scale: 1 });
+    vi.stubGlobal("visualViewport", viewport);
+    render(<MobileTerminal showProbeOutput={false} />);
+    const button = screen.getByRole("button", { name: "Show keyboard" });
+    fireEvent.click(button);
+    act(() => { viewport.height = 500; viewport.dispatchEvent(new Event("resize")); });
+    expect(button).not.toBeVisible();
+    act(() => { viewport.height = 844; viewport.dispatchEvent(new Event("resize")); });
+    expect(button).toBeVisible();
+    expect(document.activeElement).toBe(terminalHarness.helper);
+    act(() => { viewport.height = 500; viewport.scale = 2; viewport.dispatchEvent(new Event("resize")); });
+    expect(button).toBeVisible(); // Pinch zoom is not a software keyboard.
+  });
+
+  it("does not mistake the portrait screen height for a keyboard in landscape", () => {
+    vi.stubGlobal("innerHeight", 390);
+    vi.stubGlobal("innerWidth", 844);
+    vi.stubGlobal("screen", { width: 390, height: 844, orientation: { type: "landscape-primary" } });
+    const viewport = Object.assign(new EventTarget(), { height: 390, offsetTop: 0, scale: 1 });
+    vi.stubGlobal("visualViewport", viewport);
+    render(<MobileTerminal showProbeOutput={false} />);
+    const button = screen.getByRole("button", { name: "Show keyboard" });
+    expect(button).toBeVisible();
+    act(() => { viewport.height = 200; viewport.dispatchEvent(new Event("resize")); });
+    expect(button).not.toBeVisible();
+  });
+
+  it("tracks rotation with an open keyboard even when orientation metadata changes before viewport dimensions", () => {
+    vi.stubGlobal("innerHeight", 844);
+    const device = { width: 390, height: 844, orientation: { type: "portrait-primary" } };
+    vi.stubGlobal("screen", device);
+    const viewport = Object.assign(new EventTarget(), { height: 844, offsetTop: 0, scale: 1 });
+    vi.stubGlobal("visualViewport", viewport);
+    render(<MobileTerminal showProbeOutput={false} />);
+    const button = screen.getByRole("button", { name: "Show keyboard" });
+    act(() => { viewport.height = 500; viewport.dispatchEvent(new Event("resize")); });
+    expect(button).not.toBeVisible();
+    act(() => { device.orientation.type = "landscape-primary"; viewport.dispatchEvent(new Event("resize")); });
+    act(() => {
+      vi.stubGlobal("innerHeight", 200);
+      viewport.height = 200;
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    expect(button).not.toBeVisible();
+    act(() => {
+      vi.stubGlobal("innerHeight", 390);
+      viewport.height = 390;
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    expect(button).toBeVisible();
+  });
+
+  it("keeps the entry visible with browser chrome and refreshes the rotation baseline when chrome disappears", () => {
+    vi.stubGlobal("innerHeight", 700);
+    const device = { width: 390, height: 844, orientation: { type: "portrait-primary" } };
+    vi.stubGlobal("screen", device);
+    const viewport = Object.assign(new EventTarget(), { height: 700, offsetTop: 0, scale: 1 });
+    vi.stubGlobal("visualViewport", viewport);
+    render(<MobileTerminal showProbeOutput={false} />);
+    const button = screen.getByRole("button", { name: "Show keyboard" });
+    expect(button).toBeVisible();
+    act(() => {
+      vi.stubGlobal("innerHeight", 450);
+      viewport.height = 450;
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    expect(button).not.toBeVisible();
+    act(() => {
+      vi.stubGlobal("innerHeight", 700);
+      viewport.height = 700;
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    expect(button).toBeVisible();
+    act(() => {
+      vi.stubGlobal("innerHeight", 844);
+      viewport.height = 844;
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    act(() => {
+      device.orientation.type = "landscape-primary";
+      vi.stubGlobal("innerHeight", 200);
+      viewport.height = 200;
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    expect(button).not.toBeVisible();
+  });
+
+  it("uses the iOS orientation angle when Screen Orientation is unavailable", () => {
+    vi.stubGlobal("innerHeight", 390);
+    vi.stubGlobal("innerWidth", 844);
+    vi.stubGlobal("orientation", 90);
+    vi.stubGlobal("screen", { width: 390, height: 844 });
+    vi.stubGlobal("visualViewport", Object.assign(new EventTarget(), { height: 390, offsetTop: 0, scale: 1 }));
+    render(<MobileTerminal showProbeOutput={false} />);
+    expect(screen.getByRole("button", { name: "Show keyboard" })).toBeVisible();
+  });
+
+  it("blocks keyboard activation while recovering, obscured, or covered by an inert modal background", () => {
+    const view = render(<MobileTerminal showProbeOutput={false} recovering />);
+    const button = screen.getByRole("button", { name: "Show keyboard" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(document.activeElement).not.toBe(terminalHarness.helper);
+    view.rerender(<MobileTerminal showProbeOutput={false} keyboardEnabled={false} />);
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(document.activeElement).not.toBe(terminalHarness.helper);
+    view.rerender(<MobileTerminal showProbeOutput={false} obscured />);
+    expect(button).not.toBeVisible();
+    fireEvent.click(button);
+    expect(document.activeElement).not.toBe(terminalHarness.helper);
+    view.rerender(<MobileTerminal showProbeOutput={false} />);
+    view.container.setAttribute("inert", "");
+    fireEvent.click(button);
+    expect(document.activeElement).not.toBe(terminalHarness.helper);
+    view.container.removeAttribute("inert");
+    fireEvent.click(button);
+    expect(document.activeElement).toBe(terminalHarness.helper);
+  });
+
+  it("removes viewport and window resize listeners on unmount", () => {
+    const viewport = Object.assign(new EventTarget(), { height: 844, offsetTop: 0, scale: 1 });
+    const remove = vi.spyOn(viewport, "removeEventListener");
+    const removeWindow = vi.spyOn(window, "removeEventListener");
+    vi.stubGlobal("visualViewport", viewport);
+    const view = render(<MobileTerminal showProbeOutput={false} />);
+    view.unmount();
+    expect(remove).toHaveBeenCalledWith("resize", expect.any(Function));
+    expect(remove).toHaveBeenCalledWith("scroll", expect.any(Function));
+    expect(removeWindow).toHaveBeenCalledWith("resize", expect.any(Function));
+    removeWindow.mockRestore();
+  });
   it("covers recovery without hiding or replacing the focused terminal", () => {
     const view = render(<MobileTerminal showProbeOutput={false} />);
     const helper = terminalHarness.helper!;
@@ -764,19 +919,20 @@ describe("MobileTerminal input accessory", () => {
 
   it("uses the keyboard viewport and refits after the shortcut row enters layout", async () => {
     // WKWebView can shrink innerHeight together with visualViewport, so the
-    // stable device window height is the keyboard-open comparison baseline.
-    vi.stubGlobal("innerHeight", 500);
+    // previously measured closed app height is the keyboard-open baseline.
+    vi.stubGlobal("innerHeight", 844);
     vi.stubGlobal("screen", { height: 844 });
-    vi.stubGlobal("visualViewport", {
-      height: 500,
-      offsetTop: 0,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    });
+    const viewport = Object.assign(new EventTarget(), { height: 844, offsetTop: 0, scale: 1 });
+    vi.stubGlobal("visualViewport", viewport);
     const onResize = vi.fn();
     const { container } = render(<article className="session-workspace"><MobileTerminal onResize={onResize} showHeading={false} /></article>);
     const workspace = container.querySelector<HTMLElement>(".session-workspace")!;
     await waitFor(() => expect(terminalHarness.fitCalls).toBeGreaterThan(1));
+    act(() => {
+      vi.stubGlobal("innerHeight", 500);
+      viewport.height = 500;
+      viewport.dispatchEvent(new Event("resize"));
+    });
     expect(workspace).toHaveAttribute("data-keyboard-visible", "true");
 
     const settledFits = terminalHarness.fitCalls;

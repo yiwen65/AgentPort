@@ -64,6 +64,36 @@
   scrollbar-width: none;
 }
 .mobile-terminal-keys[hidden] { display: none; }
+
+/* Independent of input focus and the transient header/shortcut chrome. */
+.mobile-terminal-show-keyboard {
+  position: absolute;
+  z-index: 5;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: max(12px, env(safe-area-inset-bottom));
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--terminal-panel, rgba(44, 44, 46, .94));
+  color: var(--terminal-fg);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, .2);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.mobile-terminal-show-keyboard[hidden] { display: none; }
+.mobile-terminal-show-keyboard:disabled,
+[inert] .mobile-terminal-show-keyboard { opacity: .45; }
+.mobile-terminal-show-keyboard:active:not(:disabled) { background: var(--terminal-selection); }
+.mobile-terminal-show-keyboard:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mobile-terminal-show-keyboard svg { width: 22px; height: 22px; }
+/* Keep the entry above an accessory row left open by an external keyboard. */
+.mobile-terminal-spike[data-input-active="true"] .mobile-terminal-show-keyboard {
+  bottom: calc(72px + env(safe-area-inset-bottom));
+}
 .mobile-terminal-key-scroll {
   display: flex;
   flex: 1 1 auto;

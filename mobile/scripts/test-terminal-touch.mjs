@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -82,11 +82,38 @@ try {
   };
   const touch = (type, x, y) => call('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y }] });
   await call('Page.enable');
-  await call('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  const portraitMetrics = { width: 390, height: 844, deviceScaleFactor: 1, mobile: true, screenOrientation: { type: 'portraitPrimary', angle: 0 } };
+  await call('Emulation.setDeviceMetricsOverride', portraitMetrics);
   await call('Emulation.setTouchEmulationEnabled', { enabled: true });
   await call('Page.navigate', { url: `http://127.0.0.1:${server.address().port}` });
   for (let i = 0; i < 100 && !await evaluate('Boolean(window.ready)'); i++) await wait(30);
   await evaluate('ready()');
+  // The independent keyboard entry must be touch-reachable without input focus.
+  const keyboardRect = await evaluate(`document.querySelector('.mobile-terminal-show-keyboard').getBoundingClientRect().toJSON()`);
+  assert.ok(keyboardRect.width >= 44 && keyboardRect.height >= 44, 'Keyboard entry needs a full touch target');
+  assert.ok(keyboardRect.right <= 390 && keyboardRect.bottom <= 844, 'Keyboard entry is outside the viewport');
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('.mobile-terminal-show-keyboard')).display !== 'none'`), true);
+  if (process.env.AGENTPORT_TERMINAL_SCREENSHOT) {
+    const shot = await call('Page.captureScreenshot', { format: 'png' });
+    await writeFile(process.env.AGENTPORT_TERMINAL_SCREENSHOT, Buffer.from(shot.data, 'base64'));
+  }
+  await touch('touchStart', keyboardRect.x + keyboardRect.width / 2, keyboardRect.y + keyboardRect.height / 2);
+  await touch('touchEnd'); await wait(150);
+  assert.equal(await evaluate('document.activeElement === term.textarea'), true, 'Keyboard entry did not focus xterm');
+  assert.deepEqual(await evaluate('input'), [], 'Keyboard entry sent terminal input');
+  // Chrome emulation cannot open a native IME; model the keyboard viewport only.
+  await call('Emulation.setDeviceMetricsOverride', { ...portraitMetrics, height: 500, screenWidth: 390, screenHeight: 844 });
+  await wait(150);
+  assert.equal(await evaluate(`document.querySelector('.mobile-terminal-show-keyboard').hidden`), true, 'Entry stayed visible above keyboard viewport: ' + JSON.stringify(await evaluate(`({innerHeight, innerWidth, screenHeight: screen.height, screenWidth: screen.width, orientation: screen.orientation?.type, viewportHeight: visualViewport.height, scale: visualViewport.scale})`)));
+  await call('Emulation.setDeviceMetricsOverride', portraitMetrics);
+  await wait(150);
+  assert.equal(await evaluate(`document.querySelector('.mobile-terminal-show-keyboard').hidden`), false, 'Entry did not return after keyboard dismissal');
+  const refocusRect = await evaluate(`document.querySelector('.mobile-terminal-show-keyboard').getBoundingClientRect().toJSON()`);
+  await touch('touchStart', refocusRect.x + refocusRect.width / 2, refocusRect.y + refocusRect.height / 2);
+  await touch('touchEnd'); await wait(100);
+  assert.equal(await evaluate('document.activeElement === term.textarea'), true, 'Entry could not refocus a dismissed keyboard');
+  assert.deepEqual(await evaluate('input'), [], 'Refocusing sent terminal input');
+  await evaluate('term.textarea.blur()'); await wait(100);
   // Kimi clears scrollback on resize, then streams its redraw in later chunks.
   // Deliver the queued native scroll before xterm's next animation-frame refresh.
   await evaluate(`new Promise(r => term.write('\\x1b[3J\\x1b[2J\\x1b[H', r))`);
@@ -214,7 +241,7 @@ try {
   assert.deepEqual(await evaluate('input'), [], 'Opening settings sent input');
   await evaluate(`document.querySelector('[role="dialog"] .modal-close-button').click()`); await wait(300);
   assert.equal(await evaluate(`Boolean(document.querySelector('[role="dialog"]'))`), false);
-  console.log(JSON.stringify({ redraw, scroll: { before, after }, selection, copied: true, mouseReporting: true, pastedOnce: true, shortcutSwipe: true, modifiers: true, settings: true }));
+  console.log(JSON.stringify({ redraw, scroll: { before, after }, selection, copied: true, keyboardEntry: true, keyboardViewport: true, mouseReporting: true, pastedOnce: true, shortcutSwipe: true, modifiers: true, settings: true }));
 } finally {
   ws?.close();
   if (chrome?.pid && chrome.exitCode === null) {

@@ -19,6 +19,7 @@ const terminalHarness = vi.hoisted(() => ({
     showHeading?: boolean;
     obscured?: boolean;
     recovering?: boolean;
+    keyboardEnabled?: boolean;
     theme?: { background?: string; foreground?: string };
   } | undefined,
   writes: [] as string[],
@@ -95,6 +96,18 @@ function setupClient({ rejectResize = false, autoReplay = true, probeHealthy = t
 }
 
 describe("SessionWorkspace", () => {
+  it("enables the keyboard entry only for the active live terminal", async () => {
+    const { client, emit } = setupClient({ autoReplay: false });
+    const props = { open, client, onClose: vi.fn(), onSessionChanged: vi.fn() };
+    const view = render(<SessionWorkspace {...props} />);
+    await waitFor(() => expect(terminalHarness.props).toBeDefined());
+    expect(terminalHarness.props?.keyboardEnabled).toBe(false);
+    await waitFor(() => expect(client.request).toHaveBeenCalledWith("host-1", "session.attach", expect.anything()));
+    act(() => emit({ subscriptionId: "att-1", eventType: "replay_done", cursor: null, payload: { session_id: "ses-1" } }));
+    await waitFor(() => expect(terminalHarness.props?.keyboardEnabled).toBe(true));
+    view.rerender(<SessionWorkspace {...props} active={false} />);
+    expect(terminalHarness.props?.keyboardEnabled).toBe(false);
+  });
   it("restores the authoritative snapshot before early ReplayDone and live bytes", async () => {
     const { client, request, emit } = setupClient({ autoReplay: false });
     const h = new Headless({ cols: 47, rows: 53 });

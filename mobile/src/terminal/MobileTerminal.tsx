@@ -46,6 +46,8 @@ export interface MobileTerminalProps {
   obscured?: boolean;
   recovering?: boolean;
   recoveryLabel?: string;
+  /** Whether the explicit keyboard entry may focus this terminal. */
+  keyboardEnabled?: boolean;
 }
 
 export interface MobileTerminalHandle {
@@ -74,6 +76,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   obscured = false,
   recovering = false,
   recoveryLabel,
+  keyboardEnabled = true,
 }: MobileTerminalProps, ref) {
   const { t } = useTranslation();
   const [shortcutLayout, setShortcutLayout] = useState(loadShortcuts);
@@ -125,6 +128,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const cancelPendingPaste = () => { pasteGeneration.current += 1; pastePending.current = false; };
   const [copyFailed, setCopyFailed] = useState(false);
   const [inputActive, setInputActive] = useState(false);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [shiftActive, setShiftActive] = useState(false);
   const [controlActive, setControlActive] = useState(false);
   const [commandActive, setCommandActive] = useState(false);
@@ -436,15 +440,47 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     resize.observe(container);
     const viewport = window.visualViewport;
     const workspace = section.closest<HTMLElement>(".session-workspace");
+    let closedViewportHeight = 0;
+    let viewportOrientation: boolean | undefined;
+    let screenInset = 0;
     const viewportChanged = () => {
       workspace?.style.setProperty("--terminal-viewport-height", `${Math.round(viewport?.height ?? window.innerHeight)}px`);
       workspace?.style.setProperty("--terminal-viewport-top", `${Math.round(viewport?.offsetTop ?? 0)}px`);
-      const fullWindowHeight = Math.max(window.innerHeight, window.screen.height);
-      if (workspace) workspace.dataset.keyboardVisible = String(Boolean(viewport && fullWindowHeight - viewport.height > 80));
+      // WKWebView can shrink innerHeight along with visualViewport. Remember
+      // the closed app viewport, not physical screen height (browser chrome and
+      // window bounds may consume screen space). Ignore pinch-zoom reductions.
+      const orientation = window.screen.orientation?.type;
+      const angle = (window as Window & { orientation?: number }).orientation;
+      const landscape = orientation ? orientation.startsWith("landscape")
+        : angle !== undefined ? Math.abs(angle) === 90 : window.innerWidth > window.innerHeight;
+      const screenHeight = window.screen.width && window.screen.height
+        ? (landscape ? Math.min(window.screen.width, window.screen.height) : Math.max(window.screen.width, window.screen.height))
+        : window.screen.height;
+      const height = viewport?.height ?? window.innerHeight;
+      const unzoomed = (viewport?.scale ?? 1) === 1;
+      // Orientation metadata can precede window/viewport resize events.
+      const windowHeight = Math.min(Math.max(window.innerHeight, height), screenHeight || Infinity);
+      if (unzoomed) {
+        if (viewportOrientation === undefined) {
+          closedViewportHeight = windowHeight;
+        } else if (viewportOrientation !== landscape) {
+          // Rotation with an open IME has no closed sample yet. Preserve the
+          // measured app/screen inset until the new viewport expands again.
+          closedViewportHeight = Math.max(windowHeight, screenHeight - screenInset);
+        } else {
+          closedViewportHeight = Math.max(closedViewportHeight, windowHeight);
+        }
+        viewportOrientation = landscape;
+        screenInset = Math.max(0, screenHeight - closedViewportHeight);
+      }
+      const visible = Boolean(viewport && unzoomed && closedViewportHeight - height > 80);
+      setKeyboardVisible(visible);
+      if (workspace) workspace.dataset.keyboardVisible = String(visible);
       // A TUI positions its input against PTY rows. Report the visible keyboard
       // viewport so the remote agent redraws above the shortcut bar.
       scheduleFit(true);
     };
+    window.addEventListener("resize", viewportChanged);
     viewport?.addEventListener("resize", viewportChanged);
     viewport?.addEventListener("scroll", viewportChanged);
     viewportChanged();
@@ -711,6 +747,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       container.removeEventListener("touchmove", scrollTouch, true);
       container.removeEventListener("touchend", finishTouch, true);
       container.removeEventListener("touchcancel", finishTouch, true);
+      window.removeEventListener("resize", viewportChanged);
       viewport?.removeEventListener("resize", viewportChanged);
       viewport?.removeEventListener("scroll", viewportChanged);
       window.removeEventListener("orientationchange", orientationChanged);
@@ -791,6 +828,15 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     scheduleFitRef.current(true);
   }, [resizeEpoch]);
 
+  const showKeyboard = () => {
+    const terminal = terminalRef.current;
+    if (!terminal || !keyboardEnabled || obscured || recovering || sectionRef.current?.closest("[inert]")) return;
+    // Native dismissal can leave the textarea focused. Refocus synchronously in
+    // this user gesture so WebKit can request its software keyboard again.
+    if (document.activeElement === terminal.textarea) terminal.textarea?.blur();
+    terminal.focus();
+  };
+
   const send = (data: string) => {
     terminalRef.current?.focus();
     inputHandlerRef.current(data);
@@ -862,6 +908,15 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
           <button className="mobile-terminal-shortcut-settings" type="button" aria-label={t("shortcuts.title", { defaultValue: "Terminal shortcuts" })} aria-haspopup="dialog" onMouseDown={event => event.preventDefault()} onClick={() => { clearModifiers(); setShortcutsOpen(true); }}><ShortcutSettingsIcon /></button>
         </div>
       </div>
+      <button className="mobile-terminal-show-keyboard" type="button"
+        aria-label={t("session.showKeyboard")} title={t("session.showKeyboard")}
+        hidden={keyboardVisible || obscured || shortcutsOpen} disabled={!keyboardEnabled || recovering}
+        onMouseDown={event => event.preventDefault()} onClick={showKeyboard}>
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="2" y="5" width="20" height="14" rx="3" />
+          <path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M7 15h10" />
+        </svg>
+      </button>
       {shortcutsOpen ? <ShortcutSettings layout={shortcutLayout} onSave={saveShortcutLayout} onClose={() => setShortcutsOpen(false)} /> : null}
     </section>
   );

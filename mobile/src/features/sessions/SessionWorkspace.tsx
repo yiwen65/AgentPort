@@ -803,6 +803,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
         showProbeOutput={false}
         obscured={busyAction === "stop"}
         recovering={recoveryVeil}
+        keyboardEnabled={active && connectionLabel === "live" && !replayPending}
         recoveryLabel={t(`session.connection.${connectionLabel === "failed" ? "failed" : connectionLabel === "reconnecting" ? "reconnecting" : "attaching"}`)}
       /> : null}
 
