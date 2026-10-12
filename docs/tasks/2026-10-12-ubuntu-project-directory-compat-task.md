@@ -3,7 +3,7 @@
 - Created: 2026-10-12
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: in_progress
+- Overall status: done
 - Source: 用户截图Computer5070降级提示，授权排查修复Ubuntu目录浏览/解析兼容。
 
 <!-- task-doc-section:background-goal -->
@@ -98,9 +98,9 @@ Ubuntu上旧Bridge缺少新project.directory方法时，移动端仍通过已有
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-003 — 实机旧Ubuntu验证与调试交付
+### [x] T-003 — 实机旧Ubuntu验证与调试交付
 
-- Status: in_progress
+- Status: done
 - Owner: coordinator
 - Objective: 用已确认旧Bridge做只读真实验证和最小UI smoke，提交可见更新。
 - Inputs and prerequisites: T-001/T-002产物经coordinator检查。
@@ -115,7 +115,7 @@ Ubuntu上旧Bridge缺少新project.directory方法时，移动端仍通过已有
   - 不靠升级远端消除症状；记录SSH/Relay/native覆盖边界；commit只含本任务。
 - Verification method:
   - framed readonly proxy/browser、read-only review、App构建/签名/进程/截图、task validator/git show/status。
-- Validation evidence: Not run.
+- Validation evidence: 当前reader经真实旧Ubuntu SSH Bridge root/home/hidden/alias/missing-readonly检查通过，write0；React浏览器root→home→w、hidden、typed alias、error清空旧rows/禁Add及320/390截图均通过。只读review最新delta无actionable finding。signed iPhoneOS archive通过strict签名/profile/平台/min16/Scene验证，但配对实体机unavailable，本次未安装；默认desktop debug已按统一脚本重建签名重启，exact新GUI31000/window1389截图已读取正常。harness移出仓库， owned Vite/proxy/tab均关闭。功能commit29a9fe8只含8本任务文件，git show核对、提交后工作区干净；后续仅本文最终证据更新。
 - Blocker: None.
 - Unblock condition: None.
 
@@ -169,10 +169,18 @@ Ubuntu上旧Bridge缺少新project.directory方法时，移动端仍通过已有
 - 2026-10-12: T-003开始；最终当前reader再次连真实旧Ubuntu：root、/home/w、hidden、/var/run→/run和缺失path错误均通过，write0。实际React浏览器root→home→w、hidden19项、手动alias canonical、失败清空旧列表/禁用Add、320/390px截图及滚动后Add可见通过，write0。后台Chrome焦点门控用临时Emulation focus解锁，不前台激活；关闭该设置。只关闭本任务tab，harness移到/tmp，停止所拥有Vite/proxy。
 - 2026-10-12: normal Tauri device archive第一次被Homebrew rustc sysroot选择错误阻塞（rustup target存在但core缺失）；仅把$HOME/.cargo/bin前置后同命令成功。最终.app签名/未过期profile/已配对设备授权、Bundle ID不变、SDK27/min16/Scene真布尔通过。当前实体iPhone两次检查均unavailable，本次未安装/启动实体机，也未改其数据；可安装产物已保留。
 - 2026-10-12: 统一python3 scripts/restart-debug-app.py完整重建/固定证书签名，仅关闭旧GUI12929打开31000；PS确认新GUI exact路径，codesign strict/deep通过；Cua窗口1389 PNG已读取，sidebar与workspace正常非白屏。新增两条经验证learn：legacy路径lossy身份/文件名分层，以及iOS编译器PATH选择。
+- 2026-10-12: 所有必需验证/cleanup完成，git staged diff核对8本任务文件无无关改动；功能commit29a9fe8创建，git show确认任务范围，提交后status干净。T-003接受done，整体代码兼容修复通过；手机本次安装不可用作为明确交付限制，不把旧安装当作当前验证。本文最终补录后再validate和文档commit。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
-- Result: not_run
-- Evidence: 真实旧Ubuntureadonly baseline已复现；产品修复/回归尚未完成。
-- Limitations: 尚未证实Relay使用相同Bridge或运行Native触控；绝不声称远端已升级/业务写验证通过。
+- Result: passed
+- Evidence:
+  - 原始wire对照：实际Ubuntu22.04.5旧Bridge两新方法unknown_method/not_executed，但document.list成功；UI before错误manual-only。最新reader与同一实际Bridge通过只读路径验证，实际React面板浏览已可用，不靠升级远端消除症状。
+  - npm test -- src/features/projects/AddProjectDialog.test.tsx -t 'stale unsupported preflight'：1passed/59skipped；npm test -- --maxWorkers=2：46files/731passed；npm run build：TS和Vite通过（task-25 log）。路径身份、旧错误、canonical submit/reconcile、断线迟到成功/unsupported、single write/durable receipt均有自动回归。
+  - cargo test -p agentport-remote-protocol：13/13passed（task-30）；scripts/check-version-sync.sh、git diff --check和task_document.py validate通过。
+  - 当前TS reader经readonly proxy：root/不猜Home、/home/w/父级、hidden38entries、/var/run→/run、缺失path保持service_error/failed、write0。浏览器root→home→w成功；隐藏checkbox显示19个dotdirs；坏路径错误不隐藏为manual，旧目录列表清空且Add disabled；320px typed alias解析为/run，提交控件滚动后可见。截图/tmp/agentport-ubuntu-directory-compat/legacy-home-390.png、legacy-alias-320.png、legacy-actions-320.png已读取。始终禁project.add，无真实远端项目库写入。
+  - export PATH="$HOME/.cargo/bin:$PATH"; npm run tauri -- ios build --debug --target aarch64 --archive-only --ci成功（task-28）；产物mobile/src-tauri/gen/apple/build/agentport-mobile_iOS.xcarchive/Products/Applications/AgentPort.app。strict/deep签名、未过期profile/此前授权设备、Bundle ID com.agentport.mobile、iphoneos27.0/min16/Scene真布尔检查通过（task-30）。
+  - python3 scripts/restart-debug-app.py成功（task-29），固定证书和checkout独立Bundle ID。新GUI31000 exact executable=/Users/w/Projects/AgentSessions/target/debug/bundle/macos/AgentPort.app/Contents/MacOS/agentport；strict/deep签名通过。Cua窗口1389截图/tmp/agentport-ubuntu-directory-compat/debug-app.png已读取正常sidebar/workspace，非白屏。
+  - 独立reader/path与连续UI lifecycle delta静态review无剩余actionable finding（不冒充独立执行）；功能commit29a9fe8已创建并核对只含任务8文件，临时harness/tab/Vite/proxy清理完成。仅追加本文最终记录。
+- Limitations: 真实验证是SSH读取旧UbuntuBridge与浏览器React面板，不是Relay链路、实体手机触控、远端真实project.add业务写或最低OS测试。配对实体iPhone当前unavailable，新签名修复包已准备但本次尚未安装；先前手机安装不等于本次更新。若需要在手机使用此次修复，需重连解锁设备后继续原授权保留数据更新。旧端不会报告Home且目录symlink可能未枚举，必须用完整path选择；legacy含U+FFFD的canonical路径为避免错误目录写被诚实拒绝。
