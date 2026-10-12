@@ -64,7 +64,7 @@ pub struct ConnectError {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteCommandError {
-    code: String,
+    pub(crate) code: String,
     message: String,
     status: &'static str,
 }
@@ -179,6 +179,67 @@ pub struct RemoteConnections {
 }
 
 impl RemoteConnections {
+    #[cfg(test)]
+    pub(crate) async fn install_download_test_connection<F>(&self, mut respond: F)
+    where F: FnMut(Value) -> Result<Value, RemoteCommandError> + Send + 'static {
+        let (client, mut server) = tokio::io::duplex(1024 * 1024);
+        let (_, writer) = tokio::io::split(client);
+        let pending = Arc::new(Mutex::new(HashMap::<String, PendingRequest>::new()));
+        let responses = pending.clone();
+        let task = tokio::spawn(async move {
+            while let Ok(Some(frame)) = read_frame(&mut server).await {
+                let frame: Value = serde_json::from_slice(&frame).unwrap();
+                let id = frame["requestId"].as_str().unwrap().to_owned();
+                let result = respond(frame);
+                if let Some(request) = responses.lock().unwrap().remove(&id) {
+                    let _ = request.response.send(result);
+                }
+            }
+        });
+        self.inner.connections.lock().await.insert("p".into(), Connection {
+            generation: "g".into(), snapshot: ConnectionSnapshot { profile_id: "p".into(), protocol_major: 1,
+                protocol_minor: 0, agentport_version: "test".into(), platform: "test".into(), capabilities: vec![] },
+            writer: Arc::new(AsyncMutex::new(Box::new(writer))), pending,
+            transport: Transport::Relay(RelayLease(task.abort_handle())),
+        });
+    }
+
+    pub(crate) async fn download_generation(&self, profile_id: &str) -> Result<String, RemoteCommandError> {
+        self.inner.connections.lock().await.get(profile_id).map(|connection| connection.generation.clone())
+            .ok_or_else(download_connection_changed)
+    }
+
+    /// Never replay against a replacement transport. Callers MUST await this
+    /// whole RPC; cancellation is a flag checked between requests, not an abort
+    /// of an in-flight frame write (which would corrupt the shared transport).
+    pub(crate) async fn download_request<R: Runtime>(&self, app: &AppHandle<R>, profile_id: &str, generation: &str, method: &str, params: Value) -> Result<Value, RemoteCommandError> {
+        if !matches!(method, "session.files.download.open" | "session.files.download.chunk" | "session.files.download.finish" | "session.files.download.close") {
+            return Err(download_connection_changed());
+        }
+        let (writer, pending) = {
+            let connections = self.inner.connections.lock().await;
+            let connection = connections.get(profile_id).filter(|connection| connection.generation == generation)
+                .ok_or_else(download_connection_changed)?;
+            (connection.writer.clone(), connection.pending.clone())
+        };
+        let request_id = format!("download_{}", uuid::Uuid::new_v4().simple());
+        let (sender, receiver) = oneshot::channel();
+        pending.lock().map_err(|_| download_connection_changed())?.insert(request_id.clone(), PendingRequest {
+            accepted: false, is_read: false, response: sender,
+        });
+        let mut frame = json!({"type":"request", "requestId":request_id, "method":method, "params":params});
+        let outcome = timed_request(&writer, &mut frame, receiver, false, Duration::from_secs(30)).await;
+        zeroize_value(&mut frame);
+        pending.lock().ok().map(|mut requests| requests.remove(&request_id));
+        if outcome.as_ref().is_err_and(|error| matches!(error.code.as_str(), "request_timeout" | "connection_write_failed")) {
+            retire_connection(app, self, profile_id, &pending).await;
+        }
+        if !self.inner.connections.lock().await.get(profile_id).is_some_and(|connection| connection.generation == generation) {
+            return Err(download_connection_changed());
+        }
+        outcome
+    }
+
     /// Clone only ownership of the authenticated transport; never hold the
     /// connection-table lock while a picker or file transfer is in progress.
     pub(crate) async fn image_upload_connection(
@@ -221,6 +282,10 @@ impl RemoteConnections {
             .map(|attempts| attempts.get(profile_id).is_some_and(|value| value == token))
             .unwrap_or(false)
     }
+}
+
+fn download_connection_changed() -> RemoteCommandError {
+    RemoteCommandError { code: "connection_changed".into(), message: "The download connection ended or changed. Start again after reconnecting.".into(), status: "not_executed" }
 }
 
 fn retry_delay(attempt: u32) -> Duration {

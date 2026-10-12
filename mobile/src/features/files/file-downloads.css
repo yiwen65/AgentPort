@@ -1,0 +1,22 @@
+.file-download-banner { position: fixed; z-index: 10; inset-inline: max(12px, env(safe-area-inset-left)) max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); width: min(440px, calc(100% - 24px)); margin-inline: auto; padding: 10px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
+.file-download-details { display: grid; gap: 3px; width: 100%; min-height: 44px; text-align: start; border: 0; padding: 0; background: transparent; color: inherit; }
+.file-download-details strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-download-details span, .file-download-details small { color: var(--muted); font-size: 13px; }
+.file-download-banner progress { width: 100%; height: 8px; accent-color: var(--accent); }
+.file-download-banner p { margin: 6px 0; font-size: 13px; overflow-wrap: anywhere; color: var(--danger); }
+.file-download-banner p[role="status"] { color: var(--muted); }
+.file-download-controls { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.file-download-controls button { min-width: 44px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: transparent; color: inherit; font: inherit; font-size: 14px; }
+.file-download-controls button:disabled { opacity: .55; }
+.file-download-dialog .download-source { overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
+.file-download-save-note { font-size: 13px; color: var(--muted); }
+/* Never cover the terminal's input/shortcut bar with a transfer card. */
+body.terminal-visible .file-download-banner { top: max(8px, env(safe-area-inset-top)); bottom: auto; inset-inline-start: auto; width: min(260px, calc(100% - 24px)); margin-inline: 0; }
+/* Reserve room while a task card is visible, so the final tree row stays reachable. */
+body:has(.file-download-banner) .files-tree-scroll, body:has(.file-download-banner) .files-preview-scroll { padding-bottom: 220px; }
+.session-files .files-entry-row { display: flex; align-items: stretch; }
+.session-files .files-entry-row .files-row { flex: 1; min-width: 0; }
+.session-files .files-entry-actions { flex: 0 0 44px; min-height: 52px; border: 0; border-bottom: 1px solid var(--line-soft); border-radius: 0; background: transparent; font-size: 22px; }
+.files-operation-path { overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
+.files-operation-button { width: 100%; min-height: 48px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); font: inherit; }
+.files-operation-button:disabled { opacity: .55; }

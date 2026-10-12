@@ -12,6 +12,9 @@ import type { HostProfileSummary, RemoteClient } from "../protocol/remoteClient"
 import type { GenericTerminalClient } from "../protocol/genericTerminalClient";
 import { genericTerminalClient } from "../platform/tauriGenericTerminalClient";
 import { GenericTerminal } from "../features/generic-terminal/GenericTerminal";
+import { FileDownloadProvider } from "../features/files/FileDownloads";
+import type { FileDownloadClient } from "../protocol/fileDownloadClient";
+import { fileDownloadClient } from "../platform/tauriFileDownloadClient";
 
 const SessionWorkspace = lazy(() => import("../features/sessions/SessionWorkspace").then((module) => ({
   default: module.SessionWorkspace,
@@ -27,9 +30,14 @@ interface AppProps {
   client: RemoteClient;
   hostAuthClient: HostAuthClient;
   terminalClient?: GenericTerminalClient;
+  downloadClient?: FileDownloadClient;
 }
 
-export function App({ client, hostAuthClient, terminalClient = genericTerminalClient }: AppProps) {
+export function App({ downloadClient = fileDownloadClient, ...props }: AppProps) {
+  return <FileDownloadProvider client={downloadClient}><AppContents {...props} /></FileDownloadProvider>;
+}
+
+function AppContents({ client, hostAuthClient, terminalClient = genericTerminalClient }: AppProps) {
   useApplyAppAppearance();
   const { t } = useTranslation();
   const [openedSession, setOpenedSession] = useState<{ open: OpenSession; token: number }>();

@@ -27,6 +27,10 @@ pub const METHOD_REGISTRY: &[&str] = &[
     "session.list",
     "session.files.list",
     "session.files.read",
+    "session.files.download.open",
+    "session.files.download.chunk",
+    "session.files.download.finish",
+    "session.files.download.close",
     "session.poll",
     "session.attach",
     "session.detach",
@@ -136,6 +140,10 @@ pub const MOBILE_V2_METHOD_ALLOWLIST: &[&str] = &[
     "session.list",
     "session.files.list",
     "session.files.read",
+    "session.files.download.open",
+    "session.files.download.chunk",
+    "session.files.download.finish",
+    "session.files.download.close",
     "session.attach",
     "session.detach",
     "session.control",
@@ -388,6 +396,10 @@ pub fn classify_method(method: &str) -> RetryClass {
         | "backup.verify"
         | "session.files.list"
         | "session.files.read"
+        | "session.files.download.open"
+        | "session.files.download.chunk"
+        | "session.files.download.finish"
+        | "session.files.download.close"
         | "document.read"
         | "document.list"
         | "secret.list" => RetryClass::Read,
@@ -1261,6 +1273,10 @@ mod tests {
             "document.list",
             "session.files.list",
             "session.files.read",
+            "session.files.download.open",
+            "session.files.download.chunk",
+            "session.files.download.finish",
+            "session.files.download.close",
         ] {
             assert!(METHOD_REGISTRY.contains(&method));
             assert!(MOBILE_V2_METHOD_ALLOWLIST.contains(&method));

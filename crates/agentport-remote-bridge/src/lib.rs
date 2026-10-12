@@ -1029,6 +1029,10 @@ fn prepare_request(
         | "backup.restore"
         | "session.files.list"
         | "session.files.read"
+        | "session.files.download.open"
+        | "session.files.download.chunk"
+        | "session.files.download.finish"
+        | "session.files.download.close"
         | "document.read"
         | "document.list"
         | "document.create") => PreparedRequest::Extended(
@@ -1270,6 +1274,33 @@ mod tests {
     impl RemoteService for FixtureService {
         fn extended_facade(&self, method: &str, params: Value) -> agentport_service::Result<Value> {
             use agentport_service::SessionFilesError;
+            if method.starts_with("session.files.download.") {
+                let key = if method.ends_with("open") {
+                    assert_eq!(params["sessionId"], "session-fixture");
+                    params["path"].as_str().unwrap()
+                } else {
+                    params["downloadId"].as_str().unwrap()
+                };
+                let error = match key {
+                    "file_too_large" => Some(SessionFilesError::FileTooLarge),
+                    "source_changed" => Some(SessionFilesError::SourceChanged),
+                    "invalid_download" => Some(SessionFilesError::InvalidDownload),
+                    "invalid_offset" => Some(SessionFilesError::InvalidOffset),
+                    "incomplete_download" => Some(SessionFilesError::IncompleteDownload),
+                    "too_many_downloads" => Some(SessionFilesError::TooManyDownloads),
+                    "outside_root" => Some(SessionFilesError::OutsideRoot),
+                    "permission_denied" => Some(SessionFilesError::PermissionDenied),
+                    _ => None,
+                };
+                if let Some(error) = error { return Err(error.into()); }
+                return Ok(match method {
+                    "session.files.download.open" => json!({"downloadId":"fixture-id","name":"binary.bin","sizeBytes":3,"chunkBytes":262144}),
+                    "session.files.download.chunk" => json!({"offset":0,"contentBase64":"AP+A","eof":true}),
+                    "session.files.download.finish" => json!({"sizeBytes":3,"sha256":"fixture-hash"}),
+                    "session.files.download.close" => json!({"closed":true}),
+                    _ => return Err(ServiceError::InvalidRequest),
+                });
+            }
             if !matches!(method, "session.files.list" | "session.files.read") {
                 return Err(ServiceError::InvalidRequest);
             }
@@ -1486,6 +1517,56 @@ mod tests {
                 assert!(value.is_none());
                 assert_eq!(error.as_ref().unwrap().code, code);
                 assert_ne!(error.as_ref().unwrap().message, "request failed on the remote host");
+            }
+        }
+    }
+
+    #[test]
+    fn session_download_dispatch_frames_binary_and_sanitized_errors_as_reads() {
+        let codes = ["file_too_large", "source_changed", "invalid_download", "invalid_offset",
+            "incomplete_download", "too_many_downloads", "outside_root", "permission_denied"];
+        for action in ["open", "chunk", "finish", "close"] {
+            let method = format!("session.files.download.{action}");
+            let mut input = Vec::new();
+            append(&mut input, &hello(ProtocolVersion::V1));
+            for key in std::iter::once("fixture-id").chain(codes) {
+                let params = match action {
+                    "open" => json!({"sessionId":"session-fixture","path":key}),
+                    "chunk" => json!({"downloadId":key,"offset":0}),
+                    _ => json!({"downloadId":key}),
+                };
+                append(&mut input, &json!({"type":"request","requestId":key,"method":method,"params":params}));
+            }
+            let mut output = Vec::new();
+            let mut diagnostics = Vec::new();
+            serve(&mut Cursor::new(input), &mut output, &mut diagnostics, &FixtureService).unwrap();
+            assert!(!String::from_utf8_lossy(&diagnostics).contains("fixture-id"));
+            let results = frames(&SharedOutput(Arc::new(Mutex::new(output)))).into_iter()
+                .filter_map(|message| match message {
+                    ServerEnvelope::Result { status, retry_class, value, error, .. } => Some((status, retry_class, value, error)),
+                    _ => None,
+                }).collect::<Vec<_>>();
+            assert_eq!(results.len(), codes.len() + 1);
+            assert_eq!(results[0].0, ResultStatus::Succeeded);
+            assert_eq!(results[0].1, RetryClass::Read);
+            let success = results[0].2.as_ref().unwrap();
+            assert!(success.get("rootPath").is_none());
+            match action {
+                "open" => assert_eq!(success["chunkBytes"], 262144),
+                "chunk" => {
+                    assert_eq!(success["contentBase64"], "AP+A");
+                    assert_eq!(success["eof"], true);
+                }
+                "finish" => assert_eq!(success["sizeBytes"], 3),
+                _ => assert_eq!(success["closed"], true),
+            }
+            for ((status, retry_class, value, error), code) in results.iter().skip(1).zip(codes) {
+                assert_eq!(*status, ResultStatus::NotExecuted);
+                assert_eq!(*retry_class, RetryClass::Read);
+                assert!(value.is_none());
+                assert_eq!(error.as_ref().unwrap().code, code);
+                assert_ne!(error.as_ref().unwrap().message, "request failed on the remote host");
+                assert!(!error.as_ref().unwrap().message.contains("fixture-id"));
             }
         }
     }

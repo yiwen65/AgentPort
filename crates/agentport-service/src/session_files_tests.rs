@@ -236,6 +236,22 @@ fn session_files_facade_uses_only_server_session_cwd_and_isolates_sessions() {
                 .unwrap()["path"],
             "."
         );
+        let open = service.extended_facade("session.files.download.open",
+            serde_json::json!({"sessionId":id,"path":"note"})).unwrap();
+        let download_id = open["downloadId"].as_str().unwrap();
+        let other = CoreService::memory().unwrap();
+        assert!(matches!(other.extended_facade("session.files.download.chunk",
+            serde_json::json!({"downloadId":download_id,"offset":0})),
+            Err(ServiceError::SessionFiles(SessionFilesError::InvalidDownload))));
+        let chunk = service.extended_facade("session.files.download.chunk",
+            serde_json::json!({"downloadId":download_id,"offset":0})).unwrap();
+        use base64::Engine as _;
+        assert_eq!(base64::engine::general_purpose::STANDARD.decode(
+            chunk["contentBase64"].as_str().unwrap()).unwrap(), content.as_bytes());
+        assert_eq!(service.extended_facade("session.files.download.finish",
+            serde_json::json!({"downloadId":download_id})).unwrap()["sizeBytes"], content.len());
+        assert_eq!(service.extended_facade("session.files.download.close",
+            serde_json::json!({"downloadId":download_id})).unwrap()["closed"], true);
     }
     let errors = [
         (
@@ -263,6 +279,15 @@ fn session_files_facade_uses_only_server_session_cwd_and_isolates_sessions() {
         assert!(
             matches!(service.extended_facade("session.files.read", params), Err(ServiceError::SessionFiles(error)) if error == expected)
         );
+    }
+    for (params, expected) in [
+        (serde_json::json!({"sessionId":"missing","path":"note"}), SessionFilesError::SessionNotFound),
+        (serde_json::json!({"sessionId":"one","path":"note","rootPath":second.path()}), SessionFilesError::InvalidPath),
+        (serde_json::json!({"sessionId":"one"}), SessionFilesError::InvalidPath),
+        (serde_json::json!({"sessionId":"one","path":"../note"}), SessionFilesError::OutsideRoot),
+    ] {
+        assert!(matches!(service.extended_facade("session.files.download.open", params),
+            Err(ServiceError::SessionFiles(error)) if error == expected));
     }
     // Existing unscoped document callers remain unchanged.
     assert_eq!(

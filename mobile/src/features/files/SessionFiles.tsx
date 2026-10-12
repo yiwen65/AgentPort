@@ -4,6 +4,8 @@ import type { RemoteClient, Unsubscribe } from "../../protocol/remoteClient";
 import { remoteErrorMessage } from "../../protocol/remoteError";
 import type { OpenSession } from "../sessions/types";
 import { FileContent, isMarkdown } from "./FileContent";
+import { Modal } from "../../components/Modal";
+import { useFileDownloads } from "./FileDownloads";
 import "./session-files.css";
 
 export interface FileEntry { name: string; path: string; isDir: boolean }
@@ -17,6 +19,8 @@ const knownErrors = new Set(["unsupported_platform", "path_not_found", "not_dire
 
 export function SessionFiles({ open, client, active, onBack }: SessionFilesProps) {
   const { t } = useTranslation();
+  const downloads = useFileDownloads();
+  const [operations, setOperations] = useState<string>();
   const [directories, setDirectories] = useState<Record<string, Resource<FileListing>>>({});
   const directoriesRef = useRef(directories);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -109,6 +113,7 @@ export function SessionFiles({ open, client, active, onBack }: SessionFilesProps
       invalidate();
       previewRef.current = undefined;
       setPreview(undefined);
+      setOperations(undefined);
       setCopyStatus("");
     }
   }, [active, refresh, invalidate]);
@@ -154,7 +159,7 @@ export function SessionFiles({ open, client, active, onBack }: SessionFilesProps
       {resourceStatus(resource, () => void load(path, "list"))}
       {resource?.data && entries.length === 0 && !resource.loading ? <p className="files-note">{t("files.empty")}</p> : null}
       <ul className="files-list">{entries.map(entry => <li key={entry.path}>
-        <button type="button" className="files-row" data-page-swipe="true" aria-expanded={entry.isDir ? expanded.has(entry.path) : undefined}
+        <div className="files-entry-row"><button type="button" className="files-row" data-page-swipe="true" aria-expanded={entry.isDir ? expanded.has(entry.path) : undefined}
           ref={node => { if (node) rows.current.set(entry.path, node); else rows.current.delete(entry.path); }}
           style={{ paddingInlineStart: `${12 + Math.min(depth, 8) * 16}px` }}
           onClick={() => {
@@ -165,6 +170,7 @@ export function SessionFiles({ open, client, active, onBack }: SessionFilesProps
           <span className="files-entry-icon" aria-hidden="true">{entry.isDir ? expanded.has(entry.path) ? "▾" : "▸" : "≡"}</span>
           <span>{entry.name}<small>{entry.isDir ? t("files.directory") : t("files.file")}</small></span>
         </button>
+        {!entry.isDir ? <button type="button" className="files-entry-actions" aria-label={t("downloads.fileActions", { name: entry.name })} aria-haspopup="dialog" onClick={() => setOperations(entry.path)}>⋯</button> : null}</div>
         {entry.isDir && expanded.has(entry.path) ? tree(entry.path, depth + 1) : null}
       </li>)}</ul>
       {resource?.data?.truncated ? <p className="files-note" role="status">{t("files.directoryTruncated")}</p> : null}
@@ -181,7 +187,7 @@ export function SessionFiles({ open, client, active, onBack }: SessionFilesProps
     {preview !== undefined ? <div className="files-preview-page" data-no-page-swipe="true">
       <header className="files-header"><button type="button" onClick={backToTree}>{t("files.backToTree")}</button><h1 ref={previewHeading} tabIndex={-1}>{t("files.preview")}</h1><button type="button" disabled={!online} onClick={() => void load(preview, "read")}>{t("files.refresh")}</button></header>
       <p className="files-root">{preview}</p>
-      <div className="files-actions"><button type="button" onClick={() => void copy(preview)}>{t("files.copyPath")}</button><button type="button" disabled={!file.data} onClick={() => void copy(file.data?.content ?? "")}>{t(file.data?.truncated ? "files.copyVisible" : "files.copyContent")}</button>
+      <div className="files-actions"><button type="button" disabled={!online || !downloads.available || downloads.occupied} onClick={() => downloads.start(open, preview)}>{t("downloads.download")}</button><button type="button" onClick={() => void copy(preview)}>{t("files.copyPath")}</button><button type="button" disabled={!file.data} onClick={() => void copy(file.data?.content ?? "")}>{t(file.data?.truncated ? "files.copyVisible" : "files.copyContent")}</button>
         {isMarkdown(preview) ? <button type="button" aria-pressed={rendered} onClick={() => setRendered(value => !value)}>{t(rendered ? "files.showSource" : "files.showRendered")}</button> : null}</div>
       {copyStatus ? <p className="files-note" role="status">{copyStatus}</p> : null}
       {!online ? <p className="files-offline" role="status">{t("files.offline")}</p> : null}
@@ -191,5 +197,11 @@ export function SessionFiles({ open, client, active, onBack }: SessionFilesProps
         {file.data ? <FileContent path={preview} content={file.data.content} rendered={rendered} onOpen={openFile} /> : null}
       </div>
     </div> : null}
+    {operations !== undefined ? <Modal title={t("downloads.fileActions", { name: operations.split("/").pop() })} onClose={() => setOperations(undefined)}>
+      <p className="files-operation-path">{operations}</p>
+      <p>{t("downloads.fileHint")}</p>
+      {!downloads.available ? <p role="status">{t("downloads.nativeOnly")}</p> : downloads.occupied ? <p role="status">{t("downloads.busy")}</p> : !online ? <p role="status">{t("files.offline")}</p> : null}
+      <button className="files-operation-button" type="button" disabled={!online || !downloads.available || downloads.occupied} onClick={() => { const path = operations; setOperations(undefined); downloads.start(open, path); }}>{t("downloads.download")}</button>
+    </Modal> : null}
   </section>;
 }

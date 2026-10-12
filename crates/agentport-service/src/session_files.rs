@@ -10,6 +10,9 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
+#[path = "session_file_downloads.rs"]
+pub(crate) mod downloads;
+
 const MAX_BYTES: usize = 1024 * 1024;
 const MAX_ENTRIES: usize = 2_000;
 const MAX_SCANNED_ENTRIES: usize = 16_000;
@@ -22,7 +25,7 @@ mod tests;
 pub enum SessionFilesError {
     #[error("The requested path is outside this Session's project directory.")]
     OutsideRoot,
-    #[error("Only regular UTF-8 text files can be previewed.")]
+    #[error("Only regular files are supported; previews require UTF-8 text.")]
     UnsupportedFile,
     #[error("The requested path does not exist.")]
     PathNotFound,
@@ -38,6 +41,18 @@ pub enum SessionFilesError {
     SessionNotFound,
     #[error("Secure Session file browsing is not supported on this computer's platform.")]
     UnsupportedPlatform,
+    #[error("The file exceeds the 1 GiB download limit.")]
+    FileTooLarge,
+    #[error("The source file changed during download. Retry from the beginning.")]
+    SourceChanged,
+    #[error("This download is invalid, expired, or belongs to another connection.")]
+    InvalidDownload,
+    #[error("The download offset must match the next unread byte.")]
+    InvalidOffset,
+    #[error("The download has not transferred all of its bytes.")]
+    IncompleteDownload,
+    #[error("Too many downloads are open on this connection.")]
+    TooManyDownloads,
 }
 
 impl SessionFilesError {
@@ -52,6 +67,12 @@ impl SessionFilesError {
             Self::ReadFailed => "read_failed",
             Self::SessionNotFound => "session_not_found",
             Self::UnsupportedPlatform => "unsupported_platform",
+            Self::FileTooLarge => "file_too_large",
+            Self::SourceChanged => "source_changed",
+            Self::InvalidDownload => "invalid_download",
+            Self::InvalidOffset => "invalid_offset",
+            Self::IncompleteDownload => "incomplete_download",
+            Self::TooManyDownloads => "too_many_downloads",
         }
     }
 }
@@ -232,6 +253,12 @@ mod secure {
             let canonical = self.canonical_relative(relative)?;
             self.open_relative(&canonical, directory)
         }
+    }
+
+    pub(super) fn open_download(cwd: &str, relative: &Path) -> Result<(File, File)> {
+        let root = Root::new(cwd)?;
+        let file = root.open(relative, false)?;
+        Ok((file, root.directory))
     }
 
     pub(super) fn execute(cwd: &str, relative: &Path, list: bool) -> Result<serde_json::Value> {

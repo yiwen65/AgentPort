@@ -5,6 +5,8 @@ import type { HostProfileSummary, RemoteClient, RemoteConnectionStateEvent } fro
 import type { OpenSession } from "../sessions/types";
 import { FileContent, localFileLink } from "./FileContent";
 import { SessionFiles, type FileListing } from "./SessionFiles";
+import { FileDownloadProvider } from "./FileDownloads";
+import type { FileDownloadClient } from "../../protocol/fileDownloadClient";
 
 const open = { hostProfileId: "host", hostName: "Host", session: { id: "session", cwd: "/project" } } as OpenSession;
 const listing = (path = "."): FileListing => ({ rootPath: "/project", path, truncated: false, entries: path === "." ? [
@@ -33,6 +35,34 @@ beforeEach(async () => { await i18n.changeLanguage("en-US"); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("SessionFiles", () => {
+  it("offers download from file actions without opening preview or disturbing directory taps", async () => {
+    const { client } = remote();
+    const download: FileDownloadClient = { available: () => true, start: vi.fn().mockResolvedValue({ jobId: "job", profileId: "host", sessionId: "session", path: "README.md", name: "README.md", totalBytes: 10, receivedBytes: 0, state: "downloading" }), poll: vi.fn().mockResolvedValue({ state: "downloading" }), cancel: vi.fn().mockResolvedValue({ state: "cancelled" }), save: vi.fn().mockResolvedValue({ state: "saved" }), discard: vi.fn().mockResolvedValue(undefined) };
+    render(<FileDownloadProvider client={download}><SessionFiles open={open} client={client} active onBack={() => {}} /></FileDownloadProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "File actions for README.md" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("complete original file");
+    expect(calls(client, "read")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Download file" }));
+    await waitFor(() => expect(download.start).toHaveBeenCalledWith({ profileId: "host", sessionId: "session", path: "README.md" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("keeps download available in an unsupported binary preview and explains browser unavailability", async () => {
+    const { client } = remote();
+    vi.mocked(client.request).mockResolvedValueOnce({ ...listing(), entries: [{ name: "archive.zip", path: "archive.zip", isDir: false }] }).mockRejectedValueOnce({ code: "unsupported_file" });
+    const download: FileDownloadClient = { available: () => true, start: vi.fn().mockResolvedValue({ jobId: "job", profileId: "host", sessionId: "session", path: "archive.zip", name: "archive.zip", totalBytes: 10, receivedBytes: 0, state: "downloading" }), poll: vi.fn().mockResolvedValue({ state: "downloading" }), cancel: vi.fn().mockResolvedValue({ state: "cancelled" }), save: vi.fn().mockResolvedValue({ state: "saved" }), discard: vi.fn().mockResolvedValue(undefined) };
+    const view = render(<FileDownloadProvider client={download}><SessionFiles open={open} client={client} active onBack={() => {}} /></FileDownloadProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "archive.zip File" })); await screen.findByRole("alert");
+    expect(screen.getByRole("button", { name: "Download file" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Download file" }));
+    await waitFor(() => expect(download.start).toHaveBeenCalledWith({ profileId: "host", sessionId: "session", path: "archive.zip" }));
+    view.unmount();
+    const state = remote(); mount(state.client);
+    fireEvent.click(await screen.findByRole("button", { name: "File actions for README.md" }));
+    expect(screen.getByText(/installed iOS\/Android app only/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Download file" })).toBeDisabled();
+  });
+
   it("lazily loads sorted directories, reads code, preserves the tree/scroll, and backs out without terminal requests", async () => {
     const { client } = remote(); const view = mount(client);
     await screen.findByRole("button", { name: "src Directory" });

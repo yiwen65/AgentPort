@@ -1,4 +1,5 @@
 mod appearance;
+mod file_download;
 mod relay_pairing;
 mod credentials;
 mod hosts;
@@ -11,6 +12,7 @@ mod sftp;
 mod ssh;
 
 use serde::Serialize;
+use tauri::Manager;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,20 +45,33 @@ pub fn run() {
         .manage(remote::RemoteConnections::default())
         .manage(relay_pairing::RelayPairings::default())
         .manage(mosh::MoshSessions::default())
-        .manage(generic_terminal::TerminalConnections::default());
+        .manage(generic_terminal::TerminalConnections::default())
+        .setup(|app| {
+            // iOS already has an app-private sandbox cache. Tauri's
+            // app_cache_dir adds the bundle ID; use cache_dir to match UIKit.
+            #[cfg(target_os = "ios")]
+            let download_cache = app.path().cache_dir();
+            #[cfg(not(target_os = "ios"))]
+            let download_cache = app.path().app_cache_dir();
+            app.manage(file_download::FileDownloads::initialize(download_cache));
+            #[cfg(target_os = "ios")]
+            ios_push::install(app.handle());
+            Ok(())
+        });
     #[cfg(mobile)]
     let builder = builder.plugin(tauri_plugin_barcode_scanner::init())
-        .plugin(tauri_plugin_image_picker::init());
+        .plugin(tauri_plugin_image_picker::init())
+        .plugin(tauri_plugin_file_export::init());
     #[cfg(target_os = "android")]
     let builder = builder.plugin(tauri_plugin_screen_rotation::init());
-    #[cfg(target_os = "ios")]
-    let builder = builder.setup(|app| {
-        ios_push::install(app.handle());
-        Ok(())
-    });
     builder
         .invoke_handler(tauri::generate_handler![
             mobile_scaffold_status,
+            file_download::mobile_file_download_start,
+            file_download::mobile_file_download_poll,
+            file_download::mobile_file_download_cancel,
+            file_download::mobile_file_download_save,
+            file_download::mobile_file_download_discard,
             generic_terminal::mobile_terminal_list,
             generic_terminal::mobile_terminal_create,
             generic_terminal::mobile_terminal_connect,

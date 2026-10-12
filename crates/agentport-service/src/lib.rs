@@ -1140,6 +1140,7 @@ pub struct CoreService {
     paths: AppPaths,
     db: Db,
     attachments: Mutex<HashMap<String, AttachmentSlot>>,
+    file_downloads: session_files::downloads::Downloads,
 }
 
 impl CoreService {
@@ -1155,6 +1156,7 @@ impl CoreService {
             paths,
             db,
             attachments: Mutex::new(HashMap::new()),
+            file_downloads: session_files::downloads::Downloads::default(),
         })
     }
 
@@ -1166,6 +1168,7 @@ impl CoreService {
             ),
             db: Db::open_memory()?,
             attachments: Mutex::new(HashMap::new()),
+            file_downloads: session_files::downloads::Downloads::default(),
         })
     }
 
@@ -1970,6 +1973,23 @@ impl RemoteService for CoreService {
                     agentport_core::backup::restore(absolute_path(&params.path)?, &target)?;
                 serde_json::json!({"restored": target, "previousKeptAt": previous})
             }
+            "session.files.download.open" => {
+                let params: session_files::downloads::OpenParams = serde_json::from_value(params)
+                    .map_err(|_| SessionFilesError::InvalidPath)?;
+                if params.session_id.trim().is_empty() {
+                    return Err(SessionFilesError::InvalidPath.into());
+                }
+                let session = self.db.get_session(&params.session_id).map_err(|error| match error {
+                    agentport_core::CoreError::NotFound(_) => {
+                        ServiceError::from(SessionFilesError::SessionNotFound)
+                    }
+                    other => ServiceError::Core(other),
+                })?;
+                self.file_downloads.open(&session.cwd, &params.path)?
+            }
+            "session.files.download.chunk"
+            | "session.files.download.finish"
+            | "session.files.download.close" => self.file_downloads.execute(method, params)?,
             "session.files.list" | "session.files.read" => {
                 let params: session_files::Params = serde_json::from_value(params)
                     .map_err(|_| SessionFilesError::InvalidPath)?;

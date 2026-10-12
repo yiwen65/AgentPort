@@ -761,14 +761,14 @@
 - Prevention: Test alias-to-raw-byte versus real UTF-8 sibling, visible/hidden control-name directories, ordinary control-name files and malformed wire fields separately; never downgrade invalid responses into raw-path writes.
 - Verified by: 2026-10-12 ten focused reader guards failed 9/10 before repair and passed 10/10 after; the UI alias guard changed from Project added to no write/no journal. Complete mobile suite 731/731 passed.
 
-## `iOS Rust toolchain selection` — rustup targets do not apply to Homebrew rustc
+## `mobile Rust toolchain selection` — rustup targets do not apply to Homebrew rustc
 
 - Wrong approach: Run Tauri's iOS archive with Homebrew cargo/rustc first in PATH and treat rustup's installed iOS target as proof the active compiler can use it.
 - Why it failed: rustup reported the target up to date, but Xcode's cargo hook selected Homebrew rustc, whose sysroot had no iOS core crate.
 - Recognition signal: `can't find crate for core` follows a successful rustup target check; `which rustc` points to Homebrew while rustup reports another toolchain.
 - Correct approach: Prepend `$HOME/.cargo/bin` for the build invocation, as `mobile/scripts/build-ios-personal-team.sh` already does; do not repeatedly install targets or change source.
-- Prevention: Check `which cargo rustc`, `rustc -vV` and `rustup show` in the actual build environment before an iOS archive.
-- Verified by: 2026-10-12 the unchanged device archive failed with Homebrew1.95, then passed with rustup1.98 after only the invocation PATH changed; final iPhoneOS27/min16 bundle signature and profile checks passed.
+- Prevention: Check `which cargo rustc`, `rustc -vV` and `rustup show` in the actual build environment before an iOS archive or Android build; a target installed under rustup says nothing about the Homebrew sysroot.
+- Verified by: 2026-10-12 the unchanged device archive failed with Homebrew1.95, then passed with rustup1.98 after only the invocation PATH changed; final iPhoneOS27/min16 bundle signature and profile checks passed. 2026-10-13 Android `aarch64-linux-android` similarly failed after an up-to-date target check; invocation-only `$HOME/.cargo/bin` PATH priority produced the APK without source changes or target reinstallation.
 
 ## `remote Git status` — Core snapshot is not the desktop command DTO
 
@@ -778,3 +778,12 @@
 - Correct approach: Explicitly map the Core snapshot to `RepositoryStatus`; obtain checkout-scoped live Session ids and pending stash count from the remote endpoints. Keep the UI snapshot-change token separate from server-issued Git mutation preconditions.
 - Prevention: Verify each remote method's actual service serializer before using a desktop return type. Regression fixtures must use the Rust wire shape and exercise its downstream store/UI consumer, not just a self-consistent mock.
 - Verified by: Raw-snapshot adapter test and TopBar button test failed before/passed after; remote routing integration covers Git Center + commit review/execute with server tokens; frontend 998/998 and build passed; actual paired Linux device opened Git Center with changes and the commit composer (no user files staged or committed).
+
+## `mobile download cache startup` — fail the optional feature, not the whole App
+
+- Wrong approach: Propagate `FileDownloads::new(cache)?` from Tauri setup, including stale temporary-file sweep failures.
+- Why it failed: Cache path, permissions or cleanup errors abort App initialization before the unrelated terminal can render. Ignoring the error and using a fallback path would instead weaken the owned-source boundary.
+- Recognition signal: Download-cache creation/sweep returns an IO error inside the top-level setup closure, despite downloads being optional to Session use.
+- Correct approach: Manage a typed unavailable download state without failing setup; `start` checks it before any path/RPC use. Fix storage and restart to safely validate/sweep again; do not silently enable a failed cache.
+- Prevention: Cover missing cache resolution, non-directory/symlink root and permission-denied stale sweep; keep remote connection state usable alongside disabled downloads.
+- Verified by: `file_download` startup-isolation regressions (including actual permission denial) and full mobile Rust60/60 passed; final iOS/Android builds and startup renders passed.

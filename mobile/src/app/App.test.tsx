@@ -5,6 +5,7 @@ import { i18n } from "../i18n";
 import type { RemoteClient, RemoteEvent } from "../protocol/remoteClient";
 import type { SessionEventPayload } from "../features/sessions/types";
 import { App } from "./App";
+import type { FileDownloadClient } from "../protocol/fileDownloadClient";
 
 vi.mock("../terminal/MobileTerminal", async () => {
   const { forwardRef } = await vi.importActual<typeof import("react")>("react");
@@ -269,6 +270,30 @@ describe("AgentPort Mobile V2 shell", () => {
     expect(shell).toHaveAttribute("data-page", "files");
     expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(1);
     expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.detach")).toHaveLength(0);
+  });
+
+  it("keeps the native file download alive when returning to the terminal", async () => {
+    await i18n.changeLanguage("en-US");
+    const { remote } = focusTestClient();
+    const state = { jobId: "job", profileId: "host-1", sessionId: "ses-1", path: "README.md", name: "README.md", totalBytes: 2048, receivedBytes: 512, state: "downloading" as const };
+    const downloadClient: FileDownloadClient = { available: () => true, start: vi.fn().mockResolvedValue(state), poll: vi.fn().mockResolvedValue(state), cancel: vi.fn().mockResolvedValue({ ...state, state: "cancelled" }), save: vi.fn(), discard: vi.fn().mockResolvedValue(undefined) };
+    const { container } = render(<App client={remote} hostAuthClient={hostAuthClient} downloadClient={downloadClient} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Active task/ }));
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    const shell = container.querySelector(".app-shell")!;
+    fireEvent.touchStart(shell, { touches: [{ clientX: 230, clientY: 220 }] });
+    fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 80, clientY: 223 }] });
+    fireEvent.click(await screen.findByRole("button", { name: "File actions for README.md" }));
+    fireEvent.click(screen.getByRole("button", { name: "Download file" }));
+    await screen.findByText("Downloading");
+    fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
+    expect(shell).toHaveAttribute("data-page", "terminal");
+    expect(screen.getByText("Downloading")).toBeVisible();
+    expect(downloadClient.cancel).not.toHaveBeenCalled();
+    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.detach")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel download" }));
+    await screen.findByText("Cancelled — saving was not completed");
+    expect(downloadClient.cancel).toHaveBeenCalledWith("job");
   });
 
   it("does not navigate on cancelled, multi-touch, vertical-first or excluded-control gestures", async () => {

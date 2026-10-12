@@ -51,7 +51,17 @@ try {
           return {};
         }
       };
-      createRoot(document.getElementById('root')).render(<App client={client} hostAuthClient={{}} />);
+      window.downloadCalls = []; window.downloadPolls = 0;
+      const download = {jobId:'fixture-download',profileId:'fixture-host',sessionId:session.id,path:'README.md',name:'README.md',totalBytes:1048576,receivedBytes:262144,state:'downloading'};
+      const downloadClient = {
+        available:()=>true,
+        start:async(source)=>{window.downloadCalls.push({method:'start',source});window.downloadPolls=0;download.state='downloading';return {...download}},
+        poll:async()=>{if(++window.downloadPolls>=2){download.state='ready';download.receivedBytes=download.totalBytes}return {...download}},
+        cancel:async()=>{download.state='cancelled';return {...download}},
+        save:async()=>{window.downloadCalls.push({method:'save'});download.state='saved';return {...download}},
+        discard:async()=>{window.downloadCalls.push({method:'discard'})},
+      };
+      createRoot(document.getElementById('root')).render(<App client={client} hostAuthClient={{}} downloadClient={downloadClient} />);
     `, resolveDir: root, loader: 'tsx' },
     loader: { '.ttf': 'dataurl', '.otf': 'dataurl', '.svg': 'text', '.png': 'dataurl' }, outfile: resolve(dir, 'fixture.js'), bundle: true,
     minify: true, jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' },
@@ -138,7 +148,25 @@ try {
   await call('Emulation.setDeviceMetricsOverride',{width:320,height:640,deviceScaleFactor:1,mobile:true});await wait(150);await screenshot('mobile-file-tree-light-narrow');
   assert.equal(await evaluate('document.documentElement.scrollWidth>innerWidth'),false,'No root horizontal overflow');
   await call('Emulation.setDeviceMetricsOverride',{width:844,height:390,deviceScaleFactor:1,mobile:true});await wait(150);await screenshot('mobile-file-tree-landscape');
-  console.log('PASS: real App/xterm touch navigation, native code pan, tree scroll/expansion, Markdown safety, retained terminal and light/narrow/landscape renders. Fixture transport; not native-device proof.');
+  await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
+  await evaluate(`document.querySelector('[aria-label="File actions for README.md"]').scrollIntoView({block:'center'});true`);
+  await wait(100);
+  await click('[aria-label="File actions for README.md"]');
+  await until(`Boolean(document.querySelector('.files-operation-button'))`);
+  await screenshot('download-file-actions');
+  await click('.files-operation-button');
+  await until(`Boolean(document.querySelector('.file-download-banner'))`);
+  await screenshot('download-progress');
+  await click('.files-tree-page .files-header button');
+  assert.equal(await evaluate(`document.querySelector('.app-shell').dataset.page`),'terminal');
+  assert.equal(await evaluate(`document.querySelector('.file-download-banner').textContent.includes('README.md')`),true);
+  await until(`Array.from(document.querySelectorAll('.file-download-controls button')).some(e=>e.textContent==='Save As…')`);
+  await screenshot('download-ready-terminal');
+  await click('.file-download-controls button');
+  await until(`document.querySelector('.file-download-banner').textContent.includes('Saved to the selected location')`);
+  assert.equal(await evaluate(`downloadCalls.filter(c=>c.method==='start').length`),1);
+  assert.equal(await evaluate(`calls.filter(c=>c.method==='session.detach').length`),0);
+  console.log('PASS: real App/xterm touch navigation, native code pan, tree scroll/expansion, Markdown safety, retained terminal, download actions/progress across pages and light/narrow/landscape renders. Fixture transport/exporter; NOT native save or device proof.');
 } finally {
   ws?.close(); if(chrome && chrome.exitCode===null){chrome.kill('SIGTERM');await new Promise(r=>chrome.once('exit',r))}
   if(server)await new Promise(r=>server.close(r));await rm(dir,{recursive:true,force:true});

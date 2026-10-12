@@ -102,6 +102,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-barcode-scanner",
  "tauri-plugin-clipboard-manager",
+ "tauri-plugin-file-export",
  "tauri-plugin-image-picker",
  "tauri-plugin-keyring-store",
  "tauri-plugin-screen-rotation",
@@ -5185,6 +5186,15 @@ dependencies = [
  "tauri",
  "tauri-plugin",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "tauri-plugin-file-export"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]
