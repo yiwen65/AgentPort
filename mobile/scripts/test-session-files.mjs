@@ -13,6 +13,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dir = await mkdtemp(resolve(tmpdir(), 'agentport-files-'));
 const evidence = process.env.AGENTPORT_FILES_SCREENSHOTS;
 let chrome, server, ws;
+const requests = [];
 const wait = ms => new Promise(r => setTimeout(r, ms));
 try {
   await build({
@@ -47,7 +48,7 @@ try {
             if(params.path==='.') window.rootLoads++;
             return {rootPath:session.cwd,path:params.path,entries,truncated:false};
           }
-          if(method==='session.files.read') return {rootPath:session.cwd,path:params.path,content:params.path.endsWith('.md')?'# Project overview\\n\\nRead-only Markdown with a [source link](src/main.ts).\\n\\n'+String.fromCharCode(96).repeat(3)+'ts\\nconst wide = "'+'long code '.repeat(40)+'";\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n![blocked image](https://invalid.example/image.png)'+Array.from({length:40},(_,i)=>'\\n\\nReading paragraph '+i+': content stays in place when switching pages.').join('')+'\\n\\n| Path | Origin | Purpose | Details | State |\\n| :--- | :---: | ---: | --- | --- |\\n| codex/ | openai/codex | Reference: agent implementation | Long mobile table content | Read-only |\\n| docs/ | Local | Handoff / task documents | Safe project files | Ready |':'const greeting = "'+ 'long line '.repeat(30) +'";\\nexport { greeting };',sizeBytes:400,truncated:false};
+          if(method==='session.files.read') return {rootPath:session.cwd,path:params.path,content:params.path.endsWith('.md')?'# Project overview\\n\\nRead-only Markdown with a [source link](src/main.ts).\\n\\n'+String.fromCharCode(96).repeat(3)+'ts\\nconst wide = "'+'long code '.repeat(40)+'";\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n![blocked image](https://invalid.example/image.png)'+Array.from({length:40},(_,i)=>'\\n\\nReading paragraph '+i+': content stays in place when switching pages.').join('')+'\\n\\n| Path | Origin | Purpose | Details | State |\\n| :--- | :---: | ---: | --- | --- |\\n| codex/ | openai/codex | Reference: agent implementation | Long mobile table content | Read-only |\\n| docs/ | Local | Handoff / task documents | Safe project files | Ready |\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nflowchart LR\\n A([人类意图]) --> B[第一性原理<br/>AI 是镜子]\\n B --> C[意图心法<br/>翻译为可执行]\\n C --> D[上下文心法<br/>喂足背景]\\n D --> E[迭代心法<br/>分轮逼近]\\n E --> F[验证心法<br/>信任但核实]\\n F --> G{输出可信?}\\n G -- 否 --> E\\n G -- 是 --> H[边界心法<br/>判断归属]\\n H --> I[心态心法<br/>共生而非对抗]\\n I --> J[元心法<br/>修炼自己]\\n J --> K([放大后的智慧])\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nsequenceDiagram\\n Alice->>Bob: hello\\n Bob-->>Alice: reply\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nflowchart LR\\n A -->\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nflowchart LR\\n A@{ "img": "/mermaid-secret.png" }\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nflowchart LR\\n A-->B; classDef A fill:u'+String.fromCharCode(92)+'72l(/mermaid-paint.svg)\\n'+String.fromCharCode(96).repeat(3):'const greeting = "'+ 'long line '.repeat(30) +'";\\nexport { greeting };',sizeBytes:400,truncated:false};
           return {};
         }
       };
@@ -67,6 +68,7 @@ try {
     minify: true, jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' },
   });
   server = createServer(async(req,res)=>{
+    requests.push(req.url);
     const name = req.url==='/fixture.js'?'fixture.js':req.url==='/fixture.css'?'fixture.css':null;
     res.setHeader('Content-Type',name?.endsWith('.js')?'text/javascript':name?'text/css':'text/html');
     res.end(name?await readFile(resolve(dir,name)):'<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="fixture.css"><div id="root"></div><script src="fixture.js"></script>');
@@ -145,6 +147,10 @@ try {
   await wait(250);await screenshot('mobile-markdown-preview');
   assert.equal(await evaluate(`document.querySelectorAll('.files-markdown table tbody tr').length`),2);
   assert.equal(await evaluate(`document.querySelectorAll('.files-markdown table th').length`),5);
+  await until(`document.querySelectorAll('.files-diagram-scroll svg').length===2 && document.querySelectorAll('.files-diagram-fallback pre').length===3`);
+  assert.ok(await evaluate(`document.querySelector('.files-diagram-scroll svg').textContent.includes('人类意图') && document.querySelector('.files-diagram-scroll svg').textContent.includes('放大后的智慧')`),'Chinese flowchart labels must survive safe SVG rendering');
+  assert.equal(await evaluate(`document.querySelectorAll('[data-mermaid-measure],.files-diagram-scroll script,.files-diagram-scroll foreignObject,.files-diagram-scroll image,.files-diagram-scroll a').length`),0);
+  assert.ok(!requests.some(url=>/mermaid-secret|mermaid-paint/.test(url)),'Metadata and escaped CSS must not load resources before sanitization');
   const tableBodyTop=await evaluate(`document.querySelector('.files-preview-scroll').scrollTop`);
   await evaluate(`window.tableNode=document.querySelector('.files-table-scroll');window.tableNode.scrollIntoView({block:'center'});true`);await wait(120);
   const tableY=await evaluate(`document.querySelector('.files-table-scroll').getBoundingClientRect().top+35`);
@@ -161,6 +167,15 @@ try {
   await call('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
   await call('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
   await until(`document.querySelector('.files-preview-page .files-header').hidden`);
+  await evaluate(`window.diagramNode=document.querySelector('.files-diagram-scroll');window.diagramSvg=window.diagramNode.querySelector('svg');window.diagramNode.scrollIntoView({block:'center'});true`);await wait(120);
+  const diagramY=await evaluate(`document.querySelector('.files-diagram-scroll').getBoundingClientRect().top+40`);
+  await swipe(300,diagramY,80,diagramY+1);
+  const diagramLeft=await settledScroll('.files-diagram-scroll');assert.ok(diagramLeft>0,'Wide diagrams must support native horizontal pan');
+  assert.equal(await evaluate(`document.querySelector('.files-page-viewport').dataset.previewVisible`),'true');await screenshot('mobile-mermaid-flowchart');
+  await click('.files-preview-page .files-more-button');await until(`Boolean(document.querySelector('.files-menu-actions'))`);await click('[aria-label="Close"]');await until(`!document.querySelector('.files-menu')`);
+  assert.equal(await evaluate(`document.querySelector('.files-diagram-scroll svg')===window.diagramSvg`),true);
+  assert.equal(await evaluate(`document.querySelector('.files-diagram-scroll').scrollLeft`),diagramLeft);
+  await evaluate(`document.querySelector('.files-preview-page .files-header button').focus();true`);await call('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});await call('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});await until(`document.querySelector('.files-preview-page .files-header').hidden`);
   await evaluate(`document.querySelector('.files-preview-scroll').scrollTop=${tableBodyTop};true`);await wait(120);
   assert.equal(await evaluate(`document.querySelector('.files-preview-page .files-header').hidden`),true);
   const collapsedTop=await evaluate(`document.querySelector('.files-preview-scroll').getBoundingClientRect().top`);
@@ -231,6 +246,9 @@ try {
   const narrow=await evaluate(`(()=>{const h=document.querySelector('.files-preview-page .files-header'),title=h.querySelector('h1'),buttons=Array.from(h.querySelectorAll('button'));return {height:h.getBoundingClientRect().height,whiteSpace:getComputedStyle(title).whiteSpace,right:title.getBoundingClientRect().right,buttons:buttons.map(b=>b.getBoundingClientRect().width)}})()`);
   const narrowHeight=await evaluate(`document.querySelector('.files-preview-page .files-header').getBoundingClientRect().height`);
   assert.equal(narrowHeight,44);assert.equal(narrow.whiteSpace,'nowrap');assert.ok(narrow.right<=320);assert.ok(narrow.buttons.every(w=>w>=44));await screenshot('mobile-preview-long-title-light');
+  await until(`document.querySelectorAll('.files-diagram-scroll svg').length===2`);
+  await evaluate(`document.querySelector('.files-diagram-scroll').scrollIntoView({block:'center'});true`);await wait(100);await screenshot('mobile-mermaid-light-narrow');
+  assert.ok(!requests.some(url=>/mermaid-secret|mermaid-paint/.test(url)));
   await click('.files-preview-page .files-header button');
   await call('Emulation.setDeviceMetricsOverride',{width:844,height:390,deviceScaleFactor:1,mobile:true});await wait(150);await screenshot('mobile-file-tree-landscape');
   await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});

@@ -21,6 +21,14 @@
 - 文本/代码只读，支持常见代码语言高亮；Markdown 支持渲染/源码切换及 GitHub 风格管道表格（表头、列对齐、单元格内代码/安全链接）。宽表格在独立区域横向滚动，不撑宽整个页面或触发返回，源码模式仍保留原文。可复制相对文件路径和文件内容。大型文本跳过语法高亮，仍可阅读和复制。
 - 不包含编辑/新建/删除/重命名、Git 标记、搜索、图片预览或文件系统实时监听。
 
+## Mermaid 图表
+
+Markdown渲染模式会把标记为 `mermaid` 的代码围栏转成图表，支持常见流程图、时序图及中文标签/`<br/>`换行。引擎按需加载，图表跟随界面明暗主题；宽图在独立区域横滑，不触发返回，也不撑宽正文。更多菜单操作不会重建未变化的图表或清空横滚位置。源码模式仍显示原文。
+
+- 语法错误、超过20,000字符或引擎布局限制（流程图最多200条边）时，提示并保留源码，不让整页预览失败。
+- 文档不允许覆盖引擎配置、点击跳转/回调、图片/资产元数据或自定义CSS样式。配置前言/初始化指令、资源URL、`@{...}`元数据及`classDef/style/linkStyle`等内容回退源码；无脚本、外部图片/样式加载或图中链接导航。
+- 使用严格模式、非HTML标签及二次SVG清洗；并发图块串行初始化/渲染，隐藏的临时测量节点在成功/失败后清理，过期异步结果不能替换当前文件。
+
 ## 下载与另存为（iOS / Android）
 
 文件行右侧「⋯ → 下载文件」，或只读预览中的「下载文件」，可下载根目录内的单个普通文件。文件类型不限，最大 **1 GiB**。无法预览的图片、PDF、压缩包等仍可下载；下载的是完整原始字节，不是 1 MiB 的文本预览片段。
@@ -50,7 +58,7 @@
 
 ```bash
 cd mobile
-npm test -- src/features/files/FileContent.test.tsx src/features/files/FileTreeIcon.test.tsx src/features/files/SessionFiles.test.tsx src/features/files/useFilePageSwipe.test.tsx src/features/files/FileDownloads.test.tsx src/platform/tauriFileDownloadClient.test.ts src/app/App.test.tsx src/features/sessions/SessionWorkspace.test.tsx src/terminal/MobileTerminal.test.tsx
+npm test -- src/features/files/MermaidDiagram.test.tsx src/features/files/mermaidRenderer.test.ts src/features/files/FileContent.test.tsx src/features/files/FileTreeIcon.test.tsx src/features/files/SessionFiles.test.tsx src/features/files/useFilePageSwipe.test.tsx src/features/files/FileDownloads.test.tsx src/platform/tauriFileDownloadClient.test.ts src/app/App.test.tsx src/features/sessions/SessionWorkspace.test.tsx src/terminal/MobileTerminal.test.tsx
 npm run build
 cd ..
 cargo test -p agentport-service session_file --lib
@@ -63,5 +71,7 @@ node mobile/scripts/test-session-files.mjs
 文件树单行样式验证：完整前端856项测试通过，生产构建及Chrome触控回归通过；实测默认行高44 CSS px、层级差16 CSS px、无类型副标题或行分隔线，明暗主题及窄屏/横屏截图复核。该轮签名iPhoneOS包已保留数据覆盖安装并启动。后续全屏调整：完整前端857项测试通过；审阅后的最终修正另通过57项组件/App测试与Chrome回归，覆盖默认收起、控制栏唤出前后正文位置不变、中间刘海区留空、Escape后焦点回到可见入口、滑动/横滚及阅读状态保持。最终iPhoneOS签名归档/IPA校验通过且保留数据覆盖安装成功；启动命令超时，随后进程查询未见AgentPort，Device Hub画面显示手机在密码解锁界面，因此停止重试。全屏真机视觉/交互仍待解锁后验收，不以安装成功代替验证。Android本轮未重打包。
 
 Markdown表格修复验证：同一有效管道表格在修复前没有table节点、作为段落输出；仅启用remark-gfm后行列及对齐成立，再加入横滚容器与样式。完整前端860项测试、生产构建与Chrome回归通过；原文/代码围栏不被误转成表格，HTML/远程图片/外部链接（含自动链接）仍被限制。Chrome验证宽表格原生横滑、页面宽度不溢出、横滑不返回、菜单前后同一DOM/scrollLeft保持。最终签名iPhoneOS包已保留数据覆盖安装并启动，进程目录匹配本次安装，Device Hub实际预览中可见正常表格；真机横滑/读屏未执行，Android本轮未重打包。
+
+Mermaid支持验证：完整前端877项测试、生产构建及真实Chrome回归通过；安全逃逸字符串修正后14项渲染器测试再次通过。实际引擎渲染中文多节点流程图和时序图，错误图块回退；窄屏/明暗截图复核、宽图原生横滑不返回、菜单前后同一SVG/横滚位置保持。带引号的图片元数据与转义CSS测试未产生资源请求；SVG清洗单测覆盖脚本、外部资源、链接、CSS转义及本地箭头引用。最终签名iPhoneOS包已保留数据覆盖安装并启动，进程路径匹配本次安装，真机终端正常显示；真机图表交互与Android安装未单独验收。未提交并发终端改动。
 
 最后一项使用隔离的无头 Chrome、真实 App/xterm 及确定性 RemoteClient/保存客户端测试数据，不读取用户 Session，不代替 iOS/Android 系统实际保存、真机网络、键盘或无障碍验证。可用 `CHROME_BIN` 指定 Chrome；设置 `AGENTPORT_FILES_SCREENSHOTS=/tmp/agentport-files-evidence` 保存手机视口截图。

@@ -39,6 +39,9 @@
 .files-markdown > :first-child { margin-top: 14px; }
 .files-markdown h1 { font-size: 1.65em; letter-spacing: -.025em; }
 .files-markdown h2 { font-size: 1.4em; }
+.files-diagram-scroll { max-width: 100%; overflow-x: auto; margin: 12px 0; padding: 12px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--panel); touch-action: pan-x pan-y; overscroll-behavior-x: contain; }
+.files-diagram-scroll svg { display: block; max-width: none !important; height: auto; }
+.files-diagram-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .files-table-scroll { max-width: 100%; overflow-x: auto; margin: 12px 0; touch-action: pan-x pan-y; overscroll-behavior-x: contain; }
 .files-table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .files-markdown table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 14px; line-height: 1.5; }

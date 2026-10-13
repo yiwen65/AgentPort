@@ -13,6 +13,7 @@ import css from "highlight.js/lib/languages/css";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
 import markdown from "highlight.js/lib/languages/markdown";
+import { MermaidDiagram } from "./MermaidDiagram";
 
 for (const [name, language] of Object.entries({ javascript, typescript, json, rust, python, bash, css, xml, yaml, markdown })) hljs.registerLanguage(name, language);
 const extensions: Record<string, string> = { js: "javascript", jsx: "javascript", mjs: "javascript", ts: "typescript", tsx: "typescript", json: "json", rs: "rust", py: "python", sh: "bash", bash: "bash", css: "css", html: "xml", xml: "xml", svg: "xml", yml: "yaml", yaml: "yaml", md: "markdown", markdown: "markdown" };
@@ -49,7 +50,13 @@ export const FileContent = memo(function FileContent({ path, content, rendered, 
         return target ? <button type="button" role="link" className="files-document-link" onClick={() => onOpen(target)}>{children}</button>
           : <span title={t("files.linkBlocked")}>{children} <small>({t("files.linkBlocked")})</small></span>;
       },
-      pre: ({ children }) => <pre data-horizontal-scroll="true" tabIndex={0}>{children}</pre>,
+      pre: ({ children, node }) => {
+        const code = node?.children.find(child => child.type === "element" && child.tagName === "code");
+        if (code?.type === "element" && Array.isArray(code.properties.className) && code.properties.className.some(name => String(name).toLowerCase() === "language-mermaid")) {
+          return <MermaidDiagram source={code.children.map(child => child.type === "text" ? child.value : "").join("")} />;
+        }
+        return <pre data-horizontal-scroll="true" tabIndex={0}>{children}</pre>;
+      },
       table: ({ children }) => <div className="files-table-scroll" data-horizontal-scroll="true" role="region" aria-label={t("files.table")} tabIndex={0}><table>{children}</table></div>,
       code: ({ className, children }) => <HighlightedCode content={String(children)} language={/language-([\w-]+)/.exec(className ?? "")?.[1]} />,
   }), [onOpen, path, t]);
