@@ -787,3 +787,12 @@
 - Correct approach: Manage a typed unavailable download state without failing setup; `start` checks it before any path/RPC use. Fix storage and restart to safely validate/sweep again; do not silently enable a failed cache.
 - Prevention: Cover missing cache resolution, non-directory/symlink root and permission-denied stale sweep; keep remote connection state usable alongside disabled downloads.
 - Verified by: `file_download` startup-isolation regressions (including actual permission denial) and full mobile Rust60/60 passed; final iOS/Android builds and startup renders passed.
+
+## `Device Hub software keyboard` — check hardware simulation before changing terminal focus
+
+- Wrong approach: Treat a focused mobile terminal with a visible shortcut bar but no system keyboard as proof that the App's focus handler failed.
+- Why it failed: Device Hub's checked `Device → Keyboard → Simulate Hardware Keyboard` mode suppresses the software keyboard on the mirrored physical iPhone; both the explicit keyboard entry and input-row tap still focus the terminal.
+- Recognition signal: Both tap paths show terminal focus/accessories without an IME, and the Device Hub menu shows hardware simulation enabled.
+- Correct approach: Disable hardware simulation when testing software-keyboard behavior; keep real hardware-keyboard use a separate scenario rather than overriding it in App code.
+- Prevention: Inspect that menu before keyboard diagnosis and verify a real open → native dismiss → reopen cycle; isolated simulator success alone does not establish the physical device's input configuration.
+- Verified by: On an iOS 27 physical iPhone, the same installed App failed under enabled simulation and opened the native third-party IME after only disabling it; native dismissal followed by the same keyboard entry reopened it without an App rebuild.
