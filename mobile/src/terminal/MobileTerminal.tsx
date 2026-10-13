@@ -10,6 +10,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { FitAddon } from "@xterm/addon-fit";
 import { SerializeAddon } from "@xterm/addon-serialize";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { TerminalParserTail, type TerminalScreen } from "./terminalCheckpoint";
 import { captureSnapshotState, restoreSnapshotState } from "./terminalSnapshot";
 import { Terminal, type ITheme } from "@xterm/xterm";
@@ -25,6 +26,22 @@ import { MOBILE_TERMINAL_THEMES } from "./terminalThemes";
 import { installSynchronizedOutput } from "./synchronizedOutput";
 import "./terminalFonts.css";
 import "./mobile-terminal.css";
+
+/** WebGL keeps row painting on the GPU; iOS WKWebView re-lays out the DOM
+ * renderer's scroll area on every frame, which is the dominant cost while a
+ * session streams. Probe first so jsdom and WebGL-less WebViews stay on DOM. */
+let webglCapable: boolean | undefined;
+function canUseWebgl(): boolean {
+  if (webglCapable === undefined) {
+    try {
+      webglCapable = typeof WebGL2RenderingContext !== "undefined"
+        && Boolean(document.createElement("canvas").getContext("webgl2"));
+    } catch {
+      webglCapable = false;
+    }
+  }
+  return webglCapable;
+}
 
 export interface MobileTerminalProps {
   onInput?: (data: string) => void;
@@ -363,6 +380,19 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       terminal.parser.registerEscHandler({ final: "c" }, () => { mouseEncoding.current = 0; return false; }),
     ];
     terminal.open(container);
+    // Keep the DOM renderer as the fallback: a lost WebGL context must degrade
+    // to a working terminal, not a blank one.
+    let webgl: WebglAddon | undefined;
+    if (canUseWebgl()) {
+      try {
+        const addon = new WebglAddon();
+        addon.onContextLoss(() => { addon.dispose(); if (webgl === addon) webgl = undefined; });
+        terminal.loadAddon(addon);
+        webgl = addon;
+      } catch {
+        webgl = undefined;
+      }
+    }
     const disposeSynchronizedOutput = installSynchronizedOutput(terminal);
     // xterm 5.5 defers its DOM viewport refresh to rAF. After a TUI clears
     // scrollback and streams a redraw, an older native scroll event can map
@@ -766,6 +796,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       if (selectionFrame !== undefined) window.cancelAnimationFrame(selectionFrame);
       positionSelectionMenuRef.current = () => undefined;
       disposeSynchronizedOutput();
+      webgl?.dispose();
+      webgl = undefined;
       parsedViewport.dispose();
       selectionScrolled.dispose();
       selectionChanged.dispose();
