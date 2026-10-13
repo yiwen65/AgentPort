@@ -27,6 +27,7 @@
 | F-004 | 已有移动原生插件注册示例，尚无系统文件另存为插件 | mobile/plugins/tauri-plugin-image-picker、mobile/src-tauri/src/lib.rs |
 | F-005 | iOS目录权限和Android SAF由系统控制，不应伪造任意路径访问 | 本轮需求分析中Apple/Android官方文档验证 |
 | F-006 | 开始时工作区干净，HEAD d1e419c | git status --short / git log |
+| F-007 | 后续用户授权安装，实体iPhone17ProMax/iOS27已连接并启用开发者模式；最新版真机包已安装启动 | 2026-10-13 devicectl设备/安装/进程输出及启动截图 |
 
 <!-- task-doc-section:assumptions-questions -->
 ## Assumptions and open questions
@@ -152,9 +153,9 @@
   - 不用fixture或浏览器截图替代原生实际保存结果，不伪造不可用设备覆盖。
 - Verification method:
   - 原生交互、目标文件哈希/大小、截图。
-- Validation evidence: iOS26.5模拟器、Android API29 emulator-5554已安装启动最终构建且正常渲染；devicectl物理手机 unavailable。iOS现有localhost:51222主机配置离线，lsof无监听且launchctl未找到调试SSH服务；Android显示Add and connect a host first，没有已授权主机。未新增测试凭据、重配主机或伪造保存结果。原生RPC字节/取消/保存状态自动化通过，但系统选择目录后的实际目标文件写入未完成。
-- Blocker: 缺少可用设备上的已授权主机连接，无法从真实Session下载并启动系统另存为。
-- Unblock condition: 用户提供可连接的已授权主机与设备，或明确允许配置隔离的本地调试连接；随后按本任务继续实际目录保存/同名/取消/目标哈希验证。
+- Validation evidence: 初次交付时iOS26.5模拟器、Android API29 emulator-5554已安装启动最终构建且正常渲染；物理手机当时 unavailable，本地SSH服务缺失且Android没有已授权主机。2026-10-13用户后续授权安装，实体iPhone17ProMax/iOS27已可用：重建当前源码真机Mosh库与Apple Development归档，签名/profile/设备授权及IPA校验通过，保留数据覆盖安装com.agentport.mobile成功，PID28402运行；/tmp/agentport-iphone-download-startup.png显示原有实时终端正常恢复、非空白。未新增凭据/修改主机/写测试下载文件；本轮仅安装启动，系统选择目录后的目标文件写入仍未验收。
+- Blocker: iOS安装与启动条件已解除，但本轮请求仅安装，真实下载/另存为验收尚未执行；Android已授权主机条件仍缺失。
+- Unblock condition: 后续执行真机保存验收并选择测试文件和目标目录；Android需可连接的已授权主机。随后验证实际保存/同名/取消/目标哈希，不把安装启动当作保存验收。
 
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
@@ -183,10 +184,11 @@
 - 2026-10-13: LEARNS.md合并已存在的iOS工具链教训为mobile工具链并新增Android已验证证据；新增可复用下载缓存初始化隔离教训。构建自动schema仅新增file-export空权限manifest，无其他权限变化。
 - 2026-10-13: 最终前端784/784、TypeScript/Vite、扩展Chrome回归通过。最终iOS与Android顺序构建成功，保留数据安装并启动，审看两平台最终截图为正常离线/无主机界面。桌面调试GUI路径已核验、窗口非空白。尚未具备系统另存为真实连接条件，最终结果保持partial。准备只提交本任务已验证文件。
 - 2026-10-13: 功能commit a37112d创建，45个相关文件；暂存前确认索引为空、HEAD未漂移、所有路径均在任务范围，未提交构建二进制/生成工程个人配置。T-004 done。T-005仍blocked，final validation partial，等待真实已授权连接补端到端系统保存验收。
+- 2026-10-13后续: 用户授权安装iPhone App。确认实体手机可用、原归档早于下载功能，先重建device专用Mosh/protobuf（脚本通过），保留旧归档到仓库外私有目录，用现有已验证签名Team运行build-ios-personal-team.sh。最新iPhoneOS归档、设备授权/profile有效期、签名和IPA校验通过。devicectl覆盖安装成功并启动，进程持续可见、截图显示原实时终端恢复。未卸载/清空App数据，未提交真实Team/UDID/profile/私有安装包；仅记录安装启动，不越界宣称另存为完成。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: partial
-- Evidence: T-001至T-003完成；T-004最终自动化/两平台构建和启动验证通过并完成commit a37112d；T-001至T-004 done。T-005因实际连接缺失blocked。证据日志见执行记录；截图 /tmp/agentport-download-evidence/，含下载操作/进度/返回终端（fixture）及原生启动（不冒充保存验收）。
+- Evidence: T-001至T-003完成；T-004最终自动化/两平台构建和启动验证通过并完成commit a37112d；T-001至T-004 done。后续实体iPhone最新版安装启动通过，原实时终端恢复；T-005系统实际保存仍待验收，Android授权连接条件仍blocked。证据见执行记录；截图 /tmp/agentport-download-evidence/及/tmp/agentport-iphone-download-startup.png，不以启动冒充保存验收。
 - Limitations: 未验证真实iOS/Android系统目标写入、云提供方、设备1GiB保存/空间不足、无障碍或Linux实机主机。1GiB在macOS服务实际分块传输验证；Swift/Kotlin均编译，手机Rust字节与状态测试通过，不代表所有提供方行为已验收。
