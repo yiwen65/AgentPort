@@ -29,7 +29,7 @@ body.terminal-visible .file-download-banner { top: max(8px, env(safe-area-inset-
 body:has(.file-download-banner) .files-tree-scroll, body:has(.file-download-banner) .files-preview-scroll { padding-bottom: 220px; }
 .session-files .files-entry-row { display: flex; align-items: stretch; }
 .session-files .files-entry-row .files-row { flex: 1; min-width: 0; }
-.session-files .files-entry-actions { flex: 0 0 44px; min-height: 52px; border: 0; border-bottom: 1px solid var(--line-soft); border-radius: 0; background: transparent; font-size: 22px; }
+.session-files .files-entry-actions { flex: 0 0 44px; min-height: 44px; padding: 0; border: 0; border-radius: 0; background: transparent; font-size: 22px; }
 .files-operation-path { overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
 .files-operation-button { width: 100%; min-height: 48px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); font: inherit; }
 .files-operation-button:disabled { opacity: .55; }

@@ -2,6 +2,11 @@
 
 在 Session 终端向左滑动，或展开顶部控制区后点击文件夹按钮，进入项目文件树。文件树右滑或点击左上返回图标回终端。点文件打开预览；普通正文右滑返回文件树，树左滑回到最后打开的文件，也可通过更多菜单「继续阅读」进入。页面跟随手指移动，短滑可回弹，一次手势只返回一层。
 
+## 文件树样式
+
+- 与桌面端一致的单行树结构：目录使用展开箭头，文件按类型使用彩色图标；同层文件名对齐，每层缩进16 CSS px。不再显示第二行 `Directory/File`，读屏仍可识别类型和目录展开状态。
+- 文件名过长单行省略，打开预览或文件操作菜单可查看完整名称/路径；文件行及右侧操作按钮保留至少44 CSS px触控高度。去掉逐行分隔线，突出层级而不是表格边界。
+
 ## 沉浸阅读
 
 - 顶部常驻单行「返回图标 · 文件/根目录名 · ⋯」，长标题省略，不改变按钮热区。正文紧接标题栏；完整路径、只读及安全说明不再常驻。
@@ -44,7 +49,7 @@
 
 ```bash
 cd mobile
-npm test -- src/features/files/SessionFiles.test.tsx src/features/files/useFilePageSwipe.test.tsx src/features/files/FileDownloads.test.tsx src/platform/tauriFileDownloadClient.test.ts src/app/App.test.tsx src/features/sessions/SessionWorkspace.test.tsx src/terminal/MobileTerminal.test.tsx
+npm test -- src/features/files/FileTreeIcon.test.tsx src/features/files/SessionFiles.test.tsx src/features/files/useFilePageSwipe.test.tsx src/features/files/FileDownloads.test.tsx src/platform/tauriFileDownloadClient.test.ts src/app/App.test.tsx src/features/sessions/SessionWorkspace.test.tsx src/terminal/MobileTerminal.test.tsx
 npm run build
 cd ..
 cargo test -p agentport-service session_file --lib
@@ -53,5 +58,7 @@ cargo test -p agentport-remote-bridge --lib
 cargo test -p agentport-remote-protocol --lib
 node mobile/scripts/test-session-files.mjs
 ```
+
+文件树单行样式验证：完整前端856项测试通过，生产构建及Chrome触控回归通过；实测默认行高44 CSS px、层级差16 CSS px、无类型副标题或行分隔线，明暗主题及窄屏/横屏截图复核。包含该改动的签名iPhoneOS包已保留数据覆盖安装并启动，进程路径与本次安装目录一致；实体手机上的新文件树交互仍未独立验收，不以安装成功代替验证。Android本轮未重打包。
 
 最后一项使用隔离的无头 Chrome、真实 App/xterm 及确定性 RemoteClient/保存客户端测试数据，不读取用户 Session，不代替 iOS/Android 系统实际保存、真机网络、键盘或无障碍验证。可用 `CHROME_BIN` 指定 Chrome；设置 `AGENTPORT_FILES_SCREENSHOTS=/tmp/agentport-files-evidence` 保存手机视口截图。

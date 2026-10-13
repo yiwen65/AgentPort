@@ -147,9 +147,16 @@ describe("SessionFiles", () => {
   it("lazily loads sorted directories, reads code and preserves tree/scroll without terminal requests", async () => {
     const { client } = remote(); const view = mount(client); await screen.findByRole("button", { name: "src Directory" });
     expect(calls(client, "list")).toHaveLength(1); expect(screen.queryByRole("button", { name: /.git/ })).toBeNull();
-    const entries = [...view.container.querySelectorAll(".files-row")]; expect(entries.map(el => el.textContent)).toEqual(["▸srcDirectory", "≡README.mdFile"]);
+    const entries = [...view.container.querySelectorAll(".files-row")];
+    expect(entries.map(el => el.querySelector(".files-entry-name")?.textContent)).toEqual(["src", "README.md"]);
+    expect(view.container.querySelector(".files-row small")).toBeNull();
+    expect(entries[0].querySelector("[data-file-icon=directory]")).not.toBeNull();
+    expect(entries[1].querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+    expect(entries.map(el => (el as HTMLElement).style.paddingInlineStart)).toEqual(["12px", "12px"]);
     expect(entries[0]).toHaveAttribute("data-page-swipe", "true"); fireEvent.click(row("src")); await screen.findByRole("button", { name: "main.ts File" });
     expect(calls(client, "list")[1][2]).toEqual({ sessionId: "session", path: "src" });
+    expect(row("main.ts").style.paddingInlineStart).toBe("28px");
+    expect(row("main.ts").querySelector("svg text")).toHaveTextContent("TS");
     const scroll = view.container.querySelector(".files-tree-scroll")!; scroll.scrollTop = 180;
     fireEvent.click(row("main.ts")); await screen.findByText("answer", { exact: false }); expect(view.container.querySelector(".hljs-keyword")).toHaveTextContent("const");
     expect(view.container.querySelector(".files-preview-page")).toHaveAttribute("data-no-page-swipe", "true"); expect(view.container.querySelector("pre")).toHaveAttribute("data-horizontal-scroll", "true");

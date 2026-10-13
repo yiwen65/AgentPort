@@ -111,6 +111,11 @@ try {
   await screenshot('mobile-file-tree-dark');
   assert.equal(await evaluate(`document.querySelector('.session-stage').hasAttribute('inert')`),true);
   await click('.files-row');await until(`Array.from(document.querySelectorAll('.files-row')).some(e=>e.textContent.includes('main.ts'))`);
+  const treeRows=await evaluate(`Array.from(document.querySelectorAll('.files-row')).slice(0,3).map(e=>({name:e.querySelector('.files-entry-name').textContent,height:e.getBoundingClientRect().height,indent:getComputedStyle(e).paddingInlineStart,small:!!e.querySelector('small'),icon:!!e.querySelector('svg'),border:getComputedStyle(e).borderBottomWidth,whiteSpace:getComputedStyle(e.querySelector('.files-entry-name')).whiteSpace}))`);
+  assert.deepEqual(treeRows.map(r=>r.name),['src','main.ts','document-00.txt']);
+  assert.ok(treeRows.every(r=>r.height===44 && !r.small && r.icon && r.border==='0px' && r.whiteSpace==='nowrap'),JSON.stringify(treeRows));
+  assert.equal(parseFloat(treeRows[1].indent)-parseFloat(treeRows[0].indent),16);
+  await screenshot('compact-file-tree');
   await click('.files-list .files-list .files-row');await until(`Boolean(document.querySelector('.files-source'))`);await wait(250);
   await screenshot('mobile-code-preview');
   const rect=await evaluate(`(()=>{const r=document.querySelector('.files-source').getBoundingClientRect();return {y:r.y+25}})()`);

@@ -18,10 +18,11 @@
 .files-more-button .file-download-indicator svg { width: 14px; height: 14px; }
 .files-tree-scroll, .files-preview-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 max(12px, env(safe-area-inset-right)) 24px max(12px, env(safe-area-inset-left)); }
 .files-list { list-style: none; margin: 0; padding: 0; }
-.session-files .files-row { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 52px; text-align: start; border: 0; border-bottom: 1px solid var(--line-soft); border-radius: 0; background: transparent; touch-action: pan-y; font-size: 16px; }
-.files-row > span:last-child { min-width: 0; overflow-wrap: anywhere; }
-.files-entry-icon { flex: 0 0 18px; color: var(--muted); }
-.files-row small { display: block; color: var(--muted); font-size: 12px; }
+.session-files .files-row { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 44px; text-align: start; border: 0; border-radius: 0; background: transparent; touch-action: pan-y; font-size: 15px; }
+.files-entry-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.files-entry-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 18px; color: var(--muted); }
+.files-entry-icon svg { display: block; width: 18px; height: 18px; }
+.files-row[aria-expanded="true"] .files-entry-icon { color: var(--text); }
 .files-note, .files-error { padding: 10px 12px; margin: 6px 0; color: var(--muted); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
 .files-error { color: var(--danger); }
 .files-error p { margin: 0 0 8px; }

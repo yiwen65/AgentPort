@@ -7,6 +7,7 @@ import { FileContent, isMarkdown } from "./FileContent";
 import { Modal } from "../../components/Modal";
 import { FileDownloadIndicator, useFileDownloads } from "./FileDownloads";
 import { useFilePageSwipe } from "./useFilePageSwipe";
+import { FileTreeIcon } from "./FileTreeIcon";
 import "./session-files.css";
 
 export interface FileEntry { name: string; path: string; isDir: boolean }
@@ -155,7 +156,7 @@ export function SessionFiles({ open, client, active, onBack }: SessionFilesProps
       {resourceStatus(resource, () => void load(path, "list"), path === ".")}
       {resource?.data && entries.length === 0 && !resource.loading ? <p className="files-note">{t("files.empty")}</p> : null}
       <ul className="files-list">{entries.map(entry => <li key={entry.path}>
-        <div className="files-entry-row"><button type="button" className="files-row" data-page-swipe="true" aria-expanded={entry.isDir ? expanded.has(entry.path) : undefined}
+        <div className="files-entry-row"><button type="button" className="files-row" data-page-swipe="true" aria-label={`${entry.name} ${t(entry.isDir ? "files.directory" : "files.file")}`} title={entry.name} aria-expanded={entry.isDir ? expanded.has(entry.path) : undefined}
           ref={node => { if (node) rows.current.set(entry.path, node); else rows.current.delete(entry.path); }}
           style={{ paddingInlineStart: `${12 + Math.min(depth, 8) * 16}px` }}
           onClick={() => {
@@ -163,8 +164,8 @@ export function SessionFiles({ open, client, active, onBack }: SessionFilesProps
             setExpanded(old => { const next = new Set(old); if (next.has(entry.path)) next.delete(entry.path); else next.add(entry.path); return next; });
             if (!expanded.has(entry.path) && !Object.hasOwn(directoriesRef.current, entry.path)) void load(entry.path, "list");
           }}>
-          <span className="files-entry-icon" aria-hidden="true">{entry.isDir ? expanded.has(entry.path) ? "▾" : "▸" : "≡"}</span>
-          <span>{entry.name}<small>{entry.isDir ? t("files.directory") : t("files.file")}</small></span>
+          <span className="files-entry-icon" aria-hidden="true"><FileTreeIcon name={entry.name} directory={entry.isDir} expanded={expanded.has(entry.path)} /></span>
+          <span className="files-entry-name">{entry.name}</span>
         </button>
         {!entry.isDir ? <button type="button" className="files-entry-actions" aria-label={t("downloads.fileActions", { name: entry.name })} aria-haspopup="dialog" onClick={() => setOperations(entry.path)}>⋯</button> : null}</div>
         {entry.isDir && expanded.has(entry.path) ? tree(entry.path, depth + 1) : null}
