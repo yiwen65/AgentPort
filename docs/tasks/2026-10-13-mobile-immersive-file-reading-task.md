@@ -113,9 +113,9 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-004 — 跨层运行验证、更新App与提交
+### [x] T-004 — 跨层运行验证、更新App与提交
 
-- Status: in_progress
+- Status: done
 - Owner: coordinator
 - Objective: 审查实际手势/布局，更新可用设备并记录证据后提交。
 - Inputs and prerequisites: T-001/T-002/T-003通过。
@@ -130,7 +130,7 @@
   - 所有本任务自动化通过，实际渲染与触摸证据真实，未覆盖的设备/系统行为不夸大。
 - Verification method:
   - Vitest/build、真实触摸脚本、devicectl/Cua截图与窗口身份、git diff/check-version/task validator。
-- Validation evidence:最终842/842前端测试、TS/Vite、Chrome完整触摸/几何脚本通过；iPhoneOS真机签名归档/profile/IPA验证与保留数据安装启动成功，Android APK构建成功；统一脚本重启Debug GUI PID92206，ps精确路径及window1956截图确认非空白。版本/diff/任务文档检查通过。T-005原生阅读手势独占条件另行blocked；T-006最终包部署另外blocked，当前代码交付剩余动作仅本任务commit。
+- Validation evidence:最终842/842前端测试、TS/Vite、Chrome完整触摸/几何脚本通过；iPhoneOS真机签名归档/profile/IPA验证与保留数据安装启动成功，Android APK构建成功；统一脚本重启Debug GUI PID92206，ps精确路径及window1956截图确认非空白。版本/diff/任务文档检查通过。T-005原生阅读手势独占条件另行blocked；T-006最终包部署另外blocked，代码实现已独立提交99facd6，15个本任务文件；未混入外部键盘改动或私有构建产物。
 - Blocker: None.
 - Unblock condition: None.
 
@@ -197,10 +197,11 @@
 - 2026-10-13: Debug新GUI PID92206/window1956激活与截图、ps路径确认正常；仅统一脚本关闭旧GUI72608，不停止Host/Connector。最终任务文档/版本/diff校验通过，准备提交已验证改动。
 - 2026-10-13: 外部只改LEARNS的dd28a21已提交，差异复核本任务仅包含两条新增教训，保留其键盘环境条目，不混入其工作。
 - 2026-10-13: 补充复制反馈3秒自动收起及回归，避免成功提示成为常驻正文Chrome。最终完整842/842、生产构建与Chrome脚本通过；最终iPhoneOS签名归档/IPA及Android APK顺序重建通过，尝试刷新实体iPhone以包含全部最终改动；安装报CoreDeviceError4016，重新观察手机unavailable，新增T-006 blocked。早期沉浸主功能包已安装，但最后复制反馈完善尚未覆盖；原生独占阅读手势仍不冒称完成。
+- 2026-10-13: 代码功能提交99facd6创建；显式暂存15个已验证相关文件并检查索引/HEAD，保留外部38f5cc9/dd28a21的工作。T-004 done；T-005/T-006仍blocked，最终结果partial，不以代码提交替代真机验收/最终覆盖安装。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: partial
-- Evidence:T-001至T-003完成；842项测试、生产构建、Chrome真实触摸/几何/截图通过，iPhone新版本安装启动与Android构建通过。T-004代码验证已完成，剩余提交；T-006最终安装受手机连接阻塞、T-005独占实机阅读手势条件受阻。截图 /tmp/agentport-immersive-evidence/，实机启动 /tmp/agentport-immersive-iphone-startup.png；不以启动替代阅读手势验收。
+- Evidence:T-001至T-003完成；842项测试、生产构建、Chrome真实触摸/几何/截图通过，iPhone新版本安装启动与Android构建通过。T-004代码验证与提交99facd6已完成；T-006最终安装受手机连接阻塞、T-005独占实机阅读手势条件受阻。截图 /tmp/agentport-immersive-evidence/，实机启动 /tmp/agentport-immersive-iphone-startup.png；不以启动替代阅读手势验收。
 - Limitations:实际iPhone文件两页手势/选择/VoiceOver及Android原生文件页尚未完整验收；手机同时交互导致单次镜像操作不可归因。早期沉浸主功能包已安装，最后复制反馈完善的最终签名包因手机unavailable待覆盖。无后端和下载机制改动。
