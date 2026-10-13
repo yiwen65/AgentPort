@@ -823,3 +823,12 @@
 - Correct approach: Wait for standalone frontend builds to finish before starting the native build; let its beforeBuildCommand own dist until embedding completes.
 - Prevention: Treat all writers of the same dist directory as one serialized pipeline, not independent builds. Read-only tests or isolated browser fixtures can run separately.
 - Verified by: The parallel Markdown-table validation/archive failed with eight missing asset reads; the same source archived and passed signature/profile/IPA validation when rebuilt after the frontend build completed.
+
+## `调试 bundle 手工换二进制` — 没重签名的 App 会让 Host 在建日志前被 codesigning 杀掉
+
+- Wrong approach: 手工把新构建的 `agentport-host`（以及 `agentport-host.prev-*` 备份）拷进 `target/debug/bundle/macos/AgentPort.app/Contents/MacOS/`，不做整包重签；GUI 自己在运行，看起来与签名无关。
+- Why it failed: 替换破坏了 bundle 密封。此后从该 bundle 内 exec 任何二进制都会被 AppleSystemPolicy 拒绝，Host 在写出第一行日志前就收到 SIGKILL，GUI 只能报 `host: host exited during startup (signal: 9 (SIGKILL))`，Host 日志为空——表面症状把人指向 Host/Rust 侧，实际是 codesigning 问题。
+- Recognition signal: `codesign --verify --deep --strict <bundle>` → `a sealed resource is missing or invalid` 并列出 `file added` / `file modified`；`~/Library/Logs/DiagnosticReports/agentport-host-*.ips` 的 `termination` 是 `{namespace: CODESIGNING, indicator: "Taskgated Invalid Signature"}`；`log show --predicate 'eventMessage CONTAINS "ASP:"'` 给出 `(AppleSystemPolicy) ASP: Security policy would not allow process: <pid>, <bundle 内路径>`；把同一个二进制拷出 bundle 执行正常（`--help` → exit 64），放回 bundle 立刻被杀（exit 137）。
+- Correct approach: 先把 `.prev-*` 这类多余文件移出 bundle，再走统一入口 `python3 scripts/restart-debug-app.py` —— 其 `scripts/rebuild-debug-app.sh` 末尾用 `.env` 的 `AGENTPORT_DEBUG_SIGN_IDENTITY` 执行 `codesign --force --deep --sign` 并 `--verify --deep --strict` 复核，然后只重启精确路径的 GUI。
+- Prevention: bundle 内的可执行文件只能由 `scripts/rebuild-debug-app.sh` 安装，不要在 `.app` 里 `cp`/`mv` 手工迭代；"窗口正常、进程还在跑"不能证明密封有效，签名是独立维度。
+- Verified by: 2026-10-13 16:35 复现（bundle 内 `agentport-host --help` → `Killed: 9`，同一文件在 bundle 外 exit 64，.ips 与 ASP 日志一致）；重签后 `codesign --verify --deep --strict` 通过、bundle 内 host 正常输出 usage；GUI 重开（PID 39167）后从侧栏 `Launch Shell in project` 真起了一个 shell Session（`ses_01M4T6QH9AAS5JBG`，host_pid 47989 / child 47990，状态 working→idle），测试会话已 SIGTERM 收尾，其余 10 个在跑的 Host 全程未受影响。
