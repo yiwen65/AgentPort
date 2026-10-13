@@ -377,6 +377,10 @@ pub(crate) struct Shared {
     /// clears the flag and permits a new signal for a later failure.
     status_journal_faulted: AtomicBool,
     clients: Mutex<HashMap<u64, server::ClientSink>>,
+    /// Clients whose outbound queue is currently full (inside the lag grace
+    /// window). Broadcast reads this to decide whether it must pay for a
+    /// resync cursor, so a healthy fan-out never locks the log position.
+    lagging_clients: AtomicUsize,
     next_client_id: AtomicU64,
     /// Connections that completed authentication, including a connection
     /// currently replaying or a writer draining after its reader exits.
@@ -436,16 +440,31 @@ impl AgentChild {
 }
 
 /// Broadcast a frame to all attached clients without letting one slow socket
-/// stall the Host. Full or disconnected client queues are evicted and their
-/// `ClientSink` shuts down only that client's socket.
+/// stall the Host. A client that cannot keep up has its *frames* dropped — not
+/// its socket — while it stays inside the lag grace window; once its queue
+/// drains the Host sends `ResyncRequired` so the client resets and re-attaches
+/// from a snapshot instead of stitching a gap. Only a client that never
+/// recovers, or a directed reply that cannot be delivered, is evicted.
 pub(crate) fn broadcast(shared: &Shared, frame: &HostFrame) {
     let mut evicted = Vec::new();
-    let mut clients = shared.clients.lock().unwrap();
-    let mut drop_ids = Vec::new();
     let is_output = matches!(
         frame,
         HostFrame::Output { .. } | HostFrame::TransientOutput { .. }
     );
+    // Output and periodic heartbeats are self-healing: skipping one costs the
+    // client nothing it cannot recover from a resync. State and control frames
+    // are not skippable, so those still evict an unreachable client.
+    let lag_tolerated = is_output || matches!(frame, HostFrame::Heartbeat { .. });
+    let grace = client_lag_grace();
+    // Read the resync cursor before locking the client table: broadcast must
+    // never hold the client table and the log position at the same time.
+    let resync_cursor = if lag_tolerated && shared.lagging_clients.load(Ordering::Acquire) > 0 {
+        Some(current_log_cursor(shared))
+    } else {
+        None
+    };
+    let mut clients = shared.clients.lock().unwrap();
+    let mut drop_ids = Vec::new();
     if !clients
         .values()
         .any(|client| !is_output || client.subscribe_output)
@@ -467,8 +486,36 @@ pub(crate) fn broadcast(shared: &Shared, frame: &HostFrame) {
             .tx
             .try_send(server::OutboundFrame::Data(encoded.clone()))
         {
-            Ok(()) => {}
+            Ok(()) => {
+                if lag_tolerated && client.clear_lag() {
+                    shared.lagging_clients.fetch_sub(1, Ordering::AcqRel);
+                    if let Some(cursor) = resync_cursor.clone() {
+                        if send_lag_resync(shared, id, client, cursor) {
+                            continue;
+                        }
+                        // Still backed up: keep the client marked lagging so the
+                        // next drained broadcast retries the notice.
+                        let state = client.note_queue_overflow(grace);
+                        debug_assert!(state != server::LagState::Expired);
+                        shared.lagging_clients.fetch_add(1, Ordering::AcqRel);
+                    }
+                }
+            }
             Err(mpsc::TrySendError::Full(_)) => {
+                if lag_tolerated {
+                    match client.note_queue_overflow(grace) {
+                        server::LagState::New => {
+                            shared.lagging_clients.fetch_add(1, Ordering::AcqRel);
+                            info!(
+                                client_id = id,
+                                "client fell behind; buffering bounded backlog"
+                            );
+                            continue;
+                        }
+                        server::LagState::Continuing => continue,
+                        server::LagState::Expired => {}
+                    }
+                }
                 drop_ids.push((id, "outbound queue full"));
             }
             Err(mpsc::TrySendError::Disconnected(_)) => {
@@ -478,6 +525,9 @@ pub(crate) fn broadcast(shared: &Shared, frame: &HostFrame) {
     }
     for (id, reason) in drop_ids {
         if let Some(client) = clients.remove(&id) {
+            if client.clear_lag() {
+                shared.lagging_clients.fetch_sub(1, Ordering::AcqRel);
+            }
             evicted.push((id, reason, client));
         }
     }
@@ -487,6 +537,44 @@ pub(crate) fn broadcast(shared: &Shared, frame: &HostFrame) {
         client.close();
         drop(client);
     }
+}
+
+/// Send the one-shot resync notice that follows an absorbed stall. Returns
+/// false when the client's queue is backed up again, in which case the caller
+/// keeps the client marked lagging and retries on the next drain.
+fn send_lag_resync(
+    shared: &Shared,
+    id: u64,
+    client: &server::ClientSink,
+    cursor: LogCursor,
+) -> bool {
+    let frame = HostFrame::ResyncRequired {
+        session_id: shared.cfg.session_id.clone(),
+        earliest: cursor,
+        reason: server::CLIENT_LAG_RESYNC_REASON.to_string(),
+    };
+    let Ok(encoded) = encode_frame(&frame) else {
+        warn!(client_id = id, "could not encode lag resync frame");
+        return true;
+    };
+    info!(client_id = id, "client caught up; requesting resync");
+    client
+        .tx
+        .try_send(server::OutboundFrame::Data(Arc::new(encoded)))
+        .is_ok()
+}
+
+/// Lag grace window, overridable for tests and for hosts that must tune how
+/// long a stalled renderer may hold a slot before it is evicted.
+fn client_lag_grace() -> Duration {
+    static GRACE: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *GRACE.get_or_init(|| {
+        std::env::var(server::CLIENT_LAG_GRACE_ENV)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .unwrap_or(server::CLIENT_LAG_GRACE_DEFAULT)
+    })
 }
 
 pub(crate) fn current_log_cursor(shared: &Shared) -> LogCursor {
@@ -1070,6 +1158,7 @@ fn run() -> i32 {
         current_status: Mutex::new(None),
         status_journal_faulted: AtomicBool::new(false),
         clients: Mutex::new(HashMap::new()),
+        lagging_clients: AtomicUsize::new(0),
         next_client_id: AtomicU64::new(1),
         authenticated_client_count: AtomicUsize::new(0),
         tick_count: AtomicU64::new(0),

@@ -1032,14 +1032,14 @@ fn slow_client_is_evicted_without_stalling_healthy_client() {
 }
 
 #[test]
-fn broadcast_evicts_nonreading_output_client_without_stalling_monitor() {
+fn broadcast_absorbs_nonreading_output_client_and_requests_resync() {
     let marker = uniq("broadcast-marker");
     let ctx = make_ctx(
         vec![
             "/bin/sh".into(),
             "-c".into(),
             format!(
-                "read start; dd if=/dev/zero bs=16384 count=256 2>/dev/null; sleep 1; printf '\\n{marker}\\n'; sleep 60"
+                "read start; dd if=/dev/zero bs=16384 count=256 2>/dev/null; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do printf '\\n{marker} %s\\n' \"$i\"; sleep 0.5; done; sleep 60"
             ),
         ],
         1 << 20,
@@ -1048,9 +1048,9 @@ fn broadcast_evicts_nonreading_output_client_without_stalling_monitor() {
     let _guard = spawn_host(&ctx, &[]);
     wait_socket(&ctx);
 
-    // The slow terminal subscribes to output but never reads it. The monitor
-    // deliberately skips output so it remains a healthy control client while
-    // the PTY floods the broadcaster.
+    // The slow terminal subscribes to output but never reads while the PTY
+    // floods the broadcaster. The monitor deliberately skips output so it
+    // stays a healthy control client.
     let mut slow = connect(&ctx, &ctx.session_id, TOKEN, 0);
     slow.expect_hello_ok();
     let mut monitor = connect_with_output_subscription(&ctx, &ctx.session_id, TOKEN, 0, false);
@@ -1060,15 +1060,23 @@ fn broadcast_evicts_nonreading_output_client_without_stalling_monitor() {
         data: b"start\n".to_vec(),
     });
 
+    // A stalled consumer now loses backlog, not its attachment.
     wait_for(
         || {
             std::fs::read_to_string(&ctx.host_log)
-                .map(|log| log.contains("dropping client from broadcast"))
+                .map(|log| log.contains("client fell behind"))
                 .unwrap_or(false)
         },
         Duration::from_secs(20),
-        "broadcast slow-client eviction",
+        "broadcast slow-client lag absorption",
     );
+    assert!(
+        !std::fs::read_to_string(&ctx.host_log)
+            .map(|log| log.contains("dropping client from broadcast"))
+            .unwrap_or(false),
+        "a client inside the lag grace window must not be evicted"
+    );
+
     monitor.send(&ClientFrame::Ping {
         session_id: ctx.session_id.clone(),
     });
@@ -1081,29 +1089,23 @@ fn broadcast_evicts_nonreading_output_client_without_stalling_monitor() {
         replies
             .iter()
             .any(|frame| matches!(frame, HostFrame::Pong { .. })),
-        "the status monitor must remain usable after broadcast eviction"
+        "the status monitor must remain usable while a peer lags"
     );
 
-    let produced = monitor.collect_until(Duration::from_secs(10), |frames| {
-        frames.iter().any(|frame| {
-            matches!(
-                frame,
-                HostFrame::Heartbeat { log_bytes, .. }
-                    if *log_bytes >= 4 * 1024 * 1024 + marker.len() as u64
-            )
-        })
+    // Draining the backlog must produce a resync notice instead of a silent gap.
+    let caught_up = slow.collect_until(Duration::from_secs(25), |frames| {
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::ResyncRequired { .. }))
     });
     assert!(
-        produced.iter().any(|frame| matches!(
-            frame,
-            HostFrame::Heartbeat { log_bytes, .. }
-                if *log_bytes >= 4 * 1024 * 1024 + marker.len() as u64
-        )),
-        "Host must finish ingesting the flood before the replay assertion"
+        caught_up
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::ResyncRequired { .. })),
+        "a lagging client must be told to resync after it catches up"
     );
 
-    // A fresh terminal can still retrieve the final output tail after the
-    // slow subscriber is isolated.
+    // A fresh terminal can still retrieve the final output tail afterwards.
     let mut replay = connect(&ctx, &ctx.session_id, TOKEN, 128 * 1024);
     replay.expect_hello_ok();
     let frames = replay.collect_until(Duration::from_secs(8), |frames| {
@@ -1117,6 +1119,47 @@ fn broadcast_evicts_nonreading_output_client_without_stalling_monitor() {
         "healthy terminal must receive a bounded live-tail replay"
     );
 }
+
+#[test]
+fn broadcast_evicts_client_that_never_drains_after_lag_grace() {
+    let ctx = make_ctx(
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "read start; while :; do dd if=/dev/zero bs=16384 count=64 2>/dev/null; sleep 0.2; done"
+                .into(),
+        ],
+        1 << 20,
+        vec![],
+    );
+    // Short grace keeps the bounded-resource guarantee testable without the
+    // production 20s window.
+    let _guard = spawn_host(&ctx, &[("AGENTPORT_HOST_CLIENT_LAG_GRACE_MS", "400")]);
+    wait_socket(&ctx);
+
+    let mut slow = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    slow.expect_hello_ok();
+    let mut monitor = connect_with_output_subscription(&ctx, &ctx.session_id, TOKEN, 0, false);
+    monitor.expect_hello_ok();
+    monitor.send(&ClientFrame::Input {
+        session_id: ctx.session_id.clone(),
+        data: b"start\n".to_vec(),
+    });
+
+    wait_for(
+        || {
+            std::fs::read_to_string(&ctx.host_log)
+                .map(|log| {
+                    log.contains("client fell behind")
+                        && log.contains("dropping client from broadcast")
+                })
+                .unwrap_or(false)
+        },
+        Duration::from_secs(20),
+        "lag grace expiry eviction",
+    );
+}
+
 
 // ---------------------------------------------------------------------------
 // 2. Echo round-trip + log sha256 consistency

@@ -10,7 +10,7 @@
 use std::io::{BufReader, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
@@ -39,6 +39,18 @@ pub(crate) const MAX_AUTHENTICATED_CLIENTS: usize = 16;
 /// A PTY read produces at most 16 KiB per Output frame, so this caps the
 /// common output backlog at roughly 2 MiB per client without blocking PTY.
 const CLIENT_OUTBOUND_QUEUE_CAPACITY: usize = 128;
+/// How long a client may keep a full outbound queue before the Host treats it
+/// as dead and evicts it. Inside this window the Host skips output frames for
+/// that client and then asks it to resync, so a briefly laggy renderer (a
+/// janky phone consuming 20+ KiB/s) loses its backlog instead of its whole
+/// attachment. Without a bound, a stopped client would hold a client slot and
+/// a writer thread forever.
+pub(crate) const CLIENT_LAG_GRACE_DEFAULT: Duration = Duration::from_secs(20);
+/// Test/host tuning override for `CLIENT_LAG_GRACE_DEFAULT`.
+pub(crate) const CLIENT_LAG_GRACE_ENV: &str = "AGENTPORT_HOST_CLIENT_LAG_GRACE_MS";
+/// Reason string carried by the post-lag `ResyncRequired` frame.
+pub(crate) const CLIENT_LAG_RESYNC_REASON: &str =
+    "client fell behind the live output queue";
 /// A writer runs on its own thread, but a timeout prevents a non-reading peer
 /// from retaining that thread forever when its kernel socket buffer is full.
 const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -78,14 +90,57 @@ pub(crate) enum OutboundFrame {
 pub(crate) struct ClientSink {
     pub(crate) tx: mpsc::SyncSender<OutboundFrame>,
     pub(crate) subscribe_output: bool,
+    /// Milliseconds on the shared lag clock when the outbound queue first
+    /// overflowed, or 0 while this client keeps up. Written by `broadcast`.
+    lag_started_ms: AtomicU64,
     close_stream: UnixStream,
     closed: Arc<AtomicBool>,
+}
+
+/// Outcome of a single queue-overflow observation for one client.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LagState {
+    /// The client just fell behind; the stall is absorbed.
+    New,
+    /// Still inside the grace window; the stall stays absorbed.
+    Continuing,
+    /// The grace window elapsed; the caller must evict the client.
+    Expired,
+}
+
+/// Monotonic millisecond clock shared by every sink. `Instant` is not
+/// `Copy`-into-atomic friendly, so a process-start base is captured once.
+fn lag_clock_ms() -> u64 {
+    static BASE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    BASE.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
 impl ClientSink {
     pub(crate) fn close(&self) {
         self.closed.store(true, Ordering::Release);
         let _ = self.close_stream.shutdown(Shutdown::Both);
+    }
+
+    /// Record that this client's queue is full. Returns whether the stall is
+    /// still inside `grace`, or `Expired` once the client must be evicted.
+    pub(crate) fn note_queue_overflow(&self, grace: Duration) -> LagState {
+        let now = lag_clock_ms();
+        match self
+            .lag_started_ms
+            .compare_exchange(0, now, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => LagState::New,
+            Err(started) if now.saturating_sub(started) < grace.as_millis() as u64 => {
+                LagState::Continuing
+            }
+            Err(_) => LagState::Expired,
+        }
+    }
+
+    /// Clear the lag marker. Returns true when this client was lagging, so the
+    /// caller can keep its own count of lagging clients in sync.
+    pub(crate) fn clear_lag(&self) -> bool {
+        self.lag_started_ms.swap(0, Ordering::AcqRel) != 0
     }
 }
 
@@ -317,6 +372,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
             ClientSink {
                 tx: frame_tx.clone(),
                 subscribe_output,
+                lag_started_ms: AtomicU64::new(0),
                 close_stream,
                 closed: closed.clone(),
             },
