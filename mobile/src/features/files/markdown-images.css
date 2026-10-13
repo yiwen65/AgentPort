@@ -1,0 +1,11 @@
+.markdown-image { display: block; max-width: 100%; margin: 12px 0; }
+.session-files .markdown-image-open { display: block; width: fit-content; max-width: 100%; min-height: 44px; padding: 0; border: 0; background: transparent; border-radius: 6px; overflow: hidden; }
+.markdown-image-open img { display: block; max-width: 100%; height: auto; object-fit: contain; }
+.markdown-image-placeholder { display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 8px; min-height: 80px; max-width: 100%; padding: 12px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+.markdown-image-placeholder button { min-height: 44px; }
+.markdown-image-viewer { display: flex; flex-direction: column; width: min(100%, 900px); height: min(100%, 85dvh); overflow: hidden; }
+.markdown-image-viewer .centered-modal-header { flex: 0 0 auto; }
+.markdown-image-viewer-tools { display: flex; justify-content: center; gap: 8px; margin-bottom: 8px; }
+.markdown-image-viewer-tools button { min-height: 44px; min-width: 44px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; }
+.markdown-image-viewport { flex: 1; min-height: 0; position: relative; width: 100%; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+.markdown-image-viewport img { width: 100%; height: 100%; object-fit: contain; transform-origin: center; pointer-events: none; }

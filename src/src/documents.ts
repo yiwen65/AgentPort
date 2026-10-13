@@ -6,6 +6,7 @@ import { confirmDialog, findSession, getState, setState } from "./store";
 import type { DocumentGroup, DocumentTab } from "./store";
 import type { SessionDocument } from "./types";
 import { i18n } from "./i18n";
+import { MarkdownImageSession, type MarkdownImageContext } from "./markdownImages";
 
 export interface DocumentLinkTarget {
   path: string;
@@ -93,6 +94,8 @@ export const MAX_DOCUMENT_GROUPS = 2;
  * mutated) so `useSyncExternalStore` snapshots stay referentially stable
  * between updates. */
 export interface DocumentTabRuntime {
+  imageContext?: MarkdownImageContext;
+  imageSession?: MarkdownImageSession | null;
   doc: SessionDocument | null;
   draft: string;
   loading: boolean;
@@ -126,8 +129,19 @@ export function subscribeDocumentRuntime(listener: () => void): () => void {
   };
 }
 
+export function captureDocumentImageContext(path: string): MarkdownImageContext {
+  const state = getState();
+  const parent = path.slice(0, path.lastIndexOf("/")) || "/";
+  const contains = (root: string | null | undefined) => !!root && (root === "/" || path.startsWith(`${root.replace(/\/$/, "")}/`));
+  const sessionRoot = findSession(state.projects, state.activeSessionId)?.cwd;
+  const rootPath = contains(state.explorerRoot) ? state.explorerRoot! : contains(sessionRoot) ? sessionRoot! : parent;
+  return { path, rootPath, device: state.activeDevice };
+}
+
 function defaultRuntime(tab: DocumentTab): DocumentTabRuntime {
   return {
+    imageContext: tab.imageContext ?? captureDocumentImageContext(tab.path),
+    imageSession: null,
     doc: null,
     draft: "",
     loading: false,
@@ -163,11 +177,17 @@ export function updateDocumentTabRuntime(
 ): void {
   const current = tabRuntime.get(tabId);
   if (!current) return;
+  if (patch.doc !== undefined && (patch.doc?.path !== current.doc?.path || patch.doc?.content !== current.doc?.content)) {
+    current.imageSession?.dispose();
+    const context = current.imageContext;
+    patch = { ...patch, imageSession: patch.doc && context ? new MarkdownImageSession({ ...context, path: patch.doc.path }) : null };
+  }
   tabRuntime.set(tabId, { ...current, ...patch });
   emitRuntimeChange();
 }
 
 export function dropDocumentTabRuntime(tabId: string): void {
+  tabRuntime.get(tabId)?.imageSession?.dispose();
   if (tabRuntime.delete(tabId)) emitRuntimeChange();
 }
 
@@ -178,6 +198,7 @@ export function isDocumentTabDirty(tabId: string): boolean {
 
 /** Test hook: drops every tab runtime (drafts, load state) between cases. */
 export function resetDocumentTabRuntimes(): void {
+  for (const runtime of tabRuntime.values()) runtime.imageSession?.dispose();
   tabRuntime.clear();
   emitRuntimeChange();
 }
@@ -245,6 +266,7 @@ export function openDocumentTarget(
     path: target.path,
     pinned: options?.pinned ?? false,
     pendingLine: target.line,
+    imageContext: captureDocumentImageContext(target.path),
   };
   let group = groups[state.activeDocGroupIndex] ?? groups[groups.length - 1];
   if (!group) {
@@ -301,6 +323,7 @@ export function openDocumentTargetToSide(target: DocumentLinkTarget): void {
     path: target.path,
     pinned: true,
     pendingLine: target.line,
+    imageContext: captureDocumentImageContext(target.path),
   };
   group.tabs.push(tab);
   group.activeTabId = tab.id;
@@ -413,16 +436,22 @@ export function updateDocumentTabPath(oldPath: string, newPath: string): void {
   const located = locateTab(state.docGroups, oldPath);
   const runtime = tabRuntime.get(oldPath);
   if (runtime) {
+    runtime.imageSession?.dispose();
     tabRuntime.delete(oldPath);
     tabRuntime.set(newPath, {
       ...runtime,
       doc: runtime.doc ? { ...runtime.doc, path: newPath } : null,
+      imageContext: runtime.imageContext ? { ...runtime.imageContext, path: newPath } : undefined,
+      imageSession: runtime.doc && runtime.imageContext ? new MarkdownImageSession({ ...runtime.imageContext, path: newPath }) : null,
     });
   }
   if (!located) return;
   const groups = cloneGroups(state.docGroups);
   const group = groups[located.groupIndex];
-  group.tabs[located.tabIndex] = { ...located.tab, id: newPath, path: newPath };
+  group.tabs[located.tabIndex] = {
+    ...located.tab, id: newPath, path: newPath,
+    imageContext: located.tab.imageContext ? { ...located.tab.imageContext, path: newPath } : undefined,
+  };
   if (group.activeTabId === oldPath) group.activeTabId = newPath;
   commitGroups(groups, group);
 }

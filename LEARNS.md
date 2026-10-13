@@ -824,6 +824,15 @@
 - Prevention: Treat all writers of the same dist directory as one serialized pipeline, not independent builds. Read-only tests or isolated browser fixtures can run separately.
 - Verified by: The parallel Markdown-table validation/archive failed with eight missing asset reads; the same source archived and passed signature/profile/IPA validation when rebuilt after the frontend build completed.
 
+## `native SVG XML validation` — reject custom entities, not normal XML escapes
+
+- Wrong approach: Treat every ampersand or GeneralRef event as unsafe while adding native SVG image validation.
+- Why it failed: Valid text such as `&amp;` and numeric character references was rejected before rendering, although it does not require a DTD or external entity lookup.
+- Recognition signal: The valid static SVG regression returns `unsafe_svg` instead of bounded dimensions.
+- Correct approach: Reject DTD/processing instructions/custom names; allow the five predefined entities and valid XML numeric characters, and unescape/validate attributes before reading dimensions.
+- Prevention: Test ordinary escaped text/attributes alongside external/custom entity and invalid-codepoint rejection; continue frontend static SVG sanitization.
+- Verified by: The added valid-escape test failed against the blanket check; after correction both native image suites passed7/7, and the signed desktop displayed the static SVG demo.
+
 ## `调试 bundle 手工换二进制` — 没重签名的 App 会让 Host 在建日志前被 codesigning 杀掉
 
 - Wrong approach: 手工把新构建的 `agentport-host`（以及 `agentport-host.prev-*` 备份）拷进 `target/debug/bundle/macos/AgentPort.app/Contents/MacOS/`，不做整包重签；GUI 自己在运行，看起来与签名无关。

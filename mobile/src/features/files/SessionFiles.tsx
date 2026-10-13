@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { RemoteClient, Unsubscribe } from "../../protocol/remoteClient";
 import { remoteErrorMessage } from "../../protocol/remoteError";
@@ -8,22 +8,25 @@ import { Modal } from "../../components/Modal";
 import { FileDownloadIndicator, useFileDownloads } from "./FileDownloads";
 import { useFilePageSwipe } from "./useFilePageSwipe";
 import { FileTreeIcon } from "./FileTreeIcon";
+import { createMarkdownImageClient } from "../../platform/tauriMarkdownImageClient";
+import type { MarkdownImageClient } from "../../protocol/markdownImageClient";
 import "./session-files.css";
 
 export interface FileEntry { name: string; path: string; isDir: boolean }
 export interface FileListing { rootPath: string; path: string; entries: FileEntry[]; truncated: boolean }
 export interface FileRead { rootPath: string; path: string; content: string; sizeBytes: number; truncated: boolean }
 interface Resource<T> { data?: T; loading: boolean; stale: boolean; error?: unknown }
-export interface SessionFilesProps { open: OpenSession; client: RemoteClient; active: boolean; onBack: () => void }
+export interface SessionFilesProps { open: OpenSession; client: RemoteClient; active: boolean; onBack: () => void; imageClient?: MarkdownImageClient }
 const codeOf = (error: unknown) => error && typeof error === "object" && "code" in error ? String(error.code) : "";
 const unsupported = (error: unknown) => ["unknown_method", "method_not_found", "capability_disabled", "-32601"].includes(codeOf(error));
 const knownErrors = new Set(["unsupported_platform", "path_not_found", "not_directory", "permission_denied", "invalid_path", "outside_root", "unsupported_file", "read_failed", "session_not_found"]);
 const baseName = (path: string) => path.replace(/\/+$/, "").split("/").pop() || "/";
 function BackIcon() { return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m15 5-7 7 7 7" /></svg>; }
 
-export function SessionFiles({ open, client, active, onBack }: SessionFilesProps) {
+export function SessionFiles({ open, client, active, onBack, imageClient }: SessionFilesProps) {
   const { t } = useTranslation();
   const downloads = useFileDownloads({ immersive: active });
+  const nativeImages = useMemo(() => createMarkdownImageClient(client, open.hostProfileId, open.session.id), [client, open.hostProfileId, open.session.id]);
   const [operations, setOperations] = useState<string>();
   const [menu, setMenu] = useState<"tree" | "preview">();
   const [information, setInformation] = useState(false);
@@ -208,7 +211,7 @@ export function SessionFiles({ open, client, active, onBack }: SessionFilesProps
             {file.data?.truncated ? <button className="files-state-strip files-state-action" type="button" aria-label={t("files.fileTruncated", { size: file.data.sizeBytes.toLocaleString() })} onClick={() => { openMenu("preview"); setInformation(true); }}>{t("files.truncatedShort")}</button> : null}
             <div ref={previewScroll} className="files-preview-scroll" tabIndex={-1} aria-label={baseName(preview)}>
               {resourceStatus(file, () => void load(preview, "read"), true)}
-              {file.data ? <FileContent path={preview} content={file.data.content} rendered={rendered} onOpen={openFile} /> : null}
+              {file.data ? <FileContent path={preview} content={file.data.content} rendered={rendered} onOpen={openFile} imageClient={imageClient ?? nativeImages} /> : null}
             </div>
           </> : null}
         </section>

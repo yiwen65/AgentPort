@@ -122,6 +122,10 @@ pub const METHOD_REGISTRY: &[&str] = &[
     "backup.list",
     "backup.verify",
     "backup.restore",
+    "document.images.open",
+    "document.images.chunk",
+    "document.images.finish",
+    "document.images.close",
     "document.read",
     "document.write",
     "document.list",
@@ -400,6 +404,10 @@ pub fn classify_method(method: &str) -> RetryClass {
         | "session.files.download.chunk"
         | "session.files.download.finish"
         | "session.files.download.close"
+        | "document.images.open"
+        | "document.images.chunk"
+        | "document.images.finish"
+        | "document.images.close"
         | "document.read"
         | "document.list"
         | "secret.list" => RetryClass::Read,
@@ -1263,6 +1271,15 @@ mod tests {
             .unwrap(),
             ProtocolVersion { major: 1, minor: 1 }
         );
+    }
+
+    #[test]
+    fn document_image_streams_are_desktop_reads_not_mobile_root_overrides() {
+        for method in ["document.images.open", "document.images.chunk", "document.images.finish", "document.images.close"] {
+            assert!(METHOD_REGISTRY.contains(&method));
+            assert_eq!(classify_method(method), RetryClass::Read);
+            assert!(!MOBILE_V2_METHOD_ALLOWLIST.contains(&method));
+        }
     }
 
     #[test]

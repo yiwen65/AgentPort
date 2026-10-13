@@ -1338,6 +1338,22 @@ export class RemoteBackend {
   // documents
   // -----------------------------------------------------------------------
 
+  documentImageOpen(rootPath: string, path: string): Promise<{ downloadId: string; sizeBytes: number; chunkBytes: number }> {
+    return this.request("document.images.open", { rootPath, path });
+  }
+
+  documentImageChunk(downloadId: string, offset: number, _maxBytes?: number): Promise<{ offset: number; contentBase64: string; eof: boolean }> {
+    return this.request("document.images.chunk", { downloadId, offset });
+  }
+
+  documentImageFinish(downloadId: string): Promise<unknown> {
+    return this.request("document.images.finish", { downloadId });
+  }
+
+  documentImageClose(downloadId: string): Promise<unknown> {
+    return this.request("document.images.close", { downloadId });
+  }
+
   readSessionDocument(path: string): Promise<SessionDocument> {
     return this.request<SessionDocument>("document.read", { path });
   }

@@ -17,7 +17,7 @@ import {
   type CSSProperties,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { api, errorText } from "../api";
+import { api, errorText, readDocumentForDevice, writeDocumentForDevice } from "../api";
 import {
   clearDocumentPendingLine,
   closeDocumentTab,
@@ -218,7 +218,7 @@ async function saveDocumentTab(tabId: string): Promise<void> {
     const payload = runtime.doc.content.includes("\r\n")
       ? savedDraft.replace(/\n/g, "\r\n")
       : savedDraft;
-    const result = await api.writeSessionDocument(runtime.doc.path, payload);
+    const result = await writeDocumentForDevice(runtime.doc.path, payload, runtime.imageContext?.device);
     const current = getDocumentTabRuntime(tabId);
     if (current?.doc) {
       // Mark the saved draft as clean; keystrokes that landed during the
@@ -587,7 +587,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
       let lastError: unknown = null;
       for (const candidate of [tab.path, ...documentPathFallbacks(tab.path)]) {
         try {
-          const result = await api.readSessionDocument(candidate);
+          const result = await readDocumentForDevice(candidate, current.imageContext?.device);
           if (!isCurrent()) return;
           updateDocumentTabRuntime(tab.id, {
             doc: result,
@@ -830,6 +830,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
               {markdown ? (
                 <MarkdownView
                   source={runtime.doc.content}
+                  imageSession={runtime.imageSession ?? undefined}
                   onLinkClick={(href) =>
                     void api.openExternalUrl(href).catch((e) => {
                       toast(t("ui.sidebar.openFailed", { detail: errorText(e) }), "error");

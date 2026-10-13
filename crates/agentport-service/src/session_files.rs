@@ -43,6 +43,8 @@ pub enum SessionFilesError {
     UnsupportedPlatform,
     #[error("The file exceeds the 1 GiB download limit.")]
     FileTooLarge,
+    #[error("The image exceeds the 20 MiB image limit.")]
+    ImageTooLarge,
     #[error("The source file changed during download. Retry from the beginning.")]
     SourceChanged,
     #[error("This download is invalid, expired, or belongs to another connection.")]
@@ -67,7 +69,7 @@ impl SessionFilesError {
             Self::ReadFailed => "read_failed",
             Self::SessionNotFound => "session_not_found",
             Self::UnsupportedPlatform => "unsupported_platform",
-            Self::FileTooLarge => "file_too_large",
+            Self::FileTooLarge | Self::ImageTooLarge => "file_too_large",
             Self::SourceChanged => "source_changed",
             Self::InvalidDownload => "invalid_download",
             Self::InvalidOffset => "invalid_offset",

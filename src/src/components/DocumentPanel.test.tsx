@@ -15,6 +15,8 @@ const { readMock, writeMock, revealMock, openUrlMock, openDefaultMock, insertMoc
   }));
 
 vi.mock("../api", () => ({
+  readDocumentForDevice: (path: string) => readMock(path),
+  writeDocumentForDevice: (path: string, content: string) => writeMock(path, content),
   api: {
     readSessionDocument: readMock,
     writeSessionDocument: writeMock,

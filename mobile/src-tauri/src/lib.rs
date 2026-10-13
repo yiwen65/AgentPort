@@ -1,4 +1,5 @@
 mod appearance;
+mod markdown_images;
 mod file_download;
 mod relay_pairing;
 mod credentials;
@@ -67,6 +68,8 @@ pub fn run() {
     builder
         .invoke_handler(tauri::generate_handler![
             mobile_scaffold_status,
+            markdown_images::markdown_image_fetch,
+            markdown_images::markdown_image_validate,
             file_download::mobile_file_download_start,
             file_download::mobile_file_download_poll,
             file_download::mobile_file_download_cancel,

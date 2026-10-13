@@ -78,6 +78,8 @@ import type {
 import { runtimeMessageEnvelope, runtimeMessageText } from "./runtimeMessages";
 import { createRoutedApi } from "./remote/dispatch";
 import type { RemoteAttentionNotifyInput } from "./remote/types";
+import { activeDeviceContext, type DeviceContext } from "./deviceContext";
+import { remoteBackendFor } from "./remote/runtime";
 
 // ---------------------------------------------------------------------------
 // base64 helpers (send_input / channel output are base64 payloads)
@@ -658,6 +660,20 @@ export const localApi = {
 // device (remote/dispatch.ts). Local-device calls are passed through by
 // identity, so existing behavior and tests are unchanged.
 export const api = createRoutedApi(localApi);
+
+/** Pin document writes to the same origin as the loaded tab. */
+export function writeDocumentForDevice(path: string, content: string, device?: DeviceContext): Promise<{ path: string; sizeBytes: number }> {
+  const active = activeDeviceContext();
+  if (!device || device.kind === active.kind && (device.kind === "local" || active.kind === "remote" && device.deviceId === active.deviceId)) return api.writeSessionDocument(path, content);
+  return device.kind === "local" ? localApi.writeSessionDocument(path, content) : remoteBackendFor(device.deviceId).writeSessionDocument(path, content);
+}
+
+/** Pin asynchronous document reads to the tab origin rather than a later switch. */
+export function readDocumentForDevice(path: string, device?: DeviceContext): Promise<SessionDocument> {
+  const active = activeDeviceContext();
+  if (!device || device.kind === active.kind && (device.kind === "local" || active.kind === "remote" && device.deviceId === active.deviceId)) return api.readSessionDocument(path);
+  return device.kind === "local" ? localApi.readSessionDocument(path) : remoteBackendFor(device.deviceId).readSessionDocument(path);
+}
 
 // ---------------------------------------------------------------------------
 // in-app updates (src-tauri/src/updater.rs)

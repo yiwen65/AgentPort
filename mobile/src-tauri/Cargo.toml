@@ -26,6 +26,9 @@ agentport-relay = { path = "../../crates/agentport-relay" }
 agentport-remote-protocol = { path = "../../crates/agentport-remote-protocol" }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+quick-xml = "0.41"
 sha2 = "0.10"
 zeroize = { version = "1", features = ["derive", "serde"] }
 uuid = { version = "1", features = ["v4"] }

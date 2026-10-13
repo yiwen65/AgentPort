@@ -14,6 +14,7 @@ import { genericTerminalClient } from "../platform/tauriGenericTerminalClient";
 import { GenericTerminal } from "../features/generic-terminal/GenericTerminal";
 import { FileDownloadProvider } from "../features/files/FileDownloads";
 import type { FileDownloadClient } from "../protocol/fileDownloadClient";
+import type { MarkdownImageClient } from "../protocol/markdownImageClient";
 import { fileDownloadClient } from "../platform/tauriFileDownloadClient";
 
 const SessionWorkspace = lazy(() => import("../features/sessions/SessionWorkspace").then((module) => ({
@@ -31,13 +32,14 @@ interface AppProps {
   hostAuthClient: HostAuthClient;
   terminalClient?: GenericTerminalClient;
   downloadClient?: FileDownloadClient;
+  imageClient?: MarkdownImageClient;
 }
 
 export function App({ downloadClient = fileDownloadClient, ...props }: AppProps) {
   return <FileDownloadProvider client={downloadClient}><AppContents {...props} /></FileDownloadProvider>;
 }
 
-function AppContents({ client, hostAuthClient, terminalClient = genericTerminalClient }: AppProps) {
+function AppContents({ client, hostAuthClient, terminalClient = genericTerminalClient, imageClient }: AppProps) {
   useApplyAppAppearance();
   const { t } = useTranslation();
   const [openedSession, setOpenedSession] = useState<{ open: OpenSession; token: number }>();
@@ -216,7 +218,7 @@ function AppContents({ client, hostAuthClient, terminalClient = genericTerminalC
       {selectedSession && filesVisited ? (
         <div className={`files-stage${page === "files" ? " is-visible" : ""}`} aria-hidden={page !== "files"} {...(page !== "files" ? { inert: "" } : {})}>
           <Suspense fallback={<div className="state-card" role="status">{t("dashboard.loading")}</div>}>
-            <SessionFiles key={JSON.stringify([selectedSession.hostProfileId, selectedSession.session.id, selectedSession.session.cwd])}
+            <SessionFiles imageClient={imageClient} key={JSON.stringify([selectedSession.hostProfileId, selectedSession.session.id, selectedSession.session.cwd])}
               open={selectedSession} client={client} active={page === "files"} onBack={() => setPage("terminal")} />
           </Suspense>
         </div>

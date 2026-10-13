@@ -3,6 +3,7 @@
 //! listing without exposing Host credentials or private socket paths.
 
 mod commit_ai;
+mod document_images;
 mod project_directory;
 mod session_files;
 pub use session_files::SessionFilesError;
@@ -1141,6 +1142,7 @@ pub struct CoreService {
     db: Db,
     attachments: Mutex<HashMap<String, AttachmentSlot>>,
     file_downloads: session_files::downloads::Downloads,
+    document_images: document_images::Images,
 }
 
 impl CoreService {
@@ -1157,6 +1159,7 @@ impl CoreService {
             db,
             attachments: Mutex::new(HashMap::new()),
             file_downloads: session_files::downloads::Downloads::default(),
+            document_images: document_images::Images::default(),
         })
     }
 
@@ -1169,6 +1172,7 @@ impl CoreService {
             db: Db::open_memory()?,
             attachments: Mutex::new(HashMap::new()),
             file_downloads: session_files::downloads::Downloads::default(),
+            document_images: document_images::Images::default(),
         })
     }
 
@@ -2008,6 +2012,10 @@ impl RemoteService for CoreService {
                     method == "session.files.list",
                 )?
             }
+            "document.images.open"
+            | "document.images.chunk"
+            | "document.images.finish"
+            | "document.images.close" => self.document_images.execute(method, params)?,
             "document.read" => {
                 let params: PathParams = parse_extended(params)?;
                 read_document(&params.path)?

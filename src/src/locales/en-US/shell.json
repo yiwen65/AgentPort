@@ -4,6 +4,13 @@
     "unnamed": "Unnamed group", "rename": "Rename group", "name": "Group name", "fold": "Expand or collapse group: {{title}}",
     "empty": "No split groups yet", "hint": "Drag a Session onto another terminal to create a split group."
   },
+  "markdownImage": {
+    "consentDescription": "External images are blocked. Loading them anonymously contacts public HTTPS servers from this device.",
+    "allowRemote": "Load external images for this document",
+    "image": "Image", "viewer": "Image viewer", "zoomOut": "Zoom out", "zoomReset": "Reset zoom", "zoomIn": "Zoom in",
+    "close": "Close", "closeViewer": "Close image viewer", "openImage": "View image: {{alt}}",
+    "contextUnavailable": "Image context unavailable", "remoteBlocked": "External image blocked", "loading": "Loading image…", "retry": "Retry"
+  },
   "boot": {
     "starting": "Starting AgentPort…",
     "failed": "AgentPort failed to start: {{detail}}"

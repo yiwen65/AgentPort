@@ -14,6 +14,8 @@ import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
 import markdown from "highlight.js/lib/languages/markdown";
 import { MermaidDiagram } from "./MermaidDiagram";
+import { MarkdownImage, MarkdownImageProvider } from "./MarkdownImages";
+import type { MarkdownImageClient } from "../../protocol/markdownImageClient";
 
 for (const [name, language] of Object.entries({ javascript, typescript, json, rust, python, bash, css, xml, yaml, markdown })) hljs.registerLanguage(name, language);
 const extensions: Record<string, string> = { js: "javascript", jsx: "javascript", mjs: "javascript", ts: "typescript", tsx: "typescript", json: "json", rs: "rust", py: "python", sh: "bash", bash: "bash", css: "css", html: "xml", xml: "xml", svg: "xml", yml: "yaml", yaml: "yaml", md: "markdown", markdown: "markdown" };
@@ -39,13 +41,14 @@ export function HighlightedCode({ content, language }: { content: string; langua
   return <code className="files-code" {...(html === undefined ? {} : { dangerouslySetInnerHTML: { __html: html } })}>{html === undefined ? content : undefined}</code>;
 }
 
-export const FileContent = memo(function FileContent({ path, content, rendered, onOpen }: { path: string; content: string; rendered: boolean; onOpen: (path: string) => void }) {
+export const FileContent = memo(function FileContent({ path, content, rendered, onOpen, imageClient }: { path: string; content: string; rendered: boolean; onOpen: (path: string) => void; imageClient?: MarkdownImageClient }) {
   const { t } = useTranslation();
   // Renderer functions are React component types. Recreating them on a menu
   // or progress update would remount code blocks and lose native scroll/selection.
   const components = useMemo<Components>(() => ({
-      img: ({ alt }) => <span className="files-blocked-resource">[{t("files.imageBlocked")}{alt ? `: ${alt}` : ""}]</span>,
-      a: ({ href, children }) => {
+      img: ({ src, alt }) => imageClient ? <MarkdownImage source={src ?? ""} alt={alt} /> : <span className="files-blocked-resource">[{t("files.imageBlocked")}{alt ? `: ${alt}` : ""}]</span>,
+      a: ({ href, children, node }) => {
+        if (node?.children.some(child => child.type === "element" && child.tagName === "img")) return <>{children}</>;
         const target = localFileLink(path, href ?? "");
         return target ? <button type="button" role="link" className="files-document-link" onClick={() => onOpen(target)}>{children}</button>
           : <span title={t("files.linkBlocked")}>{children} <small>({t("files.linkBlocked")})</small></span>;
@@ -59,7 +62,9 @@ export const FileContent = memo(function FileContent({ path, content, rendered, 
       },
       table: ({ children }) => <div className="files-table-scroll" data-horizontal-scroll="true" role="region" aria-label={t("files.table")} tabIndex={0}><table>{children}</table></div>,
       code: ({ className, children }) => <HighlightedCode content={String(children)} language={/language-([\w-]+)/.exec(className ?? "")?.[1]} />,
-  }), [onOpen, path, t]);
-  if (!rendered || !isMarkdown(path)) return <pre className="files-source" data-horizontal-scroll="true" tabIndex={0}><HighlightedCode content={content} language={extensions[path.split(".").pop()?.toLowerCase() ?? ""]} /></pre>;
-  return <article className="files-markdown"><ReactMarkdown skipHtml remarkPlugins={[remarkGfm]} components={components}>{content}</ReactMarkdown></article>;
+  }), [onOpen, path, t, imageClient]);
+  const source = <pre className="files-source" data-horizontal-scroll="true" tabIndex={0}><HighlightedCode content={content} language={extensions[path.split(".").pop()?.toLowerCase() ?? ""]} /></pre>;
+  if (!isMarkdown(path)) return source;
+  const view = rendered ? <article className="files-markdown"><ReactMarkdown skipHtml remarkPlugins={[remarkGfm]} components={components}>{content}</ReactMarkdown></article> : source;
+  return imageClient ? <MarkdownImageProvider key={`${imageClient.scope ?? ""}:${path}:${content}`} path={path} client={imageClient}>{view}</MarkdownImageProvider> : view;
 });

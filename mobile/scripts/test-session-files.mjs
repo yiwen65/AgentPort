@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dir = await mkdtemp(resolve(tmpdir(), 'agentport-files-'));
-const evidence = process.env.AGENTPORT_FILES_SCREENSHOTS;
+const evidence = process.env.AGENTPORT_FILES_SCREENSHOTS || '/tmp/agentport-markdown-images-evidence/mobile';
 let chrome, server, ws;
 const requests = [];
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -48,7 +48,7 @@ try {
             if(params.path==='.') window.rootLoads++;
             return {rootPath:session.cwd,path:params.path,entries,truncated:false};
           }
-          if(method==='session.files.read') return {rootPath:session.cwd,path:params.path,content:params.path.endsWith('.md')?'# Project overview\\n\\nRead-only Markdown with a [source link](src/main.ts).\\n\\n'+String.fromCharCode(96).repeat(3)+'ts\\nconst wide = "'+'long code '.repeat(40)+'";\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n![blocked image](https://invalid.example/image.png)'+Array.from({length:40},(_,i)=>'\\n\\nReading paragraph '+i+': content stays in place when switching pages.').join('')+'\\n\\n| Path | Origin | Purpose | Details | State |\\n| :--- | :---: | ---: | --- | --- |\\n| codex/ | openai/codex | Reference: agent implementation | Long mobile table content | Read-only |\\n| docs/ | Local | Handoff / task documents | Safe project files | Ready |\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nflowchart LR\\n A([人类意图]) --> B[第一性原理<br/>AI 是镜子]\\n B --> C[意图心法<br/>翻译为可执行]\\n C --> D[上下文心法<br/>喂足背景]\\n D --> E[迭代心法<br/>分轮逼近]\\n E --> F[验证心法<br/>信任但核实]\\n F --> G{输出可信?}\\n G -- 否 --> E\\n G -- 是 --> H[边界心法<br/>判断归属]\\n H --> I[心态心法<br/>共生而非对抗]\\n I --> J[元心法<br/>修炼自己]\\n J --> K([放大后的智慧])\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nsequenceDiagram\\n Alice->>Bob: hello\\n Bob-->>Alice: reply\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nflowchart LR\\n A -->\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nflowchart LR\\n A@{ "img": "/mermaid-secret.png" }\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nflowchart LR\\n A-->B; classDef A fill:u'+String.fromCharCode(92)+'72l(/mermaid-paint.svg)\\n'+String.fromCharCode(96).repeat(3):'const greeting = "'+ 'long line '.repeat(30) +'";\\nexport { greeting };',sizeBytes:400,truncated:false};
+          if(method==='session.files.read') return {rootPath:session.cwd,path:params.path,content:params.path.endsWith('.md')?'# Project overview\\n\\nRead-only Markdown with a [source link](src/main.ts).\\n\\n'+String.fromCharCode(96).repeat(3)+'ts\\nconst wide = "'+'long code '.repeat(40)+'";\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n![local SVG](images/local.svg)\\n\\n![reference PNG][pixel]\\n\\n[pixel]: images/pixel.png\\n\\n[![wrapped SVG](images/local.svg)](https://example.com/link)\\n\\n![retry SVG](images/retry.svg)\\n\\n![remote SVG](https://example.com/image.svg)'+Array.from({length:40},(_,i)=>'\\n\\nReading paragraph '+i+': content stays in place when switching pages.').join('')+'\\n\\n| Path | Origin | Purpose | Details | State |\\n| :--- | :---: | ---: | --- | --- |\\n| codex/ | openai/codex | Reference: agent implementation | Long mobile table content | Read-only |\\n| docs/ | Local | Handoff / task documents | Safe project files | Ready |\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nflowchart LR\\n A([人类意图]) --> B[第一性原理<br/>AI 是镜子]\\n B --> C[意图心法<br/>翻译为可执行]\\n C --> D[上下文心法<br/>喂足背景]\\n D --> E[迭代心法<br/>分轮逼近]\\n E --> F[验证心法<br/>信任但核实]\\n F --> G{输出可信?}\\n G -- 否 --> E\\n G -- 是 --> H[边界心法<br/>判断归属]\\n H --> I[心态心法<br/>共生而非对抗]\\n I --> J[元心法<br/>修炼自己]\\n J --> K([放大后的智慧])\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nsequenceDiagram\\n Alice->>Bob: hello\\n Bob-->>Alice: reply\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nflowchart LR\\n A -->\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nflowchart LR\\n A@{ "img": "/mermaid-secret.png" }\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nflowchart LR\\n A-->B; classDef A fill:u'+String.fromCharCode(92)+'72l(/mermaid-paint.svg)\\n'+String.fromCharCode(96).repeat(3):'const greeting = "'+ 'long line '.repeat(30) +'";\\nexport { greeting };',sizeBytes:400,truncated:false};
           return {};
         }
       };
@@ -62,7 +62,16 @@ try {
         save:async()=>{window.downloadCalls.push({method:'save'});download.state='saved';return {...download}},
         discard:async()=>{window.downloadCalls.push({method:'discard'})},
       };
-      createRoot(document.getElementById('root')).render(<App client={client} hostAuthClient={{}} downloadClient={downloadClient} />);
+      // Native imageData adapter mocked; production sanitizer/renderer/viewer run unchanged.
+      window.imageCalls=[]; window.imageBlobs=[]; window.revokedImages=[];
+      const objectURL=URL.createObjectURL.bind(URL), revoke=URL.revokeObjectURL.bind(URL);
+      URL.createObjectURL=blob=>{window.imageBlobs.push(blob);return objectURL(blob)};
+      URL.revokeObjectURL=url=>{window.revokedImages.push(url);revoke(url)};
+      const svg='<svg xmlns="http://www.w3.org/2000/svg" width="600" height="300" viewBox="0 0 600 300"><script>window.imageExecuted=true</script><foreignObject><div>unsafe</div></foreignObject><image href="/image-secret.png"/><style>rect{fill:url(/image-paint.svg)}</style><rect width="600" height="300" fill="#4080c0"/><text x="30" y="150">Static image fixture</text></svg>';
+      const data=()=>({mime:'image/svg+xml',width:600,height:300,contentBase64:btoa(svg)});
+      let failed=false;
+      const imageClient={scope:'fixture-native-adapter',local:async path=>{window.imageCalls.push({kind:'local',path});if(path.endsWith('retry.svg')&&!failed){failed=true;throw {code:'image_failed'}}return path.endsWith('.png')?{mime:'image/png',width:1,height:1,contentBase64:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII='}:data()},remote:async url=>{window.imageCalls.push({kind:'remote',url});return data()}};
+      createRoot(document.getElementById('root')).render(<App client={client} hostAuthClient={{}} downloadClient={downloadClient} imageClient={imageClient} />);
     `, resolveDir: root, loader: 'tsx' },
     loader: { '.ttf': 'dataurl', '.otf': 'dataurl', '.svg': 'text', '.png': 'dataurl' }, outfile: resolve(dir, 'fixture.js'), bundle: true,
     minify: true, jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' },
@@ -70,6 +79,7 @@ try {
   server = createServer(async(req,res)=>{
     requests.push(req.url);
     const name = req.url==='/fixture.js'?'fixture.js':req.url==='/fixture.css'?'fixture.css':null;
+    res.setHeader('Content-Security-Policy', "img-src 'self' blob: data:; connect-src 'self'; object-src 'none'");
     res.setHeader('Content-Type',name?.endsWith('.js')?'text/javascript':name?'text/css':'text/html');
     res.end(name?await readFile(resolve(dir,name)):'<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="fixture.css"><div id="root"></div><script src="fixture.js"></script>');
   });
@@ -143,7 +153,40 @@ try {
   const readme=await evaluate(`Array.from(document.querySelectorAll('.files-row')).find(e=>e.textContent.includes('README.md')).getBoundingClientRect().y`);
   await touch('touchStart',180,readme+20);await touch('touchEnd');await until(`Boolean(document.querySelector('.files-markdown h1'))`);
   assert.equal(await evaluate(`document.querySelector('.files-markdown h1').textContent`),'Project overview');
-  assert.equal(await evaluate(`document.querySelectorAll('.files-markdown img, .files-markdown iframe, .files-markdown script').length`),0);
+  assert.equal(await evaluate(`document.querySelectorAll('.files-markdown iframe, .files-markdown script').length`),0);
+  await until(`document.querySelector('.markdown-image-open img')?.naturalWidth>0`);
+  assert.equal(await evaluate(`imageCalls.filter(c=>c.kind==='remote').length`),0,'No HTTPS image adapter calls before consent');
+  await evaluate(`Array.from(document.querySelectorAll('.markdown-image')).find(e=>e.textContent.includes('remote SVG')).scrollIntoView({block:'center'});true`);await wait(120);
+  await clickText('.markdown-image button','Load external images in this document');
+  await until(`imageCalls.some(c=>c.kind==='remote') && document.querySelector('img[alt="remote SVG"]')?.naturalWidth>0`);
+  await evaluate(`Array.from(document.querySelectorAll('.markdown-image')).find(e=>e.textContent.includes('retry SVG')).scrollIntoView({block:'center'});true`);await wait(100);
+  await clickText('.markdown-image button','Retry image');await until(`document.querySelector('img[alt="retry SVG"]')?.naturalWidth>0`);
+  await evaluate(`document.querySelector('img[alt="wrapped SVG"]').scrollIntoView({block:'center'});true`);await wait(150);
+  await until(`document.querySelector('img[alt="wrapped SVG"]')?.naturalWidth>0`);
+  const imageScroll=await evaluate(`document.querySelector('.files-preview-scroll').scrollTop`);
+  await click('.markdown-image-open:has(img[alt="wrapped SVG"])');await until(`document.querySelector('.markdown-image-viewport img')?.naturalWidth>0`);
+  await click('.markdown-image-viewer-tools button:last-child');
+  const transformBefore=await evaluate(`document.querySelector('.markdown-image-viewport img').style.transform`);
+  await call('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:120,y:350,id:1},{x:240,y:350,id:2}]});
+  await call('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:150,y:390,id:1},{x:290,y:390,id:2}]});
+  await call('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await wait(150);
+  assert.notEqual(await evaluate(`document.querySelector('.markdown-image-viewport img').style.transform`),transformBefore,'Two finger pan/pinch changes viewer transform');
+  assert.equal(await evaluate(`document.querySelector('.files-page-viewport').dataset.previewVisible`),'true');await screenshot('mobile-image-viewer-dark');
+  await click('.markdown-image-viewer [aria-label="Close"]');await until(`!document.querySelector('.markdown-image-viewer')`);
+  assert.equal(await evaluate(`document.querySelector('.files-preview-scroll').scrollTop`),imageScroll);
+  assert.equal(await evaluate(`document.activeElement?.className`),'markdown-image-open');
+  const cleanSvg=await evaluate(`Promise.all(imageBlobs.filter(b=>b.type==='image/svg+xml').map(b=>b.text()))`);
+  assert.ok(cleanSvg.length>0);assert.ok(cleanSvg.every(s=>!/<(?:script|foreignObject|image|style)\b|image-secret|image-paint/.test(s)),JSON.stringify(cleanSvg));
+  assert.equal(await evaluate(`Boolean(window.imageExecuted)`),false);
+  assert.ok(!requests.some(url=>/image-secret|image-paint/.test(url)));
+  await evaluate(`document.querySelector('.files-preview-scroll').scrollTop=0;true`);await wait(200);
+  assert.ok(await evaluate(`document.documentElement.scrollWidth<=innerWidth`),'Images do not overflow root');
+  const mobileImageGeometry=await evaluate(`Array.from(document.querySelectorAll('.markdown-image-open img')).map(e=>({alt:e.alt,src:e.src,nw:e.naturalWidth,nh:e.naturalHeight,w:e.getBoundingClientRect().width,h:e.getBoundingClientRect().height}))`);
+  assert.ok(mobileImageGeometry.some(g=>g.alt==='reference PNG'&&g.nw===1),'Reference PNG decodes in Chrome');
+  assert.ok(mobileImageGeometry.every(g=>g.src.startsWith('blob:')&&g.nw>0&&Math.abs(g.w/g.h-g.nw/g.nh)<0.01),JSON.stringify(mobileImageGeometry));
+  assert.equal(await evaluate(`imageCalls.filter(c=>c.kind==='remote').length`),1,'One grant loads current document');
+  assert.equal(await evaluate(`imageCalls.filter(c=>c.kind==='local'&&c.path.endsWith('local.svg')).length`),1,'Inline/wrapped same source shares current document cache');
+  await screenshot('mobile-images-dark');
   await wait(250);await screenshot('mobile-markdown-preview');
   assert.equal(await evaluate(`document.querySelectorAll('.files-markdown table tbody tr').length`),2);
   assert.equal(await evaluate(`document.querySelectorAll('.files-markdown table th').length`),5);
@@ -193,7 +236,7 @@ try {
   await swipe(300,markdownCodeY,80,markdownCodeY);
   assert.ok(await evaluate(`document.querySelector('.files-markdown pre').scrollLeft`)>0,'Rendered Markdown code needs native horizontal pan');
   await settledScroll('.files-markdown pre');
-  await evaluate(`window.originalMarkdownCode=document.querySelector('.files-markdown pre');window.markdownCodeX=originalMarkdownCode.scrollLeft;window.originalPreview=document.querySelector('.files-markdown');document.querySelector('.files-preview-scroll').scrollTop=320;window.previewY=document.querySelector('.files-preview-scroll').scrollTop;window.treeY=document.querySelector('.files-tree-scroll').scrollTop;true`);
+  await evaluate(`window.originalMarkdownCode=document.querySelector('.files-markdown pre');window.markdownCodeX=originalMarkdownCode.scrollLeft;window.originalPreview=document.querySelector('.files-markdown');Array.from(document.querySelectorAll('.files-markdown p')).find(p=>p.textContent.startsWith('Reading paragraph 0')).scrollIntoView({block:'start'});window.previewY=document.querySelector('.files-preview-scroll').scrollTop;window.treeY=document.querySelector('.files-tree-scroll').scrollTop;true`);
   const readingY=await evaluate(`Array.from(document.querySelectorAll('.files-markdown p')).find(p=>p.getBoundingClientRect().top>65 && p.getBoundingClientRect().bottom<700).getBoundingClientRect().top+15`);
   await touch('touchStart',60,readingY);await touch('touchMove',130,readingY+1);await wait(40);
   assert.ok(await evaluate(`parseFloat(document.querySelector('.files-page-viewport').style.getPropertyValue('--file-swipe-offset'))`)>60,'Preview must follow finger before release');
@@ -247,6 +290,12 @@ try {
   const narrowHeight=await evaluate(`document.querySelector('.files-preview-page .files-header').getBoundingClientRect().height`);
   assert.equal(narrowHeight,44);assert.equal(narrow.whiteSpace,'nowrap');assert.ok(narrow.right<=320);assert.ok(narrow.buttons.every(w=>w>=44));await screenshot('mobile-preview-long-title-light');
   await until(`document.querySelectorAll('.files-diagram-scroll svg').length===2`);
+  await evaluate(`document.querySelector('.files-preview-scroll').scrollTop=0;true`);await wait(200);
+  await until(`document.querySelector('img[alt="local SVG"]')?.naturalWidth>0`);
+  assert.equal(await evaluate(`imageCalls.filter(c=>c.kind==='remote').length`),1,'New document must not inherit remote consent');
+  assert.ok(await evaluate(`revokedImages.length`)>0,'Old document blobs are disposed');
+  assert.equal(await evaluate(`document.documentElement.scrollWidth>innerWidth`),false);
+  await screenshot('mobile-images-light-narrow');
   await evaluate(`document.querySelector('.files-diagram-scroll').scrollIntoView({block:'center'});true`);await wait(100);await screenshot('mobile-mermaid-light-narrow');
   assert.ok(!requests.some(url=>/mermaid-secret|mermaid-paint/.test(url)));
   await click('.files-preview-page .files-header button');
@@ -273,7 +322,7 @@ try {
   await until(`document.querySelector('.file-download-banner').textContent.includes('Saved to the selected location')`);
   assert.equal(await evaluate(`downloadCalls.filter(c=>c.method==='start').length`),1);
   assert.equal(await evaluate(`calls.filter(c=>c.method==='session.detach').length`),0);
-  console.log('PASS: real App/xterm touch navigation, native code pan, tree scroll/expansion, Markdown safety, retained terminal, download actions/progress across pages and light/narrow/landscape renders. Fixture transport/exporter; NOT native save or device proof.');
+  console.log('PASS: real App/xterm touch navigation, native code pan, tree scroll/expansion, Markdown safety, retained terminal, download actions/progress across pages and light/narrow/landscape renders. Production image blob decoding, SVG scrub, inline/reference/wrapped images, per-document consent/cache/disposal, retry, aspect-fit, viewer zoom/two-finger pan and close scroll/focus also passed. Native imageData adapter/transport/exporter mocked; NOT native image DNS/TLS, save or device proof.');
 } finally {
   ws?.close(); if(chrome && chrome.exitCode===null){chrome.kill('SIGTERM');await new Promise(r=>chrome.once('exit',r))}
   if(server)await new Promise(r=>server.close(r));await rm(dir,{recursive:true,force:true});

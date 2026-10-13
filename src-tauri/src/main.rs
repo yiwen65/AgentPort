@@ -43,6 +43,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 mod commit_ai;
+mod markdown_images;
 mod git_commands;
 mod git_workspace_commands;
 mod notifications;
@@ -77,6 +78,8 @@ struct AppState {
     /// Status notifications may arrive through both the durable monitor and
     /// an attached renderer, or as near-simultaneous Hook/PTY observations.
     notification_deduper: Mutex<NotificationDeduper>,
+    // Keep local image download capabilities alive across open/chunk/finish calls.
+    document_image_service: Arc<Mutex<Option<CoreService>>>,
 }
 
 type HostWriter = Arc<Mutex<std::os::unix::net::UnixStream>>;
@@ -3918,6 +3921,86 @@ async fn read_session_document(path: String) -> std::result::Result<Value, Value
     read_session_document_impl(&path)
 }
 
+async fn document_image_rpc(
+    state: State<'_, AppState>,
+    method: &'static str,
+    params: Value,
+) -> std::result::Result<Value, Value> {
+    let paths = state.paths.clone();
+    let service = state.document_image_service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut service = service
+            .lock()
+            .map_err(|_| json!({"code": "internal", "message": "Image service unavailable"}))?;
+        if service.is_none() {
+            *service = Some(CoreService::open(paths).map_err(
+                |error| json!({"code": "image_read_failed", "message": error.to_string()}),
+            )?);
+        }
+        service
+            .as_ref()
+            .expect("image service initialized")
+            .extended_facade(method, params)
+            .map_err(|error| json!({"code": "image_read_failed", "message": error.to_string()}))
+    })
+    .await
+    .map_err(|_| json!({"code": "internal", "message": "Image worker stopped"}))?
+}
+
+#[tauri::command]
+async fn document_image_open(
+    state: State<'_, AppState>,
+    root_path: String,
+    path: String,
+) -> std::result::Result<Value, Value> {
+    document_image_rpc(
+        state,
+        "document.images.open",
+        json!({"rootPath": root_path, "path": path}),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn document_image_chunk(
+    state: State<'_, AppState>,
+    download_id: String,
+    offset: u64,
+) -> std::result::Result<Value, Value> {
+    document_image_rpc(
+        state,
+        "document.images.chunk",
+        json!({"downloadId": download_id, "offset": offset}),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn document_image_finish(
+    state: State<'_, AppState>,
+    download_id: String,
+) -> std::result::Result<Value, Value> {
+    document_image_rpc(
+        state,
+        "document.images.finish",
+        json!({"downloadId": download_id}),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn document_image_close(
+    state: State<'_, AppState>,
+    download_id: String,
+) -> std::result::Result<Value, Value> {
+    document_image_rpc(
+        state,
+        "document.images.close",
+        json!({"downloadId": download_id}),
+    )
+    .await
+}
+
 fn write_session_document_impl(path: &str, content: &str) -> std::result::Result<Value, Value> {
     const MAX_WRITE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -4596,6 +4679,7 @@ fn main() {
         notification_tx,
         notification_session: Mutex::new(None),
         notification_deduper: Mutex::new(NotificationDeduper::default()),
+        document_image_service: Arc::new(Mutex::new(None)),
     };
 
     tauri::Builder::default()
@@ -4627,6 +4711,12 @@ fn main() {
         .manage(relay::DesktopRelay::default())
         .manage(updater::UpdateState::default())
         .invoke_handler(tauri::generate_handler![
+            markdown_images::markdown_image_fetch,
+            markdown_images::markdown_image_validate,
+            document_image_open,
+            document_image_chunk,
+            document_image_finish,
+            document_image_close,
             relay::desktop_relay_status,
             relay::desktop_relay_start,
             relay::desktop_relay_control,

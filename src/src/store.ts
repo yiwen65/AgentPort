@@ -420,6 +420,8 @@ export interface AppState {
 }
 
 export interface DocumentTab {
+  /** Reading context captured when opened, never derived from a later tree/device. */
+  imageContext?: import("./markdownImages").MarkdownImageContext;
   /** Stable identity; the canonical absolute path (tabs dedupe by path). */
   id: string;
   path: string;

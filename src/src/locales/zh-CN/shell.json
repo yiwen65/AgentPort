@@ -4,6 +4,13 @@
     "unnamed": "未命名分组", "rename": "重命名分组", "name": "分组名称", "fold": "展开或收起分组：{{title}}",
     "empty": "暂无分屏分组", "hint": "将 Session 拖到另一终端上，即可创建分屏分组。"
   },
+  "markdownImage": {
+    "consentDescription": "外链图片已阻止。加载后，本设备将匿名访问公开 HTTPS 图片服务器。",
+    "allowRemote": "加载本文档的外链图片",
+    "image": "图片", "viewer": "图片查看器", "zoomOut": "缩小", "zoomReset": "重置缩放", "zoomIn": "放大",
+    "close": "关闭", "closeViewer": "关闭图片查看器", "openImage": "查看图片：{{alt}}",
+    "contextUnavailable": "图片阅读上下文不可用", "remoteBlocked": "外链图片已阻止", "loading": "正在加载图片…", "retry": "重试"
+  },
   "boot": {
     "starting": "正在启动 AgentPort…",
     "failed": "启动失败：{{detail}}"

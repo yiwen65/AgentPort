@@ -20,7 +20,10 @@ tauri-plugin-updater = { version = "2", default-features = false, features = [
     "system-proxy",
 ] }
 agentport-relay = { path = "../crates/agentport-relay", features = ["connector"] }
-tokio = { version = "1", features = ["sync", "time", "rt", "io-util"] }
+tokio = { version = "1", features = ["sync", "time", "rt", "io-util", "net"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+quick-xml = "0.41"
 russh = "=0.62.7"
 keyring = { version = "3", features = ["apple-native", "sync-secret-service"] }
 zeroize = { version = "1", features = ["serde"] }

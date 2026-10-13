@@ -7,6 +7,9 @@
 
 import { createElement, Fragment, type ReactNode } from "react";
 import MermaidBlock from "./components/MermaidBlock";
+import MarkdownImage, { MarkdownImageConsent } from "./components/MarkdownImage";
+import type { MarkdownImageSession } from "./markdownImages";
+import { extractImageReferences, markdownImageTokens, type ImageReferences } from "./markdownImageGrammar";
 
 const INLINE_PATTERN =
   /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(__[^_\n]+__)|(\*[^*\n]+\*)|(_[^_\n]+_)|(\[([^\]\n]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\))/g;
@@ -17,7 +20,7 @@ function isSafeHref(href: string): boolean {
 
 /** Parses inline emphasis/code/links into React nodes. Plain text passes
  * through untouched, so raw markup is always rendered literally. */
-export function renderInline(text: string, keyPrefix: string): ReactNode[] {
+function renderTextInline(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   INLINE_PATTERN.lastIndex = 0;
   let last = 0;
@@ -50,6 +53,18 @@ export function renderInline(text: string, keyPrefix: string): ReactNode[] {
     last = match.index + full.length;
   }
   if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+
+export function renderInline(text: string, keyPrefix: string, references: ImageReferences = new Map(), session?: MarkdownImageSession): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let last = 0;
+  for (const [index, token] of markdownImageTokens(text, references).entries()) {
+    nodes.push(...renderTextInline(text.slice(last, token.start), `${keyPrefix}-t${index}`));
+    nodes.push(createElement(MarkdownImage, { key: `${keyPrefix}-image${index}`, source: token.source, alt: token.alt, session }));
+    last = token.end;
+  }
+  nodes.push(...renderTextInline(text.slice(last), `${keyPrefix}-tail`));
   return nodes;
 }
 
@@ -185,7 +200,8 @@ function parseBlocks(source: string): Block[] {
   return blocks;
 }
 
-function renderBlocks(blocks: Block[]): ReactNode[] {
+function renderBlocks(blocks: Block[], references: ImageReferences, session?: MarkdownImageSession): ReactNode[] {
+  const inline = (text: string, key: string) => renderInline(text, key, references, session);
   return blocks.map((block, index) => {
     const key = `b${index}`;
     switch (block.kind) {
@@ -193,10 +209,10 @@ function renderBlocks(blocks: Block[]): ReactNode[] {
         return createElement(
           `h${block.level}` as "h1",
           { key },
-          renderInline(block.text, key),
+          inline(block.text, key),
         );
       case "paragraph":
-        return createElement("p", { key }, renderInline(block.text, key));
+        return createElement("p", { key }, inline(block.text, key));
       case "code":
         // Diagram fences render as images; everything else stays code.
         if (["mermaid", "flowchart"].includes(block.lang.toLowerCase())) {
@@ -215,7 +231,7 @@ function renderBlocks(blocks: Block[]): ReactNode[] {
             createElement(
               "p",
               { key: `${key}-q${i}` },
-              renderInline(line, `${key}-q${i}`),
+              inline(line, `${key}-q${i}`),
             ),
           ),
         );
@@ -227,14 +243,14 @@ function renderBlocks(blocks: Block[]): ReactNode[] {
             createElement(
               "li",
               { key: `${key}-i${i}` },
-              renderInline(item, `${key}-i${i}`),
+              inline(item, `${key}-i${i}`),
             ),
           ),
         );
       case "table":
         return createElement(
           "table",
-          { key },
+          { key, className: [...block.header, ...block.rows.flat()].some((cell) => markdownImageTokens(cell, references).length > 0) ? "md-image-table" : undefined },
           createElement(
             "thead",
             null,
@@ -245,7 +261,7 @@ function renderBlocks(blocks: Block[]): ReactNode[] {
                 createElement(
                   "th",
                   { key: `${key}-h${i}` },
-                  renderInline(cell, `${key}-h${i}`),
+                  inline(cell, `${key}-h${i}`),
                 ),
               ),
             ),
@@ -261,7 +277,7 @@ function renderBlocks(blocks: Block[]): ReactNode[] {
                   createElement(
                     "td",
                     { key: `${key}-r${r}c${c}` },
-                    renderInline(cell, `${key}-r${r}c${c}`),
+                    inline(cell, `${key}-r${r}c${c}`),
                   ),
                 ),
               ),
@@ -278,11 +294,19 @@ function renderBlocks(blocks: Block[]): ReactNode[] {
 export function MarkdownView({
   source,
   onLinkClick,
+  imageSession,
 }: {
   source: string;
   onLinkClick?: (href: string) => void;
+  imageSession?: MarkdownImageSession;
 }) {
-  const blocks = renderBlocks(parseBlocks(source));
+  const parsed = extractImageReferences(source);
+  const blockData = parseBlocks(parsed.source);
+  const blocks = renderBlocks(blockData, parsed.references, imageSession);
+  const hasRemoteImages = blockData.some((block) => {
+    const texts = block.kind === "code" || block.kind === "rule" ? [] : "text" in block ? [block.text] : block.kind === "table" ? [...block.header, ...block.rows.flat()] : block.kind === "list" ? block.items : block.lines;
+    return texts.some((text) => markdownImageTokens(text, parsed.references).some((token) => /^https:\/\//i.test(token.source)));
+  });
   return (
     <div
       className="md-preview"
@@ -294,6 +318,7 @@ export function MarkdownView({
         if (href) onLinkClick?.(href);
       }}
     >
+      {hasRemoteImages && imageSession ? <MarkdownImageConsent session={imageSession} /> : null}
       {blocks.length ? blocks : <Fragment />}
     </div>
   );

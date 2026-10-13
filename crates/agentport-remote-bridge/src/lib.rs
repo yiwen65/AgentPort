@@ -1033,6 +1033,10 @@ fn prepare_request(
         | "session.files.download.chunk"
         | "session.files.download.finish"
         | "session.files.download.close"
+        | "document.images.open"
+        | "document.images.chunk"
+        | "document.images.finish"
+        | "document.images.close"
         | "document.read"
         | "document.list"
         | "document.create") => PreparedRequest::Extended(
@@ -1274,9 +1278,13 @@ mod tests {
     impl RemoteService for FixtureService {
         fn extended_facade(&self, method: &str, params: Value) -> agentport_service::Result<Value> {
             use agentport_service::SessionFilesError;
-            if method.starts_with("session.files.download.") {
+            if method.starts_with("session.files.download.") || method.starts_with("document.images.") {
                 let key = if method.ends_with("open") {
-                    assert_eq!(params["sessionId"], "session-fixture");
+                    if method.starts_with("document.images.") {
+                        assert_eq!(params["rootPath"], "/fixture");
+                    } else {
+                        assert_eq!(params["sessionId"], "session-fixture");
+                    }
                     params["path"].as_str().unwrap()
                 } else {
                     params["downloadId"].as_str().unwrap()
@@ -1294,10 +1302,10 @@ mod tests {
                 };
                 if let Some(error) = error { return Err(error.into()); }
                 return Ok(match method {
-                    "session.files.download.open" => json!({"downloadId":"fixture-id","name":"binary.bin","sizeBytes":3,"chunkBytes":262144}),
-                    "session.files.download.chunk" => json!({"offset":0,"contentBase64":"AP+A","eof":true}),
-                    "session.files.download.finish" => json!({"sizeBytes":3,"sha256":"fixture-hash"}),
-                    "session.files.download.close" => json!({"closed":true}),
+                    "session.files.download.open" | "document.images.open" => json!({"downloadId":"fixture-id","name":"binary.bin","sizeBytes":3,"chunkBytes":262144}),
+                    "session.files.download.chunk" | "document.images.chunk" => json!({"offset":0,"contentBase64":"AP+A","eof":true}),
+                    "session.files.download.finish" | "document.images.finish" => json!({"sizeBytes":3,"sha256":"fixture-hash"}),
+                    "session.files.download.close" | "document.images.close" => json!({"closed":true}),
                     _ => return Err(ServiceError::InvalidRequest),
                 });
             }
@@ -1525,12 +1533,14 @@ mod tests {
     fn session_download_dispatch_frames_binary_and_sanitized_errors_as_reads() {
         let codes = ["file_too_large", "source_changed", "invalid_download", "invalid_offset",
             "incomplete_download", "too_many_downloads", "outside_root", "permission_denied"];
-        for action in ["open", "chunk", "finish", "close"] {
-            let method = format!("session.files.download.{action}");
+        for (prefix, action) in ["session.files.download", "document.images"].into_iter()
+            .flat_map(|prefix| ["open", "chunk", "finish", "close"].map(|action| (prefix, action))) {
+            let method = format!("{prefix}.{action}");
             let mut input = Vec::new();
             append(&mut input, &hello(ProtocolVersion::V1));
             for key in std::iter::once("fixture-id").chain(codes) {
                 let params = match action {
+                    "open" if prefix == "document.images" => json!({"rootPath":"/fixture","path":key}),
                     "open" => json!({"sessionId":"session-fixture","path":key}),
                     "chunk" => json!({"downloadId":key,"offset":0}),
                     _ => json!({"downloadId":key}),

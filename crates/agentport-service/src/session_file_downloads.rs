@@ -75,7 +75,7 @@ impl Identity {
 
 struct Download {
     file: File,
-    // Keep the Session root pinned for the entire lifetime too.
+    // Keep the authorized root pinned for the entire lifetime too.
     _root: File,
     identity: Identity,
     offset: u64,
@@ -179,6 +179,10 @@ impl Downloads {
     }
 
     pub(crate) fn open(&self, cwd: &str, path: &str) -> Result<Value> {
+        self.open_bounded(cwd, path, MAX_FILE_BYTES)
+    }
+
+    pub(crate) fn open_bounded(&self, cwd: &str, path: &str, max_bytes: u64) -> Result<Value> {
         let relative = relative_path(path)?;
         let name = relative
             .file_name()
@@ -195,7 +199,7 @@ impl Downloads {
         }
         #[cfg(not(unix))]
         {
-            let _ = (cwd, relative, name);
+            let _ = (cwd, relative, name, max_bytes);
             Err(SessionFilesError::UnsupportedPlatform)
         }
         #[cfg(unix)]
@@ -203,7 +207,7 @@ impl Downloads {
             let (file, root) = super::secure::open_download(cwd, &relative)?;
             let identity = Identity::read(&file)?;
             let size = identity.size;
-            if size > MAX_FILE_BYTES {
+            if size > max_bytes {
                 return Err(SessionFilesError::FileTooLarge);
             }
             self.start_reaper()?;
