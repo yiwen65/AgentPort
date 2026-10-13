@@ -788,6 +788,24 @@
 - Prevention: Cover missing cache resolution, non-directory/symlink root and permission-denied stale sweep; keep remote connection state usable alongside disabled downloads.
 - Verified by: `file_download` startup-isolation regressions (including actual permission denial) and full mobile Rust60/60 passed; final iOS/Android builds and startup renders passed.
 
+## `mobile rendered Markdown identity` — inline renderer types reset reading state
+
+- Wrong approach: Recreate react-markdown's a/pre/code component functions on every FileContent render while navigation, menus or download polling rerender its parent.
+- Why it failed: React treats new function objects as new component types; identical fenced-code markup was remounted, losing horizontal scroll and selection. Source-mode pre stayed stable and initially hid the defect.
+- Recognition signal: Rendered Markdown pre/link nodes change identity after opening More, despite unchanged file/content/mode.
+- Correct approach: Stabilize openFile callback and renderer map, and memoize unchanged FileContent; legitimate file/mode/language changes can still update it.
+- Prevention: Test rendered fenced-code and link DOM identity/scroll across menu, tree return and progress updates, not only View source.
+- Verified by: SessionFiles rendered-code regression failed on exact pre identity before the fix, then passed; real Chrome native code-pan position and DOM survive follow/rebound/back/resume.
+
+## `mobile file swipe ghostclick` — a new press ends old compatibility suppression
+
+- Wrong approach: Suppress any detail>0 click for450ms after a drag while the navigation settle guard lasts250ms.
+- Why it failed: A deliberate new More tap/mouse press after settling was swallowed; genuine excluded-control touchstart did not clear the prior suppression flag.
+- Recognition signal: Real Chrome finishes page swipe but More does not open at approximately300ms; old ghostclick and new press are conflated.
+- Correct approach: Preserve old-drag/touch-origin suppression, but clear it on a fresh legitimate touchstart after settling/ownership checks or a genuine mouse pointerdown.
+- Prevention: Test ghost click, new button tap, real mouse press, touch-origin pointer and settling separately.
+- Verified by: Two new click regressions failed before repair;39 swipe tests and the original real Chrome menu-after-swipe flow passed afterward.
+
 ## `Device Hub software keyboard` — check hardware simulation before changing terminal focus
 
 - Wrong approach: Treat a focused mobile terminal with a visible shortcut bar but no system keyboard as proof that the App's focus handler failed.

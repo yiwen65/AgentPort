@@ -11,9 +11,38 @@ interface Downloads {
   available: boolean;
   occupied: boolean;
   start(open: OpenSession, path: string): void;
+  snapshot?: FileDownloadSnapshot;
+  openDetails(): void;
 }
-const DownloadsContext = createContext<Downloads>({ available: false, occupied: false, start: () => {} });
-export const useFileDownloads = () => useContext(DownloadsContext);
+interface DownloadPresentation extends Downloads {
+  registerImmersive(token: symbol): () => void;
+  indicatorLabel: string;
+  attention: boolean;
+}
+const noop = () => {};
+const DownloadsContext = createContext<DownloadPresentation>({ available: false, occupied: false, start: noop, openDetails: noop, registerImmersive: () => noop, indicatorLabel: "", attention: false });
+/** Surface registration changes presentation only; the provider still owns the job. */
+export function useFileDownloads({ immersive = false }: { immersive?: boolean } = {}): Downloads {
+  const downloads = useContext(DownloadsContext);
+  const token = useRef(Symbol("file-download-surface"));
+  const register = downloads.registerImmersive;
+  useEffect(() => immersive ? register(token.current) : undefined, [immersive, register]);
+  return downloads;
+}
+/** Small, non-interactive badge inside the file toolbar's More button. */
+export function FileDownloadIndicator() {
+  const { snapshot, indicatorLabel, attention } = useContext(DownloadsContext);
+  if (!snapshot) return null;
+  const progressing = snapshot.state === "downloading" || snapshot.state === "saving";
+  const progress = snapshot.state === "downloading" && snapshot.totalBytes > 0 ? Math.min(100, Math.max(0, snapshot.receivedBytes / snapshot.totalBytes * 100)) : undefined;
+  return <span className={`file-download-indicator${attention ? " has-attention" : ""}`} role="img" aria-label={indicatorLabel} title={indicatorLabel} data-state={snapshot.state}>
+    <svg viewBox="0 0 20 20" aria-hidden="true" fill="none">
+      <circle className="file-download-indicator-track" cx="10" cy="10" r="8" />
+      {progressing ? <circle className="file-download-indicator-progress" cx="10" cy="10" r="8" pathLength="100" strokeDasharray={progress === undefined ? "22 12" : "100"} strokeDashoffset={progress === undefined ? 0 : 100 - progress} /> : null}
+      {attention ? <path d="M10 5.5v5m0 3v.1" /> : snapshot.state === "saved" ? <path d="m6 10 2.5 2.5L14 7" /> : null}
+    </svg>
+  </span>;
+}
 const active = (job?: Job) => !!job && ["downloading", "ready", "saving"].includes(job.snapshot.state);
 const codeOf = (error: unknown) => error && typeof error === "object" && "code" in error ? String(error.code) : "request_failed";
 const knownErrors = new Set(["upgrade_required", "unknown_method", "capability_disabled", "unsupported_platform", "file_too_large", "source_changed", "invalid_download", "invalid_offset", "incomplete_download", "too_many_downloads", "outside_root", "path_not_found", "permission_denied", "unsupported_file", "invalid_path", "session_not_found", "host_not_connected", "connection_changed", "connection_unknown", "request_timeout", "disk_full", "write_failed", "integrity_failed", "save_failed", "cleanup_failed", "partial_save", "download_busy", "request_failed", "disk_error", "integrity_error", "invalid_job", "not_ready", "save_in_progress", "save_failed_leftover", "saved_cleanup_failed", "cancelled"]);
@@ -32,6 +61,16 @@ export function FileDownloadProvider({ client, children }: { client: FileDownloa
   const epoch = useRef(0);
   const [details, setDetails] = useState(false);
   const [notice, setNotice] = useState<string>();
+  const surfaces = useRef(new Set<symbol>());
+  const [surfaceCount, setSurfaceCount] = useState(0);
+  const immersive = surfaceCount > 0;
+  const registerImmersive = useCallback((token: symbol) => {
+    surfaces.current.add(token);
+    setSurfaceCount(surfaces.current.size);
+    return () => { surfaces.current.delete(token); setSurfaceCount(surfaces.current.size); };
+  }, []);
+  const openDetails = useCallback(() => { if (current.current) setDetails(true); }, []);
+  const [compactNotice, setCompactNotice] = useState<{ text: string; attention: boolean }>();
   const update = useCallback((value: Job | undefined) => { current.current = value; if (mounted.current) setJob(value); }, []);
   const setWorking = (value: boolean) => { busyRef.current = value; if (mounted.current) setBusy(value); };
   useEffect(() => {
@@ -127,11 +166,25 @@ export function FileDownloadProvider({ client, children }: { client: FileDownloa
     finally { if (mounted.current && turn === epoch.current) setWorking(false); }
   };
   const status = job ? t(`downloads.states.${job.snapshot.state}`) : "";
-  // A cleanup/retry notice must never hide an incomplete external destination.
-  const leftover = job?.snapshot.error?.code === "save_failed_leftover";
-  const error = leftover ? "save_failed_leftover" : notice ?? job?.snapshot.error?.code;
+  // A cleanup/retry notice must never hide an external destination or saved-copy warning.
+  const snapshotError = job?.snapshot.error?.code;
+  const criticalWarning = !!snapshotError && ["save_failed_leftover", "partial_save", "saved_cleanup_failed"].includes(snapshotError);
+  const error = criticalWarning ? snapshotError : notice ?? snapshotError;
   const errorText = error ? t(`downloads.errors.${knownErrors.has(error) || error === "cancelling" ? error : "request_failed"}`) : "";
-  const secondaryErrorText = leftover && notice && notice !== error ? t(`downloads.errors.${knownErrors.has(notice) ? notice : "request_failed"}`) : "";
+  const secondaryErrorText = criticalWarning && notice && notice !== error ? t(`downloads.errors.${knownErrors.has(notice) ? notice : "request_failed"}`) : "";
+  const attention = !!job && (["ready", "failed", "cancelled"].includes(job.snapshot.state) || (!!error && error !== "cancelling"));
+  const bytes = job ? `${formatFileBytes(job.snapshot.receivedBytes)} / ${job.snapshot.totalBytes ? formatFileBytes(job.snapshot.totalBytes) : "—"}` : "";
+  const indicatorLabel = job ? [t("downloads.details", { name: job.snapshot.name }), status, bytes, errorText, secondaryErrorText].filter(Boolean).join(". ") : "";
+  const noticeState = job?.snapshot.state;
+  const noticeId = job?.snapshot.jobId;
+  useEffect(() => {
+    if (!immersive || !noticeState || (noticeState !== "ready" && noticeState !== "failed" && noticeState !== "saved" && noticeState !== "cancelled" && (!error || error === "cancelling"))) {
+      setCompactNotice(undefined); return;
+    }
+    setCompactNotice({ text: errorText || status, attention });
+    const timer = setTimeout(() => setCompactNotice(undefined), 6000);
+    return () => clearTimeout(timer);
+  }, [immersive, noticeId, noticeState, error, errorText, secondaryErrorText, status, attention]);
   const controls = job ? <>
     {job.snapshot.state === "ready" ? <button type="button" disabled={busy} onClick={() => void save()}>{t("downloads.saveAs")}</button> : null}
     {job.snapshot.state === "saving" ? <span className="file-download-save-note">{t("downloads.systemCancel")}</span> : ["downloading", "ready"].includes(job.snapshot.state) ? <button type="button" disabled={(busy && !!job.snapshot.jobId) || notice === "cancelling"} onClick={() => void cancel()}>{t("downloads.cancel")}</button> : <>
@@ -139,9 +192,9 @@ export function FileDownloadProvider({ client, children }: { client: FileDownloa
       <button type="button" disabled={busy} onClick={() => void dismiss()}>{t("downloads.dismiss")}</button>
     </>}
   </> : null;
-  return <DownloadsContext.Provider value={{ available: client.available(), occupied: busy || active(job), start: (open, path) => { void start({ profileId: open.hostProfileId, sessionId: open.session.id, path, hostName: open.hostName, sessionTitle: open.session.title }); } }}>
+  return <DownloadsContext.Provider value={{ available: client.available(), occupied: busy || active(job), snapshot: job?.snapshot, openDetails, registerImmersive, indicatorLabel, attention, start: (open, path) => { void start({ profileId: open.hostProfileId, sessionId: open.session.id, path, hostName: open.hostName, sessionTitle: open.session.title }); } }}>
     {children}
-    {job ? <aside className="file-download-banner" data-no-page-swipe="true" aria-label={t("downloads.title")}>
+    {job && !immersive ? <aside className="file-download-banner" data-no-page-swipe="true" aria-label={t("downloads.title")}>
       <button className="file-download-details" type="button" onClick={() => setDetails(true)} aria-label={t("downloads.details", { name: job.snapshot.name })}>
         <strong>{job.snapshot.name}</strong><span role="status">{status}</span>
         <small>{formatFileBytes(job.snapshot.receivedBytes)} / {job.snapshot.totalBytes ? formatFileBytes(job.snapshot.totalBytes) : "—"}</small>
@@ -151,9 +204,16 @@ export function FileDownloadProvider({ client, children }: { client: FileDownloa
       {secondaryErrorText ? <p role="alert">{secondaryErrorText}</p> : null}
       <div className="file-download-controls">{controls}</div>
     </aside> : null}
+    {immersive && compactNotice && job && !details ? <div className="file-download-notice" data-no-page-swipe="true">
+      <span role={compactNotice.attention && error && error !== "cancelling" ? "alert" : "status"}>{compactNotice.text}</span>
+      <button type="button" onClick={openDetails} aria-label={t("downloads.details", { name: job.snapshot.name })}>
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m9 5 7 7-7 7" /></svg>
+      </button>
+    </div> : null}
     {details && job ? <Modal title={t("downloads.title")} onClose={() => setDetails(false)} className="file-download-dialog">
       <p className="download-source">{job.source.hostName} · {job.source.sessionTitle}<br />{job.source.path}</p>
       <p role="status">{status}</p><p>{formatFileBytes(job.snapshot.receivedBytes)} / {formatFileBytes(job.snapshot.totalBytes)}</p>
+      {job.snapshot.state === "downloading" && job.snapshot.totalBytes > 0 ? <progress max={job.snapshot.totalBytes} value={job.snapshot.receivedBytes} aria-label={t("downloads.progress")} /> : null}
       <p>{t("downloads.foregroundHint")}</p><p>{t("downloads.saveHint")}</p>
       {errorText ? <p role={error === "cancelling" ? "status" : "alert"}>{errorText}</p> : null}
       {secondaryErrorText ? <p role="alert">{secondaryErrorText}</p> : null}

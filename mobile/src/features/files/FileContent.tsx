@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import ReactMarkdown from "react-markdown";
+import { memo, useMemo } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import { useTranslation } from "react-i18next";
 import hljs from "highlight.js/lib/core";
 import javascript from "highlight.js/lib/languages/javascript";
@@ -37,20 +37,20 @@ export function HighlightedCode({ content, language }: { content: string; langua
   return <code className="files-code" {...(html === undefined ? {} : { dangerouslySetInnerHTML: { __html: html } })}>{html === undefined ? content : undefined}</code>;
 }
 
-export function FileContent({ path, content, rendered, onOpen }: { path: string; content: string; rendered: boolean; onOpen: (path: string) => void }) {
+export const FileContent = memo(function FileContent({ path, content, rendered, onOpen }: { path: string; content: string; rendered: boolean; onOpen: (path: string) => void }) {
   const { t } = useTranslation();
-  if (!rendered || !isMarkdown(path)) return <pre className="files-source" data-horizontal-scroll="true" tabIndex={0}><HighlightedCode content={content} language={extensions[path.split(".").pop()?.toLowerCase() ?? ""]} /></pre>;
-  return <article className="files-markdown">
-    <p className="files-note">{t("files.markdownSafety")}</p>
-    <ReactMarkdown skipHtml components={{
+  // Renderer functions are React component types. Recreating them on a menu
+  // or progress update would remount code blocks and lose native scroll/selection.
+  const components = useMemo<Components>(() => ({
       img: ({ alt }) => <span className="files-blocked-resource">[{t("files.imageBlocked")}{alt ? `: ${alt}` : ""}]</span>,
       a: ({ href, children }) => {
         const target = localFileLink(path, href ?? "");
-        return target ? <button type="button" className="files-document-link" onClick={() => onOpen(target)}>{children}</button>
+        return target ? <button type="button" role="link" className="files-document-link" onClick={() => onOpen(target)}>{children}</button>
           : <span title={t("files.linkBlocked")}>{children} <small>({t("files.linkBlocked")})</small></span>;
       },
       pre: ({ children }) => <pre data-horizontal-scroll="true" tabIndex={0}>{children}</pre>,
       code: ({ className, children }) => <HighlightedCode content={String(children)} language={/language-([\w-]+)/.exec(className ?? "")?.[1]} />,
-    }}>{content}</ReactMarkdown>
-  </article>;
-}
+  }), [onOpen, path, t]);
+  if (!rendered || !isMarkdown(path)) return <pre className="files-source" data-horizontal-scroll="true" tabIndex={0}><HighlightedCode content={content} language={extensions[path.split(".").pop()?.toLowerCase() ?? ""]} /></pre>;
+  return <article className="files-markdown"><ReactMarkdown skipHtml components={components}>{content}</ReactMarkdown></article>;
+});

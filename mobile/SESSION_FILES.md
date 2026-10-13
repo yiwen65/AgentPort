@@ -1,6 +1,14 @@
 # Session 项目文件（只读）
 
-在 Session 终端向左滑动，或展开终端顶部控制区后点击文件夹按钮，进入项目文件树。文件树右滑或点击「终端」返回；预览页点击「文件树」先返回目录。预览页的横向滑动用于阅读长代码行，不切换页面。
+在 Session 终端向左滑动，或展开顶部控制区后点击文件夹按钮，进入项目文件树。文件树右滑或点击左上返回图标回终端。点文件打开预览；普通正文右滑返回文件树，树左滑回到最后打开的文件，也可通过更多菜单「继续阅读」进入。页面跟随手指移动，短滑可回弹，一次手势只返回一层。
+
+## 沉浸阅读
+
+- 顶部常驻单行「返回图标 · 文件/根目录名 · ⋯」，长标题省略，不改变按钮热区。正文紧接标题栏；完整路径、只读及安全说明不再常驻。
+- 「⋯」中提供刷新、下载、复制路径/内容、Markdown源码/渲染切换、文件信息与安全说明。Markdown本地链接以行内链接呈现，不是大按钮，读取安全策略不变。
+- 树/预览持续挂载，同一文件往返保留树和正文滚动位置、代码横向位置及源码/渲染模式，不额外重读文件。切换新文件或显式刷新可能改变内容，不承诺跨App重启保存阅读历史。
+- 代码横滚、文本选择、链接/按钮/菜单、多指及纵滚不触发本层切页。长按开始选字后，不把结束动作当作导航；系统「减弱动态效果」下不播放完成/回弹动画。
+- 断线/缓存/截断保留紧凑提示；读取失败明确显示并可重试。截断提示可查看详细限制，不能把已截断片段当作完整文件。
 
 - 根目录是电脑端记录的 Session `cwd`，不跟随终端临时 `cd`，也不会替换成项目主 checkout。
 - 文件夹按需加载；每次进入、重新连接或手动刷新会重新读取已加载目录。展开状态和树的滚动位置在页面往返时保留，不停止 Session。
@@ -11,7 +19,8 @@
 
 文件行右侧「⋯ → 下载文件」，或只读预览中的「下载文件」，可下载根目录内的单个普通文件。文件类型不限，最大 **1 GiB**。无法预览的图片、PDF、压缩包等仍可下载；下载的是完整原始字节，不是 1 MiB 的文本预览片段。
 
-- App 全局同时运行一个任务，显示文件名、已传输量/总量、进度及取消。切回终端或切换 Session 不会取消原任务；详情显示来源主机/Session/路径。
+- App 全局同时运行一个任务。文件阅读期间不显示大任务卡片：顶部「⋯」有轻量进度/待处理标记，通过更多菜单「文件下载」打开详情，可查看进度、取消及另存为。重要变化有短提示，完整警告仍保留在指示器和详情。
+- 切回终端或切换 Session 不取消原任务；文件页之外恢复现有任务卡片。详情显示来源主机/Session/路径，不能把其他Session的任务误当作当前文件。
 - 前台分块下载到 App 私有临时文件，校验长度与 SHA-256 后显示「等待选择保存位置」。点击「另存为…」打开系统文件界面，选择目录和文件名。
 - 系统负责同名重命名或显式替换确认，App 不自行覆盖。可以选择本机目录或系统提供的云盘；「已保存」只确认保存流程完成，不保证云端同步完成。
 - 另存为期间在系统界面取消；App 不删除仍被系统读取的源文件。Android 写入失败会尝试删除系统新建的目标，无法删除时明确提示检查不完整文件。
@@ -35,7 +44,7 @@
 
 ```bash
 cd mobile
-npm test -- src/features/files/SessionFiles.test.tsx src/features/files/FileDownloads.test.tsx src/platform/tauriFileDownloadClient.test.ts src/app/App.test.tsx src/features/sessions/SessionWorkspace.test.tsx src/terminal/MobileTerminal.test.tsx
+npm test -- src/features/files/SessionFiles.test.tsx src/features/files/useFilePageSwipe.test.tsx src/features/files/FileDownloads.test.tsx src/platform/tauriFileDownloadClient.test.ts src/app/App.test.tsx src/features/sessions/SessionWorkspace.test.tsx src/terminal/MobileTerminal.test.tsx
 npm run build
 cd ..
 cargo test -p agentport-service session_file --lib

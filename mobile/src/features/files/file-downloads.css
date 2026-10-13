@@ -9,6 +9,19 @@
 .file-download-controls button { min-width: 44px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: transparent; color: inherit; font: inherit; font-size: 14px; }
 .file-download-controls button:disabled { opacity: .55; }
 .file-download-dialog .download-source { overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
+.file-download-dialog progress { width: 100%; height: 8px; accent-color: var(--accent); }
+/* Inline in More: no separate toolbar row or additional touch target. */
+.file-download-indicator { display: inline-flex; flex: 0 0 20px; width: 20px; height: 20px; color: var(--accent); vertical-align: middle; }
+.file-download-indicator svg { width: 20px; height: 20px; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.file-download-indicator-track { opacity: .25; }
+.file-download-indicator-progress { transform: rotate(-90deg); transform-origin: center; }
+.file-download-indicator[data-state="failed"] { color: var(--danger); }
+/* Transient, two-line feedback only; complete warnings remain in the badge label/details. */
+.file-download-notice { position: fixed; z-index: 10; inset-inline: max(12px, env(safe-area-inset-left)) max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); width: min(340px, calc(100% - 24px)); margin-inline: auto; display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
+.file-download-notice > span { flex: 1; min-width: 0; font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.file-download-notice > span[role="alert"] { color: var(--danger); }
+.file-download-notice button { flex: 0 0 44px; width: 44px; min-height: 44px; padding: 10px; border: 0; border-radius: 8px; background: transparent; color: inherit; }
+.file-download-notice button svg { display: block; width: 24px; height: 24px; }
 .file-download-save-note { font-size: 13px; color: var(--muted); }
 /* Never cover the terminal's input/shortcut bar with a transfer card. */
 body.terminal-visible .file-download-banner { top: max(8px, env(safe-area-inset-top)); bottom: auto; inset-inline-start: auto; width: min(260px, calc(100% - 24px)); margin-inline: 0; }

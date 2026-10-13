@@ -285,7 +285,8 @@ describe("AgentPort Mobile V2 shell", () => {
     fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 80, clientY: 223 }] });
     fireEvent.click(await screen.findByRole("button", { name: "File actions for README.md" }));
     fireEvent.click(screen.getByRole("button", { name: "Download file" }));
-    await screen.findByText("Downloading");
+    await screen.findByRole("button", { name: /^More file actions.*Downloading/ });
+    expect(screen.queryByRole("complementary", { name: "File download" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
     expect(shell).toHaveAttribute("data-page", "terminal");
     expect(screen.getByText("Downloading")).toBeVisible();

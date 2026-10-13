@@ -12,6 +12,7 @@ export const resources = {
       },
       files: {
         open: "项目文件", preview: "只读预览", backToTerminal: "终端", backToTree: "文件树", refresh: "刷新", retry: "重试",
+        more: "更多文件操作", information: "文件信息与安全说明", backToActions: "返回操作", resumePreview: "继续阅读 {{name}}", offlineShort: "未连接 · 缓存内容", cachedShort: "缓存内容 · 尚未确认最新状态", truncatedShort: "仅预览前 1 MiB · 查看详情",
         readOnly: "仅浏览 · 以当前 Session 工作目录为根 · 隐藏 .git", directory: "目录", file: "文件", empty: "此目录为空。", loading: "正在读取…",
         offline: "电脑未连接。已加载内容仅为缓存；连接后自动刷新。", cached: "显示上次读取的内容，尚未确认最新状态。",
         upgradeRequired: "此电脑版本不支持安全的 Session 文件浏览。请升级电脑上的 AgentPort 后重试。",
@@ -228,6 +229,7 @@ export const resources = {
       },
       files: {
         open: "Project files", preview: "Read-only preview", backToTerminal: "Terminal", backToTree: "File tree", refresh: "Refresh", retry: "Retry",
+        more: "More file actions", information: "File information and safety", backToActions: "Back to actions", resumePreview: "Continue reading {{name}}", offlineShort: "Disconnected · cached content", cachedShort: "Cached content · not yet confirmed current", truncatedShort: "First 1 MiB only · details",
         readOnly: "Read only · Session working directory · .git hidden", directory: "Directory", file: "File", empty: "This directory is empty.", loading: "Loading…",
         offline: "Computer disconnected. Loaded content is cached; it refreshes after reconnection.", cached: "Showing previously loaded content; not yet confirmed current.",
         upgradeRequired: "This computer does not support safe Session file browsing. Upgrade AgentPort on the computer and retry.",
