@@ -34,6 +34,37 @@ fn mobile_scaffold_status() -> ScaffoldStatus {
     }
 }
 
+/// Diagnostics sink for terminal stream lifecycle events (attach/detach,
+/// transport transitions, effect re-runs). The frontend only writes when a
+/// stream event actually changes, so this stays quiet in steady state. The file
+/// is capped and rotated so a long-lived session cannot grow it without bound.
+#[tauri::command]
+fn mobile_diag_log(app: tauri::AppHandle, line: String) -> Result<(), String> {
+    const MAX_BYTES: u64 = 512 * 1024;
+    let cleaned: String = line
+        .replace(['\n', '\r'], " ")
+        .chars()
+        .take(600)
+        .collect();
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("diag.log");
+    if std::fs::metadata(&path).map(|m| m.len() > MAX_BYTES).unwrap_or(false) {
+        let _ = std::fs::rename(&path, dir.join("diag.log.1"));
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or_default();
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    use std::io::Write;
+    writeln!(file, "{stamp} {cleaned}").map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -68,6 +99,7 @@ pub fn run() {
     builder
         .invoke_handler(tauri::generate_handler![
             mobile_scaffold_status,
+            mobile_diag_log,
             markdown_images::markdown_image_fetch,
             markdown_images::markdown_image_validate,
             file_download::mobile_file_download_start,

@@ -14,6 +14,7 @@ import {
 } from "../../terminal/terminalThemes";
 import { useMobileTerminalAppearance } from "../../terminal/terminalAppearance";
 import { decodeBase64Bytes, encodeBase64Utf8, outputBase64Of, sessionBatchId, sessionIdOf } from "./sessionProtocol";
+import { diag } from "../../platform/diag";
 import type { OpenSession, RunCursor, SessionAttachResult, SessionEventPayload, SessionStatus, TerminalGeometry } from "./types";
 
 const MOBILE_DEVICE_ID_KEY = "agentport-mobile-v2:device-id";
@@ -360,7 +361,19 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
     }
   }, [client, finishReplay, resetRunOutput, open.hostProfileId, open.session.id, scheduleTerminalOutput, t]);
 
+  // Diagnostics only: records which dependency forced the attach effect to
+  // re-run, so a stream that keeps closing and reopening can be traced back to
+  // the dep that changed. Never read by stream logic.
+  const attachDepRef = useRef<unknown[]>([]);
+
   useEffect(() => {
+    const depLabels = ["attachEpoch", "client", "handleEvent", "hostProfileId", "sessionId", "shouldAttach", "resetRunOutput", "flushTerminalOutput", "screenKey", "t"];
+    const depValues = [attachEpoch, client, handleEvent, open.hostProfileId, open.session.id, shouldAttach, resetRunOutput, flushTerminalOutput, screenKey, t];
+    const changed = attachDepRef.current.length
+      ? depLabels.filter((_, index) => !Object.is(attachDepRef.current[index], depValues[index]))
+      : ["initial"];
+    attachDepRef.current = depValues;
+    diag("attach-effect", { sessionId: open.session.id, changed, generation: replayGeneration.current + 1, shouldAttach });
     if (!shouldAttach) { setReplayPending(false); setConnectionLabel("ended"); setError(""); return; }
     replayGeneration.current += 1;
     const generation = replayGeneration.current;
@@ -422,6 +435,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
           result = await client.request<SessionAttachResult>(open.hostProfileId, "session.attach", params);
         }
         if (cancelled || generation !== replayGeneration.current) {
+          diag("detach", { sessionId: open.session.id, reason: "attach-superseded", attachmentId: result.attachmentId });
           await client.request(open.hostProfileId, "session.detach", { attachmentId: result.attachmentId }).catch(() => undefined);
           return;
         }
@@ -438,6 +452,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
           flushTerminalOutput();
           await terminal.current?.restore(result.screenSnapshot);
           if (cancelled || generation !== replayGeneration.current) {
+            diag("detach", { sessionId: open.session.id, reason: "snapshot-superseded", attachmentId: result.attachmentId });
             await client.request(open.hostProfileId, "session.detach", { attachmentId: result.attachmentId }).catch(() => undefined);
             return;
           }
@@ -469,6 +484,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
         earlyEvents.length = 0;
       } catch (requestError) {
         if (ownedAttachment) {
+          diag("detach", { sessionId: open.session.id, reason: "attach-error", attachmentId: ownedAttachment });
           void client.request(open.hostProfileId, "session.detach", { attachmentId: ownedAttachment }).catch(() => undefined);
           ownedAttachment = undefined;
         }
@@ -485,6 +501,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
     });
     void client.onConnectionState((event) => {
       if (cancelled || event.profileId !== open.hostProfileId) return;
+      diag("connection-state", { sessionId: open.session.id, state: event.state, recoveryPending: recoveryPending.current });
       if (event.state === "reconnecting" || event.state === "disconnected" || event.state === "failed") {
         setRecoveryVeil(true);
         setReplayPending(true);
@@ -508,7 +525,10 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
       if (restoringSnapshot) { cursor.current = undefined; forgetCheckpoint(screenKey); }
       setAttachmentId(undefined);
       if (attachmentRef.current === attached) attachmentRef.current = undefined;
-      if (ownedAttachment) void client.request(open.hostProfileId, "session.detach", { attachmentId: ownedAttachment }).catch(() => undefined);
+      if (ownedAttachment) {
+        diag("detach", { sessionId: open.session.id, reason: "effect-cleanup", attachmentId: ownedAttachment });
+        void client.request(open.hostProfileId, "session.detach", { attachmentId: ownedAttachment }).catch(() => undefined);
+      }
       if (unsubscribeEvents) void unsubscribeEvents();
       if (unsubscribeConnection) void unsubscribeConnection();
     };
