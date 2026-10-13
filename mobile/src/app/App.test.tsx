@@ -6,6 +6,8 @@ import type { RemoteClient, RemoteEvent } from "../protocol/remoteClient";
 import type { SessionEventPayload } from "../features/sessions/types";
 import { App } from "./App";
 import type { FileDownloadClient } from "../protocol/fileDownloadClient";
+import { useTerminalImmersion } from "./terminalImmersion";
+vi.mock("./terminalImmersion", () => ({ useTerminalImmersion: vi.fn() }));
 
 vi.mock("../terminal/MobileTerminal", async () => {
   const { forwardRef } = await vi.importActual<typeof import("react")>("react");
@@ -254,6 +256,7 @@ describe("AgentPort Mobile V2 shell", () => {
     fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 80, clientY: 223 }] });
     await screen.findByText("README.md");
     expect(shell).toHaveAttribute("data-page", "files");
+    expect(useTerminalImmersion).toHaveBeenLastCalledWith(true);
     expect(input).not.toHaveFocus();
     expect(container.querySelector(".session-stage")).toHaveAttribute("inert");
     expect(container.querySelector(".main-content")).toHaveAttribute("inert");
@@ -285,6 +288,7 @@ describe("AgentPort Mobile V2 shell", () => {
     fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 80, clientY: 223 }] });
     fireEvent.click(await screen.findByRole("button", { name: "File actions for README.md" }));
     fireEvent.click(screen.getByRole("button", { name: "Download file" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show file title and actions" }));
     await screen.findByRole("button", { name: /^More file actions.*Downloading/ });
     expect(screen.queryByRole("complementary", { name: "File download" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Terminal" }));

@@ -47,7 +47,7 @@ function AppContents({ client, hostAuthClient, terminalClient = genericTerminalC
   const [page, setPage] = useState<SessionPage>("list");
   const terminalVisible = page === "terminal" && !genericHost;
   const [filesVisited, setFilesVisited] = useState(false);
-  useTerminalImmersion(terminalVisible);
+  useTerminalImmersion(terminalVisible || page === "files");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deviceManagerOpen, setDeviceManagerOpen] = useState(false);
   const [hostProfilesEpoch, setHostProfilesEpoch] = useState(0);

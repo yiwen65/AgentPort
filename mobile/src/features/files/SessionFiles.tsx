@@ -27,6 +27,9 @@ export function SessionFiles({ open, client, active, onBack }: SessionFilesProps
   const [operations, setOperations] = useState<string>();
   const [menu, setMenu] = useState<"tree" | "preview">();
   const [information, setInformation] = useState(false);
+  const [chromeVisible, setChromeVisible] = useState(false);
+  const treeReveal = useRef<HTMLButtonElement>(null);
+  const previewReveal = useRef<HTMLButtonElement>(null);
   const [directories, setDirectories] = useState<Record<string, Resource<FileListing>>>({});
   const directoriesRef = useRef(directories);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -118,17 +121,19 @@ export function SessionFiles({ open, client, active, onBack }: SessionFilesProps
   useEffect(() => {
     if (!active) return;
     const frame = requestAnimationFrame(() => {
-      if (previewVisible) previewHeading.current?.focus({ preventScroll: true });
-      else (rows.current.get(returnRow.current ?? "") ?? treeHeading.current)?.focus({ preventScroll: true });
+      if (previewVisible) previewScroll.current?.focus({ preventScroll: true });
+      else (rows.current.get(returnRow.current ?? "") ?? treeReveal.current)?.focus({ preventScroll: true });
     });
     return () => cancelAnimationFrame(frame);
   }, [active, preview, previewVisible]);
 
+  useEffect(() => { setChromeVisible(false); }, [active, previewVisible]);
   const showPreview = () => { if (previewRef.current) setPreviewVisible(true); };
   const backToTree = () => { window.getSelection()?.removeAllRanges(); setPreviewVisible(false); setCopyStatus(""); };
   const { dragging } = useFilePageSwipe({ containerRef: pages, active, previewVisible, hasPreview: preview !== undefined, onShowTree: backToTree, onShowPreview: showPreview });
   const openFile = useCallback((path: string) => {
     returnRow.current = path;
+    setChromeVisible(false);
     setPreviewVisible(true);
     if (previewRef.current === path) return;
     previewRef.current = path; setPreview(path); setFile({ loading: false, stale: false }); setRendered(true); setCopyStatus("");
@@ -180,21 +185,28 @@ export function SessionFiles({ open, client, active, onBack }: SessionFilesProps
   const downloadWarning = downloads.snapshot?.error ? t(`downloads.errors.${downloads.snapshot.error.code}`, { defaultValue: t("downloads.errors.request_failed") }) : undefined;
   const moreLabel = downloads.snapshot ? [t("files.more"), t(`downloads.states.${downloads.snapshot.state}`), downloadWarning].filter(Boolean).join(" · ") : t("files.more");
   const menuButton = (page: "tree" | "preview") => <button type="button" className="files-icon-button files-more-button" aria-label={moreLabel} aria-haspopup="dialog" onClick={() => openMenu(page)}><span aria-hidden="true">⋯</span><FileDownloadIndicator /></button>;
+  const header = (page: "tree" | "preview", title: string, path: string) => <>
+    <button ref={page === "tree" ? treeReveal : previewReveal} type="button" className="files-chrome-reveal" hidden={chromeVisible} aria-label={t("files.showControls")} aria-expanded={false}
+      onClick={(event) => { setChromeVisible(true); if (event.detail === 0) requestAnimationFrame(() => (page === "tree" ? treeHeading : previewHeading).current?.focus({ preventScroll: true })); }}><span aria-hidden="true">⋯</span><FileDownloadIndicator /></button>
+    <header className="files-header" hidden={!chromeVisible} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setChromeVisible(false); requestAnimationFrame(() => (page === "tree" ? treeReveal : previewReveal).current?.focus({ preventScroll: true })); } }}>
+      <div className="files-heading"><button type="button" className="files-icon-button" aria-label={t(page === "tree" ? "files.backToTerminal" : "files.backToTree")} onClick={page === "tree" ? onBack : backToTree}><BackIcon /></button><h1 ref={page === "tree" ? treeHeading : previewHeading} tabIndex={-1} title={path}>{title}</h1></div>{menuButton(page)}
+    </header>
+  </>;
   const previewNotice = !online ? t("files.offlineShort") : file.data && file.loading ? t("files.loading") : file.data && file.stale ? t("files.cachedShort") : undefined;
-  return <section className={`session-files${active ? "" : " is-inactive"}`} tabIndex={-1} aria-label={t("files.open")} aria-hidden={!active}>
+  return <section className={`session-files${active ? "" : " is-inactive"}`} tabIndex={-1} aria-label={t("files.open")} aria-hidden={!active} data-chrome-visible={chromeVisible} onPointerDownCapture={(event) => { if (!(event.target as Element).closest(".files-header,.files-chrome-reveal,.modal-backdrop,.mobile-modal-portal")) setChromeVisible(false); }}>
     <div ref={pages} className="files-page-viewport" data-preview-visible={previewVisible} data-dragging={dragging}>
       <div className={`files-page-track${previewVisible ? " is-preview" : ""}`}>
         <section className="files-tree-page" aria-hidden={previewVisible} {...(previewVisible ? { inert: "" } : {})}>
-          <header className="files-header"><button type="button" className="files-icon-button" aria-label={t("files.backToTerminal")} onClick={onBack}><BackIcon /></button><h1 ref={treeHeading} tabIndex={-1} title={root}>{baseName(root)}</h1>{menuButton("tree")}</header>
+          {header("tree", baseName(root), root)}
           {!online || directories["."]?.stale && directories["."]?.data ? <p className="files-state-strip" role="status">{t(!online ? "files.offlineShort" : "files.cachedShort")}</p> : null}
           <div className="files-tree-scroll" aria-label={t("files.open")}>{tree(".")}</div>
         </section>
         <section className="files-preview-page" data-no-page-swipe="true" aria-hidden={!previewVisible} {...(!previewVisible ? { inert: "" } : {})}>
           {preview !== undefined ? <>
-            <header className="files-header"><button type="button" className="files-icon-button" aria-label={t("files.backToTree")} onClick={backToTree}><BackIcon /></button><h1 ref={previewHeading} tabIndex={-1} title={preview}>{baseName(preview)}</h1>{menuButton("preview")}</header>
+            {header("preview", baseName(preview), preview)}
             {previewNotice ? <p className="files-state-strip" role="status">{previewNotice}</p> : null}
             {file.data?.truncated ? <button className="files-state-strip files-state-action" type="button" aria-label={t("files.fileTruncated", { size: file.data.sizeBytes.toLocaleString() })} onClick={() => { openMenu("preview"); setInformation(true); }}>{t("files.truncatedShort")}</button> : null}
-            <div ref={previewScroll} className="files-preview-scroll">
+            <div ref={previewScroll} className="files-preview-scroll" tabIndex={-1} aria-label={baseName(preview)}>
               {resourceStatus(file, () => void load(preview, "read"), true)}
               {file.data ? <FileContent path={preview} content={file.data.content} rendered={rendered} onOpen={openFile} /> : null}
             </div>

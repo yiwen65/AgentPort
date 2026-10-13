@@ -35,7 +35,8 @@ function mount(client: RemoteClient) {
 }
 const row = (name: string) => screen.getByRole("button", { name: new RegExp(`^${name}`) });
 const calls = (client: RemoteClient, method: string) => vi.mocked(client.request).mock.calls.filter(([, called]) => called === `session.files.${method}`);
-function more() { fireEvent.click(screen.getByRole("button", { name: /^More file actions/ })); return screen.getByRole("dialog"); }
+function fileControl(name: string | RegExp) { if (!screen.queryByRole("button", { name })) fireEvent.click(screen.getByRole("button", { name: "Show file title and actions" })); return screen.getByRole("button", { name }); }
+function more() { fireEvent.click(fileControl(/^More file actions/)); return screen.getByRole("dialog"); }
 function action(name: string) { fireEvent.click(within(more()).getByRole("button", { name })); }
 function swipe(node: Element, x: number, to: number, y = 200) {
   fireEvent.touchStart(node, { touches: [{ identifier: 1, clientX: x, clientY: y }] });
@@ -50,10 +51,28 @@ beforeEach(async () => { await i18n.changeLanguage("en-US"); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("SessionFiles", () => {
+  it("starts fullscreen, reveals controls, hides them without resetting scroll, and supports Escape", async () => {
+    const { client } = remote(); const view = mount(client);
+    await screen.findByRole("button", { name: "README.md File" });
+    const scroll = view.container.querySelector(".files-tree-scroll")!; scroll.scrollTop = 120;
+    expect(screen.queryByRole("button", { name: "Terminal" })).toBeNull();
+    fileControl("Terminal");
+    expect(screen.getByRole("heading", { name: "project" })).toBeVisible();
+    fireEvent.pointerDown(scroll);
+    expect(screen.queryByRole("button", { name: "Terminal" })).toBeNull();
+    expect(scroll.scrollTop).toBe(120);
+    fileControl("Terminal");
+    fireEvent.keyDown(screen.getByRole("button", { name: "Terminal" }), { key: "Escape" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show file title and actions" })).toHaveFocus());
+    expect(screen.queryByRole("button", { name: "Terminal" })).toBeNull();
+  });
   it("places only filename/back/more above healthy content and moves actions/information to the menu", async () => {
     const { client } = remote(); const view = mount(client);
     fireEvent.click(await screen.findByRole("button", { name: "README.md File" })); await screen.findByRole("heading", { name: "Read me" });
     const preview = view.container.querySelector(".files-preview-page")!;
+    expect(preview.querySelector(".files-header")).toHaveAttribute("hidden");
+    expect(screen.queryByRole("button", { name: /^More file actions/ })).toBeNull();
+    fileControl("File tree");
     expect(within(preview as HTMLElement).getByRole("heading", { name: "README.md" })).toBeVisible();
     expect(preview.querySelectorAll(".files-header button")).toHaveLength(2);
     expect(preview.querySelector(".files-root,.files-actions,.files-caption")).toBeNull();
@@ -72,7 +91,7 @@ describe("SessionFiles", () => {
     fireEvent.click(await screen.findByRole("button", { name: "README.md File" })); await screen.findByRole("heading", { name: "Read me" });
     action("View source");
     const code = view.container.querySelector(".files-source"); const body = view.container.querySelector(".files-preview-scroll")!; body.scrollTop = 180;
-    fireEvent.click(screen.getByRole("button", { name: "File tree" }));
+    fireEvent.click(fileControl("File tree"));
     expect(view.container.querySelector(".files-tree-scroll")).toBe(treeScroll); expect(treeScroll.scrollTop).toBe(140);
     expect(screen.queryByRole("button", { name: "File tree" })).toBeNull();
     action("Continue reading README.md");
@@ -87,7 +106,7 @@ describe("SessionFiles", () => {
     const code = view.container.querySelector(".files-markdown pre")!; code.scrollLeft = 87;
     const menu = more(); fireEvent.click(within(menu).getByRole("button", { name: "Close" }));
     expect(view.container.querySelector(".files-markdown pre")).toBe(code); expect(code.scrollLeft).toBe(87);
-    fireEvent.click(screen.getByRole("button", { name: "File tree" })); action("Continue reading README.md");
+    fireEvent.click(fileControl("File tree")); action("Continue reading README.md");
     expect(view.container.querySelector(".files-markdown pre")).toBe(code); expect(code.scrollLeft).toBe(87);
     expect(calls(client, "read")).toHaveLength(1);
   });
@@ -107,11 +126,11 @@ describe("SessionFiles", () => {
     const view = render(<div onTouchEnd={parent}><SessionFiles open={open} client={client} active onBack={() => {}} /></div>); width(view.container);
     fireEvent.click(await screen.findByRole("button", { name: "README.md File" })); await screen.findByRole("heading", { name: "Read me" });
     swipe(screen.getByText("Ordinary reading text."), 60, 240);
-    expect(screen.getByRole("heading", { name: "project" })).toBeVisible(); expect(parent).not.toHaveBeenCalled();
+    expect(view.container.querySelector(".files-page-viewport")).toHaveAttribute("data-preview-visible", "false"); expect(parent).not.toHaveBeenCalled();
     // The settling guard lasts 250ms; the next deliberate gesture starts later.
     await act(() => new Promise(resolve => setTimeout(resolve, 270)));
     swipe(view.container.querySelector(".files-tree-scroll")!, 270, 80);
-    expect(screen.getByRole("heading", { name: "README.md" })).toBeVisible(); expect(calls(client, "read")).toHaveLength(1);
+    expect(view.container.querySelector(".files-page-viewport")).toHaveAttribute("data-preview-visible", "true"); expect(calls(client, "read")).toHaveLength(1);
   });
   it("never enters an empty preview and keeps code/link gestures out of page navigation", async () => {
     const { client } = remote(); const view = mount(client); width(view.container);
@@ -119,9 +138,9 @@ describe("SessionFiles", () => {
     expect(screen.queryByRole("button", { name: "File tree" })).toBeNull();
     fireEvent.click(row("README")); await screen.findByRole("heading", { name: "Read me" });
     swipe(screen.getByRole("link", { name: "Source" }), 60, 240);
-    expect(screen.getByRole("button", { name: "File tree" })).toBeVisible();
+    expect(fileControl("File tree")).toBeVisible();
     action("View source"); swipe(view.container.querySelector("pre")!, 60, 240);
-    expect(screen.getByRole("button", { name: "File tree" })).toBeVisible();
+    expect(fileControl("File tree")).toBeVisible();
   });
   it("offers download from file actions without opening preview or disturbing directory taps", async () => {
     const { client } = remote(); const download = downloads();
@@ -160,8 +179,8 @@ describe("SessionFiles", () => {
     const scroll = view.container.querySelector(".files-tree-scroll")!; scroll.scrollTop = 180;
     fireEvent.click(row("main.ts")); await screen.findByText("answer", { exact: false }); expect(view.container.querySelector(".hljs-keyword")).toHaveTextContent("const");
     expect(view.container.querySelector(".files-preview-page")).toHaveAttribute("data-no-page-swipe", "true"); expect(view.container.querySelector("pre")).toHaveAttribute("data-horizontal-scroll", "true");
-    fireEvent.click(screen.getByRole("button", { name: "File tree" })); expect(view.container.querySelector(".files-tree-scroll")).toBe(scroll); expect(scroll.scrollTop).toBe(180); expect(row("src")).toHaveAttribute("aria-expanded", "true");
-    fireEvent.click(screen.getByRole("button", { name: "Terminal" })); expect(view.props.onBack).toHaveBeenCalledOnce(); expect(vi.mocked(client.request).mock.calls.every(([, method]) => method.startsWith("session.files."))).toBe(true);
+    fireEvent.click(fileControl("File tree")); expect(view.container.querySelector(".files-tree-scroll")).toBe(scroll); expect(scroll.scrollTop).toBe(180); expect(row("src")).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(fileControl("Terminal")); expect(view.props.onBack).toHaveBeenCalledOnce(); expect(vi.mocked(client.request).mock.calls.every(([, method]) => method.startsWith("session.files."))).toBe(true);
   });
   it.each(["__proto__", "constructor", "toString"])("loads directory %s without confusing inherited keys with cache", async name => {
     const { client } = remote(); vi.mocked(client.request).mockResolvedValueOnce({ ...listing(), entries: [{ name, path: name, isDir: true }] }).mockResolvedValueOnce({ ...listing(name), entries: [] });
@@ -224,11 +243,11 @@ describe("SessionFiles", () => {
   it("reenters tree on activation but remembers the prior preview without keyboard input", async () => {
     const { client } = remote(); const view = mount(client); fireEvent.click(await screen.findByRole("button", { name: "README.md File" })); await screen.findByRole("heading", { name: "Read me" });
     view.rerender(<SessionFiles {...view.props} active={false} />); expect(screen.queryByRole("button", { name: "File tree" })).toBeNull(); view.rerender(<SessionFiles {...view.props} />); await screen.findByRole("button", { name: "README.md File" });
-    expect(view.container.querySelector("input,textarea,[contenteditable=true]")).toBeNull(); expect(screen.getByRole("heading", { name: "project" })).toBeVisible(); action("Continue reading README.md"); expect(screen.getByRole("heading", { name: "README.md" })).toBeVisible();
+    expect(view.container.querySelector("input,textarea,[contenteditable=true]")).toBeNull(); expect(view.container.querySelector(".files-page-viewport")).toHaveAttribute("data-preview-visible", "false"); action("Continue reading README.md"); expect(view.container.querySelector(".files-page-viewport")).toHaveAttribute("data-preview-visible", "true");
   });
   it("keeps a pending read when going back, but fences it when selecting a different file", async () => {
     const { client } = remote(); mount(client); await screen.findByRole("button", { name: "README.md File" }); const late = deferred<unknown>(); vi.mocked(client.request).mockImplementationOnce(() => late.promise); fireEvent.click(row("README")); const signal = calls(client, "read")[0][3]?.signal;
-    fireEvent.click(screen.getByRole("button", { name: "File tree" })); expect(signal?.aborted).toBe(false); fireEvent.click(row("src")); await screen.findByRole("button", { name: "main.ts File" }); fireEvent.click(row("main.ts")); await screen.findByText("answer", { exact: false }); expect(signal?.aborted).toBe(true);
+    fireEvent.click(fileControl("File tree")); expect(signal?.aborted).toBe(false); fireEvent.click(row("src")); await screen.findByRole("button", { name: "main.ts File" }); fireEvent.click(row("main.ts")); await screen.findByText("answer", { exact: false }); expect(signal?.aborted).toBe(true);
     await act(async () => late.resolve({ content: "OLD README", truncated: false })); expect(screen.queryByText("OLD README")).toBeNull();
   });
 });

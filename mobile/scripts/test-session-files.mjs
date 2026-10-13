@@ -86,6 +86,10 @@ try {
   const evaluate=async expression=>{const result=await call('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});if(result.exceptionDetails)throw new Error(JSON.stringify(result.exceptionDetails));return result.result.value};
   const until=async expression=>{for(let i=0;i<100;i++){if(await evaluate(`Boolean(${expression})`))return;await wait(50)}console.error(await evaluate('document.body.innerText.slice(-2500)'));await screenshot('failure');throw new Error('Timed out: '+expression)};
   const click=async selector=>{
+    if (/files-header|files-more-button/.test(selector) && await evaluate(`document.querySelector(${JSON.stringify(selector)})?.closest('.files-header')?.hidden`)) {
+      const page=selector.includes('preview')?'.files-preview-page':'.files-tree-page';
+      await click(page+' .files-chrome-reveal');
+    }
     const box=await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw new Error('missing '+${JSON.stringify(selector)});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
     await call('Input.dispatchMouseEvent',{type:'mousePressed',...box,button:'left',clickCount:1});
     await call('Input.dispatchMouseEvent',{type:'mouseReleased',...box,button:'left',clickCount:1});await wait(80);
@@ -139,8 +143,18 @@ try {
   assert.equal(await evaluate(`document.querySelector('.files-markdown h1').textContent`),'Project overview');
   assert.equal(await evaluate(`document.querySelectorAll('.files-markdown img, .files-markdown iframe, .files-markdown script').length`),0);
   await wait(250);await screenshot('mobile-markdown-preview');
+  assert.equal(await evaluate(`document.querySelector('.files-preview-page .files-header').hidden`),true);
+  const collapsedTop=await evaluate(`document.querySelector('.files-preview-scroll').getBoundingClientRect().top`);
+  await click('.files-preview-page .files-chrome-reveal');
+  assert.equal(await evaluate(`document.querySelector('.files-preview-scroll').getBoundingClientRect().top`),collapsedTop,'Revealing chrome must not move content');
   const geometry=await evaluate(`(()=>{const p=document.querySelector('.files-preview-page'),h=p.querySelector('.files-header'),body=p.querySelector('.files-preview-scroll'),link=p.querySelector('.files-document-link');return {header:h.getBoundingClientRect().height,gap:body.getBoundingClientRect().top-h.getBoundingClientRect().bottom,buttons:h.querySelectorAll('button').length,safety:p.textContent.includes('Safe preview:'),linkBorder:getComputedStyle(link).borderTopWidth,linkPadding:getComputedStyle(link).paddingTop}})()`);
-  assert.equal(geometry.header,49,'Healthy preview: 48px controls plus one border, no extra chrome rows');assert.equal(geometry.gap,0,'No static status/actions before body');assert.equal(geometry.buttons,2);assert.equal(geometry.safety,false);assert.equal(geometry.linkBorder,'0px');assert.equal(geometry.linkPadding,'0px');
+  assert.equal(geometry.header,44,'Overlay controls use only the safe top band');assert.equal(geometry.gap,0,'No static status/actions before body');assert.equal(geometry.buttons,2);assert.equal(geometry.safety,false);assert.equal(geometry.linkBorder,'0px');assert.equal(geometry.linkPadding,'0px');
+  const controls=await evaluate(`(()=>{const p=document.querySelector('.files-preview-page'),h=p.querySelector('.files-header');h.querySelector('button').focus();return {titleRight:h.querySelector('.files-heading').getBoundingClientRect().right,moreLeft:h.querySelector('.files-more-button').getBoundingClientRect().left,width:p.getBoundingClientRect().width}})()`);
+  assert.ok(controls.titleRight<=controls.width*.35 && controls.moreLeft>=controls.width*.65,'Center cutout band must stay empty');
+  await call('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+  await call('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+  await until(`document.activeElement===document.querySelector('.files-preview-page .files-chrome-reveal')`);
+  assert.equal(await evaluate(`document.querySelector('.files-preview-scroll').getBoundingClientRect().top`),collapsedTop);
   const markdownCodeY=await evaluate(`document.querySelector('.files-markdown pre').getBoundingClientRect().top+20`);
   await swipe(300,markdownCodeY,80,markdownCodeY);
   assert.ok(await evaluate(`document.querySelector('.files-markdown pre').scrollLeft`)>0,'Rendered Markdown code needs native horizontal pan');
@@ -194,8 +208,10 @@ try {
   // Pick the specific long-name row through grounded bounds, not an offscreen first row.
   const longRowLabel=await evaluate(`Array.from(document.querySelectorAll('.files-row')).find(e=>e.textContent.includes('very-long-')).textContent.trim()`);
   await clickText('.files-row',longRowLabel);await wait(300);
+  await click('.files-preview-page .files-chrome-reveal');
   const narrow=await evaluate(`(()=>{const h=document.querySelector('.files-preview-page .files-header'),title=h.querySelector('h1'),buttons=Array.from(h.querySelectorAll('button'));return {height:h.getBoundingClientRect().height,whiteSpace:getComputedStyle(title).whiteSpace,right:title.getBoundingClientRect().right,buttons:buttons.map(b=>b.getBoundingClientRect().width)}})()`);
-  assert.equal(narrow.height,49);assert.equal(narrow.whiteSpace,'nowrap');assert.ok(narrow.right<=320);assert.ok(narrow.buttons.every(w=>w>=44));await screenshot('mobile-preview-long-title-light');
+  const narrowHeight=await evaluate(`document.querySelector('.files-preview-page .files-header').getBoundingClientRect().height`);
+  assert.equal(narrowHeight,44);assert.equal(narrow.whiteSpace,'nowrap');assert.ok(narrow.right<=320);assert.ok(narrow.buttons.every(w=>w>=44));await screenshot('mobile-preview-long-title-light');
   await click('.files-preview-page .files-header button');
   await call('Emulation.setDeviceMetricsOverride',{width:844,height:390,deviceScaleFactor:1,mobile:true});await wait(150);await screenshot('mobile-file-tree-landscape');
   await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
