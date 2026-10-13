@@ -168,7 +168,7 @@
   - AC-006/007；不夸大未执行的平台/真机交互验收。
 - Verification method:
   - 签名/package检查、devicectl安装/进程、准确窗口截图与交互、git。
-- Validation evidence:统一脚本重建签名并打开精确debug GUI；ps路径完全匹配；原生WKWebView中demo本地PNG/SVG/引用图可见，大图100%→125%及关闭回到正文通过。真实Native外链返回blocked_address与198.18.* DNS观测一致。iPhone保留数据覆盖安装/启动成功，进程目录匹配本次安装，Device Hub正常非空白，但当前无已连接主机且控制状态受并发操作影响。Android APK构建通过，未实际安装验收。交付提交在最终执行日志记录。
+- Validation evidence:统一脚本重建签名并打开精确debug GUI；ps路径完全匹配；原生WKWebView中demo本地PNG/SVG/引用图可见，大图100%→125%及关闭回到正文通过。真实Native外链返回blocked_address与198.18.* DNS观测一致。iPhone保留数据覆盖安装/启动成功，进程目录匹配本次安装，Device Hub正常非空白，但当前无已连接主机且控制状态受并发操作影响。Android APK构建通过，未实际安装验收。实现已提交ba46e8e，交付记录在最终执行日志。
 - Blocker: macOS公共域名使用198.18.* fake-IP，不能证明正常公有DNS网络的原生外链成功；iPhone缺少已连接Session/独占操作窗口，完整图片页真机交互未验收。不改系统DNS、不放宽私有地址策略、不抢占并发控制。
 - Unblock condition: 提供正常公有DNS的读取设备网络与已连接Session/独占手机操作时段，继续T-006原生外链/手机图片页验收。
 
@@ -193,6 +193,7 @@
 - 2026-10-13: 统一debug脚本完成构建/签名/精确GUI重启；签名iPhoneOS归档/IPA验证，保留数据覆盖安装/启动及新安装目录进程均成功；Android arm64 APK构建通过。桌面原生demo的PNG/SVG/引用图显示，大图100%→125%→关闭复原经截图确认；外链真实请求按198.18 fake-IP阻止，最后错误说明改为可读message。
 - 2026-10-13: iPhone当前无已连接主机且共享控制状态变化，图片页原生交互与正常公有DNS外链成功路径无法完成；T-006 in_progress→blocked，整体partial，不改变DNS/放宽策略/抢占操作。保留外部Host/终端/diag/生成schema；仅本任务相关文件提交，mobile lib.rs只暂存新模块/两个handler。
 - 2026-10-13: 记录实际发生并修复的XML实体误拒绝教训；其他主体历史条目原样保留。
+- 2026-10-13: 实现提交ba46e8e完成。暂存59个相关文件，mobile lib.rs只包含3行image模块/handler；LEARNS仅新SVG条目。索引禁止路径检查和task validator/diff check/version sync均通过；未暂存Host/终端/diag/旧文档/生成schema，工作区剩余差异为外部工作。T-006保留真实验收blocker，整体partial不改写为完全通过。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
