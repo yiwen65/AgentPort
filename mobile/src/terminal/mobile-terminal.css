@@ -69,30 +69,31 @@
 .mobile-terminal-show-keyboard {
   position: absolute;
   z-index: 5;
-  right: max(12px, env(safe-area-inset-right));
-  bottom: max(12px, env(safe-area-inset-bottom));
+  right: max(8px, env(safe-area-inset-right));
+  /* Leave the bottom input box and TUI status rows unobstructed. */
+  bottom: calc(104px + env(safe-area-inset-bottom));
   display: grid;
   place-items: center;
   width: 44px;
   height: 44px;
   padding: 10px;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(128, 128, 128, .28);
   border-radius: 50%;
-  background: var(--terminal-panel, rgba(44, 44, 46, .94));
+  background: rgba(128, 128, 128, .16);
   color: var(--terminal-fg);
-  box-shadow: 0 3px 12px rgba(0, 0, 0, .2);
+  box-shadow: none;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
 }
 .mobile-terminal-show-keyboard[hidden] { display: none; }
 .mobile-terminal-show-keyboard:disabled,
 [inert] .mobile-terminal-show-keyboard { opacity: .45; }
-.mobile-terminal-show-keyboard:active:not(:disabled) { background: var(--terminal-selection); }
+.mobile-terminal-show-keyboard:active:not(:disabled) { background: rgba(128, 128, 128, .3); }
 .mobile-terminal-show-keyboard:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.mobile-terminal-show-keyboard svg { width: 22px; height: 22px; }
+.mobile-terminal-show-keyboard svg { width: 22px; height: 22px; opacity: .8; }
 /* Keep the entry above an accessory row left open by an external keyboard. */
 .mobile-terminal-spike[data-input-active="true"] .mobile-terminal-show-keyboard {
-  bottom: calc(72px + env(safe-area-inset-bottom));
+  bottom: calc(164px + env(safe-area-inset-bottom));
 }
 .mobile-terminal-key-scroll {
   display: flex;

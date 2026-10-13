@@ -92,6 +92,11 @@ try {
   const keyboardRect = await evaluate(`document.querySelector('.mobile-terminal-show-keyboard').getBoundingClientRect().toJSON()`);
   assert.ok(keyboardRect.width >= 44 && keyboardRect.height >= 44, 'Keyboard entry needs a full touch target');
   assert.ok(keyboardRect.right <= 390 && keyboardRect.bottom <= 844, 'Keyboard entry is outside the viewport');
+  assert.ok(keyboardRect.bottom <= 844 - 100, 'Keyboard entry covers the bottom TUI input/status band');
+  const keyboardStyle = await evaluate(`(() => { const s = getComputedStyle(document.querySelector('.mobile-terminal-show-keyboard')); return { background: s.backgroundColor, shadow: s.boxShadow }; })()`);
+  const alpha = keyboardStyle.background.startsWith('rgba(') ? parseFloat(keyboardStyle.background.split(',').at(-1)) : 1;
+  assert.ok(alpha > 0 && alpha <= .2, 'Keyboard entry background must remain translucent');
+  assert.equal(keyboardStyle.shadow, 'none', 'Keyboard entry shadow obscures underlying terminal text');
   assert.equal(await evaluate(`getComputedStyle(document.querySelector('.mobile-terminal-show-keyboard')).display !== 'none'`), true);
   if (process.env.AGENTPORT_TERMINAL_SCREENSHOT) {
     const shot = await call('Page.captureScreenshot', { format: 'png' });
@@ -109,6 +114,8 @@ try {
   await wait(150);
   assert.equal(await evaluate(`document.querySelector('.mobile-terminal-show-keyboard').hidden`), false, 'Entry did not return after keyboard dismissal');
   const refocusRect = await evaluate(`document.querySelector('.mobile-terminal-show-keyboard').getBoundingClientRect().toJSON()`);
+  const keyBarTop = await evaluate(`document.querySelector('.mobile-terminal-keys').getBoundingClientRect().top`);
+  assert.ok(refocusRect.bottom <= keyBarTop - 100, 'Keyboard entry covers TUI footer above an external-keyboard accessory row');
   await touch('touchStart', refocusRect.x + refocusRect.width / 2, refocusRect.y + refocusRect.height / 2);
   await touch('touchEnd'); await wait(100);
   assert.equal(await evaluate('document.activeElement === term.textarea'), true, 'Entry could not refocus a dismissed keyboard');
