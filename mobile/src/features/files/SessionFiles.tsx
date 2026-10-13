@@ -57,11 +57,14 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
   const updateDirectories = useCallback((update: (old: typeof directories) => typeof directories) => {
     directoriesRef.current = update(directoriesRef.current); setDirectories(directoriesRef.current);
   }, []);
-  const invalidate = useCallback(() => {
+  // Navigation/refresh cancels requests, but only a disconnect or failed read
+  // makes a previously confirmed snapshot stale. Do not turn background work
+  // into a cache warning on every terminal ↔ files transition.
+  const invalidate = useCallback((markStale = false) => {
     for (const controller of requests.current.values()) controller.abort();
     requests.current.clear();
-    updateDirectories(old => Object.fromEntries(Object.entries(old).map(([path, resource]) => [path, { ...resource, loading: false, stale: true }])));
-    setFile(old => ({ ...old, loading: false, stale: true }));
+    updateDirectories(old => Object.fromEntries(Object.entries(old).map(([path, resource]) => [path, { ...resource, loading: false, stale: markStale || resource.stale }])));
+    setFile(old => ({ ...old, loading: false, stale: markStale || old.stale }));
   }, [updateDirectories]);
 
   const load = useCallback(async (path: string, kind: "list" | "read") => {
@@ -69,8 +72,8 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
     const key = kind === "list" ? `list:${path}` : "read";
     requests.current.get(key)?.abort();
     const controller = new AbortController(); requests.current.set(key, controller);
-    if (kind === "list") updateDirectories(old => ({ ...old, [path]: { ...old[path], loading: true, stale: Boolean(old[path]?.data), error: undefined } }));
-    else setFile(old => ({ ...old, loading: true, stale: Boolean(old.data), error: undefined }));
+    if (kind === "list") updateDirectories(old => ({ ...old, [path]: { ...old[path], loading: true, stale: old[path]?.stale ?? false, error: undefined } }));
+    else setFile(old => ({ ...old, loading: true, stale: old.stale, error: undefined }));
     const valid = () => mounted.current && !controller.signal.aborted && requests.current.get(key) === controller;
     try {
       const result = await client.request<FileListing | FileRead>(open.hostProfileId, `session.files.${kind}`, { sessionId: open.session.id, path }, { signal: controller.signal });
@@ -94,7 +97,7 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
     let disposed = false; let unsubscribe: Unsubscribe | undefined; let receivedEvent = false;
     const connection = (connected: boolean) => {
       const previous = onlineRef.current; onlineRef.current = connected; setOnline(connected);
-      if (!connected) invalidate(); else if (!previous && activeRef.current) refresh();
+      if (!connected) invalidate(true); else if (!previous && activeRef.current) refresh();
     };
     void client.onConnectionState(event => {
       if (disposed || event.profileId !== open.hostProfileId) return;

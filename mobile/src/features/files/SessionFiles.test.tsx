@@ -193,6 +193,32 @@ describe("SessionFiles", () => {
     await waitFor(() => expect(calls(client, "list")).toHaveLength(6)); await act(async () => late.resolve({ ...listing(), entries: [{ name: "obsolete", path: "obsolete", isDir: false }] }));
     expect(screen.queryByText("obsolete")).toBeNull(); expect(row("src")).toHaveAttribute("aria-expanded", "true"); expect(row("main.ts")).toBeVisible();
   });
+  it("does not mark confirmed content stale on connected navigation or background refresh", async () => {
+    const { client } = remote(); const view = mount(client);
+    await screen.findByRole("button", { name: "src Directory" }); fireEvent.click(row("src")); await screen.findByRole("button", { name: "main.ts File" });
+    fireEvent.click(row("README")); await screen.findByRole("heading", { name: "Read me" });
+    view.rerender(<SessionFiles {...view.props} active={false} />);
+    const root = deferred<FileListing>(); const child = deferred<FileListing>(); const read = deferred<unknown>();
+    vi.mocked(client.request).mockImplementation((_host, method, params) => method === "session.files.read" ? read.promise : (params as { path: string }).path === "." ? root.promise : child.promise);
+    view.rerender(<SessionFiles {...view.props} />);
+    expect(screen.queryAllByText(/Cached content · not yet/)).toHaveLength(0); expect(row("src")).toHaveAttribute("aria-expanded", "true"); expect(row("main.ts")).toBeVisible();
+    await act(async () => { root.resolve(listing()); child.resolve(listing("src")); read.resolve({ rootPath: "/project", path: "README.md", content: "# Read me", sizeBytes: 9, truncated: false }); });
+    expect(screen.queryAllByText(/Cached content · not yet/)).toHaveLength(0);
+    const refresh = deferred<FileListing>(); vi.mocked(client.request).mockImplementation((_host, method, params) => method === "session.files.read" ? Promise.resolve({ rootPath: "/project", path: "README.md", content: "# Read me", sizeBytes: 9, truncated: false }) : (params as { path: string }).path === "." ? refresh.promise : Promise.resolve(listing("src"))); action("Refresh");
+    expect(screen.queryAllByText(/Cached content · not yet/)).toHaveLength(0);
+    await act(async () => refresh.resolve(listing()));
+  });
+  it("keeps real failure and disconnect cache warnings until a successful revalidation", async () => {
+    const state = remote(); const view = mount(state.client); await screen.findByRole("button", { name: "src Directory" });
+    vi.mocked(state.client.request).mockRejectedValueOnce({ code: "read_failed" }); action("Refresh");
+    await screen.findByRole("alert"); expect(screen.getByText(/Cached content · not yet/)).toBeVisible();
+    view.rerender(<SessionFiles {...view.props} active={false} />);
+    const pending = deferred<FileListing>(); vi.mocked(state.client.request).mockImplementation(() => pending.promise);
+    view.rerender(<SessionFiles {...view.props} />); expect(screen.getByText(/Cached content · not yet/)).toBeVisible();
+    act(() => state.emit("disconnected")); expect(screen.getByText(/Disconnected · cached/)).toBeVisible();
+    act(() => state.emit("connected")); expect(screen.getByText(/Cached content · not yet/)).toBeVisible();
+    await act(async () => pending.resolve(listing())); expect(screen.queryByText(/Cached content · not yet/)).toBeNull();
+  });
   it("invalidates disconnect requests, labels cache, ignores other hosts and refreshes on reconnect", async () => {
     const state = remote(); const { client } = state; mount(client); await screen.findByRole("button", { name: "src Directory" });
     act(() => state.emit("disconnected", "other")); expect(screen.queryByText(/Disconnected · cached/)).toBeNull();
