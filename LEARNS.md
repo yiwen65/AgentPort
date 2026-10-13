@@ -814,3 +814,12 @@
 - Correct approach: Disable hardware simulation when testing software-keyboard behavior; keep real hardware-keyboard use a separate scenario rather than overriding it in App code.
 - Prevention: Inspect that menu before keyboard diagnosis and verify a real open → native dismiss → reopen cycle; isolated simulator success alone does not establish the physical device's input configuration.
 - Verified by: On an iOS 27 physical iPhone, the same installed App failed under enabled simulation and opened the native third-party IME after only disabling it; native dismissal followed by the same keyboard entry reopened it without an App rebuild.
+
+## `mobile dist embedding` — serialize Vite builds with native archives
+
+- Wrong approach: Run `npm run build` in parallel with an iOS archive whose beforeBuildCommand also regenerates `mobile/dist`.
+- Why it failed: The production build replaces the debug asset names while Rust's `tauri::generate_context!()` is embedding them, leaving generated asset references pointing to removed files.
+- Recognition signal: Native compilation reports `couldn't read .../dist/assets/<hashed-name>` although both frontend builds succeeded.
+- Correct approach: Wait for standalone frontend builds to finish before starting the native build; let its beforeBuildCommand own dist until embedding completes.
+- Prevention: Treat all writers of the same dist directory as one serialized pipeline, not independent builds. Read-only tests or isolated browser fixtures can run separately.
+- Verified by: The parallel Markdown-table validation/archive failed with eight missing asset reads; the same source archived and passed signature/profile/IPA validation when rebuilt after the frontend build completed.

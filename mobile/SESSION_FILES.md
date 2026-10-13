@@ -13,12 +13,12 @@
 - 控制栏悬浮在顶部安全区，避开中间刘海/灵动岛，不占额外内容行；显示/收起不改变正文几何或滚动位置。完整路径与安全说明仍在更多菜单，底部保留系统手势安全区。
 - 「⋯」中提供刷新、下载、复制路径/内容、Markdown源码/渲染切换、文件信息与安全说明。Markdown本地链接以行内链接呈现，不是大按钮，读取安全策略不变。
 - 树/预览持续挂载，同一文件往返保留树和正文滚动位置、代码横向位置及源码/渲染模式，不额外重读文件。切换新文件或显式刷新可能改变内容，不承诺跨App重启保存阅读历史。
-- 代码横滚、文本选择、链接/按钮/菜单、多指及纵滚不触发本层切页。长按开始选字后，不把结束动作当作导航；系统「减弱动态效果」下不播放完成/回弹动画。
+- 代码/表格横滚、文本选择、链接/按钮/菜单、多指及纵滚不触发本层切页。长按开始选字后，不把结束动作当作导航；系统「减弱动态效果」下不播放完成/回弹动画。
 - 断线/缓存/截断保留紧凑提示；读取失败明确显示并可重试。截断提示可查看详细限制，不能把已截断片段当作完整文件。
 
 - 根目录是电脑端记录的 Session `cwd`，不跟随终端临时 `cd`，也不会替换成项目主 checkout。
 - 文件夹按需加载；每次进入、重新连接或手动刷新会重新读取已加载目录。展开状态和树的滚动位置在页面往返时保留，不停止 Session。
-- 文本/代码只读，支持常见代码语言高亮；Markdown 支持渲染/源码切换。可复制相对文件路径和文件内容。大型文本跳过语法高亮，仍可阅读和复制。
+- 文本/代码只读，支持常见代码语言高亮；Markdown 支持渲染/源码切换及 GitHub 风格管道表格（表头、列对齐、单元格内代码/安全链接）。宽表格在独立区域横向滚动，不撑宽整个页面或触发返回，源码模式仍保留原文。可复制相对文件路径和文件内容。大型文本跳过语法高亮，仍可阅读和复制。
 - 不包含编辑/新建/删除/重命名、Git 标记、搜索、图片预览或文件系统实时监听。
 
 ## 下载与另存为（iOS / Android）
@@ -50,7 +50,7 @@
 
 ```bash
 cd mobile
-npm test -- src/features/files/FileTreeIcon.test.tsx src/features/files/SessionFiles.test.tsx src/features/files/useFilePageSwipe.test.tsx src/features/files/FileDownloads.test.tsx src/platform/tauriFileDownloadClient.test.ts src/app/App.test.tsx src/features/sessions/SessionWorkspace.test.tsx src/terminal/MobileTerminal.test.tsx
+npm test -- src/features/files/FileContent.test.tsx src/features/files/FileTreeIcon.test.tsx src/features/files/SessionFiles.test.tsx src/features/files/useFilePageSwipe.test.tsx src/features/files/FileDownloads.test.tsx src/platform/tauriFileDownloadClient.test.ts src/app/App.test.tsx src/features/sessions/SessionWorkspace.test.tsx src/terminal/MobileTerminal.test.tsx
 npm run build
 cd ..
 cargo test -p agentport-service session_file --lib
@@ -61,5 +61,7 @@ node mobile/scripts/test-session-files.mjs
 ```
 
 文件树单行样式验证：完整前端856项测试通过，生产构建及Chrome触控回归通过；实测默认行高44 CSS px、层级差16 CSS px、无类型副标题或行分隔线，明暗主题及窄屏/横屏截图复核。该轮签名iPhoneOS包已保留数据覆盖安装并启动。后续全屏调整：完整前端857项测试通过；审阅后的最终修正另通过57项组件/App测试与Chrome回归，覆盖默认收起、控制栏唤出前后正文位置不变、中间刘海区留空、Escape后焦点回到可见入口、滑动/横滚及阅读状态保持。最终iPhoneOS签名归档/IPA校验通过且保留数据覆盖安装成功；启动命令超时，随后进程查询未见AgentPort，Device Hub画面显示手机在密码解锁界面，因此停止重试。全屏真机视觉/交互仍待解锁后验收，不以安装成功代替验证。Android本轮未重打包。
+
+Markdown表格修复验证：同一有效管道表格在修复前没有table节点、作为段落输出；仅启用remark-gfm后行列及对齐成立，再加入横滚容器与样式。完整前端860项测试、生产构建与Chrome回归通过；原文/代码围栏不被误转成表格，HTML/远程图片/外部链接（含自动链接）仍被限制。Chrome验证宽表格原生横滑、页面宽度不溢出、横滑不返回、菜单前后同一DOM/scrollLeft保持。最终签名iPhoneOS包已保留数据覆盖安装并启动，进程目录匹配本次安装，Device Hub实际预览中可见正常表格；真机横滑/读屏未执行，Android本轮未重打包。
 
 最后一项使用隔离的无头 Chrome、真实 App/xterm 及确定性 RemoteClient/保存客户端测试数据，不读取用户 Session，不代替 iOS/Android 系统实际保存、真机网络、键盘或无障碍验证。可用 `CHROME_BIN` 指定 Chrome；设置 `AGENTPORT_FILES_SCREENSHOTS=/tmp/agentport-files-evidence` 保存手机视口截图。

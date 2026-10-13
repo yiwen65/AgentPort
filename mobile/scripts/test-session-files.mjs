@@ -47,7 +47,7 @@ try {
             if(params.path==='.') window.rootLoads++;
             return {rootPath:session.cwd,path:params.path,entries,truncated:false};
           }
-          if(method==='session.files.read') return {rootPath:session.cwd,path:params.path,content:params.path.endsWith('.md')?'# Project overview\\n\\nRead-only Markdown with a [source link](src/main.ts).\\n\\n'+String.fromCharCode(96).repeat(3)+'ts\\nconst wide = "'+'long code '.repeat(40)+'";\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n![blocked image](https://invalid.example/image.png)'+Array.from({length:40},(_,i)=>'\\n\\nReading paragraph '+i+': content stays in place when switching pages.').join(''):'const greeting = "'+ 'long line '.repeat(30) +'";\\nexport { greeting };',sizeBytes:400,truncated:false};
+          if(method==='session.files.read') return {rootPath:session.cwd,path:params.path,content:params.path.endsWith('.md')?'# Project overview\\n\\nRead-only Markdown with a [source link](src/main.ts).\\n\\n'+String.fromCharCode(96).repeat(3)+'ts\\nconst wide = "'+'long code '.repeat(40)+'";\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n![blocked image](https://invalid.example/image.png)'+Array.from({length:40},(_,i)=>'\\n\\nReading paragraph '+i+': content stays in place when switching pages.').join('')+'\\n\\n| Path | Origin | Purpose | Details | State |\\n| :--- | :---: | ---: | --- | --- |\\n| codex/ | openai/codex | Reference: agent implementation | Long mobile table content | Read-only |\\n| docs/ | Local | Handoff / task documents | Safe project files | Ready |':'const greeting = "'+ 'long line '.repeat(30) +'";\\nexport { greeting };',sizeBytes:400,truncated:false};
           return {};
         }
       };
@@ -143,6 +143,25 @@ try {
   assert.equal(await evaluate(`document.querySelector('.files-markdown h1').textContent`),'Project overview');
   assert.equal(await evaluate(`document.querySelectorAll('.files-markdown img, .files-markdown iframe, .files-markdown script').length`),0);
   await wait(250);await screenshot('mobile-markdown-preview');
+  assert.equal(await evaluate(`document.querySelectorAll('.files-markdown table tbody tr').length`),2);
+  assert.equal(await evaluate(`document.querySelectorAll('.files-markdown table th').length`),5);
+  const tableBodyTop=await evaluate(`document.querySelector('.files-preview-scroll').scrollTop`);
+  await evaluate(`window.tableNode=document.querySelector('.files-table-scroll');window.tableNode.scrollIntoView({block:'center'});true`);await wait(120);
+  const tableY=await evaluate(`document.querySelector('.files-table-scroll').getBoundingClientRect().top+35`);
+  await swipe(300,tableY,80,tableY+1);
+  const tableLeft=await settledScroll('.files-table-scroll');
+  assert.ok(tableLeft>0,'Wide tables must support native horizontal touch scroll');
+  assert.equal(await evaluate(`document.querySelector('.files-page-viewport').dataset.previewVisible`),'true','Table pan must not navigate');
+  assert.ok(await evaluate(`document.querySelector('.files-preview-scroll').scrollWidth<=document.querySelector('.files-preview-scroll').clientWidth`),'Wide table must not overflow the whole page');
+  await screenshot('mobile-markdown-table');
+  await click('.files-preview-page .files-more-button');await until(`Boolean(document.querySelector('.files-menu-actions'))`);await click('[aria-label="Close"]');await until(`!document.querySelector('.files-menu')`);
+  assert.equal(await evaluate(`document.querySelector('.files-table-scroll')===window.tableNode`),true);
+  assert.equal(await evaluate(`document.querySelector('.files-table-scroll').scrollLeft`),tableLeft);
+  await evaluate(`document.querySelector('.files-preview-page .files-header button').focus();true`);
+  await call('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+  await call('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+  await until(`document.querySelector('.files-preview-page .files-header').hidden`);
+  await evaluate(`document.querySelector('.files-preview-scroll').scrollTop=${tableBodyTop};true`);await wait(120);
   assert.equal(await evaluate(`document.querySelector('.files-preview-page .files-header').hidden`),true);
   const collapsedTop=await evaluate(`document.querySelector('.files-preview-scroll').getBoundingClientRect().top`);
   await click('.files-preview-page .files-chrome-reveal');

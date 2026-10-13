@@ -1,5 +1,6 @@
 import { memo, useMemo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useTranslation } from "react-i18next";
 import hljs from "highlight.js/lib/core";
 import javascript from "highlight.js/lib/languages/javascript";
@@ -49,8 +50,9 @@ export const FileContent = memo(function FileContent({ path, content, rendered, 
           : <span title={t("files.linkBlocked")}>{children} <small>({t("files.linkBlocked")})</small></span>;
       },
       pre: ({ children }) => <pre data-horizontal-scroll="true" tabIndex={0}>{children}</pre>,
+      table: ({ children }) => <div className="files-table-scroll" data-horizontal-scroll="true" role="region" aria-label={t("files.table")} tabIndex={0}><table>{children}</table></div>,
       code: ({ className, children }) => <HighlightedCode content={String(children)} language={/language-([\w-]+)/.exec(className ?? "")?.[1]} />,
   }), [onOpen, path, t]);
   if (!rendered || !isMarkdown(path)) return <pre className="files-source" data-horizontal-scroll="true" tabIndex={0}><HighlightedCode content={content} language={extensions[path.split(".").pop()?.toLowerCase() ?? ""]} /></pre>;
-  return <article className="files-markdown"><ReactMarkdown skipHtml components={components}>{content}</ReactMarkdown></article>;
+  return <article className="files-markdown"><ReactMarkdown skipHtml remarkPlugins={[remarkGfm]} components={components}>{content}</ReactMarkdown></article>;
 });
