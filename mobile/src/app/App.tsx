@@ -25,6 +25,18 @@ const SessionFiles = lazy(() => import("../features/files/SessionFiles").then((m
   default: module.SessionFiles,
 })));
 
+/**
+ * How many opened sessions keep a live workspace (and therefore a live terminal
+ * attachment). Switching between sessions used to unmount the previous
+ * workspace, which detached its stream and forced a fresh attach/snapshot
+ * replay on return — visible as a reconnect. Keeping one previous stage mounted
+ * makes going back instant, at the cost of its stream staying subscribed while
+ * it is hidden.
+ */
+const KEEP_ALIVE_SESSION_STAGES = 2;
+
+const stageKeyOf = (session: OpenSession) => `${session.hostProfileId}:${session.session.id}`;
+
 type SessionPage = "list" | "terminal" | "files";
 
 interface AppProps {
@@ -45,6 +57,10 @@ function AppContents({ client, hostAuthClient, terminalClient = genericTerminalC
   const [openedSession, setOpenedSession] = useState<{ open: OpenSession; token: number }>();
   const handleSessionOpened = useCallback((open: OpenSession) => setOpenedSession(previous => ({ open, token: (previous?.token ?? 0) + 1 })), []);
   const [selectedSession, setSelectedSession] = useState<OpenSession>();
+  // Most-recently-opened sessions, oldest first. The last entry is the visible
+  // one; earlier entries stay mounted but hidden so returning to them reuses
+  // their terminal attachment instead of rebuilding it.
+  const [sessionStages, setSessionStages] = useState<OpenSession[]>([]);
   const [genericHost, setGenericHost] = useState<HostProfileSummary>();
   const [page, setPage] = useState<SessionPage>("list");
   const terminalVisible = page === "terminal" && !genericHost;
@@ -74,11 +90,49 @@ function AppContents({ client, hostAuthClient, terminalClient = genericTerminalC
   };
   usePushAlerts(client, hostAuthClient, hostProfilesEpoch, openSession);
 
-  const handleSessionChanged = (next?: OpenSession) => {
+  // Keep the opened stages in sync with the visible session. Re-opening a
+  // session that is already mounted only refreshes its props, so its terminal
+  // attachment survives and the stream is never rebuilt.
+  useEffect(() => {
+    if (!selectedSession) return;
+    const key = stageKeyOf(selectedSession);
+    setSessionStages(previous => {
+      const rest = previous.filter(stage => stageKeyOf(stage) !== key);
+      const next = [...rest, selectedSession].slice(-KEEP_ALIVE_SESSION_STAGES);
+      const unchanged = next.length === previous.length
+        && next.every((stage, index) => stage === previous[index]);
+      return unchanged ? previous : next;
+    });
+  }, [selectedSession]);
+
+  const currentStageKey = selectedSession ? stageKeyOf(selectedSession) : undefined;
+  const currentStageKeyRef = useRef<string>();
+  currentStageKeyRef.current = currentStageKey;
+  const sessionStagesRef = useRef<OpenSession[]>([]);
+  sessionStagesRef.current = sessionStages;
+
+  // A hidden stage keeps its own copy of session updates; only the visible one
+  // may move the view. Stable identity matters: SessionWorkspace lists this
+  // callback in an effect dependency.
+  const handleStageChanged = useCallback((key: string, next?: OpenSession) => {
+    if (!sessionStagesRef.current.some(stage => stageKeyOf(stage) === key)) return;
+    setSessionStages(previous => next
+      ? previous.map(stage => (stageKeyOf(stage) === key ? next : stage))
+      : previous.filter(stage => stageKeyOf(stage) !== key));
+    if (currentStageKeyRef.current !== key) return;
     setSelectedSession(next);
     if (!next) setPage("list");
-  };
+  }, []);
 
+  const stageChangedCallbacks = useRef(new Map<string, (next?: OpenSession) => void>());
+  const sessionChangedFor = (key: string) => {
+    let callback = stageChangedCallbacks.current.get(key);
+    if (!callback) {
+      callback = (next?: OpenSession) => handleStageChanged(key, next);
+      stageChangedCallbacks.current.set(key, callback);
+    }
+    return callback;
+  };
   const onTouchStart = (event: TouchEvent) => {
     swipeStart.current = undefined;
     if (settingsOpen || deviceManagerOpen || genericHost || event.touches.length !== 1 || document.querySelector(".mobile-modal-portal")) return;
@@ -198,22 +252,28 @@ function AppContents({ client, hostAuthClient, terminalClient = genericTerminalC
         />
       </main>
 
-      {selectedSession ? (
-        <div className={`session-stage${terminalVisible ? " is-visible" : ""}${page === "files" ? " is-before-files" : ""}`} aria-hidden={!terminalVisible} {...(!terminalVisible ? { inert: "" } : {})}>
-          <Suspense fallback={<div className="state-card" role="status">{t("dashboard.loading")}</div>}>
-            <SessionWorkspace
-              key={`${selectedSession.hostProfileId}:${selectedSession.session.id}`}
-              active={terminalVisible}
-              open={selectedSession}
-              client={client}
-              onOpened={handleSessionOpened}
-              onClose={() => setPage("list")}
-              onOpenFiles={openFiles}
-              onSessionChanged={handleSessionChanged}
-            />
-          </Suspense>
-        </div>
-      ) : null}
+      {sessionStages.map(stage => {
+        const key = stageKeyOf(stage);
+        const isCurrent = key === currentStageKey;
+        const stageVisible = isCurrent && terminalVisible;
+        return (
+          <div key={key}
+            className={`session-stage${stageVisible ? " is-visible" : ""}${isCurrent && page === "files" ? " is-before-files" : ""}`}
+            aria-hidden={!stageVisible} {...(!stageVisible ? { inert: "" } : {})}>
+            <Suspense fallback={<div className="state-card" role="status">{t("dashboard.loading")}</div>}>
+              <SessionWorkspace
+                active={stageVisible}
+                open={stage}
+                client={client}
+                onOpened={isCurrent ? handleSessionOpened : undefined}
+                onClose={() => setPage("list")}
+                onOpenFiles={openFiles}
+                onSessionChanged={sessionChangedFor(key)}
+              />
+            </Suspense>
+          </div>
+        );
+      })}
 
       {selectedSession && filesVisited ? (
         <div className={`files-stage${page === "files" ? " is-visible" : ""}`} aria-hidden={page !== "files"} {...(page !== "files" ? { inert: "" } : {})}>

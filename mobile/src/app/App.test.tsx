@@ -241,6 +241,44 @@ describe("AgentPort Mobile V2 shell", () => {
     expect(otherRow).toHaveFocus();
   });
 
+  it("keeps the previous session mounted so returning reuses its terminal attachment", async () => {
+    await i18n.changeLanguage("en-US");
+    const { remote } = focusTestClient();
+    const { container } = render(<App client={remote} hostAuthClient={hostAuthClient} />);
+    const shell = container.querySelector(".app-shell")!;
+    const backToList = () => {
+      fireEvent.touchStart(shell, { touches: [{ clientX: 40, clientY: 220 }] });
+      fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 160, clientY: 224 }] });
+    };
+
+    const stageFor = (label: string) => [...container.querySelectorAll(".session-stage")]
+      .find(stage => stage.querySelector(`article[aria-label="${label}"]`));
+
+    fireEvent.click(await screen.findByRole("button", { name: /Active task/ }));
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    expect(container.querySelectorAll(".session-stage")).toHaveLength(1);
+    const firstWorkspace = stageFor("Active task")!.querySelector(".session-workspace");
+    expect(firstWorkspace).not.toBeNull();
+
+    backToList();
+    fireEvent.click(await screen.findByRole("button", { name: /Other task/ }));
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    await waitFor(() => expect(container.querySelectorAll(".session-stage")).toHaveLength(2));
+    expect(container.querySelectorAll(".session-stage.is-visible")).toHaveLength(1);
+
+    backToList();
+    fireEvent.click(await screen.findByRole("button", { name: /Active task/ }));
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+
+    // The first workspace was kept mounted, so the attachment was never rebuilt.
+    expect(stageFor("Active task")!.querySelector(".session-workspace")).toBe(firstWorkspace);
+    const attached = vi.mocked(remote.request).mock.calls
+      .filter(([, method]) => method === "session.attach")
+      .map(call => (call[2] as { sessionId: string }).sessionId);
+    expect(attached).toEqual(["ses-1", "ses-2"]);
+    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.detach")).toHaveLength(0);
+  });
+
   it("opens Session files by swipe and button without replacing or detaching the terminal", async () => {
     await i18n.changeLanguage("en-US");
     const { remote } = focusTestClient();
