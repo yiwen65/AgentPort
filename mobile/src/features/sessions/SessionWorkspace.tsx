@@ -18,6 +18,18 @@ import { diag } from "../../platform/diag";
 import type { OpenSession, RunCursor, SessionAttachResult, SessionEventPayload, SessionStatus, TerminalGeometry } from "./types";
 
 const MOBILE_DEVICE_ID_KEY = "agentport-mobile-v2:device-id";
+/**
+ * How long the terminal keeps its last live state before the ended card is
+ * shown after a run stops. A Host idle-exit followed by a restart lands inside
+ * this window, so the user sees a continuous session instead of a reconnect.
+ */
+const SESSION_ENDED_GRACE_MS = 1500;
+/**
+ * Ceiling on terminal bytes waiting to be handed to the renderer. Beyond this
+ * the session is outrunning the phone, so the backlog is dropped and the
+ * terminal resyncs from a snapshot instead of scrolling through stale output.
+ */
+const MAX_PENDING_OUTPUT_BYTES = 512 * 1024;
 // Seed the current TUI modes from a small recent tail, then render live output.
 // Replaying megabytes of historical redraws delays a screen the user needs now.
 const MOBILE_ATTACH_REPLAY_TAIL_BYTES = 64 * 1024;
@@ -103,6 +115,9 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
   const outputFrame = useRef<number>();
   const pendingOutputChunks = useRef<Uint8Array[]>([]);
   const pendingOutputBytes = useRef(0);
+  const outputWriteInFlight = useRef(false);
+  // Assigned once resetRunOutput exists; called when the render backlog is shed.
+  const shedBacklogRef = useRef<(bytes: number) => void>(() => undefined);
   const [replayPending, setReplayPending] = useState(shouldAttach);
   const [recoveryVeil, setRecoveryVeil] = useState(false);
   const replayGeneration = useRef(0);
@@ -190,17 +205,43 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
   const flushTerminalOutput = useCallback(() => {
     if (outputFrame.current !== undefined) window.cancelAnimationFrame(outputFrame.current);
     outputFrame.current = undefined;
+    // One outstanding renderer write at a time. xterm parses asynchronously, so
+    // feeding it every frame grows an invisible backlog; waiting for the write
+    // callback lets the socket backpressure reach the Host instead, where the
+    // lag path already sheds output and converges the terminal.
+    if (outputWriteInFlight.current) return;
     const chunks = pendingOutputChunks.current;
     if (chunks.length === 0) return;
+    const handle = terminal.current;
+    if (!handle) return;
     pendingOutputChunks.current = [];
     const totalBytes = pendingOutputBytes.current;
     pendingOutputBytes.current = 0;
-    terminal.current?.write(mergeChunks(chunks, totalBytes));
+    outputWriteInFlight.current = true;
+    handle.write(mergeChunks(chunks, totalBytes), () => {
+      outputWriteInFlight.current = false;
+      if (pendingOutputChunks.current.length > 0 && outputFrame.current === undefined) {
+        outputFrame.current = window.requestAnimationFrame(flushTerminalOutput);
+      }
+    });
   }, [mergeChunks]);
 
   const scheduleTerminalOutput = useCallback((chunk: Uint8Array) => {
     pendingOutputChunks.current.push(chunk);
     pendingOutputBytes.current += chunk.byteLength;
+    if (pendingOutputBytes.current > MAX_PENDING_OUTPUT_BYTES) {
+      // The renderer is behind this session's output rate. Drop the stale
+      // backlog and resync from a snapshot rather than growing a queue the user
+      // will never read.
+      pendingOutputChunks.current = [];
+      pendingOutputBytes.current = 0;
+      if (outputFrame.current !== undefined) {
+        window.cancelAnimationFrame(outputFrame.current);
+        outputFrame.current = undefined;
+      }
+      shedBacklogRef.current(pendingOutputBytes.current);
+      return;
+    }
     if (outputFrame.current !== undefined) return;
     outputFrame.current = window.requestAnimationFrame(flushTerminalOutput);
   }, [flushTerminalOutput]);
@@ -227,6 +268,16 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
     // defer resize ownership until preceding writes have been parsed. Display
     // and input remain live while this small seed is being consumed.
     flushTerminalOutput();
+    // Write pacing may have held the backlog back; the fence below must cover
+    // every byte received before the marker, so queue it even mid-write. xterm
+    // keeps writes ordered, so the callback still fires after all of them.
+    const leftover = pendingOutputChunks.current;
+    if (leftover.length > 0) {
+      const leftoverBytes = pendingOutputBytes.current;
+      pendingOutputChunks.current = [];
+      pendingOutputBytes.current = 0;
+      terminal.current?.write(mergeChunks(leftover, leftoverBytes));
+    }
     const generation = replayGeneration.current;
     terminal.current?.write("", () => {
       if (generation === replayGeneration.current) {
@@ -237,7 +288,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
         setReplayPending(false);
       }
     });
-  }, [flushTerminalOutput]);
+  }, [flushTerminalOutput, mergeChunks]);
 
   const resetRunOutput = useCallback(() => {
     forgetCheckpoint(screenKey);
@@ -256,6 +307,17 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
     terminal.current?.reset();
     setReplayPending(true);
   }, [screenKey]);
+
+  // A shed backlog keeps the renderer live: reset to the run tail and reattach
+  // for a snapshot instead of stitching the bytes that were dropped.
+  useEffect(() => {
+    shedBacklogRef.current = (bytes: number) => {
+      diag("output-backlog-shed", { sessionId: open.session.id, bytes });
+      resetRunOutput();
+      setNotice(t("session.resynced"));
+      setAttachEpoch(current => current + 1);
+    };
+  }, [open.session.id, resetRunOutput, t]);
 
   useEffect(() => {
     const next = open.session.latestStatus;
@@ -365,6 +427,11 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
   // re-run, so a stream that keeps closing and reopening can be traced back to
   // the dep that changed. Never read by stream logic.
   const attachDepRef = useRef<unknown[]>([]);
+  // Read by the attach effect to tell "a live stream just stopped" (a restart
+  // cycle that must not flash the ended card) from "this session was already
+  // ended when it opened".
+  const connectionLabelRef = useRef(connectionLabel);
+  connectionLabelRef.current = connectionLabel;
 
   useEffect(() => {
     const depLabels = ["attachEpoch", "client", "handleEvent", "hostProfileId", "sessionId", "shouldAttach", "resetRunOutput", "flushTerminalOutput", "screenKey", "t"];
@@ -374,7 +441,25 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
       : ["initial"];
     attachDepRef.current = depValues;
     diag("attach-effect", { sessionId: open.session.id, changed, generation: replayGeneration.current + 1, shouldAttach });
-    if (!shouldAttach) { setReplayPending(false); setConnectionLabel("ended"); setError(""); return; }
+    if (!shouldAttach) {
+      // An idle Host exit followed by a new run is a restart cycle, not the end
+      // of the session: the App already reattaches within the same second. Hold
+      // the ended card briefly so a live terminal is never replaced by a
+      // restart prompt that the user did not ask for. A session that was never
+      // attached still reports its ended state immediately.
+      if (connectionLabelRef.current !== "live") {
+        setReplayPending(false);
+        setConnectionLabel("ended");
+        setError("");
+        return;
+      }
+      const endedTimer = window.setTimeout(() => {
+        setReplayPending(false);
+        setConnectionLabel("ended");
+        setError("");
+      }, SESSION_ENDED_GRACE_MS);
+      return () => window.clearTimeout(endedTimer);
+    }
     replayGeneration.current += 1;
     const generation = replayGeneration.current;
     if (!cursor.current) setReplayPending(true);
