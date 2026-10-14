@@ -11,11 +11,16 @@ import type { OpenSession } from "../features/sessions/types";
 import type { HostProfileSummary, RemoteClient } from "../protocol/remoteClient";
 import type { GenericTerminalClient } from "../protocol/genericTerminalClient";
 import { genericTerminalClient } from "../platform/tauriGenericTerminalClient";
-import { GenericTerminal } from "../features/generic-terminal/GenericTerminal";
 import { FileDownloadProvider } from "../features/files/FileDownloads";
 import type { FileDownloadClient } from "../protocol/fileDownloadClient";
 import type { MarkdownImageClient } from "../protocol/markdownImageClient";
 import { fileDownloadClient } from "../platform/tauriFileDownloadClient";
+
+// Keep xterm and its addons off the dashboard's initial module graph. Both
+// terminal entry points must be lazy; an eager generic terminal defeats this.
+const GenericTerminal = lazy(() => import("../features/generic-terminal/GenericTerminal").then((module) => ({
+  default: module.GenericTerminal,
+})));
 
 const SessionWorkspace = lazy(() => import("../features/sessions/SessionWorkspace").then((module) => ({
   default: module.SessionWorkspace,
@@ -284,8 +289,10 @@ function AppContents({ client, hostAuthClient, terminalClient = genericTerminalC
         </div>
       ) : null}
 
-      {genericHost ? <GenericTerminal key={genericHost.id} host={genericHost} client={terminalClient} authClient={hostAuthClient}
-        onBack={() => { setGenericHost(undefined); setDeviceManagerOpen(true); }} /> : null}
+      {genericHost ? <Suspense fallback={<div className="state-card" role="status">{t("genericTerminal.loading")}</div>}>
+        <GenericTerminal key={genericHost.id} host={genericHost} client={terminalClient} authClient={hostAuthClient}
+          onBack={() => { setGenericHost(undefined); setDeviceManagerOpen(true); }} />
+      </Suspense> : null}
 
       {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
 

@@ -48,7 +48,11 @@ export function createImageAsset(data: MarkdownImageData): ImageAsset {
   if (!["image/png", "image/jpeg", "image/webp", "image/gif", "image/svg+xml"].includes(data.mime) || data.contentBase64.length > Math.ceil(MAX_IMAGE_BYTES / 3) * 4) throw { code: "unsupported_image" };
   const binary = atob(data.contentBase64);
   if (!binary.length || binary.length > MAX_IMAGE_BYTES) throw { code: "image_too_large" };
-  const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+  // atob returns byte-valued code units. Fill the final buffer directly:
+  // Uint8Array.from(string) first walks the string iterator and materializes
+  // an intermediate element list, amplifying memory for multi-MiB images.
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
   const blob = data.mime === "image/svg+xml" ? new Blob([sanitizeImageSvg(new TextDecoder("utf-8", { fatal: true }).decode(bytes), data.width, data.height)], { type: data.mime }) : new Blob([bytes], { type: data.mime });
   if (blob.size > MAX_IMAGE_BYTES) throw { code: "image_too_large" };
   return { url: URL.createObjectURL(blob), width: data.width, height: data.height, bytes: blob.size };

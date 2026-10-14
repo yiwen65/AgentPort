@@ -10,6 +10,7 @@
     "build:ios-simulator": "bash scripts/build-ios-simulator.sh",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:startup": "node scripts/test-startup-bundle.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

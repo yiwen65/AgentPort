@@ -15,6 +15,7 @@ AgentPort 的 GPL-3.0-only 移动客户端子项目，采用独立的 Tauri 2 Mo
 npm ci
 npm test
 npm run build
+npm run test:startup # 校验生产模块图：首页不提前加载 xterm/终端视图
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
