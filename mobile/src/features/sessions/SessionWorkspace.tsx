@@ -15,6 +15,7 @@ import {
 import { useMobileTerminalAppearance } from "../../terminal/terminalAppearance";
 import { decodeBase64Bytes, encodeBase64Utf8, outputBase64Of, sessionBatchId, sessionIdOf } from "./sessionProtocol";
 import { diag } from "../../platform/diag";
+import { createScrollDiagnostics, SCROLL_DIAGNOSTICS_ENABLED, type ScrollDiagnostics } from "../../terminal/scrollDiagnostics";
 import type { OpenSession, RunCursor, SessionAttachResult, SessionEventPayload, SessionStatus, TerminalGeometry } from "./types";
 
 const MOBILE_DEVICE_ID_KEY = "agentport-mobile-v2:device-id";
@@ -81,6 +82,31 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
   const shouldAttach = (!stopped && !locallyStopped) || restartRequested;
   const activeRef = useRef(active);
   activeRef.current = active;
+  const diagnosticsRef = useRef<ScrollDiagnostics>();
+  const diagnosticInputSequence = useRef(0);
+  // A stable facade keeps diagnostic setup out of attachment dependencies and
+  // survives React's development effect setup/cleanup replay.
+  const [scrollDiagnostics] = useState<ScrollDiagnostics | undefined>(() => SCROLL_DIAGNOSTICS_ENABLED ? {
+    begin: metadata => diagnosticsRef.current?.begin(metadata) ?? false,
+    mark: (phase, units) => diagnosticsRef.current?.mark(phase, units),
+    frame: () => diagnosticsRef.current?.frame(),
+    finish: () => diagnosticsRef.current?.finish(),
+    dispose: () => diagnosticsRef.current?.dispose(),
+    get running() { return diagnosticsRef.current?.running ?? false; },
+  } : undefined);
+  useEffect(() => {
+    if (!SCROLL_DIAGNOSTICS_ENABLED) return;
+    const collector = createScrollDiagnostics({
+      clock: () => performance.now(),
+      schedule: (callback, ms) => window.setTimeout(callback, ms),
+      cancel: handle => window.clearTimeout(handle as number),
+      emit: diag,
+      maxEvents: 4096,
+    });
+    diagnosticsRef.current = collector;
+    return () => { collector.dispose(); diagnosticsRef.current = undefined; };
+  }, []);
+  useEffect(() => { if (!active) scrollDiagnostics?.finish(); }, [active, scrollDiagnostics]);
   const openedRef = useRef("");
   const onOpenedRef = useRef(onOpened);
   onOpenedRef.current = onOpened;
@@ -387,6 +413,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
     }
     const outputBase64 = outputBase64Of(payload);
     if ((event.eventType === "output" || event.eventType === "transient_output") && outputBase64) {
+      if (activeRef.current) diagnosticsRef.current?.mark("outputReceived", outputBase64.length);
       // xterm already owns the bounded scrollback. Coalesce bursts to one
       // renderer write per frame so mobile touch scrolling is not competing
       // with hundreds of small xterm parse/render tasks.
@@ -656,6 +683,9 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
 
   const sendInput = useCallback((data: string) => {
     if (busyAction === "stop" || !attachmentId || attachmentRef.current !== attachmentId || connectionLabel !== "live") return;
+    const diagnosticSequence = activeRef.current && diagnosticsRef.current?.running ? ++diagnosticInputSequence.current : 0;
+    if (diagnosticSequence) diagnosticsRef.current?.mark("inputCorrelation", diagnosticSequence);
+    if (activeRef.current) diagnosticsRef.current?.mark("input", data.length);
     const batchId = sessionBatchId();
     ownBatches.current.add(batchId);
     // Serialize only through the local transport write, not the remote result.
@@ -667,6 +697,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
       const releaseSubmission = () => {
         if (submissionReleased) return;
         submissionReleased = true;
+        if (activeRef.current) diagnosticsRef.current?.mark("submissionReleased");
         submitted();
       };
       void client.request<{ phase: string }>(open.hostProfileId, "session.input", {
@@ -674,9 +705,11 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
         batchId,
         dataBase64: encodeBase64Utf8(data),
       }, { onSubmitted: releaseSubmission }).then((result) => {
+        if (activeRef.current && diagnosticSequence) diagnosticsRef.current?.mark(result?.phase === "completed" ? "inputAck" : "inputFailed", diagnosticSequence);
         ownBatches.current.delete(batchId);
         if (result.phase === "unknown") setError(t("session.inputUnknown"));
       }).catch((requestError) => {
+        if (activeRef.current && diagnosticSequence) diagnosticsRef.current?.mark("inputFailed", diagnosticSequence);
         ownBatches.current.delete(batchId);
         setError(errorText(requestError));
       }).finally(releaseSubmission);
@@ -895,6 +928,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
         onRelease={releaseTerminal}
         ref={terminal}
         resizeEpoch={attachmentId}
+        scrollDiagnostics={active ? scrollDiagnostics : undefined}
         onInput={sendInput}
         onUploadImage={client.uploadImage ? () => client.uploadImage!(open.hostProfileId) : undefined}
         imageUploadTarget={JSON.stringify([open.hostProfileId, open.session.id, open.session.latestStatus?.runId, attachmentId, active, connectionLabel === "live"])}

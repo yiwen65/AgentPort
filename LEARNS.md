@@ -842,3 +842,17 @@
 - Correct approach: 先把 `.prev-*` 这类多余文件移出 bundle，再走统一入口 `python3 scripts/restart-debug-app.py` —— 其 `scripts/rebuild-debug-app.sh` 末尾用 `.env` 的 `AGENTPORT_DEBUG_SIGN_IDENTITY` 执行 `codesign --force --deep --sign` 并 `--verify --deep --strict` 复核，然后只重启精确路径的 GUI。
 - Prevention: bundle 内的可执行文件只能由 `scripts/rebuild-debug-app.sh` 安装，不要在 `.app` 里 `cp`/`mv` 手工迭代；"窗口正常、进程还在跑"不能证明密封有效，签名是独立维度。
 - Verified by: 2026-10-13 16:35 复现（bundle 内 `agentport-host --help` → `Killed: 9`，同一文件在 bundle 外 exit 64，.ips 与 ASP 日志一致）；重签后 `codesign --verify --deep --strict` 通过、bundle 内 host 正常输出 usage；GUI 重开（PID 39167）后从侧栏 `Launch Shell in project` 真起了一个 shell Session（`ses_01M4T6QH9AAS5JBG`，host_pid 47989 / child 47990，状态 working→idle），测试会话已 SIGTERM 收尾，其余 10 个在跑的 Host 全程未受影响。
+
+## `iPhone 滚动采样` — 单进程附加失败不等于 App 已退出
+
+- Wrong approach: 在 `xctrace --attach` 找不到 PID/名称时，反复重启 App 或把采样失败当成进程退出。
+- Why it failed: 此任务中 devicectl 明确列出 App 存活、DDI compatible/usable，但单进程枚举附加仍失败；未证明 Apple 工具内部根因。
+- Correct approach: 用 `xctrace record --template 'Time Profiler' --device <UDID> --all-processes` 取得 trace，再仅解析 TOC 确认的 App/WebContent/GPU。缺 dSYM 时先核对 DeviceSupport Mach-O UUID 与 load address，再用 atos；不要用不匹配的系统符号。
+- Verified by: 5 秒 probe 与 20 秒真机录制/export 成功，包含目标三个进程；匹配 UUID 的 WebKit/WebCore/JSC/主程序地址解析成功。CPU样本没有手势标记时不能充当卡顿复现证据。
+
+## `iOS WebInspector 诊断` — 旧库的 MUX_ERROR 会掩盖 receive timeout
+
+- Wrong approach: 把 libimobiledevice `webinspector_receive_with_timeout` 的 -3 当作已关闭传输或禁用检查器。
+- Why it failed: 该 wrapper 把底层接收失败统一映射成 MUX_ERROR；直接 public property-list-service API 显示真实 -5 timeout。旧 WIRFinalMessageKey 包装没有响应，直接 binary plist 返回合法 selector/argument。
+- Correct approach: 先区分低层错误与 framing；只查询目标 App，不能因它未广告就推断全局检查器关闭。快照恢复会直接设置 xterm mouse encoding，测实际 `_core.coreMouseService.activeEncoding`，不把 CSI 缓存当真值。
+- Verified by: 有界 direct 会话解码成功但目标 App 未广告；不改系统权限，改用默认关闭、内容为空的 App 时间戳采集，真机记录了 buffer/SGR/WebGL 与同步门控、输入/解析/render 事件。

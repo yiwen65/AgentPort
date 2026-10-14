@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MobileTerminal, type MobileTerminalHandle } from "./MobileTerminal";
 import { MOBILE_TERMINAL_THEMES } from "./terminalThemes";
 import { defaultShortcuts, loadShortcuts, saveShortcuts } from "./shortcuts";
+import type { ScrollDiagnostics } from "./scrollDiagnostics";
 import "../i18n";
 
 const terminalHarness = vi.hoisted(() => ({
@@ -742,6 +743,36 @@ describe("MobileTerminal input accessory", () => {
     fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 205 }] });
     fireEvent.mouseDown(terminalHarness.screen!, { clientY: 205 });
     expect(focus).toHaveBeenCalledOnce();
+  });
+
+  it("starts content-free diagnostics only on vertical scrolling and cancels its frame sampler on release", async () => {
+    let running = false;
+    const diagnostics: ScrollDiagnostics = {
+      begin: vi.fn(() => { running = true; return true; }),
+      mark: vi.fn(), frame: vi.fn(), finish: vi.fn(), dispose: vi.fn(),
+      get running() { return running; },
+    };
+    const ref = createRef<MobileTerminalHandle>();
+    const { unmount } = render(<MobileTerminal ref={ref} scrollDiagnostics={diagnostics} showProbeOutput={false} />);
+    fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 160 }] });
+    fireEvent.touchMove(terminalHarness.screen!, { touches: [{ clientX: 120, clientY: 155 }] });
+    expect(diagnostics.begin).not.toHaveBeenCalled();
+    fireEvent.touchEnd(terminalHarness.screen!, { changedTouches: [{ clientX: 120, clientY: 155 }] });
+    fireEvent.touchStart(terminalHarness.screen!, { touches: [{ clientX: 30, clientY: 160 }] });
+    fireEvent.touchMove(terminalHarness.screen!, { touches: [{ clientX: 32, clientY: 100 }] });
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(diagnostics.begin).toHaveBeenCalledOnce();
+    expect(diagnostics.begin).toHaveBeenCalledWith(expect.objectContaining({ buffer: "normal", mouseTracking: "none", cols: 80, rows: 24 }));
+    expect(diagnostics.frame).toHaveBeenCalled();
+    act(() => ref.current?.write("sensitive terminal fixture"));
+    expect(diagnostics.mark).toHaveBeenCalledWith("queuedWrite", 26);
+    expect(JSON.stringify(vi.mocked(diagnostics.mark).mock.calls)).not.toContain("sensitive terminal fixture");
+    fireEvent.touchMove(terminalHarness.screen!, { touches: [{ clientX: 32, clientY: 80 }] });
+    expect(diagnostics.begin).toHaveBeenCalledOnce();
+    const frames = vi.mocked(diagnostics.frame).mock.calls.length;
+    unmount();
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(diagnostics.frame).toHaveBeenCalledTimes(frames);
   });
 
   it("routes vertical touch movement through fast local scrollback, without interpreting a horizontal swipe as scroll", async () => {

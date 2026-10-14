@@ -24,6 +24,7 @@ import { ShortcutSettings } from "./ShortcutSettings";
 import { applyShortcutModifiers, encodeShortcutKey, isCustomShortcut, loadShortcuts, saveShortcuts, type ShortcutLayout } from "./shortcuts";
 import { MOBILE_TERMINAL_THEMES } from "./terminalThemes";
 import { installSynchronizedOutput } from "./synchronizedOutput";
+import { SCROLL_DIAGNOSTICS_ENABLED, type ScrollDiagnostics } from "./scrollDiagnostics";
 import "./terminalFonts.css";
 import "./mobile-terminal.css";
 
@@ -65,6 +66,8 @@ export interface MobileTerminalProps {
   recoveryLabel?: string;
   /** Whether the explicit keyboard entry may focus this terminal. */
   keyboardEnabled?: boolean;
+  /** Opt-in, content-free timing capture; never changes terminal behaviour. */
+  scrollDiagnostics?: ScrollDiagnostics;
 }
 
 export interface MobileTerminalHandle {
@@ -94,6 +97,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   recovering = false,
   recoveryLabel,
   keyboardEnabled = true,
+  scrollDiagnostics,
 }: MobileTerminalProps, ref) {
   const { t } = useTranslation();
   const [shortcutLayout, setShortcutLayout] = useState(loadShortcuts);
@@ -104,6 +108,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const positionSelectionMenuRef = useRef<() => void>(() => undefined);
   const keysRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
+  const diagnosticsRef = useRef(scrollDiagnostics);
+  diagnosticsRef.current = scrollDiagnostics;
   const fitRef = useRef<FitAddon | null>(null);
   const serializeRef = useRef<SerializeAddon>();
   const parserTail = useRef(new TerminalParserTail());
@@ -155,6 +161,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   useImperativeHandle(ref, () => {
     const handle: MobileTerminalHandle = {
     write(data: string | Uint8Array, onParsed?: () => void) {
+      diagnosticsRef.current?.mark("queuedWrite", data.length);
       parserTail.current.advance(data);
       terminalRef.current?.write(data, onParsed);
     },
@@ -393,7 +400,10 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
         webgl = undefined;
       }
     }
-    const disposeSynchronizedOutput = installSynchronizedOutput(terminal);
+    const disposeSynchronizedOutput = installSynchronizedOutput(terminal, SCROLL_DIAGNOSTICS_ENABLED ? (held, reason) => {
+      if (reason === "paint") diagnosticsRef.current?.mark("paintBlocked");
+      else diagnosticsRef.current?.mark(held ? "syncBegin" : "syncEnd", reason === "timeout" ? 2 : reason === "reset" ? 3 : 1);
+    } : undefined);
     // xterm 5.5 defers its DOM viewport refresh to rAF. After a TUI clears
     // scrollback and streams a redraw, an older native scroll event can map
     // DOM row 0 back onto the rebuilt buffer before that frame runs. Flush
@@ -404,7 +414,9 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
         _core: { viewport: { syncScrollArea(immediate: boolean): void } };
       })._core;
       core.viewport.syncScrollArea(true);
+      diagnosticsRef.current?.mark("parsed");
     });
+    const diagnosticRender = SCROLL_DIAGNOSTICS_ENABLED ? terminal.onRender(() => diagnosticsRef.current?.mark("render")) : undefined;
     const disposeIosIme = isIosKeyboard() && terminal.textarea
       ? installIosImeRouting(container, terminal.textarea, text => {
         iosEmissionRef.current = true;
@@ -439,6 +451,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       if (!reportRemote || terminal.cols <= 0 || terminal.rows <= 0) return;
       if (lastReportedSize.current?.cols === terminal.cols && lastReportedSize.current.rows === terminal.rows) return;
       lastReportedSize.current = { cols: terminal.cols, rows: terminal.rows };
+      diagnosticsRef.current?.mark("resize");
       resizeRef.current?.(terminal.cols, terminal.rows);
     };
     const scheduleFit = (reportRemote = false) => {
@@ -463,7 +476,10 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       setCopyFailed(false);
       positionSelectionMenu();
     });
-    const input = terminal.onData(data => inputHandlerRef.current(data));
+    const input = terminal.onData(data => {
+      diagnosticsRef.current?.mark("terminalInput", data.length);
+      inputHandlerRef.current(data);
+    });
     // Report actual content-box changes too (shortcut bar/status overlays).
     // SessionWorkspace gates remote writes on current geometry ownership.
     const resize = new ResizeObserver(() => scheduleFit(true));
@@ -611,6 +627,15 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     };
     const forwardedMouseEvents = new WeakSet<Event>();
     let scrollWheelFrame: number | undefined;
+    let diagnosticFrame: number | undefined;
+    let diagnosticStarted = false;
+    const sampleDiagnosticFrame = () => {
+      diagnosticFrame = undefined;
+      const collector = diagnosticsRef.current;
+      if (!collector?.running) return;
+      collector.frame();
+      diagnosticFrame = window.requestAnimationFrame(sampleDiagnosticFrame);
+    };
     let pendingWheel: { deltaY: number; clientX: number; clientY: number } | undefined;
     const terminalRowHeight = () => {
       const screen = container.querySelector<HTMLElement>(".xterm-screen");
@@ -622,6 +647,12 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       const next = pendingWheel;
       pendingWheel = undefined;
       if (!next) return;
+      const diagnostics = diagnosticsRef.current;
+      diagnostics?.mark("wheelFlush", Math.abs(next.deltaY));
+      if (diagnostics?.running) {
+        const bounds = container.querySelector(".xterm-screen")?.getBoundingClientRect();
+        if (bounds && (next.clientX < bounds.left || next.clientX >= bounds.right || next.clientY < bounds.top || next.clientY >= bounds.bottom)) diagnostics.mark("wheelOutside");
+      }
       if (terminal.modes.mouseTrackingMode === "none" && terminal.buffer.active.type === "normal") {
         const rows = Math.sign(next.deltaY) * Math.max(1, Math.round(Math.abs(next.deltaY) / terminalRowHeight() * 3.5));
         terminal.scrollLines(rows);
@@ -686,6 +717,21 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       compatibilityMouseUntil = performance.now() + 1000;
       event.preventDefault();
       event.stopPropagation();
+      const collector = diagnosticsRef.current;
+      if (collector && !diagnosticStarted && collector.begin({
+        startedAtEpochMs: Date.now(),
+        buffer: terminal.buffer.active.type,
+        mouseTracking: terminal.modes.mouseTrackingMode,
+        // Snapshot restoration sets this directly, bypassing CSI observers.
+        mouseEncoding: (terminal as unknown as { _core?: { coreMouseService?: { activeEncoding?: string } } })._core?.coreMouseService?.activeEncoding ?? "unknown",
+        renderer: webgl ? "webgl" : "dom",
+        cols: terminal.cols, rows: terminal.rows,
+        fontSize: terminal.options.fontSize ?? fontSize,
+        keyboardVisible: workspace?.dataset.keyboardVisible === "true",
+      })) {
+        diagnosticStarted = true;
+        diagnosticFrame = window.requestAnimationFrame(sampleDiagnosticFrame);
+      } else collector?.mark("gesture");
       queueScrollWheel(deltaY, touch.clientX, touch.clientY);
     };
     const finishTouch = (event: TouchEvent) => {
@@ -771,6 +817,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       window.clearTimeout(orientationTimerRef.current);
       if (resizeFrameRef.current !== undefined) window.cancelAnimationFrame(resizeFrameRef.current);
       if (scrollWheelFrame !== undefined) window.cancelAnimationFrame(scrollWheelFrame);
+      if (diagnosticFrame !== undefined) window.cancelAnimationFrame(diagnosticFrame);
+      diagnosticRender?.dispose();
       scrollWheelFrame = undefined;
       pendingWheel = undefined;
       document.removeEventListener("mousedown", guardCompatibilityMouse, true);
