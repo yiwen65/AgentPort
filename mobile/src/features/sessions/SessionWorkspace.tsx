@@ -925,6 +925,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
       {shouldAttach && (connectionLabel === "attaching" || (recoveryVeil && connectionLabel === "live")) ? <p className="terminal-replay-status" role="status">{t("session.connection.attaching")}</p> : null}
       {connectionLabel === "failed" ? <button type="button" onClick={retryConnection}>{t("session.retryAttach")}</button> : null}
       {shouldAttach ? <MobileTerminal
+        active={active}
         onRelease={releaseTerminal}
         ref={terminal}
         resizeEpoch={attachmentId}

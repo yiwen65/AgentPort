@@ -45,6 +45,8 @@ function canUseWebgl(): boolean {
 }
 
 export interface MobileTerminalProps {
+  /** Inactive retained Sessions must keep their Host-sized buffer intact. */
+  active?: boolean;
   onInput?: (data: string) => void;
   onResize?: (cols: number, rows: number) => void;
   onRelease?: (terminal: MobileTerminalHandle) => void;
@@ -80,6 +82,7 @@ export interface MobileTerminalHandle {
 }
 
 export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalProps>(function MobileTerminal({
+  active = true,
   onInput,
   onResize,
   onRelease,
@@ -108,6 +111,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const positionSelectionMenuRef = useRef<() => void>(() => undefined);
   const keysRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const diagnosticsRef = useRef(scrollDiagnostics);
   diagnosticsRef.current = scrollDiagnostics;
   const fitRef = useRef<FitAddon | null>(null);
@@ -445,7 +450,10 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     positionSelectionMenuRef.current = positionSelectionMenu;
     const selectionScrolled = terminal.onScroll(() => positionSelectionMenu());
     const fitTerminal = (reportRemote: boolean) => {
-      if (restoring.current) return;
+      // A keyboard on another page must not shrink this retained buffer while
+      // its Host stays at the old size. xterm cannot undo a shrink by growing:
+      // TUI rows below the cursor (and alternate-screen rows) are discarded.
+      if (restoring.current || !activeRef.current) return;
       fit.fit();
       positionSelectionMenu();
       if (!reportRemote || terminal.cols <= 0 || terminal.rows <= 0) return;
@@ -907,6 +915,14 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     lastReportedSize.current = undefined;
     scheduleFitRef.current(true);
   }, [resizeEpoch]);
+
+  useEffect(() => {
+    if (!active) return;
+    // Visibility/translation alone does not trigger ResizeObserver. Fit the
+    // current viewport on return, even if all hidden layout changes settled.
+    lastReportedSize.current = undefined;
+    scheduleFitRef.current(true);
+  }, [active]);
 
   const showKeyboard = () => {
     const terminal = terminalRef.current;

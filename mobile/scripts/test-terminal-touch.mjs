@@ -18,6 +18,7 @@ try {
     stdin: { contents: `
       import React from 'react';
       import {createRoot} from 'react-dom/client';
+      import {flushSync} from 'react-dom';
       import {Terminal} from '@xterm/xterm';
       import {MobileTerminal} from './src/terminal/MobileTerminal';
       import './src/app/styles.css';
@@ -25,8 +26,15 @@ try {
       const open = Terminal.prototype.open;
       Terminal.prototype.open = function(...args) { window.term = this; return open.apply(this, args); };
       window.input = [];
-      createRoot(document.getElementById('root')).render(<div className="app-shell"><article className="session-workspace"><MobileTerminal
-        showHeading={false} showProbeOutput={false} onInput={data => window.input.push(data)} /></article></div>);
+      window.sizes = [];
+      function Fixture() {
+        const [active, setActive] = React.useState(true);
+        window.setTerminalActive = value => flushSync(() => setActive(value));
+        return <div className="app-shell"><div className={'session-stage' + (active ? ' is-visible' : '')}><article className="session-workspace"><MobileTerminal
+          active={active} showHeading={false} showProbeOutput={false} onInput={data => window.input.push(data)}
+          onResize={(cols, rows) => { if (active) window.sizes.push({cols, rows}); }} /></article></div></div>;
+      }
+      createRoot(document.getElementById('root')).render(<Fixture />);
       window.ready = async () => {
         while (!window.term) await new Promise(r => setTimeout(r, 20));
         await new Promise(r => term.write(Array.from({length: 200}, (_, i) => 'log '+i+' hello 中文').join('\\r\\n'), r));
@@ -45,7 +53,7 @@ try {
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   chrome = spawn(process.env.CHROME_BIN || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', [
-    '--headless=new', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${dir}/profile`, 'about:blank',
+    '--headless=new', '--disable-webgl', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${dir}/profile`, 'about:blank',
   ], { stdio: ['ignore', 'ignore', 'pipe'] });
   const endpoint = await new Promise((resolve, reject) => {
     let stderr = '';
@@ -248,7 +256,49 @@ try {
   assert.deepEqual(await evaluate('input'), [], 'Opening settings sent input');
   await evaluate(`document.querySelector('[role="dialog"] .modal-close-button').click()`); await wait(300);
   assert.equal(await evaluate(`Boolean(document.querySelector('[role="dialog"]'))`), false);
-  console.log(JSON.stringify({ redraw, scroll: { before, after }, selection, copied: true, keyboardEntry: true, keyboardViewport: true, mouseReporting: true, pastedOnce: true, shortcutSwipe: true, modifiers: true, settings: true }));
+  // A retained Session must keep its Host-sized buffer while another page's
+  // keyboard changes the global viewport. Shrink/grow is destructive even in
+  // the normal buffer: rows below a TUI cursor are removed, not restored.
+  await evaluate('term.textarea.blur()'); await wait(150);
+  for (const alternate of [false, true]) {
+    const original = await evaluate(`new Promise(resolve => {
+      term.reset();
+      const rows = term.rows;
+      const content = ${alternate} ? '\\x1b[?1049h' : '';
+      term.write(content + Array.from({length:rows}, (_,i) => '\\x1b['+(i+1)+';1Hrow '+i).join('')
+        + '\\x1b['+rows+';1HFOOTER-SENTINEL' + '\\x1b['+(rows-2)+';3H', () => resolve({cols:term.cols, rows}));
+    })`);
+    const screenText = () => evaluate(`Array.from({length:term.rows}, (_,i) => term.buffer.active.getLine(term.buffer.active.baseY+i)?.translateToString(true))`);
+    const complete = await screenText();
+    assert.equal(complete.at(-1), 'FOOTER-SENTINEL');
+    const reports = await evaluate('sizes.length');
+    await evaluate('setTerminalActive(false)'); await wait(300);
+    await call('Emulation.setDeviceMetricsOverride', { ...portraitMetrics, height: 500, screenWidth: 390, screenHeight: 844 });
+    await wait(150);
+    const hiddenRows = await evaluate('term.rows');
+    await call('Emulation.setDeviceMetricsOverride', portraitMetrics); await wait(150);
+    assert.equal(await evaluate('sizes.length'), reports, 'Hidden Session published another page\'s geometry');
+    await evaluate('setTerminalActive(true)'); await wait(300);
+    assert.ok(await evaluate('sizes.length') > reports, 'Activation did not publish a fresh size report');
+    assert.deepEqual(await screenText(), complete,
+      `Hidden keyboard resize destroyed ${alternate ? 'alternate' : 'normal'} TUI: ${original.rows} -> ${hiddenRows} -> ${await evaluate('term.rows')}`);
+    assert.equal(hiddenRows, original.rows, 'An inactive Session resized without its Host');
+    assert.deepEqual(await evaluate('sizes.at(-1)'), original, 'Activation did not publish the current geometry');
+    await evaluate(`new Promise(r => term.write('\\x1b[?1049l', r))`);
+  }
+  // If the viewport is still smaller on return, activation must apply it even
+  // though no new ResizeObserver notification accompanies the stage reveal.
+  const closedRows = await evaluate('term.rows');
+  await evaluate('setTerminalActive(false)'); await wait(300);
+  await call('Emulation.setDeviceMetricsOverride', { ...portraitMetrics, height: 500, screenWidth: 390, screenHeight: 844 });
+  await wait(150);
+  assert.equal(await evaluate('term.rows'), closedRows);
+  await evaluate('setTerminalActive(true)'); await wait(300);
+  assert.ok(await evaluate('term.rows') < closedRows, 'Activation did not fit the changed viewport');
+  assert.deepEqual(await evaluate('sizes.at(-1)'), await evaluate('({cols:term.cols,rows:term.rows})'));
+  await call('Emulation.setDeviceMetricsOverride', portraitMetrics); await wait(150);
+  assert.equal(await evaluate('term.rows'), closedRows, 'Active keyboard dismissal did not refit');
+  console.log(JSON.stringify({ redraw, scroll: { before, after }, selection, copied: true, keyboardEntry: true, keyboardViewport: true, mouseReporting: true, pastedOnce: true, shortcutSwipe: true, modifiers: true, settings: true, hiddenGeometry: true }));
 } finally {
   ws?.close();
   if (chrome?.pid && chrome.exitCode === null) {

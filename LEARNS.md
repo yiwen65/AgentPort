@@ -45,6 +45,15 @@
 - Prevention: Regression-test all three boundaries: fit-induced buffer snaps are restored, the DOM viewport is synchronized, and no deferred repair remains after the user starts scrolling.
 - Verified by: The native-viewport regression failed at `scrollTop 0` before the repair and passed at `9500` after it; the focused terminal suites pass 50/50.
 
+## `mobile retained Session geometry` — hidden buffers must not follow another page's keyboard
+
+- Wrong approach: Keep hidden Sessions mounted, gate only remote PTY resize on `active`, but let every xterm fit on global viewport/keyboard changes.
+- Why it failed: The hidden Host keeps its original grid while local xterm shrinks. Shrink/grow discards rows below the cursor and alternate-screen content; restoring the old dimensions cannot recover those cells. A same-size Host resize need not produce a redraw.
+- Recognition signal: Returning to a retained Session shows a truncated input/footer and blank rows below it after opening/dismissing a keyboard elsewhere.
+- Correct approach: Pass Session activity into MobileTerminal, gate fitting at execution time while inactive, and explicitly fit/report on activation even without a new ResizeObserver event. Continue parsing hidden output at the preserved grid.
+- Prevention: Run `node mobile/scripts/test-terminal-touch.mjs`; check normal and alternate footer preservation across hidden keyboard shrink/grow, plus return with a still-changed viewport. Keep DOM and WebGL renderer checks distinct.
+- Verified by: Real Chrome before-fix normal buffer changed 52→31→52 and lost the footer; afterward normal/alternate contents survive unchanged, activation applies the current viewport, and the same geometry checks pass with WebGL. Mobile 913/913 tests and TypeScript/Vite pass; physical-device reproduction remains unverified.
+
 ## `macOS sidebar window drag` — compare CSS specificity before trusting a drag override
 
 - Wrong approach: Adding `body.is-window-dragging .sidebar { backdrop-filter: none; }` and assuming its later source order overrides every vibrancy rule.

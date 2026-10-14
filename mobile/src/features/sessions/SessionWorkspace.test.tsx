@@ -12,6 +12,7 @@ import { clearTerminalCheckpoints, checkpointKey, readCheckpoint, saveCheckpoint
 
 const terminalHarness = vi.hoisted(() => ({
   props: undefined as {
+    active?: boolean;
     onRelease?: (handle: MobileTerminalHandle) => void;
     onInput?: (data: string) => void;
     onResize?: (cols: number, rows: number) => void;
@@ -861,12 +862,15 @@ describe("SessionWorkspace", () => {
     const callbacks = { onClose: vi.fn(), onSessionChanged: vi.fn() };
     const view = render(<SessionWorkspace open={open} client={client} {...callbacks} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    expect(terminalHarness.props!.active).toBe(true);
     view.rerender(<SessionWorkspace open={open} client={client} active={false} {...callbacks} />);
+    expect(terminalHarness.props!.active).toBe(false);
     act(() => terminalHarness.props!.onResize!(52, 24));
     await act(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     expect(request.mock.calls.filter(([, method, params]) => method === "session.control" && params.control === "resize")).toHaveLength(0);
     act(() => terminalHarness.props!.onResize!(52, 40));
     view.rerender(<SessionWorkspace open={open} client={client} active {...callbacks} />);
+    expect(terminalHarness.props!.active).toBe(true);
     await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.control", expect.objectContaining({ cols: 52, rows: 40 })));
     expect(request.mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(1);
     expect(request.mock.calls.filter(([, method]) => method === "session.detach")).toHaveLength(0);

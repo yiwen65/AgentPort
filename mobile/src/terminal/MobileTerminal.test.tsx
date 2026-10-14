@@ -933,6 +933,44 @@ describe("MobileTerminal input accessory", () => {
     expect(onInput).not.toHaveBeenCalled();
   });
 
+  it("keeps an inactive retained buffer unfitted and refits on return without a layout event", async () => {
+    const onResize = vi.fn();
+    const ref = createRef<MobileTerminalHandle>();
+    const view = render(<MobileTerminal ref={ref} onResize={onResize} showProbeOutput={false} />);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    const fits = terminalHarness.fitCalls;
+    onResize.mockClear();
+    // This fit was queued while active, but executes after deactivation.
+    act(() => terminalHarness.resizeObserved());
+    view.rerender(<MobileTerminal ref={ref} active={false} onResize={onResize} showProbeOutput={false} />);
+    act(() => {
+      terminalHarness.resizeObserved();
+      window.dispatchEvent(new Event("resize"));
+      ref.current!.write("hidden output");
+    });
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(terminalHarness.fitCalls).toBe(fits);
+    expect(onResize).not.toHaveBeenCalled();
+    expect(terminalHarness.writes).toContain("hidden output");
+    view.rerender(<MobileTerminal ref={ref} active onResize={onResize} showProbeOutput={false} />);
+    await waitFor(() => expect(terminalHarness.fitCalls).toBeGreaterThan(fits));
+    expect(onResize).toHaveBeenCalledWith(80, 24);
+    expect(terminalHarness.instances).toBe(1);
+  });
+
+  it("does not fit an initially inactive renderer or a hidden restore until activation", async () => {
+    const ref = createRef<MobileTerminalHandle>();
+    const view = render(<MobileTerminal ref={ref} active={false} showProbeOutput={false} />);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(terminalHarness.fitCalls).toBe(0);
+    await act(async () => ref.current!.restore({ content: "hidden snapshot", cols: 47, rows: 53, pending: [] }));
+    act(() => ref.current!.finishRestore());
+    expect(terminalHarness.fitCalls).toBe(0);
+    expect(terminalHarness.rows).toBe(53);
+    view.rerender(<MobileTerminal ref={ref} active showProbeOutput={false} />);
+    await waitFor(() => expect(terminalHarness.fitCalls).toBeGreaterThan(0));
+  });
+
   it("reports content-box geometry changes after layout settles, including while concealed", async () => {
     const onResize = vi.fn();
     render(<MobileTerminal onResize={onResize} showProbeOutput={false} obscured />);
