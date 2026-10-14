@@ -41,6 +41,29 @@ describe("TauriRemoteClient ordered input submission", () => {
     expect(tauri.invoke).toHaveBeenCalledTimes(1);
   });
 
+  it("wakes retry and reconciles a missed native transition for all foreground consumers", async () => {
+    tauri.invoke.mockResolvedValue("connected");
+    const client = new TauriRemoteClient();
+    const first = vi.fn(), second = vi.fn();
+    await client.onConnectionState(first); await client.onConnectionState(second);
+    await client.resumeConnection("host-1");
+    expect(tauri.invoke).toHaveBeenCalledExactlyOnceWith("mobile_resume_host", { profileId: "host-1" });
+    expect(first).toHaveBeenCalledExactlyOnceWith({ profileId: "host-1", state: "connected" });
+    expect(second).toHaveBeenCalledExactlyOnceWith({ profileId: "host-1", state: "connected" });
+  });
+
+  it("does not publish an old foreground phase snapshot over a newer failure", async () => {
+    let complete!: (value: unknown) => void;
+    tauri.invoke.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
+    const client = new TauriRemoteClient();
+    const observer = vi.fn(); await client.onConnectionState(observer);
+    const resumed = client.resumeConnection("host-1");
+    await vi.waitFor(() => expect(complete).toBeTypeOf("function"));
+    tauri.connectionListener?.({ payload: { profileId: "host-1", state: "failed" } });
+    complete("connected"); await resumed;
+    expect(observer).toHaveBeenCalledExactlyOnceWith({ profileId: "host-1", state: "failed" });
+  });
+
   it("does not let an older profile snapshot overwrite a newly connected event", async () => {
     let complete!: (value: unknown) => void;
     tauri.invoke.mockImplementation(() => new Promise(resolve => { complete = resolve; }));

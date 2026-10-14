@@ -96,6 +96,15 @@ function setupClient({ rejectResize = false, autoReplay = true, probeHealthy = t
   return { client, request, emit: (event: RemoteEvent<SessionEventPayload>) => listener?.(event) };
 }
 
+function connectionEvents(client: RemoteClient) {
+  const listeners = new Set<Parameters<RemoteClient["onConnectionState"]>[0]>();
+  vi.mocked(client.onConnectionState).mockImplementation(async listener => {
+    listeners.add(listener);
+    return async () => { listeners.delete(listener); };
+  });
+  return (event: Parameters<Parameters<RemoteClient["onConnectionState"]>[0]>[0]) => listeners.forEach(listener => listener(event));
+}
+
 describe("SessionWorkspace", () => {
   it("enables the keyboard entry only for the active live terminal", async () => {
     const { client, emit } = setupClient({ autoReplay: false });
@@ -577,6 +586,30 @@ describe("SessionWorkspace", () => {
     expect(terminalHarness.mounts).toBe(1);
   });
 
+  it("attaches only once when native recovery overtakes an old foreground probe", async () => {
+    const { client, request } = setupClient();
+    const connection = connectionEvents(client);
+    const original = request.getMockImplementation()!;
+    let failProbe!: (error: unknown) => void;
+    request.mockImplementation((...args) => args[1] === "agent.preferences" && args[3]?.signal
+      ? new Promise((_, reject) => { failProbe = reject; }) : original(...args));
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    visibility.mockReturnValue("hidden"); fireEvent(document, new Event("visibilitychange"));
+    visibility.mockReturnValue("visible"); fireEvent(document, new Event("visibilitychange"));
+    await waitFor(() => expect(failProbe).toBeTypeOf("function"));
+    act(() => connection({ profileId: "host-1", state: "reconnecting" }));
+    act(() => connection({ profileId: "host-1", state: "connected" }));
+    await waitFor(() => expect(request.mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(2));
+    await act(async () => failProbe(new Error("Old reader closed")));
+    expect(client.disconnect).not.toHaveBeenCalled();
+    expect(client.connect).not.toHaveBeenCalled();
+    expect(request.mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(2);
+    expect(terminalHarness.mounts).toBe(1);
+    await waitFor(() => expect(terminalHarness.props?.recovering).toBe(false));
+  });
+
   it("covers foreground replay until the matching parsed frame has rendered", async () => {
     const { client, request } = setupClient({ probeHealthy: false });
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
@@ -602,8 +635,7 @@ describe("SessionWorkspace", () => {
   it.each([false, true])("replaces a suspended connection and resumes once (connection events delivered: %s)", async delivered => {
     const { client, request, emit } = setupClient({ probeHealthy: false });
     if (delivered) {
-      let connection!: (event: any) => void;
-      vi.mocked(client.onConnectionState).mockImplementation(async listener => { connection = listener; return async () => {}; });
+      const connection = connectionEvents(client);
       vi.mocked(client.disconnect).mockImplementation(async () => { connection({ profileId: "host-1", state: "disconnected" }); });
       vi.mocked(client.connect).mockImplementation(async () => {
         connection({ profileId: "host-1", state: "connected" });
@@ -631,8 +663,7 @@ describe("SessionWorkspace", () => {
 
   it("recovers the retained terminal with a resume cursor and disables input while disconnected", async () => {
     const { client, request, emit } = setupClient();
-    let connection!: (event: any) => void;
-    vi.mocked(client.onConnectionState).mockImplementation(async listener => { connection = listener; return async () => {}; });
+    const connection = connectionEvents(client);
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     const resume = { runId: "run", runOrdinal: 1, generation: 0, offset: 5, statusSequence: 0 };

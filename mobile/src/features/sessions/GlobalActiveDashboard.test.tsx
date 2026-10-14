@@ -16,10 +16,10 @@ function session(title: string, overrides: Partial<SessionSummary> = {}): Sessio
     createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:00:00Z", ...overrides };
 }
 function setup(profiles = hosts) {
-  let emit: (event: RemoteConnectionStateEvent) => void = () => {};
+  const listeners = new Set<(event: RemoteConnectionStateEvent) => void>();
   const remote: RemoteClient = {
     listHostProfiles: vi.fn().mockResolvedValue(profiles), connect: vi.fn(), disconnect: vi.fn(), subscribe: vi.fn(),
-    onConnectionState: vi.fn(async listener => { emit = listener; return async () => {}; }),
+    onConnectionState: vi.fn(async listener => { listeners.add(listener); return async () => { listeners.delete(listener); }; }),
     request: vi.fn(async (id, method) => {
       if (method === "session.list") return [session(id === "host-1" ? "Studio shell" : "Laptop task", { unreadAttention: id === "host-2" })];
       if (method === "project.list") return [{ id: "project", name: `${id} project`, rootPath: "/repo", pinned: false, sortOrder: 0 }];
@@ -29,7 +29,7 @@ function setup(profiles = hosts) {
       return {};
     }) as RemoteClient["request"],
   };
-  return { remote, emit: (event: RemoteConnectionStateEvent) => emit(event) };
+  return { remote, emit: (event: RemoteConnectionStateEvent) => listeners.forEach(listener => listener(event)) };
 }
 async function showActive() {
   await screen.findByRole("combobox", { name: "Current device" });

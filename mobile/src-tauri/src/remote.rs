@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{oneshot, Mutex as AsyncMutex};
+use tokio::sync::{oneshot, Mutex as AsyncMutex, Notify};
 use zeroize::{Zeroize, Zeroizing};
 
 const MAX_ONLINE_HOSTS: usize = 5;
@@ -164,10 +164,19 @@ struct LocalSubscription {
     topics: Vec<String>,
 }
 
+struct ConnectAttempt {
+    token: String,
+    wake: Arc<Notify>,
+}
+
+impl ConnectAttempt {
+    fn new(token: String) -> Self { Self { token, wake: Arc::new(Notify::new()) } }
+}
+
 #[derive(Default)]
 struct RemoteStateInner {
     connections: AsyncMutex<HashMap<String, Connection>>,
-    connecting_profiles: Mutex<HashMap<String, String>>,
+    connecting_profiles: Mutex<HashMap<String, ConnectAttempt>>,
     phases: Mutex<HashMap<String, &'static str>>,
     subscriptions: Mutex<HashMap<String, LocalSubscription>>,
     cancelled_profiles: Mutex<HashSet<String>>,
@@ -279,7 +288,7 @@ impl RemoteConnections {
         self.inner
             .connecting_profiles
             .lock()
-            .map(|attempts| attempts.get(profile_id).is_some_and(|value| value == token))
+            .map(|attempts| attempts.get(profile_id).is_some_and(|value| value.token == token))
             .unwrap_or(false)
     }
 }
@@ -289,7 +298,29 @@ fn download_connection_changed() -> RemoteCommandError {
 }
 
 fn retry_delay(attempt: u32) -> Duration {
-    Duration::from_secs(1_u64 << attempt.min(5))
+    // A suspended reader failing is not proof the network is still unavailable.
+    // Try once immediately; only failed connection attempts need backoff.
+    if attempt == 0 { Duration::ZERO }
+    else { Duration::from_secs(1_u64 << (attempt - 1).min(5)) }
+}
+
+async fn wait_for_retry(attempt: u32, wake: &Notify) {
+    tokio::select! {
+        _ = tokio::time::sleep(retry_delay(attempt)) => {},
+        _ = wake.notified() => {},
+    }
+}
+
+/// Foreground accelerates the existing owner, never cancels an in-flight
+/// handshake or creates a second transport. Notify keeps a pre-wait permit.
+#[tauri::command]
+pub fn mobile_resume_host(state: State<'_, RemoteConnections>, profile_id: String) -> Result<String, String> {
+    let attempts = state.inner.connecting_profiles.lock().map_err(|_| "Connection state is unavailable")?;
+    if let Some(attempt) = attempts.get(&profile_id) { attempt.wake.notify_one(); }
+    drop(attempts);
+    // iOS can suspend event delivery. Return the current native phase too, so
+    // a join cannot wait forever for a connected event it already missed.
+    Ok(state.connection_state(&profile_id).to_string())
 }
 
 fn retryable_connect_error(error: &ConnectError) -> bool {
@@ -319,7 +350,7 @@ fn emit_attempt_state(
     if let Ok(attempts) = state.inner.connecting_profiles.lock() {
         if attempts
             .get(profile_id)
-            .is_some_and(|current| current == token)
+            .is_some_and(|current| current.token == token)
         {
             let _ = emit_connection_state(app, profile_id, phase);
         }
@@ -784,6 +815,8 @@ async fn reader_loop(
         }
 
         let next_token = format!("connection_{}", uuid::Uuid::new_v4().simple());
+        let next_attempt = ConnectAttempt::new(next_token.clone());
+        let retry_wake = Arc::clone(&next_attempt.wake);
         {
             let mut attempts = match state.inner.connecting_profiles.lock() {
                 Ok(value) => value,
@@ -799,13 +832,13 @@ async fn reader_loop(
             {
                 return;
             }
-            attempts.insert(profile_id.clone(), next_token.clone());
+            attempts.insert(profile_id.clone(), next_attempt);
         }
         let mut reconnected = None;
         let mut attempt = 0_u32;
         while state.owns_attempt(&profile_id, &next_token) {
             emit_attempt_state(&app, &state, &profile_id, &next_token, "reconnecting");
-            tokio::time::sleep(retry_delay(attempt)).await;
+            wait_for_retry(attempt, &retry_wake).await;
             attempt = attempt.saturating_add(1);
             if !state.owns_attempt(&profile_id, &next_token) {
                 return;
@@ -830,7 +863,7 @@ async fn reader_loop(
         }
         let Some((transport, next_reader, writer, snapshot)) = reconnected else {
             if let Ok(mut attempts) = state.inner.connecting_profiles.lock() {
-                if attempts.get(&profile_id) == Some(&next_token) {
+                if attempts.get(&profile_id).is_some_and(|attempt| attempt.token == next_token) {
                     attempts.remove(&profile_id);
                     let _ = emit_connection_state(&app, &profile_id, "failed");
                 }
@@ -845,7 +878,7 @@ async fn reader_loop(
         }
         if connections.len() >= MAX_ONLINE_HOSTS {
             if let Ok(mut attempts) = state.inner.connecting_profiles.lock() {
-                if attempts.get(&profile_id) == Some(&next_token) {
+                if attempts.get(&profile_id).is_some_and(|attempt| attempt.token == next_token) {
                     attempts.remove(&profile_id);
                     let _ = emit_connection_state(&app, &profile_id, "failed");
                 }
@@ -934,7 +967,7 @@ pub async fn mobile_connect_host(
                 host_key_hop: None,
             });
         }
-        connecting.insert(profile_id.clone(), generation.clone());
+        connecting.insert(profile_id.clone(), ConnectAttempt::new(generation.clone()));
     }
     emit_attempt_state(&app, &state, &profile_id, &generation, "connecting");
     let established = tokio::time::timeout(Duration::from_secs(30), establish(&app, &profile))
@@ -1444,8 +1477,15 @@ mod tests {
     }
 
     #[test]
+    fn first_reconnect_does_not_wait_before_trying_a_usable_network() {
+        assert_eq!(retry_delay(0), Duration::ZERO);
+    }
+
+    #[test]
     fn reconnect_backoff_survives_long_outages_but_auth_failures_do_not_retry() {
-        assert_eq!(retry_delay(0).as_secs(), 1);
+        assert_eq!(retry_delay(1).as_secs(), 1);
+        assert_eq!(retry_delay(2).as_secs(), 2);
+        assert_eq!(retry_delay(6).as_secs(), 32);
         assert_eq!(retry_delay(100).as_secs(), 32);
         for (code, retry) in [
             ("ssh_connection_failed", true),
@@ -1465,6 +1505,39 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn foreground_wakes_only_the_current_retry_owner_even_before_it_sleeps() {
+        let app = tauri::test::mock_app();
+        let state = RemoteConnections::default();
+        app.manage(state.clone());
+        state.inner.phases.lock().unwrap().insert("host".into(), "reconnecting");
+        let old = ConnectAttempt::new("old".into());
+        let old_wake = Arc::clone(&old.wake);
+        state.inner.connecting_profiles.lock().unwrap().insert("host".into(), old);
+        let replacement = ConnectAttempt::new("new".into());
+        let wake = Arc::clone(&replacement.wake);
+        state.inner.connecting_profiles.lock().unwrap().insert("host".into(), replacement);
+        let retry = wait_for_retry(6, &wake);
+        tokio::pin!(retry);
+        tokio::select! {
+            _ = &mut retry => panic!("failed retries must still back off"),
+            _ = tokio::time::sleep(Duration::ZERO) => {},
+        }
+        assert_eq!(mobile_resume_host(app.state(), "host".into()).unwrap(), "reconnecting");
+        tokio::time::timeout(Duration::from_secs(1), &mut retry).await.unwrap();
+        assert!(state.owns_attempt("host", "new"));
+        assert!(!state.owns_attempt("host", "old"));
+        assert!(tokio::time::timeout(Duration::from_millis(10), old_wake.notified()).await.is_err());
+        // A foreground event can precede entry into the next backoff wait.
+        mobile_resume_host(app.state(), "host".into()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), wait_for_retry(6, &wake)).await.unwrap();
+        state.inner.connecting_profiles.lock().unwrap().remove("host");
+        state.inner.phases.lock().unwrap().insert("host".into(), "connected");
+        assert_eq!(mobile_resume_host(app.state(), "host".into()).unwrap(), "connected"); // No new attempt.
+        assert!(!state.owns_attempt("host", "new"));
+        assert!(tokio::time::timeout(Duration::from_millis(10), wake.notified()).await.is_err());
+    }
+
     #[test]
     fn a_cancelled_or_replaced_attempt_cannot_publish_a_late_connection() {
         let state = RemoteConnections::default();
@@ -1473,7 +1546,7 @@ mod tests {
             .connecting_profiles
             .lock()
             .unwrap()
-            .insert("host".into(), "old".into());
+            .insert("host".into(), ConnectAttempt::new("old".into()));
         assert!(state.owns_attempt("host", "old"));
         state
             .inner
@@ -1487,7 +1560,7 @@ mod tests {
             .connecting_profiles
             .lock()
             .unwrap()
-            .insert("host".into(), "new".into());
+            .insert("host".into(), ConnectAttempt::new("new".into()));
         assert!(!state.owns_attempt("host", "old"));
         assert!(state.owns_attempt("host", "new"));
     }

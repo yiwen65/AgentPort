@@ -33,6 +33,15 @@ function client(): RemoteClient {
   };
 }
 
+function connectionEvents(remote: RemoteClient) {
+  const listeners = new Set<Parameters<RemoteClient["onConnectionState"]>[0]>();
+  vi.mocked(remote.onConnectionState).mockImplementation(async listener => {
+    listeners.add(listener);
+    return async () => { listeners.delete(listener); };
+  });
+  return (event: Parameters<Parameters<RemoteClient["onConnectionState"]>[0]>[0]) => listeners.forEach(listener => listener(event));
+}
+
 describe("V2 Session workspace", () => {
   beforeEach(async () => { localStorage.clear(); await i18n.changeLanguage("en-US"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -66,6 +75,26 @@ describe("V2 Session workspace", () => {
     expect(screen.queryByText("Update failed. Tap to retry")).not.toBeInTheDocument();
   });
 
+  it.each([false, true])("releases a retained native foreground join on activation (another visibility cycle: %s)", async cycled => {
+    const remote = client();
+    const connection = connectionEvents(remote);
+    const view = render(<SessionDashboard client={remote} active onOpenSession={vi.fn()} />);
+    await screen.findByRole("button", { name: "Approval task" });
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    visibility.mockReturnValue("hidden"); fireEvent(document, new Event("visibilitychange"));
+    act(() => connection({ profileId: "host-1", state: "reconnecting" }));
+    visibility.mockReturnValue("visible"); fireEvent(document, new Event("visibilitychange"));
+    expect(screen.getByRole("button", { name: "Refresh" })).toHaveAttribute("aria-busy", "true");
+    view.rerender(<SessionDashboard client={remote} active={false} onOpenSession={vi.fn()} />);
+    if (cycled) { visibility.mockReturnValue("hidden"); fireEvent(document, new Event("visibilitychange")); }
+    act(() => connection({ profileId: "host-1", state: "connected" }));
+    if (cycled) { visibility.mockReturnValue("visible"); fireEvent(document, new Event("visibilitychange")); }
+    view.rerender(<SessionDashboard client={remote} active onOpenSession={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).toHaveAttribute("aria-busy", "false"));
+    expect(remote.disconnect).not.toHaveBeenCalled();
+    expect(remote.connect).not.toHaveBeenCalled();
+  });
+
   it.each(["connect", "read"])("retains retry and cached rows when foreground %s actually fails", async phase => {
     const remote = client();
     render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
@@ -91,8 +120,7 @@ describe("V2 Session workspace", () => {
 
   it("does not cancel its own recovery when native disconnect is delivered before a failed connect", async () => {
     const remote = client();
-    let connection!: (event: any) => void;
-    vi.mocked(remote.onConnectionState).mockImplementation(async listener => { connection = listener; return async () => {}; });
+    const connection = connectionEvents(remote);
     render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
     await screen.findByRole("button", { name: "Approval task" });
     const request = vi.mocked(remote.request), original = request.getMockImplementation()!;
@@ -246,8 +274,7 @@ describe("V2 Session workspace", () => {
   it("uses the same button to reconnect and then refresh exactly once", async () => {
     const remote = client();
     vi.mocked(remote.listHostProfiles).mockResolvedValue([{ ...hosts[0], connectionState: "disconnected" }]);
-    let emit: Parameters<RemoteClient["onConnectionState"]>[0] = () => {};
-    vi.mocked(remote.onConnectionState).mockImplementation(async listener => { emit = listener; return async () => {}; });
+    const emit = connectionEvents(remote);
     let finish!: () => void;
     vi.mocked(remote.connect).mockImplementation(() => new Promise(resolve => { finish = () => resolve({ profileId: "host-1" } as any); }));
     render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
@@ -313,8 +340,7 @@ describe("V2 Session workspace", () => {
   it("releases a failed connect spinner even without a final platform state event", async () => {
     const remote = client();
     vi.mocked(remote.listHostProfiles).mockResolvedValue([{ ...hosts[0], connectionState: "disconnected" }]);
-    let emit: Parameters<RemoteClient["onConnectionState"]>[0] = () => {};
-    vi.mocked(remote.onConnectionState).mockImplementation(async listener => { emit = listener; return async () => {}; });
+    const emit = connectionEvents(remote);
     vi.mocked(remote.connect).mockImplementation(async () => { emit({ profileId: "host-1", state: "connecting" }); throw new Error("failed"); });
     render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled());
@@ -326,8 +352,7 @@ describe("V2 Session workspace", () => {
   it("does not revive a connection when a newer disconnect overtakes the connect reply", async () => {
     const remote = client();
     vi.mocked(remote.listHostProfiles).mockResolvedValue([{ ...hosts[0], connectionState: "disconnected" }]);
-    let emit: Parameters<RemoteClient["onConnectionState"]>[0] = () => {};
-    vi.mocked(remote.onConnectionState).mockImplementation(async listener => { emit = listener; return async () => {}; });
+    const emit = connectionEvents(remote);
     let finish!: () => void;
     vi.mocked(remote.connect).mockImplementation(() => new Promise(resolve => { finish = () => resolve({ profileId: "host-1" } as any); }));
     render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
@@ -765,8 +790,7 @@ describe("V2 Session workspace", () => {
   it("explains empty and offline launch states", async () => {
     const remote = client();
     const request = remote.request;
-    let connection!: (event: { profileId: string; state: string }) => void;
-    remote.onConnectionState = vi.fn().mockImplementation((callback) => { connection = callback; return Promise.resolve(async () => undefined); });
+    const connection = connectionEvents(remote);
     remote.request = vi.fn().mockImplementation((host, method, params) => method === "agent.preferences" ? Promise.resolve({ agentHidden: ["claude", "shell"] }) : request(host, method, params));
     render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "Start agent in AgentPort" }));

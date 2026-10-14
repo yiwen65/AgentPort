@@ -54,6 +54,15 @@
 - Prevention: Run `node mobile/scripts/test-terminal-touch.mjs`; check normal and alternate footer preservation across hidden keyboard shrink/grow, plus return with a still-changed viewport. Keep DOM and WebGL renderer checks distinct.
 - Verified by: Real Chrome before-fix normal buffer changed 52→31→52 and lost the footer; afterward normal/alternate contents survive unchanged, activation applies the current viewport, and the same geometry checks pass with WebGL. Mobile 913/913 tests and TypeScript/Vite pass; physical-device reproduction remains unverified.
 
+## `mobile foreground recovery` — wake the existing retry owner and fence stale probes
+
+- Wrong approach: Wait before the first native reconnect, disconnect/connect again when an old foreground probe fails during native recovery, or join an existing retry without waking its background backoff.
+- Why it failed: First recovery imposed 1s before network work; a stale probe could cancel a nearly complete or healthy replacement. Joining alone inherited up to32s of backoff. Dropping completion while a retained view was inactive could also strand its recovery UI gate.
+- Recognition signal: Foreground reconnect/attach is slow despite an available network, another disconnect follows native connected, or Projects Refresh stays busy after closing Settings/returning from Active.
+- Correct approach: Retry once immediately; keep failed-attempt backoff and a token-owned Notify wake. Resume the current owner, reconcile a missed native phase without overriding newer events, fence old probes, and reconcile inactive completions/skipped visibility work on activation.
+- Prevention: Run foreground hook/adapter/Workspace/Dashboard tests and native `remote::` tests. Cover probe/native races, wake-before-wait, replacement ownership, missed events, and inactive views spanning another visibility cycle; do not shorten the healthy-connection probe budget without measurements.
+- Verified by: Three old-probe regressions failed with unwanted disconnects before repair. Isolated encrypted Relay + Bridge + synthetic attach/replay timing moved from1015–1027ms to8–37ms across three fresh test processes after removing the first wait; this is not physical-phone foreground-to-render latency. Final mobile931/931 and native69/69 pass; physical iPhone remains unavailable.
+
 ## `macOS sidebar window drag` — compare CSS specificity before trusting a drag override
 
 - Wrong approach: Adding `body.is-window-dragging .sidebar { backdrop-filter: none; }` and assuming its later source order overrides every vibrancy rule.

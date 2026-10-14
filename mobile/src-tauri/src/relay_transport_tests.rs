@@ -88,12 +88,22 @@ async fn native_relay_bridge_hello_and_owner_cancellation_do_not_need_ssh() {
                 "session.list"
             );
             write_frame(&mut stream, &json!({"type":"result","requestId":"read-only","status":"succeeded","retryClass":"read_only","value":[]})).await.unwrap();
+            let attach = read_frame(&mut stream).await.unwrap().unwrap();
+            let attach: Value = serde_json::from_slice(&attach).unwrap();
+            assert_eq!(attach["method"], "session.attach");
+            write_frame(&mut stream, &json!({"type":"result","requestId":"attach","status":"succeeded","value":{"attachmentId":"fixture-attachment"}})).await.unwrap();
+            write_frame(&mut stream, &json!({"type":"event","subscriptionId":"fixture-attachment","eventType":"replay_done","payload":{"sessionId":"fixture-session"}})).await.unwrap();
             assert!(
                 read_frame(&mut stream).await.unwrap().is_none(),
                 "native owner cancellation must close despite retained split halves"
             );
         }
     });
+    // Component timing: the production first-retry policy, real encrypted Relay
+    // connection and Bridge hello, followed by a bounded attach/replay fixture.
+    // It does not measure a physical phone or a real terminal snapshot restore.
+    let recovery_started = std::time::Instant::now();
+    tokio::time::sleep(retry_delay(0)).await;
     let (transport, mut reader, mut writer, snapshot) =
         establish_relay_with_secret(&profile, Zeroizing::new(phone.private_bytes().to_vec()))
             .await
@@ -110,6 +120,12 @@ async fn native_relay_bridge_hello_and_owner_cancellation_do_not_need_ssh() {
         serde_json::from_slice::<Value>(&response).unwrap()["value"],
         json!([])
     );
+    write_frame(&mut writer, &json!({"type":"request","requestId":"attach","method":"session.attach","params":{"sessionId":"fixture-session"}})).await.unwrap();
+    let attached: Value = serde_json::from_slice(&read_frame(&mut reader).await.unwrap().unwrap()).unwrap();
+    assert_eq!(attached["value"]["attachmentId"], "fixture-attachment");
+    let replay: Value = serde_json::from_slice(&read_frame(&mut reader).await.unwrap().unwrap()).unwrap();
+    assert_eq!(replay["eventType"], "replay_done");
+    eprintln!("first_retry_to_replay_done_ms={:.3}", recovery_started.elapsed().as_secs_f64() * 1000.0);
     drop(transport); // Reader and writer intentionally stay alive.
     assert!(
         tokio::time::timeout(Duration::from_secs(2), read_frame(&mut reader))

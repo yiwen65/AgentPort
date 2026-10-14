@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  ConnectionState,
   HostProfileSummary,
   RemoteClient,
   RemoteConnectionSnapshot,
@@ -109,6 +110,18 @@ export class TauriRemoteClient implements RemoteClient {
 
   disconnect(profileId: string): Promise<void> {
     return invoke("mobile_disconnect_host", { profileId });
+  }
+
+  async resumeConnection(profileId: string): Promise<void> {
+    await this.ensureConnectionListener();
+    const before = this.connectionEvents.get(profileId);
+    const state = await invoke<ConnectionState>("mobile_resume_host", { profileId });
+    // Reconcile a transition missed during suspension, but do not overwrite a
+    // newer live event that overtook this native phase snapshot.
+    if (this.connectionEvents.get(profileId) !== before) return;
+    const event = { profileId, state };
+    this.connectionEvents.set(profileId, event);
+    this.connectionObservers.forEach(listener => listener(event));
   }
 
   uploadImage(profileId: string): Promise<string | null> {

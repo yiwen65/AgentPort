@@ -141,6 +141,7 @@ pub fn run() {
             credentials::mobile_secure_storage_status,
             ssh::mobile_probe_ssh_bridge,
             remote::mobile_connect_host,
+            remote::mobile_resume_host,
             remote::mobile_disconnect_host,
             remote::mobile_remote_request,
             remote::mobile_remote_submit_input,
