@@ -35,6 +35,9 @@
 | F-010 | 慢的分段样本中配置0ms、DNS5–9ms、TCP1341–2219ms、TLS/WebSocket2397–3896ms | ab-final.log中原生Instant分段；elapsed可能包含调度/挂起，未证明具体网络/OS/服务端根因 |
 | F-011 | 最终已重新构建/安装无临时诊断的已提交版本，签名、profile、IPA哈希验证成功，resume修复存在、临时API字符串不存在；PID6622存活 | task-59；/tmp/agentport-foreground-final-iphone-*.json、final-processes.json；二进制strings及codesign检查 |
 | F-012 | 最终检查期间手机前台出现非AgentPort界面且有输入；立即停止所有手机输入，非目标App截图已删除 | DeviceHub12628实际观察；不记录非目标App内容，不据此推断App崩溃或代码回归 |
+| F-013 | 用户随后选择“可以继续”，排他窗口确认最终App显示本轮真实Session正文；DOM live、recovering=false、inputEnabled=true、两个画布 | /tmp/agentport-exclusive-final.png；task-68/71精确target读回 |
+| F-014 | 排他窗口观察到连接重建5101ms，两个保留Session attach238/281ms，disconnect到当前Session恢复5454ms；探测包装最终全部清理 | /tmp/agentport-exclusive-retry2.jsonl；task-71 cleaned=true、absent=true |
+| F-015 | 短后台尝试未记录到hidden/visible事件，不能作为有效后台恢复性能样本 | /tmp/agentport-exclusive-cycle.jsonl仅installed/state/ready；未据AX动作回执声称后台复验成功 |
 
 <!-- task-doc-section:assumptions-questions -->
 ## Assumptions and open questions
@@ -100,8 +103,8 @@
 - Verification method:
   - 原生阶段计时与客户端observer交叉核对。
 - Validation evidence: 原生remote14项及Relay检查通过；F-007至F-010已定位主要等待到TCP/TLS建连，原路径/分段路径交错结果否定稳定的改写收益；尚无可证明的本地修复点。
-- Blocker: 手机排他控制不能确认，已看到非目标App操作；部分样本缺少同步可见性/调度信息，无法将TCP/TLS耗时归因于某一本地缺陷或网络/VPN。
-- Unblock condition: 用户先确认可暂停其它手机/agent操作，提供短暂独占窗口；同包记录visibility的受控复验后，再决定是否需要用户自行换网络作进一步对照。
+- Blocker: 排他窗口已确认最终界面，但连接重建仍5101ms；现有样本未证明具体本地修复点。短后台AX操作没有产生visibility事件，不作为性能回归通过。
+- Unblock condition: 用户自行换一个网络（或如有VPN，临时断开后告知）作同包对照；继续时先验证实际hidden/visible，再采集同口径样本，不由agent改网络设置。
 
 ### [ ] T-003 — 最小修复与回归
 
@@ -145,9 +148,9 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-005 — 清理临时探测并保留已提交修复包
+### [x] T-005 — 清理临时探测并保留已提交修复包
 
-- Status: blocked
+- Status: done
 - Owner: coordinator
 - Objective: 阻塞前移除所有临时诊断API/连接改写及页面包装，安全交付a055301已有修复，不假冒进一步性能改善。
 - Inputs and prerequisites: T-001已完成；F-009/F-010表明当前不能接受新的连接改写。
@@ -163,13 +166,13 @@
   - 无临时探测或未验证性能改写留在源码/最终包；真实剩余问题清楚披露。
 - Verification method:
   - git diff、native remote检查、签名打包/安装/进程、物理手机页面截图与任务validator。
-- Validation evidence: 5个临时Rust修改已全部清除，源码无产品diff；native remote14项通过。最终iPhoneOS开发包已验证并覆盖安装/启动；IPA SHA256 ebd51cb72beec570c99b1ef4eee4a26d10a5e99e69fe892cf7d4f956e504be75，临时API/计时字符串均不在二进制。最后受控Session画面验证未完成。
-- Blocker: T-006需要独占手机；最后一次激活后的DeviceHub已显示其它App有输入，不能抢回手机继续验收。
-- Unblock condition: 用户确认手机可暂时独占后，完成最终AgentPort Session画面检查。
+- Validation evidence: 5个临时Rust修改全部清除，源码无产品diff；native remote14项通过。最终iPhoneOS开发包签名/profile/IPA校验通过并覆盖安装/启动；IPA SHA256 ebd51cb72beec570c99b1ef4eee4a26d10a5e99e69fe892cf7d4f956e504be75，临时API/计时字符串不在二进制。T-006确认真实Session正常显示，task-71确认页面包装已清理。
+- Blocker: None.
+- Unblock condition: None.
 
-### [ ] T-006 — 独占条件下确认最终Session画面
+### [x] T-006 — 独占条件下确认最终Session画面
 
-- Status: blocked
+- Status: done
 - Owner: coordinator
 - Objective: 对最终无临时探测包完成可归因的Session显示确认，不把其它控制者导致的画面变化当作产品结论。
 - Inputs and prerequisites: F-011最终包、当前Session身份；用户确认无其它手机/agent操作。
@@ -184,9 +187,9 @@
   - 检查期间只控制目标App；结果可归因且不以启动PID替代渲染验收。
 - Verification method:
   - DeviceHub物理手机画面、可用的精确AgentPort target只读观察；Inspector未广告目标时不反复盲试。
-- Validation evidence: 最终包已存活；DeviceHub曾显示仅终端背景/键盘入口画面，随后出现非目标App前台输入，不能归因。最终Inspector没有明确AgentPort target；原生screenshotr服务返回Invalid service，未更改DDI/权限。
-- Blocker: 手机存在其它操作，缺少排他控制；最终画面与读回不一致。
-- Unblock condition: 用户确认可暂停其它手机/agent操作，允许短暂独占AgentPort复验。
+- Validation evidence: 用户确认可以继续后，明确AgentPort target重新可读。最终live/无恢复遮罩/输入入口可用，两画布及真实本轮Session正文截图一致；一度Attach failed随后已恢复。task-71清理成功。原生screenshotr仍Invalid service，使用已验证DeviceHub等价画面，未改DDI/权限。此任务只确认最终画面，不代表T-002性能已通过。
+- Blocker: None.
+- Unblock condition: None.
 
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
@@ -199,7 +202,7 @@
 <!-- task-doc-section:risks-blockers -->
 ## Risks and blockers
 
-- 手机再次断开、锁屏或同时交互时暂停相应真机结论，不把启动替代完整恢复验收。当前已因其它前台输入暂停；A/B波动不可作为网络/VPN根因证明。
+- 手机再次断开、锁屏或同时交互时暂停相应真机结论，不把启动替代完整恢复验收。排他窗口已完成最终画面检查；A/B波动仍不可作为网络/VPN根因证明。
 - 网络/Relay/Connector调度可能是真实外部成本；未证明本地原因时不缩短健康探测超时或更改网络设置。
 - 两个保留Session会对同一主机各attach一次；不据此推断同一Session重复attach。
 
@@ -217,10 +220,12 @@
 - 2026-10-15: 新增并开始T-005，移除本轮临时诊断并重装已提交修复包；不把实验分段路径包装成性能修复。
 - 2026-10-15: T-005完成源码清理、remote14项、最终签名/profile/IPA哈希验证、覆盖安装/启动；随后检查出现非目标App输入，停止全部手机操作，删除该非目标截图。
 - 2026-10-15: 新增T-006，最终Session显示检查尝试后blocked；T-005因该验收前提in_progress→blocked。需要用户确认短暂独占手机，再进行可归因的复验，不修改网络或争抢焦点。
+- 2026-10-15: 用户选择“可以继续”；T-006/T-005 blocked→in_progress。排他检查记录到连接重建5101ms、attach238/281ms，最终恢复live/无遮挡/输入入口可用并有真实Session正文截图；T-006/T-005→done。
+- 2026-10-15: 临时组合JS首次重试因语句连接错误未确认执行，后一次检查时Retry按钮已消失；仅报告实际链路事件，不将其冒称可归因的主动点击收益。短后台AX动作未产生visibility事件，未计作后台性能通过。task-71已清理全部页面包装，无终端输入、网络改动或Host重启。T-002仍blocked，建议由用户手动换网络再对照。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: partial
-- Evidence: 初次安装曾显示真实Session，基线7296ms恢复；后续连接分段及12个A/B均已保存。临时源码/API/包装已清理，最终已提交版本签名验证并覆盖安装启动，原手机数据/配置保留。
-- Limitations: T-002/T-005/T-006 blocked，T-003/T-004尚未执行；缺少手机排他控制和最终受控画面。当前不能声称新性能修复、不能把TCP/TLS波动直接归因于网络/VPN，也不能以安装成功代替完整真机验收。
+- Evidence: T-001/T-005/T-006完成；最终签名包已保留数据覆盖安装，真实Session画面与DOM可用状态一致，临时源码/API/页面包装全部清理。基线7296ms；后续实测连接重建5101ms、attach238/281ms；12个WSS A/B原始数据保留。
+- Limitations: T-002 blocked，T-003/T-004未执行；短后台尝试没有有效visibility事件，不计为恢复验收通过。需要用户手动换网络后继续同口径对照，当前不声称新性能修复或具体网络/VPN根因。
