@@ -1369,6 +1369,101 @@ fn pi_pty_session_jsonl_inherits_completed_resume_and_emits_only_new_turn_ends()
 }
 
 #[test]
+fn pi_family_metadata_tail_arms_idle_shutdown() {
+    for adapter in ["pi", "easy_pi", "omp"] {
+        let ctx = make_pi_pty_ctx("printf 'Pi TUI ready\\r\\n'; sleep 60");
+        let mut cfg: HostConfig =
+            serde_json::from_str(&std::fs::read_to_string(&ctx.cfg_path).unwrap()).unwrap();
+        cfg.adapter_type = adapter.into();
+        std::fs::write(&ctx.cfg_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+        let _guard = spawn_host(&ctx, &[]);
+        wait_socket(&ctx);
+        let mut conn = connect(&ctx, &ctx.session_id, TOKEN, 0);
+        conn.expect_hello_ok();
+
+        let session_dir = ctx.dir.join(adapter);
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let completion = serde_json::json!({
+            "type": "message", "timestamp": chrono::Utc::now().to_rfc3339(),
+            "message": {"role": "assistant", "stopReason": "stop"}
+        });
+        std::fs::write(
+            session_dir.join("session.jsonl"),
+            format!(
+                "{completion}\n{}",
+                concat!(
+                    "{\"type\":\"custom\",\"customType\":\"pi-task-recovery\"}\n",
+                    "{\"type\":\"custom\",\"customType\":\"pi-task-recovery\"}\n",
+                    "{\"type\":\"custom\",\"customType\":\"pi-turn-duration\"}\n"
+                )
+            ),
+        )
+        .unwrap();
+        wait_for(
+            || {
+                std::fs::read_to_string(&ctx.host_log)
+                    .is_ok_and(|log| log.contains("semantic turn complete; idle shutdown armed"))
+            },
+            Duration::from_secs(3),
+            &format!("{adapter} completion followed by metadata to arm idle shutdown"),
+        );
+        let frames = conn.collect_until(Duration::from_millis(300), |_| false);
+        assert!(frames.iter().any(|frame| matches!(frame,
+            HostFrame::State { state: AgentState::Idle, source: StateSource::Adapter, .. }
+        )), "{adapter} did not publish completion: {frames:?}");
+        assert!(!frames.iter().any(|frame| matches!(frame, HostFrame::Exit { .. })),
+            "{adapter} must retain the full idle grace period");
+    }
+}
+
+#[test]
+fn pi_delayed_completion_timestamp_does_not_arm_after_new_input() {
+    for tail in ["", "{\"type\":\"custom\",\"customType\":\"pi-turn-duration\"}\n"] {
+        let ctx = make_pi_pty_ctx("read -r line; printf 'input received\\r\\n'; sleep 60");
+        let _guard = spawn_host(&ctx, &[]);
+        wait_socket(&ctx);
+        let mut conn = connect(&ctx, &ctx.session_id, TOKEN, 0);
+        conn.expect_hello_ok();
+        let completed_at = (chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
+        conn.send(&ClientFrame::Input {
+            session_id: ctx.session_id.clone(),
+            data: b"next prompt\n".to_vec(),
+        });
+        let received = conn.collect_until(Duration::from_secs(3), |frames| {
+            String::from_utf8_lossy(&output_bytes(frames)).contains("input received")
+        });
+        assert!(String::from_utf8_lossy(&output_bytes(&received)).contains("input received"));
+
+        let session_dir = ctx.dir.join("pi");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let completion = serde_json::json!({
+            "type": "message", "timestamp": completed_at,
+            "message": {"role": "assistant", "stopReason": "stop"}
+        });
+        // The append/mtime is newer than the input, but the completed turn is not.
+        std::fs::write(session_dir.join("session.jsonl"), format!("{completion}\n{tail}"))
+            .unwrap();
+        let frames = conn.collect_until(Duration::from_secs(3), |frames| {
+            frames.iter().any(|frame| matches!(frame,
+                HostFrame::State { state: AgentState::Idle, source: StateSource::Adapter, .. }
+            ))
+        });
+        assert!(frames.iter().any(|frame| matches!(frame,
+            HostFrame::State { state: AgentState::Idle, source: StateSource::Adapter, .. }
+        )));
+        // The next control-loop heartbeat is a barrier after handle_observation;
+        // Idle is published before the potentially slow descendant scan/arm.
+        let barrier = conn.collect_until(Duration::from_secs(3), |frames| {
+            frames.iter().any(|frame| matches!(frame, HostFrame::Heartbeat { .. }))
+        });
+        assert!(barrier.iter().any(|frame| matches!(frame, HostFrame::Heartbeat { .. })));
+        assert!(!std::fs::read_to_string(&ctx.host_log).unwrap()
+            .contains("semantic turn complete; idle shutdown armed"),
+            "old completion must not arm cleanup over new input (tail={tail:?})");
+    }
+}
+
+#[test]
 fn kimi_wire_end_turn_emits_semantic_completion_after_native_id_capture() {
     const KIMI_ID: &str = "session_b7034202-9ba5-405c-8cca-e9788753dade";
     let ctx = make_kimi_pty_ctx(&format!(

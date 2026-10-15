@@ -349,8 +349,21 @@ fn follow_jsonl(
             continue;
         }
         if let Ok(event) = serde_json::from_slice::<Value>(&line) {
-            let completion_input_boundary =
-                (cursor.offset == metadata.len()).then_some(observed_at);
+            // Pi extensions append recovery/duration metadata after the final
+            // assistant message. Use that message's own persistence timestamp,
+            // not the later file mtime, so completion still arms cleanup without
+            // allowing an old turn to cross intervening user input. This is the
+            // entry timestamp, not the nested message.timestamp.
+            let pi_completed_at = is_pi_turn_end(&event)
+                .then(|| {
+                    event.get("timestamp")?
+                        .as_str()
+                        .and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
+                        .map(SystemTime::from)
+                })
+                .flatten();
+            let completion_input_boundary = pi_completed_at
+                .or_else(|| (cursor.offset == metadata.len()).then_some(observed_at));
             on_event(&event, completion_input_boundary);
         }
     }
@@ -868,6 +881,120 @@ mod tests {
         file.flush().unwrap();
         follow_jsonl(&path, &mut cursor, |event, _| seen.push(event.clone()));
         assert_eq!(seen[0]["type"], "partial");
+    }
+
+    #[test]
+    fn pi_completion_boundary_uses_record_time_even_with_metadata_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let timestamp = "2026-10-14T16:07:56.675Z";
+        let recorded_at: SystemTime = chrono::DateTime::parse_from_rfc3339(timestamp)
+            .unwrap()
+            .into();
+        let completion = serde_json::json!({
+            "type": "message", "timestamp": timestamp,
+            "message": {"role": "assistant", "stopReason": "stop"}
+        });
+        for tail in [
+            "",
+            concat!(
+                "{\"type\":\"custom\",\"customType\":\"pi-task-recovery\"}\n",
+                "{\"type\":\"custom\",\"customType\":\"pi-task-recovery\"}\n",
+                "{\"type\":\"custom\",\"customType\":\"pi-turn-duration\"}\n"
+            ),
+        ] {
+            fs::write(&path, format!("{completion}\n{tail}")).unwrap();
+            let mut cursor = JsonlCursor::default();
+            let mut boundaries = Vec::new();
+            follow_jsonl(&path, &mut cursor, |event, boundary| {
+                if is_pi_turn_end(event) {
+                    boundaries.push(boundary);
+                }
+            });
+            assert_eq!(boundaries, vec![Some(recorded_at)]);
+            assert_eq!(cursor.offset, fs::metadata(&path).unwrap().len());
+        }
+    }
+
+    #[test]
+    fn kimi_completion_does_not_use_a_pi_entry_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wire.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"context.append_loop_event\",\"timestamp\":\"2026-10-14T16:07:56.675Z\",",
+                "\"event\":{\"type\":\"step.end\",\"finishReason\":\"end_turn\"}}\n",
+                "{\"type\":\"metadata\"}\n"
+            ),
+        )
+        .unwrap();
+        let mut cursor = JsonlCursor::default();
+        let mut boundaries = Vec::new();
+        follow_jsonl(&path, &mut cursor, |event, boundary| {
+            if is_kimi_turn_end(event) {
+                boundaries.push(boundary);
+            }
+        });
+        assert_eq!(boundaries, vec![None]);
+    }
+
+    #[test]
+    fn untimestamped_pi_completion_keeps_the_conservative_eof_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        for timestamp in [Value::Null, Value::String("invalid".into())] {
+            let completion = serde_json::json!({
+                "type": "message", "timestamp": timestamp,
+                "message": {"role": "assistant", "stopReason": "stop",
+                    "timestamp": 1791994076675_u64}
+            });
+            for tail in ["", "{\"type\":\"custom\"}\n"] {
+                fs::write(&path, format!("{completion}\n{tail}")).unwrap();
+                let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+                let mut cursor = JsonlCursor::default();
+                let mut boundaries = Vec::new();
+                follow_jsonl(&path, &mut cursor, |event, boundary| {
+                    if is_pi_turn_end(event) {
+                        boundaries.push(boundary);
+                    }
+                });
+                assert_eq!(boundaries, vec![tail.is_empty().then_some(mtime)]);
+            }
+        }
+    }
+
+    #[test]
+    fn pi_completion_boundary_survives_a_bounded_poll_before_a_new_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let timestamp = "2026-10-14T16:07:56.675Z";
+        let completion = serde_json::json!({
+            "type": "message", "timestamp": timestamp,
+            "message": {"role": "assistant", "stopReason": "stop"}
+        });
+        let input = format!(
+            "{completion}\n{}{{\"type\":\"message\",\"message\":{{\"role\":\"user\"}}}}\n",
+            "{\"type\":\"custom\"}\n".repeat(MAX_RECORDS_PER_POLL)
+        );
+        fs::write(&path, input).unwrap();
+        let mut cursor = JsonlCursor::default();
+        let mut completion_boundaries = Vec::new();
+        let mut starts = 0;
+        for _ in 0..2 {
+            follow_jsonl(&path, &mut cursor, |event, boundary| {
+                if is_pi_turn_end(event) {
+                    completion_boundaries.push(boundary);
+                } else if is_pi_turn_start(event) {
+                    starts += 1;
+                }
+            });
+        }
+        assert_eq!(
+            completion_boundaries,
+            vec![Some(chrono::DateTime::parse_from_rfc3339(timestamp).unwrap().into())]
+        );
+        assert_eq!(starts, 1, "later work must still cancel the completion timer");
     }
 
     #[test]

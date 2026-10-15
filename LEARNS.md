@@ -300,6 +300,15 @@
 - Prevention: Resume regressions must separately assert timer inheritance, no duplicate TurnEnd event, mismatched native IDs, incomplete records, and later user activity cancellation.
 - Verified by: Session `ses_01M1182N3M0YMGTB` remained idle for over 15 hours with no run-local TurnEnd although its exact transcript ended in assistant `stop`; the integration regression confirms a resumed completed transcript arms the timer without replaying old state.
 
+## `Pi live idle cleanup` — completion boundaries must survive extension metadata
+
+- Wrong approach: Give a native JSONL completion a cleanup boundary only when it is the final record in the file snapshot.
+- Why it failed: Easy Pi appends recovery and duration metadata after assistant `stop`; the Host publishes Idle but never arms its independent 15-minute shutdown timer.
+- Recognition signal: A live Pi-family run has adapter TurnEnd with no matching idle-shutdown arm log, and the transcript ends with `pi-task-recovery` / `pi-turn-duration` custom entries.
+- Correct approach: Use the completed message entry's top-level RFC3339 persistence timestamp, retaining the input-generation fence; never use later metadata mtime or the nested message timestamp to date that completion. Missing/invalid entry timestamps keep the conservative EOF-only fallback.
+- Prevention: Test metadata tails on pi/easy_pi/omp, delayed old completion after real PTY input (with and without metadata), and unchanged Kimi/fallback behavior.
+- Verified by: 19 live Easy Pi runs had been idle for 7–62 hours; the metadata-tail integration failed before the fix and passes afterward. Replaying the captured transcript changed missing completion boundaries from 2/2 to 0/2; the Host suite passed 84 tests.
+
 ## `xterm remote input` — do not infer key hold from a lone keydown
 
 - Wrong approach: Synthesize macOS key hold from every initial printable `keydown`, assuming a matching `keyup`, blur, `InputEvent`, or later keydown will always cancel the unbounded timer.
