@@ -1,5 +1,5 @@
-//! Generic terminals never contact AgentPort Bridge. A persisted intent names a
-//! single app-owned tmux session; only explicit create may launch that session.
+//! Generic terminals never contact AgentPort Bridge. Shell records are shortcuts
+//! to new shells; tmux records name one app-owned session, launched only by create.
 use crate::{
     credentials::load_credential,
     hosts::{self, HostProfile, PreferredTransport},
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager, State};
@@ -44,12 +44,25 @@ fn io_error(message: impl Into<String>) -> TerminalError {
     error("terminal_io_failed", message)
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalMode {
+    #[default]
+    Shell,
+    Tmux,
+}
+fn legacy_terminal_mode() -> TerminalMode {
+    TerminalMode::Tmux
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerminalRecord {
     id: String,
     profile_id: String,
     name: String,
+    #[serde(default = "legacy_terminal_mode")]
+    mode: TerminalMode,
     tmux_session: String,
     created_at: String,
 }
@@ -78,6 +91,9 @@ struct StoredRecord {
 pub struct TerminalConnections {
     // Serializes read/modify/atomic-write operations, including creation intents.
     store: Mutex<()>,
+    // Only live create/end operations own gates; expired entries are pruned on
+    // lookup so terminal history cannot grow a permanent lock registry.
+    lifecycle: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
     connections: Mutex<HashMap<String, Arc<LiveConnection>>>,
     permits: Arc<tokio::sync::Semaphore>,
 }
@@ -85,9 +101,32 @@ impl Default for TerminalConnections {
     fn default() -> Self {
         Self {
             store: Mutex::new(()),
+            lifecycle: Mutex::new(HashMap::new()),
             connections: Mutex::new(HashMap::new()),
             permits: Arc::new(tokio::sync::Semaphore::new(16)),
         }
+    }
+}
+impl TerminalConnections {
+    async fn lock_lifecycle(
+        &self,
+        id: &str,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, TerminalError> {
+        let gate = {
+            let mut gates = self
+                .lifecycle
+                .lock()
+                .map_err(|_| io_error("Lifecycle lock unavailable"))?;
+            gates.retain(|_, gate| gate.strong_count() > 0);
+            if let Some(gate) = gates.get(id).and_then(Weak::upgrade) {
+                gate
+            } else {
+                let gate = Arc::new(tokio::sync::Mutex::new(()));
+                gates.insert(id.into(), Arc::downgrade(&gate));
+                gate
+            }
+        };
+        Ok(gate.lock_owned().await)
     }
 }
 struct LiveConnection {
@@ -129,6 +168,8 @@ enum Action {
 pub struct CreateRequest {
     profile_id: String,
     name: String,
+    #[serde(default)]
+    mode: TerminalMode,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -214,30 +255,43 @@ fn profile(app: &AppHandle, id: &str) -> Result<HostProfile, TerminalError> {
     }
     Ok(p)
 }
+fn local_record(
+    path: &PathBuf,
+    state: &TerminalConnections,
+    id: &str,
+) -> Result<StoredRecord, TerminalError> {
+    let _lock = state
+        .store
+        .lock()
+        .map_err(|_| io_error("Records lock unavailable"))?;
+    read_store(path)?
+        .into_iter()
+        .find(|r| r.record.id == id)
+        .ok_or_else(|| error("terminal_not_found", "Terminal record not found"))
+}
 fn stored(
     app: &AppHandle,
     state: &TerminalConnections,
     id: &str,
 ) -> Result<(StoredRecord, HostProfile), TerminalError> {
-    let _lock = state
-        .store
-        .lock()
-        .map_err(|_| io_error("Records lock unavailable"))?;
-    let record = read_store(&store_path(app)?)?
-        .into_iter()
-        .find(|r| r.record.id == id)
-        .ok_or_else(|| error("terminal_not_found", "Terminal record not found"))?;
+    let record = local_record(&store_path(app)?, state, id)?;
+    let p = bound_profile(app, &record)?;
+    Ok((record, p))
+}
+fn bound_profile(app: &AppHandle, record: &StoredRecord) -> Result<HostProfile, TerminalError> {
     let p = profile(app, &record.record.profile_id)?;
     if record.identity != HostIdentity::from(&p) {
         return Err(error("host_identity_changed", "Host address, user or port changed; refusing to attach or end this terminal on a different host"));
     }
-    if !valid_tmux(&record.record.tmux_session) {
+    if (record.record.mode == TerminalMode::Tmux && !valid_tmux(&record.record.tmux_session))
+        || (record.record.mode == TerminalMode::Shell && !record.record.tmux_session.is_empty())
+    {
         return Err(error(
             "terminal_store_invalid",
-            "Terminal does not have a valid app-owned tmux name",
+            "Terminal mode and app-owned tmux name do not match",
         ));
     }
-    Ok((record, p))
+    Ok(p)
 }
 fn authentication(p: &HostProfile) -> ssh::AuthenticationKind {
     match p.authentication {
@@ -361,6 +415,48 @@ fn control_command(name: &str, action: &str) -> String {
         ),
     }
 }
+async fn create_remote(
+    ssh: &ssh::AuthenticatedSsh,
+    record: &TerminalRecord,
+) -> Result<(), TerminalError> {
+    if record.mode == TerminalMode::Tmux {
+        control(ssh, control_command(&record.tmux_session, "create")).await?;
+    }
+    Ok(())
+}
+async fn check_remote(
+    ssh: &ssh::AuthenticatedSsh,
+    record: &TerminalRecord,
+) -> Result<(), TerminalError> {
+    if record.mode == TerminalMode::Tmux {
+        control(ssh, control_command(&record.tmux_session, "check")).await?;
+    }
+    Ok(())
+}
+fn mosh_command(
+    record: &TerminalRecord,
+    start: Option<u16>,
+    end: Option<u16>,
+) -> Result<String, TerminalError> {
+    let range = match (start, end) {
+        (None, None) => String::new(),
+        (Some(start), Some(end)) if start > 0 && start <= end => format!(" -p {start}:{end}"),
+        _ => {
+            return Err(error(
+                "invalid_mosh_port_range",
+                "Invalid configured Mosh UDP port range",
+            ))
+        }
+    };
+    let (check, command) = match record.mode {
+        TerminalMode::Shell => (String::new(), String::new()),
+        TerminalMode::Tmux => (
+            existing_check(&record.tmux_session),
+            format!(" -- tmux attach-session -t '={}'", record.tmux_session),
+        ),
+    };
+    Ok(format!("{check}if ! command -v mosh-server >/dev/null 2>&1; then printf 'AGENTPORT MOSH ERROR missing_mosh_server\\n'; exit 127; fi; case \"$(locale charmap 2>/dev/null)\" in UTF-8|UTF8|utf8) ;; *) if [ \"$(uname -s)\" = Darwin ]; then export LC_CTYPE=UTF-8; else export LC_CTYPE=C.UTF-8; fi ;; esac; exec mosh-server new -s{range}{command}"))
+}
 async fn control(ssh: &ssh::AuthenticatedSsh, command: String) -> Result<Vec<u8>, TerminalError> {
     tokio::time::timeout(TIMEOUT, async {
         let mut channel = ssh.session.channel_open_session().await.map_err(|e| io_error(e.to_string()))?;
@@ -383,7 +479,7 @@ async fn control(ssh: &ssh::AuthenticatedSsh, command: String) -> Result<Vec<u8>
         if text.lines().any(|s| s == "AGENTPORT MOSH ERROR missing_mosh_server") { return Err(error("mosh_server_missing", "Install mosh on the remote host (brew install mosh / sudo apt install mosh) and allow its configured UDP range; or use SSH for this terminal.")); }
         if status != Some(0) { return Err(error("remote_command_failed", format!("Remote terminal command failed (exit {status:?})"))); }
         Ok(output)
-    }).await.map_err(|_| error("terminal_timeout", "Remote terminal operation timed out; the persisted record is retained. Reconnect checks the same tmux name, never recreates it."))?
+    }).await.map_err(|_| error("terminal_timeout", "Remote terminal operation timed out; the persisted record is retained. Input and commands were not retried."))?
 }
 
 #[tauri::command]
@@ -421,34 +517,55 @@ pub async fn mobile_terminal_create(
         id: id.clone(),
         profile_id: p.id.clone(),
         name: request.name.trim().into(),
-        tmux_session: format!("agentport_mobile_{id}"),
+        mode: request.mode,
+        tmux_session: match request.mode {
+            TerminalMode::Shell => String::new(),
+            TerminalMode::Tmux => format!("agentport_mobile_{id}"),
+        },
         created_at: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| io_error(e.to_string()))?
             .as_millis()
             .to_string(),
     };
+    create_saved_record(
+        &store_path(&app)?,
+        &terminals,
+        &ssh,
+        StoredRecord {
+            record,
+            identity: HostIdentity::from(&p),
+            fingerprint: ssh.host_key_fingerprint.clone(),
+        },
+    )
+    .await
+}
+async fn create_saved_record(
+    path: &PathBuf,
+    terminals: &TerminalConnections,
+    ssh: &ssh::AuthenticatedSsh,
+    stored: StoredRecord,
+) -> Result<TerminalRecord, TerminalError> {
+    let record = stored.record.clone();
+    // Acquire before publishing the intent, and hold through the remote result.
+    // End must not mistake an in-flight create for an already missing session.
+    let _lifecycle = terminals.lock_lifecycle(&record.id).await?;
     {
         let _lock = terminals
             .store
             .lock()
             .map_err(|_| io_error("Records lock unavailable"))?;
-        let path = store_path(&app)?;
-        let mut records = read_store(&path)?;
+        let mut records = read_store(path)?;
         if records.len() >= 256 {
             return Err(error(
                 "terminal_record_limit",
                 "At most 256 persisted terminals are supported; end an old terminal first",
             ));
         }
-        records.push(StoredRecord {
-            record: record.clone(),
-            identity: HostIdentity::from(&p),
-            fingerprint: ssh.host_key_fingerprint.clone(),
-        });
-        write_store(&path, &records)?;
+        records.push(stored);
+        write_store(path, &records)?;
     }
-    let result = control(&ssh, control_command(&record.tmux_session, "create")).await;
+    let result = create_remote(ssh, &record).await;
     let _ = ssh
         .session
         .disconnect(Disconnect::ByApplication, "Terminal create complete", "en")
@@ -458,10 +575,9 @@ pub async fn mobile_terminal_create(
             .store
             .lock()
             .map_err(|_| io_error("Records lock unavailable"))?;
-        let path = store_path(&app)?;
-        let mut records = read_store(&path)?;
+        let mut records = read_store(path)?;
         records.retain(|r| r.record.id != record.id);
-        write_store(&path, &records)?;
+        write_store(path, &records)?;
     }
     result?;
     Ok(record)
@@ -489,22 +605,13 @@ pub async fn mobile_terminal_connect(
             "Mosh requires an iOS or Android runtime; use SSH for this terminal",
         ));
     }
+    let path = store_path(&app)?;
     let (record, p) = stored(&app, &terminals, &request.terminal_id)?;
     let ssh = authenticate(&app, &p).await?;
     verify_record_key(&record, &ssh)?;
-    control(&ssh, control_command(&record.record.tmux_session, "check")).await?;
+    check_remote(&ssh, &record.record).await?;
     let connection = if request.transport == "mosh" {
-        let range = match (p.mosh_udp_port_start, p.mosh_udp_port_end) {
-            (None, None) => String::new(),
-            (Some(start), Some(end)) if start > 0 && start <= end => format!(" -p {start}:{end}"),
-            _ => {
-                return Err(error(
-                    "invalid_mosh_port_range",
-                    "Invalid configured Mosh UDP port range",
-                ))
-            }
-        };
-        let command = format!("{}if ! command -v mosh-server >/dev/null 2>&1; then printf 'AGENTPORT MOSH ERROR missing_mosh_server\\n'; exit 127; fi; case \"$(locale charmap 2>/dev/null)\" in UTF-8|UTF8|utf8) ;; *) if [ \"$(uname -s)\" = Darwin ]; then export LC_CTYPE=UTF-8; else export LC_CTYPE=C.UTF-8; fi ;; esac; exec mosh-server new -s{range} -- tmux attach-session -t '={}'", existing_check(&record.record.tmux_session), record.record.tmux_session);
+        let command = mosh_command(&record.record, p.mosh_udp_port_start, p.mosh_udp_port_end)?;
         let output = control(&ssh, command).await?;
         let (port, key) = mosh::bootstrap::parse_connect(&output)
             .map_err(|e| error("mosh_bootstrap_failed", e))?;
@@ -513,7 +620,7 @@ pub async fn mobile_terminal_connect(
             .disconnect(Disconnect::ByApplication, "Mosh bootstrap complete", "en")
             .await;
         let result = mosh::mobile_mosh_start(
-            mosh_sessions,
+            mosh_sessions.clone(),
             mosh::MoshStartRequest {
                 ip: p.hostname,
                 port,
@@ -526,31 +633,96 @@ pub async fn mobile_terminal_connect(
         .map_err(|e| error("mosh_start_failed", e))?;
         Connection::Mosh(result.session_id)
     } else {
-        ssh_connection(ssh, &record.record.tmux_session, request.cols, request.rows).await?
+        ssh_connection(ssh, &record.record, request.cols, request.rows).await?
     };
-    let connection_id = format!("terminal_{}", uuid::Uuid::new_v4().simple());
-    terminals
-        .connections
-        .lock()
-        .map_err(|_| io_error("Connection state unavailable"))?
-        .insert(
-            connection_id.clone(),
-            Arc::new(LiveConnection {
-                terminal_id: request.terminal_id,
-                connection,
-                _permit: permit,
-            }),
-        );
-    Ok(ConnectResult { connection_id })
+    register_connection(
+        &path,
+        &terminals,
+        &mosh_sessions,
+        request.terminal_id,
+        connection,
+        permit,
+    )
+}
+fn register_connection(
+    path: &PathBuf,
+    terminals: &TerminalConnections,
+    mosh_sessions: &mosh::MoshSessions,
+    terminal_id: String,
+    connection: Connection,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> Result<ConnectResult, TerminalError> {
+    // Serialize insertion with local deletion: a late connect cannot resurrect a
+    // deleted shortcut or leave a new Mosh client outside the cleanup gate.
+    let mut pending = Some(connection);
+    let result = (|| {
+        let _lock = terminals
+            .store
+            .lock()
+            .map_err(|_| io_error("Records lock unavailable"))?;
+        if !read_store(path)?.iter().any(|r| r.record.id == terminal_id) {
+            return Err(error(
+                "terminal_not_found",
+                "Terminal record was removed while connecting",
+            ));
+        }
+        let connection_id = format!("terminal_{}", uuid::Uuid::new_v4().simple());
+        let mut connections = terminals
+            .connections
+            .lock()
+            .map_err(|_| io_error("Connection state unavailable"))?;
+        let live = Arc::new(LiveConnection {
+            terminal_id,
+            connection: pending.take().expect("pending connection"),
+            _permit: permit,
+        });
+        connections.insert(connection_id.clone(), live);
+        Ok(ConnectResult { connection_id })
+    })();
+    if let Some(connection) = pending {
+        stop_connection(&connection, mosh_sessions)?;
+    }
+    result
+}
+async fn request_accepted(
+    channel: &mut russh::Channel<russh::client::Msg>,
+    early_output: &mut Vec<u8>,
+    rejection_code: &str,
+    description: &str,
+) -> Result<(), TerminalError> {
+    loop {
+        match channel.wait().await {
+            Some(ChannelMsg::Success) => return Ok(()),
+            Some(ChannelMsg::Failure) => {
+                return Err(error(
+                    rejection_code,
+                    format!("SSH server rejected {description}"),
+                ))
+            }
+            Some(ChannelMsg::Close | ChannelMsg::Eof) | None => {
+                return Err(error(
+                    "ssh_channel_closed",
+                    format!("SSH channel closed before accepting {description}"),
+                ))
+            }
+            Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => {
+                if early_output.len() + data.len() > OUTPUT_CAP {
+                    return Err(io_error("SSH startup output exceeded 256 KiB"));
+                }
+                early_output.extend_from_slice(&data);
+            }
+            _ => {}
+        }
+    }
 }
 async fn ssh_connection(
     ssh: SshLease,
-    name: &str,
+    record: &TerminalRecord,
     cols: u16,
     rows: u16,
 ) -> Result<Connection, TerminalError> {
-    let mut channel = tokio::time::timeout(TIMEOUT, async {
-        let channel = ssh
+    let (mut channel, early_output) = tokio::time::timeout(TIMEOUT, async {
+        let mut channel = ssh
             .session
             .channel_open_session()
             .await
@@ -559,18 +731,36 @@ async fn ssh_connection(
             .request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
             .await
             .map_err(|e| io_error(e.to_string()))?;
-        channel
-            .exec(
-                true,
-                format!(
-                    "{}exec tmux attach-session -t '={}'",
-                    existing_check(&name),
-                    name
-                ),
-            )
-            .await
-            .map_err(|e| io_error(e.to_string()))?;
-        Ok::<_, TerminalError>(channel)
+        let mut early_output = Vec::new();
+        request_accepted(
+            &mut channel,
+            &mut early_output,
+            "ssh_pty_rejected",
+            "the PTY request",
+        )
+        .await?;
+        match record.mode {
+            TerminalMode::Shell => channel.request_shell(true).await,
+            TerminalMode::Tmux => {
+                channel
+                    .exec(
+                        true,
+                        format!(
+                            "{}exec tmux attach-session -t '={}'",
+                            existing_check(&record.tmux_session),
+                            record.tmux_session
+                        ),
+                    )
+                    .await
+            }
+        }
+        .map_err(|e| io_error(e.to_string()))?;
+        let (code, description) = match record.mode {
+            TerminalMode::Shell => ("ssh_shell_rejected", "the Shell request"),
+            TerminalMode::Tmux => ("ssh_exec_rejected", "the tmux attach request"),
+        };
+        request_accepted(&mut channel, &mut early_output, code, description).await?;
+        Ok::<_, TerminalError>((channel, early_output))
     })
     .await
     .map_err(|_| error("terminal_timeout", "SSH attach timed out"))??;
@@ -579,6 +769,10 @@ async fn ssh_connection(
     let task = tokio::spawn(async move {
         // Own both SSH handles for the lifetime of this PTY (including jump).
         let _ssh = ssh;
+        if !early_output.is_empty() && tx.send(early_output).await.is_err() {
+            let _ = channel.close().await;
+            return;
+        }
         loop {
             tokio::select! {
                 action = rx.recv() => match action {
@@ -751,12 +945,19 @@ pub fn mobile_terminal_disconnect(
         .map_err(|_| io_error("Connection state unavailable"))?
         .remove(&connection_id);
     if let Some(connection) = old {
-        match &connection.connection {
-            Connection::Ssh { task, .. } => task.abort(),
-            Connection::Mosh(id) => {
-                // Idempotent even when final polling already reaped Mosh.
-                mosh::discard_after_stop(&mosh_sessions, id).map_err(io_error)?;
-            }
+        stop_connection(&connection.connection, &mosh_sessions)?;
+    }
+    Ok(())
+}
+fn stop_connection(
+    connection: &Connection,
+    mosh_sessions: &mosh::MoshSessions,
+) -> Result<(), TerminalError> {
+    match connection {
+        Connection::Ssh { task, .. } => task.abort(),
+        Connection::Mosh(id) => {
+            // Idempotent even when final polling already reaped Mosh.
+            mosh::discard_after_stop(mosh_sessions, id).map_err(io_error)?;
         }
     }
     Ok(())
@@ -768,38 +969,83 @@ pub async fn mobile_terminal_end(
     terminal_id: String,
     mosh_sessions: State<'_, mosh::MoshSessions>,
 ) -> Result<(), TerminalError> {
-    let (record, p) = stored(&app, &terminals, &terminal_id)?;
-    let ssh = authenticate(&app, &p).await?;
-    verify_record_key(&record, &ssh)?;
-    let result = control(&ssh, control_command(&record.record.tmux_session, "end")).await;
+    let path = store_path(&app)?;
+    end_saved_record(
+        &path,
+        &terminals,
+        &mosh_sessions,
+        &terminal_id,
+        |record| async move {
+            let p = bound_profile(&app, &record)?;
+            let ssh = authenticate(&app, &p).await?;
+            end_remote(&ssh, &record).await
+        },
+    )
+    .await
+}
+async fn end_remote(
+    ssh: &ssh::AuthenticatedSsh,
+    record: &StoredRecord,
+) -> Result<(), TerminalError> {
+    verify_record_key(record, ssh)?;
+    let result = control(ssh, control_command(&record.record.tmux_session, "end")).await;
     let _ = ssh
         .session
         .disconnect(Disconnect::ByApplication, "Terminal end complete", "en")
         .await;
     match result {
-        Ok(_) => {}
-        Err(e) if e.code == "tmux_session_missing" => {}
-        Err(e) => return Err(e),
+        Ok(_) => Ok(()),
+        Err(e) if e.code == "tmux_session_missing" => Ok(()),
+        Err(e) => Err(e),
     }
-    let ids: Vec<_> = terminals
+}
+async fn end_saved_record<F, Fut>(
+    path: &PathBuf,
+    terminals: &TerminalConnections,
+    mosh_sessions: &mosh::MoshSessions,
+    terminal_id: &str,
+    remote_end: F,
+) -> Result<(), TerminalError>
+where
+    F: FnOnce(StoredRecord) -> Fut,
+    Fut: std::future::Future<Output = Result<(), TerminalError>>,
+{
+    let _lifecycle = terminals.lock_lifecycle(terminal_id).await?;
+    let record = local_record(path, terminals, terminal_id)?;
+    if record.record.mode == TerminalMode::Tmux {
+        remote_end(record).await?;
+    }
+    // Shell deletion is entirely local, even if the profile was changed or
+    // removed. Detach this record's clients; do not promise to kill remote jobs.
+    remove_local_record(path, terminals, mosh_sessions, terminal_id)
+}
+fn remove_local_record(
+    path: &PathBuf,
+    terminals: &TerminalConnections,
+    mosh_sessions: &mosh::MoshSessions,
+    terminal_id: &str,
+) -> Result<(), TerminalError> {
+    let _lock = terminals
+        .store
+        .lock()
+        .map_err(|_| io_error("Records lock unavailable"))?;
+    let mut connections = terminals
         .connections
         .lock()
-        .map_err(|_| io_error("Connection state unavailable"))?
+        .map_err(|_| io_error("Connection state unavailable"))?;
+    let ids: Vec<_> = connections
         .iter()
         .filter(|(_, c)| c.terminal_id == terminal_id)
         .map(|(id, _)| id.clone())
         .collect();
     for id in ids {
-        mobile_terminal_disconnect(terminals.clone(), mosh_sessions.clone(), id)?;
+        if let Some(connection) = connections.remove(&id) {
+            stop_connection(&connection.connection, mosh_sessions)?;
+        }
     }
-    let _lock = terminals
-        .store
-        .lock()
-        .map_err(|_| io_error("Records lock unavailable"))?;
-    let path = store_path(&app)?;
-    let mut records = read_store(&path)?;
+    let mut records = read_store(path)?;
     records.retain(|r| r.record.id != terminal_id);
-    write_store(&path, &records)
+    write_store(path, &records)
 }
 
 #[cfg(test)]
@@ -845,6 +1091,7 @@ mod tests {
                 id: "id".into(),
                 profile_id: "p".into(),
                 name: "'; evil".into(),
+                mode: TerminalMode::Tmux,
                 tmux_session: "agentport_mobile_0123456789abcdef0123456789abcdef".into(),
                 created_at: "1".into(),
             },
@@ -861,6 +1108,31 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
     #[test]
+    fn legacy_records_are_tmux_but_new_requests_default_to_shell() {
+        let legacy = serde_json::json!({
+            "id": "old", "profileId": "host", "name": "existing tmux",
+            "tmuxSession": "agentport_mobile_0123456789abcdef0123456789abcdef",
+            "createdAt": "1"
+        });
+        let record: TerminalRecord = serde_json::from_value(legacy).unwrap();
+        assert_eq!(record.mode, TerminalMode::Tmux);
+        assert_eq!(serde_json::to_value(&record).unwrap()["mode"], "tmux");
+        let request: CreateRequest = serde_json::from_value(serde_json::json!({
+            "profileId": "host", "name": "new shell"
+        }))
+        .unwrap();
+        assert_eq!(request.mode, TerminalMode::Shell);
+        let request: CreateRequest = serde_json::from_value(serde_json::json!({
+            "profileId": "host", "name": "new tmux", "mode": "tmux"
+        }))
+        .unwrap();
+        assert_eq!(request.mode, TerminalMode::Tmux);
+        assert!(serde_json::from_value::<CreateRequest>(serde_json::json!({
+            "profileId": "host", "name": "bad", "mode": "other"
+        }))
+        .is_err());
+    }
+    #[test]
     fn invalid_requests_are_structured_errors() {
         assert!(size(0, 24).is_err());
         assert!(size(80, 501).is_err());
@@ -870,9 +1142,20 @@ mod tests {
         assert_eq!(serialized["code"], "tmux_session_missing");
         assert!(serialized.get("fingerprint").is_none());
     }
+    #[derive(Default)]
+    struct CreatePause {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
     #[derive(Clone)]
     struct Fixture {
         socket: String,
+        allow_tmux: bool,
+        reject_request: Option<&'static str>,
+        early_output: Vec<u8>,
+        create_pause: Option<Arc<CreatePause>>,
+        commands: Arc<Mutex<Vec<String>>>,
+        shells: Arc<Mutex<usize>>,
         received: Arc<Mutex<Vec<u8>>>,
         dimensions: Arc<Mutex<Vec<(u32, u32)>>>,
     }
@@ -920,7 +1203,16 @@ mod tests {
         ) -> Result<(), Self::Error> {
             assert_eq!(term, "xterm-256color");
             self.dimensions.lock().unwrap().push((cols, rows));
-            session.channel_success(channel)?;
+            if self.reject_request == Some("close_pty") {
+                session.close(channel)?;
+            } else if self.reject_request == Some("pty") {
+                session.channel_failure(channel)?;
+            } else {
+                if !self.early_output.is_empty() {
+                    session.data(channel, self.early_output.clone())?;
+                }
+                session.channel_success(channel)?;
+            }
             Ok(())
         }
         async fn window_change_request(
@@ -935,6 +1227,23 @@ mod tests {
             self.dimensions.lock().unwrap().push((cols, rows));
             Ok(())
         }
+        async fn shell_request(
+            &mut self,
+            channel: russh::ChannelId,
+            session: &mut russh::server::Session,
+        ) -> Result<(), Self::Error> {
+            *self.shells.lock().unwrap() += 1;
+            if self.reject_request == Some("close_shell") {
+                session.close(channel)?;
+            } else if self.reject_request == Some("shell") {
+                session.channel_failure(channel)?;
+            } else {
+                // Servers may send welcome bytes before acknowledging Shell.
+                session.data(channel, vec![0xff, 0x00, b'S'])?;
+                session.channel_success(channel)?;
+            }
+            Ok(())
+        }
         async fn exec_request(
             &mut self,
             channel: russh::ChannelId,
@@ -943,8 +1252,39 @@ mod tests {
         ) -> Result<(), Self::Error> {
             let command = std::str::from_utf8(command).unwrap();
             assert!(!command.contains("agentport-remote-bridge"));
+            self.commands.lock().unwrap().push(command.into());
+            if command.contains("tmux new-session -d") {
+                if let Some(pause) = &self.create_pause {
+                    pause.entered.notify_one();
+                    pause.release.notified().await;
+                }
+            }
+            if self.reject_request == Some("close_exec") {
+                session.close(channel)?;
+                return Ok(());
+            }
+            if self.reject_request == Some("exec") {
+                session.channel_failure(channel)?;
+                return Ok(()); // Deliberately keep the rejected channel open.
+            }
             session.channel_success(channel)?;
-            if command.contains("exec tmux attach-session") {
+            if !self.allow_tmux {
+                // This server has no tmux command path, but accepts standard
+                // Shell requests and a fake mosh-server bootstrap handshake.
+                if command.contains("tmux") {
+                    session.data(channel, format!("{TMUX_MISSING}\n").into_bytes())?;
+                    session.exit_status_request(channel, 127)?;
+                } else {
+                    assert!(command.contains("exec mosh-server new -s"));
+                    session.data(
+                        channel,
+                        b"MOSH CONNECT 60001 AAAAAAAAAAAAAAAAAAAAAA\n".to_vec(),
+                    )?;
+                    session.exit_status_request(channel, 0)?;
+                }
+                session.eof(channel)?;
+                session.close(channel)?;
+            } else if command.contains("exec tmux attach-session") {
                 // The PTY protocol is independently exercised as a byte echo;
                 // control commands below execute real tmux on a fixture-only socket.
                 session.data(channel, vec![0xff, 0x00, b'R'])?;
@@ -975,6 +1315,177 @@ mod tests {
             Ok(())
         }
     }
+    async fn start_fixture(
+        fixture: Fixture,
+    ) -> (ssh::SshProbeRequest, tokio::task::JoinHandle<()>) {
+        use russh::server::Server as _;
+        let key = russh::keys::PrivateKey::random(
+            &mut rand::rng(),
+            russh::keys::ssh_key::Algorithm::Ed25519,
+        )
+        .unwrap();
+        let fingerprint = key
+            .public_key()
+            .fingerprint(russh::keys::ssh_key::HashAlg::Sha256)
+            .to_string();
+        let config = russh::server::Config {
+            keys: vec![key],
+            auth_rejection_time: Duration::from_millis(1),
+            ..Default::default()
+        };
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let mut fixture = fixture;
+            fixture
+                .run_on_socket(Arc::new(config), &listener)
+                .await
+                .unwrap();
+        });
+        (
+            ssh::SshProbeRequest {
+                host_profile_id: "fixture".into(),
+                hostname: "127.0.0.1".into(),
+                port,
+                username: "fixture".into(),
+                credential_id: "fixture".into(),
+                authentication: ssh::AuthenticationKind::Password,
+                expected_host_key: Some(fingerprint),
+                jump: None,
+            },
+            server,
+        )
+    }
+    #[tokio::test]
+    async fn rejected_pty_shell_and_exec_never_publish_ready_connections() {
+        for (rejected, expected) in [
+            ("pty", "ssh_pty_rejected"),
+            ("shell", "ssh_shell_rejected"),
+            ("exec", "ssh_exec_rejected"),
+            ("close_pty", "ssh_channel_closed"),
+            ("close_shell", "ssh_channel_closed"),
+            ("close_exec", "ssh_channel_closed"),
+        ] {
+            let fixture = Fixture {
+                socket: String::new(),
+                allow_tmux: rejected.ends_with("exec"),
+                reject_request: Some(rejected),
+                early_output: vec![0x00, 0xff, b'P'],
+                create_pause: None,
+                commands: Arc::new(Mutex::new(Vec::new())),
+                shells: Arc::new(Mutex::new(0)),
+                received: Arc::new(Mutex::new(Vec::new())),
+                dimensions: Arc::new(Mutex::new(Vec::new())),
+            };
+            let commands = fixture.commands.clone();
+            let shells = fixture.shells.clone();
+            let (request, server) = start_fixture(fixture).await;
+            let ssh = SshLease::new(
+                ssh::connect_authenticated(&request, b"secret")
+                    .await
+                    .map_err(|e| e.reason)
+                    .unwrap(),
+            );
+            let terminal = TerminalRecord {
+                id: "reject".into(),
+                profile_id: "fixture".into(),
+                name: "display".into(),
+                mode: if rejected.ends_with("exec") {
+                    TerminalMode::Tmux
+                } else {
+                    TerminalMode::Shell
+                },
+                tmux_session: if rejected.ends_with("exec") {
+                    "agentport_mobile_0123456789abcdef0123456789abcdef".into()
+                } else {
+                    String::new()
+                },
+                created_at: "1".into(),
+            };
+            let result = tokio::time::timeout(
+                Duration::from_secs(2),
+                ssh_connection(ssh, &terminal, 80, 24),
+            )
+            .await
+            .expect("request refusal must fail promptly without waiting for channel close");
+            assert!(
+                result.is_err(),
+                "{rejected} refusal was incorrectly returned as a ready connection"
+            );
+            assert_eq!(result.err().unwrap().code, expected);
+            if rejected.ends_with("pty") {
+                assert_eq!(*shells.lock().unwrap(), 0);
+                assert!(commands.lock().unwrap().is_empty());
+            }
+            server.abort();
+        }
+    }
+    #[tokio::test]
+    async fn startup_acceptance_preserves_early_pty_and_shell_bytes() {
+        let early = vec![0x00, 0xff, b'P'];
+        let fixture = Fixture {
+            socket: String::new(),
+            allow_tmux: false,
+            reject_request: None,
+            early_output: early.clone(),
+            create_pause: None,
+            commands: Arc::new(Mutex::new(Vec::new())),
+            shells: Arc::new(Mutex::new(0)),
+            received: Arc::new(Mutex::new(Vec::new())),
+            dimensions: Arc::new(Mutex::new(Vec::new())),
+        };
+        let (request, server) = start_fixture(fixture).await;
+        let ssh = SshLease::new(
+            ssh::connect_authenticated(&request, b"secret")
+                .await
+                .map_err(|e| e.reason)
+                .unwrap(),
+        );
+        let terminal = TerminalRecord {
+            id: "early".into(),
+            profile_id: "fixture".into(),
+            name: "display".into(),
+            mode: TerminalMode::Shell,
+            tmux_session: String::new(),
+            created_at: "1".into(),
+        };
+        let actor = ssh_connection(ssh, &terminal, 80, 24).await.unwrap();
+        let Connection::Ssh { output, .. } = &actor else {
+            unreachable!()
+        };
+        let mut data = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while data.len() < early.len() + 3 {
+                while let Ok(chunk) = output.lock().unwrap().try_recv() {
+                    data.extend(chunk);
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(data, [early, vec![0xff, 0x00, b'S']].concat());
+        drop(actor);
+        server.abort();
+    }
+    #[tokio::test]
+    async fn lifecycle_gates_retain_only_live_operations() {
+        let terminals = TerminalConnections::default();
+        let active = terminals.lock_lifecycle("active").await.unwrap();
+        for i in 0..256 {
+            let gate = terminals
+                .lock_lifecycle(&format!("ended-{i}"))
+                .await
+                .unwrap();
+            assert!(terminals.lifecycle.lock().unwrap().len() <= 2);
+            drop(gate);
+        }
+        drop(active);
+        let _last = terminals.lock_lifecycle("last").await.unwrap();
+        assert_eq!(terminals.lifecycle.lock().unwrap().len(), 1);
+    }
     struct FixtureSocket(String);
     impl Drop for FixtureSocket {
         fn drop(&mut self) {
@@ -982,6 +1493,387 @@ mod tests {
                 .args(["-L", &self.0, "kill-server"])
                 .output();
         }
+    }
+    #[tokio::test]
+    async fn end_waits_for_pending_tmux_create_without_orphaning_remote_session() {
+        use std::{
+            future::Future,
+            sync::atomic::{AtomicBool, Ordering},
+            task::Poll,
+        };
+        if !std::path::Path::new("/opt/homebrew/bin/tmux").exists() {
+            eprintln!("SKIP: fixture requires /opt/homebrew/bin/tmux");
+            return;
+        }
+        let socket = FixtureSocket(format!(
+            "agentport-create-race-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let pause = Arc::new(CreatePause::default());
+        let fixture = Fixture {
+            socket: socket.0.clone(),
+            allow_tmux: true,
+            reject_request: None,
+            early_output: Vec::new(),
+            create_pause: Some(pause.clone()),
+            commands: Arc::new(Mutex::new(Vec::new())),
+            shells: Arc::new(Mutex::new(0)),
+            received: Arc::new(Mutex::new(Vec::new())),
+            dimensions: Arc::new(Mutex::new(Vec::new())),
+        };
+        let commands = fixture.commands.clone();
+        let (request, server) = start_fixture(fixture).await;
+        let request = Arc::new(request);
+        let path = std::env::temp_dir().join(format!(
+            "terminal-create-race-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let terminals = Arc::new(TerminalConnections::default());
+        let mosh_sessions = mosh::MoshSessions::default();
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let name = format!("agentport_mobile_{id}");
+        let stored = StoredRecord {
+            record: TerminalRecord {
+                id: id.clone(),
+                profile_id: "fixture".into(),
+                name: "display".into(),
+                mode: TerminalMode::Tmux,
+                tmux_session: name.clone(),
+                created_at: "1".into(),
+            },
+            identity: HostIdentity {
+                hostname: request.hostname.clone(),
+                username: request.username.clone(),
+                port: request.port,
+            },
+            fingerprint: request.expected_host_key.clone().unwrap(),
+        };
+        let create_request = request.clone();
+        let create_path = path.clone();
+        let create_state = terminals.clone();
+        let creating = tokio::spawn(async move {
+            let ssh = SshLease::new(
+                ssh::connect_authenticated(&create_request, b"secret")
+                    .await
+                    .map_err(|e| e.reason)
+                    .unwrap(),
+            );
+            create_saved_record(&create_path, &create_state, &ssh, stored).await
+        });
+        tokio::time::timeout(Duration::from_secs(5), pause.entered.notified())
+            .await
+            .unwrap();
+        assert_eq!(read_store(&path).unwrap().len(), 1); // Intent already visible.
+        let end_started = AtomicBool::new(false);
+        let end_request = request.clone();
+        let mut ending = Box::pin(end_saved_record(
+            &path,
+            &terminals,
+            &mosh_sessions,
+            &id,
+            |record| {
+                end_started.store(true, Ordering::SeqCst);
+                async move {
+                    let ssh = SshLease::new(
+                        ssh::connect_authenticated(&end_request, b"secret")
+                            .await
+                            .map_err(|e| e.reason)
+                            .unwrap(),
+                    );
+                    end_remote(&ssh, &record).await
+                }
+            },
+        ));
+        // One explicit poll distinguishes blocking on the lifecycle gate from
+        // starting remote End while Create is paused. No scheduler sleeps.
+        let polled = std::future::poll_fn(|cx| Poll::Ready(ending.as_mut().poll(cx))).await;
+        assert!(polled.is_pending());
+        let end_started_before_release = end_started.load(Ordering::SeqCst);
+        if end_started_before_release {
+            // Faulty implementation deletes the missing session's intent before
+            // the paused remote create runs; finish that ordering deterministically.
+            ending.as_mut().await.unwrap();
+        }
+        pause.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), creating)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        if !end_started_before_release {
+            tokio::time::timeout(Duration::from_secs(5), ending)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        let ssh = SshLease::new(
+            ssh::connect_authenticated(&request, b"secret")
+                .await
+                .map_err(|e| e.reason)
+                .unwrap(),
+        );
+        let checked = control(&ssh, control_command(&name, "check")).await;
+        assert!(
+            checked.is_err(),
+            "End deleted the record but pending Create left an orphan tmux session"
+        );
+        assert_eq!(checked.unwrap_err().code, "tmux_session_missing");
+        assert!(read_store(&path).unwrap().is_empty());
+        assert!(
+            !end_started_before_release,
+            "End must wait for Create before checking/ending the remote session"
+        );
+        let commands = commands.lock().unwrap();
+        assert!(commands
+            .iter()
+            .any(|c| c.contains(&format!("tmux kill-session -t '={name}'"))));
+        assert!(commands.iter().all(|c| !c.contains("kill-server")));
+        std::fs::remove_file(&path).unwrap();
+        server.abort();
+    }
+    #[tokio::test]
+    async fn no_tmux_shell_routes_preserve_bytes_resize_and_delete_locally() {
+        use russh::server::Server as _;
+        let fixture = Fixture {
+            socket: String::new(),
+            allow_tmux: false,
+            reject_request: None,
+            early_output: Vec::new(),
+            create_pause: None,
+            commands: Arc::new(Mutex::new(Vec::new())),
+            shells: Arc::new(Mutex::new(0)),
+            received: Arc::new(Mutex::new(Vec::new())),
+            dimensions: Arc::new(Mutex::new(Vec::new())),
+        };
+        let commands = fixture.commands.clone();
+        let shells = fixture.shells.clone();
+        let received = fixture.received.clone();
+        let dimensions = fixture.dimensions.clone();
+        let key = russh::keys::PrivateKey::random(
+            &mut rand::rng(),
+            russh::keys::ssh_key::Algorithm::Ed25519,
+        )
+        .unwrap();
+        let fingerprint = key
+            .public_key()
+            .fingerprint(russh::keys::ssh_key::HashAlg::Sha256)
+            .to_string();
+        let config = russh::server::Config {
+            keys: vec![key],
+            auth_rejection_time: Duration::from_millis(1),
+            ..Default::default()
+        };
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let mut fixture = fixture;
+            fixture
+                .run_on_socket(Arc::new(config), &listener)
+                .await
+                .unwrap();
+        });
+        let request = ssh::SshProbeRequest {
+            host_profile_id: "fixture".into(),
+            hostname: "127.0.0.1".into(),
+            port,
+            username: "fixture".into(),
+            credential_id: "fixture".into(),
+            authentication: ssh::AuthenticationKind::Password,
+            expected_host_key: Some(fingerprint.clone()),
+            jump: None,
+        };
+        let ssh = SshLease::new(
+            ssh::connect_authenticated(&request, b"secret")
+                .await
+                .map_err(|e| e.reason)
+                .unwrap(),
+        );
+        let terminal = TerminalRecord {
+            id: "shell".into(),
+            profile_id: "deleted-profile".into(),
+            name: "not a remote command; ' ".into(),
+            mode: TerminalMode::Shell,
+            tmux_session: String::new(),
+            created_at: "1".into(),
+        };
+        // The same authenticated fixture explicitly rejects tmux. The actual
+        // production create/check routes for Shell send no remote command.
+        let mut tmux = terminal.clone();
+        tmux.mode = TerminalMode::Tmux;
+        tmux.tmux_session = format!("agentport_mobile_{}", uuid::Uuid::new_v4().simple());
+        assert_eq!(
+            create_remote(&ssh, &tmux).await.unwrap_err().code,
+            "tmux_missing"
+        );
+        commands.lock().unwrap().clear();
+        create_remote(&ssh, &terminal).await.unwrap();
+        check_remote(&ssh, &terminal).await.unwrap();
+        assert!(commands.lock().unwrap().is_empty());
+        assert_eq!(serde_json::to_value(&terminal).unwrap()["tmuxSession"], "");
+        assert_eq!(serde_json::to_value(&terminal).unwrap()["mode"], "shell");
+
+        // Exercise the production Mosh command + bounded SSH control reader.
+        // No Mosh FFI/UDP client is started in this desktop-only fixture.
+        for (start, end) in [(None, None), (Some(60000), Some(60010))] {
+            let command = mosh_command(&terminal, start, end).unwrap();
+            assert!(!command.contains("tmux"));
+            assert!(!command.contains(" -- "));
+            let suffix = if start.is_some() {
+                "new -s -p 60000:60010"
+            } else {
+                "new -s"
+            };
+            assert!(command.ends_with(suffix));
+            let output = control(&ssh, command).await.unwrap();
+            assert_eq!(mosh::bootstrap::parse_connect(&output).unwrap().0, 60001);
+        }
+        assert_eq!(
+            mosh_command(&terminal, Some(60001), None).unwrap_err().code,
+            "invalid_mosh_port_range"
+        );
+        assert!(mosh_command(&terminal, Some(0), Some(60000)).is_err());
+        assert!(mosh_command(&terminal, Some(60001), Some(60000)).is_err());
+        let tmux_mosh = mosh_command(&tmux, None, None).unwrap();
+        assert!(tmux_mosh.contains("tmux has-session"));
+        assert!(tmux_mosh.ends_with(&format!(
+            " -- tmux attach-session -t '={}'",
+            tmux.tmux_session
+        )));
+        commands.lock().unwrap().clear();
+
+        let stored = StoredRecord {
+            record: terminal.clone(),
+            identity: HostIdentity {
+                hostname: "old-invalid-host".into(),
+                username: "old-user".into(),
+                port: 1,
+            },
+            fingerprint,
+        };
+        verify_record_key(&stored, &ssh).unwrap();
+        let mut wrong_key = stored.clone();
+        wrong_key.fingerprint = "SHA256:replacement".into();
+        assert_eq!(
+            verify_record_key(&wrong_key, &ssh).unwrap_err().code,
+            "terminal_host_key_changed"
+        );
+        let path =
+            std::env::temp_dir().join(format!("terminal-shell-{}.json", uuid::Uuid::new_v4()));
+        let mut other = stored.clone();
+        other.record.id = "other".into();
+        write_store(&path, &[stored, other]).unwrap();
+        let terminals = TerminalConnections::default();
+        let mosh_sessions = mosh::MoshSessions::default();
+        let actor = ssh_connection(ssh, &terminal, 80, 24).await.unwrap();
+        let registered = register_connection(
+            &path,
+            &terminals,
+            &mosh_sessions,
+            terminal.id.clone(),
+            actor,
+            terminals.permits.clone().try_acquire_owned().unwrap(),
+        )
+        .unwrap();
+        let live = connection(&terminals, &registered.connection_id).unwrap();
+        let Connection::Ssh { input, output, .. } = &live.connection else {
+            unreachable!()
+        };
+        let input = input.clone();
+        let bytes = b"a\x00\x03\x1b[200~\xe4\xb8\xad\x1b[201~".to_vec();
+        let (done, ack) = oneshot::channel();
+        send_action(&input, Action::Input(bytes.clone(), done), ack)
+            .await
+            .unwrap();
+        let (done, ack) = oneshot::channel();
+        send_action(&input, Action::Resize(123, 45, done), ack)
+            .await
+            .unwrap();
+        let mut polled = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                while let Ok(chunk) = output.lock().unwrap().try_recv() {
+                    polled.extend(chunk);
+                }
+                if polled.len() >= bytes.len() + 3 && dimensions.lock().unwrap().len() == 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(&polled[..3], &[0xff, 0x00, b'S']);
+        assert_eq!(&polled[3..], &bytes);
+        assert_eq!(*received.lock().unwrap(), bytes);
+        assert_eq!(*dimensions.lock().unwrap(), vec![(80, 24), (123, 45)]);
+        assert_eq!(*shells.lock().unwrap(), 1);
+        assert!(commands.lock().unwrap().is_empty());
+        drop(live);
+
+        // Deleted/changed/unreachable host data is irrelevant to local removal.
+        // Removing one shortcut detaches its client without touching another.
+        end_saved_record(&path, &terminals, &mosh_sessions, "shell", |_| async {
+            Err(io_error(
+                "Shell deletion must not authenticate or run remote End",
+            ))
+        })
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), input.closed())
+            .await
+            .unwrap();
+        assert!(connection(&terminals, &registered.connection_id).is_err());
+        let records = read_store(&path).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].record.id, "other");
+
+        // A late asynchronous connect cannot resurrect the deleted shortcut.
+        // A new Shell request is made; no input is replayed into that new shell.
+        let ssh = SshLease::new(
+            ssh::connect_authenticated(&request, b"secret")
+                .await
+                .map_err(|e| e.reason)
+                .unwrap(),
+        );
+        let actor = ssh_connection(ssh, &terminal, 80, 24).await.unwrap();
+        // request_shell queues the SSH request; wait for server observation,
+        // not merely local enqueue, before simulating late registration.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while *shells.lock().unwrap() != 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let Connection::Ssh {
+            input: late_input, ..
+        } = &actor
+        else {
+            unreachable!()
+        };
+        let late_input = late_input.clone();
+        let failure = register_connection(
+            &path,
+            &terminals,
+            &mosh_sessions,
+            terminal.id.clone(),
+            actor,
+            terminals.permits.clone().try_acquire_owned().unwrap(),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(failure.code, "terminal_not_found");
+        tokio::time::timeout(Duration::from_secs(5), late_input.closed())
+            .await
+            .unwrap();
+        assert_eq!(*shells.lock().unwrap(), 2);
+        assert_eq!(*received.lock().unwrap(), bytes);
+        assert!(commands.lock().unwrap().is_empty());
+        assert_eq!(terminals.permits.available_permits(), 16);
+        std::fs::remove_file(path).unwrap();
+        server.abort();
     }
     #[tokio::test]
     async fn real_ssh_tmux_control_and_pty_actor_preserve_bytes_and_detach() {
@@ -993,6 +1885,12 @@ mod tests {
         let socket = FixtureSocket(format!("agentport-test-{}", uuid::Uuid::new_v4().simple()));
         let fixture = Fixture {
             socket: socket.0.clone(),
+            allow_tmux: true,
+            reject_request: None,
+            early_output: Vec::new(),
+            create_pause: None,
+            commands: Arc::new(Mutex::new(Vec::new())),
+            shells: Arc::new(Mutex::new(0)),
             received: Arc::new(Mutex::new(Vec::new())),
             dimensions: Arc::new(Mutex::new(Vec::new())),
         };
@@ -1060,7 +1958,15 @@ mod tests {
         control(&ssh, control_command(&name, "check"))
             .await
             .unwrap();
-        let actor = ssh_connection(ssh, &name, 80, 24).await.unwrap();
+        let terminal = TerminalRecord {
+            id: "tmux".into(),
+            profile_id: "fixture".into(),
+            name: "display".into(),
+            mode: TerminalMode::Tmux,
+            tmux_session: name.clone(),
+            created_at: "1".into(),
+        };
+        let actor = ssh_connection(ssh, &terminal, 80, 24).await.unwrap();
         let Connection::Ssh { input, output, .. } = &actor else {
             unreachable!()
         };
@@ -1113,6 +2019,7 @@ mod tests {
                 id: "id".into(),
                 profile_id: "fixture".into(),
                 name: "display".into(),
+                mode: TerminalMode::Tmux,
                 tmux_session: name.clone(),
                 created_at: "1".into(),
             },

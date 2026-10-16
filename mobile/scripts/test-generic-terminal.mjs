@@ -30,8 +30,8 @@ try {
       let ordinal=0;
       const client={
         list:async profileId=>{calls.push(['list',profileId]);return [...records]},
-        create:async request=>{calls.push(['create',request]);const r={id:'new-'+ ++ordinal,profileId:request.profileId,name:request.name,tmuxSession:'agentport_mobile_fixture_'+ordinal,createdAt:'2'};records.push(r);return r},
-        connect:async request=>{calls.push(['connect',request]);if(request.transport==='mosh'&&moshFails)throw {code:'mosh_start_failed',message:'Fixture UDP unavailable'};const connectionId='connection-'+ ++ordinal;connections.set(connectionId,{running:true,chunks:[Array.from(new TextEncoder().encode('\\x1b[2J\\x1b[HConnected to tmux\\r\\n中文 terminal\\r\\n$ '))]});return {connectionId}},
+        create:async request=>{calls.push(['create',request]);const mode=request.mode||'shell';const r={id:'new-'+ ++ordinal,profileId:request.profileId,name:request.name,mode,tmuxSession:mode==='tmux'?'agentport_mobile_fixture_'+ordinal:'',createdAt:'2'};records.push(r);return r},
+        connect:async request=>{calls.push(['connect',request]);if(request.transport==='mosh'&&moshFails)throw {code:'mosh_start_failed',message:'Fixture UDP unavailable'};const connectionId='connection-'+ ++ordinal;const mode=records.find(r=>r.id===request.terminalId)?.mode||'tmux';connections.set(connectionId,{running:true,chunks:[Array.from(new TextEncoder().encode('\\x1b[2J\\x1b[HConnected to '+(mode==='shell'?'ordinary Shell':'tmux')+'\\r\\n中文 terminal\\r\\n$ '))]});return {connectionId}},
         input:async request=>{calls.push(['input',request]);connections.get(request.connectionId).chunks.push(Array.from(new TextEncoder().encode(request.data)))},
         resize:async request=>{calls.push(['resize',request])},
         poll:async id=>{const c=connections.get(id);if(!c)throw {code:'terminal_disconnected'};return {data:c.chunks.shift()||[],running:c.running}},
@@ -74,6 +74,8 @@ try {
   await call('Page.enable');await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
   await call('Page.navigate',{url:`http://127.0.0.1:${server.address().port}`});
   await until(`document.querySelector('[data-terminal-id="first"]')`);
+  assert.equal(await evaluate(`document.querySelector('.generic-terminal-mode').value`),'shell','New terminals default to ordinary Shell');
+  assert.equal(await evaluate(`document.querySelector('[data-terminal-id="first"]').dataset.terminalMode`),'tmux','Legacy record must remain tmux');
   await screenshot('records-dark');
   await click('[data-terminal-id="first"] button');await until(`document.querySelector('.generic-terminal-status')?.textContent.toLowerCase().includes('connected')`);
   await until(`term.buffer.active.getLine(1)?.translateToString().includes('中文')`);
@@ -96,7 +98,32 @@ try {
   await click('.generic-terminal-create input');await call('Input.insertText',{text:'Second task'});await click('.generic-terminal-create button');
   await until(`calls.some(c=>c[0]==='create'&&c[1].name==='Second task')&&document.querySelector('.generic-terminal-status')?.textContent.toLowerCase().includes('connected')`);
   assert.equal(await evaluate(`calls.filter(c=>c[0]==='create').length`),1,'Explicit create runs once');
-  await click('.generic-terminal-close');await until(`document.querySelector('.generic-terminal-back')`);await click('.generic-terminal-back');await until('didClose');
+  assert.equal(await evaluate(`calls.find(c=>c[0]==='create')[1].mode`),'shell','Default create must not request tmux');
+  assert.equal(await evaluate(`records[0].tmuxSession`),'','Ordinary record is only a shortcut');
+  assert.equal(await evaluate(`document.querySelector('.generic-terminal-status').textContent.includes('tmux')`),false,'Ordinary Shell must not claim tmux persistence');
+  await screenshot('ordinary-shell');
+  const closeShell=async()=>{await click('.generic-terminal-close');await until(`document.querySelector('.generic-terminal-shell-confirm')`);await click('.generic-terminal-shell-confirm');await until(`document.querySelector('.generic-terminal-list')`)};
+  await closeShell();
+  const firstShellId=await evaluate('records[0].id');
+  const createCount=await evaluate(`calls.filter(c=>c[0]==='create').length`);
+  await click('[data-terminal-mode="shell"] .generic-terminal-attach');await until(`document.querySelector('.generic-terminal-status')?.textContent.toLowerCase().includes('connected')`);
+  assert.equal(await evaluate(`calls.filter(c=>c[0]==='create').length`),createCount,'Opening a shortcut does not create a duplicate record');
+  await closeShell();await select('mosh');await evaluate('moshFails=false;true');
+  await click('[data-terminal-mode="shell"] .generic-terminal-attach');await until(`document.querySelector('.generic-terminal-status')?.textContent.includes('Mosh client active')`);
+  const oldMosh=await evaluate(`Array.from(connections.keys())[0]`);
+  const beforeSwitch=await evaluate(`calls.filter(c=>c[0]==='connect').length`);
+  await click('.generic-terminal-fallback');await until(`document.querySelector('.generic-terminal-shell-confirm')`);
+  assert.equal(await evaluate(`calls.filter(c=>c[0]==='connect').length`),beforeSwitch,'Plain Mosh switch must wait for explicit confirmation');
+  await screenshot('ordinary-new-shell-confirm');
+  await click('[role="dialog"] .modal-actions button:not(.primary-button)');
+  assert.equal(await evaluate(`calls.filter(c=>c[0]==='connect').length`),beforeSwitch,'Cancel must keep the current Shell');
+  await click('.generic-terminal-fallback');await click('.generic-terminal-shell-confirm');
+  await until(`calls.filter(c=>c[0]==='connect').length===${beforeSwitch+1}&&document.querySelector('.generic-terminal-status')?.textContent.toLowerCase().includes('connected')`);
+  assert.equal(await evaluate(`calls.filter(c=>c[0]==='connect').at(-1)[1].terminalId`),firstShellId);
+  assert.equal(await evaluate(`calls.filter(c=>c[0]==='connect').at(-1)[1].transport`),'ssh');
+  assert.ok(await evaluate(`calls.findIndex(c=>c[0]==='disconnect'&&c[1]===${JSON.stringify(oldMosh)})<calls.findLastIndex(c=>c[0]==='connect')`),'Detach Mosh before starting a new SSH Shell');
+  await closeShell();await click('.generic-terminal-end');await until(`document.querySelector('[role="dialog"]')`);await click('[role="dialog"] .danger-button');await until('records.length===0');
+  await click('.generic-terminal-back');await until('didClose');
   await evaluate(`changeFixtureTheme('dark');showHostManager();true`);await until(`document.querySelector('.host-row')&&document.documentElement.dataset.appTheme==='dark'`);
   assert.ok(await evaluate(`document.documentElement.scrollWidth<=320`),'Host dual-entry actions must fit narrow viewport');
   await screenshot('host-dual-entry-narrow');await click('.host-row .host-card');await until(`document.querySelector('.form-grid select:nth-of-type(1)')||document.querySelector('.form-grid input[type="number"]')`);
@@ -104,7 +131,7 @@ try {
   await evaluate(`(()=>{const selects=document.querySelectorAll('.form-grid select');const jump=selects[selects.length-1];jump.value='jump';jump.dispatchEvent(new Event('change',{bubbles:true}));return true})()`);
   await evaluate(`Array.from(document.querySelectorAll('.form-grid select')).at(-1).scrollIntoView({block:'center'});true`);await screenshot('host-network-options');await click('.modal-actions .primary-button');await until('savedProfile');
   assert.equal(await evaluate('savedProfile.jump.hostProfileId'),'jump');
-  console.log('PASS real Chrome/xterm: byte output, input, geometry, tmux restore/no recreate, detach, explicit Mosh fallback, end confirmation, create, host dual-entry/jump settings, dark/light and 320px layout');
+  console.log('PASS real Chrome/xterm: default ordinary Shell/create/reopen/delete, explicit new-Shell switch confirm/cancel/detach ordering, legacy tmux restore/no recreate, bytes/input/geometry, host settings, dark/light and 320px layout');
   console.log('Fixture transport only: native SSH/Mosh and real-device network behavior are NOT verified by this script.');
 } finally {
   ws?.close();if(chrome){const exited=new Promise(r=>chrome.once('exit',r));chrome.kill();await Promise.race([exited,wait(5000)])}if(server)await new Promise(r=>server.close(r));await rm(dir,{recursive:true,force:true});

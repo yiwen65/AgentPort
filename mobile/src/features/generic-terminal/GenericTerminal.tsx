@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type MutableR
 import { useTranslation } from "react-i18next";
 import type { HostAuthClient } from "../hosts-auth/types";
 import type { HostProfileSummary } from "../../protocol/remoteClient";
-import type { GenericTerminalClient, GenericTerminalError, TerminalRecord, TerminalTransport } from "../../protocol/genericTerminalClient";
+import { getTerminalMode, type GenericTerminalClient, type GenericTerminalError, type TerminalMode, type TerminalRecord, type TerminalTransport } from "../../protocol/genericTerminalClient";
 import { MobileTerminal, type MobileTerminalHandle } from "../../terminal/MobileTerminal";
 import { useMobileTerminalAppearance } from "../../terminal/terminalAppearance";
 import { getMobileTerminalFontFamily, getMobileTerminalPalette, getMobileTerminalWorkspaceVariables } from "../../terminal/terminalThemes";
@@ -40,6 +40,8 @@ export function GenericTerminal({ host, client, authClient, onBack }: Props) {
     return () => { viewport?.removeEventListener("resize", fitViewport); viewport?.removeEventListener("scroll", fitViewport); window.removeEventListener("resize", fitViewport); };
   }, []);
   const [name, setName] = useState("");
+  const [terminalMode, setTerminalMode] = useState<TerminalMode>("shell");
+  const [confirmation, setConfirmation] = useState<"close-shell" | "switch-shell">();
   const [transport, setTransport] = useState<TerminalTransport>("ssh");
   const [selected, setSelected] = useState<TerminalRecord>();
   const [attempt, setAttempt] = useState(0);
@@ -77,7 +79,7 @@ export function GenericTerminal({ host, client, authClient, onBack }: Props) {
   };
   const create = () => void run(async () => {
     try {
-      const record = await client.create({ profileId: host.id, name: name.trim() });
+      const record = await client.create({ profileId: host.id, name: name.trim(), mode: terminalMode });
       if (!alive.current) return;
       setRecords(previous => [...previous.filter(item => item.id !== record.id), record]);
       setName(""); setSelected(record); setAttempt(value => value + 1);
@@ -108,12 +110,19 @@ export function GenericTerminal({ host, client, authClient, onBack }: Props) {
       } catch (error) { if (alive.current) setFailure({ detail: detailOf(error) }); }
     }).then(() => retry?.());
   };
+  const close = () => {
+    reportEpoch.current++; setConfirmation(undefined); setSelected(undefined); setFailure(undefined); setTrust(undefined); void load();
+  };
+  const switchToSsh = () => {
+    reportEpoch.current++; setConfirmation(undefined); setFailure(undefined); setTrust(undefined); setTransport("ssh"); setAttempt(value => value + 1);
+  };
+  const isShell = selected && getTerminalMode(selected) === "shell";
   const errorText = failure ? t(`genericTerminal.errors.${failure.detail.code}`, { defaultValue: failure.detail.message || t("genericTerminal.failed") }) : "";
   return <section ref={pageRef} className={`generic-terminal-page${selected ? " is-attached" : ""}`} aria-label={t("genericTerminal.title")}>
     <header className="generic-terminal-header">
-      <button className={selected ? "generic-terminal-close" : "generic-terminal-back"} type="button" onClick={() => selected ? (reportEpoch.current++, setSelected(undefined), setFailure(undefined), setTrust(undefined), void load()) : onBack()}>{t(selected ? "genericTerminal.detach" : "genericTerminal.back")}</button>
-      <div><h1>{selected?.name || t("genericTerminal.title")}</h1><small>{host.name} · {selected ? transport.toUpperCase() : "SSH / Mosh · tmux"}</small></div>
-      {selected && transport === "mosh" ? <button className="generic-terminal-switch-ssh generic-terminal-fallback" type="button" onClick={() => { reportEpoch.current++; setFailure(undefined); setTrust(undefined); setTransport("ssh"); setAttempt(value => value + 1); }}>{t("genericTerminal.useSsh")}</button> : null}
+      <button className={selected ? "generic-terminal-close" : "generic-terminal-back"} type="button" onClick={() => selected ? (isShell ? setConfirmation("close-shell") : close()) : onBack()}>{t(selected ? (isShell ? "genericTerminal.shellClose" : "genericTerminal.detach") : "genericTerminal.back")}</button>
+      <div><h1>{selected?.name || t("genericTerminal.title")}</h1><small>{host.name} · {selected ? `${transport.toUpperCase()} · ${t(`genericTerminal.modes.${getTerminalMode(selected)}`)}` : "SSH / Mosh"}</small></div>
+      {selected && transport === "mosh" ? <button className="generic-terminal-switch-ssh generic-terminal-fallback" type="button" onClick={() => isShell ? setConfirmation("switch-shell") : switchToSsh()}>{t(isShell ? "genericTerminal.shellUseSsh" : "genericTerminal.useSsh")}</button> : null}
     </header>
     {!selected ? <div className="generic-terminal-content">
       <p>{t("genericTerminal.explanation")}</p>
@@ -121,24 +130,30 @@ export function GenericTerminal({ host, client, authClient, onBack }: Props) {
       {!loaded && !failure ? <p role="status">{t("genericTerminal.loading")}</p> : null}
       {loaded && records.length === 0 ? <p role="status">{t("genericTerminal.empty")}</p> : null}
       <ul className="generic-terminal-records generic-terminal-list" aria-label={t("genericTerminal.records")}>
-        {records.map(record => <li key={record.id} data-terminal-id={record.id}><div><strong>{record.name}</strong><small>{record.tmuxSession}</small></div><button type="button" disabled={busy} onClick={() => { reportEpoch.current++; setFailure(undefined); setSelected(record); setAttempt(value => value + 1); }}>{t("genericTerminal.attach")}</button><button type="button" disabled={busy} className="danger-text generic-terminal-end" onClick={() => setEndTarget(record)}>{t("genericTerminal.end")}</button></li>)}
+        {records.map(record => <li key={record.id} data-terminal-id={record.id} data-terminal-mode={getTerminalMode(record)}><div><strong>{record.name}</strong><small>{t(`genericTerminal.modes.${getTerminalMode(record)}`)}{getTerminalMode(record) === "tmux" ? ` · ${record.tmuxSession}` : ` · ${t("genericTerminal.shellShortcut")}`}</small></div><button className="generic-terminal-attach" type="button" disabled={busy} onClick={() => { reportEpoch.current++; setFailure(undefined); setSelected(record); setAttempt(value => value + 1); }}>{t(getTerminalMode(record) === "shell" ? "genericTerminal.shellOpen" : "genericTerminal.attach")}</button><button type="button" disabled={busy} className="danger-text generic-terminal-end" onClick={() => setEndTarget(record)}>{t(getTerminalMode(record) === "shell" ? "genericTerminal.shellDelete" : "genericTerminal.end")}</button></li>)}
       </ul>
       <form className="generic-terminal-create" onSubmit={(event: FormEvent) => { event.preventDefault(); create(); }}>
+        <label>{t("genericTerminal.mode")}<select className="generic-terminal-mode" value={terminalMode} disabled={busy} aria-describedby="generic-terminal-mode-hint" onChange={event => setTerminalMode(event.target.value as TerminalMode)}><option value="shell">{t("genericTerminal.modes.shell")}</option><option value="tmux">{t("genericTerminal.modes.tmux")}</option></select></label>
+        <p id="generic-terminal-mode-hint" className="generic-terminal-mode-hint">{t(`genericTerminal.modeHints.${terminalMode}`)}</p>
         <label>{t("genericTerminal.name")}<input required maxLength={128} value={name} disabled={busy} onChange={event => setName(event.target.value)} /></label>
-        <button className="primary-button" disabled={busy || !name.trim() || !loaded} type="submit">{t("genericTerminal.create")}</button>
+        <button className="primary-button" disabled={busy || !name.trim() || !loaded} type="submit">{t(terminalMode === "shell" ? "genericTerminal.shellCreate" : "genericTerminal.create")}</button>
       </form>
       <button type="button" disabled={busy} onClick={() => { setFailure(undefined); void load(); }}>{t("genericTerminal.refresh")}</button>
       {busy ? <p role="status">{t("genericTerminal.pending")}</p> : null}
     </div> : <TerminalConnection key={selected.id} record={selected} client={client} transport={transport} attempt={attempt} cleanupGate={connectionGate}
       onFailure={(error) => void report(error, () => setAttempt(value => value + 1))} />}
-    {failure ? <div className="generic-terminal-error" role="alert"><p>{errorText}</p>{selected && !trust ? <button className="generic-terminal-reconnect" type="button" onClick={() => { reportEpoch.current++; setFailure(undefined); setAttempt(value => value + 1); }}>{t("genericTerminal.reconnect")}</button> : null}</div> : null}
+    {failure ? <div className="generic-terminal-error" role="alert"><p>{errorText}</p>{selected && !trust ? <button className="generic-terminal-reconnect" type="button" onClick={() => { reportEpoch.current++; setFailure(undefined); setAttempt(value => value + 1); }}>{t(isShell ? "genericTerminal.shellOpen" : "genericTerminal.reconnect")}</button> : null}</div> : null}
     {trust ? <Modal className="generic-terminal-modal" title={t("hosts.trustTitle", { name: host.name })} onClose={() => { reportEpoch.current++; setTrust(undefined); }}>
       <p>{t("hosts.trustBody", { hop: t(`hosts.hop.${trust.hop}`) })}</p><code className="fingerprint">{trust.fingerprint}</code>
       <div className="modal-actions"><button type="button" disabled={busy} onClick={() => { reportEpoch.current++; setTrust(undefined); }}>{t("common.cancel")}</button><button type="button" disabled={busy} onClick={confirmTrust}>{t("hosts.trustConfirm")}</button></div>
     </Modal> : null}
-    {endTarget && !trust ? <Modal className="generic-terminal-modal" title={t("genericTerminal.endTitle", { name: endTarget.name })} onClose={() => setEndTarget(undefined)}>
-      <p>{t("genericTerminal.endBody")}</p>
-      <div className="modal-actions"><button type="button" disabled={busy} onClick={() => setEndTarget(undefined)}>{t("common.cancel")}</button><button className="danger-button" type="button" disabled={busy} onClick={end}>{t("genericTerminal.endConfirm")}</button></div>
+    {endTarget && !trust ? <Modal className="generic-terminal-modal" title={t(getTerminalMode(endTarget) === "shell" ? "genericTerminal.shellDeleteTitle" : "genericTerminal.endTitle", { name: endTarget.name })} onClose={() => setEndTarget(undefined)}>
+      <p>{t(getTerminalMode(endTarget) === "shell" ? "genericTerminal.shellDeleteBody" : "genericTerminal.endBody")}</p>
+      <div className="modal-actions"><button type="button" disabled={busy} onClick={() => setEndTarget(undefined)}>{t("common.cancel")}</button><button className="danger-button" type="button" disabled={busy} onClick={end}>{t(getTerminalMode(endTarget) === "shell" ? "genericTerminal.shellDeleteConfirm" : "genericTerminal.endConfirm")}</button></div>
+    </Modal> : null}
+    {selected && confirmation && !trust ? <Modal className="generic-terminal-modal" title={t(confirmation === "close-shell" ? "genericTerminal.shellCloseTitle" : "genericTerminal.shellSwitchTitle")} onClose={() => setConfirmation(undefined)}>
+      <p>{t(confirmation === "close-shell" ? "genericTerminal.shellCloseBody" : "genericTerminal.shellSwitchBody")}</p>
+      <div className="modal-actions"><button type="button" onClick={() => setConfirmation(undefined)}>{t("common.cancel")}</button><button className="primary-button generic-terminal-shell-confirm" type="button" onClick={confirmation === "close-shell" ? close : switchToSsh}>{t(confirmation === "close-shell" ? "genericTerminal.shellCloseConfirm" : "genericTerminal.shellSwitchConfirm")}</button></div>
     </Modal> : null}
   </section>;
 }
@@ -205,7 +220,7 @@ function TerminalConnection({ record, client, transport, attempt, onFailure, cle
     });
   };
   return <div className="generic-terminal-workspace" style={getMobileTerminalWorkspaceVariables(appearance.theme, mode)}>
-    <p className="generic-terminal-status" role="status">{t(`genericTerminal.${status}`)}</p>
+    <p className="generic-terminal-status" role="status">{t(`genericTerminal.${getTerminalMode(record) === "shell" ? `shellStatus.${status === "ready" && transport === "mosh" ? "moshReady" : status}` : status}`)}</p>
     <div className="generic-terminal-surface" aria-busy={status === "connecting"} {...(status !== "ready" ? { inert: "" } : {})}>
       <MobileTerminal ref={terminal} title={record.name} showHeading={false} showProbeOutput={false} theme={getMobileTerminalPalette(appearance.theme, mode).xterm}
         fontFamily={getMobileTerminalFontFamily(appearance.font)} fontSize={15} resizeEpoch={`${transport}:${attempt}:${status}`}

@@ -891,3 +891,11 @@
 - Correct approach: Render a neutral switching surface instead of the pane tree for the full `deviceSwitching` interval (including rollback). Keep persisted layouts unchanged and mount target panes only after boot finishes; do not suppress genuine disconnect warnings outside that interval.
 - Prevention: Test mounted PTY and structured split panes, the detached-runtime update while connect is pending, target boot before switch completion, and real disconnect visibility afterward—not just the final switch state or mocked release call count.
 - Verified by: Three component regressions failed before/passed after; frontend 1032/1032 and production build passed. Rebuilt signed Debug App showed only “Switching…” on the first local-to-remote switch with an active terminal; remote terminal attachment and return to local rendered normally.
+
+## `mobile generic terminal` — SSH 请求入队与持久意图落盘不是远端完成
+
+- Wrong approach: 把 russh `request_pty` / `request_shell` 返回当作已接受并忽略 `ChannelMsg::Failure`；tmux 创建意图落盘后释放生命周期保护，允许并发 End 把尚未创建的远端会话当作已消失。
+- Why it failed: 这些 SSH future 只完成请求入队，服务端可拒绝而不关闭 channel；本任务还复现了暂停 create → End 删除记录 → create 执行留下孤儿 tmux 的时序。
+- Correct approach: 在有界启动等待内逐项消费 Success/Failure/Close，保留握手前输出字节；每记录 Weak-pruned async gate 从发布创建意图覆盖到远端结果，End 在同一 gate 后读取/处理记录。未知远端结果仍不得自动重放。
+- Prevention: 跑 `cargo test --manifest-path mobile/src-tauri/Cargo.toml --locked generic_terminal::tests`；覆盖不关闭 channel 的拒绝、early bytes、暂停 create/并发 End、普通 Shell 本地删除与迟到连接清理。
+- Verified by: 拒绝误报 ready 与真实 isolated tmux 孤儿会话两项回归均先失败后通过；最终 Mobile Rust 75/75、UI 941/941。此证据不等同于真机 Mosh UDP 验收。

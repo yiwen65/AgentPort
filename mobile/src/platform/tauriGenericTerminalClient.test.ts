@@ -6,6 +6,8 @@ beforeEach(() => invoke.mockClear());
 it("uses the fixed native IPC contract without sending credentials or remote commands", async () => {
   const client = new TauriGenericTerminalClient();
   await client.list("profile"); await client.create({ profileId: "profile", name: "Name" });
+  await client.create({ profileId: "profile", name: "Shell", mode: "shell" });
+  await client.create({ profileId: "profile", name: "tmux", mode: "tmux" });
   await client.connect({ terminalId: "record", transport: "mosh", cols: 80, rows: 24 });
   await client.input({ connectionId: "connection", data: "ls\r" });
   await client.resize({ connectionId: "connection", cols: 90, rows: 30 });
@@ -13,6 +15,8 @@ it("uses the fixed native IPC contract without sending credentials or remote com
   expect(invoke.mock.calls).toEqual([
     ["mobile_terminal_list", { profileId: "profile" }],
     ["mobile_terminal_create", { request: { profileId: "profile", name: "Name" } }],
+    ["mobile_terminal_create", { request: { profileId: "profile", name: "Shell", mode: "shell" } }],
+    ["mobile_terminal_create", { request: { profileId: "profile", name: "tmux", mode: "tmux" } }],
     ["mobile_terminal_connect", { request: { terminalId: "record", transport: "mosh", cols: 80, rows: 24 } }],
     ["mobile_terminal_input", { request: { connectionId: "connection", data: "ls\r" } }],
     ["mobile_terminal_resize", { request: { connectionId: "connection", cols: 90, rows: 30 } }],
