@@ -237,6 +237,57 @@ describe("local branch management", () => {
     },
   );
 
+  it.each([
+    ["switch", false],
+    ["switch", true],
+    ["createAndSwitch", false],
+    ["createAndSwitch", true],
+  ] as const)("shows the actual %s error with live Sessions (wrapped=%s)", async (operation, wrapped) => {
+    const user = userEvent.setup();
+    setState(projectState([
+      sessionView("same-1", "编译任务"),
+      sessionView("same-2", "代码审查", "creating"),
+    ]));
+    const error = {
+      code: "blocked",
+      message: "blocked: ignored files would be overwritten by checkout: local.env",
+      phase: "switch",
+      operationId: "switch-failed",
+      recoverable: true,
+      currentStatus: status,
+      recoveryActions: ["Inspect local.env before retrying."],
+      recoveryActionCodes: ["inspect_ignored_files"],
+      diagnostics: { command: "switch_local_branch" },
+      liveSessionIds: ["same-1", "same-2"],
+    };
+    const command = operation === "switch" ? apiMock.switchLocalBranch : apiMock.createAndSwitchLocalBranch;
+    command.mockRejectedValueOnce(wrapped ? { error } : error);
+    renderPickerWithConfirm();
+    await screen.findByRole("button", { name: "feature/ui" });
+    const submit = async () => {
+      if (operation === "switch") {
+        await user.click(screen.getByRole("button", { name: "feature/ui" }));
+      } else {
+        await user.click(screen.getByRole("button", { name: "创建分支" }));
+      }
+    };
+    if (operation === "createAndSwitch") {
+      await user.type(screen.getByRole("textbox", { name: "新分支名称" }), "feature/retry");
+    }
+    await submit();
+
+    expect(await screen.findByText(/ignored files would be overwritten/)).toBeTruthy();
+    expect(screen.getByText("inspect_ignored_files")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /打开 Session.*编译任务/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /打开 Session.*代码审查/ })).toBeTruthy();
+    expect(screen.queryByText("停止过程中 checkout 状态已变化。")).toBeNull();
+    expect(screen.queryByText("本次分支操作已中止，当前分支保持不变。")).toBeNull();
+    await submit();
+    await waitFor(() => expect(command).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText(/ignored files would be overwritten/)).toBeNull());
+    expect(apiMock.stopSession).not.toHaveBeenCalled();
+  });
+
   it("does not gate switching on a changed Session snapshot", async () => {
     const user = userEvent.setup();
     apiMock.listLocalBranches
@@ -553,7 +604,7 @@ describe("local branch management", () => {
       ],
       recoveryActionCodes: ["resolve_repository_blockers", "force_delete_branch"],
       diagnostics: { command: "delete_local_branch" },
-      liveSessionIds: [],
+      liveSessionIds: ["same-1"],
     });
     apiMock.deleteLocalBranch.mockResolvedValueOnce({
       operationId: "delete-2",

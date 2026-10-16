@@ -1,5 +1,5 @@
 use super::command::GitRunner;
-use super::worktree::parse_worktree_list_z;
+use super::worktree::read_worktrees;
 use super::GitWorktreeInfo;
 use crate::error::{CoreError, Result};
 use crate::models::Project;
@@ -113,10 +113,7 @@ impl RepositoryIdentity {
     }
 
     pub fn worktrees(&self, runner: &GitRunner) -> Result<Vec<GitWorktreeInfo>> {
-        let output = runner
-            .run_read_only(Some(&self.root), ["worktree", "list", "--porcelain", "-z"])?
-            .require_success()?;
-        parse_worktree_list_z(&output.stdout)
+        read_worktrees(&self.root, runner)
     }
 }
 

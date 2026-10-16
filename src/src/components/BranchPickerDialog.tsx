@@ -53,10 +53,6 @@ type CheckoutChangingOperation =
   | { kind: "switch"; branch: string }
   | { kind: "createAndSwitch"; branch: string; startPoint: string | null };
 
-interface SessionHandlingIssue {
-  affectedSessionIds: string[];
-}
-
 function stringIds(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
@@ -297,8 +293,6 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
   const [eventBusy, setEventBusy] = useState(false);
   const [progress, setProgress] = useState<RepositoryOperationProgress | null>(null);
   const [failure, setFailure] = useState<BranchFailure | null>(null);
-  const [sessionHandlingIssue, setSessionHandlingIssue] =
-    useState<SessionHandlingIssue | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ message: string; refreshed: boolean } | null>(null);
   const [recovery, setRecovery] = useState<AutoStashRecord[]>([]);
@@ -450,28 +444,20 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
 
   const sessionDetail = (id: string, index: number): string => {
     const session = sessionForId(id);
-    const liveLifecycle: LifecycleStr = session?.lifecycle === "creating"
-      ? "creating"
-      : "running";
     return t("worktree:ui.branchPicker.sessionHandling.sessionDetail", {
       title: sessionTitle(id, index),
-      status: lifecycleLabel(liveLifecycle, t),
+      status: session ? lifecycleLabel(session.lifecycle, t) : t("common:status.unknown"),
     });
   };
 
   const setOperationFailure = (error: unknown, forceDeleteBranch: string | null = null) => {
     const nextFailure = operationFailure(error);
-    if (nextFailure.liveSessionIds.length > 0) {
-      setFailure(null);
-      setSessionHandlingIssue({
-        affectedSessionIds: nextFailure.liveSessionIds,
-      });
-    } else {
-      setFailure({
-        ...nextFailure,
-        forceDeleteBranch: forceDeleteOffered(error) ? forceDeleteBranch : null,
-      });
-    }
+    // liveSessionIds is diagnostic context on every backend error, not proof
+    // that Sessions blocked the operation. Always preserve the actual cause.
+    setFailure({
+      ...nextFailure,
+      forceDeleteBranch: forceDeleteOffered(error) ? forceDeleteBranch : null,
+    });
   };
 
   const executeOperation = async (
@@ -491,7 +477,6 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
       occurredAt: new Date().toISOString(),
     });
     setFailure(null);
-    setSessionHandlingIssue(null);
     setRefreshError(null);
     setSuccess(null);
     try {
@@ -562,7 +547,6 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
       setBusy(true);
       try {
         setFailure(null);
-        setSessionHandlingIssue(null);
         setRefreshError(null);
         setSuccess(null);
 
@@ -783,7 +767,7 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
       {status && !status.isGitRepository ? (
         <div className="error-bar" role="alert">{t("worktree:ui.branchPicker.notGitRepository")}</div>
       ) : null}
-      {progress && !failure && !sessionHandlingIssue ? (
+      {progress && !failure ? (
         <div className="info-box branch-picker-progress" role="status">
           {t("worktree:ui.branchPicker.progress.detail", {
             label: controlsBusy
@@ -807,15 +791,12 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
           <strong>{t("worktree:ui.branchPicker.error.repositoryReadFailed")}</strong> {refreshError}
         </div>
       ) : null}
-      {sessionHandlingIssue ? (
+      {failure ? (
         <div className="error-bar" role="alert">
-          <strong>
-            {t("worktree:ui.branchPicker.sessionHandling.checkoutChanged")}
-          </strong>
-          <div>{t("worktree:ui.branchPicker.sessionHandling.branchUnchanged")}</div>
-          {sessionHandlingIssue.affectedSessionIds.length ? (
+          <strong>{t("worktree:ui.branchPicker.error.branchOperationFailed")}</strong> {failure.message}
+          {failure.liveSessionIds.length ? (
             <div className="branch-picker-live-sessions">
-              {sessionHandlingIssue.affectedSessionIds.map((id, index) => (
+              {failure.liveSessionIds.map((id, index) => (
                 <span key={id}>
                   {sessionDetail(id, index)}{" "}
                   {sessionForId(id) ? (
@@ -829,14 +810,6 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
               ))}
             </div>
           ) : null}
-          <div className="branch-picker-recovery-actions">
-            {t("worktree:ui.branchPicker.sessionHandling.nextStep")}
-          </div>
-        </div>
-      ) : null}
-      {failure ? (
-        <div className="error-bar" role="alert">
-          <strong>{t("worktree:ui.branchPicker.error.branchOperationFailed")}</strong> {failure.message}
           {failure.recoveryActions.length ? (
             <div className="branch-picker-recovery-actions">
               <span>{t("worktree:ui.branchPicker.error.recoveryActions")}</span>

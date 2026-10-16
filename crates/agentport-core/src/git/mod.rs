@@ -209,10 +209,7 @@ impl GitRepo {
 
     pub fn worktree_list(&self) -> Result<Vec<GitWorktreeInfo>> {
         let runner = GitRunner::default();
-        let output = runner
-            .run_read_only(Some(&self.root), ["worktree", "list", "--porcelain", "-z"])?
-            .require_success()?;
-        worktree::parse_worktree_list_z(&output.stdout)
+        worktree::read_worktrees(&self.root, &runner)
     }
 
     /// `git worktree add <path> -b <branch> <base>` (create_branch=true) or

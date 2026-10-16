@@ -5280,11 +5280,19 @@ mod tests {
     fn post_cas_worktree_observation_failure_never_leaves_prepared() {
         let fixture = fixture();
         make_branch(&fixture.root, "post-cas-worktree-failure");
+        let (probe, recorded) = GitRunner::recording();
+        super::super::worktree::read_worktrees(&fixture.root, &probe).unwrap();
+        let discovery_commands = recorded
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|argv| argv.iter().any(|arg| arg == "worktree"))
+            .count();
         let manager = BranchManager {
             db: &fixture.db,
-            // capture_snapshot observes worktrees once; the post-CAS
-            // recoverability check is the second invocation.
-            runner: GitRunner::failing_nth("worktree", 2),
+            // Fail the next observation after capture_snapshot, accounting for
+            // the extra format probe required by Git without worktree list -z.
+            runner: GitRunner::failing_nth("worktree", discovery_commands + 1),
         };
 
         let error = manager
