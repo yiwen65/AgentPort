@@ -789,14 +789,20 @@ fn ensure_cleanup_scheduler(state: &AppState) {
 
 #[tauri::command]
 async fn boot(state: State<'_, AppState>, app: AppHandle) -> std::result::Result<BootInfo, String> {
+    let boot_started = std::time::Instant::now();
     let startup_paths = state.paths.clone();
     let purge_succeeded = run_required_backend_blocking(move || {
+        let phase_started = std::time::Instant::now();
         let db = Db::open(&startup_paths).map_err(|error| error.to_string())?;
         let manager = HostManager {
             paths: &startup_paths,
             db: &db,
         };
         let _ = manager.reconcile_on_startup();
+        tracing::info!(
+            elapsed_ms = phase_started.elapsed().as_millis(),
+            "startup reconciliation complete"
+        );
         let _ = run_due_cleanup_jobs(&startup_paths, &db);
         Ok(SearchIndex {
             db: &db,
@@ -814,6 +820,7 @@ async fn boot(state: State<'_, AppState>, app: AppHandle) -> std::result::Result
         git_workspace_commands::spawn_startup_reconcile(app.clone(), state.paths.clone());
     }
 
+    let snapshot_started = std::time::Instant::now();
     let snapshot_paths = state.paths.clone();
     let (mut platform, settings, adapters, projects, timeline, timeline_error, timeline_message) =
         run_backend_blocking(move || {
@@ -859,6 +866,11 @@ async fn boot(state: State<'_, AppState>, app: AppHandle) -> std::result::Result
         })
         .await?;
 
+    tracing::info!(
+        elapsed_ms = snapshot_started.elapsed().as_millis(),
+        "startup snapshot complete"
+    );
+
     // Linux release builds run without native window decorations
     // (tauri.linux.conf.json); the frontend draws its own window chrome only
     // when the WM provides none, so it needs the real decoration state.
@@ -870,6 +882,16 @@ async fn boot(state: State<'_, AppState>, app: AppHandle) -> std::result::Result
         object.insert("windowDecorated".to_string(), json!(window_decorated));
     }
 
+    let secret_probe_started = std::time::Instant::now();
+    let secret_backend = format!("{:?}", CredentialBroker::backend_status());
+    tracing::info!(
+        elapsed_ms = secret_probe_started.elapsed().as_millis(),
+        "startup secret backend probe complete"
+    );
+    tracing::info!(
+        elapsed_ms = boot_started.elapsed().as_millis(),
+        "startup boot complete"
+    );
     Ok(BootInfo {
         platform,
         settings,
@@ -878,7 +900,7 @@ async fn boot(state: State<'_, AppState>, app: AppHandle) -> std::result::Result
         timeline,
         timeline_error,
         timeline_message,
-        secret_backend: format!("{:?}", CredentialBroker::backend_status()),
+        secret_backend,
         index_state: if purge_succeeded {
             "native_on_demand".into()
         } else {

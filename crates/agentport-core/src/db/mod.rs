@@ -959,6 +959,47 @@ fn ensure_session_run_tx(
     Ok(())
 }
 
+/// Check immutable retries without taking SQLite's write reservation.
+fn check_status_event_retry(conn: &Connection, e: &StatusEvent) -> Result<bool> {
+    let existing = conn.prepare_cached(
+        "SELECT run_ordinal,state,source,confidence,evidence,log_generation,log_offset,occurred_at
+         FROM status_events
+         WHERE session_id=?1 AND run_id=?2 AND sequence=?3",
+    )?.query_row(params![&e.session_id, &e.run_id, e.sequence], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, Option<String>>(4)?,
+            r.get::<_, Option<i64>>(5)?,
+            r.get::<_, Option<i64>>(6)?,
+            r.get::<_, String>(7)?,
+        ))
+    }).optional()?;
+    let Some(existing) = existing else {
+        return Ok(false);
+    };
+    let occurred_at = dt_str(&e.occurred_at);
+    // Idempotency is deliberately narrow: compare every persisted field, not
+    // only the cursor. A conflicting journal line is not a delivery retry.
+    if existing.0 != e.run_ordinal
+        || existing.1 != e.state.as_str()
+        || existing.2 != e.source.as_str()
+        || existing.3 != e.confidence.as_str()
+        || existing.4.as_deref() != e.evidence.as_deref()
+        || existing.5 != e.log_cursor.as_ref().map(|cursor| cursor.generation)
+        || existing.6 != e.log_cursor.as_ref().map(|cursor| cursor.offset)
+        || existing.7 != occurred_at
+    {
+        return Err(CoreError::Conflict(format!(
+            "conflicting duplicate status event for session {} run {} sequence {}",
+            e.session_id, e.run_id, e.sequence
+        )));
+    }
+    Ok(true)
+}
+
 // ---------------------------------------------------------------------------
 // Db
 // ---------------------------------------------------------------------------
@@ -3317,7 +3358,13 @@ impl Db {
                 )));
             }
         }
+        validate_run_identity(&e.run_id, e.run_ordinal)?;
         let mut conn = self.conn.lock().unwrap();
+        // Startup replays historical journals. Exact duplicates do not need a
+        // write transaction or updates to run/recovery projections.
+        if check_status_event_retry(&conn, e)? {
+            return Ok(());
+        }
         // Acquire the write reservation before `ensure_session_run_tx` reads.
         // A deferred transaction can otherwise fail its read-to-write upgrade
         // immediately when another monitor commits between those operations.
@@ -3389,51 +3436,10 @@ impl Db {
                 ],
             )?;
         } else {
-            // Idempotency is deliberately narrow: a delivery retry must carry
-            // the exact durable fact.  Silently accepting a conflicting frame
-            // with the same (session, run, sequence) would make corrupted or
-            // split-brain event streams indistinguishable from a retry.
-            let existing = tx.query_row(
-                "SELECT run_ordinal,state,source,confidence,evidence,log_generation,log_offset,occurred_at
-                 FROM status_events
-                 WHERE session_id=?1 AND run_id=?2 AND sequence=?3",
-                params![&e.session_id, &e.run_id, e.sequence],
-                |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, String>(3)?,
-                        r.get::<_, Option<String>>(4)?,
-                        r.get::<_, Option<i64>>(5)?,
-                        r.get::<_, Option<i64>>(6)?,
-                        r.get::<_, String>(7)?,
-                    ))
-                },
-            )?;
-            let supplied = (
-                e.run_ordinal,
-                e.state.as_str(),
-                e.source.as_str(),
-                e.confidence.as_str(),
-                e.evidence.as_deref(),
-                e.log_cursor.as_ref().map(|cursor| cursor.generation),
-                e.log_cursor.as_ref().map(|cursor| cursor.offset),
-                occurred_at.as_str(),
-            );
-            if existing.0 != supplied.0
-                || existing.1 != supplied.1
-                || existing.2 != supplied.2
-                || existing.3 != supplied.3
-                || existing.4.as_deref() != supplied.4
-                || existing.5 != supplied.5
-                || existing.6 != supplied.6
-                || existing.7 != supplied.7
-            {
-                return Err(CoreError::Conflict(format!(
-                    "conflicting duplicate status event for session {} run {} sequence {}",
-                    e.session_id, e.run_id, e.sequence
-                )));
+            // A concurrent writer may have inserted this event after the fast
+            // check. It must still be the exact same durable fact.
+            if !check_status_event_retry(&tx, e)? {
+                return Err(CoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
             }
         }
         tx.commit()?;
@@ -6392,6 +6398,72 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].state, event.state);
         assert_eq!(history[0].evidence, event.evidence);
+    }
+
+    #[test]
+    fn exact_status_retry_does_not_require_the_sqlite_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(dir.path().into());
+        let db = Db::open(&paths).unwrap();
+        db.add_project(&project("prj_retry")).unwrap();
+        db.insert_session(&session("ses_retry", "prj_retry"))
+            .unwrap();
+        let event = StatusEvent {
+            session_id: "ses_retry".into(),
+            run_id: LEGACY_RUN_ID.into(),
+            run_ordinal: LEGACY_RUN_ORDINAL,
+            sequence: 1,
+            state: AgentState::Working,
+            source: StateSource::Hook,
+            confidence: Confidence::High,
+            evidence: Some("hook:PreToolUse".into()),
+            log_cursor: Some(LogCursor {
+                run_id: LEGACY_RUN_ID.into(),
+                run_ordinal: LEGACY_RUN_ORDINAL,
+                generation: 0,
+                offset: 10,
+            }),
+            occurred_at: Utc::now(),
+        };
+        db.record_status_event(&event).unwrap();
+        db.conn
+            .lock()
+            .unwrap()
+            .busy_timeout(StdDuration::ZERO)
+            .unwrap();
+        let mut other = Connection::open(paths.db_path()).unwrap();
+        let writer = other
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        // A live Host may own the writer while startup replays old events.
+        // Reads still work in WAL mode; duplicate replay must not contend.
+        db.record_status_event(&event).unwrap();
+        let mut conflicts = vec![event.clone(); 9];
+        conflicts[0].run_ordinal += 1;
+        conflicts[0].log_cursor.as_mut().unwrap().run_ordinal += 1;
+        conflicts[1].state = AgentState::NeedsInput;
+        conflicts[2].source = StateSource::Pty;
+        conflicts[3].confidence = Confidence::Low;
+        conflicts[4].evidence = None;
+        conflicts[5].log_cursor.as_mut().unwrap().generation += 1;
+        conflicts[6].log_cursor.as_mut().unwrap().offset += 1;
+        conflicts[7].occurred_at += chrono::Duration::milliseconds(1);
+        conflicts[8].log_cursor = None;
+        for conflict in conflicts {
+            assert!(matches!(
+                db.record_status_event(&conflict),
+                Err(CoreError::Conflict(_))
+            ));
+        }
+        let mut new_event = event.clone();
+        new_event.sequence += 1;
+        assert!(matches!(
+            db.record_status_event(&new_event),
+            Err(CoreError::Sqlite(_))
+        ));
+        writer.rollback().unwrap();
+        db.record_status_event(&new_event).unwrap();
+        assert_eq!(db.status_history("ses_retry", 10).unwrap().len(), 2);
     }
 
     #[test]

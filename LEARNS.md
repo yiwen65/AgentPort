@@ -33,8 +33,8 @@
 - Why it failed: Arguments after `--` are rustfmt options, while `cargo fmt` formats all bin and lib targets in the selected crate/workspace; unrelated Rust files were changed.
 - Recognition signal: `git status` suddenly lists Rust files outside the task scope immediately after a supposedly file-scoped format command.
 - Correct approach: For a bounded read-only check, run `rustfmt --edition 2021 --check <path>...`; use `cargo fmt --check -p <package>` only when package-wide formatting is intended and baseline-compatible.
-- Prevention: Inspect `git status` before and after formatting, and never pass source paths after `cargo fmt --` as selectors.
-- Verified by: The command changed six unrelated workspace files; restoring those files and pre-existing formatting in the two task files returned the diff to terminal-theme-only hunks.
+- Prevention: Inspect `git status` and the focused diff before and after formatting, and never pass source paths after `cargo fmt --` as selectors. Even direct `rustfmt --config skip_children=true <path>` reformats unrelated code inside that file; if the baseline has formatting drift, retain only task-related formatting hunks.
+- Verified by: The command changed six unrelated workspace files; restoring those files and pre-existing formatting in the two task files returned the diff to terminal-theme-only hunks. During startup optimization, file-scoped rustfmt also expanded `db/mod.rs` to 501 changed lines; reverting unrelated in-file formatting restored the surgical optimization diff.
 
 ## `xterm viewport restoration` — reconcile both buffer and DOM on Session activation
 
