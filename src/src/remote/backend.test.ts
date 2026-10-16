@@ -583,6 +583,51 @@ describe("agents/presets/worktrees/branches", () => {
     expect(request).toHaveBeenCalledWith("branch.status", { projectId: "prj_1" });
   });
 
+  it("adapts branch.list status and checkout occupancy for the desktop branch picker", async () => {
+    request.mockImplementation(async (method) => {
+      if (method === "branch.list") return {
+        repositoryRoot: "/remote/project", repoKey: "remote-repo",
+        status: {
+          checkout: { kind: "branch", value: "main" },
+          paths: [{ path: "file.ts", staged: false, unstaged: true,
+            untracked: false, unmerged: false, submoduleDirty: false }],
+          staged: false, unstaged: true, untracked: false, unmerged: false,
+          dirtySubmodule: false, operationState: null,
+        },
+        branches: [
+          { name: "main", oid: "a".repeat(40), current: true, occupiedWorktree: "/remote/project" },
+          { name: "managed", oid: "b".repeat(40), current: false, occupiedWorktree: "/remote/managed" },
+          { name: "external", oid: "c".repeat(40), current: false, occupiedWorktree: "/remote/external" },
+          { name: "available", oid: "d".repeat(40), current: false, occupiedWorktree: null },
+        ],
+      };
+      if (method === "git.context.resolve") return { liveSessionIds: ["ses_live"] };
+      if (method === "branch.autostash.list") return [];
+      if (method === "worktree.list") return [
+        { id: "wt-managed", projectId: "prj_1", path: "/remote/managed", branch: "managed" },
+      ];
+      throw new Error(`Unexpected ${method}`);
+    });
+    const result = await makeBackend().listLocalBranches("prj_1");
+    expect(result.status).toMatchObject({
+      projectId: "prj_1", isGitRepository: true,
+      head: { kind: "branch", branch: "main", oid: "a".repeat(40) },
+      changes: { staged: 0, unstaged: 1 },
+      liveSessionIds: ["ses_live"], pendingAutoStashes: 0,
+    });
+    expect(result.branches).toMatchObject([
+      { name: "main", current: true, checkedOutPath: null, agentPortWorktreeId: null },
+      { name: "managed", checkedOutPath: "/remote/managed", agentPortWorktreeId: "wt-managed" },
+      { name: "external", checkedOutPath: "/remote/external", agentPortWorktreeId: null },
+      { name: "available", checkedOutPath: null, agentPortWorktreeId: null },
+    ]);
+    expect(result.autoStashes).toEqual([]);
+    expect(request).toHaveBeenCalledWith("branch.list", { projectId: "prj_1" });
+    expect(request).toHaveBeenCalledWith("git.context.resolve", { locator: { kind: "projectMain", projectId: "prj_1" } });
+    expect(request).toHaveBeenCalledWith("branch.autostash.list", { projectId: "prj_1" });
+    expect(request).toHaveBeenCalledWith("worktree.list", { projectId: "prj_1" });
+  });
+
   it("listAutoStashes passes a nullable projectId through", async () => {
     request.mockResolvedValueOnce([{ id: "as_1" }]);
     const backend = makeBackend();

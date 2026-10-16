@@ -890,8 +890,36 @@ export class RemoteBackend {
     );
   }
 
-  listLocalBranches(projectId: string): Promise<LocalBranchesResponse> {
-    return this.request<LocalBranchesResponse>("branch.list", { projectId });
+  async listLocalBranches(projectId: string): Promise<LocalBranchesResponse> {
+    // Like branch.status, branch.list returns Core's BranchSnapshot, not the
+    // desktop response. Adapt at this boundary before the picker/store sees it.
+    const snapshot = await this.request<RemoteBranchSnapshot>("branch.list", { projectId });
+    const [context, autoStashes, worktrees] = await Promise.all([
+      this.resolveGitContext({ kind: "projectMain", projectId }),
+      this.listAutoStashes(projectId),
+      this.listWorktrees(projectId),
+    ]);
+    return {
+      status: remoteBranchSnapshotToRepositoryStatus(
+        projectId, snapshot, context.liveSessionIds, autoStashes.length,
+      ),
+      branches: snapshot.branches.map((branch) => {
+        // The main checkout is not an "occupied by another worktree" branch.
+        // Mirror the local Tauri adapter, including managed-worktree identity.
+        const checkedOutPath = branch.occupiedWorktree && branch.occupiedWorktree !== snapshot.repositoryRoot
+          ? branch.occupiedWorktree : null;
+        return {
+          name: branch.name,
+          oid: branch.oid,
+          current: branch.current,
+          checkedOutPath,
+          agentPortWorktreeId: checkedOutPath
+            ? worktrees.find((worktree) => worktree.path === checkedOutPath)?.id ?? null
+            : null,
+        };
+      }),
+      autoStashes,
+    };
   }
 
   createLocalBranch(
