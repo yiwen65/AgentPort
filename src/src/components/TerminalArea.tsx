@@ -402,7 +402,10 @@ function TerminalPane({
         setDropActive(true);
       }}
       onDragLeave={(event) => {
-        if (event.currentTarget === event.target) setDropActive(false);
+        // xterm descendants are the actual drag targets. Clear on leaving
+        // the pane, not on moves between children within the same pane.
+        const next = event.relatedTarget as Node | null;
+        if (!next || !event.currentTarget.contains(next)) setDropActive(false);
       }}
       onDrop={(event) => {
         setDropActive(false);

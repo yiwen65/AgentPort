@@ -399,8 +399,10 @@ describe("TerminalArea recursive panes", () => {
     act(() => patchSession(ptyA.id, { adapter }));
     const { container } = render(<TerminalArea />);
     const target = container.querySelector(`[data-terminal-session-id="${ptyA.id}"] .term-host`)!;
+    const crossed = container.querySelector(`[data-terminal-session-id="${ptyB.id}"] .term-host`)!;
+    let hitTarget: Element | null = crossed;
     const hitDescriptor = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
-    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => target });
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => hitTarget });
     class Transfer {
       values = new Map<string, string>();
       setData(key: string, value: string) { this.values.set(key, value); }
@@ -418,13 +420,34 @@ describe("TerminalArea recursive panes", () => {
     vi.stubGlobal("DragEvent", Drag);
     try {
       beginNativeTreeDrag({ path: "/tmp/My Docs/报告.md", isDir: false });
-      act(() => { forwardNativeDrag({ type: "over", position: { x: 400, y: 300 } }); });
+      const move = () => act(() => { forwardNativeDrag({ type: "over", position: { x: 400, y: 300 } }); });
+      move();
+      expect(crossed.closest(".term-pane")?.classList.contains("drop-target")).toBe(true);
+      hitTarget = target;
+      move();
+      expect(crossed.closest(".term-pane")?.classList.contains("drop-target")).toBe(false);
+      expect(container.querySelectorAll(".term-pane.drop-target")).toHaveLength(1);
+      // Moving between xterm descendants must keep the current pane highlighted.
+      const child = document.createElement("span");
+      target.append(child);
+      hitTarget = child;
+      move();
+      expect(target.closest(".term-pane")?.classList.contains("drop-target")).toBe(true);
+      // Moving outside all panes clears the last highlight too.
+      hitTarget = container;
+      move();
+      expect(container.querySelectorAll(".term-pane.drop-target")).toHaveLength(0);
+      hitTarget = target;
+      move();
+      act(() => { forwardNativeDrag({ type: "leave" }); });
+      expect(container.querySelectorAll(".term-pane.drop-target")).toHaveLength(0);
+      move();
       expect(target.closest(".term-pane")?.classList.contains("drop-target")).toBe(true);
       window.dispatchEvent(new Event("dragend"));
       act(() => { forwardNativeDrag({ type: "drop", position: { x: 400, y: 300 } }); });
       expect(insertTextIntoTerminalMock).toHaveBeenCalledOnce();
       expect(insertTextIntoTerminalMock).toHaveBeenCalledWith(ptyA.id, expected);
-      expect(target.closest(".term-pane")?.classList.contains("drop-target")).toBe(false);
+      expect(container.querySelectorAll(".term-pane.drop-target")).toHaveLength(0);
       expect(splitSessionIntoPaneMock).not.toHaveBeenCalled();
       expect(forwardNativeDrag({ type: "drop", position: { x: 400, y: 300 } })).toBe(false);
     } finally {
