@@ -155,7 +155,7 @@
 
 ### [ ] T-006 — 恢复连接后覆盖最终真机包
 
-- Status: blocked
+- Status: in_progress
 - Owner: coordinator
 - Objective: 将包含最后复制反馈自动收起的最终签名版本覆盖到手机。
 - Inputs and prerequisites: T-004最终源码/签名归档、重新可用的实体iPhone连接；前一次主功能包已成功安装。
@@ -169,8 +169,8 @@
 - Verification method:
   - devicectl安装/启动/进程及截图。
 - Validation evidence:最终iPhoneOS归档/IPA与Android APK顺序构建通过；最后devicectl安装报CoreDeviceError4016（设备无法满足连接/电源/服务usage assertions），随后list devices显示实体手机unavailable。此前主功能包安装成功，本次最后复制反馈完善未覆盖。
-- Blocker: 实体手机连接不可用，无法覆盖最终包；不重复盲重试。
-- Unblock condition: 用户重新接电、解锁并恢复可用连接，然后继续该步骤。
+- Blocker: None.
+- Unblock condition: None.
 
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
@@ -198,6 +198,7 @@
 - 2026-10-13: 外部只改LEARNS的dd28a21已提交，差异复核本任务仅包含两条新增教训，保留其键盘环境条目，不混入其工作。
 - 2026-10-13: 补充复制反馈3秒自动收起及回归，避免成功提示成为常驻正文Chrome。最终完整842/842、生产构建与Chrome脚本通过；最终iPhoneOS签名归档/IPA及Android APK顺序重建通过，尝试刷新实体iPhone以包含全部最终改动；安装报CoreDeviceError4016，重新观察手机unavailable，新增T-006 blocked。早期沉浸主功能包已安装，但最后复制反馈完善尚未覆盖；原生独占阅读手势仍不冒称完成。
 - 2026-10-13: 代码功能提交99facd6创建；显式暂存15个已验证相关文件并检查索引/HEAD，保留外部38f5cc9/dd28a21的工作。T-004 done；T-005/T-006仍blocked，最终结果partial，不以代码提交替代真机验收/最终覆盖安装。
+- 2026-10-13后续重试: 用户再次要求继续，devicectl现已显示实体iPhone connected，工作区干净。复核既有最终归档签名后开始保留数据覆盖安装，T-006 blocked→in_progress；不重新构建或混用旧包。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
