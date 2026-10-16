@@ -3,7 +3,7 @@
 
 import { lazy, Suspense, useEffect, useRef, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
-import { forwardNativeSessionDrag } from "./sessionNativeDrag";
+import { forwardNativeDrag } from "./nativeDrag";
 import {
   api,
   errorText,
@@ -90,7 +90,7 @@ const Onboarding = lazy(() => import("./components/Onboarding"));
 const GitCenter = lazy(() => import("./components/GitCenter"));
 
 // wry reports native drop positions in logical (CSS) pixels on macOS and
-// Linux (see sessionNativeDrag.ts), so no devicePixelRatio scaling is applied.
+// Linux (see nativeDrag.ts), so no devicePixelRatio scaling is applied.
 function terminalSessionAtPosition(position: { x: number; y: number }): string | null {
   const element = document.elementFromPoint(position.x, position.y);
   const pane = element?.closest<HTMLElement>("[data-terminal-session-id]");
@@ -570,7 +570,7 @@ export default function App() {
     let disposed = false;
     let unlisten: (() => void) | null = null;
     void getCurrentWebview().onDragDropEvent((event) => {
-      if (forwardNativeSessionDrag(event.payload)) return;
+      if (forwardNativeDrag(event.payload)) return;
       if (event.payload.type !== "drop") return;
       const sessionId = terminalSessionAtPosition(event.payload.position);
       if (!sessionId) return;

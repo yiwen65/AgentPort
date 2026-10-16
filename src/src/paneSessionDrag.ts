@@ -47,7 +47,7 @@ export function readSessionPaneDragPayload(
 // WebKitGTK rasterizes the default drag snapshot at the device scale factor,
 // so on HiDPI Linux the Session drag ghost balloons (~2x, mis-scaled). wry
 // consumes the native drag on Linux anyway — targeting runs through
-// sessionNativeDrag's forwarding — so the ghost carries no information.
+// nativeDrag's forwarding — so the ghost carries no information.
 // Replace it with a 1px transparent image on Linux only.
 let transparentDragImage: HTMLElement | null = null;
 

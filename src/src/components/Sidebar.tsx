@@ -70,7 +70,7 @@ import {
   suppressOversizedDragImage,
   writeSessionPaneDragPayload,
 } from "../paneSessionDrag";
-import { beginNativeSessionDrag } from "../sessionNativeDrag";
+import { beginNativeSessionDrag } from "../nativeDrag";
 import {
   moveProjectInLayout,
   projectDropTarget,

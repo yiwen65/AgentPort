@@ -30,6 +30,8 @@ vi.mock("../api", () => ({
   errorText: (error: unknown) => String(error),
 }));
 
+vi.mock("../terminals", () => ({ insertTextIntoTerminal: vi.fn() }));
+
 import { act } from "@testing-library/react";
 import { openDocumentTarget } from "../documents";
 import { resetTreeGitForTests } from "../docTreeGit";
@@ -43,6 +45,8 @@ function openedDoc() {
   return tab ? { path: tab.path, line: tab.pendingLine } : null;
 }
 import DocumentTree from "./DocumentTree";
+import { forwardNativeDrag } from "../nativeDrag";
+import { readDragPayload } from "../terminalDrop";
 
 const ROOT = "/tmp/demo";
 
@@ -130,6 +134,55 @@ describe("DocumentTree", () => {
   function menuItems() {
     return (getState().contextMenu?.items ?? []).filter((item) => !item.separator);
   }
+
+  it.each([
+    ["README.md", false],
+    ["docs", true],
+  ] as const)("preserves tree entry %s when native drag events contain no file paths", async (name, isDir) => {
+    class Transfer {
+      values = new Map<string, string>();
+      setData(key: string, value: string) { this.values.set(key, value); }
+      getData(key: string) { return this.values.get(key) ?? ""; }
+      get types() { return [...this.values.keys()]; }
+    }
+    class Drag extends MouseEvent {
+      dataTransfer: DataTransfer | null;
+      constructor(type: string, init: DragEventInit) {
+        super(type, init);
+        this.dataTransfer = init.dataTransfer ?? null;
+      }
+    }
+    vi.stubGlobal("DataTransfer", Transfer);
+    vi.stubGlobal("DragEvent", Drag);
+    vi.stubGlobal("devicePixelRatio", 2);
+    const target = document.createElement("div");
+    document.body.append(target);
+    const hit = vi.fn(() => target);
+    const hitDescriptor = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: hit });
+    const dropped = vi.fn((event: Event) => readDragPayload((event as DragEvent).dataTransfer!));
+    target.addEventListener("drop", dropped);
+    try {
+      render(<DocumentTree />);
+      fireEvent.dragStart(await screen.findByText(name), { dataTransfer: new DataTransfer() });
+      expect(forwardNativeDrag({ type: "enter", position: { x: 640, y: 240 } })).toBe(true);
+      // The browser can send dragend before native drop IPC arrives.
+      window.dispatchEvent(new Event("dragend"));
+      expect(forwardNativeDrag({ type: "drop", position: { x: 640, y: 240 } })).toBe(true);
+      expect(hit).toHaveBeenCalledWith(640, 240);
+      expect(dropped).toHaveBeenCalledOnce();
+      expect(dropped.mock.results[0]?.value).toEqual({ path: `${ROOT}/${name}`, isDir });
+      // A later Finder drop is not mistaken for this internal tree drag.
+      expect(forwardNativeDrag({ type: "drop", position: { x: 640, y: 240 } })).toBe(false);
+    } finally {
+      forwardNativeDrag({ type: "leave" });
+      window.dispatchEvent(new Event("dragend"));
+      if (hitDescriptor) Object.defineProperty(document, "elementFromPoint", hitDescriptor);
+      else Reflect.deleteProperty(document, "elementFromPoint");
+      target.remove();
+      vi.unstubAllGlobals();
+    }
+  });
 
   it("opens a VSCode-style context menu on right-click", async () => {
     render(<DocumentTree />);

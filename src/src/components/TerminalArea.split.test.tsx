@@ -7,6 +7,7 @@ const {
   focusSessionMock,
   getHandleMock,
   mountTerminalMock,
+  insertTextIntoTerminalMock,
   openSplitAgentPickerMock,
   openSplitSessionDialogMock,
   persistLayoutMock,
@@ -25,6 +26,7 @@ const {
   focusSessionMock: vi.fn(),
   getHandleMock: vi.fn(),
   mountTerminalMock: vi.fn(),
+  insertTextIntoTerminalMock: vi.fn().mockReturnValue(true),
   openSplitAgentPickerMock: vi.fn(),
   openSplitSessionDialogMock: vi.fn(),
   persistLayoutMock: vi.fn(),
@@ -76,6 +78,7 @@ vi.mock("../terminals", () => ({
   isTerminalPreviewRendered: vi.fn(() => true),
   loadOlderNativeHistory: vi.fn().mockResolvedValue(false),
   mountTerminal: mountTerminalMock,
+  insertTextIntoTerminal: insertTextIntoTerminalMock,
   noteTerminalScrollIntent: vi.fn(),
   scrollTerminalViewport: vi.fn(),
   scrollToBottom: vi.fn(),
@@ -105,6 +108,7 @@ import {
 import { singletonPaneLayout, splitPane } from "../paneLayout";
 import { getState, patchSession, setState } from "../store";
 import { i18n } from "../i18n";
+import { beginNativeTreeDrag, forwardNativeDrag } from "../nativeDrag";
 import type { SessionView } from "../types";
 import TerminalArea from "./TerminalArea";
 import { attachHandle, restoreDesktopTerminalSize } from "../terminals";
@@ -386,6 +390,50 @@ describe("TerminalArea recursive panes", () => {
     expect(removeItem?.danger).toBe(true);
     removeItem?.action?.();
     expect(removeSessionFlowMock).toHaveBeenCalledWith(ptyA.id, { confirm: true });
+  });
+
+  it.each([
+    ["shell", "'/tmp/My Docs/报告.md' "],
+    ["pi", "'@/tmp/My Docs/报告.md' "],
+  ])("inserts a native tree drop once into the hit %s pane, not the focused pane", (adapter, expected) => {
+    act(() => patchSession(ptyA.id, { adapter }));
+    const { container } = render(<TerminalArea />);
+    const target = container.querySelector(`[data-terminal-session-id="${ptyA.id}"] .term-host`)!;
+    const hitDescriptor = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => target });
+    class Transfer {
+      values = new Map<string, string>();
+      setData(key: string, value: string) { this.values.set(key, value); }
+      getData(key: string) { return this.values.get(key) ?? ""; }
+      get types() { return [...this.values.keys()]; }
+    }
+    class Drag extends MouseEvent {
+      dataTransfer: DataTransfer | null;
+      constructor(type: string, init: DragEventInit) {
+        super(type, init);
+        this.dataTransfer = init.dataTransfer ?? null;
+      }
+    }
+    vi.stubGlobal("DataTransfer", Transfer);
+    vi.stubGlobal("DragEvent", Drag);
+    try {
+      beginNativeTreeDrag({ path: "/tmp/My Docs/报告.md", isDir: false });
+      act(() => { forwardNativeDrag({ type: "over", position: { x: 400, y: 300 } }); });
+      expect(target.closest(".term-pane")?.classList.contains("drop-target")).toBe(true);
+      window.dispatchEvent(new Event("dragend"));
+      act(() => { forwardNativeDrag({ type: "drop", position: { x: 400, y: 300 } }); });
+      expect(insertTextIntoTerminalMock).toHaveBeenCalledOnce();
+      expect(insertTextIntoTerminalMock).toHaveBeenCalledWith(ptyA.id, expected);
+      expect(target.closest(".term-pane")?.classList.contains("drop-target")).toBe(false);
+      expect(splitSessionIntoPaneMock).not.toHaveBeenCalled();
+      expect(forwardNativeDrag({ type: "drop", position: { x: 400, y: 300 } })).toBe(false);
+    } finally {
+      act(() => { forwardNativeDrag({ type: "leave" }); });
+      window.dispatchEvent(new Event("dragend"));
+      if (hitDescriptor) Object.defineProperty(document, "elementFromPoint", hitDescriptor);
+      else Reflect.deleteProperty(document, "elementFromPoint");
+      vi.unstubAllGlobals();
+    }
   });
 
   it("shows two Session drop zones and routes the chosen direction", () => {

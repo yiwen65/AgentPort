@@ -23,6 +23,7 @@ import {
 } from "../docTreeGit";
 import { DocFileIcon } from "./docTreeIcons";
 import { writeDragPayload } from "../terminalDrop";
+import { beginNativeTreeDrag } from "../nativeDrag";
 import {
   canMutateDocumentEntries,
   canUseLocalOsIntegration,
@@ -479,7 +480,9 @@ export default function DocumentTree() {
             draggable
             onContextMenu={(event) => openEntryMenu(event, entry)}
             onDragStart={(event) => {
-              writeDragPayload(event.dataTransfer, { path: entry.path, isDir: entry.isDir });
+              const payload = { path: entry.path, isDir: entry.isDir };
+              writeDragPayload(event.dataTransfer, payload);
+              beginNativeTreeDrag(payload);
             }}
             onClick={() => {
               if (entry.isDir) {

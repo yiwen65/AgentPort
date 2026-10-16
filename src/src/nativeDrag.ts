@@ -1,18 +1,28 @@
-import { SESSION_PANE_DND_MIME } from "./paneSessionDrag";
+import { writeSessionPaneDragPayload } from "./paneSessionDrag";
+import { writeDragPayload, type TreeDragPayload } from "./terminalDrop";
 
-let sessionId: string | null = null;
-let sourceSessionId: string | null = null;
+type WriteDragData = (dataTransfer: DataTransfer) => void;
+let writeData: WriteDragData | null = null;
+let sourceWriteData: WriteDragData | null = null;
 let previousTarget: Element | null = null;
 
-export function beginNativeSessionDrag(id: string): void {
-  sourceSessionId = id;
+function beginNativeDrag(write: WriteDragData): void {
+  endNativeDrag();
+  sourceWriteData = write;
   window.addEventListener("dragend", clearSource, { once: true });
+}
+
+export function beginNativeSessionDrag(id: string): void {
+  beginNativeDrag((dataTransfer) => writeSessionPaneDragPayload(dataTransfer, id));
+}
+
+export function beginNativeTreeDrag(payload: TreeDragPayload): void {
+  beginNativeDrag((dataTransfer) => writeDragPayload(dataTransfer, payload));
 }
 
 function dispatch(target: Element, type: string, x = 0, y = 0, relatedTarget: Element | null = null) {
   const dataTransfer = new DataTransfer();
-  dataTransfer.setData(SESSION_PANE_DND_MIME, JSON.stringify({ sessionId }));
-  dataTransfer.effectAllowed = "move";
+  writeData?.(dataTransfer);
   target.dispatchEvent(new DragEvent(type, {
     bubbles: true, cancelable: true, dataTransfer,
     clientX: x, clientY: y, relatedTarget,
@@ -22,14 +32,14 @@ function dispatch(target: Element, type: string, x = 0, y = 0, relatedTarget: El
 function clearSource(): void {
   // Native drop IPC can arrive after the browser's dragend. Keep the native
   // gesture alive until its own drop/leave, rather than losing its payload.
-  sourceSessionId = null;
+  sourceWriteData = null;
 }
 
-function endNativeSessionDrag(): void {
+function endNativeDrag(): void {
   if (previousTarget) dispatch(previousTarget, "dragleave");
   previousTarget = null;
-  sessionId = null;
-  sourceSessionId = null;
+  writeData = null;
+  sourceWriteData = null;
   window.removeEventListener("dragend", clearSource);
 }
 
@@ -37,14 +47,15 @@ type NativeDrag =
   | { type: "enter" | "over" | "drop"; position: { x: number; y: number } }
   | { type: "leave" };
 
-/** Wry's native file-drop handler consumes DOM drag events, including internal drags. */
-export function forwardNativeSessionDrag(event: NativeDrag): boolean {
-  sessionId ??= sourceSessionId;
-  if (!sessionId) return false;
+/** Wry consumes DOM drag events, including internal Session and tree drags.
+ * Restore their in-memory payload: native events expose no paths for HTML drags. */
+export function forwardNativeDrag(event: NativeDrag): boolean {
+  writeData ??= sourceWriteData;
+  if (!writeData) return false;
   if (event.type === "leave") {
     if (previousTarget) dispatch(previousTarget, "dragleave");
     previousTarget = null;
-    sessionId = null;
+    writeData = null;
     return true;
   }
   // wry reports drag positions in logical (CSS) pixels on macOS and Linux
@@ -61,6 +72,6 @@ export function forwardNativeSessionDrag(event: NativeDrag): boolean {
     previousTarget = target;
   }
   if (target) dispatch(target, event.type === "drop" ? "drop" : "dragover", x, y);
-  if (event.type === "drop") endNativeSessionDrag();
+  if (event.type === "drop") endNativeDrag();
   return true;
 }
