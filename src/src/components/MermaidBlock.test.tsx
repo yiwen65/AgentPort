@@ -11,6 +11,9 @@ vi.mock("mermaid", () => ({ default: mermaidMock }));
 
 import MermaidBlock from "./MermaidBlock";
 import { MarkdownView } from "../markdown";
+import { previewSelectionLineRange } from "../documentSelection";
+
+vi.mock("../terminals", () => ({ insertTextIntoTerminal: vi.fn() }));
 import { setState } from "../store";
 import type { Settings } from "../types";
 
@@ -226,6 +229,17 @@ describe("MermaidBlock", () => {
       expect(container.querySelector("pre[data-lang='mermaid'] code")).toBeTruthy();
     });
     expect(container.querySelector(".md-mermaid")).toBeNull();
+  });
+
+  it("retains source locations in a failed diagram's visible code fallback", async () => {
+    mermaidMock.render.mockRejectedValue(new Error("Parse error"));
+    const { container } = render(<MarkdownView source={"# heading\n\n```mermaid\nnot a diagram\nselected line\n```"} sourceLocations />);
+    await waitFor(() => expect(container.querySelector("pre code")).not.toBeNull());
+    const line = container.querySelector('[data-source-line="5"]')!;
+    const range = document.createRange();
+    range.selectNodeContents(line);
+    expect(previewSelectionLineRange(container, range)).toEqual({ startLine: 5, endLine: 5 });
+    expect(line.textContent).toBe("selected line");
   });
 
   it("MarkdownView routes mermaid fences to the custom renderer", async () => {

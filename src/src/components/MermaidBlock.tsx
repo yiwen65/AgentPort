@@ -61,7 +61,7 @@ function themeVariablesFor({
   };
 }
 
-export default function MermaidBlock({ source }: { source: string }) {
+export default function MermaidBlock({ source, sourceLine }: { source: string; sourceLine?: number }) {
   const { t } = useTranslation("shell");
   // Palette objects are module-level and stable, so returning null while the
   // opaque Settings page is open also prevents hidden blocks from re-rendering
@@ -133,9 +133,14 @@ export default function MermaidBlock({ source }: { source: string }) {
   }
 
   if (failed) {
+    const lines = source.split("\n");
     return (
       <pre data-lang="mermaid">
-        <code>{source}</code>
+        <code>{sourceLine === undefined ? source : lines.map((line, index) => (
+          <span key={index} data-source-line={sourceLine + index}>
+            {line + (index < lines.length - 1 ? "\n" : "")}
+          </span>
+        ))}</code>
       </pre>
     );
   }

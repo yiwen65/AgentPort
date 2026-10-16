@@ -39,6 +39,7 @@ import { i18n } from "../i18n";
 import { runtimeMessageEnvelope } from "../runtimeMessages";
 import { insertTextIntoTerminal } from "../terminals";
 import { computeLineRange, formatSelectionReference } from "../terminalDrop";
+import { previewSelectionLineRange } from "../documentSelection";
 import {
   canUseLocalOsIntegration,
   confirmDialog,
@@ -276,7 +277,11 @@ function DocToolbar({
 
   if (!tab || !tabId) return null;
   const effectivePath = getDocumentTabRuntime(tabId)?.doc?.path ?? tab.path;
-  const selectionLineCount = selection ? selection.text.split("\n").length : 0;
+  const selectionLineCount = selection
+    ? selection.startLine !== null && selection.endLine !== null
+      ? selection.endLine - selection.startLine + 1
+      : selection.text.split("\n").length
+    : 0;
 
   return (
     <div className="doc-panel-header">
@@ -783,17 +788,15 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   const capturePreviewSelection = useCallback(() => {
     const sel = window.getSelection();
     const text = sel?.toString() ?? "";
-    if (text && sel?.anchorNode && previewRef.current?.contains(sel.anchorNode)) {
-      updateDocumentTabRuntime(tab.id, {
-        selection: { text, startLine: null, endLine: null },
-      });
-    } else if (!text) {
-      const current = getDocumentTabRuntime(tab.id);
-      if (current?.selection?.startLine === null) {
-        updateDocumentTabRuntime(tab.id, { selection: null });
-      }
-    }
-  }, [tab.id]);
+    const preview = previewRef.current;
+    const prose = preview?.querySelector(".doc-prose");
+    const lines = text && sel?.rangeCount && preview
+      ? previewSelectionLineRange(prose ?? preview, sel.getRangeAt(0), prose ? runtime.doc?.content : undefined)
+      : null;
+    updateDocumentTabRuntime(tab.id, {
+      selection: text && lines ? { text, ...lines } : null,
+    });
+  }, [tab.id, runtime.doc]);
 
   const gutterLines = useMemo(
     () => (runtime.doc ? runtime.draft.split("\n").length : 0),
@@ -830,6 +833,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
               {markdown ? (
                 <MarkdownView
                   source={runtime.doc.content}
+                  sourceLocations
                   imageSession={runtime.imageSession ?? undefined}
                   onLinkClick={(href) =>
                     void api.openExternalUrl(href).catch((e) => {

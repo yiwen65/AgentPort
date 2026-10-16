@@ -106,6 +106,7 @@ describe("DocumentPanel", () => {
       confirm: null,
     });
     resetDocumentTabRuntimes();
+    window.getSelection()?.removeAllRanges();
   });
 
   async function findRawEditor() {
@@ -397,6 +398,93 @@ describe("DocumentPanel", () => {
       "ses_quote",
       `@${DEMO_DOC.path}:3 `,
     );
+  });
+
+  function selectPreviewText(element: Element, text: string, occurrence = 0) {
+    const content = element.textContent ?? "";
+    let start = -1;
+    for (let i = 0; i <= occurrence; i += 1) start = content.indexOf(text, start + 1);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = start + text.length;
+    const range = document.createRange();
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let offset = 0;
+    let foundStart = false;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const length = node.textContent?.length ?? 0;
+      if (!foundStart && start <= offset + length) {
+        range.setStart(node, start - offset);
+        foundStart = true;
+      }
+      if (end <= offset + length) {
+        range.setEnd(node, end - offset);
+        break;
+      }
+      offset += length;
+    }
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    fireEvent.mouseUp(element.closest(".doc-preview-host")!);
+  }
+
+  it("quotes a Markdown preview selection with its source line instead of a bare path", async () => {
+    const { container } = render(<DocumentPanel />);
+    await screen.findByText("正文");
+    selectPreviewText(container.querySelector(".md-preview p")!, "正文");
+    fireEvent.click(await screen.findByText(/引用所选/));
+    expect(insertMock).toHaveBeenCalledWith("ses_quote", `@${DEMO_DOC.path}:3 `);
+  });
+
+  it.each([
+    ["重复\n\n重复", ".md-preview p:nth-child(2)", "重复", 0, "3"],
+    ["# 标题\n\n首行 **加粗\n第二行** 尾巴", ".md-preview strong", "第二行", 0, "4"],
+    ["# 标题\n\n首行 **加粗\n第二行** 尾巴", ".md-preview p", "加粗 第二行", 0, "3-4"],
+    ["# 标题\n\n`代码` 和 [链接](https://example.com)", ".md-preview a", "链接", 0, "3"],
+    ["# 标题\n\n```ts\none\nsame\nsame\nlast\n```", ".md-preview pre code", "same\n", 1, "6"],
+    ["# 标题\n\n```\none\ntwo", ".md-preview pre code", "two", 0, "5"],
+    ["# 标题\n\n- first\n  continued **bold**\n- last", ".md-preview li strong", "bold", 0, "4"],
+    ["# 标题\n\n> first\n> second", ".md-preview blockquote", "second", 0, "4"],
+    ["[pic]: a.png\n\n| a | b |\n| --- | --- |\n| target | z |", ".md-preview td", "target", 0, "5"],
+    ["first\n\n# middle\n\nlast", ".md-preview", "firstmiddlelast", 0, "1-5"],
+  ])("maps rendered Markdown selection to source lines: %s", async (source, selector, text, occurrence, location) => {
+    readMock.mockResolvedValue({ ...DEMO_DOC, content: source });
+    const { container } = render(<DocumentPanel />);
+    await waitFor(() => expect(container.querySelector(selector)).not.toBeNull());
+    selectPreviewText(container.querySelector(selector)!, text, occurrence);
+    fireEvent.click(await screen.findByText(/引用所选/));
+    expect(insertMock).toHaveBeenCalledWith("ses_quote", `@${DEMO_DOC.path}:${location} `);
+    window.getSelection()?.removeAllRanges();
+    fireEvent.mouseUp(container.querySelector(".doc-preview-host")!);
+    expect(screen.queryByText(/引用所选/)).toBeNull();
+  });
+
+  it("maps repeated text in plain preview by its DOM position, including CRLF", async () => {
+    const path = "/tmp/demo/repeated.txt";
+    readMock.mockResolvedValue({ ...DEMO_DOC, path, content: "重复\r\n\r\n重复\r\n尾行" });
+    act(() => openDocumentTarget({ path, line: null }));
+    const { container } = render(<DocumentPanel />);
+    await screen.findByLabelText("文档内容编辑");
+    fireEvent.click(screen.getByRole("tab", { name: "预览" }));
+    await waitFor(() => expect(container.querySelector(".doc-prose")).not.toBeNull());
+    selectPreviewText(container.querySelector(".doc-prose")!, "重复", 1);
+    fireEvent.click(await screen.findByText(/引用所选/));
+    expect(insertMock).toHaveBeenCalledWith("ses_quote", `@${path}:3 `);
+  });
+
+  it("rejects a preview selection extending outside its document", async () => {
+    const { container } = render(<DocumentPanel />);
+    await screen.findByText("正文");
+    const preview = container.querySelector(".doc-preview-host")!;
+    const outside = document.createTextNode("outside");
+    container.append(outside);
+    const range = document.createRange();
+    range.selectNodeContents(preview);
+    range.setEnd(outside, outside.length);
+    window.getSelection()!.addRange(range);
+    fireEvent.mouseUp(preview);
+    expect(screen.queryByText(/引用所选/)).toBeNull();
+    outside.remove();
   });
 
   function mockEditorRect(editor: HTMLTextAreaElement) {

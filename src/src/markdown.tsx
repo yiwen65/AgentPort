@@ -18,64 +18,88 @@ function isSafeHref(href: string): boolean {
   return /^https?:\/\//i.test(href);
 }
 
-/** Parses inline emphasis/code/links into React nodes. Plain text passes
- * through untouched, so raw markup is always rendered literally. */
-function renderTextInline(text: string, keyPrefix: string): ReactNode[] {
+function sourceLineAt(text: string, line: number | undefined, offset: number): number | undefined {
+  return line === undefined ? undefined : line + text.slice(0, offset).split("\n").length - 1;
+}
+
+/** Keep soft line breaks visually unchanged while retaining source provenance.
+ * Split literal runs, not Markdown syntax: emphasis can span source lines. */
+function renderLiteral(text: string, key: string, sourceLine?: number): ReactNode {
+  if (sourceLine === undefined) return text.replace(/\n/g, " ");
+  const lines = text.split("\n");
+  return lines.map((line, index) => createElement("span", {
+    key: `${key}-l${index}`, "data-source-line": sourceLine + index,
+  }, line + (index < lines.length - 1 ? " " : "")));
+}
+
+/** Parses inline emphasis/code/links into React nodes. Raw markup remains escaped. */
+function renderTextInline(text: string, keyPrefix: string, sourceLine?: number): ReactNode[] {
   const nodes: ReactNode[] = [];
   INLINE_PATTERN.lastIndex = 0;
   let last = 0;
   let match: RegExpExecArray | null;
   let index = 0;
-  while ((match = INLINE_PATTERN.exec(text)) !== null) {
-    if (match.index > last) nodes.push(text.slice(last, match.index));
+  let line = sourceLine;
+  const displayText = text.replace(/\n/g, " ");
+  while ((match = INLINE_PATTERN.exec(displayText)) !== null) {
+    const before = text.slice(last, match.index);
+    if (before) nodes.push(renderLiteral(before, `${keyPrefix}-plain${index}`, line));
+    line = sourceLineAt(before, line, before.length);
     const key = `${keyPrefix}-${index++}`;
     const [full, code, strongA, strongB, emA, emB, , linkText, href] = match;
+    const matchIndex = match.index;
+    const raw = text.slice(matchIndex, matchIndex + full.length);
+    const literal = (value: string, prefix = 0) => renderLiteral(value, key, sourceLineAt(raw, line, prefix));
     if (code) {
-      nodes.push(createElement("code", { key }, code.slice(1, -1)));
+      nodes.push(createElement("code", { key }, literal(raw.slice(1, -1), 1)));
     } else if (strongA || strongB) {
-      nodes.push(createElement("strong", { key }, full.slice(2, -2)));
+      nodes.push(createElement("strong", { key }, literal(raw.slice(2, -2), 2)));
     } else if (emA || emB) {
-      nodes.push(createElement("em", { key }, full.slice(1, -1)));
+      nodes.push(createElement("em", { key }, literal(raw.slice(1, -1), 1)));
     } else if (linkText !== undefined && href !== undefined) {
       if (isSafeHref(href)) {
         nodes.push(
           createElement(
             "a",
             { key, href, className: "md-link", "data-href": href },
-            linkText || href,
+            literal(linkText ? raw.slice(1, 1 + linkText.length) : href, 1),
           ),
         );
       } else {
         // Non-http links (file:, javascript:, …) render as literal text.
-        nodes.push(full);
+        nodes.push(literal(raw));
       }
     }
+    line = sourceLineAt(raw, line, raw.length);
     last = match.index + full.length;
   }
-  if (last < text.length) nodes.push(text.slice(last));
+  if (last < text.length) nodes.push(renderLiteral(text.slice(last), `${keyPrefix}-end`, line));
   return nodes;
 }
 
-export function renderInline(text: string, keyPrefix: string, references: ImageReferences = new Map(), session?: MarkdownImageSession): ReactNode[] {
+export function renderInline(text: string, keyPrefix: string, references: ImageReferences = new Map(), session?: MarkdownImageSession, sourceLine?: number): ReactNode[] {
   const nodes: ReactNode[] = [];
   let last = 0;
-  for (const [index, token] of markdownImageTokens(text, references).entries()) {
-    nodes.push(...renderTextInline(text.slice(last, token.start), `${keyPrefix}-t${index}`));
+  let line = sourceLine;
+  for (const [index, token] of markdownImageTokens(text.replace(/\n/g, " "), references).entries()) {
+    nodes.push(...renderTextInline(text.slice(last, token.start), `${keyPrefix}-t${index}`, line));
     nodes.push(createElement(MarkdownImage, { key: `${keyPrefix}-image${index}`, source: token.source, alt: token.alt, session }));
+    line = sourceLineAt(text.slice(last, token.end), line, token.end - last);
     last = token.end;
   }
-  nodes.push(...renderTextInline(text.slice(last), `${keyPrefix}-tail`));
+  nodes.push(...renderTextInline(text.slice(last), `${keyPrefix}-tail`, line));
   return nodes;
 }
 
-type Block =
+type Block = (
   | { kind: "heading"; level: number; text: string }
   | { kind: "paragraph"; text: string }
   | { kind: "code"; lang: string; lines: string[] }
   | { kind: "quote"; lines: string[] }
-  | { kind: "list"; ordered: boolean; items: string[] }
+  | { kind: "list"; ordered: boolean; items: string[]; itemLines: number[] }
   | { kind: "table"; header: string[]; rows: string[][] }
-  | { kind: "rule" };
+  | { kind: "rule" }
+) & { line: number };
 
 const FENCE = /^```\s*([\w+-]*)\s*$/;
 const HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
@@ -98,15 +122,17 @@ function parseBlocks(source: string): Block[] {
   let i = 0;
 
   const paragraph: string[] = [];
+  let paragraphLine = 1;
   const flushParagraph = () => {
     if (paragraph.length) {
-      blocks.push({ kind: "paragraph", text: paragraph.join(" ") });
+      blocks.push({ kind: "paragraph", text: paragraph.join("\n"), line: paragraphLine });
       paragraph.length = 0;
     }
   };
 
   while (i < lines.length) {
     const line = lines[i];
+    const sourceLine = i + 1;
 
     const fence = FENCE.exec(line);
     if (fence) {
@@ -118,7 +144,7 @@ function parseBlocks(source: string): Block[] {
         i += 1;
       }
       i += 1; // skip the closing fence (or run off the end)
-      blocks.push({ kind: "code", lang: fence[1], lines: code });
+      blocks.push({ kind: "code", lang: fence[1], lines: code, line: sourceLine });
       continue;
     }
 
@@ -131,14 +157,14 @@ function parseBlocks(source: string): Block[] {
     const heading = HEADING.exec(line);
     if (heading) {
       flushParagraph();
-      blocks.push({ kind: "heading", level: heading[1].length, text: heading[2] });
+      blocks.push({ kind: "heading", level: heading[1].length, text: heading[2], line: sourceLine });
       i += 1;
       continue;
     }
 
     if (RULE.test(line)) {
       flushParagraph();
-      blocks.push({ kind: "rule" });
+      blocks.push({ kind: "rule", line: sourceLine });
       i += 1;
       continue;
     }
@@ -152,7 +178,7 @@ function parseBlocks(source: string): Block[] {
         quote.push(item[1]);
         i += 1;
       }
-      blocks.push({ kind: "quote", lines: quote });
+      blocks.push({ kind: "quote", lines: quote, line: sourceLine });
       continue;
     }
 
@@ -161,17 +187,19 @@ function parseBlocks(source: string): Block[] {
       const ordered = OL_ITEM.test(line);
       const pattern = ordered ? OL_ITEM : UL_ITEM;
       const items: string[] = [];
+      const itemLines: number[] = [];
       while (i < lines.length) {
         const item = pattern.exec(lines[i]);
         if (!item) break;
+        itemLines.push(i + 1);
         items.push(item[2]);
         i += 1;
         while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !pattern.test(lines[i])) {
-          items[items.length - 1] += ` ${lines[i].trim()}`;
+          items[items.length - 1] += `\n${lines[i].trim()}`;
           i += 1;
         }
       }
-      blocks.push({ kind: "list", ordered, items });
+      blocks.push({ kind: "list", ordered, items, itemLines, line: sourceLine });
       continue;
     }
 
@@ -189,10 +217,11 @@ function parseBlocks(source: string): Block[] {
         rows.push(splitTableRow(lines[i]));
         i += 1;
       }
-      blocks.push({ kind: "table", header, rows });
+      blocks.push({ kind: "table", header, rows, line: sourceLine });
       continue;
     }
 
+    if (paragraph.length === 0) paragraphLine = sourceLine;
     paragraph.push(line.trim());
     i += 1;
   }
@@ -200,8 +229,8 @@ function parseBlocks(source: string): Block[] {
   return blocks;
 }
 
-function renderBlocks(blocks: Block[], references: ImageReferences, session?: MarkdownImageSession): ReactNode[] {
-  const inline = (text: string, key: string) => renderInline(text, key, references, session);
+function renderBlocks(blocks: Block[], references: ImageReferences, session?: MarkdownImageSession, sourceLocations = false): ReactNode[] {
+  const inline = (text: string, key: string, line: number) => renderInline(text, key, references, session, sourceLocations ? line : undefined);
   return blocks.map((block, index) => {
     const key = `b${index}`;
     switch (block.kind) {
@@ -209,19 +238,21 @@ function renderBlocks(blocks: Block[], references: ImageReferences, session?: Ma
         return createElement(
           `h${block.level}` as "h1",
           { key },
-          inline(block.text, key),
+          inline(block.text, key, block.line),
         );
       case "paragraph":
-        return createElement("p", { key }, inline(block.text, key));
+        return createElement("p", { key }, inline(block.text, key, block.line));
       case "code":
         // Diagram fences render as images; everything else stays code.
         if (["mermaid", "flowchart"].includes(block.lang.toLowerCase())) {
-          return createElement(MermaidBlock, { key, source: block.lines.join("\n") });
+          return createElement(MermaidBlock, { key, source: block.lines.join("\n"), sourceLine: sourceLocations ? block.line + 1 : undefined });
         }
         return createElement(
           "pre",
           { key, "data-lang": block.lang || undefined },
-          createElement("code", null, block.lines.join("\n")),
+          createElement("code", null, sourceLocations ? block.lines.map((line, index) => createElement("span", {
+            key: `${key}-l${index}`, "data-source-line": block.line + 1 + index,
+          }, line + (index < block.lines.length - 1 ? "\n" : ""))) : block.lines.join("\n")),
         );
       case "quote":
         return createElement(
@@ -231,7 +262,7 @@ function renderBlocks(blocks: Block[], references: ImageReferences, session?: Ma
             createElement(
               "p",
               { key: `${key}-q${i}` },
-              inline(line, `${key}-q${i}`),
+              inline(line, `${key}-q${i}`, block.line + i),
             ),
           ),
         );
@@ -243,7 +274,7 @@ function renderBlocks(blocks: Block[], references: ImageReferences, session?: Ma
             createElement(
               "li",
               { key: `${key}-i${i}` },
-              inline(item, `${key}-i${i}`),
+              inline(item, `${key}-i${i}`, block.itemLines[i]),
             ),
           ),
         );
@@ -261,7 +292,7 @@ function renderBlocks(blocks: Block[], references: ImageReferences, session?: Ma
                 createElement(
                   "th",
                   { key: `${key}-h${i}` },
-                  inline(cell, `${key}-h${i}`),
+                  inline(cell, `${key}-h${i}`, block.line),
                 ),
               ),
             ),
@@ -277,7 +308,7 @@ function renderBlocks(blocks: Block[], references: ImageReferences, session?: Ma
                   createElement(
                     "td",
                     { key: `${key}-r${r}c${c}` },
-                    inline(cell, `${key}-r${r}c${c}`),
+                    inline(cell, `${key}-r${r}c${c}`, block.line + 2 + r),
                   ),
                 ),
               ),
@@ -295,17 +326,19 @@ export function MarkdownView({
   source,
   onLinkClick,
   imageSession,
+  sourceLocations = false,
 }: {
   source: string;
+  sourceLocations?: boolean;
   onLinkClick?: (href: string) => void;
   imageSession?: MarkdownImageSession;
 }) {
   const parsed = extractImageReferences(source);
   const blockData = parseBlocks(parsed.source);
-  const blocks = renderBlocks(blockData, parsed.references, imageSession);
+  const blocks = renderBlocks(blockData, parsed.references, imageSession, sourceLocations);
   const hasRemoteImages = blockData.some((block) => {
     const texts = block.kind === "code" || block.kind === "rule" ? [] : "text" in block ? [block.text] : block.kind === "table" ? [...block.header, ...block.rows.flat()] : block.kind === "list" ? block.items : block.lines;
-    return texts.some((text) => markdownImageTokens(text, parsed.references).some((token) => /^https:\/\//i.test(token.source)));
+    return texts.some((text) => markdownImageTokens(text.replace(/\n/g, " "), parsed.references).some((token) => /^https:\/\//i.test(token.source)));
   });
   return (
     <div

@@ -26,6 +26,17 @@ describe("MarkdownView", () => {
     expect(container.querySelector("td")?.textContent).toBe("构建");
   });
 
+  it("source annotations preserve inline formatting across soft line breaks", () => {
+    const source = "首行 **加粗\n第二行** 与 `代码` [链接](https://example.com)";
+    const plain = render(<MarkdownView source={source} />);
+    const mapped = render(<MarkdownView source={source} sourceLocations />);
+    expect(mapped.container.textContent).toBe(plain.container.textContent);
+    expect(mapped.container.querySelector("strong")?.textContent).toBe("加粗 第二行");
+    expect(mapped.container.querySelector("strong [data-source-line='2']")?.textContent).toBe("第二行");
+    expect(mapped.container.querySelector("code [data-source-line='2']")?.textContent).toBe("代码");
+    expect(mapped.container.querySelector("a [data-source-line='2']")?.textContent).toBe("链接");
+  });
+
   it("escapes raw HTML instead of injecting it", () => {
     const { container } = render(
       <MarkdownView source={'<script>alert("x")</script>'} />,

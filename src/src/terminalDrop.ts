@@ -170,13 +170,8 @@ export function computeLineRange(
   return { startLine, endLine };
 }
 
-/**
- * Builds the reference text for a document selection: an `@path:Lx[-Ly]`
- * locator in Claude Code's documented `#start-end` line-range form, followed
- * by the selected text, so the agent sees both the source and the exact
- * content. Shell sessions get the single-line locator only — a multi-line
- * paste would execute commands there.
- */
+/** Builds a reference-only `@path:start[-end]` locator for a selection.
+ * Never paste the selected body: a multi-line paste could execute shell commands. */
 export function formatSelectionReference(opts: {
   path: string;
   startLine: number | null;
@@ -184,7 +179,7 @@ export function formatSelectionReference(opts: {
 }): string {
   // Reference-only: the agent opens the file itself, so quoting never pastes
   // the selected text. `@path:10-12` for a range, `@path:10` for one line,
-  // bare `@path` when the selection has no line info (preview).
+  // bare `@path` only when the caller has no line info.
   const location = opts.startLine
     ? `:${opts.startLine}${
         opts.endLine && opts.endLine !== opts.startLine ? `-${opts.endLine}` : ""
