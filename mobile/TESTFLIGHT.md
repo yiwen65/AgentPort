@@ -27,7 +27,24 @@ changed, and build 1 remained available. Actual tester installation of build 2
 and delivery of any email/push notification were not verified. No public App
 Store release was submitted; existing Hosts and Agents were untouched.
 
-## Latest verified upload (2026-09-11)
+## Latest verified upload (2026-10-16)
+
+Release **0.1.0 (3)**, built from source revision **a1a34e0**, was accepted by
+Apple at **19:53 CST**. Xcode reported `Upload succeeded`, `EXPORT SUCCEEDED`
+and `Uploaded package is processing`. Processing completion, export-compliance
+status, external beta review and tester availability have not been verified.
+No public App Store release or tester-group changes were submitted.
+
+Validation: all **941 Mobile tests** passed on the full rerun (the first run had
+one dashboard test failure; its isolated rerun also passed). The Release archive
+passed `codesign --verify --deep --strict`, bundle/version checks and the no-static-
+`.a`-resources guard. The initial archive failed because the active Rust toolchain
+lacked `llvm-tools`, needed by the existing Swift symbol-export workaround on
+Xcode 27. Installed that component, cleaned only the two affected Release plugin
+packages and rebuilt successfully. Generated tracked files were backed up and
+restored; existing Hosts, Agents and the desktop GUI were untouched.
+
+## Previous verified upload (2026-09-11)
 
 Release **0.1.0 (2)**, built from source revision **be4d486**, was uploaded
 successfully at **02:37 CST**. Xcode reported `Upload succeeded` / `EXPORT
