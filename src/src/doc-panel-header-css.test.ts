@@ -13,6 +13,24 @@ describe("document panel header tab strip", () => {
     expect(rule).toContain("flex: 0 0 auto");
   });
 
+  it("contains selection actions inside the editor column, not the whole window", () => {
+    const column = styles.match(/^\.doc-editor-column\s*\{([\s\S]*?)\n\}/m)?.[1];
+    expect(column).toContain("container: doc-editor / inline-size");
+    const header = styles.match(/^\.doc-panel-header\s*\{([\s\S]*?)\n\}/m)?.[1];
+    expect(header).toContain("flex-wrap: wrap");
+    const quote = styles.match(/^\.doc-quote\s*\{([\s\S]*?)\n\}/m)?.[1];
+    expect(quote).toContain("min-width: 0");
+    expect(quote).toContain("max-width: 100%");
+    expect(quote).toContain("text-overflow: ellipsis");
+    expect(quote).toContain("overflow: hidden");
+  });
+
+  it("moves Quote Selection to its own row in narrow editor columns", () => {
+    const compact = styles.match(/@container doc-editor \(max-width: 560px\)\s*\{\s*\.doc-quote\s*\{([\s\S]*?)\n  \}/)?.[1];
+    expect(compact).toContain("order: 1");
+    expect(compact).toContain("flex: 1 1 100%");
+  });
+
   it("truncates long file names inside their tab", () => {
     const name = styles.match(/^\.doc-tab-name\s*\{([\s\S]*?)\n\}/m)?.[1];
     expect(name).toContain("text-overflow: ellipsis");

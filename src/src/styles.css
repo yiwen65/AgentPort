@@ -3225,6 +3225,7 @@ body.is-resizing-pane {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  container: doc-editor / inline-size;
 }
 
 /* VSCode-like file tree column, docked to the panel's right edge so the
@@ -3614,6 +3615,7 @@ body.is-resizing-pane {
 
 .doc-panel-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
@@ -3964,8 +3966,21 @@ body.is-resizing-pane {
 }
 
 .doc-quote {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Use the editor column's width: the adjacent file tree and terminal splits
+   can leave it narrow even in a wide window. Keep utility actions reachable. */
+@container doc-editor (max-width: 560px) {
+  .doc-quote {
+    order: 1;
+    flex: 1 1 100%;
+  }
 }
 
 .doc-preview-host {
