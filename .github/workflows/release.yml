@@ -122,34 +122,16 @@ jobs:
       - name: Frontend dependencies
         run: npm --prefix src ci
 
-      # Mirrors the sidecar staging in scripts/build-macos.sh --universal:
-      # tauri-build resolves externalBin entries for the exact target triple,
-      # so both per-arch copies and the lipo'd file must exist before bundling.
-      - name: Stage universal sidecars
-        run: |
-          set -euo pipefail
-          mkdir -p src-tauri/binaries
-          for target in aarch64-apple-darwin x86_64-apple-darwin; do
-            cargo build --release -p agentport-host -p agentport-remote-bridge \
-              -p agentport-mosh-attach -p agentport-relay \
-              --features agentport-relay/connector --target "$target"
-          done
-          for binary in agentport-host agentport-remote-bridge agentport-mosh-attach agentport-connector; do
-            cp "target/aarch64-apple-darwin/release/$binary" \
-              "src-tauri/binaries/$binary-aarch64-apple-darwin"
-            cp "target/x86_64-apple-darwin/release/$binary" \
-              "src-tauri/binaries/$binary-x86_64-apple-darwin"
-            chmod +x "src-tauri/binaries/$binary-aarch64-apple-darwin" \
-              "src-tauri/binaries/$binary-x86_64-apple-darwin"
-            lipo -create \
-              "target/aarch64-apple-darwin/release/$binary" \
-              "target/x86_64-apple-darwin/release/$binary" \
-              -output "src-tauri/binaries/$binary-universal-apple-darwin"
-            chmod +x "src-tauri/binaries/$binary-universal-apple-darwin"
-          done
+      # Recovery runs build an immutable old tag, but use signing tooling from
+      # the workflow revision so fixes do not require moving the release tag.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .release-ci
+          sparse-checkout: scripts/prepare-ci-macos-signing.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
 
-      # Empty secrets still export empty variables, and Tauri treats a present
-      # APPLE_CERTIFICATE as "sign with it", so only export what exists.
       - name: Optional macOS Developer ID signing
         env:
           SKIP_SIGNING: ${{ inputs.skip_macos_signing }}
@@ -178,21 +160,43 @@ jobs:
               echo "__AGENTPORT_EOF__"
             } >> "$GITHUB_ENV"
           }
-          emit APPLE_CERTIFICATE "$INPUT_CERTIFICATE"
-          emit APPLE_CERTIFICATE_PASSWORD "$INPUT_CERTIFICATE_PASSWORD"
-          # With APPLE_CERTIFICATE present Tauri derives the signing identity
-          # from the imported certificate. Forwarding a separate
-          # APPLE_SIGNING_IDENTITY hard-fails the bundle unless it is a
-          # substring of that certificate's name ("does not match provided
-          # identity"), which is how a well-meaning but differently formatted
-          # secret broke the v0.1.2 build. Only use it when no certificate is
-          # imported (that identity must then already exist in the keychain).
-          if [ -z "$INPUT_CERTIFICATE" ]; then
+          if [ -n "$INPUT_CERTIFICATE" ]; then
+            bash .release-ci/scripts/prepare-ci-macos-signing.sh
+          else
             emit APPLE_SIGNING_IDENTITY "$INPUT_SIGNING_IDENTITY"
           fi
           emit APPLE_ID "$INPUT_APPLE_ID"
           emit APPLE_PASSWORD "$INPUT_APPLE_PASSWORD"
           emit APPLE_TEAM_ID "$INPUT_APPLE_TEAM_ID"
+
+      - name: Remove signing tooling checkout
+        run: rm -rf .release-ci
+
+      # Mirrors the sidecar staging in scripts/build-macos.sh --universal:
+      # tauri-build resolves externalBin entries for the exact target triple,
+      # so both per-arch copies and the lipo'd file must exist before bundling.
+      - name: Stage universal sidecars
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/binaries
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release -p agentport-host -p agentport-remote-bridge \
+              -p agentport-mosh-attach -p agentport-relay \
+              --features agentport-relay/connector --target "$target"
+          done
+          for binary in agentport-host agentport-remote-bridge agentport-mosh-attach agentport-connector; do
+            cp "target/aarch64-apple-darwin/release/$binary" \
+              "src-tauri/binaries/$binary-aarch64-apple-darwin"
+            cp "target/x86_64-apple-darwin/release/$binary" \
+              "src-tauri/binaries/$binary-x86_64-apple-darwin"
+            chmod +x "src-tauri/binaries/$binary-aarch64-apple-darwin" \
+              "src-tauri/binaries/$binary-x86_64-apple-darwin"
+            lipo -create \
+              "target/aarch64-apple-darwin/release/$binary" \
+              "target/x86_64-apple-darwin/release/$binary" \
+              -output "src-tauri/binaries/$binary-universal-apple-darwin"
+            chmod +x "src-tauri/binaries/$binary-universal-apple-darwin"
+          done
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -210,6 +214,14 @@ jobs:
           includeUpdaterJson: true
           # `app` is required: the macOS updater payload is the archived .app.
           args: --target universal-apple-darwin --bundles app,dmg
+
+      - name: Remove temporary signing keychain
+        if: always()
+        run: |
+          keychain="$RUNNER_TEMP/agentport-release.keychain-db"
+          if [ -f "$keychain" ]; then
+            security delete-keychain "$keychain"
+          fi
 
   linux:
     name: Linux (${{ matrix.name }})
