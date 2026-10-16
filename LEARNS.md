@@ -883,3 +883,11 @@
 - Why it failed: 该 wrapper 把底层接收失败统一映射成 MUX_ERROR；直接 public property-list-service API 显示真实 -5 timeout。旧 WIRFinalMessageKey 包装没有响应，直接 binary plist 返回合法 selector/argument。
 - Correct approach: 先区分低层错误与 framing；只查询目标 App，不能因它未广告就推断全局检查器关闭。快照恢复会直接设置 xterm mouse encoding，测实际 `_core.coreMouseService.activeEncoding`，不把 CSI 缓存当真值。
 - Verified by: 有界 direct 会话解码成功但目标 App 未广告；不改系统权限，改用默认关闭、内容为空的 App 时间戳采集，真机记录了 buffer/SGR/WebGL 与同步门控、输入/解析/render 事件。
+
+## `desktop device switching` — clearing selection does not unmount remembered panes
+
+- Wrong approach: Treat `setState({activeSessionId: null})` in device teardown as proof that the old terminal panes have unmounted before `releaseTerminal` runs.
+- Why it failed: `visiblePaneLayout(layout, null)` deliberately preserves the remembered layout. The old panes keep rendering while intentional release marks their runtime `detached=true`, so the real-disconnect warning appears during normal device connection/boot.
+- Correct approach: Render a neutral switching surface instead of the pane tree for the full `deviceSwitching` interval (including rollback). Keep persisted layouts unchanged and mount target panes only after boot finishes; do not suppress genuine disconnect warnings outside that interval.
+- Prevention: Test mounted PTY and structured split panes, the detached-runtime update while connect is pending, target boot before switch completion, and real disconnect visibility afterward—not just the final switch state or mocked release call count.
+- Verified by: Three component regressions failed before/passed after; frontend 1032/1032 and production build passed. Rebuilt signed Debug App showed only “Switching…” on the first local-to-remote switch with an active terminal; remote terminal attachment and return to local rendered normally.

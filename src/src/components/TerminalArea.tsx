@@ -1313,6 +1313,7 @@ function PaneTree({
 export default function TerminalArea() {
   const { t } = useTranslation(["session", "shell", "common"]);
   const terminalLayout = useStore((state) => state.terminalLayout);
+  const deviceSwitching = useStore((state) => state.deviceSwitching);
   const activeSessionId = useStore((state) => state.activeSessionId);
   const maximizedSessionId = useStore((state) => state.maximizedSessionId);
   const activeSession = useStore((state) =>
@@ -1341,7 +1342,14 @@ export default function TerminalArea() {
 
   return (
     <section className="workspace" aria-label={t("shell:ui.workspace.label")}>
-      {layout.root ? (
+      {/* Clearing activeSessionId does not remove the remembered pane layout.
+          Unmount it for the entire switch/rollback: intentional detach must not
+          look like a Host failure or mount a target terminal before boot ends. */}
+      {deviceSwitching ? (
+        <div className="workspace-empty" role="status" aria-live="polite">
+          <div className="empty-state">{t("shell:ui.topBar.devices.switching")}</div>
+        </div>
+      ) : layout.root ? (
         <div className={`term-body${docExpanded ? " doc-expanded" : ""}`}>
           <div className="term-stack">
             <div

@@ -104,6 +104,7 @@ import {
 } from "../paneSessionDrag";
 import { singletonPaneLayout, splitPane } from "../paneLayout";
 import { getState, patchSession, setState } from "../store";
+import { i18n } from "../i18n";
 import type { SessionView } from "../types";
 import TerminalArea from "./TerminalArea";
 import { attachHandle, restoreDesktopTerminalSize } from "../terminals";
@@ -194,6 +195,7 @@ function installLayout() {
       worktrees: [],
     }],
     activeSessionId: ptyB.id,
+    deviceSwitching: false,
     terminalLayout,
     terminalLayoutGroups: [terminalLayout],
     maximizedSessionId: null,
@@ -427,6 +429,60 @@ describe("TerminalArea recursive panes", () => {
       "outer",
       expect.any(Number),
     );
+  });
+
+  it("unmounts old PTY and structured panes before intentional device detach can show a disconnect warning", () => {
+    const view = render(<TerminalArea />);
+    const layoutBeforeSwitch = getState().terminalLayout;
+    expect(view.container.querySelectorAll(".session-pane-leaf")).toHaveLength(3);
+
+    // switchTeardown clears activeSessionId, but the remembered layout still
+    // contains the old device's panes. releaseTerminal then marks them detached.
+    act(() => setState({ deviceSwitching: true, activeSessionId: null }));
+    expect(view.container.querySelector(".session-pane-leaf")).toBeNull();
+    expect(view.queryByTestId(`pi-${rpc.id}`)).toBeNull();
+    expect(view.queryByTestId("shared-document-panel")).toBeNull();
+    act(() => setState({ runtime: {
+      [ptyA.id]: { attached: false, detached: true },
+      [ptyB.id]: { attached: false, detached: true },
+    } as never }));
+
+    expect(view.queryByText(i18n.t("session:ui.disconnected.checking"))).toBeNull();
+    expect(view.getByRole("status").textContent).toBe(i18n.t("shell:ui.topBar.devices.switching"));
+    expect(getState().terminalLayout).toBe(layoutBeforeSwitch);
+    expect(getState().terminalLayoutGroups).toEqual([layoutBeforeSwitch]);
+  });
+
+  it("does not mount target panes until device boot completes, then mounts and attaches them", async () => {
+    setState({ deviceSwitching: true });
+    const view = render(<TerminalArea />);
+    expect(mountTerminalMock).not.toHaveBeenCalled();
+    act(() => setState({
+      activeSessionId: ptyOutside.id,
+      terminalLayout: singletonPaneLayout(ptyOutside.id),
+      runtime: {},
+    }));
+    expect(view.container.querySelector(".session-pane-leaf")).toBeNull();
+    expect(attachHandle).not.toHaveBeenCalled();
+
+    act(() => setState({ deviceSwitching: false }));
+    expect(view.container.querySelector(`[data-pane-session-id="${ptyOutside.id}"]`)).not.toBeNull();
+    await waitFor(() => expect(attachHandle).toHaveBeenCalledWith(ptyOutside.id));
+    expect(view.queryByText(i18n.t("shell:ui.topBar.devices.switching"))).toBeNull();
+    expect(view.queryByText(i18n.t("session:ui.disconnected.checking"))).toBeNull();
+  });
+
+  it("still warns about a real disconnect after switching or rollback finishes", () => {
+    setState({
+      deviceSwitching: true,
+      activeSessionId: ptyA.id,
+      terminalLayout: singletonPaneLayout(ptyA.id),
+      runtime: { [ptyA.id]: { attached: false, detached: true } } as never,
+    });
+    const view = render(<TerminalArea />);
+    expect(view.queryByText(i18n.t("session:ui.disconnected.checking"))).toBeNull();
+    act(() => setState({ deviceSwitching: false }));
+    expect(view.getByText(i18n.t("session:ui.disconnected.checking"))).toBeTruthy();
   });
 
   it("keeps the legacy single-pane surface chrome-free", () => {
