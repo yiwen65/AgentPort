@@ -88,6 +88,14 @@ describe("mobile semantic design system", () => {
     }
   });
 
+  it("styles the host terminal text action before the lazy terminal stylesheet loads", () => {
+    const entry = styles.match(/\.host-actions \.generic-terminal-entry \{([^}]+)\}/)?.[1] ?? "";
+    expect(entry).toContain("width: auto;");
+    expect(entry).toContain("white-space: nowrap;");
+    expect(entry).toContain("flex: 0 0 auto;");
+    expect(readFileSync("src/features/generic-terminal/generic-terminal.css", "utf8")).not.toContain(".host-actions .generic-terminal-entry");
+  });
+
   it("allows global Active rows to shrink inside the mobile scroller with long source names", () => {
     expect(dashboardStyles).toMatch(/\.session-dashboard \.active-agent-list\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
     expect(dashboardStyles).toMatch(/\.active-agent-list \.session-row-title\s*\{[^}]*min-width:\s*0;/s);

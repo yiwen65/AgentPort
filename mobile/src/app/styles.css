@@ -69,6 +69,8 @@ h1 { margin: 0; font-size: clamp(27px, 8vw, 38px); letter-spacing: -0.045em; }
 .host-card { flex: 1; min-width: 0; min-height: 44px; border: 0; background: transparent; padding: 3px 0; display: flex; align-items: center; gap: 9px; text-align: left; }
 .host-actions { display: flex; flex: 0 0 auto; gap: 2px; }
 .host-actions button { display: grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 12px; padding: 11px; background: transparent; }
+/* This entry is visible before the lazy generic-terminal route loads its CSS. */
+.host-actions .generic-terminal-entry { flex: 0 0 auto; min-width: 44px; min-height: 44px; width: auto; padding: 4px 8px; font-size: 13px; white-space: nowrap; }
 .host-actions button:active:not(:disabled) { background: var(--panel-strong); }
 .host-actions svg { width: 20px; height: 20px; }
 .host-connection-action { color: var(--muted); }

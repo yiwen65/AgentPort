@@ -23,7 +23,7 @@ try {
       import {useMobileTerminalAppearance} from './src/terminal/terminalAppearance';
       function Appearance({children}){useApplyAppAppearance();const [,app]=useAppAppearance();const [,terminal]=useMobileTerminalAppearance();window.changeFixtureTheme=mode=>{app(mode);terminal({mode})};return children}
       import {Terminal} from '@xterm/xterm'; import {i18n} from './src/i18n'; import './src/app/styles.css';
-      i18n.changeLanguage('en-US');
+      i18n.changeLanguage('en-US'); window.changeFixtureLanguage=language=>i18n.changeLanguage(language);
       const open=Terminal.prototype.open;Terminal.prototype.open=function(...args){window.term=this;return open.apply(this,args)};
       window.calls=[];window.connections=new Map();window.moshFails=true;window.didClose=false;
       window.records=[{id:'first',profileId:'fixture',name:'Persistent work',tmuxSession:'agentport_mobile_fixture_first',createdAt:'1'}];
@@ -125,6 +125,25 @@ try {
   await closeShell();await click('.generic-terminal-end');await until(`document.querySelector('[role="dialog"]')`);await click('[role="dialog"] .danger-button');await until('records.length===0');
   await click('.generic-terminal-back');await until('didClose');
   await evaluate(`changeFixtureTheme('dark');showHostManager();true`);await until(`document.querySelector('.host-row')&&document.documentElement.dataset.appTheme==='dark'`);
+  // The host list is available before the lazy terminal route loads its CSS.
+  // Remove that route's stylesheet to reproduce a freshly paired host list.
+  await evaluate(`document.querySelector('link[rel="stylesheet"]').remove();
+    const style=document.createElement('style');style.textContent=${JSON.stringify(await readFile(resolve(root, 'src/app/styles.css'), 'utf8'))};document.head.append(style);
+    document.querySelector('.host-list').style.marginInline='24px';true`);
+  for (const width of [320, 390]) for (const language of ['zh-CN', 'en-US']) {
+    await call('Emulation.setDeviceMetricsOverride',{width,height:844,deviceScaleFactor:1,mobile:true});
+    await evaluate(`changeFixtureLanguage(${JSON.stringify(language)});true`);await wait(80);
+    const entries=await evaluate(`Array.from(document.querySelectorAll('.generic-terminal-entry')).map(button=>{
+      const row=button.closest('.host-row').getBoundingClientRect(),box=button.getBoundingClientRect();
+      const range=document.createRange();range.selectNodeContents(button);const text=range.getBoundingClientRect();
+      return {nowrap:getComputedStyle(button).whiteSpace==='nowrap',inside:text.top>=box.top-1&&text.bottom<=box.bottom+1&&text.left>=box.left-1&&text.right<=box.right+1,
+        contained:box.right<=row.right&&box.bottom<=row.bottom,target:box.width>=44&&box.height>=44};
+    })`);
+    assert.ok(entries.length>0);
+    assert.ok(entries.every(entry=>entry.nowrap&&entry.inside&&entry.contained&&entry.target),`Host terminal action overflow (${width}/${language}): ${JSON.stringify(entries)}`);
+    await screenshot(`host-entry-${width}-${language}`);
+  }
+  await call('Emulation.setDeviceMetricsOverride',{width:320,height:568,deviceScaleFactor:1,mobile:true});
   assert.ok(await evaluate(`document.documentElement.scrollWidth<=320`),'Host dual-entry actions must fit narrow viewport');
   await screenshot('host-dual-entry-narrow');await click('.host-row .host-card');await until(`document.querySelector('.form-grid select:nth-of-type(1)')||document.querySelector('.form-grid input[type="number"]')`);
   assert.equal(await evaluate(`Array.from(document.querySelectorAll('.form-grid select')).at(-1).options.length`),2,'Jump picker excludes self and Relay');
