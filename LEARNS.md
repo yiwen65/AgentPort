@@ -869,6 +869,7 @@
 - Correct approach: Set Android `adjustResize` and apply `WindowInsetsCompat.Type.ime()` bottom padding to the content parent, preserving normal edge-to-edge layout when the IME closes.
 - Prevention: Run `node mobile/scripts/test-android-terminal-keyboard.mjs` against a debuggable emulator App. Assert native viewport shrink, shortcut bounds, dismissal and reopen; headless Chrome's emulated viewport cannot verify Android IME inset delivery.
 - Verified by: API 29 viewport changed 851→554 px after the repair, and API 36 changed 851→548 px; shortcut rows were visibly above the native keyboard and both open/dismiss/reopen checks passed.
+- Fullscreen diagnostic trap: Android's first-run `Viewing full screen` hint intercepted taps during immersion work. A missing viewport shrink was mistaken for broken IME delivery, prompting unnecessary visible-frame/PopupWindow experiments. Those changes were removed; after acknowledging the visible hint, the original inset handler passed API 29 open/dismiss/reopen under fullscreen. Use the script's `--immersive` variant, assert native `mInputShown=true`, and inspect a fresh screenshot for system/input-method tutorials before changing inset code.
 
 ## `Android project cards` — unsupported CSS inside var() can erase a whole surface
 

@@ -1,13 +1,16 @@
 /// iOS fullscreen geometry alone does not hide the status bar in Tao. Update
 /// the app-owned TaoUIViewController preference instead (not UIApplication's
-/// deprecated global status-bar API). Other platforms retain their system UI.
+/// deprecated global status-bar API). Android uses the route's native display
+/// plugin to hide system bars without changing IME visibility.
 #[tauri::command]
 pub async fn mobile_set_terminal_immersive(
+    app: tauri::AppHandle,
     webview: tauri::WebviewWindow,
     immersive: bool,
 ) -> Result<(), String> {
     #[cfg(target_os = "ios")]
     {
+        let _ = &app;
         use objc2::{msg_send, runtime::AnyObject, sel};
         let (send, receive) = tokio::sync::oneshot::channel();
         // with_webview executes on the UI thread and keeps the native view alive.
@@ -33,9 +36,17 @@ pub async fn mobile_set_terminal_immersive(
         }).map_err(|error| error.to_string())?;
         receive.await.map_err(|error| error.to_string())?
     }
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(target_os = "android")]
     {
-        let _ = (webview, immersive);
+        let _ = &webview;
+        use tauri::Manager;
+        app.state::<tauri_plugin_screen_rotation::ScreenRotation<tauri::Wry>>()
+            .set_immersive(immersive)
+            .await
+    }
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    {
+        let _ = (app, webview, immersive);
         Ok(())
     }
 }

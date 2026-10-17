@@ -1,6 +1,7 @@
 // Native IME regression, using an isolated terminal (no Host or Session).
 // Requires a running emulator with a debuggable AgentPort installed.
-// Run: node mobile/scripts/test-android-terminal-keyboard.mjs
+// Run: node mobile/scripts/test-android-terminal-keyboard.mjs [--immersive]
+// Acknowledge Android's first-run fullscreen hint before the immersive check.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -67,6 +68,10 @@ try {
     outfile: resolve(dir, 'fixture.js'),
     define: { 'process.env.NODE_ENV': '"production"', 'import.meta.env': '{}' },
   });
+  // Exercise IME insets with system bars hidden as well as the default mode.
+  if (process.argv.includes('--immersive')) {
+    await evaluate("window.__TAURI_INTERNALS__.invoke('mobile_set_terminal_immersive', { immersive: true })");
+  }
   await call('Page.enable'); await call('Page.navigate', { url: 'about:blank' });
   await pause(300);
   await evaluate(`document.head.innerHTML='<meta name="viewport" content="width=device-width,initial-scale=1">';
@@ -92,8 +97,12 @@ try {
       if (closed.height - opened.height > 80 && !opened.keysHidden && opened.keyboardHidden && opened.keys.bottom <= opened.height + 1) break;
     }
     console.log(JSON.stringify({ closedHeight: closed.height, opened }, null, 2));
-    await writeFile(resolve(dir, 'opened.png'), execFileSync(adb, ['-s', serial, 'exec-out', 'screencap', '-p']));
+    const screenshot = execFileSync(adb, ['-s', serial, 'exec-out', 'screencap', '-p']);
+    await writeFile(resolve(dir, 'opened.png'), screenshot);
+    if (process.env.AGENTPORT_TERMINAL_SCREENSHOT) await writeFile(process.env.AGENTPORT_TERMINAL_SCREENSHOT, screenshot);
     assert.match(opened.focused, /xterm-helper-textarea/);
+    assert.match(shell('shell', 'dumpsys', 'input_method'), /mInputShown=true/,
+      'Native IME is not visible; check fullscreen tutorial overlays or hardware keyboard configuration');
     assert.ok(closed.height - opened.height > 80, 'Native IME did not shrink the WebView viewport');
     assert.equal(opened.keysHidden, false);
     assert.ok(opened.keys.height >= 44 && opened.keys.bottom <= opened.height + 1, 'Shortcut row is covered by IME');
@@ -114,13 +123,11 @@ try {
   // the previously hidden entry has painted at its restored coordinates.
   await pause(400);
   tap(await state()); await expectOpen();
-  if (process.env.AGENTPORT_TERMINAL_SCREENSHOT) {
-    await writeFile(process.env.AGENTPORT_TERMINAL_SCREENSHOT, execFileSync(adb, ['-s', serial, 'exec-out', 'screencap', '-p']));
-  }
   console.log('PASS: native keyboard, shortcut row, dismissal and reopen');
 } finally {
   if (ws?.readyState === WebSocket.OPEN) {
     if (/mInputShown=true/.test(shell('shell', 'dumpsys', 'input_method'))) shell('shell', 'input', 'keyevent', 'KEYCODE_BACK');
+    // Reloading the app restores its dashboard route and native chrome policy.
     if (originalUrl && call) await call('Page.navigate', { url: originalUrl }).catch(() => undefined);
     ws.close();
   }
