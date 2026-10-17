@@ -243,7 +243,7 @@
 - Inputs and prerequisites: 用户提供有效专用访问方式，或明确确认其他审核说明方案。
 - Scope or files: App Review 登录/Notes；不得把仅本机截图授权扩大为公网隧道、主账号 SSH 或长期服务部署。
 - Expected output: 经验证的专用审核访问，或用户确认并清楚说明的其他方式。
-- Dependencies: None.
+- Dependencies: T-011.
 - Execution steps:
   1. 保留旧网址不可达的证据，不填写失效凭据。
   2. 在用户明确指定可用入口/授权后验证并保存，最终提审仍需单独确认。
@@ -252,8 +252,28 @@
 - Verification method:
   - 入口/凭据/端到端检查或已确认审核说明的保存读回。
 - Validation evidence: 旧 HTTPS 入口 DNS 失败；用户明确选择仅在本机截图，不授权公网审核演示，后续访问方式另定。
-- Blocker: 缺少有效的正式审核访问方式，且当前无公网开放授权。
-- Unblock condition: 用户提供可用专用服务，或明确决定可接受的替代审核说明/访问方案。
+- Blocker: T-011 已完成内网环境与原生 SSH 连接，但尚无可信公网 HTTPS/WSS 域名和开放授权，Apple 不能访问 Tailscale 私网或 review.invalid 占位地址。
+- Unblock condition: 用户批准公网方案并提供所需域名/证书或隧道条件；验证真实公网配对、重连和撤销后再填写审核入口。
+
+### [x] T-011 — 新审核机内网隔离环境
+- Status: done
+- Owner: coordinator
+- Objective: 在用户指定的 Tailscale Linux 电脑准备独立审核演示实例，先验证内网访问，不开放公网。
+- Inputs and prerequisites: 用户授权 SSH 检查和隔离部署，并明确选择先内网准备；提供的管理凭据仅用于操作，不转交审核员或记录值。
+- Scope or files: 独立任务目录、Docker image/container/volume/internal network 和仅本机 loopback 的专用 SSH 隧道；保留已有审核容器及业务服务。
+- Expected output: 当前版本的独立演示环境、合成数据、受保护的内网测试入口和验证结果；公网入口仍另行确认。
+- Dependencies: None.
+- Execution steps:
+  1. 只读检查系统、现有服务和容器边界，不触碰旧实例。
+  2. 在新目录构建当前代码，创建仅任务所有的隔离容器和私有认证材料。
+  3. 验证容器隔离、连接与真实终端/文件数据流，说明尚未验证的公网/真机边界。
+- Acceptance criteria:
+  - 不开放公网、不泄露主账号凭据、不影响旧 Host/Connector 或业务；演示数据独立，实际连接及终端输出可证。
+- Verification method:
+  - 容器 inspect、监听/挂载/权限检查、认证和 Bridge/Relay 实测、部署前后旧实例身份对比。
+- Validation evidence: 远端 Ubuntu 24.04 x86_64，Docker 29.4.1/Rust 1.94.1。由 b70f4aa 源码快照构建当前 CLI/Host/Bridge/Connector/Relay；初次构建因旧进程环境中的失效代理失败，仅本次命令清除代理后成功，未改系统代理。新实例 agentsport-appstore-review-20261018，独立 image/volume/internal network，UID1550/read-only/cap-drop ALL/no-new-privileges/1CPU/1GiB/pids256，只挂专用 HOME，无主账号 HOME/Docker socket/SSH agent/provider secrets。Docker internal network 未实际发布 HostConfig 的端口，改用任务 SSH 隧道从本机 loopback 直达容器私网 IP；外网出口探针失败，未建任何 Serve/Funnel。网页 wrong Host400/匿名401/认证200 no-store/wrong Origin与CSRF403/合法发码200；SSH 拒绝错误密码、交互 Shell、任意 exec、转发。真实 Hello/project.list/session.list/attach/input/poll/detach 全部返回完成 Result，PTY 输出 REVIEW_REMOTE_OK 且独立 HOME/无个人秘密变量断言通过。专用 iPhone 模拟器通过原生 UI 保存独立 SSH 测试认证，核对 TOFU 后连接新 Linux Review，打开 Review Terminal；XCTest 通过且原生截图确认输出。合成 README.md/app.py/test_app.py 与 3 个真实测试已准备；gateway 测试 macOS/Linux 各25/25通过。新容器保持运行且配置 unless-stopped；四个原有容器 ID/PID/启动时间/restart count 全部不变，旧 live Session 未中断。私有操作说明位于本机 linux-20261018/README.md 和远端 ~/agentport-appstore-20261018/README.md。此接受只证明内网 SSH/网页/Connector；占位 HTTPS/WSS 域名 review.invalid 不可用于 Apple，未测试公网配对、真机跨网或整机重启。
+- Blocker: None.
+- Unblock condition: None.
 
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
@@ -294,9 +314,13 @@
 
 - 2026-10-18: 用户确认重新登录，T-009 从 blocked 恢复 in_progress。仅通过 public-browser 上传六张截图；每类首次出现重复条目，经确认逐项移除本次重复项，reload 后核实 iPhone/iPad 各 3 of 10，文件名及顺序均正确，自动持久化且 Save disabled，T-009 done。未提交审核；T-010/T-007 仍 blocked。
 
+- 2026-10-18: 用户提供另一台 Tailscale 电脑的 SSH 管理入口，并明确确认先内网准备隔离环境、公网方案另行确认。新增 T-011 in_progress；发现旧审核容器有 live Session，明确保留，另建实例，不开放公网。
+
+- 2026-10-18: T-011 独立 Linux 环境已完成；新容器/数据卷/internal network 保留运行，通过仅本机 SSH 隧道完成网页和真实 Bridge/PTY 验收，并用专用 iPhone 模拟器原生 UI 连接 Review Terminal。macOS/Linux gateway 各25/25、演示 Python3/3通过；四个旧容器身份/进程/启动时间未变，Serve/Funnel 仍无配置。未用用户 sudo 密码；未提供主账号凭据给演示环境。T-011 done，T-010 继续等待可信公网 HTTPS/WSS 方案与开放确认，T-007 未提交。
+
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: partial
 - Evidence: T-001/T-002/T-003/T-004/T-005/T-006/T-008 已验证；Mobile 949/949。隐私政策/标签、build 6、版权/联系人、4+ 年龄与 Content Rights No 均已保存读回。本机真实 SSH 演示及六张原生截图已验证尺寸和内容，任务自有 Host/PTY 进程树已退出，loopback 端口已关闭。
-- Limitations: T-009 六张截图已上传并刷新读回；T-010 的正式审核访问仍未确定；T-007 等待前置门禁和最终授权。Ready to Submit 不是审核通过或公开发布。未提交审核、未正式发布、未覆盖安装用户手机。
+- Limitations: T-009 六张截图已上传并刷新读回，T-011 已完成内网隔离部署与原生 SSH 验收；T-010 仍缺可信公网 HTTPS/WSS 入口、实际配对与跨网验证；T-007 等待前置门禁和最终授权。Ready to Submit 不是审核通过或公开发布。未提交审核、未正式发布、未覆盖安装用户手机。

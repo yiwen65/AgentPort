@@ -945,3 +945,11 @@
 - Correct approach: In the isolated simulator runner, load the synthetic value privately into UIPasteboard, then use the field's native Paste menu and explicit Allow Paste if shown. Store it through the App's actual credential button before saving the host; clear the pasteboard afterward.
 - Prevention: Never pass real credentials to XCTest typeText. Keep fixture/build artifacts private, avoid printing secure-field trees, and invalidate the fixture plus remove its credential-bearing logs after capture.
 - Verified by: AgentsPort App Store screenshot run: native Paste and secure-store action produced a real SSH connection with matching TOFU fingerprint on the dedicated iPhone/iPad; no password argument was needed in subsequent UI activity logs.
+
+## `review Docker internal network` — configured port bindings are not a live listener
+
+- Wrong approach: Target the requested host loopback `-p` ports after attaching the new review container to a Docker `--internal` bridge, treating HostConfig.PortBindings as proof of publication.
+- Why it failed: On the observed Docker 29.4.1 host, HostConfig retained the requested bindings but NetworkSettings.Ports contained null entries, `docker port` was empty and no host listener existed.
+- Correct approach: Keep the internal network for the internal-only demo; point the authorized operator SSH tunnel at the observed dedicated container IP/port, binding the client end only to 127.0.0.1. No public route or global Docker-network change is needed.
+- Prevention: Check actual NetworkSettings.Ports, `docker port`, listeners and a connection probe; do not weaken isolation merely to make a configured binding appear live. Re-read the container IP after recreation.
+- Verified by: The new isolated review portal and Bridge worked through that SSH tunnel, including native iPhone App connection and real PTY output; external egress remained blocked and old container identities were unchanged.
