@@ -19,13 +19,16 @@
 .activity-device-error > button { min-width: 44px; min-height: 44px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--panel); color: var(--text); }
 .activity-device-error > button:disabled { opacity: .5; }
 .session-dashboard .dense-project-tree { padding-top: 12px; }
-.session-dashboard .project-group { margin: 0 14px 13px; border: 0; border-radius: 24px; background: linear-gradient(150deg, color-mix(in srgb, var(--project-color, var(--accent)) 16%, var(--panel)), var(--panel) 58%); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--project-color, var(--accent)) 14%, transparent), 0 12px 28px #00000014; }
-.session-dashboard .project-group[data-project-tone="0"] { --project-color: #c8f16d; }
-.session-dashboard .project-group[data-project-tone="1"] { --project-color: #83d8ae; }
-.session-dashboard .project-group[data-project-tone="2"] { --project-color: #f7c66a; }
-.session-dashboard .project-group[data-project-tone="3"] { --project-color: #7ed6df; }
-.session-dashboard .project-group[data-project-tone="4"] { --project-color: #a8b8ff; }
-.session-dashboard .project-group[data-project-tone="5"] { --project-color: #d7a0e8; }
+/* Alpha-composite the tint over the panel instead of color-mix(): older
+   Android WebViews otherwise invalidate the entire background/shadow at
+   computed-value time, even if a fallback declaration appears before it. */
+.session-dashboard .project-group { --project-color: rgb(var(--project-rgb, 113, 230, 209)); margin: 0 14px 13px; border: 0; border-radius: 24px; background: linear-gradient(150deg, rgba(var(--project-rgb, 113, 230, 209), .16), transparent 58%), var(--panel); box-shadow: inset 0 1px 0 rgba(var(--project-rgb, 113, 230, 209), .14), 0 12px 28px #00000014; }
+.session-dashboard .project-group[data-project-tone="0"] { --project-rgb: 200, 241, 109; }
+.session-dashboard .project-group[data-project-tone="1"] { --project-rgb: 131, 216, 174; }
+.session-dashboard .project-group[data-project-tone="2"] { --project-rgb: 247, 198, 106; }
+.session-dashboard .project-group[data-project-tone="3"] { --project-rgb: 126, 214, 223; }
+.session-dashboard .project-group[data-project-tone="4"] { --project-rgb: 168, 184, 255; }
+.session-dashboard .project-group[data-project-tone="5"] { --project-rgb: 215, 160, 232; }
 .session-dashboard .project-group > header { min-height: 66px; gap: 8px; padding: 9px 11px; }
 .session-dashboard .project-toggle { min-height: 48px; gap: 10px; padding-inline: 0; letter-spacing: -.015em; }
 .session-dashboard .project-toggle .ui-icon { flex-shrink: 0; }

@@ -77,6 +77,17 @@ describe("mobile semantic design system", () => {
     expect(styles).not.toContain(".session-row-meta");
   });
 
+  it("keeps project card surfaces valid without CSS color-mix on older Android WebViews", () => {
+    const card = dashboardStyles.match(/\.session-dashboard \.project-group \{([^}]+)\}/)?.[1] ?? "";
+    expect(card).not.toContain("color-mix(");
+    expect(card).toContain("rgba(var(--project-rgb");
+    expect(card).toMatch(/background:[^;]*linear-gradient[^;]*var\(--panel\)/);
+    expect(card).toContain("box-shadow: inset 0 1px 0 rgba(");
+    for (let tone = 0; tone < 6; tone++) {
+      expect(dashboardStyles).toMatch(new RegExp(`\\[data-project-tone="${tone}"\\] \\{ --project-rgb: \\d+, \\d+, \\d+; \\}`));
+    }
+  });
+
   it("allows global Active rows to shrink inside the mobile scroller with long source names", () => {
     expect(dashboardStyles).toMatch(/\.session-dashboard \.active-agent-list\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
     expect(dashboardStyles).toMatch(/\.active-agent-list \.session-row-title\s*\{[^}]*min-width:\s*0;/s);

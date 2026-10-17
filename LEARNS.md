@@ -870,6 +870,15 @@
 - Prevention: Run `node mobile/scripts/test-android-terminal-keyboard.mjs` against a debuggable emulator App. Assert native viewport shrink, shortcut bounds, dismissal and reopen; headless Chrome's emulated viewport cannot verify Android IME inset delivery.
 - Verified by: API 29 viewport changed 851→554 px after the repair, and API 36 changed 851→548 px; shortcut rows were visibly above the native keyboard and both open/dismiss/reopen checks passed.
 
+## `Android project cards` — unsupported CSS inside var() can erase a whole surface
+
+- Wrong approach: Using `color-mix()` with custom properties as the only dashboard card background and shadow.
+- Why it failed: WebView 91 accepts the declaration's variable-containing token stream, then invalidates it at computed-value time because `color-mix()` is unsupported. The earlier plain panel background is not restored; background becomes transparent and shadow becomes none.
+- Recognition signal: Project names/icons remain correctly placed, but rounded card surfaces disappear; `CSS.supports('background', 'color-mix(in srgb, red, blue)')` is false and computed card background/shadow are none.
+- Correct approach: Composite an `rgba(var(--project-rgb), .16)` gradient over `var(--panel)` and use the same RGB channels for the .14-alpha highlight. This preserves project colors and both themes without requiring the newer color function.
+- Prevention: Keep `mobile-design-system-css.test.ts` guarding the legacy-compatible card declarations; inspect computed styles and screenshots on an old Android WebView, not only modern desktop Chrome. A preceding fallback alone does not fix computed-value invalidation.
+- Verified by: API 29/WebView 91 reproduced transparent cards in both themes; after the repair all six fixture cards had valid gradients/shadows and 24 px radii, light/dark screenshots rendered the surfaces, and the CSS suite passed 13/13.
+
 ## `mobile dist embedding` — serialize Vite builds with native archives
 
 - Wrong approach: Run `npm run build` in parallel with an iOS archive whose beforeBuildCommand also regenerates `mobile/dist`.
