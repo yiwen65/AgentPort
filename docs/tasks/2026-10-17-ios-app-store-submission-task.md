@@ -40,8 +40,9 @@
 - Assumption: 沿用本机现有付费开发团队、Xcode 登录与现有 App ID；构建前从既有 profile 核实，不能替换签名身份或提交真实团队值。
 - Resolved: 审核联系人四项已复用同一 App 原有 TestFlight 信息并核实，版权署名已按用户确认保存；电话不公开、不写入本任务文档。
 - Resolved: 用户确认 Relay 自配、开发者不收集信息，并批准以既有审核姓名/邮箱公开隐私政策。正式政策已推送 GitHub、匿名 HTTP 200 且原文一致；App Privacy URL 已保存，Data Not Collected 隐私标签已 Publish 并刷新见 Published 提示。
-- Open question: 年龄分级与内容权利尚需用户确认。标准加密/不向法国分发已确认并保存；当前新构建为 1.0.0(6)，已核实并绑定正式草稿。
-- Open question: 已确认 iPhone/iPad 截图槽为空，旧隔离审核入口不可达；需要有效演示入口或用户提供合格素材，不可公开个人会话截图。
+- Resolved: 用户批准 Content Rights No，并在 Apple 算出 4+ 后明确批准保留 4+ 保存；未选择 Made for Kids。两项已 Save/reload 读回。标准加密/不向法国分发已确认并保存；1.0.0(6) 已绑定正式草稿。
+- Resolved: 本机隔离演示已通过真实 SSH/TOFU 连接；iPhone/iPad 各三张原生截图已生成并检查，未使用个人会话。
+- Open question: public-browser 当前访问 Distribution 被重定向登录页（authResult=FAILED），需用户重新登录才能上传截图。正式审核访问方式仍由 T-010 单独决定。
 
 <!-- task-doc-section:acceptance-criteria -->
 ## Acceptance criteria
@@ -157,8 +158,8 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-006 — 审核联系与法律声明
-- Status: blocked
+### [x] T-006 — 审核联系与法律声明
+- Status: done
 - Owner: coordinator
 - Objective: 补齐审核联系人、版权和用户确认的年龄/内容权利/出口声明。
 - Inputs and prerequisites: 既有联系资料、用户合规回答；隔离审核访问和截图独立由 T-009 负责。
@@ -172,9 +173,9 @@
   - 所属联系与法律字段得到明确确认并保存读回，不自批准 T-009 的网站或素材。
 - Verification method:
   - 页面字段、问卷定义与状态读回；必要时以源码事实提出候选答案。
-- Validation evidence: 正式审核四项联系人已从既有 TestFlight 资料复用并 Save/reload 匹配；没有公开电话。用户确认后，版权 2026 jin wen 与正式版本绑定 1.0.0 build 6 均 Save/reload 核实。build 6 选择额外标准加密、法国 No 后 Save，TestFlight 从 Missing Compliance 变为 Ready to Submit；未改 Info.plist 为不加密、未动 build 5。隐私政策/标签已公开。Content Rights 对话框只读查看后 Cancel，未勾选 Yes/No；Age Ratings Step 1 定义已查看但未回答，Cancel 后确认关闭。iPhone/iPad 截图仍为空，审核登录/说明未填失效入口或专用密码。
-- Blocker: 年龄分级与内容权利仍需要用户确认；不能把版权署名确认等同于对第三方内容拥有必要权利的声明。T-009 独立处理网站与截图阻碍。
-- Unblock condition: 用户确认相应功能和内容权利声明，然后填写并保存核实。
+- Validation evidence: 正式审核四项联系人已从既有 TestFlight 资料复用并 Save/reload 匹配；没有公开电话。用户确认后，版权 2026 jin wen 与正式版本绑定 1.0.0 build 6 均 Save/reload 核实。build 6 选择额外标准加密、法国 No 后 Save，TestFlight 从 Missing Compliance 变为 Ready to Submit；未改 Info.plist 为不加密、未动 build 5。隐私政策/标签已公开。用户后续明确批准 Content Rights No，已选择 DOES_NOT_USE_THIRD_PARTY_CONTENT、Done/Save/reload 核实 No。年龄问卷按已批准的实际用途填写，Apple 计算 4+ 后再次取得用户“保留4+并保存”确认，选择 Not Applicable（不是 Made for Kids），保存并刷新核实 Global rating of 4+ with regional exceptions。审核登录/说明未填失效入口或专用密码。
+- Blocker: None.
+- Unblock condition: None.
 
 ### [ ] T-007 — 最终核对和提交边界
 - Status: blocked
@@ -183,7 +184,7 @@
 - Inputs and prerequisites: 前置任务输出及明确提审/发布确认。
 - Scope or files: App Store Connect 正式审核流程。
 - Expected output: 准确的提交结果或未提交的剩余清单。
-- Dependencies: T-001, T-003, T-004, T-005, T-006, T-008, T-009.
+- Dependencies: T-001, T-003, T-004, T-005, T-006, T-008, T-009, T-010.
 - Execution steps:
   1. 汇总最终版本、构建、政策、截图、地区和审核资料供用户确认。
   2. 仅经确认执行明确的提交动作，随后核实实际状态。
@@ -215,25 +216,44 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-009 — 隔离审核环境与真实商店截图
+### [ ] T-009 — 本机隔离演示与真实商店截图
 - Status: blocked
 - Owner: coordinator
-- Objective: 复核既有隔离 TestFlight 演示环境和专用网站凭据，生成无个人数据的 iPhone/iPad 原生截图并准备正式审核访问。
-- Inputs and prerequisites: 用户明确授权复用隔离环境；mobile/REVIEW_ACCESS.md、mobile/scripts/review-linux/README.md 与旧部署记录；已有审核专用网站凭据。
-- Scope or files: 仅任务隔离演示环境、独立截图模拟器、本机私有临时凭据/图片目录；Chrome 中的审核资料/素材上传；禁止个人会话、主账号密码、长期 Relay token 或生产数据。
-- Expected output: 实测可用的专用审核入口、真实 App 截图及保存验证；不可用时给出具体阻碍，不把假界面当原生实测。
+- Objective: 使用本机独立演示数据与独立 iPhone/iPad 模拟器生成真实商店截图；不开公网审核入口。
+- Inputs and prerequisites: 用户在旧入口失败后明确要求本机准备，并选择仅生成本机截图；既有 iOS 构建流程和 Apple 规格。
+- Scope or files: 全新临时演示数据/配置与 loopback 测试连接、独立截图模拟器、私有临时文件/图片目录、Chrome 中素材上传；不使用个人会话或主账号凭据，不启动 Docker/公网服务，不启用系统 Remote Login。
+- Expected output: 真实原生 App 使用演示数据的 iPhone/iPad 截图及上传读回；审核远程访问由 T-010 单独处理。
 - Dependencies: None.
 - Execution steps:
-  1. 从既有 App 审核资料恢复网站入口和专用凭据，保护私有文件及输出，不写入 URL/命令行或 Git。
-  2. 验证匿名拒绝、认证、配对和真实终端；若过期/预算/服务状态有问题，先记录，不擅自中断现有会话或扩大开放权限。
-  3. 使用独立 iPhone/iPad 模拟器和新 App 生成真实演示截图，核对 Apple 尺寸与隐私，再上传并读回。
+  1. 以最小环境白名单和显式 AGENTPORT_DATA_DIR/AGENTPORT_SOCKET_DIR/AGENTPORT_HOST_BIN 准备临时数据；先静态复核隔离，再验证没有默认 DB/IPC 路径误用。
+  2. 临时 SSH fixture 只监听 127.0.0.1、使用合成测试认证，并仅执行显式环境下的 Bridge；只创建并清理本任务自己的 shell sessions。这是数据/配置隔离，不宣称 OS 沙箱，不向不可信审核员开放。
+  3. 为截图使用独立模拟器和无 fixture 编译注入的新 App，拍摄真实演示状态，检查尺寸/隐私后上传并读回。
 - Acceptance criteria:
-  - 审核访问真实可用，截图仅含隔离演示数据且尺寸合格；无主账号凭据、个人信息或伪造运行证据。
+  - 截图来自真实原生 App 和真实演示会话，符合尺寸，无个人数据或实际秘密；仅任务资源被清理，无公网端口或既有 Session 受扰。
 - Verification method:
-  - 网站认证/配对/终端操作证据、simulator 签名版本与 screenshot、public-browser 上传读回。
-- Validation evidence: 已从同一 App 的 TestFlight Sign-In 字段取得用户授权复用的专用网站凭据，仅保存在本机私有目录/0600 文件中，未输出值。build 2 的 What to Test 明确该凭据只用于隔离审核网页、不是 SSH/macOS 密码，并提供旧 HTTPS 入口。该入口直接访问失败，系统 DNS 返回 nodename nor servname provided；经现有代理也出现 TLS EOF，未取得认证成功或发码证据。未向 App Review 填入已失效入口，未创建邀请、配对、改服务、重启容器或使用个人数据截图。
-- Blocker: 旧隔离审核网页当前不可达，缺少可验证的现行入口或明确维护连接资料，不能假定历史部署仍运行。
-- Unblock condition: 用户提供当前可用的隔离审核 HTTPS 入口，或明确该隔离环境所在服务器的连接/维护授权；验证通过后才能生成演示截图并复用访问资料。
+  - 环境/DB/socket 路径、所有权与服务监听验证，simulator 版本/签名/screenshot，public-browser 上传读回。
+- Validation evidence: 已从同一 App 的 TestFlight Sign-In 字段取得用户授权复用的专用网站凭据，仅保存在本机私有目录/0600 文件中，未输出值。build 2 的 What to Test 明确该凭据只用于隔离审核网页、不是 SSH/macOS 密码，并提供旧 HTTPS 入口。该入口直接访问失败，系统 DNS 返回 nodename nor servname provided；经现有代理也出现 TLS EOF，未取得认证成功或发码证据。未向 App Review 填入已失效入口。后经用户批准仅本机截图，创建独立 DB/socket/最小环境和两个合成 shell Session，实际 PTY 环境检查通过；SSH fixture 只监听 loopback，仅允许固定 Bridge exec，无交互 shell/转发。TOFU 指纹与 fixture 相符，真实 SSH 连接、项目列表、终端及 Markdown 文件预览已通过。新建专用 iPhone/iPad 模拟器安装 1.0.0 原生 App，未编译注入 fixture，使用 XCTest/Device Hub 实际操作及原生截图。私有目录 /Users/w/AgentPort-private/app-store-review-20261017/screenshots/ 含 sessions/terminal/markdown 各两类共六张 PNG：iPhone 1206×2622，iPad 2064×2752；逐张查看无个人数据或凭据，manifest.json 记录 SHA256。已通过独立 CLI 停止仅任务所有的两个 Session，验证记录的四个 Host/PTY PID 消失且私有二进制无残留进程；停止任务 SSH 服务并确认端口关闭。public-browser 新访问 Distribution 被重定向 App Store Connect 登录页，故尚未上传。
+- Blocker: 本地截图已完成，但 public-browser 当前 App Store Connect 登录失效，尚未上传。
+- Unblock condition: 用户在 public-browser 使用的 Chrome 中重新登录 App Store Connect，再执行截图上传、保存和刷新读回。
+
+### [ ] T-010 — 正式审核远程访问方式
+- Status: blocked
+- Owner: coordinator
+- Objective: 确定审核员如何完整体验需要远程主机的功能，不暴露本机个人 Shell 或失效网站。
+- Inputs and prerequisites: 用户提供有效专用访问方式，或明确确认其他审核说明方案。
+- Scope or files: App Review 登录/Notes；不得把仅本机截图授权扩大为公网隧道、主账号 SSH 或长期服务部署。
+- Expected output: 经验证的专用审核访问，或用户确认并清楚说明的其他方式。
+- Dependencies: None.
+- Execution steps:
+  1. 保留旧网址不可达的证据，不填写失效凭据。
+  2. 在用户明确指定可用入口/授权后验证并保存，最终提审仍需单独确认。
+- Acceptance criteria:
+  - 不误导审核员，不开放个人账号，不把截图会话当公网可用审核服务。
+- Verification method:
+  - 入口/凭据/端到端检查或已确认审核说明的保存读回。
+- Validation evidence: 旧 HTTPS 入口 DNS 失败；用户明确选择仅在本机截图，不授权公网审核演示，后续访问方式另定。
+- Blocker: 缺少有效的正式审核访问方式，且当前无公网开放授权。
+- Unblock condition: 用户提供可用专用服务，或明确决定可接受的替代审核说明/访问方案。
 
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
@@ -248,9 +268,9 @@
 ## Risks and blockers
 
 - 价格、欧盟以外监管、中国大陆可用性、加密和内容声明均以实际要求及用户提供的事实为准；不能规避或编造。
-- 当前磁盘约剩 6.2 GiB，归档和上传可能受空间限制；不擅自清除旧归档或用户文件。
+- 先前磁盘空间不足的风险已缓解；不擅自清除旧归档或用户文件。
 - 分发 GPLv3 移动端时保留许可与对应源码义务，不擅自改为闭源许可。
-- 政策与审核联系信息已完成；年龄/内容权利、截图、有效演示入口与最终提审确认未齐，不得声称已公开上架。
+- 政策、审核联系人、年龄及内容权利已完成；截图上传、有效正式审核访问与最终提审确认未齐，不得声称已公开上架。
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
@@ -266,11 +286,15 @@
 - 2026-10-17: 仅从同一 App 现有 TestFlight 表单复用四项审核联系人；先确认正式表单为空，Save/reload 后逐项匹配，不记录私有值、不复用审核账号密码。版权、截图、隔离审核访问及法律声明/政策公开当时仍须确认，整体回到 blocked。
 - 2026-10-17: 用户随后明确批准：以现有审核姓名/邮箱公开隐私政策到 GitHub（不公开电话）；如实选择额外标准加密并排除法国；版权用 2026 加现有审核姓名；复用隔离演示环境和专用网站审核凭据。T-003/T-006 恢复 in_progress，新增 T-009；最终提审/正式发布仍不在授权内。
 - 2026-10-17: 已根据批准的运营模型完善正式隐私政策，去除 DRAFT/内部审查笔记，公开资料只包含姓名和邮箱。T-009 从旧 build 2 的说明恢复隔离网页入口及网站专用凭据后，只读验证因 DNS/代理 TLS 失败受阻，标为 blocked；不猜测服务器、不改生产服务。T-003/T-006 的其他已授权工作继续。
-- 2026-10-17: 政策提交 554d363 已推送 main，匿名页面 200/原文一致；public-browser 保存政策 URL 并 Publish 隐私响应，reload 见 Published 与 Data Not Collected，T-003 done。标准加密/法国 No 已保存，build 6 Ready to Submit；版权与绑定 build 6 保存后刷新核实。只读查看年龄 Step 1 及内容权利问题后取消，未猜填，T-006 因其确认与 T-009 素材阻碍转 blocked；未点 Add for Review 或正式发布。
+- 2026-10-17: 政策提交 554d363 已推送 main，匿名页面 200/原文一致；public-browser 保存政策 URL 并 Publish 隐私响应，reload 见 Published 与 Data Not Collected，T-003 done。标准加密/法国 No 已保存，build 6 Ready to Submit；版权与绑定 build 6 保存后刷新核实。只读查看年龄 Step 1 及内容权利问题后取消，未猜填，T-006 当时转 blocked；未点 Add for Review 或正式发布。
+- 2026-10-17: 用户明确批准按实际功能填写年龄问卷草稿（结果保存前核对），内容权利按其产品声明选择 No；旧演示不可达后要求本机准备并确认仅生成截图，不开放公网。T-006/T-009 恢复执行，正式审核访问独立为 T-010 blocked。Docker daemon/专用旧测试账号当前不可用，考虑仅 loopback、最小环境、独立数据的临时 SSH fixture；委派只读子代理核对隔离路径和环境传播，未把它当 OS 沙箱。
+
+- 2026-10-17 至 18: 用户批准 Content Rights No；年龄草稿计算 4+ 后明确批准“保留4+并保存”。两项均通过 public-browser 保存和刷新读回，T-006 done；不是 Made for Kids，未提审。
+- 2026-10-18 00:50–01:23 CST: 用户批准继续前台模拟器操作。专用 iPhone/iPad 已通过 loopback SSH 和 TOFU，生成并检查六张真实原生截图；iPhone 1206×2622、iPad 2064×2752。Device Hub 字符合成/剪贴板输入未可靠落地，改用临时独立 XCTest 原生 UI 操作后完成；未修改正式 App、未操作个人模拟器。仅停止任务自有两个 Session 与 SSH fixture，进程树/端口关闭复核通过。T-009 因 public-browser 登录失效转 blocked，待用户重新登录后上传；T-010/T-007 保持 blocked。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: partial
-- Evidence: T-001/T-002/T-003/T-004/T-005/T-008 已验证；Mobile 949/949。隐私政策匿名可读、标签已 Publish；build 6 标准加密/法国 No 门禁通过并为 Ready to Submit，已绑定正式草稿，版权/联系人已保存。T-006/T-007/T-009 等待年龄/内容权利确认、可用隔离演示与截图、最终提审授权。
-- Limitations: Ready to Submit 是构建状态，不是 App 审核通过或公开发布。旧演示入口 DNS 解析失败，未证明网站认证/配对可用，未生成/上传截图。年龄和内容权利尚未作答；未提交审核、未正式发布、未覆盖安装用户手机。
+- Evidence: T-001/T-002/T-003/T-004/T-005/T-006/T-008 已验证；Mobile 949/949。隐私政策/标签、build 6、版权/联系人、4+ 年龄与 Content Rights No 均已保存读回。本机真实 SSH 演示及六张原生截图已验证尺寸和内容，任务自有 Host/PTY 进程树已退出，loopback 端口已关闭。
+- Limitations: T-009 等待用户恢复 App Store Connect 登录后上传截图；T-010 的正式审核访问仍未确定；T-007 等待前置门禁和最终授权。Ready to Submit 不是审核通过或公开发布。未提交审核、未正式发布、未覆盖安装用户手机。

@@ -937,3 +937,11 @@
 - Correct approach: 在有界启动等待内逐项消费 Success/Failure/Close，保留握手前输出字节；每记录 Weak-pruned async gate 从发布创建意图覆盖到远端结果，End 在同一 gate 后读取/处理记录。未知远端结果仍不得自动重放。
 - Prevention: 跑 `cargo test --manifest-path mobile/src-tauri/Cargo.toml --locked generic_terminal::tests`；覆盖不关闭 channel 的拒绝、early bytes、暂停 create/并发 End、普通 Shell 本地删除与迟到连接清理。
 - Verified by: 拒绝误报 ready 与真实 isolated tmux 孤儿会话两项回归均先失败后通过；最终 Mobile Rust 75/75、UI 941/941。此证据不等同于真机 Mosh UDP 验收。
+
+## `iOS screenshot XCTest credentials` — SecureTextField does not redact test activity arguments
+
+- Wrong approach: Assume `secureTextFields.typeText(password)` hides its argument in XCTest activity logs because the rendered field is masked.
+- Why it failed: The native runner logged a synthetic credential prefix in `Type '…' into SecureTextField`, including retries; UI masking does not sanitize the automation call's description.
+- Correct approach: In the isolated simulator runner, load the synthetic value privately into UIPasteboard, then use the field's native Paste menu and explicit Allow Paste if shown. Store it through the App's actual credential button before saving the host; clear the pasteboard afterward.
+- Prevention: Never pass real credentials to XCTest typeText. Keep fixture/build artifacts private, avoid printing secure-field trees, and invalidate the fixture plus remove its credential-bearing logs after capture.
+- Verified by: AgentsPort App Store screenshot run: native Paste and secure-store action produced a real SSH connection with matching TOFU fingerprint on the dedicated iPhone/iPad; no password argument was needed in subsequent UI activity logs.
