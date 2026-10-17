@@ -50,6 +50,14 @@ describe("Modal", () => {
     document.body.style.overflow = "";
   });
 
+  it("applies contextual stacking classes to the backdrop without changing the dialog class", () => {
+    render(<Modal title="Terminal confirmation" className="generic-terminal-modal" backdropClassName="generic-terminal-backdrop" blurBackdrop={false} onClose={vi.fn()}><p>Confirm close</p></Modal>);
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveClass("centered-modal", "generic-terminal-modal");
+    expect(dialog.parentElement).toHaveClass("centered-modal-backdrop", "generic-terminal-backdrop", "modal-backdrop-no-blur");
+    expect(dialog).not.toHaveClass("generic-terminal-backdrop");
+  });
+
   it("dismisses only a backdrop click, not content, and supports the close button", () => {
     render(<Example />);
     const trigger = screen.getByRole("button", { name: "Open" });

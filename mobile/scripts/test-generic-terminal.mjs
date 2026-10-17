@@ -74,6 +74,9 @@ try {
   await call('Page.enable');await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
   await call('Page.navigate',{url:`http://127.0.0.1:${server.address().port}`});
   await until(`document.querySelector('[data-terminal-id="first"]')`);
+  // WebView 96 (the reported phone) drops :has() selectors. Model that parser
+  // behavior even when this fixture runs on a modern Chrome.
+  await evaluate(`(()=>{for(const sheet of document.styleSheets){for(let i=sheet.cssRules.length-1;i>=0;i--){const selector=sheet.cssRules[i].selectorText;if(selector?.includes(':has(')&&selector.includes('.generic-terminal-modal'))sheet.deleteRule(i)}}return true})()`);
   assert.equal(await evaluate(`document.querySelector('.generic-terminal-mode').value`),'shell','New terminals default to ordinary Shell');
   assert.equal(await evaluate(`document.querySelector('[data-terminal-id="first"]').dataset.terminalMode`),'tmux','Legacy record must remain tmux');
   await screenshot('records-dark');
@@ -102,7 +105,12 @@ try {
   assert.equal(await evaluate(`records[0].tmuxSession`),'','Ordinary record is only a shortcut');
   assert.equal(await evaluate(`document.querySelector('.generic-terminal-status').textContent.includes('tmux')`),false,'Ordinary Shell must not claim tmux persistence');
   await screenshot('ordinary-shell');
-  const closeShell=async()=>{await click('.generic-terminal-close');await until(`document.querySelector('.generic-terminal-shell-confirm')`);await click('.generic-terminal-shell-confirm');await until(`document.querySelector('.generic-terminal-list')`)};
+  const closeShell=async()=>{
+    await click('.generic-terminal-close');await until(`document.querySelector('.generic-terminal-shell-confirm')`);
+    assert.ok(await evaluate(`(()=>{const dialog=document.querySelector('.generic-terminal-modal'),page=document.querySelector('.generic-terminal-page');return Number(getComputedStyle(dialog.parentElement).zIndex)>Number(getComputedStyle(page).zIndex)})()`),'Close Shell dialog must paint above the terminal without :has() support');
+    await screenshot('close-shell-confirm-without-has');
+    await click('.generic-terminal-shell-confirm');await until(`document.querySelector('.generic-terminal-list')`);
+  };
   await closeShell();
   const firstShellId=await evaluate('records[0].id');
   const createCount=await evaluate(`calls.filter(c=>c[0]==='create').length`);

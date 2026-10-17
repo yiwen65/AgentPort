@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import "./modal.css";
 
 /** Portaled so background inertness covers the app without hiding the dialog. */
-export function Modal({ title, onClose, onDismiss, children, className = "", titleContent, blurBackdrop = true }: {
+export function Modal({ title, onClose, onDismiss, children, className = "", backdropClassName = "", titleContent, blurBackdrop = true }: {
   title: string;
   titleContent?: ReactNode;
   blurBackdrop?: boolean;
@@ -13,6 +13,8 @@ export function Modal({ title, onClose, onDismiss, children, className = "", tit
   onDismiss?: () => void;
   children: ReactNode;
   className?: string;
+  /** Styles the portaled backdrop without relying on parent :has() support. */
+  backdropClassName?: string;
 }) {
   const { t } = useTranslation();
   const titleId = useId();
@@ -98,7 +100,7 @@ export function Modal({ title, onClose, onDismiss, children, className = "", tit
   }, [portal]);
 
   return createPortal(
-    <div className={`centered-modal-backdrop${blurBackdrop ? "" : " modal-backdrop-no-blur"}`} onClick={(event) => {
+    <div className={`centered-modal-backdrop${blurBackdrop ? "" : " modal-backdrop-no-blur"}${backdropClassName ? ` ${backdropClassName}` : ""}`} onClick={(event) => {
       if (event.target === event.currentTarget) requestClose();
     }}>
       <section ref={sheet} className={`centered-modal ${className}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>

@@ -143,15 +143,15 @@ export function GenericTerminal({ host, client, authClient, onBack }: Props) {
     </div> : <TerminalConnection key={selected.id} record={selected} client={client} transport={transport} attempt={attempt} cleanupGate={connectionGate}
       onFailure={(error) => void report(error, () => setAttempt(value => value + 1))} />}
     {failure ? <div className="generic-terminal-error" role="alert"><p>{errorText}</p>{selected && !trust ? <button className="generic-terminal-reconnect" type="button" onClick={() => { reportEpoch.current++; setFailure(undefined); setAttempt(value => value + 1); }}>{t(isShell ? "genericTerminal.shellOpen" : "genericTerminal.reconnect")}</button> : null}</div> : null}
-    {trust ? <Modal className="generic-terminal-modal" title={t("hosts.trustTitle", { name: host.name })} onClose={() => { reportEpoch.current++; setTrust(undefined); }}>
+    {trust ? <Modal className="generic-terminal-modal" backdropClassName="generic-terminal-backdrop" title={t("hosts.trustTitle", { name: host.name })} onClose={() => { reportEpoch.current++; setTrust(undefined); }}>
       <p>{t("hosts.trustBody", { hop: t(`hosts.hop.${trust.hop}`) })}</p><code className="fingerprint">{trust.fingerprint}</code>
       <div className="modal-actions"><button type="button" disabled={busy} onClick={() => { reportEpoch.current++; setTrust(undefined); }}>{t("common.cancel")}</button><button type="button" disabled={busy} onClick={confirmTrust}>{t("hosts.trustConfirm")}</button></div>
     </Modal> : null}
-    {endTarget && !trust ? <Modal className="generic-terminal-modal" title={t(getTerminalMode(endTarget) === "shell" ? "genericTerminal.shellDeleteTitle" : "genericTerminal.endTitle", { name: endTarget.name })} onClose={() => setEndTarget(undefined)}>
+    {endTarget && !trust ? <Modal className="generic-terminal-modal" backdropClassName="generic-terminal-backdrop" title={t(getTerminalMode(endTarget) === "shell" ? "genericTerminal.shellDeleteTitle" : "genericTerminal.endTitle", { name: endTarget.name })} onClose={() => setEndTarget(undefined)}>
       <p>{t(getTerminalMode(endTarget) === "shell" ? "genericTerminal.shellDeleteBody" : "genericTerminal.endBody")}</p>
       <div className="modal-actions"><button type="button" disabled={busy} onClick={() => setEndTarget(undefined)}>{t("common.cancel")}</button><button className="danger-button" type="button" disabled={busy} onClick={end}>{t(getTerminalMode(endTarget) === "shell" ? "genericTerminal.shellDeleteConfirm" : "genericTerminal.endConfirm")}</button></div>
     </Modal> : null}
-    {selected && confirmation && !trust ? <Modal className="generic-terminal-modal" title={t(confirmation === "close-shell" ? "genericTerminal.shellCloseTitle" : "genericTerminal.shellSwitchTitle")} onClose={() => setConfirmation(undefined)}>
+    {selected && confirmation && !trust ? <Modal className="generic-terminal-modal" backdropClassName="generic-terminal-backdrop" title={t(confirmation === "close-shell" ? "genericTerminal.shellCloseTitle" : "genericTerminal.shellSwitchTitle")} onClose={() => setConfirmation(undefined)}>
       <p>{t(confirmation === "close-shell" ? "genericTerminal.shellCloseBody" : "genericTerminal.shellSwitchBody")}</p>
       <div className="modal-actions"><button type="button" onClick={() => setConfirmation(undefined)}>{t("common.cancel")}</button><button className="primary-button generic-terminal-shell-confirm" type="button" onClick={confirmation === "close-shell" ? close : switchToSsh}>{t(confirmation === "close-shell" ? "genericTerminal.shellCloseConfirm" : "genericTerminal.shellSwitchConfirm")}</button></div>
     </Modal> : null}
