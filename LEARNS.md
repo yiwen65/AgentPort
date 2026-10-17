@@ -938,13 +938,13 @@
 - Prevention: 跑 `cargo test --manifest-path mobile/src-tauri/Cargo.toml --locked generic_terminal::tests`；覆盖不关闭 channel 的拒绝、early bytes、暂停 create/并发 End、普通 Shell 本地删除与迟到连接清理。
 - Verified by: 拒绝误报 ready 与真实 isolated tmux 孤儿会话两项回归均先失败后通过；最终 Mobile Rust 75/75、UI 941/941。此证据不等同于真机 Mosh UDP 验收。
 
-## `iOS screenshot XCTest credentials` — SecureTextField does not redact test activity arguments
+## `review credentials in XCTest/public-browser` — UI masking is not tool-output redaction
 
-- Wrong approach: Assume `secureTextFields.typeText(password)` hides its argument in XCTest activity logs because the rendered field is masked.
-- Why it failed: The native runner logged a synthetic credential prefix in `Type '…' into SecureTextField`, including retries; UI masking does not sanitize the automation call's description.
-- Correct approach: In the isolated simulator runner, load the synthetic value privately into UIPasteboard, then use the field's native Paste menu and explicit Allow Paste if shown. Store it through the App's actual credential button before saving the host; clear the pasteboard afterward.
-- Prevention: Never pass real credentials to XCTest typeText. Keep fixture/build artifacts private, avoid printing secure-field trees, and invalidate the fixture plus remove its credential-bearing logs after capture.
-- Verified by: AgentsPort App Store screenshot run: native Paste and secure-store action produced a real SSH connection with matching TOFU fingerprint on the dedicated iPhone/iPad; no password argument was needed in subsequent UI activity logs.
+- Wrong approach: Assume a SecureTextField hides XCTest typeText arguments, or print a full App Store Connect page snapshot containing the reviewer credential fields.
+- Why it failed: XCTest logged a synthetic password prefix; public-browser view_page returned the complete saved review-only password as a field value. Visual masking does not sanitize tool activity or snapshots.
+- Correct approach: Use private UIPasteboard + native Paste for simulator credentials, then clear it. For Apple pages, scope reads or filter inside codemode before displaying output; independently compare credentials after reload and emit only booleans.
+- Prevention: Never pass real credentials to XCTest typeText or expose full credential-bearing page trees. Keep artifacts private. On exposure, quiesce the owned endpoint, rotate the dedicated credential, prove old rejection/new acceptance, update Apple's protected field and reload-verify before submitting; never revive an obsolete credential from rollback config.
+- Verified by: Native Paste established real SSH/TOFU. The later exposed review-only password was replaced under maintenance503; old credentials returned401, replacement passed authenticated200/TLS/WSS checks, Apple reload matched the replacement, and submission then reached Waiting for Review. No management password was involved.
 
 ## `review Docker internal network` — configured port bindings are not a live listener
 

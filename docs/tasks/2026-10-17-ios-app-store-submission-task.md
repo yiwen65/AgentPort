@@ -3,7 +3,7 @@
 - Created: 2026-10-17
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: blocked
+- Overall status: done
 - Source: 用户要求通过 public-browser MCP 操作已登录 Chrome 填写 App Store Connect，随后确认 1.0 新构建、隐私审查和政策草稿、免费且排除欧盟。
 
 <!-- task-doc-section:background-goal -->
@@ -177,8 +177,8 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-007 — 最终核对和提交边界
-- Status: blocked
+### [x] T-007 — 最终核对和提交边界
+- Status: done
 - Owner: coordinator
 - Objective: 核对所有上架准备项并在用户再次确认后才提交审核或发布。
 - Inputs and prerequisites: 前置任务输出及明确提审/发布确认。
@@ -192,9 +192,9 @@
   - 无授权不点 Add for Review / Submit for Review / Publish；不承诺审核结果。
 - Verification method:
   - 最终确认回执与浏览器审核状态。
-- Validation evidence: 当前尚未提交，用户确认的边界要求提交前再次确认。
-- Blocker: 准备项已完成，但最终 Add for Review / Submit for Review 及发布策略仍需明确确认；网站当前期限为 2026-10-24 17:57 UTC，提交前须复查覆盖审核时间。
-- Unblock condition: 用户明确批准最终提审动作和手动/自动发布策略，且提交前重新核实审核入口有效。
+- Validation evidence: 用户明确要求“提交”。提交前公网TLS/认证/Origin/CSRF/WSS复查通过，网站期限仍近7天。遵循实际发布另行确认边界，将原自动发布改为Manually release this version，Save/reload独立核实manual=true/automatic=false、1.0.0/build6和审核入口字段完整。Add for Review后仅进入Draft，随后点Submit for Review；Apple显示1 Item Submitted。进入提交详情并reload，持续读回Waiting for Review、iOS App1.0.0 (6)、Date Submitted Oct18,2026 at3:14AM、Submission ID46320113-e004-4f7d-a9e2-5673eeaeba22；未发布。最后一次未过滤页面快照曾显示旧审核网站专用密码，已在最终Submit前维护503下轮换专用密码，旧认证401、新认证200及WSS复查通过，Apple替换字段Save/reload匹配；未改管理密码，私有回滚配置也保留新认证hash以免恢复旧密码。
+- Blocker: None.
+- Unblock condition: None.
 
 ### [x] T-008 — AgentsPort 商店与 iOS 桌面名称统一
 - Status: done
@@ -251,7 +251,7 @@
   - 不误导审核员，不开放个人账号，不把截图会话当公网可用审核服务。
 - Verification method:
   - 入口/凭据/端到端检查或已确认审核说明的保存读回。
-- Validation evidence: 用户后续明确批准新安全公网方案，T-012 实测 https://review.skyride.top/ 的专用网站认证、配对与真实终端可用。仅通过 public-browser 在正式 1.0.0 draft 填入网站专用随机用户名/密码、勾选 Sign-in required 并填写 Notes；说明该账户仅用于 HTTP Basic 审核网页、不是 SSH/OS/Apple 账户。Notes 包含120秒配对码步骤、键盘遮挡时重新点 Validate code 的真实操作方式、Review Demo/Review Terminal/README.md/3个真实测试、未配置付费AI提供商及当前访问期限。Save 后 reload，独立比较用户名、密码、Notes和checkbox全部匹配，仅输出布尔结果，未把任何凭据值写入日志或仓库；1.0.0仍 Prepare for Submission，绑定build6未变。
+- Validation evidence: 用户后续明确批准新安全公网方案，T-012 实测 https://review.skyride.top/ 的专用网站认证、配对与真实终端可用。仅通过 public-browser 在正式 1.0.0 draft 填入网站专用随机用户名/密码、勾选 Sign-in required 并填写 Notes；说明该账户仅用于 HTTP Basic 审核网页、不是 SSH/OS/Apple 账户。Notes 包含120秒配对码步骤、键盘遮挡时重新点 Validate code 的真实操作方式、Review Demo/Review Terminal/README.md/3个真实测试、未配置付费AI提供商及当前访问期限。Save 后 reload，独立比较用户名、密码、Notes和checkbox全部匹配，当时仅输出布尔结果，未把凭据写入仓库；1.0.0当时仍Prepare for Submission，绑定build6。T-007的一次未过滤快照显示旧专用密码后，已在最终提交前轮换并再次核实Apple字段及服务认证；无凭据进入Git。
 - Blocker: None.
 - Unblock condition: None.
 
@@ -310,7 +310,7 @@
 - 价格、欧盟以外监管、中国大陆可用性、加密和内容声明均以实际要求及用户提供的事实为准；不能规避或编造。
 - 先前磁盘空间不足的风险已缓解；不擅自清除旧归档或用户文件。
 - 分发 GPLv3 移动端时保留许可与对应源码义务，不擅自改为闭源许可。
-- 政策、声明、截图与有效审核访问均已准备并保存；尚未获得最终提审/发布策略确认，不得声称已公开上架。网站当前期限为2026-10-24 17:57 UTC，正式提交前须复核或续期。
+- 已经用户授权提交，当前Waiting for Review并设为手动发布；不是审核通过或公开上架。网站期限为2026-10-24 17:57 UTC，若审核仍在进行须在期限前复核/续期；到期并不撤销已配对设备。
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
@@ -343,9 +343,14 @@
 - 2026-10-18: T-012 已完成DNS/TLS/受限反向隧道/隔离前置启动和公网实际验收。只短暂停启任务新建演示容器，原有业务基线未变；原生iPhone公网配对/终端输入、协议完整Result/重连、任务容器重启后身份恢复及撤销Unauthorized全部有运行证据。两项初版隔离设计问题及身份漂移风险在激活前修正并验证，部署回滚reload失败分支有回归测试。网页键盘覆盖造成的UI测试误判已以焦点移出/结果核实解决，无App源代码变更。
 - 2026-10-18: 两个测试授权在公网503维护门禁下撤销，最终devices0/channels0；已恢复公网401。经public-browser保存专用审核网站凭据和详细Notes，reload四项逐一布尔匹配；T-010/T-012 done。Mac临时SSH隧道关闭、含邀请的UI临时构建/日志清理。审核信息保存后再次核实两类截图仍各3/10。Server仓库仅本任务7个新增文件提交为5a6367f，其余既有未提交工作保留；部署说明位于该仓库docs/agentport-review-entry.md。T-007仅待最终提审/发布策略确认及提交前期限复核，未点Add for Review。
 
+- 2026-10-18: 用户明确要求“提交”，授权 Add for Review / Submit for Review。遵循正式发布仍须另行确认的既有边界，将使用手动发布，不擅自自动上架。T-007 in_progress；提交前公网TLS/认证/Origin/CSRF/WSS复查通过，当前UTC2026-10-17 19:09，网站期限尚有近7天。
+
+- 2026-10-18 03:14 CST: 已按用户“提交”授权完成Add for Review与Submit for Review。先将发布方式保存/刷新为手动发布，避免未经确认自动上架。Apple提交成功对话框及提交详情reload均核实Waiting for Review、1.0.0(6)、提交ID46320113-e004-4f7d-a9e2-5673eeaeba22；T-007 done。未发布，审核结果待Apple。
+- 2026-10-18: 提交前一次完整view_page显示了旧网站审核专用密码，立即暂停最终提交，维护503下轮换仅该密码（devices/channels均0），复查旧401、新200/TLS/WSS，并替换Apple字段Save/reload匹配后才最终Submit。管理凭据/原业务未变，私有回滚认证同步更新；经验合并入LEARNS.md，未记录任何密码值。
+
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
-- Result: partial
-- Evidence: 除T-007外准备项均已验证；既有Mobile949/949，当前部署/回滚测试6/6、协议探针6/6及公网/原生App/重连/撤销实测通过。隐私、build6、联系人/声明、六张截图及审核网站凭据/Notes均已保存读回。旧本机截图fixture与临时隧道已关闭；新Linux隔离演示和公网入口保留运行，测试设备/通道清理为0。
-- Limitations: T-001至T-006及T-008至T-012已完成；T-007仅待最终提审和发布策略明确授权及提交前网站期限复核。整机重启/真机蜂窝跨网未验收，容器共享内核/磁盘边界已说明。Ready to Submit 不是审核通过或公开发布。未提交审核、未正式发布、未覆盖安装用户手机。
+- Result: passed
+- Evidence: T-001至T-012全部完成。准备项及提交前公网认证/TLS/WSS复查通过；手动发布保存/刷新确认，最终Submit后的详情reload确认为Waiting for Review、1.0.0(6)、提交ID46320113-e004-4f7d-a9e2-5673eeaeba22。提交前网站专用密码安全轮换及Apple字段更新均验证通过。演示环境保留运行，无测试授权/通道残留。
+- Limitations: 通过的是准备与提审验收，不是Apple审核通过或公开上架；正式发布仍需用户确认。网站期限2026-10-24 17:57 UTC，审核未结束时须及时续期。整机重启/真机蜂窝跨网未验收，容器共享内核/磁盘边界已说明；未覆盖安装用户手机。
