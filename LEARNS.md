@@ -596,6 +596,7 @@
 - Correct approach: The script now syncs `src-tauri/icons/icon.icns` (when changed) and the `NS*UsageDescription` keys before re-signing. Release builds are unaffected (full `tauri build` re-bundles every time).
 - Prevention: When adding bundle resources (icons, plist keys, entitlements), check the sync list in `scripts/rebuild-debug-app.sh`; icon artwork itself is guarded by `python3 src-tauri/scripts/generate-icons.py --check` (transparent corners — full-bleed square masters render as the "rectangle icon" regression from 836b697).
 - Verified by: After the sync, bundled icns corner alpha = 0 and Finder renders the rounded icon; before, corners were opaque dark.
+- Dock cache follow-up (2026-10-17): A correct bundled ICNS/Assets.car, a successful GUI restart/re-registration, and new artwork from `NSWorkspace.icon(forFile:)` / `NSRunningApplication.icon` still did not refresh the visible Dock icon. A nonblank App-window screenshot is not an icon acceptance check. Compare the actual Dock before claiming completion; if only Dock is stale, ask permission to restart Dock rather than rebuilding again or modifying valid artwork. An authorized SIGTERM to the exact Dock executable refreshed it; all seven observed AgentPort GUI/helper processes survived, and the user confirmed the new icon.
 
 ## `.env sourced by bash` — quote values containing spaces
 
