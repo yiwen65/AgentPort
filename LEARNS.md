@@ -861,6 +861,15 @@
 - Prevention: Inspect that menu before keyboard diagnosis and verify a real open → native dismiss → reopen cycle; isolated simulator success alone does not establish the physical device's input configuration.
 - Verified by: On an iOS 27 physical iPhone, the same installed App failed under enabled simulation and opened the native third-party IME after only disabling it; native dismissal followed by the same keyboard entry reopened it without an App rebuild.
 
+## `Android terminal IME layout` — focus and keyboard visibility do not prove shortcut visibility
+
+- Wrong approach: Treating `activeElement === textarea` and native `mInputShown=true` as sufficient proof that the terminal keyboard interaction works.
+- Why it failed: With `enableEdgeToEdge()`, the WebView retained its full height while the native IME covered its bottom; React revealed the shortcut row, but it remained behind the keyboard.
+- Recognition signal: Native keyboard is visible and `.mobile-terminal-keys.hidden` is false, yet `visualViewport.height` does not shrink (API 29 baseline: 851 px before and after opening).
+- Correct approach: Set Android `adjustResize` and apply `WindowInsetsCompat.Type.ime()` bottom padding to the content parent, preserving normal edge-to-edge layout when the IME closes.
+- Prevention: Run `node mobile/scripts/test-android-terminal-keyboard.mjs` against a debuggable emulator App. Assert native viewport shrink, shortcut bounds, dismissal and reopen; headless Chrome's emulated viewport cannot verify Android IME inset delivery.
+- Verified by: API 29 viewport changed 851→554 px after the repair, and API 36 changed 851→548 px; shortcut rows were visibly above the native keyboard and both open/dismiss/reopen checks passed.
+
 ## `mobile dist embedding` — serialize Vite builds with native archives
 
 - Wrong approach: Run `npm run build` in parallel with an iOS archive whose beforeBuildCommand also regenerates `mobile/dist`.
