@@ -42,7 +42,7 @@
 - Resolved: 用户确认 Relay 自配、开发者不收集信息，并批准以既有审核姓名/邮箱公开隐私政策。正式政策已推送 GitHub、匿名 HTTP 200 且原文一致；App Privacy URL 已保存，Data Not Collected 隐私标签已 Publish 并刷新见 Published 提示。
 - Resolved: 用户批准 Content Rights No，并在 Apple 算出 4+ 后明确批准保留 4+ 保存；未选择 Made for Kids。两项已 Save/reload 读回。标准加密/不向法国分发已确认并保存；1.0.0(6) 已绑定正式草稿。
 - Resolved: 本机隔离演示已通过真实 SSH/TOFU 连接；iPhone/iPad 各三张原生截图已生成并检查，未使用个人会话。
-- Open question: public-browser 当前访问 Distribution 被重定向登录页（authResult=FAILED），需用户重新登录才能上传截图。正式审核访问方式仍由 T-010 单独决定。
+- Resolved: 用户重新登录后，六张截图已通过 public-browser 上传并刷新读回，iPhone/iPad 各 3 of 10。正式审核访问方式仍由 T-010 单独决定。
 
 <!-- task-doc-section:acceptance-criteria -->
 ## Acceptance criteria
@@ -216,8 +216,8 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-009 — 本机隔离演示与真实商店截图
-- Status: blocked
+### [x] T-009 — 本机隔离演示与真实商店截图
+- Status: done
 - Owner: coordinator
 - Objective: 使用本机独立演示数据与独立 iPhone/iPad 模拟器生成真实商店截图；不开公网审核入口。
 - Inputs and prerequisites: 用户在旧入口失败后明确要求本机准备，并选择仅生成本机截图；既有 iOS 构建流程和 Apple 规格。
@@ -232,9 +232,9 @@
   - 截图来自真实原生 App 和真实演示会话，符合尺寸，无个人数据或实际秘密；仅任务资源被清理，无公网端口或既有 Session 受扰。
 - Verification method:
   - 环境/DB/socket 路径、所有权与服务监听验证，simulator 版本/签名/screenshot，public-browser 上传读回。
-- Validation evidence: 已从同一 App 的 TestFlight Sign-In 字段取得用户授权复用的专用网站凭据，仅保存在本机私有目录/0600 文件中，未输出值。build 2 的 What to Test 明确该凭据只用于隔离审核网页、不是 SSH/macOS 密码，并提供旧 HTTPS 入口。该入口直接访问失败，系统 DNS 返回 nodename nor servname provided；经现有代理也出现 TLS EOF，未取得认证成功或发码证据。未向 App Review 填入已失效入口。后经用户批准仅本机截图，创建独立 DB/socket/最小环境和两个合成 shell Session，实际 PTY 环境检查通过；SSH fixture 只监听 loopback，仅允许固定 Bridge exec，无交互 shell/转发。TOFU 指纹与 fixture 相符，真实 SSH 连接、项目列表、终端及 Markdown 文件预览已通过。新建专用 iPhone/iPad 模拟器安装 1.0.0 原生 App，未编译注入 fixture，使用 XCTest/Device Hub 实际操作及原生截图。私有目录 /Users/w/AgentPort-private/app-store-review-20261017/screenshots/ 含 sessions/terminal/markdown 各两类共六张 PNG：iPhone 1206×2622，iPad 2064×2752；逐张查看无个人数据或凭据，manifest.json 记录 SHA256。已通过独立 CLI 停止仅任务所有的两个 Session，验证记录的四个 Host/PTY PID 消失且私有二进制无残留进程；停止任务 SSH 服务并确认端口关闭。public-browser 新访问 Distribution 被重定向 App Store Connect 登录页，故尚未上传。
-- Blocker: 本地截图已完成，但 public-browser 当前 App Store Connect 登录失效，尚未上传。
-- Unblock condition: 用户在 public-browser 使用的 Chrome 中重新登录 App Store Connect，再执行截图上传、保存和刷新读回。
+- Validation evidence: 已从同一 App 的 TestFlight Sign-In 字段取得用户授权复用的专用网站凭据，仅保存在本机私有目录/0600 文件中，未输出值。build 2 的 What to Test 明确该凭据只用于隔离审核网页、不是 SSH/macOS 密码，并提供旧 HTTPS 入口。该入口直接访问失败，系统 DNS 返回 nodename nor servname provided；经现有代理也出现 TLS EOF，未取得认证成功或发码证据。未向 App Review 填入已失效入口。后经用户批准仅本机截图，创建独立 DB/socket/最小环境和两个合成 shell Session，实际 PTY 环境检查通过；SSH fixture 只监听 loopback，仅允许固定 Bridge exec，无交互 shell/转发。TOFU 指纹与 fixture 相符，真实 SSH 连接、项目列表、终端及 Markdown 文件预览已通过。新建专用 iPhone/iPad 模拟器安装 1.0.0 原生 App，未编译注入 fixture，使用 XCTest/Device Hub 实际操作及原生截图。私有目录 /Users/w/AgentPort-private/app-store-review-20261017/screenshots/ 含 sessions/terminal/markdown 各两类共六张 PNG：iPhone 1206×2622，iPad 2064×2752；逐张查看无个人数据或凭据，manifest.json 记录 SHA256。已通过独立 CLI 停止仅任务所有的两个 Session，验证记录的四个 Host/PTY PID 消失且私有二进制无残留进程；停止任务 SSH 服务并确认端口关闭。用户重新登录后通过 public-browser 原生 file_upload 向两类槽各上传三张；首次读回各出现六个独立条目，逐项仅移除本次多出的三个重复条目并确认 Remove App Screenshot，未删除原始三张或 Asset Library 资产。页面自动持久化且 Save disabled；reload 后分别切换 iPhone/iPad，均读回 3 of 10 App Screenshots 以及 sessions、terminal、markdown 三个文件名，顺序一致，无重复。1.0.0 仍 Prepare for Submission，绑定 build 6 未变，未点 Add for Review。
+- Blocker: None.
+- Unblock condition: None.
 
 ### [ ] T-010 — 正式审核远程访问方式
 - Status: blocked
@@ -270,7 +270,7 @@
 - 价格、欧盟以外监管、中国大陆可用性、加密和内容声明均以实际要求及用户提供的事实为准；不能规避或编造。
 - 先前磁盘空间不足的风险已缓解；不擅自清除旧归档或用户文件。
 - 分发 GPLv3 移动端时保留许可与对应源码义务，不擅自改为闭源许可。
-- 政策、审核联系人、年龄及内容权利已完成；截图上传、有效正式审核访问与最终提审确认未齐，不得声称已公开上架。
+- 政策、审核联系人、年龄及内容权利已完成；截图已上传；有效正式审核访问与最终提审确认未齐，不得声称已公开上架。
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
@@ -292,9 +292,11 @@
 - 2026-10-17 至 18: 用户批准 Content Rights No；年龄草稿计算 4+ 后明确批准“保留4+并保存”。两项均通过 public-browser 保存和刷新读回，T-006 done；不是 Made for Kids，未提审。
 - 2026-10-18 00:50–01:23 CST: 用户批准继续前台模拟器操作。专用 iPhone/iPad 已通过 loopback SSH 和 TOFU，生成并检查六张真实原生截图；iPhone 1206×2622、iPad 2064×2752。Device Hub 字符合成/剪贴板输入未可靠落地，改用临时独立 XCTest 原生 UI 操作后完成；未修改正式 App、未操作个人模拟器。仅停止任务自有两个 Session 与 SSH fixture，进程树/端口关闭复核通过。T-009 因 public-browser 登录失效转 blocked，待用户重新登录后上传；T-010/T-007 保持 blocked。
 
+- 2026-10-18: 用户确认重新登录，T-009 从 blocked 恢复 in_progress。仅通过 public-browser 上传六张截图；每类首次出现重复条目，经确认逐项移除本次重复项，reload 后核实 iPhone/iPad 各 3 of 10，文件名及顺序均正确，自动持久化且 Save disabled，T-009 done。未提交审核；T-010/T-007 仍 blocked。
+
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: partial
 - Evidence: T-001/T-002/T-003/T-004/T-005/T-006/T-008 已验证；Mobile 949/949。隐私政策/标签、build 6、版权/联系人、4+ 年龄与 Content Rights No 均已保存读回。本机真实 SSH 演示及六张原生截图已验证尺寸和内容，任务自有 Host/PTY 进程树已退出，loopback 端口已关闭。
-- Limitations: T-009 等待用户恢复 App Store Connect 登录后上传截图；T-010 的正式审核访问仍未确定；T-007 等待前置门禁和最终授权。Ready to Submit 不是审核通过或公开发布。未提交审核、未正式发布、未覆盖安装用户手机。
+- Limitations: T-009 六张截图已上传并刷新读回；T-010 的正式审核访问仍未确定；T-007 等待前置门禁和最终授权。Ready to Submit 不是审核通过或公开发布。未提交审核、未正式发布、未覆盖安装用户手机。
