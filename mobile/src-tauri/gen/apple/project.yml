@@ -41,6 +41,7 @@ targets:
     info:
       path: agentport-mobile_iOS/Info.plist
       properties:
+        CFBundleDisplayName: AgentsPort
         LSRequiresIPhoneOS: true
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]

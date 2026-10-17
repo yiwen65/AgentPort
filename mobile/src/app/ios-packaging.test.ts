@@ -1,6 +1,15 @@
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 
+it("uses AgentsPort as the iOS display name without changing the App identity", () => {
+  for (const path of ["src-tauri/Info.ios.plist", "src-tauri/gen/apple/agentport-mobile_iOS/Info.plist"]) {
+    expect(readFileSync(path, "utf8")).toMatch(/<key>CFBundleDisplayName<\/key>\s*<string>AgentsPort<\/string>/);
+  }
+  const spec = readFileSync("src-tauri/gen/apple/project.yml", "utf8");
+  expect(spec).toMatch(/^\s+CFBundleDisplayName: AgentsPort$/m);
+  expect(JSON.parse(readFileSync("src-tauri/tauri.conf.json", "utf8")).identifier).toBe("com.agentport.mobile");
+});
+
 it("links the Rust static library without copying it into the iOS app resources", () => {
   const project = readFileSync("src-tauri/gen/apple/agentport-mobile.xcodeproj/project.pbxproj", "utf8");
   const spec = readFileSync("src-tauri/gen/apple/project.yml", "utf8");

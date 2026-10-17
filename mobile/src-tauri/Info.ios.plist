@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleDisplayName</key>
+  <string>AgentsPort</string>
   <!-- Tao 0.35 uses this true boolean to enable its Scene lifecycle, including
        attaching UIWindow to UIWindowScene. An empty configuration is not enough
        for SDK 27; use Tao's existing runtime delegate, not a second AppDelegate. -->
