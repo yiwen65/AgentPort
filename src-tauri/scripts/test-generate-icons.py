@@ -22,8 +22,15 @@ class IconProportionsTest(unittest.TestCase):
         difference = ImageChops.difference(result, master.convert("RGB"))
         difference.paste((0, 0, 0), mask=ImageChops.invert(mask))
         self.assertIsNone(difference.getbbox(), "Opaque artwork moved, scaled, or recolored")
-        for point in [(0, 0), (1023, 0), (0, 1023), (1023, 1023)]:
-            self.assertGreater(max(result.getpixel(point)), 40, "Dark backing introduced")
+
+    def test_padding_is_extended_without_a_dark_backing(self):
+        # Use a known color: real artwork may intentionally have dark edges.
+        master = Image.new("RGBA", (64, 64))
+        master.paste((75, 100, 140, 240), (8, 8, 56, 56))
+        result = icons.derive_logo(master)
+        expected = Image.new("RGB", master.size, (75, 100, 140))
+        self.assertIsNone(ImageChops.difference(result, expected).getbbox(),
+                          "Padding was not filled with the artwork's edge color")
 
 
 if __name__ == "__main__":
