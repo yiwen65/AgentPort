@@ -42,7 +42,7 @@
 - Resolved: 用户确认 Relay 自配、开发者不收集信息，并批准以既有审核姓名/邮箱公开隐私政策。正式政策已推送 GitHub、匿名 HTTP 200 且原文一致；App Privacy URL 已保存，Data Not Collected 隐私标签已 Publish 并刷新见 Published 提示。
 - Resolved: 用户批准 Content Rights No，并在 Apple 算出 4+ 后明确批准保留 4+ 保存；未选择 Made for Kids。两项已 Save/reload 读回。标准加密/不向法国分发已确认并保存；1.0.0(6) 已绑定正式草稿。
 - Resolved: 本机隔离演示已通过真实 SSH/TOFU 连接；iPhone/iPad 各三张原生截图已生成并检查，未使用个人会话。
-- Resolved: 用户重新登录后，六张截图已通过 public-browser 上传并刷新读回，iPhone/iPad 各 3 of 10。正式审核访问方式仍由 T-010 单独决定。
+- Resolved: 六张截图已上传并刷新读回；用户随后独立批准 T-011/T-012 的安全审核部署。https://review.skyride.top/ 已通过公网及原生 App 验收；专用网站审核凭据/Notes 已在 App Store Connect 保存并刷新匹配，未提交审核。
 
 <!-- task-doc-section:acceptance-criteria -->
 ## Acceptance criteria
@@ -56,7 +56,7 @@
 <!-- task-doc-section:dependencies-batches -->
 ## Dependencies and parallel batches
 
-- Dependency graph: T-001 独立完成；T-002 -> T-003；T-004 独立；T-005 独立；T-006 独立；T-008 为名称统一及新构建的增量任务；T-009 为隔离演示和商店截图；T-001/T-003/T-004/T-005/T-006/T-008/T-009 -> T-007。
+- Dependency graph: T-001 独立；T-002 -> T-003；T-004/T-005/T-006/T-008/T-009 独立；T-011 -> T-012 -> T-010；T-001/T-003/T-004/T-005/T-006/T-008/T-009/T-010 -> T-007。
 - Parallel batches: 隐私数据流只读审查 T-002 可与协调者本机构建 T-004 并行。浏览器 T-003/T-005/T-006/T-009 串行，原生构建与不重叠的只读检查可并行。
 - Serialization constraints: 仅协调者编辑本文件、操作 Chrome、修改生成 Xcode 工程和归档；审查子代理只读源码，不能访问凭据、修改文件或操控浏览器。
 
@@ -193,8 +193,8 @@
 - Verification method:
   - 最终确认回执与浏览器审核状态。
 - Validation evidence: 当前尚未提交，用户确认的边界要求提交前再次确认。
-- Blocker: 前置材料和最终提交确认尚不齐。
-- Unblock condition: 全部前置门禁通过且用户明确批准最终动作。
+- Blocker: 准备项已完成，但最终 Add for Review / Submit for Review 及发布策略仍需明确确认；网站当前期限为 2026-10-24 17:57 UTC，提交前须复查覆盖审核时间。
+- Unblock condition: 用户明确批准最终提审动作和手动/自动发布策略，且提交前重新核实审核入口有效。
 
 ### [x] T-008 — AgentsPort 商店与 iOS 桌面名称统一
 - Status: done
@@ -236,14 +236,14 @@
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-010 — 正式审核远程访问方式
-- Status: blocked
+### [x] T-010 — 正式审核远程访问方式
+- Status: done
 - Owner: coordinator
 - Objective: 确定审核员如何完整体验需要远程主机的功能，不暴露本机个人 Shell 或失效网站。
 - Inputs and prerequisites: 用户提供有效专用访问方式，或明确确认其他审核说明方案。
-- Scope or files: App Review 登录/Notes；不得把仅本机截图授权扩大为公网隧道、主账号 SSH 或长期服务部署。
+- Scope or files: App Review 登录/Notes；公网部署须依 T-012 的独立明确授权，禁止开放主账号或填入管理凭据。
 - Expected output: 经验证的专用审核访问，或用户确认并清楚说明的其他方式。
-- Dependencies: T-011.
+- Dependencies: T-011, T-012.
 - Execution steps:
   1. 保留旧网址不可达的证据，不填写失效凭据。
   2. 在用户明确指定可用入口/授权后验证并保存，最终提审仍需单独确认。
@@ -251,9 +251,9 @@
   - 不误导审核员，不开放个人账号，不把截图会话当公网可用审核服务。
 - Verification method:
   - 入口/凭据/端到端检查或已确认审核说明的保存读回。
-- Validation evidence: 旧 HTTPS 入口 DNS 失败；用户明确选择仅在本机截图，不授权公网审核演示，后续访问方式另定。
-- Blocker: T-011 已完成内网环境与原生 SSH 连接，但尚无可信公网 HTTPS/WSS 域名和开放授权，Apple 不能访问 Tailscale 私网或 review.invalid 占位地址。
-- Unblock condition: 用户批准公网方案并提供所需域名/证书或隧道条件；验证真实公网配对、重连和撤销后再填写审核入口。
+- Validation evidence: 用户后续明确批准新安全公网方案，T-012 实测 https://review.skyride.top/ 的专用网站认证、配对与真实终端可用。仅通过 public-browser 在正式 1.0.0 draft 填入网站专用随机用户名/密码、勾选 Sign-in required 并填写 Notes；说明该账户仅用于 HTTP Basic 审核网页、不是 SSH/OS/Apple 账户。Notes 包含120秒配对码步骤、键盘遮挡时重新点 Validate code 的真实操作方式、Review Demo/Review Terminal/README.md/3个真实测试、未配置付费AI提供商及当前访问期限。Save 后 reload，独立比较用户名、密码、Notes和checkbox全部匹配，仅输出布尔结果，未把任何凭据值写入日志或仓库；1.0.0仍 Prepare for Submission，绑定build6未变。
+- Blocker: None.
+- Unblock condition: None.
 
 ### [x] T-011 — 新审核机内网隔离环境
 - Status: done
@@ -275,6 +275,26 @@
 - Blocker: None.
 - Unblock condition: None.
 
+### [x] T-012 — 受限反向隧道与公网 HTTPS/WSS 入口
+- Status: done
+- Owner: coordinator
+- Objective: 将独立 Linux 演示以可信 HTTPS/WSS 供审核访问，公网服务器只做入口。
+- Inputs and prerequisites: 用户确认并授权使用 Server 运维仓库的既有管理资料，新增 review.skyride.top DNS/TLS/Nginx、受限隧道账号和服务及必要网络隔离；冲突/付费/现有业务变更须停止确认。
+- Scope or files: Server 仓库仅新增专用部署脚本/配置/测试/说明；公网与 Linux 上仅任务自有账号/密钥/服务/路由/隔离规则。不复用生产 Relay token、不公开管理凭据、不自动提审。
+- Expected output: HTTPS 网页与 WSS 转发、独立认证、限制转发的专用 SSH 密钥、可回滚部署及端到端验证。
+- Dependencies: T-011.
+- Execution steps:
+  1. 核对 DNS、证书、Nginx/SSH 配置、监听和现有业务基线，无冲突后新增专用配置。
+  2. Linux 主动连接公网专用隧道账号，只允许两条指定 loopback 反向转发；Nginx 仅代理审核网页与 /v1/relay。
+  3. 限制容器主动访问宿主服务，验证公网认证/Origin/CSRF/TLS、真实配对/终端/撤销及原有服务不变。
+- Acceptance criteria:
+  - 不暴露 Linux SSH/主账号/生产 Relay；HTTPS/WSS 可信且真实 App 可用；严格权限、可回滚、无业务回归。
+- Verification method:
+  - DNSPod/权威 DNS、TLS 和外部请求、sshd effective config/转发拒绝、容器隔离与原生 App验收、前后业务基线。
+- Validation evidence: 按 Server/AGENTS.md 仅内存使用管理资料，新增独立部署脚本/模板/测试/运维说明，不覆盖既有工作。DNSPod 创建 review A记录（RecordId2432295403），两台权威NS答案均核实；新可信TLS证书有效至2027-01-15。专用 Linux key不离机，上游专用账号只允许45067/45068两条loopback反向转发；实测拒绝Shell、本地转发和其他端口，主机监听只为127.0.0.1。独立审查发现的旧established流量放行、Docker启动早于隔离及准备/激活身份漂移均已修正：仅REPLY方向ESTABLISHED，停用仅任务容器Docker自动重启并由Requires/After隔离的systemd单元管理，身份manifest绑定容器ID/networkID/IP/server。IPv4/IPv6规则实测阻断已建立的容器主动宿主连接，宿主主动Bridge连接仍成功；容器主动宿主SSH失败。公网可信TLS/匿名及错误认证401/认证200-no-store/Referrer-Policy same-origin/Origin-CSRF403/额外路径404/WSS101均通过。原生iPhone模拟器实际完成公网配对，后续终端输入XCTest通过，独立Host读到NATIVE_PUBLIC_INPUT_OK；原生协议探针等待完整Result并验证重连/attach/input/poll/detach和解码PTY输出。只重启新任务容器/隧道后，配对身份仍保留且再次重连/I/O通过。先实测maintenance503封闭发码，再撤销仅两个命名测试身份；确认devices0/channels0，恢复公网401后旧身份明确返回Unauthorized。四个原有Linux容器PID/start/restart不变，公网原有配置hash及Nginx/sshd/生产Relay主PID/状态不变，原Relay HTTP状态未变。脚本bash-n/ShellCheck、6项部署离线测试、6项探针单测通过；原gateway macOS/Linux各25项通过。已关闭Mac临时隧道，公网服务不依赖本Mac。未整机重启或真机蜂窝跨网测试；容器不是VM、共享内核和底层磁盘且HOME无硬配额，风险在运维说明中明确。
+- Blocker: None.
+- Unblock condition: None.
+
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
 
@@ -290,7 +310,7 @@
 - 价格、欧盟以外监管、中国大陆可用性、加密和内容声明均以实际要求及用户提供的事实为准；不能规避或编造。
 - 先前磁盘空间不足的风险已缓解；不擅自清除旧归档或用户文件。
 - 分发 GPLv3 移动端时保留许可与对应源码义务，不擅自改为闭源许可。
-- 政策、审核联系人、年龄及内容权利已完成；截图已上传；有效正式审核访问与最终提审确认未齐，不得声称已公开上架。
+- 政策、声明、截图与有效审核访问均已准备并保存；尚未获得最终提审/发布策略确认，不得声称已公开上架。网站当前期限为2026-10-24 17:57 UTC，正式提交前须复核或续期。
 
 <!-- task-doc-section:execution-log -->
 ## Execution log
@@ -318,9 +338,14 @@
 
 - 2026-10-18: T-011 独立 Linux 环境已完成；新容器/数据卷/internal network 保留运行，通过仅本机 SSH 隧道完成网页和真实 Bridge/PTY 验收，并用专用 iPhone 模拟器原生 UI 连接 Review Terminal。macOS/Linux gateway 各25/25、演示 Python3/3通过；四个旧容器身份/进程/启动时间未变，Serve/Funnel 仍无配置。未用用户 sudo 密码；未提供主账号凭据给演示环境。T-011 done，T-010 继续等待可信公网 HTTPS/WSS 方案与开放确认，T-007 未提交。
 
+- 2026-10-18: 用户确认安全公网方案并明确授权部署 review.skyride.top 专用 DNS/TLS/Nginx、受限反向隧道账号/服务及容器网络隔离；公网服务器资料仅按 Server/AGENTS.md 使用。T-012 in_progress，T-010 恢复执行；现有业务、管理 SSH、生产 Relay 与最终提审权限边界不变。
+
+- 2026-10-18: T-012 已完成DNS/TLS/受限反向隧道/隔离前置启动和公网实际验收。只短暂停启任务新建演示容器，原有业务基线未变；原生iPhone公网配对/终端输入、协议完整Result/重连、任务容器重启后身份恢复及撤销Unauthorized全部有运行证据。两项初版隔离设计问题及身份漂移风险在激活前修正并验证，部署回滚reload失败分支有回归测试。网页键盘覆盖造成的UI测试误判已以焦点移出/结果核实解决，无App源代码变更。
+- 2026-10-18: 两个测试授权在公网503维护门禁下撤销，最终devices0/channels0；已恢复公网401。经public-browser保存专用审核网站凭据和详细Notes，reload四项逐一布尔匹配；T-010/T-012 done。Mac临时SSH隧道关闭、含邀请的UI临时构建/日志清理。审核信息保存后再次核实两类截图仍各3/10。Server仓库仅本任务7个新增文件提交为5a6367f，其余既有未提交工作保留；部署说明位于该仓库docs/agentport-review-entry.md。T-007仅待最终提审/发布策略确认及提交前期限复核，未点Add for Review。
+
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: partial
-- Evidence: T-001/T-002/T-003/T-004/T-005/T-006/T-008 已验证；Mobile 949/949。隐私政策/标签、build 6、版权/联系人、4+ 年龄与 Content Rights No 均已保存读回。本机真实 SSH 演示及六张原生截图已验证尺寸和内容，任务自有 Host/PTY 进程树已退出，loopback 端口已关闭。
-- Limitations: T-009 六张截图已上传并刷新读回，T-011 已完成内网隔离部署与原生 SSH 验收；T-010 仍缺可信公网 HTTPS/WSS 入口、实际配对与跨网验证；T-007 等待前置门禁和最终授权。Ready to Submit 不是审核通过或公开发布。未提交审核、未正式发布、未覆盖安装用户手机。
+- Evidence: 除T-007外准备项均已验证；既有Mobile949/949，当前部署/回滚测试6/6、协议探针6/6及公网/原生App/重连/撤销实测通过。隐私、build6、联系人/声明、六张截图及审核网站凭据/Notes均已保存读回。旧本机截图fixture与临时隧道已关闭；新Linux隔离演示和公网入口保留运行，测试设备/通道清理为0。
+- Limitations: T-001至T-006及T-008至T-012已完成；T-007仅待最终提审和发布策略明确授权及提交前网站期限复核。整机重启/真机蜂窝跨网未验收，容器共享内核/磁盘边界已说明。Ready to Submit 不是审核通过或公开发布。未提交审核、未正式发布、未覆盖安装用户手机。

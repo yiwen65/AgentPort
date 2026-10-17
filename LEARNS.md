@@ -953,3 +953,11 @@
 - Correct approach: Keep the internal network for the internal-only demo; point the authorized operator SSH tunnel at the observed dedicated container IP/port, binding the client end only to 127.0.0.1. No public route or global Docker-network change is needed.
 - Prevention: Check actual NetworkSettings.Ports, `docker port`, listeners and a connection probe; do not weaken isolation merely to make a configured binding appear live. Re-read the container IP after recreation.
 - Verified by: The new isolated review portal and Bridge worked through that SSH tunnel, including native iPhone App connection and real PTY output; external egress remained blocked and old container identities were unchanged.
+
+## `iOS WKWebView XCTest taps` — hittable does not mean uncovered by the software keyboard
+
+- Wrong approach: Trust a WebView button's `isHittable=true` and successful XCTest tap while its frame lies behind the software keyboard; infer completion from input delivery.
+- Why it failed: The pairing authorization button occupied y772–819 while the keyboard started at y583. Taps did not reach it. A later diagnostic also aborted by reading `.frame` from a keyboard that had already disappeared.
+- Correct approach: Move focus out of the input using a known safe visible control (here, re-validating the unchanged pairing code), then activate authorization. Inspect keyboard geometry only if the keyboard exists; validate the Connector approval and actual terminal result afterward.
+- Prevention: Check coverage, not AX hittability alone, for native WebView form actions. Do not repeat an apparent network operation until its actual UI/backend outcome is known.
+- Verified by: With no product-code change, public pairing then created one approved device/channel; native terminal input crossed the public WSS route and the independent Linux Host read confirmed NATIVE_PUBLIC_INPUT_OK.
