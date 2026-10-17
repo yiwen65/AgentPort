@@ -38,9 +38,12 @@ in the English description were saved and read back after reload; references
 to the separate desktop AgentPort project were preserved.
 
 **1.0.0 (6)** was accepted by Apple's upload service at **23:05 CST**. Xcode
-reported `Upload succeeded` / `EXPORT SUCCEEDED`; Public Browser showed its
-Build Uploads row as **Processing** with the 23:05 upload time. Build 5 remains
-in the existing history and was not deleted. Processing is not review approval.
+reported `Upload succeeded` / `EXPORT SUCCEEDED`; Public Browser initially showed
+**Processing** with the 23:05 upload time. After the user's explicit confirmation,
+the encryption questionnaire was answered as additional standard encryption and
+no distribution in France. Build 6 then showed **Ready to Submit** and was attached
+to the formal 1.0.0 version; the attachment and approved copyright were verified
+after reload. Build 5 remains in history. This is not App Store review approval.
 
 The signed iPhoneOS/arm64 archive has `CFBundleDisplayName=AgentsPort`, unchanged
 `com.agentport.mobile`, version 1.0.0 and build 6. Signature, Scene manifest,
@@ -54,8 +57,18 @@ and this release archive was not installed over the user's current phone App.
 The existing TestFlight review contact's four fields were copied to the blank
 formal-review contact fields and matched exactly after reload. Existing formal
 values were checked before writing; review login/password fields were not copied.
-Policy publication, remaining declarations, screenshots and final review/release
-permission are still governed by the task document linked below.
+With the user's explicit approval, the final privacy policy was published at
+https://github.com/yiwen65/AgentPort/blob/main/mobile/PRIVACY.md (anonymous HTTP 200
+and exact source-text match), its URL was saved in App Store Connect, and the
+**Data Not Collected** responses were published. Reload confirmed the Published
+status, policy URL and label. This publication is only the privacy information,
+not the App or an App Review submission.
+
+The old dedicated review website recovered from build 2's instructions currently
+fails DNS resolution; its credentials were handled only in private storage and
+no stale review access was copied to the formal form. Age/content-rights answers,
+usable review access, screenshots and final review/release permission remain
+pending as recorded in the authoritative task document below.
 
 ## App Store preparation upload (2026-10-17)
 
@@ -79,14 +92,13 @@ back after reload.
 
 Basic English store metadata and free pricing were saved. Region availability
 was verified after reload: 148 available on release, the EU's 27 member states
-not available. Privacy-policy draft `PRIVACY.md` is **not approved for public
-publication**. Following the publisher's confirmation that users configure their
-own Relay and the publisher does not collect user information, the App Privacy
-questionnaire was saved as **Data Not Collected** and verified after reload; its
-**Publish** action was not taken. Age/content-rights/encryption declarations,
-review contact information, screenshots and final submission/release authorization
-remain incomplete. The encryption dialog was inspected and cancelled without an
-answer.
+not available. At this initial build-5 stage, privacy was only a draft and the
+encryption dialog was inspected then cancelled. The user subsequently approved
+the formal policy and its public contact, declared that Relay servers are
+user-configured and that the publisher does not collect user information, and
+authorized the privacy publication. The later build-6 section above records the
+published privacy information, completed encryption declaration and remaining
+age/content-rights, screenshot and review-access limitations.
 See `../docs/tasks/2026-10-17-ios-app-store-submission-task.md` for the authoritative
 ongoing task status; do not infer public publication from this upload.
 
