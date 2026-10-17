@@ -1,95 +1,71 @@
-# AgentsPort privacy notice — DRAFT
+# AgentsPort Privacy Policy
 
-**Not approved for publication.** This is a source-backed draft for the iOS 1.0.0 release, prepared on 17 October 2026. The publisher has confirmed that users configure their own Relay servers and that the publisher does not collect user information through this App. A corresponding App Store “Data Not Collected” questionnaire draft has been saved, but its Publish action has not been taken. The operator/contact details, final wording and public hosting location below still need approval.
+Effective date: 17 October 2026
 
-## 1. Scope
+Publisher: jin wen
 
-AgentsPort is a remote terminal and a mobile client for compatible AgentPort computers. It connects to hosts and optional Relay services configured by the user. A remote host, Relay operator, notification provider, image website or file-sharing destination may have its own privacy practices. This notice must distinguish those services from services actually operated by the App's publisher.
+Privacy contact: [tiandrive@icloud.com](mailto:tiandrive@icloud.com)
 
-**App operator and privacy contact: pending confirmation.**
+## Our approach
 
-## 2. Information stored on your device
+AgentsPort is a remote terminal and a mobile client for compatible AgentPort computers. You choose and configure the computers and optional Relay services it connects to.
+
+The publisher does not collect user information from the App or operate a Relay data-collection service for its users. The App does not require an account with the publisher. This does not mean that the App processes no data: it keeps information on your device and communicates with the servers and services you use, as explained below.
+
+## Information on your device
 
 To provide its features, the App stores or processes:
 
-- Connection profiles, including the names you assign, host addresses and ports, SSH usernames, connection preferences, trusted host fingerprints, Relay identities, pairing state and related connection settings.
-- Passwords, SSH private keys and private pairing identities through the App's secure credential-storage integration. Profiles refer to credential handles rather than embedding the secrets. This draft does not make unverified promises about operating-system backups or Keychain deletion after uninstalling.
-- Local terminal shortcut records, such as a terminal name, associated host, shell/tmux choice and optional tmux session name.
-- Interface and terminal appearance settings, workspace preferences and local notification/inbox state. Inbox entries can include host/session identifiers, timestamps, event types, read state and session titles.
-- Temporary downloaded files and selected-image copies needed for the file and image features.
-- Local diagnostic logs containing timestamps, lifecycle events and error/context information. The diagnostic writer limits and rotates its files, but does not automatically redact arbitrary strings passed to it. Do not assume a diagnostic log is free of identifiers or other sensitive context.
+- Connection profiles, including names, host addresses and ports, SSH usernames, connection preferences, trusted host fingerprints, pairing identities and related settings.
+- Passwords, SSH private keys and private pairing identities through its secure credential-storage integration. Connection profiles refer to credential handles rather than embedding these secrets.
+- Terminal shortcut records, interface and terminal preferences, and workspace settings.
+- Local notification and inbox records, which can include host/session identifiers, timestamps, event types, read state and session titles.
+- Temporary downloads, selected-image copies and local diagnostic logs needed to operate or troubleshoot the App.
 
-## 3. Data sent to the services you connect to
+Operating-system protections and backup/keychain behavior apply to this local information. Removing the App must not be assumed to erase operating-system keychain records, backups or copies held elsewhere.
 
-Your selected host processes the information needed for your requested operation. This can include authentication information, pairing identifiers, terminal input and output, commands, project and session information, file paths, file contents, selected images and connection metadata.
+## Connections to your hosts and Relay services
 
-SSH password authentication sends the password through the authenticated SSH connection. SSH public-key authentication proves possession of the private key rather than uploading the private key. Mosh uses an initial authenticated SSH connection to start the remote service, followed by its terminal transport. A configured jump host can receive the destination address and port.
+Your selected host processes the information needed for your requested operations. This can include authentication information, terminal input and output, commands, project and session information, paths, files and selected images.
 
-### Relay visibility
+SSH password authentication sends the password through the authenticated SSH connection. SSH public-key authentication proves possession of the key rather than uploading the private key. Mosh uses an initial SSH connection to start its remote service and then its terminal transport. A configured jump host can observe the destination address and port.
 
-Relay connections use authenticated device identities and encrypted network transport. However, **the realtime Relay mode supported by the current client and Connector terminates its WSS transport at the Relay, allowing the Relay to read forwarded session data.** That data may include terminal interaction, RPC requests and responses, and files or images sent over the session stream. Do not use a Relay operator you do not trust with this information.
+Relay services are configured by users, not operated as a publisher collection service. **In the current realtime Relay mode, WSS terminates at the Relay, allowing that Relay to read the session data it forwards.** This may include terminal interactions, requests and responses, and files or images sent through the session. Other compatible modes may retain an additional encryption layer. The App does not promise that every Relay connection hides its content from the Relay operator: use a Relay you trust.
 
-Some older Connector sessions retain an additional Noise encryption layer. This does not justify claiming that every Relay connection is end-to-end encrypted against the Relay operator. Pairing and push-token registration use separate control paths with different protections, described below.
+Your chosen network services can also observe connection metadata such as IP addresses, timing and traffic volume. Their logging, retention, access controls and deletion practices are determined by their operators, not by this policy. Choosing a server yourself does not mean that the server cannot process or retain data.
 
-The network services you use can also observe connection metadata such as IP addresses, timing and traffic volume. Whether a host or Relay logs or retains data depends on that service's actual configuration and operator. These are user-configured services; their processing is distinct from the publisher collecting user information through the App.
+## Optional iOS notifications
 
-## 4. Optional notifications
+The App asks for permission to show system notifications. When notifications and a compatible paired Connector are configured, Apple supplies an APNs device token to the App. The App registers that token with the approved paired computer using a dedicated Noise-encrypted control channel, separate from the readable realtime Relay session stream.
 
-On iOS, the App requests permission before enabling visible system notifications. When notifications and a compatible paired Connector are configured:
+The Connector stores the token and device-authorization information needed for notifications. The configured notification sender sends the token and notification payload to Apple APNs. The implemented sender uses generic event text and opaque host/session routing identifiers, rather than terminal commands, file paths or terminal output.
 
-- Apple provides an APNs device token and permission/environment information to the App.
-- The App registers that token with the approved paired computer using a dedicated Noise-encrypted control channel; it does not fall back to the readable realtime session stream for this registration.
-- The Connector stores the registered token, environment and device-authorization information so it can deliver notifications.
-- The configured notification provider sends the token and notification payload to Apple APNs. The implemented sender uses generic event text and opaque host/session routing identifiers, rather than terminal commands, file paths or terminal output.
+Apple and the notification provider configured for your paired computer process the information needed for delivery under their own practices. You can change notification permission in iOS Settings. Revoking a paired device on its host is a separate operation.
 
-Apple and the notification provider configured for the paired computer process the data needed for delivery. This is not a declaration of a publisher-operated collection backend. Those services' actual retention is not established by the mobile source review. You can change notification permission in iOS Settings; removing a paired device's authorization on the host is a separate operation.
+## Files, images and other destinations
 
-## 5. Files, images and external destinations
+Downloads come from the host/session you choose and are temporarily stored in the App's private cache. The App attempts cleanup when downloads are cancelled or discarded, after saving, and at startup. Cleanup can fail. Files you save or share outside the App remain under the control of the destination you select.
 
-- Downloads come from the host/session you choose and are temporarily stored in the App's private cache. The App attempts cleanup on cancellation, disposal, completed saving and subsequent startup. Cleanup can fail, and saving or sharing creates copies outside the App's control.
-- When you choose an image to upload, its contents are sent to your selected host. The upload implementation does not establish that embedded image metadata has been removed. A successfully uploaded remote copy is not automatically deleted merely because a local temporary copy is cleaned up.
-- Loading an external HTTPS image referenced by Markdown can contact the image website and any accepted redirect destination. Such a service can receive your IP address, requested URL and timing. An anonymous request is not an assurance that no data is disclosed.
-- File providers, cloud storage or other apps you choose in the system save/share interface process the shared content under their own practices.
+When you select an image to upload, its contents are sent to your chosen host. Images may retain embedded metadata. Cleaning up a local temporary copy does not automatically delete a successfully uploaded remote copy.
 
-## 6. Permissions
+An external HTTPS image referenced by Markdown can contact the image website and accepted redirect destinations. Those services can receive your IP address, requested URL and timing. File providers, cloud storage and other apps you choose for saving or sharing also process the content under their own practices.
 
-The App's iOS permission descriptions identify camera access for scanning a short-lived pairing code and local-network access for pairing with and connecting to your computer. System image/file selection and notification features operate when you use or enable them. Permission descriptions alone do not prove that no other data is processed.
+## Permissions and diagnostics
 
-## 7. Publisher collection and third-party processing
+Camera access is used to scan a short-lived pairing code. Local-network access is used to pair with and connect to your computer. Image/file selection and notifications are used when you choose or enable those features.
 
-The publisher confirms that Relay servers are configured by users and that the publisher does not collect user information through this App. The reviewed connection paths use user-supplied profiles/invitations rather than a discovered default publisher collection service. The reviewed direct mobile dependencies and initialization did not identify a dedicated advertising, product-analytics or crash-reporting SDK.
+The App writes limited, rotating diagnostic logs locally. These can contain timestamps, lifecycle details, identifiers and error context; do not assume a diagnostic file contains no sensitive information. The reviewed diagnostic writer does not automatically upload its logs to the publisher.
 
-This does not mean that the App processes no data: it stores local information and communicates with the hosts, Relay services, notification infrastructure and image/file destinations described above. A user-configured server's own processing must not be confused with collection by the App's publisher. The static review does not establish third-party retention practices or constitute an audit of every transitive dependency.
+The App's reviewed direct dependencies and initialization do not include a dedicated advertising, product-analytics or crash-reporting SDK. The publisher does not use the App to collect user information. These statements do not govern the independent services you configure or external content you access.
 
-If you voluntarily contact the publisher through email or GitHub, that separate communication necessarily includes the information you choose to send. Do not include credentials or private terminal content in public issue reports. Any change that introduces publisher collection, analytics or tracking must be reflected in the final policy and App Store privacy declaration.
+## Your choices and retention
 
-## 8. Retention and controls
+You can manage connections and settings in the App, disable notifications in iOS Settings, stop using a server, and revoke a paired device on its host. Local preferences and records support their respective features until changed or removed by the applicable App or operating-system controls. Cancelling or letting a pairing attempt expire does not necessarily delete its pending local identity.
 
-Local settings and records remain available for their relevant features until changed, removed or cleared by applicable App/operating-system controls. Temporary files have the cleanup behavior described above. These statements do not specify a universal retention deadline for every local or remote data category.
+There is no publisher-operated App-data collection service for which a retention period is specified. Data held by your chosen hosts, Relay operators, notification providers, external storage or backups follows those services' own rules. To delete remote records or external file copies, use the relevant service's controls or contact its operator.
 
-Removing a profile, cancelling a pairing attempt or uninstalling the App must not be treated as a guarantee that credentials, host/Relay records, notification registrations, external file copies or backups have all been deleted. In particular, cancelled/expired pairing attempts can retain their pending local identity. Remote device revocation and service-side deletion may require separate action by the relevant operator.
+## Contact and policy updates
 
-No retention period for a publisher-operated App-data collection service is specified, because the publisher has declared that it does not collect user information through the App. User-operated or third-party services and external copies remain subject to their own controls. The final privacy-contact address and handling of voluntary support requests still require confirmation.
+For privacy questions, contact [tiandrive@icloud.com](mailto:tiandrive@icloud.com). If you voluntarily send email or open a GitHub issue, the information you choose to include is available to its recipients and the relevant email or website provider. We use such communications to handle your request. Do not send passwords, private keys or private terminal content in public issue reports.
 
-## 9. Contact and changes
-
-The final policy will identify the responsible operator and a functioning privacy-contact address. Requests relating to a third-party or user-operated host, Relay or storage destination may also need to be directed to that service's operator. Changes to actual features or service practices require this notice and the App Store privacy declaration to be reviewed again.
-
-## Operator confirmation required before publication
-
-1. Legal/publishing operator name, privacy-contact email and effective date.
-2. Confirmed by the publisher: Relay servers are user-configured and the publisher does not collect user information through this App. The corresponding App Store questionnaire is saved as an unpublished “Data Not Collected” draft.
-3. Privacy-request contact and any description of handling voluntary support messages outside the App. Do not invent retention/deletion guarantees for arbitrary user-operated hosts or third-party services.
-4. Recheck this notice if the service model, SDKs, analytics or tracking practices change.
-5. Public hosting location and approval of the final wording. This file is not yet an approved public policy URL, and saving the questionnaire draft is not authorization to press Publish.
-
-## Internal evidence notes — remove before public policy publication
-
-- Profiles/credentials: `src-tauri/src/hosts/mod.rs`, `src-tauri/src/credentials/mod.rs`, `src-tauri/src/relay_pairing.rs`.
-- Relay/SSH/Mosh: `src-tauri/src/remote.rs`, `src-tauri/src/ssh/mod.rs`, `src-tauri/src/mosh/bootstrap.rs`; `../crates/agentport-relay/src/endpoint.rs::connect_session_realtime` and Connector realtime negotiation.
-- Notifications: `src-tauri/ios/PushBridge.mm`, `src-tauri/src/ios_push.rs`, Relay `register_push_token` / Connector `register_push` and APNs sender.
-- Local inbox/diagnostics: `src/features/sessions/attentionInbox.ts`, `src-tauri/src/lib.rs::mobile_diag_log`.
-- Files/images: `src-tauri/src/file_download.rs`, `src-tauri/src/sftp/image.rs`, `src-tauri/src/markdown_images.rs`.
-- Dependency/permission scope: `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, `src-tauri/Info.ios.plist`.
-
-This was a bounded static review. It did not inspect private credentials, execute traffic capture, audit every dependency, or verify deployed server logs, retention, account ownership or third-party practices.
+We will review this policy and the App Store privacy declaration if the App's features or service model change. The effective date above identifies this version of the policy.

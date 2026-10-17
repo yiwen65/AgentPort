@@ -3,7 +3,7 @@
 - Created: 2026-10-17
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: blocked
+- Overall status: in_progress
 - Source: 用户要求通过 public-browser MCP 操作已登录 Chrome 填写 App Store Connect，随后确认 1.0 新构建、隐私审查和政策草稿、免费且排除欧盟。
 
 <!-- task-doc-section:background-goal -->
@@ -55,8 +55,8 @@
 <!-- task-doc-section:dependencies-batches -->
 ## Dependencies and parallel batches
 
-- Dependency graph: T-001 独立完成；T-002 -> T-003；T-004 独立；T-005 独立；T-006 独立；T-008 为名称统一及新构建的增量任务；T-001/T-003/T-004/T-005/T-006/T-008 -> T-007。
-- Parallel batches: 隐私数据流只读审查 T-002 可与协调者本机构建 T-004 并行。浏览器 T-005/T-006 串行。
+- Dependency graph: T-001 独立完成；T-002 -> T-003；T-004 独立；T-005 独立；T-006 独立；T-008 为名称统一及新构建的增量任务；T-009 为隔离演示和商店截图；T-001/T-003/T-004/T-005/T-006/T-008/T-009 -> T-007。
+- Parallel batches: 隐私数据流只读审查 T-002 可与协调者本机构建 T-004 并行。浏览器 T-003/T-005/T-006/T-009 串行，原生构建与不重叠的只读检查可并行。
 - Serialization constraints: 仅协调者编辑本文件、操作 Chrome、修改生成 Xcode 工程和归档；审查子代理只读源码，不能访问凭据、修改文件或操控浏览器。
 
 <!-- task-doc-section:task-list -->
@@ -99,7 +99,7 @@
 - Unblock condition: None.
 
 ### [ ] T-003 — 隐私政策草稿与确认
-- Status: blocked
+- Status: in_progress
 - Owner: coordinator
 - Objective: 基于已核实数据流起草政策，向用户确认后才决定公开发布和 Apple 声明。
 - Inputs and prerequisites: T-002 报告及协调者复核。
@@ -114,8 +114,8 @@
 - Verification method:
   - 对照 T-002 路径证据和用户确认。
 - Validation evidence: mobile/PRIVACY.md 草稿已随新名称改为 AgentsPort，标明未批准公开；覆盖本地数据、可读 realtime Relay、独立加密推送注册、APNs、图片、文件和日志。用户明确说明 Relay 自配、不收集用户信息后，已将该运营事实纳入草稿；public-browser 选择 No, we do not collect data、Save，再 reload 后仍见 Data Not Collected；未点 Publish。仍待主体/联系、最终文字与公开位置确认。
-- Blocker: 用户已澄清自配 Relay、不收集信息；仍缺隐私联系人、最终政策内容和公开位置确认，不能点 Publish。
-- Unblock condition: 用户确认联系资料、最终文字和公开发布位置/动作后，才公开政策及 Apple 隐私标签。
+- Blocker: None.
+- Unblock condition: None.
 
 ### [x] T-004 — 1.0 App Store 构建与上传
 - Status: done
@@ -158,7 +158,7 @@
 - Unblock condition: None.
 
 ### [ ] T-006 — 审核资料、截图与法律声明
-- Status: blocked
+- Status: in_progress
 - Owner: coordinator
 - Objective: 补齐联系人、版权、真实素材和用户确认的适用声明。
 - Inputs and prerequisites: 联系资料、截图来源、隔离审核访问、合规回答。
@@ -173,8 +173,8 @@
 - Verification method:
   - 页面读回、素材检查、审核通道实际可用性验证。
 - Validation evidence: App Information 的 Content Rights / Age Ratings 未设置；版权和审核登录凭据未填。已在同一 App 的 TestFlight Test Information 找到四项既有联系人，确认正式表单原为空后复用并 Save/reload，四项逐字匹配；未复制账号密码，未在文档记录手机号或其他私有值。隐私 No Data Collected 草稿经用户运营说明后已保存但未 Publish。1.0.0(5) Missing Compliance，加密向导查看后 Cancel，未勾选；新 build 6 上传已接收。iPhone 6.1/6.3 与 iPad 12.9/13 截图槽均为 0/10，未上传个人数据截图。
-- Blocker: 仍需版权署名、年龄/内容/出口声明确认；截图来源、隔离审核入口与凭据使用尚未授权/复核。联系人已补齐，供用户最终核对。
-- Unblock condition: 用户确认对应声明、版权和素材/审核访问来源，并完成必要验证。
+- Blocker: None.
+- Unblock condition: None.
 
 ### [ ] T-007 — 最终核对和提交边界
 - Status: blocked
@@ -183,7 +183,7 @@
 - Inputs and prerequisites: 前置任务输出及明确提审/发布确认。
 - Scope or files: App Store Connect 正式审核流程。
 - Expected output: 准确的提交结果或未提交的剩余清单。
-- Dependencies: T-001, T-003, T-004, T-005, T-006, T-008.
+- Dependencies: T-001, T-003, T-004, T-005, T-006, T-008, T-009.
 - Execution steps:
   1. 汇总最终版本、构建、政策、截图、地区和审核资料供用户确认。
   2. 仅经确认执行明确的提交动作，随后核实实际状态。
@@ -215,6 +215,26 @@
 - Blocker: None.
 - Unblock condition: None.
 
+### [ ] T-009 — 隔离审核环境与真实商店截图
+- Status: blocked
+- Owner: coordinator
+- Objective: 复核既有隔离 TestFlight 演示环境和专用网站凭据，生成无个人数据的 iPhone/iPad 原生截图并准备正式审核访问。
+- Inputs and prerequisites: 用户明确授权复用隔离环境；mobile/REVIEW_ACCESS.md、mobile/scripts/review-linux/README.md 与旧部署记录；已有审核专用网站凭据。
+- Scope or files: 仅任务隔离演示环境、独立截图模拟器、本机私有临时凭据/图片目录；Chrome 中的审核资料/素材上传；禁止个人会话、主账号密码、长期 Relay token 或生产数据。
+- Expected output: 实测可用的专用审核入口、真实 App 截图及保存验证；不可用时给出具体阻碍，不把假界面当原生实测。
+- Dependencies: None.
+- Execution steps:
+  1. 从既有 App 审核资料恢复网站入口和专用凭据，保护私有文件及输出，不写入 URL/命令行或 Git。
+  2. 验证匿名拒绝、认证、配对和真实终端；若过期/预算/服务状态有问题，先记录，不擅自中断现有会话或扩大开放权限。
+  3. 使用独立 iPhone/iPad 模拟器和新 App 生成真实演示截图，核对 Apple 尺寸与隐私，再上传并读回。
+- Acceptance criteria:
+  - 审核访问真实可用，截图仅含隔离演示数据且尺寸合格；无主账号凭据、个人信息或伪造运行证据。
+- Verification method:
+  - 网站认证/配对/终端操作证据、simulator 签名版本与 screenshot、public-browser 上传读回。
+- Validation evidence: 已从同一 App 的 TestFlight Sign-In 字段取得用户授权复用的专用网站凭据，仅保存在本机私有目录/0600 文件中，未输出值。build 2 的 What to Test 明确该凭据只用于隔离审核网页、不是 SSH/macOS 密码，并提供旧 HTTPS 入口。该入口直接访问失败，系统 DNS 返回 nodename nor servname provided；经现有代理也出现 TLS EOF，未取得认证成功或发码证据。未向 App Review 填入已失效入口，未创建邀请、配对、改服务、重启容器或使用个人数据截图。
+- Blocker: 旧隔离审核网页当前不可达，缺少可验证的现行入口或明确维护连接资料，不能假定历史部署仍运行。
+- Unblock condition: 用户提供当前可用的隔离审核 HTTPS 入口，或明确该隔离环境所在服务器的连接/维护授权；验证通过后才能生成演示截图并复用访问资料。
+
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
 
@@ -243,7 +263,9 @@
 - 2026-10-17 23:00 CST: 用户确认名称 AgentsPort，并选择同时统一商店与手机桌面名称，新增 T-008 并开始执行；不扩大到桌面/Android 重命名。用户关于自配 Relay、不收集信息的陈述已用于保存 Data Not Collected 草稿，reload 后再次验证，但未 Publish。
 - 2026-10-17 23:01–23:05 CST: iOS 显示名回归先失败，再因三份配置同步 AgentsPort 而通过；发行构建 1.0.0(6) 最终 plist、签名/平台/图标/Scene 门禁通过，Xcode 上传成功。商店名称和两处移动文案保存/刷新读回为 AgentsPort；public-browser 验证 Build Uploads 的 build 6/Processing/23:05，T-008 完成。
 - 2026-10-17 23:06 CST: Mobile 全量 949/949、Python packaging 10/10、图标 34 项、桌面版本同步和 diff 检查通过。新构建的生成 Xcode/schema 文件已自动恢复到包含新显示名的构建前状态。
-- 2026-10-17: 仅从同一 App 现有 TestFlight 表单复用四项审核联系人；先确认正式表单为空，Save/reload 后逐项匹配，不记录私有值、不复用审核账号密码。版权、截图、隔离审核访问及法律声明/政策公开仍须确认，整体回到 blocked。
+- 2026-10-17: 仅从同一 App 现有 TestFlight 表单复用四项审核联系人；先确认正式表单为空，Save/reload 后逐项匹配，不记录私有值、不复用审核账号密码。版权、截图、隔离审核访问及法律声明/政策公开当时仍须确认，整体回到 blocked。
+- 2026-10-17: 用户随后明确批准：以现有审核姓名/邮箱公开隐私政策到 GitHub（不公开电话）；如实选择额外标准加密并排除法国；版权用 2026 加现有审核姓名；复用隔离演示环境和专用网站审核凭据。T-003/T-006 恢复 in_progress，新增 T-009；最终提审/正式发布仍不在授权内。
+- 2026-10-17: 已根据批准的运营模型完善正式隐私政策，去除 DRAFT/内部审查笔记，公开资料只包含姓名和邮箱。T-009 从旧 build 2 的说明恢复隔离网页入口及网站专用凭据后，只读验证因 DNS/代理 TLS 失败受阻，标为 blocked；不猜测服务器、不改生产服务。T-003/T-006 的其他已授权工作继续。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
