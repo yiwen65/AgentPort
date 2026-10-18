@@ -24,6 +24,7 @@ import { ShortcutSettings } from "./ShortcutSettings";
 import { applyShortcutModifiers, encodeShortcutKey, isCustomShortcut, loadShortcuts, saveShortcuts, type ShortcutLayout } from "./shortcuts";
 import { MOBILE_TERMINAL_THEMES } from "./terminalThemes";
 import { installSynchronizedOutput } from "./synchronizedOutput";
+import { installWebglAtlasRepair } from "./webglAtlas";
 import { SCROLL_DIAGNOSTICS_ENABLED, type ScrollDiagnostics } from "./scrollDiagnostics";
 import "./terminalFonts.css";
 import "./mobile-terminal.css";
@@ -395,11 +396,13 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     // Keep the DOM renderer as the fallback: a lost WebGL context must degrade
     // to a working terminal, not a blank one.
     let webgl: WebglAddon | undefined;
+    let disposeWebglAtlas: () => void = () => undefined;
     if (canUseWebgl()) {
       try {
         const addon = new WebglAddon();
-        addon.onContextLoss(() => { addon.dispose(); if (webgl === addon) webgl = undefined; });
+        addon.onContextLoss(() => { disposeWebglAtlas(); addon.dispose(); if (webgl === addon) webgl = undefined; });
         terminal.loadAddon(addon);
+        disposeWebglAtlas = installWebglAtlasRepair(terminal, addon);
         webgl = addon;
       } catch {
         webgl = undefined;
@@ -852,6 +855,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       if (selectionFrame !== undefined) window.cancelAnimationFrame(selectionFrame);
       positionSelectionMenuRef.current = () => undefined;
       disposeSynchronizedOutput();
+      disposeWebglAtlas();
       webgl?.dispose();
       webgl = undefined;
       parsedViewport.dispose();
