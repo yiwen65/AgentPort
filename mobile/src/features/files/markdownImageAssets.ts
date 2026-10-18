@@ -7,7 +7,7 @@ export function sanitizeImageSvg(source: string, width?: number, height?: number
   const original = new DOMParser().parseFromString(source, "image/svg+xml");
   if (original.querySelector("parsererror") || original.documentElement.localName !== "svg" || /<!DOCTYPE|<!ENTITY/i.test(source)) throw { code: "invalid_image" };
   staticImageStyles(original);
-  const clean = DOMPurify.sanitize(new XMLSerializer().serializeToString(original.documentElement), { USE_PROFILES: { svg: true }, ADD_TAGS: ["use"], FORBID_TAGS: ["script", "foreignObject", "image", "a", "animate", "animateMotion", "animateTransform", "set", "filter", "style"], FORBID_ATTR: ["target", "style"] });
+  const clean = DOMPurify.sanitize(new XMLSerializer().serializeToString(original.documentElement), { USE_PROFILES: { svg: true }, ADD_TAGS: ["use"], FORBID_TAGS: ["script", "foreignObject", "image", "a", "animate", "animateColor", "animateMotion", "animateTransform", "set", "filter", "style"], FORBID_ATTR: ["target", "style"] });
   const document = new DOMParser().parseFromString(clean, "image/svg+xml");
   const root = document.documentElement;
   if (document.querySelector("parsererror") || root.localName !== "svg") throw { code: "invalid_image" };

@@ -1,9 +1,10 @@
 export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 export const MAX_IMAGE_PIXELS = 20_000_000;
 export interface MarkdownImageData { mime: string; width: number; height: number; contentBase64: string }
+export interface LocalImageOptions { signal?: AbortSignal; animationLimits?: boolean }
 export interface MarkdownImageClient {
   scope?: string;
-  local(path: string): Promise<MarkdownImageData>;
+  local(path: string, options?: LocalImageOptions): Promise<MarkdownImageData>;
   remote(url: string): Promise<MarkdownImageData>;
 }
 export type ImageSource = { kind: "local"; path: string } | { kind: "remote"; url: string };

@@ -66,6 +66,11 @@ describe("Markdown images", () => {
     const { unmount } = render(view("![Local](one.png)", images)); await waitFor(() => expect(images.local).toHaveBeenCalled()); unmount();
     await act(async () => finish(data)); expect(serial).toBe(0);
   });
+  it("removes all SMIL animation tags, including deprecated animateColor", () => {
+    const animations = ["animate", "animateColor", "animateMotion", "animateTransform", "set"];
+    const source = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10">${animations.map(tag => `<${tag} attributeName="fill" values="red;blue" dur="1s" repeatCount="indefinite"/>`).join("")}</rect></svg>`;
+    expect(sanitizeImageSvg(source)).not.toMatch(/<(?:animate\w*|set)\b/i);
+  });
   it("bounds dimensions and scrubs SVG resources/CSS while preserving static text", () => {
     expect(() => createImageAsset({ ...data, width: 20_000_001 })).toThrow();
     const svg = sanitizeImageSvg('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" onload="alert(1)"><script>x</script><foreignObject>x</foreignObject><image href="https://bad.example/a"/><a href="https://bad.example"><text>label</text></a><style>@import "https://bad.example/style";</style><path style="fill:u\\72l(remote.svg)"/><use href="https://bad.example/symbol"/></svg>', 10, 10);

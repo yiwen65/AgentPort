@@ -12,6 +12,9 @@ use std::{
 
 const MAX_BYTES: usize = 20 * 1024 * 1024;
 const MAX_PIXELS: u64 = 20_000_000;
+// Conservative input gates, not a bound on the browser's decoded/cache memory.
+const MAX_ANIMATION_FRAMES: u64 = 300;
+const MAX_ANIMATION_PIXELS: u64 = 80_000_000;
 const MAX_REDIRECTS: usize = 5;
 
 #[derive(Debug, Serialize)]
@@ -222,7 +225,10 @@ pub async fn markdown_image_fetch(url: String) -> Result<MarkdownImage> {
 }
 
 #[tauri::command]
-pub async fn markdown_image_validate(content_base64: String) -> Result<MarkdownImage> {
+pub async fn markdown_image_validate(
+    content_base64: String,
+    animation_limits: Option<bool>,
+) -> Result<MarkdownImage> {
     if content_base64.len() > MAX_BYTES.div_ceil(3) * 4 {
         return Err(error("byte_limit", "Image exceeds 20 MiB"));
     }
@@ -230,7 +236,7 @@ pub async fn markdown_image_validate(content_base64: String) -> Result<MarkdownI
         let bytes = STANDARD
             .decode(content_base64)
             .map_err(|_| error("invalid_image", "Invalid image encoding"))?;
-        validate(&bytes, None)
+        validate_with_animation_limits(&bytes, None, animation_limits.unwrap_or(false))
     })
     .await
     .map_err(|_| error("internal", "Image validation worker stopped"))?
@@ -247,6 +253,14 @@ fn dimensions(width: u32, height: u32) -> Result<(u32, u32)> {
 }
 
 fn validate(bytes: &[u8], declared: Option<&str>) -> Result<MarkdownImage> {
+    validate_with_animation_limits(bytes, declared, false)
+}
+
+fn validate_with_animation_limits(
+    bytes: &[u8],
+    declared: Option<&str>,
+    animation_limits: bool,
+) -> Result<MarkdownImage> {
     if bytes.len() > MAX_BYTES {
         return Err(error("byte_limit", "Image exceeds 20 MiB"));
     }
@@ -262,7 +276,13 @@ fn validate(bytes: &[u8], declared: Option<&str>) -> Result<MarkdownImage> {
         // image constructors receive limits only *after* their header initialization.
         let (width, height) = bounded_header_dimensions(bytes, format)?;
         if format == ImageFormat::Gif {
-            gif_frames(bytes, width, height)?;
+            gif_frames(bytes, width, height, animation_limits)?;
+        } else if animation_limits {
+            match format {
+                ImageFormat::WebP => webp_frames(bytes, width, height)?,
+                ImageFormat::Png => reject_apng(bytes)?,
+                _ => {}
+            }
         }
         let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
         let mut limits = Limits::default();
@@ -402,7 +422,7 @@ fn bounded_header_dimensions(bytes: &[u8], format: ImageFormat) -> Result<(u32, 
 
 // GIF frame rectangles can differ from the logical-screen header. Validate every
 // rectangle and block boundary without decompressing or allocating frame pixels.
-fn gif_frames(bytes: &[u8], width: u32, height: u32) -> Result<()> {
+fn gif_frames(bytes: &[u8], width: u32, height: u32, animation_limits: bool) -> Result<()> {
     let invalid = || error("invalid_image", "Malformed GIF image");
     fn take<'a>(bytes: &'a [u8], pos: &mut usize, length: usize) -> Option<&'a [u8]> {
         let end = pos.checked_add(length)?;
@@ -424,7 +444,7 @@ fn gif_frames(bytes: &[u8], width: u32, height: u32) -> Result<()> {
     if header[10] & 0x80 != 0 {
         take(bytes, &mut pos, 3 * (1usize << ((header[10] & 7) + 1))).ok_or_else(invalid)?;
     }
-    let mut frames = 0;
+    let mut frames = 0u64;
     loop {
         match *take(bytes, &mut pos, 1)
             .ok_or_else(invalid)?
@@ -432,7 +452,30 @@ fn gif_frames(bytes: &[u8], width: u32, height: u32) -> Result<()> {
             .ok_or_else(invalid)?
         {
             0x21 => {
-                take(bytes, &mut pos, 1).ok_or_else(invalid)?;
+                let label = take(bytes, &mut pos, 1).ok_or_else(invalid)?[0];
+                if animation_limits {
+                    match label {
+                        0xf9 => {
+                            let control = take(bytes, &mut pos, 6).ok_or_else(invalid)?;
+                            if control[0] != 4
+                                || control[1] & 0xe0 != 0
+                                || (control[1] >> 2) & 7 > 3
+                                || control[5] != 0
+                            {
+                                return Err(invalid());
+                            }
+                            continue;
+                        }
+                        0x01 | 0xff => {
+                            let length = if label == 0x01 { 12 } else { 11 };
+                            if take(bytes, &mut pos, 1).ok_or_else(invalid)?[0] != length {
+                                return Err(invalid());
+                            }
+                            take(bytes, &mut pos, usize::from(length)).ok_or_else(invalid)?;
+                        }
+                        _ => {}
+                    }
+                }
                 blocks(bytes, &mut pos).ok_or_else(invalid)?;
             }
             0x2c => {
@@ -451,6 +494,9 @@ fn gif_frames(bytes: &[u8], width: u32, height: u32) -> Result<()> {
                         "GIF frame exceeds its image viewport",
                     ));
                 }
+                if animation_limits && descriptor[8] & 0x18 != 0 {
+                    return Err(invalid());
+                }
                 if descriptor[8] & 0x80 != 0 {
                     take(bytes, &mut pos, 3 * (1usize << ((descriptor[8] & 7) + 1)))
                         .ok_or_else(invalid)?;
@@ -460,12 +506,202 @@ fn gif_frames(bytes: &[u8], width: u32, height: u32) -> Result<()> {
                     return Err(invalid());
                 }
                 blocks(bytes, &mut pos).ok_or_else(invalid)?;
-                frames += 1;
+                frames = frames.checked_add(1).ok_or_else(invalid)?;
+                if animation_limits {
+                    animation_budget(width, height, frames)?;
+                }
             }
             0x3b if frames > 0 && pos == bytes.len() => return Ok(()),
             _ => return Err(invalid()),
         }
     }
+}
+
+fn animation_budget(width: u32, height: u32, frames: u64) -> Result<()> {
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|canvas| canvas.checked_mul(frames));
+    if frames > MAX_ANIMATION_FRAMES || pixels.is_none_or(|n| n > MAX_ANIMATION_PIXELS) {
+        return Err(error(
+            "animation_limit",
+            "Animation exceeds 300 frames or 80 million cumulative canvas pixels",
+        ));
+    }
+    Ok(())
+}
+
+// APNG is not an opted-in file-image format: do not let its animation bypass the
+// GIF/WebP budgets. Inspect chunk boundaries, not compressed bytes for a marker.
+fn reject_apng(bytes: &[u8]) -> Result<()> {
+    let invalid = || error("invalid_image", "Malformed PNG image");
+    let mut pos = 8usize;
+    loop {
+        let header = bytes
+            .get(pos..pos.checked_add(8).ok_or_else(invalid)?)
+            .ok_or_else(invalid)?;
+        let length = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        pos = pos
+            .checked_add(12)
+            .and_then(|n| n.checked_add(length))
+            .ok_or_else(invalid)?;
+        if pos > bytes.len() {
+            return Err(invalid());
+        }
+        match &header[4..8] {
+            b"acTL" | b"fcTL" | b"fdAT" => {
+                return Err(error(
+                    "unsupported_format",
+                    "APNG animation is not supported",
+                ));
+            }
+            b"IEND" if length == 0 => return Ok(()),
+            _ => {}
+        }
+    }
+}
+
+fn le24(bytes: &[u8]) -> u32 {
+    u32::from(bytes[0]) | (u32::from(bytes[1]) << 8) | (u32::from(bytes[2]) << 16)
+}
+
+// Return a borrowed chunk and advance over its mandatory even-byte padding.
+// This is used for both RIFF chunks and ANMF subchunks, with no allocations.
+fn webp_chunk<'a>(bytes: &'a [u8], pos: &mut usize) -> Result<(&'a [u8], &'a [u8])> {
+    let invalid = || error("invalid_image", "Malformed WebP chunk");
+    let header_end = pos.checked_add(8).ok_or_else(invalid)?;
+    let header = bytes.get(*pos..header_end).ok_or_else(invalid)?;
+    let length = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+    let end = header_end.checked_add(length).ok_or_else(invalid)?;
+    let data = bytes.get(header_end..end).ok_or_else(invalid)?;
+    *pos = end.checked_add(length & 1).ok_or_else(invalid)?;
+    if *pos > bytes.len() || (length & 1 != 0 && bytes.get(end) != Some(&0)) {
+        return Err(invalid());
+    }
+    Ok((&header[..4], data))
+}
+
+fn webp_bitstream(kind: &[u8], data: &[u8]) -> Result<(u32, u32, bool)> {
+    let invalid = || error("invalid_image", "Malformed WebP frame header");
+    match kind {
+        b"VP8L" if data.len() >= 5 && data[0] == 0x2f && data[4] & 0xe0 == 0 => {
+            let bits = u32::from_le_bytes(data[1..5].try_into().unwrap());
+            Ok((
+                (bits & 0x3fff) + 1,
+                ((bits >> 14) & 0x3fff) + 1,
+                bits & (1 << 28) != 0,
+            ))
+        }
+        b"VP8 " if data.len() >= 10 && data[0] & 1 == 0 && &data[3..6] == b"\x9d\x01\x2a" => {
+            let width = u32::from(u16::from_le_bytes(data[6..8].try_into().unwrap())) & 0x3fff;
+            let height = u32::from(u16::from_le_bytes(data[8..10].try_into().unwrap())) & 0x3fff;
+            Ok((width, height, false))
+        }
+        _ => Err(invalid()),
+    }
+}
+
+fn webp_alpha(data: &[u8], width: u32, height: u32) -> Result<()> {
+    let invalid = || error("invalid_image", "Malformed WebP alpha chunk");
+    let flags = *data.first().ok_or_else(invalid)?;
+    if flags & 0xc0 != 0 || flags & 3 > 1 || (flags >> 4) & 3 > 1 || data.len() < 2 {
+        return Err(invalid());
+    }
+    if flags & 3 == 0 && data.len() as u64 != 1 + u64::from(width) * u64::from(height) {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn webp_frame_payload(bytes: &[u8], width: u32, height: u32) -> Result<bool> {
+    let invalid = || error("invalid_image", "Malformed WebP frame data");
+    let (mut pos, mut alpha, mut image) = (0, false, false);
+    while pos < bytes.len() {
+        let (kind, data) = webp_chunk(bytes, &mut pos)?;
+        match kind {
+            b"ALPH" if !alpha && !image => {
+                webp_alpha(data, width, height)?;
+                alpha = true;
+            }
+            b"VP8 " | b"VP8L" if !image => {
+                let (w, h, embedded_alpha) = webp_bitstream(kind, data)?;
+                if (w, h) != (width, height) || (alpha && kind == b"VP8L") {
+                    return Err(invalid());
+                }
+                alpha |= embedded_alpha;
+                image = true;
+            }
+            b"ALPH" | b"VP8 " | b"VP8L" | b"VP8X" | b"ANIM" | b"ANMF" => return Err(invalid()),
+            _ => {} // Unknown RIFF chunks are permitted by WebP, but still boundary-checked.
+        }
+    }
+    if !image {
+        return Err(invalid());
+    }
+    Ok(alpha)
+}
+
+fn webp_frames(bytes: &[u8], width: u32, height: u32) -> Result<()> {
+    let invalid = || error("invalid_image", "Malformed WebP animation");
+    let header = bytes.get(..12).ok_or_else(invalid)?;
+    if &header[..4] != b"RIFF"
+        || &header[8..12] != b"WEBP"
+        || u64::from(u32::from_le_bytes(header[4..8].try_into().unwrap())) + 8 != bytes.len() as u64
+    {
+        return Err(invalid());
+    }
+    let mut pos = 12;
+    let (kind, extended) = webp_chunk(bytes, &mut pos)?;
+    if kind != b"VP8X" {
+        // Simple still WebP has no feature header and must not hide animation.
+        webp_frame_payload(&bytes[12..], width, height)?;
+        return Ok(());
+    }
+    if extended.len() != 10
+        || extended[0] & 0xc1 != 0
+        || extended[1..4] != [0; 3]
+        || (le24(&extended[4..7]) + 1, le24(&extended[7..10]) + 1) != (width, height)
+    {
+        return Err(invalid());
+    }
+    let animated = extended[0] & 2 != 0;
+    let has_alpha = extended[0] & 0x10 != 0;
+    if !animated {
+        if webp_frame_payload(&bytes[pos..], width, height)? && !has_alpha {
+            return Err(invalid());
+        }
+        return Ok(());
+    }
+    let (mut animation_header, mut frames) = (false, 0u64);
+    while pos < bytes.len() {
+        let (kind, data) = webp_chunk(bytes, &mut pos)?;
+        match kind {
+            b"ANIM" if !animation_header && frames == 0 && data.len() == 6 => {
+                animation_header = true;
+            }
+            b"ANMF" if animation_header && data.len() >= 16 => {
+                let (left, top) = (le24(&data[..3]) * 2, le24(&data[3..6]) * 2);
+                let (w, h) = (le24(&data[6..9]) + 1, le24(&data[9..12]) + 1);
+                dimensions(w, h)?;
+                if data[15] & !3 != 0
+                    || left.checked_add(w).is_none_or(|end| end > width)
+                    || top.checked_add(h).is_none_or(|end| end > height)
+                {
+                    return Err(invalid());
+                }
+                frames = frames.checked_add(1).ok_or_else(invalid)?;
+                animation_budget(width, height, frames)?;
+                if webp_frame_payload(&data[16..], w, h)? && !has_alpha {
+                    return Err(invalid());
+                }
+            }
+            b"ANIM" | b"ANMF" | b"VP8X" | b"VP8 " | b"VP8L" | b"ALPH" => return Err(invalid()),
+            _ => {}
+        }
+    }
+    if frames == 0 {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 fn svg_number(value: &str) -> Result<f64> {
@@ -700,8 +936,243 @@ mod tests {
     fn gif_frame_rectangles_cannot_bypass_screen_limit() {
         let mut gif = b"GIF89a\x02\x00\x03\x00\x00\x00\x00".to_vec();
         gif.extend_from_slice(b"\x2c\x00\x00\x00\x00\xff\xff\xff\xff\x00\x02\x01\x00\x00\x3b");
-        assert_eq!(gif_frames(&gif, 2, 3).unwrap_err().code, "pixel_limit");
-        assert!(gif_frames(&gif[..13], 2, 3).is_err());
+        assert_eq!(
+            gif_frames(&gif, 2, 3, false).unwrap_err().code,
+            "pixel_limit"
+        );
+        assert!(gif_frames(&gif[..13], 2, 3, false).is_err());
+    }
+    // Actual two-frame 2x3 red/blue images (Pillow GIF/WebP lossless encoders).
+    fn animated_gif() -> Vec<u8> {
+        STANDARD.decode("R0lGODlhAgADAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAAgADAAAIBgABCBwYEAAh+QQBCgABACwAAAAAAgADAIEAAP8AAAAAAAAAAAAIBgABCBwYEAA7").unwrap()
+    }
+    fn animated_webp() -> Vec<u8> {
+        STANDARD.decode("UklGRoQAAABXRUJQVlA4WAoAAAACAAAAAQAAAgAAQU5JTQYAAAAAAAAAAABBTk1GKAAAAAAAAAAAAAEAAAIAAGQAAAJWUDhMDwAAAC8BgAAABxD9j/4HIqL/AQBBTk1GKAAAAAAAAAAAAAEAAAIAAGQAAABWUDhMDwAAAC8BgAAABxDR//4HIqL/AQA=").unwrap()
+    }
+    fn repeated_gif(frames: usize, width: u16, height: u16) -> Vec<u8> {
+        let fixture = animated_gif();
+        let mut bytes = fixture[..44].to_vec(); // header, palette and loop extension
+        bytes[6..8].copy_from_slice(&width.to_le_bytes());
+        bytes[8..10].copy_from_slice(&height.to_le_bytes());
+        for _ in 0..frames {
+            bytes.extend_from_slice(&fixture[44..71]); // GCE and complete 2x3 frame
+        }
+        bytes.push(0x3b);
+        bytes
+    }
+    fn fix_riff_size(bytes: &mut [u8]) {
+        let length = (bytes.len() - 8) as u32;
+        bytes[4..8].copy_from_slice(&length.to_le_bytes());
+    }
+    fn repeated_webp(frames: usize, width: u32, height: u32) -> Vec<u8> {
+        let fixture = animated_webp();
+        let mut bytes = fixture[..44].to_vec(); // RIFF, VP8X and ANIM
+        bytes[24..27].copy_from_slice(&(width - 1).to_le_bytes()[..3]);
+        bytes[27..30].copy_from_slice(&(height - 1).to_le_bytes()[..3]);
+        for _ in 0..frames {
+            bytes.extend_from_slice(&fixture[44..92]); // complete 2x3 ANMF
+        }
+        fix_riff_size(&mut bytes);
+        bytes
+    }
+    #[test]
+    fn actual_gif_and_webp_animations_are_allowed() {
+        use image::AnimationDecoder;
+        let gif = animated_gif();
+        let webp = animated_webp();
+        for bytes in [&gif, &webp] {
+            let result = validate_with_animation_limits(bytes, None, true).unwrap();
+            assert_eq!((result.width, result.height), (2, 3));
+        }
+        assert_eq!(
+            image::codecs::gif::GifDecoder::new(Cursor::new(&gif))
+                .unwrap()
+                .into_frames()
+                .collect_frames()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            image::codecs::webp::WebPDecoder::new(Cursor::new(&webp))
+                .unwrap()
+                .into_frames()
+                .collect_frames()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+    #[test]
+    fn webp_lossy_and_lossless_alpha_frames_are_validated() {
+        use image::AnimationDecoder;
+        for encoded in [
+            "UklGRuQAAABXRUJQVlA4WAoAAAASAAAAAQAAAgAAQU5JTQYAAAAAAAAAAABBTk1GWgAAAAAAAAAAAAEAAAIAAGQAAAJBTFBIBwAAAACAgICAgIAAVlA4IDIAAAAwAQCdASoCAAMAAUAmJaAAA3AA/vLrf//5sD/28/8EegH//9Lg//6XB//0uD/0pAAAAEFOTUZWAAAAAAAAAAAAAQAAAgAAZAAAAkFMUEgHAAAAAICAgICAgABWUDggLgAAADABAJ0BKgIAAwABQCYloAADcAD++1Xj//9Lg//6XB//0uD/0uD/+tXlV6yroAA=",
+            "UklGRoQAAABXRUJQVlA4WAoAAAASAAAAAQAAAgAAQU5JTQYAAAAAAAAAAABBTk1GKAAAAAAAAAAAAAEAAAIAAGQAAAJWUDhMDwAAAC8BgAAQBxD9jwIGIqL/AQBBTk1GKAAAAAAAAAAAAAEAAAIAAGQAAAJWUDhMDwAAAC8BgAAQBxDR/wIGIqL/AQA=",
+        ] {
+            let bytes = STANDARD.decode(encoded).unwrap();
+            assert!(validate_with_animation_limits(&bytes, None, true).is_ok());
+            assert_eq!(
+                image::codecs::webp::WebPDecoder::new(Cursor::new(&bytes))
+                    .unwrap()
+                    .into_frames()
+                    .collect_frames()
+                    .unwrap()
+                    .len(),
+                2
+            );
+            let mut inconsistent = bytes.clone();
+            inconsistent[20] = 2; // animation flag without the required alpha feature
+            assert!(validate_with_animation_limits(&inconsistent, None, true).is_err());
+            if &bytes[68..72] == b"ALPH" {
+                for (offset, value) in [(76, 0xc0), (72, 6), (98, 1)] {
+                    let mut invalid = bytes.clone();
+                    invalid[offset] = value;
+                    assert!(validate_with_animation_limits(&invalid, None, true).is_err());
+                }
+            }
+        }
+    }
+    #[test]
+    fn animation_frame_and_canvas_budgets_include_delta_frames() {
+        for bytes in [
+            repeated_gif(300, 2, 3),
+            repeated_webp(300, 2, 3),
+            repeated_gif(4, 5000, 4000),
+            repeated_webp(4, 5000, 4000),
+        ] {
+            assert!(validate_with_animation_limits(&bytes, None, true).is_ok());
+        }
+        for bytes in [
+            repeated_gif(301, 2, 3),
+            repeated_webp(301, 2, 3),
+            repeated_gif(5, 5000, 4000),
+            repeated_webp(5, 5000, 4000),
+        ] {
+            assert_eq!(
+                validate_with_animation_limits(&bytes, None, true)
+                    .unwrap_err()
+                    .code,
+                "animation_limit"
+            );
+            // Existing Markdown behavior remains unchanged without the opt-in.
+            assert!(validate(&bytes, None).is_ok());
+        }
+        assert_eq!(
+            animation_budget(u32::MAX, u32::MAX, u64::MAX)
+                .unwrap_err()
+                .code,
+            "animation_limit"
+        );
+    }
+    #[tokio::test]
+    async fn validate_command_animation_policy_is_optional() {
+        for bytes in [repeated_gif(301, 2, 3), repeated_webp(301, 2, 3)] {
+            let encoded = STANDARD.encode(bytes);
+            for policy in [None, Some(false)] {
+                assert!(markdown_image_validate(encoded.clone(), policy)
+                    .await
+                    .is_ok());
+            }
+            assert_eq!(
+                markdown_image_validate(encoded, Some(true))
+                    .await
+                    .unwrap_err()
+                    .code,
+                "animation_limit"
+            );
+        }
+    }
+    #[test]
+    fn malformed_and_truncated_gif_animations_are_rejected() {
+        let fixture = animated_gif();
+        for end in 0..fixture.len() {
+            assert!(
+                validate_with_animation_limits(&fixture[..end], None, true).is_err(),
+                "GIF prefix {end}"
+            );
+        }
+        for (offset, value) in [
+            (46, 3),
+            (47, 0xe0),
+            (51, 1),
+            (52, 0),
+            (53, 0xff),
+            (57, 0),
+            (59, 0),
+            (61, 0x18),
+            (62, 1),
+            (63, 0),
+        ] {
+            let mut bytes = fixture.clone();
+            bytes[offset] = value;
+            assert!(
+                validate_with_animation_limits(&bytes, None, true).is_err(),
+                "GIF offset {offset}"
+            );
+        }
+        let mut trailing = fixture.clone();
+        trailing.push(0);
+        assert!(validate_with_animation_limits(&trailing, None, true).is_err());
+    }
+    #[test]
+    fn malformed_and_truncated_webp_animations_are_rejected() {
+        let fixture = animated_webp();
+        for end in 0..fixture.len() {
+            assert!(
+                validate_with_animation_limits(&fixture[..end], None, true).is_err(),
+                "WebP prefix {end}"
+            );
+        }
+        for (offset, value) in [
+            (4, 0),
+            (16, 0xff),
+            (20, 0x82),
+            (20, 0),
+            (21, 1),
+            (34, 5),
+            (48, 15),
+            (52, 2),
+            (58, 0),
+            (67, 4),
+            (72, 0xff),
+            (76, 0),
+            (91, 1),
+        ] {
+            let mut bytes = fixture.clone();
+            bytes[offset] = value;
+            assert!(
+                validate_with_animation_limits(&bytes, None, true).is_err(),
+                "WebP offset {offset} value {value}"
+            );
+        }
+        for mut bytes in [
+            fixture[..44].to_vec(),                      // animation with no frames
+            [&fixture[..30], &fixture[44..92]].concat(), // frame before ANIM
+            [&fixture[..44], &fixture[30..44], &fixture[44..92]].concat(), // duplicate ANIM
+        ] {
+            fix_riff_size(&mut bytes);
+            assert!(validate_with_animation_limits(&bytes, None, true).is_err());
+        }
+        let mut duplicate_image = [&fixture[..92], &fixture[68..92]].concat();
+        duplicate_image[48..52].copy_from_slice(&64u32.to_le_bytes());
+        fix_riff_size(&mut duplicate_image);
+        assert!(validate_with_animation_limits(&duplicate_image, None, true).is_err());
+        let mut empty_frame = fixture[..68].to_vec();
+        empty_frame[48..52].copy_from_slice(&16u32.to_le_bytes());
+        fix_riff_size(&mut empty_frame);
+        assert!(validate_with_animation_limits(&empty_frame, None, true).is_err());
+    }
+    #[test]
+    fn apng_is_rejected_only_with_animation_policy() {
+        let bytes = STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAACGFjVEwAAAACAAAAAPONk3AAAAAaZmNUTAAAAAAAAAACAAAAAwAAAAAAAAAAAGQD6AAAuK5U9QAAABVJREFUeJxj/M/A8J+BgYGBCUSgMAAxOwIEVSNINAAAABpmY1RMAAAAAQAAAAIAAAADAAAAAAAAAAAAZAPoAAAj3b4hAAAAGWZkQVQAAAACeJxjZGD4/5+BgYGBCUSgMAAvPQIEBtbc6AAAAABJRU5ErkJggg==").unwrap();
+        assert!(validate(&bytes, None).is_ok());
+        assert_eq!(
+            validate_with_animation_limits(&bytes, None, true)
+                .unwrap_err()
+                .code,
+            "unsupported_format"
+        );
     }
     #[test]
     fn dimensions_are_gated_before_decoder_construction() {
@@ -743,6 +1214,12 @@ mod tests {
             );
             let result = validate(encoded.get_ref(), Some(mime)).unwrap();
             assert_eq!((result.mime, result.width, result.height), (mime, 2, 3));
+            let opted_in =
+                validate_with_animation_limits(encoded.get_ref(), Some(mime), true).unwrap();
+            assert_eq!(
+                (opted_in.mime, opted_in.width, opted_in.height),
+                (mime, 2, 3)
+            );
             assert!(validate(encoded.get_ref(), Some("text/html")).is_err());
             assert!(validate(&encoded.get_ref()[..10], None).is_err());
         }

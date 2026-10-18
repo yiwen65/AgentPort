@@ -6,6 +6,7 @@
 .markdown-image-viewer { display: flex; flex-direction: column; width: min(100%, 900px); height: min(100%, 85dvh); overflow: hidden; }
 .markdown-image-viewer .centered-modal-header { flex: 0 0 auto; }
 .markdown-image-viewer-tools { display: flex; justify-content: center; gap: 8px; margin-bottom: 8px; }
+.markdown-image-viewer-tools[hidden] { display: none; }
 .markdown-image-viewer-tools button { min-height: 44px; min-width: 44px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; }
 .markdown-image-viewport { flex: 1; min-height: 0; position: relative; width: 100%; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
 .markdown-image-viewport img { width: 100%; height: 100%; object-fit: contain; transform-origin: center; pointer-events: none; }

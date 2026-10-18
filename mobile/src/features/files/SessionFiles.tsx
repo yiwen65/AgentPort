@@ -8,6 +8,7 @@ import { Modal } from "../../components/Modal";
 import { FileDownloadIndicator, useFileDownloads } from "./FileDownloads";
 import { useFilePageSwipe } from "./useFilePageSwipe";
 import { FileTreeIcon } from "./FileTreeIcon";
+import { SessionImage, isImageFile, type ImageBackground } from "./SessionImage";
 import { createMarkdownImageClient } from "../../platform/tauriMarkdownImageClient";
 import type { MarkdownImageClient } from "../../protocol/markdownImageClient";
 import "./session-files.css";
@@ -40,6 +41,9 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
   const [preview, setPreview] = useState<string>();
   const previewRef = useRef<string>();
   const [previewVisible, setPreviewVisible] = useState(false);
+  const imagePreview = preview !== undefined && isImageFile(preview);
+  const [imageRevision, setImageRevision] = useState(0);
+  const [imageBackground, setImageBackground] = useState<ImageBackground>("checker");
   const [file, setFile] = useState<Resource<FileRead>>({ loading: false, stale: false });
   const [rendered, setRendered] = useState(true);
   const [online, setOnline] = useState(true);
@@ -89,7 +93,7 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
   const refresh = useCallback(() => {
     invalidate();
     for (const path of new Set([".", ...Object.keys(directoriesRef.current)])) void load(path, "list");
-    if (previewRef.current) void load(previewRef.current, "read");
+    if (previewRef.current && !isImageFile(previewRef.current)) void load(previewRef.current, "read");
   }, [invalidate, load]);
 
   useEffect(() => {
@@ -134,16 +138,27 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
   }, [active, preview, previewVisible]);
 
   useEffect(() => { setChromeVisible(false); }, [active, previewVisible]);
+  useEffect(() => {
+    const hide = () => {
+      if (document.visibilityState === "hidden" && imagePreview) {
+        setPreviewVisible(false); setMenu(undefined); setChromeVisible(false);
+      }
+    };
+    document.addEventListener("visibilitychange", hide);
+    return () => document.removeEventListener("visibilitychange", hide);
+  }, [imagePreview]);
   const showPreview = () => { if (previewRef.current) setPreviewVisible(true); };
   const backToTree = () => { window.getSelection()?.removeAllRanges(); setPreviewVisible(false); setCopyStatus(""); };
-  const { dragging } = useFilePageSwipe({ containerRef: pages, active, previewVisible, hasPreview: preview !== undefined, onShowTree: backToTree, onShowPreview: showPreview });
+  const { dragging } = useFilePageSwipe({ containerRef: pages, active: active && !(previewVisible && imagePreview), previewVisible, hasPreview: preview !== undefined && !imagePreview, onShowTree: backToTree, onShowPreview: showPreview });
   const openFile = useCallback((path: string) => {
     returnRow.current = path;
     setChromeVisible(false);
     setPreviewVisible(true);
+    setImageBackground("checker");
+    if (isImageFile(path)) { requests.current.get("read")?.abort(); requests.current.delete("read"); }
     if (previewRef.current === path) return;
     previewRef.current = path; setPreview(path); setFile({ loading: false, stale: false }); setRendered(true); setCopyStatus("");
-    void load(path, "read");
+    if (!isImageFile(path)) void load(path, "read");
   }, [load]);
   const copy = async (value: string) => {
     const path = previewRef.current;
@@ -198,8 +213,8 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
       <div className="files-heading"><button type="button" className="files-icon-button" aria-label={t(page === "tree" ? "files.backToTerminal" : "files.backToTree")} onClick={page === "tree" ? onBack : backToTree}><BackIcon /></button><h1 ref={page === "tree" ? treeHeading : previewHeading} tabIndex={-1} title={path}>{title}</h1></div>{menuButton(page)}
     </header>
   </>;
-  const previewNotice = !online ? t("files.offlineShort") : file.data && file.loading ? t("files.loading") : file.data && file.stale ? t("files.cachedShort") : undefined;
-  return <section className={`session-files${active ? "" : " is-inactive"}`} tabIndex={-1} aria-label={t("files.open")} aria-hidden={!active} data-chrome-visible={chromeVisible} onPointerDownCapture={(event) => { if (!(event.target as Element).closest(".files-header,.files-chrome-reveal,.modal-backdrop,.mobile-modal-portal")) setChromeVisible(false); }}>
+  const previewNotice = !online ? t(imagePreview ? "images.offline" : "files.offlineShort") : !imagePreview && file.data && file.loading ? t("files.loading") : !imagePreview && file.data && file.stale ? t("files.cachedShort") : undefined;
+  return <section className={`session-files${active ? "" : " is-inactive"}`} tabIndex={-1} aria-label={t("files.open")} aria-hidden={!active} data-chrome-visible={chromeVisible} onPointerDownCapture={(event) => { if (!(event.target as Element).closest(".files-header,.files-chrome-reveal,.markdown-image-viewer-tools,.modal-backdrop,.mobile-modal-portal")) setChromeVisible(false); }}>
     <div ref={pages} className="files-page-viewport" data-preview-visible={previewVisible} data-dragging={dragging}>
       <div className={`files-page-track${previewVisible ? " is-preview" : ""}`}>
         <section className="files-tree-page" aria-hidden={previewVisible} {...(previewVisible ? { inert: "" } : {})}>
@@ -207,14 +222,16 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
           {!online || directories["."]?.stale && directories["."]?.data ? <p className="files-state-strip" role="status">{t(!online ? "files.offlineShort" : "files.cachedShort")}</p> : null}
           <div className="files-tree-scroll" aria-label={t("files.open")}>{tree(".")}</div>
         </section>
-        <section className="files-preview-page" data-no-page-swipe="true" aria-hidden={!previewVisible} {...(!previewVisible ? { inert: "" } : {})}>
+        <section className={`files-preview-page${imagePreview ? " files-image-page" : ""}`} data-no-page-swipe="true" aria-hidden={!previewVisible} {...(!previewVisible ? { inert: "" } : {})}>
           {preview !== undefined ? <>
             {header("preview", baseName(preview), preview)}
             {previewNotice ? <p className="files-state-strip" role="status">{previewNotice}</p> : null}
-            {file.data?.truncated ? <button className="files-state-strip files-state-action" type="button" aria-label={t("files.fileTruncated", { size: file.data.sizeBytes.toLocaleString() })} onClick={() => { openMenu("preview"); setInformation(true); }}>{t("files.truncatedShort")}</button> : null}
+            {!imagePreview && file.data?.truncated ? <button className="files-state-strip files-state-action" type="button" aria-label={t("files.fileTruncated", { size: file.data.sizeBytes.toLocaleString() })} onClick={() => { openMenu("preview"); setInformation(true); }}>{t("files.truncatedShort")}</button> : null}
             <div ref={previewScroll} className="files-preview-scroll" tabIndex={-1} aria-label={baseName(preview)}>
-              {resourceStatus(file, () => void load(preview, "read"), true)}
-              {file.data ? <FileContent path={preview} content={file.data.content} rendered={rendered} onOpen={openFile} imageClient={imageClient ?? nativeImages} /> : null}
+              {imagePreview ? active && previewVisible && online ? <SessionImage key={`${preview}:${imageRevision}`} path={preview} client={imageClient ?? nativeImages} controlsVisible={chromeVisible} background={imageBackground} /> : null : <>
+                {resourceStatus(file, () => void load(preview, "read"), true)}
+                {file.data ? <FileContent path={preview} content={file.data.content} rendered={rendered} onOpen={openFile} imageClient={imageClient ?? nativeImages} /> : null}
+              </>}
             </div>
           </> : null}
         </section>
@@ -224,17 +241,17 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
     {menu !== undefined ? <Modal title={information ? t("files.information") : menuTitle} onClose={closeMenu} className="files-menu">
       {information ? <div className="files-information">
         <p className="files-operation-path">{menu === "preview" && preview ? `${root.replace(/\/$/, "")}/${preview}` : root}</p>
-        <p>{t("files.readOnly")}</p><p>{t("files.markdownSafety")}</p>
+        <p>{t("files.readOnly")}</p><p>{t(imagePreview && menu === "preview" ? "images.safety" : "files.markdownSafety")}</p>
         {!online ? <p>{t("files.offline")}</p> : null}
         {menu === "preview" && file.stale && file.data ? <p>{t("files.cached")}</p> : null}
         {menu === "preview" && file.data?.truncated ? <p>{t("files.fileTruncated", { size: file.data.sizeBytes.toLocaleString() })}</p> : null}
         <button type="button" className="files-menu-action" onClick={() => setInformation(false)}>{t("files.backToActions")}</button>
       </div> : <div className="files-menu-actions">
-        <button type="button" className="files-menu-action" disabled={!online} onClick={() => { closeMenu(); if (menu === "preview" && preview) void load(preview, "read"); else refresh(); }}>{t("files.refresh")}</button>
+        <button type="button" className="files-menu-action" disabled={!online} onClick={() => { closeMenu(); if (menu === "preview" && preview) { if (imagePreview) setImageRevision(old => old + 1); else void load(preview, "read"); } else refresh(); }}>{t("files.refresh")}</button>
         {menu === "preview" && preview ? <>
           <button type="button" className="files-menu-action" disabled={!online || !downloads.available || downloads.occupied} onClick={() => { closeMenu(); downloads.start(open, preview); }}>{t("downloads.download")}</button>
           <button type="button" className="files-menu-action" onClick={() => { closeMenu(); void copy(preview); }}>{t("files.copyPath")}</button>
-          <button type="button" className="files-menu-action" disabled={!file.data} onClick={() => { closeMenu(); void copy(file.data?.content ?? ""); }}>{t(file.data?.truncated ? "files.copyVisible" : "files.copyContent")}</button>
+          {!imagePreview ? <button type="button" className="files-menu-action" disabled={!file.data} onClick={() => { closeMenu(); void copy(file.data?.content ?? ""); }}>{t(file.data?.truncated ? "files.copyVisible" : "files.copyContent")}</button> : <fieldset className="file-image-backgrounds"><legend>{t("images.background")}</legend>{(["checker", "light", "dark"] as const).map(background => <button key={background} type="button" aria-pressed={imageBackground === background} onClick={() => { setImageBackground(background); closeMenu(); }}>{t(`images.backgrounds.${background}`)}</button>)}</fieldset>}
           {isMarkdown(preview) ? <button type="button" className="files-menu-action" aria-pressed={rendered} onClick={() => { closeMenu(); setRendered(value => !value); }}>{t(rendered ? "files.showSource" : "files.showRendered")}</button> : null}
         </> : preview ? <button type="button" className="files-menu-action" onClick={() => { closeMenu(); showPreview(); }}>{t("files.resumePreview", { name: baseName(preview) })}</button> : null}
         {downloads.snapshot ? <button type="button" className="files-menu-action" onClick={() => { closeMenu(); queueMicrotask(downloads.openDetails); }}>{t("downloads.title")} · {t(`downloads.states.${downloads.snapshot.state}`)}</button> : null}

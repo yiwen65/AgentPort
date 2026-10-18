@@ -62,4 +62,15 @@
 .files-information { line-height: 1.5; font-size: 14px; color: var(--muted); }
 .files-information p { overflow-wrap: anywhere; }
 .files-toast { position: absolute; inset-inline: 12px; bottom: max(16px, env(safe-area-inset-bottom)); width: fit-content; max-width: calc(100% - 24px); margin: auto; padding: 6px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); font-size: 13px; pointer-events: none; }
+.files-image-page .files-preview-scroll { position: relative; display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+.file-image-content { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.file-image-content[data-image-background="checker"] { background-color: #eee; background-image: conic-gradient(#d5d5d5 25%, transparent 0 50%, #d5d5d5 0 75%, transparent 0); background-size: 24px 24px; }
+.file-image-content[data-image-background="light"] { background: #fff; }
+.file-image-content[data-image-background="dark"] { background: #161616; }
+.file-image-content .files-note, .file-image-content .files-error { width: fit-content; max-width: calc(100% - 24px); align-self: center; margin: auto 12px; padding: 12px; border-radius: 8px; background: var(--panel); color: var(--text); }
+.file-image-content .markdown-image-viewer-tools { position: absolute; z-index: 2; bottom: 8px; inset-inline: 8px; margin: 0; }
+.file-image-content .markdown-image-viewer-tools button { background: var(--panel); box-shadow: 0 1px 6px #0003; }
+.file-image-backgrounds { margin: 4px 0; padding: 8px; border: 1px solid var(--line); border-radius: 8px; display: flex; flex-wrap: wrap; gap: 8px; color: var(--text); }
+.file-image-backgrounds button { min-height: 44px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; }
+.file-image-backgrounds button[aria-pressed="true"] { border-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) { .files-page-track { transition: none; } }

@@ -899,6 +899,15 @@
 - Prevention: Test ordinary escaped text/attributes alongside external/custom entity and invalid-codepoint rejection; continue frontend static SVG sanitization.
 - Verified by: The added valid-escape test failed against the blanket check; after correction both native image suites passed7/7, and the signed desktop displayed the static SVG demo.
 
+## `mobile static SVG` — include legacy SMIL elements in the animation denylist
+
+- Wrong approach: Assume removing animate/animateMotion/animateTransform/set makes the existing DOMPurify SVG profile static.
+- Why it failed: DOMPurify also allows deprecated animateColor with duration/repetition attributes; the shared sanitizer returned that element unchanged.
+- Recognition signal: `removes all SMIL animation tags, including deprecated animateColor` fails with an animateColor node in the sanitized XML.
+- Correct approach: Explicitly forbid animateColor alongside the other SMIL elements, retaining Blob-only SVG rendering and resource restrictions.
+- Prevention: Enumerate the installed sanitizer's SVG allowlist and test every supported animation tag, not just modern examples.
+- Verified by: The new mobile regression failed before the one-tag correction, then all68 targeted tests and both production Chrome harnesses passed; the real SVG fixture also includes animateColor.
+
 ## `调试 bundle 手工换二进制` — 没重签名的 App 会让 Host 在建日志前被 codesigning 杀掉
 
 - Wrong approach: 手工把新构建的 `agentport-host`（以及 `agentport-host.prev-*` 备份）拷进 `target/debug/bundle/macos/AgentPort.app/Contents/MacOS/`，不做整包重签；GUI 自己在运行，看起来与签名无关。
