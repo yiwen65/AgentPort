@@ -3,7 +3,7 @@
 - Created: 2026-10-18
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: in_progress
+- Overall status: blocked
 - Source: 用户已确认需求摘要，并授权“编写开发计划，开始实施完成交付”。
 
 <!-- task-doc-section:background-goal -->
@@ -161,9 +161,9 @@
 - Blocker: 尚未获得手机独占验收时段及Android设备；安装/进程不是图片页交互证据。
 - Unblock condition: 在可操作且已连接Session的iPhone/Android上验证真实文件读取、GIF/WebP播放、缩放拖动、返回树及后台清理；不卸载App或覆盖个人数据。
 
-### [ ] T-006 — 文档与任务专属提交
+### [x] T-006 — 文档与任务专属提交
 
-- Status: in_progress
+- Status: done
 - Owner: coordinator
 - Objective: 更新使用说明、收口证据并提交本任务改动。
 - Inputs and prerequisites: 自动化与审查通过，设备状态已如实记录。
@@ -177,7 +177,7 @@
   - 文档与实现一致、提交范围准确，交付报告不掩盖阻塞。
 - Verification method:
   - task_document.py validate、git diff --check、版本同步与提交文件核对。
-- Validation evidence: Not run.
+- Validation evidence: 任务文档校验、git diff --check、scripts/check-version-sync.sh通过；提交a79667f（feat(mobile): view file tree images with safe animation limits），18个文件均属本任务；原生生成Info.plist/ACL、签名资料和构建产物未入Git。SESSION_FILES与LEARNS已更新。
 - Blocker: None.
 - Unblock condition: None.
 
@@ -208,10 +208,11 @@
 - 2026-10-18 14:32 +0800: iOS开发归档与签名IPA校验完成，输出在Downloads；随后串行Android构建，未并发写dist。
 - 2026-10-18 14:34 +0800: Android arm64 debug APK构建完成；iPhone已重新连接，保留数据覆盖安装/启动成功且进程路径匹配。手机正在并行使用，停止交互/画面采集并恢复DeviceHub原选择，非任务画面自有临时截图已删除，不保留内容；不当作图片页验收。T-005 blocked，待独占设备时段与Android设备。
 - 2026-10-18 14:36 +0800: 两包已汇总至Downloads并双SHA校验通过；恢复自动构建产生的跟踪Info.plist版本与ACL漂移，不提交生成噪音。更新SESSION_FILES与静态SVG可复用教训；T-006开始收口提交。
+- 2026-10-18: APK经Java17/apksigner v2验证通过；最终diff/版本同步/任务文档校验通过。实现与使用说明提交a79667f，18文件无任务外改动，T-006 done；仅T-005真机验收仍blocked，整体结果保持partial，不以构建安装代替验收。
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: partial
-- Evidence: T-001至T-004已通过实现/相关测试/原生测试/实际浏览器/独立审查；iOS/Android构建、iPhone覆盖安装启动、desktop debug精确进程与非白屏通过；T-006提交中。
+- Evidence: T-001至T-004、T-006 done：最终68相关前端测试/82原生测试、生产构建、新旧实际浏览器与独立审查通过，实现提交a79667f。iOS签名IPA/Android已验签APK构建、iPhone覆盖安装启动、desktop debug精确进程与非白屏通过；交付包在 ~/Downloads/AgentPort-file-tree-images-20261018-143118/。
 - Limitations: T-005手机图片页/手势/后台真实验收未完成，Android无连接设备；全量前端一项GlobalActive基线失败已独立复现，未掩盖或混入修复。浏览器原生adapter为mock，不替代真机传输验证。
