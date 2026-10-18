@@ -131,7 +131,17 @@ export function runtimeMessageText(envelope: RuntimeMessageEnvelope): string {
     case "host_session_id_mismatch":
       return i18n.t("runtime:errors.host.sessionIdMismatch");
     case "host_terminal_input_unavailable":
-      return i18n.t("runtime:errors.host.terminalInputUnavailable");
+      // Older live Hosts reused this code for PTY queue/validation rejection.
+      // They survive GUI upgrades, so do not reinterpret that detail as RPC.
+      return detail === "terminal input was not accepted"
+        ? i18n.t("runtime:errors.host.terminalInputRejected")
+        : i18n.t("runtime:errors.host.terminalInputUnavailable");
+    case "host_terminal_input_invalid":
+      return i18n.t("runtime:errors.host.terminalInputInvalid");
+    case "host_terminal_input_queue_full":
+      return i18n.t("runtime:errors.host.terminalInputQueueFull");
+    case "host_terminal_input_executor_unavailable":
+      return i18n.t("runtime:errors.host.terminalInputExecutorUnavailable");
     case "host_structured_prompt_transport_required":
       return i18n.t("runtime:errors.host.structuredPromptTransportRequired");
     case "host_structured_prompt_empty":

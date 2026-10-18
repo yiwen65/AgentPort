@@ -841,6 +841,224 @@ fn authenticated_connection_limit_rejects_excess_client() {
 }
 
 #[test]
+fn terminal_input_queue_full_reports_backpressure_and_recovers() {
+    let ctx = make_ctx(
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            // Raw mode prevents line-discipline consumption/drop from hiding
+            // backpressure. The gate keeps the child from reading any bytes.
+            "stty raw -echo; touch ready; while [ ! -e drain ]; do sleep 0.01; done; exec cat >/dev/null".into(),
+        ],
+        1 << 20,
+        vec![],
+    );
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    wait_for(
+        || ctx.dir.join("ready").exists(),
+        Duration::from_secs(5),
+        "non-reading PTY ready",
+    );
+    let mut conn = connect_with_output_subscription(&ctx, &ctx.session_id, TOKEN, 0, false);
+    conn.expect_hello_ok();
+
+    let has_ack = |frames: &[HostFrame], batch: &str, phase: InputBatchAckPhase| {
+        frames.iter().any(|frame| {
+            matches!(frame,
+            HostFrame::InputBatchAck { batch_id, phase: actual, .. }
+                if batch_id == batch && *actual == phase)
+        })
+    };
+    conn.send(&ClientFrame::InputBatch {
+        session_id: ctx.session_id.clone(),
+        batch_id: "blocked".into(),
+        // Larger than the kernel PTY input buffer; the single writer blocks.
+        data: vec![b'x'; 256 * 1024],
+    });
+    let started = conn.collect_until(Duration::from_secs(3), |frames| {
+        has_ack(frames, "blocked", InputBatchAckPhase::Accepted)
+    });
+    assert!(
+        has_ack(&started, "blocked", InputBatchAckPhase::Accepted),
+        "{started:?}"
+    );
+
+    // Exactly fill the bounded 128-entry FIFO behind the blocked writer.
+    for _ in 0..127 {
+        conn.send(&ClientFrame::Input {
+            session_id: ctx.session_id.clone(),
+            data: vec![b'y'],
+        });
+    }
+    conn.send(&ClientFrame::InputBatch {
+        session_id: ctx.session_id.clone(),
+        batch_id: "drain-barrier".into(),
+        data: vec![b'y'],
+    });
+    conn.send(&ClientFrame::InputBatch {
+        session_id: ctx.session_id.clone(),
+        batch_id: "overflow".into(),
+        data: b"batch-payload-must-not-be-logged".to_vec(),
+    });
+    conn.send(&ClientFrame::Input {
+        session_id: ctx.session_id.clone(),
+        data: b"legacy-payload-must-not-be-logged".to_vec(),
+    });
+    conn.send(&ClientFrame::Resize {
+        session_id: ctx.session_id.clone(),
+        cols: 100,
+        rows: 30,
+        pixel_width: 0,
+        pixel_height: 0,
+        expected_revision: Some(0),
+        source_kind: Some("desktop".into()),
+        source_device_id: Some("test-desktop".into()),
+        attachment_id: Some("test-attachment".into()),
+        orientation: None,
+    });
+    conn.send(&ClientFrame::Ping {
+        session_id: ctx.session_id.clone(),
+    });
+    let saturated = conn.collect_until(Duration::from_secs(3), |frames| {
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::Pong { .. }))
+    });
+    assert!(
+        saturated
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::Pong { .. })),
+        "ping blocked behind PTY input: {saturated:?}"
+    );
+    assert!(
+        saturated
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::ResizeAck { accepted: true, .. })),
+        "resize blocked behind PTY input: {saturated:?}"
+    );
+    assert!(
+        !has_ack(&saturated, "blocked", InputBatchAckPhase::Completed),
+        "PTY must still be blocked: {saturated:?}"
+    );
+    assert!(saturated.iter().any(|frame| matches!(frame,
+        HostFrame::InputBatchAck { batch_id, phase: InputBatchAckPhase::NotExecuted, message: Some(message), .. }
+            if batch_id == "overflow" && message == "input queue is full")), "{saturated:?}");
+    assert!(
+        saturated.iter().any(|frame| matches!(frame,
+        HostFrame::Error { code: Some(code), message, .. }
+            if code == "host_terminal_input_queue_full" && message == "input queue is full")),
+        "queue overflow must not masquerade as a structured Session: {saturated:?}"
+    );
+    assert!(!saturated.iter().any(|frame| matches!(frame,
+        HostFrame::Error { code: Some(code), .. } if code == "host_terminal_input_unavailable")));
+
+    // Releasing the consumer must drain the existing FIFO without latching
+    // input_failed. Submit a new batch only once a FIFO barrier completes.
+    std::fs::write(ctx.dir.join("drain"), b"").unwrap();
+    let drained = conn.collect_until(Duration::from_secs(5), |frames| {
+        has_ack(frames, "drain-barrier", InputBatchAckPhase::Completed)
+    });
+    assert!(
+        has_ack(&drained, "drain-barrier", InputBatchAckPhase::Completed),
+        "{drained:?}"
+    );
+    conn.send(&ClientFrame::InputBatch {
+        session_id: ctx.session_id.clone(),
+        batch_id: "recovered".into(),
+        data: b"recovered".to_vec(),
+    });
+    let recovered = conn.collect_until(Duration::from_secs(5), |frames| {
+        has_ack(frames, "recovered", InputBatchAckPhase::Completed)
+    });
+    assert!(
+        has_ack(&recovered, "recovered", InputBatchAckPhase::Completed),
+        "{recovered:?}"
+    );
+    assert!(!has_ack(
+        &recovered,
+        "recovered",
+        InputBatchAckPhase::NotExecuted
+    ));
+
+    let log = std::fs::read_to_string(&ctx.host_log).unwrap();
+    assert!(
+        log.contains("input queue is full"),
+        "rejection reason absent from host log: {log}"
+    );
+    assert!(
+        !log.contains("payload-must-not-be-logged"),
+        "input data leaked into host log"
+    );
+}
+
+#[test]
+fn terminal_input_unavailable_is_reserved_for_structured_transport() {
+    let ctx = make_rpc_ctx(
+        r#"while IFS= read -r line; do
+  case "$line" in
+    *get_state*) printf '{"type":"response","command":"get_state","success":true,"data":{"sessionId":"pi-native-test-id"}}\n' ;;
+  esac
+done"#,
+    );
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut conn = connect_with_output_subscription(&ctx, &ctx.session_id, TOKEN, 0, false);
+    conn.expect_hello_ok();
+    conn.send(&ClientFrame::Input {
+        session_id: ctx.session_id.clone(),
+        data: b"legacy-payload-must-not-be-logged".to_vec(),
+    });
+    let frames = conn.collect_until(Duration::from_secs(3), |frames| {
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::Error { .. }))
+    });
+    assert!(
+        frames.iter().any(|frame| matches!(frame,
+        HostFrame::Error { code: Some(code), message, .. }
+            if code == "host_terminal_input_unavailable"
+                && message == "terminal input is unavailable for structured sessions")),
+        "{frames:?}"
+    );
+}
+
+#[test]
+fn terminal_input_invalid_payload_has_a_distinct_error() {
+    let ctx = make_ctx(vec!["/bin/sleep".into(), "60".into()], 1 << 20, vec![]);
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut conn = connect_with_output_subscription(&ctx, &ctx.session_id, TOKEN, 0, false);
+    conn.expect_hello_ok();
+    for data in [Vec::new(), vec![b'x'; 256 * 1024 + 1]] {
+        conn.send(&ClientFrame::Input {
+            session_id: ctx.session_id.clone(),
+            data,
+        });
+        let frames = conn.collect_until(Duration::from_secs(3), |frames| {
+            frames
+                .iter()
+                .any(|frame| matches!(frame, HostFrame::Error { .. }))
+        });
+        assert!(frames.iter().any(|frame| matches!(frame,
+            HostFrame::Error { code: Some(code), message, .. }
+                if code == "host_terminal_input_invalid" && message == "terminal input payload is empty or too large")),
+            "invalid PTY input must not masquerade as a structured Session: {frames:?}");
+    }
+    conn.send(&ClientFrame::Ping {
+        session_id: ctx.session_id.clone(),
+    });
+    let frames = conn.collect_until(Duration::from_secs(3), |frames| {
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HostFrame::Pong { .. }))
+    });
+    assert!(frames
+        .iter()
+        .any(|frame| matches!(frame, HostFrame::Pong { .. })));
+}
+
+#[test]
 fn input_batches_from_two_clients_share_one_atomic_fifo() {
     let ctx = make_ctx(
         vec![

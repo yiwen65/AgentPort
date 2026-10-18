@@ -40,6 +40,27 @@ describe("runtime message localization", () => {
     })).toBe("结构化 Session 不支持终端输入。");
   });
 
+  it("does not mislabel a legacy PTY admission rejection as structured transport", async () => {
+    await applyUiLanguage("en-US", { persistHint: false });
+    expect(runtimeMessageText({
+      code: "host_terminal_input_unavailable",
+      technicalDetail: "terminal input was not accepted",
+      message: "terminal input was not accepted",
+    })).toBe("Terminal input was not accepted. It was not resent automatically.");
+  });
+
+  it.each([
+    ["host_terminal_input_invalid", "Invalid terminal input."],
+    ["host_terminal_input_queue_full", "Terminal input queue is full. The input was not sent; wait for the Agent to respond."],
+    ["host_terminal_input_executor_unavailable", "The terminal input writer is unavailable. Restart the Session."],
+  ])("localizes %s without a false transport diagnosis", async (code, expected) => {
+    await applyUiLanguage("en-US", { persistHint: false });
+    expect(runtimeMessageText({ code })).toBe(expected);
+    await applyUiLanguage("zh-CN", { persistHint: false });
+    expect(runtimeMessageText({ code })).not.toContain(code);
+    expect(runtimeMessageText({ code })).not.toContain("结构化");
+  });
+
   it("localizes Host attach failures emitted by Tauri", async () => {
     await applyUiLanguage("en-US", { persistHint: false });
     expect(runtimeMessageText({

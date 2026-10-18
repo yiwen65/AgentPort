@@ -60,6 +60,36 @@ const CLIENT_WRITER_POLL: Duration = Duration::from_millis(100);
 const MAX_INPUT_BATCH_BYTES: usize = 256 * 1024;
 pub(crate) const INPUT_QUEUE_CAPACITY: usize = 128;
 
+#[derive(Debug, Clone, Copy)]
+enum InputRejection {
+    Invalid,
+    QueueFull,
+    ExecutorUnavailable,
+}
+
+impl InputRejection {
+    fn code(self) -> HostErrorCode {
+        match self {
+            Self::Invalid => HostErrorCode::TerminalInputInvalid,
+            Self::QueueFull => HostErrorCode::TerminalInputQueueFull,
+            Self::ExecutorUnavailable => HostErrorCode::TerminalInputExecutorUnavailable,
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Invalid => "terminal input payload is empty or too large",
+            Self::QueueFull => "input queue is full",
+            Self::ExecutorUnavailable => "input executor is unavailable",
+        }
+    }
+}
+
+fn log_input_rejection(shared: &Shared, reason: &'static str) {
+    // Only fixed diagnostic text: never include input bytes or client batch IDs.
+    warn!(session_id = %shared.cfg.session_id, reason, "terminal input rejected");
+}
+
 /// Metadata needed for a directed batch acknowledgement. No input bytes are
 /// retained here or in the Host's logs.
 struct InputAckTarget {
@@ -409,6 +439,10 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
         match frame {
             ClientFrame::Input { data, .. } => {
                 if shared.cfg.transport != AgentTransport::Pty {
+                    log_input_rejection(
+                        &shared,
+                        "terminal input is unavailable for structured sessions",
+                    );
                     let _ = queue_client_frame(
                         &shared,
                         id,
@@ -423,18 +457,21 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                 }
                 // Legacy clients receive no new frame type, but their bytes
                 // still share the exact same FIFO as batch-aware clients.
-                if data.is_empty()
-                    || data.len() > MAX_INPUT_BATCH_BYTES
-                    || !enqueue_input(&shared, data, None)
-                {
+                let result = if data.is_empty() || data.len() > MAX_INPUT_BATCH_BYTES {
+                    log_input_rejection(&shared, InputRejection::Invalid.message());
+                    Err(InputRejection::Invalid)
+                } else {
+                    enqueue_input(&shared, data, None)
+                };
+                if let Err(rejection) = result {
                     let _ = queue_client_frame(
                         &shared,
                         id,
                         &frame_tx,
                         err_frame(
                             Some(&shared.cfg.session_id),
-                            HostErrorCode::TerminalInputUnavailable,
-                            "terminal input was not accepted",
+                            rejection.code(),
+                            rejection.message(),
                         ),
                     );
                 }
@@ -451,6 +488,7 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                     tx: frame_tx.clone(),
                 };
                 if invalid {
+                    log_input_rejection(&shared, "input batch validation failed");
                     let sequence = next_input_sequence(&shared);
                     send_input_ack(
                         &shared,
@@ -781,54 +819,41 @@ fn next_input_sequence(shared: &Shared) -> u64 {
 
 /// Admit input under one mutex so the assigned sequence is the Host's sole
 /// definition of receive order across independent Unix socket reader threads.
-fn enqueue_input(shared: &Shared, data: Vec<u8>, ack: Option<InputAckTarget>) -> bool {
+fn enqueue_input(
+    shared: &Shared,
+    data: Vec<u8>,
+    ack: Option<InputAckTarget>,
+) -> Result<(), InputRejection> {
     let _admission = shared.input_admission.lock().unwrap();
     let sequence = next_input_sequence(shared);
-    if shared.input_failed.load(Ordering::Acquire) {
-        if let Some(ack) = ack.as_ref() {
-            send_input_ack(
-                shared,
-                ack,
-                sequence,
-                InputBatchAckPhase::NotExecuted,
-                Some("input executor is unavailable"),
-            );
+    let (rejection, ack) = if shared.input_failed.load(Ordering::Acquire) {
+        (InputRejection::ExecutorUnavailable, ack)
+    } else {
+        let mutation = InputMutation {
+            server_sequence: sequence,
+            data,
+            ack,
+        };
+        match shared.input_queue.try_send(mutation) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::TrySendError::Full(mutation)) => (InputRejection::QueueFull, mutation.ack),
+            Err(mpsc::TrySendError::Disconnected(mutation)) => {
+                shared.input_failed.store(true, Ordering::Release);
+                (InputRejection::ExecutorUnavailable, mutation.ack)
+            }
         }
-        return false;
-    }
-    let mutation = InputMutation {
-        server_sequence: sequence,
-        data,
-        ack,
     };
-    match shared.input_queue.try_send(mutation) {
-        Ok(()) => true,
-        Err(mpsc::TrySendError::Full(mutation)) => {
-            if let Some(ack) = mutation.ack.as_ref() {
-                send_input_ack(
-                    shared,
-                    ack,
-                    sequence,
-                    InputBatchAckPhase::NotExecuted,
-                    Some("input queue is full"),
-                );
-            }
-            false
-        }
-        Err(mpsc::TrySendError::Disconnected(mutation)) => {
-            shared.input_failed.store(true, Ordering::Release);
-            if let Some(ack) = mutation.ack.as_ref() {
-                send_input_ack(
-                    shared,
-                    ack,
-                    sequence,
-                    InputBatchAckPhase::NotExecuted,
-                    Some("input executor is unavailable"),
-                );
-            }
-            false
-        }
+    log_input_rejection(shared, rejection.message());
+    if let Some(ack) = ack.as_ref() {
+        send_input_ack(
+            shared,
+            ack,
+            sequence,
+            InputBatchAckPhase::NotExecuted,
+            Some(rejection.message()),
+        );
     }
+    Err(rejection)
 }
 
 fn send_input_ack(
@@ -861,6 +886,7 @@ pub(crate) fn spawn_input_worker(shared: Arc<Shared>, rx: mpsc::Receiver<InputMu
     std::thread::spawn(move || {
         while let Ok(mutation) = rx.recv() {
             if shared.input_failed.load(Ordering::Acquire) {
+                log_input_rejection(&shared, InputRejection::ExecutorUnavailable.message());
                 if let Some(ack) = mutation.ack.as_ref() {
                     send_input_ack(
                         &shared,

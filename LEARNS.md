@@ -1,5 +1,14 @@
 # Project Learnings
 
+## `desktop input socket shutdown` — interrupt the writing endpoint without its mutex
+
+- Wrong approach: Let attachment close notify an ACK waiter, then acquire the socket writer mutex to shut down; in the regression fixture, shut down only the non-reading peer to release a blocked write.
+- Why it failed: `send()` still awaited `spawn_blocking(write_frame)` before observing the ACK error, and that write held the mutex. On macOS the peer shutdown did not wake the blocked `sendto`, so even test cleanup hung.
+- Recognition signal: Detach/replacement stalls with a non-reading Host; a process sample shows `write_frame → write_all → __sendto` while callers wait for completion.
+- Correct approach: Retain an independent clone of the writing endpoint and call `shutdown(Both)` without the writer mutex; notify pending/queued callers and never replay uncertain input.
+- Prevention: Keep the bounded socket-pair regression `closing_an_attachment_interrupts_a_blocked_socket_write`; its failure cleanup must shut down the writing endpoint itself.
+- Verified by: With corrected cleanup the pre-fix regression failed its 100ms close oracle; independent-descriptor shutdown passed, and all 133 desktop tests passed (3 pre-existing ignored).
+
 ## `pane drop overlay` — an indicator that mounts under the cursor becomes WebKit's drag target
 
 - Wrong approach: Letting the drop-zone overlay own the drop targets and deciding "the drag left this pane" from `dragleave`'s `relatedTarget`.

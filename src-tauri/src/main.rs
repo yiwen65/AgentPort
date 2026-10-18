@@ -50,6 +50,7 @@ mod notifications;
 mod relay;
 mod remote;
 mod updater;
+mod terminal_input;
 
 // ---------------------------------------------------------------------------
 // App state
@@ -280,6 +281,7 @@ struct RendererAttachment {
     id: u64,
     host: HostIdentity,
     writer: HostWriter,
+    input: Arc<terminal_input::DesktopInput>,
     /// Highest log cursor that this exact renderer attachment confirmed after
     /// its xterm write queue consumed the corresponding frame. Host cursors
     /// are producer high-waters and must never substitute for this boundary.
@@ -370,10 +372,7 @@ fn take_any_attachment(
 }
 
 fn shutdown_attachment(attachment: &RendererAttachment) {
-    use std::net::Shutdown;
-    if let Ok(writer) = attachment.writer.lock() {
-        let _ = writer.shutdown(Shutdown::Both);
-    }
+    attachment.input.close();
 }
 
 fn transition_terminal_lifecycle_for_host(
@@ -1788,6 +1787,12 @@ async fn attach_session(
     }
     let notification_watermark = NotificationWatermark::new(info.current_status.as_ref(),
         info.protocol == agentport_core::protocol::LEGACY_PROTOCOL_VERSION);
+    let shutdown = client.writer.try_clone().map_err(|error| {
+        runtime_command_error("host_connection_failed", json!({}), error.to_string(), error.to_string())
+    })?;
+    let input = Arc::new(terminal_input::DesktopInput::new(
+        client.supports_input_batches(), shutdown,
+    ));
     let HostClient { reader, writer, .. } = client;
     let writer = Arc::new(Mutex::new(writer));
     let attachment_id = state.next_attachment_id.fetch_add(1, Ordering::Relaxed);
@@ -1798,6 +1803,7 @@ async fn attach_session(
             id: attachment_id,
             host: host.clone(),
             writer: writer.clone(),
+            input: input.clone(),
             rendered_log_cursor: None,
         },
     );
@@ -1866,6 +1872,7 @@ async fn attach_session(
             host,
             writer,
             notification_watermark,
+            input,
         );
     });
     Ok(attach_info)
@@ -1883,6 +1890,7 @@ fn watch_loop(
     host: HostIdentity,
     writer: HostWriter,
     mut notification_watermark: NotificationWatermark,
+    input: Arc<terminal_input::DesktopInput>,
 ) {
     loop {
         match agentport_core::protocol::read_frame::<HostFrame>(&mut reader) {
@@ -2150,9 +2158,9 @@ fn watch_loop(
                     }
                     HostFrame::Pong { .. } => {}
                     HostFrame::HelloOk { .. } => {}
-                    // The GUI never sends InputBatch frames, so no ack can
-                    // arrive; ignore it like Pong/HelloOk.
-                    HostFrame::InputBatchAck { .. } => {}
+                    HostFrame::InputBatchAck {
+                        batch_id, server_sequence, phase, message, ..
+                    } => input.acknowledge(&batch_id, server_sequence, phase, message),
                     HostFrame::Error {
                         message,
                         code,
@@ -2186,6 +2194,7 @@ fn watch_loop(
             }
         }
     }
+    input.close();
     // EOF/error is a renderer transport fact, never evidence that the Host or
     // Agent exited. Remove and close only this generation's writer; a newer
     // attachment for the same Session remains untouched.
@@ -2283,7 +2292,6 @@ async fn send_input(
     session_id: String,
     data: String,
 ) -> std::result::Result<(), String> {
-    use agentport_core::protocol::{write_frame, ClientFrame};
     use base64::Engine as _;
     let bytes = map_err!(base64::engine::general_purpose::STANDARD
         .decode(&data)
@@ -2294,26 +2302,18 @@ async fn send_input(
             "input frame exceeds {MAX_INPUT_FRAME_BYTES} byte limit; split large paste before sending"
         ));
     }
-    // Clone the per-session writer before locking it.  Holding the global map
-    // lock across a blocking Unix-socket flush head-of-line blocks resize,
-    // detach and input for every other Session.
-    let writer = {
+    // Clone this attachment's capability before waiting. Completion comes
+    // from its watch thread, never from socket delivery or a later attachment.
+    let attachment = {
         let writers = state.writers.lock().unwrap();
-        writers
-            .get(&session_id)
-            .map(|attachment| attachment.writer.clone())
+        writers.get(&session_id).map(|attachment| {
+            (attachment.writer.clone(), attachment.input.clone())
+        })
     };
-    let Some(w) = writer else {
+    let Some((writer, input)) = attachment else {
         return Err("session not attached".into());
     };
-    let mut w = w.lock().unwrap();
-    map_err!(write_frame(
-        &mut *w,
-        &ClientFrame::Input {
-            session_id: session_id.clone(),
-            data: bytes,
-        }
-    ))
+    input.send(writer, session_id, bytes).await
 }
 
 /// Pi RPC prompt entry point. Structured sessions deliberately do not route
@@ -5085,6 +5085,7 @@ mod cleanup_tests {
 
     fn test_attachment(id: u64) -> RendererAttachment {
         let (writer, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let input = Arc::new(terminal_input::DesktopInput::new(false, writer.try_clone().unwrap()));
         RendererAttachment {
             id,
             host: HostIdentity {
@@ -5094,6 +5095,7 @@ mod cleanup_tests {
                 run_ordinal: 1,
             },
             writer: Arc::new(Mutex::new(writer)),
+            input,
             rendered_log_cursor: None,
         }
     }
