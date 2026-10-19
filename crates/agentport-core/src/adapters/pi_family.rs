@@ -253,7 +253,12 @@ fn base_plan(agent: AgentType, argv: Vec<String>, id: String) -> Result<LaunchPl
 /// private product directory. Validate the *header*, not just a UUID filename.
 /// Both CLIs create fresh files for missing paths, making this cold-resume gate
 /// essential. A duplicate matching ID is a conflict, never "take the latest".
-pub fn find_session_file(directory: &Path, id: &str, cwd: &str) -> Result<PathBuf> {
+pub fn find_session_file(
+    agent: AgentType,
+    directory: &Path,
+    id: &str,
+    cwd: &str,
+) -> Result<PathBuf> {
     native_id(Some(id))?;
     let metadata = fs::symlink_metadata(directory).map_err(|_| {
         CoreError::Blocked("native Session storage is missing; exact resume is unavailable".into())
@@ -296,7 +301,11 @@ pub fn find_session_file(directory: &Path, id: &str, cwd: &str) -> Result<PathBu
         if value["type"] != "session" || value["id"].as_str() != Some(id) {
             continue;
         }
-        if value["cwd"].as_str() != Some(cwd) || !matches!(value["version"].as_u64(), Some(1..=3)) {
+        let supported_format = matches!(value["version"].as_u64(), Some(1..=3))
+            || (agent == AgentType::EasyPi
+                && value["version"].as_u64() == Some(4)
+                && value["imageEncoding"].as_str() == Some("assets-v1"));
+        if value["cwd"].as_str() != Some(cwd) || !supported_format {
             return Err(CoreError::Blocked(
                 "native Session header has a different project or unsupported format".into(),
             ));
@@ -437,7 +446,7 @@ impl AgentAdapter for PiFamilyAdapter {
         let mut plan = self.build_resume(ctx)?;
         let directory = session_directory(Path::new(&ctx.session_dir), self.0);
         let id = native_id(ctx.agent_session_id.as_deref())?;
-        let path = find_session_file(&directory, id, &ctx.cwd)?;
+        let path = find_session_file(self.0, &directory, id, &ctx.cwd)?;
         let flag = if self.0 == AgentType::Omp {
             "--resume"
         } else {
@@ -707,6 +716,70 @@ mod tests {
     }
 
     #[test]
+    fn easy_pi_checked_resume_accepts_v4_asset_headers_only_for_the_same_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = session_directory(temp.path(), AgentType::EasyPi);
+        fs::create_dir(&directory).unwrap();
+        let mut ctx = fx::resume_ctx(AgentType::EasyPi, EASY_FLAGS, Some(ID));
+        ctx.session_dir = temp.path().to_string_lossy().into_owned();
+        let transcript = directory.join(format!("timestamp_{ID}.jsonl"));
+        let mut value = serde_json::json!({
+            "type": "session", "version": 4, "imageEncoding": "assets-v1",
+            "id": ID, "cwd": ctx.cwd,
+        });
+        fs::write(&transcript, format!("{value}\n")).unwrap();
+        let plan = PiFamilyAdapter(AgentType::EasyPi)
+            .build_resume_checked(&ctx)
+            .unwrap();
+        assert!(plan
+            .argv
+            .windows(2)
+            .any(|pair| { pair[0] == "--session" && pair[1] == transcript.to_string_lossy() }));
+        assert_eq!(plan.assigned_agent_session_id.as_deref(), Some(ID));
+        assert_eq!(plan.resume_precision, ResumePrecision::Exact);
+        assert!(!plan.argv.contains(&"--session-id".into()));
+        assert!(plan.helper_files.is_empty());
+        value["cwd"] = serde_json::json!("/different-project");
+        fs::write(&transcript, format!("{value}\n")).unwrap();
+        assert!(PiFamilyAdapter(AgentType::EasyPi)
+            .build_resume_checked(&ctx)
+            .is_err());
+    }
+
+    #[test]
+    fn checked_resume_rejects_foreign_or_unsupported_v4_formats() {
+        for (agent, flags, version, encoding) in [
+            (AgentType::Omp, OMP_FLAGS, 4, serde_json::json!("assets-v1")),
+            (
+                AgentType::EasyPi,
+                EASY_FLAGS,
+                5,
+                serde_json::json!("assets-v1"),
+            ),
+            (
+                AgentType::EasyPi,
+                EASY_FLAGS,
+                4,
+                serde_json::json!("assets-v2"),
+            ),
+            (AgentType::EasyPi, EASY_FLAGS, 4, serde_json::Value::Null),
+            (AgentType::EasyPi, EASY_FLAGS, 4, serde_json::json!(1)),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let directory = session_directory(temp.path(), agent);
+            fs::create_dir(&directory).unwrap();
+            let mut ctx = fx::resume_ctx(agent, flags, Some(ID));
+            ctx.session_dir = temp.path().to_string_lossy().into_owned();
+            let value = serde_json::json!({
+                "type": "session", "version": version, "imageEncoding": encoding,
+                "id": ID, "cwd": ctx.cwd,
+            });
+            fs::write(directory.join("session.jsonl"), format!("{value}\n")).unwrap();
+            assert!(PiFamilyAdapter(agent).build_resume_checked(&ctx).is_err());
+        }
+    }
+
+    #[test]
     fn transcript_lookup_rejects_ambiguous_headers_and_symlinks() {
         let temp = tempfile::tempdir().unwrap();
         let directory = temp.path().join("easy_pi");
@@ -715,15 +788,15 @@ mod tests {
         let second = directory.join("b.jsonl");
         fs::write(&first, header("/tmp/work", ID)).unwrap();
         fs::write(&second, header("/tmp/work", ID)).unwrap();
-        assert!(find_session_file(&directory, ID, "/tmp/work").is_err());
+        assert!(find_session_file(AgentType::EasyPi, &directory, ID, "/tmp/work").is_err());
         fs::remove_file(&second).unwrap();
         fs::remove_file(&first).unwrap();
         let foreign = temp.path().join("foreign.jsonl");
         fs::write(&foreign, header("/tmp/work", ID)).unwrap();
         std::os::unix::fs::symlink(&foreign, &first).unwrap();
-        assert!(find_session_file(&directory, ID, "/tmp/work").is_err());
+        assert!(find_session_file(AgentType::EasyPi, &directory, ID, "/tmp/work").is_err());
         fs::remove_file(&first).unwrap();
         fs::write(&first, "x".repeat(16 * 1024 + 1)).unwrap();
-        assert!(find_session_file(&directory, ID, "/tmp/work").is_err());
+        assert!(find_session_file(AgentType::EasyPi, &directory, ID, "/tmp/work").is_err());
     }
 }
