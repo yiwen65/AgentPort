@@ -1,5 +1,14 @@
 # Project Learnings
 
+## `live easy-pi CPU profiling` — inspector evaluation can terminate the Session
+
+- Wrong approach: After profiling a live Node Session, evaluate `import("node:inspector").then(...)` through `Runtime.evaluate` to close its inspector.
+- Why it failed: Node 24's inspector evaluation lacks a dynamic-import callback; the rejected Promise was unhandled and terminated the agent with exit code 1. A successful evaluation response containing a Promise did not prove that cleanup succeeded.
+- Recognition signal: `ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING` followed by Host `pty EOF` / `process:exit:1` immediately after diagnostic cleanup.
+- Correct approach: Prefer profiling a disposable replay process. If live inspection is necessary, validate both setup and cleanup against the same Node version in an isolated process first; avoid dynamic imports and unhandled Promises. Node 24's synchronous `process.getBuiltinModule("node:inspector")` lookup worked in the isolated cleanup probe; schedule close after the client disconnects.
+- Prevention: Never use the user's active Session as the first test of an inspector expression. Verify the target PID and post-cleanup liveness separately from the protocol response; do not automatically resume interrupted tool work without confirming its effects.
+- Verified by: On Node 24.15.0, the isolated dynamic-import probe reproduced exit 1; synchronous builtin lookup left the process alive until the probe explicitly terminated it.
+
 ## `desktop input socket shutdown` — interrupt the writing endpoint without its mutex
 
 - Wrong approach: Let attachment close notify an ACK waiter, then acquire the socket writer mutex to shut down; in the regression fixture, shut down only the non-reading peer to release a blocked write.
