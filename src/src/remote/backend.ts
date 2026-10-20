@@ -922,64 +922,80 @@ export class RemoteBackend {
     };
   }
 
-  createLocalBranch(
+  // Core mutation outcomes contain an operation id, not a desktop status.
+  // Hydrate only after the write succeeds; never replay a write if this read
+  // fails. Recovery inventory is refreshed separately by the branch picker.
+  private async branchOperationResult(
+    projectId: string,
+    operationId: string,
+  ): Promise<BranchOperationResult> {
+    return { operationId, status: await this.getRepositoryStatus(projectId) };
+  }
+
+  async createLocalBranch(
     projectId: string,
     name: string,
     startPoint: string | null,
   ): Promise<BranchOperationResult> {
-    return this.request<BranchOperationResult>("branch.create", {
+    const result = await this.request<{ operationId: string }>("branch.create", {
       projectId,
       name,
       startPoint,
     });
+    return this.branchOperationResult(projectId, result.operationId);
   }
 
-  createAndSwitchLocalBranch(
+  async createAndSwitchLocalBranch(
     projectId: string,
     name: string,
     startPoint: string | null,
   ): Promise<BranchOperationResult> {
-    return this.request<BranchOperationResult>("branch.create_switch", {
+    const result = await this.request<{ operationId: string }>("branch.create_switch", {
       projectId,
       name,
       startPoint,
     });
+    return this.branchOperationResult(projectId, result.operationId);
   }
 
-  switchLocalBranch(projectId: string, branch: string): Promise<BranchOperationResult> {
-    return this.request<BranchOperationResult>("branch.switch", { projectId, branch });
+  async switchLocalBranch(projectId: string, branch: string): Promise<BranchOperationResult> {
+    const result = await this.request<{ operationId: string }>("branch.switch", { projectId, branch });
+    return this.branchOperationResult(projectId, result.operationId);
   }
 
-  deleteLocalBranch(
+  async deleteLocalBranch(
     projectId: string,
     branch: string,
     force = false,
   ): Promise<BranchOperationResult> {
-    return this.request<BranchOperationResult>("branch.delete", {
+    const result = await this.request<{ operationId: string }>("branch.delete", {
       projectId,
       branch,
       force,
     });
+    return this.branchOperationResult(projectId, result.operationId);
   }
 
   listAutoStashes(projectId: string | null): Promise<AutoStashRecord[]> {
     return this.request<AutoStashRecord[]>("branch.autostash.list", { projectId });
   }
 
-  restoreAutoStash(
+  async restoreAutoStash(
     operationId: string,
     strategy: "target" | "source",
   ): Promise<BranchOperationResult> {
-    return this.request<BranchOperationResult>("branch.autostash.restore", {
+    const result = await this.request<{ id: string; projectId: string }>("branch.autostash.restore", {
       operationId,
       strategy,
     });
+    return this.branchOperationResult(result.projectId, result.id);
   }
 
-  cleanupAutoStash(operationId: string): Promise<BranchOperationResult> {
-    return this.request<BranchOperationResult>("branch.autostash.cleanup", {
+  async cleanupAutoStash(operationId: string): Promise<BranchOperationResult> {
+    const result = await this.request<{ id: string; projectId: string }>("branch.autostash.cleanup", {
       operationId,
     });
+    return this.branchOperationResult(result.projectId, result.id);
   }
 
   // -----------------------------------------------------------------------
