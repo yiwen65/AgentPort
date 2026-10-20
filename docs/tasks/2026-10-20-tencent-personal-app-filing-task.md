@@ -3,7 +3,7 @@
 - Created: 2026-10-20
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: blocked
+- Overall status: in_progress
 - Source: 用户说明腾讯云、个人主体，并要求操作其已打开的备案控制台。
 
 <!-- task-doc-section:background-goal -->
@@ -35,7 +35,7 @@
 ## Assumptions and open questions
 
 - 原个人主体、所属省级管局及平台已列出的可备案云资源已观察；初始APP名AgentsPort已填入。最终命名规则仍以接入商/管局审核为准。
-- 待用户本人确认带入的证件、地址、有效期与联系方式仍准确，才继续沿用；不在聊天索取其具体值。
+- 用户已明确确认带入的个人资料准确并允许原样沿用；不在聊天索取其具体值。
 - 服务域名/IP须与真实用途相符，审核演示不伪装成正式中央业务服务。
 - 若签名归档与备案特征格式不能证实，暂停该字段，不用开发证书或猜测公钥格式。
 
@@ -57,7 +57,7 @@
 ## Task list
 
 ### [ ] T-001 — 腾讯云草稿与主体/资源核实
-- Status: blocked
+- Status: in_progress
 - Owner: coordinator
 - Objective: 核实表单并填写可以证实的 APP 信息。
 - Inputs and prerequisites: 用户授权操作现有腾讯云窗口与个人主体。
@@ -72,11 +72,11 @@
 - Verification method:
   - 原生AX与隐私裁剪截图交叉核实，写入后新快照读回。
 - Validation evidence: 新增服务表单默认仍为网站，明确切换APP后填入AgentsPort，AX及裁剪截图一致。使用平台已列出的有备案余量的原云资源，未购买或变更资源。核实新增服务和原主体所属管局，无协议勾选；主体信息仅原样带入，未编辑。点击保存订单草稿后列表唯一逻辑行显示草稿（未提交）及本次时间；AX列视图重复不是另一个订单，未删除任何订单。已编辑该草稿回到主体/主体负责人信息页，存在拍照上传入口。期间窗口切到其他网页时目标校验拦截输入，恢复备案标签后才继续。
-- Blocker: 用户本人须确认身份、地址、有效期及联系方式仍准确，不能由AI擅自声明真实性。
-- Unblock condition: 用户确认原资料准确并允许本次沿用，或本人先完成必要修正/核验。
+- Blocker: APP实际访问的腾讯云后台域名待用户确认；不能把审核演示域名当正式服务。服务分类、SDK列表、语言、备注、图标等仍待完成。
+- Unblock condition: 用户说明真实后台/域名用途后继续，不新增购买或改造服务。
 
-### [ ] T-002 — iOS 发行公开特征信息
-- Status: blocked
+### [x] T-002 — iOS 发行公开特征信息
+- Status: done
 - Owner: coordinator
 - Objective: 从确切发行材料提取 Bundle ID、公开证书和SHA-1，核实公钥格式。
 - Inputs and prerequisites: 本机归档、对应Bundle ID的公开App Store发行profile及腾讯云要求；不把自动导出重签之前的开发证书当发行证书。
@@ -90,9 +90,9 @@
   - 无开发证书混用，无私钥导出，无个人身份值进入Git。
 - Verification method:
   - plist/codesign/openssl只读交叉验证及输出文件权限检查。
-- Validation evidence: 当前及历史候选归档实际development签名，未冒充发行材料。代理仅从唯一匹配com.agentport.mobile、get-task-allow=false、无设备列表、beta-reports-active=true且有效的App Store profile中提取唯一Apple Distribution公钥证书；公开DER/PEM/SHA-1和明确标记SPKI/PKCS1/modulus候选编码保存在私有目录，未读取/导出私钥。协调者独立复核profile类型、DER一致性、SHA-1一致性及security verify-cert -p codeSign通过。来源是对应App发行profile，不声称已核实build6包内签名。开发候选均标记NOT-build6，未填入表单；尚未提交公钥/指纹给腾讯云。
-- Blocker: 尚未到实际iOS特征字段，公钥所需编码待核对；精确包内签名若被要求须另补真实上传IPA/导出证据。
-- Unblock condition: 主体步骤继续后核对字段规范，以明确来源的对应App发行公开证书填写，不混用开发证书或猜测编码。
+- Validation evidence: 当前及历史候选归档实际development签名，未冒充发行材料。代理仅从唯一匹配com.agentport.mobile、get-task-allow=false、无设备列表、beta-reports-active=true且有效的App Store profile中提取唯一Apple Distribution公钥证书；公开DER/PEM/SHA-1和明确标记SPKI/PKCS1/modulus候选编码保存在私有目录，未读取/导出私钥。协调者独立复核profile类型、DER一致性、SHA-1一致性及security verify-cert -p codeSign通过。来源是对应App发行profile，不声称已核实build6包内签名。开发候选均标记NOT-build6，未使用。已选择苹果平台；实际包信息弹窗要求40位SHA-1。官方规范第5幅公钥示例为256字节RSA公钥数值（不是SPKI/PKCS1 DER），据此填写对应发行profile证书的512位十六进制modulus、证书SHA-1及Bundle ID。遮罩截图确认三字段绿色格式标记；点击“验证”后弹窗关闭，包信息表中三值精确匹配。该验证不代表已核实build6实际导出签名，也不代表完整服务已持久保存或备案通过。
+- Blocker: None；若后续要求build6包内签名证明，仍须补真实上传IPA/导出证据。
+- Unblock condition: None.
 
 ### [ ] T-003 — 保存核实与用户核验/提交边界
 - Status: blocked
@@ -136,9 +136,13 @@
 - 2026-10-20: 新增APP流程已填AgentsPort并保存订单草稿，唯一逻辑订单显示草稿（未提交），重新编辑停在主体信息。未修改原身份数据、网站备案或Apple审核。T-001/T-003因本人资料确认/核验转blocked。
 - 2026-10-20: 发行profile公开证书已由代理提取、协调者独立校验，拒绝误用开发归档；实际公钥字段编码仍待核对，T-002 blocked。无工程/归档变更或私钥操作，所有公开材料只在私有目录。
 
+- 2026-10-20: 用户明确确认页面原个人资料准确并允许原样沿用，T-001恢复in_progress，继续后续APP服务信息；人脸/短信和最终法律提交边界不变。
+
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: partial
 - Evidence: 新APP初始信息已填写并保存草稿，重新编辑回主体步骤；对应App发行profile公开材料已提取并独立校验，未冒用开发证书。
-- Limitations: T-001/T-003待本人确认/核验；T-002待实际字段编码匹配；服务字段未全部完成，未最终提交、未获备案号，未变更原网站备案或Apple审核。
+- Limitations: 用户已确认沿用个人资料；T-001/T-003仍待真实后台域名和其余服务字段/本人核验。包信息已加入当前编辑器，但尚未保存完整服务并重新打开核实持久化；初始订单草稿已保存。发行profile证书来源明确，但build6包内最终签名仍未独立恢复。未最终提交、未获备案号，未变更原网站备案或Apple审核。
+
+- 2026-10-20: 苹果平台及包信息已填写，页面验证后表格精确读回Bundle ID、公钥与SHA-1。官方正文best-effort扫描完成，但图片不在文本扫描范围；另单独读取官方第5幅图片确认公钥格式。停在APP服务编辑器，待用户确认真实后台域名；SDK默认选项尚未当作已核实声明，未获取短信或接受协议。
