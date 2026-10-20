@@ -9,9 +9,15 @@ use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// How long a reader thread keeps the stage after its deadline expired and the
+/// process group was killed: enough for the descendant holding the write end to
+/// die and for the reader to hand over the bytes it already read.
+const READER_GRACE: Duration = Duration::from_millis(200);
 
 const REPOSITORY_ENV: &[&str] = &[
     "GIT_DIR",
@@ -454,11 +460,22 @@ impl GitRunner {
             .ok_or_else(|| CoreError::Internal("git stderr was not piped".into()))?;
         let max_stdout = options.max_stdout;
         let max_stderr = options.max_stderr;
-        let stdout_thread = std::thread::spawn(move || read_bounded(&mut stdout, max_stdout));
-        let stderr_thread = std::thread::spawn(move || read_bounded(&mut stderr, max_stderr));
+        // The readers own the pipe read ends and report through channels
+        // instead of join handles. A hook, filter or escaped descendant can
+        // keep a write end open after Git itself exits, and joining such a
+        // reader would block this call - and the repository lock its caller
+        // holds - forever.
+        let (stdout_tx, stdout_rx) = mpsc::channel::<ReaderResult>();
+        let (stderr_tx, stderr_rx) = mpsc::channel::<ReaderResult>();
+        let _stdout_reader = std::thread::spawn(move || {
+            let _ = stdout_tx.send(read_bounded(&mut stdout, max_stdout));
+        });
+        let _stderr_reader = std::thread::spawn(move || {
+            let _ = stderr_tx.send(read_bounded(&mut stderr, max_stderr));
+        });
 
         let deadline = Instant::now() + options.timeout.unwrap_or(self.timeout);
-        let (status, timed_out) = loop {
+        let (status, mut timed_out) = loop {
             if let Some(status) = child.try_wait()? {
                 break (status, false);
             }
@@ -472,18 +489,85 @@ impl GitRunner {
         if let Some(stdin_thread) = stdin_thread {
             let _ = stdin_thread.join();
         }
-        let (stdout, stdout_truncated) = stdout_thread.join().unwrap_or_default();
-        let (stderr, stderr_truncated) = stderr_thread.join().unwrap_or_default();
+        // Collecting the readers is bounded by the same deadline. Git may exit
+        // normally while a hook/filter/descendant still holds a write end; the
+        // capture is then untrustworthy, so the call reports a timeout instead
+        // of blocking on the pipe or of handing back a silently partial result.
+        let mut stdout_capture = join_reader(&stdout_rx, deadline);
+        let mut stderr_capture = join_reader(&stderr_rx, deadline);
+        if stdout_capture.timed_out || stderr_capture.timed_out {
+            timed_out = true;
+            terminate_process_group(&mut child);
+            let grace_deadline = Instant::now() + READER_GRACE;
+            if stdout_capture.timed_out {
+                stdout_capture = join_reader(&stdout_rx, grace_deadline).into_partial();
+            }
+            if stderr_capture.timed_out {
+                stderr_capture = join_reader(&stderr_rx, grace_deadline).into_partial();
+            }
+        }
 
         Ok(GitOutput {
             argv,
-            stdout,
-            stderr,
-            stdout_truncated,
-            stderr_truncated,
+            stdout: stdout_capture.bytes,
+            stderr: stderr_capture.bytes,
+            stdout_truncated: stdout_capture.truncated,
+            stderr_truncated: stderr_capture.truncated,
             status,
             timed_out,
         })
+    }
+}
+
+/// What one reader thread captured from a pipe.
+type ReaderResult = (Vec<u8>, bool);
+
+/// Bytes captured by one reader thread plus whether the caller may trust them
+/// to be complete.
+#[derive(Debug)]
+struct ReaderCapture {
+    bytes: Vec<u8>,
+    truncated: bool,
+    /// The reader had not delivered by its deadline; the caller must not trust
+    /// the capture and must reconcile repository state itself.
+    timed_out: bool,
+}
+
+impl ReaderCapture {
+    /// Keep the bytes that already arrived without ever reporting a complete
+    /// capture. Used after the process group was killed while a reader was
+    /// still blocked on a write end it did not own.
+    fn into_partial(mut self) -> Self {
+        self.truncated = true;
+        self.timed_out = true;
+        self
+    }
+}
+
+fn remaining_until(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now())
+}
+
+/// Receive one reader's result without ever waiting past `deadline`.
+fn join_reader(rx: &Receiver<ReaderResult>, deadline: Instant) -> ReaderCapture {
+    match rx.recv_timeout(remaining_until(deadline)) {
+        Ok((bytes, truncated)) => ReaderCapture {
+            bytes,
+            truncated,
+            timed_out: false,
+        },
+        Err(RecvTimeoutError::Timeout) => ReaderCapture {
+            bytes: Vec::new(),
+            truncated: true,
+            timed_out: true,
+        },
+        // The reader thread ended without reporting (it panicked), so whatever
+        // it had read is lost and cannot be distinguished from a partial read.
+        Err(RecvTimeoutError::Disconnected) => ReaderCapture {
+            bytes: Vec::new(),
+            truncated: true,
+            timed_out: false,
+        },
     }
 }
 
@@ -493,8 +577,16 @@ fn read_bounded(reader: &mut impl Read, limit: usize) -> (Vec<u8>, bool) {
     let mut truncated = false;
     loop {
         let read = match reader.read(&mut buffer) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
             Ok(read) => read,
+            // A signal interrupting the read is not the end of the stream; only
+            // an actual read error is, and that error cannot be told apart from
+            // a complete read by the caller.
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                truncated = true;
+                break;
+            }
         };
         let remaining = limit.saturating_sub(kept.len());
         let take = read.min(remaining);
@@ -565,6 +657,107 @@ mod tests {
             .unwrap();
         std::env::remove_var("GIT_DIR");
         assert_eq!(output.stdout_lossy().trim(), ".git");
+    }
+
+    #[test]
+    fn join_reader_reports_timeout_for_a_silent_reader() {
+        // The sender stays alive but never delivers, exactly like a reader
+        // thread whose pipe write end is still held by an escaped descendant.
+        let (_tx, rx) = mpsc::channel::<ReaderResult>();
+        let started = Instant::now();
+        let capture = join_reader(&rx, Instant::now() + Duration::from_millis(50));
+        let elapsed = started.elapsed();
+        assert!(capture.timed_out, "a silent reader must look timed out");
+        assert!(capture.truncated, "an undelivered capture is not complete");
+        assert!(capture.bytes.is_empty());
+        assert!(
+            elapsed >= Duration::from_millis(40),
+            "returned before its deadline: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "deadline was ignored: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn join_reader_returns_a_delivered_capture() {
+        let (tx, rx) = mpsc::channel::<ReaderResult>();
+        tx.send((b"captured".to_vec(), false)).unwrap();
+        let capture = join_reader(&rx, Instant::now() + Duration::from_secs(1));
+        assert_eq!(capture.bytes, b"captured");
+        assert!(!capture.truncated);
+        assert!(!capture.timed_out);
+    }
+
+    #[test]
+    fn late_capture_is_never_reported_as_complete() {
+        let (tx, rx) = mpsc::channel::<ReaderResult>();
+        tx.send((b"late".to_vec(), false)).unwrap();
+        let capture = join_reader(&rx, Instant::now() + Duration::from_secs(1)).into_partial();
+        assert_eq!(capture.bytes, b"late");
+        assert!(capture.truncated);
+        assert!(capture.timed_out);
+    }
+
+    #[derive(Clone, Copy)]
+    enum ScriptedChunk {
+        Bytes(&'static [u8]),
+        Error(std::io::ErrorKind),
+    }
+
+    struct ScriptedReader {
+        chunks: Vec<ScriptedChunk>,
+        next: usize,
+    }
+
+    impl ScriptedReader {
+        fn new(chunks: Vec<ScriptedChunk>) -> Self {
+            Self { chunks, next: 0 }
+        }
+    }
+
+    impl Read for ScriptedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let Some(chunk) = self.chunks.get(self.next) else {
+                return Ok(0);
+            };
+            self.next += 1;
+            match chunk {
+                ScriptedChunk::Bytes(bytes) => {
+                    buffer[..bytes.len()].copy_from_slice(bytes);
+                    Ok(bytes.len())
+                }
+                ScriptedChunk::Error(kind) => {
+                    Err(std::io::Error::new(*kind, "scripted read error"))
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn read_bounded_retries_interrupted_reads() {
+        let mut reader = ScriptedReader::new(vec![
+            ScriptedChunk::Error(std::io::ErrorKind::Interrupted),
+            ScriptedChunk::Bytes(b"kept"),
+        ]);
+        let (bytes, truncated) = read_bounded(&mut reader, 64);
+        assert_eq!(bytes, b"kept", "EINTR must not truncate the capture");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn read_bounded_marks_genuine_read_errors_as_truncated() {
+        let mut reader = ScriptedReader::new(vec![
+            ScriptedChunk::Bytes(b"kept"),
+            ScriptedChunk::Error(std::io::ErrorKind::Other),
+        ]);
+        let (bytes, truncated) = read_bounded(&mut reader, 64);
+        assert_eq!(bytes, b"kept");
+        assert!(
+            truncated,
+            "a read error cannot be told apart from a complete read"
+        );
     }
 
     #[test]

@@ -118,9 +118,20 @@ impl<'a> GitWorkspaceManager<'a> {
                 "Push to a local-branch upstream is not supported in Git Center".into(),
             ));
         }
+        // A push publishes the ref with the SAME name as the checked-out branch.
+        // `branch.<name>.merge` may name a different ref (e.g. `git checkout -b
+        // feature origin/main` records `merge=refs/heads/main`); using it as
+        // the destination would publish feature commits onto the remote default
+        // branch, so it is only used for pulls.
+        let push_ref = branch.map(|branch| format!("refs/heads/{branch}"));
         if action == GitRemoteAction::ForcePush {
             let branch = branch.unwrap_or_default();
-            if matches!(branch, "main" | "master") {
+            if matches!(branch, "main" | "master")
+                || matches!(
+                    push_ref.as_deref(),
+                    Some("refs/heads/main" | "refs/heads/master")
+                )
+            {
                 return Err(CoreError::Blocked(
                     "Force Push is disabled for main and master".into(),
                 ));
@@ -132,7 +143,17 @@ impl<'a> GitWorkspaceManager<'a> {
             }
         }
 
-        let args = remote_args(action, remote, merge_ref.as_deref());
+        // When no upstream (or a differently named one) exists, record the
+        // ref that is actually pushed so later Pull/Push no longer resolve to
+        // an unrelated branch.
+        let set_upstream = push_ref.is_some() && merge_ref.as_deref() != push_ref.as_deref();
+        let args = remote_args(
+            action,
+            remote,
+            merge_ref.as_deref(),
+            push_ref.as_deref(),
+            set_upstream,
+        );
         self.runner
             .run_with_options(
                 Some(checkout),
@@ -145,9 +166,21 @@ impl<'a> GitWorkspaceManager<'a> {
                 },
             )?
             .require_success()?;
+        let changes = self.changes(locator, true)?;
+        // `git pull --autostash` exits 0 even when the stash could not be
+        // re-applied; Git only warns and leaves conflict markers in the
+        // worktree. Never report that as a successful sync.
+        if is_explicit_autostash && changes.entries.iter().any(|entry| entry.conflicted) {
+            return Err(CoreError::Blocked(
+                "Pull updated the branch, but Git could not re-apply the automatic stash cleanly. \
+                 Your changes are stored in the Git autostash and the working tree now contains \
+                 conflict markers; resolve them before restoring or dropping the autostash."
+                    .into(),
+            ));
+        }
         Ok(GitMutationResult {
             operation_id: format!("gitop_{}", uuid::Uuid::new_v4().simple()),
-            changes: self.changes(locator, true)?,
+            changes,
         })
     }
 }
@@ -195,7 +228,13 @@ fn branch_merge_ref(
         .filter(|value| value.starts_with("refs/heads/"))
 }
 
-fn remote_args(action: GitRemoteAction, remote: &str, merge_ref: Option<&str>) -> Vec<OsString> {
+fn remote_args(
+    action: GitRemoteAction,
+    remote: &str,
+    merge_ref: Option<&str>,
+    push_ref: Option<&str>,
+    set_upstream: bool,
+) -> Vec<OsString> {
     match action {
         GitRemoteAction::Fetch => vec!["fetch".into(), "--prune".into(), remote.into()],
         GitRemoteAction::Pull => vec![
@@ -228,22 +267,23 @@ fn remote_args(action: GitRemoteAction, remote: &str, merge_ref: Option<&str>) -
             remote.into(),
             merge_ref.unwrap_or_default().into(),
         ],
-        GitRemoteAction::Push if merge_ref.is_some() => vec![
-            "push".into(),
-            remote.into(),
-            format!("HEAD:{}", merge_ref.unwrap_or_default()).into(),
-        ],
-        GitRemoteAction::Push => vec![
-            "push".into(),
-            "--set-upstream".into(),
-            remote.into(),
-            "HEAD".into(),
-        ],
-        GitRemoteAction::ForcePush => vec![
-            "push".into(),
-            "--force-with-lease".into(),
-            remote.into(),
-            format!("HEAD:{}", merge_ref.unwrap_or_default()).into(),
-        ],
+        GitRemoteAction::Push => {
+            let mut args = vec![OsString::from("push")];
+            if set_upstream {
+                args.push(OsString::from("--set-upstream"));
+            }
+            args.push(remote.into());
+            args.push(format!("HEAD:{}", push_ref.unwrap_or_default()).into());
+            args
+        }
+        GitRemoteAction::ForcePush => {
+            let mut args = vec![OsString::from("push"), OsString::from("--force-with-lease")];
+            if set_upstream {
+                args.push(OsString::from("--set-upstream"));
+            }
+            args.push(remote.into());
+            args.push(format!("HEAD:{}", push_ref.unwrap_or_default()).into());
+            args
+        }
     }
 }

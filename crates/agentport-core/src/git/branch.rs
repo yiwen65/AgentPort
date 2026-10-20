@@ -1,4 +1,4 @@
-use super::command::{GitOutput, GitRunner};
+use super::command::{GitOutput, GitRunOptions, GitRunner};
 use super::operation::{
     AutoStash, BranchOperation, BranchOperationKind, BranchOperationPhase, OperationJournal,
     ReconcileReport, RestoreStrategy,
@@ -14,6 +14,11 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+
+/// Upper bound for machine-readable repository listings. Large repositories
+/// can exceed the 8 MiB default; anything beyond this fails closed instead of
+/// being parsed as a complete list.
+const MAX_REPOSITORY_LISTING_BYTES: usize = 64 * 1024 * 1024;
 
 /// Stable marker inside the blocked error raised when the merged-only delete
 /// gate rejects a branch. Command layers use it to recognize that an explicit
@@ -115,6 +120,8 @@ struct SnapshotPath {
     staged: bool,
     unstaged: bool,
     untracked: bool,
+    /// Content hash for tracked/untracked paths; a metadata signature for
+    /// ignored paths (see `ignored_path_signature`).
     worktree_hash: Option<String>,
     #[serde(default)]
     worktree_mode: Option<u32>,
@@ -1969,7 +1976,7 @@ impl<'a> BranchManager<'a> {
     }
 
     fn list_branches(&self, identity: &RepositoryIdentity) -> Result<Vec<BranchInfo>> {
-        let output = self.run_success(
+        let output = self.run_listing(
             identity,
             [
                 "for-each-ref",
@@ -2153,7 +2160,7 @@ impl<'a> BranchManager<'a> {
         identity: &RepositoryIdentity,
         name: &str,
     ) -> Result<Option<String>> {
-        let output = self.run_success(
+        let output = self.run_listing(
             identity,
             [
                 "for-each-ref",
@@ -2418,18 +2425,18 @@ impl<'a> BranchManager<'a> {
         target: &str,
     ) -> Result<()> {
         let target_treeish = format!("refs/heads/{target}^{{tree}}");
-        let target_tree = self.run_success(
+        let target_tree = self.run_listing(
             identity,
             ["ls-tree", "-r", "-z", "--name-only", &target_treeish],
         )?;
-        let current_index = self.run_success(identity, ["ls-files", "-z"])?;
+        let current_index = self.run_listing(identity, ["ls-files", "-z"])?;
         let current_paths = current_index
             .stdout
             .split(|byte| *byte == 0)
             .filter(|path| !path.is_empty())
-            .map(bytes_to_string)
+            .map(|path| bytes_to_string(path).map(PathBuf::from))
             .collect::<Result<std::collections::BTreeSet<_>>>()?;
-        let ignored_output = self.run_success(
+        let ignored_output = self.run_listing(
             identity,
             [
                 "ls-files",
@@ -2443,43 +2450,57 @@ impl<'a> BranchManager<'a> {
             .stdout
             .split(|byte| *byte == 0)
             .filter(|path| !path.is_empty())
-            .map(bytes_to_string)
-            .collect::<Result<Vec<_>>>()?;
-        let mut collisions = Vec::new();
+            .map(|path| bytes_to_string(path).map(PathBuf::from))
+            .collect::<Result<std::collections::BTreeSet<_>>>()?;
+        // Ordered set lookups keep this O((tree + ignored) log n). The
+        // previous nested scan compared every target path against every
+        // ignored path, which is seconds of CPU on a large checkout and grows
+        // multiplicatively in monorepos.
+        let mut collisions = std::collections::BTreeSet::new();
         for raw_path in target_tree
             .stdout
             .split(|byte| *byte == 0)
             .filter(|path| !path.is_empty())
         {
-            let path = bytes_to_string(raw_path)?;
-            if current_paths.contains(&path) {
+            let target_path = PathBuf::from(bytes_to_string(raw_path)?);
+            if current_paths.contains(&target_path) {
                 continue;
             }
-            // Target tree entries are files/gitlinks, while the ignored side
-            // may be either that exact path, a parent occupying the target's
-            // location, or a descendant that would be recursively deleted if
-            // Git replaces its directory with a file. Compare path components
-            // in both directions; string-prefix checks would confuse `foo`
-            // with `foobar`.
-            let target_path = Path::new(&path);
-            for ignored in &ignored_paths {
-                let ignored_path = Path::new(ignored);
-                if ignored_path == target_path
-                    || ignored_path.starts_with(target_path)
-                    || target_path.starts_with(ignored_path)
-                {
-                    collisions.push(ignored.clone());
+            // Target entry itself: an ignored file occupies the path Git wants
+            // to write.
+            let mut colliding = ignored_paths
+                .contains(&target_path)
+                .then(|| target_path.clone());
+            // Ignored parent: Git would replace the directory with a file.
+            if colliding.is_none() {
+                for ancestor in target_path.ancestors().skip(1) {
+                    if ancestor.as_os_str().is_empty() {
+                        break;
+                    }
+                    if ignored_paths.contains(ancestor) {
+                        colliding = Some(ancestor.to_path_buf());
+                        break;
+                    }
                 }
             }
+            // Ignored descendant: Git would recursively delete the directory.
+            if colliding.is_none() {
+                if let Some(candidate) = ignored_paths.range(target_path.clone()..).next() {
+                    if candidate.starts_with(&target_path) {
+                        colliding = Some(candidate.clone());
+                    }
+                }
+            }
+            if let Some(colliding) = colliding {
+                collisions.insert(colliding.to_string_lossy().into_owned());
+            }
         }
-        collisions.sort();
-        collisions.dedup();
         if collisions.is_empty() {
             Ok(())
         } else {
             Err(CoreError::Blocked(format!(
                 "target branch tracks paths occupied by local ignored files: {}",
-                collisions.join(", ")
+                collisions.into_iter().collect::<Vec<_>>().join(", ")
             )))
         }
     }
@@ -2521,7 +2542,7 @@ impl<'a> BranchManager<'a> {
         paths.sort_by(|a, b| a.path.cmp(&b.path));
         let mut ignored = Vec::new();
         if include_protected_files {
-            let ignored_output = self.run_success(
+            let ignored_output = self.run_listing(
                 identity,
                 [
                     "ls-files",
@@ -2538,7 +2559,7 @@ impl<'a> BranchManager<'a> {
             {
                 let path = bytes_to_string(raw)?;
                 ignored.push(SnapshotPath {
-                    worktree_hash: hash_path(&identity.root.join(&path))?,
+                    worktree_hash: ignored_path_signature(&identity.root.join(&path))?,
                     worktree_mode: path_mode(&identity.root.join(&path))?,
                     path,
                     staged: false,
@@ -2580,7 +2601,7 @@ impl<'a> BranchManager<'a> {
     ) -> Result<bool> {
         for ignored in &snapshot.ignored {
             let path = identity.root.join(&ignored.path);
-            if hash_path(&path)? != ignored.worktree_hash
+            if ignored_path_signature(&path)? != ignored.worktree_hash
                 || path_mode(&path)? != ignored.worktree_mode
             {
                 return Ok(false);
@@ -2666,14 +2687,16 @@ impl<'a> BranchManager<'a> {
             .iter()
             .map(|path| (&path.path, path))
             .collect::<BTreeMap<_, _>>();
-        if expected_ignored.keys().collect::<Vec<_>>() != current_ignored.keys().collect::<Vec<_>>()
-        {
-            return Ok(false);
-        }
+        // Every protected ignored path must still exist unchanged. NEW ignored
+        // paths are allowed: builds, editors and logs routinely create them
+        // while an operation is in flight, and treating that as a failed
+        // restore used to park a perfectly restored checkout in
+        // recovery_required with no way out.
         Ok(expected_ignored.iter().all(|(path, expected)| {
-            let current = current_ignored[path];
-            expected.worktree_hash == current.worktree_hash
-                && expected.worktree_mode == current.worktree_mode
+            current_ignored.get(path).is_some_and(|current| {
+                expected.worktree_hash == current.worktree_hash
+                    && expected.worktree_mode == current.worktree_mode
+            })
         }))
     }
 
@@ -2718,6 +2741,12 @@ impl<'a> BranchManager<'a> {
         }
     }
 
+    /// True when every path that is still visible in the checkout is one of
+    /// the ignored paths captured before the stash and is unchanged.
+    ///
+    /// Reachable case: stashing a modified `.gitignore` removes its rules, so
+    /// previously-ignored files become untracked and appear in `RepoStatus`.
+    /// They are still the user's original local data, not new drift.
     fn only_original_ignored_paths_are_visible(
         &self,
         identity: &RepositoryIdentity,
@@ -2737,7 +2766,8 @@ impl<'a> BranchManager<'a> {
                 return Ok(false);
             };
             let absolute = identity.root.join(&path.path);
-            if hash_path(&absolute)? != **expected_hash || path_mode(&absolute)? != **expected_mode
+            if ignored_path_signature(&absolute)? != **expected_hash
+                || path_mode(&absolute)? != **expected_mode
             {
                 return Ok(false);
             }
@@ -2758,10 +2788,12 @@ impl<'a> BranchManager<'a> {
                 .as_deref()
                 .ok_or_else(|| CoreError::Conflict("operation has no dirty snapshot".into()))?,
         )?;
-        // Resolve marker + immutable OID before any checkout mutation. Recheck
-        // again immediately before apply because the shared stash reflog may
-        // change outside AgentPort's advisory repository lock.
-        let _ = self.exact_stash(identity, operation)?;
+        // Resolve the marker + immutable OID before any checkout mutation, but
+        // do not require the stash to still exist until a restore actually
+        // needs it: if the user already popped the stash (or a retry observes
+        // the restored content), the verified worktree is authoritative and a
+        // missing stash must not strand the operation in recovery_required.
+        let stash = self.exact_stash(identity, operation);
         if self.snapshot_matches(identity, &snapshot)? {
             let status = self.status(identity)?;
             let head = self
@@ -2785,6 +2817,9 @@ impl<'a> BranchManager<'a> {
             ));
         }
 
+        // The captured state is not on disk, so applying the exact stash is the
+        // only path forward.
+        let _ = stash?;
         let status = self.status(identity)?;
         self.ensure_mutation_allowed(identity, &status)?;
         if let Some(state) = &status.operation_state {
@@ -3129,7 +3164,34 @@ impl<'a> BranchManager<'a> {
         )?;
         let _ = self.verify_cleanup_state(identity, operation, &snapshot)?;
 
-        let stash = self.exact_stash(identity, operation)?;
+        let stash = match self.exact_stash(identity, operation) {
+            Ok(stash) => stash,
+            Err(error) => {
+                // The user may have consumed the autostash with `git stash
+                // pop/drop` after a verified restore. The worktree was just
+                // re-verified above, so the changes are safe and there is
+                // nothing left to drop: close the journal instead of blocking
+                // cleanup forever on a stash that no longer exists.
+                let marker = operation.stash_marker.as_deref().unwrap_or_default();
+                let oid = operation.stash_oid.as_deref();
+                let already_consumed = !marker.is_empty()
+                    && oid.is_some()
+                    && self.find_stash(identity, marker, oid)?.is_none();
+                if !already_consumed {
+                    return Err(error);
+                }
+                journal.update(
+                    &operation.id,
+                    BranchOperationPhase::Completed,
+                    None,
+                    Some(
+                        "the automatic stash was already consumed; the verified restore is the only copy",
+                    ),
+                    Some("cleanup completed without a stash to drop"),
+                )?;
+                return Ok(());
+            }
+        };
         let stashes = self.list_stashes(identity)?;
         // `git stash drop stash@{N}` cannot atomically assert that the mutable
         // selector still names an OID. We can safely clean the common case in
@@ -3365,9 +3427,12 @@ impl<'a> BranchManager<'a> {
         identity: &RepositoryIdentity,
         args: [&str; N],
     ) -> Result<GitOutput> {
-        self.runner
+        let output = self
+            .runner
             .run(Some(&identity.root), args)?
-            .require_success()
+            .require_success()?;
+        Self::ensure_complete_listing(&output)?;
+        Ok(output)
     }
 
     fn run_success_os(
@@ -3375,9 +3440,46 @@ impl<'a> BranchManager<'a> {
         identity: &RepositoryIdentity,
         args: Vec<OsString>,
     ) -> Result<GitOutput> {
-        self.runner
+        let output = self
+            .runner
             .run(Some(&identity.root), args)?
-            .require_success()
+            .require_success()?;
+        Self::ensure_complete_listing(&output)?;
+        Ok(output)
+    }
+
+    /// Repository listings (ignored files, branch refs, target trees) can
+    /// legitimately exceed the default 8 MiB stdout budget. They get a larger
+    /// bound and must never be consumed when Git truncated the output: a
+    /// partial listing silently weakens the ignored-file protection.
+    fn run_listing<const N: usize>(
+        &self,
+        identity: &RepositoryIdentity,
+        args: [&str; N],
+    ) -> Result<GitOutput> {
+        let output = self
+            .runner
+            .run_with_options(
+                Some(&identity.root),
+                args,
+                GitRunOptions {
+                    max_stdout: MAX_REPOSITORY_LISTING_BYTES,
+                    ..GitRunOptions::default()
+                },
+            )?
+            .require_success()?;
+        Self::ensure_complete_listing(&output)?;
+        Ok(output)
+    }
+
+    fn ensure_complete_listing(output: &GitOutput) -> Result<()> {
+        if output.stdout_truncated {
+            return Err(CoreError::Blocked(
+                "Git output exceeded the safety limit; refusing to use an incomplete repository listing"
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 
     fn record_observation(
@@ -3609,6 +3711,42 @@ fn hash_path(path: &Path) -> Result<Option<String>> {
         }
     } else {
         hash.update(b"other\0");
+    }
+    Ok(Some(format!("{:x}", hash.finalize())))
+}
+
+/// Metadata-only change detector for IGNORED files.
+///
+/// Ignored content is only used to prove that a checkout/stash did not disturb
+/// local data, so a signature (size + mtime + mode + inode + symlink target)
+/// is sufficient. `status.rs::hash_path_signature` already makes the same
+/// trade-off for `status_token`. Reading the ignored tree in full is
+/// prohibitively expensive: this checkout alone holds ~400k ignored files /
+/// ~138 GiB, which a dirty branch switch used to read several times while
+/// holding both repository locks.
+fn ignored_path_signature(path: &Path) -> Result<Option<String>> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(CoreError::Io(error)),
+    };
+    let mut hash = Sha256::new();
+    hash.update(metadata.len().to_le_bytes());
+    if let Ok(modified) = metadata.modified() {
+        if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+            hash.update(duration.as_nanos().to_le_bytes());
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        hash.update(metadata.mode().to_le_bytes());
+        hash.update(metadata.ino().to_le_bytes());
+    }
+    if metadata.file_type().is_symlink() {
+        if let Ok(target) = std::fs::read_link(path) {
+            hash.update(path_bytes(&target));
+        }
     }
     Ok(Some(format!("{:x}", hash.finalize())))
 }
@@ -4151,6 +4289,86 @@ mod tests {
             std::fs::read_to_string(fixture.root.join("scratch/local")).unwrap(),
             "keep\n"
         );
+    }
+
+    #[test]
+    fn a_new_ignored_file_does_not_strand_autostash_recovery() {
+        let fixture = fixture();
+        commit(&fixture.root, ".gitignore", "scratch/\n", "ignore scratch");
+        make_branch(&fixture.root, "target");
+        std::fs::create_dir_all(fixture.root.join("scratch")).unwrap();
+        std::fs::write(fixture.root.join("scratch/keep.txt"), "keep\n").unwrap();
+        std::fs::write(fixture.root.join("tracked.txt"), "dirty work\n").unwrap();
+
+        let outcome = manager(&fixture)
+            .switch(&fixture.project_id, "target")
+            .unwrap();
+        assert!(outcome.stashed);
+        assert!(outcome.pending_restore);
+
+        // A build/editor creates a new ignored file while the operation is
+        // parked. It must not make the captured state unverifiable.
+        std::fs::write(
+            fixture.root.join("scratch/new-build-artifact.txt"),
+            "noise\n",
+        )
+        .unwrap();
+
+        let restored = manager(&fixture)
+            .recover(&outcome.operation_id, RestoreStrategy::Target)
+            .unwrap();
+        assert_eq!(restored.phase, BranchOperationPhase::RestoredVerified);
+        assert_eq!(
+            std::fs::read_to_string(fixture.root.join("tracked.txt")).unwrap(),
+            "dirty work\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.root.join("scratch/new-build-artifact.txt")).unwrap(),
+            "noise\n"
+        );
+
+        let cleaned = manager(&fixture).cleanup(&outcome.operation_id).unwrap();
+        assert_eq!(cleaned.phase, BranchOperationPhase::Completed);
+        assert!(git(&fixture.root, &["stash", "list"]).trim().is_empty());
+    }
+
+    #[test]
+    fn cleanup_completes_when_the_user_already_popped_the_stash() {
+        let fixture = fixture();
+        make_branch(&fixture.root, "target");
+        std::fs::write(fixture.root.join("tracked.txt"), "dirty work\n").unwrap();
+
+        let outcome = manager(&fixture)
+            .switch(&fixture.project_id, "target")
+            .unwrap();
+        assert!(outcome.stashed);
+
+        // The user restores the autostash themselves, outside AgentPort.
+        git(&fixture.root, &["stash", "pop"]);
+        assert!(git(&fixture.root, &["stash", "list"]).trim().is_empty());
+
+        let restored = manager(&fixture)
+            .recover(&outcome.operation_id, RestoreStrategy::Target)
+            .unwrap();
+        assert_eq!(restored.phase, BranchOperationPhase::RestoredVerified);
+        let cleaned = manager(&fixture).cleanup(&outcome.operation_id).unwrap();
+        assert_eq!(cleaned.phase, BranchOperationPhase::Completed);
+    }
+
+    #[test]
+    fn truncated_repository_listings_are_rejected() {
+        let status = std::process::Command::new("true").status().unwrap();
+        let output = GitOutput {
+            argv: Vec::new(),
+            stdout: b"partial listing".to_vec(),
+            stderr: Vec::new(),
+            stdout_truncated: true,
+            stderr_truncated: false,
+            status,
+            timed_out: false,
+        };
+        let error = BranchManager::ensure_complete_listing(&output).unwrap_err();
+        assert!(matches!(error, CoreError::Blocked(_)), "{error}");
     }
 
     #[test]

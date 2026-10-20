@@ -308,7 +308,8 @@ export default function GitChangesPanel() {
 
   const changes = cache.changes;
   const stageable = changes.entries.filter(
-    (entry) => !entry.ignored && (entry.unstaged || entry.untracked || entry.conflicted),
+    (entry) =>
+      !entry.ignored && !entry.conflicted && (entry.unstaged || entry.untracked),
   ).length;
   const unstageable = changes.entries.filter(
     (entry) => entry.staged && !entry.conflicted,

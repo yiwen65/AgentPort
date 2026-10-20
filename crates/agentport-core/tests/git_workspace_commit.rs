@@ -623,3 +623,47 @@ fn review_warns_when_a_rename_touches_a_path_outside_the_project_directory() {
         .iter()
         .any(|warning| warning == "outside_project_scope"));
 }
+
+#[test]
+fn intent_to_add_entries_block_commit_instead_of_reporting_scope_drift() {
+    let fixture = MockRepo::new();
+    let db = Db::open_memory().unwrap();
+    fixture.add_project(&db, "project-a");
+    let locator = GitContextLocator::ProjectMain {
+        project_id: "project-a".into(),
+    };
+    let manager = GitWorkspaceManager::new(&db);
+    fixture.write("tracked.txt", "staged\n");
+    let _ = stage_tracked(&fixture, &manager, &locator);
+    let before_head = fixture.git(fixture.root(), &["rev-parse", "HEAD"]);
+
+    fixture.write("pending.txt", "pending content\n");
+    fixture.git(fixture.root(), &["add", "-N", "--", "pending.txt"]);
+    let changes = manager.changes(&locator, true).unwrap();
+    assert!(
+        changes
+            .entries
+            .iter()
+            .any(|entry| entry.display_path == "pending.txt"),
+        "porcelain reports the intent-to-add entry"
+    );
+
+    let error = manager
+        .prepare_commit(
+            &locator,
+            &changes.context.checkout_id,
+            &changes.status_token,
+            "feat: blocked\n",
+        )
+        .expect_err("intent-to-add entries must block Commit, not fake a scope drift");
+    assert!(matches!(error, CoreError::Blocked(_)), "{error}");
+    assert!(
+        error.to_string().contains("intent-to-add"),
+        "the existing actionable message must be used: {error}"
+    );
+    assert_eq!(
+        fixture.git(fixture.root(), &["rev-parse", "HEAD"]),
+        before_head,
+        "nothing may be committed"
+    );
+}

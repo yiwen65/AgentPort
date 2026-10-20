@@ -447,3 +447,66 @@ fn unborn_unstage_removes_only_index_entry_and_preserves_worktree_file() {
         .is_empty());
     fixture.assert_recorded_write_targets_are_isolated();
 }
+
+#[test]
+fn staging_a_modified_rename_never_references_the_old_path() {
+    let fixture = MockRepo::new();
+    let db = Db::open_memory().unwrap();
+    fixture.add_project(&db, "project-a");
+    fixture.git(fixture.root(), &["mv", "tracked.txt", "renamed.txt"]);
+    fixture.write("renamed.txt", "renamed and modified\n");
+    // A tool recreates the old path; it must never be staged implicitly.
+    fixture.write("tracked.txt", "recreated\n");
+    let locator = GitContextLocator::ProjectMain {
+        project_id: "project-a".into(),
+    };
+    let manager = GitWorkspaceManager::new(&db);
+    let before = manager.changes(&locator, true).unwrap();
+    let entry = before
+        .entries
+        .iter()
+        .find(|entry| entry.display_path == "renamed.txt")
+        .unwrap();
+    assert!(
+        entry.old_path_token.is_some(),
+        "a `git mv` + edit entry must carry the old path"
+    );
+
+    fixture.record_write_target("stage modified rename", fixture.root());
+    let staged = manager
+        .stage_paths(
+            &locator,
+            &before.context.checkout_id,
+            &before.status_token,
+            &[selection(&before, "renamed.txt")],
+        )
+        .expect("staging a renamed file with a worktree edit must not fail");
+
+    let names = fixture.git(
+        fixture.root(),
+        &["diff", "--cached", "--name-status", "--find-renames"],
+    );
+    assert!(
+        names.contains("renamed.txt"),
+        "the selected path must be staged: {names}"
+    );
+    // The recreated old path is an untracked file, not part of the rename.
+    // Before the fix `git add -A <old> <new>` either failed or staged it.
+    assert!(
+        fixture
+            .git(fixture.root(), &["ls-files", "--", "tracked.txt"])
+            .trim()
+            .is_empty(),
+        "the recreated old path must not gain an index entry"
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(fixture.root().join("renamed.txt")).unwrap(),
+        "renamed and modified\n"
+    );
+    assert!(staged
+        .changes
+        .entries
+        .iter()
+        .any(|entry| entry.display_path == "renamed.txt" && entry.staged));
+}

@@ -211,14 +211,53 @@ impl<'a> GitWorkspaceManager<'a> {
             &expected_tree_oid,
             &review.message_hash,
         )?;
-        self.finish_commit_journal(
+        // The commit may already exist at this point. Journal finalisation and
+        // the post-commit snapshot are diagnostics: never turn a landed commit
+        // into a failure the renderer would report as "not committed".
+        let mut post_commit_warning = None;
+        if let Err(error) = self.finish_commit_journal(
             &operation_id,
             observation.outcome,
             observation.after_head.as_deref(),
             observation.actual_tree_oid.as_deref(),
             observation.journal_error,
-        )?;
-        let changes = self.changes(locator, true)?;
+        ) {
+            tracing::warn!(
+                operation_id = %operation_id,
+                error = %error,
+                "commit landed but journal finalisation failed; startup reconcile will re-derive the outcome"
+            );
+            post_commit_warning = Some(format!(
+                "commit landed, but its journal could not be finalised: {error}"
+            ));
+        }
+        let changes = match self.changes(locator, true) {
+            Ok(changes) => changes,
+            Err(error) => {
+                tracing::warn!(
+                    operation_id = %operation_id,
+                    error = %error,
+                    "commit landed but the post-commit Git Changes snapshot could not be read"
+                );
+                if post_commit_warning.is_none() {
+                    post_commit_warning = Some(format!(
+                        "commit landed, but the refreshed Git Changes snapshot could not be read: {error}"
+                    ));
+                }
+                // Honest partial snapshot: the UI disables further writes and
+                // the next refresh replaces it. The empty status token can
+                // never authorize a mutation.
+                super::status::GitChangesSnapshot {
+                    context: review.context.clone(),
+                    status_token: String::new(),
+                    complete: false,
+                    partial_reason: Some("post_commit_snapshot_unavailable".into()),
+                    counts: Default::default(),
+                    entries: Vec::new(),
+                    observed_at: now_string(),
+                }
+            }
+        };
         Ok(GitCommitResult {
             operation_id,
             outcome: observation.outcome,
@@ -227,7 +266,9 @@ impl<'a> GitWorkspaceManager<'a> {
             expected_tree_oid,
             actual_tree_oid: observation.actual_tree_oid,
             changes,
-            error: execution_error.or(observation.error),
+            error: execution_error
+                .or(observation.error)
+                .or(post_commit_warning),
         })
     }
 
@@ -483,11 +524,18 @@ impl<'a> GitWorkspaceManager<'a> {
                 &snapshot.context.checkout_id,
                 &entry.path_token,
             )?);
-            if let Some(old_path_token) = entry.old_path_token.as_deref() {
-                paths.insert(decode_path_token(
-                    &snapshot.context.checkout_id,
-                    old_path_token,
-                )?);
+            // A staged rename already carries the deletion of the old path in
+            // the index; adding it to a Stage pathspec fails (`pathspec did not
+            // match any files`) or, if a file reappears there, stages a file
+            // the user never selected. Only an Unstage must restore both sides
+            // from HEAD.
+            if matches!(mutation, IndexMutation::Unstage) {
+                if let Some(old_path_token) = entry.old_path_token.as_deref() {
+                    paths.insert(decode_path_token(
+                        &snapshot.context.checkout_id,
+                        old_path_token,
+                    )?);
+                }
             }
         }
         let input = nul_path_input(&paths);
@@ -569,6 +617,22 @@ impl<'a> GitWorkspaceManager<'a> {
         if snapshot.counts.conflict > 0 {
             return Err(CoreError::Blocked(
                 "resolve all conflicts before Commit".into(),
+            ));
+        }
+        // `git add -N` stores an intent-to-add entry whose object ID is the
+        // EMPTY blob, not all zeros, so the guard inside `decode_hex_oid` never
+        // fires. `git commit`/`git write-tree` omit such entries while the
+        // in-memory expected tree would include them, turning every real
+        // commit into a false ScopeDrift. Porcelain v2 reports them as `1 .A`
+        // (no index status, worktree "A", not untracked).
+        if snapshot.entries.iter().any(|entry| {
+            !entry.untracked
+                && !entry.ignored
+                && entry.index_status.is_none()
+                && entry.worktree_status.as_deref() == Some("A")
+        }) {
+            return Err(CoreError::Blocked(
+                "intent-to-add entries must be staged with content before Commit".into(),
             ));
         }
         let checkout = Path::new(&snapshot.context.checkout_root);
@@ -1233,7 +1297,9 @@ fn read_staged_scope(
     Ok((files, outside_project_paths.into_iter().collect()))
 }
 
-fn project_boundary(resolved: &super::context::ResolvedGitContext) -> Result<std::path::PathBuf> {
+pub(crate) fn project_boundary(
+    resolved: &super::context::ResolvedGitContext,
+) -> Result<std::path::PathBuf> {
     let main_identity = super::repository::RepositoryIdentity::from_project(
         &resolved.project,
         &GitRunner::default(),

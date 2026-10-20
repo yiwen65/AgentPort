@@ -433,6 +433,8 @@ export interface WorktreeDeletePreflight {
   repositoryMissing: boolean;
   canRemove: boolean;
   blockers: string[];
+  /** Set when the local-change probe failed; the counts above are then unknown, not zero. */
+  summaryError: string | null;
 }
 
 export interface ConfirmedArchivedSession {

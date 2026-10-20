@@ -111,3 +111,52 @@ fn view_and_trash_accept_only_the_current_untracked_entry() {
     assert_eq!(trashed.changes.counts.untracked, 0);
     fixture.assert_recorded_write_targets_are_isolated();
 }
+
+#[test]
+fn discarding_a_glob_like_path_never_reverts_unselected_siblings() {
+    let fixture = MockRepo::new();
+    let db = Db::open_memory().unwrap();
+    fixture.add_project(&db, "project-a");
+    fixture.write("a*b.txt", "original\n");
+    fixture.write("axb.txt", "original\n");
+    fixture.git(fixture.root(), &["add", "--", "a*b.txt", "axb.txt"]);
+    fixture.git(
+        fixture.root(),
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "add glob files",
+        ],
+    );
+    fixture.write("a*b.txt", "changed\n");
+    fixture.write("axb.txt", "changed\n");
+
+    let locator = GitContextLocator::ProjectMain {
+        project_id: "project-a".into(),
+    };
+    let manager = GitWorkspaceManager::new(&db);
+    let before = manager.changes(&locator, true).unwrap();
+    fixture.record_write_target("discard glob path", fixture.root());
+    manager
+        .discard_paths(
+            &locator,
+            &before.context.checkout_id,
+            &before.status_token,
+            &[selection(&before, "a*b.txt")],
+        )
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(fixture.root().join("a*b.txt")).unwrap(),
+        "original\n",
+        "the selected file is restored"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.root().join("axb.txt")).unwrap(),
+        "changed\n",
+        "the pathspec must be literal: an unselected sibling keeps its edit"
+    );
+    fixture.assert_recorded_write_targets_are_isolated();
+}

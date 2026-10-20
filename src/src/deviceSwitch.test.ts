@@ -22,6 +22,9 @@ const remoteSyncMock = vi.hoisted(() => ({
   startRemoteSync: vi.fn(),
   stopRemoteSync: vi.fn(),
 }));
+const hoverCardMock = vi.hoisted(() => ({
+  clearCommitPreviewCache: vi.fn(),
+}));
 
 vi.mock("./api", () => ({
   api: apiMock,
@@ -31,6 +34,7 @@ vi.mock("./actions", () => actionsMock);
 vi.mock("./terminals", () => terminalsMock);
 vi.mock("./remote/runtime", () => runtimeMock);
 vi.mock("./remote/remoteSync", () => remoteSyncMock);
+vi.mock("./components/GitCommitHoverCard", () => hoverCardMock);
 
 import {
   LOCAL_DEVICE_CONTEXT,
@@ -47,9 +51,11 @@ import {
 import { cacheLocalBootBase, resetLocalBootBaseForTests } from "./remoteBoot";
 import {
   getState,
+  emptyGitCenterState,
   setActiveDevice,
   setState,
   shouldApplyLocalBackendEvent,
+  type GitCheckoutUiState,
 } from "./store";
 import { emptyPaneLayout } from "./paneLayout";
 import type { BootInfo, ProjectView, SessionView, Settings } from "./types";
@@ -313,6 +319,40 @@ describe("switchDevice", () => {
     expect(s.deviceError).toContain("unreachable");
     // The sync engine follows the device we actually ended up on.
     expect(remoteSyncMock.startRemoteSync).toHaveBeenLastCalledWith("dev_1");
+  });
+
+  it("resets Git Center when the device actually changes", async () => {
+    const backend = makeBackend();
+    runtimeMock.remoteBackendFor.mockReturnValue(backend);
+    setState({
+      gitCenter: {
+        ...emptyGitCenterState(),
+        open: true,
+        locator: { kind: "projectMain", projectId: "prj_local" },
+        activeCheckoutId: "checkout-local",
+        resolvePhase: "ready",
+        caches: {
+          "checkout-local": {
+            context: { repoKey: "local-repo" },
+          } as unknown as GitCheckoutUiState,
+        },
+      },
+    });
+
+    // Selecting the already-active device keeps the open panel (and its cache).
+    await switchDevice(LOCAL_DEVICE_CONTEXT);
+    expect(getState().gitCenter.open).toBe(true);
+    expect(getState().gitCenter.caches["checkout-local"]).toBeTruthy();
+    expect(hoverCardMock.clearCommitPreviewCache).not.toHaveBeenCalled();
+
+    await switchDevice(remoteContext("dev_1"));
+
+    const gitCenter = getState().gitCenter;
+    expect(gitCenter.open).toBe(false);
+    expect(gitCenter.activeCheckoutId).toBeNull();
+    expect(gitCenter.locator).toBeNull();
+    expect(gitCenter.caches).toEqual({});
+    expect(hoverCardMock.clearCommitPreviewCache).toHaveBeenCalledTimes(1);
   });
 
   it("serializes concurrent switches in call order", async () => {

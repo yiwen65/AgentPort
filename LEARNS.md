@@ -1,5 +1,14 @@
 # Project Learnings
 
+## `Git Center 远端推送/路径选择/ignored 树` — 同名推送、字面 pathspec、元数据指纹
+
+- Wrong approach: 用 `branch.<name>.merge` 作为 Push 目标；依赖 `--pathspec-from-file` 的字面语义；把 ignored 文件全文哈希当安全校验；据审查结论删除 `only_original_ignored_paths_are_visible`。
+- Why it failed: `git checkout -b feature origin/main` 会写入 `merge=refs/heads/main`，普通 Push/Force Push 因此直接改写远端 main（实测 `986a39a..5d03101 HEAD -> main`）；`git restore --worktree --pathspec-from-file` 仍按 glob 解释，`a*b.txt` 会连带重置 `axb.txt`；本仓库 ignored 树 406,677 文件 / 138 GiB，脏切换要全文读 3–7 次且全程持锁；stash 修改过的 `.gitignore` 后原 ignored 文件会变成 untracked 进入 `RepoStatus.paths`，该 helper 正是此时返回 true。
+- Recognition signal: 从 `origin/main` 新建分支后 Push 的出参是 `HEAD -> main`；discard 后未选中的 `axb.txt` 也被还原；`worktree_hash` 对 ignored 条目读取整文件；安全恢复在 stash apply 后因 ignored 键集合变化永久 `recovery_required`。
+- Correct approach: Push/Force Push 目标固定 `refs/heads/<当前分支>`，upstream 名不同用 `--set-upstream` 修复；add/restore/diff 全部显式 `--literal-pathspecs`；ignored 条目用 len+mtime+mode+inode 指纹、允许新增 ignored 文件；`restore_locked` 先验证快照再要求 stash，cleanup 在 stash 已被用户 pop 时按已验证状态收尾；i-t-a 用 porcelain `1 .A` 识别。
+- Prevention: 保留 upstream 名不同的 push、glob discard、rename+edit stage、`git add -N`、autostash 冲突、switch 后新增 ignored 文件等回归；机器可读 git 列表在 `stdout_truncated` 时必须 fail closed（列表上限 64 MiB）；审查结论必须复现后再据此删代码。
+- Verified by: `cargo test --workspace` 全绿（core lib 433 passed）；前端 135 files / 1128 tests、tsc 通过；Push 目标与 glob discard 在临时 bare/仓库中做过修复前后对比。
+
 ## `live easy-pi CPU profiling` — inspector evaluation can terminate the Session
 
 - Wrong approach: After profiling a live Node Session, evaluate `import("node:inspector").then(...)` through `Runtime.evaluate` to close its inspector.

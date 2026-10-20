@@ -6,6 +6,9 @@
 
 import { api, errorText } from "./api";
 import { applyBootInfo } from "./bootApply";
+// Git Center caches (and the commit hover preview cache) hold ids, locators
+// and repo keys that only exist on the device that produced them.
+import { clearCommitPreviewCache } from "./components/GitCommitHoverCard";
 import {
   ACTIVE_DEVICE_STORAGE_KEY,
   activeDeviceContext,
@@ -13,6 +16,7 @@ import {
   LOCAL_DEVICE_STORAGE_VALUE,
   type DeviceContext,
 } from "./deviceContext";
+import { resetGitCenterForDeviceChange } from "./gitCenter";
 import { i18n } from "./i18n";
 import { composeRemoteBoot } from "./remoteBoot";
 import { dropRemoteBackend, remoteBackendFor } from "./remote/runtime";
@@ -81,6 +85,8 @@ async function doSwitchDevice(target: DeviceContext): Promise<void> {
     });
     if (!stale()) {
       if (target.kind === "remote") startRemoteSync(target.deviceId);
+      resetGitCenterForDeviceChange();
+      clearCommitPreviewCache();
       setState({ deviceSwitching: false, deviceError: null });
     }
   } catch (error) {

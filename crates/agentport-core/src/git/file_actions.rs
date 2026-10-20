@@ -57,6 +57,7 @@ impl<'a> GitWorkspaceManager<'a> {
             .run_with_options(
                 Some(checkout),
                 [
+                    "--literal-pathspecs",
                     "restore",
                     "--worktree",
                     "--pathspec-from-file=-",

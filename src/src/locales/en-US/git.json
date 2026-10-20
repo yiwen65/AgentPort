@@ -138,11 +138,11 @@
       },
       "push": {
         "title": "Push the current branch?",
-        "body": "Push {{branch}} to {{upstream}}."
+        "body": "Push {{branch}} to {{destination}}."
       },
       "force_push": {
         "title": "Safe Force Push the current branch?",
-        "body": "Rewrite {{upstream}} using --force-with-lease. Git rejects the operation if the remote has changed."
+        "body": "Rewrite {{destination}} using --force-with-lease. Git rejects the operation if the remote has changed."
       }
     },
     "dirty": {

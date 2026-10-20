@@ -7,6 +7,7 @@
     "orphanedDetail": "The managed Worktree directory and all files in it will be deleted.",
     "pathDetail": "Directory: {{path}}",
     "safeDetail": "No local files or Session references need additional cleanup.",
+    "unknownLocalDetail": "Local files could not be verified: {{detail}}",
     "cleanupDetail": "Deletion will also permanently clean up: {{detail}}.",
     "changesBlocker": "local changes exist ({{modified}} modified, {{staged}} staged, {{untracked}} untracked)",
     "ignoredBlocker": "{{count}} Git-ignored local file or directory exists ({{sample}})",

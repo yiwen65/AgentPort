@@ -1106,6 +1106,15 @@ function worktreeDeleteBlockerDetails(
   preflight: WorktreeDeletePreflight,
 ): string[] {
   const details: string[] = [];
+  if (preflight.summaryError) {
+    // Zero counts from a failed probe say nothing about local data, so the
+    // confirmation must show the uncertainty instead of a clean summary.
+    details.push(
+      i18n.t("worktree:flow.unknownLocalDetail", {
+        detail: preflight.summaryError,
+      }),
+    );
+  }
   if (preflight.modified + preflight.staged + preflight.untracked > 0) {
     details.push(
       i18n.t("worktree:flow.changesBlocker", {
@@ -1166,6 +1175,8 @@ export async function removeWorktreeFlow(worktreeId: string) {
       body,
       details: [
         i18n.t("worktree:flow.pathDetail", { path: preflight.path }),
+        // A failed local-change probe always contributes an item, so an
+        // unverifiable Worktree never reaches the "nothing to clean up" copy.
         cleanupItems.length > 0
           ? i18n.t("worktree:flow.cleanupDetail", {
               detail: cleanupItems.join(

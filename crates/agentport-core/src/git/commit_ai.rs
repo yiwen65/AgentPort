@@ -68,18 +68,40 @@ impl<'a> GitWorkspaceManager<'a> {
         }
 
         let checkout = Path::new(&snapshot.context.checkout_root);
+        // The AI request leaves the machine. Restrict the diff to the Project
+        // boundary exactly like commit review does, so staged files from a
+        // sibling project that shares the same Git root are never sent to the
+        // configured provider. `--no-textconv` keeps repository-configured
+        // converter programs from running for a read-only action.
+        let boundary = super::commit::project_boundary(&resolved)?;
+        let pathspec = boundary
+            .strip_prefix(checkout)
+            .map_err(|_| {
+                CoreError::Conflict("Project boundary is outside the resolved Git Checkout".into())
+            })?
+            .as_os_str()
+            .to_owned();
+        let pathspec = if pathspec.is_empty() {
+            std::ffi::OsString::from(".")
+        } else {
+            pathspec
+        };
+        let diff_args = vec![
+            std::ffi::OsString::from("--literal-pathspecs"),
+            std::ffi::OsString::from("diff"),
+            std::ffi::OsString::from("--cached"),
+            std::ffi::OsString::from("--no-ext-diff"),
+            std::ffi::OsString::from("--no-textconv"),
+            std::ffi::OsString::from("--no-color"),
+            std::ffi::OsString::from("--unified=3"),
+            std::ffi::OsString::from("--"),
+            pathspec,
+        ];
         let diff = self
             .runner
             .run_with_options(
                 Some(checkout),
-                [
-                    "diff",
-                    "--cached",
-                    "--no-ext-diff",
-                    "--no-color",
-                    "--unified=3",
-                    "--",
-                ],
+                diff_args,
                 GitRunOptions {
                     max_stdout: MAX_STAGED_DIFF_BYTES,
                     max_stderr: 64 * 1024,

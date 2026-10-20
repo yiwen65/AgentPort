@@ -14,6 +14,7 @@ import {
   setState,
   toast,
   update,
+  type GitCenterPhase,
   type GitCheckoutUiState,
   type GitDiffSelection,
 } from "./store";
@@ -42,6 +43,14 @@ type RequestScope =
 let resolveSequence = 0;
 const requestSequences = new Map<string, Record<RequestScope, number>>();
 const invalidationTimers = new Map<string, number>();
+// The transient changesPhase (loading/refreshing) is owned by the request that
+// set it. A dropped request may only restore the phase it superseded; when a
+// newer request already claimed the phase, that request stays responsible.
+let changesPhaseSequence = 0;
+const changesPhaseClaims = new Map<
+  string,
+  { token: number; previous: GitCenterPhase }
+>();
 
 function locatorKey(locator: GitContextLocator): string {
   switch (locator.kind) {
@@ -85,6 +94,48 @@ function requestIsCurrent(
 ): boolean {
   return getState().gitCenter.activeCheckoutId === checkoutId &&
     requestSequences.get(checkoutId)?.[scope] === request;
+}
+
+/** Mark the changesPhase as owned by a request that is now in flight. */
+function claimChangesPhase(
+  checkoutId: string,
+  phase: "loading" | "refreshing",
+): number {
+  const token = ++changesPhaseSequence;
+  updateCheckout(checkoutId, (current) => {
+    changesPhaseClaims.set(checkoutId, {
+      token,
+      previous: current.changesPhase,
+    });
+    return { ...current, changesPhase: phase, changesError: null };
+  });
+  return token;
+}
+
+function releaseChangesPhase(checkoutId: string, token: number) {
+  const claim = changesPhaseClaims.get(checkoutId);
+  // A newer request owns the phase now and settles it itself.
+  if (!claim || claim.token !== token) return;
+  changesPhaseClaims.delete(checkoutId);
+  updateCheckout(checkoutId, (current) => ({
+    ...current,
+    changesPhase:
+      claim.previous === "loading" || claim.previous === "refreshing"
+        ? current.changes ? "ready" : "idle"
+        : claim.previous,
+  }));
+}
+
+/**
+ * A cache can hold a transient changesPhase whose request was dropped while
+ * another target was active. Reusing that cache must not inherit the latch:
+ * every open refreshes right after, and the refresh guard would never pass.
+ */
+function settledChangesPhase(cache: GitCheckoutUiState): GitCenterPhase {
+  if (cache.changesPhase !== "loading" && cache.changesPhase !== "refreshing") {
+    return cache.changesPhase;
+  }
+  return cache.changes ? "ready" : "idle";
 }
 
 function createCheckoutState(
@@ -212,7 +263,11 @@ export async function openGitCenter(locator: GitContextLocator): Promise<void> {
           caches: {
             ...state.gitCenter.caches,
             [context.checkoutId]: existing
-              ? { ...existing, context }
+              ? {
+                ...existing,
+                context,
+                changesPhase: settledChangesPhase(existing),
+              }
               : createCheckoutState(context),
           },
         },
@@ -424,17 +479,17 @@ export async function refreshGitChanges(
   }
   const { checkoutId, locator, cache } = target;
   const request = nextRequest(checkoutId, "changes");
-  updateCheckout(checkoutId, (current) => ({
-    ...current,
-    changesPhase: options.initial && !current.changes ? "loading" : "refreshing",
-    changesError: null,
-  }));
+  const phaseToken = claimChangesPhase(
+    checkoutId,
+    options.initial && !cache.changes ? "loading" : "refreshing",
+  );
   try {
     const changes = await api.getGitChanges(locator, true);
     if (
       !requestIsCurrent(checkoutId, "changes", request) ||
       changes.context.checkoutId !== checkoutId
     ) {
+      releaseChangesPhase(checkoutId, phaseToken);
       return;
     }
     applyAuthoritativeChanges(checkoutId, changes);
@@ -445,7 +500,10 @@ export async function refreshGitChanges(
       void selectGitDiff(cache.diffSelection);
     }
   } catch (error) {
-    if (!requestIsCurrent(checkoutId, "changes", request)) return;
+    if (!requestIsCurrent(checkoutId, "changes", request)) {
+      releaseChangesPhase(checkoutId, phaseToken);
+      return;
+    }
     updateCheckout(checkoutId, (current) => ({
       ...current,
       changesPhase: "error",
@@ -550,11 +608,7 @@ export async function adoptCurrentGitWorktreeBranch(): Promise<void> {
   if (!confirmed) return;
 
   const request = nextRequest(checkoutId, "mutation");
-  updateCheckout(checkoutId, (current) => ({
-    ...current,
-    changesPhase: "refreshing",
-    changesError: null,
-  }));
+  const phaseToken = claimChangesPhase(checkoutId, "refreshing");
   try {
     const changes = await api.adoptCurrentGitWorktreeBranch(
       locator,
@@ -566,6 +620,7 @@ export async function adoptCurrentGitWorktreeBranch(): Promise<void> {
       !requestIsCurrent(checkoutId, "mutation", request) ||
       changes.context.checkoutId !== checkoutId
     ) {
+      releaseChangesPhase(checkoutId, phaseToken);
       return;
     }
     nextRequest(checkoutId, "changes");
@@ -573,7 +628,10 @@ export async function adoptCurrentGitWorktreeBranch(): Promise<void> {
     toast(i18n.t("git:branchAdoption.succeeded"), "success");
     await refreshProjects();
   } catch (error) {
-    if (!requestIsCurrent(checkoutId, "mutation", request)) return;
+    if (!requestIsCurrent(checkoutId, "mutation", request)) {
+      releaseChangesPhase(checkoutId, phaseToken);
+      return;
+    }
     applyWriteError(checkoutId, error);
   }
 }
@@ -581,12 +639,13 @@ export async function adoptCurrentGitWorktreeBranch(): Promise<void> {
 export async function mutateAllGitChanges(side: GitDiffSide): Promise<void> {
   const target = activeTarget();
   if (!target?.cache.changes || !gitWritesEnabled(target.cache)) return;
-  const entries = target.cache.changes.entries.filter((entry) =>
-    side === "staged"
-      ? entry.staged && !entry.conflicted
-      : !entry.ignored &&
-        (entry.unstaged || entry.untracked || entry.conflicted)
-  );
+  const entries = target.cache.changes.entries.filter((entry) => {
+    if (side === "staged") return entry.staged && !entry.conflicted;
+    // "Stage all" must never resolve a conflict: Core stages conflicted entries
+    // as resolved. Conflicts keep their per-file "mark resolved" action.
+    return !entry.ignored && !entry.conflicted &&
+      (entry.unstaged || entry.untracked);
+  });
   await mutateGitPaths(
     target.checkoutId,
     target.locator,
@@ -605,11 +664,7 @@ async function mutateGitPaths(
 ): Promise<void> {
   if (selections.length === 0) return;
   const request = nextRequest(checkoutId, "mutation");
-  updateCheckout(checkoutId, (current) => ({
-    ...current,
-    changesPhase: "refreshing",
-    changesError: null,
-  }));
+  const phaseToken = claimChangesPhase(checkoutId, "refreshing");
   try {
     const result = side === "staged"
       ? await api.unstageGitPaths(
@@ -628,6 +683,7 @@ async function mutateGitPaths(
       !requestIsCurrent(checkoutId, "mutation", request) ||
       result.changes.context.checkoutId !== checkoutId
     ) {
+      releaseChangesPhase(checkoutId, phaseToken);
       return;
     }
     nextRequest(checkoutId, "changes");
@@ -635,7 +691,10 @@ async function mutateGitPaths(
       clearSelection: true,
     });
   } catch (error) {
-    if (!requestIsCurrent(checkoutId, "mutation", request)) return;
+    if (!requestIsCurrent(checkoutId, "mutation", request)) {
+      releaseChangesPhase(checkoutId, phaseToken);
+      return;
+    }
     applyWriteError(checkoutId, error);
   }
 }
@@ -646,16 +705,12 @@ async function runFileMutation(
     checkoutId: string,
     statusToken: string,
   ) => Promise<{ changes: GitChangesSnapshot }>,
-): Promise<void> {
+): Promise<boolean> {
   const target = activeTarget();
-  if (!target?.cache.changes || !gitWritesEnabled(target.cache)) return;
+  if (!target?.cache.changes || !gitWritesEnabled(target.cache)) return false;
   const { checkoutId, locator } = target;
   const request = nextRequest(checkoutId, "mutation");
-  updateCheckout(checkoutId, (current) => ({
-    ...current,
-    changesPhase: "refreshing",
-    changesError: null,
-  }));
+  const phaseToken = claimChangesPhase(checkoutId, "refreshing");
   try {
     const result = await operation(
       locator,
@@ -666,15 +721,21 @@ async function runFileMutation(
       !requestIsCurrent(checkoutId, "mutation", request) ||
       result.changes.context.checkoutId !== checkoutId
     ) {
-      return;
+      releaseChangesPhase(checkoutId, phaseToken);
+      return false;
     }
     nextRequest(checkoutId, "changes");
     applyAuthoritativeChanges(checkoutId, result.changes, {
       clearSelection: true,
     });
+    return true;
   } catch (error) {
-    if (!requestIsCurrent(checkoutId, "mutation", request)) return;
+    if (!requestIsCurrent(checkoutId, "mutation", request)) {
+      releaseChangesPhase(checkoutId, phaseToken);
+      return false;
+    }
     applyWriteError(checkoutId, error);
+    return false;
   }
 }
 
@@ -772,6 +833,10 @@ export async function runGitRemoteAction(action: GitRemoteAction): Promise<void>
     ? i18n.t("git:remote.confirm.noIncoming")
     : null;
   const pullActionName = requestedAction === "pull" ? "Pull" : "Pull Rebase";
+  // Push/Force Push target `<remote>/<current branch>`. The upstream can point
+  // at a differently named remote branch, so the copy names the real
+  // destination instead of the tracked ref.
+  const destination = `${context.remote ?? "origin"}/${context.actualBranch ?? "—"}`;
   let effectiveAction = action;
 
   if (pulling && localChanges.length > 0) {
@@ -808,6 +873,7 @@ export async function runGitRemoteAction(action: GitRemoteAction): Promise<void>
       body: i18n.t(`git:remote.confirm.${requestedAction}.body`, {
         branch: context.actualBranch ?? "—",
         upstream: context.upstream ?? context.remote ?? "—",
+        destination,
       }),
       details: [noIncomingWarning, activeSessionWarning]
         .filter((detail): detail is string => Boolean(detail)),
@@ -816,11 +882,16 @@ export async function runGitRemoteAction(action: GitRemoteAction): Promise<void>
     });
     if (!confirmed) return;
   }
-  await runFileMutation((locator, checkoutId, statusToken) =>
+  const applied = await runFileMutation((locator, checkoutId, statusToken) =>
     api.syncGitRemote(locator, checkoutId, statusToken, effectiveAction)
   );
+  if (!applied) return;
   if (activeTarget()?.cache.changesPhase === "ready") {
     toast(i18n.t(`git:remote.success.${requestedAction}`), "success");
+  }
+  // Pull/Push move refs the History view is anchored to; Fetch does not.
+  if (requestedAction !== "fetch") {
+    await refreshGitHistory({ reset: true });
   }
 }
 
@@ -1249,11 +1320,20 @@ export function handleGitStateInvalidation(event: GitStateInvalidated) {
   scheduleInvalidatedRefresh(checkoutId);
 }
 
-/** Used by tests to isolate module-level request counters and store state. */
-export function resetGitCenterStateForTests() {
+/**
+ * Drop every Git Center cache and pending request before the UI runs on a
+ * different device: checkout ids, locators and repo keys are device-scoped.
+ */
+export function resetGitCenterForDeviceChange() {
   resolveSequence += 1;
   requestSequences.clear();
+  changesPhaseClaims.clear();
   for (const timer of invalidationTimers.values()) window.clearTimeout(timer);
   invalidationTimers.clear();
   setState({ gitCenter: emptyGitCenterState() });
+}
+
+/** Used by tests to isolate module-level request counters and store state. */
+export function resetGitCenterStateForTests() {
+  resetGitCenterForDeviceChange();
 }

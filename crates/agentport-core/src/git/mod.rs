@@ -106,6 +106,9 @@ pub struct WorktreeDeletePreflight {
     pub repository_missing: bool,
     pub can_remove: bool,
     pub blockers: Vec<String>,
+    /// Why the local-change probe failed. The counts above stay at zero when
+    /// this is set, so a zero count alone must never be read as "clean".
+    pub summary_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -722,6 +725,9 @@ impl<'a> WorktreeManager<'a> {
 
     /// Re-read all deletion-sensitive facts immediately before confirmation.
     /// This is intentionally richer than the sidebar's cached health badge.
+    /// A failed local-change probe is reported through `summary_error` (plus a
+    /// `local_changes_unknown` blocker) instead of collapsing into zero counts;
+    /// `can_remove` stays true because the destructive confirmation decides.
     pub fn deletion_preflight(&self, worktree_id: &str) -> Result<WorktreeDeletePreflight> {
         let worktree = self.db.get_worktree(worktree_id)?;
         let repository_missing = self.repository_missing(&worktree.project_id)?;
@@ -733,13 +739,17 @@ impl<'a> WorktreeManager<'a> {
             // a fallback after attempting Git's own cleanup.
             self.refresh_health(worktree_id).unwrap_or(worktree.health)
         };
-        let summary = if !repository_missing && Path::new(&worktree.path).is_dir() {
-            self.dirty_summary(worktree_id).unwrap_or_default()
+        let (summary, summary_error) = if !repository_missing && Path::new(&worktree.path).is_dir()
+        {
+            preflight_dirty_summary(self.dirty_summary(worktree_id))
         } else {
-            DirtySummary::default()
+            (DirtySummary::default(), None)
         };
         let (session_count, active_session_count) = self.db.worktree_session_counts(worktree_id)?;
         let mut blockers = Vec::new();
+        if summary_error.is_some() {
+            blockers.push("local_changes_unknown".into());
+        }
         if summary.modified + summary.staged + summary.untracked > 0 {
             blockers.push("uncommitted_changes".into());
         }
@@ -770,6 +780,7 @@ impl<'a> WorktreeManager<'a> {
             repository_missing,
             can_remove,
             blockers,
+            summary_error,
         })
     }
 
@@ -803,22 +814,20 @@ impl<'a> WorktreeManager<'a> {
 
         if is_owned {
             let project = self.db.get_project(&w.project_id)?;
-            if let Some(git_root) = project
+            let repo = project
                 .git_root_path
                 .as_deref()
                 .filter(|root| !root.trim().is_empty())
-            {
-                if let Ok(repo) = GitRepo::discover(Path::new(git_root)) {
-                    if !path_is_symlink {
-                        // Unlock is idempotent for the deletion goal; Git
-                        // reports an error when the Worktree was not locked.
-                        let _ = repo.worktree_unlock(cleanup_path);
-                        if let Err(error) = repo.worktree_remove_force(cleanup_path) {
-                            cleanup_errors.push(error.to_string());
-                        }
-                    }
-                    if let Err(error) = repo.worktree_prune() {
-                        cleanup_errors.push(error.to_string());
+                .and_then(|root| GitRepo::discover(Path::new(root)).ok());
+            let mut removed_by_git = false;
+            if let Some(repo) = &repo {
+                if !path_is_symlink {
+                    // Unlock is idempotent for the deletion goal; Git
+                    // reports an error when the Worktree was not locked.
+                    let _ = repo.worktree_unlock(cleanup_path);
+                    match repo.worktree_remove_force(cleanup_path) {
+                        Ok(()) => removed_by_git = true,
+                        Err(error) => cleanup_errors.push(error.to_string()),
                     }
                 }
             }
@@ -829,6 +838,26 @@ impl<'a> WorktreeManager<'a> {
             if cleanup_path.exists() {
                 if let Err(error) = remove_owned_path(cleanup_path) {
                     cleanup_errors.push(error.to_string());
+                }
+            }
+
+            // Prune only drops registrations whose directory is already gone:
+            // Git's own removal already deleted this Worktree's metadata, and
+            // while the directory still exists prune is a no-op. So the only
+            // case left is a path that no longer exists (removed by the
+            // fallback above or externally), which must not stay registered in
+            // `.git/worktrees/<id>` — that blocks `git switch <branch>` and
+            // future `git worktree add` forever.
+            if let Some(repo) = &repo {
+                if !removed_by_git && !cleanup_path.exists() {
+                    match repo.worktree_prune() {
+                        Ok(()) => {
+                            if let Err(error) = verify_worktree_unregistered(repo, cleanup_path) {
+                                cleanup_errors.push(error.to_string());
+                            }
+                        }
+                        Err(error) => cleanup_errors.push(error.to_string()),
+                    }
                 }
             }
         } else {
@@ -1200,6 +1229,36 @@ fn classify_worktree_add_failure(
     Ok(None)
 }
 
+/// Local-change probe result for the destructive confirmation. A failed probe
+/// keeps the (all-zero) default counts but must report why, because zero counts
+/// alone would read as "nothing to clean up" in the UI.
+fn preflight_dirty_summary(result: Result<DirtySummary>) -> (DirtySummary, Option<String>) {
+    match result {
+        Ok(summary) => (summary, None),
+        Err(error) => (DirtySummary::default(), Some(error.to_string())),
+    }
+}
+
+/// Confirm Git no longer registers `path` after a prune. A leftover
+/// registration in `.git/worktrees/<id>` blocks `git switch <branch>` and
+/// future `git worktree add`, so a deletion that leaves it behind must report
+/// the incomplete cleanup instead of succeeding silently.
+fn verify_worktree_unregistered(repo: &GitRepo, path: &Path) -> Result<()> {
+    let runner = GitRunner::default();
+    let identity = RepositoryIdentity::discover(&repo.root, &runner)?;
+    let registered = identity
+        .worktrees(&runner)?
+        .into_iter()
+        .any(|worktree| same_path(&worktree.path, path));
+    if registered {
+        return Err(CoreError::Internal(format!(
+            "Git still registers the removed Worktree at {}: worktree metadata could not be pruned",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 fn same_path(left: &Path, right: &Path) -> bool {
     let left = std::fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
     let right = std::fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
@@ -1559,6 +1618,129 @@ mod tests {
             .unwrap()
             .iter()
             .any(|i| i.path == Path::new(&wt.path)));
+    }
+
+    /// `git worktree remove --force` refuses a Worktree whose Git metadata is
+    /// damaged, so the owned directory is deleted by the direct fallback. Git
+    /// kept `.git/worktrees/<id>` because prune ran while the directory still
+    /// existed; that stale registration makes the branch look "already used by
+    /// worktree" forever, so the fallback path must prune and verify it.
+    #[test]
+    fn remove_after_fence_prunes_registration_when_git_refuses_removal() {
+        let fx = fixture();
+        let manager = mgr(&fx);
+        let repo = GitRepo::discover(&fx.repo_dir).unwrap();
+        let wt = manager
+            .create(&fx.project_id, "broken metadata", None, None)
+            .unwrap();
+        let dir = PathBuf::from(&wt.path);
+        let canon = std::fs::canonicalize(&dir).unwrap();
+
+        // Damage the Worktree's `.git` file: Git refuses to remove the
+        // directory itself, which forces the direct-directory fallback.
+        std::fs::write(dir.join(".git"), "gitdir: /nonexistent-agentport-test\n").unwrap();
+        let refused = repo.worktree_remove_force(&canon).unwrap_err();
+        assert!(matches!(refused, CoreError::Git(_)), "{refused}");
+        assert!(repo
+            .worktree_list()
+            .unwrap()
+            .iter()
+            .any(|info| same_path(&info.path, &canon)));
+
+        let outcome = manager.remove_after_fence(&wt.id).unwrap();
+
+        // Git's refusal is reported, the fallback removed the directory, and
+        // the registration is gone rather than silently left behind.
+        assert_eq!(outcome.cleanup_warnings, 1);
+        assert!(!dir.exists());
+        assert!(matches!(
+            fx.db.get_worktree(&wt.id),
+            Err(CoreError::NotFound(_))
+        ));
+        assert!(!repo
+            .worktree_list()
+            .unwrap()
+            .iter()
+            .any(|info| same_path(&info.path, &canon)));
+
+        // The branch must be usable again: a leftover registration would answer
+        // "is already used by worktree at ..." here.
+        git(&fx.repo_dir, &["switch", "agent/broken-metadata"]);
+        assert_eq!(
+            repo.current_branch().unwrap().as_deref(),
+            Some("agent/broken-metadata")
+        );
+    }
+
+    /// Zero counts alone must never read as "nothing to clean up": a failed
+    /// local-change probe has to stay visible in the destructive confirmation.
+    #[test]
+    fn deletion_preflight_reports_unverified_local_changes_instead_of_clean() {
+        let fx = fixture();
+        let manager = mgr(&fx);
+        let wt = manager
+            .create(&fx.project_id, "unverified changes", None, None)
+            .unwrap();
+        let dir = PathBuf::from(&wt.path);
+
+        let probed = manager.deletion_preflight(&wt.id).unwrap();
+        assert_eq!(probed.summary_error, None);
+        assert_eq!(
+            probed.modified + probed.staged + probed.untracked + probed.ignored,
+            0
+        );
+
+        // Keep the directory (and local data) but break its Git metadata so the
+        // status probe fails exactly like a truncated or timed-out probe.
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".git"), "gitdir: /nonexistent-agentport-test\n").unwrap();
+        std::fs::write(dir.join("local-note.txt"), "unverified local data\n").unwrap();
+
+        let preflight = manager.deletion_preflight(&wt.id).unwrap();
+        assert!(!preflight.repository_missing);
+        assert!(preflight.can_remove);
+        assert_eq!(preflight.modified, 0);
+        assert_eq!(preflight.staged, 0);
+        assert_eq!(preflight.untracked, 0);
+        assert_eq!(preflight.ignored, 0);
+        let error = preflight
+            .summary_error
+            .clone()
+            .expect("a failed probe must be reported");
+        assert!(error.contains("git"), "{error}");
+        assert!(
+            preflight
+                .blockers
+                .iter()
+                .any(|blocker| blocker == "local_changes_unknown"),
+            "{:?}",
+            preflight.blockers
+        );
+    }
+
+    #[test]
+    fn preflight_dirty_summary_helper_keeps_a_failed_probe_explicit() {
+        let (summary, error) = preflight_dirty_summary(Ok(DirtySummary {
+            modified: 2,
+            staged: 1,
+            ..Default::default()
+        }));
+        assert_eq!(summary.modified, 2);
+        assert_eq!(summary.staged, 1);
+        assert_eq!(error, None);
+
+        let (summary, error) = preflight_dirty_summary(Err(CoreError::Blocked(
+            "git status produced more than 10000 entries".into(),
+        )));
+        assert_eq!(summary.modified, 0);
+        assert_eq!(summary.staged, 0);
+        assert_eq!(summary.untracked, 0);
+        assert_eq!(summary.ignored, 0);
+        assert!(summary.ignored_sample.is_empty());
+        assert!(summary.raw.is_empty());
+        let error = error.expect("the probe error must survive");
+        assert!(error.contains("10000"), "{error}");
     }
 
     /// The user deleted the whole project checkout from disk while the managed

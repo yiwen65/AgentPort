@@ -138,11 +138,11 @@
       },
       "push": {
         "title": "Push 当前分支？",
-        "body": "将 {{branch}} 推送到 {{upstream}}。"
+        "body": "将 {{branch}} 推送到 {{destination}}。"
       },
       "force_push": {
         "title": "安全强推当前分支？",
-        "body": "将使用 --force-with-lease 改写 {{upstream}}。远端已变化时 Git 会拒绝操作。"
+        "body": "将使用 --force-with-lease 改写 {{destination}}。远端已变化时 Git 会拒绝操作。"
       }
     },
     "dirty": {
