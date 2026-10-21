@@ -1,5 +1,14 @@
 # Project Learnings
 
+## `remote SSH device switch` — `bridge_closed` 表示远端 Bridge 没起来，不是链路问题
+
+- Wrong approach: 把设备切换失败的 `bridge_closed: io error: bridge closed the stream` 当成 SSH 认证/网络问题去查凭据、known_hosts 或 Relay。
+- Why it failed: 该 reason 来自 `src-tauri/src/remote/ssh.rs::forward_frames` 的 `read_exact` UnexpectedEof——远端 exec 的 `agentport-remote-bridge serve --stdio` 立刻结束，通道随即 EOF。实测远端 `apt remove agent-port` 删掉了 `/usr/bin/agentport-remote-bridge`，而非交互 SSH 的 PATH 只有系统目录，命令退出 127；桌面端不读取远端 stderr，最终只剩一句“bridge closed the stream”。
+- Recognition signal: `ssh <host> 'command -v agentport-remote-bridge'` 无输出、`ssh <host> 'agentport-remote-bridge serve --stdio'` 返回 127；同一台机器的 Relay 设备可连，`devices.json` 中只有该 SSH profile 带这个 `lastError`。
+- Correct approach: 在远端放一份与客户端同版本的 Bridge 到非交互 PATH。Linux 无需 sudo：用 `dpkg-deb -x` 从已下载的 deb 取 `usr/bin/agentport-remote-bridge` 到 `~/.local/bin`，并确认 shell 启动文件导出该目录（zsh 非交互只读 `~/.zshenv`）。
+- Prevention: 远端跑 checkout/GUI 不代表 SSH Bridge 可用——Bridge 是独立入口，卸载 deb/App 会一并删除；报 `bridge_closed` 时先查远端 `command -v`，再怀疑传输层。
+- Verified by: 恢复后用 4 字节长度前缀发送 Hello 收到 `type:"hello"`（`server.platform=linux-x86_64`，EOF 后退出 0）；设备切换器切到该 SSH 设备后远端项目/会话加载成功、`devices.json` 的 `lastError` 清空，再切回本机。
+
 ## `Git Center 远端推送/路径选择/ignored 树` — 同名推送、字面 pathspec、元数据指纹
 
 - Wrong approach: 用 `branch.<name>.merge` 作为 Push 目标；依赖 `--pathspec-from-file` 的字面语义；把 ignored 文件全文哈希当安全校验；据审查结论删除 `only_original_ignored_paths_are_visible`。
