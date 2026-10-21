@@ -1,5 +1,14 @@
 # Project Learnings
 
+## `remote terminal latency` — 高 RTT/低带宽链路上的 SSH 传输才是瓶颈
+
+- Wrong approach: 把远程终端卡顿归因于 xterm 渲染或 Bridge 事件频率，先去改前端批处理/滚动逻辑。
+- Why it failed: 实测链路 RTT 168 ms（Tailscale + 热点），单流只有 ~0.28 MB/s（4 并发合计 ~1 MB/s）；Bridge 把 2.7 MB 输出推完要 5.2 s，与直接 `ssh host 'seq 1 400000'` 同量级。根因是 SSH 默认不压缩（base64/JSON 还放大 33%），且 russh 默认 `nodelay=false`，Nagle 让 window-adjust/输入小包多等一个 RTT。
+- Recognition signal: `ping` 高 RTT；`ssh <host> 'dd if=/dev/zero bs=1M count=8'` 远低于本地带宽；`ssh -o Compression=yes` 明显变快；`netstat -ib -I <tunnel>` 在 burst 期间收到的字节数接近原始文本量。
+- Correct approach: `russh` 的 compression 列表改为 `zlib@openssh.com, zlib, none`（客户端顺序生效，`none` 兜底保证 `Compression no` 的主机仍可握手），并开 `nodelay`。
+- Prevention: 评估“远程终端卡”先分层测量（链路 RTT/吞吐 → Bridge → webview）；压缩列表不能去掉 `none`，否则禁用压缩的 sshd 会在 KEX 阶段 `NoCommonAlgo`。
+- Verified by: 真实 OpenSSH 22.04 上用 russh probe 传 2.69 MB：默认 9.1–9.8 s（0.28 MB/s）；仅 nodelay 5.1–5.3 s（0.52）；zlib+nodelay 1.8–3.3 s（0.95–1.47）。重建 Debug App 后同一 burst 线路只收 ~1.3 MB（文本 2.69 MB，未压缩时必 ≥文本量），约 2 s 内渲染到 DONE-MARKER；`cargo test -p agentport remote::` 60 项通过。
+
 ## `remote SSH device` — `bridge_closed` / `session.restart` unknown 都是远端 Sidecar 不全
 
 - Wrong approach: 把设备切换失败的 `bridge_closed: io error: bridge closed the stream` 当成 SSH 认证/网络问题，或把 `session.restart outcome could not be observed` 当成会话状态机问题。
