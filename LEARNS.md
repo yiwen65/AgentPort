@@ -1,5 +1,14 @@
 # Project Learnings
 
+## `remote terminal input` — 每个输入事件都在等一次 RTT
+
+- Wrong approach: 把远程终端“滚动/打字卡”归为渲染问题，只优化输出下行（压缩、批量写入）。
+- Why it failed: 前端 `queueTerminalInput` 逐个 `await api.sendInput`，远程模式下每次 `session.input` 都是一次 SSH 请求-响应（实测同一链路 71–89 ms，RTT ~170 ms）；TUI 的滚轮会变成 mouse report/方向键，一次滑动产生几十个事件，队列按 RTT 累加。每个成功的输入还会触发 `refreshProjectsSoon()`，把 project/session/worktree 刷新风暴压在同一条链路上。
+- Recognition signal: 同一会话本地不卡、远程空闲时滚轮/打字才卡；`session.input` 往返与 ping 同量级；`REFRESH_SKIP_METHODS` 里没有 `session.input`。
+- Correct approach: 仿移动端 `mobile_remote_submit_input`：桌面新增 `remote_send_input`（同步命令按 IPC 顺序入队）→ manager 每设备唯一有序 input worker → `RemoteConnection::submit` 写帧但不等待结果；前端 `sendInput` 走此路径，不再进 `request()`/ack/refresh 钩子。必须先入队再解析 promise，否则下一帧可能先写。
+- Prevention: 任何“每事件一个请求”的交互路径都检查是否串行等 RTT；顺序必须由单一写入者保证，不能依赖并发 invoke 的到达顺序；丢结果的路径要有队伍上限（`input_queue_full`）。
+- Verified by: `submit` 单测让假 Bridge 收到两帧后才回包、调用方不阻塞；`cargo test -p agentport` 135 项、前端 135 文件/1128 项、`tsc` 均通过；重建 Debug App 后远程 shell 的鼠标上报与键入照常到达 PTY。
+
 ## `remote terminal latency` — 高 RTT/低带宽链路上的 SSH 传输才是瓶颈
 
 - Wrong approach: 把远程终端卡顿归因于 xterm 渲染或 Bridge 事件频率，先去改前端批处理/滚动逻辑。
