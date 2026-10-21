@@ -1,13 +1,13 @@
 # Project Learnings
 
-## `remote SSH device switch` — `bridge_closed` 表示远端 Bridge 没起来，不是链路问题
+## `remote SSH device` — `bridge_closed` / `session.restart` unknown 都是远端 Sidecar 不全
 
-- Wrong approach: 把设备切换失败的 `bridge_closed: io error: bridge closed the stream` 当成 SSH 认证/网络问题去查凭据、known_hosts 或 Relay。
-- Why it failed: 该 reason 来自 `src-tauri/src/remote/ssh.rs::forward_frames` 的 `read_exact` UnexpectedEof——远端 exec 的 `agentport-remote-bridge serve --stdio` 立刻结束，通道随即 EOF。实测远端 `apt remove agent-port` 删掉了 `/usr/bin/agentport-remote-bridge`，而非交互 SSH 的 PATH 只有系统目录，命令退出 127；桌面端不读取远端 stderr，最终只剩一句“bridge closed the stream”。
-- Recognition signal: `ssh <host> 'command -v agentport-remote-bridge'` 无输出、`ssh <host> 'agentport-remote-bridge serve --stdio'` 返回 127；同一台机器的 Relay 设备可连，`devices.json` 中只有该 SSH profile 带这个 `lastError`。
-- Correct approach: 在远端放一份与客户端同版本的 Bridge 到非交互 PATH。Linux 无需 sudo：用 `dpkg-deb -x` 从已下载的 deb 取 `usr/bin/agentport-remote-bridge` 到 `~/.local/bin`，并确认 shell 启动文件导出该目录（zsh 非交互只读 `~/.zshenv`）。
-- Prevention: 远端跑 checkout/GUI 不代表 SSH Bridge 可用——Bridge 是独立入口，卸载 deb/App 会一并删除；报 `bridge_closed` 时先查远端 `command -v`，再怀疑传输层。
-- Verified by: 恢复后用 4 字节长度前缀发送 Hello 收到 `type:"hello"`（`server.platform=linux-x86_64`，EOF 后退出 0）；设备切换器切到该 SSH 设备后远端项目/会话加载成功、`devices.json` 的 `lastError` 清空，再切回本机。
+- Wrong approach: 把设备切换失败的 `bridge_closed: io error: bridge closed the stream` 当成 SSH 认证/网络问题，或把 `session.restart outcome could not be observed` 当成会话状态机问题。
+- Why it failed: 前者是 `ssh.rs::forward_frames` 的 `read_exact` UnexpectedEof：远端 exec 的 `agentport-remote-bridge serve --stdio` 立即结束（实测 `apt remove agent-port` 删掉了 `/usr/bin/agentport-remote-bridge`，非交互 SSH 的 PATH 里没有别的入口）。后者是 Bridge 起来了、但同目录缺少 `agentport-host`：`host_binary_path()` 只查 Bridge 可执行文件旁、`../lib/agentport/` 和 PATH，launch 失败返回 `ServiceError::Core`，`session.restart` 属非幂等写入，被降为 `ResultStatus::Unknown`；Bridge 又把 Core 详情替换成 “request failed on the remote host”，桌面端还丢弃 stderr。
+- Recognition signal: `ssh <host> 'command -v agentport-remote-bridge'` 无输出、直接执行返回 127；或 `session.list` 正常而 `session.create`/`session.restart` 失败、`ls ~/.local/bin/agentport-host` 为空。用 `AGENTPORT_HOST_BIN=/nonexistent/... agentport-remote-bridge serve --stdio` 可复现同样的 `unknown` 结果。
+- Correct approach: 从同版本 deb 用 `dpkg-deb -x` 把**全部** Sidecar（`agentport-remote-bridge`、`agentport-host`、`agentport-mosh-attach`、`agentport-connector`）装到非交互 PATH（Linux 无需 sudo：`~/.local/bin` + `~/.zshenv` 导出 PATH；只拷 Bridge 只能 hello/list，不能启动会话）。
+- Prevention: 远端跑 checkout/GUI 不代表 SSH Sidecar 可用；卸载 deb/App 会成组删除它们。报 `bridge_closed` 先查 `command -v agentport-remote-bridge`，报 `restart outcome unknown` 先查 `agentport-host` 是否在 Bridge 同目录或 PATH。
+- Verified by: 补齐 Sidecar 后 Hello 回包 `linux-x86_64`；`session.create`（permission `native`）成功；`session.stop` → `session.restart` 成功（`shell_resume_unavailable` 提示符合 shell 语义）；测试会话已 stop/archive/delete，无残留 Host 进程。设备切换器切到该 SSH 设备后项目/会话加载成功、`devices.json` 的 `lastError` 清空。
 
 ## `Git Center 远端推送/路径选择/ignored 树` — 同名推送、字面 pathspec、元数据指纹
 
