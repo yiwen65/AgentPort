@@ -2,6 +2,7 @@
 //! channel, adapted to the blocking `FrameReader`/`FrameWriter` traits via a
 //! dedicated thread running a small tokio runtime.
 
+use std::borrow::Cow;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
@@ -265,6 +266,26 @@ where
     let _ = writer.shutdown().await;
 }
 
+/// SSH transport options shared by every remote device dial.
+///
+/// Terminal traffic is highly compressible text and remote devices are
+/// usually reached over a high-latency WAN. OpenSSH's delayed zlib is offered
+/// first but `none` stays last, so hosts that disable compression still
+/// negotiate. `nodelay` matches OpenSSH's interactive-shell default: without
+/// it Nagle delays small window-adjust/input packets by up to one RTT
+/// (measured on a ~170 ms link: 0.28 MB/s -> 0.52 MB/s without compression,
+/// 0.95-1.47 MB/s with it).
+fn transport_config() -> russh::client::Config {
+    let mut config = russh::client::Config::default();
+    config.preferred.compression = Cow::Borrowed(&[
+        russh::compression::ZLIB_LEGACY,
+        russh::compression::ZLIB,
+        russh::compression::NONE,
+    ]);
+    config.nodelay = true;
+    config
+}
+
 async fn drive(
     target: SshTarget,
     secret: SshSecret,
@@ -280,7 +301,7 @@ async fn drive(
         tofu: Arc::clone(&tofu),
         verdict: Arc::clone(&verdict),
     };
-    let config = Arc::new(russh::client::Config::default());
+    let config = Arc::new(transport_config());
     let mut handle = match tokio::time::timeout(
         timeout,
         russh::client::connect(config, (target.host.as_str(), target.port), handler),
@@ -397,6 +418,21 @@ async fn drive(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_config_prefers_compression_with_none_fallback() {
+        let config = super::transport_config();
+        let names: Vec<&str> = config
+            .preferred
+            .compression
+            .iter()
+            .map(|name| name.as_ref())
+            .collect();
+        // Client order wins in SSH negotiation: zlib first, `none` last so a
+        // host with `Compression no` still connects.
+        assert_eq!(names, vec!["zlib@openssh.com", "zlib", "none"]);
+        assert!(config.nodelay, "interactive SSH must not leave Nagle on");
+    }
 
     #[test]
     fn ssh_secret_roundtrip_clone_is_zeroizing() {
