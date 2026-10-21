@@ -33,6 +33,15 @@ describe("remote attach through the routed api", () => {
       async (command: string, args: Record<string, unknown>) => {
         if (command === "remote_connect") return HELLO;
         if (command === "remote_subscribe") return undefined;
+        if (command === "remote_send_input") {
+          // Ordered terminal input is enqueued, not acknowledged; record it
+          // like a request so the wire contract stays asserted.
+          requests.push({
+            method: args.method as string,
+            params: args.params,
+          });
+          return undefined;
+        }
         if (command === "remote_request") {
           const method = args.method as string;
           const params = args.params;

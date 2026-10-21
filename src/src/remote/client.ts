@@ -128,6 +128,34 @@ export class RemoteClient {
     this.subscribed = true;
   }
 
+  /**
+   * Ordered terminal input. Resolves once the desktop queued the frame — not
+   * after the bridge answered it — so a wheel burst or fast typing pays one
+   * WAN round trip total instead of one per event. The desktop's per-device
+   * input worker writes queued frames in call order.
+   */
+  async submitInput(params: {
+    attachmentId: string;
+    batchId: string;
+    dataBase64: string;
+  }): Promise<void> {
+    if (this.state !== "connected") {
+      throw new RemoteRequestError(
+        "not_connected",
+        `device ${this.deviceId} is not connected`,
+      );
+    }
+    try {
+      await this.invoker("remote_send_input", {
+        deviceId: this.deviceId,
+        method: "session.input",
+        params,
+      });
+    } catch (error) {
+      throw normalizeRequestError(error);
+    }
+  }
+
   async disconnect(): Promise<void> {
     this.subscribed = false;
     this.hello = null;

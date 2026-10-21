@@ -111,7 +111,6 @@ import type {
   RemoteAgentProbeResult,
   RemotePresetSummary,
   RemoteSessionControlResult,
-  RemoteSessionInputResult,
   RemoteSessionStopResult,
   RemoteWorktreeRemoveResult,
   RemoteWorktreeSummary,
@@ -668,22 +667,18 @@ export class RemoteBackend {
     });
   }
 
+  /**
+   * Terminal input uses the desktop's ordered input queue: this resolves
+   * after enqueue, not after the remote acknowledgement. A wheel/keystroke
+   * burst therefore reaches the remote PTY in user order without waiting one
+   * round trip per event (typing and TUI scrolling were gated by that).
+   */
   async sendInput(sessionId: string, data: string): Promise<void> {
-    const result = await this.request<RemoteSessionInputResult>(
-      "session.input",
-      {
-        attachmentId: this.attachmentFor(sessionId),
-        batchId: this.nextBatchId(),
-        dataBase64: data,
-      },
-    );
-    if (result && result.phase === "not_executed") {
-      throw new RemoteRequestError(
-        "input_not_executed",
-        `input batch ${result.batchId} was not executed by the remote host`,
-        "not_executed",
-      );
-    }
+    await this.client.submitInput({
+      attachmentId: this.attachmentFor(sessionId),
+      batchId: this.nextBatchId(),
+      dataBase64: data,
+    });
   }
 
   async sendStructuredPrompt(sessionId: string, text: string): Promise<void> {

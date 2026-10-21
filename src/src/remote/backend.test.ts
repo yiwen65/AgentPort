@@ -1,15 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RemoteBackend, ROUTING } from "./backend";
 import type { RemoteClient } from "./client";
-import { RemoteUnavailableError, isRemoteUnavailableError } from "./errors";
+import { RemoteRequestError, RemoteUnavailableError, isRemoteUnavailableError } from "./errors";
 
 const request = vi.fn<(method: string, params?: unknown) => Promise<unknown>>();
+const submitInput = vi.fn<(params: unknown) => Promise<void>>();
 const hasCapability = vi.fn(() => true);
 const addEventListener = vi.fn(() => () => undefined);
 
 function makeBackend(): RemoteBackend {
   const client = {
     request,
+    submitInput,
     hasCapability,
     deviceId: "dev-1",
     addEventListener,
@@ -19,6 +21,7 @@ function makeBackend(): RemoteBackend {
 
 beforeEach(() => {
   request.mockReset();
+  submitInput.mockReset().mockResolvedValue(undefined);
   hasCapability.mockReset().mockReturnValue(true);
 });
 
@@ -88,12 +91,7 @@ describe("sessions domain", () => {
     expect(backend.attachmentIdFor("ses_1")).toBe("att-1");
   });
 
-  it("sendInput threads attachmentId and a unique batchId, passing base64 through", async () => {
-    request.mockResolvedValue({
-      batchId: "b",
-      serverSequence: 1,
-      phase: "accepted",
-    });
+  it("sendInput uses the ordered input queue with attachmentId and a unique batchId", async () => {
     const backend = makeBackend();
     (backend as never as { attachments: Map<string, string> }).attachments.set(
       "ses_1",
@@ -101,30 +99,30 @@ describe("sessions domain", () => {
     );
     await backend.sendInput("ses_1", "aGVsbG8=");
     await backend.sendInput("ses_1", "d29ybGQ=");
-    const [first, second] = request.mock.calls;
-    expect(first[1]).toMatchObject({
+    const [first, second] = submitInput.mock.calls;
+    expect(first[0]).toMatchObject({
       attachmentId: "att-1",
       dataBase64: "aGVsbG8=",
     });
-    const batchA = (first[1] as { batchId: string }).batchId;
-    const batchB = (second[1] as { batchId: string }).batchId;
+    const batchA = (first[0] as { batchId: string }).batchId;
+    const batchB = (second[0] as { batchId: string }).batchId;
     expect(batchA).not.toBe(batchB);
+    // Input must not ride the acknowledged request path: that would add one
+    // round trip per keystroke/wheel report.
+    expect(request).not.toHaveBeenCalledWith("session.input", expect.anything());
   });
 
-  it("sendInput rejects when the remote reports not_executed", async () => {
-    request.mockResolvedValueOnce({
-      batchId: "b1",
-      serverSequence: 1,
-      phase: "not_executed",
-    });
+  it("sendInput surfaces an input-queue rejection", async () => {
+    submitInput.mockRejectedValueOnce(
+      new RemoteRequestError("input_queue_full", "too many frames"),
+    );
     const backend = makeBackend();
     (backend as never as { attachments: Map<string, string> }).attachments.set(
       "ses_1",
       "att-1",
     );
     await expect(backend.sendInput("ses_1", "eA==")).rejects.toMatchObject({
-      code: "input_not_executed",
-      status: "not_executed",
+      code: "input_queue_full",
     });
   });
 
@@ -133,7 +131,7 @@ describe("sessions domain", () => {
     await expect(backend.sendInput("ses_x", "eA==")).rejects.toMatchObject({
       code: "no_attachment",
     });
-    expect(request).not.toHaveBeenCalled();
+    expect(submitInput).not.toHaveBeenCalled();
   });
 
   it("detachSession calls by attachmentId and clears the registry", async () => {

@@ -34,6 +34,10 @@ const REFRESH_SKIP_METHODS: ReadonlySet<string> = new Set([
   "session.poll",
   "session.attach",
   "session.detach",
+  // Input is terminal traffic, not a project/session mutation. Treating it
+  // as one refreshed the whole remote snapshot on every keystroke/wheel
+  // report, competing with the terminal stream on the same link.
+  "session.input",
   "attention.poll",
   "agent.supported",
   "agent.probe",

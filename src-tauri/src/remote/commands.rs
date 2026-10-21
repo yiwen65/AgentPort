@@ -50,6 +50,26 @@ pub async fn remote_request(
         .map_err(|error| RemoteCommandError::new("join_failed", error.to_string()))?
 }
 
+/// Ordered terminal input: queues one `session.input` frame and returns before
+/// the bridge answers it. Kept synchronous so Tauri dispatches calls in
+/// webview order; the per-device input worker is the only frame writer, so a
+/// wheel/keystroke burst stays in user order without one round trip each.
+#[tauri::command]
+pub fn remote_send_input(
+    manager: tauri::State<'_, Arc<RemoteConnectionManager>>,
+    device_id: String,
+    method: String,
+    params: serde_json::Value,
+) -> Result<(), RemoteCommandError> {
+    if method != "session.input" {
+        return Err(RemoteCommandError::new(
+            "invalid_input_request",
+            "only session.input may use the ordered input path",
+        ));
+    }
+    manager.enqueue_input(&device_id, &method, params)
+}
+
 #[tauri::command]
 pub async fn remote_subscribe(
     manager: tauri::State<'_, Arc<RemoteConnectionManager>>,

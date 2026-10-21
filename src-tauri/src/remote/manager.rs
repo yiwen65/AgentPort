@@ -5,7 +5,7 @@
 //! device registry + credential store without touching this module.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::sync::{mpsc, Arc, Condvar, Mutex, RwLock};
 use std::time::Duration;
 
 use agentport_core::paths::AppPaths;
@@ -23,6 +23,16 @@ use crate::remote::{relay, RemoteCommandError, RemoteHello};
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// Bound on queued-but-unsent terminal input frames per device. Each frame is
+/// at most one xterm input event (keystroke/wheel report), so this only fills
+/// while the link is far behind a paste or a fast scroll.
+const INPUT_QUEUE_CAPACITY: usize = 1024;
+
+/// One ordered terminal-input frame waiting for the per-device writer.
+struct InputJob {
+    method: String,
+    params: serde_json::Value,
+}
 
 /// How to reach a device.
 #[derive(Debug, Clone)]
@@ -141,6 +151,10 @@ pub struct RemoteConnectionManager {
     resolver: RwLock<Arc<dyn DeviceResolver>>,
     prober: RwLock<Arc<dyn SshProber>>,
     connections: Mutex<HashMap<String, ConnectionSlot>>,
+    /// Per-device ordered terminal-input writers. Exactly one worker thread
+    /// per device owns the input frames, so callers can enqueue immediately
+    /// instead of waiting one round trip per keystroke/wheel report.
+    input_queues: Mutex<HashMap<String, mpsc::SyncSender<InputJob>>>,
     /// Connect dedupe: the first caller per device leads, followers wait.
     connecting: Mutex<HashSet<String>>,
     connecting_cv: Condvar,
@@ -169,6 +183,7 @@ impl RemoteConnectionManager {
             resolver: RwLock::new(Arc::new(NullResolver)),
             prober: RwLock::new(prober),
             connections: Mutex::new(HashMap::new()),
+            input_queues: Mutex::new(HashMap::new()),
             connecting: Mutex::new(HashSet::new()),
             connecting_cv: Condvar::new(),
             client_identity,
@@ -248,7 +263,8 @@ impl RemoteConnectionManager {
     }
 
     fn connect_leading(&self, device_id: &str) -> Result<RemoteHello, RemoteCommandError> {
-        // Drop any half-dead slot before dialing again.
+        // Drop any half-dead slot (and its input writer) before dialing again.
+        self.drop_input_queue(device_id);
         if let Some(stale) = self.connections.lock().unwrap().remove(device_id) {
             stale.connection.shutdown();
         }
@@ -312,6 +328,77 @@ impl RemoteConnectionManager {
         connection.request(method, params, DEFAULT_REQUEST_TIMEOUT)
     }
 
+    /// Enqueues one terminal-input frame for ordered, ack-independent
+    /// delivery. Returns as soon as the frame is queued; a per-device worker
+    /// writes frames in call order, so a wheel/keystroke burst is not
+    /// serialized behind one round trip per event. The bridge answers each
+    /// frame normally; the reader discards results without a waiter.
+    pub fn enqueue_input(
+        &self,
+        device_id: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<(), RemoteCommandError> {
+        let sender = self.input_sender(device_id)?;
+        match sender.try_send(InputJob {
+            method: method.to_string(),
+            params,
+        }) {
+            Ok(()) => Ok(()),
+            Err(mpsc::TrySendError::Full(_)) => Err(RemoteCommandError::new(
+                "input_queue_full",
+                format!("too many terminal input frames are queued for {device_id}"),
+            )),
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                self.drop_input_queue(device_id);
+                Err(RemoteCommandError::new(
+                    "not_connected",
+                    format!("input writer for {device_id} is gone; reconnect required"),
+                ))
+            }
+        }
+    }
+
+    fn input_sender(
+        &self,
+        device_id: &str,
+    ) -> Result<mpsc::SyncSender<InputJob>, RemoteCommandError> {
+        if let Some(sender) = self.input_queues.lock().unwrap().get(device_id).cloned() {
+            return Ok(sender);
+        }
+        // Resolve the connection before retaking the queue lock so the
+        // connections/input_queues locks are never held in opposite order.
+        let connection = self.connection_for(device_id)?;
+        let (sender, receiver) = mpsc::sync_channel::<InputJob>(INPUT_QUEUE_CAPACITY);
+        std::thread::Builder::new()
+            .name("agentport-remote-input".into())
+            .spawn(move || {
+                while let Ok(job) = receiver.recv() {
+                    if let Err(error) = connection.submit(&job.method, job.params) {
+                        tracing::warn!(
+                            code = %error.code,
+                            message = %error.message,
+                            "remote: ordered input writer stopped"
+                        );
+                        break;
+                    }
+                }
+            })
+            .map_err(|error| RemoteCommandError::new("input_worker_failed", error.to_string()))?;
+        let mut queues = self.input_queues.lock().unwrap();
+        // A concurrent caller may have created the worker first; only one
+        // worker may write, so keep the existing sender and let ours exit.
+        if let Some(existing) = queues.get(device_id) {
+            return Ok(existing.clone());
+        }
+        queues.insert(device_id.to_string(), sender.clone());
+        Ok(sender)
+    }
+
+    fn drop_input_queue(&self, device_id: &str) {
+        self.input_queues.lock().unwrap().remove(device_id);
+    }
+
     /// Registers an event subscriber on a live connection.
     pub fn subscribe(
         &self,
@@ -324,6 +411,7 @@ impl RemoteConnectionManager {
     }
 
     pub fn disconnect(&self, device_id: &str) {
+        self.drop_input_queue(device_id);
         if let Some(slot) = self.connections.lock().unwrap().remove(device_id) {
             slot.connection.shutdown();
         }
@@ -331,6 +419,7 @@ impl RemoteConnectionManager {
 
     /// Disconnects every device (app teardown / test cleanup).
     pub fn disconnect_all(&self) {
+        self.input_queues.lock().unwrap().clear();
         let slots: Vec<ConnectionSlot> = self
             .connections
             .lock()
@@ -372,6 +461,7 @@ impl RemoteConnectionManager {
         reader: Box<dyn crate::remote::transport::FrameReader>,
         writer: Box<dyn crate::remote::transport::FrameWriter>,
     ) -> Result<RemoteHello, RemoteCommandError> {
+        self.drop_input_queue(device_id);
         if let Some(stale) = self.connections.lock().unwrap().remove(device_id) {
             stale.connection.shutdown();
         }

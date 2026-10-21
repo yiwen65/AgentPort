@@ -361,6 +361,33 @@ impl RemoteConnection {
         }
     }
 
+    /// Writes one request frame and returns without waiting for its terminal
+    /// `Result`. The reader loop discards results whose request id has no
+    /// waiter. Calls are NOT ordered against each other by this method alone:
+    /// the ordered terminal-input worker is the only writer, which is exactly
+    /// what keeps a burst of keystrokes/wheel reports in user order without
+    /// paying one round trip per event.
+    pub fn submit(&self, method: &str, params: Value) -> Result<(), RemoteCommandError> {
+        if self.is_closed() {
+            return Err(self.closed_error());
+        }
+        let request_id = format!("req-{}", self.next_request.fetch_add(1, Ordering::Relaxed));
+        let request = Request {
+            message_type: RequestType::Request,
+            request_id,
+            method: method.to_string(),
+            params,
+            precondition: None,
+        };
+        let payload = serde_json::to_vec(&request)
+            .map_err(|error| RemoteCommandError::new("request_encode_failed", error.to_string()))?;
+        if let Err(error) = self.writer.lock().unwrap().write_frame(&payload) {
+            self.close(&error.to_string());
+            return Err(RemoteCommandError::new(error.code(), error.to_string()));
+        }
+        Ok(())
+    }
+
     /// Registers an event subscriber. The closure returns `false` when its
     /// consumer is gone (e.g. webview reloaded) and is then pruned.
     pub fn subscribe(&self, subscriber: Subscriber) {
@@ -673,6 +700,54 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(error.code, "request_timeout");
+        connection.shutdown();
+        let _ = server_thread.join();
+    }
+
+    #[test]
+    fn submit_writes_requests_without_waiting_for_results() {
+        let (client, server_thread) = spawn_fake_bridge(|mut server| {
+            agentport_remote_protocol::read_frame(
+                &mut server,
+                agentport_remote_protocol::MAX_FRAME_BYTES,
+            )?;
+            write_envelope(&mut server, &ServerEnvelope::Hello(hello_result()))?;
+            let first = read_request(&mut server)?;
+            let second = read_request(&mut server)?;
+            assert_eq!(first.method, "session.input");
+            assert_eq!(first.params["n"], 1);
+            assert_eq!(second.method, "session.input");
+            assert_eq!(second.params["n"], 2);
+            // Answer only after both frames arrived: a submit that waited for
+            // its own reply could never have written the second frame.
+            for request in [first, second] {
+                write_envelope(
+                    &mut server,
+                    &ServerEnvelope::Result {
+                        request_id: request.request_id,
+                        operation_id: None,
+                        status: ResultStatus::Succeeded,
+                        retry_class: agentport_remote_protocol::RetryClass::NonIdempotentWrite,
+                        value: Some(serde_json::json!({})),
+                        error: None,
+                    },
+                )?;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            Ok(())
+        });
+        let connection = establish_over(client).unwrap();
+        let started = Instant::now();
+        connection
+            .submit("session.input", serde_json::json!({"n": 1}))
+            .unwrap();
+        connection
+            .submit("session.input", serde_json::json!({"n": 2}))
+            .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "submit must not await the bridge result"
+        );
         connection.shutdown();
         let _ = server_thread.join();
     }
