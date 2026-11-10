@@ -134,7 +134,7 @@ function IconClose() {
 }
 
 export default function TopBar() {
-  const { t } = useTranslation(["shell", "common", "git"]);
+  const { t } = useTranslation(["shell", "git"]);
   const activeSession = useStore((state) =>
     findSession(state.projects, state.activeSessionId),
   );
@@ -238,7 +238,7 @@ export default function TopBar() {
     const rect = anchor.getBoundingClientRect();
     const items: MenuItem[] = [
       { label: t("shell:ui.topBar.commandPalette"), action: () => openDialog({ kind: "palette" }) },
-      { label: `${t("common:actions.search")}…`, action: () => openDialog({ kind: "search" }) },
+      { label: t("shell:ui.topBar.searchSessions"), action: () => openDialog({ kind: "search" }) },
       {
         label: pending > 0
           ? t("shell:ui.topBar.recoveryTimelineCount", { count: pending })

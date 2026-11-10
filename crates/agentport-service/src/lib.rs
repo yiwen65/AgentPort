@@ -1786,7 +1786,7 @@ impl RemoteService for CoreService {
             }
             "search.global" => {
                 let params: SearchParams = parse_extended(params)?;
-                search_all(&self.paths, &self.db, params.query, params.limit.min(1_000))?
+                search_all(&self.db, params.query, params.limit.min(1_000))?
             }
             "search.session" => {
                 let params: SessionSearchParams = parse_extended(params)?;
@@ -3374,101 +3374,33 @@ fn backup_list(paths: &AppPaths) -> serde_json::Value {
     serde_json::Value::Array(items)
 }
 
-fn search_all(paths: &AppPaths, db: &Db, query: String, limit: usize) -> Result<serde_json::Value> {
+fn search_all(db: &Db, query: String, limit: usize) -> Result<serde_json::Value> {
     let needle = query.trim().to_lowercase();
     if needle.chars().count() < 2 {
         return Err(ServiceError::InvalidRequest);
     }
-    let history = NativeHistory::new(paths);
+    let sessions = db.list_sessions(None, false)?;
     let mut hits = Vec::new();
     let mut total_hits = 0usize;
-    for project in db.list_projects()? {
-        if project.name.to_lowercase().contains(&needle)
-            || project.root_path.to_lowercase().contains(&needle)
-        {
-            total_hits = total_hits.saturating_add(1);
-            if hits.len() < limit {
-                hits.push(serde_json::json!({
-                    "kind": "project",
-                    "sessionId": serde_json::Value::Null,
-                    "projectId": project.id,
-                    "title": project.name,
-                    "snippet": project.root_path,
-                    "logOffset": serde_json::Value::Null,
-                    "rotatedAway": false,
-                }));
-            }
+    for session in sessions {
+        if !session.title.to_lowercase().contains(&needle) {
+            continue;
         }
-        for worktree in db.list_worktrees(&project.id)? {
-            if worktree.branch.to_lowercase().contains(&needle)
-                || worktree.path.to_lowercase().contains(&needle)
-            {
-                total_hits = total_hits.saturating_add(1);
-                if hits.len() < limit {
-                    hits.push(serde_json::json!({
-                        "kind": "branch",
-                        "sessionId": serde_json::Value::Null,
-                        "projectId": project.id,
-                        "title": worktree.branch,
-                        "snippet": worktree.path,
-                        "logOffset": serde_json::Value::Null,
-                        "rotatedAway": false,
-                    }));
-                }
-            }
-        }
-    }
-    let mut partial = limit == 0 || hits.len() == limit;
-    if !partial {
-        for session in db.list_sessions(None, false)? {
-            if session.title.to_lowercase().contains(&needle)
-                || session.cwd.to_lowercase().contains(&needle)
-                || session.adapter_type.as_str().contains(&needle)
-            {
-                total_hits = total_hits.saturating_add(1);
-                if hits.len() < limit {
-                    hits.push(serde_json::json!({
-                        "kind": "session",
-                        "sessionId": session.id,
-                        "projectId": session.project_id,
-                        "title": session.title,
-                        "snippet": session.cwd,
-                        "logOffset": serde_json::Value::Null,
-                        "rotatedAway": false,
-                    }));
-                }
-                if hits.len() == limit {
-                    partial = true;
-                    break;
-                }
-            }
-            let result = history.search_session_bounded(
-                &session,
-                &query,
-                limit.saturating_sub(hits.len()),
-            )?;
-            total_hits = total_hits.saturating_add(result.total_hits);
-            for hit in result.hits {
-                hits.push(serde_json::json!({
-                    "kind": "terminal",
-                    "sessionId": session.id,
-                    "projectId": session.project_id,
-                    "title": session.title,
-                    "snippet": hit.snippet,
-                    "eventId": hit.event.id,
-                    "provider": hit.event.provider,
-                    "logOffset": serde_json::Value::Null,
-                    "rotatedAway": false,
-                }));
-            }
-            if result.partial || hits.len() == limit {
-                partial = true;
-                break;
-            }
+        total_hits = total_hits.saturating_add(1);
+        if hits.len() < limit {
+            hits.push(serde_json::json!({
+                "kind": "session",
+                "sessionId": session.id,
+                "projectId": session.project_id,
+                "title": session.title,
+                "snippet": session.cwd,
+                "logOffset": serde_json::Value::Null,
+                "rotatedAway": false,
+            }));
         }
     }
     Ok(serde_json::json!({
-        "partial": partial,
+        "partial": total_hits > hits.len(),
         "totalHits": total_hits,
         "hits": hits,
     }))
@@ -5404,6 +5336,58 @@ mod tests {
             ),
             Err(ServiceError::InvalidRequest)
         ));
+    }
+
+    #[test]
+    fn global_search_matches_session_titles_only() {
+        let root = tempfile::tempdir().unwrap();
+        let service = CoreService::open(AppPaths::new(root.path().join("app"))).unwrap();
+        let project = service
+            .add_project(ProjectAddParams {
+                path: root.path().to_string_lossy().into_owned(),
+                name: Some("needle project".into()),
+            })
+            .unwrap();
+        let make_session = |id: &str, title: &str, cwd: &str| Session {
+            id: id.into(),
+            project_id: project.project.id.clone(),
+            worktree_id: None,
+            preset_id: "pre_codex_bypass".into(),
+            title: title.into(),
+            cwd: cwd.into(),
+            host_pid: None,
+            host_socket: None,
+            host_token: "fixture-only-token".into(),
+            lifecycle: Lifecycle::Creating,
+            agent_session_id: None,
+            resume_precision: ResumePrecision::Unavailable,
+            adapter_type: AgentType::Codex,
+            transport: AgentTransport::Pty,
+            command: Vec::new(),
+            permission_mode: PermissionMode::Bypass,
+            pinned_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            archived_at: None,
+        };
+        for (id, title, cwd) in [
+            ("ses_needle", "Fix needle bug", "/work/other"),
+            ("ses_cwd_only", "Unrelated task", "/work/needle"),
+            ("ses_other", "Other task", "/work/other"),
+        ] {
+            service.db.insert_session(&make_session(id, title, cwd)).unwrap();
+        }
+
+        let result = service
+            .extended_facade(
+                "search.global",
+                serde_json::json!({"query": "needle", "limit": 20}),
+            )
+            .unwrap();
+        assert_eq!(result["totalHits"], 1);
+        assert_eq!(result["partial"], false);
+        assert_eq!(result["hits"][0]["kind"], "session");
+        assert_eq!(result["hits"][0]["sessionId"], "ses_needle");
     }
 
     #[test]

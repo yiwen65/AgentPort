@@ -27,6 +27,7 @@
         "switchFailed": "Switch failed: {{detail}}"
       },
       "commandPalette": "Commands",
+      "searchSessions": "Search Sessions…",
       "recoveryTimeline": "Timeline",
       "recoveryTimelineCount_one": "Timeline ({{count}})",
       "recoveryTimelineCount_other": "Timeline ({{count}})",

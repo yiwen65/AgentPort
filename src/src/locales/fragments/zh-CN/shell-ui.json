@@ -27,6 +27,7 @@
         "switchFailed": "切换失败：{{detail}}"
       },
       "commandPalette": "命令",
+      "searchSessions": "搜索 Session…",
       "recoveryTimeline": "时间线",
       "recoveryTimelineCount_one": "时间线（{{count}}）",
       "recoveryTimelineCount_other": "时间线（{{count}}）",

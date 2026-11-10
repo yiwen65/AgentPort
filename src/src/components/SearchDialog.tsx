@@ -58,7 +58,6 @@ export default function SearchDialog() {
         value={q}
         onChange={(e) => setQ(e.target.value)}
       />
-      <div className="form-hint">{t("search.nativeOnDemand")}</div>
       {searching ? (
         <div className="dim">
           <span className="spin" aria-hidden="true" /> {t("search.searching")}
