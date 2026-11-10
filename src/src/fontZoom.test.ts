@@ -7,6 +7,7 @@ vi.mock("./terminals", () => ({ applyTerminalSettings: applyMock.apply }));
 import { openDocumentTarget } from "./documents";
 import { getState, setState } from "./store";
 import {
+  DOC_FONT_SCALE_STORAGE_KEY,
   MAX_FONT_SCALE,
   MIN_FONT_SCALE,
   adjustFontZoom,
@@ -15,6 +16,7 @@ import {
   initFontZoom,
   nextFontScale,
   resetFontZoomFocus,
+  restoreDocFontScale,
 } from "./fontZoom";
 
 function zoomKey(key: string, init: KeyboardEventInit = {}): KeyboardEvent {
@@ -54,6 +56,7 @@ describe("font zoom key handling", () => {
     });
     document.documentElement.style.removeProperty("--doc-font-scale");
     document.documentElement.style.removeProperty("--term-font-scale");
+    window.localStorage.removeItem(DOC_FONT_SCALE_STORAGE_KEY);
     document.body.innerHTML = "";
   });
 
@@ -90,6 +93,43 @@ describe("font zoom key handling", () => {
     expect(
       document.documentElement.style.getPropertyValue("--doc-font-scale"),
     ).toBe("0.9");
+  });
+
+  it("persists the document zoom and restores it on launch", () => {
+    const panel = document.createElement("div");
+    panel.className = "doc-panel";
+    const inner = document.createElement("div");
+    panel.appendChild(inner);
+    document.body.appendChild(panel);
+    inner.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+
+    openDocumentTarget({ path: "/tmp/a.md", line: null });
+    expect(handleFontZoomKey(zoomKey("-"))).toBe(true);
+    expect(window.localStorage.getItem(DOC_FONT_SCALE_STORAGE_KEY)).toBe("0.9");
+
+    // Simulate the next launch: default state, then boot restore.
+    setState({ docFontScale: 1 });
+    document.documentElement.style.removeProperty("--doc-font-scale");
+    restoreDocFontScale();
+    expect(getState().docFontScale).toBe(0.9);
+    expect(
+      document.documentElement.style.getPropertyValue("--doc-font-scale"),
+    ).toBe("0.9");
+  });
+
+  it("falls back to 100% for corrupt or out-of-range persisted zoom", () => {
+    window.localStorage.setItem(DOC_FONT_SCALE_STORAGE_KEY, "abc");
+    restoreDocFontScale();
+    expect(getState().docFontScale).toBe(1);
+
+    window.localStorage.setItem(DOC_FONT_SCALE_STORAGE_KEY, "99");
+    restoreDocFontScale();
+    expect(getState().docFontScale).toBe(MAX_FONT_SCALE);
+  });
+
+  it("leaves terminal zoom transient", () => {
+    expect(handleFontZoomKey(zoomKey("="))).toBe(true);
+    expect(window.localStorage.getItem(DOC_FONT_SCALE_STORAGE_KEY)).toBeNull();
   });
 
   it("treats a preview click as document focus (non-focusable surface)", () => {

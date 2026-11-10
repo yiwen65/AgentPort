@@ -407,7 +407,8 @@ export interface AppState {
   /** Transient font zoom of the terminal area (xterm fontSize multiplier and
    * the pi timeline's `--term-font-scale`), adjusted via Ctrl/⌘ +/-. */
   termFontScale: number;
-  /** Transient font zoom of the document viewer body (`--doc-font-scale`). */
+  /** Font zoom of the document viewer body (`--doc-font-scale`), persisted
+   * to localStorage and restored on launch. */
   docFontScale: number;
   /** Project whose worktree management view replaces the sidebar list. */
   sidebarWorktreeProjectId: string | null;

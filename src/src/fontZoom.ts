@@ -1,7 +1,9 @@
 // Ctrl/⌘ +/- font zoom for the two reading surfaces: the terminal area
-// (xterm panes and the pi timeline) and the document viewer body. The zoom is
-// transient (not persisted to settings) and applies to whichever surface last
-// had focus, so the two areas scale independently.
+// (xterm panes and the pi timeline) and the document viewer body. The zoom
+// applies to whichever surface last had focus, so the two areas scale
+// independently. The document zoom is a reading preference and survives
+// restarts (localStorage); the terminal zoom stays transient because the
+// terminal font size has its own persisted setting.
 
 import { getState, hasOpenDocuments, setState } from "./store";
 import { applyTerminalSettings } from "./terminals";
@@ -11,6 +13,9 @@ export type ZoomArea = "terminal" | "doc";
 export const MIN_FONT_SCALE = 0.6;
 export const MAX_FONT_SCALE = 2;
 export const FONT_SCALE_STEP = 0.1;
+
+/** UI preference, not device-scoped: the viewer renders the same on every device. */
+export const DOC_FONT_SCALE_STORAGE_KEY = "agentport-doc-font-scale";
 
 /** Last area that saw a `focusin`; buttons/menus do not steal the target. */
 let lastArea: ZoomArea = "terminal";
@@ -35,10 +40,39 @@ export function resetFontZoomFocus(): void {
   lastArea = "terminal";
 }
 
+/** Stored zoom rounded/validated; corrupt or out-of-range values fall back
+ * to 100% (or the nearest bound). */
+function readPersistedDocFontScale(): number {
+  try {
+    const raw = window.localStorage.getItem(DOC_FONT_SCALE_STORAGE_KEY);
+    if (!raw) return 1;
+    const value = Number.parseFloat(raw);
+    return Number.isFinite(value) ? clampFontScale(value) : 1;
+  } catch {
+    return 1;
+  }
+}
+
+function persistDocFontScale(scale: number): void {
+  try {
+    window.localStorage.setItem(DOC_FONT_SCALE_STORAGE_KEY, String(scale));
+  } catch {
+    // Zoom still applies for this run when WebView storage is unavailable.
+  }
+}
+
+/** Restores the persisted document zoom (state + CSS variable). */
+export function restoreDocFontScale(): void {
+  const scale = readPersistedDocFontScale();
+  setState({ docFontScale: scale });
+  document.documentElement.style.setProperty("--doc-font-scale", String(scale));
+}
+
 function applyAreaScale(area: ZoomArea, scale: number): void {
   if (area === "doc") {
     setState({ docFontScale: scale });
     document.documentElement.style.setProperty("--doc-font-scale", String(scale));
+    persistDocFontScale(scale);
   } else {
     setState({ termFontScale: scale });
     document.documentElement.style.setProperty("--term-font-scale", String(scale));
@@ -89,6 +123,7 @@ function classifyTarget(el: HTMLElement | null): void {
 export function initFontZoom(): () => void {
   if (initialized) return () => {};
   initialized = true;
+  restoreDocFontScale();
   // focusin covers keyboard navigation and the focusable raw-editor textarea,
   // but NOT the preview: plain divs never receive focus, so clicking the
   // preview used to leave the area stuck on "terminal". pointerdown closes
