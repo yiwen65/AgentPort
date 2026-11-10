@@ -30,6 +30,14 @@
   color: var(--text);
 }
 
+.device-picker-trigger.icon-only {
+  width: 28px;
+  height: 28px;
+  max-width: none;
+  justify-content: center;
+  padding: 0;
+}
+
 .device-picker-name {
   overflow: hidden;
   text-overflow: ellipsis;

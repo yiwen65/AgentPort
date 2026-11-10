@@ -55,17 +55,30 @@ async function openMenu() {
   await screen.findByText("Linux box");
 }
 
-it("shows the active device name and lists devices on open", async () => {
+it("shows only the computer icon while local and lists devices on open", async () => {
   render(<DevicePicker />);
   expect(
     screen.getByRole("button", { name: "Device switcher" }).textContent,
-  ).toContain("This computer");
+  ).toBe("");
   expect(mocks.invoke).not.toHaveBeenCalled();
   await openMenu();
   expect(mocks.invoke).toHaveBeenCalledWith("device_list", undefined);
   expect(screen.getByText("Office PC")).toBeTruthy();
   expect(screen.getByText("dev@192.168.1.10")).toBeTruthy();
   expect(screen.getByText("host-1 · wss://relay.example/v1/relay")).toBeTruthy();
+});
+
+it("shows the active remote device name", () => {
+  setActiveDevice({
+    kind: "remote",
+    deviceId: "dev_ssh",
+    deviceName: "Linux box",
+    capabilities: [],
+  });
+  render(<DevicePicker />);
+  expect(
+    screen.getByRole("button", { name: "Device switcher" }).textContent,
+  ).toContain("Linux box");
 });
 
 it("selecting a device invokes the injected switch handler with a remote context", async () => {

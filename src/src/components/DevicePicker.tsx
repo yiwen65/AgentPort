@@ -114,6 +114,7 @@ export default function DevicePicker(props: {
       ? activeDevice.deviceName
       : t("shell:ui.topBar.devices.local");
   const switching = switchingTo !== null || pending;
+  const localOnly = activeDevice.kind === "local" && !switching;
 
   // The menu stays open while a switch runs: on success it closes, on failure
   // it remains so the error (devicesStore.switchError) stays visible.
@@ -163,7 +164,7 @@ export default function DevicePicker(props: {
   return (
     <div className="device-picker" ref={rootRef}>
       <button
-        className="device-picker-trigger"
+        className={`device-picker-trigger${localOnly ? " icon-only" : ""}`}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={t("shell:ui.topBar.devices.label")}
@@ -184,12 +185,16 @@ export default function DevicePicker(props: {
         data-tauri-drag-region="false"
       >
         <IconDevices />
-        <span className="device-picker-name">
-          {switching
-            ? t("shell:ui.topBar.devices.switching")
-            : activeName}
-        </span>
-        <IconChevronSmall />
+        {localOnly ? null : (
+          <>
+            <span className="device-picker-name">
+              {switching
+                ? t("shell:ui.topBar.devices.switching")
+                : activeName}
+            </span>
+            <IconChevronSmall />
+          </>
+        )}
       </button>
       {open && menuPos
         ? createPortal(
