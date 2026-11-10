@@ -1,7 +1,6 @@
 // Terminal workspace: persistent xterm panes (display:none toggling), header
-// with session actions, reconnect/suspension banners, in-terminal search
-// bar (⌘F — never sends to the PTY), lifecycle overlays, status line and
-// "回到最新" (⌘↓).
+// with session actions, reconnect/suspension banners, lifecycle overlays,
+// status line and "回到最新" (⌘↓).
 
 import {
   useCallback,
@@ -27,7 +26,6 @@ import {
   hasOpenDocuments,
   openContextMenu,
   openDialog,
-  setState,
   toast,
   useStore,
   type MenuItem,
@@ -42,7 +40,6 @@ import {
   isTerminalPreviewRendered,
   loadOlderNativeHistory,
   mountTerminal,
-  noteTerminalScrollIntent,
   scrollTerminalViewport,
   scrollToBottom,
   setTerminalActive,
@@ -426,162 +423,6 @@ function TerminalPane({
     >
       <div className="term-host" ref={hostRef} />
       <TerminalScrollbar sessionId={sessionId} active={visible} />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// in-terminal search (SearchAddon; page-local, never touches the PTY)
-// ---------------------------------------------------------------------------
-
-const SEARCH_DECORATIONS = {
-  matchBackground: "#7a5c00",
-  matchOverviewRuler: "#d8a03b",
-  activeMatchBackground: "#b98a00",
-  activeMatchColorOverviewRuler: "#ffd840",
-};
-
-interface TerminalSearchPosition {
-  resultIndex: number;
-  resultCount: number;
-  buffer: "normal" | "alternate";
-}
-
-const EMPTY_TERMINAL_SEARCH_POSITION: TerminalSearchPosition = {
-  resultIndex: -1,
-  resultCount: 0,
-  buffer: "normal",
-};
-
-function TermSearchBar({ sessionId }: { sessionId: string }) {
-  const { t } = useTranslation("shell");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [q, setQ] = useState("");
-  const [searchPosition, setSearchPosition] = useState<TerminalSearchPosition>(
-    EMPTY_TERMINAL_SEARCH_POSITION,
-  );
-
-  useEffect(() => {
-    inputRef.current?.focus();
-    return () => {
-      getHandle(sessionId)?.search.clearDecorations();
-    };
-  }, [sessionId]);
-
-  useEffect(() => {
-    let connectFrame = 0;
-    let resultDisposable: { dispose(): void } | undefined;
-    const connect = () => {
-      const handle = getHandle(sessionId);
-      if (!handle) {
-        connectFrame = requestAnimationFrame(connect);
-        return;
-      }
-      resultDisposable = handle.search.onDidChangeResults((result) => {
-        setSearchPosition({
-          resultIndex: result.resultIndex,
-          resultCount: result.resultCount,
-          buffer: handle.term.buffer.active.type,
-        });
-      });
-    };
-    connect();
-    return () => {
-      cancelAnimationFrame(connectFrame);
-      resultDisposable?.dispose();
-    };
-  }, [sessionId]);
-
-
-  const find = (query: string, dir: "next" | "prev", incremental = false) => {
-    const h = getHandle(sessionId);
-    if (!h) return;
-    const needle = query.trim();
-    if (!needle) {
-      h.search.clearDecorations();
-      setSearchPosition(EMPTY_TERMINAL_SEARCH_POSITION);
-      return;
-    }
-    const opts = { incremental, decorations: SEARCH_DECORATIONS };
-    noteTerminalScrollIntent(sessionId, "locating");
-    if (dir === "next") h.search.findNext(needle, opts);
-    else h.search.findPrevious(needle, opts);
-  };
-
-  const hasBufferResult = searchPosition.resultCount > 0;
-  const bufferScope =
-    searchPosition.buffer === "normal"
-      ? t("ui.terminalSearch.currentBuffer")
-      : t("ui.terminalSearch.currentScreen");
-  const bufferPosition = hasBufferResult
-    ? t("ui.terminalSearch.matchPosition", {
-        scope: bufferScope,
-        current:
-          searchPosition.resultIndex >= 0 ? searchPosition.resultIndex + 1 : "?",
-        count: searchPosition.resultCount,
-      })
-    : null;
-
-  const navigate = (dir: "next" | "prev") => {
-    find(q, dir);
-  };
-
-  const close = () => {
-    setState({ termSearchOpen: false });
-    focusSession(sessionId);
-  };
-
-  return (
-    <div className="term-search" role="search" aria-label={t("ui.terminalSearch.regionLabel")}>
-      <div className="term-search-main">
-        <input
-          ref={inputRef}
-          type="text"
-          placeholder={t("ui.terminalSearch.placeholder")}
-          aria-label={t("ui.terminalSearch.inputLabel")}
-          value={q}
-          onChange={(e) => {
-            setQ(e.target.value);
-            setSearchPosition(EMPTY_TERMINAL_SEARCH_POSITION);
-            find(e.target.value, "next", true);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              navigate(e.shiftKey ? "prev" : "next");
-            } else if (e.key === "Escape") {
-              e.preventDefault();
-              e.stopPropagation();
-              close();
-            }
-          }}
-        />
-        <span className="count" aria-live="polite">
-          {bufferPosition ??
-            (q.trim() ? t("ui.terminalSearch.noCurrentBufferResults") : "")}
-        </span>
-        <button
-          className="btn small ghost"
-          onClick={() => navigate("prev")}
-          aria-label={t("ui.terminalSearch.previousMatch")}
-        >
-          ↑
-        </button>
-        <button
-          className="btn small ghost"
-          onClick={() => navigate("next")}
-          aria-label={t("ui.terminalSearch.nextMatch")}
-        >
-          ↓
-        </button>
-        <button
-          className="btn small ghost"
-          onClick={close}
-          aria-label={t("ui.terminalSearch.close")}
-        >
-          ✕
-        </button>
-      </div>
     </div>
   );
 }
@@ -1038,7 +879,6 @@ function SessionPaneLeaf({
   // A non-focused leaf can change without changing the root's active Session
   // selector. Its overlay/header must observe the same snapshot as TerminalPane.
   const ses = useStore((state) => findSession(state.projects, initialSession.id)) ?? initialSession;
-  const termSearchOpen = useStore((state) => state.termSearchOpen);
   const [sessionDragActive, setSessionDragActive] = useState(false);
   const leafRef = useRef<HTMLDivElement | null>(null);
   const ended = ["stopped", "exited", "interrupted"].includes(ses.lifecycle);
@@ -1152,7 +992,6 @@ function SessionPaneLeaf({
               <ReconnectBanner ses={ses} />
               <SuspendedBanner ses={ses} />
             </div>
-            {focused && termSearchOpen ? <TermSearchBar sessionId={ses.id} /> : null}
             <div className="pane-terminal-renderer">
               <TerminalPane sessionId={ses.id} focused={focused} visible={visible} />
               <SessionOverlay ses={ses} />

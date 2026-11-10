@@ -11,10 +11,9 @@ import {
 } from "@xterm/xterm";
 import { CanvasAddon } from "@xterm/addon-canvas";
 import { FitAddon } from "@xterm/addon-fit";
-import { SearchAddon } from "@xterm/addon-search";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { SerializeAddon } from "@xterm/addon-serialize";
 import { Channel } from "@tauri-apps/api/core";
 import { scopedStorageKey } from "./deviceContext";
 import {
@@ -817,7 +816,6 @@ export interface TermHandle {
   writes: TerminalWriteCoordinator;
   viewport: TerminalViewportController;
   fit: FitAddon;
-  search: SearchAddon;
   serialize: SerializeAddon;
   /** Last non-empty selection text with its timestamp. Live TUIs repaint
    * continuously and xterm drops the selection as soon as a redraw touches
@@ -1336,12 +1334,10 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     theme: getTerminalPalette(settings?.terminalTheme ?? "one", s.themeEffective).xterm,
   });
   const fit = new FitAddon();
-  const search = new SearchAddon();
   const serialize = new SerializeAddon();
   term.loadAddon(new Unicode11Addon());
   term.unicode.activeVersion = "11";
   term.loadAddon(fit);
-  term.loadAddon(search);
   term.loadAddon(serialize);
   // Detect plain http(s) URLs. OSC 8 links use the handler above, so both
   // forms share the same native URL validation and browser-opening path.
@@ -1365,7 +1361,6 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     writes,
     viewport,
     fit,
-    search,
     serialize,
     lastSelectionText: null,
     lastSelectionAt: 0,
@@ -2231,10 +2226,6 @@ export function installClipboardCompatibility(
       {
         label: i18n.t("shell:terminal.selectAll"),
         action: () => term.selectAll(),
-      },
-      {
-        label: i18n.t("shell:terminal.search"),
-        action: () => setState({ termSearchOpen: true }),
       },
     ];
     openContextMenu(event.clientX, event.clientY, items);

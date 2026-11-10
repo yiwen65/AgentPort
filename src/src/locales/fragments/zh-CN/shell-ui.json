@@ -209,19 +209,6 @@
       "remoteMutationUnavailable": "远程设备上暂不支持该文档操作",
       "remoteActionUnavailable": "该操作在远程设备上不可用"
     },
-    "terminalSearch": {
-      "regionLabel": "终端缓冲区搜索",
-      "placeholder": "搜索当前终端缓冲区（不会发送给 Agent）",
-      "inputLabel": "搜索当前终端缓冲区",
-      "currentBuffer": "当前缓冲",
-      "currentScreen": "当前屏幕",
-      "matchPosition_one": "{{scope}} {{current}}/{{count}}",
-      "matchPosition_other": "{{scope}} {{current}}/{{count}}",
-      "noCurrentBufferResults": "当前缓冲：无结果",
-      "previousMatch": "上一个匹配",
-      "nextMatch": "下一个匹配",
-      "close": "关闭搜索"
-    },
     "workspace": {
       "label": "终端工作区"
     },

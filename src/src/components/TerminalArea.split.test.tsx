@@ -208,7 +208,6 @@ function installLayout() {
       [ptyA.id]: { attached: true, replayDone: true },
       [ptyB.id]: { attached: true, replayDone: true },
     } as never,
-    termSearchOpen: false,
     docGroups: [],
     docPanelExpanded: false,
   });

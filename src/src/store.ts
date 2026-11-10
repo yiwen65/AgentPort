@@ -387,8 +387,6 @@ export interface AppState {
   projectLayoutSaving: boolean;
   /** Monotonic revision of backend/event-owned Project snapshots. */
   projectsAuthorityRevision: number;
-  /** Terminal search bar visibility for the active session. */
-  termSearchOpen: boolean;
   /** Open document viewer tab groups (one group per split column, max two).
    * An empty array means no file is open; groups always hold ≥1 tab. */
   docGroups: DocumentGroup[];
@@ -559,7 +557,6 @@ const initialState: AppState = {
   sidebarWidth: 296,
   projectLayoutSaving: false,
   projectsAuthorityRevision: 0,
-  termSearchOpen: false,
   docGroups: [],
   activeDocGroupIndex: 0,
   explorerOpen: false,
@@ -930,10 +927,6 @@ function sessionScopedState(
     maximizedSessionId,
     attachedIds,
     activeSessionId,
-    termSearchOpen:
-      activeSessionId && activeSessionId === s.activeSessionId
-        ? s.termSearchOpen
-        : false,
   };
 }
 

@@ -478,10 +478,6 @@ function commitPaneLayout(
     activeSessionId,
     attachedIds,
     maximizedSessionId,
-    termSearchOpen:
-      activeSessionId && activeSessionId === current.activeSessionId
-        ? current.termSearchOpen
-        : false,
   });
   persistPaneGroups(groups, terminalLayout);
   releaseIdsOutside(current.attachedIds, attachedIds);
@@ -542,7 +538,6 @@ export function selectSession(
     attachedIds,
     expandedProjects,
     collapsedWorktrees,
-    termSearchOpen: false,
   });
   persistPaneGroups(terminalLayoutGroups, terminalLayout);
   releaseIdsOutside(s.attachedIds, attachedIds);
@@ -682,8 +677,6 @@ export function toggleSessionPaneMaximized(sessionId: string): boolean {
     terminalLayoutGroups,
     activeSessionId: sessionId,
     maximizedSessionId,
-    termSearchOpen:
-      state.activeSessionId === sessionId ? state.termSearchOpen : false,
   });
   persistPaneGroups(terminalLayoutGroups, terminalLayout);
   if (state.activeSessionId !== sessionId) acknowledgeSession(sessionId);

@@ -209,19 +209,6 @@
       "remoteMutationUnavailable": "This document operation is not available on a remote device",
       "remoteActionUnavailable": "This action is unavailable on a remote device"
     },
-    "terminalSearch": {
-      "regionLabel": "Terminal buffer search",
-      "placeholder": "Search current terminal buffer (never sent to the Agent)",
-      "inputLabel": "Search current terminal buffer",
-      "currentBuffer": "Current buffer",
-      "currentScreen": "Current screen",
-      "matchPosition_one": "{{scope}} {{current}}/{{count}}",
-      "matchPosition_other": "{{scope}} {{current}}/{{count}}",
-      "noCurrentBufferResults": "Current buffer: no results",
-      "previousMatch": "Previous match",
-      "nextMatch": "Next match",
-      "close": "Close search"
-    },
     "workspace": {
       "label": "Terminal workspace"
     },

@@ -368,17 +368,6 @@ function useHotkeys() {
         return;
       }
 
-      // Terminal search: ⌘F / Ctrl+Shift+F — page-local, never sent to PTY.
-      const findCombo = mac
-        ? e.metaKey && !e.shiftKey && !e.ctrlKey && !e.altKey && key === "f"
-        : e.ctrlKey && e.shiftKey && !e.altKey && key === "f";
-      if (findCombo) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (s.activeSessionId) setState({ termSearchOpen: true });
-        return;
-      }
-
       // Jump to latest output: ⌘↓ / Ctrl+Shift+↓
       const bottomCombo = mac
         ? e.metaKey && !e.ctrlKey && !e.altKey && e.key === "ArrowDown"

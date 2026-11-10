@@ -3364,7 +3364,6 @@ async fn backup_restore(
 }
 
 fn search_sync(
-    paths: &AppPaths,
     db: &Db,
     query: String,
     limit: Option<usize>,
@@ -3374,96 +3373,27 @@ fn search_sync(
     if needle.chars().count() < 2 {
         return Err("search query needs at least 2 characters".into());
     }
-    let history = NativeHistory::new(paths);
     let mut hits = Vec::new();
     let mut total_hits = 0usize;
-    let projects = map_err!(db.list_projects())?;
-    for project in &projects {
-        if project.name.to_lowercase().contains(&needle)
-            || project.root_path.to_lowercase().contains(&needle)
-        {
-            total_hits = total_hits.saturating_add(1);
-            if hits.len() < limit {
-                hits.push(json!({
-                    "kind": "project",
-                    "sessionId": Value::Null,
-                    "projectId": project.id,
-                    "title": project.name,
-                    "snippet": project.root_path,
-                    "logOffset": Value::Null,
-                    "rotatedAway": false,
-                }));
-            }
+    for session in map_err!(db.list_sessions(None, false))? {
+        if !session.title.to_lowercase().contains(&needle) {
+            continue;
         }
-        for worktree in map_err!(db.list_worktrees(&project.id))? {
-            if worktree.branch.to_lowercase().contains(&needle)
-                || worktree.path.to_lowercase().contains(&needle)
-            {
-                total_hits = total_hits.saturating_add(1);
-                if hits.len() < limit {
-                    hits.push(json!({
-                        "kind": "branch",
-                        "sessionId": Value::Null,
-                        "projectId": project.id,
-                        "title": worktree.branch,
-                        "snippet": worktree.path,
-                        "logOffset": Value::Null,
-                        "rotatedAway": false,
-                    }));
-                }
-            }
-        }
-    }
-    let mut partial = limit == 0;
-    if hits.len() == limit {
-        partial = true;
-    } else {
-        for session in map_err!(db.list_sessions(None, false))? {
-            if session.title.to_lowercase().contains(&needle)
-                || session.cwd.to_lowercase().contains(&needle)
-                || session.adapter_type.as_str().contains(&needle)
-            {
-                total_hits = total_hits.saturating_add(1);
-                if hits.len() < limit {
-                    hits.push(json!({
-                        "kind": "session",
-                        "sessionId": session.id,
-                        "projectId": session.project_id,
-                        "title": session.title,
-                        "snippet": session.cwd,
-                        "logOffset": Value::Null,
-                        "rotatedAway": false,
-                    }));
-                }
-                if hits.len() == limit {
-                    partial = true;
-                    break;
-                }
-            }
-            let remaining = limit.saturating_sub(hits.len());
-            let result = map_err!(history.search_session_bounded(&session, &query, remaining,))?;
-            total_hits = total_hits.saturating_add(result.total_hits);
-            for hit in result.hits {
-                hits.push(json!({
-                    "kind": "terminal",
-                    "sessionId": session.id,
-                    "projectId": session.project_id,
-                    "title": session.title,
-                    "snippet": hit.snippet,
-                    "eventId": hit.event.id,
-                    "provider": hit.event.provider,
-                    "logOffset": Value::Null,
-                    "rotatedAway": false,
-                }));
-            }
-            if result.partial || hits.len() == limit {
-                partial = true;
-                break;
-            }
+        total_hits = total_hits.saturating_add(1);
+        if hits.len() < limit {
+            hits.push(json!({
+                "kind": "session",
+                "sessionId": session.id,
+                "projectId": session.project_id,
+                "title": session.title,
+                "snippet": session.cwd,
+                "logOffset": Value::Null,
+                "rotatedAway": false,
+            }));
         }
     }
     Ok(json!({
-        "partial": partial,
+        "partial": total_hits > hits.len(),
         "totalHits": total_hits,
         "hits": hits,
     }))
@@ -3478,7 +3408,7 @@ async fn search(
     let paths = state.paths.clone();
     run_backend_blocking(move || {
         let db = Db::open(&paths).map_err(|error| error.to_string())?;
-        search_sync(&paths, &db, query, limit)
+        search_sync(&db, query, limit)
     })
     .await
 }
@@ -4906,6 +4836,61 @@ mod cleanup_tests {
         assert!(BackendBlockingPermit::try_acquire().is_none());
         drop(permits);
         assert!(BackendBlockingPermit::try_acquire().is_some());
+    }
+
+    #[test]
+    fn global_search_matches_session_titles_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("app"));
+        paths.ensure_layout().unwrap();
+        let db = Db::open(&paths).unwrap();
+        let project_id = ids::new_id("prj_search");
+        db.add_project(&Project {
+            id: project_id.clone(),
+            name: "needle project".into(),
+            root_path: temp.path().to_string_lossy().into_owned(),
+            git_root_path: None,
+            created_at: Utc::now(),
+            pinned: false,
+            sort_order: 0,
+        })
+        .unwrap();
+        let now = Utc::now();
+        for (id, title, cwd) in [
+            ("ses_needle", "Fix needle bug", "/work/other"),
+            ("ses_cwd_only", "Unrelated task", "/work/needle"),
+            ("ses_other", "Other task", "/work/other"),
+        ] {
+            db.insert_session(&Session {
+                id: id.into(),
+                project_id: project_id.clone(),
+                worktree_id: None,
+                preset_id: "pre_shell_safe".into(),
+                title: title.into(),
+                cwd: cwd.into(),
+                host_pid: None,
+                host_socket: None,
+                host_token: ids::new_host_token(),
+                lifecycle: Lifecycle::Running,
+                agent_session_id: None,
+                resume_precision: ResumePrecision::Unavailable,
+                adapter_type: AgentType::Shell,
+                transport: AgentTransport::Pty,
+                command: vec!["/bin/sh".into()],
+                permission_mode: PermissionMode::Native,
+                created_at: now,
+                updated_at: now,
+                pinned_at: None,
+                archived_at: None,
+            })
+            .unwrap();
+        }
+
+        let result = search_sync(&db, "needle".into(), Some(20)).unwrap();
+        assert_eq!(result["totalHits"], 1);
+        assert_eq!(result["partial"], false);
+        assert_eq!(result["hits"][0]["kind"], "session");
+        assert_eq!(result["hits"][0]["sessionId"], "ses_needle");
     }
 
     #[test]

@@ -4677,36 +4677,6 @@ body.is-resizing-pane {
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
 }
 
-/* Terminal search bar */
-.term-search {
-  flex: none;
-  display: grid;
-  gap: 4px;
-  padding: 5px 10px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-panel);
-}
-
-.term-search-main {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.term-search-main input {
-  flex: 1;
-  max-width: 320px;
-}
-
-.term-search .count {
-  font-size: 11px;
-  color: var(--text-faint);
-  min-width: 52px;
-  text-align: center;
-}
-
-
 /* Empty workspace */
 .workspace-empty {
   flex: 1;

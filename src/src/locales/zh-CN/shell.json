@@ -25,8 +25,7 @@
     "copy": "复制",
     "copySelectHint": "拖拽选中文字后再复制",
     "paste": "粘贴",
-    "selectAll": "全选",
-    "search": "查找…"
+    "selectAll": "全选"
   },
   "pane": {
     "workspaceLabel": "终端分屏工作区",

@@ -7,14 +7,12 @@ const {
   hasWarmTerminalPreviewMock,
   isTerminalPreviewRenderedMock,
   loadOlderNativeHistoryMock,
-  noteTerminalScrollIntentMock,
   scrollTerminalViewportMock,
 } = vi.hoisted(() => ({
   getHandleMock: vi.fn(),
   hasWarmTerminalPreviewMock: vi.fn(() => false),
   isTerminalPreviewRenderedMock: vi.fn(() => false),
   loadOlderNativeHistoryMock: vi.fn().mockResolvedValue(false),
-  noteTerminalScrollIntentMock: vi.fn(),
   scrollTerminalViewportMock: vi.fn(),
 }));
 
@@ -33,7 +31,6 @@ vi.mock("../terminals", () => ({
   isTerminalPreviewRendered: isTerminalPreviewRenderedMock,
   loadOlderNativeHistory: loadOlderNativeHistoryMock,
   mountTerminal: vi.fn(),
-  noteTerminalScrollIntent: noteTerminalScrollIntentMock,
   scrollTerminalViewport: scrollTerminalViewportMock,
   scrollToBottom: vi.fn(),
   setTerminalActive: vi.fn(),
@@ -297,69 +294,6 @@ describe("PTY Session native history stays inside xterm", () => {
 
     expect(loadOlderNativeHistoryMock).not.toHaveBeenCalled();
     expect(container.querySelector(".native-history-pane.live")).toBeNull();
-  });
-});
-
-describe("terminal search navigation", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    cleanup();
-    setState({ termSearchOpen: false });
-  });
-
-  it("uses SearchAddon as the only viewport authority and follows its result index", () => {
-    let resultListener:
-      | ((result: { resultIndex: number; resultCount: number }) => void)
-      | undefined;
-    let nextIndex = 0;
-    const search = {
-      clearDecorations: vi.fn(),
-      findNext: vi.fn(() => {
-        resultListener?.({ resultIndex: nextIndex, resultCount: 2 });
-        nextIndex = (nextIndex + 1) % 2;
-        return true;
-      }),
-      findPrevious: vi.fn(() => true),
-      onDidChangeResults: vi.fn(
-        (listener: (result: { resultIndex: number; resultCount: number }) => void) => {
-          resultListener = listener;
-          return { dispose: vi.fn() };
-        },
-      ),
-    };
-    getHandleMock.mockReturnValue({
-      search,
-      term: {
-        buffer: { active: { type: "normal" } },
-        onWriteParsed: vi.fn(() => ({ dispose: vi.fn() })),
-      },
-    });
-    setState({
-      activeSessionId: session.id,
-      attachedIds: [],
-      termSearchOpen: true,
-      projects: [{
-        id: "prj_1",
-        name: "Project",
-        rootPath: "/tmp/project",
-        gitRootPath: "/tmp/project",
-        pinned: false,
-        worktrees: [],
-        sessions: [session],
-      }],
-    });
-    const { container } = render(<TerminalArea />);
-    const input = screen.getByRole("textbox", { name: "搜索当前终端缓冲区" });
-
-    fireEvent.change(input, { target: { value: "x" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-
-    expect(search.findNext).toHaveBeenCalledTimes(2);
-    expect(noteTerminalScrollIntentMock).toHaveBeenCalledTimes(2);
-    expect(container.querySelector(".term-search .count")?.textContent).toContain("2/2");
   });
 });
 

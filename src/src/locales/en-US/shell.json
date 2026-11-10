@@ -25,8 +25,7 @@
     "copy": "Copy",
     "copySelectHint": "Drag to select text, then copy",
     "paste": "Paste",
-    "selectAll": "Select All",
-    "search": "Find…"
+    "selectAll": "Select All"
   },
   "pane": {
     "workspaceLabel": "Terminal split workspace",

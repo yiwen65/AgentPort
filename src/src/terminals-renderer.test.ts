@@ -218,7 +218,6 @@ const rendererMocks = vi.hoisted(() => {
   class FakeFitAddon {
     fit = vi.fn();
   }
-  class FakeSearchAddon {}
   class FakeUnicode11Addon {}
   class FakeSerializeAddon {
     serialize = vi.fn(() => "");
@@ -235,7 +234,6 @@ const rendererMocks = vi.hoisted(() => {
     FakeCanvasAddon,
     FakeWebLinksAddon,
     FakeFitAddon,
-    FakeSearchAddon,
     FakeUnicode11Addon,
     FakeSerializeAddon,
   };
@@ -246,9 +244,6 @@ vi.mock("@xterm/addon-canvas", () => ({
   CanvasAddon: rendererMocks.FakeCanvasAddon,
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: rendererMocks.FakeFitAddon }));
-vi.mock("@xterm/addon-search", () => ({
-  SearchAddon: rendererMocks.FakeSearchAddon,
-}));
 vi.mock("@xterm/addon-web-links", () => ({
   WebLinksAddon: rendererMocks.FakeWebLinksAddon,
 }));
