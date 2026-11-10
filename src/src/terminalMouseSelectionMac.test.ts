@@ -81,6 +81,7 @@ async function setup(
     alt?: boolean;
     onAgentScroll?: () => void;
     canAgentScroll?: () => boolean;
+    enabled?: () => boolean;
   } = {},
 ) {
   const terminal = new Terminal({
@@ -124,6 +125,7 @@ async function setup(
     onAgentScroll: opts.onAgentScroll,
     // Selection regressions keep the gesture local; edge-handoff tests opt in.
     canAgentScroll: opts.canAgentScroll ?? (() => false),
+    enabled: opts.enabled,
   });
   disposals.push(() => {
     uninstall(); subscription.dispose(); terminal.dispose(); container.remove();
@@ -260,6 +262,24 @@ describe("macOS Agent mouse mode selection", () => {
     await vi.advanceTimersByTimeAsync(160);
     expect(sent.some((data) => data.includes("\x1b[<64;"))).toBe(true);
     mouse("mouseup", 5, 5);
+  });
+
+  it("leaves the drag to a TUI that owns selection (Pi fullscreen)", async () => {
+    const onAgentScroll = vi.fn();
+    const { terminal, sent, drag } = await setup(1002, {
+      alt: true,
+      onAgentScroll,
+      canAgentScroll: () => true,
+      enabled: () => false,
+    });
+
+    drag();
+
+    // The TUI receives the drag as mouse reports and does its own selection,
+    // edge auto-scroll and copy-on-release.
+    expect(terminal.getSelection()).toBe("");
+    expect(onAgentScroll).not.toHaveBeenCalled();
+    expect(sent.length).toBeGreaterThan(0);
   });
 
   it("keeps the selection when the Session cannot act on wheel reports", async () => {

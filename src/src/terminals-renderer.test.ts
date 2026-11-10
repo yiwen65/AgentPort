@@ -1326,6 +1326,38 @@ describe("terminal renderer", () => {
     expect(rendererMocks.defaultClipboardCopies).toEqual([]);
   });
 
+  it("copies OSC 52 clipboard writes to the local clipboard", async () => {
+    const container = document.createElement("div");
+    mountTerminal("renderer-test", container);
+    await vi.waitFor(() =>
+      expect(getState().runtime["renderer-test"]?.attached).toBe(true),
+    );
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const text = "复制 文本";
+    const payload = btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+
+    expect(terminal.emitOsc(52, `c;${payload}`)).toBe(true);
+
+    await vi.waitFor(() => {
+      expect(rendererMocks.apiMock.copyText).toHaveBeenCalledWith(text);
+    });
+  });
+
+  it("ignores OSC 52 queries and oversized payloads", async () => {
+    const container = document.createElement("div");
+    mountTerminal("renderer-test", container);
+    await vi.waitFor(() =>
+      expect(getState().runtime["renderer-test"]?.attached).toBe(true),
+    );
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+
+    expect(terminal.emitOsc(52, "c;?")).toBe(true);
+    expect(terminal.emitOsc(52, `c;${"A".repeat(2 * 1024 * 1024 + 1)}`)).toBe(true);
+    expect(rendererMocks.apiMock.copyText).not.toHaveBeenCalled();
+  });
+
   it("forwards an image clipboard paste to the Agent image-paste shortcut", async () => {
     const container = document.createElement("div");
     mountTerminal("renderer-test", container);
@@ -4335,6 +4367,44 @@ describe("terminal renderer", () => {
 
       document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
       expect(writtenText(terminal)).toContain("FORCED-SELECTION-CHUNK");
+    });
+
+    it("leaves a Pi-family drag to the TUI without freezing its repaints", async () => {
+      setState({
+        platform: {
+          os: "macos",
+          osVersion: "15.0",
+          arch: "arm64",
+          webview: "WKWebView",
+          appVersion: "0.1.0",
+          windowDecorated: true,
+        },
+        projects: getState().projects.map((project) => ({
+          ...project,
+          sessions: project.sessions.map((session) =>
+            session.id === "renderer-test"
+              ? { ...session, adapter: "easy_pi" }
+              : session,
+          ),
+        })),
+      });
+      const container = document.createElement("div");
+      mountTerminal("renderer-test", container);
+      await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+      const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1]!;
+      terminal.modes.mouseTrackingMode = "any";
+
+      const event = new MouseEvent("mousedown", {
+        button: 0,
+        bubbles: true,
+        cancelable: true,
+      });
+      terminal.element!.dispatchEvent(event);
+
+      // Pi's TuiAltScreen receives the drag and owns selection, auto-scroll
+      // and copy-on-release; buffering output would freeze that scrolling.
+      expect(event.defaultPrevented).toBe(false);
+      expect(getHandle("renderer-test")?.writes.selectionFrozen).toBe(false);
     });
   });
 });

@@ -74,6 +74,13 @@ const REPLAY_TAIL_BYTES = 4 * 1024 * 1024;
 // Host frame retains many complete redraws plus the Host's terminal-mode seed.
 const FULLSCREEN_PI_REPLAY_TAIL_BYTES = 64 * 1024;
 const FULLSCREEN_PI_ADAPTERS = new Set(["pi", "easy_pi", "omp"]);
+/** Adapters whose fullscreen TUI implements its own drag selection, edge
+ * auto-scroll and clipboard copy (Pi's TuiAltScreen). Intercepting the drag
+ * would replace all three with xterm's screen-local selection. */
+const TUI_SELECTION_ADAPTERS = new Set(["pi", "easy_pi"]);
+const OSC52_CLIPBOARD = 52;
+/** Clipboard text cap for OSC 52 writes; Pi caps its own payloads at 100 KB. */
+const OSC52_MAX_BASE64_LENGTH = 2 * 1024 * 1024;
 const PI_STARTUP_READY_OSC = 6973;
 const PI_STARTUP_READY_PAYLOAD = "startup-ready";
 const PI_STARTUP_READY_TIMEOUT_MS = 15_000;
@@ -1416,6 +1423,32 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
         : null,
   };
   installMouseEncodingTracking(handle);
+  // OSC 52 is how a TUI running on another machine hands a copy to the local
+  // terminal. Write-only and size-capped: the app never exposes clipboard
+  // reads to terminal output.
+  term.parser.registerOscHandler(OSC52_CLIPBOARD, (data) => {
+    const separator = data.indexOf(";");
+    if (separator <= 0) return true;
+    const selection = data.slice(0, separator);
+    const payload = data.slice(separator + 1);
+    if (
+      selection !== "c" ||
+      payload.length === 0 ||
+      payload.length > OSC52_MAX_BASE64_LENGTH ||
+      payload === "?"
+    ) {
+      return true;
+    }
+    try {
+      const binary = atob(payload);
+      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+      const text = new TextDecoder().decode(bytes);
+      if (text) void copyText(text);
+    } catch {
+      // Malformed base64 is ignored like any other unsupported control.
+    }
+    return true;
+  });
   term.parser.registerOscHandler(PI_STARTUP_READY_OSC, (data) => {
     if (data !== PI_STARTUP_READY_PAYLOAD) return false;
     if (getState().runtime[sessionId]?.startupPending) {
@@ -2124,6 +2157,9 @@ export interface ClipboardCompatibilityOptions {
   onAgentScroll?: () => void;
   /** Whether the Session is live enough to act on forwarded wheel reports. */
   canAgentScroll?: () => boolean;
+  /** Whether plain drags become local xterm selections. TUIs that implement
+   * their own selection (Pi fullscreen) keep owning the drag instead. */
+  enabled?: () => boolean;
 }
 
 export function installClipboardCompatibility(
@@ -2134,7 +2170,7 @@ export function installClipboardCompatibility(
   const { resolveSelection = () => term.getSelection() } = options;
   let disposed = false;
   const disposeMouseSelection = installTerminalMouseSelection(term, container, {
-    enabled: plainDragSelectsText,
+    enabled: options.enabled ?? plainDragSelectsText,
     forceModifier: forceSelectionModifier,
     onAgentScroll: options.onAgentScroll,
     canAgentScroll: options.canAgentScroll,
@@ -2283,6 +2319,12 @@ function plainDragSelectsText(): boolean {
   return os === "linux" || os === "macos";
 }
 
+/** Whether this Session's TUI owns drag selection (and copies on release). */
+function sessionHandlesTextSelection(sessionId: string): boolean {
+  const session = findSession(getState().projects, sessionId);
+  return session !== null && TUI_SELECTION_ADAPTERS.has(session.adapter);
+}
+
 function forceSelectionModifier(): TerminalForceSelectionModifier {
   return getState().platform?.os === "macos" ? "alt" : "shift";
 }
@@ -2305,8 +2347,13 @@ function mouseDragIsTerminalSelection(term: Terminal, event: MouseEvent): boolea
 
 /** Freeze live PTY output while a selection gesture is in progress (and while
  * a selection survives) so live-TUI repaints cannot destroy it mid-gesture.
- * See TerminalWriteCoordinator.setSelectionFreeze for the buffering half. */
-function installSelectionFreeze(handle: TermHandle, container: HTMLDivElement) {
+ * See TerminalWriteCoordinator.setSelectionFreeze for the buffering half.
+ * `delegated` Sessions own the drag and must keep streaming their repaints. */
+function installSelectionFreeze(
+  handle: TermHandle,
+  container: HTMLDivElement,
+  delegated: () => boolean,
+) {
   const { term } = handle;
   let capTimer: number | null = null;
   let pollTimer: number | null = null;
@@ -2328,6 +2375,7 @@ function installSelectionFreeze(handle: TermHandle, container: HTMLDivElement) {
   };
   const onMouseDown = (event: MouseEvent) => {
     if (event.button !== 0) return;
+    if (delegated()) return;
     if (!mouseDragIsTerminalSelection(term, event)) return;
     handle.writes.setSelectionFreeze(true);
     if (capTimer !== null) window.clearTimeout(capTimer);
@@ -2369,6 +2417,9 @@ function bindTerminalContainer(handle: TermHandle, container: HTMLDivElement) {
       resolveSelection: () => resolveCopySelection(handle),
       onAgentScroll: () => handle.writes.setSelectionFreeze(false),
       canAgentScroll: () => handle.attached,
+      enabled: () =>
+        plainDragSelectsText() &&
+        !sessionHandlesTextSelection(handle.sessionId),
     }),
   );
   viewportIntentDisposers.get(handle.sessionId)?.();
@@ -2379,7 +2430,9 @@ function bindTerminalContainer(handle: TermHandle, container: HTMLDivElement) {
   selectionFreezeDisposers.get(handle.sessionId)?.();
   selectionFreezeDisposers.set(
     handle.sessionId,
-    installSelectionFreeze(handle, container),
+    installSelectionFreeze(handle, container, () =>
+      sessionHandlesTextSelection(handle.sessionId),
+    ),
   );
   handle.resizeObserver?.disconnect();
   handle.resizeObserver = new ResizeObserver(() => {
