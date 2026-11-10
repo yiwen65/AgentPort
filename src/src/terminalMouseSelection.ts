@@ -63,12 +63,19 @@ export function installTerminalMouseSelection(
     return buffer.type !== "normal" || buffer.baseY === 0;
   };
 
+  /** Top/bottom edge zone, including the outermost rows: TUIs start their own
+   * selection auto-scroll as soon as the pointer reaches the edge row, so a
+   * pointer that only stops at the last row must count too. */
   const edgeDirection = (event: MouseEvent): -1 | 0 | 1 => {
     const screen = screenElement();
     if (!screen) return 0;
     const rect = screen.getBoundingClientRect();
     if (event.clientY < rect.top) return -1;
     if (event.clientY >= rect.bottom) return 1;
+    const rowHeight = rect.height / Math.max(1, term.rows);
+    const offset = event.clientY - rect.top;
+    if (offset < rowHeight) return -1;
+    if (offset >= rect.height - rowHeight) return 1;
     return 0;
   };
 

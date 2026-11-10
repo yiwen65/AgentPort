@@ -60,7 +60,10 @@ async function setup(mode = 1002) {
   await vi.advanceTimersByTimeAsync(10);
   const sent: string[] = [];
   const subscription = terminal.onData((data) => sent.push(data));
-  const uninstall = installClipboardCompatibility(terminal, container);
+  const uninstall = installClipboardCompatibility(terminal, container, {
+    // These regressions keep selection local; edge hand-off has its own suite.
+    canAgentScroll: () => false,
+  });
   disposals.push(() => {
     uninstall(); subscription.dispose(); terminal.dispose(); container.remove();
   });

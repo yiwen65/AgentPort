@@ -122,7 +122,8 @@ async function setup(
   const subscription = terminal.onData((data) => sent.push(data));
   const uninstall = installClipboardCompatibility(terminal, container, {
     onAgentScroll: opts.onAgentScroll,
-    canAgentScroll: opts.canAgentScroll,
+    // Selection regressions keep the gesture local; edge-handoff tests opt in.
+    canAgentScroll: opts.canAgentScroll ?? (() => false),
   });
   disposals.push(() => {
     uninstall(); subscription.dispose(); terminal.dispose(); container.remove();
@@ -217,7 +218,11 @@ describe("macOS Agent mouse mode selection", () => {
 
   it("hands an alternate-screen edge drag to the Agent as wheel reports", async () => {
     const onAgentScroll = vi.fn();
-    const { terminal, sent, mouse } = await setup(1002, { alt: true, onAgentScroll });
+    const { terminal, sent, mouse } = await setup(1002, {
+      alt: true,
+      onAgentScroll,
+      canAgentScroll: () => true,
+    });
     terminal.write(
       "\r\n" + Array.from({ length: 40 }, (_, i) => `row ${i}`).join("\r\n"),
     );
@@ -237,6 +242,24 @@ describe("macOS Agent mouse mode selection", () => {
     const afterRelease = sent.length;
     await vi.advanceTimersByTimeAsync(400);
     expect(sent.length).toBe(afterRelease);
+  });
+
+  it("hands over as soon as the drag reaches the outermost row", async () => {
+    const onAgentScroll = vi.fn();
+    const { terminal, sent, mouse } = await setup(1002, {
+      alt: true,
+      onAgentScroll,
+      canAgentScroll: () => true,
+    });
+
+    mouse("mousedown", 5, 100);
+    mouse("mousemove", 5, 5); // first row, still inside the screen
+
+    expect(onAgentScroll).toHaveBeenCalledOnce();
+    expect(terminal.getSelection()).toBe("");
+    await vi.advanceTimersByTimeAsync(160);
+    expect(sent.some((data) => data.includes("\x1b[<64;"))).toBe(true);
+    mouse("mouseup", 5, 5);
   });
 
   it("keeps the selection when the Session cannot act on wheel reports", async () => {
