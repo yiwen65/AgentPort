@@ -210,6 +210,40 @@ describe("project row plus button menu", () => {
     expect(preventMovableDefault).toHaveBeenCalledOnce();
   });
 
+  it("keeps horizontal swipes over the quick-agent strip out of the sidebar page gesture", () => {
+    render(<Sidebar collapsed={false} width={296} />);
+    const strip = document.querySelector<HTMLElement>(".quick-agent-strip");
+    expect(strip).not.toBeNull();
+    if (!strip) throw new Error("quick agent strip missing");
+    let scrollLeft = 0;
+    Object.defineProperties(strip, {
+      clientWidth: { configurable: true, value: 100 },
+      scrollWidth: { configurable: true, value: 300 },
+      scrollLeft: {
+        configurable: true,
+        get: () => scrollLeft,
+        set: (value: number) => {
+          scrollLeft = Math.max(0, Math.min(200, value));
+        },
+      },
+    });
+
+    act(() => {
+      strip.dispatchEvent(new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        deltaX: 100,
+        deltaY: 2,
+      }));
+    });
+
+    expect(scrollLeft).toBe(100);
+    expect(
+      screen.getByRole("button", { name: "分屏分组" }).getAttribute("aria-current"),
+    ).not.toBe("page");
+    expect(screen.queryByText("暂无分屏分组")).toBeNull();
+  });
+
   it("opens project context-menu items without 新建 Session / quick-launch agents", () => {
     render(<Sidebar collapsed={false} width={296} />);
     const plus = screen.getByRole("button", { name: "项目 Demo 的更多操作" });
