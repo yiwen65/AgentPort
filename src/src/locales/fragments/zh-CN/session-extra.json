@@ -83,16 +83,13 @@
   },
   "timeline": {
     "sessionMissing": "该 Session 已不存在，无法打开",
-    "newOutputWhileClosed": "关闭期间新增输出",
-    "hostInterrupted": "Host 异常中断",
     "title": "恢复时间线",
-    "description": "离开期间发生的完成 / 等待 / 异常事件",
+    "description": "离开期间发生的完成 / 等待事件",
     "markAllRead": "全部已读",
     "completed": "已完成",
     "needsInput": "等待批准",
-    "failed": "异常 / 退出",
     "openDiagnostics": "打开诊断",
-    "empty": "离开期间没有新的完成、等待或异常事件。",
+    "empty": "离开期间没有新的完成或等待事件。",
     "viewAllSessions": "查看全部 Session",
     "eventsAria": "时间线事件"
   },

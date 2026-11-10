@@ -22,7 +22,7 @@ vi.mock("./terminals", () => ({
   resetForRestart: vi.fn(),
 }));
 
-import { ackTimelineFlow, refreshTimeline } from "./actions";
+import { ackTimelineFlow, dismissTimelineEntry, refreshTimeline } from "./actions";
 import { getState, setState } from "./store";
 
 const timeline = (id: string) => ({
@@ -75,6 +75,31 @@ describe("refreshTimeline", () => {
     expect(apiMock.ackTimeline).toHaveBeenCalledWith(snapshots);
     expect(getState().timeline.entries).toEqual([]);
     expect(getState().timeline.ackSnapshots).toEqual([]);
+  });
+
+  it("dismisses one entry and acknowledges only its status cursor", async () => {
+    const shown = {
+      sessionId: "ses_1",
+      statusCursor: { runId: "run_1", runOrdinal: 1, sequence: 4 },
+      logCursor: null,
+    };
+    const remaining = {
+      sessionId: "ses_2",
+      statusCursor: { runId: "run_1", runOrdinal: 1, sequence: 2 },
+      logCursor: null,
+    };
+    apiMock.ackTimeline.mockResolvedValueOnce(undefined);
+    setState({
+      timeline: {
+        ...timeline("shown"),
+        entries: [shown, remaining],
+      } as never,
+    });
+
+    await dismissTimelineEntry(shown as never);
+
+    expect(apiMock.ackTimeline).toHaveBeenCalledWith([shown]);
+    expect(getState().timeline.entries).toEqual([remaining]);
   });
 
   it("does not let a refresh started before acknowledgement restore read entries", async () => {

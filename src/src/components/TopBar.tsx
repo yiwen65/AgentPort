@@ -16,6 +16,7 @@ import { toggleActiveAgentsView, toggleSidebarCollapsed } from "../actions";
 import DevicePicker from "./DevicePicker";
 import { toggleExplorer } from "../documents";
 import { closeGitCenter, openGitCenter } from "../gitCenter";
+import { visibleTimelineEntries } from "../timelineEntries";
 
 function IconFolder() {
   return (
@@ -165,7 +166,9 @@ export default function TopBar() {
     : null;
   const projectName = activeProject?.name;
   const projectBranch = worktreeBranch ?? mainBranch;
-  const pending = useStore((state) => state.timeline.entries.length);
+  const pending = useStore(
+    (state) => visibleTimelineEntries(state.timeline.entries).length,
+  );
   const sidebarCollapsed = useStore((state) => state.sidebarCollapsed);
   const sidebarViewMode = useStore((state) => state.sidebarViewMode);
   const gitCenterOpen = useStore((state) => state.gitCenter.open);

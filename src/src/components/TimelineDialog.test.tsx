@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { selectSessionMock } = vi.hoisted(() => ({
+const { dismissTimelineEntryMock, selectSessionMock } = vi.hoisted(() => ({
+  dismissTimelineEntryMock: vi.fn(),
   selectSessionMock: vi.fn(),
 }));
 
 vi.mock("../actions", () => ({
   ackTimelineFlow: vi.fn(),
+  dismissTimelineEntry: dismissTimelineEntryMock,
   refreshTimeline: vi.fn(),
   selectSession: selectSessionMock,
 }));
@@ -42,9 +44,9 @@ const entry: TimelineEntry = {
   state: "idle",
   source: "process",
   confidence: "high",
-  evidence: "recovery:output-during-gui-closed",
+  evidence: "hook:Stop",
   occurredAt: "2026-09-14T00:00:00Z",
-  statusCursor: null,
+  statusCursor: { runId: "run_1", runOrdinal: 1, sequence: 3 },
   logCursor: {
     runId: "run_1",
     runOrdinal: 1,
@@ -54,6 +56,28 @@ const entry: TimelineEntry = {
   logOffset: 128,
   rotatedAway: false,
   locationUnavailableReason: null,
+};
+
+const waitingEntry: TimelineEntry = {
+  ...entry,
+  state: "needs_input",
+  evidence: "hook:PermissionRequest",
+  statusCursor: { runId: "run_1", runOrdinal: 1, sequence: 4 },
+};
+
+const failedEntry: TimelineEntry = {
+  ...entry,
+  state: "exited",
+  evidence: "process:signal:9",
+  statusCursor: { runId: "run_1", runOrdinal: 1, sequence: 5 },
+};
+
+const outputOnlyEntry: TimelineEntry = {
+  ...entry,
+  state: "working",
+  evidence: "recovery:output-during-gui-closed",
+  statusCursor: null,
+  logCursor: null,
 };
 
 describe("TimelineDialog", () => {
@@ -71,9 +95,9 @@ describe("TimelineDialog", () => {
       }],
       timeline: {
         completed: 1,
-        waiting: 0,
-        failed: 0,
-        entries: [entry],
+        waiting: 1,
+        failed: 1,
+        entries: [entry, waitingEntry, failedEntry, outputOnlyEntry],
         ackSnapshots: [],
       },
       timelineError: null,
@@ -85,11 +109,25 @@ describe("TimelineDialog", () => {
 
   afterEach(cleanup);
 
-  it("opens the Session at latest output without forwarding its historical cursor", () => {
+  it("lists only completed and waiting entries without technical labels", () => {
+    const view = render(<TimelineDialog />);
+
+    expect(view.container.querySelectorAll(".timeline-row")).toHaveLength(2);
+    expect(
+      Array.from(view.container.querySelectorAll(".timeline-kind")).map(
+        (node) => node.textContent,
+      ),
+    ).toEqual(["已完成", "等待批准"]);
+    expect(screen.queryByText(/置信度/)).toBeNull();
+    expect(screen.queryByText(/空闲|Hook|PTY/)).toBeNull();
+  });
+
+  it("opens the Session and dismisses the clicked entry", () => {
     const view = render(<TimelineDialog />);
 
     fireEvent.click(view.container.querySelector(".timeline-row")!);
 
+    expect(dismissTimelineEntryMock).toHaveBeenCalledWith(entry);
     expect(selectSessionMock).toHaveBeenCalledWith(session.id);
     expect(selectSessionMock).toHaveBeenCalledTimes(1);
   });

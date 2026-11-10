@@ -6333,10 +6333,6 @@ textarea:focus {
   color: var(--amber);
 }
 
-.summary-card.fail .num {
-  color: var(--red);
-}
-
 .timeline-row {
   display: flex;
   align-items: center;
@@ -6379,6 +6375,12 @@ textarea:focus {
 .timeline-sub {
   font-size: 11px;
   color: var(--text-faint);
+}
+
+.timeline-kind {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-dim);
 }
 
 /* Command palette / search */

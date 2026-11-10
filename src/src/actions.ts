@@ -68,6 +68,7 @@ import type {
   ProjectLayoutEntry,
   ProjectRemovalPreflight,
   ProjectView,
+  TimelineEntry,
   WorktreeDeletePreflight,
 } from "./types";
 
@@ -1314,6 +1315,29 @@ export async function ackTimelineFlow() {
       timelineMessage: null,
     });
     await refreshProjects();
+  } catch (e) {
+    toast(
+      i18n.t("session:flow.operationFailed", { detail: errorText(e) }),
+      "error",
+    );
+  }
+}
+
+export async function dismissTimelineEntry(entry: TimelineEntry) {
+  const timeline = getState().timeline;
+  setState({
+    timeline: {
+      ...timeline,
+      entries: timeline.entries.filter((candidate) => candidate !== entry),
+    },
+  });
+  if (!entry.statusCursor) return;
+  try {
+    await api.ackTimeline([{
+      sessionId: entry.sessionId,
+      statusCursor: entry.statusCursor,
+      logCursor: null,
+    }]);
   } catch (e) {
     toast(
       i18n.t("session:flow.operationFailed", { detail: errorText(e) }),

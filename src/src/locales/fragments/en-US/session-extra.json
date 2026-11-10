@@ -83,16 +83,13 @@
   },
   "timeline": {
     "sessionMissing": "This Session no longer exists, so it cannot be opened",
-    "newOutputWhileClosed": "New output while AgentPort was closed",
-    "hostInterrupted": "Host interrupted unexpectedly",
     "title": "Recovery Timeline",
-    "description": "Completed, waiting, and failed events while you were away",
+    "description": "Completed and waiting events while you were away",
     "markAllRead": "Mark all as read",
     "completed": "Completed",
     "needsInput": "Waiting for approval",
-    "failed": "Failed / exited",
     "openDiagnostics": "Open Diagnostics",
-    "empty": "No new completed, waiting, or failed events while you were away.",
+    "empty": "No new completed or waiting events while you were away.",
     "viewAllSessions": "View all Sessions",
     "eventsAria": "Timeline events"
   },

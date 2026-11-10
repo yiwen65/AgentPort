@@ -1,21 +1,20 @@
-// Recovery timeline (PRD 3.6 / 4.4.1): three-line summary + event list,
-// click opens the Session at its latest output, "全部已读" acknowledges.
+// Recovery timeline: completed and waiting-for-approval list. Click opens the
+// Session at its latest output and acknowledges that entry.
 
 import Modal from "./Modal";
 import { useTranslation } from "react-i18next";
-import { ackTimelineFlow, refreshTimeline, selectSession } from "../actions";
-import { agentDisplay, confidenceLabel, formatTimelineTime, sourceLabel, stateLabel } from "../format";
+import { ackTimelineFlow, dismissTimelineEntry, refreshTimeline, selectSession } from "../actions";
+import { agentDisplay, formatTimelineTime } from "../format";
 import { closeDialog, findSession, openDialog, toast, useStore } from "../store";
 import { runtimeMessageText } from "../runtimeMessages";
+import { visibleTimelineEntries, type TimelineEntryKind } from "../timelineEntries";
 import type { TimelineEntry } from "../types";
 
-function EntryRow({ entry }: { entry: TimelineEntry }) {
+function EntryRow({ entry, kind }: { entry: TimelineEntry; kind: TimelineEntryKind }) {
   const { t } = useTranslation("session");
   const s = useStore();
   const session = findSession(s.projects, entry.sessionId);
   const exists = Boolean(session);
-  const outputOnly = entry.evidence === "recovery:output-during-gui-closed";
-  const hostInterrupted = entry.evidence?.startsWith("host:interrupted:") ?? false;
   return (
     <button
       className="timeline-row"
@@ -25,6 +24,7 @@ function EntryRow({ entry }: { entry: TimelineEntry }) {
           toast(t("timeline.sessionMissing"), "error");
           return;
         }
+        void dismissTimelineEntry(entry);
         closeDialog();
         selectSession(entry.sessionId);
       }}
@@ -36,15 +36,8 @@ function EntryRow({ entry }: { entry: TimelineEntry }) {
         </div>
         <div className="timeline-sub">{entry.projectName}</div>
       </span>
-      <span className="dim" style={{ flex: "none", fontSize: 12 }}>
-        {outputOnly
-          ? t("timeline.newOutputWhileClosed")
-          : hostInterrupted
-            ? t("timeline.hostInterrupted")
-            : stateLabel(entry.state)}
-      </span>
-      <span className="dim" style={{ flex: "none", fontSize: 11 }}>
-        {sourceLabel(entry.source)} · {confidenceLabel(entry.confidence)}
+      <span className="timeline-kind">
+        {t(kind === "waiting" ? "timeline.needsInput" : "timeline.completed")}
       </span>
     </button>
   );
@@ -57,6 +50,9 @@ export default function TimelineDialog() {
   const timelineError = s.timelineMessage
     ? runtimeMessageText(s.timelineMessage)
     : s.timelineError;
+  const entries = visibleTimelineEntries(timeline.entries);
+  const completed = entries.filter((item) => item.kind === "completed").length;
+  const waiting = entries.filter((item) => item.kind === "waiting").length;
 
   return (
     <Modal
@@ -70,7 +66,7 @@ export default function TimelineDialog() {
           </span>
           <button
             className="btn"
-            disabled={timeline.entries.length === 0}
+            disabled={entries.length === 0}
             onClick={() => void ackTimelineFlow()}
           >
             {t("session:timeline.markAllRead")}
@@ -83,16 +79,12 @@ export default function TimelineDialog() {
     >
       <div className="timeline-summary">
         <div className="summary-card ok">
-          <div className="num">{timeline.completed}</div>
+          <div className="num">{completed}</div>
           <div className="dim">{t("session:timeline.completed")}</div>
         </div>
         <div className="summary-card wait">
-          <div className="num">{timeline.waiting}</div>
+          <div className="num">{waiting}</div>
           <div className="dim">{t("session:timeline.needsInput")}</div>
-        </div>
-        <div className="summary-card fail">
-          <div className="num">{timeline.failed}</div>
-          <div className="dim">{t("session:timeline.failed")}</div>
         </div>
       </div>
       {timelineError ? (
@@ -104,7 +96,7 @@ export default function TimelineDialog() {
           </div>
         </div>
       ) : null}
-      {timelineError ? null : timeline.entries.length === 0 ? (
+      {timelineError ? null : entries.length === 0 ? (
         <div className="empty-state">
           <div>{t("session:timeline.empty")}</div>
           <button className="btn ghost" onClick={closeDialog}>
@@ -113,8 +105,8 @@ export default function TimelineDialog() {
         </div>
       ) : (
         <div role="list" aria-label={t("session:timeline.eventsAria")}>
-          {timeline.entries.map((e, i) => (
-            <EntryRow key={`${e.sessionId}-${i}`} entry={e} />
+          {entries.map(({ entry, kind }, i) => (
+            <EntryRow key={`${entry.sessionId}-${i}`} entry={entry} kind={kind} />
           ))}
         </div>
       )}
