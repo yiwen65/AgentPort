@@ -2271,8 +2271,41 @@ body.is-project-dragging .tree-row.project {
 }
 
 .git-diff-code > span {
-  display: block;
+  display: flex;
   min-height: 17px;
+  background: color-mix(in srgb, var(--bg-active) 80%, var(--git-surface));
+}
+
+.git-diff-line-no {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  flex: none;
+  width: 5ch;
+  padding-right: 1ch;
+  color: color-mix(in srgb, var(--text-dim) 72%, transparent);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  background-color: color-mix(in srgb, var(--bg-active) 80%, var(--git-surface));
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.git-diff-code > span.add .git-diff-line-no {
+  background-image: linear-gradient(var(--green-soft), var(--green-soft));
+}
+
+.git-diff-code > span.del .git-diff-line-no {
+  background-image: linear-gradient(var(--red-soft), var(--red-soft));
+}
+
+.git-diff-line-no + .git-diff-line-no {
+  left: 5ch;
+  box-shadow: inset -1px 0 color-mix(in srgb, var(--border) 65%, transparent);
+}
+
+.git-diff-line-text {
+  flex: none;
 }
 
 .git-diff-code > span.add {
