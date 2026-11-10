@@ -244,6 +244,17 @@ describe("active Agent sidebar", () => {
     ]);
   });
 
+  it("keeps the full Session title available on hover", () => {
+    const title = "请检查这个很长的中文输入内容是否能够正确截断并显示";
+    const base = projects();
+    base[0].sessions = [session(title, "working", { adapter: "shell" })];
+    setState({ projects: base });
+
+    render(<Sidebar collapsed={false} width={296} />);
+
+    expect(screen.getByText(title).getAttribute("data-tip")).toBe(title);
+  });
+
   it("renders one global flat list with compact project and branch sources", () => {
     render(<Sidebar collapsed={false} width={296} />);
 

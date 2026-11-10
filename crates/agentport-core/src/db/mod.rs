@@ -437,6 +437,7 @@ fn session_removal_is_fenced(conn: &Connection, session_id: &str) -> Result<bool
 const CLEANUP_RETRY_BASE_SECONDS: i64 = 5;
 const CLEANUP_RETRY_MAX_SECONDS: i64 = 60 * 60;
 const MAX_CLEANUP_ERROR_CHARS: usize = 240;
+const MAX_SESSION_TITLE_CHARS: usize = 120;
 /// Multiple GUI projections and the cleanup worker use independent SQLite
 /// connections. Give a contending writer time to finish rather than turning a
 /// short WAL write-lock collision into a lost session-status projection.
@@ -486,13 +487,9 @@ fn title_from_first_input(input: &str) -> Option<String> {
     if normalized.is_empty() {
         return None;
     }
-    let mut chars = normalized.chars();
-    let prefix: String = chars.by_ref().take(15).collect();
-    Some(if chars.next().is_some() {
-        format!("{prefix}...")
-    } else {
-        prefix
-    })
+    // Store the full first input; the sidebar ellipsizes it to the available
+    // width and reveals the full title on hover. Only the storage limit caps it.
+    Some(normalized.chars().take(MAX_SESSION_TITLE_CHARS).collect())
 }
 
 fn purge_session_rows(tx: &Transaction<'_>, id: &str) -> Result<()> {
@@ -2200,7 +2197,7 @@ impl Db {
 
     // -- sessions -----------------------------------------------------------
     pub fn insert_session(&self, s: &Session) -> Result<()> {
-        if s.title.is_empty() || s.title.chars().count() > 120 {
+        if s.title.is_empty() || s.title.chars().count() > MAX_SESSION_TITLE_CHARS {
             return Err(CoreError::Validation(
                 "session title must be 1-120 chars".into(),
             ));
@@ -2854,7 +2851,7 @@ impl Db {
     }
 
     pub fn rename_session(&self, id: &str, title: &str) -> Result<()> {
-        if title.is_empty() || title.chars().count() > 120 {
+        if title.is_empty() || title.chars().count() > MAX_SESSION_TITLE_CHARS {
             return Err(CoreError::Validation(
                 "session title must be 1-120 chars".into(),
             ));
@@ -5669,7 +5666,7 @@ mod tests {
             .unwrap());
         assert_eq!(
             db.get_session("ses_auto").unwrap().title,
-            "请检查这个很长的中文输入内容是..."
+            "请检查这个很长的中文输入内容是否能够正确截断并显示"
         );
         assert!(!db
             .auto_rename_session_from_first_input("ses_auto", "第二段输入")

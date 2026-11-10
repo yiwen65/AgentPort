@@ -858,7 +858,9 @@ function SessionRow({
             }}
           />
         ) : (
-          <span className="tree-label">{ses.title}</span>
+          <span className="tree-label" data-tip={ses.title}>
+            {ses.title}
+          </span>
         )}
         {sourceLabel ? (
           <span className="active-session-source">{sourceLabel}</span>
