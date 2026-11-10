@@ -118,6 +118,36 @@ fn cursor_for(event: &agentport_core::models::StatusEvent) -> AttentionCursor {
     }
 }
 
+/// Global order of a delivered attention event. Two registrations can share
+/// one APNs token (for example after pairing the same install again); the
+/// token still names one device, so an event delivered once must not be sent
+/// a second time for the other registration.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct DeliveredFence {
+    occurred_at: chrono::DateTime<Utc>,
+    session_id: String,
+    run_ordinal: i64,
+    sequence: i64,
+}
+
+impl DeliveredFence {
+    fn of(event: &agentport_core::models::StatusEvent) -> Self {
+        Self {
+            occurred_at: event.occurred_at,
+            session_id: event.session_id.clone(),
+            run_ordinal: event.run_ordinal,
+            sequence: event.sequence,
+        }
+    }
+}
+
+fn already_delivered(
+    fence: Option<&DeliveredFence>,
+    event: &agentport_core::models::StatusEvent,
+) -> bool {
+    fence.is_some_and(|fence| *fence >= DeliveredFence::of(event))
+}
+
 fn check_file(file: &File) -> Result<()> {
     let meta = file.metadata().map_err(|_| Error::Storage)?;
     if !meta.is_file()
@@ -232,6 +262,7 @@ pub async fn run(
     let root = private_directory(&state_dir)?;
     let mut state = load(&root)?;
     let mut retries: HashMap<String, Retry> = HashMap::new();
+    let mut delivered: HashMap<String, DeliveredFence> = HashMap::new();
     loop {
         if *shutdown.borrow() {
             return Ok(());
@@ -292,20 +323,33 @@ pub async fn run(
                 let Some(alert_kind) = kind(&event) else {
                     return Err(Error::Storage); // DB predicate and semantic classifier diverged.
                 };
-                let result = sender
-                    .send_alert(
-                        &target.registration.token,
-                        alert_kind,
-                        &host_id,
-                        &event.session_id,
-                    )
-                    .await;
+                let duplicate =
+                    already_delivered(delivered.get(&target.registration.token), &event);
+                let result = if duplicate {
+                    // Another registration for the same APNs device already
+                    // received this event. Advance this cursor without a
+                    // second visible alert.
+                    Ok(())
+                } else {
+                    sender
+                        .send_alert(
+                            &target.registration.token,
+                            alert_kind,
+                            &host_id,
+                            &event.session_id,
+                        )
+                        .await
+                };
+                let token = target.registration.token.clone();
                 match apply_outcome(
                     state.registrations.get_mut(&key).unwrap(),
                     cursor_for(&event),
                     result,
                 ) {
                     DeliveryDecision::Advanced => {
+                        if !duplicate {
+                            delivered.insert(token, DeliveredFence::of(&event));
+                        }
                         persist(&root, &state)?;
                         retries.remove(&key);
                     }
@@ -347,6 +391,34 @@ pub async fn run(
 mod tests {
     use super::*;
     use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[test]
+    fn same_token_does_not_receive_an_event_twice() {
+        use agentport_core::models::{AgentState, Confidence, StateSource, StatusEvent};
+        let base = Utc::now();
+        let event = |sequence: i64| StatusEvent {
+            session_id: "0123456789abcdef".into(),
+            run_id: "run".into(),
+            run_ordinal: 1,
+            sequence,
+            state: AgentState::Idle,
+            source: StateSource::Hook,
+            confidence: Confidence::High,
+            evidence: Some("hook:Stop".into()),
+            log_cursor: None,
+            occurred_at: base + chrono::Duration::seconds(sequence),
+        };
+        let first = event(1);
+        let second = event(2);
+        let mut fence = None;
+        assert!(!already_delivered(fence.as_ref(), &first));
+        fence = Some(DeliveredFence::of(&first));
+        assert!(already_delivered(fence.as_ref(), &first));
+        assert!(!already_delivered(fence.as_ref(), &second));
+        fence = Some(DeliveredFence::of(&second));
+        assert!(already_delivered(fence.as_ref(), &first));
+        assert!(already_delivered(fence.as_ref(), &second));
+    }
 
     #[test]
     fn registration_cursor_is_distinct_for_each_token_and_environment() {

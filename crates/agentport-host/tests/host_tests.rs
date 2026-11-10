@@ -2449,9 +2449,9 @@ fn resumed_completed_pi_run_publishes_idle_without_replaying_completion() {
         session_id: ctx.session_id.clone(),
     });
     let frames = client.collect_until(Duration::from_secs(3), |frames| frames.iter().any(|frame|
-        matches!(frame, HostFrame::State { state: AgentState::Idle, source: StateSource::Adapter, evidence: Some(e), .. } if e == "adapter:pi:TurnEnd")));
+        matches!(frame, HostFrame::State { state: AgentState::Idle, source: StateSource::Adapter, evidence: Some(e), .. } if e == "adapter:pi:InheritedTurnEnd")));
     let inherited = frames.iter().filter(|frame| matches!(frame,
-        HostFrame::State { state: AgentState::Idle, source: StateSource::Adapter, evidence: Some(e), .. } if e == "adapter:pi:TurnEnd")).count();
+        HostFrame::State { state: AgentState::Idle, source: StateSource::Adapter, evidence: Some(e), .. } if e == "adapter:pi:InheritedTurnEnd")).count();
     assert_eq!(inherited, 1, "inherited idle state not reported exactly once: {frames:?}");
     // …and it stays a snapshot: no later completion replay without new input.
     let later = client.collect_until(Duration::from_millis(700), |_| false);

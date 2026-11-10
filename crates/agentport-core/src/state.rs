@@ -244,11 +244,13 @@ impl StateMachine {
     ///
     /// The inherited completion is durable status so clients do not stay on
     /// `process:spawn` after a resume, and it claims precise lifecycle
-    /// authority so repaints cannot downgrade it. It must NOT seed the
-    /// state+source dedupe baseline: a real turn end of this run carries the
-    /// same (idle, adapter) pair, and seeding it would swallow that run's first
-    /// completion — no completion event and no notification for the user's
-    /// next turn.
+    /// authority so repaints cannot downgrade it. Its evidence is deliberately
+    /// distinct from a real `adapter:*:TurnEnd` so the snapshot cannot become
+    /// an attention event (unread badge, APNs push) on every restart. It must
+    /// NOT seed the state+source dedupe baseline: a real turn end of this run
+    /// carries the same (idle, adapter) pair, and seeding it would swallow that
+    /// run's first completion — no completion event and no notification for
+    /// the user's next turn.
     pub fn publish_inherited_turn_end(&mut self, adapter: &str) -> Option<StatusEvent> {
         if self.exited {
             return None;
@@ -270,7 +272,7 @@ impl StateMachine {
             state,
             source,
             confidence: Confidence::High,
-            evidence: Some(format!("adapter:{adapter}:TurnEnd")),
+            evidence: Some(format!("adapter:{adapter}:InheritedTurnEnd")),
             log_cursor: None,
             occurred_at,
         };
@@ -756,7 +758,13 @@ mod tests {
         let inherited = sm.publish_inherited_turn_end("pi").unwrap();
         assert_eq!(inherited.state, AgentState::Idle);
         assert_eq!(inherited.source, StateSource::Adapter);
-        assert_eq!(inherited.evidence.as_deref(), Some("adapter:pi:TurnEnd"));
+        assert_eq!(
+            inherited.evidence.as_deref(),
+            Some("adapter:pi:InheritedTurnEnd")
+        );
+        // A resumed completed transcript is a snapshot, never a fresh
+        // completion notification.
+        assert_eq!(inherited.attention_kind(), None);
         // Publishing the inherited snapshot twice is not a second transition.
         assert!(sm.publish_inherited_turn_end("pi").is_none());
 

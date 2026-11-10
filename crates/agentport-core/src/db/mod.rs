@@ -6243,6 +6243,12 @@ mod tests {
                 true,
             ),
             (
+                AgentState::Idle,
+                StateSource::Adapter,
+                "adapter:easy_pi:InheritedTurnEnd",
+                false,
+            ),
+            (
                 AgentState::Exited,
                 StateSource::Process,
                 "process:exit:1",
