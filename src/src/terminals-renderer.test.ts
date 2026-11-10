@@ -53,6 +53,7 @@ const rendererMocks = vi.hoisted(() => {
     element: HTMLDivElement | null = null;
     textarea: HTMLTextAreaElement | undefined;
     bufferLines: string[] = [];
+    modes = { mouseTrackingMode: "none" as string };
     unicode = { activeVersion: "6" };
     selectionText = "";
     linkProviders: Array<{
@@ -4256,6 +4257,89 @@ describe("terminal renderer", () => {
         cursor: { runId: "run_1", runOrdinal: 1, generation: 0, offset: 1 },
       });
       expect(terminal.write.mock.calls.length).toBeGreaterThan(writesBefore);
+    });
+
+    it("passes live output through while a modified drag stays with the mouse-reporting TUI", async () => {
+      setState({
+        platform: {
+          os: "linux",
+          osVersion: "24.04",
+          arch: "x86_64",
+          webview: "WebKitGTK",
+          appVersion: "0.1.0",
+          windowDecorated: true,
+        },
+      });
+      const container = document.createElement("div");
+      mountTerminal("renderer-test", container);
+      await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+      const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1]!;
+      // Fullscreen agents paint selection, scrollbar and auto-scroll frames
+      // themselves while the button is held; buffering them would freeze the
+      // drag and replay only the final frame on release.
+      terminal.modes.mouseTrackingMode = "any";
+      const before = writtenText(terminal);
+
+      container.dispatchEvent(
+        new MouseEvent("mousedown", { button: 0, ctrlKey: true, bubbles: true }),
+      );
+      expect(getHandle("renderer-test")?.writes.selectionFrozen).toBe(false);
+      output("DRAG-FRAME");
+      expect(writtenText(terminal)).toBe(before + "DRAG-FRAME");
+
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    });
+
+    it("freezes a plain drag that the compatibility layer turns into local selection", async () => {
+      setState({
+        platform: {
+          os: "macos",
+          osVersion: "15.0",
+          arch: "arm64",
+          webview: "WKWebView",
+          appVersion: "0.1.0",
+          windowDecorated: true,
+        },
+      });
+      const container = document.createElement("div");
+      mountTerminal("renderer-test", container);
+      await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+      const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1]!;
+      terminal.modes.mouseTrackingMode = "any";
+
+      container.dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }));
+      expect(getHandle("renderer-test")?.writes.selectionFrozen).toBe(true);
+
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    });
+
+    it("freezes when the force-selection modifier turns a mouse-owning drag into text selection", async () => {
+      setState({
+        platform: {
+          os: "macos",
+          osVersion: "15.0",
+          arch: "arm64",
+          webview: "WKWebView",
+          appVersion: "0.1.0",
+          windowDecorated: true,
+        },
+      });
+      const container = document.createElement("div");
+      mountTerminal("renderer-test", container);
+      await vi.waitFor(() => expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled());
+      const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1]!;
+      terminal.modes.mouseTrackingMode = "any";
+      const before = writtenText(terminal);
+
+      container.dispatchEvent(
+        new MouseEvent("mousedown", { button: 0, bubbles: true, altKey: true }),
+      );
+      expect(getHandle("renderer-test")?.writes.selectionFrozen).toBe(true);
+      output("FORCED-SELECTION-CHUNK");
+      expect(writtenText(terminal)).toBe(before);
+
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      expect(writtenText(terminal)).toContain("FORCED-SELECTION-CHUNK");
     });
   });
 });

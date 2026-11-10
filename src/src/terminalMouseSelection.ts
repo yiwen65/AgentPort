@@ -2,14 +2,18 @@ import type { Terminal } from "@xterm/xterm";
 
 const DRAG_THRESHOLD_PX = 4;
 
-/** Keep Agent clicks/wheels, but let ordinary Linux drags select terminal text.
- * Shift selection remains xterm's responsibility; Ctrl/Alt/Meta drags pass
- * through to the Agent. Replay through DOM so xterm owns selection geometry,
+/** xterm's force-selection modifier: Shift on Linux/Windows, Option on macOS. */
+export type TerminalForceSelectionModifier = "alt" | "shift";
+
+/** Keep Agent clicks/wheels, but let ordinary drags select terminal text.
+ * Modifier drags (and the platform's own force-selection modifier) remain
+ * xterm's responsibility. Replay through DOM so xterm owns selection geometry,
  * wide characters, rendering, auto-scroll and Linux primary selection. */
 export function installTerminalMouseSelection(
   term: Terminal,
   container: HTMLElement,
   enabled: () => boolean,
+  forceModifier: () => TerminalForceSelectionModifier = () => "shift",
 ): () => void {
   const doc = container.ownerDocument;
   const win = doc.defaultView!;
@@ -30,8 +34,9 @@ export function installTerminalMouseSelection(
     target: EventTarget,
     event: MouseEvent,
     type = event.type,
-    shiftKey = event.shiftKey,
+    force = false,
   ) => {
+    const modifier = force ? forceModifier() : null;
     replaying = true;
     try {
       target.dispatchEvent(new MouseEvent(type, {
@@ -43,9 +48,9 @@ export function installTerminalMouseSelection(
         buttons: type === "mouseup" ? 0 : event.buttons,
         detail: event.detail,
         ctrlKey: event.ctrlKey,
-        altKey: event.altKey,
+        altKey: modifier === "alt" || event.altKey,
         metaKey: event.metaKey,
-        shiftKey,
+        shiftKey: modifier === "shift" || event.shiftKey,
       }));
     } finally {
       replaying = false;

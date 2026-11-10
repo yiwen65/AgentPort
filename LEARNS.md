@@ -1,5 +1,14 @@
 # Project Learnings
 
+## `remote TUI copy` — 远端全屏 Agent 下 macOS 普通拖拽根本没有本地选区
+
+- Wrong approach: 把“连接远程设备后复制失效、右键 Copy 灰色”当成远程事件流或剪贴板路由问题；或让 macOS 用户只靠 ⌥+drag。
+- Why it failed: 点击/拖拽分流兼容层只在 Linux 启用；macOS 上鼠标上报的全屏 Agent（远端 Codex/Claude 等）会把普通左键拖拽全部转发给 TUI，xterm 从未产生选区。右键菜单的 Copy 因 `getSelection()` 为空而置灰，Cmd+C 也没有内容可复制——用户看到的“选中”只是 TUI 自己的高亮或错觉。远程会话几乎都是全屏 TUI，所以症状只在远程场景暴露。
+- Recognition signal: 远程 TUI 右键 Copy 灰色且同时显示“拖拽选中”提示；`term.modes.mouseTrackingMode` 为 `any`；同一机器普通 Shell 可正常拖选；macOS 上只有 ⌥+drag 能选出高亮。
+- Correct approach: 把点击/拖拽分流兼容层扩展到 macOS，并在回放 mousedown/move/up 时按平台注入 xterm 的强制选择修饰键（Linux Shift、macOS Option，`macOptionClickForcesSelection` 已开启）；单击仍回放给 Agent；选区冻结判定与兼容层共用同一平台谓词；Copy 事件与右键菜单改用 `resolveCopySelection` 的 30s 捕获兜底。
+- Prevention: 选区/复制改动必须覆盖 Linux × macOS × 本地/远程全屏 TUI；xterm 的强制选择修饰键按平台不同（mac 为 Option 且受选项门控）；jsdom 里 xterm 用 `'title' in process` 判 Node，会把 `navigator.platform` 短路，macOS 分支测试需在导入前临时隐藏 process.title。
+- Verified by: 新增 macOS 真实 xterm 回归（1000/1002/1003 普通拖选、右键菜单复制、单击上报、⌥ 原生强制选、Ctrl 拖拽直通）；前端 136 文件/1137 项、tsc、生产构建通过；调试 App 连接远程 5070 的 Codex TUI 中普通拖选“permissions: YOLO mode”，右键 Copy 可用，点击后本机 `pbpaste` 得到同样文本。
+
 ## `remote terminal input` — 每个输入事件都在等一次 RTT
 
 - Wrong approach: 把远程终端“滚动/打字卡”归为渲染问题，只优化输出下行（压缩、批量写入）。

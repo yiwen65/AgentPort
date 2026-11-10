@@ -27,7 +27,11 @@ import {
   readClipboardText,
 } from "./api";
 import { PiStartupNoticeFilter } from "./piStartupNotice";
-import { installTerminalMouseSelection } from "./terminalMouseSelection";
+import {
+  installTerminalMouseSelection,
+  type TerminalForceSelectionModifier,
+} from "./terminalMouseSelection";
+import { resolveCopySelection } from "./copySelection";
 import { newerSessionRun, staleSessionRun, type SessionRun } from "./sessionRun";
 import {
   announce,
@@ -2119,12 +2123,16 @@ export function installInputCompatibility(
 export function installClipboardCompatibility(
   term: Terminal,
   container: HTMLElement,
+  /** Live selection plus the pane's captured fallback for selections a live
+   * TUI repaint erased before the user pressed Copy. */
+  resolveSelection: () => string = () => term.getSelection(),
 ): () => void {
   let disposed = false;
   const disposeMouseSelection = installTerminalMouseSelection(
     term,
     container,
-    () => getState().platform?.os === "linux",
+    plainDragSelectsText,
+    forceSelectionModifier,
   );
   const onKeyDown = (event: KeyboardEvent) => {
     if (
@@ -2136,8 +2144,10 @@ export function installClipboardCompatibility(
       event.metaKey ||
       event.key.toLowerCase() !== "c"
     ) return;
-    const selection = term.getSelection();
-    if (!selection) return; // Bare Ctrl+C must still interrupt the Agent.
+    // Bare Ctrl+C must still interrupt the Agent; only the explicit
+    // Ctrl+Shift+C chord may use the captured fallback.
+    const selection = term.getSelection() || (event.shiftKey ? resolveSelection() : "");
+    if (!selection) return;
 
     // WebKitGTK does not turn Ctrl+Shift+C into a copy event, and xterm
     // translates Ctrl+C into ETX even with selected text. Handle selected
@@ -2147,7 +2157,7 @@ export function installClipboardCompatibility(
     event.stopImmediatePropagation();
   };
   const onCopy = (event: ClipboardEvent) => {
-    const selection = term.getSelection();
+    const selection = resolveSelection();
     if (!selection) return;
 
     // xterm's built-in copy handler writes through ClipboardEvent.setData().
@@ -2199,7 +2209,7 @@ export function installClipboardCompatibility(
   const onContextMenu = (event: MouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
-    const selection = term.getSelection();
+    const selection = resolveSelection();
     const items: MenuItem[] = [
       {
         label: i18n.t("shell:terminal.copy"),
@@ -2264,6 +2274,34 @@ const SELECTION_FREEZE_MAX_BUFFER_BYTES = 2 * 1024 * 1024;
 /** Failsafe: never hold live output longer than this for one gesture. */
 const SELECTION_FREEZE_HARD_CAP_MS = 30_000;
 
+/** Platforms where a plain left drag is replayed as a local text selection in
+ * mouse-owning TUIs (installTerminalMouseSelection). Clicks still reach the
+ * Agent, so TUI buttons/scroll keep working. */
+function plainDragSelectsText(): boolean {
+  const os = getState().platform?.os;
+  return os === "linux" || os === "macos";
+}
+
+function forceSelectionModifier(): TerminalForceSelectionModifier {
+  return getState().platform?.os === "macos" ? "alt" : "shift";
+}
+
+/** Whether this press becomes an xterm-owned text selection instead of Agent
+ * input. Mouse-owning TUIs (fullscreen agents) paint drag selection, scrollbar
+ * and auto-scroll frames into the PTY themselves; buffering those frames would
+ * freeze the drag until mouseup and replay only the last position. */
+function mouseDragIsTerminalSelection(term: Terminal, event: MouseEvent): boolean {
+  if ((term.modes?.mouseTrackingMode ?? "none") === "none") return true;
+  const os = getState().platform?.os;
+  const mac = os ? os === "macos" : navigator.platform.toLowerCase().includes("mac");
+  // xterm's own force-selection modifiers: Option on macOS (gated by
+  // macOptionClickForcesSelection), Shift elsewhere.
+  if (mac ? event.altKey : event.shiftKey) return true;
+  // Other modified drags pass through to the Agent.
+  if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return false;
+  return plainDragSelectsText();
+}
+
 /** Freeze live PTY output while a selection gesture is in progress (and while
  * a selection survives) so live-TUI repaints cannot destroy it mid-gesture.
  * See TerminalWriteCoordinator.setSelectionFreeze for the buffering half. */
@@ -2289,6 +2327,7 @@ function installSelectionFreeze(handle: TermHandle, container: HTMLDivElement) {
   };
   const onMouseDown = (event: MouseEvent) => {
     if (event.button !== 0) return;
+    if (!mouseDragIsTerminalSelection(term, event)) return;
     handle.writes.setSelectionFreeze(true);
     if (capTimer !== null) window.clearTimeout(capTimer);
     capTimer = window.setTimeout(release, SELECTION_FREEZE_HARD_CAP_MS);
@@ -2325,7 +2364,9 @@ function bindTerminalContainer(handle: TermHandle, container: HTMLDivElement) {
   clipboardCompatibilityDisposers.get(handle.sessionId)?.();
   clipboardCompatibilityDisposers.set(
     handle.sessionId,
-    installClipboardCompatibility(handle.term, container),
+    installClipboardCompatibility(handle.term, container, () =>
+      resolveCopySelection(handle),
+    ),
   );
   viewportIntentDisposers.get(handle.sessionId)?.();
   viewportIntentDisposers.set(

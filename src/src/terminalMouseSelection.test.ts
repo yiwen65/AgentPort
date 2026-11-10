@@ -127,14 +127,6 @@ describe("Linux Agent mouse mode selection", () => {
     expect(sent).toEqual([]);
   });
 
-  it("does not change macOS Agent mouse input", async () => {
-    const { terminal, sent, drag } = await setup();
-    setState({ platform: { ...getState().platform!, os: "macos" } });
-    drag();
-    expect(terminal.getSelection()).toBe("");
-    expect(sent).toHaveLength(3);
-  });
-
   it("handles backward and multiline selection with xterm", async () => {
     const { terminal, sent, mouse } = await setup();
     mouse("mousedown", 61, 21);
