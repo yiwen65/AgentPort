@@ -46,6 +46,7 @@ import type {
   CommitAiLanguage,
   CommitAiProvider,
   Settings,
+  SettingsSection,
   TerminalThemeId,
 } from "../types";
 
@@ -1053,17 +1054,6 @@ function ArchiveSection() {
   );
 }
 
-type SettingsSection =
-  | "appearance"
-  | "notifications"
-  | "adapters"
-  | "commitAi"
-  | "archive"
-  | "backup"
-  | "devices"
-  | "pairing"
-  | "about";
-
 const SETTINGS_SECTIONS = [
   { id: "appearance", labelKey: "settings:ui.sections.appearance" },
   { id: "notifications", labelKey: "settings:ui.sections.notifications" },
@@ -1076,7 +1066,9 @@ const SETTINGS_SECTIONS = [
   { id: "about", labelKey: "settings:ui.sections.about" },
 ] as const satisfies ReadonlyArray<{ id: SettingsSection; labelKey: string }>;
 
-export default function SettingsDialog() {
+export default function SettingsDialog({
+  initialSection = "appearance",
+}: { initialSection?: SettingsSection } = {}) {
   const { t } = useTranslation(["settings", "common"]);
   const s = useStore();
   const pageRef = useRef<HTMLDivElement>(null);
@@ -1086,7 +1078,7 @@ export default function SettingsDialog() {
   const [themeBusy, setThemeBusy] = useState(false);
   const [languageBusy, setLanguageBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [section, setSection] = useState<SettingsSection>("appearance");
+  const [section, setSection] = useState<SettingsSection>(initialSection);
   const closeBlocked = busy || themeBusy || languageBusy;
   const requestClose = () => {
     if (!closeBlocked) closeDialog();

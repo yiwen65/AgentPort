@@ -33,6 +33,7 @@ import type {
   ProjectView,
   SessionView,
   Settings,
+  SettingsSection,
   StatusEventView,
   TimelineData,
   RuntimeMessageEnvelope,
@@ -242,7 +243,7 @@ export type DialogState =
     }
   | { kind: "newWorktree"; projectId: string }
   | { kind: "branchPicker"; projectId: string }
-  | { kind: "settings" }
+  | { kind: "settings"; section?: SettingsSection }
   | { kind: "pairDevice" }
   | { kind: "diagnostics" }
   | { kind: "timeline" }

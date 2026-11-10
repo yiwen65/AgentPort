@@ -140,7 +140,7 @@ it("opens the add-device dialog at the app layer and the settings dialog from fo
   act(() => setActiveDevice({ kind: "local" }));
   fireEvent.click(screen.getByRole("button", { name: "Device switcher" }));
   fireEvent.click(await screen.findByText("Manage devices…"));
-  expect(getState().dialog).toEqual({ kind: "settings" });
+  expect(getState().dialog).toEqual({ kind: "settings", section: "devices" });
   act(() => setActiveDevice({ kind: "local" }));
 });
 

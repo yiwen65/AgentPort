@@ -253,7 +253,7 @@ export default function DevicePicker(props: {
               role="menuitem"
               onClick={() => {
                 setOpen(false);
-                openDialog({ kind: "settings" });
+                openDialog({ kind: "settings", section: "devices" });
               }}
             >
               {t("shell:ui.topBar.devices.manage")}

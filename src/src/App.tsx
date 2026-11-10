@@ -434,7 +434,7 @@ function DialogRouter() {
       // chrome and let clicks fall through to the terminal workspace.
       return <PairDeviceDialog onClose={closeDialog} />;
     case "settings":
-      return <SettingsDialog />;
+      return <SettingsDialog initialSection={d.section} />;
     case "diagnostics":
       return <DiagnosticsDialog />;
     case "timeline":

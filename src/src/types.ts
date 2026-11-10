@@ -229,6 +229,17 @@ export interface TimelineData {
   ackSnapshots: TimelineAckSnapshot[];
 }
 
+export type SettingsSection =
+  | "appearance"
+  | "notifications"
+  | "adapters"
+  | "commitAi"
+  | "archive"
+  | "backup"
+  | "devices"
+  | "pairing"
+  | "about";
+
 /** Exact recovery facts rendered in one GUI snapshot and safe to acknowledge. */
 export interface TimelineAckSnapshot {
   sessionId: string;
