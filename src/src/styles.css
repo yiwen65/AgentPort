@@ -501,47 +501,9 @@ button {
   display: inline-flex;
 }
 
-.terminal-menu {
-  width: auto;
-  min-width: 58px;
-  padding: 0 8px;
-  gap: 6px;
-  border-color: rgba(255, 255, 255, 0.09);
-  border-radius: 10px;
-  color: #c6c7cd;
-  background: rgba(0, 0, 0, 0.12);
-}
-
-.terminal-menu:hover {
-  border-color: rgba(255, 255, 255, 0.16);
-}
-
 :root[data-theme="light"] .window-control:hover,
 :root[data-theme="light"] .window-control[aria-pressed="true"] {
   background: rgba(17, 18, 23, 0.1);
-}
-
-:root[data-theme="light"] .terminal-menu {
-  border-color: rgba(17, 18, 23, 0.08);
-  color: rgba(17, 18, 23, 0.72);
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.1);
-}
-
-:root[data-theme="light"] .terminal-menu:hover {
-  border-color: rgba(17, 18, 23, 0.14);
-  background: #ffffff;
-}
-
-:root[data-theme="light"] .window-control-divider {
-  background: rgba(17, 18, 23, 0.18);
-}
-
-.window-control-divider {
-  display: block;
-  height: 16px;
-  width: 1px;
-  background: rgba(255, 255, 255, 0.12);
 }
 
 /* Generic compact icon button, retained for dialogs and tree actions. */

@@ -59,18 +59,12 @@ function IconSidebarToggle({ collapsed }: { collapsed: boolean }) {
   );
 }
 
-function IconTerminal() {
+function IconMore() {
   return (
-    <svg width="19" height="19" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-      <path d="m7.25 6.5-3 3.5 3 3.5M11.25 13.5h4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function IconChevron() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="m4.5 6.25 3.5 3.5 3.5-3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <circle cx="4.5" cy="10" r="1.3" fill="currentColor" />
+      <circle cx="10" cy="10" r="1.3" fill="currentColor" />
+      <circle cx="15.5" cy="10" r="1.3" fill="currentColor" />
     </svg>
   );
 }
@@ -246,20 +240,11 @@ export default function TopBar() {
       { label: t("shell:ui.topBar.commandPalette"), action: () => openDialog({ kind: "palette" }) },
       { label: `${t("common:actions.search")}…`, action: () => openDialog({ kind: "search" }) },
       {
-        label: t("git:open"),
-        disabled: !gitTarget,
-        action: gitTarget
-          ? () => void openGitCenter(gitTarget.locator)
-          : undefined,
-      },
-      {
         label: pending > 0
           ? t("shell:ui.topBar.recoveryTimelineCount", { count: pending })
           : t("shell:ui.topBar.recoveryTimeline"),
         action: () => openDialog({ kind: "timeline" }),
       },
-      { label: "", separator: true },
-      { label: t("shell:ui.topBar.settingsEllipsis"), action: () => openDialog({ kind: "settings" }) },
     ];
     openContextMenu(rect.right - 180, rect.bottom + 6, items);
   };
@@ -324,15 +309,13 @@ export default function TopBar() {
         <DevicePicker />
         <ExplorerToggleButton />
         <button
-          className="window-control terminal-menu"
+          className="window-control sidebar-toggle"
           onClick={(e) => openSurfaceMenu(e.currentTarget)}
           aria-label={t("shell:ui.topBar.workspaceMenu")}
           aria-haspopup="menu"
           data-tauri-drag-region="false"
         >
-          <IconTerminal />
-          <span className="window-control-divider" aria-hidden="true" />
-          <IconChevron />
+          <IconMore />
         </button>
         {frameless ? (
           <div className="window-sys-controls" data-tauri-drag-region="false">
