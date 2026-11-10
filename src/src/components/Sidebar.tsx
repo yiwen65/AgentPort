@@ -341,27 +341,22 @@ function QuickAgentStrip({
     if (!scroller) return;
     const onWheel = (event: WheelEvent) => {
       if (event.ctrlKey) return;
-      const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY);
-      if (!horizontal && scroller.scrollWidth <= scroller.clientWidth) return;
       const unit =
         event.deltaMode === 1
           ? 16
           : event.deltaMode === 2
             ? scroller.clientWidth
             : 1;
-      const delta = (horizontal ? event.deltaX : event.deltaY) * unit;
+      const delta =
+        (Math.abs(event.deltaX) > Math.abs(event.deltaY)
+          ? event.deltaX
+          : event.deltaY) * unit;
       if (delta === 0) return;
-      if (horizontal) {
-        // Swipes over the strip belong to the strip alone: never let them
-        // reach the sidebar's page-switch gesture, even at an edge.
-        event.stopPropagation();
-        event.preventDefault();
-        scroller.scrollLeft += delta;
-        return;
-      }
-      const previousScrollLeft = scroller.scrollLeft;
+      // Any wheel or swipe over the strip belongs to the strip alone: the
+      // sidebar list must not scroll and page swipes must not fire.
+      event.stopPropagation();
+      event.preventDefault();
       scroller.scrollLeft += delta;
-      if (scroller.scrollLeft !== previousScrollLeft) event.preventDefault();
     };
     scroller.addEventListener("wheel", onWheel, { passive: false });
     return () => scroller.removeEventListener("wheel", onWheel);

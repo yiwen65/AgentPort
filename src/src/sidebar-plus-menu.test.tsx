@@ -168,11 +168,14 @@ describe("project row plus button menu", () => {
     expect(piButton.getAttribute("data-tip")).toMatch(/^启动 Pi$|^Launch Pi$/);
   });
 
-  it("lets vertical wheel scrolling escape the quick-agent strip at its edge", () => {
+  it("keeps vertical wheel over the quick-agent strip scrolling the icons, not the sidebar list", () => {
     const { container } = render(<Sidebar collapsed={false} width={296} />);
     const strip = container.querySelector<HTMLElement>(".quick-agent-strip");
     expect(strip).not.toBeNull();
     if (!strip) throw new Error("quick agent strip missing");
+    const sidebar = container.querySelector("aside")!;
+    const bubbledToSidebar = vi.fn();
+    sidebar.addEventListener("wheel", bubbledToSidebar);
     let scrollLeft = 200;
     Object.defineProperties(strip, {
       clientWidth: { configurable: true, value: 100 },
@@ -190,12 +193,12 @@ describe("project row plus button menu", () => {
       cancelable: true,
       deltaY: 40,
     });
-    const preventDefault = vi.spyOn(event, "preventDefault");
 
     act(() => strip.dispatchEvent(event));
 
     expect(scrollLeft).toBe(200);
-    expect(preventDefault).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+    expect(bubbledToSidebar).not.toHaveBeenCalled();
 
     scrollLeft = 100;
     const movableEvent = new WheelEvent("wheel", {
@@ -203,11 +206,11 @@ describe("project row plus button menu", () => {
       cancelable: true,
       deltaY: 40,
     });
-    const preventMovableDefault = vi.spyOn(movableEvent, "preventDefault");
     act(() => strip.dispatchEvent(movableEvent));
 
     expect(scrollLeft).toBe(140);
-    expect(preventMovableDefault).toHaveBeenCalledOnce();
+    expect(movableEvent.defaultPrevented).toBe(true);
+    expect(bubbledToSidebar).not.toHaveBeenCalled();
   });
 
   it("keeps horizontal swipes over the quick-agent strip out of the sidebar page gesture", () => {
