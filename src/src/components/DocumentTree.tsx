@@ -408,7 +408,7 @@ export default function DocumentTree() {
       if (kind === "dir") {
         setActiveDir(result.path);
       } else {
-        openDocumentTarget({ path: result.path, line: null });
+        openDocumentTarget({ path: result.path, line: null }, { pinned: true });
       }
     } catch (e) {
       setCreateError(errorText(e));
@@ -489,12 +489,8 @@ export default function DocumentTree() {
                 toggleDir(entry.path);
               } else {
                 setActiveDir(parentDir(entry.path));
-                openDocumentTarget({ path: entry.path, line: null });
-              }
-            }}
-            onDoubleClick={() => {
-              if (!entry.isDir) {
-                // Double-click opens a pinned (kept) tab, VSCode-style.
+                // Pinned, so clicking another file opens a new tab instead of
+                // replacing the previous one (no preview slot in the tree).
                 openDocumentTarget({ path: entry.path, line: null }, { pinned: true });
               }
             }}

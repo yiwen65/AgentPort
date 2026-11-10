@@ -292,6 +292,21 @@ describe("DocumentTree", () => {
     });
   });
 
+  it("opens consecutive clicks as separate tabs instead of replacing", async () => {
+    render(<DocumentTree />);
+    fireEvent.click(await screen.findByText("README.md"));
+    fireEvent.click(screen.getByText("docs"));
+    fireEvent.click(await screen.findByText("报告.md"));
+
+    const tabs = getState().docGroups[0]?.tabs ?? [];
+    expect(tabs.map((tab) => tab.path)).toEqual([
+      `${ROOT}/README.md`,
+      `${ROOT}/docs/报告.md`,
+    ]);
+    // Tree opens are pinned, so no preview slot can evict an open file.
+    expect(tabs.every((tab) => tab.pinned)).toBe(true);
+  });
+
   it("marks the open file as selected", async () => {
     render(<DocumentTree />);
     const row = await screen.findByText("README.md");

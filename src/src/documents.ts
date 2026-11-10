@@ -79,11 +79,12 @@ export function parseDocumentLinkTarget(
  * Tab/split model.
  *
  * The viewer holds up to two side-by-side groups, each with its own tab
- * strip. Single clicks (tree or terminal links) open a VSCode-style
- * preview tab — italic, replaced by the next preview open in the same
- * group — while editing or double-clicking pins it. Preview tabs are
- * therefore always clean, so replacing one never needs a confirmation;
- * only closing a pinned tab with unsaved edits asks.
+ * strip. Terminal document links open a VSCode-style preview tab —
+ * italic, replaced by the next preview open in the same group — while
+ * editing pins it, and file-tree opens always pin (a click must never
+ * evict another open file). Preview tabs are therefore always clean, so
+ * replacing one never needs a confirmation; only closing a pinned tab
+ * with unsaved edits asks.
  * ------------------------------------------------------------------ */
 
 export const MAX_DOCUMENT_GROUPS = 2;
@@ -240,7 +241,7 @@ function commitGroups(groups: DocumentGroup[], active: DocumentGroup | null): vo
 }
 
 /** Opens a parsed target in the active group's viewer, reusing the group's
- * preview tab unless this is an explicit pinned (double-click) open. */
+ * preview tab unless this is an explicit pinned open (file-tree clicks). */
 export function openDocumentTarget(
   target: DocumentLinkTarget,
   options?: { pinned?: boolean },
