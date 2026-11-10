@@ -27,6 +27,7 @@ import {
 import { copyTextWithToast, selectSession } from "../actions";
 import {
   branchOperationPhaseLabel,
+  formatTimelineTime,
   recoveryActionLabel,
   repositoryProgressMessage,
 } from "../format";
@@ -296,6 +297,8 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ message: string; refreshed: boolean } | null>(null);
   const [recovery, setRecovery] = useState<AutoStashRecord[]>([]);
+  // Offered after switching back to the branch an auto-stash was created from.
+  const [restoreHint, setRestoreHint] = useState<{ stash: AutoStashRecord; remaining: number } | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const confirmDeleteRef = useRef<HTMLButtonElement | null>(null);
@@ -516,6 +519,14 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
     }
   };
 
+  const pendingRestoresFor = (branchName: string): AutoStashRecord[] =>
+    recovery.filter(
+      (stash) =>
+        stash.state === "pending_restore"
+        && stash.restorable !== false
+        && stash.sourceBranch === branchName,
+    );
+
   const executeCheckoutChangingOperation = async (intent: CheckoutChangingOperation) => {
     const completionMessage = intent.kind === "switch"
       ? t("worktree:ui.branchPicker.operation.switched", { branch: intent.branch })
@@ -526,6 +537,7 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
     const pendingMessage = intent.kind === "switch"
       ? t("worktree:ui.branchPicker.operation.switchingLocalBranch", { branch: intent.branch })
       : t("worktree:ui.branchPicker.operation.creatingAndSwitching", { branch: intent.branch });
+    const restoreCandidates = intent.kind === "switch" ? pendingRestoresFor(intent.branch) : [];
     return executeOperation(
       completionMessage,
       async () => {
@@ -535,6 +547,14 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
         setData((previous) => (previous ? { ...previous, status: result.status } : previous));
         if (result.autoStash) setRecovery((items) => [result.autoStash!, ...items]);
         if (intent.kind === "createAndSwitch") setNewName("");
+        if (restoreCandidates.length) {
+          const [newest, ...remaining] = [...restoreCandidates].sort(
+            (left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt),
+          );
+          setRestoreHint({ stash: newest, remaining: remaining.length });
+        } else {
+          setRestoreHint(null);
+        }
       },
       { command, branch: intent.branch, message: pendingMessage },
     );
@@ -636,25 +656,25 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
 
   const restore = (stash: AutoStashRecord, strategy: "target" | "source") => {
     void (async () => {
+      let cleanupDeferred = false;
       const restored = await complete(
-        strategy === "target"
-          ? t("worktree:ui.branchPicker.operation.restoreAttemptedOnCurrentCheckout")
-          : t("worktree:ui.branchPicker.operation.returnedToSourceCheckout"),
+        t("worktree:ui.branchPicker.operation.restored"),
         async () => {
           await api.restoreAutoStash(stash.operationId, strategy);
+          try {
+            await api.cleanupAutoStash(stash.operationId);
+          } catch {
+            cleanupDeferred = true;
+          }
         },
       );
       if (!restored) return;
-
-      const cleaned = await complete(
-        t("worktree:ui.branchPicker.operation.restoredAndCleaned"),
-        async () => {
-          await api.cleanupAutoStash(stash.operationId);
-        },
-      );
-      if (!cleaned) {
+      if (cleanupDeferred) {
         toast(t("worktree:ui.branchPicker.recovery.cleanupDeferred"), "info");
       }
+      setRestoreHint((current) => (
+        current?.stash.operationId === stash.operationId ? null : current
+      ));
     })();
   };
 
@@ -784,6 +804,37 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
           {success.refreshed
             ? t("worktree:ui.branchPicker.success.repositoryRefreshed")
             : t("worktree:ui.branchPicker.success.repositoryRefreshFailed")}
+        </div>
+      ) : null}
+      {restoreHint ? (
+        <div className="info-box branch-picker-restore-hint" role="status">
+          <div>
+            <span>
+              {t("worktree:ui.branchPicker.restoreHint.message", {
+                branch: restoreHint.stash.sourceBranch
+                  ?? t("worktree:ui.branchPicker.recovery.sourceCheckout"),
+              })}
+            </span>
+            {restoreHint.remaining ? (
+              <span>{t("worktree:ui.branchPicker.restoreHint.more", { count: restoreHint.remaining })}</span>
+            ) : null}
+          </div>
+          <div className="branch-picker-stash-actions">
+            <button
+              className="btn small primary"
+              disabled={controlsBusy}
+              onClick={() => restore(restoreHint.stash, "source")}
+            >
+              {t("worktree:ui.branchPicker.restoreHint.restoreAction")}
+            </button>
+            <button
+              className="btn small ghost"
+              disabled={controlsBusy}
+              onClick={() => setRestoreHint(null)}
+            >
+              {t("worktree:ui.branchPicker.restoreHint.dismiss")}
+            </button>
+          </div>
         </div>
       ) : null}
       {refreshError ? (
@@ -938,15 +989,23 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
           <p className="form-hint">{t("worktree:ui.branchPicker.recovery.description")}</p>
           {recovery.map((stash) => (
             <div className="branch-picker-stash" key={stash.id}>
-              <div><strong>{stash.targetBranch}</strong>{stash.restorable === false && stash.stashOid ? <span className="mono">{stash.stashOid.slice(0, 12)}</span> : null}<span>{branchOperationPhaseLabel(stash.state)}</span>{stash.lastError ? <span>{t("worktree:ui.branchPicker.recovery.error", { detail: stash.lastError })}</span> : null}</div>
+              <div>
+                <strong>
+                  {stash.sourceBranch ? `${stash.sourceBranch} → ${stash.targetBranch}` : stash.targetBranch}
+                </strong>
+                {stash.restorable === false && stash.stashOid ? <span className="mono">{stash.stashOid.slice(0, 12)}</span> : null}
+                <span title={stash.createdAt}>{formatTimelineTime(stash.createdAt)}</span>
+                <span>{branchOperationPhaseLabel(stash.state)}</span>
+                {stash.lastError ? <span>{t("worktree:ui.branchPicker.recovery.error", { detail: stash.lastError })}</span> : null}
+              </div>
               {stash.restorable === false ? (
                 <p className="form-hint" role="status">
                   {t("worktree:ui.branchPicker.recovery.missingSnapshot")}
                 </p>
               ) : null}
               <div className="branch-picker-stash-actions">
-                <button className="btn small ghost" disabled={controlsBusy || stash.restorable === false || stash.state === "restored_verified"} onClick={() => restore(stash, "target")}>{t("worktree:ui.branchPicker.recovery.restoreToTarget")}</button>
-                <button className="btn small ghost" disabled={controlsBusy || stash.restorable === false || stash.state === "restored_verified"} onClick={() => restore(stash, "source")}>{t("worktree:ui.branchPicker.recovery.returnToSourceAndRestore")}</button>
+                <button className="btn small ghost" disabled={controlsBusy || stash.restorable === false || stash.state === "restored_verified"} onClick={() => restore(stash, "target")}>{t("worktree:ui.branchPicker.recovery.restoreToTarget", { branch: stash.targetBranch })}</button>
+                <button className="btn small ghost" disabled={controlsBusy || stash.restorable === false || stash.state === "restored_verified"} onClick={() => restore(stash, "source")}>{t("worktree:ui.branchPicker.recovery.returnToSourceAndRestore", { branch: stash.sourceBranch ?? t("worktree:ui.branchPicker.recovery.sourceCheckout") })}</button>
                 {stash.restorable === false && stash.stashOid ? (
                   <button
                     className="btn small ghost"

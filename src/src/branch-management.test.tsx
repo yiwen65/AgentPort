@@ -330,11 +330,48 @@ describe("local branch management", () => {
   it("automatically cleans the verified recovery record after restoring changes", async () => {
     const user = userEvent.setup();
     render(<BranchPickerDialog projectId="p1" />);
-    const restoreButtons = await screen.findAllByRole("button", { name: "恢复到目标分支" });
+    const restoreButtons = await screen.findAllByRole("button", { name: /切到 .* 并恢复/ });
     await user.click(restoreButtons[0]);
 
     await waitFor(() => expect(apiMock.restoreAutoStash).toHaveBeenCalledWith("op1", "target"));
     await waitFor(() => expect(apiMock.cleanupAutoStash).toHaveBeenCalledWith("op1"));
+  });
+
+  it("offers to restore the auto-stash when switching back to its source branch", async () => {
+    const user = userEvent.setup();
+    const stashed = {
+      id: "stash-back",
+      operationId: "op-back",
+      projectId: "p1",
+      sourceKind: "branch",
+      sourceBranch: "feature/ui",
+      targetBranch: "main",
+      stashOid: "d".repeat(40),
+      marker: "m",
+      createdAt: "2026-01-02T00:00:00.000Z",
+      state: "pending_restore",
+      restorable: true,
+    };
+    apiMock.listLocalBranches.mockResolvedValue({ status, branches, autoStashes: [stashed] });
+    render(<BranchPickerDialog projectId="p1" />);
+
+    await user.click(await screen.findByRole("button", { name: "feature/ui" }));
+    await waitFor(() => expect(apiMock.switchLocalBranch).toHaveBeenCalledWith("p1", "feature/ui"));
+    expect(await screen.findByText(/从 feature\/ui 切走时的未提交改动/)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "恢复改动" }));
+    await waitFor(() => expect(apiMock.restoreAutoStash).toHaveBeenCalledWith("op-back", "source"));
+    await waitFor(() => expect(apiMock.cleanupAutoStash).toHaveBeenCalledWith("op-back"));
+    await waitFor(() => expect(screen.queryByText(/从 feature\/ui 切走时的未提交改动/)).toBeNull());
+  });
+
+  it("does not offer a restore hint when no stash was created from the target branch", async () => {
+    const user = userEvent.setup();
+    render(<BranchPickerDialog projectId="p1" />);
+
+    await user.click(await screen.findByRole("button", { name: "feature/ui" }));
+    await waitFor(() => expect(apiMock.switchLocalBranch).toHaveBeenCalledWith("p1", "feature/ui"));
+    expect(screen.queryByRole("button", { name: "恢复改动" })).toBeNull();
   });
 
   it("updates a repository event without recursively refreshing the branch list", async () => {
@@ -414,7 +451,7 @@ describe("local branch management", () => {
     expect((screen.getByRole("button", { name: "feature/ui" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "刷新" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("textbox", { name: "新分支名称" }) as HTMLInputElement).disabled).toBe(true);
-    expect(screen.getAllByRole("button", { name: "恢复到目标分支" }).every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+    expect(screen.getAllByRole("button", { name: /切到 .* 并恢复/ }).every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
     expect(screen.getAllByRole("button", { name: "清理记录" }).every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
 
     act(() => listeners.progress[0]?.({

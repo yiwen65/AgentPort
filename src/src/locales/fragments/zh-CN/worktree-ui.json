@@ -71,9 +71,7 @@
         "switchingLocalBranch": "正在切换到 {{branch}}",
         "creatingAndSwitching": "正在创建并切换到 {{branch}}",
         "createdButSwitchFailed": "分支 {{branch}} 已创建，但未能切换。{{detail}}",
-        "restoreAttemptedOnCurrentCheckout": "已尝试恢复到当前 checkout",
-        "returnedToSourceCheckout": "已返回原 checkout",
-        "restoredAndCleaned": "改动已恢复，临时恢复记录已自动清理",
+        "restored": "暂存的改动已恢复",
         "recoveryRecordCleaned": "恢复记录已清理"
       },
       "progress": {
@@ -184,14 +182,21 @@
         "description": "操作中断或冲突后，先选择恢复位置；验证成功后 AgentPort 会自动清理临时记录。清理失败时会保留备份供重试。",
         "error": "错误：{{detail}}",
         "missingSnapshot": "此备份缺少操作快照，AgentPort 不会自动 apply 或清理；请确认 checkout 后手动使用持久化 OID 恢复。",
-        "restoreToTarget": "恢复到目标分支",
-        "returnToSourceAndRestore": "返回源分支并恢复",
+        "sourceCheckout": "源 checkout",
+        "restoreToTarget": "切到 {{branch}} 并恢复",
+        "returnToSourceAndRestore": "切回 {{branch}} 并恢复",
         "manualCommandCopied": "已复制手动恢复命令",
         "copyManualCommand": "复制手动恢复命令",
         "deleteVerifiedRecord": "删除已验证恢复记录",
         "cleanupRequiresVerification": "仅恢复已验证后可清理",
         "cleanupDeferred": "改动已恢复，但临时记录未能清理；备份已保留，可稍后重试清理。",
         "cleanupRecord": "清理记录"
+      },
+      "restoreHint": {
+        "message": "从 {{branch}} 切走时的未提交改动仍在自动暂存中。",
+        "more": "另有 {{count}} 条同源待恢复记录。",
+        "restoreAction": "恢复改动",
+        "dismiss": "稍后处理"
       }
     },
     "newWorktree": {

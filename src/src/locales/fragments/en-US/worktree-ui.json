@@ -71,9 +71,7 @@
         "switchingLocalBranch": "Switching to {{branch}}",
         "creatingAndSwitching": "Creating and switching to {{branch}}",
         "createdButSwitchFailed": "Local branch {{branch}} was created, but checkout failed. {{detail}}",
-        "restoreAttemptedOnCurrentCheckout": "Restore attempted in the current checkout",
-        "returnedToSourceCheckout": "Returned to the original checkout",
-        "restoredAndCleaned": "Changes restored and the temporary recovery record was cleaned up",
+        "restored": "Stashed changes restored",
         "recoveryRecordCleaned": "Restore record cleaned up"
       },
       "progress": {
@@ -184,14 +182,21 @@
         "description": "After an interruption or conflict, choose where to restore. Once verified, AgentPort automatically cleans up the temporary record; a failed cleanup keeps the backup for retry.",
         "error": "Error: {{detail}}",
         "missingSnapshot": "This backup is missing its operation snapshot. AgentPort will not apply or clean it up automatically; confirm the checkout, then Restore it manually with the persistent OID.",
-        "restoreToTarget": "Restore to target local branch",
-        "returnToSourceAndRestore": "Return to source local branch and Restore",
+        "sourceCheckout": "source checkout",
+        "restoreToTarget": "Switch to {{branch}} and restore",
+        "returnToSourceAndRestore": "Switch back to {{branch}} and restore",
         "manualCommandCopied": "Manual Restore command copied",
         "copyManualCommand": "Copy manual Restore command",
         "deleteVerifiedRecord": "Delete verified Restore record",
         "cleanupRequiresVerification": "Cleanup is available only after Restore is verified",
         "cleanupDeferred": "Your changes were restored, but the temporary record could not be cleaned up. The backup was kept so you can retry.",
         "cleanupRecord": "Clean up record"
+      },
+      "restoreHint": {
+        "message": "Uncommitted changes stashed when you left {{branch}} are still pending.",
+        "more": "{{count}} more pending record(s) from the same branch are listed below.",
+        "restoreAction": "Restore changes",
+        "dismiss": "Not now"
       }
     },
     "newWorktree": {

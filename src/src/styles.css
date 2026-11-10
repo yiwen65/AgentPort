@@ -5786,6 +5786,16 @@ textarea:focus {
 .branch-picker-success {
   border-left: 3px solid var(--green);
 }
+.branch-picker-restore-hint {
+  display: flex;
+  flex-direction: column;
+  border-left: 3px solid var(--accent);
+}
+.branch-picker-restore-hint > div:first-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
 
 .branch-picker-live-sessions,
 .branch-picker-recovery-actions,
