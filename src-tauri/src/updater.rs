@@ -10,7 +10,9 @@
 //! the GUI quits (PRD ch.6). Installing an update replaces the sidecar binaries,
 //! so the GUI first stops every live Host gracefully, verifies that its process
 //! group is gone, and aborts the install — keeping the running version — when
-//! that cannot be proven.
+//! that cannot be proven. The detached Relay connector is also stopped before
+//! the bundle is replaced; otherwise the restarted GUI would reuse the old
+//! connector process and keep serving pre-update behavior.
 //!
 //! Debug builds never talk to the release feed: `cfg!(debug_assertions)` or
 //! `AGENTPORT_UPDATER_DISABLED` short-circuits the startup probe and every
@@ -398,6 +400,7 @@ pub async fn update_install(
     let payload = state
         .take_payload()
         .ok_or_else(|| "the update payload is not downloaded yet".to_string())?;
+    let data_root = core.paths.root().to_path_buf();
 
     commit(&app, &state, |snapshot| {
         snapshot.phase = UpdatePhase::Installing;
@@ -427,7 +430,18 @@ pub async fn update_install(
         }
     }
 
+    if let Err(error) = crate::relay::stop_for_update(&data_root).await {
+        commit(&app, &state, |snapshot| {
+            snapshot.phase = UpdatePhase::Ready;
+            snapshot.error = Some(error.clone());
+        });
+        return Err(error);
+    }
+
     if let Err(error) = update.install(payload) {
+        if let Err(restart) = crate::relay::start_or_reuse(&data_root).await {
+            tracing::warn!(%restart, "Relay connector restart after failed update failed");
+        }
         let message = error.to_string();
         commit(&app, &state, |snapshot| {
             snapshot.phase = UpdatePhase::Ready;

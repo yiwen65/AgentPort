@@ -65,9 +65,54 @@ pub async fn desktop_relay_start(
     start_or_reuse(state.paths.root()).await
 }
 
-async fn start_or_reuse(data: &std::path::Path) -> Result<Status, String> {
+pub(crate) async fn start_or_reuse(data: &std::path::Path) -> Result<Status, String> {
     let (binary, socket) = locations(data)?;
     start_or_reuse_at(data, &binary, &socket).await
+}
+
+/// Stop the detached connector before an app update replaces its binary.
+/// Session Hosts are independent and already stopped by the updater; without
+/// this the restarted GUI would reuse the old connector process and keep
+/// serving pre-update behavior.
+pub async fn stop_for_update(data: &std::path::Path) -> Result<(), String> {
+    let (_, socket) = locations(data)?;
+    stop_for_update_at(&socket, std::time::Duration::from_secs(10)).await
+}
+
+async fn stop_for_update_at(
+    socket: &std::path::Path,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let stop = tokio::time::timeout(timeout, ipc::call(socket, &ipc::Request::Stop))
+        .await
+        .map_err(|_| "Relay connector did not acknowledge stop".to_string())?;
+    match stop {
+        Ok(ipc::Response::Ok) => {}
+        Ok(ipc::Response::Error { message }) => return Err(message),
+        Ok(_) => return Err("Unexpected Relay connector response".into()),
+        Err(agentport_relay::Error::Offline | agentport_relay::Error::Transport) => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    }
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err("Relay connector did not stop for the update".into());
+        }
+        // Bound each probe: `ipc::call` has its own 15s timeout and a partially
+        // stopped connector must not outlive the update's overall deadline.
+        let probe = tokio::time::timeout(
+            remaining.min(std::time::Duration::from_millis(500)),
+            ipc::call(socket, &ipc::Request::Status),
+        )
+        .await;
+        match probe {
+            Ok(Err(agentport_relay::Error::Offline | agentport_relay::Error::Transport)) => {
+                return Ok(())
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+        }
+    }
 }
 
 async fn start_or_reuse_at(
@@ -245,6 +290,41 @@ mod tests {
         ));
         assert!(status.pairing.is_none());
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn update_stop_tolerates_absence_and_waits_for_connector_exit() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = private_temp();
+        assert!(
+            stop_for_update_at(dir.path(), std::time::Duration::from_millis(100))
+                .await
+                .is_ok()
+        );
+
+        let listener = tokio::net::UnixListener::bind(dir.path().join("control.sock")).unwrap();
+        std::fs::set_permissions(
+            dir.path().join("control.sock"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let length = stream.read_u32().await.unwrap();
+            let mut bytes = vec![0; length as usize];
+            stream.read_exact(&mut bytes).await.unwrap();
+            assert!(matches!(
+                serde_json::from_slice::<ipc::Request>(&bytes).unwrap(),
+                ipc::Request::Stop
+            ));
+            let bytes = serde_json::to_vec(&ipc::Response::Ok).unwrap();
+            stream.write_u32(bytes.len() as u32).await.unwrap();
+            stream.write_all(&bytes).await.unwrap();
+            // Returning drops the listener, so the update can replace the binary.
+        });
+        let result = stop_for_update_at(dir.path(), std::time::Duration::from_secs(2)).await;
+        server.await.unwrap();
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[tokio::test]
