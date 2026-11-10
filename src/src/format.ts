@@ -287,13 +287,6 @@ export function recoveryActionLabel(action: string): string {
     : action;
 }
 
-export function secretBackendZh(backend: string): string {
-  if (backend === "macos_keychain" || backend.includes("MacosKeychain")) return "macOS Keychain";
-  if (backend === "linux_secret_service" || backend.includes("LinuxSecretService"))
-    return "Linux Secret Service";
-  return backend;
-}
-
 export function formatBytes(n: number): string {
   const format = (value: number, digits: number) =>
     new Intl.NumberFormat(currentUiLanguage(), {

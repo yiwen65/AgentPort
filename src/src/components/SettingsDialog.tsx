@@ -1,6 +1,5 @@
 // Settings full-page surface (PRD 3.8 / 7.x): appearance & a11y,
-// notifications, Agent adapters, archive/backup management, and Secret
-// management against the system credential backend (never plaintext fallback).
+// notifications, Agent adapters, and archive/backup management.
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
@@ -18,8 +17,6 @@ import {
   agentDisplay,
   formatBytes,
   formatTime,
-  presetDisplayName,
-  secretBackendZh,
 } from "../format";
 import { applyUiLanguage, currentUiLanguage, i18n } from "../i18n";
 import { orderAgentIds } from "../agentOrder";
@@ -48,8 +45,6 @@ import type {
   CommitAiConfig,
   CommitAiLanguage,
   CommitAiProvider,
-  Preset,
-  SecretMeta,
   Settings,
   TerminalThemeId,
 } from "../types";
@@ -78,197 +73,6 @@ const FONT_OPTIONS = [
     labelKey: "settings:ui.appearance.font.options.lxgwWenKaiMono",
   },
 ] as const;
-
-function backendStatus(status: string): { ok: boolean; locked: boolean; backend: string } {
-  if (status.startsWith("Available")) {
-    const m = status.match(/\((\w+)\)/);
-    return { ok: true, locked: false, backend: secretBackendZh(m?.[1] ?? "") };
-  }
-  if (status.startsWith("Locked")) {
-    const m = status.match(/\((\w+)\)/);
-    return { ok: false, locked: true, backend: secretBackendZh(m?.[1] ?? "") };
-  }
-  return { ok: false, locked: false, backend: "" };
-}
-
-function SecretSection() {
-  const { t } = useTranslation(["settings", "common"]);
-  const s = useStore();
-  const [status, setStatus] = useState(s.secretBackend);
-  const [secrets, setSecrets] = useState<SecretMeta[]>([]);
-  const [presets, setPresets] = useState<Preset[]>([]);
-  const [envName, setEnvName] = useState("");
-  const [presetId, setPresetId] = useState("");
-  const [value, setValue] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const reload = async () => {
-    try {
-      const [st, list, pre] = await Promise.all([
-        api.secretStatus(),
-        api.secretList(),
-        api.listPresets(null),
-      ]);
-      setStatus(st);
-      setSecrets(list);
-      setPresets(pre);
-      setState({ secretBackend: st });
-    } catch (e) {
-      setError(t("settings:ui.secrets.loadFailed", { detail: errorText(e) }));
-    }
-  };
-
-  useEffect(() => {
-    void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const st = backendStatus(status);
-  const statusText = st.ok
-    ? t("settings:ui.secrets.backendAvailable", { backend: st.backend })
-    : st.locked
-      ? t("settings:ui.secrets.backendLocked", { backend: st.backend })
-      : t("common:status.unavailable");
-
-  const add = async () => {
-    if (!envName.trim() || !presetId || !value) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await api.secretAdd(presetId, envName.trim(), value);
-      setEnvName("");
-      setValue("");
-      toast(t("settings:ui.secrets.saved"), "success");
-      await reload();
-    } catch (e) {
-      setError(t("settings:ui.secrets.saveFailed", { detail: errorText(e) }));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const remove = async (id: string) => {
-    const meta = secrets.find((x) => x.id === id);
-    const ok = await confirmDialog({
-      title: t("settings:ui.secrets.deleteTitle", { name: meta?.envName ?? id }),
-      body: t("settings:ui.secrets.deleteBody"),
-      confirmLabel: t("common:actions.delete"),
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      await api.secretDelete(id);
-      await reload();
-      toast(t("settings:ui.secrets.deleted"), "success");
-    } catch (e) {
-      toast(t("settings:ui.secrets.deleteFailed", { detail: errorText(e) }), "error");
-    }
-  };
-
-  return (
-    <>
-      <div className="section-title">{t("settings:ui.sections.secrets")}</div>
-      <div className="settings-grid">
-        <label>{t("settings:ui.secrets.backendLabel")}</label>
-        <div className="control">
-          <span className={st.ok ? "" : "warn-text"}>{statusText}</span>
-          <button className="btn small ghost" onClick={() => void reload()}>
-            {t("common:actions.refresh")}
-          </button>
-        </div>
-      </div>
-      {!st.ok ? (
-        <p className="warn-text" style={{ margin: 0 }}>
-          {t("settings:ui.secrets.unavailableWarning")}{" "}
-          {st.locked
-            ? t("settings:ui.secrets.lockedHint")
-            : t("settings:ui.secrets.unavailableHint")}
-        </p>
-      ) : null}
-      {error ? <div className="error-bar">{error}</div> : null}
-      <div className="form-row">
-        <span className="form-label">{t("settings:ui.secrets.addLabel")}</span>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <input
-            type="text"
-            style={{ flex: "1 1 140px" }}
-            placeholder={t("settings:ui.secrets.envPlaceholder")}
-            aria-label={t("settings:ui.secrets.envAriaLabel")}
-            value={envName}
-            disabled={!st.ok}
-            onChange={(e) => setEnvName(e.target.value)}
-          />
-          <select
-            style={{ flex: "1 1 140px" }}
-            aria-label={t("settings:ui.secrets.presetAriaLabel")}
-            value={presetId}
-            disabled={!st.ok}
-            onChange={(e) => setPresetId(e.target.value)}
-          >
-            <option value="">{t("settings:ui.secrets.selectPreset")}</option>
-            {presets.map((p) => (
-              <option key={p.id} value={p.id}>
-                {presetDisplayName(p)}
-              </option>
-            ))}
-          </select>
-          <input
-            type="password"
-            style={{ flex: "1 1 160px" }}
-            placeholder={t("settings:ui.secrets.valuePlaceholder")}
-            aria-label={t("settings:ui.secrets.valueAriaLabel")}
-            value={value}
-            disabled={!st.ok}
-            onChange={(e) => setValue(e.target.value)}
-          />
-          <button
-            className="btn"
-            disabled={!st.ok || busy || !envName.trim() || !presetId || !value}
-            onClick={() => void add()}
-          >
-            {busy ? t("common:actions.saving") : t("settings:ui.secrets.save")}
-          </button>
-        </div>
-        <span className="form-hint">
-          {t("settings:ui.secrets.valueHint")}
-        </span>
-      </div>
-      {secrets.length === 0 ? (
-        <p className="dim" style={{ margin: 0 }}>
-          {t("settings:ui.secrets.empty")}
-        </p>
-      ) : (
-        <table className="table" aria-label={t("settings:ui.secrets.tableAriaLabel")}>
-          <thead>
-            <tr>
-              <th>{t("settings:ui.secrets.columns.environmentVariable")}</th>
-              <th>{t("settings:ui.secrets.columns.backend")}</th>
-              <th>{t("settings:ui.secrets.columns.accountKey")}</th>
-              <th>{t("settings:ui.secrets.columns.updatedAt")}</th>
-              <th aria-label={t("settings:ui.columns.actions")} />
-            </tr>
-          </thead>
-          <tbody>
-            {secrets.map((m) => (
-              <tr key={m.id}>
-                <td className="mono">{m.envName}</td>
-                <td>{secretBackendZh(m.backend)}</td>
-                <td className="mono dim">{m.account ?? "—"}</td>
-                <td className="dim">{m.updatedAt ? m.updatedAt.slice(0, 10) : "—"}</td>
-                <td>
-                  <button className="btn small danger" onClick={() => void remove(m.id)}>
-                    {t("common:actions.delete")}
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </>
-  );
-}
 
 function CommitAiSection() {
   const { t } = useTranslation(["settings", "common"]);
@@ -1254,7 +1058,6 @@ type SettingsSection =
   | "notifications"
   | "adapters"
   | "commitAi"
-  | "secrets"
   | "archive"
   | "backup"
   | "devices"
@@ -1266,7 +1069,6 @@ const SETTINGS_SECTIONS = [
   { id: "notifications", labelKey: "settings:ui.sections.notifications" },
   { id: "adapters", labelKey: "settings:ui.sections.adapters" },
   { id: "commitAi", labelKey: "settings:ui.sections.commitAi" },
-  { id: "secrets", labelKey: "settings:ui.sections.secrets" },
   { id: "archive", labelKey: "settings:ui.sections.archive" },
   { id: "backup", labelKey: "settings:ui.sections.backup" },
   { id: "devices", labelKey: "settings:ui.sections.devices" },
@@ -1707,7 +1509,6 @@ export default function SettingsDialog() {
     notifications: notificationsSection,
     adapters: <AdapterSection agentOrder={draft.agentOrder} agentHidden={draft.agentHidden} onAgentOrderChange={(agentOrder) => patch({ agentOrder })} onAgentHiddenChange={(agentHidden) => patch({ agentHidden })} />,
     commitAi: <CommitAiSection />,
-    secrets: <SecretSection />,
     archive: <ArchiveSection />,
     backup: <BackupSection />,
     devices: <DeviceSettings />,
