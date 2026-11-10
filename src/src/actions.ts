@@ -817,12 +817,7 @@ export async function archiveSessionFlow(sessionId: string) {
     disposeHandle(sessionId);
     clearSessionScopedState(sessionId);
     if (wasActive && getState().activeSessionId === null) {
-      const current = getState();
-      const archiving = new Set(current.archivingSessionIds);
-      const next = flattenSessions(current.projects).find(
-        (session) => session.id !== sessionId && !archiving.has(session.id),
-      );
-      if (next) selectSession(next.id);
+      selectReplacementSession(sessionId);
     }
     // The command already emitted `projects-changed`; this read is only a
     // reconciliation fallback and must not hold the interaction open.
@@ -834,6 +829,18 @@ export async function archiveSessionFlow(sessionId: string) {
       "error",
     );
   }
+}
+
+/** Replacement selection is implicit navigation: never rewrite the sidebar's
+ * Project/Worktree expansion the user explicitly chose. */
+function selectReplacementSession(removedSessionId: string) {
+  const current = getState();
+  const next = flattenSessions(current.projects).find(
+    (session) =>
+      session.id !== removedSessionId &&
+      !current.archivingSessionIds.includes(session.id),
+  );
+  if (next) selectSession(next.id, { revealInSidebar: false });
 }
 
 // Leave the removed pane immediately; process cleanup still runs to completion.
@@ -848,10 +855,7 @@ function leaveRemovingSession(sessionId: string): () => void {
     previousLayout: layout,
   });
   if (getState().activeSessionId === null) {
-    const current = getState();
-    const next = flattenSessions(current.projects).find(session =>
-      session.id !== sessionId && !current.archivingSessionIds.includes(session.id));
-    if (next) selectSession(next.id);
+    selectReplacementSession(sessionId);
   }
   const intent = sessionSelectionIntent;
   const pendingLayout = getState().terminalLayout;
@@ -891,12 +895,7 @@ export async function removeSessionFlow(
     disposeHandle(sessionId);
     clearSessionScopedState(sessionId);
     if (wasActive && getState().activeSessionId === null) {
-      const current = getState();
-      const archiving = new Set(current.archivingSessionIds);
-      const next = flattenSessions(current.projects).find(
-        (session) => session.id !== sessionId && !archiving.has(session.id),
-      );
-      if (next) selectSession(next.id);
+      selectReplacementSession(sessionId);
     }
     void refreshProjects();
   } catch (e) {

@@ -201,6 +201,46 @@ describe("selectSession", () => {
     expect(apiMock.deleteArchivedSession).toHaveBeenCalledWith(oldSession.id);
   });
 
+  it("keeps a collapsed Project collapsed when removal selects its Session as fallback", async () => {
+    const collapsedProject = {
+      id: "prj_collapsed",
+      name: "Collapsed",
+      rootPath: "/tmp/collapsed",
+      gitRootPath: null,
+      pinned: false,
+      sessions: [newSession],
+      worktrees: [],
+    };
+    const activeProject = {
+      id: "prj_active",
+      name: "Active",
+      rootPath: "/tmp/active",
+      gitRootPath: null,
+      pinned: false,
+      sessions: [oldSession],
+      worktrees: [],
+    };
+    apiMock.archiveSession.mockResolvedValueOnce(undefined);
+    apiMock.deleteArchivedSession.mockResolvedValueOnce(undefined);
+    apiMock.listProjects.mockResolvedValueOnce([collapsedProject, activeProject]);
+    setState({
+      projects: [collapsedProject, activeProject],
+      activeSessionId: oldSession.id,
+      terminalLayout: singletonPaneLayout(oldSession.id),
+      terminalLayoutGroups: [],
+      attachedIds: [oldSession.id],
+      expandedProjects: {
+        [collapsedProject.id]: false,
+        [activeProject.id]: true,
+      },
+    });
+
+    await removeSessionFlow(oldSession.id);
+
+    expect(getState().activeSessionId).toBe(newSession.id);
+    expect(getState().expandedProjects[collapsedProject.id]).toBe(false);
+  });
+
   it("restores a removed pane on stop failure without stealing later navigation", async () => {
     let fail!: (error: Error) => void;
     apiMock.archiveSession.mockReturnValueOnce(new Promise<void>((_, reject) => { fail = reject; }));
