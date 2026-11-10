@@ -126,7 +126,6 @@ AgentPort 是 macOS 与 Linux 上的本地 AI CLI 工作台：把 Claude Code、
 |---|---|---|
 | macOS 13+（Universal，Apple silicon 与 Intel） | `.dmg` | 正式支持 |
 | Ubuntu 22.04 / 24.04 x86_64 | `.deb` | 正式支持 |
-| Fedora 当前稳定版、Arch 发布快照 | tarball | 社区验证 |
 | Linux 通用 | AppImage | Beta（本次发布未提供，可按 `scripts/build-linux.sh appimage` 自行构建） |
 
 Windows、iOS、Android 不在支持范围内（移动端只通过手机配对 / SSH Bridge 访问桌面端会话）。

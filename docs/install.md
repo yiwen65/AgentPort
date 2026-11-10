@@ -8,11 +8,9 @@
 |---|---|---|
 | macOS 13+（Universal） | `.dmg` | 正式支持 |
 | Ubuntu 22.04 / 24.04 x86_64 | `.deb` | 正式支持 |
-| Fedora 当前稳定版 | tarball | 社区验证 |
-| Arch 发布快照 | tarball | 社区验证 |
 | Linux 通用 | AppImage | Beta |
 
-此表描述桌面分发支持；Windows、容器与通用远程主机部署不在该范围内。AgentPort Mobile 可通过 SSH 连接已安装的 macOS 桌面端，需单独启用下述 Bridge 入口（不是独立 SSH 服务）。"社区验证"与 Beta 不等同于正式支持：发行版滚动更新可能带来兼容回归。
+此表描述桌面分发支持；Windows、容器与通用远程主机部署不在该范围内。AgentPort Mobile 可通过 SSH 连接已安装的 macOS 桌面端，需单独启用下述 Bridge 入口（不是独立 SSH 服务）。Fedora / Arch 不再随 Release 发布预编译产物，可按 `scripts/build-linux.sh` 在本地构建。Beta 不等同于正式支持：发行版滚动更新可能带来兼容回归。
 
 ## macOS（正式支持）
 
@@ -88,29 +86,6 @@ sudo apt install ./AgentPort_<版本>_amd64.deb
 
 `apt` 会自动拉取运行依赖（WebKitGTK、GTK 与 Git）。安装完成后桌面环境中可直接启动 `agentport`。包还推荐安装 `libnotify-bin`、`xdg-utils` 与 `xterm`，以提供系统通知、在文件管理器中显示目录和默认终端入口；使用 `--no-install-recommends` 的最小化系统应手动安装这些包或在设置中指定已有终端的可执行文件。随发布产物同时提供独立的 headless 二进制 `agentport-cli`（放入 PATH 即可使用）。
 
-## Fedora / Arch（社区验证）
-
-社区验证层级以 tarball 分发（当前产物内含 headless 组件 `agentport-cli` 与 `agentport-host`）。
-
-先安装系统依赖——AgentPort 的 GUI 基于 WebKitGTK 4.1，另需托盘、通知与凭据相关库：
-
-```bash
-# Fedora
-sudo dnf install webkit2gtk4.1 libayatana-appindicator libxdo dbus
-
-# Arch
-sudo pacman -S --needed webkit2gtk-4.1 libayatana-appindicator libxdo dbus
-```
-
-然后解压 tarball 并把二进制放入 PATH：
-
-```bash
-tar -xzf agentport-fedora-x86_64.tar.gz   # Arch 为 agentport-arch-x86_64.tar.gz
-sudo install -m 0755 agentport-cli agentport-host /usr/local/bin/
-```
-
-注意：该层级为社区验证，未承诺与正式支持相同的回归覆盖；如遇问题请附上发行版版本与桌面环境信息反馈。
-
 ## AppImage（Beta）
 
 AppImage 为 Beta 分发物，在 Ubuntu 22.04 基线上构建以兼顾运行兼容性：
@@ -178,6 +153,6 @@ sudo apt remove agentport
 rm -rf ~/.local/share/agentport   # 应用数据与 Worktree，确认后手动删除
 ```
 
-### Fedora / Arch / AppImage
+### AppImage
 
-删除解压/安装的二进制与 AppImage 文件，再手动删除 `~/.local/share/agentport`。Linux 上 Secret Service 中保存的条目（service 为 `agentport`）请用桌面环境的密码管理工具（如 GNOME 的"密码和密钥"）手动删除。
+删除 AppImage 文件，再手动删除 `~/.local/share/agentport`。Linux 上 Secret Service 中保存的条目（service 为 `agentport`）请用桌面环境的密码管理工具（如 GNOME 的"密码和密钥"）手动删除。

@@ -17,7 +17,7 @@ Tauri bundle → 安装包 → Tauri Updater 整包更新
 
 ## 用户可见流程
 
-> 平台范围：应用内更新当前只对 **macOS** 生效。Linux 的 `.deb`/tarball 由系统包管理器升级（bundler 只能用 AppImage 产出 Linux updater 载荷，而 AppImage 尚未发布），Windows 不在本项目分发范围内；其他平台 `update_status` 直接返回 `disabled`，不产生网络请求。
+> 平台范围：应用内更新当前只对 **macOS** 生效。Linux 的 `.deb` 由系统包管理器升级（bundler 只能用 AppImage 产出 Linux updater 载荷，而 AppImage 尚未发布），Windows 不在本项目分发范围内；其他平台 `update_status` 直接返回 `disabled`，不产生网络请求。
 
 ```
 启动 → 后台 check()
@@ -60,7 +60,7 @@ Rust 命令：
 | `update_download` | 后台下载并校验签名，进度通过同一事件推送 |
 | `update_install` | 停止 Host → 复核 → `Update::install` → `app.restart()` |
 
-平台范围：应用内更新只对 **macOS** 生效（Tauri 的 Linux 载荷只能由 AppImage 产出，而本项目暂不发布 AppImage）。Linux 的 `.deb`/tarball 由包管理器升级，`update_status` 在非 AppImage 的 Linux 上直接返回 `disabled`；Windows 不在分发范围内。
+平台范围：应用内更新只对 **macOS** 生效（Tauri 的 Linux 载荷只能由 AppImage 产出，而本项目暂不发布 AppImage）。Linux 的 `.deb` 由包管理器升级，`update_status` 在非 AppImage 的 Linux 上直接返回 `disabled`；Windows 不在分发范围内。
 
 配置（`src-tauri/tauri.conf.json`）：
 
@@ -108,12 +108,9 @@ WebView **没有** `updater:*` 权限（`src-tauri/capabilities/default.json` �
    AgentPort.app.tar.gz      + AgentPort.app.tar.gz.sig
    latest.json               （darwin-aarch64 / darwin-x86_64 指向同一个 universal 包）
    AgentPort_0.2.0_amd64.deb            # Ubuntu 22.04 基线，22.04/24.04 共用
-   agentport-fedora-x86_64.tar.gz        # 社区验证档：CLI + sidecar
-   agentport-arch-x86_64.tar.gz
-   SHA256SUMS-linux
    ```
 
-   Linux 由 CI 在各自的发行版容器里构建（`scripts/linux/Dockerfile.*`，与本地 `scripts/build-linux.sh` 同一份配方），发布时用包管理器升级，因此没有应用内 updater 载荷。
+   Linux 由 CI 在 Ubuntu 22.04 容器里构建（`scripts/linux/Dockerfile.ubuntu2204`，与本地 `scripts/build-linux.sh` 同一份配方），发布时用包管理器升级，因此没有应用内 updater 载荷。
 
    已发布的 tag 可以在**不移动 tag** 的前提下重跑某一平台（例如补发 Linux 资产）：
 

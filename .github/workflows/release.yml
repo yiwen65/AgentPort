@@ -3,11 +3,11 @@ name: release
 # Tag-driven release: one tag = one version for the Tauri shell, the embedded
 # frontend dist and every bundled sidecar. See docs/updater.md.
 #
-# macOS and Linux ship together: macOS produces the universal .app + DMG and
-# the updater payload (in-app updates are macOS-only — the bundler can only
-# build a Linux updater payload from an AppImage, which this project does not
-# publish yet), Linux produces the .deb plus the Fedora/Arch tarballs from the
-# same Dockerfiles used locally (scripts/linux/Dockerfile.*).
+# Published platforms: macOS (universal DMG + updater payload) and Ubuntu
+# (.deb). In-app updates are macOS-only — the bundler can only build a Linux
+# updater payload from an AppImage, which this project does not publish yet.
+# Fedora/Arch tarballs are no longer released; their Dockerfiles remain for
+# local builds via scripts/build-linux.sh.
 #
 # A published tag can be re-processed without moving it:
 #   gh workflow run release.yml -f tag=v0.1.1 -f platforms=linux
@@ -232,17 +232,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Official tier: Ubuntu 22.04 baseline .deb (22.04 and 24.04 share it).
+          # Only released Linux artifact: Ubuntu 22.04 baseline .deb
+          # (22.04 and 24.04 share it).
           - name: ubuntu2204
             dockerfile: scripts/linux/Dockerfile.ubuntu2204
             pattern: "*.deb"
-          # Community-verified tiers: CLI + sidecar tarballs.
-          - name: fedora
-            dockerfile: scripts/linux/Dockerfile.fedora
-            pattern: "*fedora*.tar.gz"
-          - name: arch
-            dockerfile: scripts/linux/Dockerfile.arch
-            pattern: "*arch*.tar.gz"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -277,7 +271,7 @@ jobs:
         with:
           path: linux-artifacts
 
-      - name: Upload to the release with checksums
+      - name: Upload the .deb to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.meta.outputs.tag }}
@@ -292,12 +286,7 @@ jobs:
           done
           gh release view "$TAG" --repo "$REPO" >/dev/null
           cd linux-artifacts
-          mapfile -t files < <(find . -type f \( -name '*.deb' -o -name '*.tar.gz' \) | sort)
+          mapfile -t files < <(find . -type f -name '*.deb' | sort)
           [ "${#files[@]}" -gt 0 ] || { echo "no Linux artifacts found" >&2; exit 1; }
           printf '%s\n' "${files[@]}"
-          # Plain file names: the download directory is not part of the release.
-          for f in "${files[@]}"; do
-            echo "$(sha256sum "$f" | awk '{print $1}')  $(basename "$f")"
-          done > SHA256SUMS-linux
-          cat SHA256SUMS-linux
-          gh release upload "$TAG" --repo "$REPO" --clobber "${files[@]}" SHA256SUMS-linux
+          gh release upload "$TAG" --repo "$REPO" --clobber "${files[@]}"
