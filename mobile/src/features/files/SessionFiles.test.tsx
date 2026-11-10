@@ -154,6 +154,22 @@ describe("SessionFiles", () => {
     expect(await screen.findByRole("dialog", { name: "File download" })).toHaveTextContent("Host · Task");
     expect(screen.getByRole("button", { name: "Cancel download" })).toBeEnabled();
   });
+  it("copies relative paths for files and directories from tree actions without reading or opening them", async () => {
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) }; vi.stubGlobal("navigator", { ...navigator, clipboard });
+    const { client } = remote(); mount(client);
+    fireEvent.click(await screen.findByRole("button", { name: "File actions for README.md" }));
+    const fileMenu = screen.getByRole("dialog"); expect(fileMenu).toHaveTextContent("README.md");
+    fireEvent.click(within(fileMenu).getByRole("button", { name: "Copy relative path" }));
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenLastCalledWith("README.md"));
+    expect(await screen.findByText("Copied.")).toBeVisible(); expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Directory actions for src" }));
+    const directoryMenu = screen.getByRole("dialog"); expect(directoryMenu).toHaveTextContent("src");
+    expect(within(directoryMenu).queryByRole("button", { name: "Download file" })).toBeNull();
+    fireEvent.click(within(directoryMenu).getByRole("button", { name: "Copy relative path" }));
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenLastCalledWith("src"));
+    expect(calls(client, "read")).toHaveLength(0); expect(calls(client, "list")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "main.ts File" })).toBeNull();
+  });
   it("keeps download in the binary preview menu and explains browser unavailability", async () => {
     const { client } = remote(); vi.mocked(client.request).mockResolvedValueOnce({ ...listing(), entries: [{ name: "archive.zip", path: "archive.zip", isDir: false }] }).mockRejectedValueOnce({ code: "unsupported_file" });
     const download = downloads(); const view = render(<FileDownloadProvider client={download}><SessionFiles open={open} client={client} active onBack={() => {}} /></FileDownloadProvider>);

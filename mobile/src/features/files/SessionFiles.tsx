@@ -28,7 +28,7 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
   const { t } = useTranslation();
   const downloads = useFileDownloads({ immersive: active });
   const nativeImages = useMemo(() => createMarkdownImageClient(client, open.hostProfileId, open.session.id), [client, open.hostProfileId, open.session.id]);
-  const [operations, setOperations] = useState<string>();
+  const [operations, setOperations] = useState<{ path: string; isDir: boolean }>();
   const [menu, setMenu] = useState<"tree" | "preview">();
   const [information, setInformation] = useState(false);
   const [chromeVisible, setChromeVisible] = useState(false);
@@ -160,13 +160,13 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
     previewRef.current = path; setPreview(path); setFile({ loading: false, stale: false }); setRendered(true); setCopyStatus("");
     if (!isImageFile(path)) void load(path, "read");
   }, [load]);
-  const copy = async (value: string) => {
-    const path = previewRef.current;
+  const copy = async (value: string, previewPath?: string) => {
+    const current = () => mounted.current && (previewPath === undefined || previewPath === previewRef.current);
     try {
       if (!navigator.clipboard) throw new Error("clipboard unavailable");
       await navigator.clipboard.writeText(value);
-      if (mounted.current && path === previewRef.current) setCopyStatus(t("files.copied"));
-    } catch { if (mounted.current && path === previewRef.current) setCopyStatus(t("files.copyFailed")); }
+      if (current()) setCopyStatus(t("files.copied"));
+    } catch { if (current()) setCopyStatus(t("files.copyFailed")); }
   };
   const errorText = (error: unknown) => unsupported(error) ? t("files.upgradeRequired")
     : knownErrors.has(codeOf(error)) ? t(`files.errors.${codeOf(error)}`) : t("files.requestFailed", { error: remoteErrorMessage(error) });
@@ -193,7 +193,7 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
           <span className="files-entry-icon" aria-hidden="true"><FileTreeIcon name={entry.name} directory={entry.isDir} expanded={expanded.has(entry.path)} /></span>
           <span className="files-entry-name">{entry.name}</span>
         </button>
-        {!entry.isDir ? <button type="button" className="files-entry-actions" aria-label={t("downloads.fileActions", { name: entry.name })} aria-haspopup="dialog" onClick={() => setOperations(entry.path)}>⋯</button> : null}</div>
+        <button type="button" className="files-entry-actions" aria-label={t(entry.isDir ? "files.directoryActions" : "downloads.fileActions", { name: entry.name })} aria-haspopup="dialog" onClick={() => setOperations({ path: entry.path, isDir: entry.isDir })}>⋯</button></div>
         {entry.isDir && expanded.has(entry.path) ? tree(entry.path, depth + 1) : null}
       </li>)}</ul>
       {resource?.data?.truncated ? <p className="files-state-strip" role="status">{t("files.directoryTruncated")}</p> : null}
@@ -250,8 +250,8 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
         <button type="button" className="files-menu-action" disabled={!online} onClick={() => { closeMenu(); if (menu === "preview" && preview) { if (imagePreview) setImageRevision(old => old + 1); else void load(preview, "read"); } else refresh(); }}>{t("files.refresh")}</button>
         {menu === "preview" && preview ? <>
           <button type="button" className="files-menu-action" disabled={!online || !downloads.available || downloads.occupied} onClick={() => { closeMenu(); downloads.start(open, preview); }}>{t("downloads.download")}</button>
-          <button type="button" className="files-menu-action" onClick={() => { closeMenu(); void copy(preview); }}>{t("files.copyPath")}</button>
-          {!imagePreview ? <button type="button" className="files-menu-action" disabled={!file.data} onClick={() => { closeMenu(); void copy(file.data?.content ?? ""); }}>{t(file.data?.truncated ? "files.copyVisible" : "files.copyContent")}</button> : <fieldset className="file-image-backgrounds"><legend>{t("images.background")}</legend>{(["checker", "light", "dark"] as const).map(background => <button key={background} type="button" aria-pressed={imageBackground === background} onClick={() => { setImageBackground(background); closeMenu(); }}>{t(`images.backgrounds.${background}`)}</button>)}</fieldset>}
+          <button type="button" className="files-menu-action" onClick={() => { closeMenu(); void copy(preview, preview); }}>{t("files.copyPath")}</button>
+          {!imagePreview ? <button type="button" className="files-menu-action" disabled={!file.data} onClick={() => { closeMenu(); void copy(file.data?.content ?? "", preview); }}>{t(file.data?.truncated ? "files.copyVisible" : "files.copyContent")}</button> : <fieldset className="file-image-backgrounds"><legend>{t("images.background")}</legend>{(["checker", "light", "dark"] as const).map(background => <button key={background} type="button" aria-pressed={imageBackground === background} onClick={() => { setImageBackground(background); closeMenu(); }}>{t(`images.backgrounds.${background}`)}</button>)}</fieldset>}
           {isMarkdown(preview) ? <button type="button" className="files-menu-action" aria-pressed={rendered} onClick={() => { closeMenu(); setRendered(value => !value); }}>{t(rendered ? "files.showSource" : "files.showRendered")}</button> : null}
         </> : preview ? <button type="button" className="files-menu-action" onClick={() => { closeMenu(); showPreview(); }}>{t("files.resumePreview", { name: baseName(preview) })}</button> : null}
         {downloads.snapshot ? <button type="button" className="files-menu-action" onClick={() => { closeMenu(); queueMicrotask(downloads.openDetails); }}>{t("downloads.title")} · {t(`downloads.states.${downloads.snapshot.state}`)}</button> : null}
@@ -259,10 +259,11 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
         {menu === "preview" && !downloads.available ? <p className="files-note">{t("downloads.nativeOnly")}</p> : null}
       </div>}
     </Modal> : null}
-    {operations !== undefined ? <Modal title={t("downloads.fileActions", { name: baseName(operations) })} onClose={() => setOperations(undefined)} className="files-menu">
-      <p className="files-operation-path">{operations}</p><p>{t("downloads.fileHint")}</p>
-      {!downloads.available ? <p role="status">{t("downloads.nativeOnly")}</p> : downloads.occupied ? <p role="status">{t("downloads.busy")}</p> : !online ? <p role="status">{t("files.offline")}</p> : null}
-      <button className="files-operation-button" type="button" disabled={!online || !downloads.available || downloads.occupied} onClick={() => { const path = operations; setOperations(undefined); downloads.start(open, path); }}>{t("downloads.download")}</button>
+    {operations !== undefined ? <Modal title={t(operations.isDir ? "files.directoryActions" : "downloads.fileActions", { name: baseName(operations.path) })} onClose={() => setOperations(undefined)} className="files-menu">
+      <p className="files-operation-path">{operations.path}</p><p>{t(operations.isDir ? "files.directoryHint" : "downloads.fileHint")}</p>
+      {operations.isDir ? null : !downloads.available ? <p role="status">{t("downloads.nativeOnly")}</p> : downloads.occupied ? <p role="status">{t("downloads.busy")}</p> : !online ? <p role="status">{t("files.offline")}</p> : null}
+      <button className="files-operation-button" type="button" onClick={() => { const path = operations.path; setOperations(undefined); void copy(path); }}>{t("files.copyPath")}</button>
+      {operations.isDir ? null : <button className="files-operation-button" type="button" disabled={!online || !downloads.available || downloads.occupied} onClick={() => { const path = operations.path; setOperations(undefined); downloads.start(open, path); }}>{t("downloads.download")}</button>}
     </Modal> : null}
   </section>;
 }
