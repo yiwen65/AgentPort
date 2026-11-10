@@ -75,7 +75,14 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function setup(mode = 1002) {
+async function setup(
+  mode = 1002,
+  opts: {
+    alt?: boolean;
+    onAgentScroll?: () => void;
+    canAgentScroll?: () => boolean;
+  } = {},
+) {
   const terminal = new Terminal({
     cols: 40,
     rows: 10,
@@ -105,11 +112,18 @@ async function setup(mode = 1002) {
     x: 0, y: 0, left: 0, top: 0, right: 400, bottom: 200,
     width: 400, height: 200, toJSON() {},
   });
-  terminal.write((mode ? `\x1b[?${mode}h\x1b[?1006h` : "") + "copy 中文\r\nsecond line");
+  terminal.write(
+    (opts.alt ? "\x1b[?1049h" : "") +
+      (mode ? `\x1b[?${mode}h\x1b[?1006h` : "") +
+      "copy 中文\r\nsecond line",
+  );
   await vi.advanceTimersByTimeAsync(10);
   const sent: string[] = [];
   const subscription = terminal.onData((data) => sent.push(data));
-  const uninstall = installClipboardCompatibility(terminal, container);
+  const uninstall = installClipboardCompatibility(terminal, container, {
+    onAgentScroll: opts.onAgentScroll,
+    canAgentScroll: opts.canAgentScroll,
+  });
   disposals.push(() => {
     uninstall(); subscription.dispose(); terminal.dispose(); container.remove();
   });
@@ -180,5 +194,64 @@ describe("macOS Agent mouse mode selection", () => {
     drag({ ctrlKey: true });
     expect(terminal.getSelection()).toBe("");
     expect(sent).toHaveLength(3);
+  });
+
+  it("auto-scrolls locally while a drag is held beyond the top edge", async () => {
+    const { terminal, sent, mouse } = await setup();
+    terminal.write(
+      "\r\n" + Array.from({ length: 120 }, (_, i) => `line ${i}`).join("\r\n"),
+    );
+    await vi.advanceTimersByTimeAsync(20);
+    terminal.scrollToBottom();
+    const startViewportY = terminal.buffer.active.viewportY;
+    expect(startViewportY).toBeGreaterThan(0);
+
+    mouse("mousedown", 5, 100);
+    mouse("mousemove", 5, -10);
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(terminal.buffer.active.viewportY).toBeLessThan(startViewportY);
+    expect(sent).toEqual([]);
+    mouse("mouseup", 5, -10);
+  });
+
+  it("hands an alternate-screen edge drag to the Agent as wheel reports", async () => {
+    const onAgentScroll = vi.fn();
+    const { terminal, sent, mouse } = await setup(1002, { alt: true, onAgentScroll });
+    terminal.write(
+      "\r\n" + Array.from({ length: 40 }, (_, i) => `row ${i}`).join("\r\n"),
+    );
+    await vi.advanceTimersByTimeAsync(20);
+    expect(terminal.buffer.active.type).toBe("alternate");
+
+    mouse("mousedown", 5, 100);
+    mouse("mousemove", 5, -10);
+
+    // The local selection ends; the TUI owns the rest of the gesture.
+    expect(onAgentScroll).toHaveBeenCalledOnce();
+    expect(terminal.getSelection()).toBe("");
+    await vi.advanceTimersByTimeAsync(240);
+    expect(sent.some((data) => data.includes("\x1b[<64;"))).toBe(true);
+
+    mouse("mouseup", 5, -10);
+    const afterRelease = sent.length;
+    await vi.advanceTimersByTimeAsync(400);
+    expect(sent.length).toBe(afterRelease);
+  });
+
+  it("keeps the selection when the Session cannot act on wheel reports", async () => {
+    const onAgentScroll = vi.fn();
+    const { terminal, mouse } = await setup(1002, {
+      alt: true,
+      onAgentScroll,
+      canAgentScroll: () => false,
+    });
+
+    mouse("mousedown", 5, 100);
+    mouse("mousemove", 5, -10);
+
+    expect(onAgentScroll).not.toHaveBeenCalled();
+    expect(terminal.getSelection()).not.toBe("");
+    mouse("mouseup", 5, -10);
   });
 });

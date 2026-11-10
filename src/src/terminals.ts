@@ -2115,20 +2115,30 @@ export function installInputCompatibility(
   };
 }
 
+export interface ClipboardCompatibilityOptions {
+  /** Live selection plus the pane's captured fallback for selections a live
+   * TUI repaint erased before the user pressed Copy. */
+  resolveSelection?: () => string;
+  /** Release the output freeze when an edge drag hands scrolling to the TUI;
+   * its repaint is the scroll the user sees. */
+  onAgentScroll?: () => void;
+  /** Whether the Session is live enough to act on forwarded wheel reports. */
+  canAgentScroll?: () => boolean;
+}
+
 export function installClipboardCompatibility(
   term: Terminal,
   container: HTMLElement,
-  /** Live selection plus the pane's captured fallback for selections a live
-   * TUI repaint erased before the user pressed Copy. */
-  resolveSelection: () => string = () => term.getSelection(),
+  options: ClipboardCompatibilityOptions = {},
 ): () => void {
+  const { resolveSelection = () => term.getSelection() } = options;
   let disposed = false;
-  const disposeMouseSelection = installTerminalMouseSelection(
-    term,
-    container,
-    plainDragSelectsText,
-    forceSelectionModifier,
-  );
+  const disposeMouseSelection = installTerminalMouseSelection(term, container, {
+    enabled: plainDragSelectsText,
+    forceModifier: forceSelectionModifier,
+    onAgentScroll: options.onAgentScroll,
+    canAgentScroll: options.canAgentScroll,
+  });
   const onKeyDown = (event: KeyboardEvent) => {
     if (
       getState().platform?.os !== "linux" ||
@@ -2355,9 +2365,11 @@ function bindTerminalContainer(handle: TermHandle, container: HTMLDivElement) {
   clipboardCompatibilityDisposers.get(handle.sessionId)?.();
   clipboardCompatibilityDisposers.set(
     handle.sessionId,
-    installClipboardCompatibility(handle.term, container, () =>
-      resolveCopySelection(handle),
-    ),
+    installClipboardCompatibility(handle.term, container, {
+      resolveSelection: () => resolveCopySelection(handle),
+      onAgentScroll: () => handle.writes.setSelectionFreeze(false),
+      canAgentScroll: () => handle.attached,
+    }),
   );
   viewportIntentDisposers.get(handle.sessionId)?.();
   viewportIntentDisposers.set(
