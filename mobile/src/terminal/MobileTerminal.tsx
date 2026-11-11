@@ -16,7 +16,7 @@ import { captureSnapshotState, restoreSnapshotState } from "./terminalSnapshot";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { installIosImeRouting, isIosKeyboard } from "./iosIme";
-import { readClipboardText } from "../platform/clipboard";
+import { readClipboardText, writeClipboardText } from "../platform/clipboard";
 import { remoteErrorMessage } from "../protocol/remoteError";
 import { selectionMenuPosition } from "./selectionMenu";
 import { ShortcutIcon, SHORTCUT_NAMES, ShortcutSettingsIcon } from "./ShortcutIcon";
@@ -32,6 +32,20 @@ import "./mobile-terminal.css";
 /** WebGL keeps row painting on the GPU; iOS WKWebView re-lays out the DOM
  * renderer's scroll area on every frame, which is the dominant cost while a
  * session streams. Probe first so jsdom and WebGL-less WebViews stay on DOM. */
+/** TUI adapters whose fullscreen TUI implements its own drag selection, edge
+ * auto-scroll and copy-on-release (Pi's TuiAltScreen). Touch drags are
+ * forwarded to them as mouse reports instead of becoming local selections. */
+const NATIVE_SELECTION_ADAPTERS = new Set(["pi", "easy_pi"]);
+/** How long a captured selection stays copyable after a repaint erased it. */
+const SELECTION_CAPTURE_TTL_MS = 30_000;
+/** Live output buffered while a local selection is active. */
+const SELECTION_FREEZE_MAX_BYTES = 2 * 1024 * 1024;
+const SELECTION_FREEZE_MAX_MS = 30_000;
+/** Cadence of viewport scrolling while a selection drag pushes an edge row. */
+const SELECTION_SCROLL_INTERVAL_MS = 60;
+/** Clipboard text cap for OSC 52 writes; Pi caps its own payloads at 100 KB. */
+const OSC52_MAX_BASE64_LENGTH = 2 * 1024 * 1024;
+
 let webglCapable: boolean | undefined;
 function canUseWebgl(): boolean {
   if (webglCapable === undefined) {
@@ -69,6 +83,8 @@ export interface MobileTerminalProps {
   recoveryLabel?: string;
   /** Whether the explicit keyboard entry may focus this terminal. */
   keyboardEnabled?: boolean;
+  /** Agent adapter; Pi-family fullscreen TUIs keep their native selection. */
+  adapter?: string;
   /** Opt-in, content-free timing capture; never changes terminal behaviour. */
   scrollDiagnostics?: ScrollDiagnostics;
 }
@@ -101,6 +117,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   recovering = false,
   recoveryLabel,
   keyboardEnabled = true,
+  adapter,
   scrollDiagnostics,
 }: MobileTerminalProps, ref) {
   const { t } = useTranslation();
@@ -121,6 +138,19 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const parserTail = useRef(new TerminalParserTail());
   const restoring = useRef(false);
   const mouseEncoding = useRef(0);
+  const adapterRef = useRef(adapter);
+  adapterRef.current = adapter;
+  /** Last non-empty selection: a live TUI repaint can erase the live one
+   * before the user taps Copy. */
+  const lastSelectionRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
+  const lastSelectionMenuPosition = useRef<{ left: number; top: number } | null>(null);
+  /** Live output buffered while a local selection is active so TUI repaints
+   * cannot destroy it mid-gesture. */
+  const selectionFreezeRef = useRef<{
+    chunks: Array<{ data: string | Uint8Array; onParsed?: () => void }>;
+    bytes: number;
+    timer: number;
+  } | null>(null);
   const releaseRef = useRef(onRelease);
   releaseRef.current = onRelease;
   const handleRef = useRef<MobileTerminalHandle>();
@@ -164,14 +194,63 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   inputRef.current = onInput;
   resizeRef.current = onResize;
 
+  const releaseSelectionFreeze = () => {
+    const frozen = selectionFreezeRef.current;
+    if (!frozen) return;
+    selectionFreezeRef.current = null;
+    window.clearTimeout(frozen.timer);
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      for (const item of frozen.chunks) item.onParsed?.();
+      return;
+    }
+    for (const item of frozen.chunks) terminal.write(item.data, item.onParsed);
+  };
+  const discardSelectionFreeze = () => {
+    const frozen = selectionFreezeRef.current;
+    if (!frozen) return;
+    selectionFreezeRef.current = null;
+    window.clearTimeout(frozen.timer);
+    // The snapshot/reset supersedes this output, but the writer's flow-control
+    // callback must still settle or the Session would stop streaming.
+    for (const item of frozen.chunks) item.onParsed?.();
+  };
+  const startSelectionFreeze = () => {
+    if (selectionFreezeRef.current) return;
+    selectionFreezeRef.current = {
+      chunks: [],
+      bytes: 0,
+      timer: window.setTimeout(releaseSelectionFreeze, SELECTION_FREEZE_MAX_MS),
+    };
+  };
+  const captureFreshSelection = () => {
+    const captured = lastSelectionRef.current;
+    return captured.text && Date.now() - captured.at <= SELECTION_CAPTURE_TTL_MS
+      ? captured.text
+      : "";
+  };
+
   useImperativeHandle(ref, () => {
     const handle: MobileTerminalHandle = {
     write(data: string | Uint8Array, onParsed?: () => void) {
       diagnosticsRef.current?.mark("queuedWrite", data.length);
       parserTail.current.advance(data);
+      const frozen = selectionFreezeRef.current;
+      if (frozen) {
+        const bytes = typeof data === "string"
+          ? new TextEncoder().encode(data).byteLength
+          : data.byteLength;
+        frozen.chunks.push({ data, onParsed });
+        frozen.bytes += bytes;
+        if (frozen.bytes > SELECTION_FREEZE_MAX_BYTES) releaseSelectionFreeze();
+        return;
+      }
       terminalRef.current?.write(data, onParsed);
     },
     capture() {
+      // Queued frames must parse before the parser tail is captured, or the
+      // checkpoint would claim bytes the screen never showed.
+      releaseSelectionFreeze();
       const terminal = terminalRef.current;
       const serialize = serializeRef.current;
       if (!terminal || !serialize) return Promise.resolve(undefined);
@@ -188,6 +267,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     restore(screen) {
       const terminal = terminalRef.current;
       if (!terminal) return Promise.resolve();
+      // The snapshot supersedes anything buffered behind the selection freeze.
+      discardSelectionFreeze();
       restoring.current = true;
       parserTail.current.reset();
       parserTail.current.advance(new Uint8Array(screen.pending));
@@ -244,6 +325,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       cancelPendingPaste();
       imageGeneration.current += 1;
       invalidateIosImeRef.current();
+      discardSelectionFreeze();
       const terminal = terminalRef.current;
       if (!terminal) return;
       // Fence the reset behind writes already queued in xterm, while writes
@@ -335,12 +417,29 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     });
   };
 
+  const clearSelectionAndCapture = () => {
+    lastSelectionRef.current = { text: "", at: 0 };
+    lastSelectionMenuPosition.current = null;
+    releaseSelectionFreeze();
+    terminalRef.current?.clearSelection();
+    // A capture-only menu has no live selection to trigger a change event.
+    setHasSelection(false);
+  };
+
   const copySelection = () => {
-    const selection = terminalRef.current?.getSelection() ?? "";
+    // A live TUI redraw can erase the highlight before Copy is tapped; the
+    // captured text keeps the action useful for a bounded window.
+    const selection =
+      terminalRef.current?.getSelection() || captureFreshSelection();
     if (!selection) return;
     setCopyFailed(false);
-    if (!navigator.clipboard) { setCopyFailed(true); return; }
-    void navigator.clipboard.writeText(selection).then(() => terminalRef.current?.clearSelection()).catch(() => setCopyFailed(true));
+    void writeClipboardText(selection).then(() => {
+      lastSelectionRef.current = { text: "", at: 0 };
+      lastSelectionMenuPosition.current = null;
+      releaseSelectionFreeze();
+      terminalRef.current?.clearSelection();
+      setHasSelection(false);
+    }).catch(() => setCopyFailed(true));
   };
 
   inputHandlerRef.current = (data: string) => {
@@ -392,6 +491,32 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       }),
       terminal.parser.registerEscHandler({ final: "c" }, () => { mouseEncoding.current = 0; return false; }),
     ];
+    // Pi-family TUIs copy their native selection through OSC 52 when they run
+    // on the Host; write it to this device's clipboard. Size-capped and
+    // write-only: terminal output can never read the clipboard.
+    const osc52 = terminal.parser.registerOscHandler(52, data => {
+      const separator = data.indexOf(";");
+      if (separator <= 0) return true;
+      const selection = data.slice(0, separator);
+      const payload = data.slice(separator + 1);
+      if (
+        selection !== "c" ||
+        payload.length === 0 ||
+        payload.length > OSC52_MAX_BASE64_LENGTH ||
+        payload === "?"
+      ) {
+        return true;
+      }
+      try {
+        const binary = atob(payload);
+        const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+        const text = new TextDecoder().decode(bytes);
+        if (text) void writeClipboardText(text).catch(() => undefined);
+      } catch {
+        // Malformed base64 is ignored like any other unsupported control.
+      }
+      return true;
+    });
     terminal.open(container);
     // Keep the DOM renderer as the fallback: a lost WebGL context must degrade
     // to a working terminal, not a blank one.
@@ -441,8 +566,14 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
         const screen = container.querySelector(".xterm-screen");
         const selection = terminal.getSelectionPosition();
         if (!menu || !screen) return;
-        const position = selection && selectionMenuPosition(selection, terminal.buffer.active.viewportY,
+        let position = selection && selectionMenuPosition(selection, terminal.buffer.active.viewportY,
           terminal.cols, terminal.rows, screen.getBoundingClientRect(), section.getBoundingClientRect(), menu.getBoundingClientRect());
+        if (position) lastSelectionMenuPosition.current = position;
+        else if (!selection && captureFreshSelection()) {
+          // A repaint erased the highlight; keep Copy reachable where the menu
+          // was last anchored.
+          position = lastSelectionMenuPosition.current ?? undefined;
+        }
         menu.style.visibility = position ? "visible" : "hidden";
         if (position) {
           menu.style.left = `${position.left}px`;
@@ -483,7 +614,16 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       terminal.write("Touch, select, type with IME, or use the special-key row.\r\n$ ");
     }
     const selectionChanged = terminal.onSelectionChange(() => {
-      setHasSelection(Boolean(terminal.getSelection()));
+      const text = terminal.getSelection();
+      if (text) {
+        lastSelectionRef.current = { text, at: Date.now() };
+        // Freeze live output while a selection exists: fullscreen TUIs repaint
+        // continuously and would overwrite the selected rows before Copy.
+        startSelectionFreeze();
+      } else {
+        releaseSelectionFreeze();
+      }
+      setHasSelection(Boolean(text) || Boolean(captureFreshSelection()));
       setCopyFailed(false);
       positionSelectionMenu();
     });
@@ -550,19 +690,114 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     section.addEventListener("focusin", focusIn);
     section.addEventListener("focusout", focusOut);
     const keys = keysRef.current;
-    let touchGesture: { x: number; y: number; lastY: number; moved: boolean; selection?: { start: number; end: number } } | undefined;
+    let touchGesture: {
+      x: number; y: number; lastY: number; pointerX: number; pointerY: number;
+      moved: boolean;
+      selection?: { start: number; end: number };
+      nativeDrag?: boolean;
+    } | undefined;
     let longPressTimer: number | undefined;
+    let nativeDragHelper: HTMLTextAreaElement | undefined;
+    let selectionScrollTimer: number | undefined;
+    let selectionScrollDirection: -1 | 0 | 1 = 0;
     const cancelLongPress = () => window.clearTimeout(longPressTimer);
+    const screenRect = () => container.querySelector(".xterm-screen")?.getBoundingClientRect();
     const cellAt = (x: number, y: number) => {
-      const rect = container.querySelector(".xterm-screen")?.getBoundingClientRect();
+      const rect = screenRect();
       if (!rect || rect.width <= 0 || rect.height <= 0) return;
       return {
         col: Math.max(0, Math.min(terminal.cols - 1, Math.floor((x - rect.left) / rect.width * terminal.cols))),
         row: terminal.buffer.active.viewportY + Math.max(0, Math.min(terminal.rows - 1, Math.floor((y - rect.top) / rect.height * terminal.rows))),
       };
     };
+    const forwardedMouseEvents = new WeakSet<Event>();
+    const dispatchMouse = (target: EventTarget, type: string, x: number, y: number, buttons: number) => {
+      const event = new MouseEvent(type, {
+        clientX: x, clientY: y, button: 0, buttons,
+        bubbles: true, cancelable: true,
+      });
+      forwardedMouseEvents.add(event);
+      target.dispatchEvent(event);
+      return event;
+    };
+    const stopSelectionAutoScroll = () => {
+      if (selectionScrollTimer !== undefined) window.clearInterval(selectionScrollTimer);
+      selectionScrollTimer = undefined;
+      selectionScrollDirection = 0;
+    };
+    const extendSelectionToEdge = (direction: -1 | 1) => {
+      const gesture = touchGesture;
+      if (!gesture?.selection) return;
+      const rect = screenRect();
+      if (!rect || rect.width <= 0) return;
+      terminal.scrollLines(direction);
+      const row = direction < 0
+        ? terminal.buffer.active.viewportY
+        : terminal.buffer.active.viewportY + terminal.rows - 1;
+      const col = Math.max(0, Math.min(terminal.cols - 1,
+        Math.floor((gesture.pointerX - rect.left) / rect.width * terminal.cols)));
+      const line = terminal.buffer.active.getLine(row);
+      const width = Math.max(1, line?.getCell(col)?.getWidth() ?? 1);
+      const at = row * terminal.cols + col;
+      const start = Math.min(gesture.selection.start, at);
+      const end = Math.max(gesture.selection.end, at + width);
+      gesture.selection = { start, end };
+      terminal.select(start % terminal.cols, Math.floor(start / terminal.cols), end - start);
+    };
+    const updateSelectionAutoScroll = () => {
+      const gesture = touchGesture;
+      const rect = screenRect();
+      const scrollable = terminal.buffer.active.type === "normal" && terminal.buffer.active.baseY > 0;
+      if (!gesture?.selection || !rect || rect.height <= 0 || !scrollable) {
+        stopSelectionAutoScroll();
+        return;
+      }
+      const rowHeight = rect.height / Math.max(1, terminal.rows);
+      const direction = gesture.pointerY < rect.top + rowHeight
+        ? -1
+        : gesture.pointerY >= rect.bottom - rowHeight ? 1 : 0;
+      if (direction === 0) {
+        stopSelectionAutoScroll();
+        return;
+      }
+      selectionScrollDirection = direction;
+      if (selectionScrollTimer !== undefined) return;
+      selectionScrollTimer = window.setInterval(() => {
+        if (!touchGesture?.selection || selectionScrollDirection === 0) {
+          stopSelectionAutoScroll();
+          return;
+        }
+        extendSelectionToEdge(selectionScrollDirection);
+      }, SELECTION_SCROLL_INTERVAL_MS);
+    };
+    const endNativeDrag = () => {
+      if (!touchGesture?.nativeDrag) return;
+      const gesture = touchGesture;
+      gesture.nativeDrag = false;
+      dispatchMouse(document, "mouseup", gesture.pointerX, gesture.pointerY, 0);
+      nativeDragHelper?.removeAttribute("inert");
+      nativeDragHelper = undefined;
+    };
     const beginSelection = () => {
       if (!touchGesture || touchGesture.moved) return;
+      // Pi-family fullscreen TUIs own drag selection, edge auto-scroll and
+      // copy-on-release; forward the touch drag as mouse reports so their
+      // native gesture runs instead of a screen-local xterm selection.
+      if (NATIVE_SELECTION_ADAPTERS.has(adapterRef.current ?? "")
+        && terminal.modes.mouseTrackingMode !== "none") {
+        const screen = container.querySelector<HTMLElement>(".xterm-screen");
+        if (!screen) return;
+        touchGesture.nativeDrag = true;
+        gestureStartedInInput = false;
+        compatibilityMouseUntil = performance.now() + 1000;
+        // xterm's mousedown focuses its helper; keep the software keyboard
+        // closed for the whole selection drag.
+        nativeDragHelper = terminal.textarea ?? undefined;
+        nativeDragHelper?.blur();
+        nativeDragHelper?.setAttribute("inert", "");
+        dispatchMouse(screen, "mousedown", touchGesture.pointerX, touchGesture.pointerY, 1);
+        return;
+      }
       const cell = cellAt(touchGesture.x, touchGesture.y);
       if (!cell) return;
       const line = terminal.buffer.active.getLine(cell.row);
@@ -611,12 +846,21 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     };
     const recordTouchGesture = (event: TouchEvent) => {
       cancelLongPress();
+      if (touchGesture?.nativeDrag) endNativeDrag();
+      stopSelectionAutoScroll();
       const touch = event.touches[0] ?? event.changedTouches[0];
       if (touch) recordInputGestureAt(event.target instanceof Node ? event.target : null, touch.clientY);
       if (event.touches.length === 1 && event.target instanceof Node && container.contains(event.target)) {
         compatibilityMouseUntil = performance.now() + 1000;
+        lastSelectionRef.current = { text: "", at: 0 };
+        lastSelectionMenuPosition.current = null;
         terminal.clearSelection();
-        touchGesture = { x: touch.clientX, y: touch.clientY, lastY: touch.clientY, moved: false };
+        setHasSelection(false);
+        touchGesture = {
+          x: touch.clientX, y: touch.clientY, lastY: touch.clientY,
+          pointerX: touch.clientX, pointerY: touch.clientY,
+          moved: false,
+        };
         longPressTimer = window.setTimeout(beginSelection, 500);
       } else touchGesture = undefined;
     };
@@ -636,7 +880,6 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       const helper = container.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
       if (helper && document.activeElement === helper) helper.blur();
     };
-    const forwardedMouseEvents = new WeakSet<Event>();
     let scrollWheelFrame: number | undefined;
     let diagnosticFrame: number | undefined;
     let diagnosticStarted = false;
@@ -701,8 +944,19 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     const scrollTouch = (event: TouchEvent) => {
       if (!touchGesture || event.touches.length !== 1) return;
       const touch = event.touches[0];
+      touchGesture.pointerX = touch.clientX;
+      touchGesture.pointerY = touch.clientY;
       const dx = touch.clientX - touchGesture.x;
       const dy = touch.clientY - touchGesture.y;
+      if (touchGesture.nativeDrag) {
+        // The TUI owns this gesture: forward pointer motion as reports so its
+        // native selection and edge auto-scroll follow the finger.
+        event.preventDefault();
+        event.stopPropagation();
+        touchGesture.moved = true;
+        dispatchMouse(document, "mousemove", touch.clientX, touch.clientY, 1);
+        return;
+      }
       if (touchGesture.selection) {
         event.preventDefault();
         event.stopPropagation();
@@ -713,8 +967,10 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
           const at = cell.row * terminal.cols + col;
           const start = Math.min(touchGesture.selection.start, at);
           const end = Math.max(touchGesture.selection.end, at + Math.max(1, line?.getCell(col)?.getWidth() ?? 1));
+          touchGesture.selection = { start, end };
           terminal.select(start % terminal.cols, Math.floor(start / terminal.cols), end - start);
         }
+        updateSelectionAutoScroll();
         return;
       }
       if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
@@ -747,7 +1003,17 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     };
     const finishTouch = (event: TouchEvent) => {
       cancelLongPress();
+      stopSelectionAutoScroll();
       if (!touchGesture) return;
+      if (touchGesture.nativeDrag) {
+        // Release reaches the TUI so it finishes its native selection and
+        // copies the spanned text (OSC 52 to this device).
+        event.preventDefault();
+        event.stopPropagation();
+        endNativeDrag();
+        touchGesture = undefined;
+        return;
+      }
       // A selection drag belongs to xterm even if its final displacement looks
       // like a page swipe. Do not let App navigate on this touchend.
       if (touchGesture.selection) event.stopPropagation();
@@ -852,8 +1118,13 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       disposeIosIme?.();
       invalidateIosImeRef.current = () => undefined;
       cancelLongPress();
+      stopSelectionAutoScroll();
+      if (nativeDragHelper) nativeDragHelper.removeAttribute("inert");
+      nativeDragHelper = undefined;
+      discardSelectionFreeze();
       if (selectionFrame !== undefined) window.cancelAnimationFrame(selectionFrame);
       positionSelectionMenuRef.current = () => undefined;
+      osc52.dispose();
       disposeSynchronizedOutput();
       disposeWebglAtlas();
       webgl?.dispose();
@@ -990,7 +1261,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
         data-recovery-label={recovering ? (recoveryLabel ?? t("session.connection.attaching")) : undefined} />
       {hasSelection && !obscured ? <div ref={selectionMenuRef} className="mobile-terminal-selection" role="group" aria-label="Text selection">
         <button type="button" onMouseDown={event => event.preventDefault()} onClick={copySelection}>Copy</button>
-        <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => terminalRef.current?.clearSelection()}>Clear</button>
+        <button type="button" onMouseDown={event => event.preventDefault()} onClick={clearSelectionAndCapture}>Clear</button>
         {copyFailed ? <span role="alert">Unable to copy. Try again.</span> : null}
       </div> : null}
       {pasteFailed && inputActive && !obscured ? <p className="mobile-terminal-paste-error" role="alert">Unable to paste. Check clipboard access and try again.</p> : null}

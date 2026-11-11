@@ -36,6 +36,7 @@ const terminalHarness = vi.hoisted(() => ({
   resets: 0,
   pastes: [] as string[],
   scrollToTopCalls: 0,
+  oscHandlers: new Map<number, (data: string) => boolean | Promise<boolean>>(),
   instances: 0,
   options: undefined as { fontSize?: number; fontFamily?: string; minimumContrastRatio?: number; screenReaderMode?: boolean; scrollback?: number; theme?: unknown } | undefined,
 }));
@@ -56,7 +57,15 @@ vi.mock("@xterm/addon-serialize", () => ({
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     _core = { _renderService: { _renderRows() {}, _renderer: { value: { renderRows() {} } } } };
-    parser = { registerCsiHandler: () => ({ dispose() {} }), registerEscHandler: () => ({ dispose() {} }) };
+    parser = {
+      registerCsiHandler: () => ({ dispose() {} }),
+      registerEscHandler: () => ({ dispose() {} }),
+      registerOscHandler: (ident: number, handler: (data: string) => boolean | Promise<boolean>) => {
+        terminalHarness.oscHandlers.set(ident, handler);
+        return { dispose: () => terminalHarness.oscHandlers.delete(ident) };
+      },
+    };
+    emitOsc(ident: number, data: string) { return terminalHarness.oscHandlers.get(ident)?.(data); }
     resize(cols: number, rows: number) { terminalHarness.cols = cols; terminalHarness.rows = rows; }
     get cols() { return terminalHarness.cols; }
     get rows() { return terminalHarness.rows; }
@@ -385,6 +394,7 @@ describe("MobileTerminal input accessory", () => {
     terminalHarness.resets = 0;
     terminalHarness.pastes = [];
     terminalHarness.scrollToTopCalls = 0;
+    terminalHarness.oscHandlers.clear();
     terminalHarness.instances = 0;
     terminalHarness.options = undefined;
     vi.stubGlobal("ResizeObserver", class {
@@ -842,6 +852,108 @@ describe("MobileTerminal input accessory", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Copy" })).toBeNull());
     expect(terminalHarness.clears).toBe(1);
+  });
+
+  it("buffers live output while a selection exists and flushes it after Copy", async () => {
+    const ref = createRef<MobileTerminalHandle>();
+    render(<MobileTerminal ref={ref} showProbeOutput={false} />);
+    act(() => terminalHarness.selectionChanged());
+    ref.current!.write("frozen frame");
+    expect(terminalHarness.writes).not.toContain("frozen frame");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Copy" }));
+
+    await waitFor(() => expect(terminalHarness.writes).toContain("frozen frame"));
+  });
+
+  it("keeps Copy available from the captured text when a repaint erases the selection", async () => {
+    render(<MobileTerminal showProbeOutput={false} />);
+    act(() => terminalHarness.selectionChanged());
+    await screen.findByRole("button", { name: "Copy" });
+
+    // A live TUI repaint clears xterm's selection without any user action.
+    terminalHarness.selection = "";
+    act(() => terminalHarness.selectionChanged());
+
+    fireEvent.click(await screen.findByRole("button", { name: "Copy" }));
+    await waitFor(() =>
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith("selected output"),
+    );
+  });
+
+  it("scrolls the viewport while a local selection drag pushes the bottom edge", () => {
+    vi.useFakeTimers();
+    try {
+      terminalHarness.baseY = 400;
+      terminalHarness.viewportY = 400;
+      render(<MobileTerminal showProbeOutput={false} />);
+      const screenEl = terminalHarness.screen!;
+      fireEvent.touchStart(screenEl, { touches: [{ clientX: 30, clientY: 100 }] });
+      vi.advanceTimersByTime(550);
+      const selected = terminalHarness.selects.length;
+      expect(selected).toBeGreaterThan(0);
+
+      fireEvent.touchMove(screenEl, {
+        touches: [{ clientX: 30, clientY: terminalHarness.screenHeight - 2 }],
+      });
+      vi.advanceTimersByTime(180);
+      expect(terminalHarness.scrolledLines.some(rows => rows > 0)).toBe(true);
+      expect(terminalHarness.selects.length).toBeGreaterThan(selected);
+
+      fireEvent.touchEnd(screenEl, {
+        changedTouches: [{ clientX: 30, clientY: terminalHarness.screenHeight - 2 }],
+      });
+      const scrolled = terminalHarness.scrolledLines.length;
+      vi.advanceTimersByTime(300);
+      expect(terminalHarness.scrolledLines.length).toBe(scrolled);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("delegates Pi fullscreen drags to the native TUI selection", () => {
+    vi.useFakeTimers();
+    const seen: string[] = [];
+    const record = (event: Event) => seen.push(event.type);
+    document.addEventListener("mousedown", record, true);
+    document.addEventListener("mousemove", record, true);
+    document.addEventListener("mouseup", record, true);
+    try {
+      terminalHarness.mouseTracking = "any";
+      terminalHarness.bufferType = "alternate";
+      render(<MobileTerminal showProbeOutput={false} adapter="easy_pi" />);
+      const screenEl = terminalHarness.screen!;
+
+      fireEvent.touchStart(screenEl, { touches: [{ clientX: 30, clientY: 100 }] });
+      vi.advanceTimersByTime(550);
+      expect(seen).toContain("mousedown");
+      expect(terminalHarness.selects).toEqual([]);
+      expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
+
+      fireEvent.touchMove(screenEl, { touches: [{ clientX: 40, clientY: 120 }] });
+      expect(seen).toContain("mousemove");
+
+      fireEvent.touchEnd(screenEl, { changedTouches: [{ clientX: 40, clientY: 120 }] });
+      expect(seen).toContain("mouseup");
+      expect(terminalHarness.helper).not.toHaveAttribute("inert");
+    } finally {
+      document.removeEventListener("mousedown", record, true);
+      document.removeEventListener("mousemove", record, true);
+      document.removeEventListener("mouseup", record, true);
+      vi.useRealTimers();
+    }
+  });
+
+  it("writes an OSC 52 clipboard payload to the device clipboard", async () => {
+    render(<MobileTerminal showProbeOutput={false} />);
+    const text = "复制 文本";
+    const payload = btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+
+    expect(terminalHarness.oscHandlers.get(52)?.(`c;${payload}`)).toBe(true);
+
+    await waitFor(() =>
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(text),
+    );
   });
 
   it("hides the floating menu with obscured terminal output and reanchors it on return", async () => {

@@ -1037,6 +1037,14 @@ fn run() -> i32 {
             // instead of falling back to the visible `label (url)` form.
             command.env("FORCE_HYPERLINK", "1");
             command.env_remove("NO_COLOR");
+            // Pi's clipboard helper prefers native tools and only *also* emits
+            // OSC 52 when it believes it runs over a remote shell. AgentPort's
+            // mobile client renders the same output stream and needs that
+            // channel to put a Pi selection on the phone's clipboard; the
+            // desktop clipboard still updates natively.
+            if matches!(cfg.adapter_type.as_str(), "pi" | "easy_pi") {
+                command.env("MOSH_CONNECTION", "agentport");
+            }
             let mut child = match slave.spawn_command(command) {
                 Ok(child) => child,
                 Err(e) => {

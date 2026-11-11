@@ -926,6 +926,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
       {connectionLabel === "failed" ? <button type="button" onClick={retryConnection}>{t("session.retryAttach")}</button> : null}
       {shouldAttach ? <MobileTerminal
         active={active}
+        adapter={open.session.adapterType}
         onRelease={releaseTerminal}
         ref={terminal}
         resizeEpoch={attachmentId}

@@ -1,5 +1,13 @@
 # Project Learnings
 
+## `mobile TUI copy` — 长按选区敌不过重绘，alternate screen 也没有本地回滚
+
+- Wrong approach: 把 mobile 全屏 TUI 复制失效归为剪贴板权限或网络；或只在桌面侧修，不动手机的本地选区与手势分流。
+- Why it failed: mobile 用“长按 500ms→本地 xterm 选区”的方式选字，但全屏 TUI 持续重绘会覆盖/清掉选区，且没有捕获兜底，Copy 按钮随后消失；拖到首/末行没有自动滚动，alternate screen 又没有本地回滚；手机也没有桌面那种“把拖拽交还 TUI”的通路，而 Pi 的复制只有它认为远端时才额外发 OSC 52。
+- Correct approach: ①选区冻结：本地选区存活期间把 `write` 排队（2 MiB/30s 上限），`copy`/清除/capture 时按序冲刷，capture/restore/reset 丢弃时也必须结算排队的 `onParsed` 回调，否则 SessionWorkspace 的 `outputWriteInFlight` 会永久卡住；②30s 选区捕获兜底 + 菜单锚点缓存，重绘抹掉高亮后 Copy 仍可用；③普通 buffer（normal 且有回滚）拖到首/末行时用 60ms 定时器 `scrollLines` 并扩展选区；④`pi`/`easy_pi` 全屏且 `mouseTracking !== none` 时，长按后把触摸拖拽合成 mousedown/mousemove/mouseup 交给 TUI，让 Pi 原生选区、边缘滚动与松手复制生效；Host 对 `pi`/`easy_pi` 进程设置 `MOSH_CONNECTION`，Pi 便会在原生复制之外追加 OSC 52；mobile 新增 OSC 52→本机剪贴板（仅写入、2 MiB 上限），且通过 Tauri 原生 clipboard 插件写入（OSC 52 到达时没有用户手势）。
+- Prevention: 触摸端没有修饰键，delegation 必须按 adapter 且确认 TUI 真有鼠标模式；freeze 只能排在渲染层，不能在协议层丢帧；OSC 52 是跨机复制通道，但写入必须走原生剪贴板并限制大小。
+- Verified by: mobile 62 文件/972 项（新增冻结/捕获/边缘滚动/委派/OSC52 回归）、tsc、生产构建通过；`cargo check -p agentport-host --all-targets` 通过；桌面既有 139 文件/1161 项不受影响。
+
 ## `remote TUI copy` — 远端全屏 Agent 下 macOS 普通拖拽根本没有本地选区
 
 - Wrong approach: 把“连接远程设备后复制失效、右键 Copy 灰色”当成远程事件流或剪贴板路由问题；或让 macOS 用户只靠 ⌥+drag。

@@ -11,3 +11,12 @@ export function readClipboardText(): Promise<string> {
   if (!navigator.clipboard) return Promise.reject(new Error("Clipboard unavailable"));
   return navigator.clipboard.readText();
 }
+
+/** Write through the native bridge when installed. OSC 52 copies arrive from
+ * terminal output outside any user gesture, where WKWebView's web Clipboard
+ * API can reject the write. */
+export function writeClipboardText(text: string): Promise<void> {
+  if (isTauri()) return invoke("plugin:clipboard-manager|write_text", { text });
+  if (!navigator.clipboard) return Promise.reject(new Error("Clipboard unavailable"));
+  return navigator.clipboard.writeText(text);
+}
