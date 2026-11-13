@@ -1113,6 +1113,12 @@ body.is-project-dragging .tree-row.project {
   color: var(--sidebar-text-strong);
 }
 
+/* Only the live working spinner stays visible. Other state markers keep their
+   14px slot (visibility: hidden) so every title aligns on the same column. */
+.tree-row.session .dot:not(.working) {
+  visibility: hidden;
+}
+
 .tree-row.session.nested {
   padding-left: 28px;
 }
