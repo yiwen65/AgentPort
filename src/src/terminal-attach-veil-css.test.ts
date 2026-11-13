@@ -73,6 +73,21 @@ describe("terminal attach/replay veil", () => {
     );
   });
 
+  it("delays the Connecting card so a quick attach does not flash it", () => {
+    expect(terminalArea).toContain(
+      '<div className="overlay-card skeleton-card"',
+    );
+    const card = ruleBody(/\.skeleton-card\s*\{([^}]*)\}/);
+    expect(card).toContain("animation: skeleton-card-reveal");
+    expect(card).toMatch(/\b900ms\b/);
+    expect(card).toContain("both");
+    const reveal = ruleBody(
+      /@keyframes skeleton-card-reveal\s*\{([\s\S]*?)\n\}/,
+    );
+    expect(reveal).toContain("opacity: 0");
+    expect(reveal).toContain("opacity: 1");
+  });
+
   it.each(["warn", "info"])("composites the %s banner tint over an opaque background", tone => {
     const banner = ruleBody(new RegExp(`\\.banner\\.${tone}\\s*\\{([^}]*)\\}`));
     expect(banner).toContain("linear-gradient(");

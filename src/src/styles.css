@@ -4595,6 +4595,22 @@ body.is-resizing-pane {
   gap: 10px;
 }
 
+/* A warm switch restores its checkpoint within a few frames; only a genuinely
+   slow attach should show "Connecting". Keep the pane veiled immediately but
+   reveal the card after a delay so quick switches never flash it. */
+.skeleton-card {
+  animation: skeleton-card-reveal 1ms linear 900ms both;
+}
+
+@keyframes skeleton-card-reveal {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 .skeleton-line {
   height: 12px;
   border-radius: 6px;

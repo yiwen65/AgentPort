@@ -3711,6 +3711,113 @@ describe("terminal renderer", () => {
     localStorage.removeItem(key);
   });
 
+  it("trims scrollback instead of discarding an oversized release checkpoint", async () => {
+    const key = "agentport:terminal-snapshot:v2:renderer-test";
+    localStorage.removeItem(key);
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const handle = getHandle("renderer-test")!;
+    handle.logCursor = {
+      runId: "run_oversized",
+      runOrdinal: 1,
+      generation: 0,
+      offset: 42,
+    };
+    handle.displayReady = true;
+    handle.attached = true;
+    handle.attachmentId = 1;
+    const oversized = "x".repeat(2 * 1024 * 1024 + 8);
+    const serialize = handle.serialize.serialize as unknown as ReturnType<
+      typeof vi.fn
+    >;
+    serialize.mockImplementation(
+      (options: { scrollback?: number } = {}) =>
+        (options.scrollback ?? 0) > 0 ? oversized : "visible screen",
+    );
+
+    const released = releaseTerminal("renderer-test");
+    invokeWriteCallback(
+      terminal.write.mock.calls[terminal.write.mock.calls.length - 1],
+    );
+    await released;
+
+    expect(serialize.mock.calls[0][0]).toEqual({ scrollback: 1000 });
+    expect(serialize.mock.calls.length).toBeGreaterThan(1);
+    expect(
+      (serialize.mock.calls[1][0] as { scrollback: number }).scrollback,
+    ).toBeLessThan(1000);
+    expect(JSON.parse(localStorage.getItem(key) ?? "null").content).toBe(
+      "visible screen",
+    );
+    localStorage.removeItem(key);
+  });
+
+  it("reclaims deleted-Session checkpoints when quota blocks a new checkpoint", async () => {
+    const key = "agentport:terminal-snapshot:v2:renderer-test";
+    const staleKey = "agentport:terminal-snapshot:v2:deleted-session";
+    localStorage.removeItem(key);
+    localStorage.setItem(staleKey, "{}");
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const handle = getHandle("renderer-test")!;
+    handle.logCursor = {
+      runId: "run_quota",
+      runOrdinal: 1,
+      generation: 0,
+      offset: 42,
+    };
+    handle.displayReady = true;
+    handle.attached = true;
+    handle.attachmentId = 1;
+    vi.mocked(handle.serialize.serialize).mockReturnValue("release checkpoint");
+
+    const setItem = Storage.prototype.setItem;
+    let rejected = false;
+    const quota = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(function (this: Storage, name: string, value: string) {
+        if (!rejected && name === key) {
+          rejected = true;
+          throw new DOMException("quota exceeded", "QuotaExceededError");
+        }
+        setItem.call(this, name, value);
+      });
+
+    const released = releaseTerminal("renderer-test");
+    invokeWriteCallback(
+      terminal.write.mock.calls[terminal.write.mock.calls.length - 1],
+    );
+    await released;
+    quota.mockRestore();
+
+    expect(rejected).toBe(true);
+    expect(localStorage.getItem(staleKey)).toBeNull();
+    expect(JSON.parse(localStorage.getItem(key) ?? "null").content).toBe(
+      "release checkpoint",
+    );
+    localStorage.removeItem(key);
+  });
+
+  it("drops terminal checkpoints for Sessions removed from the project tree", () => {
+    const aliveId = getState().projects[0].sessions[0].id;
+    const aliveKey = `agentport:terminal-snapshot:v2:${aliveId}`;
+    const staleKey = "agentport:terminal-snapshot:v2:deleted-session";
+    localStorage.setItem(aliveKey, "{}");
+    localStorage.setItem(staleKey, "{}");
+
+    pruneHandles();
+
+    expect(localStorage.getItem(staleKey)).toBeNull();
+    expect(localStorage.getItem(aliveKey)).not.toBeNull();
+    localStorage.removeItem(aliveKey);
+  });
+
   it("flushes an open synchronized-output frame before release snapshots its cursor", async () => {
     const key = "agentport:terminal-snapshot:v2:renderer-test";
     localStorage.removeItem(key);

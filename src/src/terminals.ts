@@ -1741,6 +1741,45 @@ interface TerminalSnapshot {
   mouseEncoding: TerminalMouseEncoding;
 }
 
+const TERMINAL_SNAPSHOT_STORAGE_PREFIX = "agentport:terminal-snapshot:";
+
+function snapshotSessionIdFromKey(key: string): string | null {
+  const prefix = scopedStorageKey(TERMINAL_SNAPSHOT_STORAGE_PREFIX);
+  if (!key.startsWith(prefix)) return null;
+  return key.slice(prefix.length).match(/^v\d+:(.+)$/)?.[1] ?? null;
+}
+
+/** Drop checkpoints for the current device only; other devices keep theirs. */
+function removeTerminalSnapshots(predicate: (sessionId: string) => boolean) {
+  try {
+    const doomed: Array<{ key: string; sessionId: string }> = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key) continue;
+      const sessionId = snapshotSessionIdFromKey(key);
+      if (sessionId !== null && predicate(sessionId)) {
+        doomed.push({ key, sessionId });
+      }
+    }
+    for (const { key, sessionId } of doomed) {
+      localStorage.removeItem(key);
+      terminalSnapshotCache.delete(sessionId);
+    }
+  } catch {
+    // Storage unavailable; checkpoints are only a warm-switch optimization.
+  }
+}
+
+/** Remove checkpoints for Sessions that no longer exist in the project tree. */
+function pruneStaleTerminalSnapshots() {
+  const alive = new Set(
+    getState().projects.flatMap((project) =>
+      project.sessions.map((session) => session.id),
+    ),
+  );
+  removeTerminalSnapshots((sessionId) => !alive.has(sessionId));
+}
+
 /** @internal exported for device-scoping tests. */
 export function snapshotKey(sessionId: string) {
   return scopedStorageKey(
@@ -1840,19 +1879,68 @@ export function hasWarmTerminalPreview(sessionId: string): boolean {
   );
 }
 
+function serializeTerminalCheckpoint(handle: TermHandle): string | null {
+  const serialize = (scrollback: number) =>
+    handle.serialize.serialize({ scrollback });
+  const content = serialize(TERMINAL_SNAPSHOT_SCROLLBACK_LINES);
+  if (content.length <= MAX_TERMINAL_SNAPSHOT_CHARS) return content;
+  // Styled Agent output can push a full navigation window past the storage
+  // cap. Keep the visible screen and trim scrollback instead of discarding the
+  // checkpoint and forcing a cold reconnect. Bound the retries: serialization
+  // runs on the renderer's main thread during a Session switch.
+  const scaled = Math.floor(
+    (TERMINAL_SNAPSHOT_SCROLLBACK_LINES *
+      MAX_TERMINAL_SNAPSHOT_CHARS *
+      0.9) /
+      content.length,
+  );
+  if (scaled > 0) {
+    const trimmed = serialize(scaled);
+    if (trimmed.length <= MAX_TERMINAL_SNAPSHOT_CHARS) return trimmed;
+  }
+  const visibleOnly = serialize(0);
+  return visibleOnly.length <= MAX_TERMINAL_SNAPSHOT_CHARS
+    ? visibleOnly
+    : null;
+}
+
+function writeTerminalSnapshot(sessionId: string, raw: string): boolean {
+  const key = snapshotKey(sessionId);
+  try {
+    localStorage.setItem(key, raw);
+    return true;
+  } catch {
+    // Checkpoints share WKWebView's small LocalStorage quota with UI state.
+    // They are a disposable cache, so reclaim dead Sessions first, then keep
+    // only the panes that are visible right now (plus this one) and retry.
+  }
+  pruneStaleTerminalSnapshots();
+  try {
+    localStorage.setItem(key, raw);
+    return true;
+  } catch {
+    const keep = new Set(getState().attachedIds);
+    keep.add(sessionId);
+    removeTerminalSnapshots((other) => !keep.has(other));
+    terminalSnapshotCache.delete(sessionId);
+  }
+  try {
+    localStorage.setItem(key, raw);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function storeTerminalSnapshot(
   handle: TermHandle,
   cursor: LogCursorView,
   snapshotRevision: number,
 ): boolean {
+  if (!findSession(getState().projects, handle.sessionId)) return false;
   try {
-    const content = handle.serialize.serialize({
-      scrollback: TERMINAL_SNAPSHOT_SCROLLBACK_LINES,
-    });
-    if (content.length > MAX_TERMINAL_SNAPSHOT_CHARS) {
-      clearTerminalSnapshot(handle.sessionId);
-      return false;
-    }
+    const content = serializeTerminalCheckpoint(handle);
+    if (content === null) return false;
     const snapshot: TerminalSnapshot = {
       version: TERMINAL_SNAPSHOT_VERSION,
       cursor,
@@ -1862,7 +1950,7 @@ function storeTerminalSnapshot(
       mouseEncoding: handle.mouseEncoding,
     };
     const encoded = JSON.stringify(snapshot);
-    localStorage.setItem(snapshotKey(handle.sessionId), encoded);
+    if (!writeTerminalSnapshot(handle.sessionId, encoded)) return false;
     cacheTerminalSnapshot(handle.sessionId, encoded, snapshot);
     if (handle.terminalSnapshotRevision === snapshotRevision) {
       handle.persistedTerminalSnapshotRevision = snapshotRevision;
@@ -3753,4 +3841,7 @@ export function pruneHandles() {
     if (!alive.has(id)) void releaseTerminal(id);
   }
   setState({ attachedIds: s.attachedIds.filter((id) => alive.has(id)) });
+  // Deleted Sessions cannot be switched back to; their checkpoints otherwise
+  // accumulate until the shared LocalStorage quota blocks new ones.
+  pruneStaleTerminalSnapshots();
 }

@@ -439,7 +439,7 @@ function SkeletonOverlay() {
     // visibly race through history (高频刷屏). Ended-session overlays stay
     // translucent on purpose so their read-only history remains visible.
     <div className="term-overlay term-overlay-solid">
-      <div className="overlay-card" style={{ alignItems: "stretch", textAlign: "left" }}>
+      <div className="overlay-card skeleton-card" style={{ alignItems: "stretch", textAlign: "left" }}>
         <h3>{t("ui.lifecycle.connectingHost")}</h3>
         <div className="skeleton" aria-hidden="true">
           <div className="skeleton-line" style={{ width: "88%" }} />
