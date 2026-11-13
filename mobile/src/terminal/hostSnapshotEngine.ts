@@ -29,18 +29,11 @@ export function detectionText(): string {
   return lines.slice(-8).join("\n").slice(-8192);
 }
 export function snapshot(): string {
-  let pending = tail.snapshot();
-  if (!pending) {
-    // The simplified parser-tail can stick in overflow/unsafePrefix on a
-    // prefix the real terminal parses cleanly. Returning "null" makes the Host
-    // fall back to a differential tail replay, which for a busy fullscreen TUI
-    // reconstructs the screen by re-parsing history and keeps the renderer
-    // repainting. The serialized screen and mode state are still authoritative;
-    // drop only the unusable trailing prefix (never replay its side effects)
-    // and reset the tracker so it can track the live stream again.
-    tail.reset();
-    pending = [];
-  }
+  const pending = tail.snapshot();
+  // Serializing the screen cannot preserve an unfinished parser state whose
+  // prefix is unsafe to replay. Keep tracking until the sequence terminates;
+  // resetting here would silently corrupt snapshots and live prompt detection.
+  if (!pending) return "null";
   return JSON.stringify({ content: serialize.serialize({ scrollback: 2000 }),
     cols: terminal.cols, rows: terminal.rows, pending, state: captureSnapshotState(terminal) });
 }
