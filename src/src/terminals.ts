@@ -1051,6 +1051,15 @@ function restoreHostScreenSnapshot(handle: TermHandle, value: unknown) {
   if (snapshot.pending.length > 0) {
     handle.writes.write(new Uint8Array(snapshot.pending));
   }
+  // The queued reset above can overwrite activateAttachment's synchronous
+  // fit with the Host's old geometry (notably after a remote restart). Keep
+  // that geometry while restoring the snapshot, then reconcile with the pane
+  // only after its content and parser state have drained. Hidden panes defer
+  // the fit, and fitHandle preserves mobile-owned PTY geometry authority.
+  handle.writes.write("", () => {
+    if (!fence()) return;
+    fitHandle(handle, true, true, "host-snapshot");
+  });
 }
 
 /**

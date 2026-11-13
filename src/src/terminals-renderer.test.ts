@@ -489,6 +489,64 @@ describe("terminal renderer", () => {
     },
   );
 
+  it.each(["desktop", "mobile", "hidden"] as const)(
+    "reconciles snapshot geometry after parsing without a window resize (%s)",
+    async (mode) => {
+      const active = mode !== "hidden";
+      if (!active) setState({ activeSessionId: "another-session" });
+      const content = "\x1b[2J\x1b[HREMOTE RESTART";
+      rendererMocks.apiMock.attachSession.mockResolvedValueOnce({
+        attachmentId: 1, childAlive: true, hostPid: 42, logBytes: 0,
+        status: null, agentSessionId: null,
+        terminalGeometry: mode === "mobile" ? {
+          runId: "run-mobile", runOrdinal: 2, cols: 120, rows: 32,
+          sourceKind: "mobile", sourceDeviceId: "phone-1", attachmentId: 9,
+          orientation: "portrait", revision: 4, updatedAt: "2026-09-02T10:00:00Z",
+        } : null,
+        screenSnapshot: { content, cols: 120, rows: 32, pending: [0x1b, 0x5b],
+          state: validSnapshotState(32) },
+      });
+      const container = document.createElement("div");
+      Object.defineProperties(container, {
+        clientWidth: { value: 1000 },
+        clientHeight: { value: 800 },
+      });
+      mountTerminal("renderer-test", container);
+      const handle = getHandle("renderer-test")!;
+      const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1]!;
+      vi.mocked(handle.fit.fit).mockImplementation(() => terminal.resize(160, 48));
+      await vi.waitFor(() => expect(handle.attached).toBe(true));
+      // Attach fits synchronously, but the queued snapshot reset runs later.
+      if (active) expect(terminal.cols).toBe(160);
+      const calls = terminal.write.mock.calls;
+      const barrier = calls.findIndex(call => call[0] === "");
+      const contentIndex = calls.findIndex(call => call[0] === content);
+      invokeWriteCallback(calls[barrier]);
+      expect(terminal.cols).toBe(120);
+      invokeWriteCallback(calls[contentIndex]);
+      const pendingIndex = calls.findIndex(call => call[0] instanceof Uint8Array);
+      for (const call of calls.slice(pendingIndex + 1)) {
+        if (typeof call[1] === "function") invokeWriteCallback(call);
+      }
+      if (active) {
+        expect([terminal.cols, terminal.rows]).toEqual([160, 48]);
+        expect(handle.lastFitReason).toBe("host-snapshot");
+        if (mode === "mobile") {
+          expect(rendererMocks.apiMock.resizePty).not.toHaveBeenCalled();
+        } else {
+          await vi.waitFor(() => expect(rendererMocks.apiMock.resizePty)
+            .toHaveBeenCalledWith("renderer-test", 160, 48, 0, 0));
+        }
+      } else {
+        expect(handle.geometryDirty).toBe(true);
+        expect(handle.fit.fit).not.toHaveBeenCalled();
+        setTerminalActive("renderer-test", true);
+        fitSession("renderer-test", true);
+        expect([terminal.cols, terminal.rows]).toEqual([160, 48]);
+      }
+    },
+  );
+
   it("keeps the warm preview when the served snapshot fails validation", async () => {
     setState({
       projects: getState().projects.map(project => ({
