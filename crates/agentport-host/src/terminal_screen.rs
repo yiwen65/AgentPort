@@ -118,6 +118,33 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_rejects_unsafe_prefix_without_resetting_live_tracking() {
+        let screen = TerminalScreen::new(47, 53).unwrap();
+        // LF has already affected the screen, but the CSI is still unfinished.
+        // Replaying the prefix duplicates LF; dropping it loses the CSI state.
+        screen.feed(b"HEADER\x1b[\n2").unwrap();
+        assert!(screen.snapshot().is_none());
+        assert!(screen.snapshot().is_none());
+        assert_eq!(screen.detection_text().unwrap(), "");
+        screen.feed(b"JREADY").unwrap();
+        assert!(screen.snapshot().is_some());
+        assert!(screen.detection_text().unwrap().contains("READY"));
+    }
+
+    #[test]
+    fn snapshot_rejects_overflow_until_the_control_string_ends() {
+        let screen = TerminalScreen::new(47, 53).unwrap();
+        screen.feed(b"HEADER\x1b]0;").unwrap();
+        screen.feed(&vec![b'x'; 70000]).unwrap();
+        assert!(screen.snapshot().is_none());
+        assert!(screen.snapshot().is_none());
+        screen.feed(b"\x07READY").unwrap();
+        let saved = screen.snapshot().unwrap();
+        assert_eq!(saved["pending"], serde_json::json!([]));
+        assert!(saved["content"].as_str().unwrap().contains("READY"));
+    }
+
+    #[test]
     fn retains_screen_beyond_the_raw_tail_and_keeps_parser_prefix() {
         let screen = TerminalScreen::new(47, 53).unwrap();
         screen

@@ -3,6 +3,8 @@
 /src-tauri/binaries
 /dist-release
 /tmp-build
+# Tauri 在 Linux 构建时自动生成的本机权限 schema
+/src-tauri/gen/schemas/linux-schema.json
 
 # Node / 前端
 **/node_modules/
