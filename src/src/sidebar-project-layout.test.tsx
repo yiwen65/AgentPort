@@ -168,6 +168,8 @@ describe("Project drag ordering and pinning", () => {
       projects: [project("a"), project("b"), project("c")],
       adapters: [],
       expandedProjects: { a: true, b: true, c: true },
+      revealedProjects: {},
+      revealedWorktrees: {},
       repositoryStatuses: {},
       sidebarWorktreeProjectId: null,
       projectLayoutSaving: false,
@@ -198,6 +200,34 @@ describe("Project drag ordering and pinning", () => {
       ),
     ).toEqual(["b"]);
     expect(saveProjectLayoutFlowMock).not.toHaveBeenCalled();
+  });
+
+  it("an explicit click replaces a transient reveal and persists the collapse", () => {
+    setState({
+      expandedProjects: { a: true, b: false, c: true },
+      revealedProjects: { b: true },
+    });
+    render(<Sidebar collapsed={false} width={296} />);
+    const row = screen.getByRole("button", { name: "B" });
+
+    expect(
+      document
+        .querySelector('[data-project-id="b"]')
+        ?.getAttribute("aria-expanded"),
+    ).toBe("true");
+    act(() => {
+      pointer(row, "pointerdown", 20, 115);
+      pointer(row, "pointerup", 20, 115);
+      fireEvent.click(row);
+    });
+
+    expect(getState().expandedProjects.b).toBe(false);
+    expect(getState().revealedProjects.b).toBeUndefined();
+    expect(
+      JSON.parse(
+        window.localStorage.getItem("agentport-collapsed-project-ids") ?? "null",
+      ),
+    ).toEqual(["b"]);
   });
 
   it("reorders only after crossing the threshold and suppresses the trailing click", () => {

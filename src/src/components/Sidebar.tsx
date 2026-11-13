@@ -33,6 +33,7 @@ import {
   openDialog,
   openWorktreeView,
   persistProjectExpansion,
+  persistWorktreeExpansion,
   canUseLocalOsIntegration,
   getState,
   promptDialog,
@@ -941,7 +942,9 @@ function WorktreeNode({
 }) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
   const collapsed = useStore(
-    (state) => state.collapsedWorktrees[w.id] === true,
+    (state) =>
+      state.collapsedWorktrees[w.id] === true &&
+      state.revealedWorktrees[w.id] !== true,
   );
   return (
     <div role="treeitem" aria-expanded={!collapsed}>
@@ -949,12 +952,16 @@ function WorktreeNode({
         <button
           className={"tree-row worktree" + (highlighted ? " highlighted" : "")}
           onClick={() =>
-            update((s) => ({
-              collapsedWorktrees: {
+            update((s) => {
+              const collapsedWorktrees = {
                 ...s.collapsedWorktrees,
                 [w.id]: !collapsed,
-              },
-            }))
+              };
+              persistWorktreeExpansion(collapsedWorktrees);
+              const revealedWorktrees = { ...s.revealedWorktrees };
+              delete revealedWorktrees[w.id];
+              return { collapsedWorktrees, revealedWorktrees };
+            })
           }
           onContextMenu={(e) => {
             e.preventDefault();
@@ -1561,7 +1568,11 @@ function ProjectNode({
   onTogglePin,
 }: ProjectNodeProps) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
-  const expanded = useStore((state) => state.expandedProjects[p.id] !== false);
+  const expanded = useStore(
+    (state) =>
+      state.expandedProjects[p.id] !== false ||
+      state.revealedProjects[p.id] === true,
+  );
   const order = useSessionOrder();
   const archiving = useStore((state) => state.archivingSessionIds);
   const archivingSessionIds = new Set(archiving);
@@ -1639,7 +1650,9 @@ function ProjectNode({
                 [p.id]: !expanded,
               };
               persistProjectExpansion(expandedProjects);
-              return { expandedProjects };
+              const revealedProjects = { ...state.revealedProjects };
+              delete revealedProjects[p.id];
+              return { expandedProjects, revealedProjects };
             });
           }}
           onContextMenu={(event) => {
@@ -1929,15 +1942,25 @@ export default function Sidebar({
   const projectLayoutSaving = useStore((state) => state.projectLayoutSaving);
   const projectDrag = useProjectDrag(projects, projectLayoutSaving);
   const expandedProjects = useStore((state) => state.expandedProjects);
+  const revealedProjects = useStore((state) => state.revealedProjects);
   const collapsedWorktrees = useStore((state) => state.collapsedWorktrees);
+  const revealedWorktrees = useStore((state) => state.revealedWorktrees);
   const sidebarWorktreeProjectId = useStore(
     (state) => state.sidebarWorktreeProjectId,
   );
   const allProjectsCollapsed =
     projects.length > 0 &&
-    projects.every((project) => expandedProjects[project.id] === false);
+    projects.every(
+      (project) =>
+        expandedProjects[project.id] === false &&
+        revealedProjects[project.id] !== true,
+    );
   const allWorktreesCollapsed = projects.every((p) =>
-    p.worktrees.every((w) => collapsedWorktrees[w.id] === true),
+    p.worktrees.every(
+      (w) =>
+        collapsedWorktrees[w.id] === true &&
+        revealedWorktrees[w.id] !== true,
+    ),
   );
   // Master toggle covers both project groups and worktree session groups.
   const allCollapsed = allProjectsCollapsed && allWorktreesCollapsed;
@@ -2051,13 +2074,17 @@ export default function Sidebar({
                   state.projects.map((project) => [project.id, !collapse]),
                 );
                 persistProjectExpansion(expandedProjects);
+                const collapsedWorktrees = Object.fromEntries(
+                  state.projects.flatMap((p) =>
+                    p.worktrees.map((w) => [w.id, collapse]),
+                  ),
+                );
+                persistWorktreeExpansion(collapsedWorktrees);
                 return {
                   expandedProjects,
-                  collapsedWorktrees: Object.fromEntries(
-                    state.projects.flatMap((p) =>
-                      p.worktrees.map((w) => [w.id, collapse]),
-                    ),
-                  ),
+                  collapsedWorktrees,
+                  revealedProjects: {},
+                  revealedWorktrees: {},
                 };
               })
             }

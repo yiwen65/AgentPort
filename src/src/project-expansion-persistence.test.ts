@@ -26,6 +26,31 @@ it("ignores malformed persisted expansion state", async () => {
   expect(getState().expandedProjects).toEqual({});
 });
 
+it("restores collapsed Worktree session lists when the frontend store starts again", async () => {
+  window.localStorage.setItem(
+    "agentport-collapsed-worktree-ids",
+    JSON.stringify(["worktree-b"]),
+  );
+  vi.resetModules();
+
+  const { getState } = await import("./store");
+
+  expect(getState().collapsedWorktrees).toEqual({ "worktree-b": true });
+});
+
+it("persists only collapsed Worktrees under the compact key", async () => {
+  vi.resetModules();
+  const { persistWorktreeExpansion } = await import("./store");
+
+  persistWorktreeExpansion({ "worktree-a": false, "worktree-b": true });
+
+  expect(
+    JSON.parse(
+      window.localStorage.getItem("agentport-collapsed-worktree-ids") ?? "null",
+    ),
+  ).toEqual(["worktree-b"]);
+});
+
 it("reclaims obsolete terminal snapshots when quota blocks persistence", async () => {
   const legacySnapshotKey = "agentport:terminal-snapshot:v1:stale-session";
   window.localStorage.setItem(legacySnapshotKey, "x".repeat(4_999_950));

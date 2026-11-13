@@ -36,7 +36,9 @@ export default function AddProjectDialog() {
       if (res.id) {
         const expandedProjects = { ...getState().expandedProjects, [res.id]: true };
         persistProjectExpansion(expandedProjects);
-        setState({ expandedProjects });
+        const revealedProjects = { ...getState().revealedProjects };
+        delete revealedProjects[res.id];
+        setState({ expandedProjects, revealedProjects });
       }
       closeDialog();
     } catch (e) {

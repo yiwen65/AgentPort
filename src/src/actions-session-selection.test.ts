@@ -149,6 +149,54 @@ describe("selectSession", () => {
     ).toEqual(["prj_1"]);
   });
 
+  it("does not persist a reveal when a Session is selected outside the tree", () => {
+    window.localStorage.setItem(
+      "agentport-collapsed-project-ids",
+      JSON.stringify(["prj_1"]),
+    );
+    setState({ expandedProjects: { prj_1: false }, revealedProjects: {} });
+
+    selectSession("ses_old");
+
+    expect(getState().expandedProjects.prj_1).toBe(false);
+    expect(getState().revealedProjects.prj_1).toBe(true);
+    expect(
+      JSON.parse(
+        window.localStorage.getItem("agentport-collapsed-project-ids") ?? "null",
+      ),
+    ).toEqual(["prj_1"]);
+
+    setState({ expandedProjects: { prj_1: true }, revealedProjects: {} });
+    window.localStorage.removeItem("agentport-collapsed-project-ids");
+  });
+
+  it("reveals a collapsed Worktree without persisting the reveal", () => {
+    const worktreeSession = { ...oldSession, worktreeId: "wt_1" };
+    window.localStorage.setItem(
+      "agentport-collapsed-worktree-ids",
+      JSON.stringify(["wt_1"]),
+    );
+    setState({
+      projects: projectWith(worktreeSession),
+      collapsedWorktrees: { wt_1: true },
+      revealedWorktrees: {},
+    });
+
+    selectSession("ses_old");
+
+    expect(getState().collapsedWorktrees.wt_1).toBe(true);
+    expect(getState().revealedWorktrees.wt_1).toBe(true);
+    expect(
+      JSON.parse(
+        window.localStorage.getItem("agentport-collapsed-worktree-ids") ??
+          "null",
+      ),
+    ).toEqual(["wt_1"]);
+
+    setState({ collapsedWorktrees: {}, revealedWorktrees: {} });
+    window.localStorage.removeItem("agentport-collapsed-worktree-ids");
+  });
+
   it("never adds a JSON-RPC Session to the persistent xterm LRU", () => {
     setState({
       projects: projectWith(oldSession, rpcSession),

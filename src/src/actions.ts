@@ -165,9 +165,12 @@ export async function addProjectFromPickerFlow() {
       res.focusedExisting ? "info" : "success",
     );
     if (res.id) {
-      const expandedProjects = { ...getState().expandedProjects, [res.id]: true };
+      const state = getState();
+      const expandedProjects = { ...state.expandedProjects, [res.id]: true };
       persistProjectExpansion(expandedProjects);
-      setState({ expandedProjects });
+      const revealedProjects = { ...state.revealedProjects };
+      delete revealedProjects[res.id];
+      setState({ expandedProjects, revealedProjects });
     }
   } catch (e) {
     toast(i18n.t("shell:project.addFailed", { detail: errorText(e) }), "error");
@@ -522,23 +525,29 @@ export function selectSession(
     layoutContains(s.terminalLayout, id) && s.maximizedSessionId ? id : null;
   const revealInSidebar = options.revealInSidebar !== false;
   const proj = findProjectOf(s.projects, id);
-  const expandedProjects =
-    revealInSidebar && proj && s.expandedProjects[proj.id] === false
-      ? { ...s.expandedProjects, [proj.id]: true }
-      : s.expandedProjects;
-  const collapsedWorktrees = { ...s.collapsedWorktrees };
-  if (revealInSidebar && ses?.worktreeId) delete collapsedWorktrees[ses.worktreeId];
-  if (expandedProjects !== s.expandedProjects) {
-    persistProjectExpansion(expandedProjects);
-  }
+  // Reveals are view-only: they must never overwrite the user's persisted
+  // Project/Worktree collapse choice. Only explicit tree toggles persist.
+  const revealProject =
+    revealInSidebar && proj && s.expandedProjects[proj.id] === false;
+  const revealedProjects = revealProject
+    ? { ...s.revealedProjects, [proj.id]: true as const }
+    : s.revealedProjects;
+  const revealWorktree =
+    revealInSidebar &&
+    ses?.worktreeId &&
+    s.collapsedWorktrees[ses.worktreeId] === true;
+  const revealedWorktrees =
+    revealWorktree && ses?.worktreeId
+      ? { ...s.revealedWorktrees, [ses.worktreeId]: true as const }
+      : s.revealedWorktrees;
   setState({
     activeSessionId: id,
     terminalLayout,
     terminalLayoutGroups,
     maximizedSessionId,
     attachedIds,
-    expandedProjects,
-    collapsedWorktrees,
+    revealedProjects,
+    revealedWorktrees,
   });
   persistPaneGroups(terminalLayoutGroups, terminalLayout);
   releaseIdsOutside(s.attachedIds, attachedIds);

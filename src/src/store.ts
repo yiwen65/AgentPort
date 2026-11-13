@@ -369,6 +369,9 @@ export interface AppState {
   toasts: Toast[];
   showOnboarding: boolean;
   expandedProjects: Record<string, boolean>;
+  /** Ephemeral Project reveals caused by Session selection; never persisted,
+   * so they cannot overwrite the user's explicit collapse state. */
+  revealedProjects: Record<string, true>;
   /** Last backend-confirmed checkout state keyed by project. */
   repositoryStatuses: Record<string, RepositoryStatus>;
   announcement: string;
@@ -415,6 +418,8 @@ export interface AppState {
   highlightedWorktreeId: string | null;
   /** Worktree ids whose session list is collapsed in the management view. */
   collapsedWorktrees: Record<string, boolean>;
+  /** Ephemeral Worktree reveals caused by Session selection; never persisted. */
+  revealedWorktrees: Record<string, true>;
   /** Checkout-frozen Git Center state, with all snapshots keyed by checkoutId. */
   gitCenter: GitCenterState;
 }
@@ -456,21 +461,39 @@ export function getActiveDocumentTab(
 export const COLLAPSED_PROJECTS_STORAGE_KEY =
   "agentport-collapsed-project-ids";
 
+export const COLLAPSED_WORKTREES_STORAGE_KEY =
+  "agentport-collapsed-worktree-ids";
+
+function readPersistedCollapsedIds(baseKey: string): string[] {
+  try {
+    const value = window.localStorage.getItem(scopedStorageKey(baseKey));
+    if (!value) return [];
+    const ids: unknown = JSON.parse(value);
+    if (!Array.isArray(ids)) return [];
+    return ids.filter((id): id is string => typeof id === "string");
+  } catch {
+    return [];
+  }
+}
+
 /** Restore collapsed Projects while keeping unknown/new Projects expanded. */
 export function readPersistedProjectExpansion(): Record<string, boolean> {
-  try {
-    const value = window.localStorage.getItem(
-      scopedStorageKey(COLLAPSED_PROJECTS_STORAGE_KEY),
-    );
-    if (!value) return {};
-    const ids: unknown = JSON.parse(value);
-    if (!Array.isArray(ids)) return {};
-    return Object.fromEntries(
-      ids.filter((id): id is string => typeof id === "string").map((id) => [id, false]),
-    );
-  } catch {
-    return {};
-  }
+  return Object.fromEntries(
+    readPersistedCollapsedIds(COLLAPSED_PROJECTS_STORAGE_KEY).map((id) => [
+      id,
+      false,
+    ]),
+  );
+}
+
+/** Restore collapsed Worktree session lists while keeping new ones expanded. */
+export function readPersistedWorktreeExpansion(): Record<string, boolean> {
+  return Object.fromEntries(
+    readPersistedCollapsedIds(COLLAPSED_WORKTREES_STORAGE_KEY).map((id) => [
+      id,
+      true,
+    ]),
+  );
 }
 
 const LEGACY_TERMINAL_SNAPSHOT_STORAGE_PREFIX =
@@ -490,13 +513,9 @@ function reclaimObsoleteTerminalSnapshots() {
   }
 }
 
-export function persistProjectExpansion(expandedProjects: Record<string, boolean>) {
-  const collapsedIds = Object.entries(expandedProjects)
-    .filter(([, expanded]) => expanded === false)
-    .map(([id]) => id)
-    .sort();
-  const encoded = JSON.stringify(collapsedIds);
-  const storageKey = scopedStorageKey(COLLAPSED_PROJECTS_STORAGE_KEY);
+function persistCollapsedIds(baseKey: string, ids: string[]) {
+  const encoded = JSON.stringify([...new Set(ids)].sort());
+  const storageKey = scopedStorageKey(baseKey);
   try {
     window.localStorage.setItem(storageKey, encoded);
   } catch {
@@ -510,6 +529,26 @@ export function persistProjectExpansion(expandedProjects: Record<string, boolean
       // Expansion remains usable when WebView storage is unavailable.
     }
   }
+}
+
+export function persistProjectExpansion(expandedProjects: Record<string, boolean>) {
+  persistCollapsedIds(
+    COLLAPSED_PROJECTS_STORAGE_KEY,
+    Object.entries(expandedProjects)
+      .filter(([, expanded]) => expanded === false)
+      .map(([id]) => id),
+  );
+}
+
+export function persistWorktreeExpansion(
+  collapsedWorktrees: Record<string, boolean>,
+) {
+  persistCollapsedIds(
+    COLLAPSED_WORKTREES_STORAGE_KEY,
+    Object.entries(collapsedWorktrees)
+      .filter(([, collapsed]) => collapsed === true)
+      .map(([id]) => id),
+  );
 }
 
 const persistedTerminalWorkspace = readPersistedTerminalWorkspace();
@@ -548,6 +587,7 @@ const initialState: AppState = {
   toasts: [],
   showOnboarding: false,
   expandedProjects: readPersistedProjectExpansion(),
+  revealedProjects: {},
   repositoryStatuses: {},
   announcement: "",
   themeEffective: "dark",
@@ -569,7 +609,8 @@ const initialState: AppState = {
   docFontScale: 1,
   sidebarWorktreeProjectId: null,
   highlightedWorktreeId: null,
-  collapsedWorktrees: {},
+  collapsedWorktrees: readPersistedWorktreeExpansion(),
+  revealedWorktrees: {},
   gitCenter: emptyGitCenterState(),
 };
 
@@ -939,6 +980,7 @@ function sessionScopedState(
 export function applyProjectsSnapshot(projects: ProjectView[]) {
   update((s) => {
     const worktreeIds = new Set(projects.flatMap((p) => p.worktrees.map((w) => w.id)));
+    const projectIds = new Set(projects.map((p) => p.id));
     const currentSessions = new Map<string, SessionView>();
     for (const project of s.projects) {
       for (const session of project.sessions) currentSessions.set(session.id, session);
@@ -967,6 +1009,12 @@ export function applyProjectsSnapshot(projects: ProjectView[]) {
           : null,
       collapsedWorktrees: Object.fromEntries(
         Object.entries(s.collapsedWorktrees).filter(([id]) => worktreeIds.has(id)),
+      ),
+      revealedProjects: Object.fromEntries(
+        Object.entries(s.revealedProjects).filter(([id]) => projectIds.has(id)),
+      ),
+      revealedWorktrees: Object.fromEntries(
+        Object.entries(s.revealedWorktrees).filter(([id]) => worktreeIds.has(id)),
       ),
       ...sessionScopedState(s, nextProjects, aliveSessionIds),
     };
