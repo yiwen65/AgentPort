@@ -742,6 +742,36 @@ describe("search/history/timeline/documents/secrets/backup/export/diagnostics", 
     });
   });
 
+  it("getNativeHistory falls back to legacy params when an older sidecar rejects the tool-result option", async () => {
+    const page = { sourceStatus: { status: "unavailable" }, events: [], nextCursor: null, skippedLines: 0 };
+    request
+      .mockRejectedValueOnce(new RemoteRequestError("not_executed", "request failed on the remote host"))
+      .mockResolvedValueOnce(page);
+    const backend = makeBackend();
+
+    await expect(backend.getNativeHistory("ses_1", null, 200, false)).resolves.toBe(page);
+    expect(request).toHaveBeenNthCalledWith(1, "history.page", {
+      sessionId: "ses_1",
+      cursor: null,
+      limit: 200,
+      includeToolResults: false,
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "history.page", {
+      sessionId: "ses_1",
+      cursor: null,
+      limit: 200,
+    });
+  });
+
+  it("getNativeHistory does not hide unrelated page failures", async () => {
+    const failure = new RemoteRequestError("remote_failed", "request failed on the remote host");
+    request.mockRejectedValueOnce(failure);
+    const backend = makeBackend();
+
+    await expect(backend.getNativeHistory("ses_1", null, 200, false)).rejects.toBe(failure);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it("document read/write/list/create pass paths through", async () => {
     request.mockResolvedValue({});
     const backend = makeBackend();

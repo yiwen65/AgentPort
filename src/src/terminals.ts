@@ -938,6 +938,9 @@ export interface TermHandle {
   /** Agent-native history is a prefix of this same xterm buffer. `undefined`
    * means not requested yet; `null` means the oldest source line was reached. */
   nativeHistoryCursor: string | null | undefined;
+  /** Cursor whose page request already failed. Wheel gestures must not retry
+   * it (or re-toast) until the handle resets; `undefined` means no failure. */
+  nativeHistoryFailedCursor: string | null | undefined;
   nativeHistoryEvents: HistoryEvent[];
   nativeHistorySkippedLines: number;
   nativeHistoryRequest: Promise<boolean> | null;
@@ -1511,6 +1514,7 @@ export function getOrCreateHandle(key: string): TermHandle {
     historyLoaded: false,
     historyLoading: false,
     nativeHistoryCursor: undefined,
+    nativeHistoryFailedCursor: undefined,
     nativeHistoryEvents: [],
     nativeHistorySkippedLines: 0,
     nativeHistoryRequest: null,
@@ -2868,6 +2872,7 @@ const MAX_HISTORY_LIVE_BUFFER_BYTES = 64 * 1024 * 1024;
 function resetNativeHistory(handle: TermHandle) {
   handle.nativeHistoryBoundaryMarker?.dispose();
   handle.nativeHistoryCursor = undefined;
+  handle.nativeHistoryFailedCursor = undefined;
   handle.nativeHistoryEvents = [];
   handle.nativeHistorySkippedLines = 0;
   handle.nativeHistoryRequest = null;
@@ -3062,6 +3067,12 @@ export function loadOlderNativeHistory(sessionId: string): Promise<boolean> {
   if (handle.nativeHistoryCursor === null) return Promise.resolve(false);
   const generation = handle.generation;
   const cursor = handle.nativeHistoryCursor ?? null;
+  if (
+    handle.nativeHistoryFailedCursor !== undefined &&
+    handle.nativeHistoryFailedCursor === cursor
+  ) {
+    return Promise.resolve(false);
+  }
   let request!: Promise<boolean>;
   request = (async () => {
     try {
@@ -3080,6 +3091,7 @@ export function loadOlderNativeHistory(sessionId: string): Promise<boolean> {
         return false;
       }
       handle.nativeHistoryCursor = page.nextCursor;
+      handle.nativeHistoryFailedCursor = undefined;
       handle.nativeHistorySkippedLines += page.skippedLines;
       if (page.sourceStatus.status !== "available") return false;
       if (page.events.length === 0) return page.nextCursor !== null;
@@ -3094,6 +3106,7 @@ export function loadOlderNativeHistory(sessionId: string): Promise<boolean> {
         handles.get(sessionId) === handle &&
         handle.generation === generation
       ) {
+        handle.nativeHistoryFailedCursor = cursor;
         toast(errorText(error), "error");
       }
       return false;

@@ -74,6 +74,7 @@ import { RemoteClient } from "./client";
 import { remoteEventToChannelMsg } from "./events";
 import type { ChannelLike, RemoteEventWire } from "./types";
 import {
+  isRemoteRequestError,
   RemoteRequestError,
   RemoteUnavailableError,
 } from "./errors";
@@ -1330,11 +1331,24 @@ export class RemoteBackend {
     limit = 200,
     includeToolResults = true,
   ): Promise<HistoryPage> {
+    const params = { sessionId, cursor, limit };
+    if (includeToolResults) {
+      return this.request<HistoryPage>("history.page", {
+        ...params,
+        includeToolResults,
+      });
+    }
     return this.request<HistoryPage>("history.page", {
-      sessionId,
-      cursor,
-      limit,
-      includeToolResults,
+      ...params,
+      includeToolResults: false,
+    }).catch((error) => {
+      // Sidecars older than the history-options field reject the unknown
+      // parameter as not executed. Legacy pages still carry complete
+      // transcripts, which are better than no terminal history at all.
+      if (!isRemoteRequestError(error) || error.code !== "not_executed") {
+        throw error;
+      }
+      return this.request<HistoryPage>("history.page", params);
     });
   }
 

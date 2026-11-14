@@ -722,6 +722,32 @@ describe("terminal renderer", () => {
     expect(rendered).not.toContain("\u001b[2J remains plain text");
   });
 
+  it("does not retry or re-toast a native history page that already failed", async () => {
+    setState({
+      toasts: [],
+      projects: getState().projects.map((project) => ({
+        ...project,
+        sessions: project.sessions.map((session) => ({
+          ...session,
+          adapter: "codex",
+          lifecycle: "stopped" as const,
+        })),
+      })),
+    });
+    rendererMocks.apiMock.getNativeHistory.mockRejectedValue(
+      "request failed on the remote host",
+    );
+
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(getState().toasts).toHaveLength(1));
+    expect(getHandle("renderer-test")?.nativeHistoryFailedCursor).toBeNull();
+
+    await expect(loadOlderNativeHistory("renderer-test")).resolves.toBe(false);
+    await expect(loadOlderNativeHistory("renderer-test")).resolves.toBe(false);
+    expect(rendererMocks.apiMock.getNativeHistory).toHaveBeenCalledTimes(1);
+    expect(getState().toasts).toHaveLength(1);
+  });
+
   it("deduplicates an in-flight native page request", async () => {
     let resolvePage!: (page: {
       sourceStatus: { status: "available"; sources: never[] };
