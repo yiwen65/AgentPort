@@ -36,7 +36,11 @@ import {
   setState,
   toast,
 } from "./store";
-import { refreshProjects, selectSession } from "./actions";
+import {
+  refreshActiveRemoteAdaptersIfStale,
+  refreshProjects,
+  selectSession,
+} from "./actions";
 import type { RemoteBackend } from "./remote/backend";
 import { registerFocusSessionKeyHandler } from "./sessionFocusRegistry";
 import { parseSessionKey } from "./sessionIdentity";
@@ -172,26 +176,40 @@ async function doSwitchDevice(
       if (snapshotProjects) {
         const hello = getDeviceConnectionsState().connections[target.deviceId]
           ?.hello;
-        const context: DeviceContext = {
-          kind: "remote",
-          deviceId: target.deviceId,
-          deviceName: hello?.deviceName || target.deviceName,
-          capabilities: hello?.capabilities ?? [],
-        };
-        applyProjectsSnapshot(snapshotProjects, context);
-        const cachedAdapters = cachedRemoteAdapters(target.deviceId);
-        if (cachedAdapters) setState({ adapters: cachedAdapters });
-        resetGitCenterForDeviceChange();
-        clearCommitPreviewCache();
-        applyRequestedFocus(options);
-        setState({ deviceSwitching: false, deviceError: null });
-        startRemoteSync(target.deviceId);
-        void finishSnapshotSwitch(
+        return activateRemoteFromProjects(
           target.deviceId,
-          remoteBackendFor(target.deviceId),
+          remoteContextFromHello(target, hello),
+          snapshotProjects,
+          options,
           stale,
         );
-        return !stale();
+      }
+
+      // No cached snapshot: connect, show the light session/project list as
+      // soon as it arrives, then reconcile worktrees and slow slices behind it.
+      const hello = await connectDevice(target.deviceId);
+      if (stale()) return false;
+      const backend = remoteBackendFor(target.deviceId);
+      const context = remoteContextFromHello(target, hello);
+      let lightProjects: ProjectView[] | null = null;
+      try {
+        lightProjects = await backend.listProjectSessions(null);
+      } catch {
+        lightProjects = null;
+      }
+      if (stale()) return false;
+      if (
+        lightProjects &&
+        lightProjects.length > 0 &&
+        projectsContainSession(lightProjects, options.focusSessionId)
+      ) {
+        return activateRemoteFromProjects(
+          target.deviceId,
+          context,
+          lightProjects,
+          options,
+          stale,
+        );
       }
     }
     const { boot, context } = await connectAndBoot(target);
@@ -202,7 +220,10 @@ async function doSwitchDevice(
       skipBackgroundProbeRefresh: context.kind === "remote",
     });
     if (!stale()) {
-      if (target.kind === "remote") startRemoteSync(target.deviceId);
+      if (target.kind === "remote") {
+        startRemoteSync(target.deviceId);
+        scheduleRemoteAdapterFill(target.deviceId, stale);
+      }
       resetGitCenterForDeviceChange();
       clearCommitPreviewCache();
       applyRequestedFocus(options);
@@ -304,8 +325,75 @@ function snapshotProjectsForSwitch(
   return snapshot.projects;
 }
 
-/** Reconcile and fill slow slices after a snapshot-fast switch. */
-async function finishSnapshotSwitch(
+function remoteContextFromHello(
+  target: DeviceContext & { kind: "remote" },
+  hello: { deviceName: string; capabilities: string[] } | null | undefined,
+): DeviceContext {
+  return {
+    kind: "remote",
+    deviceId: target.deviceId,
+    deviceName: hello?.deviceName || target.deviceName,
+    capabilities: hello?.capabilities ?? [],
+  };
+}
+
+function projectsContainSession(
+  projects: ProjectView[],
+  focusSessionId: string | null | undefined,
+): boolean {
+  return (
+    !focusSessionId ||
+    projects.some((project) =>
+      project.sessions.some((session) => session.id === focusSessionId),
+    )
+  );
+}
+
+/**
+ * Apply already-fetched projects and finish the switch synchronously. Slow
+ * slices reconcile afterward so the workspace paints without waiting for them.
+ */
+function activateRemoteFromProjects(
+  deviceId: string,
+  context: DeviceContext,
+  projects: ProjectView[],
+  options: SwitchDeviceOptions,
+  stale: () => boolean,
+): boolean {
+  applyProjectsSnapshot(projects, context);
+  const cachedAdapters = cachedRemoteAdapters(deviceId);
+  if (cachedAdapters) setState({ adapters: cachedAdapters });
+  resetGitCenterForDeviceChange();
+  clearCommitPreviewCache();
+  applyRequestedFocus(options);
+  setState({ deviceSwitching: false, deviceError: null });
+  startRemoteSync(deviceId);
+  void refreshRemoteWorkspaceInBackground(
+    deviceId,
+    remoteBackendFor(deviceId),
+    stale,
+  );
+  scheduleRemoteAdapterFill(deviceId, stale);
+  return !stale();
+}
+
+/**
+ * Adapter discovery blocks the remote request loop for seconds on hosts that
+ * probe every agent sequentially. Run it only after the switched workspace has
+ * settled so panes attach first, and let the dialog path reuse the cache.
+ */
+function scheduleRemoteAdapterFill(deviceId: string, stale: () => boolean) {
+  window.setTimeout(() => {
+    if (stale()) return;
+    const active = getState().activeDevice;
+    if (active.kind === "remote" && active.deviceId === deviceId) {
+      refreshActiveRemoteAdaptersIfStale();
+    }
+  }, 1500);
+}
+
+/** Reconcile and fill project/worktree, timeline, and secret slices. */
+async function refreshRemoteWorkspaceInBackground(
   deviceId: string,
   backend: RemoteBackend,
   stale: () => boolean,
@@ -318,7 +406,7 @@ async function finishSnapshotSwitch(
   try {
     await backend.boot();
   } catch {
-    // The snapshot workspace stays usable; the sync engine reports transport
+    // The displayed workspace stays usable; the sync engine reports transport
     // loss and panes expose their reconnect action.
   }
   if (!stillActive()) return;

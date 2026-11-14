@@ -8,6 +8,7 @@ const apiMock = vi.hoisted(() => ({
 const actionsMock = vi.hoisted(() => ({
   applyThemeSettings: vi.fn(),
   readLastSelectedSessionId: vi.fn(),
+  refreshActiveRemoteAdaptersIfStale: vi.fn(),
   refreshProjects: vi.fn().mockResolvedValue(false),
   selectSession: vi.fn(),
 }));
@@ -324,6 +325,33 @@ describe("switchDevice", () => {
     });
     expect(remoteSyncMock.startRemoteSync).toHaveBeenCalledWith("dev_1");
     expect(apiMock.boot).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(backend.boot).toHaveBeenCalled());
+    expect(actionsMock.refreshProjects).toHaveBeenCalled();
+  });
+
+  it("shows the light session list on a first switch without a snapshot", async () => {
+    const listProjectSessions = vi.fn(async () => [remoteProject]);
+    const backend = makeBackend({ listProjectSessions });
+    runtimeMock.remoteBackendFor.mockReturnValue(backend);
+    setState({ projects: [localProject] });
+
+    await switchDevice(remoteContext("dev_1"), {
+      focusSessionId: "ses_remote",
+    });
+
+    const s = getState();
+    expect(s.activeDevice).toMatchObject({
+      kind: "remote",
+      deviceId: "dev_1",
+    });
+    expect(s.projects.map((p) => p.id)).toEqual(["prj_remote"]);
+    expect(listProjectSessions).toHaveBeenCalledWith(null);
+    expect(backend.listProjects).not.toHaveBeenCalled();
+    expect(apiMock.boot).not.toHaveBeenCalled();
+    expect(actionsMock.selectSession).toHaveBeenCalledWith("ses_remote", {
+      revealInSidebar: false,
+    });
+    expect(remoteSyncMock.startRemoteSync).toHaveBeenCalledWith("dev_1");
     await vi.waitFor(() => expect(backend.boot).toHaveBeenCalled());
     expect(actionsMock.refreshProjects).toHaveBeenCalled();
   });
