@@ -1109,6 +1109,18 @@ body.is-project-dragging .tree-row.project {
   padding-bottom: 6px;
 }
 
+/* Local rows have no device eyebrow: match the project-tree row height. */
+.tree-row.session.active-agent-session.no-device-label {
+  min-height: 41px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+.tree-row.session.active-agent-session.no-device-label .session-tail {
+  gap: 2px;
+  padding: 0;
+}
+
 .tree-row.session.active-agent-session .session-copy {
   gap: 1px;
 }

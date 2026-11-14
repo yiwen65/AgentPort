@@ -923,6 +923,7 @@ function SessionRow({
         "tree-row session" +
         (nested ? " nested" : "") +
         (sourceLabel ? " active-agent-session" : "") +
+        (sourceLabel && !deviceName ? " no-device-label" : "") +
         (active ? " active" : "") +
         (inPaneLayout && !active ? " in-pane-layout" : "") +
         (draggingPaneSession ? " dragging-pane-session" : "")
