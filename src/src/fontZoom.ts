@@ -6,7 +6,7 @@
 // terminal font size has its own persisted setting.
 
 import { getState, hasOpenDocuments, setState } from "./store";
-import { applyTerminalSettings } from "./terminals";
+import { applyTerminalSettingsAsync } from "./terminalRuntime";
 
 export type ZoomArea = "terminal" | "doc";
 
@@ -76,7 +76,7 @@ function applyAreaScale(area: ZoomArea, scale: number): void {
   } else {
     setState({ termFontScale: scale });
     document.documentElement.style.setProperty("--term-font-scale", String(scale));
-    applyTerminalSettings();
+    void applyTerminalSettingsAsync();
   }
 }
 

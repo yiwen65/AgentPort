@@ -45,16 +45,16 @@ import {
   type EffectiveTheme,
 } from "./store";
 import {
-  applyTerminalSettings,
-  applyXtermTheme,
-  attachHandle,
-  clearUnreadOutputTracking,
-  disposeHandle,
-  getHandle,
-  pruneHandles,
-  releaseTerminal,
-  resetForRestart,
-} from "./terminals";
+  applyTerminalSettingsAsync,
+  applyXtermThemeAsync,
+  attachHandleAsync,
+  clearUnreadOutputTrackingAsync,
+  disposeHandleAsync,
+  getHandleAsync,
+  pruneHandlesAsync,
+  releaseTerminalAsync,
+  resetForRestartAsync,
+} from "./terminalRuntime";
 import { agentDisplay } from "./format";
 import { i18n } from "./i18n";
 import { applyTerminalThemeCss } from "./terminalThemes";
@@ -137,7 +137,7 @@ export async function refreshProjects() {
     const projects = await api.listProjects(active);
     if (!isCurrentProjectsSnapshotRequest(request)) return false;
     applyProjectsSnapshot(projects);
-    pruneHandles();
+    void pruneHandlesAsync();
     return true;
   } catch {
     // The backend is the source of truth; keep the last good tree on error.
@@ -266,8 +266,8 @@ export function applyThemeSettings() {
     // Theme application must not depend on optional WebView storage.
   }
   setState({ themeEffective: theme, reducedMotion: reduced });
-  applyXtermTheme(theme, st.terminalTheme);
-  applyTerminalSettings();
+  void applyXtermThemeAsync(theme, st.terminalTheme);
+  void applyTerminalSettingsAsync();
 }
 
 // Sidebar hide/show choreography: the panel only ever animates `transform`
@@ -453,14 +453,14 @@ function attachedPtyIdsForLayout(layout: PaneLayout): string[] {
 function releaseIdsOutside(previousIds: string[], nextIds: string[]) {
   const retained = new Set(nextIds);
   for (const key of previousIds) {
-    if (!retained.has(key)) void releaseTerminal(key);
+    if (!retained.has(key)) void releaseTerminalAsync(key);
   }
 }
 
 function acknowledgeSession(id: string) {
   const key = activeKeyFor(id);
   rememberSelectedSessionId(id);
-  clearUnreadOutputTracking(key);
+  void clearUnreadOutputTrackingAsync(key);
   const session = findSession(getState().projects, id);
   void api
     .markSessionSeen(id, session?.status ?? null)
@@ -861,7 +861,7 @@ export async function restartSessionFlow(
     // The selected Session already persists its permission mode. Restart it
     // directly instead of asking the user to acknowledge the same mode again.
     const res = await sessionApi.restartSession(sessionId, true);
-    resetForRestart(key);
+    await resetForRestartAsync(key);
     await refreshSessionOwner(deviceId);
     if (isActiveDeviceId(deviceId)) {
       // Cold-start selection intentionally drops interrupted PTYs from the
@@ -869,10 +869,10 @@ export async function restartSessionFlow(
       // selection again so the active Session gets a TerminalPane before the
       // renderer switches away from its recovery surface.
       if (getState().activeSessionId === sessionId) selectSession(sessionId);
-      void attachHandle(key);
-    } else if (getHandle(key)) {
+      await attachHandleAsync(key);
+    } else if (await getHandleAsync(key)) {
       // A background pane keeps its renderer; reattach it to the new run.
-      void attachHandle(key);
+      await attachHandleAsync(key);
     }
     if (res.resumePrecision === "latest") {
       toast(i18n.t("session:flow.latestResumeNotice"), "info");
@@ -937,7 +937,7 @@ export async function archiveSessionFlow(
     await deviceSessionApiFor(deviceId ?? activeDeviceKey()).archiveSession(
       sessionId,
     );
-    disposeHandle(key);
+    await disposeHandleAsync(key);
     clearSessionScopedState(key);
     if (!active) removeSessionFromSnapshot(key);
     if (wasActive && getState().activeSessionId === null) {
@@ -1023,7 +1023,7 @@ export async function removeSessionFlow(
     await sessionApi.archiveSession(sessionId);
     archived = true;
     await sessionApi.deleteArchivedSession(sessionId);
-    disposeHandle(key);
+    await disposeHandleAsync(key);
     clearSessionScopedState(key);
     if (!active) removeSessionFromSnapshot(key);
     if (wasActive && getState().activeSessionId === null) {

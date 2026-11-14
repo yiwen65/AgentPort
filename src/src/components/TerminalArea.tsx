@@ -110,6 +110,11 @@ import {
   readDismissedGeometryRevision,
   terminalGeometryPromptState,
 } from "../terminalGeometryPrompt";
+import { loadTerminalRuntime } from "../terminalRuntime";
+
+// The pane chunk already owns the real terminal module; publish it to the
+// eager facade so synchronous drop/shortcut helpers can use mounted handles.
+void loadTerminalRuntime();
 
 // ---------------------------------------------------------------------------
 // persistent pane

@@ -47,11 +47,11 @@ import {
   useStore,
 } from "./store";
 import {
-  getHandle,
-  insertTextIntoTerminal,
-  pruneHandles,
-  scrollToBottom,
-} from "./terminals";
+  getHandleIfLoaded,
+  insertTextIntoTerminalIfLoaded,
+  pruneHandlesAsync,
+  scrollToBottomIfLoaded,
+} from "./terminalRuntime";
 import { applyBootInfo } from "./bootApply";
 import { cacheLocalBootBase } from "./remoteBoot";
 import {
@@ -176,7 +176,7 @@ function useBoot() {
               if (!shouldApplyLocalBackendEvent(getState())) return;
               invalidateProjectsSnapshotRequests();
               applyProjectsSnapshot(projects);
-              pruneHandles();
+              void pruneHandlesAsync();
             });
           }),
           onRepositoryStateChanged((status) => {
@@ -336,7 +336,7 @@ function useHotkeys() {
           : null;
       const focusedKey = activeSessionKey(s);
       if (piShortcut && focusedKey) {
-        const activeTerminal = getHandle(focusedKey);
+        const activeTerminal = getHandleIfLoaded(focusedKey);
         if (activeTerminal) {
           e.preventDefault();
           e.stopPropagation();
@@ -409,7 +409,7 @@ function useHotkeys() {
       if (bottomCombo) {
         e.preventDefault();
         e.stopPropagation();
-        if (focusedKey) scrollToBottom(focusedKey);
+        if (focusedKey) scrollToBottomIfLoaded(focusedKey);
         return;
       }
 
@@ -608,7 +608,7 @@ export default function App() {
       const paths = event.payload.paths.filter((path) => path.startsWith("/"));
       if (!session || paths.length === 0) return;
       const text = paths.map((path) => formatTerminalReference(path, false, session.adapter)).join("");
-      if (!insertTextIntoTerminal(sessionId, text)) {
+      if (!insertTextIntoTerminalIfLoaded(sessionId, text)) {
         toast(i18n.t("shell:ui.document.dropFailed"), "error");
       }
     }).then((value) => {

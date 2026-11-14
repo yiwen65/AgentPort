@@ -1004,11 +1004,10 @@ export default function DocumentPanel() {
   const [activeSash, setActiveSash] = useState<"panel" | "tree" | null>(null);
 
   useEffect(() => {
-    const onMove = (event: PointerEvent) => {
-      const start = dragStart.current;
-      if (!start) return;
-      const next = start.width + (start.x - event.clientX);
-      if (start.tree) {
+    let frame: number | null = null;
+    let pendingWidth: number | null = null;
+    const applyWidth = (next: number, tree: boolean) => {
+      if (tree) {
         setState({
           docTreeWidth: Math.round(
             Math.min(MAX_DOC_TREE_WIDTH, Math.max(MIN_DOC_TREE_WIDTH, next)),
@@ -1023,7 +1022,37 @@ export default function DocumentPanel() {
         ),
       });
     };
+    const flush = () => {
+      frame = null;
+      const start = dragStart.current;
+      if (!start || pendingWidth === null) return;
+      const next = pendingWidth;
+      pendingWidth = null;
+      applyWidth(next, start.tree);
+    };
+    const onMove = (event: PointerEvent) => {
+      const start = dragStart.current;
+      if (!start) return;
+      pendingWidth = start.width + (start.x - event.clientX);
+      if (frame === null) {
+        // Apply the leading edge immediately for responsiveness, then coalesce
+        // the rest of this frame's moves into one trailing write.
+        const next = pendingWidth;
+        pendingWidth = null;
+        applyWidth(next, start.tree);
+        frame = window.requestAnimationFrame(() => {
+          frame = null;
+          flush();
+        });
+      }
+    };
     const onEnd = () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      frame = null;
+      if (pendingWidth !== null && dragStart.current) {
+        applyWidth(pendingWidth, dragStart.current.tree);
+      }
+      pendingWidth = null;
       dragStart.current = null;
       setActiveSash(null);
       document.body.classList.remove("is-resizing-split");
@@ -1032,6 +1061,7 @@ export default function DocumentPanel() {
     window.addEventListener("pointerup", onEnd);
     window.addEventListener("pointercancel", onEnd);
     return () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onEnd);
       window.removeEventListener("pointercancel", onEnd);

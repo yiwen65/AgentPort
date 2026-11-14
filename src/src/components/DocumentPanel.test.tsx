@@ -2,6 +2,15 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+async function movePointer(clientX: number) {
+  await act(async () => {
+    window.dispatchEvent(new MouseEvent("pointermove", { clientX }));
+    await new Promise<void>((resolve) =>
+      window.requestAnimationFrame(() => resolve()),
+    );
+  });
+}
+
 const { readMock, writeMock, revealMock, openUrlMock, openDefaultMock, insertMock, listMock, createMock } =
   vi.hoisted(() => ({
     readMock: vi.fn(),
@@ -174,17 +183,11 @@ describe("DocumentPanel", () => {
       );
     });
     // Dragging the left-edge sash leftward widens the tree, clamped at 420.
-    act(() => {
-      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 440 }));
-    });
+    await movePointer(440);
     expect(getState().docTreeWidth).toBe(244);
-    act(() => {
-      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 0 }));
-    });
+    await movePointer(0);
     expect(getState().docTreeWidth).toBe(420);
-    act(() => {
-      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 900 }));
-    });
+    await movePointer(900);
     expect(getState().docTreeWidth).toBe(160);
     act(() => {
       window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
@@ -207,18 +210,12 @@ describe("DocumentPanel", () => {
     });
     expect(container.querySelector(".doc-tree-resize")?.className).toContain("active");
     // Dragging left widens the tree (it docks to the panel's right edge).
-    act(() => {
-      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 460 }));
-    });
+    await movePointer(460);
     expect(getState().docTreeWidth).toBe(224);
     // Clamped to [160, 420] like the tree-only sash.
-    act(() => {
-      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 0 }));
-    });
+    await movePointer(0);
     expect(getState().docTreeWidth).toBe(420);
-    act(() => {
-      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 900 }));
-    });
+    await movePointer(900);
     expect(getState().docTreeWidth).toBe(160);
     act(() => {
       window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
@@ -246,9 +243,7 @@ describe("DocumentPanel", () => {
         new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 500 }),
       );
     });
-    act(() => {
-      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 384 }));
-    });
+    await movePointer(384);
     expect(getState().docTreeWidth).toBe(300);
     act(() => {
       window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));

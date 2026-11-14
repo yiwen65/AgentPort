@@ -76,6 +76,7 @@ export default function MermaidBlock({ source, sourceLine }: { source: string; s
   );
   const [svg, setSvg] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const [visible, setVisible] = useState(false);
   const renderedSourceRef = useRef<string | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
 
@@ -84,7 +85,27 @@ export default function MermaidBlock({ source, sourceLine }: { source: string; s
   const flowGraph = useMemo(() => parseFlowchart(source), [source]);
 
   useEffect(() => {
-    if (flowGraph) return; // custom renderer owns this block
+    if (flowGraph) return;
+    const host = hostRef.current;
+    if (!host) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        setVisible(true);
+        observer.disconnect();
+      },
+      { rootMargin: "300px" },
+    );
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [flowGraph]);
+
+  useEffect(() => {
+    if (flowGraph || !visible) return; // custom renderer or off-screen block
     // Settings is an opaque full-window page while the terminal/document tree
     // stays mounted behind it. Theme exploration can otherwise launch one
     // non-cancellable Mermaid parse/layout per hidden block and per click.
@@ -126,7 +147,7 @@ export default function MermaidBlock({ source, sourceLine }: { source: string; s
     return () => {
       stale = true;
     };
-  }, [source, terminalPalette, flowGraph]);
+  }, [source, terminalPalette, flowGraph, visible]);
 
   if (flowGraph) {
     return <FlowGraph graph={flowGraph} />;
@@ -145,7 +166,11 @@ export default function MermaidBlock({ source, sourceLine }: { source: string; s
     );
   }
   if (!svg) {
-    return <div className="md-mermaid-status">{t("ui.document.diagramLoading")}</div>;
+    return (
+      <div ref={hostRef} className="md-mermaid-status">
+        {visible ? t("ui.document.diagramLoading") : null}
+      </div>
+    );
   }
   return (
     <div

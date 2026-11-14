@@ -3,7 +3,7 @@
 // pane inserts a reference the agent understands (`@/abs/path`), or a plain
 // shell-quoted path for shell sessions.
 
-import { insertTextIntoTerminal } from "./terminals";
+import { insertTextIntoTerminalIfLoaded } from "./terminalRuntime";
 import { i18n } from "./i18n";
 import { suppressOversizedDragImage } from "./paneSessionDrag";
 import { toast } from "./store";
@@ -149,7 +149,7 @@ export function dropTreeEntryIntoTerminal(
   payload: TreeDragPayload,
 ): boolean {
   const text = formatTerminalReference(payload.path, payload.isDir, adapter);
-  if (!insertTextIntoTerminal(sessionId, text)) {
+  if (!insertTextIntoTerminalIfLoaded(sessionId, text)) {
     toast(i18n.t("shell:ui.document.dropFailed"), "error");
     return false;
   }

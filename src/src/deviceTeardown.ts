@@ -18,7 +18,7 @@ import {
 } from "./paneLayout";
 import { deviceKeyForContext, parseSessionKey } from "./sessionIdentity";
 import { confirmDialog, getState, setState, toast } from "./store";
-import { releaseTerminal } from "./terminals";
+import { releaseTerminalAsync } from "./terminalRuntime";
 
 function layoutKeys(state = getState()): string[] {
   const keys = new Set<string>(orderedLayoutSessionIds(state.terminalLayout));
@@ -128,7 +128,7 @@ export async function disconnectDeviceFlow(
     terminalLayoutGroups,
     terminalLayoutGroups[0] ?? terminalLayout,
   );
-  await Promise.allSettled(keys.map((key) => releaseTerminal(key)));
+  await Promise.allSettled(keys.map((key) => releaseTerminalAsync(key)));
   dropDeviceSnapshot(deviceId);
   try {
     if (options.forget) forgetDeviceConnection(deviceId);

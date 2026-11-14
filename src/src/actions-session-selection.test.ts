@@ -197,7 +197,7 @@ describe("selectSession", () => {
     window.localStorage.removeItem("agentport-collapsed-worktree-ids");
   });
 
-  it("never adds a JSON-RPC Session to the persistent xterm LRU", () => {
+  it("never adds a JSON-RPC Session to the persistent xterm LRU", async () => {
     setState({
       projects: projectWith(oldSession, rpcSession),
       attachedIds: ["ses_rpc", "ses_old"],
@@ -207,11 +207,13 @@ describe("selectSession", () => {
 
     expect(getState().activeSessionId).toBe("ses_rpc");
     expect(getState().attachedIds).toEqual([]);
-    expect(releaseTerminalMock).toHaveBeenCalledWith("ses_rpc");
-    expect(releaseTerminalMock).toHaveBeenCalledWith("ses_old");
+    await vi.waitFor(() => {
+      expect(releaseTerminalMock).toHaveBeenCalledWith("ses_rpc");
+      expect(releaseTerminalMock).toHaveBeenCalledWith("ses_old");
+    });
   });
 
-  it("keeps ended PTY Sessions in the single xterm renderer", () => {
+  it("keeps ended PTY Sessions in the single xterm renderer", async () => {
     const ended = { ...oldSession, id: "ses_ended", lifecycle: "stopped" as const };
     setState({ projects: projectWith(oldSession, ended), attachedIds: [oldSession.id] });
 
@@ -219,7 +221,9 @@ describe("selectSession", () => {
 
     expect(getState().activeSessionId).toBe(ended.id);
     expect(getState().attachedIds).toEqual([ended.id]);
-    expect(releaseTerminalMock).toHaveBeenCalledWith(oldSession.id);
+    await vi.waitFor(() => {
+      expect(releaseTerminalMock).toHaveBeenCalledWith(oldSession.id);
+    });
   });
 
   it("stops directly without confirmation and ignores duplicate in-flight requests", async () => {
@@ -464,7 +468,7 @@ describe("selectSession", () => {
     expect(releaseTerminalMock).not.toHaveBeenCalled();
   });
 
-  it("shows an out-of-layout Session temporarily and restores the remembered split", () => {
+  it("shows an out-of-layout Session temporarily and restores the remembered split", async () => {
     const terminalLayout = splitPane(
       singletonPaneLayout(oldSession.id),
       oldSession.id,
@@ -493,8 +497,10 @@ describe("selectSession", () => {
     ]);
     expect(getState().activeSessionId).toBe(rpcSession.id);
     expect(getState().attachedIds).toEqual([]);
-    expect(releaseTerminalMock).toHaveBeenCalledWith(oldSession.id);
-    expect(releaseTerminalMock).toHaveBeenCalledWith(newSession.id);
+    await vi.waitFor(() => {
+      expect(releaseTerminalMock).toHaveBeenCalledWith(oldSession.id);
+      expect(releaseTerminalMock).toHaveBeenCalledWith(newSession.id);
+    });
 
     releaseTerminalMock.mockClear();
     selectSession(oldSession.id);

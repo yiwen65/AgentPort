@@ -60,14 +60,14 @@ describe("font zoom key handling", () => {
     document.body.innerHTML = "";
   });
 
-  it("zooms the terminal area by default and applies it to xterm", () => {
+  it("zooms the terminal area by default and applies it to xterm", async () => {
     expect(handleFontZoomKey(zoomKey("="))).toBe(true);
     expect(getState().termFontScale).toBe(1.1);
     expect(getState().docFontScale).toBe(1);
     expect(
       document.documentElement.style.getPropertyValue("--term-font-scale"),
     ).toBe("1.1");
-    expect(applyMock.apply).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(applyMock.apply).toHaveBeenCalledTimes(1));
   });
 
   it("ignores keys without Ctrl/⌘ and unrelated combos", () => {

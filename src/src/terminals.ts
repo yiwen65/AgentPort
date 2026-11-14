@@ -968,6 +968,9 @@ export interface TermHandle {
   container: HTMLDivElement | null;
   resizeObserver: ResizeObserver | null;
   active: boolean;
+  hiddenOutput: Uint8Array[];
+  hiddenOutputBytes: number;
+  hiddenOutputOverflowed: boolean;
   geometryDirty: boolean;
   fitCount: number;
   lastFitReason: string | null;
@@ -1532,6 +1535,9 @@ export function getOrCreateHandle(key: string): TermHandle {
     container: null,
     resizeObserver: null,
     active: activeSessionKey(getState()) === key,
+    hiddenOutput: [],
+    hiddenOutputBytes: 0,
+    hiddenOutputOverflowed: false,
     geometryDirty: false,
     fitCount: 0,
     lastFitReason: null,
@@ -1835,10 +1841,52 @@ function armPiStartupReadyTimeout(handle: TermHandle) {
   }, PI_STARTUP_READY_TIMEOUT_MS);
 }
 
+const MAX_HIDDEN_OUTPUT_BYTES = 256 * 1024;
+
+function bufferHiddenOutput(handle: TermHandle, bytes: Uint8Array) {
+  if (handle.hiddenOutputOverflowed) return;
+  if (handle.hiddenOutputBytes + bytes.byteLength > MAX_HIDDEN_OUTPUT_BYTES) {
+    handle.hiddenOutput = [];
+    handle.hiddenOutputBytes = 0;
+    handle.hiddenOutputOverflowed = true;
+    return;
+  }
+  handle.hiddenOutput.push(bytes.slice());
+  handle.hiddenOutputBytes += bytes.byteLength;
+}
+
+function flushHiddenOutput(handle: TermHandle) {
+  if (handle.hiddenOutputOverflowed) {
+    handle.hiddenOutput = [];
+    handle.hiddenOutputBytes = 0;
+    handle.hiddenOutputOverflowed = false;
+    // The retained Host tail is authoritative; re-attaching replays it.
+    resetForRestart(handle.sessionId, false);
+    return;
+  }
+  if (handle.hiddenOutput.length === 0) return;
+  const chunks = handle.hiddenOutput;
+  const total = handle.hiddenOutputBytes;
+  handle.hiddenOutput = [];
+  handle.hiddenOutputBytes = 0;
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  handle.writes.writeOutput(merged);
+}
+
 function writeTerminalOutput(handle: TermHandle, bytes: Uint8Array) {
   const visible = handle.piStartupNoticeFilter?.feed(bytes) ?? bytes;
   if (visible.length) {
     rememberHistoryLiveOutput(handle, visible);
+    if (!handle.active) {
+      bufferHiddenOutput(handle, visible);
+      return;
+    }
+    flushHiddenOutput(handle);
     handle.writes.writeOutput(visible);
   }
 }
@@ -1847,6 +1895,11 @@ function finishTerminalStartupFilter(handle: TermHandle) {
   const visible = handle.piStartupNoticeFilter?.finish();
   if (visible?.length) {
     rememberHistoryLiveOutput(handle, visible);
+    if (!handle.active) {
+      bufferHiddenOutput(handle, visible);
+      return;
+    }
+    flushHiddenOutput(handle);
     handle.writes.writeOutput(visible);
   }
 }
@@ -3261,7 +3314,10 @@ export function setTerminalActive(sessionId: string, active: boolean) {
   if (handle) {
     handle.active = active;
     if (!active) clearAttachmentRetry(handle);
-    else scheduleAttachmentRetry(handle);
+    else {
+      flushHiddenOutput(handle);
+      scheduleAttachmentRetry(handle);
+    }
   }
 }
 
@@ -3951,7 +4007,7 @@ export function writeMarker(sessionId: string, text: string) {
   if (handle) handle.writes.write(`\r\n\x1b[2m── ${text} ──\x1b[0m\r\n`);
 }
 
-export function resetForRestart(key: string) {
+export function resetForRestart(key: string, marker = true) {
   clearTerminalSnapshot(key);
   const session = findSessionByKey(key)?.session;
   const startupPending = session?.adapter === "pi";
@@ -3973,6 +4029,9 @@ export function resetForRestart(key: string) {
     // otherwise duplicate it under the old content / loaded history.
     resetNativeHistory(handle);
     resetTerminal(handle);
+    handle.hiddenOutput = [];
+    handle.hiddenOutputBytes = 0;
+    handle.hiddenOutputOverflowed = false;
     handle.displayReady = false;
     handle.displayRenderPending = false;
     handle.logCursor = null;
@@ -3998,7 +4057,7 @@ export function resetForRestart(key: string) {
     historyNote: null,
     historyMessage: null,
   });
-  writeMarker(key, i18n.t("session:terminal.restartMarker"));
+  if (marker) writeMarker(key, i18n.t("session:terminal.restartMarker"));
 }
 
 /** Apply font/a11y settings to all live terminals. */

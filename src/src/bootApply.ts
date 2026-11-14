@@ -17,7 +17,7 @@ import {
   getState,
   setState,
 } from "./store";
-import { applyTerminalLanguage } from "./terminals";
+import { applyTerminalLanguageAsync } from "./terminalRuntime";
 import { applyUiLanguage } from "./i18n";
 import { hasPersistedTerminalLayout } from "./paneLayout";
 import type { BootInfo } from "./types";
@@ -59,7 +59,7 @@ export async function applyBootInfo(
   const cancelled = () => hooks.isCancelled?.() ?? false;
   await applyUiLanguage(info.settings.uiLanguage);
   if (cancelled()) return;
-  applyTerminalLanguage();
+  void applyTerminalLanguageAsync();
   if (cancelled()) return;
   applyProjectsSnapshot(info.projects, hooks.activeDevice);
   setState({

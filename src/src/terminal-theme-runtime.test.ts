@@ -75,7 +75,7 @@ describe("terminal theme runtime pairing", () => {
     vi.unstubAllGlobals();
   });
 
-  it("keeps the selected family while the effective app mode changes", () => {
+  it("keeps the selected family while the effective app mode changes", async () => {
     applyThemeSettings();
 
     expect(getState().settings?.theme).toBe("system");
@@ -83,7 +83,9 @@ describe("terminal theme runtime pairing", () => {
     expect(document.documentElement.dataset.theme).toBe("light");
     expect(document.documentElement.dataset.terminalTheme).toBe("aurora");
     expect(document.documentElement.style.getPropertyValue("--bg-term")).toBe("#f7f9ff");
-    expect(runtimeMocks.applyXtermTheme).toHaveBeenLastCalledWith("light", "aurora");
+    await vi.waitFor(() =>
+      expect(runtimeMocks.applyXtermTheme).toHaveBeenLastCalledWith("light", "aurora"),
+    );
 
     prefersDark = true;
     applyThemeSettings();
@@ -91,8 +93,10 @@ describe("terminal theme runtime pairing", () => {
     expect(document.documentElement.dataset.theme).toBe("dark");
     expect(document.documentElement.dataset.terminalTheme).toBe("aurora");
     expect(document.documentElement.style.getPropertyValue("--bg-term")).toBe("#0d1321");
-    expect(runtimeMocks.applyXtermTheme).toHaveBeenLastCalledWith("dark", "aurora");
-    expect(runtimeMocks.applyTerminalSettings).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() =>
+      expect(runtimeMocks.applyXtermTheme).toHaveBeenLastCalledWith("dark", "aurora"),
+    );
+    await vi.waitFor(() => expect(runtimeMocks.applyTerminalSettings).toHaveBeenCalledTimes(2));
     expect(runtimeMocks.setNativeTheme).toHaveBeenLastCalledWith("dark");
   });
 });
