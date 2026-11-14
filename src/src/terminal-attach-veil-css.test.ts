@@ -94,8 +94,14 @@ describe("terminal attach/replay veil", () => {
     expect(banner).toContain(", var(--bg)");
   });
 
-  it("keeps ended/interrupted overlays translucent (history stays visible)", () => {
+  it("keeps ended/interrupted overlays translucent and terminal-tinted", () => {
     const base = ruleBody(/\.term-overlay\s*\{([^}]*)\}/);
-    expect(base).toContain("rgba(");
+    // Translucent so history stays visible, but tinted with the terminal
+    // background so the ended surface never shifts away from its gutters.
+    expect(base).toContain("color-mix(");
+    expect(base).toContain("var(--bg-term)");
+    const light = ruleBody(/:root\[data-theme="light"\] \.term-overlay\s*\{([^}]*)\}/);
+    expect(light).toContain("color-mix(");
+    expect(light).toContain("var(--bg-term)");
   });
 });

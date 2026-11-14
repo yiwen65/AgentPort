@@ -391,6 +391,13 @@ button {
   --workspace-current: var(--workspace-live);
 }
 
+/* Ended/interrupted Sessions still paint their terminal. Their pane gutters,
+   status strips and the underlapped titlebar area must use that same surface,
+   otherwise the idle tone shows as bands above and below the xterm. */
+.app[data-workspace-state="ended"] {
+  --workspace-current: var(--workspace-live);
+}
+
 .main {
   display: flex;
   flex: 1;
@@ -4601,7 +4608,10 @@ body.is-resizing-pane {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(16, 17, 21, 0.2);
+  /* Fade stopped history toward the terminal's own background instead of a
+     fixed scrim: an untinted veil would recolor the xterm surface and band
+     against the surrounding pane gutters. */
+  background: color-mix(in srgb, var(--bg-term) 20%, transparent);
   z-index: 5;
   pointer-events: none;
 }
@@ -4782,7 +4792,7 @@ body.is-resizing-pane {
 }
 
 :root[data-theme="light"] .term-overlay {
-  background: rgba(245, 245, 245, 0.28);
+  background: color-mix(in srgb, var(--bg-term) 28%, transparent);
 }
 
 /* Attach/replay veil (SkeletonOverlay): fully masks the pane while retained
