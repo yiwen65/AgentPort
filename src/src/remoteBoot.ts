@@ -49,6 +49,12 @@ function emptyTimeline(): TimelineData {
  * workspace appears immediately. Explicit rechecks refresh the cache through
  * RemoteBackend.probeAgents.
  */
+/** Adapter list from the most recent local boot, used to paint local
+ * switches immediately before the background boot refreshes it. */
+export function cachedLocalAdapters(): AdapterInstall[] {
+  return localBase?.adapters ?? [];
+}
+
 export interface ComposeRemoteBootOptions {
   deviceId?: string;
   fallbackAdapters?: AdapterInstall[];

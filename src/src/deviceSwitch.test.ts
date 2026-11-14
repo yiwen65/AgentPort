@@ -4,11 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const apiMock = vi.hoisted(() => ({
   boot: vi.fn(),
   getSettings: vi.fn(),
+  listProjects: vi.fn(),
 }));
 const actionsMock = vi.hoisted(() => ({
   applyThemeSettings: vi.fn(),
   readLastSelectedSessionId: vi.fn(),
-  refreshProjects: vi.fn().mockResolvedValue(false),
   selectSession: vi.fn(),
 }));
 const terminalsMock = vi.hoisted(() => ({
@@ -201,6 +201,7 @@ beforeEach(() => {
   cacheLocalBootBase(localBoot);
   apiMock.boot.mockResolvedValue(localBoot);
   apiMock.getSettings.mockResolvedValue(settings);
+  apiMock.listProjects.mockResolvedValue([localProject]);
   actionsMock.readLastSelectedSessionId.mockReturnValue(null);
   terminalsMock.releaseTerminal.mockResolvedValue(undefined);
   setActiveDevice(LOCAL_DEVICE_CONTEXT);
@@ -328,7 +329,6 @@ describe("switchDevice", () => {
     expect(remoteSyncMock.startRemoteSync).toHaveBeenCalledWith("dev_1");
     expect(apiMock.boot).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(backend.boot).toHaveBeenCalled());
-    expect(actionsMock.refreshProjects).toHaveBeenCalled();
   });
 
   it("shows the light session list on a first switch without a snapshot", async () => {
@@ -355,7 +355,28 @@ describe("switchDevice", () => {
     });
     expect(remoteSyncMock.startRemoteSync).toHaveBeenCalledWith("dev_1");
     await vi.waitFor(() => expect(backend.boot).toHaveBeenCalled());
-    expect(actionsMock.refreshProjects).toHaveBeenCalled();
+  });
+
+  it("paints a local switch from the local snapshot before reconciling", async () => {
+    const previous = { ...remoteContext("dev_1"), deviceName: "Box" };
+    setDeviceContext(previous);
+    setState({ activeDevice: previous, projects: [remoteProject] });
+    await refreshDeviceSnapshot("local");
+    expect(deviceSnapshotFor("local")?.projects.map((p) => p.id)).toEqual([
+      "prj_local",
+    ]);
+
+    await switchDevice(LOCAL_DEVICE_CONTEXT, {
+      focusSessionId: "ses_local",
+    });
+
+    const s = getState();
+    expect(s.activeDevice.kind).toBe("local");
+    expect(s.projects.map((p) => p.id)).toEqual(["prj_local"]);
+    expect(actionsMock.selectSession).toHaveBeenCalledWith("ses_local", {
+      revealInSidebar: false,
+    });
+    await vi.waitFor(() => expect(apiMock.boot).toHaveBeenCalled());
   });
 
   it("switches remote → local without disconnecting the remote device", async () => {
