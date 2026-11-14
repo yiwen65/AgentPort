@@ -1393,6 +1393,7 @@ export async function quickStartSession(
 ) {
   const shell = agent === "shell";
   const plain = agent === "pi" || isAddedAgent(agent);
+  const deviceKey = deviceKeyForContext(getState().activeDevice);
   try {
     const res = await api.createSession({
       projectId,
@@ -1418,7 +1419,7 @@ export async function quickStartSession(
     const inserted = splitIntent
       ? splitSessionIntoPane(
           splitIntent.targetSessionId,
-          res.id,
+          sessionKeyFor(deviceKey, res.id),
           splitIntent.direction,
         )
       : false;

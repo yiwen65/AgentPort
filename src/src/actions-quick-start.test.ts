@@ -201,6 +201,36 @@ describe("quickStartSession split intent", () => {
     expect(getState().activeSessionId).toBe(createdSession.id);
   });
 
+  it("inserts a split created on the active remote device under its device key", async () => {
+    const remoteTargetKey = `dev_b:${targetSession.id}`;
+    setState({
+      activeDevice: {
+        kind: "remote",
+        deviceId: "dev_b",
+        deviceName: "Beta",
+        capabilities: [],
+      },
+      projects: projectWith(targetSession),
+      activeSessionId: targetSession.id,
+      terminalLayout: singletonPaneLayout(remoteTargetKey),
+      terminalLayoutGroups: [],
+      attachedIds: [remoteTargetKey],
+    });
+
+    await quickStartSession(
+      targetSession.projectId,
+      "codex",
+      targetSession.worktreeId ?? undefined,
+      { targetSessionId: remoteTargetKey, direction: "right" },
+    );
+
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
+      remoteTargetKey,
+      `dev_b:${createdSession.id}`,
+    ]);
+    expect(getState().activeSessionId).toBe(createdSession.id);
+  });
+
   it("does not change the pane layout when creation fails", async () => {
     apiMock.createSession.mockRejectedValue(new Error("create failed"));
 

@@ -12,7 +12,8 @@ import {
 } from "../actions";
 import { refreshActiveRemoteAdaptersIfStale } from "../remoteAdapterFill";
 import { agentDisplay, permissionLabel, presetDisplayName } from "../format";
-import { closeDialog, toast, useStore } from "../store";
+import { closeDialog, getState, toast, useStore } from "../store";
+import { deviceKeyForContext, sessionKeyFor } from "../sessionIdentity";
 import { localizedNotices } from "../runtimeMessages";
 import { availablePermissionModes, isAddedAgent } from "../agentCapabilities";
 import type { PaneSplitDirection } from "../paneLayout";
@@ -118,6 +119,7 @@ export default function NewSessionDialog(props: {
     if (!args) return;
     setBusy(true);
     setError(null);
+    const deviceKey = deviceKeyForContext(getState().activeDevice);
     try {
       const res = await api.createSession(args);
       closeDialog();
@@ -129,7 +131,7 @@ export default function NewSessionDialog(props: {
         props.splitTargetSessionId && props.splitDirection
           ? splitSessionIntoPane(
               props.splitTargetSessionId,
-              res.id,
+              sessionKeyFor(deviceKey, res.id),
               props.splitDirection,
             )
           : false;

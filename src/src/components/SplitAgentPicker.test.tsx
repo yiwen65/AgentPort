@@ -170,4 +170,29 @@ describe("SplitAgentPicker", () => {
       { targetSessionId: targetSession.id, direction: "right" },
     );
   });
+
+  it("resolves a remote Session from its device-qualified key", () => {
+    const remoteKey = `dev_b:${targetSession.id}`;
+    setState({
+      activeDevice: {
+        kind: "remote",
+        deviceId: "dev_b",
+        deviceName: "Beta",
+        capabilities: [],
+      },
+      activeSessionId: targetSession.id,
+      dialog: { kind: "splitAgentPicker", targetSessionId: remoteKey, direction: "down" },
+    });
+
+    render(<SplitAgentPicker targetSessionId={remoteKey} direction="down" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+
+    expect(quickStartSessionMock).toHaveBeenCalledWith(
+      targetSession.projectId,
+      "codex",
+      targetSession.worktreeId,
+      { targetSessionId: remoteKey, direction: "down" },
+    );
+  });
 });

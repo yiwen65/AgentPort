@@ -4,7 +4,8 @@ import { quickStartSession } from "../actions";
 import { refreshActiveRemoteAdaptersIfStale } from "../remoteAdapterFill";
 import { orderAgentIds, visibleAgentIds } from "../agentOrder";
 import { agentDisplay } from "../format";
-import { closeDialog, findSession, useStore } from "../store";
+import { closeDialog, useStore } from "../store";
+import { findSessionByKeyForState } from "../deviceSessions";
 import type { PaneSplitDirection } from "../paneLayout";
 import { AgentIcon, hasAgentIcon } from "./AgentIcons";
 import { isAddedAgent } from "../agentCapabilities";
@@ -42,7 +43,7 @@ export default function SplitAgentPicker({
 }) {
   const { t } = useTranslation("shell");
   const state = useStore();
-  const target = findSession(state.projects, targetSessionId);
+  const target = findSessionByKeyForState(state, targetSessionId);
   const agents = useMemo(
     () => visibleAgentIds(
       orderAgentIds(
@@ -88,7 +89,7 @@ export default function SplitAgentPicker({
           direction === "right"
             ? "ui.panePicker.descriptionRight"
             : "ui.panePicker.descriptionDown",
-          { title: target.title },
+          { title: target.session.title },
         )}
       </p>
       {agents.length > 0 ? (
@@ -118,9 +119,9 @@ export default function SplitAgentPicker({
                 onClick={() => {
                   closeDialog();
                   void quickStartSession(
-                    target.projectId,
+                    target.project.id,
                     agent,
-                    target.worktreeId ?? undefined,
+                    target.session.worktreeId ?? undefined,
                     { targetSessionId, direction },
                   );
                 }}
