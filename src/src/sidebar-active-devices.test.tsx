@@ -202,10 +202,10 @@ describe("cross-device active sidebar", () => {
       expect(screen.getByText("Beta · RemoteProj")).toBeTruthy();
     });
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
-    expect(screen.getByText("本机")).toBeTruthy();
-    expect(screen.getByText("Beta")).toBeTruthy();
-    // Unconnected paired devices are managed from the top-right switcher's
-    // power control, not the connected-device summary.
+    // The sidebar has no device strip; connection management lives in the
+    // top-right switcher.
+    expect(screen.queryByText("本机")).toBeNull();
+    expect(screen.queryByText("Beta")).toBeNull();
     expect(screen.queryByText("Gamma")).toBeNull();
   });
 
@@ -234,10 +234,4 @@ describe("cross-device active sidebar", () => {
     );
   });
 
-  it("does not expose unconnected devices in the connected-device summary", async () => {
-    render(<Sidebar collapsed={false} width={296} />);
-    await screen.findByText("Beta");
-    expect(screen.queryByText("Gamma")).toBeNull();
-    expect(connectDeviceMock).not.toHaveBeenCalled();
-  });
 });

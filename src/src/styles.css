@@ -1106,61 +1106,6 @@ body.is-project-dragging .tree-row.project {
   text-align: center;
 }
 
-.active-agent-view {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
-.active-device-strip {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 4px 8px 6px;
-  border-bottom: 1px solid rgba(127, 127, 127, 0.16);
-}
-
-.active-device-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  min-height: 24px;
-  padding: 2px 4px;
-  border-radius: 6px;
-  color: var(--sidebar-text);
-  font-size: 11px;
-}
-
-.active-device-row.active {
-  background: rgba(127, 127, 127, 0.1);
-}
-
-.active-device-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.active-device-badge {
-  flex: none;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  color: var(--accent);
-  font-size: 10px;
-  line-height: 16px;
-}
-
-.active-device-loading {
-  padding: 2px 4px;
-  color: var(--sidebar-text-faint);
-  font-size: 10px;
-}
-
 /* Live sessions lift their label to the strong tier; the accent spinner /
    pulse dot (--accent in both themes) carries the explicit running color. */
 .tree-row.session:has(.dot.working) .tree-label,

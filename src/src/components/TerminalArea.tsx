@@ -1259,7 +1259,10 @@ function MissingSessionPane({
         deviceKey);
   const connected = isDeviceConnected(deviceKey);
   const missing =
-    connected && snapshot !== null && !snapshot.loading && !snapshot.error;
+    connected &&
+    snapshot !== undefined &&
+    !snapshot.loading &&
+    !snapshot.error;
   const [reconnecting, setReconnecting] = useState(false);
 
   useEffect(() => {

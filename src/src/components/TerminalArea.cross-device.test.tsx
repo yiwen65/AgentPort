@@ -245,6 +245,18 @@ describe("TerminalArea cross-device panes", () => {
     await waitFor(() => expect(connectDeviceMock).toHaveBeenCalledWith("dev_b"));
   });
 
+  it("renders a reconnect surface when the device has no snapshot at all", () => {
+    delete (sessionsState.snapshots as Record<string, unknown>).dev_b;
+    located.delete(remoteKey);
+    isDeviceConnectedMock.mockReturnValue(false);
+    const view = render(<TerminalArea />);
+    expect(view.getByText("未连接")).toBeTruthy();
+    expect(
+      view.container.querySelector(`[data-pane-session-id="${remoteKey}"]`)
+        ?.classList.contains("missing-session-pane"),
+    ).toBe(true);
+  });
+
   it("keeps a remote pane visible while a device switch is in flight", () => {
     const view = render(<TerminalArea />);
     act(() => setState({ deviceSwitching: true }));

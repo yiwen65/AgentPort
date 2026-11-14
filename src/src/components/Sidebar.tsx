@@ -40,13 +40,8 @@ import {
   useDeviceSessions,
   type DeviceSessionSnapshot,
 } from "../deviceSessions";
-import { useDeviceConnections } from "../deviceConnections";
 import { focusSessionKey } from "../deviceSwitch";
-import {
-  refreshDevices,
-  useDevicesStore,
-  type DeviceProfile,
-} from "../devicesStore";
+import { useDevicesStore, type DeviceProfile } from "../devicesStore";
 import {
   closeWorktreeView,
   openContextMenu,
@@ -1258,137 +1253,6 @@ function activeDeviceLabel(
   );
 }
 
-function ActiveDeviceStrip() {
-  const { t } = useTranslation(["shell", "common"]);
-  const activeDevice = useStore((state) => state.activeDevice);
-  const activeDeviceId = deviceKeyForContext(activeDevice);
-  const connections = useDeviceConnections((state) => state.connections);
-  const explicitDeviceIds = useDeviceConnections(
-    (state) => state.explicitDeviceIds,
-  );
-  const snapshots = useDeviceSessions((state) => state.snapshots);
-  const profiles = useDevicesStore((state) => state.devices);
-  const switchingTo = useDevicesStore((state) => state.switchingTo);
-  const localLabel = t("shell:ui.topBar.devices.local");
-
-  useEffect(() => {
-    void refreshDevices().catch(() => undefined);
-  }, []);
-
-  const remoteRows = useMemo(() => {
-    const ids = new Set<string>();
-    for (const id of Object.keys(connections)) ids.add(id);
-    for (const id of explicitDeviceIds) ids.add(id);
-    if (activeDevice.kind === "remote") ids.add(activeDevice.deviceId);
-    const rows = [...ids].map((deviceId) => {
-      const connection = connections[deviceId];
-      const profile = profiles?.find((device) => device.id === deviceId);
-      const phase =
-        connection?.phase === "connected"
-          ? ("connected" as const)
-          : connection?.phase === "connecting" || switchingTo === deviceId
-            ? ("connecting" as const)
-            : connection?.phase === "error" || profile?.lastError
-              ? ("error" as const)
-              : ("disconnected" as const);
-      return {
-        id: deviceId,
-        name:
-          activeDeviceId === deviceId && activeDevice.kind === "remote"
-            ? activeDevice.deviceName
-            : (profile?.name ?? deviceId),
-        transport: profile?.transport ?? "relay",
-        phase,
-        error:
-          connection?.error ??
-          (phase === "error" ? (profile?.lastError ?? null) : null),
-        active: activeDeviceId === deviceId,
-      };
-    });
-    // The strip is now a connected-device summary; pairing/connecting lives in
-    // the top-right device switcher's power control.
-    return rows.filter(
-      (row) =>
-        row.active ||
-        row.phase === "connected" ||
-        row.phase === "connecting",
-    );
-  }, [
-    activeDevice,
-    activeDeviceId,
-    connections,
-    explicitDeviceIds,
-    profiles,
-    switchingTo,
-  ]);
-
-  const rows = [
-    {
-      id: "local",
-      name: localLabel,
-      transport: null as string | null,
-      phase: "connected" as const,
-      error: null as string | null,
-      active: activeDeviceId === "local",
-    },
-    ...remoteRows,
-  ];
-
-  const phaseLabel = (phase: (typeof rows)[number]["phase"]) =>
-    phase === "connected"
-      ? t("shell:ui.activeDevices.connected")
-      : phase === "connecting"
-        ? t("shell:ui.activeDevices.connecting")
-        : phase === "error"
-          ? t("shell:ui.activeDevices.unavailable")
-          : t("shell:ui.activeDevices.disconnected");
-
-  return (
-    <section
-      className="active-device-strip"
-      aria-label={t("shell:ui.activeDevices.label")}
-    >
-      {rows.map((row) => (
-        <div
-          key={row.id}
-          className={"active-device-row" + (row.active ? " active" : "")}
-          data-tip={row.error ?? phaseLabel(row.phase)}
-        >
-          <span
-            className={
-              "device-dot" +
-              (row.phase === "connected"
-                ? " ok"
-                : row.phase === "connecting"
-                  ? " switching"
-                  : row.phase === "error"
-                    ? " error"
-                    : "")
-            }
-            aria-hidden="true"
-          />
-          <span className="active-device-name" title={row.name}>
-            {row.name}
-          </span>
-          {row.transport ? (
-            <span className="device-badge">{row.transport}</span>
-          ) : null}
-          {row.active ? (
-            <span className="active-device-badge">
-              {t("shell:ui.activeDevices.active")}
-            </span>
-          ) : null}
-        </div>
-      ))}
-      {remoteRows.some((row) => snapshots[row.id]?.loading) ? (
-        <div className="active-device-loading" role="status">
-          {t("shell:ui.activeDevices.loading")}
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
 function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
   const activeDevice = useStore((state) => state.activeDevice);
@@ -1528,26 +1392,25 @@ function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
     (snapshot) => snapshot.loading,
   );
 
+  if (entries.length === 0) {
+    return (
+      <div className="active-agent-empty" role="status">
+        {anyLoading || snapshotsRefreshing
+          ? t("shell:ui.activeDevices.loading")
+          : t("shell:ui.sidebar.activeAgentsEmpty")}
+      </div>
+    );
+  }
+
   return (
-    <div className="active-agent-view">
-      <ActiveDeviceStrip />
-      {entries.length === 0 ? (
-        <div className="active-agent-empty" role="status">
-          {anyLoading || snapshotsRefreshing
-            ? t("shell:ui.activeDevices.loading")
-            : t("shell:ui.sidebar.activeAgentsEmpty")}
-        </div>
-      ) : (
-        <div
-          className="active-agent-session-list"
-          role="list"
-          aria-label={t("shell:ui.sidebar.activeAgentListLabel")}
-        >
-          {entries.map((entry) => (
-            <ActiveAgentSessionItem key={entry.key} entry={entry} />
-          ))}
-        </div>
-      )}
+    <div
+      className="active-agent-session-list"
+      role="list"
+      aria-label={t("shell:ui.sidebar.activeAgentListLabel")}
+    >
+      {entries.map((entry) => (
+        <ActiveAgentSessionItem key={entry.key} entry={entry} />
+      ))}
     </div>
   );
 }
