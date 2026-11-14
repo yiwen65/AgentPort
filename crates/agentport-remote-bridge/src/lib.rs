@@ -11,14 +11,13 @@ use agentport_remote_protocol::{
     Precondition, PresetListParams, ProjectAddParams, ProjectDirectoryListParams,
     ProjectDirectoryResolveParams, ProjectIdParams, ProjectLayoutReplaceParams,
     ProjectRemoveParams, ProjectRenameParams, ProtocolError, ProtocolVersion, RemoteError,
-    RequestType, ResultStatus, RetryClass, SecretAddParams, SecretDeleteParams,
-    ServerEnvelope, ServerIdentity, SessionAttachParams, SessionAutoTitleParams,
-    SessionControlParams, SessionCreateParams, SessionDetachParams, SessionIdParams,
-    SessionInputParams, SessionPinParams, SessionPollParams,
-    SessionRenameParams, SessionRestartParams, SessionSeenParams, SessionStopParams,
-    SessionStructuredPromptParams, SessionUnreadParams, WorktreeCreateParams, WorktreeIdParams,
-    WorktreePreviewParams, WorktreeProjectParams, CAPABILITY_SESSION_EVENT_PUSH, EVENT_PUSH_MINOR,
-    MAX_FRAME_BYTES,
+    RequestType, ResultStatus, RetryClass, SecretAddParams, SecretDeleteParams, ServerEnvelope,
+    ServerIdentity, SessionAttachParams, SessionAutoTitleParams, SessionControlParams,
+    SessionCreateParams, SessionDetachParams, SessionIdParams, SessionInputParams,
+    SessionPinParams, SessionPollParams, SessionRenameParams, SessionRestartParams,
+    SessionSeenParams, SessionStopParams, SessionStructuredPromptParams, SessionUnreadParams,
+    WorktreeCreateParams, WorktreeIdParams, WorktreePreviewParams, WorktreeProjectParams,
+    CAPABILITY_SESSION_EVENT_PUSH, EVENT_PUSH_MINOR, MAX_FRAME_BYTES,
 };
 use agentport_service::{
     RemoteService, ServiceError, ServiceSnapshot, SessionEvent, SessionSubscription,
@@ -36,7 +35,10 @@ use thiserror::Error;
 const WRITER_QUEUE_CAPACITY: usize = 128;
 const ATTACHMENT_WRITER_QUEUE_CAPACITY: usize = 32;
 const WRITER_CONTROL_QUANTUM: usize = 16;
-const DISPATCH_TICK: Duration = Duration::from_millis(250);
+const WRITER_FALLBACK_TICK: Duration = Duration::from_millis(250);
+// Cancellation is checked between subscription waits; writer wakeups do not
+// interrupt these waits, so keep their timeout short for prompt detach.
+const DISPATCH_CANCEL_TICK: Duration = Duration::from_millis(10);
 
 enum WriterMessage {
     Envelope(ServerEnvelope),
@@ -274,7 +276,7 @@ fn writer_loop<W: Write>(
         if controls_closed {
             break;
         }
-        match receiver.recv_timeout(DISPATCH_TICK) {
+        match receiver.recv_timeout(WRITER_FALLBACK_TICK) {
             Ok(message) => handle_writer_message(output, &mut subscriptions, message)?,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => controls_closed = true,
@@ -366,14 +368,19 @@ fn serve_after_hello<R: Read, E: Write, S: RemoteService + Sync>(
             Err(error) => break Err(error.into()),
         };
         let (header, image_bytes) = if frame.as_bytes().first() == Some(&0) {
-            if !connection.enabled_capabilities.contains(agentport_remote_protocol::image::CAPABILITY) {
+            if !connection
+                .enabled_capabilities
+                .contains(agentport_remote_protocol::image::CAPABILITY)
+            {
                 break Err(BridgeError::UnexpectedMessage);
             }
             match agentport_remote_protocol::image::decode_chunk(frame.as_bytes()) {
                 Ok(parts) => parts,
                 Err(_) => break Err(BridgeError::UnexpectedMessage),
             }
-        } else { (frame.as_bytes(), &[][..]) };
+        } else {
+            (frame.as_bytes(), &[][..])
+        };
         let kind: MessageKind = match serde_json::from_slice(header) {
             Ok(kind) => kind,
             Err(error) => break Err(ProtocolError::InvalidJson(error).into()),
@@ -389,8 +396,14 @@ fn serve_after_hello<R: Read, E: Write, S: RemoteService + Sync>(
             break Err(BridgeError::UnexpectedMessage);
         }
         server_sequence = server_sequence.saturating_add(1);
-        if matches!(request.method, "image.begin" | "image.chunk" | "image.finish" | "image.abort") {
-            let outcome = if !connection.enabled_capabilities.contains(agentport_remote_protocol::image::CAPABILITY) {
+        if matches!(
+            request.method,
+            "image.begin" | "image.chunk" | "image.finish" | "image.abort"
+        ) {
+            let outcome = if !connection
+                .enabled_capabilities
+                .contains(agentport_remote_protocol::image::CAPABILITY)
+            {
                 Err("Image upload capability was not negotiated.".to_owned())
             } else if (request.method == "image.chunk") != !image_bytes.is_empty() {
                 Err("Image chunks require binary framing.".to_owned())
@@ -402,14 +415,31 @@ fn serve_after_hello<R: Read, E: Write, S: RemoteService + Sync>(
             };
             let (status, value, error) = match outcome {
                 Ok(value) => (ResultStatus::Succeeded, Some(value), None),
-                Err(message) => (ResultStatus::Failed, None, Some(RemoteError { code: "image_upload_failed".into(), message })),
+                Err(message) => (
+                    ResultStatus::Failed,
+                    None,
+                    Some(RemoteError {
+                        code: "image_upload_failed".into(),
+                        message,
+                    }),
+                ),
             };
-            if let Err(error) = write_result(writer, request.request_id, None, status, RetryClass::NonIdempotentWrite, value, error) {
+            if let Err(error) = write_result(
+                writer,
+                request.request_id,
+                None,
+                status,
+                RetryClass::NonIdempotentWrite,
+                value,
+                error,
+            ) {
                 break Err(error);
             }
             continue;
         }
-        if !image_bytes.is_empty() { break Err(BridgeError::UnexpectedMessage); }
+        if !image_bytes.is_empty() {
+            break Err(BridgeError::UnexpectedMessage);
+        }
         if let Err(error) = handle_request(
             writer,
             diagnostics,
@@ -472,8 +502,15 @@ fn hello_result(
         })
         .collect();
 
-    if requested.iter().any(|name| name == agentport_remote_protocol::image::CAPABILITY) {
-        capabilities.push(Capability { name: agentport_remote_protocol::image::CAPABILITY.into(), enabled: true, disabled_reason: None });
+    if requested
+        .iter()
+        .any(|name| name == agentport_remote_protocol::image::CAPABILITY)
+    {
+        capabilities.push(Capability {
+            name: agentport_remote_protocol::image::CAPABILITY.into(),
+            enabled: true,
+            disabled_reason: None,
+        });
     }
     for requested_name in requested {
         if !capabilities
@@ -852,7 +889,7 @@ fn spawn_dispatcher(
             if worker_cancel.load(Ordering::Acquire) {
                 break;
             }
-            match subscription.recv_timeout(DISPATCH_TICK) {
+            match subscription.recv_timeout(DISPATCH_CANCEL_TICK) {
                 Ok(event) => {
                     let mut pending = event_envelope(&attachment_id, event);
                     loop {
@@ -1284,7 +1321,9 @@ mod tests {
     impl RemoteService for FixtureService {
         fn extended_facade(&self, method: &str, params: Value) -> agentport_service::Result<Value> {
             use agentport_service::SessionFilesError;
-            if method.starts_with("session.files.download.") || method.starts_with("document.images.") {
+            if method.starts_with("session.files.download.")
+                || method.starts_with("document.images.")
+            {
                 let key = if method.ends_with("open") {
                     if method.starts_with("document.images.") {
                         assert_eq!(params["rootPath"], "/fixture");
@@ -1306,12 +1345,22 @@ mod tests {
                     "permission_denied" => Some(SessionFilesError::PermissionDenied),
                     _ => None,
                 };
-                if let Some(error) = error { return Err(error.into()); }
+                if let Some(error) = error {
+                    return Err(error.into());
+                }
                 return Ok(match method {
-                    "session.files.download.open" | "document.images.open" => json!({"downloadId":"fixture-id","name":"binary.bin","sizeBytes":3,"chunkBytes":262144}),
-                    "session.files.download.chunk" | "document.images.chunk" => json!({"offset":0,"contentBase64":"AP+A","eof":true}),
-                    "session.files.download.finish" | "document.images.finish" => json!({"sizeBytes":3,"sha256":"fixture-hash"}),
-                    "session.files.download.close" | "document.images.close" => json!({"closed":true}),
+                    "session.files.download.open" | "document.images.open" => {
+                        json!({"downloadId":"fixture-id","name":"binary.bin","sizeBytes":3,"chunkBytes":262144})
+                    }
+                    "session.files.download.chunk" | "document.images.chunk" => {
+                        json!({"offset":0,"contentBase64":"AP+A","eof":true})
+                    }
+                    "session.files.download.finish" | "document.images.finish" => {
+                        json!({"sizeBytes":3,"sha256":"fixture-hash"})
+                    }
+                    "session.files.download.close" | "document.images.close" => {
+                        json!({"closed":true})
+                    }
                     _ => return Err(ServiceError::InvalidRequest),
                 });
             }
@@ -1331,7 +1380,9 @@ mod tests {
                 "session_not_found" => Some(SessionFilesError::SessionNotFound),
                 _ => None,
             };
-            if let Some(error) = error { return Err(error.into()); }
+            if let Some(error) = error {
+                return Err(error.into());
+            }
             Ok(if method == "session.files.list" {
                 json!({"rootPath":"/fixture", "path":path, "entries":[{"name":"note", "path":"note", "isDir":false}], "truncated":false})
             } else {
@@ -1347,7 +1398,9 @@ mod tests {
             &self,
             params: ProjectDirectoryListParams,
         ) -> agentport_service::Result<agentport_service::ProjectDirectoryListResult> {
-            Err(directory_fixture_error(params.path.as_deref().unwrap_or("")))
+            Err(directory_fixture_error(
+                params.path.as_deref().unwrap_or(""),
+            ))
         }
 
         fn add_project(
@@ -1501,67 +1554,127 @@ mod tests {
 
     #[test]
     fn session_files_dispatch_and_errors_survive_framing_as_reads() {
-        let codes = ["outside_root", "unsupported_file", "path_not_found", "permission_denied",
-            "not_directory", "invalid_path", "read_failed", "session_not_found"];
+        let codes = [
+            "outside_root",
+            "unsupported_file",
+            "path_not_found",
+            "permission_denied",
+            "not_directory",
+            "invalid_path",
+            "read_failed",
+            "session_not_found",
+        ];
         for method in ["session.files.list", "session.files.read"] {
             let mut input = Vec::new();
             append(&mut input, &hello(ProtocolVersion::V1));
             for path in std::iter::once("note").chain(codes) {
-                append(&mut input, &json!({"type":"request", "requestId":path,
-                    "method":method, "params":{"sessionId":"session-fixture", "path":path}}));
+                append(
+                    &mut input,
+                    &json!({"type":"request", "requestId":path,
+                    "method":method, "params":{"sessionId":"session-fixture", "path":path}}),
+                );
             }
             let mut output = Vec::new();
-            serve(&mut Cursor::new(input), &mut output, &mut Vec::new(), &FixtureService).unwrap();
-            let results = frames(&SharedOutput(Arc::new(Mutex::new(output)))).into_iter()
+            serve(
+                &mut Cursor::new(input),
+                &mut output,
+                &mut Vec::new(),
+                &FixtureService,
+            )
+            .unwrap();
+            let results = frames(&SharedOutput(Arc::new(Mutex::new(output))))
+                .into_iter()
                 .filter_map(|message| match message {
-                    ServerEnvelope::Result { status, retry_class, value, error, .. } => Some((status, retry_class, value, error)),
+                    ServerEnvelope::Result {
+                        status,
+                        retry_class,
+                        value,
+                        error,
+                        ..
+                    } => Some((status, retry_class, value, error)),
                     _ => None,
-                }).collect::<Vec<_>>();
+                })
+                .collect::<Vec<_>>();
             assert_eq!(results.len(), codes.len() + 1);
             assert_eq!(results[0].0, ResultStatus::Succeeded);
             assert_eq!(results[0].1, RetryClass::Read);
             let success = results[0].2.as_ref().unwrap();
             assert_eq!(success["rootPath"], "/fixture");
             assert_eq!(success["path"], "note");
-            if method.ends_with("read") { assert_eq!(success["content"], "hello"); }
-            else { assert_eq!(success["entries"][0]["path"], "note"); }
+            if method.ends_with("read") {
+                assert_eq!(success["content"], "hello");
+            } else {
+                assert_eq!(success["entries"][0]["path"], "note");
+            }
             for ((status, retry_class, value, error), code) in results.iter().skip(1).zip(codes) {
                 assert_eq!(*status, ResultStatus::NotExecuted);
                 assert_eq!(*retry_class, RetryClass::Read);
                 assert!(value.is_none());
                 assert_eq!(error.as_ref().unwrap().code, code);
-                assert_ne!(error.as_ref().unwrap().message, "request failed on the remote host");
+                assert_ne!(
+                    error.as_ref().unwrap().message,
+                    "request failed on the remote host"
+                );
             }
         }
     }
 
     #[test]
     fn session_download_dispatch_frames_binary_and_sanitized_errors_as_reads() {
-        let codes = ["file_too_large", "source_changed", "invalid_download", "invalid_offset",
-            "incomplete_download", "too_many_downloads", "outside_root", "permission_denied"];
-        for (prefix, action) in ["session.files.download", "document.images"].into_iter()
-            .flat_map(|prefix| ["open", "chunk", "finish", "close"].map(|action| (prefix, action))) {
+        let codes = [
+            "file_too_large",
+            "source_changed",
+            "invalid_download",
+            "invalid_offset",
+            "incomplete_download",
+            "too_many_downloads",
+            "outside_root",
+            "permission_denied",
+        ];
+        for (prefix, action) in ["session.files.download", "document.images"]
+            .into_iter()
+            .flat_map(|prefix| ["open", "chunk", "finish", "close"].map(|action| (prefix, action)))
+        {
             let method = format!("{prefix}.{action}");
             let mut input = Vec::new();
             append(&mut input, &hello(ProtocolVersion::V1));
             for key in std::iter::once("fixture-id").chain(codes) {
                 let params = match action {
-                    "open" if prefix == "document.images" => json!({"rootPath":"/fixture","path":key}),
+                    "open" if prefix == "document.images" => {
+                        json!({"rootPath":"/fixture","path":key})
+                    }
                     "open" => json!({"sessionId":"session-fixture","path":key}),
                     "chunk" => json!({"downloadId":key,"offset":0}),
                     _ => json!({"downloadId":key}),
                 };
-                append(&mut input, &json!({"type":"request","requestId":key,"method":method,"params":params}));
+                append(
+                    &mut input,
+                    &json!({"type":"request","requestId":key,"method":method,"params":params}),
+                );
             }
             let mut output = Vec::new();
             let mut diagnostics = Vec::new();
-            serve(&mut Cursor::new(input), &mut output, &mut diagnostics, &FixtureService).unwrap();
+            serve(
+                &mut Cursor::new(input),
+                &mut output,
+                &mut diagnostics,
+                &FixtureService,
+            )
+            .unwrap();
             assert!(!String::from_utf8_lossy(&diagnostics).contains("fixture-id"));
-            let results = frames(&SharedOutput(Arc::new(Mutex::new(output)))).into_iter()
+            let results = frames(&SharedOutput(Arc::new(Mutex::new(output))))
+                .into_iter()
                 .filter_map(|message| match message {
-                    ServerEnvelope::Result { status, retry_class, value, error, .. } => Some((status, retry_class, value, error)),
+                    ServerEnvelope::Result {
+                        status,
+                        retry_class,
+                        value,
+                        error,
+                        ..
+                    } => Some((status, retry_class, value, error)),
                     _ => None,
-                }).collect::<Vec<_>>();
+                })
+                .collect::<Vec<_>>();
             assert_eq!(results.len(), codes.len() + 1);
             assert_eq!(results[0].0, ResultStatus::Succeeded);
             assert_eq!(results[0].1, RetryClass::Read);
@@ -1581,7 +1694,10 @@ mod tests {
                 assert_eq!(*retry_class, RetryClass::Read);
                 assert!(value.is_none());
                 assert_eq!(error.as_ref().unwrap().code, code);
-                assert_ne!(error.as_ref().unwrap().message, "request failed on the remote host");
+                assert_ne!(
+                    error.as_ref().unwrap().message,
+                    "request failed on the remote host"
+                );
                 assert!(!error.as_ref().unwrap().message.contains("fixture-id"));
             }
         }
@@ -2470,6 +2586,41 @@ mod tests {
         }
         producer.join().unwrap();
         dispatcher.stop();
+    }
+
+    #[test]
+    fn idle_dispatcher_cancellation_does_not_wait_for_writer_fallback() {
+        let (event_tx, event_rx) = mpsc::sync_channel(1);
+        let (writer_tx, writer_rx) = mpsc::sync_channel(2);
+        let dispatcher = spawn_dispatcher(
+            "att-idle".into(),
+            SessionSubscription::new("att-idle".into(), event_rx),
+            writer_tx,
+        )
+        .unwrap();
+        let _registration = writer_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        event_tx
+            .send(SessionEvent {
+                event_type: "output".into(),
+                cursor: test_cursor(1),
+                payload: json!({}),
+            })
+            .unwrap();
+        assert!(matches!(
+            writer_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            WriterMessage::Wake
+        ));
+        // The wake proves the worker processed the event. Let it enter its
+        // next subscription wait, keeping the upstream sender connected.
+        std::thread::sleep(Duration::from_millis(20));
+        let started = Instant::now();
+        dispatcher.stop();
+        let elapsed = started.elapsed();
+        drop(event_tx);
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "idle dispatcher cancellation took {elapsed:?}"
+        );
     }
 
     #[test]
