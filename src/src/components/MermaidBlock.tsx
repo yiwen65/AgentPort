@@ -3,12 +3,13 @@
 // actually contains a diagram. Blocks that fail to parse fall back to the
 // plain code view instead of breaking the whole preview.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "../store";
 import { parseFlowchart } from "../flowchart";
 import { getTerminalPalette, type TerminalPalette } from "../terminalThemes";
-import FlowGraph from "./FlowGraph";
+
+const FlowGraph = lazy(() => import("./FlowGraph"));
 
 let renderSeq = 0;
 
@@ -150,7 +151,15 @@ export default function MermaidBlock({ source, sourceLine }: { source: string; s
   }, [source, terminalPalette, flowGraph, visible]);
 
   if (flowGraph) {
-    return <FlowGraph graph={flowGraph} />;
+    return (
+      <Suspense
+        fallback={
+          <div className="md-mermaid-status">{t("ui.document.diagramLoading")}</div>
+        }
+      >
+        <FlowGraph graph={flowGraph} />
+      </Suspense>
+    );
   }
 
   if (failed) {
