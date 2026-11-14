@@ -1,9 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  quickStartSession,
-  refreshActiveRemoteAdaptersIfStale,
-} from "../actions";
+import { quickStartSession } from "../actions";
+import { refreshActiveRemoteAdaptersIfStale } from "../remoteAdapterFill";
 import { orderAgentIds, visibleAgentIds } from "../agentOrder";
 import { agentDisplay } from "../format";
 import { closeDialog, findSession, useStore } from "../store";

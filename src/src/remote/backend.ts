@@ -68,10 +68,7 @@ import type {
   ResizePtyAuthority,
 } from "../api";
 import type { ChannelMsg } from "../types";
-import {
-  cachedRemoteAdapters,
-  rememberRemoteAdapters,
-} from "../remoteAdapterCache";
+import { rememberRemoteAdapters } from "../remoteAdapterCache";
 import { RemoteClient } from "./client";
 import { remoteEventToChannelMsg } from "./events";
 import type { ChannelLike, RemoteEventWire } from "./types";
@@ -494,15 +491,7 @@ export class RemoteBackend {
       agent,
       path,
     });
-    const outcome = remoteProbeToProbeOutcome(result);
-    const cached = this.deviceId ? cachedRemoteAdapters(this.deviceId) : null;
-    if (cached) {
-      rememberRemoteAdapters(this.deviceId, [
-        ...cached.filter((adapter) => adapter.agentType !== outcome.agent),
-        ...(outcome.install ? [outcome.install] : []),
-      ]);
-    }
-    return outcome;
+    return remoteProbeToProbeOutcome(result);
   }
 
   async listSupportedAgents(): Promise<SupportedAgent[]> {

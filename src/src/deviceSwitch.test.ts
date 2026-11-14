@@ -8,7 +8,6 @@ const apiMock = vi.hoisted(() => ({
 const actionsMock = vi.hoisted(() => ({
   applyThemeSettings: vi.fn(),
   readLastSelectedSessionId: vi.fn(),
-  refreshActiveRemoteAdaptersIfStale: vi.fn(),
   refreshProjects: vi.fn().mockResolvedValue(false),
   selectSession: vi.fn(),
 }));
@@ -36,6 +35,9 @@ vi.mock("./actions", () => actionsMock);
 vi.mock("./terminals", () => terminalsMock);
 vi.mock("./remote/runtime", () => runtimeMock);
 vi.mock("./remote/remoteSync", () => remoteSyncMock);
+vi.mock("./remoteAdapterFill", () => ({
+  refreshActiveRemoteAdaptersIfStale: vi.fn(),
+}));
 vi.mock("./components/GitCommitHoverCard", () => hoverCardMock);
 
 import {

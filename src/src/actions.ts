@@ -57,7 +57,6 @@ import {
 } from "./terminals";
 import { agentDisplay } from "./format";
 import { i18n } from "./i18n";
-import { remoteAdaptersStale } from "./remoteAdapterCache";
 import { applyTerminalThemeCss } from "./terminalThemes";
 import {
   focusPane,
@@ -222,44 +221,6 @@ export async function refreshTimeline() {
     }
     return false;
   }
-}
-
-// ---------------------------------------------------------------------------
-// remote agent discovery
-// ---------------------------------------------------------------------------
-
-const REMOTE_ADAPTER_MAX_AGE_MS = 5 * 60_000;
-const remoteAdapterProbes = new Map<string, Promise<void>>();
-
-/**
- * Refresh the active remote device's installed-agent list without delaying a
- * device switch. Called when a UI that needs adapter choices opens; the list
- * updates in place, and successful results also feed the switch cache.
- */
-export function refreshActiveRemoteAdaptersIfStale(
-  maxAgeMs = REMOTE_ADAPTER_MAX_AGE_MS,
-): void {
-  const state = getState();
-  if (state.activeDevice.kind !== "remote") return;
-  const deviceId = state.activeDevice.deviceId;
-  if (!remoteAdaptersStale(deviceId, maxAgeMs)) return;
-  if (remoteAdapterProbes.has(deviceId)) return;
-  const probe = api
-    .probeAgents(true)
-    .then((outcomes) => {
-      const current = getState().activeDevice;
-      if (current.kind !== "remote" || current.deviceId !== deviceId) return;
-      setState({
-        adapters: outcomes.flatMap((outcome) =>
-          outcome.install ? [outcome.install] : [],
-        ),
-      });
-    })
-    .catch(() => undefined)
-    .finally(() => {
-      remoteAdapterProbes.delete(deviceId);
-    });
-  remoteAdapterProbes.set(deviceId, probe);
 }
 
 // ---------------------------------------------------------------------------

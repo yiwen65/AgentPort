@@ -36,11 +36,8 @@ import {
   setState,
   toast,
 } from "./store";
-import {
-  refreshActiveRemoteAdaptersIfStale,
-  refreshProjects,
-  selectSession,
-} from "./actions";
+import { refreshProjects, selectSession } from "./actions";
+import { refreshActiveRemoteAdaptersIfStale } from "./remoteAdapterFill";
 import type { RemoteBackend } from "./remote/backend";
 import { registerFocusSessionKeyHandler } from "./sessionFocusRegistry";
 import { parseSessionKey } from "./sessionIdentity";
@@ -378,9 +375,9 @@ function activateRemoteFromProjects(
 }
 
 /**
- * Adapter discovery blocks the remote request loop for seconds on hosts that
- * probe every agent sequentially. Run it only after the switched workspace has
- * settled so panes attach first, and let the dialog path reuse the cache.
+ * Adapter discovery runs in single-agent steps with gaps, so terminal input
+ * queued between probes is serviced promptly. Delay the start until the
+ * switched workspace has settled, and let the dialog path reuse the cache.
  */
 function scheduleRemoteAdapterFill(deviceId: string, stale: () => boolean) {
   window.setTimeout(() => {

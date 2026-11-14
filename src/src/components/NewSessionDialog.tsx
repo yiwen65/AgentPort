@@ -6,11 +6,11 @@ import { useTranslation } from "react-i18next";
 import Modal from "./Modal";
 import { api, errorText, type CreateSessionArgs } from "../api";
 import {
-  refreshActiveRemoteAdaptersIfStale,
   refreshProjects,
   selectSession,
   splitSessionIntoPane,
 } from "../actions";
+import { refreshActiveRemoteAdaptersIfStale } from "../remoteAdapterFill";
 import { agentDisplay, permissionLabel, presetDisplayName } from "../format";
 import { closeDialog, toast, useStore } from "../store";
 import { localizedNotices } from "../runtimeMessages";
