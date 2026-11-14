@@ -4721,32 +4721,6 @@ body.is-resizing-pane {
     inset 0 1px 0 rgba(255, 255, 255, 0.56);
 }
 
-.session-state-card {
-  width: min(380px, calc(100% - 48px));
-  max-width: none;
-  padding: 28px 30px 26px;
-  gap: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.11);
-  border-radius: 16px;
-  background: var(--bg-elevated);
-  box-shadow:
-    0 24px 64px rgba(0, 0, 0, 0.42),
-    inset 0 1px 0 rgba(255, 255, 255, 0.045);
-}
-
-.session-agent-mark {
-  display: grid;
-  width: 56px;
-  height: 56px;
-  margin-bottom: 6px;
-  place-items: center;
-  border: 1px solid rgba(107, 140, 255, 0.2);
-  border-radius: 15px;
-  background: var(--accent-soft);
-  color: var(--accent-text);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.2);
-}
-
 .session-agent-glyph {
   display: block;
   width: 32px;
@@ -4757,68 +4731,6 @@ body.is-resizing-pane {
   display: block;
   width: 100% !important;
   height: 100% !important;
-}
-
-.session-agent-mark.pi {
-  border-color: rgba(113, 211, 193, 0.22);
-  background: rgba(113, 211, 193, 0.11);
-  color: #8bd7c9;
-}
-
-.session-agent-mark.qoder {
-  border-color: rgba(42, 219, 92, 0.2);
-  background: rgba(42, 219, 92, 0.09);
-  color: rgba(243, 245, 251, 0.86);
-}
-
-.session-state-card h3 {
-  max-width: min(560px, 100%);
-  overflow: hidden;
-  color: rgba(243, 245, 251, 0.68);
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.session-state-card .session-state-label {
-  color: rgba(243, 245, 251, 0.96);
-  font-size: 16px;
-  font-weight: 650;
-  line-height: 1.4;
-}
-
-.session-state-card .session-state-detail,
-.session-state-card .session-state-history {
-  max-width: 440px;
-  color: rgba(243, 245, 251, 0.46);
-  font-size: 11px;
-  line-height: 1.45;
-}
-
-.session-state-card .overlay-actions {
-  width: 100%;
-  margin-top: 10px;
-}
-
-.session-state-card .btn.primary {
-  width: 100%;
-  min-height: 38px;
-  padding: 8px 16px;
-  border-color: var(--accent);
-  border-radius: 9px;
-  background: var(--accent);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 650;
-  box-shadow: 0 9px 24px rgba(70, 103, 218, 0.28);
-}
-
-.session-state-card .btn.primary:hover {
-  border-color: var(--accent);
-  background: var(--accent);
-  filter: brightness(1.1);
 }
 
 :root[data-theme="light"] .term-overlay {
@@ -4836,46 +4748,6 @@ body.is-resizing-pane {
 
 :root[data-theme="light"] .term-overlay.term-overlay-solid {
   background: var(--bg);
-}
-
-:root[data-theme="light"] .session-state-card {
-  border-color: rgba(17, 18, 23, 0.1);
-  box-shadow:
-    0 22px 58px rgba(31, 35, 48, 0.16),
-    inset 0 1px 0 rgba(255, 255, 255, 0.8);
-}
-
-:root[data-theme="light"] .session-state-card h3 {
-  color: rgba(17, 18, 23, 0.64);
-}
-
-:root[data-theme="light"] .session-state-card .session-state-label {
-  color: rgba(17, 18, 23, 0.94);
-}
-
-:root[data-theme="light"] .session-state-card .session-state-detail,
-:root[data-theme="light"] .session-state-card .session-state-history {
-  color: rgba(17, 18, 23, 0.6);
-}
-
-:root[data-theme="light"] .session-state-card .btn.primary {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #ffffff;
-  box-shadow: 0 9px 22px rgba(0, 122, 255, 0.2);
-}
-
-:root[data-theme="light"] .session-state-card .btn.primary:hover {
-  border-color: var(--accent);
-  background: var(--accent);
-}
-
-:root[data-theme="light"] .session-agent-mark.pi {
-  color: #147f70;
-}
-
-:root[data-theme="light"] .session-agent-mark.qoder {
-  color: rgba(17, 18, 23, 0.84);
 }
 
 /* Skeleton while attaching/replaying */

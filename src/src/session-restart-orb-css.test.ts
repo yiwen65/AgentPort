@@ -23,9 +23,4 @@ describe("ended session restart orb", () => {
     expect(orb).toContain("animation: session-restart-orb-in");
     expect(styles).toContain("@keyframes session-restart-halo");
   });
-
-  it("keeps the remaining recovery card free of backdrop blur", () => {
-    const card = ruleBody(/\.session-state-card\s*\{([^}]*)\}/);
-    expect(card).not.toContain("backdrop-filter");
-  });
 });

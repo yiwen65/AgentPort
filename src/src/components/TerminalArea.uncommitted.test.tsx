@@ -197,11 +197,14 @@ describe("PTY Session native history stays inside xterm", () => {
     vi.restoreAllMocks();
   });
 
-  it("mounts interrupted history behind the recovery card in the same xterm", () => {
+  it("mounts interrupted history behind the restart orb in the same xterm", () => {
     setState({ attachedIds: [session.id] });
     const { container } = render(<TerminalArea />);
 
-    expect(container.querySelector(".session-state-card")).not.toBeNull();
+    const orb = container.querySelector<HTMLButtonElement>(".session-restart-orb");
+    expect(orb).not.toBeNull();
+    expect(orb?.querySelector(".session-restart-glyph")).not.toBeNull();
+    expect(container.querySelector(".session-state-card")).toBeNull();
     expect(container.querySelector(".term-host")).not.toBeNull();
     expect(container.querySelector(".native-history-pane")).toBeNull();
   });

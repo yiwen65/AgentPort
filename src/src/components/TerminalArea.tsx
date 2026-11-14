@@ -495,24 +495,6 @@ function SkeletonOverlay() {
   );
 }
 
-function SessionAgentMark({ adapter }: { adapter: string }) {
-  const theme = useStore((state) => state.themeEffective);
-  return (
-    <span className={`session-agent-mark ${adapter}`}>
-      {adapter === "shell" ? (
-        <ShellIcon className="session-agent-glyph shell" size={32} />
-      ) : (
-        <AgentIcon
-          agent={adapter}
-          className="session-agent-glyph"
-          size={32}
-          mono={theme === "light"}
-        />
-      )}
-    </span>
-  );
-}
-
 function RestartGlyph() {
   return (
     <svg
@@ -541,9 +523,11 @@ function RestartGlyph() {
 
 function SessionRestartButton({
   label,
+  tip,
   onRestart,
 }: {
   label: string;
+  tip?: string;
   onRestart: () => void;
 }) {
   const [turn, setTurn] = useState(0);
@@ -552,7 +536,7 @@ function SessionRestartButton({
       type="button"
       className="session-restart-orb"
       aria-label={label}
-      data-tip={label}
+      data-tip={tip ?? label}
       onClick={() => {
         setTurn((value) => value + 1);
         onRestart();
@@ -571,37 +555,25 @@ function SessionOverlay({ ses, sessionKey }: { ses: SessionView; sessionKey: str
 
   if (ses.lifecycle === "interrupted") {
     const p = ses.resumePrecision;
+    const warnings = [
+      precisionLabel(p),
+      p === "latest" ? t("ui.lifecycle.latestContextWarning") : "",
+      p === "unavailable" ? t("ui.lifecycle.unavailableResumeWarning") : "",
+    ].filter(Boolean);
     return (
       <div className="term-overlay">
-        <div className="overlay-card session-state-card" role="alert">
-          <SessionAgentMark adapter={ses.adapter} />
-          <h3>{ses.title}</h3>
-          <p className="session-state-label">{t("ui.lifecycle.interrupted")}</p>
-          <span className="sr-only">{precisionLabel(p)}</span>
-          {p === "latest" ? (
-            <p className="session-state-detail warn-text">
-              {t("ui.lifecycle.latestContextWarning")}
-            </p>
-          ) : null}
-          {p === "unavailable" ? (
-            <p className="session-state-detail warn-text">
-              {t("ui.lifecycle.unavailableResumeWarning")}
-            </p>
-          ) : null}
-          <div className="overlay-actions">
-            <button
-              className="btn primary"
-              data-tip={precisionLabel(p)}
-              onClick={() => {
-                const deviceId = flowDeviceIdFor(sessionKey);
-                if (deviceId) void restartSessionFlow(ses.id, deviceId);
-                else void restartSessionFlow(ses.id);
-              }}
-            >
-              {t("ui.actions.restart")}
-            </button>
-          </div>
-        </div>
+        <span className="sr-only" role="status">
+          {[t("ui.lifecycle.interrupted"), ...warnings].join(" ")}
+        </span>
+        <SessionRestartButton
+          label={t("ui.actions.restart")}
+          tip={[t("ui.actions.restart"), ...warnings].join("\n")}
+          onRestart={() => {
+            const deviceId = flowDeviceIdFor(sessionKey);
+            if (deviceId) void restartSessionFlow(ses.id, deviceId);
+            else void restartSessionFlow(ses.id);
+          }}
+        />
       </div>
     );
   }
