@@ -77,16 +77,20 @@ pub(crate) const LIVE_OUTPUT_TAIL_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) struct OutputTail {
     terminal_seed: agentport_core::terminal_seed::TerminalSeed,
     screen: Option<terminal_screen::TerminalScreen>,
+    cols: u16,
+    rows: u16,
     bytes: VecDeque<u8>,
     start_offset: u64,
     end_offset: u64,
 }
 
 impl OutputTail {
-    fn new() -> Self {
+    fn new(cols: u16, rows: u16) -> Self {
         Self {
             terminal_seed: Default::default(),
             screen: None,
+            cols,
+            rows,
             bytes: VecDeque::with_capacity(LIVE_OUTPUT_TAIL_BYTES),
             start_offset: 0,
             end_offset: 0,
@@ -94,14 +98,36 @@ impl OutputTail {
     }
 
     fn with_screen(cols: u16, rows: u16) -> Self {
-        let mut tail = Self::new();
-        tail.screen = terminal_screen::TerminalScreen::new(cols, rows).map_err(|error| {
-            warn!(%error, "terminal snapshot engine unavailable");
-        }).ok();
+        let mut tail = Self::new(cols, rows);
+        tail.ensure_screen();
         tail
     }
 
+    fn ensure_screen(&mut self) -> bool {
+        if self.screen.is_some() {
+            return true;
+        }
+        let screen = match terminal_screen::TerminalScreen::new(self.cols, self.rows) {
+            Ok(screen) => screen,
+            Err(error) => {
+                warn!(%error, "terminal snapshot engine unavailable");
+                return false;
+            }
+        };
+        if !self.bytes.is_empty() {
+            let retained: Vec<u8> = self.bytes.iter().copied().collect();
+            if let Err(error) = screen.feed(&retained) {
+                warn!(%error, "terminal snapshot engine could not replay retained output");
+                return false;
+            }
+        }
+        self.screen = Some(screen);
+        true
+    }
+
     fn resize_screen(&mut self, cols: u16, rows: u16) {
+        self.cols = cols;
+        self.rows = rows;
         if self.screen.as_ref().is_some_and(|screen| screen.resize(cols, rows).is_err()) {
             self.screen = None;
             warn!("terminal snapshot engine disabled after resize failure");
@@ -174,7 +200,7 @@ mod output_tail_tests {
 
     #[test]
     fn terminal_modes_survive_text_tail_eviction() {
-        let mut tail = OutputTail::new();
+        let mut tail = OutputTail::new(80, 24);
         tail.append(b"\x1b[?1049h\x1b[?1003;1006h");
         tail.append(&vec![b'x'; LIVE_OUTPUT_TAIL_BYTES + 1]);
         assert_eq!(
@@ -187,7 +213,7 @@ mod output_tail_tests {
 
     #[test]
     fn append_evicts_in_bulk_and_retains_exact_suffix() {
-        let mut tail = OutputTail::new();
+        let mut tail = OutputTail::new(80, 24);
         let initial = vec![b'a'; LIVE_OUTPUT_TAIL_BYTES];
         tail.append(&initial);
         let replacement = (0..16 * 1024)
@@ -212,7 +238,7 @@ mod output_tail_tests {
 
     #[test]
     fn oversized_append_and_chunked_ranges_preserve_offsets_and_order() {
-        let mut tail = OutputTail::new();
+        let mut tail = OutputTail::new(80, 24);
         let data = (0..LIVE_OUTPUT_TAIL_BYTES + 257)
             .map(|index| (index % 239) as u8)
             .collect::<Vec<_>>();
@@ -338,6 +364,11 @@ impl SemanticIdleShutdown {
     }
 }
 
+struct ProcessTableCache {
+    at: Instant,
+    children: std::collections::HashMap<i32, Vec<i32>>,
+}
+
 /// State shared with the socket server and worker threads.
 pub(crate) struct Shared {
     cfg: HostConfig,
@@ -369,6 +400,7 @@ pub(crate) struct Shared {
     /// Live-refreshed descendant snapshot so job-control escapees can be
     /// cleaned even after the leader dies and they reparent to init.
     known_descendants: Mutex<Vec<i32>>,
+    process_table: Mutex<ProcessTableCache>,
     agent_session_id: Mutex<Option<String>>,
     current_status: Mutex<Option<StatusEvent>>,
     /// Set after a failed status-journal write so connected consumers receive
@@ -377,6 +409,7 @@ pub(crate) struct Shared {
     /// clears the flag and permits a new signal for a later failure.
     status_journal_faulted: AtomicBool,
     clients: Mutex<HashMap<u64, server::ClientSink>>,
+    output_subscribers: AtomicUsize,
     /// Clients whose outbound queue is currently full (inside the lag grace
     /// window). Broadcast reads this to decide whether it must pay for a
     /// resync cursor, so a healthy fan-out never locks the log position.
@@ -463,12 +496,7 @@ pub(crate) fn broadcast(shared: &Shared, frame: &HostFrame) {
     } else {
         None
     };
-    let mut clients = shared.clients.lock().unwrap();
-    let mut drop_ids = Vec::new();
-    if !clients
-        .values()
-        .any(|client| !is_output || client.subscribe_output)
-    {
+    if is_output && shared.output_subscribers.load(Ordering::Acquire) == 0 {
         return;
     }
     let encoded = match encode_frame(frame) {
@@ -478,6 +506,14 @@ pub(crate) fn broadcast(shared: &Shared, frame: &HostFrame) {
             return;
         }
     };
+    let mut clients = shared.clients.lock().unwrap();
+    let mut drop_ids = Vec::new();
+    if !clients
+        .values()
+        .any(|client| !is_output || client.subscribe_output)
+    {
+        return;
+    }
     for (&id, client) in clients.iter() {
         if is_output && !client.subscribe_output {
             continue;
@@ -685,15 +721,16 @@ fn descendant_pids(shared: &Shared) -> Vec<i32> {
 
 /// Walk the process table (argv form, no shell) and collect every pid whose
 /// ancestor chain reaches `root`. The host itself is never included.
-pub(crate) fn descendants_of(root: i32) -> Vec<i32> {
-    let out = match std::process::Command::new("ps")
+fn process_children() -> Option<std::collections::HashMap<i32, Vec<i32>>> {
+    let out = std::process::Command::new("ps")
         .args(["-axo", "pid=,ppid="])
         .output()
-    {
-        Ok(o) if o.status.success() => o,
-        _ => return vec![],
-    };
-    let mut children: std::collections::HashMap<i32, Vec<i32>> = std::collections::HashMap::new();
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let mut children: std::collections::HashMap<i32, Vec<i32>> =
+        std::collections::HashMap::new();
     let text = String::from_utf8_lossy(&out.stdout);
     for line in text.lines() {
         let mut it = line.split_whitespace();
@@ -704,6 +741,13 @@ pub(crate) fn descendants_of(root: i32) -> Vec<i32> {
         };
         children.entry(ppid).or_default().push(pid);
     }
+    Some(children)
+}
+
+fn descendants_from_table(
+    children: &std::collections::HashMap<i32, Vec<i32>>,
+    root: i32,
+) -> Vec<i32> {
     let mut out = vec![];
     let mut stack = vec![root];
     let me = std::process::id() as i32;
@@ -720,13 +764,31 @@ pub(crate) fn descendants_of(root: i32) -> Vec<i32> {
     out
 }
 
+pub(crate) fn descendants_of(root: i32) -> Vec<i32> {
+    let Some(children) = process_children() else {
+        return vec![];
+    };
+    descendants_from_table(&children, root)
+}
+
+fn cached_descendants_of(shared: &Shared, root: i32) -> Vec<i32> {
+    let mut cache = shared.process_table.lock().unwrap();
+    if cache.at.elapsed() >= Duration::from_secs(5) {
+        if let Some(children) = process_children() {
+            cache.children = children;
+            cache.at = Instant::now();
+        }
+    }
+    descendants_from_table(&cache.children, root)
+}
+
 fn pid_alive(pid: i32) -> bool {
     !matches!(kill(Pid::from_raw(pid), None::<Signal>), Err(Errno::ESRCH))
 }
 
 /// No descendants of the session leader remain anywhere in the process table.
 fn tree_gone(shared: &Shared) -> bool {
-    if !descendants_of(shared.child_pid).is_empty() {
+    if !cached_descendants_of(shared, shared.child_pid).is_empty() {
         return false;
     }
     !shared
@@ -1164,14 +1226,27 @@ fn run() -> i32 {
         process_suspended: AtomicBool::new(false),
         log_bytes: AtomicU64::new(0),
         log_position: Mutex::new((0, 0)),
-        output_tail: Mutex::new(OutputTail::with_screen(cfg.cols, cfg.rows)),
+        output_tail: Mutex::new(
+            if std::env::var_os("AGENTPORT_EAGER_SCREEN").is_some()
+                || matches!(cfg.adapter_type.as_str(), "claude" | "qoder")
+            {
+                OutputTail::with_screen(cfg.cols, cfg.rows)
+            } else {
+                OutputTail::new(cfg.cols, cfg.rows)
+            },
+        ),
         output_serial: Mutex::new(()),
         last_output_at: Mutex::new(Instant::now()),
         known_descendants: Mutex::new(vec![]),
+        process_table: Mutex::new(ProcessTableCache {
+            at: Instant::now() - Duration::from_secs(10),
+            children: std::collections::HashMap::new(),
+        }),
         agent_session_id: Mutex::new(None),
         current_status: Mutex::new(None),
         status_journal_faulted: AtomicBool::new(false),
         clients: Mutex::new(HashMap::new()),
+        output_subscribers: AtomicUsize::new(0),
         lagging_clients: AtomicUsize::new(0),
         next_client_id: AtomicU64::new(1),
         authenticated_client_count: AtomicUsize::new(0),

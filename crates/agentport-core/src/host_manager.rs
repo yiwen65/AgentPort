@@ -13,7 +13,8 @@ use crate::models::*;
 use crate::paths::AppPaths;
 use crate::protocol::*;
 use crate::secrets::SecretValue;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
@@ -1062,16 +1063,52 @@ impl<'a> HostManager<'a> {
             .paths
             .session_dir(session_id)
             .join("status-events.jsonl");
-        let Ok(f) = std::fs::File::open(&path) else {
+        let Ok(file) = std::fs::File::open(&path) else {
             return (0, 0);
         };
+        let Ok(metadata) = file.metadata() else {
+            return (0, 0);
+        };
+        let inode = metadata.ino();
+        let mtime_ns = metadata
+            .mtime()
+            .saturating_mul(1_000_000_000)
+            .saturating_add(metadata.mtime_nsec());
+        let path_string = path.to_string_lossy().into_owned();
+        let stored = self.db.status_import_cursor(session_id).ok().flatten();
+        let offset = stored
+            .as_ref()
+            .filter(|cursor| {
+                cursor.path == path_string
+                    && cursor.inode == inode
+                    && cursor.offset <= metadata.len()
+            })
+            .map(|cursor| cursor.offset)
+            .unwrap_or(0);
+        let mut reader = BufReader::new(file);
+        if reader.seek(SeekFrom::Start(offset)).is_err() {
+            return (0, 0);
+        }
         let mut imported = 0u64;
         let mut skipped = 0u64;
-        for line in BufReader::new(f).lines() {
-            let Ok(line) = line else {
-                skipped += 1;
-                continue;
+        let mut consumed = offset;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let read = match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(_) => {
+                    skipped += 1;
+                    break;
+                }
             };
+            // A Host append may be observed mid-line. Leave the fragment for
+            // the next import instead of discarding a valid event.
+            if !line.ends_with('\n') {
+                break;
+            }
+            consumed += read as u64;
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
@@ -1083,6 +1120,11 @@ impl<'a> HostManager<'a> {
                 },
                 _ => skipped += 1,
             }
+        }
+        if consumed > offset {
+            let _ = self
+                .db
+                .set_status_import_cursor(session_id, &path_string, inode, consumed, mtime_ns);
         }
         (imported, skipped)
     }

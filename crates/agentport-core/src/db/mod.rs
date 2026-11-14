@@ -382,6 +382,18 @@ pub mod schema {
         CREATE INDEX idx_sessions_lifecycle
             ON sessions(lifecycle) WHERE archived_at IS NULL;
         "#,
+        // v18 -> v19: remember how much of each append-only status journal was
+        // already imported so startup does not re-parse lifetime history.
+        r#"
+        CREATE TABLE status_import_cursors (
+            session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+            path TEXT NOT NULL,
+            inode INTEGER NOT NULL DEFAULT 0,
+            offset INTEGER NOT NULL,
+            mtime_ns INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        "#,
     ];
 }
 
@@ -1026,6 +1038,13 @@ pub struct SessionProjection {
     pub session: Session,
     pub latest_status: Option<StatusEvent>,
     pub unread_attention: bool,
+}
+
+pub struct StatusImportCursor {
+    pub path: String,
+    pub inode: u64,
+    pub offset: u64,
+    pub mtime_ns: i64,
 }
 
 pub struct ArchivedSessionRow {
@@ -2590,6 +2609,44 @@ impl Db {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    pub fn status_import_cursor(&self, session_id: &str) -> Result<Option<StatusImportCursor>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT path,inode,\"offset\",mtime_ns FROM status_import_cursors WHERE session_id=?1",
+            params![session_id],
+            |row| {
+                Ok(StatusImportCursor {
+                    path: row.get(0)?,
+                    inode: row.get(1)?,
+                    offset: row.get(2)?,
+                    mtime_ns: row.get(3)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(CoreError::Sqlite)
+    }
+
+    pub fn set_status_import_cursor(
+        &self,
+        session_id: &str,
+        path: &str,
+        inode: u64,
+        offset: u64,
+        mtime_ns: i64,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO status_import_cursors(session_id,path,inode,\"offset\",mtime_ns,updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6)
+             ON CONFLICT(session_id) DO UPDATE SET
+               path=excluded.path, inode=excluded.inode, \"offset\"=excluded.\"offset\",
+               mtime_ns=excluded.mtime_ns, updated_at=excluded.updated_at",
+            params![session_id, path, inode, offset, mtime_ns, dt_str(&Utc::now())],
+        )?;
+        Ok(())
     }
 
     pub fn update_session_lifecycle(&self, id: &str, l: Lifecycle) -> Result<()> {

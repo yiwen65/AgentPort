@@ -9,7 +9,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use agentport_core::models::AgentTransport;
@@ -590,64 +590,79 @@ fn kimi_home(cfg: &HostConfig) -> Option<PathBuf> {
     })
 }
 
-fn kimi_sessions(home: &Path, cwd: &str) -> HashMap<String, FileCursor> {
-    let mut sessions = HashMap::new();
+type KimiIndexKey = (PathBuf, String, u64, Option<SystemTime>);
+static KIMI_INDEX_CACHE: OnceLock<
+    Mutex<Option<(KimiIndexKey, HashMap<String, FileCursor>)>>,
+> = OnceLock::new();
+
+fn kimi_index(home: &Path, cwd: &str) -> HashMap<String, FileCursor> {
     let index = home.join("session_index.jsonl");
-    let Ok(file) = File::open(index) else {
-        return sessions;
+    let Ok(metadata) = fs::metadata(&index) else {
+        return HashMap::new();
     };
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
-        let Ok(entry) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        if entry.get("workDir").and_then(Value::as_str) != Some(cwd) {
-            continue;
+    let key = (
+        index.clone(),
+        cwd.to_string(),
+        metadata.len(),
+        metadata.modified().ok(),
+    );
+    let cache = KIMI_INDEX_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((cached_key, cached)) = guard.as_ref() {
+            if cached_key == &key {
+                return cached.clone();
+            }
         }
-        let Some(id) = entry.get("sessionId").and_then(Value::as_str) else {
-            continue;
-        };
-        let Some(path) = validated_kimi_wire_path(home, &entry) else {
-            continue;
-        };
-        let offset = fs::metadata(&path)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
-        sessions.insert(
-            id.to_string(),
-            FileCursor {
-                path,
-                cursor: JsonlCursor {
-                    offset,
-                    draining_oversized: false,
+    }
+    let mut sessions = HashMap::new();
+    if let Ok(file) = File::open(&index) {
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let Ok(entry) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if entry.get("workDir").and_then(Value::as_str) != Some(cwd) {
+                continue;
+            }
+            let Some(id) = entry.get("sessionId").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(path) = validated_kimi_wire_path(home, &entry) else {
+                continue;
+            };
+            let offset = fs::metadata(&path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            sessions.insert(
+                id.to_string(),
+                FileCursor {
+                    path,
+                    cursor: JsonlCursor {
+                        offset,
+                        draining_oversized: false,
+                    },
                 },
-            },
-        );
+            );
+        }
+    }
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((key, sessions.clone()));
     }
     sessions
 }
 
+fn kimi_sessions(home: &Path, cwd: &str) -> HashMap<String, FileCursor> {
+    kimi_index(home, cwd)
+}
+
 fn kimi_session(home: &Path, cwd: &str, id: &str, offset: u64) -> Option<FileCursor> {
-    let index = home.join("session_index.jsonl");
-    let file = File::open(index).ok()?;
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
-        let Ok(entry) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        if entry.get("sessionId").and_then(Value::as_str) != Some(id)
-            || entry.get("workDir").and_then(Value::as_str) != Some(cwd)
-        {
-            continue;
-        }
-        let path = validated_kimi_wire_path(home, &entry)?;
-        return Some(FileCursor {
-            path,
-            cursor: JsonlCursor {
-                offset,
-                draining_oversized: false,
-            },
-        });
-    }
-    None
+    let path = kimi_index(home, cwd).get(id)?.path.clone();
+    Some(FileCursor {
+        path,
+        cursor: JsonlCursor {
+            offset,
+            draining_oversized: false,
+        },
+    })
 }
 
 fn validated_kimi_wire_path(home: &Path, entry: &Value) -> Option<PathBuf> {

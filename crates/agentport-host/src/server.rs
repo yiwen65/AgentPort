@@ -318,7 +318,9 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
             // A retained byte cursor alone cannot prove checkpoint equivalence:
             // another client may have resized the PTY without producing bytes.
             // Requested authoritative state therefore also replaces warm resumes.
-            shared.output_tail.lock().unwrap().screen.as_ref().and_then(|screen| screen.snapshot())
+            let mut tail = shared.output_tail.lock().unwrap();
+            tail.ensure_screen();
+            tail.screen.as_ref().and_then(|screen| screen.snapshot())
         } else { None };
         let has_snapshot = snapshot.is_some();
         let mut initial_frames = vec![HostFrame::HelloOk {
@@ -407,6 +409,9 @@ fn handle_connection(stream: UnixStream, shared: Arc<Shared>, tx: mpsc::Sender<H
                 closed: closed.clone(),
             },
         );
+        if subscribe_output {
+            shared.output_subscribers.fetch_add(1, Ordering::AcqRel);
+        }
     }
     {
         let shared = shared.clone();
@@ -778,12 +783,18 @@ fn queue_client_frame(
 
 fn remove_client(shared: &Shared, id: u64) {
     let client = shared.clients.lock().unwrap().remove(&id);
+    if client.as_ref().is_some_and(|client| client.subscribe_output) {
+        shared.output_subscribers.fetch_sub(1, Ordering::AcqRel);
+    }
     drop(client);
 }
 
 fn disconnect_client(shared: &Shared, id: u64) {
     let client = shared.clients.lock().unwrap().remove(&id);
     if let Some(client) = client {
+        if client.subscribe_output {
+            shared.output_subscribers.fetch_sub(1, Ordering::AcqRel);
+        }
         client.close();
     }
 }
