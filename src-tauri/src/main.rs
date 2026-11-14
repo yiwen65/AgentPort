@@ -3627,6 +3627,9 @@ async fn save_settings(
         .lock()
         .unwrap()
         .configure(settings.notifications_enabled, settings.ui_language);
+    if let Ok(mut cache) = state.probe_setup_cache.lock() {
+        cache.clear();
+    }
     Ok(())
 }
 
