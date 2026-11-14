@@ -36,7 +36,7 @@ use thiserror::Error;
 const WRITER_QUEUE_CAPACITY: usize = 128;
 const ATTACHMENT_WRITER_QUEUE_CAPACITY: usize = 32;
 const WRITER_CONTROL_QUANTUM: usize = 16;
-const DISPATCH_TICK: Duration = Duration::from_millis(10);
+const DISPATCH_TICK: Duration = Duration::from_millis(250);
 
 enum WriterMessage {
     Envelope(ServerEnvelope),
@@ -47,6 +47,7 @@ enum WriterMessage {
     Unregister {
         attachment_id: String,
     },
+    Wake,
 }
 
 #[derive(Debug, Error)]
@@ -299,6 +300,7 @@ fn handle_writer_message<W: Write>(
         WriterMessage::Unregister { attachment_id } => {
             subscriptions.retain(|(existing, _)| existing != &attachment_id);
         }
+        WriterMessage::Wake => {}
     }
     Ok(())
 }
@@ -858,7 +860,10 @@ fn spawn_dispatcher(
                             break 'dispatch;
                         }
                         match event_writer.try_send(pending) {
-                            Ok(()) => break,
+                            Ok(()) => {
+                                let _ = writer.try_send(WriterMessage::Wake);
+                                break;
+                            }
                             Err(mpsc::TrySendError::Full(envelope)) => {
                                 // Hold one event and stop reading upstream. A replay
                                 // burst must apply backpressure, not become a gap.
@@ -2276,7 +2281,12 @@ mod tests {
                 payload: json!({}),
             })
             .is_err());
-        let result = writer_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let result = loop {
+            match writer_rx.recv_timeout(Duration::from_secs(1)).unwrap() {
+                WriterMessage::Wake => continue,
+                message => break message,
+            }
+        };
         assert!(matches!(
             result,
             WriterMessage::Envelope(ServerEnvelope::Result { .. })
