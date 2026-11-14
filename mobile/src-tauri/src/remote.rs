@@ -563,7 +563,7 @@ async fn bridge_hello<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             "type": "hello",
             "protocol": {"major": 1, "minor": 1},
             "client": {"name": "agentport-mobile", "version": env!("CARGO_PKG_VERSION")},
-            "requestedCapabilities": ["session.event_push", "terminal.geometry_v1", "image.upload_v1"]
+            "requestedCapabilities": ["session.event_push", "terminal.geometry_v1", "image.upload_v1", agentport_remote_protocol::binary_output::CAPABILITY]
         }),
     )
     .await
@@ -729,8 +729,18 @@ async fn reader_loop(
 ) {
     loop {
         while let Ok(Some(body)) = read_frame(&mut reader).await {
-            let Ok(envelope) = serde_json::from_slice::<Value>(body.as_slice()) else {
-                break;
+            let envelope = match agentport_remote_protocol::binary_output::decode_envelope(
+                body.as_slice(),
+            ) {
+                Ok(Some(envelope)) => match serde_json::to_value(envelope) {
+                    Ok(value) => value,
+                    Err(_) => break,
+                },
+                Ok(None) => match serde_json::from_slice::<Value>(body.as_slice()) {
+                    Ok(value) => value,
+                    Err(_) => break,
+                },
+                Err(_) => break,
             };
             match envelope.get("type").and_then(Value::as_str) {
                 Some("accepted") => {

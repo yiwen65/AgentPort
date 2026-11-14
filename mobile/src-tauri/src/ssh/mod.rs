@@ -461,7 +461,7 @@ async fn probe_with_password(
         "type": "hello",
         "protocol": {"major": 1, "minor": 1},
         "client": {"name": "agentport-mobile", "version": env!("CARGO_PKG_VERSION")},
-        "requestedCapabilities": ["session.event_push"]
+        "requestedCapabilities": ["session.event_push", agentport_remote_protocol::binary_output::CAPABILITY]
     }))
     .map_err(|_| "Bridge hello serialization failed".to_string())?;
     stream

@@ -24,6 +24,7 @@ use crate::remote::{RemoteCommandError, RemoteEventMsg};
 pub const REQUESTED_CAPABILITIES: &[&str] = &[
     agentport_remote_protocol::CAPABILITY_SESSION_EVENT_PUSH,
     agentport_remote_protocol::CAPABILITY_TERMINAL_GEOMETRY,
+    agentport_remote_protocol::binary_output::CAPABILITY,
 ];
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -207,13 +208,21 @@ impl RemoteConnection {
     }
 
     fn dispatch(shared: &Arc<Shared>, frame: &[u8]) {
-        let envelope: ServerEnvelope = match serde_json::from_slice(frame) {
-            Ok(envelope) => envelope,
-            Err(error) => {
-                tracing::warn!(%error, "remote: dropping undecodable bridge frame");
-                return;
-            }
-        };
+        let envelope: ServerEnvelope =
+            match agentport_remote_protocol::binary_output::decode_envelope(frame) {
+                Ok(Some(envelope)) => envelope,
+                Ok(None) => match serde_json::from_slice(frame) {
+                    Ok(envelope) => envelope,
+                    Err(error) => {
+                        tracing::warn!(%error, "remote: dropping undecodable bridge frame");
+                        return;
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!(%error, "remote: dropping malformed binary bridge frame");
+                    return;
+                }
+            };
         match envelope {
             ServerEnvelope::Result { ref request_id, .. } => {
                 let waiter = shared.pending.lock().unwrap().remove(request_id);

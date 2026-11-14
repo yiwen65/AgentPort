@@ -2,6 +2,7 @@
 //!
 //! This crate deliberately has no dependency on Core, Tauri, SSH, or Mosh.
 
+pub mod binary_output;
 pub mod image;
 
 use base64::Engine as _;

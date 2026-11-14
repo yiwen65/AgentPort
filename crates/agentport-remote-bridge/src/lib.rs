@@ -46,10 +46,19 @@ enum WriterMessage {
         attachment_id: String,
         events: mpsc::Receiver<ServerEnvelope>,
     },
+    RegisterBinary {
+        attachment_id: String,
+        frames: mpsc::Receiver<Vec<u8>>,
+    },
     Unregister {
         attachment_id: String,
     },
     Wake,
+}
+
+enum SubscriptionQueue {
+    Json(mpsc::Receiver<ServerEnvelope>),
+    Raw(mpsc::Receiver<Vec<u8>>),
 }
 
 #[derive(Debug, Error)]
@@ -238,7 +247,7 @@ fn writer_loop<W: Write>(
     output: &mut W,
     receiver: mpsc::Receiver<WriterMessage>,
 ) -> Result<(), BridgeError> {
-    let mut subscriptions: Vec<(String, mpsc::Receiver<ServerEnvelope>)> = Vec::new();
+    let mut subscriptions: Vec<(String, SubscriptionQueue)> = Vec::new();
     let mut next_subscription = 0_usize;
     let mut controls_closed = false;
     loop {
@@ -253,13 +262,30 @@ fn writer_loop<W: Write>(
             next_subscription %= subscriptions.len();
             for checked in 0..subscriptions.len() {
                 let index = (next_subscription + checked) % subscriptions.len();
-                match subscriptions[index].1.try_recv() {
-                    Ok(envelope) => {
+                let received = match &subscriptions[index].1 {
+                    SubscriptionQueue::Json(events) => events
+                        .try_recv()
+                        .map(|envelope| (Some(envelope), None)),
+                    SubscriptionQueue::Raw(frames) => frames.try_recv().map(|frame| (None, Some(frame))),
+                };
+                match received {
+                    Ok((Some(envelope), None)) => {
                         write_frame(output, &envelope, MAX_FRAME_BYTES)?;
                         next_subscription = index.saturating_add(1);
                         made_progress = true;
                         break;
                     }
+                    Ok((None, Some(frame))) => {
+                        agentport_remote_protocol::binary_output::write_frame(
+                            output,
+                            &frame,
+                            MAX_FRAME_BYTES,
+                        )?;
+                        next_subscription = index.saturating_add(1);
+                        made_progress = true;
+                        break;
+                    }
+                    Ok(_) => {}
                     Err(mpsc::TryRecvError::Empty) => {}
                     Err(mpsc::TryRecvError::Disconnected) => {
                         subscriptions.remove(index);
@@ -287,7 +313,7 @@ fn writer_loop<W: Write>(
 
 fn handle_writer_message<W: Write>(
     output: &mut W,
-    subscriptions: &mut Vec<(String, mpsc::Receiver<ServerEnvelope>)>,
+    subscriptions: &mut Vec<(String, SubscriptionQueue)>,
     message: WriterMessage,
 ) -> Result<(), BridgeError> {
     match message {
@@ -297,7 +323,14 @@ fn handle_writer_message<W: Write>(
             events,
         } => {
             subscriptions.retain(|(existing, _)| existing != &attachment_id);
-            subscriptions.push((attachment_id, events));
+            subscriptions.push((attachment_id, SubscriptionQueue::Json(events)));
+        }
+        WriterMessage::RegisterBinary {
+            attachment_id,
+            frames,
+        } => {
+            subscriptions.retain(|(existing, _)| existing != &attachment_id);
+            subscriptions.push((attachment_id, SubscriptionQueue::Raw(frames)));
         }
         WriterMessage::Unregister { attachment_id } => {
             subscriptions.retain(|(existing, _)| existing != &attachment_id);
@@ -512,6 +545,16 @@ fn hello_result(
             disabled_reason: None,
         });
     }
+    if requested
+        .iter()
+        .any(|name| name == agentport_remote_protocol::binary_output::CAPABILITY)
+    {
+        capabilities.push(Capability {
+            name: agentport_remote_protocol::binary_output::CAPABILITY.into(),
+            enabled: true,
+            disabled_reason: None,
+        });
+    }
     for requested_name in requested {
         if !capabilities
             .iter()
@@ -683,9 +726,17 @@ fn handle_request<E: Write, S: RemoteService + Sync>(
                 // barrier: even an already-buffered Host event follows it.
                 connection.attachments.insert(attachment_id.clone());
                 if let Some(subscription) = subscription {
+                    let binary_output = connection
+                        .enabled_capabilities
+                        .contains(agentport_remote_protocol::binary_output::CAPABILITY);
                     connection.dispatchers.insert(
                         attachment_id.clone(),
-                        spawn_dispatcher(attachment_id, subscription, writer.clone())?,
+                        spawn_dispatcher_with_output(
+                            attachment_id,
+                            subscription,
+                            writer.clone(),
+                            binary_output,
+                        )?,
                     );
                 }
                 Ok(())
@@ -875,6 +926,72 @@ fn spawn_dispatcher(
     subscription: SessionSubscription,
     writer: mpsc::SyncSender<WriterMessage>,
 ) -> Result<PushDispatcher, BridgeError> {
+    spawn_dispatcher_with_output(attachment_id, subscription, writer, false)
+}
+
+fn spawn_dispatcher_with_output(
+    attachment_id: String,
+    subscription: SessionSubscription,
+    writer: mpsc::SyncSender<WriterMessage>,
+    binary_frames: bool,
+) -> Result<PushDispatcher, BridgeError> {
+    if binary_frames {
+        let (frame_writer, frame_reader) =
+            mpsc::sync_channel(ATTACHMENT_WRITER_QUEUE_CAPACITY);
+        writer
+            .send(WriterMessage::RegisterBinary {
+                attachment_id: attachment_id.clone(),
+                frames: frame_reader,
+            })
+            .map_err(|_| BridgeError::WriterClosed)?;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let worker = std::thread::spawn(move || {
+            'dispatch: loop {
+                if worker_cancel.load(Ordering::Acquire) {
+                    break;
+                }
+                match subscription.recv_timeout(DISPATCH_CANCEL_TICK) {
+                    Ok(event) => {
+                        let envelope = event_envelope(&attachment_id, event);
+                        let mut pending =
+                            match agentport_remote_protocol::binary_output::encode_envelope(
+                                &envelope,
+                            ) {
+                                Ok(Some(frame)) => frame,
+                                _ => match serde_json::to_vec(&envelope) {
+                                    Ok(json) => json,
+                                    Err(_) => continue,
+                                },
+                            };
+                        loop {
+                            if worker_cancel.load(Ordering::Acquire) {
+                                break 'dispatch;
+                            }
+                            match frame_writer.try_send(pending) {
+                                Ok(()) => {
+                                    let _ = writer.try_send(WriterMessage::Wake);
+                                    break;
+                                }
+                                Err(mpsc::TrySendError::Full(frame)) => {
+                                    pending = frame;
+                                    std::thread::sleep(Duration::from_millis(1));
+                                }
+                                Err(mpsc::TrySendError::Disconnected(_)) => break 'dispatch,
+                            }
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        });
+        return Ok(PushDispatcher {
+            cancel,
+            worker: Some(worker),
+        });
+    }
+
     let (event_writer, event_reader) = mpsc::sync_channel(ATTACHMENT_WRITER_QUEUE_CAPACITY);
     writer
         .send(WriterMessage::Register {
@@ -2585,6 +2702,57 @@ mod tests {
             );
         }
         producer.join().unwrap();
+        dispatcher.stop();
+    }
+
+    #[test]
+    fn binary_dispatcher_emits_raw_output_and_json_control_events() {
+        let (event_tx, event_rx) = mpsc::sync_channel(8);
+        let (writer_tx, writer_rx) = mpsc::sync_channel(8);
+        let dispatcher = spawn_dispatcher_with_output(
+            "att-bin".into(),
+            SessionSubscription::new("att-bin".into(), event_rx),
+            writer_tx,
+            true,
+        )
+        .unwrap();
+        let frames = match writer_rx.recv_timeout(Duration::from_secs(1)).unwrap() {
+            WriterMessage::RegisterBinary { frames, .. } => frames,
+            _ => panic!("binary dispatcher did not register a raw queue"),
+        };
+        event_tx
+            .send(SessionEvent {
+                event_type: "output".into(),
+                cursor: test_cursor(1),
+                payload: json!({"sessionId": "ses-1", "dataBase64": "aGVsbG8="}),
+            })
+            .unwrap();
+        let raw = frames.recv_timeout(Duration::from_secs(1)).unwrap();
+        let decoded =
+            agentport_remote_protocol::binary_output::decode_envelope(&raw)
+                .unwrap()
+                .unwrap();
+        let ServerEnvelope::Event(event) = decoded else {
+            panic!("expected binary event");
+        };
+        assert_eq!(event.payload["dataBase64"], "aGVsbG8=");
+        assert_eq!(event.payload["sessionId"], "ses-1");
+
+        event_tx
+            .send(SessionEvent {
+                event_type: "state".into(),
+                cursor: test_cursor(2),
+                payload: json!({}),
+            })
+            .unwrap();
+        let json_frame = frames.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(agentport_remote_protocol::binary_output::decode_envelope(&json_frame)
+            .unwrap()
+            .is_none());
+        assert!(matches!(
+            serde_json::from_slice::<ServerEnvelope>(&json_frame).unwrap(),
+            ServerEnvelope::Event(Event { event_type, .. }) if event_type == "state"
+        ));
         dispatcher.stop();
     }
 
