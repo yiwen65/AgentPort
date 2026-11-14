@@ -1188,17 +1188,13 @@ struct LiveSnapshotCache {
 }
 
 impl LiveSnapshotCache {
-    fn probe(&self, manager: &HostManager<'_>, session_id: &str) -> LiveSnapshotFacts {
+    fn probe_with_binding(
+        &self,
+        manager: &HostManager<'_>,
+        session_id: &str,
+        binding_run: Option<(String, i64)>,
+    ) -> LiveSnapshotFacts {
         let now = Instant::now();
-        let binding_run = manager
-            .db
-            .session_host_binding(session_id)
-            .ok()
-            .and_then(|binding| {
-                binding
-                    .run_identity()
-                    .map(|(run_id, ordinal)| (run_id.to_string(), ordinal))
-            });
         let journal = status_journal_stamp(manager.paths, session_id);
         if let Ok(entries) = self.entries.lock() {
             if let Some(entry) = entries.get(session_id) {
@@ -3689,6 +3685,7 @@ fn session_summary(paths: &AppPaths, db: &Db, session_id: &str) -> Result<Sessio
         &HostManager { paths, db },
         projection,
         None,
+        None,
     ))
 }
 
@@ -3700,8 +3697,20 @@ fn collect_live_session_summaries(
 ) -> Result<Vec<SessionSummary>> {
     if projections.is_empty() { return Ok(Vec::new()); }
     let deadline = std::time::Instant::now() + budget;
+    let binding_runs = manager
+        .db
+        .list_live_session_bindings()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(session_id, binding)| {
+            binding
+                .run_identity()
+                .map(|(run_id, ordinal)| (session_id, (run_id.to_string(), ordinal)))
+        })
+        .collect::<HashMap<_, _>>();
     let chunk_size = projections.len().div_ceil(4);
     std::thread::scope(|scope| {
+        let binding_runs = &binding_runs;
         let workers: Vec<_> = projections.chunks(chunk_size).map(|chunk| scope.spawn(move || {
             chunk.iter().map(|projection| {
                 if matches!(projection.session.lifecycle, Lifecycle::Creating | Lifecycle::Running)
@@ -3710,7 +3719,12 @@ fn collect_live_session_summaries(
                     return Err(ServiceError::Core(agentport_core::CoreError::Host(
                         "Session refresh exceeded its Host-check budget; retry refresh".into())));
                 }
-                Ok(live_session_summary(manager, projection.clone(), snapshots))
+                Ok(live_session_summary(
+                    manager,
+                    projection.clone(),
+                    snapshots,
+                    binding_runs.get(&projection.session.id).cloned(),
+                ))
             }).collect::<Result<Vec<_>>>()
         })).collect();
         let mut result = Vec::with_capacity(projections.len());
@@ -3726,13 +3740,18 @@ fn live_session_summary(
     manager: &HostManager<'_>,
     projection: agentport_core::db::SessionProjection,
     snapshots: Option<&LiveSnapshotCache>,
+    binding_run: Option<(String, i64)>,
 ) -> SessionSummary {
     // The liveness handshake already carries current status. Mobile-created
     // Sessions may have no desktop DB monitor at all. List polling reuses a
     // cached handshake until the status journal changes.
     let live = if matches!(projection.session.lifecycle, Lifecycle::Creating | Lifecycle::Running) {
         match snapshots {
-            Some(cache) => Some(cache.probe(manager, &projection.session.id)),
+            Some(cache) => Some(cache.probe_with_binding(
+                manager,
+                &projection.session.id,
+                binding_run,
+            )),
             None => manager
                 .live_snapshot(&projection.session.id)
                 .ok()

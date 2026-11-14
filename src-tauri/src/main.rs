@@ -79,6 +79,11 @@ struct AppState {
     /// Status notifications may arrive through both the durable monitor and
     /// an attached renderer, or as near-simultaneous Hook/PTY observations.
     notification_deduper: Mutex<NotificationDeduper>,
+    /// Notification setup depends on the resolved CLI and its on-disk state;
+    /// startup probes should not re-run login-shell/runtime checks every boot.
+    probe_setup_cache: Arc<
+        Mutex<HashMap<(AgentType, std::path::PathBuf, u64), agentport_core::notification_setup::NotificationSetup>>,
+    >,
     // Keep local image download capabilities alive across open/chunk/finish calls.
     document_image_service: Arc<Mutex<Option<CoreService>>>,
 }
@@ -957,6 +962,40 @@ fn existing_executable(path: Option<&str>) -> Option<&std::path::Path> {
     path.map(std::path::Path::new).filter(|path| path.is_file())
 }
 
+fn cached_probe_setup(
+    cache: &Mutex<
+        HashMap<
+            (AgentType, std::path::PathBuf, u64),
+            agentport_core::notification_setup::NotificationSetup,
+        >,
+    >,
+    paths: &AppPaths,
+    agent: AgentType,
+    install: Option<&agentport_core::models::AdapterInstall>,
+) -> agentport_core::notification_setup::NotificationSetup {
+    let Some(install) = install else {
+        return agentport_core::notification_setup::for_probe(paths, agent, None);
+    };
+    let executable = std::path::PathBuf::from(&install.executable_path);
+    let mtime = std::fs::metadata(&executable)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let key = (agent, executable, mtime);
+    if let Ok(cache) = cache.lock() {
+        if let Some(setup) = cache.get(&key) {
+            return setup.clone();
+        }
+    }
+    let setup = agentport_core::notification_setup::for_probe(paths, agent, Some(install));
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(key, setup.clone());
+    }
+    setup
+}
+
 #[tauri::command]
 async fn probe_agents(
     state: State<'_, AppState>,
@@ -964,6 +1003,7 @@ async fn probe_agents(
 ) -> std::result::Result<Vec<Value>, String> {
     let preserve_selections = preserve_selections.unwrap_or(false);
     let paths = state.paths.clone();
+    let setup_cache = state.probe_setup_cache.clone();
     run_required_backend_blocking(move || {
         let db = Db::open_read(&paths).map_err(|error| error.to_string())?;
         // Startup probes refresh capability metadata, but must not turn a user's
@@ -987,11 +1027,7 @@ async fn probe_agents(
             if let Some(i) = &o.install {
                 let _ = db.upsert_adapter(i);
             }
-            let setup = agentport_core::notification_setup::for_probe(
-                &paths,
-                t,
-                o.install.as_ref(),
-            );
+            let setup = cached_probe_setup(&setup_cache, &paths, t, o.install.as_ref());
             let mut result = probe_outcome_json(t, &o);
             result["notificationSetup"] = json!(setup);
             out.push(result);
@@ -1029,13 +1065,14 @@ async fn probe_agent(
         Err(e) => return Ok(json!({"state": "unavailable", "reason": e.to_string()})),
     };
     let paths = state.paths.clone();
+    let setup_cache = state.probe_setup_cache.clone();
     run_required_backend_blocking(move || {
         let db = Db::open_read(&paths).map_err(|error| error.to_string())?;
         let o = capability::probe_agent(t, path.as_deref().map(std::path::Path::new));
         if let Some(i) = &o.install {
             let _ = db.upsert_adapter(i);
         }
-        let setup = agentport_core::notification_setup::for_probe(&paths, t, o.install.as_ref());
+        let setup = cached_probe_setup(&setup_cache, &paths, t, o.install.as_ref());
         let mut result = probe_outcome_json(t, &o);
         result["notificationSetup"] = json!(setup);
         Ok(result)
@@ -1066,9 +1103,14 @@ async fn rollback_notification_setup(
         .parse()
         .map_err(|error: agentport_core::CoreError| error.to_string())?;
     let paths = state.paths.clone();
+    let setup_cache = state.probe_setup_cache.clone();
     run_backend_blocking(move || {
-        agentport_core::notification_setup::rollback(&paths, agent)
-            .map_err(|error| error.to_string())
+        let setup = agentport_core::notification_setup::rollback(&paths, agent)
+            .map_err(|error| error.to_string())?;
+        if let Ok(mut cache) = setup_cache.lock() {
+            cache.clear();
+        }
+        Ok(setup)
     })
     .await
 }
@@ -4700,6 +4742,7 @@ fn main() {
         notification_tx,
         notification_session: Mutex::new(None),
         notification_deduper: Mutex::new(NotificationDeduper::default()),
+        probe_setup_cache: Arc::new(Mutex::new(HashMap::new())),
         document_image_service: Arc::new(Mutex::new(None)),
     };
 

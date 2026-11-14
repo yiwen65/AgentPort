@@ -2510,6 +2510,44 @@ impl Db {
         Ok(rows)
     }
 
+    /// Bindings for every Session whose Host may still be alive, in one
+    /// statement. The list path must not issue one binding query per Session.
+    pub fn list_live_session_bindings(&self) -> Result<HashMap<String, SessionHostBinding>> {
+        let conn = self.conn.lock().unwrap();
+        let mut st = conn.prepare(
+            "SELECT id,host_pid,host_run_id,host_run_ordinal FROM sessions
+             WHERE archived_at IS NULL AND lifecycle IN ('creating','running')",
+        )?;
+        let rows = st
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    SessionHostBinding {
+                        host_pid: row.get(1)?,
+                        run_id: row.get(2)?,
+                        run_ordinal: row.get(3)?,
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut bindings = HashMap::with_capacity(rows.len());
+        for (session_id, binding) in rows {
+            match (&binding.run_id, binding.run_ordinal) {
+                (Some(run_id), Some(run_ordinal)) => {
+                    validate_run_identity(run_id, run_ordinal)?;
+                }
+                (None, None) => {}
+                _ => {
+                    return Err(CoreError::Conflict(format!(
+                        "session {session_id} has an incomplete active host-run identity"
+                    )))
+                }
+            }
+            bindings.insert(session_id, binding);
+        }
+        Ok(bindings)
+    }
+
     /// One Session plus the same sidebar status/unread projection used by the
     /// list path, without loading every other Session.
     pub fn get_session_projection(&self, session_id: &str) -> Result<Option<SessionProjection>> {

@@ -166,6 +166,36 @@ fn start_session(
     ctx.db.get_session(&sid)
 }
 
+fn insert_idle_session(ctx: &PerfCtx, project: &Project, preset: &Preset) -> Result<Session> {
+    let sid = ids::new_id("ses");
+    std::fs::create_dir_all(ctx.paths.session_dir(&sid))?;
+    let now = chrono::Utc::now();
+    let session = Session {
+        id: sid,
+        project_id: project.id.clone(),
+        worktree_id: None,
+        preset_id: preset.id.clone(),
+        title: "perf-idle".into(),
+        cwd: project.root_path.clone(),
+        host_pid: None,
+        host_socket: None,
+        host_token: ids::new_host_token(),
+        lifecycle: Lifecycle::Exited,
+        agent_session_id: None,
+        resume_precision: ResumePrecision::Unavailable,
+        adapter_type: AgentType::Shell,
+        transport: agentport_core::models::AgentTransport::Pty,
+        command: vec![preset.executable_path.clone()],
+        permission_mode: PermissionMode::Native,
+        created_at: now,
+        updated_at: now,
+        pinned_at: None,
+        archived_at: None,
+    };
+    ctx.db.insert_session(&session)?;
+    Ok(session)
+}
+
 fn stop_session(ctx: &PerfCtx, id: &str) -> Result<()> {
     let mgr = HostManager {
         paths: &ctx.paths,
@@ -187,6 +217,42 @@ fn client_for(ctx: &PerfCtx, s: &Session) -> Result<HostClient> {
 // ---------------------------------------------------------------------------
 // scenarios
 // ---------------------------------------------------------------------------
+
+/// Project-list refresh path: fast DB open + one projection query + project
+/// and worktree reads. This is the desktop `list_projects` hot path.
+pub fn list_projects(ctx: &PerfCtx) -> Result<()> {
+    let project = make_project(ctx)?;
+    let preset = shell_preset(ctx)?;
+    for _ in 0..50 {
+        insert_idle_session(ctx, &project, &preset)?;
+    }
+    let mut samples = vec![];
+    for _ in 0..100 {
+        let t = Instant::now();
+        let db = Db::open_read(&ctx.paths)?;
+        let projections = db.list_session_projections(false)?;
+        let projects = db.list_projects()?;
+        let worktrees = db.list_all_worktrees()?;
+        assert!(!projections.is_empty() && !projects.is_empty());
+        let _ = worktrees;
+        samples.push(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    let mut sorted = samples.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let p95 = percentile(&sorted, 95.0);
+    emit(
+        ctx,
+        Rec {
+            scenario: "list_projects_ms",
+            target: "P95 <= 10ms".into(),
+            unit: "ms",
+            samples,
+            pass: p95 <= 10.0,
+            notes: "fast open + 50 Session projections + projects/worktrees".into(),
+        },
+    );
+    Ok(())
+}
 
 /// PRD: 已运行 Session 重连 P95 ≤ 300 ms (30 samples).
 pub fn reconnect(ctx: &PerfCtx) -> Result<()> {
@@ -830,6 +896,7 @@ pub fn state_notify(ctx: &PerfCtx) -> Result<()> {
 
 pub fn run_all(ctx: &PerfCtx) -> Result<()> {
     reconnect(ctx)?;
+    list_projects(ctx)?;
     input_echo(ctx)?;
     state_notify(ctx)?;
     stop_cleanup(ctx)?;
@@ -849,6 +916,7 @@ pub fn run(ctx: &PerfCtx, name: &str) -> Result<()> {
     match name {
         "all" => run_all(ctx),
         "reconnect" => reconnect(ctx),
+        "list_projects" => list_projects(ctx),
         "input_echo" => input_echo(ctx),
         "state_notify" => state_notify(ctx),
         "stop_cleanup" => stop_cleanup(ctx),
