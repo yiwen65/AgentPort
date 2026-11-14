@@ -5,7 +5,7 @@
 // agent-generated reports: headings, paragraphs, emphasis, code, fences,
 // lists, quotes, tables, rules and http(s) links.
 
-import { createElement, Fragment, type ReactNode } from "react";
+import { createElement, Fragment, useMemo, type ReactNode } from "react";
 import MermaidBlock from "./components/MermaidBlock";
 import MarkdownImage, { MarkdownImageConsent } from "./components/MarkdownImage";
 import type { MarkdownImageSession } from "./markdownImages";
@@ -333,13 +333,16 @@ export function MarkdownView({
   onLinkClick?: (href: string) => void;
   imageSession?: MarkdownImageSession;
 }) {
-  const parsed = extractImageReferences(source);
-  const blockData = parseBlocks(parsed.source);
-  const blocks = renderBlocks(blockData, parsed.references, imageSession, sourceLocations);
-  const hasRemoteImages = blockData.some((block) => {
+  const parsed = useMemo(() => extractImageReferences(source), [source]);
+  const blockData = useMemo(() => parseBlocks(parsed.source), [parsed.source]);
+  const blocks = useMemo(
+    () => renderBlocks(blockData, parsed.references, imageSession, sourceLocations),
+    [blockData, parsed.references, imageSession, sourceLocations],
+  );
+  const hasRemoteImages = useMemo(() => blockData.some((block) => {
     const texts = block.kind === "code" || block.kind === "rule" ? [] : "text" in block ? [block.text] : block.kind === "table" ? [...block.header, ...block.rows.flat()] : block.kind === "list" ? block.items : block.lines;
     return texts.some((text) => markdownImageTokens(text.replace(/\n/g, " "), parsed.references).some((token) => /^https:\/\//i.test(token.source)));
-  });
+  }), [blockData, parsed.references]);
   return (
     <div
       className="md-preview"

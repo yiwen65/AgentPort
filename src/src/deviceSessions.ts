@@ -56,7 +56,10 @@ function setSnapshots(snapshots: Record<string, DeviceSessionSnapshot>) {
 
 function setRefreshing(delta: number) {
   refreshingCount = Math.max(0, refreshingCount + delta);
-  state = { ...state, refreshing: refreshingCount > 0 };
+  const refreshing = refreshingCount > 0;
+  if (refreshing === state.refreshing) return;
+  state = { ...state, refreshing };
+  emit();
 }
 
 function publish(snapshot: DeviceSessionSnapshot) {
@@ -203,11 +206,21 @@ export async function refreshDeviceSnapshot(
   }
 }
 
+let connectedRefresh: Promise<void> | null = null;
+
 /**
  * Refresh every connected device except the active one. The local device is
  * included when a remote device is active. Failures are isolated per device.
  */
-export async function refreshConnectedDeviceSnapshots(): Promise<void> {
+export function refreshConnectedDeviceSnapshots(): Promise<void> {
+  if (connectedRefresh) return connectedRefresh;
+  connectedRefresh = refreshConnectedDeviceSnapshotsOnce().finally(() => {
+    connectedRefresh = null;
+  });
+  return connectedRefresh;
+}
+
+async function refreshConnectedDeviceSnapshotsOnce(): Promise<void> {
   const app = getState();
   const activeKey = activeDeviceKeyOf(app);
   const targets = new Set<string>();
@@ -323,7 +336,10 @@ export function seedActiveDeviceSnapshot(): void {
   });
 }
 
-function projectsForDevice(app: AppState, deviceId: string): ProjectView[] {
+function projectsForDevice(
+  app: Pick<AppState, "activeDevice" | "projects">,
+  deviceId: string,
+): ProjectView[] {
   return deviceId === activeDeviceKeyOf(app)
     ? app.projects
     : (state.snapshots[deviceId]?.projects ?? []);
@@ -338,7 +354,7 @@ export interface LocatedSession {
 
 /** Resolve a stable Session key across the active tree and device snapshots. */
 export function findSessionByKeyForState(
-  app: AppState,
+  app: Pick<AppState, "activeDevice" | "projects">,
   key: string | null,
 ): LocatedSession | null {
   if (!key) return null;

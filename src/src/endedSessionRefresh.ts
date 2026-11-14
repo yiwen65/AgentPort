@@ -9,6 +9,10 @@ function schedule() {
   if (!watchers.size || timer !== undefined || inFlight) return;
   timer = setTimeout(async () => {
     timer = undefined;
+    if (typeof document !== "undefined" && document.hidden) {
+      schedule();
+      return;
+    }
     inFlight = true;
     try { await refreshProjects(); } catch { /* Retry reads, not mutations. */ }
     finally { inFlight = false; schedule(); }

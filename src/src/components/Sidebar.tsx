@@ -55,6 +55,7 @@ import {
   promptDialog,
   toast,
   update,
+  useShallowStore,
   useStore,
   type MenuItem,
 } from "../store";
@@ -865,9 +866,17 @@ function SessionRow({
   // the tip before the user can read it.
   useLayoutEffect(() => {
     const label = titleRef.current;
-    const truncated = label !== null && label.scrollWidth > label.clientWidth + 1;
-    setTitleTruncated((current) => (current === truncated ? current : truncated));
-  });
+    if (!label) return;
+    const measure = () => {
+      const truncated = label.scrollWidth > label.clientWidth + 1;
+      setTitleTruncated((current) => (current === truncated ? current : truncated));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(label);
+    return () => observer.disconnect();
+  }, [ses.title, editing]);
   const [draftTitle, setDraftTitle] = useState(ses.title);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -1205,14 +1214,31 @@ function WorktreeNode({
   );
 }
 
+const sessionOrderEpochs = new WeakMap<
+  SessionView,
+  { pinned: number; created: number }
+>();
+
+function sessionOrderEpoch(session: SessionView) {
+  let epoch = sessionOrderEpochs.get(session);
+  if (!epoch) {
+    epoch = {
+      pinned: sessionTime(session.pinnedAt),
+      created: sessionTime(session.createdAt),
+    };
+    sessionOrderEpochs.set(session, epoch);
+  }
+  return epoch;
+}
+
 /** Sidebar session ordering: pinned first (latest pin wins), then newest. */
 export function orderSessionsForSidebar(sessions: SessionView[]): SessionView[] {
   return [...sessions].sort((a, b) => {
-    const pinnedOrder =
-      (b.pinnedAt ? Date.parse(b.pinnedAt) : 0) -
-      (a.pinnedAt ? Date.parse(a.pinnedAt) : 0);
+    const left = sessionOrderEpoch(a);
+    const right = sessionOrderEpoch(b);
+    const pinnedOrder = right.pinned - left.pinned;
     if (pinnedOrder !== 0) return pinnedOrder;
-    return Date.parse(b.createdAt) - Date.parse(a.createdAt);
+    return right.created - left.created;
   });
 }
 
@@ -1932,16 +1958,19 @@ function ProjectNode({
   );
   const order = useSessionOrder();
   const archiving = useStore((state) => state.archivingSessionIds);
-  const archivingSessionIds = new Set(archiving);
   const activeDeviceKey = useStore((state) =>
     deviceKeyForContext(state.activeDevice),
   );
-  const visibleSessions = p.sessions.filter(
-    (session) =>
-      !archivingSessionIds.has(sessionKeyFor(activeDeviceKey, session.id)),
-  );
-  const mainSessions = order(
-    visibleSessions.filter((session) => !session.worktreeId),
+  const visibleSessions = useMemo(() => {
+    const archivingSessionIds = new Set(archiving);
+    return p.sessions.filter(
+      (session) =>
+        !archivingSessionIds.has(sessionKeyFor(activeDeviceKey, session.id)),
+    );
+  }, [p.sessions, archiving, activeDeviceKey]);
+  const mainSessions = useMemo(
+    () => order(visibleSessions.filter((session) => !session.worktreeId)),
+    [visibleSessions, order],
   );
   const repositoryStatus = useStore((state) => state.repositoryStatuses[p.id]);
   // Branch management is intentionally gated by a live backend probe. The
@@ -2222,7 +2251,10 @@ function PaneGroupNode({
 }) {
   const { t } = useTranslation("shell");
   const [expanded, setExpanded] = useState(true);
-  const storeState = useStore();
+  const storeState = useShallowStore((state) => ({
+    projects: state.projects,
+    activeDevice: state.activeDevice,
+  }));
   const snapshots = useDeviceSessions((state) => state.snapshots);
   const activeDevice = useStore((state) => state.activeDevice);
   const repositoryStatuses = useStore((state) => state.repositoryStatuses);

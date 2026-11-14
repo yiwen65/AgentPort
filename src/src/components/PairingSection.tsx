@@ -57,7 +57,9 @@ export function PairingSection() {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
-      try { await refresh(); } catch (cause) { if (!disposed) setError(message(cause)); }
+      if (!document.hidden) {
+        try { await refresh(); } catch (cause) { if (!disposed) setError(message(cause)); }
+      }
       if (!disposed) timer = setTimeout(() => void poll(), 1000);
     };
     void poll();

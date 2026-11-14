@@ -138,8 +138,10 @@ export function createRemoteSync(deps: RemoteSyncDeps): RemoteSync {
     }
   }
 
+  let lastTickAt = 0;
   async function tick(): Promise<void> {
     if (tickInFlight) return;
+    lastTickAt = Date.now();
     tickInFlight = true;
     try {
       await deps.refreshProjects();
@@ -157,7 +159,7 @@ export function createRemoteSync(deps: RemoteSyncDeps): RemoteSync {
       void tick();
     }, deps.pollIntervalMs);
     removeVisibilityListener = deps.onVisibilityChange(() => {
-      if (!deps.isDocumentHidden()) void tick();
+      if (!deps.isDocumentHidden() && Date.now() - lastTickAt >= 1000) void tick();
     });
     deps.backend.setRequestHook((method, ok) => sync.onRemoteRequest(method, ok));
     void tick();
