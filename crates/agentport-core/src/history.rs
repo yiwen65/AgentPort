@@ -973,6 +973,7 @@ fn normalize_event(source: &NativeSource, offset: u64, value: &Value) -> Option<
         .or_else(|| match kind.as_str() {
             "user" | "turn.prompt" | "input.prompt.submitted" => Some("user"),
             "assistant" | "agent_message" => Some("assistant"),
+            "tool.requested" => Some("tool"),
             _ => None,
         });
     let role = match role_text {
@@ -993,10 +994,30 @@ fn normalize_event(source: &NativeSource, offset: u64, value: &Value) -> Option<
     if let Some(content) = text_value {
         collect_text(content, &mut text, 0);
     }
+    if text.trim().is_empty() && source.provider == AgentType::Qoder {
+        // Qoder's current segment logs are telemetry-shaped: conversation
+        // content sits under `data` instead of the legacy top-level fields.
+        let data_text = match kind.as_str() {
+            "input.prompt.submitted" => value
+                .pointer("/data/text_preview")
+                .or_else(|| value.pointer("/data/text")),
+            "tool.requested" => value.pointer("/data/args/command"),
+            _ => None,
+        };
+        if let Some(content) = data_text {
+            collect_text(content, &mut text, 0);
+        } else if kind == "tool.requested" {
+            if let Some(args) = value.pointer("/data/args") {
+                if let Ok(encoded) = serde_json::to_string(args) {
+                    text.push_str(&encoded);
+                }
+            }
+        }
+    }
     if text.trim().is_empty() {
         return None;
     }
-    let timestamp = ["timestamp", "time", "created_at", "createdAt"]
+    let timestamp = ["timestamp", "time", "created_at", "createdAt", "ts"]
         .into_iter()
         .find_map(|key| value.get(key))
         .or_else(|| value.pointer("/message/timestamp"))
@@ -1505,5 +1526,47 @@ mod tests {
             .unwrap();
         std::env::remove_var("QODER_HOME");
         assert_eq!(qoder.events[0].text, "qoder question");
+    }
+
+    #[test]
+    fn qoder_telemetry_segments_page_prompts_and_tool_calls() {
+        let temp = TempDir::new().unwrap();
+        let paths = AppPaths::new(temp.path().join("data"));
+        let session = session(temp.path(), AgentType::Qoder, Some("qoder-native"));
+        let qoder_home = temp.path().join("qoder");
+        let segments = qoder_home
+            .join("logs/sessions")
+            .join(cwd_slug(&session.cwd))
+            .join("qoder-native/segments");
+        fs::create_dir_all(&segments).unwrap();
+        fs::write(
+            segments.join("001.jsonl"),
+            concat!(
+                "{\"ts\":\"2026-11-14T17:00:00Z\",\"type\":\"input.prompt.submitted\",\"data\":{\"text_preview\":\"qoder question\"}}\n",
+                "{\"ts\":\"2026-11-14T17:00:01Z\",\"type\":\"tool.requested\",\"data\":{\"tool_name\":\"Bash\",\"args\":{\"command\":\"echo hello\"}}}\n",
+                "{\"ts\":\"2026-11-14T17:00:02Z\",\"type\":\"tool.shell.started\",\"data\":{\"command\":\"npm test\",\"cwd\":\"/tmp\"}}\n",
+                "{\"ts\":\"2026-11-14T17:00:03Z\",\"type\":\"session.phase.started\",\"data\":{\"phase\":\"mcp_context.refresh\"}}\n"
+            ),
+        )
+        .unwrap();
+        std::env::set_var("QODER_HOME", &qoder_home);
+        let page = NativeHistory::new(&paths).page(&session, None, 10).unwrap();
+        std::env::remove_var("QODER_HOME");
+
+        let texts = page
+            .events
+            .iter()
+            .map(|event| event.text.as_str())
+            .collect::<Vec<_>>();
+        // `tool.shell.started` repeats the same command as `tool.requested`
+        // and telemetry phases carry no conversation text.
+        assert_eq!(texts, ["qoder question", "echo hello"]);
+        assert_eq!(page.events[0].role, Some(HistoryRole::User));
+        assert_eq!(page.events[1].role, Some(HistoryRole::Tool));
+        assert_eq!(
+            page.events[0].timestamp.as_deref(),
+            Some("2026-11-14T17:00:00Z")
+        );
+        assert!(page.next_cursor.is_none());
     }
 }
