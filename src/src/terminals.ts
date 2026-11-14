@@ -2555,8 +2555,22 @@ function installViewportIntentTracking(
     // 0), so reconcile the native layer before xterm handles the gesture.
     handle.viewport.beginWheelGesture();
   };
+  // xterm suppresses its public onScroll event for viewport-originated
+  // scrolling (the wheel/trackpad path). Observe the native scroll element so
+  // the scrollback mode and the "back to latest" affordance stay current while
+  // the user is reading.
+  const viewport =
+    container.querySelector<HTMLElement>(".xterm-viewport");
+  const onViewportScroll = () => {
+    handle.viewport.observeViewport();
+    updateScrolledUp(handle);
+  };
   container.addEventListener("wheel", onWheel, { capture: true, passive: true });
-  return () => container.removeEventListener("wheel", onWheel, true);
+  viewport?.addEventListener("scroll", onViewportScroll, { passive: true });
+  return () => {
+    container.removeEventListener("wheel", onWheel, true);
+    viewport?.removeEventListener("scroll", onViewportScroll);
+  };
 }
 
 const inputCompatibilityDisposers = new Map<string, () => void>();

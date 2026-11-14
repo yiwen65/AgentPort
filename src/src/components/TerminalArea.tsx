@@ -168,6 +168,16 @@ export function TerminalScrollbar({
     readTerminalScrollPosition(sessionId),
   );
 
+  const applyThumbPosition = useCallback((next: TerminalScrollPosition) => {
+    const track = trackRef.current;
+    if (!track) return;
+    const ratio = next.max > 0 ? next.value / next.max : 0;
+    track.style.setProperty(
+      "--terminal-scroll-top",
+      `calc(${ratio * 100}% - ${ratio * TERMINAL_SCROLL_THUMB_PX}px)`,
+    );
+  }, []);
+
   const schedulePositionSync = useCallback((viewportY?: number) => {
     if (viewportY !== undefined) {
       const buffer = getHandle(sessionId)?.term.buffer.active;
@@ -186,17 +196,30 @@ export function TerminalScrollbar({
           ? pendingViewport.value
           : undefined;
       const next = readTerminalScrollPosition(sessionId, pendingViewportY);
+      applyThumbPosition(next);
       setPosition((current) =>
         current.value === next.value && current.max === next.max ? current : next,
       );
     });
-  }, [sessionId]);
+  }, [applyThumbPosition, sessionId]);
+
+  /** xterm suppresses its public onScroll event for viewport-originated
+   * scrolling, so wheel/trackpad movement is only observable on the native
+   * scroll element. Paint the thumb in the same frame as that event instead of
+   * waiting for output or another scroll source to refresh it. */
+  const syncNativeScrollPosition = useCallback(() => {
+    const next = readTerminalScrollPosition(sessionId);
+    applyThumbPosition(next);
+    schedulePositionSync(next.value);
+  }, [applyThumbPosition, schedulePositionSync, sessionId]);
 
   useEffect(() => {
     if (!active) return;
     let connectFrame = 0;
+    let viewport: HTMLElement | null = null;
     let scrollDisposable: { dispose(): void } | undefined;
     let writeDisposable: { dispose(): void } | undefined;
+    const onViewportScroll = () => syncNativeScrollPosition();
 
     const connect = () => {
       const handle = getHandle(sessionId);
@@ -204,6 +227,12 @@ export function TerminalScrollbar({
         connectFrame = requestAnimationFrame(connect);
         return;
       }
+      viewport =
+        handle.term.element?.querySelector<HTMLElement>(".xterm-viewport") ??
+        null;
+      viewport?.addEventListener("scroll", onViewportScroll, {
+        passive: true,
+      });
       schedulePositionSync();
       scrollDisposable = handle.term.onScroll((viewportY) => {
         schedulePositionSync(viewportY);
@@ -221,10 +250,11 @@ export function TerminalScrollbar({
         positionFrameRef.current = 0;
       }
       pendingViewportRef.current = undefined;
+      viewport?.removeEventListener("scroll", onViewportScroll);
       scrollDisposable?.dispose();
       writeDisposable?.dispose();
     };
-  }, [active, sessionId, schedulePositionSync]);
+  }, [active, sessionId, schedulePositionSync, syncNativeScrollPosition]);
 
   const scrollFromPointer = (clientY: number) => {
     const track = trackRef.current;
@@ -315,15 +345,11 @@ export function TerminalScrollbar({
   };
 
   const ratio = position.max > 0 ? position.value / position.max : 0;
-  const style = {
-    "--terminal-scroll-top": `calc(${ratio * 100}% - ${ratio * TERMINAL_SCROLL_THUMB_PX}px)`,
-  } as CSSProperties;
 
   return (
     <div
       ref={trackRef}
       className={"terminal-scrollbar" + (dragging ? " dragging" : "")}
-      style={style}
       role="scrollbar"
       aria-label={t("ui.terminal.scrollbarLabel")}
       aria-orientation="vertical"

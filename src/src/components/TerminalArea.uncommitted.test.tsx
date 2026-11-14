@@ -313,6 +313,7 @@ describe("terminal scrollbar", () => {
   let viewportReadCount: number;
   let activeBuffer: { baseY: number; readonly viewportY: number };
   let normalBuffer: { baseY: number; readonly viewportY: number };
+  let nativeViewport: HTMLDivElement;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -335,8 +336,13 @@ describe("terminal scrollbar", () => {
       },
     };
     activeBuffer = normalBuffer;
+    nativeViewport = document.createElement("div");
+    nativeViewport.className = "xterm-viewport";
+    const terminalElement = document.createElement("div");
+    terminalElement.appendChild(nativeViewport);
     getHandleMock.mockReturnValue({
       term: {
+        element: terminalElement,
         buffer: {
           get active() {
             return activeBuffer;
@@ -389,6 +395,23 @@ describe("terminal scrollbar", () => {
 
     expect(screen.getByRole("scrollbar").getAttribute("aria-valuenow")).toBe("250");
     expect(screen.getByRole("scrollbar").getAttribute("aria-valuetext")).toBe("25%");
+  });
+
+  it("tracks native viewport scrolling in the same frame as the wheel", () => {
+    render(<TerminalScrollbar sessionId="ses_scroll" />);
+    flushAnimationFrame();
+    const scrollbar = screen.getByRole("scrollbar");
+
+    viewportY = 250;
+    act(() => {
+      nativeViewport.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(
+      scrollbar.style.getPropertyValue("--terminal-scroll-top"),
+    ).toBe("calc(25% - 18px)");
+    flushAnimationFrame();
+    expect(scrollbar.getAttribute("aria-valuenow")).toBe("250");
   });
 
   it("coalesces a burst of xterm scroll events to one position read per frame", () => {
