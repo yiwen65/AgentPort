@@ -254,6 +254,67 @@ pub fn list_projects(ctx: &PerfCtx) -> Result<()> {
     Ok(())
 }
 
+/// Second startup reconcile over an already-imported status journal. The
+/// cursor must make this independent of lifetime journal length.
+pub fn status_import_second_pass(_ctx: &PerfCtx) -> Result<()> {
+    let paths = AppPaths::new(std::env::temp_dir().join(format!(
+        "agentport-perf-{}",
+        ids::new_id("x")
+    )));
+    paths.ensure_layout()?;
+    let db = Db::open(&paths)?;
+    let ctx = PerfCtx { paths, db };
+    let project = make_project(&ctx)?;
+    let preset = shell_preset(&ctx)?;
+    let session = insert_idle_session(&ctx, &project, &preset)?;
+    let mut journal = String::new();
+    for sequence in 1..=2000 {
+        let line = serde_json::json!({
+            "sessionId": session.id,
+            "runId": "run_perf",
+            "runOrdinal": 1,
+            "sequence": sequence,
+            "state": "working",
+            "source": "process",
+            "confidence": "low",
+            "evidence": null,
+            "occurredAt": "2026-01-01T00:00:00.000Z",
+        });
+        journal.push_str(&line.to_string());
+        journal.push('\n');
+    }
+    std::fs::write(
+        ctx.paths.session_dir(&session.id).join("status-events.jsonl"),
+        journal,
+    )?;
+    let mgr = HostManager {
+        paths: &ctx.paths,
+        db: &ctx.db,
+    };
+    mgr.reconcile_on_startup()?;
+    let mut samples = vec![];
+    for _ in 0..20 {
+        let t = Instant::now();
+        mgr.reconcile_on_startup()?;
+        samples.push(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    let mut sorted = samples.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let p95 = percentile(&sorted, 95.0);
+    emit(
+        &ctx,
+        Rec {
+            scenario: "status_import_second_pass_ms",
+            target: "P95 <= 10ms".into(),
+            unit: "ms",
+            samples,
+            pass: p95 <= 10.0,
+            notes: "startup reconcile after a 2,000-event journal was already imported".into(),
+        },
+    );
+    Ok(())
+}
+
 /// PRD: 已运行 Session 重连 P95 ≤ 300 ms (30 samples).
 pub fn reconnect(ctx: &PerfCtx) -> Result<()> {
     let project = make_project(ctx)?;
@@ -897,6 +958,7 @@ pub fn state_notify(ctx: &PerfCtx) -> Result<()> {
 pub fn run_all(ctx: &PerfCtx) -> Result<()> {
     reconnect(ctx)?;
     list_projects(ctx)?;
+    status_import_second_pass(ctx)?;
     input_echo(ctx)?;
     state_notify(ctx)?;
     stop_cleanup(ctx)?;
@@ -917,6 +979,7 @@ pub fn run(ctx: &PerfCtx, name: &str) -> Result<()> {
         "all" => run_all(ctx),
         "reconnect" => reconnect(ctx),
         "list_projects" => list_projects(ctx),
+        "status_import_second_pass" => status_import_second_pass(ctx),
         "input_echo" => input_echo(ctx),
         "state_notify" => state_notify(ctx),
         "stop_cleanup" => stop_cleanup(ctx),
