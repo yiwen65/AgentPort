@@ -15,6 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10 * 60);
 const CHECK_INTERVAL: Duration = Duration::from_secs(60);
 const REFRESHED_AT_FILE: &str = "adapter-cache-refreshed-at";
+const STARTED_AT_FILE: &str = "adapter-refresh-started-at";
 const LAST_RUN_FILE: &str = "adapter-refresh-last.log";
 const LOCK_FILE: &str = "adapter-cache-refresh.lock";
 
@@ -32,6 +33,11 @@ where
                     // Another bridge may have refreshed while we waited for
                     // the lock; re-check before spending CPU on a probe.
                     if refresh_due(&root, SystemTime::now()) {
+                        let started_millis = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|value| value.as_millis())
+                            .unwrap_or_default();
+                        let _ = fs::write(root.join(STARTED_AT_FILE), started_millis.to_string());
                         let started = Instant::now();
                         let result = service.refresh_adapter_cache();
                         let elapsed = started.elapsed();
