@@ -1884,6 +1884,13 @@ body.is-project-dragging .tree-row.project {
 /* Git Center                                                          */
 /* ------------------------------------------------------------------ */
 
+/* The Git Center surface underlaps the window topbar, so its background is
+   what the transparent title strip shows above the workspace. Match the
+   canvas below instead of the legacy raised Git surface. */
+.workspace-surface.git-surface {
+  background: var(--settings-surface);
+}
+
 .git-center {
   background: var(--settings-surface);
   color: var(--text);
