@@ -16,7 +16,12 @@ import {
   composeRemoteBoot,
   resetLocalBootBaseForTests,
 } from "./remoteBoot";
-import type { BootInfo, ProjectView, Settings } from "./types";
+import {
+  rememberRemoteAdapters,
+  remoteAdaptersStale,
+  resetRemoteAdapterCacheForTests,
+} from "./remoteAdapterCache";
+import type { AdapterInstall, BootInfo, ProjectView, Settings } from "./types";
 
 const settings: Settings = {
   logLimitMib: 100,
@@ -66,6 +71,20 @@ const localBoot: BootInfo = {
   exportsDir: "/tmp/exports",
 };
 
+const remoteAdapter: AdapterInstall = {
+  agentType: "pi",
+  executablePath: "/usr/bin/pi",
+  versionText: "1.0",
+  capabilityHash: "h",
+  exactResume: true,
+  hookStatus: "supported",
+  approvalModel: "native_prompts",
+  defaultTransport: "pty",
+  probedAt: "2026-09-23T00:00:00.000Z",
+  candidates: [],
+  flags: [],
+};
+
 function makeBackend(overrides: Record<string, unknown> = {}) {
   const calls: string[] = [];
   const track = <T>(name: string, value: T): T => {
@@ -75,24 +94,7 @@ function makeBackend(overrides: Record<string, unknown> = {}) {
   const backend = {
     boot: vi.fn(async () => track("boot", { reconciledSessions: 0 })),
     probeAgents: vi.fn(async () =>
-      track("probeAgents", [
-        {
-          install: {
-            agentType: "pi",
-            executablePath: "/usr/bin/pi",
-            versionText: "1.0",
-            capabilityHash: "h",
-            exactResume: true,
-            hookStatus: "supported",
-            approvalModel: "native_prompts",
-            defaultTransport: "pty",
-            probedAt: "2026-09-23T00:00:00.000Z",
-            candidates: [],
-            flags: [],
-          },
-        },
-        { install: null },
-      ]),
+      track("probeAgents", [{ install: remoteAdapter }, { install: null }]),
     ),
     listProjects: vi.fn(async () => track("listProjects", [localProject])),
     getTimeline: vi.fn(async () =>
@@ -113,6 +115,7 @@ function makeBackend(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   resetLocalBootBaseForTests();
+  resetRemoteAdapterCacheForTests();
   apiMock.getSettings.mockResolvedValue(settings);
 });
 
@@ -122,22 +125,49 @@ describe("composeRemoteBoot", () => {
     await expect(composeRemoteBoot(backend)).rejects.toThrow(/local boot/);
   });
 
-  it("composes remote data slices with local-only slices", async () => {
+  it("composes remote data slices without blocking on agent probes", async () => {
     cacheLocalBootBase(localBoot);
     const { backend } = makeBackend();
-    const info = await composeRemoteBoot(backend);
+    const info = await composeRemoteBoot(backend, {
+      deviceId: "dev_1",
+      fallbackAdapters: [remoteAdapter],
+    });
     expect(info.platform).toEqual(localBoot.platform);
     expect(info.webview).toBe("system");
     expect(info.exportsDir).toBe("/tmp/exports");
     expect(info.settings).toEqual(settings);
     expect(apiMock.getSettings).toHaveBeenCalledTimes(1);
-    expect(info.adapters.map((a) => a.executablePath)).toEqual(["/usr/bin/pi"]);
+    expect(info.adapters).toEqual([remoteAdapter]);
+    expect(backend.probeAgents).not.toHaveBeenCalled();
     expect(info.projects.map((p) => p.id)).toEqual(["prj_local"]);
     expect(info.timeline.completed).toBe(1);
     expect(info.timelineError).toBeNull();
     expect(info.timelineMessage).toBeNull();
     expect(info.secretBackend).toBe("RemoteKeyring");
     expect(info.indexState).toBe("native_on_demand");
+  });
+
+  it("tracks remote adapter freshness for on-demand rechecks", () => {
+    expect(remoteAdaptersStale("dev_1", 60_000)).toBe(true);
+    rememberRemoteAdapters("dev_1", [remoteAdapter]);
+    expect(remoteAdaptersStale("dev_1", 60_000)).toBe(false);
+    expect(remoteAdaptersStale("dev_2", 60_000)).toBe(true);
+  });
+
+  it("prefers the last successful device probe over the fallback list", async () => {
+    cacheLocalBootBase(localBoot);
+    rememberRemoteAdapters("dev_1", [
+      { ...remoteAdapter, executablePath: "/opt/remote/pi" },
+    ]);
+    const { backend } = makeBackend();
+    const info = await composeRemoteBoot(backend, {
+      deviceId: "dev_1",
+      fallbackAdapters: [remoteAdapter],
+    });
+    expect(info.adapters.map((adapter) => adapter.executablePath)).toEqual([
+      "/opt/remote/pi",
+    ]);
+    expect(backend.probeAgents).not.toHaveBeenCalled();
   });
 
   it("runs the server-side reconcile before composing slices", async () => {

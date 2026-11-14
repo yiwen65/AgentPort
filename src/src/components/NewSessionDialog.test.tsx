@@ -10,6 +10,7 @@ const { createSessionMock, listPresetsMock, selectSessionMock, splitSessionMock 
 }));
 
 vi.mock("../actions", () => ({
+  refreshActiveRemoteAdaptersIfStale: vi.fn(),
   refreshProjects: vi.fn().mockResolvedValue(undefined),
   selectSession: selectSessionMock,
   splitSessionIntoPane: splitSessionMock,

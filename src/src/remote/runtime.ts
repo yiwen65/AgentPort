@@ -19,7 +19,7 @@ function defaultFactory(deviceId: string): RemoteBackend {
     invoker: (command, args) => invoke(command, args),
     channelFactory: () => new Channel<RemoteEventWire>(),
   });
-  return new RemoteBackend(client);
+  return new RemoteBackend(client, deviceId);
 }
 
 /** Lazily create (and cache) the backend for one device. */

@@ -6,13 +6,20 @@
 // New desktop code (desktop multi-device switching).
 
 import { api, errorText } from "./api";
+import { cachedRemoteAdapters } from "./remoteAdapterCache";
 import type { RemoteBackend } from "./remote/backend";
-import type { BootInfo, PlatformInfo, TimelineData } from "./types";
+import type {
+  AdapterInstall,
+  BootInfo,
+  PlatformInfo,
+  TimelineData,
+} from "./types";
 
 export interface LocalBootBase {
   platform: PlatformInfo;
   webview: string;
   exportsDir: string;
+  adapters: AdapterInstall[];
 }
 
 let localBase: LocalBootBase | null = null;
@@ -27,11 +34,24 @@ export function cacheLocalBootBase(info: BootInfo): void {
     platform: info.platform,
     webview: info.webview,
     exportsDir: info.exportsDir,
+    adapters: info.adapters,
   };
 }
 
 function emptyTimeline(): TimelineData {
   return { completed: 0, waiting: 0, failed: 0, entries: [], ackSnapshots: [] };
+}
+
+/**
+ * Remote adapter discovery is a slow, server-blocking probe (several seconds
+ * on hosts that check every agent sequentially). A switch must not wait for
+ * it; reuse the last successful result or the current device's list so the
+ * workspace appears immediately. Explicit rechecks refresh the cache through
+ * RemoteBackend.probeAgents.
+ */
+export interface ComposeRemoteBootOptions {
+  deviceId?: string;
+  fallbackAdapters?: AdapterInstall[];
 }
 
 /**
@@ -42,6 +62,7 @@ function emptyTimeline(): TimelineData {
  */
 export async function composeRemoteBoot(
   backend: RemoteBackend,
+  options: ComposeRemoteBootOptions = {},
 ): Promise<BootInfo> {
   if (!localBase) {
     throw new Error(
@@ -49,29 +70,23 @@ export async function composeRemoteBoot(
     );
   }
   await backend.boot();
-  const [settings, adapters, projects, timeline, secretBackend] =
-    await Promise.all([
-      // Settings are ALWAYS local (device switching never restyles the UI).
-      api.getSettings(),
-      // A live probe is the only remote source of AdapterInstalls; it runs
-      // with preserveSelections so explicit remote path choices survive.
-      backend
-        .probeAgents(true)
-        .then((outcomes) =>
-          outcomes.flatMap((outcome) =>
-            outcome.install ? [outcome.install] : [],
-          ),
-        ),
-      backend.listProjects(null),
-      backend
-        .getTimeline()
-        .then((data) => ({ data, error: null as string | null }))
-        .catch((error: unknown) => ({
-          data: emptyTimeline(),
-          error: errorText(error),
-        })),
-      backend.secretStatus(),
-    ]);
+  const [settings, projects, timeline, secretBackend] = await Promise.all([
+    // Settings are ALWAYS local (device switching never restyles the UI).
+    api.getSettings(),
+    backend.listProjects(null),
+    backend
+      .getTimeline()
+      .then((data) => ({ data, error: null as string | null }))
+      .catch((error: unknown) => ({
+        data: emptyTimeline(),
+        error: errorText(error),
+      })),
+    backend.secretStatus(),
+  ]);
+  const adapters =
+    (options.deviceId ? cachedRemoteAdapters(options.deviceId) : null) ??
+    (options.fallbackAdapters?.length ? options.fallbackAdapters : null) ??
+    localBase.adapters;
   return {
     platform: localBase.platform,
     settings,

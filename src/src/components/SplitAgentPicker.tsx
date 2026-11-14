@@ -1,6 +1,9 @@
 import { useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { quickStartSession } from "../actions";
+import {
+  quickStartSession,
+  refreshActiveRemoteAdaptersIfStale,
+} from "../actions";
 import { orderAgentIds, visibleAgentIds } from "../agentOrder";
 import { agentDisplay } from "../format";
 import { closeDialog, findSession, useStore } from "../store";
@@ -52,6 +55,10 @@ export default function SplitAgentPicker({
     ),
     [state.adapters, state.settings?.agentHidden, state.settings?.agentOrder],
   );
+
+  useEffect(() => {
+    refreshActiveRemoteAdaptersIfStale();
+  }, []);
 
   useEffect(() => {
     if (!target) closeDialog();

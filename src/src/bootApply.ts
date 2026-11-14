@@ -73,7 +73,9 @@ export async function applyBootInfo(
     secretBackend: info.secretBackend,
     indexState: info.indexState,
     exportsDir: info.exportsDir,
-    showOnboarding: info.adapters.length === 0,
+    showOnboarding: hooks.activeDevice
+      ? getState().showOnboarding
+      : info.adapters.length === 0,
   });
   applyThemeSettings();
   hooks.afterStateApplied?.();

@@ -68,6 +68,10 @@ import type {
   ResizePtyAuthority,
 } from "../api";
 import type { ChannelMsg } from "../types";
+import {
+  cachedRemoteAdapters,
+  rememberRemoteAdapters,
+} from "../remoteAdapterCache";
 import { RemoteClient } from "./client";
 import { remoteEventToChannelMsg } from "./events";
 import type { ChannelLike, RemoteEventWire } from "./types";
@@ -267,6 +271,8 @@ export type RemoteCapableFn = (typeof ROUTING.remoteCapable)[number];
 
 export class RemoteBackend {
   readonly client: RemoteClient;
+  /** Registry id used to cache device-scoped discovery results. */
+  readonly deviceId: string;
 
   /** sessionId → server-issued attachmentId for input/control routing. */
   private readonly attachments = new Map<string, string>();
@@ -290,8 +296,9 @@ export class RemoteBackend {
    * request result. */
   private requestHook: ((method: string, ok: boolean) => void) | null = null;
 
-  constructor(client: RemoteClient) {
+  constructor(client: RemoteClient, deviceId = client.deviceId ?? "") {
     this.client = client;
+    this.deviceId = deviceId;
     this.client.addEventListener((event) => this.routeAttachmentEvent(event));
   }
 
@@ -474,7 +481,12 @@ export class RemoteBackend {
       "agent.probe_all",
       { preserveSelections },
     );
-    return results.map(remoteProbeToProbeOutcome);
+    const outcomes = results.map(remoteProbeToProbeOutcome);
+    rememberRemoteAdapters(
+      this.deviceId,
+      outcomes.flatMap((outcome) => (outcome.install ? [outcome.install] : [])),
+    );
+    return outcomes;
   }
 
   async probeAgent(agent: string, path: string | null): Promise<ProbeOutcome> {
@@ -482,7 +494,15 @@ export class RemoteBackend {
       agent,
       path,
     });
-    return remoteProbeToProbeOutcome(result);
+    const outcome = remoteProbeToProbeOutcome(result);
+    const cached = this.deviceId ? cachedRemoteAdapters(this.deviceId) : null;
+    if (cached) {
+      rememberRemoteAdapters(this.deviceId, [
+        ...cached.filter((adapter) => adapter.agentType !== outcome.agent),
+        ...(outcome.install ? [outcome.install] : []),
+      ]);
+    }
+    return outcome;
   }
 
   async listSupportedAgents(): Promise<SupportedAgent[]> {

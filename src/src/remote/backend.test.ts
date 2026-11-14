@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RemoteBackend, ROUTING } from "./backend";
 import type { RemoteClient } from "./client";
+import {
+  cachedRemoteAdapters,
+  resetRemoteAdapterCacheForTests,
+} from "../remoteAdapterCache";
 import { RemoteRequestError, RemoteUnavailableError, isRemoteUnavailableError } from "./errors";
 
 const request = vi.fn<(method: string, params?: unknown) => Promise<unknown>>();
@@ -23,6 +27,7 @@ beforeEach(() => {
   request.mockReset();
   submitInput.mockReset().mockResolvedValue(undefined);
   hasCapability.mockReset().mockReturnValue(true);
+  resetRemoteAdapterCacheForTests();
 });
 
 describe("sessions domain", () => {
@@ -484,6 +489,7 @@ describe("agents/presets/worktrees/branches", () => {
       preserveSelections: true,
     });
     expect(outcomes[0]).toMatchObject({ agent: "pi", state: "available" });
+    expect(cachedRemoteAdapters("dev-1")).toEqual([{ agentType: "pi" }]);
   });
 
   it("notificationSetups extracts only reported setups from agent.supported", async () => {

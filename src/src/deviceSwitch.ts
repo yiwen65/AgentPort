@@ -259,7 +259,11 @@ async function connectAndBoot(target: DeviceContext): Promise<ConnectedBoot> {
     deviceName: hello.deviceName || target.deviceName,
     capabilities: hello.capabilities,
   };
-  return { boot: await composeRemoteBoot(backend), context };
+  const boot = await composeRemoteBoot(backend, {
+    deviceId: target.deviceId,
+    fallbackAdapters: getState().adapters,
+  });
+  return { boot, context };
 }
 
 async function rollbackTo(

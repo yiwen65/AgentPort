@@ -8,6 +8,7 @@ const { quickStartSessionMock } = vi.hoisted(() => ({
 
 vi.mock("../actions", () => ({
   quickStartSession: quickStartSessionMock,
+  refreshActiveRemoteAdaptersIfStale: vi.fn(),
 }));
 
 import { getState, setState } from "../store";

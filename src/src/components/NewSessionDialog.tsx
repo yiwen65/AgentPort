@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import Modal from "./Modal";
 import { api, errorText, type CreateSessionArgs } from "../api";
 import {
+  refreshActiveRemoteAdaptersIfStale,
   refreshProjects,
   selectSession,
   splitSessionIntoPane,
@@ -65,6 +66,10 @@ export default function NewSessionDialog(props: {
   const permissionModes = availablePermissionModes(agent, selectedAdapter);
   const noPermissionModes = isShell || isPi || selectedAdapter?.approvalModel === "no_builtin_prompts";
   const nativeWarningKey = permission === "native" ? nativePermissionWarning(agent) : undefined;
+
+  useEffect(() => {
+    refreshActiveRemoteAdaptersIfStale();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
