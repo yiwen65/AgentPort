@@ -601,6 +601,12 @@ pub trait RemoteService {
     fn probe_all_agents(&self, _params: AgentProbeAllParams) -> Result<Vec<AgentProbeResult>> {
         Err(ServiceError::InvalidRequest)
     }
+    /// Refresh only the cached adapter installs. Unlike `probe_all_agents`
+    /// this skips notification setup, so a Host-side cache refresh cannot be
+    /// delayed by notification transactions.
+    fn refresh_adapter_cache(&self) -> Result<()> {
+        Err(ServiceError::InvalidRequest)
+    }
     fn agent_preferences(&self) -> Result<AgentPreferencesSnapshot> {
         Err(ServiceError::InvalidRequest)
     }
@@ -1235,6 +1241,24 @@ impl RemoteService for CoreService {
         let mut result = probe_result(agent, outcome);
         result.notification_setup = Some(setup);
         Ok(result)
+    }
+
+    fn refresh_adapter_cache(&self) -> Result<()> {
+        let confirmed = self
+            .db
+            .list_adapters()?
+            .into_iter()
+            .filter_map(|install| {
+                let path = std::path::PathBuf::from(&install.executable_path);
+                path.is_file().then_some((install.agent_type, path))
+            })
+            .collect::<Vec<_>>();
+        for outcome in capability::probe_all_with_confirmed_paths(&confirmed) {
+            if let Some(install) = outcome.install {
+                self.db.upsert_adapter(&install)?;
+            }
+        }
+        Ok(())
     }
 
     fn probe_all_agents(&self, params: AgentProbeAllParams) -> Result<Vec<AgentProbeResult>> {

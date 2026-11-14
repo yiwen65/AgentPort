@@ -5,17 +5,17 @@
 //! a dedicated background thread and writes the results to the shared Host DB,
 //! so desktop clients can keep reading the cheap `agent.supported` cache.
 
-use agentport_remote_protocol::AgentProbeAllParams;
 use agentport_service::RemoteService;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10 * 60);
 const CHECK_INTERVAL: Duration = Duration::from_secs(60);
 const REFRESHED_AT_FILE: &str = "adapter-cache-refreshed-at";
+const LAST_RUN_FILE: &str = "adapter-refresh-last.log";
 const LOCK_FILE: &str = "adapter-cache-refresh.lock";
 
 /// Start the periodic refresh. The thread owns no connection state; it only
@@ -32,10 +32,21 @@ where
                     // Another bridge may have refreshed while we waited for
                     // the lock; re-check before spending CPU on a probe.
                     if refresh_due(&root, SystemTime::now()) {
-                        match service.probe_all_agents(AgentProbeAllParams {
-                            preserve_selections: true,
-                        }) {
-                            Ok(_) => {
+                        let started = Instant::now();
+                        let result = service.refresh_adapter_cache();
+                        let elapsed = started.elapsed();
+                        let summary = format!(
+                            "at={} elapsed_ms={} result={}\n",
+                            SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .map(|value| value.as_secs())
+                                .unwrap_or_default(),
+                            elapsed.as_millis(),
+                            if result.is_ok() { "ok" } else { "error" },
+                        );
+                        let _ = fs::write(root.join(LAST_RUN_FILE), summary);
+                        match result {
+                            Ok(()) => {
                                 if let Err(error) = write_refreshed_at(&root, SystemTime::now()) {
                                     eprintln!(
                                         "agentport remote bridge: adapter refresh timestamp failed: {error}"

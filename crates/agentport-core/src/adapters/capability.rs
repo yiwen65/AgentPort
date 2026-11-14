@@ -19,6 +19,8 @@ use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// Budget for one read-only probe (`--version`, `--help`, …). Two seconds was
@@ -33,6 +35,9 @@ pub const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_PROBE_OUTPUT: usize = 256 * 1024; // 256 KiB
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_VERSIONED_RUNTIME_DIRS: usize = 8;
+/// Bounded parallelism for whole-registry probes. Higher values mostly add
+/// process-launch contention on small remote hosts.
+const PROBE_WORKERS: usize = 4;
 /// How far up from an executable the macOS quarantine check walks: the file
 /// itself plus 6 ancestors. A quarantined download normally marks the version
 /// directory it was extracted into, so this stays inside the install tree
@@ -719,20 +724,40 @@ pub fn probe_all_with_confirmed_paths(
     let login_paths = login_shell_path_entries();
     let discovery_paths = discovery_dirs();
     let path_env = effective_path_env_from(&process_paths, &login_paths, &discovery_paths);
-    AgentType::all()
-        .iter()
-        .copied()
-        .map(|t| {
-            let confirmed_path = confirmed_paths
-                .iter()
-                .find_map(|(agent, path)| (*agent == t).then_some(path.as_path()));
-            probe_agent_with_candidates(
-                t,
-                confirmed_path,
-                find_candidates_from_paths(t, &process_paths, &login_paths, &discovery_paths),
-                &path_env,
-            )
-        })
+    let agents = AgentType::all();
+    // Adapter probes are independent CLI checks. Run a bounded pool so one
+    // slow/hung candidate does not serialize the whole refresh behind it;
+    // discovery inputs are computed once and shared by every worker.
+    let results: Mutex<Vec<Option<ProbeOutcome>>> =
+        Mutex::new((0..agents.len()).map(|_| None).collect());
+    let next = AtomicUsize::new(0);
+    let workers = PROBE_WORKERS.min(agents.len()).max(1);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                if index >= agents.len() {
+                    break;
+                }
+                let t = agents[index];
+                let confirmed_path = confirmed_paths
+                    .iter()
+                    .find_map(|(agent, path)| (*agent == t).then_some(path.as_path()));
+                let outcome = probe_agent_with_candidates(
+                    t,
+                    confirmed_path,
+                    find_candidates_from_paths(t, &process_paths, &login_paths, &discovery_paths),
+                    &path_env,
+                );
+                results.lock().unwrap()[index] = Some(outcome);
+            });
+        }
+    });
+    results
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .flatten()
         .collect()
 }
 
