@@ -1155,28 +1155,6 @@ body.is-project-dragging .tree-row.project {
   line-height: 16px;
 }
 
-.active-device-action {
-  flex: none;
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-
-.active-device-action .btn.linkish {
-  padding: 0 2px;
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  font-size: 11px;
-  line-height: 16px;
-  cursor: pointer;
-}
-
-.active-device-action .btn.linkish:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
 .active-device-loading {
   padding: 2px 4px;
   color: var(--sidebar-text-faint);

@@ -198,13 +198,15 @@ describe("cross-device active sidebar", () => {
     render(<Sidebar collapsed={false} width={296} />);
 
     await waitFor(() => {
-      expect(screen.getByText("本机 · LocalProj")).toBeTruthy();
+      expect(screen.getByText("LocalProj")).toBeTruthy();
       expect(screen.getByText("Beta · RemoteProj")).toBeTruthy();
     });
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
     expect(screen.getByText("本机")).toBeTruthy();
     expect(screen.getByText("Beta")).toBeTruthy();
-    expect(screen.getByText("Gamma")).toBeTruthy();
+    // Unconnected paired devices are managed from the top-right switcher's
+    // power control, not the connected-device summary.
+    expect(screen.queryByText("Gamma")).toBeNull();
   });
 
   it("routes a background row click through the device-aware focus helper", async () => {
@@ -232,12 +234,10 @@ describe("cross-device active sidebar", () => {
     );
   });
 
-  it("connects an unconnected paired device from the strip", async () => {
+  it("does not expose unconnected devices in the connected-device summary", async () => {
     render(<Sidebar collapsed={false} width={296} />);
-    const gamma = (await screen.findByText("Gamma")).closest(
-      ".active-device-row",
-    )!;
-    fireEvent.click(gamma.querySelector("button")!);
-    await waitFor(() => expect(connectDeviceMock).toHaveBeenCalledWith("dev_c"));
+    await screen.findByText("Beta");
+    expect(screen.queryByText("Gamma")).toBeNull();
+    expect(connectDeviceMock).not.toHaveBeenCalled();
   });
 });

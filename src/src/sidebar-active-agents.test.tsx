@@ -267,9 +267,9 @@ describe("active Agent sidebar", () => {
     ]);
     expect(screen.queryByText("Inactive shell")).toBeNull();
     expect(screen.queryByText("Dead agent")).toBeNull();
-    expect(screen.getAllByText("本机 · Apollo · main")).toHaveLength(2);
-    expect(screen.getByText("本机 · Apollo · feature/live-view")).toBeTruthy();
-    expect(screen.getByText("本机 · Notes")).toBeTruthy();
+    expect(screen.getAllByText("Apollo · main")).toHaveLength(2);
+    expect(screen.getByText("Apollo · feature/live-view")).toBeTruthy();
+    expect(screen.getByText("Notes")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Apollo" })).toBeNull();
     expect(screen.queryByLabelText("折叠所有项目与 Session")).toBeNull();
     expect(screen.getByRole("button", { name: "设置" })).toBeTruthy();
@@ -294,7 +294,7 @@ describe("active Agent sidebar", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Needs review，Codex，来源 本机 · Apollo · main",
+        name: "Needs review，Codex，来源 Apollo · main",
       }),
     );
 

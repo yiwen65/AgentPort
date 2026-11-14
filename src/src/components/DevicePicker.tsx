@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { openDialog, useStore } from "../store";
+import { openDialog, toast, useStore } from "../store";
 import type { DeviceContext } from "../deviceContext";
 import {
   deviceTargetSummary,
@@ -17,7 +17,10 @@ import {
   type DeviceProfile,
   type DeviceSwitchHandler,
 } from "../devicesStore";
-import { useDeviceConnections } from "../deviceConnections";
+import { connectDevice, useDeviceConnections } from "../deviceConnections";
+import { disconnectDeviceFlow } from "../deviceTeardown";
+import { refreshDeviceSnapshot } from "../deviceSessions";
+import { errorText } from "../api";
 import "./devices.css";
 
 function IconDevices() {
@@ -36,6 +39,25 @@ function IconDevices() {
         d="M7 16.5h6M10 13.5v3"
         stroke="currentColor"
         strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconPower() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <path
+        d="M10 3.25v6.5"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+      <path
+        d="M6.35 5.55a6.1 6.1 0 1 0 7.3 0"
+        stroke="currentColor"
+        strokeWidth="1.7"
         strokeLinecap="round"
       />
     </svg>
@@ -77,6 +99,7 @@ export default function DevicePicker(props: {
   const switchError = useDevicesStore((state) => state.switchError);
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
+  const [busyPower, setBusyPower] = useState<string | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -128,6 +151,44 @@ export default function DevicePicker(props: {
       .finally(() => setPending(false));
   };
 
+  const togglePower = (device: DeviceProfile, connected: boolean) => {
+    if (busyPower !== null) return;
+    setBusyPower(device.id);
+    void (async () => {
+      try {
+        if (connected) {
+          await disconnectDeviceFlow(device.id);
+        } else {
+          await connectDevice(device.id);
+          await refreshDeviceSnapshot(device.id);
+        }
+      } catch (cause) {
+        toast(
+          t(
+            connected
+              ? "shell:ui.activeDevices.disconnectFailed"
+              : "shell:ui.activeDevices.connectFailed",
+            { device: device.name, detail: errorText(cause) },
+          ),
+          "error",
+        );
+      } finally {
+        setBusyPower(null);
+      }
+    })();
+  };
+
+  const powerLabel = (
+    connected: boolean,
+    connecting: boolean,
+    deviceName: string,
+  ) =>
+    connecting
+      ? t("shell:ui.activeDevices.powerConnecting", { device: deviceName })
+      : connected
+        ? t("shell:ui.activeDevices.powerOff", { device: deviceName })
+        : t("shell:ui.activeDevices.powerOn", { device: deviceName });
+
   const deviceRow = (device: DeviceProfile) => {
     const isActive =
       activeDevice.kind === "remote" && activeDevice.deviceId === device.id;
@@ -146,28 +207,56 @@ export default function DevicePicker(props: {
       connection?.phase === "connected"
         ? undefined
         : (connection?.error ?? device.lastError ?? undefined);
+    const connected = connection?.phase === "connected";
+    const connecting =
+      switching || switchingTo === device.id || connection?.phase === "connecting";
+    const busy = busyPower === device.id;
+    const label = powerLabel(connected, connecting, device.name);
     return (
-      <button
+      <div
         key={device.id}
-        className="device-picker-row"
-        role="menuitemradio"
-        aria-checked={isActive}
-        disabled={switching || isActive}
-        onClick={() => switchTo(contextForDevice(device))}
+        className="device-picker-row device-picker-device"
+        role="none"
         data-tip={tip}
       >
-        <span className={dotClass} aria-hidden="true" />
-        <span className="device-picker-row-label">
-          {device.name}
-          <span className="device-picker-row-target">
-            {deviceTargetSummary(device)}
+        <button
+          type="button"
+          className="device-picker-row-main"
+          role="menuitemradio"
+          aria-checked={isActive}
+          disabled={switching || isActive}
+          onClick={() => switchTo(contextForDevice(device))}
+        >
+          <span className={dotClass} aria-hidden="true" />
+          <span className="device-picker-row-label">
+            {device.name}
+            <span className="device-picker-row-target">
+              {deviceTargetSummary(device)}
+            </span>
           </span>
-        </span>
-        <span className="device-badge">{device.transport}</span>
+          <span className="device-badge">{device.transport}</span>
+        </button>
         <span className="device-picker-check" aria-hidden="true">
           {isActive ? "✓" : ""}
         </span>
-      </button>
+        <button
+          type="button"
+          className={
+            "device-power " +
+            (connecting ? "connecting" : connected ? "on" : "off")
+          }
+          role="menuitem"
+          aria-label={label}
+          data-tip={label}
+          disabled={switching || busy || connecting}
+          onClick={(event) => {
+            event.stopPropagation();
+            togglePower(device, connected);
+          }}
+        >
+          <IconPower />
+        </button>
+      </div>
     );
   };
 
@@ -215,29 +304,42 @@ export default function DevicePicker(props: {
               ref={menuRef}
               style={{ top: menuPos.top, right: menuPos.right }}
             >
-          <button
-            className="device-picker-row"
-            role="menuitemradio"
-            aria-checked={activeDevice.kind === "local"}
-            disabled={switching || activeDevice.kind === "local"}
-            onClick={() => switchTo({ kind: "local" })}
-          >
-            <span
-              className={
-                switchingTo === "local" ? "device-dot switching" : "device-dot ok"
-              }
-              aria-hidden="true"
-            />
-            <span className="device-picker-row-label">
-              {t("shell:ui.topBar.devices.local")}
-              <span className="device-picker-row-target">
-                {t("shell:ui.topBar.devices.localTarget")}
+          <div className="device-picker-row device-picker-device" role="none">
+            <button
+              type="button"
+              className="device-picker-row-main"
+              role="menuitemradio"
+              aria-checked={activeDevice.kind === "local"}
+              disabled={switching || activeDevice.kind === "local"}
+              onClick={() => switchTo({ kind: "local" })}
+            >
+              <span
+                className={
+                  switchingTo === "local" ? "device-dot switching" : "device-dot ok"
+                }
+                aria-hidden="true"
+              />
+              <span className="device-picker-row-label">
+                {t("shell:ui.topBar.devices.local")}
+                <span className="device-picker-row-target">
+                  {t("shell:ui.topBar.devices.localTarget")}
+                </span>
               </span>
-            </span>
+            </button>
             <span className="device-picker-check" aria-hidden="true">
               {activeDevice.kind === "local" ? "✓" : ""}
             </span>
-          </button>
+            <button
+              type="button"
+              className="device-power on locked"
+              role="menuitem"
+              aria-label={t("shell:ui.activeDevices.localAlwaysConnected")}
+              data-tip={t("shell:ui.activeDevices.localAlwaysConnected")}
+              disabled
+            >
+              <IconPower />
+            </button>
+          </div>
           {(devices ?? []).map(deviceRow)}
           {devices !== null && devices.length === 0 ? (
             <div className="device-picker-row" role="presentation">

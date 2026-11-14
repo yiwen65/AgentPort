@@ -134,6 +134,10 @@
       "disconnectBody": "将关闭 {{device}} 上的 {{count}} 个终端窗格。",
       "disconnectFailed": "断开 {{device}} 失败：{{detail}}",
       "connectFailed": "连接 {{device}} 失败：{{detail}}",
+      "powerOn": "连接 {{device}}",
+      "powerOff": "断开 {{device}}",
+      "powerConnecting": "正在连接 {{device}}…",
+      "localAlwaysConnected": "本机始终连接",
       "switchFailed": "设备切换失败：{{detail}}",
       "switchBackFailed": "无法切回本机"
     },

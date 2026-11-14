@@ -31,18 +31,17 @@ import {
   activeSessionKey,
   deviceKeyForContext,
   sessionKeyFor,
+  LOCAL_DEVICE_KEY,
 } from "../sessionIdentity";
 import {
   activeDeviceKeyOf,
   findSessionByKeyForState,
   refreshConnectedDeviceSnapshots,
-  refreshDeviceSnapshot,
   useDeviceSessions,
   type DeviceSessionSnapshot,
 } from "../deviceSessions";
-import { connectDevice, useDeviceConnections } from "../deviceConnections";
-import { disconnectDeviceFlow } from "../deviceTeardown";
-import { focusSessionKey, reconnectActiveDevice } from "../deviceSwitch";
+import { useDeviceConnections } from "../deviceConnections";
+import { focusSessionKey } from "../deviceSwitch";
 import {
   refreshDevices,
   useDevicesStore,
@@ -1271,75 +1270,17 @@ function ActiveDeviceStrip() {
   const profiles = useDevicesStore((state) => state.devices);
   const switchingTo = useDevicesStore((state) => state.switchingTo);
   const localLabel = t("shell:ui.topBar.devices.local");
-  const activeName =
-    activeDevice.kind === "remote" ? activeDevice.deviceName : localLabel;
-
-  const [busy, setBusy] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     void refreshDevices().catch(() => undefined);
   }, []);
 
-  const remoteIds = useMemo(() => {
+  const remoteRows = useMemo(() => {
     const ids = new Set<string>();
-    for (const device of profiles ?? []) ids.add(device.id);
     for (const id of Object.keys(connections)) ids.add(id);
     for (const id of explicitDeviceIds) ids.add(id);
     if (activeDevice.kind === "remote") ids.add(activeDevice.deviceId);
-    return [...ids];
-  }, [activeDevice, connections, explicitDeviceIds, profiles]);
-
-  const connect = async (deviceId: string) => {
-    setBusy((current) => ({ ...current, [deviceId]: true }));
-    try {
-      if (deviceId === activeDeviceId && activeDevice.kind === "remote") {
-        await reconnectActiveDevice();
-      } else {
-        await connectDevice(deviceId);
-        await refreshDeviceSnapshot(deviceId);
-      }
-    } catch (cause) {
-      toast(
-        t("shell:ui.activeDevices.connectFailed", {
-          device:
-            profiles?.find((device) => device.id === deviceId)?.name ??
-            deviceId,
-          detail: errorText(cause),
-        }),
-        "error",
-      );
-    } finally {
-      setBusy((current) => {
-        const next = { ...current };
-        delete next[deviceId];
-        return next;
-      });
-    }
-  };
-
-  const disconnect = async (deviceId: string) => {
-    setBusy((current) => ({ ...current, [deviceId]: true }));
-    try {
-      await disconnectDeviceFlow(deviceId);
-    } finally {
-      setBusy((current) => {
-        const next = { ...current };
-        delete next[deviceId];
-        return next;
-      });
-    }
-  };
-
-  const rows = [
-    {
-      id: "local",
-      name: localLabel,
-      transport: null as string | null,
-      phase: "connected" as const,
-      error: null as string | null,
-      active: activeDeviceId === "local",
-    },
-    ...remoteIds.map((deviceId) => {
+    const rows = [...ids].map((deviceId) => {
       const connection = connections[deviceId];
       const profile = profiles?.find((device) => device.id === deviceId);
       const phase =
@@ -1360,12 +1301,47 @@ function ActiveDeviceStrip() {
         phase,
         error:
           connection?.error ??
-          snapshots[deviceId]?.error ??
           (phase === "error" ? (profile?.lastError ?? null) : null),
         active: activeDeviceId === deviceId,
       };
-    }),
+    });
+    // The strip is now a connected-device summary; pairing/connecting lives in
+    // the top-right device switcher's power control.
+    return rows.filter(
+      (row) =>
+        row.active ||
+        row.phase === "connected" ||
+        row.phase === "connecting",
+    );
+  }, [
+    activeDevice,
+    activeDeviceId,
+    connections,
+    explicitDeviceIds,
+    profiles,
+    switchingTo,
+  ]);
+
+  const rows = [
+    {
+      id: "local",
+      name: localLabel,
+      transport: null as string | null,
+      phase: "connected" as const,
+      error: null as string | null,
+      active: activeDeviceId === "local",
+    },
+    ...remoteRows,
   ];
+
+  const phaseLabel = (phase: (typeof rows)[number]["phase"]) =>
+    phase === "connected"
+      ? t("shell:ui.activeDevices.connected")
+      : phase === "connecting"
+        ? t("shell:ui.activeDevices.connecting")
+        : phase === "error"
+          ? t("shell:ui.activeDevices.unavailable")
+          : t("shell:ui.activeDevices.disconnected");
 
   return (
     <section
@@ -1375,10 +1351,8 @@ function ActiveDeviceStrip() {
       {rows.map((row) => (
         <div
           key={row.id}
-          className={
-            "active-device-row" + (row.active ? " active" : "")
-          }
-          data-tip={row.error ?? undefined}
+          className={"active-device-row" + (row.active ? " active" : "")}
+          data-tip={row.error ?? phaseLabel(row.phase)}
         >
           <span
             className={
@@ -1399,43 +1373,14 @@ function ActiveDeviceStrip() {
           {row.transport ? (
             <span className="device-badge">{row.transport}</span>
           ) : null}
-          {row.name === activeName && row.active ? (
+          {row.active ? (
             <span className="active-device-badge">
               {t("shell:ui.activeDevices.active")}
             </span>
           ) : null}
-          <span className={"active-device-action"}>
-            {row.id !== "local" ? (
-              row.phase === "connected" ? (
-                <button
-                  type="button"
-                  className="btn linkish"
-                  disabled={busy[row.id] === true}
-                  onClick={() => void disconnect(row.id)}
-                >
-                  {t("shell:ui.activeDevices.disconnect")}
-                </button>
-              ) : row.phase === "connecting" ? (
-                <span className="dim">
-                  {t("shell:ui.activeDevices.connecting")}
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  className="btn linkish"
-                  disabled={busy[row.id] === true}
-                  onClick={() => void connect(row.id)}
-                >
-                  {t("shell:ui.activeDevices.connect")}
-                </button>
-              )
-            ) : (
-              <span className="dim">{t("shell:ui.activeDevices.connected")}</span>
-            )}
-          </span>
         </div>
       ))}
-      {remoteIds.some((deviceId) => snapshots[deviceId]?.loading) ? (
+      {remoteRows.some((row) => snapshots[row.id]?.loading) ? (
         <div className="active-device-loading" role="status">
           {t("shell:ui.activeDevices.loading")}
         </div>
@@ -1531,7 +1476,10 @@ function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
             key,
             deviceId: source.deviceId,
             deviceName: source.deviceName,
-            sourceLabel: `${source.deviceName} · ${projectLabel}`,
+            sourceLabel:
+              source.deviceId === LOCAL_DEVICE_KEY
+                ? projectLabel
+                : `${source.deviceName} · ${projectLabel}`,
             session,
             project,
           });

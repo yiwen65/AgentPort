@@ -4,7 +4,10 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { i18n } from "../i18n";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: mocks.invoke,
+  Channel: class {},
+}));
 
 import DevicePicker from "./DevicePicker";
 import {
@@ -12,6 +15,9 @@ import {
   resetDevicesStoreForTests,
   setDevicesInvokerForTests,
 } from "../devicesStore";
+import { resetDeviceConnectionsForTests } from "../deviceConnections";
+import { resetDeviceSessionsForTests } from "../deviceSessions";
+import { resetRemoteBackendsForTests } from "../remote/runtime";
 import { getState, setActiveDevice } from "../store";
 
 const devices = [
@@ -39,11 +45,21 @@ beforeEach(async () => {
   vi.resetAllMocks();
   await i18n.changeLanguage("en-US");
   resetDevicesStoreForTests();
+  resetDeviceConnectionsForTests();
+  resetDeviceSessionsForTests();
+  resetRemoteBackendsForTests();
   registerDeviceSwitchHandler(null);
   setActiveDevice({ kind: "local" });
   setDevicesInvokerForTests(undefined);
   mocks.invoke.mockImplementation(async (command: string) => {
     if (command === "device_list") return structuredClone(devices);
+    if (command === "remote_connect") {
+      return { protocolVersion: "1", capabilities: [], deviceName: "Office PC" };
+    }
+    if (command === "remote_subscribe" || command === "remote_disconnect") {
+      return undefined;
+    }
+    if (command === "remote_request") return [];
     throw new Error(`Unexpected command ${command}`);
   });
 });
@@ -167,4 +183,34 @@ it("tracks switching state in the trigger label", async () => {
   await screen.findByText("Switching…");
   release();
   await waitFor(() => expect(screen.queryByText("Switching…")).toBeNull());
+});
+
+it("connects and disconnects with the power control without switching", async () => {
+  const onSwitchDevice = vi.fn();
+  render(<DevicePicker onSwitchDevice={onSwitchDevice} />);
+  await openMenu();
+
+  fireEvent.click(screen.getByRole("menuitem", { name: "Connect Office PC" }));
+  await screen.findByRole("menuitem", { name: "Disconnect Office PC" });
+  expect(mocks.invoke).toHaveBeenCalledWith("remote_connect", {
+    deviceId: "dev_relay",
+  });
+  expect(onSwitchDevice).not.toHaveBeenCalled();
+
+  fireEvent.click(screen.getByRole("menuitem", { name: "Disconnect Office PC" }));
+  await screen.findByRole("menuitem", { name: "Connect Office PC" });
+  expect(mocks.invoke).toHaveBeenCalledWith("remote_disconnect", {
+    deviceId: "dev_relay",
+  });
+  expect(onSwitchDevice).not.toHaveBeenCalled();
+});
+
+it("shows the local device's power as locked on", async () => {
+  render(<DevicePicker />);
+  await openMenu();
+  const localPower = screen.getByRole("menuitem", {
+    name: "This computer is always connected",
+  });
+  expect((localPower as HTMLButtonElement).disabled).toBe(true);
+  expect(localPower.className).toContain("on");
 });

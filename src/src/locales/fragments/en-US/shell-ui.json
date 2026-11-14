@@ -134,6 +134,10 @@
       "disconnectBody": "This closes {{count}} terminal pane(s) on {{device}}.",
       "disconnectFailed": "Could not disconnect {{device}}: {{detail}}",
       "connectFailed": "Could not connect {{device}}: {{detail}}",
+      "powerOn": "Connect {{device}}",
+      "powerOff": "Disconnect {{device}}",
+      "powerConnecting": "Connecting {{device}}…",
+      "localAlwaysConnected": "This computer is always connected",
       "switchFailed": "Device switch failed: {{detail}}",
       "switchBackFailed": "could not return to This computer"
     },
