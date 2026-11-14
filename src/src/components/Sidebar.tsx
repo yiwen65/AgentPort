@@ -30,6 +30,7 @@ import { orderAgentIds, visibleAgentIds } from "../agentOrder";
 import {
   activeSessionKey,
   deviceKeyForContext,
+  parseSessionKey,
   sessionKeyFor,
   LOCAL_DEVICE_KEY,
 } from "../sessionIdentity";
@@ -59,6 +60,7 @@ import {
 } from "../store";
 import type {
   ProjectView,
+  RepositoryStatus,
   SessionView,
   WorktreeHealthStr,
   WorktreeView,
@@ -1291,6 +1293,25 @@ function deviceAccentAssignments(
   return assignment;
 }
 
+/** Project (· branch) context shared by the active list and split groups. */
+function sessionSourceLabel(
+  project: ProjectView,
+  session: SessionView,
+  deviceId: string,
+  activeDeviceId: string,
+  repositoryStatuses: Record<string, RepositoryStatus>,
+): string {
+  const branch = session.worktreeId
+    ? project.worktrees.find((worktree) => worktree.id === session.worktreeId)
+        ?.branch
+    : deviceId === activeDeviceId &&
+        repositoryStatuses[project.id]?.isGitRepository &&
+        repositoryStatuses[project.id]?.head.kind === "branch"
+      ? repositoryStatuses[project.id]?.head.branch
+      : null;
+  return branch ? `${project.name} · ${branch}` : project.name;
+}
+
 function activeEntryPriority(
   entry: ActiveAgentSessionEntry,
   suspendedSessionIds: ReadonlySet<string>,
@@ -1448,18 +1469,13 @@ function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
           const key = sessionKeyFor(source.deviceId, session.id);
           if (archiving.has(key)) continue;
           projectHasActiveSession = true;
-          const branch = session.worktreeId
-            ? project.worktrees.find(
-                (worktree) => worktree.id === session.worktreeId,
-              )?.branch
-            : source.deviceId === activeDeviceId &&
-                repositoryStatuses[project.id]?.isGitRepository &&
-                repositoryStatuses[project.id]?.head.kind === "branch"
-              ? repositoryStatuses[project.id]?.head.branch
-              : null;
-          const projectLabel = branch
-            ? `${project.name} · ${branch}`
-            : project.name;
+          const projectLabel = sessionSourceLabel(
+            project,
+            session,
+            source.deviceId,
+            activeDeviceId,
+            repositoryStatuses,
+          );
           entries.push({
             key,
             deviceId: source.deviceId,
@@ -2188,14 +2204,23 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
 function PaneGroupNode({
   group,
   accent,
+  deviceAccents,
 }: {
   group: PaneLayout;
   accent?: PaneGroupAccent;
+  deviceAccents: ReadonlyMap<string, PaneGroupAccent>;
 }) {
   const { t } = useTranslation("shell");
   const [expanded, setExpanded] = useState(true);
   const storeState = useStore();
   const snapshots = useDeviceSessions((state) => state.snapshots);
+  const activeDevice = useStore((state) => state.activeDevice);
+  const repositoryStatuses = useStore((state) => state.repositoryStatuses);
+  const profiles = useDevicesStore((state) => state.devices);
+  const activeDeviceId = deviceKeyForContext(activeDevice);
+  const localLabel = t("ui.topBar.devices.local");
+  const activeDeviceName =
+    activeDevice.kind === "remote" ? activeDevice.deviceName : localLabel;
   const locatedSessions = useMemo(
     () =>
       orderedLayoutSessionIds(group).map((key) => ({
@@ -2261,16 +2286,42 @@ function PaneGroupNode({
         </button>
       </div>
       {expanded
-        ? locatedSessions.flatMap(({ key, located }) =>
-            located ? (
+        ? locatedSessions.flatMap(({ key, located }) => {
+            if (!located) return [];
+            const localSession = located.deviceId === LOCAL_DEVICE_KEY;
+            return [
               <SessionRow
                 key={key}
                 ses={located.session}
                 nested
                 deviceId={located.deviceId}
-              />
-            ) : []
-          )
+                sourceLabel={sessionSourceLabel(
+                  located.project,
+                  located.session,
+                  located.deviceId,
+                  activeDeviceId,
+                  repositoryStatuses,
+                )}
+                deviceName={
+                  localSession
+                    ? undefined
+                    : activeDeviceLabel(
+                        located.deviceId,
+                        activeDeviceId,
+                        activeDeviceName,
+                        localLabel,
+                        snapshots,
+                        profiles,
+                      )
+                }
+                deviceAccent={
+                  localSession
+                    ? undefined
+                    : deviceAccents.get(located.deviceId)
+                }
+              />,
+            ];
+          })
         : null}
     </section>
   );
@@ -2294,6 +2345,21 @@ export default function Sidebar({
   const groupAccents = useMemo(
     () => normalizePaneGroupAccents(groups).groups.map((group) => group.accent),
     [groups],
+  );
+  const groupDeviceAccents = useMemo(
+    () =>
+      groupsPage && !activeAgentsView
+        ? deviceAccentAssignments(
+            groups
+              .flatMap((group) =>
+                orderedLayoutSessionIds(group).map(
+                  (key) => parseSessionKey(key).deviceKey,
+                ),
+              )
+              .filter((deviceKey) => deviceKey !== LOCAL_DEVICE_KEY),
+          )
+        : new Map<string, PaneGroupAccent>(),
+    [activeAgentsView, groups, groupsPage],
   );
   const sidebarRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -2382,6 +2448,7 @@ export default function Sidebar({
                 key={[...orderedLayoutSessionIds(group)].sort().join("/")}
                 group={group}
                 accent={groupAccents[index]}
+                deviceAccents={groupDeviceAccents}
               />
             )) : <div className="empty-state"><div>{t("shell:sidebarGroups.empty")}</div><p>{t("shell:sidebarGroups.hint")}</p></div>}
           </div>

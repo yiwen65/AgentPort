@@ -107,6 +107,7 @@ import {
   resetDevicesStoreForTests,
   setDevicesInvokerForTests,
 } from "./devicesStore";
+import { singletonPaneLayout, splitPane } from "./paneLayout";
 import type { ProjectView, SessionView } from "./types";
 
 function session(id: string, title: string): SessionView {
@@ -189,6 +190,7 @@ describe("cross-device active sidebar", () => {
       sidebarWorktreeProjectId: null,
       contextMenu: null,
       deviceSwitching: false,
+      terminalLayoutGroups: [],
     });
   });
 
@@ -241,6 +243,37 @@ describe("cross-device active sidebar", () => {
       "ses_shared",
       "dev_b",
     );
+  });
+
+  it("labels devices and project context on split-group rows", async () => {
+    const group = splitPane(
+      singletonPaneLayout("ses_shared"),
+      "ses_shared",
+      "dev_b:ses_shared",
+      "right",
+      "remote-split",
+    );
+    setState({ sidebarViewMode: "projects", terminalLayoutGroups: [group] });
+    render(<Sidebar collapsed={false} width={296} />);
+    fireEvent.click(screen.getByRole("button", { name: "分屏分组" }));
+
+    const remoteRow = (await screen.findByText("RemoteProj")).closest(
+      ".tree-row.session",
+    )!;
+    expect(remoteRow.querySelector(".session-device")?.textContent).toBe(
+      "Beta",
+    );
+    expect(
+      remoteRow.querySelector(".active-session-source")?.textContent,
+    ).toBe("RemoteProj");
+
+    const localRow = screen.getByText("LocalProj").closest(
+      ".tree-row.session",
+    )!;
+    expect(localRow.querySelector(".session-device")).toBeNull();
+    expect(
+      localRow.querySelector(".active-session-source")?.textContent,
+    ).toBe("LocalProj");
   });
 
 });

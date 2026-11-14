@@ -156,6 +156,13 @@ describe("sidebar Session pane drag", () => {
     expect(view.container.querySelector(".sidebar-groups-caption")).toBeNull();
     const groupPage = view.container.querySelector(".sidebar-groups-page")!;
     expect(groupPage.firstElementChild?.classList.contains("sidebar-pane-group")).toBe(true);
+    // Grouped rows carry the same project context as the active Session list.
+    expect(
+      [...groupPage.querySelectorAll(".active-session-source")].map(
+        (node) => node.textContent,
+      ),
+    ).toEqual(["Demo", "Demo", "Demo", "Demo"]);
+    expect(groupPage.querySelectorAll(".session-device")).toHaveLength(0);
     for (const label of groupPage.querySelectorAll(".sidebar-group-open .tree-label")) {
       expect(label.textContent).toBe("");
     }
