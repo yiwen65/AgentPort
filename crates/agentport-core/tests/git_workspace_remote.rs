@@ -268,7 +268,7 @@ fn explicit_autostash_pull_preserves_staged_changes_while_updating_the_branch() 
 }
 
 #[test]
-fn push_targets_the_checked_out_branch_instead_of_a_differently_named_upstream() {
+fn push_preserves_and_updates_a_differently_named_upstream() {
     let fixture = MockRepo::new();
     let bare = fixture.workspace().join("origin.git");
     Command::new("git")
@@ -328,28 +328,28 @@ fn push_targets_the_checked_out_branch_instead_of_a_differently_named_upstream()
         .unwrap();
 
     assert_eq!(pushed.changes.context.ahead, 0);
+    assert_ne!(main_before.trim(), feature_oid);
     assert_eq!(
-        git(&bare, &["rev-parse", "refs/heads/feature/thing"]).trim(),
-        feature_oid,
-        "Push must publish the checked-out branch under its own name"
+        pushed.changes.context.upstream.as_deref(),
+        Some("origin/main")
     );
     assert_eq!(
         git(&bare, &["rev-parse", "refs/heads/main"]).trim(),
-        main_before.trim(),
-        "the remote default branch must not receive feature commits"
+        feature_oid,
+        "Push must update the configured upstream"
     );
-    // The stale `merge=refs/heads/main` upstream is repaired by --set-upstream.
+    assert!(git(&bare, &["for-each-ref", "refs/heads/feature/thing"]).is_empty());
     assert_eq!(
         fixture
             .git(fixture.root(), &["config", "branch.feature/thing.merge"])
             .trim(),
-        "refs/heads/feature/thing"
+        "refs/heads/main"
     );
     fixture.assert_recorded_write_targets_are_isolated();
 }
 
 #[test]
-fn force_push_tracking_main_rewrites_only_the_checked_out_branch() {
+fn force_push_to_a_protected_upstream_is_blocked() {
     let fixture = MockRepo::new();
     let bare = fixture.workspace().join("origin.git");
     Command::new("git")
@@ -386,24 +386,143 @@ fn force_push_tracking_main_rewrites_only_the_checked_out_branch() {
     };
     let manager = GitWorkspaceManager::new(&db);
     let before = manager.changes(&locator, true).unwrap();
-    let forced = manager
+    let error = manager
         .sync_remote(
             &locator,
             &before.context.checkout_id,
             &before.status_token,
             GitRemoteAction::ForcePush,
         )
-        .expect("force push must target the checked-out branch, not the upstream name");
-
-    assert_eq!(forced.changes.context.ahead, 0);
+        .unwrap_err();
+    assert!(matches!(error, CoreError::Blocked(_)), "{error}");
+    assert!(error.to_string().contains("main and master"));
     assert_eq!(
-        git(&bare, &["rev-parse", "refs/heads/feature/thing"]).trim(),
+        fixture.git(fixture.root(), &["rev-parse", "HEAD"]).trim(),
         feature_oid
     );
+    assert_eq!(
+        fixture
+            .git(fixture.root(), &["config", "branch.feature/thing.merge"])
+            .trim(),
+        "refs/heads/main"
+    );
+    assert!(git(&bare, &["for-each-ref", "refs/heads/feature/thing"]).is_empty());
     assert_eq!(
         git(&bare, &["rev-parse", "refs/heads/main"]).trim(),
         main_before.trim()
     );
+}
+
+#[test]
+fn push_without_an_upstream_publishes_the_local_name_and_sets_tracking() {
+    let fixture = MockRepo::new();
+    let bare = fixture.workspace().join("origin.git");
+    git(
+        fixture.workspace(),
+        &["init", "--bare", bare.to_str().unwrap()],
+    );
+    fixture.git(
+        fixture.root(),
+        &["remote", "add", "origin", bare.to_str().unwrap()],
+    );
+    fixture.git(fixture.root(), &["checkout", "-b", "my-pi"]);
+
+    let db = Db::open_memory().unwrap();
+    fixture.add_project(&db, "project-a");
+    let locator = GitContextLocator::ProjectMain {
+        project_id: "project-a".into(),
+    };
+    let manager = GitWorkspaceManager::new(&db);
+    let before = manager.changes(&locator, true).unwrap();
+    assert!(before.context.upstream.is_none());
+    fixture.record_write_target("publish untracked branch", fixture.root());
+    let pushed = manager
+        .sync_remote(
+            &locator,
+            &before.context.checkout_id,
+            &before.status_token,
+            GitRemoteAction::Push,
+        )
+        .unwrap();
+
+    assert_eq!(
+        pushed.changes.context.upstream.as_deref(),
+        Some("origin/my-pi")
+    );
+    assert_eq!(
+        git(&bare, &["rev-parse", "refs/heads/my-pi"]).trim(),
+        fixture.git(fixture.root(), &["rev-parse", "HEAD"]).trim()
+    );
+    fixture.assert_recorded_write_targets_are_isolated();
+}
+
+#[test]
+fn force_push_preserves_a_differently_named_unprotected_upstream() {
+    let fixture = MockRepo::new();
+    let bare = fixture.workspace().join("origin.git");
+    git(
+        fixture.workspace(),
+        &["init", "--bare", bare.to_str().unwrap()],
+    );
+    fixture.git(
+        fixture.root(),
+        &["remote", "add", "origin", bare.to_str().unwrap()],
+    );
+    fixture.git(fixture.root(), &["checkout", "-b", "my-pi"]);
+    fixture.git(
+        fixture.root(),
+        &["push", "-u", "origin", "HEAD:refs/heads/release"],
+    );
+    let original = fixture.git(fixture.root(), &["rev-parse", "HEAD"]);
+    fixture.write("remote-only.txt", "remote\n");
+    fixture.git(fixture.root(), &["add", "remote-only.txt"]);
+    fixture.git(
+        fixture.root(),
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "remote commit",
+        ],
+    );
+    fixture.git(
+        fixture.root(),
+        &["push", "origin", "HEAD:refs/heads/release"],
+    );
+    // Move only the local ref back; the remote tracking ref still provides the lease.
+    fixture.git(fixture.root(), &["checkout", "--detach", original.trim()]);
+    fixture.git(fixture.root(), &["branch", "-f", "my-pi", original.trim()]);
+    fixture.git(fixture.root(), &["checkout", "my-pi"]);
+
+    let db = Db::open_memory().unwrap();
+    fixture.add_project(&db, "project-a");
+    let locator = GitContextLocator::ProjectMain {
+        project_id: "project-a".into(),
+    };
+    let manager = GitWorkspaceManager::new(&db);
+    let before = manager.changes(&locator, true).unwrap();
+    assert_eq!(before.context.behind, 1);
+    fixture.record_write_target("force push configured upstream", fixture.root());
+    let pushed = manager
+        .sync_remote(
+            &locator,
+            &before.context.checkout_id,
+            &before.status_token,
+            GitRemoteAction::ForcePush,
+        )
+        .unwrap();
+
+    assert_eq!(
+        pushed.changes.context.upstream.as_deref(),
+        Some("origin/release")
+    );
+    assert_eq!(
+        git(&bare, &["rev-parse", "refs/heads/release"]).trim(),
+        original.trim()
+    );
+    assert!(git(&bare, &["for-each-ref", "refs/heads/my-pi"]).is_empty());
+    fixture.assert_recorded_write_targets_are_isolated();
 }
 
 #[test]

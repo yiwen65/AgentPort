@@ -44,14 +44,14 @@
 - Prevention: 远端跑 checkout/GUI 不代表 SSH Sidecar 可用；卸载 deb/App 会成组删除它们。报 `bridge_closed` 先查 `command -v agentport-remote-bridge`，报 `restart outcome unknown` 先查 `agentport-host` 是否在 Bridge 同目录或 PATH。
 - Verified by: 补齐 Sidecar 后 Hello 回包 `linux-x86_64`；`session.create`（permission `native`）成功；`session.stop` → `session.restart` 成功（`shell_resume_unavailable` 提示符合 shell 语义）；测试会话已 stop/archive/delete，无残留 Host 进程。设备切换器切到该 SSH 设备后项目/会话加载成功、`devices.json` 的 `lastError` 清空。
 
-## `Git Center 远端推送/路径选择/ignored 树` — 同名推送、字面 pathspec、元数据指纹
+## `Git Center 远端推送/路径选择/ignored 树` — 保留上游、字面 pathspec、元数据指纹
 
-- Wrong approach: 用 `branch.<name>.merge` 作为 Push 目标；依赖 `--pathspec-from-file` 的字面语义；把 ignored 文件全文哈希当安全校验；据审查结论删除 `only_original_ignored_paths_are_visible`。
-- Why it failed: `git checkout -b feature origin/main` 会写入 `merge=refs/heads/main`，普通 Push/Force Push 因此直接改写远端 main（实测 `986a39a..5d03101 HEAD -> main`）；`git restore --worktree --pathspec-from-file` 仍按 glob 解释，`a*b.txt` 会连带重置 `axb.txt`；本仓库 ignored 树 406,677 文件 / 138 GiB，脏切换要全文读 3–7 次且全程持锁；stash 修改过的 `.gitignore` 后原 ignored 文件会变成 untracked 进入 `RepoStatus.paths`，该 helper 正是此时返回 true。
-- Recognition signal: 从 `origin/main` 新建分支后 Push 的出参是 `HEAD -> main`；discard 后未选中的 `axb.txt` 也被还原；`worktree_hash` 对 ignored 条目读取整文件；安全恢复在 stash apply 后因 ignored 键集合变化永久 `recovery_required`。
-- Correct approach: Push/Force Push 目标固定 `refs/heads/<当前分支>`，upstream 名不同用 `--set-upstream` 修复；add/restore/diff 全部显式 `--literal-pathspecs`；ignored 条目用 len+mtime+mode+inode 指纹、允许新增 ignored 文件；`restore_locked` 先验证快照再要求 stash，cleanup 在 stash 已被用户 pop 时按已验证状态收尾；i-t-a 用 porcelain `1 .A` 识别。
-- Prevention: 保留 upstream 名不同的 push、glob discard、rename+edit stage、`git add -N`、autostash 冲突、switch 后新增 ignored 文件等回归；机器可读 git 列表在 `stdout_truncated` 时必须 fail closed（列表上限 64 MiB）；审查结论必须复现后再据此删代码。
-- Verified by: `cargo test --workspace` 全绿（core lib 433 passed）；前端 135 files / 1128 tests、tsc 通过；Push 目标与 glob discard 在临时 bare/仓库中做过修复前后对比。
+- Wrong approach: 把异名 upstream 一律当成错误，Push 固定同名目标并用 `--set-upstream` 覆盖；依赖 `--pathspec-from-file` 的字面语义；把 ignored 文件全文哈希当安全校验；据审查结论删除 `only_original_ignored_paths_are_visible`。
+- Why it failed: 为防止新功能分支误推 main 而加入的同名策略，也会把用户明确设置的 `my-pi → easy-pi/main` 改成 `easy-pi/my-pi`；`git checkout -b feature origin/main` 自动建立跟踪，但仅凭名字不同无法判断它是否符合用户意图。`git restore --worktree --pathspec-from-file` 仍按 glob 解释，`a*b.txt` 会连带重置 `axb.txt`；本仓库 ignored 树 406,677 文件 / 138 GiB，脏切换要全文读 3–7 次且全程持锁；stash 修改过的 `.gitignore` 后原 ignored 文件会变成 untracked 进入 `RepoStatus.paths`，该 helper 正是此时返回 true。
+- Recognition signal: Push 后 `branch.my-pi.merge` 从 `refs/heads/main` 变成 `refs/heads/my-pi`；discard 后未选中的 `axb.txt` 也被还原；`worktree_hash` 对 ignored 条目读取整文件；安全恢复在 stash apply 后因 ignored 键集合变化永久 `recovery_required`。
+- Correct approach: 按用户确认的契约，Push 使用已有 upstream 且不改跟踪关系；仅无 upstream 时推送同名分支并建立跟踪。确认框必须显示真实目标，Force Push 同时检查本地分支和目标，禁止 main/master。add/restore/diff 全部显式 `--literal-pathspecs`；ignored 条目用 len+mtime+mode+inode 指纹、允许新增 ignored 文件；`restore_locked` 先验证快照再要求 stash，cleanup 在 stash 已被用户 pop 时按已验证状态收尾；i-t-a 用 porcelain `1 .A` 识别。
+- Prevention: 保留异名 upstream 不被覆盖、无 upstream 首次发布、异名非保护目标强推、保护目标拒绝强推，以及 glob discard、rename+edit stage、`git add -N`、autostash 冲突等回归；机器可读 git 列表在 `stdout_truncated` 时必须 fail closed（列表上限 64 MiB）；安全策略不能静默重写已有用户配置。
+- Verified by: 上游修复前两项回归分别观察到跟踪被覆盖、保护目标强推未被拒绝；修复后 `cargo test -p agentport-core --test git_workspace_remote` 9/9，前端 Git Center 两文件 30/30、tsc 通过。原路径/恢复修复曾通过 core lib 433 项与前端 1128 项验证。
 
 ## `live easy-pi CPU profiling` — inspector evaluation can terminate the Session
 

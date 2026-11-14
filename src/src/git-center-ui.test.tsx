@@ -322,6 +322,28 @@ describe("Git Center states", () => {
     expect(pull?.tip).toBe("当前分支未设置 upstream");
   });
 
+  it.each([
+    ["my-pi", "easy-pi/main", true],
+    ["my-pi", "easy-pi/master", true],
+    ["main", "easy-pi/feature", true],
+    ["master", "easy-pi/feature", true],
+    ["my-pi", "easy-pi/feature/main", false],
+    ["my-pi", "easy-pi/legacy", false],
+  ])("guards Force Push from %s tracking %s", (actualBranch, upstream, protectedBranch) => {
+    show(cache({
+      context: { ...context, actualBranch, upstream, remote: "easy-pi" },
+    }));
+    render(<GitCenter />);
+
+    expect(screen.getByText(`→ ${upstream}`)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "更多远端操作" }));
+    const forcePush = getState().contextMenu?.items.find(
+      (item) => item.label.startsWith("安全强推"),
+    );
+    expect(forcePush?.disabled).toBe(protectedBranch);
+    expect(forcePush?.tip).toBe(protectedBranch ? "main/master 禁止强推" : undefined);
+  });
+
   it("keeps long Git text inside a narrow Changes column without clipping it", () => {
     show(cache({
       changes: snapshot([{

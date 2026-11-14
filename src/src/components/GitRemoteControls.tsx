@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import {
+  gitForcePushProtected,
   gitWritesEnabled,
   runGitRemoteAction,
 } from "../gitCenter";
@@ -15,7 +16,7 @@ export default function GitRemoteControls() {
   if (!cache?.changes) return null;
   const context = cache.context;
   const busy = cache.changesPhase === "refreshing";
-  const protectedBranch = ["main", "master"].includes(context.actualBranch ?? "");
+  const protectedBranch = gitForcePushProtected(context);
   const canWrite = gitWritesEnabled(cache) && !busy;
   const writeBlockReason = busy
     ? t("remote.blocked.syncing")

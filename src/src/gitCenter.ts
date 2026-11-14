@@ -21,6 +21,7 @@ import {
 import type {
   GitChangeEntry,
   GitChangesSnapshot,
+  GitCheckoutDescriptor,
   GitContextLocator,
   GitDiffSide,
   GitIgnoreTarget,
@@ -813,10 +814,18 @@ export async function openGitFile(entry: GitChangeEntry): Promise<void> {
   }
 }
 
+export function gitForcePushProtected(context: GitCheckoutDescriptor): boolean {
+  const remote = context.remote ?? "origin";
+  return ["main", "master"].some((branch) =>
+    context.actualBranch === branch || context.upstream === `${remote}/${branch}`
+  );
+}
+
 export async function runGitRemoteAction(action: GitRemoteAction): Promise<void> {
   const target = activeTarget();
   if (!target?.cache.changes || !gitWritesEnabled(target.cache)) return;
   const context = target.cache.context;
+  if (action === "force_push" && gitForcePushProtected(context)) return;
   const requestedAction = action === "pull_autostash"
     ? "pull"
     : action === "pull_rebase_autostash"
@@ -833,10 +842,10 @@ export async function runGitRemoteAction(action: GitRemoteAction): Promise<void>
     ? i18n.t("git:remote.confirm.noIncoming")
     : null;
   const pullActionName = requestedAction === "pull" ? "Pull" : "Pull Rebase";
-  // Push/Force Push target `<remote>/<current branch>`. The upstream can point
-  // at a differently named remote branch, so the copy names the real
-  // destination instead of the tracked ref.
-  const destination = `${context.remote ?? "origin"}/${context.actualBranch ?? "—"}`;
+  // Preserve the configured upstream; only an untracked branch is published
+  // under its local name and gets a new upstream.
+  const destination = context.upstream ??
+    `${context.remote ?? "origin"}/${context.actualBranch ?? "—"}`;
   let effectiveAction = action;
 
   if (pulling && localChanges.length > 0) {

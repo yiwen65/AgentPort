@@ -3,7 +3,7 @@
 // - T-006 "Stage all" must not stage conflicted entries
 // - T-010 a dropped request must not latch changesPhase = "refreshing"
 // - T-019 a successful remote action refreshes History
-// - T-001 Push/Force Push copy names the real `<remote>/<branch>` destination
+// - Push/Force Push preserve the configured upstream destination
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -430,7 +430,7 @@ describe("Git Center review regressions", () => {
     );
   });
 
-  it("names <remote>/<branch> as the Push and Force Push destination", async () => {
+  it("names the configured upstream as the Push and Force Push destination", async () => {
     const target = context("checkout-a", "a", {
       actualBranch: "feature/login",
       upstream: "origin/legacy",
@@ -449,7 +449,7 @@ describe("Git Center review regressions", () => {
       pushing = runGitRemoteAction("push");
     });
     expect(getState().confirm?.body).toBe(
-      "将 feature/login 推送到 origin/feature/login。",
+      "将 feature/login 推送到 origin/legacy。",
     );
     await act(async () => {
       resolveConfirm(false);
@@ -461,7 +461,7 @@ describe("Git Center review regressions", () => {
       forcing = runGitRemoteAction("force_push");
     });
     expect(getState().confirm?.body).toBe(
-      "将使用 --force-with-lease 改写 origin/feature/login。远端已变化时 Git 会拒绝操作。",
+      "将使用 --force-with-lease 改写 origin/legacy。远端已变化时 Git 会拒绝操作。",
     );
     expect(getState().confirm?.danger).toBe(true);
     await act(async () => {
@@ -469,6 +469,50 @@ describe("Git Center review regressions", () => {
       await forcing;
     });
 
+    expect(apiMock.syncGitRemote).not.toHaveBeenCalled();
+  });
+
+  it("names the same-name destination for a Push without upstream", async () => {
+    const target = context("checkout-a", "a", {
+      actualBranch: "feature/login",
+      upstream: null,
+      remote: "easy-pi",
+    });
+    apiMock.resolveGitContext.mockResolvedValue(target);
+    apiMock.getGitChanges.mockResolvedValue(changes(target));
+    apiMock.getGitHistory.mockResolvedValue(history(target));
+    await openGitCenter(locator("a"));
+
+    const pushing = runGitRemoteAction("push");
+    expect(getState().confirm?.body).toBe(
+      "将 feature/login 推送到 easy-pi/feature/login。",
+    );
+    resolveConfirm(false);
+    await pushing;
+  });
+
+  it.each([
+    ["my-pi", "easy-pi/main"],
+    ["my-pi", "easy-pi/master"],
+    ["main", "easy-pi/feature"],
+    ["master", "easy-pi/feature"],
+  ])("blocks direct Force Push from %s tracking %s", async (actualBranch, upstream) => {
+    const target = context("checkout-a", "a", {
+      actualBranch,
+      upstream,
+      remote: "easy-pi",
+    });
+    apiMock.resolveGitContext.mockResolvedValue(target);
+    apiMock.getGitChanges.mockResolvedValue(changes(target));
+    apiMock.getGitHistory.mockResolvedValue(history(target));
+    await openGitCenter(locator("a"));
+
+    const forcing = runGitRemoteAction("force_push");
+    const confirmation = getState().confirm;
+    // Settle an unexpected confirmation so a failing regression cannot hang.
+    if (confirmation) resolveConfirm(false);
+    await forcing;
+    expect(confirmation).toBeNull();
     expect(apiMock.syncGitRemote).not.toHaveBeenCalled();
   });
 });

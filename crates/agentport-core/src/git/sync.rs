@@ -118,12 +118,12 @@ impl<'a> GitWorkspaceManager<'a> {
                 "Push to a local-branch upstream is not supported in Git Center".into(),
             ));
         }
-        // A push publishes the ref with the SAME name as the checked-out branch.
-        // `branch.<name>.merge` may name a different ref (e.g. `git checkout -b
-        // feature origin/main` records `merge=refs/heads/main`); using it as
-        // the destination would publish feature commits onto the remote default
-        // branch, so it is only used for pulls.
-        let push_ref = branch.map(|branch| format!("refs/heads/{branch}"));
+        // An existing upstream is intentional, even when its name differs from
+        // the checked-out branch. Only publish under the local name when no
+        // upstream has been configured.
+        let push_ref = merge_ref
+            .clone()
+            .or_else(|| branch.map(|branch| format!("refs/heads/{branch}")));
         if action == GitRemoteAction::ForcePush {
             let branch = branch.unwrap_or_default();
             if matches!(branch, "main" | "master")
@@ -143,10 +143,8 @@ impl<'a> GitWorkspaceManager<'a> {
             }
         }
 
-        // When no upstream (or a differently named one) exists, record the
-        // ref that is actually pushed so later Pull/Push no longer resolve to
-        // an unrelated branch.
-        let set_upstream = push_ref.is_some() && merge_ref.as_deref() != push_ref.as_deref();
+        // Establish tracking for a new branch, never overwrite existing tracking.
+        let set_upstream = merge_ref.is_none();
         let args = remote_args(
             action,
             remote,
