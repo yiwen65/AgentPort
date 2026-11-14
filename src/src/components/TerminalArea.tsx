@@ -513,6 +513,56 @@ function SessionAgentMark({ adapter }: { adapter: string }) {
   );
 }
 
+function RestartGlyph() {
+  return (
+    <svg
+      className="session-restart-glyph"
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M23 4v6h-6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function SessionRestartButton({
+  label,
+  onRestart,
+}: {
+  label: string;
+  onRestart: () => void;
+}) {
+  const [turn, setTurn] = useState(0);
+  return (
+    <button
+      type="button"
+      className="session-restart-orb"
+      aria-label={label}
+      data-tip={label}
+      onClick={() => {
+        setTurn((value) => value + 1);
+        onRestart();
+      }}
+    >
+      <RestartGlyph key={turn} />
+    </button>
+  );
+}
+
 function SessionOverlay({ ses, sessionKey }: { ses: SessionView; sessionKey: string }) {
   const { t } = useTranslation("session");
   const rt = useStore((state) => state.runtime[sessionKey]);
@@ -561,41 +611,31 @@ function SessionOverlay({ ses, sessionKey }: { ses: SessionView; sessionKey: str
     const signal = r.exit?.signal;
     return (
       <div className="term-overlay">
-        <div className="overlay-card session-state-card" role="alert">
-          <SessionAgentMark adapter={ses.adapter} />
-          <h3>{ses.title}</h3>
-          <p className="session-state-label">
-            {t("ui.lifecycle.stopped")}
-          </p>
-          {(code !== null && code !== undefined) || (signal !== null && signal !== undefined) || r.exit?.groupCleaned === false ? (
-            <p className="session-state-detail">
-              {code !== null && code !== undefined ? <span>{t("ui.lifecycle.exitedWithCode", { code })} </span> : null}
-              {signal !== null && signal !== undefined
-                ? t("ui.lifecycle.terminatedBySignal", { signal })
-                : ""}
-              {r.exit?.groupCleaned === false ? (
-                <span className="warn-text">{t("ui.lifecycle.groupCleanupUnconfirmed")}</span>
-              ) : null}
-            </p>
-          ) : null}
-          {r.historyNote ? (
-            <p className="session-state-history">
-              {t("ui.lifecycle.readOnlyHistory", { note: r.historyNote })}
-            </p>
-          ) : null}
-          <div className="overlay-actions">
-            <button
-              className="btn primary"
-              onClick={() => {
-                const deviceId = flowDeviceIdFor(sessionKey);
-                if (deviceId) void restartSessionFlow(ses.id, deviceId);
-                else void restartSessionFlow(ses.id);
-              }}
-            >
-              {t("ui.actions.restart")}
-            </button>
-          </div>
-        </div>
+        <span className="sr-only" role="status">
+          {[
+            t("ui.lifecycle.stopped"),
+            code !== null && code !== undefined
+              ? t("ui.lifecycle.exitedWithCode", { code })
+              : "",
+            signal !== null && signal !== undefined
+              ? t("ui.lifecycle.terminatedBySignal", { signal })
+              : "",
+            r.exit?.groupCleaned === false
+              ? t("ui.lifecycle.groupCleanupUnconfirmed")
+              : "",
+            r.historyNote
+              ? t("ui.lifecycle.readOnlyHistory", { note: r.historyNote })
+              : "",
+          ].filter(Boolean).join(" ")}
+        </span>
+        <SessionRestartButton
+          label={t("ui.actions.restart")}
+          onRestart={() => {
+            const deviceId = flowDeviceIdFor(sessionKey);
+            if (deviceId) void restartSessionFlow(ses.id, deviceId);
+            else void restartSessionFlow(ses.id);
+          }}
+        />
       </div>
     );
   }

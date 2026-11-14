@@ -281,10 +281,10 @@ describe("TerminalArea recursive panes", () => {
     const pane = () => view.container.querySelector(`[data-pane-session-id="${ptyA.id}"]`)!;
     act(() => patchSession(ptyA.id, { lifecycle: "stopped", hostAlive: false }));
     expect(pane().querySelector(".term-pane")?.classList.contains("ended")).toBe(true);
-    expect(pane().querySelector(".session-state-card")).not.toBeNull();
+    expect(pane().querySelector(".session-restart-orb")).not.toBeNull();
     act(() => patchSession(ptyA.id, { lifecycle: "running", hostAlive: true }));
     expect(pane().querySelector(".term-pane")?.classList.contains("ended")).toBe(false);
-    expect(pane().querySelector(".session-state-card")).toBeNull();
+    expect(pane().querySelector(".session-restart-orb")).toBeNull();
   });
 
   it("reattaches a new run even when a rapid external restart skipped the stopped snapshot", async () => {

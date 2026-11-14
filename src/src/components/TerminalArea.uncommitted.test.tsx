@@ -206,7 +206,7 @@ describe("PTY Session native history stays inside xterm", () => {
     expect(container.querySelector(".native-history-pane")).toBeNull();
   });
 
-  it("mounts stopped history in xterm instead of switching to a history page", () => {
+  it("offers one circular restart orb over the still-mounted stopped history", () => {
     const ended = { ...session, lifecycle: "stopped" as const };
     setState({
       activeSessionId: ended.id,
@@ -224,7 +224,12 @@ describe("PTY Session native history stays inside xterm", () => {
     });
     const { container } = render(<TerminalArea />);
     expect(container.querySelector(".term-host")).not.toBeNull();
-    expect(container.querySelector(".session-state-card")).not.toBeNull();
+    const orb = container.querySelector<HTMLButtonElement>(".session-restart-orb");
+    expect(orb).not.toBeNull();
+    expect(orb?.getAttribute("aria-label")).toBeTruthy();
+    expect(orb?.querySelector(".session-restart-glyph")).not.toBeNull();
+    expect(container.querySelector(".session-state-card")).toBeNull();
+    expect(container.querySelector(".session-agent-mark")).toBeNull();
     expect(container.querySelector(".native-history-pane")).toBeNull();
   });
 
