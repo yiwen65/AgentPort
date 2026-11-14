@@ -52,11 +52,11 @@ use agentport_remote_protocol::{
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -1149,12 +1149,133 @@ const PUSH_EVENT_QUEUE_CAPACITY: usize = 64;
 const PUSH_COMMAND_QUEUE_CAPACITY: usize = 16;
 const PUSH_READ_SLICE: Duration = Duration::from_millis(20);
 
+/// `session.list` must expose live Host status for Sessions that have no
+/// desktop monitor, but polling every few seconds must not open a Host
+/// connection per Session each time. Reuse the last handshake until the Host's
+/// status journal grows (a status transition) or this liveness bound lapses.
+const LIVE_SNAPSHOT_LIVENESS_TTL: Duration = Duration::from_secs(30);
+/// Failed probes are retried sooner: a Host that just came back should not be
+/// hidden behind a long negative cache.
+const LIVE_SNAPSHOT_FAILURE_TTL: Duration = Duration::from_secs(5);
+/// Drop cached facts for Sessions that no longer appear in the listing.
+const LIVE_SNAPSHOT_CACHE_TTL: Duration = Duration::from_secs(300);
+
+/// Cheap change signal for `<session_dir>/status-events.jsonl`. The Host
+/// appends one line per state transition, so an unchanged stamp proves that a
+/// reused probe cannot be missing a newer status.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct StatusJournalStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+struct CachedLiveSnapshot {
+    observed_at: Instant,
+    binding_run: Option<(String, i64)>,
+    journal: Option<StatusJournalStamp>,
+    alive: bool,
+    current_status: Option<StatusEvent>,
+}
+
+struct LiveSnapshotFacts {
+    alive: bool,
+    current_status: Option<StatusEvent>,
+}
+
+#[derive(Default)]
+struct LiveSnapshotCache {
+    entries: Mutex<HashMap<String, CachedLiveSnapshot>>,
+}
+
+impl LiveSnapshotCache {
+    fn probe(&self, manager: &HostManager<'_>, session_id: &str) -> LiveSnapshotFacts {
+        let now = Instant::now();
+        let binding_run = manager
+            .db
+            .session_host_binding(session_id)
+            .ok()
+            .and_then(|binding| {
+                binding
+                    .run_identity()
+                    .map(|(run_id, ordinal)| (run_id.to_string(), ordinal))
+            });
+        let journal = status_journal_stamp(manager.paths, session_id);
+        if let Ok(entries) = self.entries.lock() {
+            if let Some(entry) = entries.get(session_id) {
+                if entry.binding_run.as_ref() == binding_run.as_ref()
+                    && snapshot_is_fresh(entry, now, journal)
+                {
+                    return LiveSnapshotFacts {
+                        alive: entry.alive,
+                        current_status: entry.current_status.clone(),
+                    };
+                }
+            }
+        }
+        let live = manager.live_snapshot(session_id).ok();
+        let facts = LiveSnapshotFacts {
+            alive: live.is_some(),
+            current_status: live.and_then(|info| info.current_status),
+        };
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.insert(
+                session_id.to_string(),
+                CachedLiveSnapshot {
+                    observed_at: now,
+                    binding_run,
+                    journal,
+                    alive: facts.alive,
+                    current_status: facts.current_status.clone(),
+                },
+            );
+        }
+        facts
+    }
+
+    fn retain(&self, keep: &HashSet<String>) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.retain(|session_id, entry| {
+                keep.contains(session_id)
+                    || entry.observed_at.elapsed() < LIVE_SNAPSHOT_CACHE_TTL
+            });
+        }
+    }
+}
+
+fn status_journal_stamp(paths: &AppPaths, session_id: &str) -> Option<StatusJournalStamp> {
+    let metadata = std::fs::metadata(
+        paths
+            .session_dir(session_id)
+            .join("status-events.jsonl"),
+    )
+    .ok()?;
+    Some(StatusJournalStamp {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
+}
+
+fn snapshot_is_fresh(
+    entry: &CachedLiveSnapshot,
+    now: Instant,
+    journal: Option<StatusJournalStamp>,
+) -> bool {
+    let age = now.duration_since(entry.observed_at);
+    if !entry.alive {
+        return age < LIVE_SNAPSHOT_FAILURE_TTL;
+    }
+    // The probe is stamped before the handshake, so an append racing the
+    // handshake only costs one extra probe; it can never hide a new status.
+    entry.journal == journal && age < LIVE_SNAPSHOT_LIVENESS_TTL
+}
+
 pub struct CoreService {
     paths: AppPaths,
     db: Db,
     attachments: Mutex<HashMap<String, AttachmentSlot>>,
     file_downloads: session_files::downloads::Downloads,
     document_images: document_images::Images,
+    live_snapshots: LiveSnapshotCache,
 }
 
 impl CoreService {
@@ -1172,6 +1293,7 @@ impl CoreService {
             attachments: Mutex::new(HashMap::new()),
             file_downloads: session_files::downloads::Downloads::default(),
             document_images: document_images::Images::default(),
+            live_snapshots: LiveSnapshotCache::default(),
         })
     }
 
@@ -1185,6 +1307,7 @@ impl CoreService {
             attachments: Mutex::new(HashMap::new()),
             file_downloads: session_files::downloads::Downloads::default(),
             document_images: document_images::Images::default(),
+            live_snapshots: LiveSnapshotCache::default(),
         })
     }
 
@@ -2136,9 +2259,20 @@ impl RemoteService for CoreService {
             db: &self.db,
         };
         let projections = self.db.list_session_projections(include_archived)?;
+        let listed: HashSet<String> = projections
+            .iter()
+            .map(|projection| projection.session.id.clone())
+            .collect();
         // Bound both parallel handshakes and their total scheduling window.
         // A slow Host must not serialize every other Session/metadata request.
-        collect_live_session_summaries(&manager, projections, std::time::Duration::from_secs(8))
+        let summaries = collect_live_session_summaries(
+            &manager,
+            projections,
+            std::time::Duration::from_secs(8),
+            Some(&self.live_snapshots),
+        )?;
+        self.live_snapshots.retain(&listed);
+        Ok(summaries)
     }
 
     fn create_session(&self, params: SessionCreateParams) -> Result<SessionLaunchResult> {
@@ -3552,13 +3686,19 @@ fn session_summary(paths: &AppPaths, db: &Db, session_id: &str) -> Result<Sessio
         .into_iter()
         .find(|projection| projection.session.id == session_id)
         .ok_or_else(|| agentport_core::CoreError::NotFound(format!("session {session_id}")))?;
-    Ok(live_session_summary(&HostManager { paths, db }, projection))
+    // Mutation replies want facts, not a list-poll cache entry.
+    Ok(live_session_summary(
+        &HostManager { paths, db },
+        projection,
+        None,
+    ))
 }
 
 fn collect_live_session_summaries(
     manager: &HostManager<'_>,
     projections: Vec<agentport_core::db::SessionProjection>,
     budget: std::time::Duration,
+    snapshots: Option<&LiveSnapshotCache>,
 ) -> Result<Vec<SessionSummary>> {
     if projections.is_empty() { return Ok(Vec::new()); }
     let deadline = std::time::Instant::now() + budget;
@@ -3572,7 +3712,7 @@ fn collect_live_session_summaries(
                     return Err(ServiceError::Core(agentport_core::CoreError::Host(
                         "Session refresh exceeded its Host-check budget; retry refresh".into())));
                 }
-                Ok(live_session_summary(manager, projection.clone()))
+                Ok(live_session_summary(manager, projection.clone(), snapshots))
             }).collect::<Result<Vec<_>>>()
         })).collect();
         let mut result = Vec::with_capacity(projections.len());
@@ -3587,15 +3727,28 @@ fn collect_live_session_summaries(
 fn live_session_summary(
     manager: &HostManager<'_>,
     projection: agentport_core::db::SessionProjection,
+    snapshots: Option<&LiveSnapshotCache>,
 ) -> SessionSummary {
-    // The existing liveness handshake already carries current status.
-    // Mobile-created Sessions may have no desktop DB monitor at all.
+    // The liveness handshake already carries current status. Mobile-created
+    // Sessions may have no desktop DB monitor at all. List polling reuses a
+    // cached handshake until the status journal changes.
     let live = if matches!(projection.session.lifecycle, Lifecycle::Creating | Lifecycle::Running) {
-        manager.live_snapshot(&projection.session.id).ok()
-    } else { None };
-    let host_alive = live.is_some();
+        match snapshots {
+            Some(cache) => Some(cache.probe(manager, &projection.session.id)),
+            None => manager
+                .live_snapshot(&projection.session.id)
+                .ok()
+                .map(|info| LiveSnapshotFacts {
+                    alive: true,
+                    current_status: info.current_status,
+                }),
+        }
+    } else {
+        None
+    };
+    let host_alive = live.as_ref().is_some_and(|facts| facts.alive);
     let mut latest_status = projection.latest_status;
-    if let Some(status) = live.and_then(|info| info.current_status) {
+    if let Some(status) = live.and_then(|facts| facts.current_status) {
         if latest_status.as_ref().is_none_or(|stored| {
             (status.run_ordinal, status.sequence) >= (stored.run_ordinal, stored.sequence)
         }) {
@@ -4758,12 +4911,91 @@ mod tests {
             assert_eq!(service.db.latest_status(id).unwrap().is_some(), persisted);
             let manager = HostManager { paths: &service.paths, db: &service.db };
             assert!(collect_live_session_summaries(&manager,
-                service.db.list_session_projections(false).unwrap(), std::time::Duration::ZERO).is_err());
+                service.db.list_session_projections(false).unwrap(), std::time::Duration::ZERO, None).is_err());
             service.db.update_session_lifecycle(id, Lifecycle::Exited).unwrap();
             let ended = collect_live_session_summaries(&manager,
-                service.db.list_session_projections(false).unwrap(), std::time::Duration::ZERO).unwrap();
+                service.db.list_session_projections(false).unwrap(), std::time::Duration::ZERO, None).unwrap();
             assert!(!ended[0].host_alive); // no handshake for terminal history
         }
+    }
+
+    #[test]
+    fn session_list_reuses_live_probe_until_the_status_journal_changes() {
+        use agentport_core::models::{AgentState, Confidence, StateSource};
+        let root = tempfile::tempdir().unwrap();
+        let service = CoreService::open(AppPaths::new(root.path().join("app"))).unwrap();
+        let project = service.add_project(ProjectAddParams {
+            path: root.path().to_string_lossy().into_owned(), name: None,
+        }).unwrap();
+        let id = "ses_live_cache";
+        let socket = root.path().join("host.sock");
+        service.db.insert_session(&Session {
+            id: id.into(), project_id: project.project.id, worktree_id: None,
+            preset_id: "pre_codex_bypass".into(), title: "Mobile-created".into(),
+            cwd: root.path().to_string_lossy().into_owned(), host_pid: None,
+            host_socket: None, host_token: "fixture-only-token".into(), lifecycle: Lifecycle::Creating,
+            agent_session_id: None, resume_precision: ResumePrecision::Unavailable,
+            adapter_type: AgentType::Codex,
+            transport: AgentTransport::Pty, command: Vec::new(),
+            permission_mode: PermissionMode::Bypass, pinned_at: None,
+            created_at: Utc::now(), updated_at: Utc::now(), archived_at: None,
+        }).unwrap();
+        let run = service.db.create_session_run(id, "current-run").unwrap();
+        service.db.claim_session_run(id, &run.run_id, run.run_ordinal).unwrap();
+        service.db.bind_session_host_for_run(id, &run.run_id, run.run_ordinal,
+            i64::from(std::process::id()), &socket.to_string_lossy()).unwrap();
+        service.db.update_session_lifecycle(id, Lifecycle::Running).unwrap();
+
+        let event = StatusEvent {
+            session_id: id.into(), run_id: run.run_id.clone(), run_ordinal: run.run_ordinal,
+            sequence: 2, state: AgentState::Working, source: StateSource::Pty,
+            confidence: Confidence::High, evidence: Some("fixture:live".into()),
+            log_cursor: None, occurred_at: Utc::now(),
+        };
+        let listener = UnixListener::bind(&socket).unwrap();
+        let host = std::thread::spawn({
+            let event = event.clone();
+            let run_id = run.run_id.clone();
+            let run_ordinal = run.run_ordinal;
+            move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let hello = read_frame::<ClientFrame>(
+                    &mut BufReader::new(stream.try_clone().unwrap()),
+                ).unwrap().unwrap();
+                assert!(matches!(hello, ClientFrame::Hello { .. }));
+                write_frame(&mut stream, &HostFrame::HelloOk {
+                    protocol: PROTOCOL_VERSION, session_id: "ses_live_cache".into(),
+                    host_pid: std::process::id(), child_alive: true, log_bytes: 0,
+                    agent_session_id: None, run_id: run_id.clone(), run_ordinal,
+                    current_status: Some(event),
+                    log_cursor: LogCursor {
+                        run_id, run_ordinal, generation: 0, offset: 0,
+                    },
+                    features: Vec::new(), terminal_geometry: None, screen_snapshot: None,
+                }).unwrap();
+                let _ = read_frame::<ClientFrame>(&mut BufReader::new(stream));
+            }
+        });
+
+        let first = service.list_sessions(false).unwrap();
+        host.join().unwrap();
+        assert!(first[0].host_alive);
+        assert_eq!(
+            first[0].latest_status.as_ref().map(|status| status.state.clone()),
+            Some(AgentState::Working.as_str().to_string()),
+        );
+
+        // No Host is listening anymore: only a cached probe can stay alive.
+        let cached = service.list_sessions(false).unwrap();
+        assert!(cached[0].host_alive);
+        assert_eq!(cached[0].latest_status.as_ref().map(|status| status.sequence), Some(2));
+
+        // A status transition appends to the journal and must force a probe.
+        let journal = service.paths.session_dir(id).join("status-events.jsonl");
+        std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+        std::fs::write(&journal, "{}\n").unwrap();
+        let probed = service.list_sessions(false).unwrap();
+        assert!(!probed[0].host_alive);
     }
 
     #[test]
