@@ -122,6 +122,9 @@ jobs:
       - name: Frontend dependencies
         run: npm --prefix src ci
 
+      - name: Check terminal snapshot assets
+        run: node scripts/build-terminal-snapshot.mjs --check
+
       # Recovery runs build an immutable old tag, but use signing tooling from
       # the workflow revision so fixes do not require moving the release tag.
       - uses: actions/checkout@v4

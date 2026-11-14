@@ -82,6 +82,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
   const shouldAttach = (!stopped && !locallyStopped) || restartRequested;
   const activeRef = useRef(active);
   activeRef.current = active;
+  const hiddenOutputPending = useRef(false);
   const diagnosticsRef = useRef<ScrollDiagnostics>();
   const diagnosticInputSequence = useRef(0);
   // A stable facade keeps diagnostic setup out of attachment dependencies and
@@ -371,6 +372,12 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
     setAttachEpoch(value => value + 1);
   }, [open.session.latestStatus, open.session.hostAlive, stopped, resetRunOutput, connectionLabel, busyAction]);
 
+  useEffect(() => {
+    if (!active || !hiddenOutputPending.current) return;
+    hiddenOutputPending.current = false;
+    setAttachEpoch((current) => current + 1);
+  }, [active]);
+
   const handleEvent = useCallback((event: RemoteEvent<SessionEventPayload>) => {
     const payload = event.payload;
     const attachmentGap = event.eventType === "resync_required" && event.subscriptionId === attachmentRef.current;
@@ -413,7 +420,11 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
     }
     const outputBase64 = outputBase64Of(payload);
     if ((event.eventType === "output" || event.eventType === "transient_output") && outputBase64) {
-      if (activeRef.current) diagnosticsRef.current?.mark("outputReceived", outputBase64.length);
+      if (!activeRef.current) {
+        hiddenOutputPending.current = true;
+        return;
+      }
+      diagnosticsRef.current?.mark("outputReceived", outputBase64.length);
       // xterm already owns the bounded scrollback. Coalesce bursts to one
       // renderer write per frame so mobile touch scrolling is not competing
       // with hundreds of small xterm parse/render tasks.
@@ -500,6 +511,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
     // until the server-issued attachment ID tells us which stream we own.
     const earlyEvents: RemoteEvent<SessionEventPayload>[] = [];
     let earlyOverflow = false;
+    let hasWarmCheckpoint = false;
     attachmentRef.current = undefined;
     setAttachmentId(undefined);
     setConnectionLabel("attaching");
@@ -514,6 +526,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
           await terminal.current?.restore(saved);
           if (cancelled || generation !== replayGeneration.current) return;
           cursor.current = saved.cursor;
+          hasWarmCheckpoint = true;
         } else if (saved) forgetCheckpoint(screenKey);
       }
       if (cancelled || generation !== replayGeneration.current) return;
@@ -537,7 +550,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
           resumeFrom: cursor.current, subscribeOutput: true };
         let result: SessionAttachResult;
         try {
-          result = await client.request<SessionAttachResult>(open.hostProfileId, "session.attach", { ...params, screenSnapshot: true });
+          result = await client.request<SessionAttachResult>(open.hostProfileId, "session.attach", { ...params, screenSnapshot: !hasWarmCheckpoint });
         } catch (error) {
           // Older Bridges reject unknown fields before executing the attach.
           // Retry only an explicitly unexecuted request, never a timeout/unknown outcome.

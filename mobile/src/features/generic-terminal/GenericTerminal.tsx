@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { HostAuthClient } from "../hosts-auth/types";
 import type { HostProfileSummary } from "../../protocol/remoteClient";
 import { getTerminalMode, type GenericTerminalClient, type GenericTerminalError, type TerminalMode, type TerminalRecord, type TerminalTransport } from "../../protocol/genericTerminalClient";
+import { decodeBase64Bytes } from "../sessions/sessionProtocol";
 import { MobileTerminal, type MobileTerminalHandle } from "../../terminal/MobileTerminal";
 import { useMobileTerminalAppearance } from "../../terminal/terminalAppearance";
 import { getMobileTerminalFontFamily, getMobileTerminalPalette, getMobileTerminalWorkspaceVariables } from "../../terminal/terminalThemes";
@@ -186,9 +187,9 @@ function TerminalConnection({ record, client, transport, attempt, onFailure, cle
       try {
         const frame = await client.poll(attached.id);
         if (stopped || !attached?.active) return;
-        if (frame.data.length) terminal.current?.write(new Uint8Array(frame.data));
+        if (frame.data.length) terminal.current?.write(decodeBase64Bytes(frame.data));
         if (!frame.running) { fail({ code: "connection_closed" }); return; }
-        timer = setTimeout(() => { void poll(); }, frame.data.length ? 0 : 40);
+        timer = setTimeout(() => { void poll(); }, frame.data.length ? 0 : 250);
       } catch (error) { fail(error); }
     };
     // Serialize detach and the next attach, including a connection that resolves

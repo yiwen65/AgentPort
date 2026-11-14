@@ -5,6 +5,7 @@ use russh::keys::PrivateKeyWithHashAlg;
 use russh::Disconnect;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::AppHandle;
@@ -157,13 +158,18 @@ pub(crate) async fn connect_authenticated(
         expected: request.expected_host_key.clone(),
         observed: Arc::clone(&observed),
     };
-    let config = client::Config {
+    let mut config = client::Config {
         inactivity_timeout: Some(Duration::from_secs(15)),
         keepalive_interval: Some(Duration::from_secs(5)),
         keepalive_max: 2,
         nodelay: true,
         ..Default::default()
     };
+    config.preferred.compression = Cow::Borrowed(&[
+        russh::compression::ZLIB_LEGACY,
+        russh::compression::ZLIB,
+        russh::compression::NONE,
+    ]);
     let mut session = match client::connect(
         Arc::new(config),
         (request.hostname.as_str(), request.port),
@@ -310,13 +316,18 @@ pub(crate) async fn connect_authenticated_with_jump(
         expected: request.expected_host_key.clone(),
         observed: Arc::clone(&observed),
     };
-    let config = client::Config {
+    let mut config = client::Config {
         inactivity_timeout: Some(Duration::from_secs(15)),
         keepalive_interval: Some(Duration::from_secs(5)),
         keepalive_max: 2,
         nodelay: true,
         ..Default::default()
     };
+    config.preferred.compression = Cow::Borrowed(&[
+        russh::compression::ZLIB_LEGACY,
+        russh::compression::ZLIB,
+        russh::compression::NONE,
+    ]);
     let mut session = client::connect_stream(Arc::new(config), tunnel.into_stream(), verifier)
         .await
         .map_err(|_| {

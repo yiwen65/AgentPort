@@ -114,16 +114,16 @@ it("blocks pending input and disconnects a late connect result after close", asy
   await act(async () => pending.resolve({ connectionId: "late" })); await waitFor(() => expect(client.disconnect).toHaveBeenCalledWith("late")); expect(client.poll).not.toHaveBeenCalled();
 });
 it("polls without overlap, passes bytes unchanged and suppresses stale output", async () => {
-  const { client, auth } = clients(); const frame = deferred<{ data: number[]; running: boolean }>();
-  const stale = deferred<{ data: number[]; running: boolean }>();
+  const { client, auth } = clients(); const frame = deferred<{ data: string; running: boolean }>();
+  const stale = deferred<{ data: string; running: boolean }>();
   vi.mocked(client.poll).mockReturnValueOnce(frame.promise).mockReturnValueOnce(stale.promise);
   mount(client, auth); await attach(); await waitFor(() => expect(client.poll).toHaveBeenCalledTimes(1));
   await new Promise(resolve => setTimeout(resolve, 70)); expect(client.poll).toHaveBeenCalledTimes(1);
-  await act(async () => frame.resolve({ data: [240, 159, 146, 187], running: true }));
+  await act(async () => frame.resolve({ data: "8J+Suw==", running: true }));
   await waitFor(() => expect(terminalSpy.write).toHaveBeenCalledWith(new Uint8Array([240, 159, 146, 187])));
   await waitFor(() => expect(client.poll).toHaveBeenCalledTimes(2));
   fireEvent.click(screen.getByRole("button", { name: "Close (keep terminal)" }));
-  await act(async () => stale.resolve({ data: [65], running: true })); expect(terminalSpy.write).toHaveBeenCalledTimes(1);
+  await act(async () => stale.resolve({ data: "QQ==", running: true })); expect(terminalSpy.write).toHaveBeenCalledTimes(1);
 });
 it("offers SSH for the same record after Mosh failure, with no auto fallback", async () => {
   const { client, auth } = clients(); vi.mocked(client.connect).mockRejectedValueOnce({ code: "mosh_server_missing" }).mockResolvedValue({ connectionId: "ssh" });
@@ -188,7 +188,7 @@ it("plain record deletion describes local-only cleanup and requires confirmation
 });
 it("plain disconnect never auto-reconnects; retry explicitly starts a new Shell without replay", async () => {
   const { client, auth } = clients(); vi.mocked(client.list).mockResolvedValue([shellRecord]);
-  vi.mocked(client.poll).mockResolvedValueOnce({ data: [65], running: false }); mount(client, auth);
+  vi.mocked(client.poll).mockResolvedValueOnce({ data: "QQ==", running: false }); mount(client, auth);
   fireEvent.click(await screen.findByRole("button", { name: "Start new Shell" }));
   await screen.findByText("Disconnected; input is unavailable. Opening again starts a new Shell, not the previous Shell.");
   expect(client.connect).toHaveBeenCalledTimes(1); expect(client.input).not.toHaveBeenCalled();

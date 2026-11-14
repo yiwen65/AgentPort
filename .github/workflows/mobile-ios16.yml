@@ -33,6 +33,7 @@ jobs:
           npm test
           npm run build
           cargo test --manifest-path src-tauri/Cargo.toml
+          node ../scripts/build-terminal-snapshot.mjs --check
       - name: Build unsigned simulator bundle
         run: npm run tauri -- ios build --debug --target aarch64-sim --no-sign --ci
       - name: Boot iOS 16, install, launch, and capture

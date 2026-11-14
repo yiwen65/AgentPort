@@ -199,7 +199,7 @@ pub struct ConnectResult {
 }
 #[derive(Serialize)]
 pub struct PollResult {
-    data: Vec<u8>,
+    data: String,
     running: bool,
 }
 
@@ -918,16 +918,14 @@ pub fn mobile_terminal_poll(
                 }
             }
             Ok(PollResult {
-                data,
+                data: base64::engine::general_purpose::STANDARD.encode(data),
                 running: !task.is_finished() || !output.is_empty(),
             })
         }
         Connection::Mosh(id) => {
             let result = mosh::mobile_mosh_poll(mosh_sessions, id.clone()).map_err(io_error)?;
             Ok(PollResult {
-                data: base64::engine::general_purpose::STANDARD
-                    .decode(result.data_base64)
-                    .map_err(|e| io_error(e.to_string()))?,
+                data: result.data_base64,
                 running: result.running,
             })
         }

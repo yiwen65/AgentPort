@@ -194,6 +194,11 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   const [removingSessions, setRemovingSessions] = useState<string[]>([]);
   const refreshEpoch = useRef(0);
   const refreshes = useRef(new Map<string, { again: boolean; promise: Promise<void> }>());
+  const metadataCache = useRef(new Map<string, {
+    at: number;
+    agents: SupportedAgent[];
+    preferences: AgentPreferences;
+  }>());
   const manualUpdates = useRef(new Set<string>());
   const recoveringDevice = useRef<string>();
   const [recoveringHost, setRecoveringHost] = useState<string>();
@@ -254,10 +259,16 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     if (!deviceId || recoveringDevice.current === deviceId) return;
     const epoch = ++refreshEpoch.current;
     const sessionsRequest = client.request<SessionSummary[]>(deviceId, "session.list", { includeArchived: false });
+    const cachedMetadata = metadataCache.current.get(deviceId);
+    const needsMetadata = !cachedMetadata || Date.now() - cachedMetadata.at > 60_000;
     const metadataRequest = Promise.all([
       client.request<ProjectSummary[]>(deviceId, "project.list", {}),
-      client.request<SupportedAgent[]>(deviceId, "agent.supported", {}),
-      client.request<AgentPreferences>(deviceId, "agent.preferences", {}),
+      needsMetadata
+        ? client.request<SupportedAgent[]>(deviceId, "agent.supported", {})
+        : Promise.resolve(cachedMetadata.agents),
+      needsMetadata
+        ? client.request<AgentPreferences>(deviceId, "agent.preferences", {})
+        : Promise.resolve(cachedMetadata.preferences),
     ]).then(
       value => ({ ok: true as const, value }),
       error => ({ ok: false as const, error }),
@@ -279,6 +290,9 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
       if (!metadata.ok) throw metadata.error;
       if (!mounted.current || deviceId !== selectedDeviceRef.current || epoch !== refreshEpoch.current) return;
       const [projects, agents, preferences] = metadata.value;
+      if (needsMetadata) {
+        metadataCache.current.set(deviceId, { at: Date.now(), agents, preferences });
+      }
       setSnapshot({ deviceId, sessions, projects, projectsLoaded: true, agents, preferences, cached: false });
     } catch (error) {
       if (!mounted.current || deviceId !== selectedDeviceRef.current || epoch !== refreshEpoch.current) return;

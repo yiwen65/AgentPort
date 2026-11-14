@@ -24,7 +24,7 @@ export interface GenericTerminalClient {
   connect(request: { terminalId: string; transport: TerminalTransport; cols: number; rows: number }): Promise<{ connectionId: string }>;
   input(request: { connectionId: string; data: string }): Promise<void>;
   resize(request: { connectionId: string; cols: number; rows: number }): Promise<void>;
-  poll(connectionId: string): Promise<{ data: number[]; running: boolean }>;
+  poll(connectionId: string): Promise<{ data: string; running: boolean }>;
   disconnect(connectionId: string): Promise<void>;
   end(terminalId: string): Promise<void>;
 }
