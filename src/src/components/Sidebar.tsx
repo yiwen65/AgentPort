@@ -31,7 +31,6 @@ import {
   activeSessionKey,
   deviceKeyForContext,
   sessionKeyFor,
-  LOCAL_DEVICE_KEY,
 } from "../sessionIdentity";
 import {
   activeDeviceKeyOf,
@@ -77,6 +76,7 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { openGitCenter } from "../gitCenter";
 import {
+  PANE_GROUP_ACCENTS,
   normalizePaneGroupAccents,
   orderedLayoutSessionIds,
   layoutContains,
@@ -314,6 +314,30 @@ function QuickAgentIcon({ agent }: { agent: string }) {
       size={agent === "easy_pi" ? 22 : 17}
       mono={theme === "light"}
     />
+  );
+}
+
+/** Owning agent mark in the active-session list, bottom-right of the row. */
+function SessionAgentBadge({ agent }: { agent: string }) {
+  const theme = useStore((state) => state.themeEffective);
+  const label = agentDisplay(agent);
+  return (
+    <span className="session-agent-badge" data-tip={label} aria-hidden="true">
+      {agent === "shell" ? (
+        <ShellIcon className="session-agent-glyph" size={13} />
+      ) : hasAgentIcon(agent) ? (
+        <AgentIcon
+          agent={agent}
+          className={`session-agent-glyph ${agent}`}
+          size={agent === "easy_pi" ? 16 : 13}
+          mono={theme === "light"}
+        />
+      ) : (
+        <span className="session-agent-fallback">
+          {agent.slice(0, 1).toUpperCase()}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -778,12 +802,17 @@ function SessionRow({
   nested,
   sourceLabel,
   deviceId,
+  deviceName,
+  deviceAccent,
 }: {
   ses: SessionView;
   nested?: boolean;
   sourceLabel?: string;
   /** Undefined = the active device (project tree rows). */
   deviceId?: string;
+  /** Owner label shown above the title in the cross-device list. */
+  deviceName?: string;
+  deviceAccent?: PaneGroupAccent;
 }) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
   const activeDevice = useStore((state) => state.activeDevice);
@@ -811,6 +840,19 @@ function SessionRow({
   const inPaneLayout = (rowState & SESSION_ROW_IN_PANE_LAYOUT) !== 0;
   const pinned = ses.pinnedAt !== null;
   const suspended = (rowState & SESSION_ROW_SUSPENDED) !== 0;
+  const ariaSource =
+    deviceName && sourceLabel ? `${deviceName} · ${sourceLabel}` : sourceLabel;
+  const rowStyle =
+    paneAccent || deviceAccent
+      ? ({
+          ...(paneAccent
+            ? { "--pane-group-color": `var(--pane-group-${paneAccent})` }
+            : {}),
+          ...(deviceAccent
+            ? { "--session-device-color": `var(--pane-group-${deviceAccent})` }
+            : {}),
+        } as CSSProperties)
+      : undefined;
   const [editing, setEditing] = useState(false);
   const [draggingPaneSession, setDraggingPaneSession] = useState(false);
   const [draftTitle, setDraftTitle] = useState(ses.title);
@@ -886,11 +928,8 @@ function SessionRow({
         (draggingPaneSession ? " dragging-pane-session" : "")
       }
       data-pane-group-accent={paneAccent ?? undefined}
-      style={
-        paneAccent
-          ? ({ "--pane-group-color": `var(--pane-group-${paneAccent})` } as CSSProperties)
-          : undefined
-      }
+      data-device-accent={deviceAccent ?? undefined}
+      style={rowStyle}
       draggable={!editing}
       data-pane-drag-label={t("shell:pane.dragLabel", { title: ses.title })}
       onDragStart={(event) => {
@@ -938,11 +977,11 @@ function SessionRow({
       tabIndex={0}
       aria-current={active ? "true" : undefined}
       aria-label={
-        sourceLabel
+        ariaSource
           ? t("session:ui.sidebar.activeRowLabel", {
               title: ses.title,
               agent: agentDisplay(ses.adapter),
-              source: sourceLabel,
+              source: ariaSource,
             })
           : t("session:ui.sidebar.rowLabel", {
               title: ses.title,
@@ -952,6 +991,14 @@ function SessionRow({
     >
       <StatusDot session={ses} />
       <span className="session-copy">
+        {deviceName ? (
+          <span className="session-device">
+            <span className="session-device-dot" aria-hidden="true" />
+            <span className="session-device-name" data-tip={deviceName}>
+              {deviceName}
+            </span>
+          </span>
+        ) : null}
         {editing ? (
           <input
             className="session-title-input"
@@ -982,52 +1029,62 @@ function SessionRow({
           <span className="active-session-source">{sourceLabel}</span>
         ) : null}
       </span>
-      <span
-        className="session-row-actions"
-        aria-label={t("session:ui.sidebar.actionsLabel")}
-      >
-        <span
-          className={"session-action" + (pinned ? " pinned" : "")}
-          role="button"
-          tabIndex={0}
-          aria-label={
-            pinned ? t("session:ui.sidebar.unpin") : t("session:ui.sidebar.pin")
-          }
-          onClick={(event) => {
-            event.stopPropagation();
-            if (flowDeviceId) void toggleSessionPinFlow(ses.id, flowDeviceId);
-            else void toggleSessionPinFlow(ses.id);
-          }}
-        >
-          <IconPin pinned={pinned} />
+      <span className="session-tail">
+        <span className="session-tail-meta">
+          <span
+            className="session-row-actions"
+            aria-label={t("session:ui.sidebar.actionsLabel")}
+          >
+            <span
+              className={"session-action" + (pinned ? " pinned" : "")}
+              role="button"
+              tabIndex={0}
+              aria-label={
+                pinned
+                  ? t("session:ui.sidebar.unpin")
+                  : t("session:ui.sidebar.pin")
+              }
+              onClick={(event) => {
+                event.stopPropagation();
+                if (flowDeviceId)
+                  void toggleSessionPinFlow(ses.id, flowDeviceId);
+                else void toggleSessionPinFlow(ses.id);
+              }}
+            >
+              <IconPin pinned={pinned} />
+            </span>
+            <span
+              className="session-action"
+              role="button"
+              tabIndex={0}
+              aria-label={t("session:ui.sidebar.archive")}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (flowDeviceId) void archiveSessionFlow(ses.id, flowDeviceId);
+                else void archiveSessionFlow(ses.id);
+              }}
+            >
+              <IconArchive />
+            </span>
+          </span>
+          <span
+            className="session-age"
+            aria-label={t("session:ui.sidebar.createdAt", {
+              date: ses.createdAt,
+            })}
+          >
+            {relativeAge(ses.createdAt)}
+          </span>
+          {ses.unread ? (
+            <span
+              className="unread-dot"
+              aria-label={t("session:ui.sidebar.unread")}
+              data-tip={t("session:ui.sidebar.unread")}
+            />
+          ) : null}
         </span>
-        <span
-          className="session-action"
-          role="button"
-          tabIndex={0}
-          aria-label={t("session:ui.sidebar.archive")}
-          onClick={(event) => {
-            event.stopPropagation();
-            if (flowDeviceId) void archiveSessionFlow(ses.id, flowDeviceId);
-            else void archiveSessionFlow(ses.id);
-          }}
-        >
-          <IconArchive />
-        </span>
+        {deviceName ? <SessionAgentBadge agent={ses.adapter} /> : null}
       </span>
-      <span
-        className="session-age"
-        aria-label={t("session:ui.sidebar.createdAt", { date: ses.createdAt })}
-      >
-        {relativeAge(ses.createdAt)}
-      </span>
-      {ses.unread ? (
-        <span
-          className="unread-dot"
-          aria-label={t("session:ui.sidebar.unread")}
-          data-tip={t("session:ui.sidebar.unread")}
-        />
-      ) : null}
     </div>
   );
 }
@@ -1201,9 +1258,33 @@ interface ActiveAgentSessionEntry {
   key: string;
   deviceId: string;
   deviceName: string;
+  deviceAccent: PaneGroupAccent;
   sourceLabel: string;
   session: SessionView;
   project: ProjectView;
+}
+
+/** Stable tint per device; collisions probe to the next free palette slot. */
+function deviceAccentAssignments(
+  deviceIds: readonly string[],
+): Map<string, PaneGroupAccent> {
+  const used = new Set<PaneGroupAccent>();
+  const assignment = new Map<string, PaneGroupAccent>();
+  for (const deviceId of [...new Set(deviceIds)].sort()) {
+    let hash = 5381;
+    for (let index = 0; index < deviceId.length; index += 1) {
+      hash = ((hash << 5) + hash + deviceId.charCodeAt(index)) >>> 0;
+    }
+    let slot = hash % PANE_GROUP_ACCENTS.length;
+    for (let attempts = 0; attempts < PANE_GROUP_ACCENTS.length; attempts += 1) {
+      if (!used.has(PANE_GROUP_ACCENTS[slot])) break;
+      slot = (slot + 1) % PANE_GROUP_ACCENTS.length;
+    }
+    const accent = PANE_GROUP_ACCENTS[slot];
+    used.add(accent);
+    assignment.set(deviceId, accent);
+  }
+  return assignment;
 }
 
 function activeEntryPriority(
@@ -1262,6 +1343,8 @@ const ActiveAgentSessionItem = memo(function ActiveAgentSessionItem({
         ses={entry.session}
         sourceLabel={entry.sourceLabel}
         deviceId={entry.deviceId}
+        deviceName={entry.deviceName}
+        deviceAccent={entry.deviceAccent}
       />
     </div>
   );
@@ -1347,6 +1430,9 @@ function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
     }
 
     const entries: ActiveAgentSessionEntry[] = [];
+    const deviceAccents = deviceAccentAssignments(
+      sources.map((source) => source.deviceId),
+    );
     for (const source of sources) {
       for (const project of source.projects) {
         let projectHasActiveSession = false;
@@ -1371,10 +1457,8 @@ function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
             key,
             deviceId: source.deviceId,
             deviceName: source.deviceName,
-            sourceLabel:
-              source.deviceId === LOCAL_DEVICE_KEY
-                ? projectLabel
-                : `${source.deviceName} · ${projectLabel}`,
+            deviceAccent: deviceAccents.get(source.deviceId) ?? "blue",
+            sourceLabel: projectLabel,
             session,
             project,
           });

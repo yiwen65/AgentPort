@@ -194,31 +194,41 @@ describe("cross-device active sidebar", () => {
 
   afterEach(cleanup);
 
-  it("shows equal Session ids from different devices with device sources", async () => {
+  it("shows equal Session ids from different devices with device labels", async () => {
     render(<Sidebar collapsed={false} width={296} />);
 
     await waitFor(() => {
       expect(screen.getByText("LocalProj")).toBeTruthy();
-      expect(screen.getByText("Beta · RemoteProj")).toBeTruthy();
+      expect(screen.getByText("RemoteProj")).toBeTruthy();
     });
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
-    // The sidebar has no device strip; connection management lives in the
-    // top-right switcher.
-    expect(screen.queryByText("本机")).toBeNull();
-    expect(screen.queryByText("Beta")).toBeNull();
+    // Device names sit above the Session title and get distinct tints.
+    expect(screen.getAllByText("本机")).toHaveLength(1);
+    expect(screen.getAllByText("Beta")).toHaveLength(1);
     expect(screen.queryByText("Gamma")).toBeNull();
+    const accents = screen
+      .getAllByRole("listitem")
+      .map((item) =>
+        item
+          .querySelector("[data-device-accent]")
+          ?.getAttribute("data-device-accent"),
+      );
+    expect(accents.filter(Boolean)).toHaveLength(2);
+    expect(new Set(accents).size).toBe(2);
+    // Every row exposes its owning agent in the bottom-right corner.
+    expect(document.querySelectorAll(".session-agent-badge")).toHaveLength(2);
   });
 
   it("routes a background row click through the device-aware focus helper", async () => {
     render(<Sidebar collapsed={false} width={296} />);
-    const source = await screen.findByText("Beta · RemoteProj");
+    const source = await screen.findByText("RemoteProj");
     fireEvent.click(source.closest('[role="button"]')!);
     expect(focusSessionKeyMock).toHaveBeenCalledWith("dev_b:ses_shared");
   });
 
   it("routes background pin and archive actions with the owning device", async () => {
     render(<Sidebar collapsed={false} width={296} />);
-    const source = await screen.findByText("Beta · RemoteProj");
+    const source = await screen.findByText("RemoteProj");
     const row = source.closest('[role="button"]')!;
     const pin = row.querySelector('[aria-label="置顶"]')!;
     fireEvent.click(pin);
