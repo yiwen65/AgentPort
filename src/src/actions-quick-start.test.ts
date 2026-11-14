@@ -95,6 +95,7 @@ describe("quickStartSession split intent", () => {
     apiMock.listProjects.mockResolvedValue(projectWith(targetSession, createdSession));
     apiMock.markSessionSeen.mockReturnValue(new Promise(() => undefined));
     setState({
+      activeDevice: { kind: "local" },
       projects: projectWith(targetSession),
       activeSessionId: targetSession.id,
       terminalLayout: singletonPaneLayout(targetSession.id),
