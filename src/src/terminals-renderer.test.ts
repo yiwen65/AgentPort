@@ -280,6 +280,7 @@ import {
   fitHandle,
   fitSession,
   getHandle,
+  getOrCreateHandle,
   hasWarmTerminalPreview,
   isTerminalPreviewRendered,
   loadOlderNativeHistory,
@@ -295,6 +296,12 @@ import {
 import { bytesToB64 } from "./api";
 import { applyUiLanguage } from "./i18n";
 import { applyProjectsSnapshot, emptyRuntime, getState, setState } from "./store";
+import {
+  emptyPaneLayout,
+  orderedLayoutSessionIds,
+  singletonPaneLayout,
+} from "./paneLayout";
+import { LOCAL_DEVICE_CONTEXT } from "./deviceContext";
 
 /** Active document-viewer tab as `{path, line}`, mirroring the old
  * single-target `openDocument` shape for link-routing assertions. */
@@ -345,6 +352,9 @@ describe("terminal renderer", () => {
     rendererMocks.apiMock.clipboardHasImage.mockResolvedValue(false);
     setState({
       activeSessionId: "renderer-test",
+      activeDevice: LOCAL_DEVICE_CONTEXT,
+      terminalLayout: emptyPaneLayout(),
+      terminalLayoutGroups: [],
       runtime: {},
       platform: null,
       projects: [
@@ -546,6 +556,50 @@ describe("terminal renderer", () => {
       }
     },
   );
+
+  it("reveals a served snapshot when replay_done arrives before the attach reply", async () => {
+    let resolveAttach!: (info: AttachInfo) => void;
+    rendererMocks.apiMock.attachSession.mockReset().mockReturnValue(
+      new Promise<AttachInfo>((resolve) => {
+        resolveAttach = resolve;
+      }),
+    );
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const channel = rendererMocks.channels[0];
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+
+    // A remote bridge can deliver the channel marker before the invoke reply.
+    channel.onmessage?.({ t: "replay_done", offset: 0, cursor: null });
+    const earlyBoundaryIndex = terminal.write.mock.calls.length - 1;
+    invokeWriteCallback(terminal.write.mock.calls[earlyBoundaryIndex]);
+    terminal.emitRender();
+    expect(isTerminalPreviewRendered("renderer-test")).toBe(true);
+
+    const content = "\x1b[2J\x1b[HREMOTE SCREEN";
+    resolveAttach({
+      attachmentId: 1, childAlive: true, hostPid: 42, protocol: null, logBytes: 0,
+      status: null, agentSessionId: null, runId: "run_1", runOrdinal: 1,
+      logCursor: { runId: "run_1", runOrdinal: 1, generation: 0, offset: 10 },
+      screenSnapshot: { content, cols: 131, rows: 38, pending: [],
+        state: validSnapshotState(38) },
+    });
+    const handle = getHandle("renderer-test")!;
+    await vi.waitFor(() => expect(handle.attached).toBe(true));
+    // Applying the snapshot invalidates the already-completed marker's render.
+    expect(isTerminalPreviewRendered("renderer-test")).toBe(false);
+
+    for (const call of terminal.write.mock.calls.slice(earlyBoundaryIndex + 1)) {
+      if (typeof call[1] === "function") invokeWriteCallback(call);
+    }
+    expect(getState().runtime["renderer-test"]?.replayDone).toBe(true);
+    expect(isTerminalPreviewRendered("renderer-test")).toBe(false);
+    terminal.emitRender();
+    expect(isTerminalPreviewRendered("renderer-test")).toBe(true);
+  });
 
   it("keeps the warm preview when the served snapshot fails validation", async () => {
     setState({
@@ -799,6 +853,8 @@ describe("terminal renderer", () => {
   afterEach(() => {
     disposeHandle("renderer-test");
     disposeHandle("renderer-visible-test");
+    disposeHandle("dev_b:ses_b");
+    disposeHandle("dev_lag:ses_lag");
     setState({ settings: null });
     vi.useRealTimers();
     vi.unstubAllGlobals();
@@ -3664,6 +3720,39 @@ describe("terminal renderer", () => {
     expect(visibleHandle.term.dispose).not.toHaveBeenCalled();
     expect(getState().attachedIds).toEqual(["renderer-visible-test"]);
     expect(getState().projects).toEqual([visibleProject]);
+  });
+
+  it("keys a remote pane handle by its device-qualified session key", () => {
+    const key = "dev_b:ses_b";
+    const handle = getOrCreateHandle(key);
+    expect(getHandle(key)).toBe(handle);
+    expect(handle.plainSessionId).toBe("ses_b");
+    expect(handle.deviceId).toBe("dev_b");
+    expect(getHandle("ses_b")).toBeUndefined();
+  });
+
+  it("keeps a mounted active-device layout leaf while its project snapshot lags", async () => {
+    const key = "dev_lag:ses_lag";
+    const handle = getOrCreateHandle(key);
+    setState({
+      activeDevice: {
+        kind: "remote",
+        deviceId: "dev_lag",
+        deviceName: "Lag",
+        capabilities: [],
+      },
+      terminalLayout: singletonPaneLayout(key),
+      projects: getState().projects,
+    });
+
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toContain(key);
+    pruneHandles();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getHandle(key)).toBe(handle);
+    expect(handle.term.dispose).not.toHaveBeenCalled();
   });
 
   it.each(["snapshot", "detach"] as const)(

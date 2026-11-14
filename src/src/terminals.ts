@@ -1104,6 +1104,13 @@ function restoreHostScreenSnapshot(handle: TermHandle, value: unknown) {
     if (!fence()) return;
     fitHandle(handle, true, true, "host-snapshot");
   });
+  // replay_done travels on the same channel as the attach reply, and a remote
+  // bridge may deliver it before this snapshot is applied. The snapshot resets
+  // displayReady, so without a completion drain behind it an early
+  // replay_done would leave the attach skeleton up forever. The snapshot is
+  // the complete screen (the Host omits the byte tail when serving one), so a
+  // later duplicate replay_done only repeats an idempotent drain.
+  queueReplayParsed(handle);
 }
 
 /**
@@ -1456,7 +1463,7 @@ export function getOrCreateHandle(key: string): TermHandle {
     lastOutputParseLatencyMs: 0,
     container: null,
     resizeObserver: null,
-    active: activeSessionKey(getState()) === sessionId,
+    active: activeSessionKey(getState()) === key,
     geometryDirty: false,
     fitCount: 0,
     lastFitReason: null,
@@ -1505,13 +1512,13 @@ export function getOrCreateHandle(key: string): TermHandle {
   });
   term.parser.registerOscHandler(PI_STARTUP_READY_OSC, (data) => {
     if (data !== PI_STARTUP_READY_PAYLOAD) return false;
-    if (getState().runtime[sessionId]?.startupPending) {
+    if (getState().runtime[key]?.startupPending) {
       queuePiStartupReady(handle);
     }
     return true;
   });
   term.onTitleChange((title) => {
-    patchRuntime(sessionId, { terminalTitle: title.trim() || null });
+    patchRuntime(key, { terminalTitle: title.trim() || null });
   });
   term.onBell(() => {
     const target = handle.container;
@@ -1523,12 +1530,12 @@ export function getOrCreateHandle(key: string): TermHandle {
     window.setTimeout(() => target.classList.remove("terminal-bell"), 240);
   });
   term.onRender(() => {
-    if (!handle.displayRenderPending || handles.get(sessionId) !== handle) return;
+    if (!handle.displayRenderPending || handles.get(key) !== handle) return;
     handle.displayRenderPending = false;
     handle.displayReady = true;
     const revision =
-      (getState().runtime[sessionId]?.terminalPreviewRevision ?? 0) + 1;
-    patchRuntime(sessionId, { terminalPreviewRevision: revision });
+      (getState().runtime[key]?.terminalPreviewRevision ?? 0) + 1;
+    patchRuntime(key, { terminalPreviewRevision: revision });
   });
   term.onData((data) => {
     if (!handle.attached) {
@@ -1544,7 +1551,7 @@ export function getOrCreateHandle(key: string): TermHandle {
     handle.viewport.observeViewport();
     updateScrolledUp(handle);
   });
-  handles.set(sessionId, handle);
+  handles.set(key, handle);
   // Capture every completed selection: live TUIs repaint constantly and
   // xterm drops the selection when a redraw touches it, so the context menu
   // falls back to this snapshot (see paneContextItems / resolveCopySelection).
@@ -1556,7 +1563,7 @@ export function getOrCreateHandle(key: string): TermHandle {
       handle.lastSelectionAt = Date.now();
     }
   });
-  if (getState().runtime[sessionId]?.startupPending) {
+  if (getState().runtime[key]?.startupPending) {
     armPiStartupReadyTimeout(handle);
   }
   const sessionLive =
@@ -1565,12 +1572,12 @@ export function getOrCreateHandle(key: string): TermHandle {
     sessionLive &&
     (session?.adapter === "pi" || session?.adapter === "easy_pi") &&
     session.transport === "pty";
-  let snapshot = sessionLive ? readTerminalSnapshot(sessionId) : null;
+  let snapshot = sessionLive ? readTerminalSnapshot(key) : null;
   if (fullscreenPi && snapshot && !snapshot.content.includes("\x1b[?1049h")) {
     // A prior renderer may have snapshotted Pi after losing its alternate
     // buffer. Reusing that normal-buffer image makes every later reconnect
     // preserve the corruption, so discard it and rebuild from the Host tail.
-    clearTerminalSnapshot(sessionId);
+    clearTerminalSnapshot(key);
     snapshot = null;
   }
   if (snapshot) {
@@ -1595,7 +1602,7 @@ export function getOrCreateHandle(key: string): TermHandle {
             )
           : mouseEncodingSequence(restoredMouseEncoding)),
       () => {
-        if (handles.get(sessionId) !== handle) return;
+        if (handles.get(key) !== handle) return;
         handle.displayRenderPending = true;
         handle.term.refresh(0, Math.max(0, handle.term.rows - 1));
       },
@@ -3392,6 +3399,16 @@ export async function attachHandle(
       void apiForHandle(handle)
         .detachSession(handle.plainSessionId, info.attachmentId)
         .catch(() => undefined);
+      // No replacement handle owns the pane now (for example the leaf was
+      // closed while the request was in flight): clear the stale attaching
+      // state so a reopened pane does not inherit an eternal skeleton.
+      if (!handles.has(sessionId)) {
+        patchRuntime(sessionId, {
+          attaching: false,
+          attached: false,
+          detached: true,
+        });
+      }
       return;
     }
     activateAttachment(handle, info);
@@ -3948,13 +3965,15 @@ export function pruneHandles() {
       project.sessions.map((session) => sessionKeyFor(activeKey, session.id)),
     ),
   );
-  // Foreign panes are owned by their device snapshots; only closing their
-  // layout leaf (or removing the device) may release them.
+  // Every mounted pane is owned by its layout leaf, whichever device is
+  // active. During startup/project refreshes the active device's projects can
+  // briefly lag the layout (for example while a remote boot applies), and
+  // pruning active-device leaves then would release a pane mid-attach.
   for (const key of [
     ...orderedLayoutSessionIds(s.terminalLayout),
     ...s.terminalLayoutGroups.flatMap((group) => orderedLayoutSessionIds(group)),
   ]) {
-    if (parseSessionKey(key).deviceKey !== activeKey) alive.add(key);
+    alive.add(key);
   }
   for (const id of [...handles.keys()]) {
     if (!alive.has(id)) void releaseTerminal(id);
