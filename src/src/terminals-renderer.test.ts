@@ -1130,6 +1130,64 @@ describe("terminal renderer", () => {
     expect(nativeViewport.scrollTop).toBe(9_500);
   });
 
+  it.each([
+    ["a tail-following buffer", "normal", 1_000, 9_500],
+    ["a scrollback reading position", "normal", 250, 2_375],
+  ])(
+    "reconciles the native viewport for %s before the wheel maps it",
+    (_label, bufferType, viewportY, expectedScrollTop) => {
+      const container = document.createElement("div");
+      Object.defineProperties(container, {
+        clientWidth: { configurable: true, value: 800 },
+        clientHeight: { configurable: true, value: 600 },
+      });
+      mountTerminal("renderer-test", container);
+      const terminal =
+        rendererMocks.terminals[rendererMocks.terminals.length - 1];
+      terminal.buffer.active.type = bufferType;
+      terminal.buffer.active.baseY = 1_000;
+      terminal.buffer.active.viewportY = viewportY;
+      const nativeViewport = document.createElement("div");
+      nativeViewport.className = "xterm-viewport";
+      Object.defineProperties(nativeViewport, {
+        clientHeight: { configurable: true, value: 500 },
+        scrollHeight: { configurable: true, value: 10_000 },
+      });
+      nativeViewport.scrollTop = 0;
+      terminal.element?.appendChild(nativeViewport);
+
+      container.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
+
+      expect(nativeViewport.scrollTop).toBe(expectedScrollTop);
+    },
+  );
+
+  it("leaves an alternate-screen viewport untouched before wheel input", () => {
+    const container = document.createElement("div");
+    Object.defineProperties(container, {
+      clientWidth: { configurable: true, value: 800 },
+      clientHeight: { configurable: true, value: 600 },
+    });
+    mountTerminal("renderer-test", container);
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.buffer.active.type = "alternate";
+    terminal.buffer.active.baseY = 0;
+    terminal.buffer.active.viewportY = 0;
+    const nativeViewport = document.createElement("div");
+    nativeViewport.className = "xterm-viewport";
+    Object.defineProperties(nativeViewport, {
+      clientHeight: { configurable: true, value: 500 },
+      scrollHeight: { configurable: true, value: 10_000 },
+    });
+    nativeViewport.scrollTop = 0;
+    terminal.element?.appendChild(nativeViewport);
+
+    container.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
+
+    expect(nativeViewport.scrollTop).toBe(0);
+  });
+
   it("does not queue a repair that can override the user's next upward scroll", () => {
     const container = document.createElement("div");
     Object.defineProperties(container, {

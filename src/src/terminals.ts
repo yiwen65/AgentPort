@@ -218,6 +218,28 @@ class TerminalViewportController {
     this.synchronizeTail();
   }
 
+  /** Align xterm's native scrollbar with the buffer before a native wheel event
+   * maps the DOM position back into the buffer. A Session re-entry can leave
+   * `scrollTop` at 0 while the buffer is already following the tail; without
+   * this fence the first wheel event jumps to the oldest output. The buffer is
+   * authoritative, so this never changes it — it only corrects the DOM layer. */
+  synchronizeNativeViewport() {
+    const buffer = this.term.buffer.active;
+    if (buffer.type !== "normal" || buffer.baseY <= 0) return;
+    const viewport =
+      this.term.element?.querySelector<HTMLElement>(".xterm-viewport");
+    if (!viewport) return;
+    const maxScrollTop = Math.max(
+      0,
+      viewport.scrollHeight - viewport.clientHeight,
+    );
+    if (maxScrollTop <= 0) return;
+    const desired =
+      (Math.min(buffer.viewportY, buffer.baseY) / buffer.baseY) * maxScrollTop;
+    if (Math.abs(viewport.scrollTop - desired) < 1) return;
+    viewport.scrollTop = desired;
+  }
+
   restoreAfterFit(line: number) {
     this.term.scrollToLine(line);
     this.mode = "reading";
@@ -2462,6 +2484,10 @@ function installViewportIntentTracking(
   container: HTMLDivElement,
 ): () => void {
   const onWheel = () => {
+    // xterm reads `.xterm-viewport.scrollTop` for the wheel delta. A stale DOM
+    // position here would be translated into a buffer jump (typically to row
+    // 0), so reconcile the native layer before xterm handles the gesture.
+    handle.viewport.synchronizeNativeViewport();
     handle.viewport.noteUserIntent();
   };
   container.addEventListener("wheel", onWheel, { capture: true, passive: true });
