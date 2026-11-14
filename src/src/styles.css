@@ -1076,6 +1076,44 @@ body.is-project-dragging .tree-row.project {
   gap: 4px;
 }
 
+.adapter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--overlay-divider);
+}
+
+.adapter-action-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.adapter-action-icon.spinning {
+  animation: dot-spin 0.8s linear infinite;
+}
+
+:root[data-motion="reduced"] .adapter-action-icon.spinning {
+  animation: dot-spin 1.2s linear infinite !important;
+  animation-duration: 1.2s !important;
+  animation-iteration-count: infinite !important;
+}
+
+.settings-page .adapter-actions .btn.adapter-manage {
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent-text);
+}
+
+.settings-page .adapter-actions .btn.adapter-manage:hover {
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+  background: color-mix(in srgb, var(--accent) 17%, transparent);
+  color: var(--accent-text);
+}
+
 .adapter-enabled-switch {
   position: relative;
   display: inline-block;

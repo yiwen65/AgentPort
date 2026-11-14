@@ -504,17 +504,44 @@ function AdapterSection({
           </tbody>
         </table>
       )}
-      <div className="control" style={{ display: "flex", gap: 8 }}>
-        <button className="btn small" disabled={busy || setupBusy} onClick={() => void reprobe()}>
+      <div className="adapter-actions">
+        <button
+          className="btn primary"
+          disabled={busy || setupBusy}
+          aria-busy={busy}
+          onClick={() => void reprobe()}
+        >
+          {busy ? (
+            <svg className="adapter-action-icon spinning" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.6" opacity="0.35" />
+              <path d="M8 2.5a5.5 5.5 0 0 1 5.5 5.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg className="adapter-action-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <circle cx="7" cy="7" r="4.25" stroke="currentColor" strokeWidth="1.5" />
+              <path d="m10.3 10.3 3.2 3.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <path d="M7 5.1v3.8M5.1 7h3.8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          )}
           {busy ? t("settings:ui.adapters.probing") : t("settings:ui.adapters.reprobeAll")}
         </button>
         <button
-          className="btn small ghost"
+          className="btn adapter-manage"
           onClick={() => {
             closeDialog();
             setState({ showOnboarding: true });
           }}
         >
+          <svg className="adapter-action-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path
+              d="M2.5 5.5h4.7m3.9 0h2.4M2.5 10.5h.6m3.8 0h6.6"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
+            <circle cx="9.1" cy="5.5" r="1.5" stroke="currentColor" strokeWidth="1.5" />
+            <circle cx="4.8" cy="10.5" r="1.5" stroke="currentColor" strokeWidth="1.5" />
+          </svg>
           {t("settings:ui.adapters.manage")}
         </button>
       </div>
