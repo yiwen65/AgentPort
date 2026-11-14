@@ -231,6 +231,10 @@ describe("sidebar Session pane drag", () => {
     expect(member?.classList.contains("in-pane-layout")).toBe(true);
     expect(rememberedMember?.classList.contains("in-pane-layout")).toBe(true);
     expect(outside?.classList.contains("in-pane-layout")).toBe(false);
+    expect(active?.dataset.paneGroupAccent).toBe("blue");
+    expect(member?.dataset.paneGroupAccent).toBe("blue");
+    expect(rememberedMember?.dataset.paneGroupAccent).toBe("violet");
+    expect(outside?.dataset.paneGroupAccent).toBeUndefined();
     expect(container.querySelector(".pane-layout-indicator")).toBeNull();
   });
 

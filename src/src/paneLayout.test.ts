@@ -8,6 +8,7 @@ import {
   TERMINAL_LAYOUT_STORAGE_KEY,
   TERMINAL_LAYOUT_VERSION,
   emptyPaneLayout,
+  assignPaneGroupAccent,
   clampPaneSplitRatio,
   focusPane,
   layoutContains,
@@ -17,6 +18,7 @@ import {
   paneLayoutFitsSize,
   paneMinimumSize,
   paneSessionSize,
+  normalizePaneGroupAccents,
   persistTerminalLayout,
   persistTerminalLayouts,
   prunePaneLayout,
@@ -406,7 +408,7 @@ describe("pane layout persistence", () => {
     expect(persistTerminalLayout(layout)).toBe(true);
     expect(JSON.parse(window.localStorage.getItem(TERMINAL_LAYOUT_STORAGE_KEY) ?? "null"))
       .toMatchObject({ version: TERMINAL_LAYOUT_VERSION });
-    expect(readPersistedTerminalLayout()).toEqual(layout);
+    expect(readPersistedTerminalLayout()).toEqual({ ...layout, accent: "blue" });
   });
 
   it("degrades malformed, unknown-version, duplicate, and invalid data safely", () => {
@@ -468,7 +470,38 @@ describe("pane layout persistence", () => {
       ["c", "d"],
       ["a", "b"],
     ]);
-    expect(restored.activeLayout).toEqual(second);
+    expect(restored.groups.map((group) => group.accent)).toEqual([
+      "blue",
+      "violet",
+    ]);
+    expect(restored.activeLayout).toEqual({ ...second, accent: "blue" });
+  });
+
+  it("assigns distinct group accents and repairs persisted duplicates", () => {
+    const first = splitPane(singletonPaneLayout("a"), "a", "b", "right", "first");
+    const second = splitPane(singletonPaneLayout("c"), "c", "d", "down", "second");
+    const third = splitPane(singletonPaneLayout("e"), "e", "f", "right", "third");
+
+    expect(assignPaneGroupAccent(first, []).accent).toBe("blue");
+    const withFirst = { ...first, accent: "blue" as const };
+    expect(assignPaneGroupAccent(second, [withFirst]).accent).toBe("violet");
+
+    const normalized = normalizePaneGroupAccents([
+      withFirst,
+      { ...second, accent: "blue" as const },
+      third,
+    ]);
+    expect(normalized.changed).toBe(true);
+    expect(normalized.groups.map((group) => group.accent)).toEqual([
+      "blue",
+      "violet",
+      "teal",
+    ]);
+
+    const stable = normalizePaneGroupAccents(normalized.groups);
+    expect(stable.changed).toBe(false);
+    expect(normalizePaneGroupAccents([{ ...first, accent: "neon" as never }]).groups[0].accent)
+      .toBe("blue");
   });
 
   it("migrates the previous single-layout persistence format", () => {

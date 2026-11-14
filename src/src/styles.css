@@ -130,6 +130,15 @@
      row color. */
   --sidebar-worktree: #d4b36c;
   --sidebar-worktree-hover: #e6c886;
+  /* Split-group tints (dark): one hue per remembered split, all at the same
+     pastel saturation so adjacent groups read as a family rather than as
+     different states. Selection stays on --accent. */
+  --pane-group-blue: #82a1ff;
+  --pane-group-violet: #bda1ff;
+  --pane-group-teal: #55c4cf;
+  --pane-group-amber: #dfb45e;
+  --pane-group-rose: #ee9ab1;
+  --pane-group-green: #7fcb92;
   --sidebar-edit-bg: rgba(0, 0, 0, 0.24);
   --sidebar-edit-border: var(--accent-text);
   --sidebar-handle: rgba(188, 199, 226, 0.45);
@@ -233,6 +242,14 @@
      contrast on the light sidebar; hover lifts toward the brighter hue. */
   --sidebar-worktree: #96771f;
   --sidebar-worktree-hover: #b08d2a;
+  /* Split-group tints (light): deeper counterparts of the dark palette so the
+     hairline bars stay legible on the porcelain sidebar. */
+  --pane-group-blue: #3d6fd8;
+  --pane-group-violet: #7953d1;
+  --pane-group-teal: #0d7d89;
+  --pane-group-amber: #946800;
+  --pane-group-rose: #b85072;
+  --pane-group-green: #2c7b48;
   --sidebar-edit-bg: rgba(255, 255, 255, 0.92);
   --sidebar-edit-border: var(--accent-text);
   --sidebar-handle: rgba(17, 18, 23, 0.24);
@@ -3228,10 +3245,22 @@ body.is-resizing-pane {
   opacity: 0.58;
 }
 
-/* Secondary sidebar state for Sessions visible in a non-focused pane. */
+/* Secondary sidebar state for Sessions visible in a non-focused pane. Each
+   remembered split owns a tint (--pane-group-color) so rows from different
+   groups stay distinguishable without competing with the selection chip. */
 .tree-row.session.in-pane-layout {
-  background: color-mix(in srgb, var(--accent) 5%, transparent);
-  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 44%, transparent);
+  background: color-mix(in srgb, var(--pane-group-color, var(--accent)) 6%, transparent);
+  box-shadow: inset 2px 0 0
+    color-mix(in srgb, var(--pane-group-color, var(--accent)) 58%, transparent);
+}
+
+/* The selected row keeps its frosted chip, but adds the group bar so an
+   active member does not lose its group identity. */
+.tree-row.session.active[data-pane-group-accent] {
+  box-shadow:
+    inset 2px 0 0 color-mix(in srgb, var(--pane-group-color) 68%, transparent),
+    inset 0 0 0 1px var(--sidebar-active-ring),
+    inset 0 1px 0 var(--sidebar-active-highlight);
 }
 
 .tree-row.session.dragging-pane-session {

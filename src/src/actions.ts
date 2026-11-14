@@ -59,6 +59,7 @@ import { agentDisplay } from "./format";
 import { i18n } from "./i18n";
 import { applyTerminalThemeCss } from "./terminalThemes";
 import {
+  assignPaneGroupAccent,
   focusPane,
   layoutContains,
   movePane,
@@ -520,34 +521,36 @@ function commitPaneLayout(
   } = {},
 ) {
   const current = getState();
+  const remembered = rememberedPaneGroups(current);
+  const nextLayout = assignPaneGroupAccent(terminalLayout, remembered);
   const groups = paneGroupsAfterLayoutChange(
-    rememberedPaneGroups(current),
+    remembered,
     options.previousLayout ?? current.terminalLayout,
-    terminalLayout,
+    nextLayout,
     options.movingSessionId,
   );
-  const activeSessionId = plainActiveId(terminalLayout.focusedSessionId);
-  const attachedIds = attachedPtyIdsForLayout(terminalLayout);
+  const activeSessionId = plainActiveId(nextLayout.focusedSessionId);
+  const attachedIds = attachedPtyIdsForLayout(nextLayout);
   const maximizedSessionId =
     options.maximizedSessionId !== undefined
       ? options.maximizedSessionId
       : current.maximizedSessionId &&
-          layoutContains(terminalLayout, current.maximizedSessionId)
+          layoutContains(nextLayout, current.maximizedSessionId)
         ? current.maximizedSessionId
         : null;
   setState({
-    terminalLayout,
+    terminalLayout: nextLayout,
     terminalLayoutGroups: groups,
     activeSessionId,
     attachedIds,
     maximizedSessionId,
   });
-  persistPaneGroups(groups, terminalLayout);
+  persistPaneGroups(groups, nextLayout);
   releaseIdsOutside(current.attachedIds, attachedIds);
   if (options.acknowledgeFocused && activeSessionId) acknowledgeSession(activeSessionId);
   // A split/move can land on a pane owned by another device. Focus-driven
   // activity must follow it instead of leaving the top bar on the old device.
-  const focusedKey = terminalLayout.focusedSessionId;
+  const focusedKey = nextLayout.focusedSessionId;
   if (
     focusedKey &&
     parseSessionKey(focusedKey).deviceKey !== activeDeviceKey()
@@ -581,7 +584,7 @@ export function selectSession(
   const currentGroups = rememberedPaneGroups(s);
   const rememberedGroup = paneLayoutGroupContaining(currentGroups, key);
   const terminalLayout = rememberedGroup
-    ? focusPane(rememberedGroup, key)
+    ? assignPaneGroupAccent(focusPane(rememberedGroup, key), currentGroups)
     : singletonPaneLayout(key);
   const terminalLayoutGroups = rememberedGroup
     ? [

@@ -77,9 +77,11 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { openGitCenter } from "../gitCenter";
 import {
+  normalizePaneGroupAccents,
   orderedLayoutSessionIds,
   layoutContains,
   persistTerminalLayouts,
+  type PaneGroupAccent,
   type PaneLayout,
 } from "../paneLayout";
 import {
@@ -718,36 +720,53 @@ function worktreeMenu(
   ];
 }
 
+interface PaneSessionMeta {
+  ids: ReadonlySet<string>;
+  accents: ReadonlyMap<string, PaneGroupAccent>;
+}
+
 let cachedPaneLayout: PaneLayout | null = null;
 let cachedPaneLayoutGroups: PaneLayout[] | null = null;
-let cachedPaneSessionIds: ReadonlySet<string> = new Set();
+let cachedPaneSessionMeta: PaneSessionMeta = { ids: new Set(), accents: new Map() };
 
 /**
  * Session rows share this reference-keyed cache. Production pane transforms
  * replace layout references, so unrelated store updates only pay Set lookups.
  */
-function paneSessionIds(
+function paneSessionMeta(
   terminalLayout: PaneLayout,
   terminalLayoutGroups: PaneLayout[],
-): ReadonlySet<string> {
+): PaneSessionMeta {
   if (
     terminalLayout === cachedPaneLayout &&
     terminalLayoutGroups === cachedPaneLayoutGroups
   ) {
-    return cachedPaneSessionIds;
+    return cachedPaneSessionMeta;
   }
 
-  const sessionIds = new Set(orderedLayoutSessionIds(terminalLayout));
-  for (const group of terminalLayoutGroups) {
-    if (group === terminalLayout) continue;
-    for (const sessionId of orderedLayoutSessionIds(group)) {
-      sessionIds.add(sessionId);
-    }
+  const accents = normalizePaneGroupAccents(terminalLayoutGroups).groups;
+  const sessionIds = new Set<string>();
+  const sessionAccents = new Map<string, PaneGroupAccent>();
+  const activeIds = orderedLayoutSessionIds(terminalLayout);
+  for (const sessionId of activeIds) sessionIds.add(sessionId);
+  const activeIndex = terminalLayoutGroups.indexOf(terminalLayout);
+  const activeAccent =
+    activeIndex >= 0 ? accents[activeIndex].accent : undefined;
+  if (activeAccent) {
+    for (const sessionId of activeIds) sessionAccents.set(sessionId, activeAccent);
   }
+  terminalLayoutGroups.forEach((group, index) => {
+    if (group === terminalLayout) return;
+    const ids = orderedLayoutSessionIds(group);
+    for (const sessionId of ids) sessionIds.add(sessionId);
+    const accent = accents[index].accent;
+    if (!accent) return;
+    for (const sessionId of ids) sessionAccents.set(sessionId, accent);
+  });
   cachedPaneLayout = terminalLayout;
   cachedPaneLayoutGroups = terminalLayoutGroups;
-  cachedPaneSessionIds = sessionIds;
-  return sessionIds;
+  cachedPaneSessionMeta = { ids: sessionIds, accents: sessionAccents };
+  return cachedPaneSessionMeta;
 }
 
 const SESSION_ROW_ACTIVE = 1;
@@ -777,10 +796,16 @@ function SessionRow({
   const rowKey = sessionKeyFor(ownerDeviceId, ses.id);
   const rowState = useStore((state) =>
     (activeSessionKey(state) === rowKey ? SESSION_ROW_ACTIVE : 0) |
-    (paneSessionIds(state.terminalLayout, state.terminalLayoutGroups).has(rowKey)
+    (paneSessionMeta(state.terminalLayout, state.terminalLayoutGroups).ids.has(rowKey)
       ? SESSION_ROW_IN_PANE_LAYOUT
       : 0) |
     (state.runtime[rowKey]?.suspended === true ? SESSION_ROW_SUSPENDED : 0),
+  );
+  const paneAccent = useStore(
+    (state) =>
+      paneSessionMeta(state.terminalLayout, state.terminalLayoutGroups).accents.get(
+        rowKey,
+      ) ?? null,
   );
   const active = (rowState & SESSION_ROW_ACTIVE) !== 0;
   const inPaneLayout = (rowState & SESSION_ROW_IN_PANE_LAYOUT) !== 0;
@@ -859,6 +884,12 @@ function SessionRow({
         (active ? " active" : "") +
         (inPaneLayout && !active ? " in-pane-layout" : "") +
         (draggingPaneSession ? " dragging-pane-session" : "")
+      }
+      data-pane-group-accent={paneAccent ?? undefined}
+      style={
+        paneAccent
+          ? ({ "--pane-group-color": `var(--pane-group-${paneAccent})` } as CSSProperties)
+          : undefined
       }
       draggable={!editing}
       data-pane-drag-label={t("shell:pane.dragLabel", { title: ses.title })}
@@ -2061,7 +2092,13 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
   );
 }
 
-function PaneGroupNode({ group }: { group: PaneLayout }) {
+function PaneGroupNode({
+  group,
+  accent,
+}: {
+  group: PaneLayout;
+  accent?: PaneGroupAccent;
+}) {
   const { t } = useTranslation("shell");
   const [expanded, setExpanded] = useState(true);
   const storeState = useStore();
@@ -2100,7 +2137,15 @@ function PaneGroupNode({ group }: { group: PaneLayout }) {
   };
   if (!sessions.length) return null;
   return (
-    <section className="tree-project sidebar-pane-group">
+    <section
+      className="tree-project sidebar-pane-group"
+      data-pane-group-accent={accent}
+      style={
+        accent
+          ? ({ "--pane-group-color": `var(--pane-group-${accent})` } as CSSProperties)
+          : undefined
+      }
+    >
       <div className="sidebar-group-heading">
         <button type="button" className="sidebar-group-fold" aria-expanded={expanded}
           aria-label={t("sidebarGroups.fold", { title })} onClick={() => setExpanded(!expanded)}>
@@ -2153,6 +2198,10 @@ export default function Sidebar({
   const activeAgentsView = sidebarViewMode === "activeAgents";
   const [groupsPage, setGroupsPage] = useState(false);
   const groups = useStore((state) => state.terminalLayoutGroups);
+  const groupAccents = useMemo(
+    () => normalizePaneGroupAccents(groups).groups.map((group) => group.accent),
+    [groups],
+  );
   const sidebarRef = useRef<HTMLElement>(null);
   useEffect(() => {
     const element = sidebarRef.current;
@@ -2235,8 +2284,12 @@ export default function Sidebar({
       >
         {showGroups ? (
           <div className="sidebar-groups-page">
-            {groups.length ? groups.map((group) => (
-              <PaneGroupNode key={[...orderedLayoutSessionIds(group)].sort().join("/")} group={group} />
+            {groups.length ? groups.map((group, index) => (
+              <PaneGroupNode
+                key={[...orderedLayoutSessionIds(group)].sort().join("/")}
+                group={group}
+                accent={groupAccents[index]}
+              />
             )) : <div className="empty-state"><div>{t("shell:sidebarGroups.empty")}</div><p>{t("shell:sidebarGroups.hint")}</p></div>}
           </div>
         ) : activeAgentsView ? (

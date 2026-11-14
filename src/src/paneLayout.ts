@@ -53,9 +53,29 @@ export interface PaneSplit {
 
 export type PaneLayoutNode = PaneLeaf | PaneSplit;
 
+/** Sidebar accents shared by every Session row of one split group. */
+export const PANE_GROUP_ACCENTS = [
+  "blue",
+  "violet",
+  "teal",
+  "amber",
+  "rose",
+  "green",
+] as const;
+export type PaneGroupAccent = (typeof PANE_GROUP_ACCENTS)[number];
+
+export function isPaneGroupAccent(value: unknown): value is PaneGroupAccent {
+  return (
+    typeof value === "string" &&
+    (PANE_GROUP_ACCENTS as readonly string[]).includes(value)
+  );
+}
+
 export interface PaneLayout {
   /** Optional user-defined group title, persisted with the layout. */
   name?: string;
+  /** Sidebar tint for this group, persisted so colors stay stable. */
+  accent?: PaneGroupAccent;
   root: PaneLayoutNode | null;
   focusedSessionId: string | null;
 }
@@ -775,7 +795,12 @@ function sameNode(a: PaneLayoutNode | null, b: PaneLayoutNode | null, depth = 0)
 }
 
 export function samePaneLayout(a: PaneLayout, b: PaneLayout): boolean {
-  return a.name === b.name && a.focusedSessionId === b.focusedSessionId && sameNode(a.root, b.root);
+  return (
+    a.name === b.name &&
+    a.accent === b.accent &&
+    a.focusedSessionId === b.focusedSessionId &&
+    sameNode(a.root, b.root)
+  );
 }
 
 export function paneLayoutHasSplit(layout: PaneLayout): boolean {
@@ -787,6 +812,52 @@ export function paneLayoutGroupContaining(
   sessionId: string,
 ): PaneLayout | null {
   return groups.find((layout) => layoutContains(layout, sessionId)) ?? null;
+}
+
+function sameGroupSessions(a: PaneLayout, b: PaneLayout): boolean {
+  const ids = new Set(orderedLayoutSessionIds(a));
+  const other = orderedLayoutSessionIds(b);
+  return ids.size === other.length && other.every((id) => ids.has(id));
+}
+
+function pickFreePaneGroupAccent(used: ReadonlySet<PaneGroupAccent>): PaneGroupAccent {
+  return (
+    PANE_GROUP_ACCENTS.find((accent) => !used.has(accent)) ??
+    PANE_GROUP_ACCENTS[used.size % PANE_GROUP_ACCENTS.length]
+  );
+}
+
+/** Give a split layout an accent no other group already owns. */
+export function assignPaneGroupAccent(
+  layout: PaneLayout,
+  groups: readonly PaneLayout[],
+): PaneLayout {
+  if (!paneLayoutHasSplit(layout) || isPaneGroupAccent(layout.accent)) return layout;
+  const used = new Set<PaneGroupAccent>();
+  for (const group of groups) {
+    if (group === layout || sameGroupSessions(group, layout)) continue;
+    if (isPaneGroupAccent(group.accent)) used.add(group.accent);
+  }
+  return { ...layout, accent: pickFreePaneGroupAccent(used) };
+}
+
+/** Backfill persisted groups (and repair duplicate accents) at load time. */
+export function normalizePaneGroupAccents(
+  groups: readonly PaneLayout[],
+): { groups: PaneLayout[]; changed: boolean } {
+  const used = new Set<PaneGroupAccent>();
+  let changed = false;
+  const next = groups.map((group) => {
+    const accent =
+      isPaneGroupAccent(group.accent) && !used.has(group.accent)
+        ? group.accent
+        : pickFreePaneGroupAccent(used);
+    used.add(accent);
+    if (accent === group.accent) return group;
+    changed = true;
+    return { ...group, accent };
+  });
+  return { groups: changed ? next : groups.slice(), changed };
 }
 
 export function samePaneLayouts(
@@ -827,6 +898,7 @@ export function sanitizePaneLayout(
     focusedSessionId: nearestSurvivingFocus(originalIds, rawFocus, ids),
     ...(wrapper && typeof value.name === "string" && value.name.trim()
       ? { name: value.name.trim() } : {}),
+    ...(wrapper && isPaneGroupAccent(value.accent) ? { accent: value.accent } : {}),
   };
 }
 
@@ -909,15 +981,33 @@ export function readPersistedTerminalWorkspace(
     }
   };
   const finish = (workspace: PaneLayoutWorkspace): PaneLayoutWorkspace => {
-    if (!legacy) return workspace;
-    // Old plain ids belonged to the device that owned the scoped key.
-    const deviceKey = deviceKeyForContext(activeDeviceContext());
-    const migrated: PaneLayoutWorkspace = {
-      groups: namespaceSessionKeys(workspace.groups, deviceKey),
-      activeLayout: namespaceSessionKeys(workspace.activeLayout, deviceKey),
-    };
-    persistTerminalLayouts(migrated.groups, migrated.activeLayout, storage);
-    return migrated;
+    let next = workspace;
+    if (legacy) {
+      // Old plain ids belonged to the device that owned the scoped key.
+      const deviceKey = deviceKeyForContext(activeDeviceContext());
+      next = {
+        groups: namespaceSessionKeys(workspace.groups, deviceKey),
+        activeLayout: namespaceSessionKeys(workspace.activeLayout, deviceKey),
+      };
+    }
+    const accents = normalizePaneGroupAccents(next.groups);
+    let activeLayout = next.activeLayout;
+    if (paneLayoutHasSplit(activeLayout)) {
+      const owner = activeLayout.focusedSessionId
+        ? paneLayoutGroupContaining(accents.groups, activeLayout.focusedSessionId)
+        : accents.groups[0];
+      if (owner) {
+        activeLayout = focusPane(
+          owner,
+          activeLayout.focusedSessionId ?? owner.focusedSessionId ?? "",
+        );
+      }
+    }
+    const normalized = { groups: accents.groups, activeLayout };
+    if (legacy || accents.changed) {
+      persistTerminalLayouts(normalized.groups, normalized.activeLayout, storage);
+    }
+    return normalized;
   };
 
   try {
