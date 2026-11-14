@@ -13,11 +13,13 @@ import {
 } from "./deviceContext";
 import {
   activeDeviceCapabilities,
+  applyProjectsSnapshot,
   getState,
   isRemoteDevice,
   persistProjectExpansion,
   readPersistedProjectExpansion,
   setActiveDevice,
+  setState,
 } from "./store";
 import {
   persistTerminalLayouts,
@@ -133,6 +135,54 @@ describe("per-device localStorage isolation", () => {
 
     setActiveDevice({ kind: "local" });
     expect(readPersistedProjectExpansion()).toEqual({ prj_local: false });
+  });
+
+  it("a device switch reloads that device's project and worktree disclosure", () => {
+    window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify(["prj_local"]));
+    window.localStorage.setItem(
+      scoped("dev-a", COLLAPSED_KEY),
+      JSON.stringify(["prj_remote"]),
+    );
+    window.localStorage.setItem(
+      scoped("dev-a", "agentport-collapsed-worktree-ids"),
+      JSON.stringify(["wt_remote"]),
+    );
+    setActiveDevice({ kind: "local" });
+    setState({
+      expandedProjects: { prj_local: false, prj_remote: true },
+      revealedProjects: { prj_remote: true },
+      collapsedWorktrees: { wt_local: true },
+      revealedWorktrees: { wt_remote: true },
+    });
+
+    applyProjectsSnapshot(
+      [
+        {
+          id: "prj_remote",
+          name: "Remote",
+          rootPath: "/tmp/remote",
+          gitRootPath: null,
+          pinned: false,
+          sessions: [],
+          worktrees: [
+            {
+              id: "wt_remote",
+              branch: "feature",
+              baseCommit: "abc",
+              baseRef: null,
+              path: "/tmp/remote/wt",
+              health: "clean",
+            },
+          ],
+        },
+      ],
+      REMOTE_A,
+    );
+
+    expect(getState().expandedProjects).toEqual({ prj_remote: false });
+    expect(getState().collapsedWorktrees).toEqual({ wt_remote: true });
+    expect(getState().revealedProjects).toEqual({});
+    expect(getState().revealedWorktrees).toEqual({});
   });
 
   it("terminal layouts persist as one global workspace with device-qualified leaves", () => {

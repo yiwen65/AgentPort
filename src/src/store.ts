@@ -1065,6 +1065,12 @@ export function applyProjectsSnapshot(
     }));
     const aliveSessionIds = sessionIds(nextProjects);
     const activeDeviceKey = deviceKeyForContext(activeDevice);
+    // A switch must restore the target device's own disclosure state. Cached
+    // local/light snapshots bypass applyBootInfo, so reload here — before the
+    // new project tree renders — instead of inheriting the previous device's
+    // expansion or its transient reveals.
+    const switchedDevice =
+      activeDeviceKey !== deviceKeyForContext(s.activeDevice);
     return {
       ...(nextActiveDevice ? { activeDevice: nextActiveDevice } : {}),
       projectsAuthorityRevision: s.projectsAuthorityRevision + 1,
@@ -1081,15 +1087,30 @@ export function applyProjectsSnapshot(
         nextProjects.some((p) => p.id === s.sidebarWorktreeProjectId)
           ? s.sidebarWorktreeProjectId
           : null,
-      collapsedWorktrees: Object.fromEntries(
-        Object.entries(s.collapsedWorktrees).filter(([id]) => worktreeIds.has(id)),
-      ),
-      revealedProjects: Object.fromEntries(
-        Object.entries(s.revealedProjects).filter(([id]) => projectIds.has(id)),
-      ),
-      revealedWorktrees: Object.fromEntries(
-        Object.entries(s.revealedWorktrees).filter(([id]) => worktreeIds.has(id)),
-      ),
+      expandedProjects: switchedDevice
+        ? readPersistedProjectExpansion()
+        : s.expandedProjects,
+      collapsedWorktrees: switchedDevice
+        ? readPersistedWorktreeExpansion()
+        : Object.fromEntries(
+            Object.entries(s.collapsedWorktrees).filter(([id]) =>
+              worktreeIds.has(id),
+            ),
+          ),
+      revealedProjects: switchedDevice
+        ? {}
+        : Object.fromEntries(
+            Object.entries(s.revealedProjects).filter(([id]) =>
+              projectIds.has(id),
+            ),
+          ),
+      revealedWorktrees: switchedDevice
+        ? {}
+        : Object.fromEntries(
+            Object.entries(s.revealedWorktrees).filter(([id]) =>
+              worktreeIds.has(id),
+            ),
+          ),
       ...sessionScopedState(s, nextProjects, aliveSessionIds, {}, activeDevice),
     };
   });
