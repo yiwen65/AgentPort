@@ -921,7 +921,7 @@ async fn list_projects(
     ensure_live_session_monitors(&app, &state);
     let paths = state.paths.clone();
     run_backend_blocking(move || {
-        let db = Db::open(&paths).map_err(|error| error.to_string())?;
+        let db = Db::open_read(&paths).map_err(|error| error.to_string())?;
         Ok(collect_projects(&db, active_session.as_deref()))
     })
     .await
@@ -931,25 +931,18 @@ async fn list_projects(
 async fn list_archived_sessions(
     state: State<'_, AppState>,
 ) -> std::result::Result<Vec<ArchivedSessionView>, String> {
-    let mut archived = Vec::new();
-    for project in map_err!(state.db.list_projects())? {
-        for session in map_err!(state.db.list_sessions(Some(&project.id), true))? {
-            let Some(archived_at) = session.archived_at else {
-                continue;
-            };
-            archived.push(ArchivedSessionView {
-                id: session.id,
-                project_id: project.id.clone(),
-                project_name: project.name.clone(),
-                title: session.title,
-                adapter: session.adapter_type.as_str().into(),
-                created_at: session.created_at.to_rfc3339(),
-                archived_at: archived_at.to_rfc3339(),
-            });
-        }
-    }
-    archived.sort_by(|a, b| b.archived_at.cmp(&a.archived_at));
-    Ok(archived)
+    Ok(map_err!(state.db.list_archived_session_rows())?
+        .into_iter()
+        .map(|row| ArchivedSessionView {
+            id: row.id,
+            project_id: row.project_id,
+            project_name: row.project_name,
+            title: row.title,
+            adapter: row.adapter_type,
+            created_at: row.created_at.to_rfc3339(),
+            archived_at: row.archived_at.to_rfc3339(),
+        })
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -970,36 +963,42 @@ async fn probe_agents(
     preserve_selections: Option<bool>,
 ) -> std::result::Result<Vec<Value>, String> {
     let preserve_selections = preserve_selections.unwrap_or(false);
-    // Startup probes refresh capability metadata, but must not turn a user's
-    // explicit executable choice back into the automatic winner. A missing
-    // selected executable is allowed to fall back to discovery.
-    let confirmed_paths = if preserve_selections {
-        state
-            .db
-            .list_adapters()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|install| {
-                existing_executable(Some(&install.executable_path))
-                    .map(|path| (install.agent_type, path.to_path_buf()))
-            })
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    let mut out = vec![];
-    for o in capability::probe_all_with_confirmed_paths(&confirmed_paths) {
-        let t = o.agent_type;
-        if let Some(i) = &o.install {
-            let _ = state.db.upsert_adapter(i);
+    let paths = state.paths.clone();
+    run_required_backend_blocking(move || {
+        let db = Db::open_read(&paths).map_err(|error| error.to_string())?;
+        // Startup probes refresh capability metadata, but must not turn a user's
+        // explicit executable choice back into the automatic winner. A missing
+        // selected executable is allowed to fall back to discovery.
+        let confirmed_paths = if preserve_selections {
+            db.list_adapters()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|install| {
+                    existing_executable(Some(&install.executable_path))
+                        .map(|path| (install.agent_type, path.to_path_buf()))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let mut out = vec![];
+        for o in capability::probe_all_with_confirmed_paths(&confirmed_paths) {
+            let t = o.agent_type;
+            if let Some(i) = &o.install {
+                let _ = db.upsert_adapter(i);
+            }
+            let setup = agentport_core::notification_setup::for_probe(
+                &paths,
+                t,
+                o.install.as_ref(),
+            );
+            let mut result = probe_outcome_json(t, &o);
+            result["notificationSetup"] = json!(setup);
+            out.push(result);
         }
-        let setup =
-            agentport_core::notification_setup::for_probe(&state.paths, t, o.install.as_ref());
-        let mut result = probe_outcome_json(t, &o);
-        result["notificationSetup"] = json!(setup);
-        out.push(result);
-    }
-    Ok(out)
+        Ok(out)
+    })
+    .await
 }
 
 /// Adapter registry for renderer surfaces. New compiled adapters appear in
@@ -1029,14 +1028,19 @@ async fn probe_agent(
         Ok(t) => t,
         Err(e) => return Ok(json!({"state": "unavailable", "reason": e.to_string()})),
     };
-    let o = capability::probe_agent(t, path.as_deref().map(std::path::Path::new));
-    if let Some(i) = &o.install {
-        let _ = state.db.upsert_adapter(i);
-    }
-    let setup = agentport_core::notification_setup::for_probe(&state.paths, t, o.install.as_ref());
-    let mut result = probe_outcome_json(t, &o);
-    result["notificationSetup"] = json!(setup);
-    Ok(result)
+    let paths = state.paths.clone();
+    run_required_backend_blocking(move || {
+        let db = Db::open_read(&paths).map_err(|error| error.to_string())?;
+        let o = capability::probe_agent(t, path.as_deref().map(std::path::Path::new));
+        if let Some(i) = &o.install {
+            let _ = db.upsert_adapter(i);
+        }
+        let setup = agentport_core::notification_setup::for_probe(&paths, t, o.install.as_ref());
+        let mut result = probe_outcome_json(t, &o);
+        result["notificationSetup"] = json!(setup);
+        Ok(result)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1045,7 +1049,7 @@ async fn notification_setups(
 ) -> std::result::Result<Vec<agentport_core::notification_setup::NotificationSetup>, String> {
     let paths = state.paths.clone();
     run_backend_blocking(move || {
-        let db = Db::open(&paths).map_err(|error| error.to_string())?;
+        let db = Db::open_read(&paths).map_err(|error| error.to_string())?;
         let installs = db.list_adapters().map_err(|error| error.to_string())?;
         agentport_core::notification_setup::list_status_with_installs(&paths, &installs)
             .map_err(|error| error.to_string())
@@ -1590,6 +1594,9 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
             let mut notification_watermark = NotificationWatermark::new(info.current_status.as_ref(),
                 info.protocol == agentport_core::protocol::LEGACY_PROTOCOL_VERSION);
             let mut stream_ended = false;
+            let mut last_cursor_persist = std::time::Instant::now();
+            let mut last_identity_check = std::time::Instant::now();
+            let mut pending_cursor: Option<LogCursor> = None;
             loop {
                 let frame = match client.read_frame() {
                     Ok(Some(frame)) => frame,
@@ -1637,14 +1644,26 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
                         );
                     }
                     HostFrame::Heartbeat { log_cursor, .. } => {
-                        if !host.matches_run(&log_cursor.run_id, log_cursor.run_ordinal)
-                            || !host_identity_is_current(&db, &session_id, &host)
-                        {
+                        if !host.matches_run(&log_cursor.run_id, log_cursor.run_ordinal) {
                             tracing::warn!(session = %session_id, host_pid = host.host_pid, "monitor received heartbeat from a superseded Host");
                             break;
                         }
-                        if let Err(error) = db.set_latest_log_cursor(&session_id, &log_cursor) {
-                            tracing::warn!(session = %session_id, error = %error, "monitor could not persist heartbeat cursor");
+                        pending_cursor = Some(log_cursor);
+                        let now = std::time::Instant::now();
+                        if last_identity_check.elapsed() >= Duration::from_secs(5) {
+                            if !host_identity_is_current(&db, &session_id, &host) {
+                                tracing::warn!(session = %session_id, host_pid = host.host_pid, "monitor heartbeat belongs to a superseded Host");
+                                break;
+                            }
+                            last_identity_check = now;
+                        }
+                        if last_cursor_persist.elapsed() >= Duration::from_secs(5) {
+                            if let Some(cursor) = pending_cursor.take() {
+                                if let Err(error) = db.set_latest_log_cursor(&session_id, &cursor) {
+                                    tracing::warn!(session = %session_id, error = %error, "monitor could not persist heartbeat cursor");
+                                }
+                            }
+                            last_cursor_persist = now;
                         }
                     }
                     HostFrame::Exit {
@@ -1687,6 +1706,11 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
                     _ => {}
                 }
             }
+            if let Some(cursor) = pending_cursor.take() {
+                if let Err(error) = db.set_latest_log_cursor(&session_id, &cursor) {
+                    tracing::warn!(session = %session_id, error = %error, "monitor could not flush heartbeat cursor");
+                }
+            }
             if terminal {
                 break;
             }
@@ -1701,7 +1725,7 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
 }
 
 fn ensure_live_session_monitors(app: &AppHandle, state: &AppState) {
-    if let Ok(sessions) = state.db.list_sessions(None, false) {
+    if let Ok(sessions) = state.db.list_live_sessions() {
         for session in sessions {
             ensure_session_monitor(app, state, &session);
         }
@@ -3107,17 +3131,58 @@ async fn list_worktrees(
     state: State<'_, AppState>,
     project_id: String,
 ) -> std::result::Result<Vec<WorktreeView>, String> {
-    let mgr = WorktreeManager {
-        paths: &state.paths,
-        db: &state.db,
-    };
-    let mut out = vec![];
-    for w in map_err!(state.db.list_worktrees(&project_id))? {
-        let _ = mgr.refresh_health(&w.id);
-        let w = state.db.get_worktree(&w.id).map_err(|e| e.to_string())?;
-        out.push(worktree_view(&w));
-    }
-    Ok(out)
+    let paths = state.paths.clone();
+    run_backend_blocking(move || {
+        let db = Db::open_read(&paths).map_err(|error| error.to_string())?;
+        let worktrees =
+            map_err!(db.list_worktrees(&project_id))?;
+        let mgr = WorktreeManager {
+            paths: &paths,
+            db: &db,
+        };
+        let refreshed: Vec<_> = std::thread::scope(|scope| {
+            let chunk_size = worktrees.len().div_ceil(4).max(1);
+            let workers: Vec<_> = worktrees
+                .chunks(chunk_size)
+                .map(|chunk| {
+                    let mgr = &mgr;
+                    scope.spawn(move || {
+                        chunk
+                            .iter()
+                            .filter_map(|worktree| {
+                                mgr.refresh_health(&worktree.id)
+                                    .ok()
+                                    .map(|health| (worktree.id.clone(), health))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            let mut out = Vec::with_capacity(worktrees.len());
+            for worker in workers {
+                out.extend(worker.join().unwrap_or_default());
+            }
+            out
+        });
+        Ok(worktrees
+            .into_iter()
+            .map(|worktree| {
+                let health = refreshed
+                    .iter()
+                    .find_map(|(id, health)| (id == &worktree.id).then_some(*health))
+                    .unwrap_or(worktree.health);
+                WorktreeView {
+                    id: worktree.id,
+                    branch: worktree.branch,
+                    base_commit: worktree.base_commit,
+                    base_ref: worktree.base_ref,
+                    path: worktree.path,
+                    health: health.as_str().into(),
+                }
+            })
+            .collect())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3407,7 +3472,7 @@ async fn search(
 ) -> std::result::Result<Value, String> {
     let paths = state.paths.clone();
     run_backend_blocking(move || {
-        let db = Db::open(&paths).map_err(|error| error.to_string())?;
+        let db = Db::open_read(&paths).map_err(|error| error.to_string())?;
         search_sync(&db, query, limit)
     })
     .await
@@ -3423,7 +3488,7 @@ async fn get_native_history(
 ) -> std::result::Result<Value, String> {
     let paths = state.paths.clone();
     run_backend_blocking(move || {
-        let db = Db::open(&paths).map_err(|error| error.to_string())?;
+        let db = Db::open_read(&paths).map_err(|error| error.to_string())?;
         let session = map_err!(db.get_session(&session_id))?;
         let page = map_err!(NativeHistory::new(&paths).page_with_options(
             &session,

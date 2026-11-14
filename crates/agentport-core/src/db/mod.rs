@@ -370,7 +370,18 @@ pub mod schema {
         ALTER TABLE projects ADD COLUMN removed INTEGER NOT NULL DEFAULT 0
             CHECK(removed IN (0,1));
         "#,
-
+        // v17 -> v18: list/archive/monitor scans select active or archived rows
+        // directly instead of an OR predicate SQLite cannot index.
+        r#"
+        CREATE INDEX idx_sessions_active_created
+            ON sessions(created_at, id) WHERE archived_at IS NULL;
+        CREATE INDEX idx_sessions_active_project_created
+            ON sessions(project_id, created_at, id) WHERE archived_at IS NULL;
+        CREATE INDEX idx_sessions_archived_at
+            ON sessions(archived_at, id) WHERE archived_at IS NOT NULL;
+        CREATE INDEX idx_sessions_lifecycle
+            ON sessions(lifecycle) WHERE archived_at IS NULL;
+        "#,
     ];
 }
 
@@ -1017,6 +1028,16 @@ pub struct SessionProjection {
     pub unread_attention: bool,
 }
 
+pub struct ArchivedSessionRow {
+    pub id: String,
+    pub project_id: String,
+    pub project_name: String,
+    pub title: String,
+    pub adapter_type: String,
+    pub created_at: DateTime<Utc>,
+    pub archived_at: DateTime<Utc>,
+}
+
 /// The persisted authority lease for the currently claimed Session run.
 ///
 /// `run_id`/`run_ordinal` are absent only for sessions created by versions
@@ -1050,6 +1071,43 @@ impl Db {
         crate::paths::AppPaths::restrict_file(&paths.db_path().with_extension("db-wal"))?;
         crate::paths::AppPaths::restrict_file(&paths.db_path().with_extension("db-shm"))?;
         Self::init(conn)
+    }
+
+    /// Open an existing, fully-migrated database without layout repair,
+    /// permission fixes, journal-mode writes, or the `app_meta` upsert.
+    /// `None` means the caller must take the cold `open` path once (missing or
+    /// older schema); a newer schema still fails closed.
+    pub fn open_existing(paths: &AppPaths) -> Result<Option<Self>> {
+        let db_path = paths.db_path();
+        if !db_path.is_file() {
+            return Ok(None);
+        }
+        let conn = Connection::open(&db_path)?;
+        conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
+        conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;")?;
+        let current: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        let latest = schema::MIGRATIONS.len() as i64;
+        if current > latest {
+            return Err(CoreError::Conflict(format!(
+                "database schema v{current} is newer than this build supports (v{latest})"
+            )));
+        }
+        if current < latest {
+            return Ok(None);
+        }
+        Ok(Some(Db {
+            conn: Mutex::new(conn),
+            snapshot_source: Some(db_path),
+        }))
+    }
+
+    /// Read-path open: reuse a current database cheaply, falling back to the
+    /// cold migrating path only for a missing or pre-migration file.
+    pub fn open_read(paths: &AppPaths) -> Result<Self> {
+        match Self::open_existing(paths)? {
+            Some(db) => Ok(db),
+            None => Self::open(paths),
+        }
     }
 
     /// Open an in-memory database (tests).
@@ -2320,22 +2378,27 @@ impl Db {
     ) -> Result<Vec<SessionProjection>> {
         let conn = self.conn.lock().unwrap();
         let tx = conn.unchecked_transaction()?;
-        let archived = if include_archived { 1_i64 } else { 0_i64 };
 
         let sessions = {
-            let mut st = tx.prepare(
-                "SELECT * FROM sessions
-                 WHERE ?1=1 OR archived_at IS NULL
-                 ORDER BY created_at, id",
-            )?;
+            let sql = if include_archived {
+                "SELECT * FROM sessions ORDER BY created_at, id"
+            } else {
+                "SELECT * FROM sessions WHERE archived_at IS NULL ORDER BY created_at, id"
+            };
+            let mut st = tx.prepare(sql)?;
             let rows = st
-                .query_map(params![archived], row_session)?
+                .query_map([], row_session)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             rows
         };
 
         let latest_by_session: HashMap<String, StatusEvent> = {
-            let mut st = tx.prepare(
+            let filter = if include_archived {
+                ""
+            } else {
+                "WHERE s.archived_at IS NULL"
+            };
+            let sql = format!(
                 "SELECT e.session_id,e.run_id,e.run_ordinal,e.sequence,e.state,e.source,
                         e.confidence,e.evidence,e.log_generation,e.log_offset,e.occurred_at
                  FROM sessions s
@@ -2346,10 +2409,11 @@ impl Db {
                     ORDER BY candidate.run_ordinal DESC, candidate.sequence DESC
                     LIMIT 1
                  )
-                 WHERE ?1=1 OR s.archived_at IS NULL",
-            )?;
+                 {filter}"
+            );
+            let mut st = tx.prepare(&sql)?;
             let rows = st
-                .query_map(params![archived], row_status_event)?
+                .query_map([], row_status_event)?
                 .collect::<rusqlite::Result<Vec<_>>>()?
                 .into_iter()
                 .map(|event| (event.session_id.clone(), event))
@@ -2358,7 +2422,12 @@ impl Db {
         };
 
         let unread_by_session: HashMap<String, bool> = {
-            let mut st = tx.prepare(
+            let filter = if include_archived {
+                ""
+            } else {
+                "WHERE s.archived_at IS NULL"
+            };
+            let sql = format!(
                 "SELECT s.id,
                         CASE WHEN r.session_id IS NULL THEN 0 ELSE EXISTS(
                           SELECT 1 FROM status_events e
@@ -2384,10 +2453,11 @@ impl Db {
                         ) END
                  FROM sessions s
                  LEFT JOIN recovery_summary r ON r.session_id=s.id
-                 WHERE ?1=1 OR s.archived_at IS NULL",
-            )?;
+                 {filter}"
+            );
+            let mut st = tx.prepare(&sql)?;
             let rows = st
-                .query_map(params![archived], |row| {
+                .query_map([], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
                 })?
                 .collect::<rusqlite::Result<HashMap<_, _>>>()?;
@@ -2404,6 +2474,122 @@ impl Db {
             .collect();
         tx.commit()?;
         Ok(projections)
+    }
+
+    /// Only Sessions whose Host may still be alive. Used by monitor discovery
+    /// instead of scanning every historical Session on each project refresh.
+    pub fn list_live_sessions(&self) -> Result<Vec<Session>> {
+        let conn = self.conn.lock().unwrap();
+        let mut st = conn.prepare(
+            "SELECT * FROM sessions
+             WHERE archived_at IS NULL AND lifecycle IN ('creating','running')
+             ORDER BY created_at, id",
+        )?;
+        let rows = st
+            .query_map([], row_session)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// One Session plus the same sidebar status/unread projection used by the
+    /// list path, without loading every other Session.
+    pub fn get_session_projection(&self, session_id: &str) -> Result<Option<SessionProjection>> {
+        let conn = self.conn.lock().unwrap();
+        let session = conn
+            .query_row(
+                "SELECT * FROM sessions WHERE id=?1",
+                params![session_id],
+                row_session,
+            )
+            .optional()?;
+        let Some(session) = session else {
+            return Ok(None);
+        };
+        let latest_status = conn
+            .query_row(
+                "SELECT e.session_id,e.run_id,e.run_ordinal,e.sequence,e.state,e.source,
+                        e.confidence,e.evidence,e.log_generation,e.log_offset,e.occurred_at
+                 FROM status_events e
+                 WHERE e.id=(
+                    SELECT candidate.id FROM status_events candidate
+                    WHERE candidate.session_id=?1
+                      AND NOT (candidate.source='hook' AND candidate.evidence IS 'hook:Notification')
+                    ORDER BY candidate.run_ordinal DESC, candidate.sequence DESC
+                    LIMIT 1
+                 )",
+                params![session_id],
+                row_status_event,
+            )
+            .optional()?;
+        let unread_attention = conn.query_row(
+            "SELECT CASE WHEN r.session_id IS NULL THEN 0 ELSE EXISTS(
+                SELECT 1 FROM status_events e
+                WHERE e.session_id=?1 AND (
+                  e.run_ordinal>r.last_seen_run_ordinal OR
+                  (e.run_ordinal=r.last_seen_run_ordinal
+                   AND e.run_id=r.last_seen_run_id
+                   AND e.sequence>r.last_seen_sequence)
+                ) AND (
+                  (e.state='needs_input' AND (
+                    (e.source='hook' AND e.evidence IN ('hook:PermissionRequest','hook:AskUserQuestion','hook:AgentPortNotification:needs_input')) OR
+                    (e.source='pty' AND e.evidence LIKE 'pty:pattern:%')
+                  )) OR
+                  (e.state='idle' AND (
+                    (e.source='hook' AND e.evidence IN ('hook:Stop','hook:TurnEnd','hook:AgentPortNotification:completed','hook:AgentPortNotification:failed')) OR
+                    (e.source='adapter' AND e.evidence IN ('adapter:kimi:TurnEnd','adapter:pi:TurnEnd','adapter:omp:TurnEnd','adapter:easy_pi:TurnEnd'))
+                  )) OR
+                  (e.state='exited' AND e.source='process' AND (
+                    (e.evidence GLOB 'process:exit:[0-9]*' AND substr(e.evidence,14) NOT GLOB '*[^0-9]*' AND CAST(substr(e.evidence,14) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(e.evidence,14) AS INTEGER) NOT IN (130,143)) OR
+                    (e.evidence GLOB 'process:signal:[0-9]*' AND substr(e.evidence,16) NOT GLOB '*[^0-9]*' AND CAST(substr(e.evidence,16) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(e.evidence,16) AS INTEGER) NOT IN (2,15))
+                  ))
+                )
+             ) END
+             FROM sessions s
+             LEFT JOIN recovery_summary r ON r.session_id=s.id
+             WHERE s.id=?1",
+            params![session_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        Ok(Some(SessionProjection {
+            session,
+            latest_status,
+            unread_attention,
+        }))
+    }
+
+    /// One query for the archive page instead of one full-table scan per
+    /// Project. Ordering matches the previous in-memory sort.
+    pub fn list_archived_session_rows(&self) -> Result<Vec<ArchivedSessionRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut st = conn.prepare(
+            "SELECT s.id,s.project_id,p.name,s.title,s.adapter_type,s.created_at,s.archived_at
+             FROM sessions s
+             JOIN projects p ON p.id=s.project_id
+             WHERE s.archived_at IS NOT NULL
+             ORDER BY s.archived_at DESC, s.id",
+        )?;
+        let rows = st
+            .query_map([], |row| {
+                Ok(ArchivedSessionRow {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    project_name: row.get(2)?,
+                    title: row.get(3)?,
+                    adapter_type: row.get(4)?,
+                    created_at: DateTime::parse_from_rfc3339(
+                        &row.get::<_, String>(5)?,
+                    )
+                    .map(|value| value.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                    archived_at: DateTime::parse_from_rfc3339(
+                        &row.get::<_, String>(6)?,
+                    )
+                    .map(|value| value.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     pub fn update_session_lifecycle(&self, id: &str, l: Lifecycle) -> Result<()> {

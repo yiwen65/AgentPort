@@ -3682,9 +3682,7 @@ fn parse_worktree_branch_selection(
 
 fn session_summary(paths: &AppPaths, db: &Db, session_id: &str) -> Result<SessionSummary> {
     let projection = db
-        .list_session_projections(true)?
-        .into_iter()
-        .find(|projection| projection.session.id == session_id)
+        .get_session_projection(session_id)?
         .ok_or_else(|| agentport_core::CoreError::NotFound(format!("session {session_id}")))?;
     // Mutation replies want facts, not a list-poll cache entry.
     Ok(live_session_summary(
