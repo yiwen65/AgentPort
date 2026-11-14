@@ -51,6 +51,16 @@ pub fn write_frame<W: Write>(
     payload: &[u8],
     maximum: u32,
 ) -> Result<(), ProtocolError> {
+    write_frame_unflushed(writer, payload, maximum)?;
+    writer.flush()?;
+    Ok(())
+}
+
+pub fn write_frame_unflushed<W: Write>(
+    writer: &mut W,
+    payload: &[u8],
+    maximum: u32,
+) -> Result<(), ProtocolError> {
     let length = u32::try_from(payload.len()).map_err(|_| ProtocolError::LengthOverflow)?;
     if length > maximum {
         return Err(ProtocolError::FrameTooLarge {
@@ -60,7 +70,6 @@ pub fn write_frame<W: Write>(
     }
     writer.write_all(&length.to_be_bytes())?;
     writer.write_all(payload)?;
-    writer.flush()?;
     Ok(())
 }
 

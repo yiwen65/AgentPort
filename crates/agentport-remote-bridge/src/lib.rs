@@ -6,6 +6,7 @@ mod image;
 
 use agentport_remote_protocol::{
     borrow_request, classify_method, negotiate_version, read_frame, write_frame,
+    write_frame_unflushed,
     AgentPreferencesReplaceParams, AgentProbeAllParams, AgentProbeParams, AttentionPollParams,
     Capability, CommitAiConfigSaveParams, DocumentWriteParams, Event, Hello, HelloResult, Limits,
     Precondition, PresetListParams, ProjectAddParams, ProjectDirectoryListParams,
@@ -250,10 +251,13 @@ fn writer_loop<W: Write>(
     let mut subscriptions: Vec<(String, SubscriptionQueue)> = Vec::new();
     let mut next_subscription = 0_usize;
     let mut controls_closed = false;
+    let mut wrote = false;
     loop {
         for _ in 0..WRITER_CONTROL_QUANTUM {
             match receiver.try_recv() {
-                Ok(message) => handle_writer_message(output, &mut subscriptions, message)?,
+                Ok(message) => {
+                    handle_writer_message(output, &mut subscriptions, message, &mut wrote)?
+                }
                 Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
             }
         }
@@ -270,17 +274,19 @@ fn writer_loop<W: Write>(
                 };
                 match received {
                     Ok((Some(envelope), None)) => {
-                        write_frame(output, &envelope, MAX_FRAME_BYTES)?;
+                        write_frame_unflushed(output, &envelope, MAX_FRAME_BYTES)?;
+                        wrote = true;
                         next_subscription = index.saturating_add(1);
                         made_progress = true;
                         break;
                     }
                     Ok((None, Some(frame))) => {
-                        agentport_remote_protocol::binary_output::write_frame(
+                        agentport_remote_protocol::binary_output::write_frame_unflushed(
                             output,
                             &frame,
                             MAX_FRAME_BYTES,
                         )?;
+                        wrote = true;
                         next_subscription = index.saturating_add(1);
                         made_progress = true;
                         break;
@@ -296,6 +302,10 @@ fn writer_loop<W: Write>(
                 }
             }
         }
+        if wrote {
+            output.flush().map_err(ProtocolError::Io)?;
+            wrote = false;
+        }
         if made_progress {
             continue;
         }
@@ -303,7 +313,9 @@ fn writer_loop<W: Write>(
             break;
         }
         match receiver.recv_timeout(WRITER_FALLBACK_TICK) {
-            Ok(message) => handle_writer_message(output, &mut subscriptions, message)?,
+            Ok(message) => {
+                handle_writer_message(output, &mut subscriptions, message, &mut wrote)?
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => controls_closed = true,
         }
@@ -315,9 +327,13 @@ fn handle_writer_message<W: Write>(
     output: &mut W,
     subscriptions: &mut Vec<(String, SubscriptionQueue)>,
     message: WriterMessage,
+    wrote: &mut bool,
 ) -> Result<(), BridgeError> {
     match message {
-        WriterMessage::Envelope(envelope) => write_frame(output, &envelope, MAX_FRAME_BYTES)?,
+        WriterMessage::Envelope(envelope) => {
+            write_frame_unflushed(output, &envelope, MAX_FRAME_BYTES)?;
+            *wrote = true;
+        }
         WriterMessage::Register {
             attachment_id,
             events,

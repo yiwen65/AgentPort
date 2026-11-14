@@ -237,6 +237,18 @@ pub fn write_frame<W: Write, T: Serialize>(
     value: &T,
     maximum: u32,
 ) -> Result<(), ProtocolError> {
+    write_frame_unflushed(writer, value, maximum)?;
+    writer.flush()?;
+    Ok(())
+}
+
+/// Same as `write_frame` without flushing, for a writer that batches frames
+/// and flushes once before blocking.
+pub fn write_frame_unflushed<W: Write, T: Serialize>(
+    writer: &mut W,
+    value: &T,
+    maximum: u32,
+) -> Result<(), ProtocolError> {
     let payload = Zeroizing::new(serde_json::to_vec(value)?);
     let length = u32::try_from(payload.len()).map_err(|_| ProtocolError::LengthOverflow)?;
     if length > maximum {
@@ -247,7 +259,6 @@ pub fn write_frame<W: Write, T: Serialize>(
     }
     writer.write_all(&length.to_be_bytes())?;
     writer.write_all(payload.as_slice())?;
-    writer.flush()?;
     Ok(())
 }
 
