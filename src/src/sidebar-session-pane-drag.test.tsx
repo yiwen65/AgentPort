@@ -166,6 +166,12 @@ describe("sidebar Session pane drag", () => {
     expect(view.container.querySelectorAll(".tree-row.session")).toHaveLength(2);
     fireEvent.click(view.getByRole("button", { name: "项目" }));
     expect(view.container.querySelectorAll(".tree-row.session")).toHaveLength(5);
+    // Project-tree rows expose the owning agent in the row's bottom-right corner.
+    expect(
+      view.container.querySelectorAll(
+        ".tree-row.session .session-corner .session-agent-badge",
+      ),
+    ).toHaveLength(5);
   });
 
   it("uses horizontal wheel gestures without hijacking vertical scrolling and shows an empty state", () => {

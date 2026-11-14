@@ -1067,6 +1067,9 @@ body.is-project-dragging .tree-row.project {
 }
 
 .tree-row.session {
+  min-height: 41px;
+  padding-top: 3px;
+  padding-bottom: 3px;
   padding-left: 10px;
   color: var(--sidebar-text);
   font-size: 13px;
@@ -1139,20 +1142,21 @@ body.is-project-dragging .tree-row.project {
   white-space: nowrap;
 }
 
-/* Right rail: age/time on the first line, owning-agent mark in the corner. */
+/* Right rail: age/time on the first line, owning-agent mark in the corner.
+   The corner swaps to pin/archive on hover so the row height never shifts. */
 .session-tail {
-  display: contents;
-}
-
-.tree-row.session.active-agent-session .session-tail {
   display: flex;
   flex: none;
   flex-direction: column;
   align-items: flex-end;
   align-self: stretch;
   justify-content: space-between;
-  gap: 4px;
+  gap: 2px;
   margin-left: auto;
+}
+
+.tree-row.session.active-agent-session .session-tail {
+  gap: 4px;
   padding: 1px 0;
 }
 
@@ -1161,16 +1165,18 @@ body.is-project-dragging .tree-row.project {
   align-items: center;
   gap: 5px;
   min-height: 13px;
-  margin-left: auto;
 }
 
-.tree-row.session.active-agent-session .session-tail-meta {
-  margin-left: 0;
-}
-
-.session-tail-meta .session-row-actions,
 .session-tail-meta .session-age {
   margin-left: 0;
+}
+
+.session-corner {
+  display: inline-flex;
+  min-width: 20px;
+  min-height: 20px;
+  align-items: center;
+  justify-content: flex-end;
 }
 
 .session-agent-badge {
@@ -1261,11 +1267,9 @@ body.is-project-dragging .tree-row.project {
 }
 
 .session-row-actions {
-  /* Occupies the session-age slot on hover instead of overlaying it:
-     hidden by default, revealed in place (margin-left:auto) on hover. */
+  /* Occupies the agent-mark corner on hover instead of the age slot. */
   display: none;
   flex: none;
-  margin-left: auto;
   gap: 1px;
   border-radius: 6px;
 }
@@ -1275,9 +1279,9 @@ body.is-project-dragging .tree-row.project {
   display: inline-flex;
 }
 
-/* The age yields its slot to the hover actions; restored on mouse-leave. */
-.tree-row.session:hover .session-age,
-.tree-row.session:focus-within .session-age {
+/* The agent mark yields its corner to the hover actions; restored on leave. */
+.tree-row.session:hover .session-corner .session-agent-badge,
+.tree-row.session:focus-within .session-corner .session-agent-badge {
   display: none;
 }
 

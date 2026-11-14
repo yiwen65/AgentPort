@@ -317,12 +317,11 @@ function QuickAgentIcon({ agent }: { agent: string }) {
   );
 }
 
-/** Owning agent mark in the active-session list, bottom-right of the row. */
+/** Owning agent mark in the bottom-right corner of a Session row. */
 function SessionAgentBadge({ agent }: { agent: string }) {
   const theme = useStore((state) => state.themeEffective);
-  const label = agentDisplay(agent);
   return (
-    <span className="session-agent-badge" data-tip={label} aria-hidden="true">
+    <span className="session-agent-badge" aria-hidden="true">
       {agent === "shell" ? (
         <ShellIcon className="session-agent-glyph" size={13} />
       ) : hasAgentIcon(agent) ? (
@@ -1032,6 +1031,23 @@ function SessionRow({
       <span className="session-tail">
         <span className="session-tail-meta">
           <span
+            className="session-age"
+            aria-label={t("session:ui.sidebar.createdAt", {
+              date: ses.createdAt,
+            })}
+          >
+            {relativeAge(ses.createdAt)}
+          </span>
+          {ses.unread ? (
+            <span
+              className="unread-dot"
+              aria-label={t("session:ui.sidebar.unread")}
+              data-tip={t("session:ui.sidebar.unread")}
+            />
+          ) : null}
+        </span>
+        <span className="session-corner">
+          <span
             className="session-row-actions"
             aria-label={t("session:ui.sidebar.actionsLabel")}
           >
@@ -1067,23 +1083,8 @@ function SessionRow({
               <IconArchive />
             </span>
           </span>
-          <span
-            className="session-age"
-            aria-label={t("session:ui.sidebar.createdAt", {
-              date: ses.createdAt,
-            })}
-          >
-            {relativeAge(ses.createdAt)}
-          </span>
-          {ses.unread ? (
-            <span
-              className="unread-dot"
-              aria-label={t("session:ui.sidebar.unread")}
-              data-tip={t("session:ui.sidebar.unread")}
-            />
-          ) : null}
+          <SessionAgentBadge agent={ses.adapter} />
         </span>
-        {deviceName ? <SessionAgentBadge agent={ses.adapter} /> : null}
       </span>
     </div>
   );
