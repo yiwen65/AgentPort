@@ -3360,10 +3360,10 @@ body.is-resizing-pane {
 }
 
 /* Secondary sidebar state for Sessions visible in a non-focused pane. Each
-   remembered split owns a tint (--pane-group-color) so rows from different
-   groups stay distinguishable without competing with the selection chip. */
+   remembered split owns a tint (--pane-group-color) exposed only as the left
+   edge bar, so rows from different groups stay distinguishable without
+   tinting the whole row or competing with the selection chip. */
 .tree-row.session.in-pane-layout {
-  background: color-mix(in srgb, var(--pane-group-color, var(--accent)) 6%, transparent);
   box-shadow: inset 2px 0 0
     color-mix(in srgb, var(--pane-group-color, var(--accent)) 58%, transparent);
 }
