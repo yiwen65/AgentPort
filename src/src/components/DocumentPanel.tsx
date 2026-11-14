@@ -8,6 +8,7 @@
 // wrapped prose read-only.
 
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -501,6 +502,8 @@ function DocTab({
 
 /** A group's tab strip: also the drop target for reordering and for moves
  * arriving from the other group. */
+const MemoDocTab = memo(DocTab);
+
 function DocTabStrip({
   group,
   groupIndex,
@@ -540,7 +543,7 @@ function DocTabStrip({
       }}
     >
       {group.tabs.map((tab) => (
-        <DocTab
+        <MemoDocTab
           key={tab.id}
           tab={tab}
           groupIndex={groupIndex}
@@ -910,6 +913,8 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
 
 /** One editor group: tab strip + stacked tab bodies, plus the split drop
  * hint while a tab is dragged over the panel's right edge. */
+const MemoDocTabEditor = memo(DocTabEditor);
+
 function DocGroupView({
   group,
   groupIndex,
@@ -950,7 +955,7 @@ function DocGroupView({
       />
       <div className="doc-group-body">
         {group.tabs.map((tab) => (
-          <DocTabEditor key={tab.id} tab={tab} visible={tab.id === group.activeTabId} />
+          <MemoDocTabEditor key={tab.id} tab={tab} visible={tab.id === group.activeTabId} />
         ))}
       </div>
       {single && dragTabId ? (
