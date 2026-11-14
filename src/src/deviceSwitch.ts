@@ -1,17 +1,18 @@
-// Device switching: tear down the current device's UI/connection state, then
-// connect and boot the target device. The app is never left device-less — any
-// failure rolls back to the previous device, with the local device as the
-// last resort. Switching runs strictly serialized.
-// New desktop code (desktop multi-device switching).
+// Device switching: change the workspace's active device without destroying
+// other devices' connections or panes. Explicit connections are owned by
+// deviceConnections; this module only boots the target workspace and transfers
+// focus. Switching runs strictly serialized.
+// New desktop code (desktop multi-device switching, cross-device workspace).
 
 import { api, errorText } from "./api";
 import { applyBootInfo } from "./bootApply";
-// Git Center caches (and the commit hover preview cache) hold ids, locators
-// and repo keys that only exist on the device that produced them.
 import { clearCommitPreviewCache } from "./components/GitCommitHoverCard";
+import { connectDevice } from "./deviceConnections";
+import { seedActiveDeviceSnapshot } from "./deviceSessions";
 import {
   ACTIVE_DEVICE_STORAGE_KEY,
   activeDeviceContext,
+  deviceKey,
   LOCAL_DEVICE_CONTEXT,
   LOCAL_DEVICE_STORAGE_VALUE,
   type DeviceContext,
@@ -19,14 +20,35 @@ import {
 import { resetGitCenterForDeviceChange } from "./gitCenter";
 import { i18n } from "./i18n";
 import { composeRemoteBoot } from "./remoteBoot";
-import { dropRemoteBackend, remoteBackendFor } from "./remote/runtime";
+import { remoteBackendFor } from "./remote/runtime";
 import { startRemoteSync, stopRemoteSync } from "./remote/remoteSync";
-import { getState, setActiveDevice, setState, toast } from "./store";
-import { releaseTerminal } from "./terminals";
+import {
+  findSession,
+  flattenSessions,
+  getState,
+  invalidateProjectsSnapshotRequests,
+  setActiveDevice,
+  setState,
+  toast,
+} from "./store";
+import { selectSession } from "./actions";
+import { registerFocusSessionKeyHandler } from "./sessionFocusRegistry";
+import { parseSessionKey } from "./sessionIdentity";
 import type { BootInfo } from "./types";
+
+const ACTIVE_SESSION_STORAGE_KEY = "agentport-active-session-id";
 
 let switchChain: Promise<void> = Promise.resolve();
 let switchGeneration = 0;
+
+export interface SwitchDeviceOptions {
+  /** Plain Session id on the target device to focus after boot. */
+  focusSessionId?: string | null;
+  /** Focus the target device's remembered (or first) Session after boot. */
+  focusRecent?: boolean;
+  /** Reconnect/reboot even when the target device is already active. */
+  force?: boolean;
+}
 
 function sameDevice(a: DeviceContext, b: DeviceContext): boolean {
   if (a.kind !== b.kind) return false;
@@ -39,9 +61,62 @@ function sameDevice(a: DeviceContext, b: DeviceContext): boolean {
  * resolves — failures are surfaced via AppState.deviceError plus a toast and
  * leave the app on the previous device.
  */
-export function switchDevice(target: DeviceContext): Promise<void> {
-  const run = switchChain.then(() => doSwitchDevice(target));
+export function switchDevice(
+  target: DeviceContext,
+  options: SwitchDeviceOptions = {},
+): Promise<void> {
+  const run = switchChain.then(() => doSwitchDevice(target, options).then(() => undefined));
   switchChain = run.catch(() => undefined);
+  return run;
+}
+
+/** Focus one stable Session key, switching devices first when necessary. */
+export function focusSessionKey(
+  key: string,
+  options: { revealInSidebar?: boolean } = {},
+): Promise<boolean> {
+  const { deviceKey: targetKey, sessionId } = parseSessionKey(key);
+  const active = getState().activeDevice;
+  const activeKey = active.kind === "local" ? "local" : active.deviceId;
+  if (targetKey === activeKey) {
+    if (options.revealInSidebar === undefined) selectSession(sessionId);
+    else selectSession(sessionId, options);
+    return Promise.resolve(true);
+  }
+  const target: DeviceContext =
+    targetKey === "local"
+      ? LOCAL_DEVICE_CONTEXT
+      : {
+          kind: "remote",
+          deviceId: targetKey,
+          deviceName: targetKey,
+          capabilities: [],
+        };
+  const run = switchChain.then(() =>
+    doSwitchDevice(target, { focusSessionId: sessionId }),
+  );
+  switchChain = run.then(() => undefined).catch(() => undefined);
+  return run;
+}
+
+/** User-initiated selector switch: focus the target's remembered Session. */
+export function switchDeviceAndFocusRecent(target: DeviceContext): Promise<void> {
+  return switchDevice(target, { focusRecent: true });
+}
+
+/**
+ * Reconnect the currently active remote device after an unexpected transport
+ * loss. Explicitly user-triggered (the device strip's Connect action), never
+ * automatic. Reboots the workspace and restarts the remote sync engine.
+ */
+export function reconnectActiveDevice(): Promise<boolean> {
+  const active = getState().activeDevice;
+  if (active.kind !== "remote") return Promise.resolve(false);
+  const focused = getState().activeSessionId;
+  const run = switchChain.then(() =>
+    doSwitchDevice(active, { force: true, focusSessionId: focused }),
+  );
+  switchChain = run.then(() => undefined).catch(() => undefined);
   return run;
 }
 
@@ -65,18 +140,24 @@ export function startupRestoreTarget(): DeviceContext | null {
   return null;
 }
 
-async function doSwitchDevice(target: DeviceContext): Promise<void> {
+async function doSwitchDevice(
+  target: DeviceContext,
+  options: SwitchDeviceOptions,
+): Promise<boolean> {
   // At cold startup the context already holds the persisted device for scoped
   // storage, but no device has been booted yet. It is not a live connection to
   // skip or tear down, and a failed restore must fall back to the local device.
   const initialized = getState().ready;
   const previous = initialized ? activeDeviceContext() : LOCAL_DEVICE_CONTEXT;
-  if (initialized && sameDevice(previous, target)) return;
+  if (initialized && sameDevice(previous, target) && !options.force) {
+    applyRequestedFocus(options);
+    return true;
+  }
   const generation = ++switchGeneration;
   const stale = () => generation !== switchGeneration;
   setState({ deviceSwitching: true });
   try {
-    if (initialized) await switchTeardown(previous);
+    if (initialized) switchTeardown();
     const boot = await connectAndBoot(target);
     await applyBootInfo(boot, {
       isCancelled: stale,
@@ -87,45 +168,72 @@ async function doSwitchDevice(target: DeviceContext): Promise<void> {
       if (target.kind === "remote") startRemoteSync(target.deviceId);
       resetGitCenterForDeviceChange();
       clearCommitPreviewCache();
+      applyRequestedFocus(options);
       setState({ deviceSwitching: false, deviceError: null });
     }
+    return !stale();
   } catch (error) {
-    await rollbackTo(previous, stale);
+    const rolledBack = await rollbackTo(previous, stale);
     if (!stale()) {
       const detail = errorText(error);
       setState({ deviceSwitching: false, deviceError: detail });
       toast(
-        i18n.t("device:switch.failed", {
-          detail,
-          defaultValue: "设备切换失败：{{detail}}",
-        }),
+        i18n.t("shell:ui.activeDevices.switchFailed", { detail }),
         "error",
       );
     }
+    return rolledBack && !stale();
   }
 }
 
 /**
- * Detach every attached terminal (detach calls still route to the OLD device
- * because the context flips only in connectAndBoot), then drop the old remote
- * connection. The remote Sessions keep running on their device.
+ * Detach the OLD device's workspace polling only. Its transport and terminal
+ * attachments stay alive: explicit connections are released exclusively by
+ * the user (or app exit), never by switching the visible device.
  */
-async function switchTeardown(previous: DeviceContext): Promise<void> {
-  // Stop remote polling/notification sync before any detach or disconnect.
+function switchTeardown(): void {
+  // Stop remote polling/notification sync before the workspace changes.
   stopRemoteSync();
-  // Unmount terminal panes first so components never touch a disposed handle.
+  // A tick that was already in flight must not replace the target device's
+  // projects after its boot snapshot is applied.
+  invalidateProjectsSnapshotRequests();
+  // Keep the old device's panes resolvable as background panes. This must run
+  // before the active context flips to the target device.
+  seedActiveDeviceSnapshot();
+  // Clear the plain focused id without touching remembered panes. Otherwise a
+  // target device that reuses the same Session id could inherit the old
+  // device's focus before applyRequestedFocus runs.
   setState({ activeSessionId: null });
-  const attached = [...getState().attachedIds];
-  await Promise.all(
-    attached.map((sessionId) =>
-      releaseTerminal(sessionId).catch(() => undefined),
-    ),
-  );
-  if (previous.kind === "remote") {
-    const backend = remoteBackendFor(previous.deviceId);
-    await backend.client.disconnect().catch(() => undefined);
-    // A fresh backend on return guarantees no stale attachment ids survive.
-    dropRemoteBackend(previous.deviceId);
+}
+
+function applyRequestedFocus(options: SwitchDeviceOptions) {
+  if (options.focusSessionId) {
+    if (findSession(getState().projects, options.focusSessionId)) {
+      selectSession(options.focusSessionId, { revealInSidebar: false });
+    }
+    return;
+  }
+  if (!options.focusRecent) return;
+  const state = getState();
+  const remembered = readRememberedSessionId(state.activeDevice);
+  const target =
+    (remembered ? findSession(state.projects, remembered) : null) ??
+    flattenSessions(state.projects)[0] ??
+    null;
+  if (target) {
+    selectSession(target.id, { revealInSidebar: false });
+  } else {
+    setState({ activeSessionId: null });
+  }
+}
+
+function readRememberedSessionId(target: DeviceContext): string | null {
+  try {
+    return window.localStorage.getItem(
+      deviceKey(target, ACTIVE_SESSION_STORAGE_KEY),
+    );
+  } catch {
+    return null;
   }
 }
 
@@ -134,8 +242,8 @@ async function connectAndBoot(target: DeviceContext): Promise<BootInfo> {
     setActiveDevice(LOCAL_DEVICE_CONTEXT);
     return api.boot();
   }
+  const hello = await connectDevice(target.deviceId);
   const backend = remoteBackendFor(target.deviceId);
-  const hello = await backend.client.connect();
   setActiveDevice({
     kind: "remote",
     deviceId: target.deviceId,
@@ -148,8 +256,9 @@ async function connectAndBoot(target: DeviceContext): Promise<BootInfo> {
 async function rollbackTo(
   previous: DeviceContext,
   stale: () => boolean,
-): Promise<void> {
+): Promise<boolean> {
   try {
+    setState({ activeSessionId: null });
     const boot = await connectAndBoot(previous);
     await applyBootInfo(boot, {
       isCancelled: stale,
@@ -158,16 +267,23 @@ async function rollbackTo(
     if (!stale() && previous.kind === "remote") {
       startRemoteSync(previous.deviceId);
     }
+    return true;
   } catch {
     // The previous device is gone too; the local device always exists.
     setActiveDevice(LOCAL_DEVICE_CONTEXT);
     try {
       await applyBootInfo(await api.boot(), { isCancelled: stale });
+      return true;
     } catch (fatal) {
       if (!stale()) setState({ ready: true, bootError: errorText(fatal) });
+      return false;
     }
   }
 }
+
+registerFocusSessionKeyHandler((key) => {
+  void focusSessionKey(key);
+});
 
 /** Test hook: reset the serialization chain and generation counter. */
 export function resetDeviceSwitchForTests(): void {

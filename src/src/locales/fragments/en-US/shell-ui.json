@@ -117,6 +117,26 @@
       },
       "remoteOsIntegration": "Only available on this computer (a remote device is active)"
     },
+    "activeDevices": {
+      "label": "Connected devices",
+      "connected": "Connected",
+      "connecting": "Connecting…",
+      "disconnected": "Disconnected",
+      "unavailable": "Unavailable",
+      "connect": "Connect",
+      "disconnect": "Disconnect",
+      "active": "Active",
+      "loading": "Loading Sessions…",
+      "sessionMissing": "This Session is no longer available",
+      "closePane": "Close pane",
+      "stale": "Last snapshot is unconfirmed",
+      "disconnectTitle": "Disconnect {{device}}?",
+      "disconnectBody": "This closes {{count}} terminal pane(s) on {{device}}.",
+      "disconnectFailed": "Could not disconnect {{device}}: {{detail}}",
+      "connectFailed": "Could not connect {{device}}: {{detail}}",
+      "switchFailed": "Device switch failed: {{detail}}",
+      "switchBackFailed": "could not return to This computer"
+    },
     "terminal": {
       "scrollbarLabel": "Session history scroll position",
       "backToLatest": "↓ Back to latest",

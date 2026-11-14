@@ -407,6 +407,34 @@ export class RemoteBackend {
     return this.request<RemoteBootSnapshot>("boot");
   }
 
+  /**
+   * Project/session snapshot without per-project worktree fan-out. Background
+   * Active-view polling uses this every few seconds and merges the worktree
+   * metadata fetched by the next full `listProjects` pass.
+   */
+  async listProjectSessions(activeSession: string | null): Promise<ProjectView[]> {
+    const [projects, sessions] = await Promise.all([
+      this.request<RemoteProjectSummary[]>("project.list"),
+      this.request<RemoteSessionSummary[]>("session.list"),
+    ]);
+    const summariesByProject = new Map<string, RemoteSessionSummary[]>();
+    for (const session of sessions) {
+      if (session.archivedAt) continue;
+      const list = summariesByProject.get(session.projectId) ?? [];
+      list.push(session);
+      summariesByProject.set(session.projectId, list);
+    }
+    return projects.map((project) =>
+      assembleProjectView(
+        project,
+        (summariesByProject.get(project.id) ?? []).map((summary) =>
+          remoteSessionToSessionView(summary, activeSession),
+        ),
+        [],
+      ),
+    );
+  }
+
   async listProjects(activeSession: string | null): Promise<ProjectView[]> {
     const [projects, sessions] = await Promise.all([
       this.request<RemoteProjectSummary[]>("project.list"),

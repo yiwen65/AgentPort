@@ -22,7 +22,7 @@ describe("terminal attach/replay veil", () => {
     expect(terminalArea).toContain(
       "shouldShowTerminalAttachOverlay(r, warmPreview)",
     );
-    expect(terminalArea).toContain("!isTerminalPreviewRendered(ses.id)");
+    expect(terminalArea).toContain("!isTerminalPreviewRendered(sessionKey)");
     expect(terminalArea).toContain(
       '<div className="term-overlay term-overlay-solid" aria-hidden />',
     );

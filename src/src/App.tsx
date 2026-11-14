@@ -24,7 +24,6 @@ import {
   refreshProjectsSoon,
   restartSessionFlow,
   toggleSidebarCollapsed,
-  selectSession,
   switchSessionByIndex,
   toggleSessionPaneMaximized,
 } from "./actions";
@@ -55,8 +54,17 @@ import {
 } from "./terminals";
 import { applyBootInfo } from "./bootApply";
 import { cacheLocalBootBase } from "./remoteBoot";
-import { startupRestoreTarget, switchDevice } from "./deviceSwitch";
-import { registerDeviceSwitchHandler } from "./devicesStore";
+import {
+  focusSessionKey,
+  startupRestoreTarget,
+  switchDevice,
+  switchDeviceAndFocusRecent,
+} from "./deviceSwitch";
+import { activeSessionKey } from "./sessionIdentity";
+import { findSessionByKey } from "./deviceSessions";
+import { refreshDevices, registerDeviceSwitchHandler } from "./devicesStore";
+import { restoreExplicitConnections } from "./deviceConnections";
+import { refreshConnectedDeviceSnapshots } from "./deviceSessions";
 import { handleFontZoomKey, initFontZoom } from "./fontZoom";
 import { piTerminalShortcutSequence } from "./piTerminalShortcuts";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -121,11 +129,32 @@ function useWindowDragClass() {
   }, []);
 }
 
+/**
+ * Restore the persisted explicit-connection set after the workspace is usable.
+ * Deleted profiles are filtered out; failures stay per-device and panes keep a
+ * reconnect entry. Never blocks first paint.
+ */
+async function restoreConnectedDevicesAfterBoot(
+  isCancelled: () => boolean,
+): Promise<void> {
+  try {
+    const devices = await refreshDevices();
+    if (isCancelled()) return;
+    await restoreExplicitConnections(new Set(devices.map((device) => device.id)));
+    if (isCancelled()) return;
+    void refreshConnectedDeviceSnapshots();
+  } catch {
+    // The registry may be unavailable in headless/test environments; boot is
+    // still valid and the persisted set remains for the next launch.
+  }
+}
+
 function useBoot() {
   useEffect(() => {
     // Device UI affordances (picker, pair success) delegate the real switch
-    // to this flow; register before any component can request one.
-    registerDeviceSwitchHandler(switchDevice);
+    // to this flow; register before any component can request one. Selector
+    // switches transfer focus to the target device's remembered Session.
+    registerDeviceSwitchHandler(switchDeviceAndFocusRecent);
     let cancelled = false;
     const unlistens: Array<() => void> = [];
     let booted = false;
@@ -191,8 +220,11 @@ function useBoot() {
           onNotificationActivated((sessionId) => {
             notificationActivationPending = true;
             applyWhenBooted(() => {
-              selectSession(sessionId);
-              notificationActivationPending = false;
+              // Notifications target the local device; focusing one must leave
+              // a remote workspace and select the local Session.
+              void focusSessionKey(sessionId).finally(() => {
+                notificationActivationPending = false;
+              });
             });
           }),
           onNativeCleanupWarning(({ count }) => {
@@ -246,6 +278,7 @@ function useBoot() {
             suppressFallbackSelection: () => notificationActivationPending,
           });
         }
+        void restoreConnectedDevicesAfterBoot(() => cancelled);
       } catch (e) {
         if (!cancelled) {
           for (const unlisten of unlistens.splice(0)) unlisten();
@@ -301,8 +334,9 @@ function useHotkeys() {
         activeSession?.adapter === "pi" && terminalTarget
           ? piTerminalShortcutSequence(e)
           : null;
-      if (piShortcut && s.activeSessionId) {
-        const activeTerminal = getHandle(s.activeSessionId);
+      const focusedKey = activeSessionKey(s);
+      if (piShortcut && focusedKey) {
+        const activeTerminal = getHandle(focusedKey);
         if (activeTerminal) {
           e.preventDefault();
           e.stopPropagation();
@@ -323,12 +357,12 @@ function useHotkeys() {
       if (paneShortcut) {
         e.preventDefault();
         e.stopPropagation();
-        if (s.activeSessionId) {
+        if (focusedKey) {
           if (paneShortcut === "toggle-maximize") {
-            toggleSessionPaneMaximized(s.activeSessionId);
+            toggleSessionPaneMaximized(focusedKey);
           } else {
             openSplitAgentPicker(
-              s.activeSessionId,
+              focusedKey,
               paneShortcut === "split-right" ? "right" : "down",
             );
           }
@@ -375,7 +409,7 @@ function useHotkeys() {
       if (bottomCombo) {
         e.preventDefault();
         e.stopPropagation();
-        if (s.activeSessionId) scrollToBottom(s.activeSessionId);
+        if (focusedKey) scrollToBottom(focusedKey);
         return;
       }
 
@@ -444,7 +478,13 @@ function DialogRouter() {
     case "addProject":
       return <AddProjectDialog />;
     case "export":
-      return <ExportDialog sessionId={d.sessionId} exportKind={d.exportKind} />;
+      return (
+        <ExportDialog
+          sessionId={d.sessionId}
+          exportKind={d.exportKind}
+          deviceId={d.deviceId}
+        />
+      );
     case "palette":
       return <CommandPalette />;
     default:
@@ -551,6 +591,7 @@ export default function App() {
   const showOnboarding = useStore((state) => state.showOnboarding);
   const announcement = useStore((state) => state.announcement);
   const activeSessionId = useStore((state) => state.activeSessionId);
+  const activeDevice = useStore((state) => state.activeDevice);
   const gitCenterOpen = useStore((state) => state.gitCenter.open);
   useBoot();
   useHotkeys();
@@ -563,7 +604,7 @@ export default function App() {
       if (event.payload.type !== "drop") return;
       const sessionId = terminalSessionAtPosition(event.payload.position);
       if (!sessionId) return;
-      const session = findSession(getState().projects, sessionId);
+      const session = findSessionByKey(sessionId)?.session;
       const paths = event.payload.paths.filter((path) => path.startsWith("/"));
       if (!session || paths.length === 0) return;
       const text = paths.map((path) => formatTerminalReference(path, false, session.adapter)).join("");
@@ -579,12 +620,16 @@ export default function App() {
     noteActiveSessionForGitCenter(activeSessionId);
     // Native window focus is checked again by the delivery worker. This only
     // identifies the selected Session; it never marks its history as read.
+    // The local notification target is only meaningful on THIS computer;
+    // remote focus is passed through the attention-notify request instead.
     if ("__TAURI_INTERNALS__" in window) {
-      void api.setNotificationSession(activeSessionId).catch((error) => {
+      const localTarget =
+        activeDevice.kind === "local" ? activeSessionId : null;
+      void api.setNotificationSession(localTarget).catch((error) => {
         console.warn("Could not update notification target", error);
       });
     }
-  }, [activeSessionId]);
+  }, [activeDevice, activeSessionId]);
 
   if (!ready) {
     return (

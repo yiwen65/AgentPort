@@ -212,7 +212,11 @@ describe("sidebar Session pane drag", () => {
     expect(getState().prompt?.initial).toBe("");
     await act(async () => { getState().prompt?.resolve("  工作组  "); });
     expect(view.getByRole("button", { name: "工作组 2" })).toBeTruthy();
-    expect(JSON.parse(localStorage.getItem("agentport-terminal-layout")!).groups[0].name).toBe("工作组");
+    expect(
+      JSON.parse(
+        localStorage.getItem("agentport:global-terminal-layout:v1")!,
+      ).groups[0].name,
+    ).toBe("工作组");
   });
 
   it("marks remembered pane rows without rendering a trailing badge", () => {

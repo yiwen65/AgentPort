@@ -1,21 +1,34 @@
-import { scopedStorageKey } from "./deviceContext";
+import { activeDeviceContext, scopedStorageKey } from "./deviceContext";
+import {
+  deviceKeyForContext,
+  namespaceSessionKeys,
+} from "./sessionIdentity";
 
 export const MIN_PANE_WIDTH = 320;
 export const MIN_PANE_HEIGHT = 180;
 export const DEFAULT_SPLIT_RATIO = 0.5;
 export const MAX_PANE_LAYOUT_DEPTH = 32;
 export const TERMINAL_LAYOUT_VERSION = 2;
-export const TERMINAL_LAYOUT_STORAGE_KEY = "agentport-terminal-layout";
+/** Global workspace layout: leaves may belong to different devices. */
+export const TERMINAL_LAYOUT_STORAGE_KEY = "agentport:global-terminal-layout:v1";
+/** Pre-multi-device key, still written under each device's namespace. */
+const LEGACY_TERMINAL_LAYOUT_STORAGE_KEY = "agentport-terminal-layout";
 
-/** Active-device-scoped storage key (local device keeps the legacy key). */
 function terminalLayoutStorageKey(): string {
-  return scopedStorageKey(TERMINAL_LAYOUT_STORAGE_KEY);
+  return TERMINAL_LAYOUT_STORAGE_KEY;
 }
 
-/** True when a terminal layout is persisted for the ACTIVE device. */
+function legacyTerminalLayoutStorageKey(): string {
+  return scopedStorageKey(LEGACY_TERMINAL_LAYOUT_STORAGE_KEY);
+}
+
+/** True when a global (or migratable legacy) terminal layout exists. */
 export function hasPersistedTerminalLayout(): boolean {
   try {
-    return window.localStorage.getItem(terminalLayoutStorageKey()) !== null;
+    return (
+      window.localStorage.getItem(terminalLayoutStorageKey()) !== null ||
+      window.localStorage.getItem(legacyTerminalLayoutStorageKey()) !== null
+    );
   } catch {
     return false;
   }
@@ -876,15 +889,39 @@ export function readPersistedTerminalWorkspace(
 ): PaneLayoutWorkspace {
   const empty = { groups: [], activeLayout: emptyPaneLayout() };
   if (!storage) return empty;
+
+  // Prefer the global workspace; a legacy per-device layout is migrated once.
+  let storageKey = terminalLayoutStorageKey();
+  let legacy = false;
+  try {
+    if (!storage.getItem(storageKey)) {
+      storageKey = legacyTerminalLayoutStorageKey();
+      legacy = true;
+    }
+  } catch {
+    return empty;
+  }
   const discardInvalidValue = () => {
     try {
-      storage.removeItem(terminalLayoutStorageKey());
+      storage.removeItem(storageKey);
     } catch {
       // Storage can become unavailable between getItem and cleanup.
     }
   };
+  const finish = (workspace: PaneLayoutWorkspace): PaneLayoutWorkspace => {
+    if (!legacy) return workspace;
+    // Old plain ids belonged to the device that owned the scoped key.
+    const deviceKey = deviceKeyForContext(activeDeviceContext());
+    const migrated: PaneLayoutWorkspace = {
+      groups: namespaceSessionKeys(workspace.groups, deviceKey),
+      activeLayout: namespaceSessionKeys(workspace.activeLayout, deviceKey),
+    };
+    persistTerminalLayouts(migrated.groups, migrated.activeLayout, storage);
+    return migrated;
+  };
+
   try {
-    const encoded = storage.getItem(terminalLayoutStorageKey());
+    const encoded = storage.getItem(storageKey);
     if (!encoded) return empty;
     const parsed: unknown = JSON.parse(encoded);
     if (!isRecord(parsed)) {
@@ -896,10 +933,10 @@ export function readPersistedTerminalWorkspace(
       const activeLayout = sanitizePaneLayout(parsed as unknown as PersistedTerminalLayoutV1);
       const explicitEmpty = parsed.root === null && parsed.focusedSessionId === null;
       if (!explicitEmpty && !activeLayout.root) discardInvalidValue();
-      return {
+      return finish({
         groups: paneLayoutHasSplit(activeLayout) ? [activeLayout] : [],
         activeLayout,
-      };
+      });
     }
 
     if (
@@ -939,7 +976,7 @@ export function readPersistedTerminalWorkspace(
       discardInvalidValue();
       return empty;
     }
-    return { groups, activeLayout };
+    return finish({ groups, activeLayout });
   } catch {
     discardInvalidValue();
     return empty;

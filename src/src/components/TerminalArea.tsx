@@ -20,7 +20,6 @@ import {
   readClipboardText,
 } from "../api";
 import {
-  findSession,
   getRuntime,
   getState,
   hasOpenDocuments,
@@ -30,6 +29,24 @@ import {
   useStore,
   type MenuItem,
 } from "../store";
+import {
+  findSessionByKey,
+  findSessionByKeyForState,
+  refreshDeviceSnapshot,
+  useDeviceSessions,
+} from "../deviceSessions";
+import {
+  connectDevice,
+  isDeviceConnected,
+  useDeviceConnections,
+} from "../deviceConnections";
+import { useDevicesStore } from "../devicesStore";
+import {
+  activeSessionKey,
+  deviceKeyForContext,
+  parseSessionKey,
+} from "../sessionIdentity";
+import { focusSessionKey, reconnectActiveDevice } from "../deviceSwitch";
 import { resolveCopySelection } from "../copySelection";
 import {
   attachHandle,
@@ -62,7 +79,6 @@ import {
   renameSessionFlow,
   resumeSessionFlow,
   restartSessionFlow,
-  selectSession,
   setPaneSplitRatio,
   splitSessionIntoPane,
   stopSessionFlow,
@@ -100,6 +116,14 @@ import {
 // ---------------------------------------------------------------------------
 
 const TERMINAL_SCROLL_THUMB_PX = 72;
+
+/** Active-device flows keep the historical one-argument call shape. */
+function flowDeviceIdFor(sessionKey: string): string | undefined {
+  const { deviceKey } = parseSessionKey(sessionKey);
+  return deviceKey === deviceKeyForContext(getState().activeDevice)
+    ? undefined
+    : deviceKey;
+}
 
 interface TerminalScrollPosition {
   value: number;
@@ -321,32 +345,43 @@ export function TerminalScrollbar({
 }
 
 function TerminalPane({
-  sessionId,
+  sessionKey,
   focused,
   visible,
 }: {
-  sessionId: string;
+  sessionKey: string;
   focused: boolean;
   visible: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const ses = useStore((state) => findSession(state.projects, sessionId));
-  const runtime = useStore((state) => state.runtime[sessionId]);
-  const scrolledUp = getRuntime(sessionId).scrolledUp;
+  const ses = useStore((state) => findSessionByKeyForState(state, sessionKey)?.session);
+  const runtime = useStore((state) => state.runtime[sessionKey]);
+  const scrolledUp = getRuntime(sessionKey).scrolledUp;
   const [dropActive, setDropActive] = useState(false);
+  const sessionId = sessionKey;
+  const paneDeviceId = parseSessionKey(sessionKey).deviceKey;
+  const deviceConnected = useDeviceConnections(
+    (state) =>
+      paneDeviceId === "local" ||
+      state.connections[paneDeviceId]?.phase === "connected",
+  );
 
   useLayoutEffect(() => {
-    if (hostRef.current) mountTerminal(sessionId, hostRef.current);
-  }, [sessionId]);
+    if (hostRef.current) mountTerminal(sessionKey, hostRef.current);
+  }, [sessionKey]);
 
   useLayoutEffect(() => {
-    setTerminalActive(sessionId, visible);
+    setTerminalActive(sessionKey, visible);
     if (!visible) return;
     // Every visible split pane owns a live attachment. Focus is independent:
     // only one xterm textarea receives keyboard input, while all panes stream.
-    const sesNow = findSession(getState().projects, sessionId);
-    if (sesNow && (sesNow.lifecycle === "running" || sesNow.lifecycle === "creating")) {
-      void attachHandle(sessionId);
+    const sesNow = findSessionByKey(sessionKey)?.session;
+    if (
+      deviceConnected &&
+      sesNow &&
+      (sesNow.lifecycle === "running" || sesNow.lifecycle === "creating")
+    ) {
+      void attachHandle(sessionKey);
     }
     let secondRaf: number | null = null;
     const firstRaf = requestAnimationFrame(() => {
@@ -359,7 +394,16 @@ function TerminalPane({
       cancelAnimationFrame(firstRaf);
       if (secondRaf !== null) cancelAnimationFrame(secondRaf);
     };
-  }, [focused, sessionId, visible, ses?.lifecycle, ses?.hostAlive, ses?.status?.runId, ses?.status?.runOrdinal]);
+  }, [
+    deviceConnected,
+    focused,
+    sessionId,
+    visible,
+    ses?.lifecycle,
+    ses?.hostAlive,
+    ses?.status?.runId,
+    ses?.status?.runOrdinal,
+  ]);
 
   const ended =
     ses?.lifecycle === "exited" ||
@@ -469,10 +513,10 @@ function SessionAgentMark({ adapter }: { adapter: string }) {
   );
 }
 
-function SessionOverlay({ ses }: { ses: SessionView }) {
+function SessionOverlay({ ses, sessionKey }: { ses: SessionView; sessionKey: string }) {
   const { t } = useTranslation("session");
-  const rt = useStore((state) => state.runtime[ses.id]);
-  const r = getRuntime(ses.id);
+  const rt = useStore((state) => state.runtime[sessionKey]);
+  const r = getRuntime(sessionKey);
   void rt; // subscribe
 
   if (ses.lifecycle === "interrupted") {
@@ -498,7 +542,11 @@ function SessionOverlay({ ses }: { ses: SessionView }) {
             <button
               className="btn primary"
               data-tip={precisionLabel(p)}
-              onClick={() => void restartSessionFlow(ses.id)}
+              onClick={() => {
+                const deviceId = flowDeviceIdFor(sessionKey);
+                if (deviceId) void restartSessionFlow(ses.id, deviceId);
+                else void restartSessionFlow(ses.id);
+              }}
             >
               {t("ui.actions.restart")}
             </button>
@@ -536,7 +584,14 @@ function SessionOverlay({ ses }: { ses: SessionView }) {
             </p>
           ) : null}
           <div className="overlay-actions">
-            <button className="btn primary" onClick={() => void restartSessionFlow(ses.id)}>
+            <button
+              className="btn primary"
+              onClick={() => {
+                const deviceId = flowDeviceIdFor(sessionKey);
+                if (deviceId) void restartSessionFlow(ses.id, deviceId);
+                else void restartSessionFlow(ses.id);
+              }}
+            >
               {t("ui.actions.restart")}
             </button>
           </div>
@@ -549,20 +604,20 @@ function SessionOverlay({ ses }: { ses: SessionView }) {
   // intermediate replay state. A normal switch restores its persisted
   // checkpoint behind a silent solid veil, then reveals it on xterm's first
   // actual render while suffix replay/attach continue in the background.
-  const warmPreview = hasWarmTerminalPreview(ses.id);
+  const warmPreview = hasWarmTerminalPreview(sessionKey);
   const attachActive = r.attaching || r.attached;
   if (
     attachActive &&
     warmPreview &&
     !r.startupPending &&
-    !isTerminalPreviewRendered(ses.id)
+    !isTerminalPreviewRendered(sessionKey)
   ) {
     return <div className="term-overlay term-overlay-solid" aria-hidden />;
   }
   if (shouldShowTerminalAttachOverlay(r, warmPreview)) {
     return <SkeletonOverlay />;
   }
-  if (attachActive && !isTerminalPreviewRendered(ses.id)) {
+  if (attachActive && !isTerminalPreviewRendered(sessionKey)) {
     return <SkeletonOverlay />;
   }
   return null;
@@ -572,10 +627,10 @@ function SessionOverlay({ ses }: { ses: SessionView }) {
 // banners
 // ---------------------------------------------------------------------------
 
-function ReconnectBanner({ ses }: { ses: SessionView }) {
+function ReconnectBanner({ ses, sessionKey }: { ses: SessionView; sessionKey: string }) {
   const { t } = useTranslation("session");
-  const r = getRuntime(ses.id);
-  useStore((state) => state.runtime[ses.id]);
+  const r = getRuntime(sessionKey);
+  useStore((state) => state.runtime[sessionKey]);
   const show =
     r.detached &&
     !r.exit &&
@@ -586,7 +641,7 @@ function ReconnectBanner({ ses }: { ses: SessionView }) {
       <span>{t("ui.disconnected.checking")}</span>
       {r.error ? <span className="dim">{t("ui.disconnected.errorDetail", { detail: r.error })}</span> : null}
       <span className="spacer" />
-      <button className="btn small" onClick={() => void attachHandle(ses.id)}>
+      <button className="btn small" onClick={() => void attachHandle(sessionKey)}>
         {t("ui.actions.reconnect")}
       </button>
       <button className="btn small ghost" onClick={() => openDialog({ kind: "diagnostics" })}>
@@ -596,25 +651,32 @@ function ReconnectBanner({ ses }: { ses: SessionView }) {
   );
 }
 
-function SuspendedBanner({ ses }: { ses: SessionView }) {
+function SuspendedBanner({ ses, sessionKey }: { ses: SessionView; sessionKey: string }) {
   const { t } = useTranslation("session");
-  const suspended = useStore((state) => state.runtime[ses.id]?.suspended === true);
+  const suspended = useStore((state) => state.runtime[sessionKey]?.suspended === true);
   if (!suspended) return null;
   return (
     <div className="banner warn" role="status">
       <span>{t("ui.suspended.message")}</span>
       <span className="spacer" />
-      <button className="btn small primary" onClick={() => void resumeSessionFlow(ses.id)}>
+      <button
+        className="btn small primary"
+        onClick={() => {
+          const deviceId = flowDeviceIdFor(sessionKey);
+          if (deviceId) void resumeSessionFlow(ses.id, deviceId);
+          else void resumeSessionFlow(ses.id);
+        }}
+      >
         {t("ui.suspended.resume")}
       </button>
     </div>
   );
 }
 
-function PhoneGeometryBanner({ ses }: { ses: SessionView }) {
+function PhoneGeometryBanner({ ses, sessionKey }: { ses: SessionView; sessionKey: string }) {
   const { t } = useTranslation("session");
   const geometry = useStore(
-    (state) => state.runtime[ses.id]?.terminalGeometry ?? null,
+    (state) => state.runtime[sessionKey]?.terminalGeometry ?? null,
   );
   const [restoring, setRestoring] = useState(false);
   const dismissedRevision = readDismissedGeometryRevision(ses.id, geometry);
@@ -634,7 +696,7 @@ function PhoneGeometryBanner({ ses }: { ses: SessionView }) {
         disabled={restoring}
         onClick={() => {
           setRestoring(true);
-          void restoreDesktopTerminalSize(ses.id, geometry.revision)
+          void restoreDesktopTerminalSize(sessionKey, geometry.revision)
             .catch((error) => {
               toast(
                 t("ui.phoneGeometry.restoreFailed", { detail: errorText(error) }),
@@ -654,10 +716,10 @@ function PhoneGeometryBanner({ ses }: { ses: SessionView }) {
 // session status affordance
 // ---------------------------------------------------------------------------
 
-function TermStatusLine({ ses }: { ses: SessionView }) {
+function TermStatusLine({ sessionKey }: { sessionKey: string }) {
   const { t } = useTranslation("shell");
-  useStore((state) => state.runtime[ses.id]);
-  const r = getRuntime(ses.id);
+  useStore((state) => state.runtime[sessionKey]);
+  const r = getRuntime(sessionKey);
   if (!r.scrolledUp && !r.terminalTitle) return null;
   return (
     <div className="term-statusline">
@@ -665,7 +727,7 @@ function TermStatusLine({ ses }: { ses: SessionView }) {
       {r.scrolledUp ? (
         <button
           className="back-to-latest"
-          onClick={() => scrollToBottom(ses.id)}
+          onClick={() => scrollToBottom(sessionKey)}
           data-tip={t("ui.terminal.backToLatestTip")}
         >
           {t("ui.terminal.backToLatest")}
@@ -689,14 +751,26 @@ function PaneAgentIcon({ ses }: { ses: SessionView }) {
 
 function PaneHeader({
   ses,
+  sessionKey,
   focused,
   maximized,
 }: {
   ses: SessionView;
+  sessionKey: string;
   focused: boolean;
   maximized: boolean;
 }) {
   const { t } = useTranslation("shell");
+  const { deviceKey } = parseSessionKey(sessionKey);
+  const activeDevice = useStore((state) => state.activeDevice);
+  const profiles = useDevicesStore((state) => state.devices);
+  const deviceName =
+    deviceKey === "local"
+      ? null
+      : activeDevice.kind === "remote" && activeDevice.deviceId === deviceKey
+        ? activeDevice.deviceName
+        : (profiles?.find((device) => device.id === deviceKey)?.name ??
+          deviceKey);
   return (
     <header
       className="pane-header"
@@ -704,6 +778,11 @@ function PaneHeader({
     >
       <PaneAgentIcon ses={ses} />
       <StatusDot session={ses} />
+      {deviceName ? (
+        <span className="pane-device-badge" title={deviceName}>
+          {deviceName}
+        </span>
+      ) : null}
       <span className="pane-title" title={`${agentDisplay(ses.adapter)} · ${ses.title}`}>
         {ses.title}
       </span>
@@ -718,7 +797,7 @@ function PaneHeader({
         data-tip={maximized ? t("pane.restore") : t("pane.maximize")}
         onClick={(event) => {
           event.stopPropagation();
-          toggleSessionPaneMaximized(ses.id);
+          toggleSessionPaneMaximized(sessionKey);
         }}
       >
         {maximized ? "↙" : "↗"}
@@ -730,7 +809,7 @@ function PaneHeader({
         data-tip={t("pane.remove")}
         onClick={(event) => {
           event.stopPropagation();
-          removeSessionPane(ses.id);
+          removeSessionPane(sessionKey);
         }}
       >
         ×
@@ -741,11 +820,13 @@ function PaneHeader({
 
 function paneContextItems(
   ses: SessionView,
+  sessionKey: string,
   t: ReturnType<typeof useTranslation<["session", "shell", "common"]>>["t"],
 ): MenuItem[] {
   const items: MenuItem[] = [];
+  const flowDeviceId = flowDeviceIdFor(sessionKey);
   if (ses.transport === "pty") {
-    const handle = getHandle(ses.id);
+    const handle = getHandle(sessionKey);
     const selection = resolveCopySelection(handle);
     const mouseOwned =
       !!handle &&
@@ -776,7 +857,7 @@ function paneContextItems(
         action: () => {
           void readClipboardText()
             .then((text) => {
-              const current = getHandle(ses.id);
+              const current = getHandle(sessionKey);
               if (text) current?.term.paste(text);
               current?.term.focus();
             })
@@ -789,32 +870,47 @@ function paneContextItems(
   items.push(
     {
       label: t("shell:pane.splitRight"),
-      disabled: !canSplitSessionPane(ses.id, "right"),
-      action: () => openSplitAgentPicker(ses.id, "right"),
+      disabled: !canSplitSessionPane(sessionKey, "right"),
+      action: () => openSplitAgentPicker(sessionKey, "right"),
     },
     {
       label: t("shell:pane.splitDown"),
-      disabled: !canSplitSessionPane(ses.id, "down"),
-      action: () => openSplitAgentPicker(ses.id, "down"),
+      disabled: !canSplitSessionPane(sessionKey, "down"),
+      action: () => openSplitAgentPicker(sessionKey, "down"),
     },
     { label: "", separator: true },
     {
       label: t("common:actions.rename"),
-      action: () => void renameSessionFlow(ses.id),
+      action: () =>
+        flowDeviceId
+          ? void renameSessionFlow(ses.id, flowDeviceId)
+          : void renameSessionFlow(ses.id),
     },
     {
       label: t("session:ui.menu.restartAndResume"),
-      action: () => void restartSessionFlow(ses.id),
+      action: () =>
+        flowDeviceId
+          ? void restartSessionFlow(ses.id, flowDeviceId)
+          : void restartSessionFlow(ses.id),
     },
     {
       label: t("session:ui.menu.stop"),
       danger: true,
-      action: () => void stopSessionFlow(ses.id),
+      action: () =>
+        flowDeviceId
+          ? void stopSessionFlow(ses.id, flowDeviceId)
+          : void stopSessionFlow(ses.id),
     },
     {
       label: t("session:ui.menu.remove"),
       danger: true,
-      action: () => void removeSessionFlow(ses.id, { confirm: true }),
+      action: () =>
+        flowDeviceId
+          ? void removeSessionFlow(ses.id, {
+              confirm: true,
+              deviceId: flowDeviceId,
+            })
+          : void removeSessionFlow(ses.id, { confirm: true }),
     },
   );
   return items;
@@ -864,12 +960,14 @@ function PaneDropOverlay({ ses }: { ses: SessionView }) {
 
 function SessionPaneLeaf({
   ses: initialSession,
+  sessionKey,
   focused,
   visible,
   multiPane,
   maximized,
 }: {
   ses: SessionView;
+  sessionKey: string;
   focused: boolean;
   visible: boolean;
   multiPane: boolean;
@@ -878,7 +976,9 @@ function SessionPaneLeaf({
   const { t } = useTranslation(["session", "shell", "common"]);
   // A non-focused leaf can change without changing the root's active Session
   // selector. Its overlay/header must observe the same snapshot as TerminalPane.
-  const ses = useStore((state) => findSession(state.projects, initialSession.id)) ?? initialSession;
+  const ses =
+    useStore((state) => findSessionByKeyForState(state, sessionKey)?.session) ??
+    initialSession;
   const [sessionDragActive, setSessionDragActive] = useState(false);
   const leafRef = useRef<HTMLDivElement | null>(null);
   const ended = ["stopped", "exited", "interrupted"].includes(ses.lifecycle);
@@ -917,22 +1017,22 @@ function SessionPaneLeaf({
         (focused ? " focused" : "") +
         (visible ? "" : " max-hidden")
       }
-      data-pane-session-id={ses.id}
+      data-pane-session-id={sessionKey}
       aria-label={t("shell:pane.headerLabel", { title: ses.title })}
       onPointerDownCapture={() => {
-        if (!focused) selectSession(ses.id);
+        if (!focused) void focusSessionKey(sessionKey);
       }}
       onFocusCapture={() => {
-        if (!focused) selectSession(ses.id);
+        if (!focused) void focusSessionKey(sessionKey);
       }}
       onContextMenuCapture={(event) => {
         event.preventDefault();
         event.stopPropagation();
-        if (!focused) selectSession(ses.id);
+        if (!focused) void focusSessionKey(sessionKey);
         openContextMenu(
           event.clientX,
           event.clientY,
-          paneContextItems(ses, t),
+          paneContextItems(ses, sessionKey, t),
         );
       }}
       onDragEnter={(event) => {
@@ -972,15 +1072,20 @@ function SessionPaneLeaf({
           event.currentTarget.getBoundingClientRect(),
           event.clientX,
         );
-        if (canSplitSessionPane(ses.id, direction)) {
-          splitSessionIntoPane(ses.id, payload.sessionId, direction);
+        if (canSplitSessionPane(sessionKey, direction)) {
+          splitSessionIntoPane(sessionKey, payload.sessionId, direction);
         } else {
           toast(t("shell:pane.tooSmall"), "info");
         }
       }}
     >
-      {multiPane ? (
-        <PaneHeader ses={ses} focused={focused} maximized={maximized} />
+      {multiPane || parseSessionKey(sessionKey).deviceKey !== "local" ? (
+        <PaneHeader
+          ses={ses}
+          sessionKey={sessionKey}
+          focused={focused}
+          maximized={maximized}
+        />
       ) : null}
       <div className="pane-session-surface">
         {ses.transport === "json_rpc" ? (
@@ -988,15 +1093,15 @@ function SessionPaneLeaf({
         ) : (
           <>
             <div className="workspace-banners">
-              <PhoneGeometryBanner ses={ses} />
-              <ReconnectBanner ses={ses} />
-              <SuspendedBanner ses={ses} />
+              <PhoneGeometryBanner ses={ses} sessionKey={sessionKey} />
+              <ReconnectBanner ses={ses} sessionKey={sessionKey} />
+              <SuspendedBanner ses={ses} sessionKey={sessionKey} />
             </div>
             <div className="pane-terminal-renderer">
-              <TerminalPane sessionId={ses.id} focused={focused} visible={visible} />
-              <SessionOverlay ses={ses} />
+              <TerminalPane sessionKey={sessionKey} focused={focused} visible={visible} />
+              <SessionOverlay ses={ses} sessionKey={sessionKey} />
             </div>
-            <TermStatusLine ses={ses} />
+            <TermStatusLine sessionKey={sessionKey} />
           </>
         )}
       </div>
@@ -1125,6 +1230,109 @@ function paneNodeKey(node: PaneLayoutNode): string {
   return node.type === "leaf" ? `leaf:${node.sessionId}` : `split:${node.id}`;
 }
 
+/**
+ * A restored cross-device pane can outlive its Session snapshot (startup or a
+ * disconnected device). Render an explicit reconnect surface instead of a
+ * silently missing grid cell, and never mount a terminal for an unknown key.
+ */
+function MissingSessionPane({
+  sessionKey,
+  visible,
+}: {
+  sessionKey: string;
+  visible: boolean;
+}) {
+  const { t } = useTranslation(["shell", "common"]);
+  const { deviceKey } = parseSessionKey(sessionKey);
+  const activeDevice = useStore((state) => state.activeDevice);
+  const activeDeviceKey = deviceKeyForContext(activeDevice);
+  const connections = useDeviceConnections((state) => state.connections);
+  const snapshots = useDeviceSessions((state) => state.snapshots);
+  const profiles = useDevicesStore((state) => state.devices);
+  const connection = connections[deviceKey];
+  const snapshot = snapshots[deviceKey];
+  const deviceName =
+    activeDevice.kind === "remote" && activeDevice.deviceId === deviceKey
+      ? activeDevice.deviceName
+      : (profiles?.find((device) => device.id === deviceKey)?.name ??
+        snapshot?.deviceName ??
+        deviceKey);
+  const connected = isDeviceConnected(deviceKey);
+  const missing =
+    connected && snapshot !== null && !snapshot.loading && !snapshot.error;
+  const [reconnecting, setReconnecting] = useState(false);
+
+  useEffect(() => {
+    if (connected && !snapshot && deviceKey !== "local") {
+      void refreshDeviceSnapshot(deviceKey);
+    }
+  }, [connected, deviceKey, snapshot]);
+
+  const reconnect = async () => {
+    setReconnecting(true);
+    try {
+      if (deviceKey === activeDeviceKey) {
+        await reconnectActiveDevice();
+      } else {
+        await connectDevice(deviceKey);
+        await refreshDeviceSnapshot(deviceKey);
+      }
+    } catch {
+      // The device strip and connection state carry the error detail.
+    } finally {
+      setReconnecting(false);
+    }
+  };
+
+  return (
+    <div
+      className={
+        "session-pane-leaf missing-session-pane" + (visible ? "" : " max-hidden")
+      }
+      data-pane-session-id={sessionKey}
+      role="status"
+    >
+      <div className="workspace-empty">
+        <div className="empty-state">
+          <div className="empty-icon" aria-hidden="true">
+            ⌁
+          </div>
+          <div>
+            {missing
+              ? t("shell:ui.activeDevices.sessionMissing")
+              : connected
+                ? t("shell:ui.activeDevices.loading")
+                : t("shell:ui.activeDevices.disconnected")}
+          </div>
+          <div className="dim">{deviceName}</div>
+          {connection?.error || snapshot?.error ? (
+            <div className="dim" data-tip={connection?.error ?? snapshot?.error ?? undefined}>
+              {connection?.error ?? snapshot?.error}
+            </div>
+          ) : null}
+          <div className="overlay-actions">
+            {!connected ? (
+              <button
+                className="btn primary"
+                disabled={reconnecting}
+                onClick={() => void reconnect()}
+              >
+                {t("shell:ui.activeDevices.connect")}
+              </button>
+            ) : null}
+            <button
+              className="btn"
+              onClick={() => removeSessionPane(sessionKey)}
+            >
+              {t("shell:ui.activeDevices.closePane")}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PaneTree({
   node,
   focusedSessionId,
@@ -1139,15 +1347,18 @@ function PaneTree({
   const subtreeVisible =
     !maximizedSessionId || layoutContains(node, maximizedSessionId);
   if (node.type === "leaf") {
-    const ses = findSession(getState().projects, node.sessionId);
-    if (!ses) return null;
+    const located = findSessionByKey(node.sessionId);
+    if (!located) {
+      return <MissingSessionPane sessionKey={node.sessionId} visible={subtreeVisible} />;
+    }
     return (
       <SessionPaneLeaf
-        ses={ses}
-        focused={focusedSessionId === ses.id}
+        ses={located.session}
+        sessionKey={node.sessionId}
+        focused={focusedSessionId === node.sessionId}
         visible={subtreeVisible}
         multiPane={multiPane}
-        maximized={maximizedSessionId === ses.id}
+        maximized={maximizedSessionId === node.sessionId}
       />
     );
   }
@@ -1198,11 +1409,8 @@ export default function TerminalArea() {
   const { t } = useTranslation(["session", "shell", "common"]);
   const terminalLayout = useStore((state) => state.terminalLayout);
   const deviceSwitching = useStore((state) => state.deviceSwitching);
-  const activeSessionId = useStore((state) => state.activeSessionId);
   const maximizedSessionId = useStore((state) => state.maximizedSessionId);
-  const activeSession = useStore((state) =>
-    findSession(state.projects, state.activeSessionId),
-  );
+  const focusedSessionKey = useStore((state) => activeSessionKey(state));
   const hasAnySession = useStore((state) =>
     state.projects.some((project) => project.sessions.length > 0),
   );
@@ -1213,12 +1421,13 @@ export default function TerminalArea() {
   // A Session outside the remembered split is shown as a temporary singleton.
   // The stored tree remains intact and reappears when one of its leaves is
   // selected (or when the App restarts).
-  const layout = visiblePaneLayout(
-    terminalLayout,
-    activeSession?.id ?? null,
-  );
+  const layout = visiblePaneLayout(terminalLayout, focusedSessionKey);
   const paneIds = orderedLayoutSessionIds(layout);
   const multiPane = paneIds.length > 1;
+  const paneFocusedKey =
+    focusedSessionKey && layoutContains(layout, focusedSessionKey)
+      ? focusedSessionKey
+      : layout.focusedSessionId;
   const effectiveMaximizedSessionId =
     maximizedSessionId && layoutContains(layout, maximizedSessionId)
       ? maximizedSessionId
@@ -1229,11 +1438,7 @@ export default function TerminalArea() {
       {/* Clearing activeSessionId does not remove the remembered pane layout.
           Unmount it for the entire switch/rollback: intentional detach must not
           look like a Host failure or mount a target terminal before boot ends. */}
-      {deviceSwitching ? (
-        <div className="workspace-empty" role="status" aria-live="polite">
-          <div className="empty-state">{t("shell:ui.topBar.devices.switching")}</div>
-        </div>
-      ) : layout.root ? (
+      {layout.root ? (
         <div className={`term-body${docExpanded ? " doc-expanded" : ""}`}>
           <div className="term-stack">
             <div
@@ -1244,13 +1449,17 @@ export default function TerminalArea() {
               <PaneTree
                 key={paneNodeKey(layout.root)}
                 node={layout.root}
-                focusedSessionId={activeSessionId ?? layout.focusedSessionId}
+                focusedSessionId={paneFocusedKey}
                 maximizedSessionId={effectiveMaximizedSessionId}
                 multiPane={multiPane}
               />
             </div>
           </div>
           <DocumentPanel />
+        </div>
+      ) : deviceSwitching ? (
+        <div className="workspace-empty" role="status" aria-live="polite">
+          <div className="empty-state">{t("shell:ui.topBar.devices.switching")}</div>
         </div>
       ) : (
         <div className="workspace-empty">

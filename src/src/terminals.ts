@@ -15,7 +15,6 @@ import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Channel } from "@tauri-apps/api/core";
-import { scopedStorageKey } from "./deviceContext";
 import {
   api,
   b64ToBytes,
@@ -25,6 +24,21 @@ import {
   errorText,
   readClipboardText,
 } from "./api";
+import { deviceTerminalApiFor, type DeviceTerminalApi } from "./deviceApi";
+import { isDeviceConnected, markDeviceDisconnected } from "./deviceConnections";
+import {
+  findSessionByKey,
+  patchSessionByKey,
+  refreshDeviceSnapshot,
+} from "./deviceSessions";
+import { isRemoteRequestError } from "./remote/errors";
+import {
+  activeSessionKey,
+  deviceKeyForContext,
+  parseSessionKey,
+  sessionKeyFor,
+} from "./sessionIdentity";
+import { orderedLayoutSessionIds } from "./paneLayout";
 import { PiStartupNoticeFilter } from "./piStartupNotice";
 import {
   installTerminalMouseSelection,
@@ -60,6 +74,7 @@ import type {
   HistoryEvent,
   LogCursorView,
   RuntimeMessageEnvelope,
+  SessionView,
   TerminalThemeId,
 } from "./types";
 
@@ -818,7 +833,12 @@ class TerminalWriteCoordinator {
 }
 
 export interface TermHandle {
+  /** Stable cross-device key used by handles/runtime/layouts. */
   sessionId: string;
+  /** Plain backend id sent over local/remote protocols. */
+  plainSessionId: string;
+  /** `local` or the remote registry id. */
+  deviceId: string;
   term: Terminal;
   writes: TerminalWriteCoordinator;
   viewport: TerminalViewportController;
@@ -912,6 +932,30 @@ export interface TermHandle {
 
 const handles = new Map<string, TermHandle>();
 const unreadOutputPending = new Set<string>();
+
+function apiForHandle(handle: TermHandle): DeviceTerminalApi {
+  return deviceTerminalApiFor(handle.deviceId);
+}
+
+function activeDeviceKey(): string {
+  return deviceKeyForContext(getState().activeDevice);
+}
+
+function isActiveKey(key: string): boolean {
+  return parseSessionKey(key).deviceKey === activeDeviceKey();
+}
+
+function patchSessionForKey(
+  key: string,
+  patch: Partial<SessionView>,
+  run?: Partial<SessionRun> | null,
+) {
+  if (isActiveKey(key)) {
+    patchSession(parseSessionKey(key).sessionId, patch, run);
+  } else {
+    patchSessionByKey(key, patch);
+  }
+}
 
 type TerminalMouseEncoding = "default" | "sgr" | "sgr-pixels";
 
@@ -1134,7 +1178,7 @@ function localFileLinkProvider(term: Terminal, sessionId: string): ILinkProvider
           range,
           text,
           activate: (_event, linkText) => {
-            const cwd = findSession(getState().projects, sessionId)?.cwd;
+            const cwd = findSessionByKey(sessionId)?.session?.cwd;
             openTerminalLink(linkText, cwd);
           },
         });
@@ -1283,18 +1327,17 @@ function syncHandleTheme(
   handle.term.clearTextureAtlas();
 }
 
-export function getHandle(sessionId: string): TermHandle | undefined {
-  return handles.get(sessionId);
+export function getHandle(key: string): TermHandle | undefined {
+  return handles.get(key);
 }
 
-export function getOrCreateHandle(sessionId: string): TermHandle {
-  const existing = handles.get(sessionId);
+export function getOrCreateHandle(key: string): TermHandle {
+  const existing = handles.get(key);
   if (existing) return existing;
   const s = getState();
   const settings = s.settings;
-  const session = s.projects
-    .flatMap((project) => project.sessions)
-    .find((item) => item.id === sessionId);
+  const { deviceKey, sessionId } = parseSessionKey(key);
+  const session = findSessionByKey(key)?.session ?? null;
   if (Terminal.strings) {
     Terminal.strings.promptLabel = i18n.t("shell:terminal.promptLabel");
     Terminal.strings.tooMuchOutput = i18n.t("shell:terminal.tooMuchOutput");
@@ -1360,11 +1403,11 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
   term.loadAddon(new WebLinksAddon((_event, url) => openTerminalLink(url)));
   // Detect plain-text absolute and relative paths so agent-printed document
   // paths (which are not always wrapped in OSC 8 sequences) are clickable.
-  term.registerLinkProvider(localFileLinkProvider(term, sessionId));
+  term.registerLinkProvider(localFileLinkProvider(term, key));
   let handle!: TermHandle;
   const writes = new TerminalWriteCoordinator(
     term,
-    () => (handles.get(sessionId) === handle ? handle : null),
+    () => (handles.get(key) === handle ? handle : null),
     (data) => writePreservingViewport(handle, data),
     () => {
       handle.terminalSnapshotRevision += 1;
@@ -1372,7 +1415,9 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
   );
   const viewport = new TerminalViewportController(term);
   handle = {
-    sessionId,
+    sessionId: key,
+    plainSessionId: sessionId,
+    deviceId: deviceKey,
     term,
     writes,
     viewport,
@@ -1411,7 +1456,7 @@ export function getOrCreateHandle(sessionId: string): TermHandle {
     lastOutputParseLatencyMs: 0,
     container: null,
     resizeObserver: null,
-    active: getState().activeSessionId === sessionId,
+    active: activeSessionKey(getState()) === sessionId,
     geometryDirty: false,
     fitCount: 0,
     lastFitReason: null,
@@ -1752,53 +1797,69 @@ interface TerminalSnapshot {
 
 const TERMINAL_SNAPSHOT_STORAGE_PREFIX = "agentport:terminal-snapshot:";
 
-function snapshotSessionIdFromKey(key: string): string | null {
-  const prefix = scopedStorageKey(TERMINAL_SNAPSHOT_STORAGE_PREFIX);
-  if (!key.startsWith(prefix)) return null;
-  return key.slice(prefix.length).match(/^v\d+:(.+)$/)?.[1] ?? null;
+function deviceSnapshotPrefix(deviceKey: string): string {
+  return deviceKey === "local"
+    ? TERMINAL_SNAPSHOT_STORAGE_PREFIX
+    : `agentport:device:${deviceKey}:${TERMINAL_SNAPSHOT_STORAGE_PREFIX}`;
 }
 
-/** Drop checkpoints for the current device only; other devices keep theirs. */
-function removeTerminalSnapshots(predicate: (sessionId: string) => boolean) {
+function snapshotSessionKeyFromStorageKey(storageKey: string): string | null {
+  const match = storageKey.match(
+    /^(?:agentport:device:([^:]+):)?agentport:terminal-snapshot:v\d+:(.+)$/,
+  );
+  if (!match) return null;
+  return sessionKeyFor(match[1] ?? "local", match[2]);
+}
+
+/** Drop checkpoints whose stable Session key is rejected by the predicate. */
+function removeTerminalSnapshots(predicate: (sessionKey: string) => boolean) {
   try {
-    const doomed: Array<{ key: string; sessionId: string }> = [];
+    const doomed: Array<{ key: string; sessionKey: string }> = [];
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
       if (!key) continue;
-      const sessionId = snapshotSessionIdFromKey(key);
-      if (sessionId !== null && predicate(sessionId)) {
-        doomed.push({ key, sessionId });
+      const sessionKey = snapshotSessionKeyFromStorageKey(key);
+      if (sessionKey !== null && predicate(sessionKey)) {
+        doomed.push({ key, sessionKey });
       }
     }
-    for (const { key, sessionId } of doomed) {
+    for (const { key, sessionKey } of doomed) {
       localStorage.removeItem(key);
-      terminalSnapshotCache.delete(sessionId);
+      terminalSnapshotCache.delete(sessionKey);
     }
   } catch {
     // Storage unavailable; checkpoints are only a warm-switch optimization.
   }
 }
 
-/** Remove checkpoints for Sessions that no longer exist in the project tree. */
+/** Remove checkpoints for Sessions that no longer exist in any workspace pane. */
 function pruneStaleTerminalSnapshots() {
+  const s = getState();
+  const activeKey = activeDeviceKey();
   const alive = new Set(
-    getState().projects.flatMap((project) =>
-      project.sessions.map((session) => session.id),
+    s.projects.flatMap((project) =>
+      project.sessions.map((session) => sessionKeyFor(activeKey, session.id)),
     ),
   );
-  removeTerminalSnapshots((sessionId) => !alive.has(sessionId));
+  for (const key of [
+    ...orderedLayoutSessionIds(s.terminalLayout),
+    ...s.terminalLayoutGroups.flatMap((group) => orderedLayoutSessionIds(group)),
+  ]) {
+    alive.add(key);
+  }
+  removeTerminalSnapshots((sessionKey) => !alive.has(sessionKey));
 }
 
 /** @internal exported for device-scoping tests. */
-export function snapshotKey(sessionId: string) {
-  return scopedStorageKey(
-    `agentport:terminal-snapshot:v${TERMINAL_SNAPSHOT_VERSION}:${sessionId}`,
-  );
+export function snapshotKey(sessionKey: string) {
+  const { deviceKey, sessionId } = parseSessionKey(sessionKey);
+  return `${deviceSnapshotPrefix(deviceKey)}v${TERMINAL_SNAPSHOT_VERSION}:${sessionId}`;
 }
 
 /** @internal exported for device-scoping tests. */
-export function legacySnapshotKey(sessionId: string) {
-  return scopedStorageKey(`agentport:terminal-snapshot:v1:${sessionId}`);
+export function legacySnapshotKey(sessionKey: string) {
+  const { deviceKey, sessionId } = parseSessionKey(sessionKey);
+  return `${deviceSnapshotPrefix(deviceKey)}v1:${sessionId}`;
 }
 
 function readTerminalSnapshot(sessionId: string): TerminalSnapshot | null {
@@ -1873,7 +1934,7 @@ export function isTerminalPreviewRendered(sessionId: string): boolean {
 
 export function hasWarmTerminalPreview(sessionId: string): boolean {
   if (isTerminalPreviewRendered(sessionId)) return true;
-  const session = findSession(getState().projects, sessionId);
+  const session = findSessionByKey(sessionId)?.session;
   if (
     session?.transport !== "pty" ||
     (session.lifecycle !== "creating" && session.lifecycle !== "running")
@@ -1946,7 +2007,7 @@ function storeTerminalSnapshot(
   cursor: LogCursorView,
   snapshotRevision: number,
 ): boolean {
-  if (!findSession(getState().projects, handle.sessionId)) return false;
+  if (!findSessionByKey(handle.sessionId)) return false;
   try {
     const content = serializeTerminalCheckpoint(handle);
     if (content === null) return false;
@@ -2042,12 +2103,14 @@ function scheduleTerminalSnapshot(handle: TermHandle) {
 /** Preserve byte ordering while splitting a large paste into bounded IPC
  * frames. The backend applies the same limit before forwarding to the Host. */
 async function sendTerminalInput(
-  sessionId: string,
+  key: string,
   data: string,
 ): Promise<void> {
+  const { deviceKey, sessionId } = parseSessionKey(key);
+  const deviceApi = deviceTerminalApiFor(deviceKey);
   const bytes = new TextEncoder().encode(data);
   for (let start = 0; start < bytes.length; start += MAX_INPUT_FRAME_BYTES) {
-    await api.sendInput(
+    await deviceApi.sendInput(
       sessionId,
       bytesToB64(bytes.subarray(start, start + MAX_INPUT_FRAME_BYTES)),
     );
@@ -2077,8 +2140,8 @@ function submitTerminalInput(handle: TermHandle, data: string) {
   void queueTerminalInput(handle.sessionId, data)
     .then(() => {
       if (!firstInput) return;
-      void api
-        .autoRenameSessionFromFirstInput(handle.sessionId, firstInput)
+      void apiForHandle(handle)
+        .autoRenameSessionFromFirstInput(handle.plainSessionId, firstInput)
         .catch(() => {
           // Keep the input buffered so a later Enter can retry the harmless
           // metadata update if the database command temporarily fails.
@@ -2417,9 +2480,9 @@ function plainDragSelectsText(): boolean {
 }
 
 /** Whether this Session's TUI owns drag selection (and copies on release). */
-function sessionHandlesTextSelection(sessionId: string): boolean {
-  const session = findSession(getState().projects, sessionId);
-  return session !== null && TUI_SELECTION_ADAPTERS.has(session.adapter);
+function sessionHandlesTextSelection(key: string): boolean {
+  const session = findSessionByKey(key)?.session;
+  return session !== undefined && TUI_SELECTION_ADAPTERS.has(session.adapter);
 }
 
 function forceSelectionModifier(): TerminalForceSelectionModifier {
@@ -2823,8 +2886,8 @@ export function loadOlderNativeHistory(sessionId: string): Promise<boolean> {
   let request!: Promise<boolean>;
   request = (async () => {
     try {
-      const page = await api.getNativeHistory(
-        sessionId,
+      const page = await apiForHandle(handle).getNativeHistory(
+        handle.plainSessionId,
         cursor,
         NATIVE_HISTORY_PAGE_SIZE,
       );
@@ -3062,10 +3125,17 @@ export async function restoreDesktopTerminalSize(
     65535,
     Math.max(0, Math.round(rect.height * scale)),
   );
-  await api.resizePty(sessionId, cols, rows, pixelWidth, pixelHeight, {
-    expectedRevision,
-    sourceKind: "desktop",
-  });
+  await apiForHandle(handle).resizePty(
+    handle.plainSessionId,
+    cols,
+    rows,
+    pixelWidth,
+    pixelHeight,
+    {
+      expectedRevision,
+      sourceKind: "desktop",
+    },
+  );
 }
 
 /**
@@ -3124,17 +3194,30 @@ function clearAttachmentRetry(handle: TermHandle, resetAttempts = true) {
   if (resetAttempts) handle.reconnectAttempt = 0;
 }
 
-async function refreshProjectsAfterAttachFailure(sessionId: string) {
+async function refreshProjectsAfterAttachFailure(key: string) {
+  const located = findSessionByKey(key);
+  if (!located) return;
+  const activeKey = activeDeviceKey();
+  if (located.deviceId !== activeKey) {
+    await refreshDeviceSnapshot(located.deviceId);
+    const session = findSessionByKey(key)?.session;
+    if (session && session.lifecycle !== "running" && session.lifecycle !== "creating") {
+      const handle = handles.get(key);
+      if (handle) clearAttachmentRetry(handle);
+      patchRuntime(key, { detached: false, attaching: false, attached: false });
+    }
+    return;
+  }
   const request = beginProjectsSnapshotRequest();
   try {
     const projects = await api.listProjects(getState().activeSessionId);
     if (!isCurrentProjectsSnapshotRequest(request)) return;
     applyProjectsSnapshot(projects);
-    const session = findSession(projects, sessionId);
+    const session = findSession(projects, parseSessionKey(key).sessionId);
     if (session && session.lifecycle !== "running" && session.lifecycle !== "creating") {
-      const handle = handles.get(sessionId);
+      const handle = handles.get(key);
       if (handle) clearAttachmentRetry(handle);
-      patchRuntime(sessionId, { detached: false, attaching: false, attached: false });
+      patchRuntime(key, { detached: false, attaching: false, attached: false });
     }
   } catch {
     // Keep the explicit transport error visible; automatic retries will keep probing.
@@ -3144,8 +3227,9 @@ async function refreshProjectsAfterAttachFailure(sessionId: string) {
 function shouldRetryAttachment(handle: TermHandle): boolean {
   const state = getState();
   const runtime = state.runtime[handle.sessionId];
-  const session = findSession(state.projects, handle.sessionId);
+  const session = findSessionByKey(handle.sessionId)?.session;
   return handles.get(handle.sessionId) === handle && handle.active &&
+    isDeviceConnected(handle.deviceId) &&
     !handle.attached && !handle.attaching && runtime?.detached === true && !runtime.exit &&
     (session?.lifecycle === "running" || session?.lifecycle === "creating");
 }
@@ -3169,9 +3253,11 @@ function activateAttachment(handle: TermHandle, info: AttachInfo): boolean {
   // A Host can exit between its handshake and either readiness delivery. The
   // channel remains authoritative for this attach generation.
   const runtime = getState().runtime[sessionId];
-  const session = findSession(getState().projects, sessionId);
+  const session = findSessionByKey(sessionId)?.session;
   if (staleSessionRun(info, session?.status)) {
-    void api.detachSession(sessionId, info.attachmentId).catch(() => undefined);
+    void apiForHandle(handle)
+      .detachSession(handle.plainSessionId, info.attachmentId)
+      .catch(() => undefined);
     if (!handle.attached) {
       handle.pendingAttachInput = [];
       patchRuntime(sessionId, { attaching: false, attached: false, detached: true });
@@ -3181,15 +3267,15 @@ function activateAttachment(handle: TermHandle, info: AttachInfo): boolean {
   if (runtime?.exit || runtime?.detached || !info.childAlive) {
     handle.attached = false;
     handle.pendingAttachInput = [];
-    void api
-      .detachSession(sessionId, info.attachmentId)
+    void apiForHandle(handle)
+      .detachSession(handle.plainSessionId, info.attachmentId)
       .catch(() => undefined);
     patchRuntime(sessionId, {
       attaching: false,
       attached: false,
       detached: !info.childAlive,
     });
-    if (!info.childAlive) patchSession(sessionId, {
+    if (!info.childAlive) patchSessionForKey(sessionId, {
       lifecycle: session?.lifecycle === "stopped" ? "stopped" : "exited", hostAlive: false,
     }, info);
     return false;
@@ -3229,10 +3315,10 @@ function activateAttachment(handle: TermHandle, info: AttachInfo): boolean {
   });
   if (info.status) {
     patchRuntime(sessionId, { status: info.status });
-    patchSession(sessionId, { status: info.status });
+    patchSessionForKey(sessionId, { status: info.status });
   }
   if (info.agentSessionId) {
-    patchSession(sessionId, { agentSessionId: info.agentSessionId });
+    patchSessionForKey(sessionId, { agentSessionId: info.agentSessionId });
   }
   if (newlyWritable) {
     // The backend registers this capability before it starts flooding replay
@@ -3248,11 +3334,12 @@ function activateAttachment(handle: TermHandle, info: AttachInfo): boolean {
 
 /** Attach (or re-attach) the backend channel and replay the log tail. */
 export async function attachHandle(
-  sessionId: string,
+  key: string,
   preserveErrorDuringAttach = false,
 ): Promise<void> {
-  const handle = getOrCreateHandle(sessionId);
-  const session = findSession(getState().projects, sessionId);
+  const sessionId = key;
+  const handle = getOrCreateHandle(key);
+  const session = findSessionByKey(key)?.session;
   const run = handle.runIdentity ?? handle.logCursor;
   const live = session?.lifecycle === "running" || session?.lifecycle === "creating";
   if (live && (newerSessionRun(session.status, run) || getState().runtime[sessionId]?.exit)) {
@@ -3290,8 +3377,8 @@ export async function attachHandle(
     const replayTailBytes = fullscreenPi
       ? FULLSCREEN_PI_REPLAY_TAIL_BYTES
       : REPLAY_TAIL_BYTES;
-    const info = await api.attachSession(
-      sessionId,
+    const info = await apiForHandle(handle).attachSession(
+      handle.plainSessionId,
       replayTailBytes,
       channel,
       resumeFrom,
@@ -3302,8 +3389,8 @@ export async function attachHandle(
     if (handles.get(sessionId) !== handle || generation !== handle.generation) {
       // The backend may have completed after this renderer was evicted or
       // reattached. Its capability can remove only that late attachment.
-      void api
-        .detachSession(sessionId, info.attachmentId)
+      void apiForHandle(handle)
+        .detachSession(handle.plainSessionId, info.attachmentId)
         .catch(() => undefined);
       return;
     }
@@ -3315,6 +3402,13 @@ export async function attachHandle(
     // writer even if a later invoke response cannot be decoded or delivered.
     if (handle.attached && handle.attachmentId !== null) return;
     handle.pendingAttachInput = [];
+    if (
+      handle.deviceId !== "local" &&
+      isRemoteRequestError(e) &&
+      (e.code === "not_connected" || e.code === "transport_closed")
+    ) {
+      markDeviceDisconnected(handle.deviceId, e.message);
+    }
     const errorMessage = runtimeMessageEnvelope(e);
     patchRuntime(sessionId, {
       attaching: false,
@@ -3383,10 +3477,10 @@ function queueRenderedLogObservation(
     const attachmentId = handle.attachmentId;
     if (
       attachmentId !== null &&
-      getState().activeSessionId === handle.sessionId
+      activeSessionKey(getState()) === handle.sessionId
     ) {
-      void api
-        .markSessionLogRendered(handle.sessionId, attachmentId, observed)
+      void apiForHandle(handle)
+        .markSessionLogRendered(handle.plainSessionId, attachmentId, observed)
         .catch(() => undefined);
     }
     if (handle.pendingRenderedLogCursor) {
@@ -3475,12 +3569,12 @@ function applyOutputFrame(
   queueRenderedLogObservation(handle, handle.logCursor);
   updateScrolledUp(handle);
   if (
-    getState().activeSessionId !== sessionId &&
+    activeSessionKey(getState()) !== sessionId &&
     !unreadOutputPending.has(sessionId)
   ) {
     unreadOutputPending.add(sessionId);
-    void api
-      .markSessionOutputUnread(sessionId, msg.offset, incoming)
+    void apiForHandle(handle)
+      .markSessionOutputUnread(handle.plainSessionId, msg.offset, incoming)
       .catch(() => {
         unreadOutputPending.delete(sessionId);
       });
@@ -3489,7 +3583,7 @@ function applyOutputFrame(
 
 function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
   const sessionId = handle.sessionId;
-  const current = findSession(getState().projects, sessionId)?.status;
+  const current = findSessionByKey(sessionId)?.session?.status;
   const incoming = msg.t === "state" ? msg.event : msg.t === "exit" ? msg
     : msg.t === "output" || msg.t === "replay_done" ? msg.cursor
     : msg.t === "terminal_geometry_changed" || msg.t === "resize_ack" ? msg.payload.geometry : null;
@@ -3547,7 +3641,7 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
     }
     case "state": {
       patchRuntime(sessionId, { status: msg.event });
-      patchSession(sessionId, { status: msg.event });
+      patchSessionForKey(sessionId, { status: msg.event });
       if (getState().settings?.screenReaderMode) {
         const ses = getState()
           .projects.flatMap((p) => p.sessions)
@@ -3562,7 +3656,7 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       break;
     }
     case "agent_session": {
-      patchSession(sessionId, {
+      patchSessionForKey(sessionId, {
         agentSessionId: msg.id,
         resumePrecision: "exact",
       });
@@ -3604,7 +3698,7 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
           groupCleaned: msg.groupCleaned,
         },
       });
-      patchSession(sessionId, {
+      patchSessionForKey(sessionId, {
         lifecycle: msg.reason === "user_stop" ? "stopped" : "exited",
         hostAlive: false,
       });
@@ -3648,13 +3742,11 @@ export function writeMarker(sessionId: string, text: string) {
   if (handle) handle.writes.write(`\r\n\x1b[2m── ${text} ──\x1b[0m\r\n`);
 }
 
-export function resetForRestart(sessionId: string) {
-  clearTerminalSnapshot(sessionId);
-  const session = getState()
-    .projects.flatMap((project) => project.sessions)
-    .find((item) => item.id === sessionId);
+export function resetForRestart(key: string) {
+  clearTerminalSnapshot(key);
+  const session = findSessionByKey(key)?.session;
   const startupPending = session?.adapter === "pi";
-  const handle = handles.get(sessionId);
+  const handle = handles.get(key);
   if (handle) {
     clearAttachmentRetry(handle);
     const previousAttachment = handle.attachmentId;
@@ -3664,7 +3756,9 @@ export function resetForRestart(sessionId: string) {
     handle.attaching = false;
     handle.pendingAttachInput = [];
     handle.generation += 1; // drop messages from the pre-restart channel
-    if (previousAttachment !== null) void api.detachSession(sessionId, previousAttachment).catch(() => undefined);
+    if (previousAttachment !== null) void apiForHandle(handle)
+      .detachSession(handle.plainSessionId, previousAttachment)
+      .catch(() => undefined);
     resetRenderObservation(handle);
     // Clear the buffer: the re-attach replays the same log tail and would
     // otherwise duplicate it under the old content / loaded history.
@@ -3679,7 +3773,7 @@ export function resetForRestart(sessionId: string) {
     if (startupPending) armPiStartupReadyTimeout(handle);
     else clearPiStartupReadyTimer(handle);
   }
-  patchRuntime(sessionId, {
+  patchRuntime(key, {
     attached: false,
     attaching: false,
     detached: false,
@@ -3695,7 +3789,7 @@ export function resetForRestart(sessionId: string) {
     historyNote: null,
     historyMessage: null,
   });
-  writeMarker(sessionId, i18n.t("session:terminal.restartMarker"));
+  writeMarker(key, i18n.t("session:terminal.restartMarker"));
 }
 
 /** Apply font/a11y settings to all live terminals. */
@@ -3822,7 +3916,10 @@ export async function releaseTerminal(sessionId: string): Promise<void> {
   await persistTerminalSnapshotBeforeRelease(handle);
   if (attachmentId !== null) {
     try {
-      await api.detachSession(sessionId, attachmentId);
+      await apiForHandle(handle).detachSession(
+        handle.plainSessionId,
+        attachmentId,
+      );
     } catch {
       // The host may already have exited; local renderer cleanup is still safe.
     }
@@ -3845,7 +3942,20 @@ export async function releaseTerminal(sessionId: string): Promise<void> {
 /** Release hidden Sessions' renderers and attachments without stopping Hosts. */
 export function pruneHandles() {
   const s = getState();
-  const alive = new Set(s.projects.flatMap((p) => p.sessions.map((x) => x.id)));
+  const activeKey = activeDeviceKey();
+  const alive = new Set(
+    s.projects.flatMap((project) =>
+      project.sessions.map((session) => sessionKeyFor(activeKey, session.id)),
+    ),
+  );
+  // Foreign panes are owned by their device snapshots; only closing their
+  // layout leaf (or removing the device) may release them.
+  for (const key of [
+    ...orderedLayoutSessionIds(s.terminalLayout),
+    ...s.terminalLayoutGroups.flatMap((group) => orderedLayoutSessionIds(group)),
+  ]) {
+    if (parseSessionKey(key).deviceKey !== activeKey) alive.add(key);
+  }
   for (const id of [...handles.keys()]) {
     if (!alive.has(id)) void releaseTerminal(id);
   }

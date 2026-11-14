@@ -10,6 +10,11 @@ import {
   setDeviceContext,
   type DeviceContext,
 } from "./deviceContext";
+import {
+  deviceKeyForContext,
+  parseSessionKey,
+  sessionKeyFor,
+} from "./sessionIdentity";
 import { staleSessionRun, type SessionRun } from "./sessionRun";
 import {
   emptyPaneLayout,
@@ -250,7 +255,13 @@ export type DialogState =
   | { kind: "palette" }
   | { kind: "search" }
   | { kind: "addProject" }
-  | { kind: "export"; sessionId: string; exportKind: "md" | "json" }
+  | {
+      kind: "export";
+      sessionId: string;
+      exportKind: "md" | "json";
+      /** Present when exporting a Session owned by a non-active device. */
+      deviceId?: string;
+    }
   | null;
 
 /** True while the window is pointed at a remote device. */
@@ -553,6 +564,15 @@ export function persistWorktreeExpansion(
 
 const persistedTerminalWorkspace = readPersistedTerminalWorkspace();
 const persistedTerminalLayout = persistedTerminalWorkspace.activeLayout;
+const initialDeviceKey = deviceKeyForContext(activeDeviceContext());
+const persistedFocus = persistedTerminalLayout.focusedSessionId;
+const persistedFocusParts = persistedFocus
+  ? parseSessionKey(persistedFocus)
+  : null;
+const initialActiveSessionId =
+  persistedFocusParts && persistedFocusParts.deviceKey === initialDeviceKey
+    ? persistedFocusParts.sessionId
+    : null;
 
 const initialState: AppState = {
   ready: false,
@@ -570,7 +590,7 @@ const initialState: AppState = {
   secretBackend: "unknown",
   indexState: "unknown",
   exportsDir: "",
-  activeSessionId: persistedTerminalLayout.focusedSessionId,
+  activeSessionId: initialActiveSessionId,
   terminalLayout: persistedTerminalLayout,
   terminalLayoutGroups: persistedTerminalWorkspace.groups,
   maximizedSessionId: null,
@@ -843,7 +863,14 @@ export function getRuntime(sessionId: string): SessionRuntime {
 
 /** Patch one session inside the project tree (keeps unread/ordering intact). */
 export function patchSession(sessionId: string, patch: Partial<SessionView>, run: Partial<SessionRun> | null | undefined = patch.status) {
-  const known = [findSession(state.projects, sessionId)?.status, state.runtime[sessionId]?.status];
+  const runtimeKey = sessionKeyFor(
+    deviceKeyForContext(state.activeDevice),
+    sessionId,
+  );
+  const known = [
+    findSession(state.projects, sessionId)?.status,
+    state.runtime[runtimeKey]?.status,
+  ];
   if (known.some(status => staleSessionRun(run, status))) return;
   invalidateProjectsSnapshotRequests();
   update((s) => ({
@@ -885,46 +912,70 @@ function sameIds(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 
+function workspaceSessionKeys(s: AppState): string[] {
+  const keys = new Set<string>(orderedLayoutSessionIds(s.terminalLayout));
+  for (const group of s.terminalLayoutGroups) {
+    for (const key of orderedLayoutSessionIds(group)) keys.add(key);
+  }
+  return [...keys];
+}
+
 function sessionScopedState(
   s: AppState,
   projects: ProjectView[],
-  alive: Set<string>,
+  alivePlainIds: Set<string>,
+  options: { removedKey?: string } = {},
 ): Partial<AppState> {
-  const prunedCurrent = prunePaneLayout(s.terminalLayout, alive);
+  const deviceKey = deviceKeyForContext(s.activeDevice);
+  // Panes owned by OTHER devices survive an active-device snapshot: only the
+  // active device's tree is authoritative for pruning its own keys.
+  const activeAlive = new Set<string>();
+  for (const sessionId of alivePlainIds) {
+    activeAlive.add(sessionKeyFor(deviceKey, sessionId));
+  }
+  const workspaceAlive = new Set(activeAlive);
+  for (const key of workspaceSessionKeys(s)) {
+    if (key === options.removedKey) continue;
+    if (parseSessionKey(key).deviceKey !== deviceKey) workspaceAlive.add(key);
+  }
+
+  const activeKey = s.activeSessionId
+    ? sessionKeyFor(deviceKey, s.activeSessionId)
+    : null;
+  const survivingActiveKey =
+    activeKey && workspaceAlive.has(activeKey) ? activeKey : null;
+
+  const prunedCurrent = prunePaneLayout(s.terminalLayout, workspaceAlive);
   const remembered = paneLayoutHasSplit(s.terminalLayout)
     ? [s.terminalLayout, ...s.terminalLayoutGroups]
     : s.terminalLayoutGroups;
-  let terminalLayoutGroups = sanitizePaneLayouts(remembered, alive)
+  let terminalLayoutGroups = sanitizePaneLayouts(remembered, workspaceAlive)
     .filter(paneLayoutHasSplit);
-  const survivingActiveSessionId =
-    s.activeSessionId && alive.has(s.activeSessionId) ? s.activeSessionId : null;
 
   let terminalLayout = emptyPaneLayout();
-  let activeSessionId: string | null = null;
-  if (survivingActiveSessionId) {
+  if (survivingActiveKey) {
     const group = paneLayoutGroupContaining(
       terminalLayoutGroups,
-      survivingActiveSessionId,
+      survivingActiveKey,
     );
     if (group) {
-      terminalLayout = focusPane(group, survivingActiveSessionId);
+      terminalLayout = focusPane(group, survivingActiveKey);
       terminalLayoutGroups = [
         terminalLayout,
         ...terminalLayoutGroups.filter((candidate) => candidate !== group),
       ];
     } else {
-      terminalLayout = singletonPaneLayout(survivingActiveSessionId);
+      terminalLayout = singletonPaneLayout(survivingActiveKey);
     }
-    activeSessionId = survivingActiveSessionId;
   } else if (prunedCurrent.root) {
     terminalLayout = prunedCurrent;
-    activeSessionId = prunedCurrent.focusedSessionId;
+    const focusedKey = prunedCurrent.focusedSessionId;
     if (paneLayoutHasSplit(prunedCurrent)) {
-      const group = activeSessionId
-        ? paneLayoutGroupContaining(terminalLayoutGroups, activeSessionId)
+      const group = focusedKey
+        ? paneLayoutGroupContaining(terminalLayoutGroups, focusedKey)
         : null;
       if (group) {
-        terminalLayout = focusPane(group, activeSessionId ?? "");
+        terminalLayout = focusPane(group, focusedKey ?? "");
         terminalLayoutGroups = [
           terminalLayout,
           ...terminalLayoutGroups.filter((candidate) => candidate !== group),
@@ -933,19 +984,28 @@ function sessionScopedState(
     }
   } else if (terminalLayoutGroups[0]) {
     terminalLayout = terminalLayoutGroups[0];
-    activeSessionId = terminalLayout.focusedSessionId;
   }
 
+  const focusedKey = terminalLayout.focusedSessionId;
+  const focusedParts = focusedKey ? parseSessionKey(focusedKey) : null;
+  const activeSessionId =
+    focusedParts && focusedParts.deviceKey === deviceKey
+      ? focusedParts.sessionId
+      : null;
+
   const sessions = sessionsById(projects);
-  const nextAttachedIds = orderedLayoutSessionIds(terminalLayout).filter(
-    (sessionId) => alive.has(sessionId) && sessions.get(sessionId)?.transport === "pty",
-  );
+  const nextAttachedIds = orderedLayoutSessionIds(terminalLayout).filter((key) => {
+    if (!workspaceAlive.has(key)) return false;
+    const parts = parseSessionKey(key);
+    if (parts.deviceKey !== deviceKey) return true; // mounted foreign pane
+    return sessions.get(parts.sessionId)?.transport === "pty";
+  });
   const attachedIds = sameIds(s.attachedIds, nextAttachedIds)
     ? s.attachedIds
     : nextAttachedIds;
   const maximizedSessionId =
-    activeSessionId &&
-    layoutContains(terminalLayout, activeSessionId) &&
+    focusedKey &&
+    layoutContains(terminalLayout, focusedKey) &&
     s.maximizedSessionId &&
     layoutContains(terminalLayout, s.maximizedSessionId)
       ? s.maximizedSessionId
@@ -963,7 +1023,7 @@ function sessionScopedState(
     );
   }
   return {
-    runtime: retainSessionEntries(s.runtime, alive),
+    runtime: retainSessionEntries(s.runtime, workspaceAlive),
     terminalLayout,
     terminalLayoutGroups,
     maximizedSessionId,
@@ -998,10 +1058,17 @@ export function applyProjectsSnapshot(projects: ProjectView[]) {
       }),
     }));
     const aliveSessionIds = sessionIds(nextProjects);
+    const activeDeviceKey = deviceKeyForContext(s.activeDevice);
     return {
       projectsAuthorityRevision: s.projectsAuthorityRevision + 1,
       projects: nextProjects,
-      archivingSessionIds: s.archivingSessionIds.filter((id) => aliveSessionIds.has(id)),
+      archivingSessionIds: s.archivingSessionIds.filter((key) => {
+        const parts = parseSessionKey(key);
+        return (
+          parts.deviceKey !== activeDeviceKey ||
+          aliveSessionIds.has(parts.sessionId)
+        );
+      }),
       sidebarWorktreeProjectId:
         s.sidebarWorktreeProjectId &&
         nextProjects.some((p) => p.id === s.sidebarWorktreeProjectId)
@@ -1038,11 +1105,16 @@ export function setSessionArchiving(sessionId: string, archiving: boolean) {
 }
 
 /** Remove local state that must not outlive a successfully removed Session. */
-export function clearSessionScopedState(sessionId: string) {
+export function clearSessionScopedState(key: string) {
   update((s) => {
+    const parsed = parseSessionKey(key);
+    const activeDeviceKey = deviceKeyForContext(s.activeDevice);
     const alive = sessionIds(s.projects);
-    alive.delete(sessionId);
-    return sessionScopedState(s, s.projects, alive);
+    if (parsed.deviceKey === activeDeviceKey) alive.delete(parsed.sessionId);
+    return {
+      ...sessionScopedState(s, s.projects, alive, { removedKey: key }),
+      archivingSessionIds: s.archivingSessionIds.filter((id) => id !== key),
+    };
   });
 }
 

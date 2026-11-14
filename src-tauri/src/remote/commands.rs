@@ -221,13 +221,16 @@ pub async fn remote_attention_notify(
     if !allowed {
         return Ok(false);
     }
-    let selected = state.notification_session.lock().unwrap().clone();
     let window_focused = app
         .get_webview_window("main")
         .is_some_and(|window| window.is_focused().unwrap_or(false));
+    // Remote focus is explicitly device-qualified. The local
+    // `notification_session` must not suppress a remote Session that happens
+    // to reuse the same plain id.
+    let focused_session = input.is_focused().then_some(input.session_id.as_str());
     if agentport_core::notification_policy::is_focused_target(
         &event,
-        selected.as_deref(),
+        focused_session,
         window_focused,
     ) {
         return Ok(false);

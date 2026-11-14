@@ -38,6 +38,7 @@ import { MarkdownView } from "../markdown";
 import { i18n } from "../i18n";
 import { runtimeMessageEnvelope } from "../runtimeMessages";
 import { insertTextIntoTerminal } from "../terminals";
+import { activeSessionKey } from "../sessionIdentity";
 import { computeLineRange, formatSelectionReference } from "../terminalDrop";
 import { previewSelectionLineRange } from "../documentSelection";
 import {
@@ -45,6 +46,7 @@ import {
   confirmDialog,
   findSession,
   getActiveDocumentTab,
+  getState,
   openContextMenu,
   setState,
   toast,
@@ -316,7 +318,12 @@ function DocToolbar({
               startLine: selection.startLine,
               endLine: selection.endLine,
             });
-            if (!insertTextIntoTerminal(activeSession.id, text)) {
+            if (
+              !insertTextIntoTerminal(
+                activeSessionKey(getState()) ?? activeSession.id,
+                text,
+              )
+            ) {
               toast(t("ui.document.dropFailed"), "error");
             }
           }}

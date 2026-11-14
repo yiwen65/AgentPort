@@ -14,6 +14,8 @@ import {
   useDevicesStore,
   type DeviceProfile,
 } from "../devicesStore";
+import { disconnectDeviceFlow } from "../deviceTeardown";
+import { isDeviceConnected } from "../deviceConnections";
 import "./devices.css";
 
 function formatConnectedAt(
@@ -72,6 +74,11 @@ export default function DeviceSettings() {
   const confirmRemove = () =>
     run(async () => {
       if (!removing) return;
+      const closed = await disconnectDeviceFlow(removing.id, {
+        skipConfirm: true,
+        forget: true,
+      });
+      if (!closed) return;
       await removeDevice(removing.id, deleteCredentials);
       setRemoving(null);
     });
@@ -202,7 +209,11 @@ export default function DeviceSettings() {
                   <button
                     className="btn small"
                     disabled={busy || testing[device.id]?.phase === "testing"}
-                    onClick={() => void testDeviceConnection(device.id)}
+                    onClick={() =>
+                      void testDeviceConnection(device.id, {
+                        preserveConnection: isDeviceConnected(device.id),
+                      })
+                    }
                   >
                     {t("settings:ui.devices.testConnect")}
                   </button>

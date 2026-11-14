@@ -65,6 +65,18 @@ const SPLIT_LAYOUT: PaneLayout = {
   focusedSessionId: "ses_a",
 };
 
+const REMOTE_SPLIT_LAYOUT: PaneLayout = {
+  root: {
+    type: "split",
+    id: "split-1",
+    direction: "right",
+    ratio: 0.5,
+    first: { type: "leaf", sessionId: "dev-a:ses_a" },
+    second: { type: "leaf", sessionId: "dev-a:ses_b" },
+  },
+  focusedSessionId: "dev-a:ses_a",
+};
+
 beforeEach(() => {
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -123,29 +135,58 @@ describe("per-device localStorage isolation", () => {
     expect(readPersistedProjectExpansion()).toEqual({ prj_local: false });
   });
 
-  it("terminal layouts persist per device and never touch the local key", () => {
+  it("terminal layouts persist as one global workspace with device-qualified leaves", () => {
     setActiveDevice(REMOTE_A);
-    expect(persistTerminalLayouts([SPLIT_LAYOUT], SPLIT_LAYOUT)).toBe(true);
-    expect(window.localStorage.getItem(TERMINAL_LAYOUT_STORAGE_KEY)).toBeNull();
-    const remoteRaw = window.localStorage.getItem(
-      scoped("dev-a", TERMINAL_LAYOUT_STORAGE_KEY),
-    );
-    expect(remoteRaw).not.toBeNull();
+    expect(
+      persistTerminalLayouts([REMOTE_SPLIT_LAYOUT], REMOTE_SPLIT_LAYOUT),
+    ).toBe(true);
+    expect(
+      window.localStorage.getItem(TERMINAL_LAYOUT_STORAGE_KEY),
+    ).not.toBeNull();
+    expect(
+      window.localStorage.getItem(
+        scoped("dev-a", "agentport-terminal-layout"),
+      ),
+    ).toBeNull();
     const workspace = readPersistedTerminalWorkspace();
-    expect(workspace.activeLayout.focusedSessionId).toBe("ses_a");
+    expect(workspace.activeLayout.focusedSessionId).toBe("dev-a:ses_a");
 
+    // A global layout is a workspace, not an active-device snapshot: switching
+    // to local must not hide the remote panes.
     setActiveDevice({ kind: "local" });
-    expect(readPersistedTerminalWorkspace().activeLayout.root).toBeNull();
+    expect(readPersistedTerminalWorkspace().activeLayout.focusedSessionId).toBe(
+      "dev-a:ses_a",
+    );
   });
 
-  it("terminal snapshot keys keep the legacy local form and prefix remotely", () => {
+  it("migrates a legacy per-device layout into the global workspace once", () => {
+    setActiveDevice(REMOTE_A);
+    window.localStorage.setItem(
+      scoped("dev-a", "agentport-terminal-layout"),
+      JSON.stringify({ version: 2, groups: [SPLIT_LAYOUT], activeLayout: SPLIT_LAYOUT }),
+    );
+
+    const migrated = readPersistedTerminalWorkspace();
+    expect(migrated.activeLayout.focusedSessionId).toBe("dev-a:ses_a");
+    expect(
+      window.localStorage.getItem(TERMINAL_LAYOUT_STORAGE_KEY),
+    ).not.toBeNull();
+    expect(
+      window.localStorage.getItem(scoped("dev-a", "agentport-terminal-layout")),
+    ).not.toBeNull();
+  });
+
+  it("terminal snapshot keys stay legacy-local and become device-scoped for remote keys", () => {
     expect(snapshotKey("ses_1")).toBe("agentport:terminal-snapshot:v2:ses_1");
     expect(legacySnapshotKey("ses_1")).toBe("agentport:terminal-snapshot:v1:ses_1");
+    // Plain ids stay local even while a remote device is active; the key, not
+    // the ambient device, decides the namespace.
     setActiveDevice(REMOTE_A);
-    expect(snapshotKey("ses_1")).toBe(
+    expect(snapshotKey("ses_1")).toBe("agentport:terminal-snapshot:v2:ses_1");
+    expect(snapshotKey("dev-a:ses_1")).toBe(
       "agentport:device:dev-a:agentport:terminal-snapshot:v2:ses_1",
     );
-    expect(legacySnapshotKey("ses_1")).toBe(
+    expect(legacySnapshotKey("dev-a:ses_1")).toBe(
       "agentport:device:dev-a:agentport:terminal-snapshot:v1:ses_1",
     );
   });

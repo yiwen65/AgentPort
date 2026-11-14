@@ -13,6 +13,9 @@ import {
   toast,
   useStore,
 } from "../store";
+import { findSessionByKey } from "../deviceSessions";
+import { deviceSessionApiFor } from "../deviceApi";
+import { sessionKeyFor } from "../sessionIdentity";
 import { isRemoteUnavailableError } from "../remote/errors";
 
 function defaultDest(sessionId: string, kind: "md" | "json", remote: boolean): string {
@@ -25,14 +28,20 @@ function defaultDest(sessionId: string, kind: "md" | "json", remote: boolean): s
 export default function ExportDialog({
   sessionId,
   exportKind,
+  deviceId,
 }: {
   sessionId: string;
   exportKind: "md" | "json";
+  deviceId?: string;
 }) {
   const { t } = useTranslation(["runtime", "common"]);
   const s = useStore();
-  const remote = useStore(destinationsAreRemote);
-  const ses = findSession(s.projects, sessionId);
+  const remote = useStore(destinationsAreRemote) || Boolean(
+    deviceId && deviceId !== "local",
+  );
+  const ses = deviceId
+    ? findSessionByKey(sessionKeyFor(deviceId, sessionId))?.session
+    : findSession(s.projects, sessionId);
   const [dest, setDest] = useState(defaultDest(sessionId, exportKind, remote));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +52,8 @@ export default function ExportDialog({
     setBusy(true);
     setError(null);
     try {
-      const p = await api.exportSession({
+      const targetApi = deviceId ? deviceSessionApiFor(deviceId) : api;
+      const p = await targetApi.exportSession({
         sessionId,
         kind: exportKind,
         dest: dest.trim(),

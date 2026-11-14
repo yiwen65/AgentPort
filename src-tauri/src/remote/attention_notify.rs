@@ -36,6 +36,20 @@ pub struct RemoteAttentionNotificationInput {
     pub kind: String,
     /// RFC3339 timestamp from the attention cursor.
     pub occurred_at: String,
+    /// Device that currently owns the focused terminal pane (null when none).
+    pub focused_device_id: Option<String>,
+    /// Plain Session id of the focused terminal pane on that device.
+    pub focused_session_id: Option<String>,
+}
+
+impl RemoteAttentionNotificationInput {
+    /// True when this attention item belongs to the focused remote Session.
+    /// Device identity is required: equal Session ids on two computers must
+    /// never let one suppress the other's notification.
+    pub fn is_focused(&self) -> bool {
+        self.focused_device_id.as_deref() == Some(self.device_id.as_str())
+            && self.focused_session_id.as_deref() == Some(self.session_id.as_str())
+    }
 }
 
 /// Freshness window mirrored from `notify_status_once`: replayed history is
@@ -116,6 +130,8 @@ mod tests {
             sequence: 7,
             kind: kind.into(),
             occurred_at: Utc::now().to_rfc3339(),
+            focused_device_id: None,
+            focused_session_id: None,
         }
     }
 
@@ -203,5 +219,21 @@ mod tests {
             attention_notification_title(&input("turn_completed")),
             "[buildbox] Refactor"
         );
+    }
+
+    #[test]
+    fn focused_suppression_requires_the_same_device_and_session() {
+        let mut focused = input("turn_completed");
+        assert!(!focused.is_focused());
+        focused.focused_device_id = Some("dev-1".into());
+        focused.focused_session_id = Some("ses_remote".into());
+        assert!(focused.is_focused());
+
+        // Equal Session id on another device must not suppress this event.
+        focused.focused_device_id = Some("dev-2".into());
+        assert!(!focused.is_focused());
+        focused.focused_device_id = Some("dev-1".into());
+        focused.focused_session_id = Some("ses_local".into());
+        assert!(!focused.is_focused());
     }
 }

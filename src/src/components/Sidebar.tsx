@@ -28,6 +28,27 @@ import {
 import { agentDisplay, healthLabel, relativeAge } from "../format";
 import { orderAgentIds, visibleAgentIds } from "../agentOrder";
 import {
+  activeSessionKey,
+  deviceKeyForContext,
+  sessionKeyFor,
+} from "../sessionIdentity";
+import {
+  activeDeviceKeyOf,
+  findSessionByKeyForState,
+  refreshConnectedDeviceSnapshots,
+  refreshDeviceSnapshot,
+  useDeviceSessions,
+  type DeviceSessionSnapshot,
+} from "../deviceSessions";
+import { connectDevice, useDeviceConnections } from "../deviceConnections";
+import { disconnectDeviceFlow } from "../deviceTeardown";
+import { focusSessionKey, reconnectActiveDevice } from "../deviceSwitch";
+import {
+  refreshDevices,
+  useDevicesStore,
+  type DeviceProfile,
+} from "../devicesStore";
+import {
   closeWorktreeView,
   openContextMenu,
   openDialog,
@@ -493,7 +514,10 @@ function sessionMenu(
   suspended: boolean,
   onRemove: () => void,
   t: SidebarT,
+  deviceId?: string,
 ): MenuItem[] {
+  const active =
+    !deviceId || deviceId === activeDeviceKeyOf(getState());
   return [
     {
       label: t("session:ui.menu.copyId"),
@@ -504,30 +528,49 @@ function sessionMenu(
     {
       label: t("session:ui.menu.exportMarkdown"),
       action: () =>
-        openDialog({ kind: "export", sessionId: ses.id, exportKind: "md" }),
+        openDialog({
+          kind: "export",
+          sessionId: ses.id,
+          exportKind: "md",
+          deviceId: active ? undefined : deviceId,
+        }),
     },
     {
       label: t("session:ui.menu.exportRawLog"),
       action: () =>
-        openDialog({ kind: "export", sessionId: ses.id, exportKind: "json" }),
+        openDialog({
+          kind: "export",
+          sessionId: ses.id,
+          exportKind: "json",
+          deviceId: active ? undefined : deviceId,
+        }),
     },
     { label: "", separator: true },
     {
       label: t("session:ui.menu.restartAndResume"),
-      action: () => void restartSessionFlow(ses.id),
+      action: () =>
+        deviceId
+          ? void restartSessionFlow(ses.id, deviceId)
+          : void restartSessionFlow(ses.id),
     },
     ...(suspended
       ? [
           {
             label: t("session:ui.menu.resume"),
-            action: () => void resumeSessionFlow(ses.id),
+            action: () =>
+              deviceId
+                ? void resumeSessionFlow(ses.id, deviceId)
+                : void resumeSessionFlow(ses.id),
           },
         ]
       : []),
     {
       label: t("session:ui.menu.stop"),
       danger: true,
-      action: () => void stopSessionFlow(ses.id),
+      action: () =>
+        deviceId
+          ? void stopSessionFlow(ses.id, deviceId)
+          : void stopSessionFlow(ses.id),
     },
     { label: "", separator: true },
     { label: t("session:ui.menu.remove"), danger: true, action: onRemove },
@@ -721,18 +764,29 @@ function SessionRow({
   ses,
   nested,
   sourceLabel,
+  deviceId,
 }: {
   ses: SessionView;
   nested?: boolean;
   sourceLabel?: string;
+  /** Undefined = the active device (project tree rows). */
+  deviceId?: string;
 }) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
+  const activeDevice = useStore((state) => state.activeDevice);
+  const activeDeviceKey = deviceKeyForContext(activeDevice);
+  const ownerDeviceId = deviceId ?? activeDeviceKey;
+  // Flow calls keep their historical single-argument shape for the active
+  // device; only a background owner needs explicit routing.
+  const flowDeviceId =
+    ownerDeviceId === activeDeviceKey ? undefined : ownerDeviceId;
+  const rowKey = sessionKeyFor(ownerDeviceId, ses.id);
   const rowState = useStore((state) =>
-    (state.activeSessionId === ses.id ? SESSION_ROW_ACTIVE : 0) |
-    (paneSessionIds(state.terminalLayout, state.terminalLayoutGroups).has(ses.id)
+    (activeSessionKey(state) === rowKey ? SESSION_ROW_ACTIVE : 0) |
+    (paneSessionIds(state.terminalLayout, state.terminalLayoutGroups).has(rowKey)
       ? SESSION_ROW_IN_PANE_LAYOUT
       : 0) |
-    (state.runtime[ses.id]?.suspended === true ? SESSION_ROW_SUSPENDED : 0),
+    (state.runtime[rowKey]?.suspended === true ? SESSION_ROW_SUSPENDED : 0),
   );
   const active = (rowState & SESSION_ROW_ACTIVE) !== 0;
   const inPaneLayout = (rowState & SESSION_ROW_IN_PANE_LAYOUT) !== 0;
@@ -751,7 +805,11 @@ function SessionRow({
   }, [editing]);
   const saveTitle = () => {
     setEditing(false);
-    void renameSessionInlineFlow(ses.id, draftTitle);
+    if (flowDeviceId) {
+      void renameSessionInlineFlow(ses.id, draftTitle, flowDeviceId);
+    } else {
+      void renameSessionInlineFlow(ses.id, draftTitle);
+    }
   };
   if (confirmingRemove) {
     return (
@@ -785,7 +843,11 @@ function SessionRow({
             className="btn small danger"
             onClick={(event) => {
               event.stopPropagation();
-              void removeSessionFlow(ses.id);
+              if (flowDeviceId) {
+                void removeSessionFlow(ses.id, { deviceId: flowDeviceId });
+              } else {
+                void removeSessionFlow(ses.id);
+              }
             }}
           >
             {t("common:actions.remove")}
@@ -811,26 +873,40 @@ function SessionRow({
           event.preventDefault();
           return;
         }
-        writeSessionPaneDragPayload(event.dataTransfer, ses.id);
+        writeSessionPaneDragPayload(event.dataTransfer, rowKey);
         suppressOversizedDragImage(event.dataTransfer);
-        beginNativeSessionDrag(ses.id);
+        beginNativeSessionDrag(rowKey);
         setDraggingPaneSession(true);
       }}
       onDragEnd={() => setDraggingPaneSession(false)}
-      onClick={() => selectSession(ses.id)}
+      onClick={() =>
+        ownerDeviceId === deviceKeyForContext(activeDevice)
+          ? selectSession(ses.id)
+          : void focusSessionKey(rowKey)
+      }
       onDoubleClick={() => setEditing(true)}
       onContextMenu={(e) => {
         e.preventDefault();
         openContextMenu(
           e.clientX,
           e.clientY,
-          sessionMenu(ses, suspended, () => setConfirmingRemove(true), t),
+          sessionMenu(
+            ses,
+            suspended,
+            () => setConfirmingRemove(true),
+            t,
+            flowDeviceId,
+          ),
         );
       }}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          selectSession(ses.id);
+          if (ownerDeviceId === deviceKeyForContext(activeDevice)) {
+            selectSession(ses.id);
+          } else {
+            void focusSessionKey(rowKey);
+          }
         }
       }}
       role="button"
@@ -894,7 +970,8 @@ function SessionRow({
           }
           onClick={(event) => {
             event.stopPropagation();
-            void toggleSessionPinFlow(ses.id);
+            if (flowDeviceId) void toggleSessionPinFlow(ses.id, flowDeviceId);
+            else void toggleSessionPinFlow(ses.id);
           }}
         >
           <IconPin pinned={pinned} />
@@ -906,7 +983,8 @@ function SessionRow({
           aria-label={t("session:ui.sidebar.archive")}
           onClick={(event) => {
             event.stopPropagation();
-            void archiveSessionFlow(ses.id);
+            if (flowDeviceId) void archiveSessionFlow(ses.id, flowDeviceId);
+            else void archiveSessionFlow(ses.id);
           }}
         >
           <IconArchive />
@@ -1095,60 +1173,389 @@ export function orderActiveAgentSessionsForSidebar(
 }
 
 interface ActiveAgentSessionEntry {
+  key: string;
+  deviceId: string;
+  deviceName: string;
+  sourceLabel: string;
   session: SessionView;
   project: ProjectView;
 }
 
+function activeEntryPriority(
+  entry: ActiveAgentSessionEntry,
+  suspendedSessionIds: ReadonlySet<string>,
+): number {
+  if (
+    suspendedSessionIds.has(entry.key) ||
+    entry.session.unread ||
+    entry.session.status?.state === "needs_input"
+  ) {
+    return 0;
+  }
+  if (
+    entry.session.lifecycle === "creating" ||
+    entry.session.status?.state === "working"
+  ) {
+    return 1;
+  }
+  if (entry.session.status?.state === "idle") return 2;
+  return 3;
+}
+
+/** Attention, working, idle, then unknown; pins and recency inside a bucket. */
+function orderActiveEntries(
+  entries: ActiveAgentSessionEntry[],
+  suspendedSessionIds: ReadonlySet<string>,
+): ActiveAgentSessionEntry[] {
+  return [...entries].sort((a, b) => {
+    const priority =
+      activeEntryPriority(a, suspendedSessionIds) -
+      activeEntryPriority(b, suspendedSessionIds);
+    if (priority !== 0) return priority;
+    const pinned =
+      Number(b.session.pinnedAt !== null) - Number(a.session.pinnedAt !== null);
+    if (pinned !== 0) return pinned;
+    const recent =
+      sessionTime(
+        b.session.status?.occurredAt ?? b.session.createdAt,
+      ) -
+      sessionTime(a.session.status?.occurredAt ?? a.session.createdAt);
+    if (recent !== 0) return recent;
+    const byDevice = a.deviceId.localeCompare(b.deviceId);
+    return byDevice !== 0 ? byDevice : a.session.id.localeCompare(b.session.id);
+  });
+}
+
 const ActiveAgentSessionItem = memo(function ActiveAgentSessionItem({
   entry,
-  sourceLabel,
 }: {
   entry: ActiveAgentSessionEntry;
-  sourceLabel: string;
 }) {
   return (
     <div role="listitem">
-      <SessionRow ses={entry.session} sourceLabel={sourceLabel} />
+      <SessionRow
+        ses={entry.session}
+        sourceLabel={entry.sourceLabel}
+        deviceId={entry.deviceId}
+      />
     </div>
   );
 });
 
+function activeDeviceLabel(
+  deviceId: string,
+  activeDeviceId: string,
+  activeDeviceName: string,
+  localLabel: string,
+  snapshots: Record<string, DeviceSessionSnapshot>,
+  devices: DeviceProfile[] | null,
+): string {
+  if (deviceId === activeDeviceId) return activeDeviceName;
+  if (deviceId === "local") return localLabel;
+  return (
+    snapshots[deviceId]?.deviceName ??
+    devices?.find((device) => device.id === deviceId)?.name ??
+    deviceId
+  );
+}
+
+function ActiveDeviceStrip() {
+  const { t } = useTranslation(["shell", "common"]);
+  const activeDevice = useStore((state) => state.activeDevice);
+  const activeDeviceId = deviceKeyForContext(activeDevice);
+  const connections = useDeviceConnections((state) => state.connections);
+  const explicitDeviceIds = useDeviceConnections(
+    (state) => state.explicitDeviceIds,
+  );
+  const snapshots = useDeviceSessions((state) => state.snapshots);
+  const profiles = useDevicesStore((state) => state.devices);
+  const switchingTo = useDevicesStore((state) => state.switchingTo);
+  const localLabel = t("shell:ui.topBar.devices.local");
+  const activeName =
+    activeDevice.kind === "remote" ? activeDevice.deviceName : localLabel;
+
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    void refreshDevices().catch(() => undefined);
+  }, []);
+
+  const remoteIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const device of profiles ?? []) ids.add(device.id);
+    for (const id of Object.keys(connections)) ids.add(id);
+    for (const id of explicitDeviceIds) ids.add(id);
+    if (activeDevice.kind === "remote") ids.add(activeDevice.deviceId);
+    return [...ids];
+  }, [activeDevice, connections, explicitDeviceIds, profiles]);
+
+  const connect = async (deviceId: string) => {
+    setBusy((current) => ({ ...current, [deviceId]: true }));
+    try {
+      if (deviceId === activeDeviceId && activeDevice.kind === "remote") {
+        await reconnectActiveDevice();
+      } else {
+        await connectDevice(deviceId);
+        await refreshDeviceSnapshot(deviceId);
+      }
+    } catch (cause) {
+      toast(
+        t("shell:ui.activeDevices.connectFailed", {
+          device:
+            profiles?.find((device) => device.id === deviceId)?.name ??
+            deviceId,
+          detail: errorText(cause),
+        }),
+        "error",
+      );
+    } finally {
+      setBusy((current) => {
+        const next = { ...current };
+        delete next[deviceId];
+        return next;
+      });
+    }
+  };
+
+  const disconnect = async (deviceId: string) => {
+    setBusy((current) => ({ ...current, [deviceId]: true }));
+    try {
+      await disconnectDeviceFlow(deviceId);
+    } finally {
+      setBusy((current) => {
+        const next = { ...current };
+        delete next[deviceId];
+        return next;
+      });
+    }
+  };
+
+  const rows = [
+    {
+      id: "local",
+      name: localLabel,
+      transport: null as string | null,
+      phase: "connected" as const,
+      error: null as string | null,
+      active: activeDeviceId === "local",
+    },
+    ...remoteIds.map((deviceId) => {
+      const connection = connections[deviceId];
+      const profile = profiles?.find((device) => device.id === deviceId);
+      const phase =
+        connection?.phase === "connected"
+          ? ("connected" as const)
+          : connection?.phase === "connecting" || switchingTo === deviceId
+            ? ("connecting" as const)
+            : connection?.phase === "error" || profile?.lastError
+              ? ("error" as const)
+              : ("disconnected" as const);
+      return {
+        id: deviceId,
+        name:
+          activeDeviceId === deviceId && activeDevice.kind === "remote"
+            ? activeDevice.deviceName
+            : (profile?.name ?? deviceId),
+        transport: profile?.transport ?? "relay",
+        phase,
+        error:
+          connection?.error ??
+          snapshots[deviceId]?.error ??
+          (phase === "error" ? (profile?.lastError ?? null) : null),
+        active: activeDeviceId === deviceId,
+      };
+    }),
+  ];
+
+  return (
+    <section
+      className="active-device-strip"
+      aria-label={t("shell:ui.activeDevices.label")}
+    >
+      {rows.map((row) => (
+        <div
+          key={row.id}
+          className={
+            "active-device-row" + (row.active ? " active" : "")
+          }
+          data-tip={row.error ?? undefined}
+        >
+          <span
+            className={
+              "device-dot" +
+              (row.phase === "connected"
+                ? " ok"
+                : row.phase === "connecting"
+                  ? " switching"
+                  : row.phase === "error"
+                    ? " error"
+                    : "")
+            }
+            aria-hidden="true"
+          />
+          <span className="active-device-name" title={row.name}>
+            {row.name}
+          </span>
+          {row.transport ? (
+            <span className="device-badge">{row.transport}</span>
+          ) : null}
+          {row.name === activeName && row.active ? (
+            <span className="active-device-badge">
+              {t("shell:ui.activeDevices.active")}
+            </span>
+          ) : null}
+          <span className={"active-device-action"}>
+            {row.id !== "local" ? (
+              row.phase === "connected" ? (
+                <button
+                  type="button"
+                  className="btn linkish"
+                  disabled={busy[row.id] === true}
+                  onClick={() => void disconnect(row.id)}
+                >
+                  {t("shell:ui.activeDevices.disconnect")}
+                </button>
+              ) : row.phase === "connecting" ? (
+                <span className="dim">
+                  {t("shell:ui.activeDevices.connecting")}
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="btn linkish"
+                  disabled={busy[row.id] === true}
+                  onClick={() => void connect(row.id)}
+                >
+                  {t("shell:ui.activeDevices.connect")}
+                </button>
+              )
+            ) : (
+              <span className="dim">{t("shell:ui.activeDevices.connected")}</span>
+            )}
+          </span>
+        </div>
+      ))}
+      {remoteIds.some((deviceId) => snapshots[deviceId]?.loading) ? (
+        <div className="active-device-loading" role="status">
+          {t("shell:ui.activeDevices.loading")}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
   const { t } = useTranslation(["session", "shell", "common", "git"]);
+  const activeDevice = useStore((state) => state.activeDevice);
   const archivingSessionIds = useStore((state) => state.archivingSessionIds);
   const suspendedSessionIds = useStore((state) => state.suspendedSessionIds);
   const repositoryStatuses = useStore((state) => state.repositoryStatuses);
+  const snapshots = useDeviceSessions((state) => state.snapshots);
+  const snapshotsRefreshing = useDeviceSessions((state) => state.refreshing);
+  const profiles = useDevicesStore((state) => state.devices);
+  const localLabel = t("shell:ui.topBar.devices.local");
+  const activeDeviceId = deviceKeyForContext(activeDevice);
+  const activeDeviceName =
+    activeDevice.kind === "remote" ? activeDevice.deviceName : localLabel;
+
+  useEffect(() => {
+    const refresh = () => {
+      if (!document.hidden) void refreshConnectedDeviceSnapshots();
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 5_000);
+    const onVisibility = () => {
+      if (!document.hidden) refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
   const { entries, projectKey } = useMemo(() => {
     const archiving = new Set(archivingSessionIds);
-    const projectBySession = new Map<string, ProjectView>();
-    const sessions: SessionView[] = [];
     const activeProjectIds: string[] = [];
-
-    for (const project of projects) {
-      let projectHasActiveAgent = false;
-      for (const session of project.sessions) {
-        if (
-          session.hostAlive &&
-          !archiving.has(session.id)
-        ) {
-          projectBySession.set(session.id, project);
-          sessions.push(session);
-          projectHasActiveAgent = true;
-        }
-      }
-      if (projectHasActiveAgent) activeProjectIds.push(project.id);
+    const sources: Array<{
+      deviceId: string;
+      deviceName: string;
+      projects: ProjectView[];
+    }> = [
+      {
+        deviceId: activeDeviceId,
+        deviceName: activeDeviceName,
+        projects,
+      },
+    ];
+    for (const snapshot of Object.values(snapshots)) {
+      if (snapshot.deviceId === activeDeviceId) continue;
+      sources.push({
+        deviceId: snapshot.deviceId,
+        deviceName: activeDeviceLabel(
+          snapshot.deviceId,
+          activeDeviceId,
+          activeDeviceName,
+          localLabel,
+          snapshots,
+          profiles,
+        ),
+        projects: snapshot.projects,
+      });
     }
 
     const entries: ActiveAgentSessionEntry[] = [];
-    for (const session of orderActiveAgentSessionsForSidebar(
-      sessions,
-      suspendedSessionIds,
-    )) {
-      const project = projectBySession.get(session.id);
-      if (project) entries.push({ session, project });
+    for (const source of sources) {
+      for (const project of source.projects) {
+        let projectHasActiveSession = false;
+        for (const session of project.sessions) {
+          if (!session.hostAlive) continue;
+          const key = sessionKeyFor(source.deviceId, session.id);
+          if (archiving.has(key)) continue;
+          projectHasActiveSession = true;
+          const branch = session.worktreeId
+            ? project.worktrees.find(
+                (worktree) => worktree.id === session.worktreeId,
+              )?.branch
+            : source.deviceId === activeDeviceId &&
+                repositoryStatuses[project.id]?.isGitRepository &&
+                repositoryStatuses[project.id]?.head.kind === "branch"
+              ? repositoryStatuses[project.id]?.head.branch
+              : null;
+          const projectLabel = branch
+            ? `${project.name} · ${branch}`
+            : project.name;
+          entries.push({
+            key,
+            deviceId: source.deviceId,
+            deviceName: source.deviceName,
+            sourceLabel: `${source.deviceName} · ${projectLabel}`,
+            session,
+            project,
+          });
+        }
+        if (projectHasActiveSession && source.deviceId === activeDeviceId) {
+          activeProjectIds.push(project.id);
+        }
+      }
     }
-    return { entries, projectKey: activeProjectIds.join("\0") };
-  }, [archivingSessionIds, projects, suspendedSessionIds]);
+    return {
+      entries: orderActiveEntries(entries, suspendedSessionIds),
+      projectKey: activeProjectIds.join("\0"),
+    };
+  }, [
+    activeDeviceId,
+    activeDeviceName,
+    archivingSessionIds,
+    localLabel,
+    profiles,
+    projects,
+    repositoryStatuses,
+    snapshots,
+    suspendedSessionIds,
+  ]);
 
   useEffect(() => {
     const projectIds = projectKey ? projectKey.split("\0") : [];
@@ -1169,41 +1576,30 @@ function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
     };
   }, [projectKey]);
 
-  if (entries.length === 0) {
-    return (
-      <div className="active-agent-empty" role="status">
-        {t("shell:ui.sidebar.activeAgentsEmpty")}
-      </div>
-    );
-  }
+  const anyLoading = Object.values(snapshots).some(
+    (snapshot) => snapshot.loading,
+  );
 
   return (
-    <div
-      className="active-agent-session-list"
-      role="list"
-      aria-label={t("shell:ui.sidebar.activeAgentListLabel")}
-    >
-      {entries.map((entry) => {
-        const { session, project } = entry;
-        const branch = session.worktreeId
-          ? project.worktrees.find(
-              (worktree) => worktree.id === session.worktreeId,
-            )?.branch
-          : repositoryStatuses[project.id]?.isGitRepository &&
-              repositoryStatuses[project.id]?.head.kind === "branch"
-            ? repositoryStatuses[project.id]?.head.branch
-            : null;
-        const sourceLabel = branch
-          ? `${project.name} · ${branch}`
-          : project.name;
-        return (
-          <ActiveAgentSessionItem
-            key={session.id}
-            entry={entry}
-            sourceLabel={sourceLabel}
-          />
-        );
-      })}
+    <div className="active-agent-view">
+      <ActiveDeviceStrip />
+      {entries.length === 0 ? (
+        <div className="active-agent-empty" role="status">
+          {anyLoading || snapshotsRefreshing
+            ? t("shell:ui.activeDevices.loading")
+            : t("shell:ui.sidebar.activeAgentsEmpty")}
+        </div>
+      ) : (
+        <div
+          className="active-agent-session-list"
+          role="list"
+          aria-label={t("shell:ui.sidebar.activeAgentListLabel")}
+        >
+          {entries.map((entry) => (
+            <ActiveAgentSessionItem key={entry.key} entry={entry} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1576,8 +1972,12 @@ function ProjectNode({
   const order = useSessionOrder();
   const archiving = useStore((state) => state.archivingSessionIds);
   const archivingSessionIds = new Set(archiving);
+  const activeDeviceKey = useStore((state) =>
+    deviceKeyForContext(state.activeDevice),
+  );
   const visibleSessions = p.sessions.filter(
-    (session) => !archivingSessionIds.has(session.id),
+    (session) =>
+      !archivingSessionIds.has(sessionKeyFor(activeDeviceKey, session.id)),
   );
   const mainSessions = order(
     visibleSessions.filter((session) => !session.worktreeId),
@@ -1754,6 +2154,9 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
   const order = useSessionOrder();
   const canCreate = Boolean(p.gitRootPath);
   const archiving = useStore((state) => state.archivingSessionIds);
+  const activeDeviceKey = useStore((state) =>
+    deviceKeyForContext(state.activeDevice),
+  );
   const highlightedWorktreeId = useStore(
     (state) => state.highlightedWorktreeId,
   );
@@ -1835,7 +2238,9 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
               p.sessions.filter(
                 (session) =>
                   session.worktreeId === w.id &&
-                  !archivingSessionIds.has(session.id),
+                  !archivingSessionIds.has(
+                    sessionKeyFor(activeDeviceKey, session.id),
+                  ),
               ),
             )}
           />
@@ -1845,14 +2250,24 @@ function WorktreeSessionsView({ p }: { p: ProjectView }) {
   );
 }
 
-function PaneGroupNode({ group, projects }: { group: PaneLayout; projects: ProjectView[] }) {
+function PaneGroupNode({ group }: { group: PaneLayout }) {
   const { t } = useTranslation("shell");
   const [expanded, setExpanded] = useState(true);
-  const ids = orderedLayoutSessionIds(group);
-  const sessions = ids.flatMap((id) => {
-    const session = projects.flatMap((project) => project.sessions).find((item) => item.id === id);
-    return session ? [session] : [];
-  });
+  const storeState = useStore();
+  const snapshots = useDeviceSessions((state) => state.snapshots);
+  const locatedSessions = useMemo(
+    () =>
+      orderedLayoutSessionIds(group).map((key) => ({
+        key,
+        located: findSessionByKeyForState(storeState, key),
+      })),
+    // `snapshots` is a stable store slice replaced on every device refresh.
+    [group, snapshots, storeState],
+  );
+  const ids = locatedSessions.map(({ key }) => key);
+  const sessions = locatedSessions.flatMap(({ located }) =>
+    located ? [located.session] : [],
+  );
   const title = sessions.map((session) => session.title).join(" · ");
   const label = group.name ?? "";
   const rename = async () => {
@@ -1884,7 +2299,10 @@ function PaneGroupNode({ group, projects }: { group: PaneLayout; projects: Proje
           aria-label={`${label || t("sidebarGroups.unnamed")} ${sessions.length}`}
           onDoubleClick={() => void rename()}
           onKeyDown={(event) => { if (event.key === "F2") { event.preventDefault(); void rename(); } }}
-          onClick={() => selectSession(group.focusedSessionId ?? sessions[0].id)}>
+          onClick={() => {
+            const focusKey = group.focusedSessionId ?? ids[0];
+            if (focusKey) void focusSessionKey(focusKey);
+          }}>
           <svg className="sidebar-group-glyph" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <rect x="2" y="3" width="12" height="10" rx="2" stroke="currentColor" />
             <path d="M8 3v10" stroke="currentColor" />
@@ -1893,7 +2311,18 @@ function PaneGroupNode({ group, projects }: { group: PaneLayout; projects: Proje
           <span className="sidebar-group-count">{sessions.length}</span>
         </button>
       </div>
-      {expanded ? sessions.map((ses) => <SessionRow key={ses.id} ses={ses} nested />) : null}
+      {expanded
+        ? locatedSessions.flatMap(({ key, located }) =>
+            located ? (
+              <SessionRow
+                key={key}
+                ses={located.session}
+                nested
+                deviceId={located.deviceId}
+              />
+            ) : []
+          )
+        : null}
     </section>
   );
 }
@@ -1996,7 +2425,7 @@ export default function Sidebar({
         {showGroups ? (
           <div className="sidebar-groups-page">
             {groups.length ? groups.map((group) => (
-              <PaneGroupNode key={[...orderedLayoutSessionIds(group)].sort().join("/")} group={group} projects={projects} />
+              <PaneGroupNode key={[...orderedLayoutSessionIds(group)].sort().join("/")} group={group} />
             )) : <div className="empty-state"><div>{t("shell:sidebarGroups.empty")}</div><p>{t("shell:sidebarGroups.hint")}</p></div>}
           </div>
         ) : activeAgentsView ? (

@@ -170,6 +170,22 @@ describe("testDeviceConnection", () => {
     expect(getDevicesState().testing.dev_ssh.phase).toBe("ok");
   });
 
+  it("leaves an already-live connection intact when asked to preserve it", async () => {
+    invoker.mockImplementation(async (command: string) => {
+      if (command === "remote_connect") {
+        return { deviceName: "Linux box", capabilities: [], protocolVersion: { major: 1, minor: 1 } };
+      }
+      return undefined;
+    });
+    const result = await testDeviceConnection("dev_ssh", {
+      preserveConnection: true,
+    });
+    expect(result.phase).toBe("ok");
+    expect(invoker).not.toHaveBeenCalledWith("remote_disconnect", {
+      deviceId: "dev_ssh",
+    });
+  });
+
   it("records structured failures and still disconnects", async () => {
     invoker.mockImplementation(async (command: string) => {
       if (command === "remote_connect") {

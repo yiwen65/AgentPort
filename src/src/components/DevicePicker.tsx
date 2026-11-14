@@ -17,6 +17,7 @@ import {
   type DeviceProfile,
   type DeviceSwitchHandler,
 } from "../devicesStore";
+import { useDeviceConnections } from "../deviceConnections";
 import "./devices.css";
 
 function IconDevices() {
@@ -71,6 +72,7 @@ export default function DevicePicker(props: {
   const onSwitchDevice = props.onSwitchDevice ?? requestDeviceSwitch;
   const activeDevice = useStore((state) => state.activeDevice);
   const devices = useDevicesStore((state) => state.devices);
+  const connections = useDeviceConnections((state) => state.connections);
   const switchingTo = useDevicesStore((state) => state.switchingTo);
   const switchError = useDevicesStore((state) => state.switchError);
   const [open, setOpen] = useState(false);
@@ -129,13 +131,21 @@ export default function DevicePicker(props: {
   const deviceRow = (device: DeviceProfile) => {
     const isActive =
       activeDevice.kind === "remote" && activeDevice.deviceId === device.id;
-    const dotClass = switchingTo === device.id
-      ? "device-dot switching"
-      : device.lastError
-        ? "device-dot error"
-        : device.lastConnectedAt
+    // The dot reflects the live transport, not the historical lastConnectedAt:
+    // an idle paired device must not look connected in a multi-device window.
+    const connection = connections[device.id];
+    const dotClass =
+      switchingTo === device.id || connection?.phase === "connecting"
+        ? "device-dot switching"
+        : connection?.phase === "connected"
           ? "device-dot ok"
-          : "device-dot";
+          : connection?.phase === "error" || device.lastError
+            ? "device-dot error"
+            : "device-dot";
+    const tip =
+      connection?.phase === "connected"
+        ? undefined
+        : (connection?.error ?? device.lastError ?? undefined);
     return (
       <button
         key={device.id}
@@ -144,7 +154,7 @@ export default function DevicePicker(props: {
         aria-checked={isActive}
         disabled={switching || isActive}
         onClick={() => switchTo(contextForDevice(device))}
-        data-tip={device.lastError ?? undefined}
+        data-tip={tip}
       >
         <span className={dotClass} aria-hidden="true" />
         <span className="device-picker-row-label">

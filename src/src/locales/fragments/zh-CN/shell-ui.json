@@ -117,6 +117,26 @@
       },
       "remoteOsIntegration": "仅本机可用（当前指向远程设备）"
     },
+    "activeDevices": {
+      "label": "已连接设备",
+      "connected": "已连接",
+      "connecting": "连接中…",
+      "disconnected": "未连接",
+      "unavailable": "不可用",
+      "connect": "连接",
+      "disconnect": "断开",
+      "active": "当前",
+      "loading": "正在读取 Session…",
+      "sessionMissing": "该 Session 已不存在",
+      "closePane": "关闭窗格",
+      "stale": "上次快照尚未确认",
+      "disconnectTitle": "断开 {{device}}？",
+      "disconnectBody": "将关闭 {{device}} 上的 {{count}} 个终端窗格。",
+      "disconnectFailed": "断开 {{device}} 失败：{{detail}}",
+      "connectFailed": "连接 {{device}} 失败：{{detail}}",
+      "switchFailed": "设备切换失败：{{detail}}",
+      "switchBackFailed": "无法切回本机"
+    },
     "terminal": {
       "scrollbarLabel": "Session 历史滚动位置",
       "backToLatest": "↓ 回到最新",

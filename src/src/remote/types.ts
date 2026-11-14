@@ -234,6 +234,10 @@ export interface RemoteAttentionNotifyInput {
   sequence: number;
   kind: string;
   occurredAt: string;
+  /** Device owning the focused terminal pane, or null when none is focused. */
+  focusedDeviceId: string | null;
+  /** Plain Session id focused on that device. */
+  focusedSessionId: string | null;
 }
 
 export interface RemoteAttentionPollResult {

@@ -3,6 +3,20 @@
 
 import { api, copyText, errorText } from "./api";
 import { scopedStorageKey } from "./deviceContext";
+import {
+  findSessionByKey,
+  patchSessionByKey,
+  refreshDeviceSnapshot,
+  removeSessionFromSnapshot,
+} from "./deviceSessions";
+import { deviceSessionApiFor } from "./deviceApi";
+import { focusSessionKeyViaRegistry } from "./sessionFocusRegistry";
+import {
+  activeSessionKey,
+  deviceKeyForContext,
+  parseSessionKey,
+  sessionKeyFor,
+} from "./sessionIdentity";
 import { setTheme as setNativeTheme } from "@tauri-apps/api/app";
 import { localizedNotices } from "./runtimeMessages";
 import { isAddedAgent, quickStartPermission } from "./agentCapabilities";
@@ -36,6 +50,7 @@ import {
   attachHandle,
   clearUnreadOutputTracking,
   disposeHandle,
+  getHandle,
   pruneHandles,
   releaseTerminal,
   resetForRestart,
@@ -347,16 +362,19 @@ function paneWorkspaceRect(): DOMRect | null {
 }
 
 export function canSplitSessionPane(
-  sessionId: string,
+  key: string,
   direction: PaneSplitDirection,
 ): boolean {
   const state = getState();
-  const layout = visiblePaneLayout(state.terminalLayout, state.activeSessionId);
+  const layout = visiblePaneLayout(
+    state.terminalLayout,
+    activeSessionKey(state),
+  );
   const workspaceRect = paneWorkspaceRect();
   if (layout.root && workspaceRect) {
     const logicalSize = paneSessionSize(
       layout.root,
-      sessionId,
+      key,
       workspaceRect.width,
       workspaceRect.height,
       PANE_SEPARATOR_SIZE,
@@ -365,7 +383,7 @@ export function canSplitSessionPane(
       return canSplitPaneSize(direction, logicalSize.width, logicalSize.height);
     }
   }
-  const element = paneElement(sessionId);
+  const element = paneElement(key);
   if (!element) return true;
   const rect = element.getBoundingClientRect();
   return canSplitPaneSize(direction, rect.width, rect.height);
@@ -382,25 +400,66 @@ function paneLayoutFitsWorkspace(layout: PaneLayout): boolean {
   );
 }
 
-function attachedPtyIdsForLayout(
-  layout: PaneLayout,
-  projects = getState().projects,
-): string[] {
-  return orderedLayoutSessionIds(layout).filter(
-    (sessionId) => findSession(projects, sessionId)?.transport === "pty",
-  );
+function activeDeviceKey(): string {
+  return deviceKeyForContext(getState().activeDevice);
+}
+
+/** Stable layout/runtime key for a Session on the currently active device. */
+function activeKeyFor(sessionId: string): string {
+  return sessionKeyFor(activeDeviceKey(), sessionId);
+}
+
+function plainActiveId(key: string | null): string | null {
+  if (!key) return null;
+  const parts = parseSessionKey(key);
+  return parts.deviceKey === activeDeviceKey() ? parts.sessionId : null;
+}
+
+/** Stable key for a Session on an explicit device (default: active device). */
+function sessionKeyOn(deviceId: string | undefined, sessionId: string): string {
+  return sessionKeyFor(deviceId ?? activeDeviceKey(), sessionId);
+}
+
+function isActiveDeviceId(deviceId: string | undefined): boolean {
+  return !deviceId || deviceId === activeDeviceKey();
+}
+
+function sessionOnDevice(
+  sessionId: string,
+  deviceId: string | undefined,
+) {
+  return isActiveDeviceId(deviceId)
+    ? findSession(getState().projects, sessionId)
+    : (findSessionByKey(sessionKeyOn(deviceId, sessionId))?.session ?? null);
+}
+
+function refreshSessionOwner(deviceId: string | undefined): Promise<unknown> {
+  return isActiveDeviceId(deviceId)
+    ? refreshProjects()
+    : refreshDeviceSnapshot(deviceId!);
+}
+
+function attachedPtyIdsForLayout(layout: PaneLayout): string[] {
+  return orderedLayoutSessionIds(layout).filter((key) => {
+    const located = findSessionByKey(key);
+    if (located) return located.session.transport === "pty";
+    // A foreign pane can render before its device snapshot is loaded; it is a
+    // mounted terminal by construction and must stay attached.
+    return parseSessionKey(key).deviceKey !== activeDeviceKey();
+  });
 }
 
 function releaseIdsOutside(previousIds: string[], nextIds: string[]) {
   const retained = new Set(nextIds);
-  for (const sessionId of previousIds) {
-    if (!retained.has(sessionId)) void releaseTerminal(sessionId);
+  for (const key of previousIds) {
+    if (!retained.has(key)) void releaseTerminal(key);
   }
 }
 
 function acknowledgeSession(id: string) {
+  const key = activeKeyFor(id);
   rememberSelectedSessionId(id);
-  clearUnreadOutputTracking(id);
+  clearUnreadOutputTracking(key);
   const session = findSession(getState().projects, id);
   void api
     .markSessionSeen(id, session?.status ?? null)
@@ -467,8 +526,8 @@ function commitPaneLayout(
     terminalLayout,
     options.movingSessionId,
   );
-  const activeSessionId = terminalLayout.focusedSessionId;
-  const attachedIds = attachedPtyIdsForLayout(terminalLayout, current.projects);
+  const activeSessionId = plainActiveId(terminalLayout.focusedSessionId);
+  const attachedIds = attachedPtyIdsForLayout(terminalLayout);
   const maximizedSessionId =
     options.maximizedSessionId !== undefined
       ? options.maximizedSessionId
@@ -486,6 +545,15 @@ function commitPaneLayout(
   persistPaneGroups(groups, terminalLayout);
   releaseIdsOutside(current.attachedIds, attachedIds);
   if (options.acknowledgeFocused && activeSessionId) acknowledgeSession(activeSessionId);
+  // A split/move can land on a pane owned by another device. Focus-driven
+  // activity must follow it instead of leaving the top bar on the old device.
+  const focusedKey = terminalLayout.focusedSessionId;
+  if (
+    focusedKey &&
+    parseSessionKey(focusedKey).deviceKey !== activeDeviceKey()
+  ) {
+    focusSessionKeyViaRegistry(focusedKey);
+  }
 }
 
 export function selectSession(
@@ -509,20 +577,23 @@ export function selectSession(
     return;
   }
   const ses = findSession(s.projects, id);
+  const key = activeKeyFor(id);
   const currentGroups = rememberedPaneGroups(s);
-  const rememberedGroup = paneLayoutGroupContaining(currentGroups, id);
+  const rememberedGroup = paneLayoutGroupContaining(currentGroups, key);
   const terminalLayout = rememberedGroup
-    ? focusPane(rememberedGroup, id)
-    : singletonPaneLayout(id);
+    ? focusPane(rememberedGroup, key)
+    : singletonPaneLayout(key);
   const terminalLayoutGroups = rememberedGroup
     ? [
         terminalLayout,
         ...currentGroups.filter((group) => group !== rememberedGroup),
       ]
     : currentGroups;
-  const attachedIds = attachedPtyIdsForLayout(terminalLayout, s.projects);
+  const attachedIds = attachedPtyIdsForLayout(terminalLayout);
   const maximizedSessionId =
-    layoutContains(s.terminalLayout, id) && s.maximizedSessionId ? id : null;
+    layoutContains(s.terminalLayout, key) && s.maximizedSessionId
+      ? s.maximizedSessionId
+      : null;
   const revealInSidebar = options.revealInSidebar !== false;
   const proj = findProjectOf(s.projects, id);
   // Reveals are view-only: they must never overwrite the user's persisted
@@ -555,26 +626,26 @@ export function selectSession(
 }
 
 export function openSplitSessionDialog(
-  targetSessionId: string,
+  targetKey: string,
   direction: PaneSplitDirection,
 ): boolean {
   const state = getState();
-  const target = findSession(state.projects, targetSessionId);
+  const target = findSessionByKey(targetKey);
   const displayLayout = visiblePaneLayout(
     state.terminalLayout,
-    state.activeSessionId,
+    activeSessionKey(state),
   );
-  if (!target || !layoutContains(displayLayout, targetSessionId)) return false;
-  if (!canSplitSessionPane(targetSessionId, direction)) {
+  if (!target || !layoutContains(displayLayout, targetKey)) return false;
+  if (!canSplitSessionPane(targetKey, direction)) {
     toast(i18n.t("shell:pane.tooSmall"), "info");
     return false;
   }
-  selectSession(targetSessionId);
+  selectSession(target.session.id);
   openDialog({
     kind: "newSession",
-    projectId: target.projectId,
-    worktreeId: target.worktreeId ?? undefined,
-    splitTargetSessionId: targetSessionId,
+    projectId: target.project.id,
+    worktreeId: target.session.worktreeId ?? undefined,
+    splitTargetSessionId: targetKey,
     splitDirection: direction,
   });
   return true;
@@ -582,47 +653,47 @@ export function openSplitSessionDialog(
 
 /** Open the lightweight Agent chooser used by pane context-menu splits. */
 export function openSplitAgentPicker(
-  targetSessionId: string,
+  targetKey: string,
   direction: PaneSplitDirection,
 ): boolean {
   const state = getState();
-  const target = findSession(state.projects, targetSessionId);
+  const target = findSessionByKey(targetKey);
   const displayLayout = visiblePaneLayout(
     state.terminalLayout,
-    state.activeSessionId,
+    activeSessionKey(state),
   );
-  if (!target || !layoutContains(displayLayout, targetSessionId)) return false;
-  if (!canSplitSessionPane(targetSessionId, direction)) {
+  if (!target || !layoutContains(displayLayout, targetKey)) return false;
+  if (!canSplitSessionPane(targetKey, direction)) {
     toast(i18n.t("shell:pane.tooSmall"), "info");
     return false;
   }
-  selectSession(targetSessionId);
-  openDialog({ kind: "splitAgentPicker", targetSessionId, direction });
+  selectSession(target.session.id);
+  openDialog({ kind: "splitAgentPicker", targetSessionId: targetKey, direction });
   return true;
 }
 
 export function splitSessionIntoPane(
-  targetSessionId: string,
-  sessionId: string,
+  targetKey: string,
+  newKey: string,
   direction: PaneSplitDirection,
 ): boolean {
   const state = getState();
   const displayLayout = visiblePaneLayout(
     state.terminalLayout,
-    state.activeSessionId,
+    activeSessionKey(state),
   );
   if (
-    targetSessionId === sessionId ||
-    !findSession(state.projects, targetSessionId) ||
-    !findSession(state.projects, sessionId) ||
-    !layoutContains(displayLayout, targetSessionId)
+    targetKey === newKey ||
+    !findSessionByKey(targetKey) ||
+    !findSessionByKey(newKey) ||
+    !layoutContains(displayLayout, targetKey)
   ) {
     return false;
   }
-  const terminalLayout = layoutContains(displayLayout, sessionId)
-    ? movePane(displayLayout, sessionId, targetSessionId, direction)
-    : splitPane(displayLayout, targetSessionId, sessionId, direction);
-  if (!layoutContains(terminalLayout, sessionId)) return false;
+  const terminalLayout = layoutContains(displayLayout, newKey)
+    ? movePane(displayLayout, newKey, targetKey, direction)
+    : splitPane(displayLayout, targetKey, newKey, direction);
+  if (!layoutContains(terminalLayout, newKey)) return false;
   if (!samePaneLayout(terminalLayout, displayLayout)) {
     if (!paneLayoutFitsWorkspace(terminalLayout)) {
       toast(i18n.t("shell:pane.tooSmall"), "info");
@@ -632,21 +703,22 @@ export function splitSessionIntoPane(
       maximizedSessionId: null,
       acknowledgeFocused: true,
       previousLayout: displayLayout,
-      movingSessionId: sessionId,
+      movingSessionId: newKey,
     });
-  } else if (terminalLayout.focusedSessionId === sessionId) {
-    acknowledgeSession(sessionId);
+  } else if (terminalLayout.focusedSessionId === newKey) {
+    const plain = plainActiveId(newKey);
+    if (plain) acknowledgeSession(plain);
   }
   return true;
 }
 
-export function removeSessionPane(sessionId: string): boolean {
+export function removeSessionPane(key: string): boolean {
   const state = getState();
   const displayLayout = visiblePaneLayout(
     state.terminalLayout,
-    state.activeSessionId,
+    activeSessionKey(state),
   );
-  if (!layoutContains(displayLayout, sessionId)) return false;
+  if (!layoutContains(displayLayout, key)) return false;
   const groups = rememberedPaneGroups(state);
   if (!paneLayoutHasSplit(displayLayout) && groups[0]) {
     const restored = groups[0];
@@ -657,39 +729,43 @@ export function removeSessionPane(sessionId: string): boolean {
     });
     return true;
   }
-  const terminalLayout = removePane(displayLayout, sessionId);
+  const terminalLayout = removePane(displayLayout, key);
   if (samePaneLayout(terminalLayout, displayLayout)) return false;
   commitPaneLayout(terminalLayout, {
     maximizedSessionId:
-      state.maximizedSessionId === sessionId ? null : state.maximizedSessionId,
+      state.maximizedSessionId === key ? null : state.maximizedSessionId,
     acknowledgeFocused:
       terminalLayout.focusedSessionId !== null &&
-      terminalLayout.focusedSessionId !== state.activeSessionId,
+      terminalLayout.focusedSessionId !== activeSessionKey(state),
     previousLayout: displayLayout,
   });
   return true;
 }
 
-export function toggleSessionPaneMaximized(sessionId: string): boolean {
+export function toggleSessionPaneMaximized(key: string): boolean {
   const state = getState();
-  if (!layoutContains(state.terminalLayout, sessionId)) return false;
+  if (!layoutContains(state.terminalLayout, key)) return false;
   if (orderedLayoutSessionIds(state.terminalLayout).length <= 1) return false;
-  const maximizedSessionId =
-    state.maximizedSessionId === sessionId ? null : sessionId;
-  const terminalLayout = focusPane(state.terminalLayout, sessionId);
+  const maximizedSessionId = state.maximizedSessionId === key ? null : key;
+  const terminalLayout = focusPane(state.terminalLayout, key);
   const terminalLayoutGroups = paneGroupsAfterLayoutChange(
     rememberedPaneGroups(state),
     state.terminalLayout,
     terminalLayout,
   );
+  const activeSessionId = plainActiveId(key);
   setState({
     terminalLayout,
     terminalLayoutGroups,
-    activeSessionId: sessionId,
+    activeSessionId,
     maximizedSessionId,
   });
   persistPaneGroups(terminalLayoutGroups, terminalLayout);
-  if (state.activeSessionId !== sessionId) acknowledgeSession(sessionId);
+  if (activeSessionId && state.activeSessionId !== activeSessionId) {
+    acknowledgeSession(activeSessionId);
+  } else if (!activeSessionId) {
+    focusSessionKeyViaRegistry(key);
+  }
   return true;
 }
 
@@ -718,12 +794,20 @@ export function persistCurrentPaneLayout() {
 
 export function switchSessionByIndex(index: number) {
   const s = getState();
+  const layout = visiblePaneLayout(s.terminalLayout, activeSessionKey(s));
   const archiving = new Set(s.archivingSessionIds);
-  const list = flattenSessions(s.projects).filter(
-    (session) => !archiving.has(session.id),
+  const keys = orderedLayoutSessionIds(layout).filter(
+    (key) => !archiving.has(key),
   );
-  const target = list[index];
-  if (target) selectSession(target.id);
+  const targetKey = keys[index];
+  if (!targetKey) return;
+  const located = findSessionByKey(targetKey);
+  if (!located) return;
+  if (located.deviceId === activeDeviceKey()) {
+    selectSession(located.session.id);
+  } else {
+    focusSessionKeyViaRegistry(targetKey);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -732,26 +816,36 @@ export function switchSessionByIndex(index: number) {
 
 const stoppingSessions = new Set<string>();
 
-export async function stopSessionFlow(sessionId: string) {
-  const ses = findSession(getState().projects, sessionId);
-  if (!ses || stoppingSessions.has(sessionId)) return;
-  stoppingSessions.add(sessionId);
+export async function stopSessionFlow(
+  sessionId: string,
+  deviceId?: string,
+) {
+  const ses = sessionOnDevice(sessionId, deviceId);
+  const key = sessionKeyOn(deviceId, sessionId);
+  if (!ses || stoppingSessions.has(key)) return;
+  stoppingSessions.add(key);
   try {
-    await api.stopSession(sessionId);
+    await deviceSessionApiFor(deviceId ?? activeDeviceKey()).stopSession(sessionId);
     toast(i18n.t("session:flow.stopped"), "success");
+    if (!isActiveDeviceId(deviceId)) void refreshSessionOwner(deviceId);
   } catch (e) {
     toast(i18n.t("session:flow.stopFailed", { detail: errorText(e) }), "error");
   } finally {
-    stoppingSessions.delete(sessionId);
+    stoppingSessions.delete(key);
   }
 }
 
-export async function restartSessionFlow(sessionId: string) {
-  const ses = findSession(getState().projects, sessionId);
+export async function restartSessionFlow(
+  sessionId: string,
+  deviceId?: string,
+) {
+  const ses = sessionOnDevice(sessionId, deviceId);
   if (!ses) return;
+  const key = sessionKeyOn(deviceId, sessionId);
+  const sessionApi = deviceSessionApiFor(deviceId ?? activeDeviceKey());
   if (ses.lifecycle === "running" || ses.lifecycle === "creating") {
     try {
-      await api.stopSession(sessionId);
+      await sessionApi.stopSession(sessionId);
     } catch (e) {
       toast(
         i18n.t("session:flow.stopFailed", { detail: errorText(e) }),
@@ -763,15 +857,20 @@ export async function restartSessionFlow(sessionId: string) {
   try {
     // The selected Session already persists its permission mode. Restart it
     // directly instead of asking the user to acknowledge the same mode again.
-    const res = await api.restartSession(sessionId, true);
-    resetForRestart(sessionId);
-    await refreshProjects();
-    // Cold-start selection intentionally drops interrupted PTYs from the
-    // mounted-terminal LRU. Once restart publishes the Session as live, run
-    // selection again so the active Session gets a TerminalPane before the
-    // renderer switches away from its recovery surface.
-    if (getState().activeSessionId === sessionId) selectSession(sessionId);
-    void attachHandle(sessionId);
+    const res = await sessionApi.restartSession(sessionId, true);
+    resetForRestart(key);
+    await refreshSessionOwner(deviceId);
+    if (isActiveDeviceId(deviceId)) {
+      // Cold-start selection intentionally drops interrupted PTYs from the
+      // mounted-terminal LRU. Once restart publishes the Session as live, run
+      // selection again so the active Session gets a TerminalPane before the
+      // renderer switches away from its recovery surface.
+      if (getState().activeSessionId === sessionId) selectSession(sessionId);
+      void attachHandle(key);
+    } else if (getHandle(key)) {
+      // A background pane keeps its renderer; reattach it to the new run.
+      void attachHandle(key);
+    }
     if (res.resumePrecision === "latest") {
       toast(i18n.t("session:flow.latestResumeNotice"), "info");
     } else if (res.resumePrecision === "unavailable") {
@@ -786,9 +885,14 @@ export async function restartSessionFlow(sessionId: string) {
   }
 }
 
-export async function interruptSessionFlow(sessionId: string) {
+export async function interruptSessionFlow(
+  sessionId: string,
+  deviceId?: string,
+) {
   try {
-    await api.interruptSession(sessionId);
+    await deviceSessionApiFor(deviceId ?? activeDeviceKey()).interruptSession(
+      sessionId,
+    );
   } catch (e) {
     toast(
       i18n.t("session:flow.interruptFailed", { detail: errorText(e) }),
@@ -797,9 +901,15 @@ export async function interruptSessionFlow(sessionId: string) {
   }
 }
 
-export async function resumeSessionFlow(sessionId: string) {
+export async function resumeSessionFlow(
+  sessionId: string,
+  deviceId?: string,
+) {
   try {
-    await api.resumeSession(sessionId);
+    await deviceSessionApiFor(deviceId ?? activeDeviceKey()).resumeSession(
+      sessionId,
+    );
+    if (!isActiveDeviceId(deviceId)) void refreshSessionOwner(deviceId);
   } catch (e) {
     toast(
       i18n.t("session:flow.resumeFailed", { detail: errorText(e) }),
@@ -808,25 +918,33 @@ export async function resumeSessionFlow(sessionId: string) {
   }
 }
 
-export async function archiveSessionFlow(sessionId: string) {
+export async function archiveSessionFlow(
+  sessionId: string,
+  deviceId?: string,
+) {
   const initial = getState();
-  const ses = findSession(initial.projects, sessionId);
+  const ses = sessionOnDevice(sessionId, deviceId);
   if (!ses) return;
-  if (initial.archivingSessionIds.includes(sessionId)) return;
-  const wasActive = initial.activeSessionId === sessionId;
-  setSessionArchiving(sessionId, true);
+  const active = isActiveDeviceId(deviceId);
+  const key = sessionKeyOn(deviceId, sessionId);
+  if (initial.archivingSessionIds.includes(key)) return;
+  const wasActive = active && initial.activeSessionId === sessionId;
+  setSessionArchiving(key, true);
   try {
-    await api.archiveSession(sessionId);
-    disposeHandle(sessionId);
-    clearSessionScopedState(sessionId);
+    await deviceSessionApiFor(deviceId ?? activeDeviceKey()).archiveSession(
+      sessionId,
+    );
+    disposeHandle(key);
+    clearSessionScopedState(key);
+    if (!active) removeSessionFromSnapshot(key);
     if (wasActive && getState().activeSessionId === null) {
       selectReplacementSession(sessionId);
     }
     // The command already emitted `projects-changed`; this read is only a
     // reconciliation fallback and must not hold the interaction open.
-    void refreshProjects();
+    void refreshSessionOwner(deviceId);
   } catch (e) {
-    setSessionArchiving(sessionId, false);
+    setSessionArchiving(key, false);
     toast(
       i18n.t("session:flow.archiveFailed", { detail: errorText(e) }),
       "error",
@@ -841,24 +959,27 @@ function selectReplacementSession(removedSessionId: string) {
   const next = flattenSessions(current.projects).find(
     (session) =>
       session.id !== removedSessionId &&
-      !current.archivingSessionIds.includes(session.id),
+      !current.archivingSessionIds.includes(activeKeyFor(session.id)),
   );
   if (next) selectSession(next.id, { revealInSidebar: false });
 }
 
 // Leave the removed pane immediately; process cleanup still runs to completion.
 // Restore only if cleanup failed and the user has not navigated elsewhere.
-function leaveRemovingSession(sessionId: string): () => void {
+function leaveRemovingSession(key: string): () => void {
   const before = getState();
-  const layout = visiblePaneLayout(before.terminalLayout, before.activeSessionId);
-  if (!layoutContains(layout, sessionId)) return () => undefined;
-  commitPaneLayout(removePane(layout, sessionId), {
+  const layout = visiblePaneLayout(
+    before.terminalLayout,
+    activeSessionKey(before),
+  );
+  if (!layoutContains(layout, key)) return () => undefined;
+  commitPaneLayout(removePane(layout, key), {
     maximizedSessionId: null,
     acknowledgeFocused: false,
     previousLayout: layout,
   });
   if (getState().activeSessionId === null) {
-    selectReplacementSession(sessionId);
+    selectReplacementSession(parseSessionKey(key).sessionId);
   }
   const intent = sessionSelectionIntent;
   const pendingLayout = getState().terminalLayout;
@@ -871,12 +992,15 @@ function leaveRemovingSession(sessionId: string): () => void {
 
 export async function removeSessionFlow(
   sessionId: string,
-  options: { confirm?: boolean } = {},
+  options: { confirm?: boolean; deviceId?: string } = {},
 ) {
   const initial = getState();
-  const ses = findSession(initial.projects, sessionId);
+  const deviceId = options.deviceId;
+  const active = isActiveDeviceId(deviceId);
+  const ses = sessionOnDevice(sessionId, deviceId);
   if (!ses) return;
-  if (initial.archivingSessionIds.includes(sessionId)) return;
+  const key = sessionKeyOn(deviceId, sessionId);
+  if (initial.archivingSessionIds.includes(key)) return;
   if (options.confirm) {
     const ok = await confirmDialog({
       title: i18n.t("session:flow.removeTitle", { title: ses.title }),
@@ -887,24 +1011,26 @@ export async function removeSessionFlow(
     if (!ok) return;
   }
 
-  const wasActive = initial.activeSessionId === sessionId;
-  setSessionArchiving(sessionId, true);
-  const restorePane = leaveRemovingSession(sessionId);
+  const wasActive = active && initial.activeSessionId === sessionId;
+  const sessionApi = deviceSessionApiFor(deviceId ?? activeDeviceKey());
+  setSessionArchiving(key, true);
+  const restorePane = active ? leaveRemovingSession(key) : () => undefined;
   let archived = false;
   try {
-    await api.archiveSession(sessionId);
+    await sessionApi.archiveSession(sessionId);
     archived = true;
-    await api.deleteArchivedSession(sessionId);
-    disposeHandle(sessionId);
-    clearSessionScopedState(sessionId);
+    await sessionApi.deleteArchivedSession(sessionId);
+    disposeHandle(key);
+    clearSessionScopedState(key);
+    if (!active) removeSessionFromSnapshot(key);
     if (wasActive && getState().activeSessionId === null) {
       selectReplacementSession(sessionId);
     }
-    void refreshProjects();
+    void refreshSessionOwner(deviceId);
   } catch (e) {
-    setSessionArchiving(sessionId, false);
+    setSessionArchiving(key, false);
     if (!archived) restorePane();
-    else void refreshProjects();
+    else void refreshSessionOwner(deviceId);
     toast(
       i18n.t("session:flow.removeFailed", { detail: errorText(e) }),
       "error",
@@ -912,8 +1038,11 @@ export async function removeSessionFlow(
   }
 }
 
-export async function renameSessionFlow(sessionId: string) {
-  const ses = findSession(getState().projects, sessionId);
+export async function renameSessionFlow(
+  sessionId: string,
+  deviceId?: string,
+) {
+  const ses = sessionOnDevice(sessionId, deviceId);
   if (!ses) return;
   const title = await promptDialog({
     title: i18n.t("session:flow.renameTitle"),
@@ -923,7 +1052,10 @@ export async function renameSessionFlow(sessionId: string) {
   });
   if (!title || !title.trim() || title.trim() === ses.title) return;
   try {
-    await api.renameSession(sessionId, title.trim());
+    await deviceSessionApiFor(
+      deviceId ?? activeDeviceKey(),
+    ).renameSession(sessionId, title.trim());
+    await refreshSessionOwner(deviceId);
   } catch (e) {
     toast(
       i18n.t("session:flow.renameFailed", { detail: errorText(e) }),
@@ -935,13 +1067,16 @@ export async function renameSessionFlow(sessionId: string) {
 export async function renameSessionInlineFlow(
   sessionId: string,
   title: string,
+  deviceId?: string,
 ) {
   const nextTitle = title.trim();
-  const ses = findSession(getState().projects, sessionId);
+  const ses = sessionOnDevice(sessionId, deviceId);
   if (!ses || !nextTitle || nextTitle === ses.title) return;
   try {
-    await api.renameSession(sessionId, nextTitle);
-    await refreshProjects();
+    await deviceSessionApiFor(
+      deviceId ?? activeDeviceKey(),
+    ).renameSession(sessionId, nextTitle);
+    await refreshSessionOwner(deviceId);
   } catch (e) {
     toast(
       i18n.t("session:flow.renameFailed", { detail: errorText(e) }),
@@ -953,18 +1088,26 @@ export async function renameSessionInlineFlow(
 /** Pin state is backend-owned (sessions.pinned_at); patch optimistically so
  * the sidebar reorders immediately, then let the projects-changed snapshot
  * reconcile the persisted timestamp. */
-export async function toggleSessionPinFlow(sessionId: string) {
-  const ses = findSession(getState().projects, sessionId);
+export async function toggleSessionPinFlow(
+  sessionId: string,
+  deviceId?: string,
+) {
+  const ses = sessionOnDevice(sessionId, deviceId);
   if (!ses) return;
+  const active = isActiveDeviceId(deviceId);
+  const key = sessionKeyOn(deviceId, sessionId);
   const pinned = ses.pinnedAt === null;
-  patchSession(sessionId, {
-    pinnedAt: pinned ? new Date().toISOString() : null,
-  });
+  const patch = { pinnedAt: pinned ? new Date().toISOString() : null };
+  if (active) patchSession(sessionId, patch);
+  else patchSessionByKey(key, patch);
   try {
-    await api.setSessionPinned(sessionId, pinned);
+    await deviceSessionApiFor(
+      deviceId ?? activeDeviceKey(),
+    ).setSessionPinned(sessionId, pinned);
+    if (!active) void refreshSessionOwner(deviceId);
   } catch (e) {
     toast(i18n.t("session:flow.pinFailed", { detail: errorText(e) }), "error");
-    await refreshProjects();
+    await refreshSessionOwner(deviceId);
   }
 }
 

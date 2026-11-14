@@ -11,6 +11,7 @@ import { refreshProjects, refreshProjectsSoon } from "../actions";
 import { api } from "../api";
 import { activeDeviceContext } from "../deviceContext";
 import { getState } from "../store";
+import { deviceKeyForContext } from "../sessionIdentity";
 import type { RemoteBackend } from "./backend";
 import { isRemoteRequestError } from "./errors";
 import { remoteBackendFor } from "./runtime";
@@ -225,8 +226,9 @@ export function startRemoteSync(deviceId: string): void {
     deviceName,
     refreshProjects: () => refreshProjects(),
     refreshProjectsSoon: () => refreshProjectsSoon(),
-    notifyAttention: (event) =>
-      api.remoteAttentionNotify({
+    notifyAttention: (event) => {
+      const state = getState();
+      return api.remoteAttentionNotify({
         deviceId,
         deviceName,
         sessionId: event.sessionId,
@@ -236,7 +238,10 @@ export function startRemoteSync(deviceId: string): void {
         sequence: event.cursor.sequence,
         kind: event.kind,
         occurredAt: event.cursor.occurredAt,
-      }),
+        focusedDeviceId: deviceKeyForContext(state.activeDevice),
+        focusedSessionId: state.activeSessionId,
+      });
+    },
     isDocumentHidden: () => document.hidden,
     onVisibilityChange: (listener) => {
       document.addEventListener("visibilitychange", listener);

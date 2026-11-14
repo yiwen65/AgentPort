@@ -274,7 +274,10 @@ export async function removeDevice(
  * Test-connect: remote_connect followed by remote_disconnect. Measures the
  * round trip; the connection is always released, even on failure.
  */
-export async function testDeviceConnection(id: string): Promise<DeviceTestState> {
+export async function testDeviceConnection(
+  id: string,
+  options: { preserveConnection?: boolean } = {},
+): Promise<DeviceTestState> {
   const testing = { ...state.testing, [id]: { phase: "testing" } as DeviceTestState };
   setState({ testing });
   const started = Date.now();
@@ -289,10 +292,14 @@ export async function testDeviceConnection(id: string): Promise<DeviceTestState>
   } catch (cause) {
     result = { phase: "failed", error: deviceCommandError(cause) };
   } finally {
-    try {
-      await activeInvoker("remote_disconnect", { deviceId: id });
-    } catch {
-      // Disconnect is best-effort: a failed connect may leave nothing to close.
+    // A live multi-device connection is stronger than a probe: disconnecting
+    // it would silently tear down background panes. Reuse it instead.
+    if (!options.preserveConnection) {
+      try {
+        await activeInvoker("remote_disconnect", { deviceId: id });
+      } catch {
+        // Disconnect is best-effort: a failed connect may leave nothing to close.
+      }
     }
   }
   setState({ testing: { ...state.testing, [id]: result } });

@@ -44,11 +44,18 @@ import {
   type DeviceContext,
 } from "./deviceContext";
 import {
+  focusSessionKey,
+  reconnectActiveDevice,
   resetDeviceSwitchForTests,
   startupRestoreTarget,
   switchDevice,
 } from "./deviceSwitch";
 import { cacheLocalBootBase, resetLocalBootBaseForTests } from "./remoteBoot";
+import { resetDeviceConnectionsForTests } from "./deviceConnections";
+import {
+  deviceSnapshotFor,
+  resetDeviceSessionsForTests,
+} from "./deviceSessions";
 import {
   getState,
   emptyGitCenterState,
@@ -179,6 +186,8 @@ beforeEach(() => {
   window.localStorage.clear();
   resetDeviceContextForTests();
   resetDeviceSwitchForTests();
+  resetDeviceConnectionsForTests();
+  resetDeviceSessionsForTests();
   resetLocalBootBaseForTests();
   cacheLocalBootBase(localBoot);
   apiMock.boot.mockResolvedValue(localBoot);
@@ -207,14 +216,19 @@ describe("switchDevice", () => {
     expect(runtimeMock.remoteBackendFor).not.toHaveBeenCalled();
   });
 
-  it("switches local → remote: teardown, connect, remote boot applied", async () => {
+  it("switches local → remote without releasing local terminals", async () => {
     const backend = makeBackend();
     runtimeMock.remoteBackendFor.mockReturnValue(backend);
-    setState({ attachedIds: ["ses_local"], activeSessionId: "ses_local" });
+    setState({
+      projects: [localProject],
+      attachedIds: ["ses_local"],
+      activeSessionId: "ses_local",
+    });
 
     await switchDevice(remoteContext("dev_1"));
 
-    expect(terminalsMock.releaseTerminal).toHaveBeenCalledWith("ses_local");
+    expect(terminalsMock.releaseTerminal).not.toHaveBeenCalled();
+    expect(backend.client.disconnect).not.toHaveBeenCalled();
     expect(remoteSyncMock.stopRemoteSync).toHaveBeenCalled();
     expect(remoteSyncMock.startRemoteSync).toHaveBeenCalledWith("dev_1");
     expect(backend.client.connect).toHaveBeenCalledTimes(1);
@@ -226,6 +240,11 @@ describe("switchDevice", () => {
       capabilities: ["session.event_push"],
     });
     expect(s.projects.map((p) => p.id)).toEqual(["prj_remote"]);
+    // The old device is now a background source, so its still-mounted panes
+    // can resolve their Sessions immediately.
+    expect(deviceSnapshotFor("local")?.projects.map((p) => p.id)).toEqual([
+      "prj_local",
+    ]);
     expect(s.ready).toBe(true);
     expect(s.activeSessionId).toBeNull();
     expect(s.deviceSwitching).toBe(false);
@@ -235,7 +254,7 @@ describe("switchDevice", () => {
     expect(s.settings).toEqual(settings);
   });
 
-  it("switches remote → local: disconnects, drops the backend, local boot applied", async () => {
+  it("switches remote → local without disconnecting the remote device", async () => {
     const backend = makeBackend();
     runtimeMock.remoteBackendFor.mockReturnValue(backend);
     const previous = remoteContext("dev_1");
@@ -244,8 +263,9 @@ describe("switchDevice", () => {
 
     await switchDevice(LOCAL_DEVICE_CONTEXT);
 
-    expect(backend.client.disconnect).toHaveBeenCalledTimes(1);
-    expect(runtimeMock.dropRemoteBackend).toHaveBeenCalledWith("dev_1");
+    expect(backend.client.disconnect).not.toHaveBeenCalled();
+    expect(runtimeMock.dropRemoteBackend).not.toHaveBeenCalled();
+    expect(deviceSnapshotFor("dev_1")?.projects).toEqual([]);
     expect(apiMock.boot).toHaveBeenCalledTimes(1);
     const s = getState();
     expect(s.activeDevice.kind).toBe("local");
@@ -312,8 +332,8 @@ describe("switchDevice", () => {
     await switchDevice(remoteContext("dev_2"));
 
     const s = getState();
-    expect(backendA.client.disconnect).toHaveBeenCalledTimes(1);
-    expect(backendA.client.connect).toHaveBeenCalledTimes(1); // reconnected
+    expect(backendA.client.disconnect).not.toHaveBeenCalled();
+    expect(backendA.client.connect).toHaveBeenCalledTimes(1); // rollback dial
     expect(s.activeDevice.kind).toBe("remote");
     expect((s.activeDevice as { deviceId: string }).deviceId).toBe("dev_1");
     expect(s.deviceError).toContain("unreachable");
@@ -353,6 +373,59 @@ describe("switchDevice", () => {
     expect(gitCenter.locator).toBeNull();
     expect(gitCenter.caches).toEqual({});
     expect(hoverCardMock.clearCommitPreviewCache).toHaveBeenCalledTimes(1);
+  });
+
+  it("focuses a Session on another device by switching first", async () => {
+    const backend = makeBackend();
+    runtimeMock.remoteBackendFor.mockReturnValue(backend);
+    setState({ projects: [localProject] });
+
+    expect(await focusSessionKey("dev_1:ses_remote")).toBe(true);
+
+    expect(backend.client.connect).toHaveBeenCalledTimes(1);
+    expect(actionsMock.selectSession).toHaveBeenCalledWith("ses_remote", {
+      revealInSidebar: false,
+    });
+    expect(getState().activeDevice).toMatchObject({
+      kind: "remote",
+      deviceId: "dev_1",
+    });
+  });
+
+  it("focuses an already-active remote Session without rebooting", async () => {
+    const backend = makeBackend();
+    runtimeMock.remoteBackendFor.mockReturnValue(backend);
+    const remote = remoteContext("dev_1");
+    setDeviceContext(remote);
+    setState({ activeDevice: remote, projects: [remoteProject] });
+
+    expect(await focusSessionKey("dev_1:ses_remote")).toBe(true);
+
+    expect(backend.client.connect).not.toHaveBeenCalled();
+    expect(actionsMock.selectSession).toHaveBeenCalledWith("ses_remote");
+  });
+
+  it("reconnects the active remote device without a device switch", async () => {
+    const backend = makeBackend();
+    runtimeMock.remoteBackendFor.mockReturnValue(backend);
+    const remote = remoteContext("dev_1");
+    setDeviceContext(remote);
+    setState({
+      activeDevice: remote,
+      projects: [remoteProject],
+      activeSessionId: "ses_remote",
+    });
+
+    expect(await reconnectActiveDevice()).toBe(true);
+
+    expect(backend.client.connect).toHaveBeenCalledTimes(1);
+    expect(remoteSyncMock.stopRemoteSync).toHaveBeenCalled();
+    expect(remoteSyncMock.startRemoteSync).toHaveBeenCalledWith("dev_1");
+    const s = getState();
+    expect(s.activeDevice).toMatchObject({ kind: "remote", deviceId: "dev_1" });
+    expect(s.projects.map((project) => project.id)).toEqual(["prj_remote"]);
+    expect(s.deviceSwitching).toBe(false);
+    expect(s.deviceError).toBeNull();
   });
 
   it("serializes concurrent switches in call order", async () => {
