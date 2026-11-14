@@ -8,6 +8,7 @@ const apiMock = vi.hoisted(() => ({
 const actionsMock = vi.hoisted(() => ({
   applyThemeSettings: vi.fn(),
   readLastSelectedSessionId: vi.fn(),
+  refreshProjects: vi.fn().mockResolvedValue(false),
   selectSession: vi.fn(),
 }));
 const terminalsMock = vi.hoisted(() => ({
@@ -51,9 +52,13 @@ import {
   switchDevice,
 } from "./deviceSwitch";
 import { cacheLocalBootBase, resetLocalBootBaseForTests } from "./remoteBoot";
-import { resetDeviceConnectionsForTests } from "./deviceConnections";
+import {
+  connectDevice,
+  resetDeviceConnectionsForTests,
+} from "./deviceConnections";
 import {
   deviceSnapshotFor,
+  refreshDeviceSnapshot,
   resetDeviceSessionsForTests,
 } from "./deviceSessions";
 import {
@@ -294,6 +299,34 @@ describe("switchDevice", () => {
       }
     },
   );
+
+  it("paints a connected remote device from its snapshot before reconciling", async () => {
+    const backend = makeBackend();
+    runtimeMock.remoteBackendFor.mockReturnValue(backend);
+    await connectDevice("dev_1");
+    await refreshDeviceSnapshot("dev_1");
+    expect(deviceSnapshotFor("dev_1")?.projects.map((p) => p.id)).toEqual([
+      "prj_remote",
+    ]);
+
+    await switchDevice(remoteContext("dev_1"), {
+      focusSessionId: "ses_remote",
+    });
+
+    const s = getState();
+    expect(s.activeDevice).toMatchObject({
+      kind: "remote",
+      deviceId: "dev_1",
+    });
+    expect(s.projects.map((p) => p.id)).toEqual(["prj_remote"]);
+    expect(actionsMock.selectSession).toHaveBeenCalledWith("ses_remote", {
+      revealInSidebar: false,
+    });
+    expect(remoteSyncMock.startRemoteSync).toHaveBeenCalledWith("dev_1");
+    expect(apiMock.boot).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(backend.boot).toHaveBeenCalled());
+    expect(actionsMock.refreshProjects).toHaveBeenCalled();
+  });
 
   it("switches remote → local without disconnecting the remote device", async () => {
     const backend = makeBackend();
