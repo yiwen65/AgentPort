@@ -1,6 +1,7 @@
 //! Stdio-only Remote Bridge adapter. Protocol bytes use stdin/stdout; bounded
 //! diagnostics use stderr. This crate contains no listener or daemon path.
 
+pub mod adapter_cache;
 mod image;
 
 use agentport_remote_protocol::{

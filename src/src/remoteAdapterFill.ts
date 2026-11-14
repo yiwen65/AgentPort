@@ -10,7 +10,7 @@ import {
 import { remoteBackendFor } from "./remote/runtime";
 import { getState, setState } from "./store";
 
-const REMOTE_ADAPTER_MAX_AGE_MS = 5 * 60_000;
+const REMOTE_ADAPTER_MAX_AGE_MS = 2 * 60_000;
 const remoteAdapterFills = new Map<string, Promise<void>>();
 
 /**

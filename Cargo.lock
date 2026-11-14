@@ -232,8 +232,10 @@ dependencies = [
 name = "agentport-remote-bridge"
 version = "0.1.0"
 dependencies = [
+ "agentport-core",
  "agentport-remote-protocol",
  "agentport-service",
+ "libc",
  "serde",
  "serde_json",
  "sha2 0.10.9",
