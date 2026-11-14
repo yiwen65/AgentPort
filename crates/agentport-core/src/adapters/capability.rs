@@ -695,6 +695,16 @@ fn probe_agent_with_candidates(
     )
 }
 
+/// Probe the executable recorded when a Session was launched. A restart must
+/// reuse that build: PATH priority and installed versions change over time,
+/// and older agent builds may reject state written by a newer one.
+pub fn probe_recorded_executable(agent: AgentType, path: &Path) -> Option<AdapterInstall> {
+    if !path.is_file() {
+        return None;
+    }
+    probe_agent(agent, Some(path)).install
+}
+
 /// Full probe for one agent type. Without an explicit path, every discovered
 /// candidate remains visible and is tried in deterministic priority order.
 pub fn probe_agent(t: AgentType, confirmed_path: Option<&Path>) -> ProbeOutcome {

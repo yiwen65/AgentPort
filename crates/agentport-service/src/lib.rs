@@ -2309,8 +2309,7 @@ impl RemoteService for CoreService {
         if permission_requires_risk_ack(permission) && !params.risk_ack {
             return Err(ServiceError::RiskAcknowledgementRequired);
         }
-        let install =
-            install_for(self, session.adapter_type).map_err(ServiceError::NotExecutedCore)?;
+        let install = resume_install_for(self, &session).map_err(ServiceError::NotExecutedCore)?;
         let preset = preset_for(
             self,
             session.adapter_type,
@@ -2888,6 +2887,26 @@ impl RemoteService for CoreService {
 }
 
 type MaterializedLaunchEnvironment = (Vec<(String, String)>, Vec<(String, SecretValue)>);
+
+/// Restart reuses the executable recorded on the Session so resume stays with
+/// the agent build that owns the native transcript, not whatever install the
+/// adapter cache currently points at.
+fn resume_install_for(
+    service: &CoreService,
+    session: &Session,
+) -> agentport_core::Result<AdapterInstall> {
+    let current = install_for(service, session.adapter_type)?;
+    let Some(recorded) = session.command.first().filter(|path| !path.is_empty()) else {
+        return Ok(current);
+    };
+    if recorded == &current.executable_path {
+        return Ok(current);
+    }
+    Ok(
+        capability::probe_recorded_executable(session.adapter_type, std::path::Path::new(recorded))
+            .unwrap_or(current),
+    )
+}
 
 fn install_for(service: &CoreService, agent: AgentType) -> agentport_core::Result<AdapterInstall> {
     if let Some(install) = service.db.get_adapter(agent)? {
@@ -4791,6 +4810,74 @@ mod tests {
             }
             assert_eq!(service.db.get_session(id).unwrap().lifecycle, expected, "{case}");
         }
+    }
+
+    #[test]
+    fn resume_prefers_the_executable_recorded_on_the_session() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let service = CoreService::memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let cached = root.path().join("cached-epi");
+        std::fs::write(&cached, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&cached, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let install = adapters::adapter_for(AgentType::EasyPi)
+            .parse_capabilities(
+                &cached,
+                "0.1.0-beta.4",
+                "easy-pi - AI coding assistant\nEASY_PI_CODING_AGENT_DIR --session --session-id --session-dir --tui-mode",
+            )
+            .unwrap();
+        service.db.upsert_adapter(&install).unwrap();
+
+        let recorded = root.path().join("recorded-epi");
+        std::fs::write(
+            &recorded,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '0.84.2'; else printf 'easy-pi - AI coding assistant\\nEASY_PI_CODING_AGENT_DIR --session --session-id --session-dir --tui-mode\\n'; fi\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&recorded, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut session = Session {
+            id: "ses_recorded_executable".into(),
+            project_id: "prj_fixture".into(),
+            worktree_id: None,
+            preset_id: "pre_easy_pi_safe".into(),
+            title: "Recorded executable".into(),
+            cwd: root.path().to_string_lossy().into_owned(),
+            host_pid: None,
+            host_socket: None,
+            host_token: "fixture-only-token".into(),
+            lifecycle: Lifecycle::Exited,
+            agent_session_id: Some("9c1426e8-5516-4ee4-b180-1c1ebd4048e1".into()),
+            resume_precision: ResumePrecision::Exact,
+            adapter_type: AgentType::EasyPi,
+            transport: AgentTransport::Pty,
+            command: vec![
+                recorded.to_string_lossy().into_owned(),
+                "--session-dir".into(),
+                "/tmp/easy_pi".into(),
+                "--session-id".into(),
+                "9c1426e8-5516-4ee4-b180-1c1ebd4048e1".into(),
+                "--tui-mode".into(),
+                "fullscreen".into(),
+            ],
+            permission_mode: PermissionMode::Native,
+            pinned_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            archived_at: None,
+        };
+        let selected = resume_install_for(&service, &session).unwrap();
+        assert_eq!(selected.executable_path, recorded.to_string_lossy());
+        assert_eq!(selected.version_text, "0.84.2");
+
+        session.command = vec![root
+            .path()
+            .join("removed-epi")
+            .to_string_lossy()
+            .into_owned()];
+        let fallback = resume_install_for(&service, &session).unwrap();
+        assert_eq!(fallback.executable_path, cached.to_string_lossy());
     }
 
     #[test]

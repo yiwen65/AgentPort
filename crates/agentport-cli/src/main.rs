@@ -408,6 +408,22 @@ fn install_for(ctx: &Ctx, t: AgentType) -> Result<AdapterInstall> {
     }
 }
 
+/// Keep restart on the executable recorded for the Session; the adapter cache
+/// may resolve a different agent build than the one owning its transcript.
+fn resume_install_for(ctx: &Ctx, session: &Session) -> Result<AdapterInstall> {
+    let current = install_for(ctx, session.adapter_type)?;
+    let Some(recorded) = session.command.first().filter(|path| !path.is_empty()) else {
+        return Ok(current);
+    };
+    if recorded == &current.executable_path {
+        return Ok(current);
+    }
+    Ok(
+        capability::probe_recorded_executable(session.adapter_type, std::path::Path::new(recorded))
+            .unwrap_or(current),
+    )
+}
+
 fn preset_for(
     ctx: &Ctx,
     t: AgentType,
@@ -983,7 +999,7 @@ fn cmd_session_restart(ctx: &Ctx, args: &[String]) -> Result<()> {
         }
         _ => {}
     }
-    let install = install_for(ctx, session.adapter_type)?;
+    let install = resume_install_for(ctx, &session)?;
     let preset = preset_for(
         ctx,
         session.adapter_type,
