@@ -62,6 +62,7 @@ import {
   setActiveDevice,
   setState,
   shouldApplyLocalBackendEvent,
+  subscribe,
   type GitCheckoutUiState,
 } from "./store";
 import { emptyPaneLayout } from "./paneLayout";
@@ -253,6 +254,46 @@ describe("switchDevice", () => {
     expect(apiMock.getSettings).toHaveBeenCalled();
     expect(s.settings).toEqual(settings);
   });
+
+  it.each(["local-to-remote", "remote-to-local"] as const)(
+    "never emits the new device paired with the old project tree (%s)",
+    async (direction) => {
+      const backend = makeBackend();
+      runtimeMock.remoteBackendFor.mockReturnValue(backend);
+      const remote = { ...remoteContext("dev_1"), deviceName: "Box" };
+      if (direction === "remote-to-local") {
+        setDeviceContext(remote);
+        setState({ activeDevice: remote, projects: [remoteProject] });
+      } else {
+        setState({ projects: [localProject] });
+      }
+      const seen: Array<{ device: string; roots: string[] }> = [];
+      const unsubscribe = subscribe(() => {
+        const state = getState();
+        seen.push({
+          device:
+            state.activeDevice.kind === "local"
+              ? "local"
+              : state.activeDevice.deviceId,
+          roots: state.projects.map((project) => project.rootPath),
+        });
+      });
+
+      await switchDevice(
+        direction === "local-to-remote"
+          ? remote
+          : LOCAL_DEVICE_CONTEXT,
+      );
+      unsubscribe();
+
+      const target = direction === "local-to-remote" ? "dev_1" : "local";
+      const staleRoot =
+        direction === "local-to-remote" ? "/tmp/local" : "/srv/linux";
+      for (const state of seen) {
+        if (state.device === target) expect(state.roots).not.toContain(staleRoot);
+      }
+    },
+  );
 
   it("switches remote → local without disconnecting the remote device", async () => {
     const backend = makeBackend();

@@ -925,8 +925,9 @@ function sessionScopedState(
   projects: ProjectView[],
   alivePlainIds: Set<string>,
   options: { removedKey?: string } = {},
+  deviceContext: DeviceContext = s.activeDevice,
 ): Partial<AppState> {
-  const deviceKey = deviceKeyForContext(s.activeDevice);
+  const deviceKey = deviceKeyForContext(deviceContext);
   // Panes owned by OTHER devices survive an active-device snapshot: only the
   // active device's tree is authoritative for pruning its own keys.
   const activeAlive = new Set<string>();
@@ -1037,8 +1038,13 @@ function sessionScopedState(
  * session status already observed through an event stream. This is also the
  * single store-side cleanup point for session-scoped UI caches.
  */
-export function applyProjectsSnapshot(projects: ProjectView[]) {
+export function applyProjectsSnapshot(
+  projects: ProjectView[],
+  nextActiveDevice?: DeviceContext,
+) {
+  if (nextActiveDevice) setDeviceContext(nextActiveDevice);
   update((s) => {
+    const activeDevice = nextActiveDevice ?? s.activeDevice;
     const worktreeIds = new Set(projects.flatMap((p) => p.worktrees.map((w) => w.id)));
     const projectIds = new Set(projects.map((p) => p.id));
     const currentSessions = new Map<string, SessionView>();
@@ -1058,8 +1064,9 @@ export function applyProjectsSnapshot(projects: ProjectView[]) {
       }),
     }));
     const aliveSessionIds = sessionIds(nextProjects);
-    const activeDeviceKey = deviceKeyForContext(s.activeDevice);
+    const activeDeviceKey = deviceKeyForContext(activeDevice);
     return {
+      ...(nextActiveDevice ? { activeDevice: nextActiveDevice } : {}),
       projectsAuthorityRevision: s.projectsAuthorityRevision + 1,
       projects: nextProjects,
       archivingSessionIds: s.archivingSessionIds.filter((key) => {
@@ -1083,7 +1090,7 @@ export function applyProjectsSnapshot(projects: ProjectView[]) {
       revealedWorktrees: Object.fromEntries(
         Object.entries(s.revealedWorktrees).filter(([id]) => worktreeIds.has(id)),
       ),
-      ...sessionScopedState(s, nextProjects, aliveSessionIds),
+      ...sessionScopedState(s, nextProjects, aliveSessionIds, {}, activeDevice),
     };
   });
 }

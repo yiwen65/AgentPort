@@ -27,7 +27,6 @@ import {
   flattenSessions,
   getState,
   invalidateProjectsSnapshotRequests,
-  setActiveDevice,
   setState,
   toast,
 } from "./store";
@@ -158,11 +157,12 @@ async function doSwitchDevice(
   setState({ deviceSwitching: true });
   try {
     if (initialized) switchTeardown();
-    const boot = await connectAndBoot(target);
+    const { boot, context } = await connectAndBoot(target);
     await applyBootInfo(boot, {
       isCancelled: stale,
+      activeDevice: context,
       // connectAndBoot already probed a remote target.
-      skipBackgroundProbeRefresh: target.kind === "remote",
+      skipBackgroundProbeRefresh: context.kind === "remote",
     });
     if (!stale()) {
       if (target.kind === "remote") startRemoteSync(target.deviceId);
@@ -237,20 +237,29 @@ function readRememberedSessionId(target: DeviceContext): string | null {
   }
 }
 
-async function connectAndBoot(target: DeviceContext): Promise<BootInfo> {
+interface ConnectedBoot {
+  boot: BootInfo;
+  context: DeviceContext;
+}
+
+/**
+ * Fetch the target device's boot while the old context stays active. The
+ * active context flips in applyBootInfo immediately before its projects land,
+ * so the workspace never mixes the new device with the old project tree.
+ */
+async function connectAndBoot(target: DeviceContext): Promise<ConnectedBoot> {
   if (target.kind === "local") {
-    setActiveDevice(LOCAL_DEVICE_CONTEXT);
-    return api.boot();
+    return { boot: await api.boot(), context: LOCAL_DEVICE_CONTEXT };
   }
   const hello = await connectDevice(target.deviceId);
   const backend = remoteBackendFor(target.deviceId);
-  setActiveDevice({
+  const context: DeviceContext = {
     kind: "remote",
     deviceId: target.deviceId,
     deviceName: hello.deviceName || target.deviceName,
     capabilities: hello.capabilities,
-  });
-  return composeRemoteBoot(backend);
+  };
+  return { boot: await composeRemoteBoot(backend), context };
 }
 
 async function rollbackTo(
@@ -259,20 +268,23 @@ async function rollbackTo(
 ): Promise<boolean> {
   try {
     setState({ activeSessionId: null });
-    const boot = await connectAndBoot(previous);
+    const { boot, context } = await connectAndBoot(previous);
     await applyBootInfo(boot, {
       isCancelled: stale,
-      skipBackgroundProbeRefresh: previous.kind === "remote",
+      activeDevice: context,
+      skipBackgroundProbeRefresh: context.kind === "remote",
     });
-    if (!stale() && previous.kind === "remote") {
-      startRemoteSync(previous.deviceId);
+    if (!stale() && context.kind === "remote") {
+      startRemoteSync(context.deviceId);
     }
     return true;
   } catch {
     // The previous device is gone too; the local device always exists.
-    setActiveDevice(LOCAL_DEVICE_CONTEXT);
     try {
-      await applyBootInfo(await api.boot(), { isCancelled: stale });
+      await applyBootInfo(await api.boot(), {
+        isCancelled: stale,
+        activeDevice: LOCAL_DEVICE_CONTEXT,
+      });
       return true;
     } catch (fatal) {
       if (!stale()) setState({ ready: true, bootError: errorText(fatal) });

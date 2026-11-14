@@ -4,6 +4,7 @@
 // New desktop code (desktop multi-device switching).
 
 import { api } from "./api";
+import type { DeviceContext } from "./deviceContext";
 import {
   applyThemeSettings,
   readLastSelectedSessionId,
@@ -24,6 +25,12 @@ import type { BootInfo } from "./types";
 export interface ApplyBootHooks {
   /** Return true to abort between await points (unmount / newer switch). */
   isCancelled?: () => boolean;
+  /**
+   * Device switches provide the target context here so it lands in the same
+   * store update as its project tree; components never observe the new device
+   * paired with the old projects.
+   */
+  activeDevice?: DeviceContext;
   /**
    * Runs after the state snapshot is applied and before initial selection.
    * The initial boot replays its buffered backend events here so selection
@@ -54,7 +61,7 @@ export async function applyBootInfo(
   if (cancelled()) return;
   applyTerminalLanguage();
   if (cancelled()) return;
-  applyProjectsSnapshot(info.projects);
+  applyProjectsSnapshot(info.projects, hooks.activeDevice);
   setState({
     ready: true,
     platform: info.platform,
