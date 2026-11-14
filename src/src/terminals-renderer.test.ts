@@ -294,6 +294,10 @@ import {
   writeMarker,
 } from "./terminals";
 import { bytesToB64 } from "./api";
+import {
+  resetRemoteBackendsForTests,
+  setRemoteBackendFactoryForTests,
+} from "./remote/runtime";
 import { applyUiLanguage } from "./i18n";
 import { applyProjectsSnapshot, emptyRuntime, getState, setState } from "./store";
 import {
@@ -1077,6 +1081,70 @@ describe("terminal renderer", () => {
       600,
       { expectedRevision: 12, sourceKind: "desktop" },
     );
+  });
+
+  it("publishes automatic remote resize against the plain attachment id", async () => {
+    vi.useRealTimers();
+    const resizePty = vi.fn().mockResolvedValue(undefined);
+    resetRemoteBackendsForTests();
+    setRemoteBackendFactoryForTests(
+      () =>
+        ({
+          attachSession: vi.fn().mockResolvedValue({
+            remote: true,
+            attachmentId: "att-remote",
+            sessionId: "ses_b",
+            hostPid: null,
+            protocol: null,
+            childAlive: true,
+            logBytes: null,
+            status: null,
+            agentSessionId: null,
+            runId: "run-1",
+            runOrdinal: 1,
+            logCursor: null,
+            terminalGeometry: null,
+          }),
+          detachSession: vi.fn().mockResolvedValue(undefined),
+          resizePty,
+        }) as never,
+    );
+    try {
+      setState({
+        activeSessionId: "ses_b",
+        activeDevice: {
+          kind: "remote",
+          deviceId: "dev_b",
+          deviceName: "B",
+          capabilities: [],
+        },
+      });
+      const container = document.createElement("div");
+      Object.defineProperties(container, {
+        clientWidth: { configurable: true, value: 800 },
+        clientHeight: { configurable: true, value: 600 },
+      });
+      mountTerminal("dev_b:ses_b", container);
+      const handle = getHandle("dev_b:ses_b")!;
+      await vi.waitFor(() => expect(handle.attached).toBe(true));
+      // RemoteBackend keys its attachment map by the plain session id. A
+      // device-qualified key misses the map, the caller swallows the resulting
+      // rejection, and the remote PTY silently keeps its old columns.
+      await vi.waitFor(() =>
+        expect(resizePty).toHaveBeenCalledWith(
+          "ses_b",
+          handle.term.cols,
+          handle.term.rows,
+          0,
+          0,
+        ),
+      );
+      expect(resizePty.mock.calls.map(([sessionId]) => sessionId)).not.toContain(
+        "dev_b:ses_b",
+      );
+    } finally {
+      resetRemoteBackendsForTests();
+    }
   });
 
   it("preserves a user's scrollback position when fitting reflows the viewport", () => {

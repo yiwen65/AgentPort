@@ -3223,8 +3223,14 @@ export function fitHandle(
           65535,
           Math.max(0, Math.round((rect?.height ?? 0) * scale)),
         );
-        api
-          .resizePty(handle.sessionId, cols, rows, pixelWidth, pixelHeight)
+        apiForHandle(handle)
+          .resizePty(
+            handle.plainSessionId,
+            cols,
+            rows,
+            pixelWidth,
+            pixelHeight,
+          )
           .catch(() => undefined);
       }, 100),
     );
