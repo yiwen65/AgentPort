@@ -270,9 +270,8 @@ describe("active Agent sidebar", () => {
     expect(screen.getAllByText("Apollo · main")).toHaveLength(2);
     expect(screen.getByText("Apollo · feature/live-view")).toBeTruthy();
     expect(screen.getByText("Notes")).toBeTruthy();
-    // The active list labels its owner device above each title and marks the
-    // owning agent in the bottom-right corner.
-    expect(screen.getAllByText("本机")).toHaveLength(4);
+    // Local rows stay label-free; the owning agent still marks the corner.
+    expect(screen.queryByText("本机")).toBeNull();
     expect(document.querySelectorAll(".session-agent-badge")).toHaveLength(4);
     expect(screen.queryByRole("button", { name: "Apollo" })).toBeNull();
     expect(screen.queryByLabelText("折叠所有项目与 Session")).toBeNull();
@@ -298,7 +297,7 @@ describe("active Agent sidebar", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Needs review，Codex，来源 本机 · Apollo · main",
+        name: "Needs review，Codex，来源 Apollo · main",
       }),
     );
 

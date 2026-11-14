@@ -31,6 +31,7 @@ import {
   activeSessionKey,
   deviceKeyForContext,
   sessionKeyFor,
+  LOCAL_DEVICE_KEY,
 } from "../sessionIdentity";
 import {
   activeDeviceKeyOf,
@@ -1258,8 +1259,9 @@ export function orderActiveAgentSessionsForSidebar(
 interface ActiveAgentSessionEntry {
   key: string;
   deviceId: string;
-  deviceName: string;
-  deviceAccent: PaneGroupAccent;
+  /** Undefined for the local device: its rows stay label-free. */
+  deviceName?: string;
+  deviceAccent?: PaneGroupAccent;
   sourceLabel: string;
   session: SessionView;
   project: ProjectView;
@@ -1432,9 +1434,12 @@ function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
 
     const entries: ActiveAgentSessionEntry[] = [];
     const deviceAccents = deviceAccentAssignments(
-      sources.map((source) => source.deviceId),
+      sources
+        .map((source) => source.deviceId)
+        .filter((deviceId) => deviceId !== LOCAL_DEVICE_KEY),
     );
     for (const source of sources) {
+      const localSource = source.deviceId === LOCAL_DEVICE_KEY;
       for (const project of source.projects) {
         let projectHasActiveSession = false;
         for (const session of project.sessions) {
@@ -1457,8 +1462,10 @@ function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
           entries.push({
             key,
             deviceId: source.deviceId,
-            deviceName: source.deviceName,
-            deviceAccent: deviceAccents.get(source.deviceId) ?? "blue",
+            deviceName: localSource ? undefined : source.deviceName,
+            deviceAccent: localSource
+              ? undefined
+              : deviceAccents.get(source.deviceId),
             sourceLabel: projectLabel,
             session,
             project,

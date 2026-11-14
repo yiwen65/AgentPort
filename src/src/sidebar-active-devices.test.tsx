@@ -194,7 +194,7 @@ describe("cross-device active sidebar", () => {
 
   afterEach(cleanup);
 
-  it("shows equal Session ids from different devices with device labels", async () => {
+  it("shows equal Session ids from different devices with remote device labels", async () => {
     render(<Sidebar collapsed={false} width={296} />);
 
     await waitFor(() => {
@@ -202,8 +202,8 @@ describe("cross-device active sidebar", () => {
       expect(screen.getByText("RemoteProj")).toBeTruthy();
     });
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
-    // Device names sit above the Session title and get distinct tints.
-    expect(screen.getAllByText("本机")).toHaveLength(1);
+    // Local rows stay label-free; only the remote device gets a colored label.
+    expect(screen.queryByText("本机")).toBeNull();
     expect(screen.getAllByText("Beta")).toHaveLength(1);
     expect(screen.queryByText("Gamma")).toBeNull();
     const accents = screen
@@ -213,8 +213,7 @@ describe("cross-device active sidebar", () => {
           .querySelector("[data-device-accent]")
           ?.getAttribute("data-device-accent"),
       );
-    expect(accents.filter(Boolean)).toHaveLength(2);
-    expect(new Set(accents).size).toBe(2);
+    expect(accents.filter(Boolean)).toHaveLength(1);
     // Every row exposes its owning agent in the bottom-right corner.
     expect(document.querySelectorAll(".session-agent-badge")).toHaveLength(2);
   });
