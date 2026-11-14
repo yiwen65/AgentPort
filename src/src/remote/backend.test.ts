@@ -492,6 +492,35 @@ describe("agents/presets/worktrees/branches", () => {
     expect(cachedRemoteAdapters("dev-1")).toEqual([{ agentType: "pi" }]);
   });
 
+  it("listCachedAdapterInstalls reads recorded installs without probing", async () => {
+    request.mockResolvedValueOnce([
+      {
+        agent: "claude",
+        displayName: "Claude",
+        commandNames: ["claude"],
+        install: {
+          agentType: "claude",
+          executablePath: "/usr/bin/claude",
+        },
+        notificationSetup: null,
+      },
+      {
+        agent: "pi",
+        displayName: "Pi",
+        commandNames: ["pi"],
+        install: null,
+        notificationSetup: null,
+      },
+    ]);
+    const backend = makeBackend();
+    const installs = await backend.listCachedAdapterInstalls();
+    expect(request).toHaveBeenCalledWith("agent.supported", {});
+    expect(request).not.toHaveBeenCalledWith("agent.probe", expect.anything());
+    expect(installs).toEqual([
+      { agentType: "claude", executablePath: "/usr/bin/claude" },
+    ]);
+  });
+
   it("notificationSetups extracts only reported setups from agent.supported", async () => {
     request.mockResolvedValueOnce([
       {

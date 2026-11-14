@@ -375,9 +375,9 @@ function activateRemoteFromProjects(
 }
 
 /**
- * Adapter discovery runs in single-agent steps with gaps, so terminal input
- * queued between probes is serviced promptly. Delay the start until the
- * switched workspace has settled, and let the dialog path reuse the cache.
+ * Adapter refresh reads the Host's cached install list and never probes, so it
+ * cannot stall terminal I/O. Delay it until the switched workspace settles;
+ * explicit rechecks keep the Host-side cache current.
  */
 function scheduleRemoteAdapterFill(deviceId: string, stale: () => boolean) {
   window.setTimeout(() => {

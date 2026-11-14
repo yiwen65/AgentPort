@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const apiMock = vi.hoisted(() => ({
-  listSupportedAgents: vi.fn(),
-  probeAgent: vi.fn(),
+const backendMock = vi.hoisted(() => ({
+  listCachedAdapterInstalls: vi.fn(),
+}));
+const runtimeMock = vi.hoisted(() => ({
+  remoteBackendFor: vi.fn(),
 }));
 
-vi.mock("./api", () => ({
-  api: apiMock,
-  errorText: (error: unknown) => String(error),
+vi.mock("./remote/runtime", () => ({
+  remoteBackendFor: runtimeMock.remoteBackendFor,
 }));
 
 import { LOCAL_DEVICE_CONTEXT } from "./deviceContext";
@@ -40,9 +41,10 @@ const claude: AdapterInstall = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.useFakeTimers();
   resetRemoteAdapterCacheForTests();
   resetRemoteAdapterFillForTests();
+  runtimeMock.remoteBackendFor.mockReturnValue(backendMock);
+  backendMock.listCachedAdapterInstalls.mockResolvedValue([claude]);
   setActiveDevice({
     kind: "remote",
     deviceId: "dev_1",
@@ -50,66 +52,40 @@ beforeEach(() => {
     capabilities: [],
   });
   setState({ adapters: [] });
-  apiMock.listSupportedAgents.mockResolvedValue([
-    { agent: "claude", displayName: "Claude", commandNames: ["claude"] },
-    { agent: "pi", displayName: "Pi", commandNames: ["pi"] },
-  ]);
-  apiMock.probeAgent.mockImplementation(async (agent: string) => ({
-    agent,
-    displayName: agent,
-    state: agent === "claude" ? "available" : "unavailable",
-    reason: null,
-    reasonCode: null,
-    reasonDetail: null,
-    install: agent === "claude" ? claude : null,
-    candidates: [],
-  }));
 });
 
 afterEach(() => {
-  vi.useRealTimers();
   setActiveDevice(LOCAL_DEVICE_CONTEXT);
   resetRemoteAdapterCacheForTests();
   resetRemoteAdapterFillForTests();
 });
 
-it("fills agents one at a time instead of issuing a blocking probe-all", async () => {
+it("fills adapters from the Host cache without running probes", async () => {
   refreshActiveRemoteAdaptersIfStale();
 
-  await vi.advanceTimersByTimeAsync(0);
-  expect(apiMock.probeAgent).toHaveBeenCalledTimes(1);
-  expect(apiMock.probeAgent).toHaveBeenLastCalledWith("claude", null);
-  expect(getState().adapters).toEqual([claude]);
-
-  await vi.advanceTimersByTimeAsync(250);
-  expect(apiMock.probeAgent).toHaveBeenCalledTimes(2);
-  expect(apiMock.probeAgent).toHaveBeenLastCalledWith("pi", null);
-
-  await vi.advanceTimersByTimeAsync(250);
-  expect(apiMock.probeAgent).toHaveBeenCalledTimes(2);
-  expect(getState().adapters).toEqual([claude]);
+  await vi.waitFor(() => expect(getState().adapters).toEqual([claude]));
+  expect(backendMock.listCachedAdapterInstalls).toHaveBeenCalledTimes(1);
   expect(cachedRemoteAdapters("dev_1")).toEqual([claude]);
 });
 
-it("reuses cached confirmed paths when probing", async () => {
-  rememberRemoteAdapters("dev_1", [claude]);
+it("leaves the fallback adapter list when the Host cache is empty", async () => {
+  backendMock.listCachedAdapterInstalls.mockResolvedValueOnce([]);
 
-  refreshActiveRemoteAdaptersIfStale(-1);
-  await vi.advanceTimersByTimeAsync(0);
-
-  expect(apiMock.probeAgent).toHaveBeenLastCalledWith(
-    "claude",
-    "/usr/bin/claude",
+  refreshActiveRemoteAdaptersIfStale();
+  await vi.waitFor(() =>
+    expect(backendMock.listCachedAdapterInstalls).toHaveBeenCalledTimes(1),
   );
-  await vi.advanceTimersByTimeAsync(600);
+  await Promise.resolve();
+
+  expect(getState().adapters).toEqual([]);
+  expect(cachedRemoteAdapters("dev_1")).toBeNull();
 });
 
 it("does nothing while the cached adapter list is fresh", async () => {
   rememberRemoteAdapters("dev_1", [claude]);
 
   refreshActiveRemoteAdaptersIfStale();
-  await vi.advanceTimersByTimeAsync(0);
+  await Promise.resolve();
 
-  expect(apiMock.listSupportedAgents).not.toHaveBeenCalled();
-  expect(apiMock.probeAgent).not.toHaveBeenCalled();
+  expect(runtimeMock.remoteBackendFor).not.toHaveBeenCalled();
 });

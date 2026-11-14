@@ -4,6 +4,7 @@
 // New desktop code.
 
 import type {
+  AdapterInstall,
   AddProjectResult,
   ArchivedSessionView,
   AutoStashRecord,
@@ -499,6 +500,21 @@ export class RemoteBackend {
       "agent.supported",
     );
     return summaries.map(remoteSupportedAgentToSupportedAgent);
+  }
+
+  /**
+   * Adapter installs the remote Host already recorded. This reads the Host's
+   * cache and never runs a probe, so it is safe to refresh in the background
+   * while the interactive bridge is carrying session traffic.
+   */
+  async listCachedAdapterInstalls(): Promise<AdapterInstall[]> {
+    const summaries = await this.request<RemoteSupportedAgentSummary[]>(
+      "agent.supported",
+    );
+    return summaries.flatMap((summary) => {
+      const install = summary.install as AdapterInstall | null;
+      return install ? [install] : [];
+    });
   }
 
   /**
