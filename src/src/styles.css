@@ -1885,13 +1885,7 @@ body.is-project-dragging .tree-row.project {
 /* ------------------------------------------------------------------ */
 
 .git-center {
-  background:
-    radial-gradient(
-      100% 55% at 50% -18%,
-      color-mix(in srgb, var(--accent) 7%, transparent),
-      transparent 64%
-    ),
-    var(--settings-surface);
+  background: var(--settings-surface);
   color: var(--text);
   overflow: hidden;
 }
