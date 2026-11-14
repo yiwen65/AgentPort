@@ -137,9 +137,15 @@ export type TerminalViewportCommand =
 
 type TerminalViewportMode = "follow" | "reading" | "locating";
 
+/** Consecutive wheel events closer than this belong to one wheel/trackpad
+ * gesture. Momentum events arrive faster than xterm updates its buffer, so the
+ * native viewport must not be re-aligned between them. */
+const TERMINAL_WHEEL_GESTURE_GAP_MS = 250;
+
 /** Single authority for user and renderer viewport mutations. */
 class TerminalViewportController {
   private intentRevision = 0;
+  private lastWheelAt = Number.NEGATIVE_INFINITY;
   private mode: TerminalViewportMode = "follow";
 
   constructor(private readonly term: Terminal) {}
@@ -238,6 +244,35 @@ class TerminalViewportController {
       (Math.min(buffer.viewportY, buffer.baseY) / buffer.baseY) * maxScrollTop;
     if (Math.abs(viewport.scrollTop - desired) < 1) return;
     viewport.scrollTop = desired;
+  }
+
+  /** Reconcile the native layer only at the start of a wheel gesture. Within a
+   * gesture xterm's buffer legitimately trails the DOM until it handles the
+   * queued scroll events; syncing then would pull the viewport back and make
+   * scrolling feel stuck at the bottom. */
+  beginWheelGesture(now = performance.now()) {
+    const freshGesture =
+      now - this.lastWheelAt >= TERMINAL_WHEEL_GESTURE_GAP_MS;
+    this.lastWheelAt = now;
+    if (freshGesture) this.synchronizeNativeViewport();
+    this.noteUserIntent();
+  }
+
+  /** Restore a reading position captured as a distance from the tail. Fenced
+   * by the intent revision so a gesture during snapshot restore wins. */
+  restoreReadingDistance(distance: number, expectedRevision: number): boolean {
+    if (this.intentRevision !== expectedRevision || distance <= 0) return false;
+    const buffer = this.term.buffer.active;
+    if (buffer.type !== "normal" || buffer.baseY <= 0) return false;
+    const target = Math.max(0, buffer.baseY - distance);
+    this.term.scrollToLine(target);
+    this.mode = target >= buffer.baseY ? "follow" : "reading";
+    if (target < buffer.baseY) {
+      // Treat the restored position as intent so replay writes queued behind
+      // the checkpoint cannot repair this reading position back to the tail.
+      this.noteUserIntent("reading");
+    }
+    return target < buffer.baseY;
   }
 
   restoreAfterFit(line: number) {
@@ -1615,6 +1650,7 @@ export function getOrCreateHandle(key: string): TermHandle {
       fullscreenPi && snapshot.mouseEncoding === "default"
         ? "sgr"
         : snapshot.mouseEncoding;
+    const restoreViewportRevision = handle.viewport.revision;
     handle.writes.write(
       snapshot.content +
         (fullscreenPi
@@ -1625,6 +1661,14 @@ export function getOrCreateHandle(key: string): TermHandle {
           : mouseEncodingSequence(restoredMouseEncoding)),
       () => {
         if (handles.get(key) !== handle) return;
+        if (
+          handle.viewport.restoreReadingDistance(
+            snapshot.viewportFromBottom,
+            restoreViewportRevision,
+          )
+        ) {
+          updateScrolledUp(handle);
+        }
         handle.displayRenderPending = true;
         handle.term.refresh(0, Math.max(0, handle.term.rows - 1));
       },
@@ -1822,6 +1866,8 @@ interface TerminalSnapshot {
   rows: number;
   content: string;
   mouseEncoding: TerminalMouseEncoding;
+  /** Reading distance from the tail in lines; 0 keeps the restored tail. */
+  viewportFromBottom: number;
 }
 
 const TERMINAL_SNAPSHOT_STORAGE_PREFIX = "agentport:terminal-snapshot:";
@@ -1926,6 +1972,12 @@ function readTerminalSnapshot(sessionId: string): TerminalSnapshot | null {
     ) {
       return null;
     }
+    const viewportFromBottom =
+      typeof parsed.viewportFromBottom === "number" &&
+      Number.isFinite(parsed.viewportFromBottom) &&
+      parsed.viewportFromBottom > 0
+        ? Math.floor(parsed.viewportFromBottom)
+        : 0;
     const snapshot: TerminalSnapshot = {
       version: TERMINAL_SNAPSHOT_VERSION,
       cursor: parsed.cursor,
@@ -1933,6 +1985,7 @@ function readTerminalSnapshot(sessionId: string): TerminalSnapshot | null {
       rows: parsed.rows,
       content: parsed.content,
       mouseEncoding: legacy ? "default" : parsed.mouseEncoding!,
+      viewportFromBottom,
     };
     if (legacy) {
       const encoded = JSON.stringify(snapshot);
@@ -2031,6 +2084,14 @@ function writeTerminalSnapshot(sessionId: string, raw: string): boolean {
   }
 }
 
+/** Lines between the top of the viewport and the tail; 0 means following. */
+function terminalViewportFromBottom(handle: TermHandle): number {
+  const buffer = handle.term.buffer.active;
+  return buffer.type === "normal"
+    ? Math.max(0, Math.floor(buffer.baseY - buffer.viewportY))
+    : 0;
+}
+
 function storeTerminalSnapshot(
   handle: TermHandle,
   cursor: LogCursorView,
@@ -2040,6 +2101,7 @@ function storeTerminalSnapshot(
   try {
     const content = serializeTerminalCheckpoint(handle);
     if (content === null) return false;
+    const viewportFromBottom = terminalViewportFromBottom(handle);
     const snapshot: TerminalSnapshot = {
       version: TERMINAL_SNAPSHOT_VERSION,
       cursor,
@@ -2047,6 +2109,7 @@ function storeTerminalSnapshot(
       rows: handle.term.rows,
       content,
       mouseEncoding: handle.mouseEncoding,
+      viewportFromBottom,
     };
     const encoded = JSON.stringify(snapshot);
     if (!writeTerminalSnapshot(handle.sessionId, encoded)) return false;
@@ -2079,7 +2142,10 @@ function persistTerminalSnapshotBeforeRelease(
     cached.cursor.runId === cursor.runId &&
     cached.cursor.runOrdinal === cursor.runOrdinal &&
     cached.cursor.generation === cursor.generation &&
-    cached.cursor.offset === cursor.offset
+    cached.cursor.offset === cursor.offset &&
+    // Scrolling changes the reading position without touching content, so the
+    // cached checkpoint is only reusable when it captured this position too.
+    cached.viewportFromBottom === terminalViewportFromBottom(handle)
   ) {
     return Promise.resolve(true);
   }
@@ -2487,8 +2553,7 @@ function installViewportIntentTracking(
     // xterm reads `.xterm-viewport.scrollTop` for the wheel delta. A stale DOM
     // position here would be translated into a buffer jump (typically to row
     // 0), so reconcile the native layer before xterm handles the gesture.
-    handle.viewport.synchronizeNativeViewport();
-    handle.viewport.noteUserIntent();
+    handle.viewport.beginWheelGesture();
   };
   container.addEventListener("wheel", onWheel, { capture: true, passive: true });
   return () => container.removeEventListener("wheel", onWheel, true);

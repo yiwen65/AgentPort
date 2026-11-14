@@ -1188,6 +1188,35 @@ describe("terminal renderer", () => {
     expect(nativeViewport.scrollTop).toBe(0);
   });
 
+  it("does not re-align the native viewport within one wheel gesture", () => {
+    const container = document.createElement("div");
+    Object.defineProperties(container, {
+      clientWidth: { configurable: true, value: 800 },
+      clientHeight: { configurable: true, value: 600 },
+    });
+    mountTerminal("renderer-test", container);
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.buffer.active.baseY = 1_000;
+    terminal.buffer.active.viewportY = 1_000;
+    const nativeViewport = document.createElement("div");
+    nativeViewport.className = "xterm-viewport";
+    Object.defineProperties(nativeViewport, {
+      clientHeight: { configurable: true, value: 500 },
+      scrollHeight: { configurable: true, value: 10_000 },
+    });
+    nativeViewport.scrollTop = 9_500;
+    terminal.element?.appendChild(nativeViewport);
+
+    container.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
+    // xterm moved the native viewport for the first event, but its scroll
+    // event (and therefore the buffer) has not caught up yet.
+    nativeViewport.scrollTop = 9_460;
+    container.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
+
+    expect(nativeViewport.scrollTop).toBe(9_460);
+  });
+
   it("does not queue a repair that can override the user's next upward scroll", () => {
     const container = document.createElement("div");
     Object.defineProperties(container, {
@@ -3913,6 +3942,80 @@ describe("terminal renderer", () => {
     } | null;
     expect(snapshot?.content).toBe("release checkpoint");
     expect(snapshot?.cursor?.offset).toBe(42);
+    localStorage.removeItem(key);
+  });
+
+  it("records the reading distance from the tail in a release checkpoint", async () => {
+    const key = "agentport:terminal-snapshot:v2:renderer-test";
+    localStorage.removeItem(key);
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const handle = getHandle("renderer-test")!;
+    handle.logCursor = {
+      runId: "run_position",
+      runOrdinal: 1,
+      generation: 0,
+      offset: 7,
+    };
+    handle.displayReady = true;
+    handle.attached = true;
+    handle.attachmentId = 1;
+    terminal.buffer.active.baseY = 1_000;
+    terminal.buffer.active.viewportY = 700;
+    vi.mocked(handle.serialize.serialize).mockReturnValue("position checkpoint");
+
+    const released = releaseTerminal("renderer-test");
+    invokeWriteCallback(
+      terminal.write.mock.calls[terminal.write.mock.calls.length - 1],
+    );
+    await released;
+
+    const snapshot = JSON.parse(localStorage.getItem(key) ?? "null") as {
+      content?: string;
+      viewportFromBottom?: number;
+    } | null;
+    expect(snapshot?.content).toBe("position checkpoint");
+    expect(snapshot?.viewportFromBottom).toBe(300);
+    localStorage.removeItem(key);
+  });
+
+  it("restores the captured reading distance after re-entry", () => {
+    const key = "agentport:terminal-snapshot:v2:renderer-test";
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        version: 2,
+        cursor: {
+          runId: "run_1",
+          runOrdinal: 1,
+          generation: 0,
+          offset: 1,
+        },
+        cols: 80,
+        rows: 24,
+        content: "position checkpoint",
+        mouseEncoding: "default",
+        viewportFromBottom: 300,
+      }),
+    );
+
+    mountTerminal("renderer-test", document.createElement("div"));
+
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    terminal.buffer.active.baseY = 1_000;
+    terminal.buffer.active.viewportY = 1_000;
+    const checkpointWrite = terminal.write.mock.calls.find(
+      ([data, callback]) =>
+        data === "position checkpoint" && typeof callback === "function",
+    );
+    invokeWriteCallback(checkpointWrite);
+
+    expect(terminal.scrollToLine).toHaveBeenCalledWith(700);
+    expect(getState().runtime["renderer-test"]?.scrolledUp).toBe(true);
     localStorage.removeItem(key);
   });
 
