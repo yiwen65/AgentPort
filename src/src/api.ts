@@ -581,8 +581,18 @@ export const localApi = {
     invoke<{ imported: string[]; skipped: string[]; nativeCoverage: NativeCoverageSummary }>("backup_restore", { path, agent }),
   search: (query: string, limit: number | null) =>
     invoke<SearchResult>("search", { query, limit }),
-  getNativeHistory: (sessionId: string, cursor: string | null, limit = 200) =>
-    invoke<HistoryPage>("get_native_history", { sessionId, cursor, limit }),
+  getNativeHistory: (
+    sessionId: string,
+    cursor: string | null,
+    limit = 200,
+    includeToolResults = true,
+  ) =>
+    invoke<HistoryPage>("get_native_history", {
+      sessionId,
+      cursor,
+      limit,
+      includeToolResults,
+    }),
   getLegacyLogInventory: () =>
     invoke<LegacyLogInventory>("get_legacy_log_inventory"),
   deleteLegacyLogs: (entryIds: string[], confirmed: boolean) =>

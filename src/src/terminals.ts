@@ -942,9 +942,14 @@ export interface TermHandle {
   nativeHistorySkippedLines: number;
   nativeHistoryRequest: Promise<boolean> | null;
   nativeHistoryBoundaryMarker: IMarker | null;
-  nativeHistoryTailSnapshot: string | null;
-  /** Whether output/reflow changed the terminal tail since its last snapshot. */
-  nativeHistoryTailDirty: boolean;
+  /** Full tail serialization captured before the first history page. Every
+   * rebuild replays this same snapshot instead of re-serializing a live TUI. */
+  historyBaseTail: string | null;
+  /** Raw output received after `historyBaseTail`; replayed after the base tail
+   * so a rebuild reconstructs the exact live screen. Memory only. */
+  historyLiveBytes: Uint8Array[];
+  historyLiveBytesSize: number;
+  historyLiveOverflowed: boolean;
   /** Last contiguous byte rendered for the current Host output stream. */
   logCursor: LogCursorView | null;
   /** The retained-log boundary is useful once, but routine later rotations in
@@ -1510,8 +1515,10 @@ export function getOrCreateHandle(key: string): TermHandle {
     nativeHistorySkippedLines: 0,
     nativeHistoryRequest: null,
     nativeHistoryBoundaryMarker: null,
-    nativeHistoryTailSnapshot: null,
-    nativeHistoryTailDirty: true,
+    historyBaseTail: null,
+    historyLiveBytes: [],
+    historyLiveBytesSize: 0,
+    historyLiveOverflowed: false,
     logCursor: null,
     rotationNoticeShown: false,
     pendingRenderedLogCursor: null,
@@ -1715,9 +1722,6 @@ function writePreservingViewport(
   const byteLength =
     typeof data === "string" ? new TextEncoder().encode(data).byteLength : data.byteLength;
   const queuedAt = performance.now();
-  if (handle.nativeHistoryBoundaryMarker !== null) {
-    handle.nativeHistoryTailDirty = true;
-  }
   handle.pendingOutputBytes += byteLength;
   handle.peakPendingOutputBytes = Math.max(
     handle.peakPendingOutputBytes,
@@ -1829,12 +1833,18 @@ function armPiStartupReadyTimeout(handle: TermHandle) {
 
 function writeTerminalOutput(handle: TermHandle, bytes: Uint8Array) {
   const visible = handle.piStartupNoticeFilter?.feed(bytes) ?? bytes;
-  if (visible.length) handle.writes.writeOutput(visible);
+  if (visible.length) {
+    rememberHistoryLiveOutput(handle, visible);
+    handle.writes.writeOutput(visible);
+  }
 }
 
 function finishTerminalStartupFilter(handle: TermHandle) {
   const visible = handle.piStartupNoticeFilter?.finish();
-  if (visible?.length) handle.writes.writeOutput(visible);
+  if (visible?.length) {
+    rememberHistoryLiveOutput(handle, visible);
+    handle.writes.writeOutput(visible);
+  }
 }
 
 const MAX_INPUT_FRAME_BYTES = 256 * 1024;
@@ -1937,6 +1947,19 @@ export function legacySnapshotKey(sessionKey: string) {
   return `${deviceSnapshotPrefix(deviceKey)}v1:${sessionId}`;
 }
 
+/** Older checkpoints could contain a prepended agent-history prefix. Keep only
+ * the live tail after the last boundary so a restored terminal cannot nest
+ * stale history into later pages. */
+const HISTORY_BOUNDARY_PATTERN = /\x1b\[2m── [^\r\n]* ──\x1b\[0m\r\n/g;
+
+function stripPersistedHistoryPrefix(content: string): string {
+  let tailStart = -1;
+  for (const match of content.matchAll(HISTORY_BOUNDARY_PATTERN)) {
+    tailStart = (match.index ?? 0) + match[0].length;
+  }
+  return tailStart >= 0 ? content.slice(tailStart) : content;
+}
+
 function readTerminalSnapshot(sessionId: string): TerminalSnapshot | null {
   try {
     const currentKey = snapshotKey(sessionId);
@@ -1983,7 +2006,7 @@ function readTerminalSnapshot(sessionId: string): TerminalSnapshot | null {
       cursor: parsed.cursor,
       cols: parsed.cols,
       rows: parsed.rows,
-      content: parsed.content,
+      content: stripPersistedHistoryPrefix(parsed.content),
       mouseEncoding: legacy ? "default" : parsed.mouseEncoding!,
       viewportFromBottom,
     };
@@ -2034,6 +2057,29 @@ export function hasWarmTerminalPreview(sessionId: string): boolean {
 function serializeTerminalCheckpoint(handle: TermHandle): string | null {
   const serialize = (scrollback: number) =>
     handle.serialize.serialize({ scrollback });
+  const buffer = handle.term.buffer.active;
+  const marker = handle.nativeHistoryBoundaryMarker;
+  if (
+    marker &&
+    buffer.type === "normal" &&
+    marker.line >= 0 &&
+    marker.line < buffer.length
+  ) {
+    // Never persist the prepended agent history. A restored checkpoint starts
+    // from the live tail, so a later page load cannot nest old history.
+    const start = Math.max(
+      marker.line,
+      buffer.length - (TERMINAL_SNAPSHOT_SCROLLBACK_LINES + handle.term.rows),
+    );
+    const content = handle.serialize.serialize({
+      range: { start, end: buffer.length - 1 },
+    });
+    if (content.length <= MAX_TERMINAL_SNAPSHOT_CHARS) return content;
+    const visibleOnly = serialize(0);
+    return visibleOnly.length <= MAX_TERMINAL_SNAPSHOT_CHARS
+      ? visibleOnly
+      : null;
+  }
   const content = serialize(TERMINAL_SNAPSHOT_SCROLLBACK_LINES);
   if (content.length <= MAX_TERMINAL_SNAPSHOT_CHARS) return content;
   // Styled Agent output can push a full navigation window past the storage
@@ -2814,6 +2860,10 @@ export function mountTerminal(sessionId: string, container: HTMLDivElement) {
 }
 
 const NATIVE_HISTORY_PAGE_SIZE = 200;
+/** Rebuilds replay live output received since the base tail. Bound the memory
+ * used by that replay buffer; a session that streams this much while the user
+ * reads history can be re-entered to start a fresh history session. */
+const MAX_HISTORY_LIVE_BUFFER_BYTES = 64 * 1024 * 1024;
 
 function resetNativeHistory(handle: TermHandle) {
   handle.nativeHistoryBoundaryMarker?.dispose();
@@ -2822,8 +2872,36 @@ function resetNativeHistory(handle: TermHandle) {
   handle.nativeHistorySkippedLines = 0;
   handle.nativeHistoryRequest = null;
   handle.nativeHistoryBoundaryMarker = null;
-  handle.nativeHistoryTailSnapshot = null;
-  handle.nativeHistoryTailDirty = true;
+  handle.historyBaseTail = null;
+  handle.historyLiveBytes = [];
+  handle.historyLiveBytesSize = 0;
+  handle.historyLiveOverflowed = false;
+}
+
+function rememberHistoryLiveOutput(handle: TermHandle, bytes: Uint8Array) {
+  if (handle.historyBaseTail === null || handle.historyLiveOverflowed) return;
+  if (
+    handle.historyLiveBytesSize + bytes.byteLength >
+    MAX_HISTORY_LIVE_BUFFER_BYTES
+  ) {
+    handle.historyLiveOverflowed = true;
+    handle.historyLiveBytes = [];
+    handle.historyLiveBytesSize = 0;
+    return;
+  }
+  handle.historyLiveBytes.push(bytes.slice());
+  handle.historyLiveBytesSize += bytes.byteLength;
+}
+
+function mergedHistoryLiveBytes(handle: TermHandle): Uint8Array | null {
+  if (handle.historyLiveBytesSize <= 0) return null;
+  const merged = new Uint8Array(handle.historyLiveBytesSize);
+  let offset = 0;
+  for (const chunk of handle.historyLiveBytes) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return merged;
 }
 
 /** Native log text is untrusted terminal input. Preserve readable whitespace,
@@ -2865,25 +2943,6 @@ function estimateWrappedRows(text: string, cols: number): number {
   );
 }
 
-function serializeTailAfterNativePrefix(handle: TermHandle): string {
-  if (
-    handle.nativeHistoryTailSnapshot !== null &&
-    !handle.nativeHistoryTailDirty
-  ) {
-    return handle.nativeHistoryTailSnapshot;
-  }
-  const markerLine = handle.nativeHistoryBoundaryMarker?.line ?? -1;
-  const buffer = handle.term.buffer.active;
-  if (markerLine >= 0 && buffer.type === "normal") {
-    const start = markerLine + 1;
-    const end = buffer.length - 1;
-    return start <= end
-      ? handle.serialize.serialize({ range: { start, end } })
-      : "";
-  }
-  return handle.nativeHistoryTailSnapshot ?? handle.serialize.serialize();
-}
-
 function rebuildWithNativeHistory(handle: TermHandle): Promise<void> {
   return new Promise((resolve) => {
     const queued = handle.writes.drain(
@@ -2914,11 +2973,13 @@ function rebuildWithNativeHistory(handle: TermHandle): Promise<void> {
           before.baseY > 0 ||
           before.cursorY > 0 ||
           handle.logCursor !== null;
-        const tailSnapshot = hasTerminalTail
-          ? serializeTailAfterNativePrefix(handle)
-          : "";
-        handle.nativeHistoryTailSnapshot = tailSnapshot;
-        handle.nativeHistoryTailDirty = false;
+        if (hasTerminalTail && handle.historyBaseTail === null) {
+          // Capture the live screen once, before any history prefix exists.
+          // Reusing this immutable snapshot avoids re-serializing a TUI tail
+          // whose wrapped rows and cursor state do not survive a range slice.
+          handle.historyBaseTail = handle.serialize.serialize();
+        }
+        const tailSnapshot = handle.historyBaseTail ?? "";
         handle.nativeHistoryBoundaryMarker?.dispose();
         handle.nativeHistoryBoundaryMarker = null;
 
@@ -2953,6 +3014,8 @@ function rebuildWithNativeHistory(handle: TermHandle): Promise<void> {
             tailSnapshot + mouseEncodingSequence(mouseEncoding),
           );
         }
+        const liveBytes = mergedHistoryLiveBytes(handle);
+        if (liveBytes) handle.writes.write(liveBytes);
         handle.writes.drain(
           "native-history-rebuild",
           () => {
@@ -2992,6 +3055,10 @@ function rebuildWithNativeHistory(handle: TermHandle): Promise<void> {
 export function loadOlderNativeHistory(sessionId: string): Promise<boolean> {
   const handle = getOrCreateHandle(sessionId);
   if (handle.nativeHistoryRequest) return handle.nativeHistoryRequest;
+  if (handle.historyLiveOverflowed) {
+    toast(i18n.t("session:ui.history.liveAdvanced"), "info");
+    return Promise.resolve(false);
+  }
   if (handle.nativeHistoryCursor === null) return Promise.resolve(false);
   const generation = handle.generation;
   const cursor = handle.nativeHistoryCursor ?? null;
@@ -3002,6 +3069,9 @@ export function loadOlderNativeHistory(sessionId: string): Promise<boolean> {
         handle.plainSessionId,
         cursor,
         NATIVE_HISTORY_PAGE_SIZE,
+        // Terminal history keeps assistant text and tool-call summaries, but
+        // not bulky tool results.
+        false,
       );
       if (
         handles.get(sessionId) !== handle ||
@@ -3116,9 +3186,6 @@ export function fitHandle(
   }
   const sizeChanged = cols !== handle.lastCols || rows !== handle.lastRows;
   if (sizeChanged) {
-    if (handle.nativeHistoryBoundaryMarker !== null) {
-      handle.nativeHistoryTailDirty = true;
-    }
     handle.lastCols = cols;
     handle.lastRows = rows;
   }

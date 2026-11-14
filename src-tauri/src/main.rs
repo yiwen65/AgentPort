@@ -3419,15 +3419,19 @@ async fn get_native_history(
     session_id: String,
     cursor: Option<String>,
     limit: Option<usize>,
+    include_tool_results: Option<bool>,
 ) -> std::result::Result<Value, String> {
     let paths = state.paths.clone();
     run_backend_blocking(move || {
         let db = Db::open(&paths).map_err(|error| error.to_string())?;
         let session = map_err!(db.get_session(&session_id))?;
-        let page = map_err!(NativeHistory::new(&paths).page(
+        let page = map_err!(NativeHistory::new(&paths).page_with_options(
             &session,
             cursor.as_deref(),
             limit.unwrap_or(agentport_core::history::DEFAULT_HISTORY_PAGE_SIZE),
+            agentport_core::history::HistoryPageOptions {
+                include_tool_results: include_tool_results.unwrap_or(true),
+            },
         ))?;
         map_err!(serde_json::to_value(page))
     })

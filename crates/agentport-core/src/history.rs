@@ -71,6 +71,21 @@ pub struct HistoryPage {
     pub skipped_lines: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct HistoryPageOptions {
+    /// Include user-side tool results (command output, file contents). The
+    /// desktop terminal history excludes them; search and export keep them.
+    pub include_tool_results: bool,
+}
+
+impl Default for HistoryPageOptions {
+    fn default() -> Self {
+        Self {
+            include_tool_results: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistorySearchHit {
@@ -156,6 +171,16 @@ impl<'a> NativeHistory<'a> {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<HistoryPage> {
+        self.page_with_options(session, cursor, limit, HistoryPageOptions::default())
+    }
+
+    pub fn page_with_options(
+        &self,
+        session: &Session,
+        cursor: Option<&str>,
+        limit: usize,
+        options: HistoryPageOptions,
+    ) -> Result<HistoryPage> {
         let sources = match self.resolve(session) {
             Resolution::Available(sources) => sources,
             Resolution::Unavailable(reason) => {
@@ -236,6 +261,12 @@ impl<'a> NativeHistory<'a> {
                     skipped_lines += 1;
                     continue;
                 };
+                if is_auxiliary_transcript_record(&value) {
+                    continue;
+                }
+                if !options.include_tool_results && is_tool_result_record(&value) {
+                    continue;
+                }
                 if let Some(event) = normalize_event(source, record.end, &value) {
                     events.push(event);
                 }
@@ -838,6 +869,25 @@ fn resolve_qoder(
     native_ids: &[String],
 ) -> std::result::Result<Vec<NativeSource>, ResolveError> {
     let qoder_home = configured_home("QODER_HOME", ".qoder");
+    // Qoder stores the full conversation transcript separately from its
+    // telemetry segments. Prefer that transcript: it carries assistant text,
+    // while the segments only log prompts and tool-call telemetry.
+    let projects = qoder_home.join("projects");
+    let project = projects.join(cwd_slug(&session.cwd));
+    let transcripts = native_ids
+        .iter()
+        .filter_map(|id| {
+            source(
+                AgentType::Qoder,
+                project.join(format!("{id}.jsonl")),
+                &projects,
+            )
+        })
+        .collect::<Vec<_>>();
+    if !transcripts.is_empty() {
+        return Ok(transcripts);
+    }
+
     let root = qoder_home.join("logs/sessions");
     let project = root.join(cwd_slug(&session.cwd));
     let mut sources = Vec::new();
@@ -983,33 +1033,41 @@ fn normalize_event(source: &NativeSource, offset: u64, value: &Value) -> Option<
         Some("system") | Some("developer") => Some(HistoryRole::System),
         _ => None,
     };
-    let text_value = value
-        .pointer("/message/content")
-        .or_else(|| value.pointer("/payload/content"))
-        .or_else(|| value.get("content"))
-        .or_else(|| value.get("input"))
-        .or_else(|| value.pointer("/payload/message"))
-        .or_else(|| value.get("message"));
+    let qoder_transcript = source.provider == AgentType::Qoder && value.get("message").is_some();
     let mut text = String::new();
-    if let Some(content) = text_value {
-        collect_text(content, &mut text, 0);
-    }
-    if text.trim().is_empty() && source.provider == AgentType::Qoder {
-        // Qoder's current segment logs are telemetry-shaped: conversation
-        // content sits under `data` instead of the legacy top-level fields.
-        let data_text = match kind.as_str() {
-            "input.prompt.submitted" => value
-                .pointer("/data/text_preview")
-                .or_else(|| value.pointer("/data/text")),
-            "tool.requested" => value.pointer("/data/args/command"),
-            _ => None,
-        };
-        if let Some(content) = data_text {
+    if qoder_transcript {
+        // The transcript separates assistant text, tool calls and tool
+        // results into content blocks. Summarize tool calls instead of
+        // dumping their full JSON input into terminal history.
+        text = qoder_transcript_text(value);
+    } else {
+        let text_value = value
+            .pointer("/message/content")
+            .or_else(|| value.pointer("/payload/content"))
+            .or_else(|| value.get("content"))
+            .or_else(|| value.get("input"))
+            .or_else(|| value.pointer("/payload/message"))
+            .or_else(|| value.get("message"));
+        if let Some(content) = text_value {
             collect_text(content, &mut text, 0);
-        } else if kind == "tool.requested" {
-            if let Some(args) = value.pointer("/data/args") {
-                if let Ok(encoded) = serde_json::to_string(args) {
-                    text.push_str(&encoded);
+        }
+        if text.trim().is_empty() && source.provider == AgentType::Qoder {
+            // Qoder's current segment logs are telemetry-shaped: conversation
+            // content sits under `data` instead of the legacy top-level fields.
+            let data_text = match kind.as_str() {
+                "input.prompt.submitted" => value
+                    .pointer("/data/text_preview")
+                    .or_else(|| value.pointer("/data/text")),
+                "tool.requested" => value.pointer("/data/args/command"),
+                _ => None,
+            };
+            if let Some(content) = data_text {
+                collect_text(content, &mut text, 0);
+            } else if kind == "tool.requested" {
+                if let Some(args) = value.pointer("/data/args") {
+                    if let Ok(encoded) = serde_json::to_string(args) {
+                        text.push_str(&encoded);
+                    }
                 }
             }
         }
@@ -1039,6 +1097,101 @@ fn normalize_event(source: &NativeSource, offset: u64, value: &Value) -> Option<
         timestamp,
         text: text.trim().to_string(),
     })
+}
+
+fn is_auxiliary_transcript_record(value: &Value) -> bool {
+    value.get("isSidechain").and_then(Value::as_bool) == Some(true)
+        || value.get("isMeta").and_then(Value::as_bool) == Some(true)
+}
+
+fn is_tool_result_record(value: &Value) -> bool {
+    value
+        .pointer("/message/content")
+        .and_then(Value::as_array)
+        .is_some_and(|blocks| {
+            !blocks.is_empty()
+                && blocks
+                    .iter()
+                    .all(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+        })
+}
+
+const MAX_QODER_TOOL_SUMMARY_CHARS: usize = 2_000;
+
+fn qoder_transcript_text(value: &Value) -> String {
+    let Some(content) = value.pointer("/message/content") else {
+        return String::new();
+    };
+    if let Some(text) = content.as_str() {
+        return text.trim().to_string();
+    }
+    let Some(blocks) = content.as_array() else {
+        return String::new();
+    };
+    let mut parts = Vec::new();
+    for block in blocks {
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(text) = block.get("text").and_then(Value::as_str) {
+                    if !text.trim().is_empty() {
+                        parts.push(text.trim().to_string());
+                    }
+                }
+            }
+            Some("tool_use") => {
+                parts.push(qoder_tool_summary(block));
+            }
+            Some("tool_result") => {
+                if let Some(content) = block.get("content") {
+                    let mut text = String::new();
+                    collect_text(content, &mut text, 0);
+                    if !text.trim().is_empty() {
+                        parts.push(text.trim().to_string());
+                    }
+                }
+            }
+            // Thinking blocks are model-internal and never shown in the TUI.
+            _ => {}
+        }
+    }
+    parts.join("\n")
+}
+
+fn qoder_tool_summary(block: &Value) -> String {
+    let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
+    let input = block.get("input");
+    let detail = [
+        "command",
+        "file_path",
+        "path",
+        "description",
+        "pattern",
+        "query",
+    ]
+    .into_iter()
+    .find_map(|key| {
+        input
+            .and_then(|input| input.get(key))
+            .and_then(Value::as_str)
+    })
+    .map(str::to_string)
+    .or_else(|| input.and_then(|input| serde_json::to_string(input).ok()))
+    .unwrap_or_default();
+    let detail = detail.trim();
+    let summary = if detail.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name} {detail}")
+    };
+    let mut chars = summary.chars();
+    let mut truncated = chars
+        .by_ref()
+        .take(MAX_QODER_TOOL_SUMMARY_CHARS)
+        .collect::<String>();
+    if chars.next().is_some() {
+        truncated.push('…');
+    }
+    truncated
 }
 
 fn collect_text(value: &Value, output: &mut String, depth: usize) {
@@ -1136,7 +1289,11 @@ mod tests {
     use super::*;
     use crate::models::{Lifecycle, PermissionMode, ResumePrecision};
     use chrono::Utc;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    /// Provider homes are process-global; serialize tests that mutate them.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn session(root: &Path, provider: AgentType, native_id: Option<&str>) -> Session {
         Session {
@@ -1401,6 +1558,7 @@ mod tests {
 
     #[test]
     fn hook_native_id_rollover_resolves_multiple_claude_sources() {
+        let _env = ENV_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
         let paths = AppPaths::new(temp.path().join("data"));
         let mut session = session(temp.path(), AgentType::Claude, Some("new-id"));
@@ -1461,6 +1619,7 @@ mod tests {
 
     #[test]
     fn codex_kimi_and_qoder_resolve_only_verified_native_sources() {
+        let _env = ENV_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
         let paths = AppPaths::new(temp.path().join("data"));
 
@@ -1529,7 +1688,88 @@ mod tests {
     }
 
     #[test]
+    fn qoder_transcript_prefers_conversation_and_filters_auxiliary_records() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let paths = AppPaths::new(temp.path().join("data"));
+        let session = session(temp.path(), AgentType::Qoder, Some("qoder-native"));
+        let qoder_home = temp.path().join("qoder");
+        let projects = qoder_home.join("projects");
+        let project = projects.join(cwd_slug(&session.cwd));
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("qoder-native.jsonl"),
+            concat!(
+                "{\"type\":\"user\",\"timestamp\":\"2026-11-14T17:00:00Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"qoder question\"}]}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"internal\"}]}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"assistant answer\"}]}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"echo hello\"}}]}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"x\",\"content\":\"tool output\"}]}}\n",
+                "{\"type\":\"user\",\"isSidechain\":true,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"sidechain\"}]}}\n",
+                "{\"type\":\"user\",\"isMeta\":true,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"meta\"}]}}\n"
+            ),
+        )
+        .unwrap();
+        let segments = qoder_home
+            .join("logs/sessions")
+            .join(cwd_slug(&session.cwd))
+            .join("qoder-native/segments");
+        fs::create_dir_all(&segments).unwrap();
+        fs::write(
+            segments.join("001.jsonl"),
+            "{\"type\":\"input.prompt.submitted\",\"data\":{\"text_preview\":\"segment question\"}}\n",
+        )
+        .unwrap();
+
+        std::env::set_var("QODER_HOME", &qoder_home);
+        let page = NativeHistory::new(&paths)
+            .page_with_options(&session, None, 10, HistoryPageOptions::default())
+            .unwrap();
+        let without_results = NativeHistory::new(&paths)
+            .page_with_options(
+                &session,
+                None,
+                10,
+                HistoryPageOptions {
+                    include_tool_results: false,
+                },
+            )
+            .unwrap();
+        std::env::remove_var("QODER_HOME");
+
+        let texts = page
+            .events
+            .iter()
+            .map(|event| event.text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            texts,
+            [
+                "qoder question",
+                "assistant answer",
+                "Bash echo hello",
+                "tool output",
+            ]
+        );
+        assert_eq!(page.events[0].role, Some(HistoryRole::User));
+        assert_eq!(page.events[1].role, Some(HistoryRole::Assistant));
+        assert_eq!(
+            without_results
+                .events
+                .iter()
+                .map(|event| event.text.as_str())
+                .collect::<Vec<_>>(),
+            ["qoder question", "assistant answer", "Bash echo hello"]
+        );
+        assert!(!texts.iter().any(|text| matches!(
+            *text,
+            "sidechain" | "meta" | "internal" | "segment question"
+        )));
+    }
+
+    #[test]
     fn qoder_telemetry_segments_page_prompts_and_tool_calls() {
+        let _env = ENV_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
         let paths = AppPaths::new(temp.path().join("data"));
         let session = session(temp.path(), AgentType::Qoder, Some("qoder-native"));

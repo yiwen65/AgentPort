@@ -702,6 +702,7 @@ describe("terminal renderer", () => {
         "renderer-test",
         null,
         200,
+        false,
       ),
     );
 
@@ -787,6 +788,7 @@ describe("terminal renderer", () => {
         "renderer-test",
         null,
         200,
+        false,
       ),
     );
     invokeWriteCallback(terminal.write.mock.calls[firstCall]);
@@ -794,7 +796,9 @@ describe("terminal renderer", () => {
     terminal.marker.line = 123;
     terminal.buffer.active.baseY = 130;
     terminal.buffer.active.viewportY = 130;
-    invokeWriteCallback(terminal.write.mock.calls[firstCall + 3]);
+    invokeWriteCallback(
+      terminal.write.mock.calls[terminal.write.mock.calls.length - 1],
+    );
     await first;
     expect(terminal.scrollToLine).toHaveBeenLastCalledWith(124);
     const serializeCallsAfterFirst = vi.mocked(handle.serialize.serialize).mock.calls.length;
@@ -802,6 +806,8 @@ describe("terminal renderer", () => {
     terminal.buffer.active.viewportY = 0;
     terminal.buffer.active.length = 154;
     terminal.marker.line = 123;
+    handle.historyLiveBytes = [Uint8Array.of(65)];
+    handle.historyLiveBytesSize = 1;
     const secondCall = terminal.write.mock.calls.length;
     const second = loadOlderNativeHistory("renderer-test");
     await vi.waitFor(() =>
@@ -809,6 +815,7 @@ describe("terminal renderer", () => {
         "renderer-test",
         "older-page",
         200,
+        false,
       ),
     );
     invokeWriteCallback(terminal.write.mock.calls[secondCall]);
@@ -816,29 +823,36 @@ describe("terminal renderer", () => {
     terminal.marker.line = 153;
     terminal.buffer.active.baseY = 160;
     terminal.buffer.active.viewportY = 160;
-    invokeWriteCallback(terminal.write.mock.calls[secondCall + 3]);
+    invokeWriteCallback(
+      terminal.write.mock.calls[terminal.write.mock.calls.length - 1],
+    );
     await second;
 
     expect(terminal.scrollToLine).toHaveBeenLastCalledWith(30);
     expect(handle.serialize.serialize).toHaveBeenCalledTimes(
       serializeCallsAfterFirst,
     );
+    expect(
+      terminal.write.mock.calls.some(
+        ([data]) =>
+          data instanceof Uint8Array && Array.from(data).join(",") === "65",
+      ),
+    ).toBe(true);
     const secondPrefix = String(terminal.write.mock.calls[secondCall + 1]?.[0]);
     expect(secondPrefix.indexOf("older native event")).toBeLessThan(
       secondPrefix.indexOf("latest native event"),
     );
   });
 
-  it("invalidates the cached native-history tail when live output arrives", async () => {
+  it("buffers live output for the next stable-tail history rebuild", async () => {
     mountTerminal("renderer-test", document.createElement("div"));
     await vi.waitFor(() =>
       expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
     );
-    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1]!;
     const handle = getHandle("renderer-test")!;
-    handle.nativeHistoryBoundaryMarker = terminal.registerMarker() as never;
-    handle.nativeHistoryTailSnapshot = "cached live tail";
-    handle.nativeHistoryTailDirty = false;
+    handle.historyBaseTail = "captured live tail";
+    handle.historyLiveBytes = [];
+    handle.historyLiveBytesSize = 0;
 
     rendererMocks.channels[0].onmessage?.({
       t: "output",
@@ -847,7 +861,9 @@ describe("terminal renderer", () => {
       cursor: { runId: "run_1", runOrdinal: 1, generation: 0, offset: 1 },
     });
 
-    expect(handle.nativeHistoryTailDirty).toBe(true);
+    expect(handle.historyLiveBytesSize).toBe(1);
+    expect(handle.historyLiveBytes).toHaveLength(1);
+    expect(Array.from(handle.historyLiveBytes[0])).toEqual([65]);
   });
 
   afterEach(() => {
@@ -870,23 +886,26 @@ describe("terminal renderer", () => {
     expect(getState().rendererMode).toBe("canvas");
   });
 
-  it("invalidates a cached native-history tail after terminal reflow", () => {
+  it("keeps the captured base tail stable across reflow and later pages", async () => {
     const container = document.createElement("div");
     Object.defineProperties(container, {
       clientWidth: { configurable: true, value: 800 },
       clientHeight: { configurable: true, value: 600 },
     });
     mountTerminal("renderer-test", container);
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
     const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1]!;
     const handle = getHandle("renderer-test")!;
-    handle.nativeHistoryBoundaryMarker = terminal.registerMarker() as never;
-    handle.nativeHistoryTailSnapshot = "cached live tail";
-    handle.nativeHistoryTailDirty = false;
+    vi.mocked(handle.serialize.serialize).mockReturnValue("captured live tail");
+    handle.historyBaseTail = "captured live tail";
     handle.lastCols = terminal.cols - 1;
 
     fitHandle(handle);
 
-    expect(handle.nativeHistoryTailDirty).toBe(true);
+    expect(handle.historyBaseTail).toBe("captured live tail");
+    expect(vi.mocked(handle.serialize.serialize).mock.calls).toHaveLength(0);
   });
 
   it("routes explicit viewport commands through one controller", () => {
@@ -3584,6 +3603,42 @@ describe("terminal renderer", () => {
     );
   });
 
+  it("restores only the live tail from a checkpoint carrying a history prefix", () => {
+    const key = "agentport:terminal-snapshot:v2:renderer-test";
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        version: 2,
+        cursor: {
+          runId: "run_1",
+          runOrdinal: 1,
+          generation: 0,
+          offset: 1,
+        },
+        cols: 80,
+        rows: 24,
+        content:
+          "old history\r\n\x1b[2m── Return to live terminal ──\x1b[0m\r\nlive tail",
+        mouseEncoding: "default",
+        viewportFromBottom: 0,
+      }),
+    );
+
+    mountTerminal("renderer-test", document.createElement("div"));
+
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    expect(terminal.write).toHaveBeenCalledWith(
+      "live tail",
+      expect.any(Function),
+    );
+    expect(terminal.write).not.toHaveBeenCalledWith(
+      expect.stringContaining("old history"),
+      expect.anything(),
+    );
+    localStorage.removeItem(key);
+  });
+
   it("repairs the omitted SGR mode when restoring a fullscreen Pi v1 snapshot", () => {
     setState({
       projects: getState().projects.map((project) => ({
@@ -4016,6 +4071,46 @@ describe("terminal renderer", () => {
 
     expect(terminal.scrollToLine).toHaveBeenCalledWith(700);
     expect(getState().runtime["renderer-test"]?.scrolledUp).toBe(true);
+    localStorage.removeItem(key);
+  });
+
+  it("persists only the live tail after agent history was prepended", async () => {
+    const key = "agentport:terminal-snapshot:v2:renderer-test";
+    localStorage.removeItem(key);
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const handle = getHandle("renderer-test")!;
+    handle.logCursor = {
+      runId: "run_tail_only",
+      runOrdinal: 1,
+      generation: 0,
+      offset: 11,
+    };
+    handle.displayReady = true;
+    handle.attached = true;
+    handle.attachmentId = 1;
+    handle.nativeHistoryBoundaryMarker = terminal.registerMarker() as never;
+    terminal.marker.line = 5;
+    terminal.buffer.active.type = "normal";
+    terminal.buffer.active.length = 24;
+    vi.mocked(handle.serialize.serialize).mockReturnValue("tail only checkpoint");
+
+    const released = releaseTerminal("renderer-test");
+    invokeWriteCallback(
+      terminal.write.mock.calls[terminal.write.mock.calls.length - 1],
+    );
+    await released;
+
+    expect(handle.serialize.serialize).toHaveBeenCalledWith({
+      range: { start: 5, end: 23 },
+    });
+    const snapshot = JSON.parse(localStorage.getItem(key) ?? "null") as {
+      content?: string;
+    } | null;
+    expect(snapshot?.content).toBe("tail only checkpoint");
     localStorage.removeItem(key);
   });
 

@@ -70,7 +70,8 @@
       "skipped": "解析时跳过了 {{count}} 条损坏或过大的记录。",
       "empty": "原生日志中尚无可显示的对话事件。",
       "loading": "正在读取原生日志…",
-      "loadMore": "加载更早记录"
+      "loadMore": "加载更早记录",
+      "liveAdvanced": "实时输出过多，无法继续重建更早历史；切换会话后可重新开始。"
     },
     "disconnected": {
       "checking": "连接已断开，正在确认 Agent 是否仍在运行。",

@@ -1328,8 +1328,14 @@ export class RemoteBackend {
     sessionId: string,
     cursor: string | null,
     limit = 200,
+    includeToolResults = true,
   ): Promise<HistoryPage> {
-    return this.request<HistoryPage>("history.page", { sessionId, cursor, limit });
+    return this.request<HistoryPage>("history.page", {
+      sessionId,
+      cursor,
+      limit,
+      includeToolResults,
+    });
   }
 
   getLegacyLogInventory(): Promise<LegacyLogInventory> {

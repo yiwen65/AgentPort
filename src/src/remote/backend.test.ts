@@ -735,6 +735,7 @@ describe("search/history/timeline/documents/secrets/backup/export/diagnostics", 
       sessionId: "ses_1",
       cursor: "cursor-1",
       limit: 50,
+      includeToolResults: true,
     });
     expect(request).toHaveBeenNthCalledWith(2, "timeline.ack", {
       snapshots: [{ sessionId: "ses_1", statusCursor: null, logCursor: null }],

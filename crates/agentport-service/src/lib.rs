@@ -1028,6 +1028,8 @@ struct HistoryPageParams {
     cursor: Option<String>,
     #[serde(default = "default_history_page_limit")]
     limit: usize,
+    #[serde(default = "default_include_tool_results")]
+    include_tool_results: bool,
 }
 
 #[derive(Deserialize)]
@@ -1133,6 +1135,10 @@ fn default_session_search_limit() -> usize {
 
 fn default_history_page_limit() -> usize {
     agentport_core::history::DEFAULT_HISTORY_PAGE_SIZE
+}
+
+fn default_include_tool_results() -> bool {
+    true
 }
 
 fn default_git_history_limit() -> usize {
@@ -1840,10 +1846,13 @@ impl RemoteService for CoreService {
             "history.page" => {
                 let params: HistoryPageParams = parse_extended(params)?;
                 let session = self.db.get_session(&params.session_id)?;
-                serialize_extended(NativeHistory::new(&self.paths).page(
+                serialize_extended(NativeHistory::new(&self.paths).page_with_options(
                     &session,
                     params.cursor.as_deref(),
                     params.limit.min(1_000),
+                    agentport_core::history::HistoryPageOptions {
+                        include_tool_results: params.include_tool_results,
+                    },
                 )?)?
             }
             "storage.legacy.inventory" => {

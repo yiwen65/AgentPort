@@ -43,6 +43,7 @@ export interface DeviceTerminalApi {
     sessionId: string,
     cursor: string | null,
     limit?: number,
+    includeToolResults?: boolean,
   ) => Promise<HistoryPage>;
   markSessionLogRendered: (
     sessionId: string,

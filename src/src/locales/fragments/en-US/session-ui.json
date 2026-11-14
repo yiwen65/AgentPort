@@ -70,7 +70,8 @@
       "skipped": "Skipped {{count}} corrupt or oversized records while parsing.",
       "empty": "The native log has no displayable conversation events yet.",
       "loading": "Reading native history…",
-      "loadMore": "Load earlier history"
+      "loadMore": "Load earlier history",
+      "liveAdvanced": "Live output advanced too far to rebuild older history. Switch Sessions to start again."
     },
     "disconnected": {
       "checking": "Disconnected. Checking whether the Agent is still running.",
