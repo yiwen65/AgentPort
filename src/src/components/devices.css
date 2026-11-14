@@ -53,11 +53,16 @@
   z-index: 800;
   min-width: 240px;
   max-width: 320px;
-  padding: 4px;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: var(--bg-panel);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  padding: 5px;
+  border: 1px solid var(--overlay-border);
+  border-radius: 12px;
+  background: var(--overlay-bg);
+  box-shadow:
+    var(--overlay-shadow-sm),
+    inset 0 1px 0 var(--overlay-highlight);
+  -webkit-backdrop-filter: blur(18px) saturate(1.18);
+  backdrop-filter: blur(18px) saturate(1.18);
+  animation: overlay-menu-in 140ms ease-out both;
 }
 
 .device-picker-row {
@@ -65,17 +70,18 @@
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 7px 8px;
+  padding: 7px 9px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 7px;
   background: transparent;
   color: var(--text);
   font-size: 12.5px;
   text-align: left;
+  transition: background-color 0.1s ease;
 }
 
 .device-picker-row:hover {
-  background: var(--bg-hover);
+  background: var(--overlay-hover);
 }
 
 .device-picker-row:disabled {
@@ -185,8 +191,8 @@
 
 .device-picker-separator {
   height: 1px;
-  margin: 4px 6px;
-  background: var(--border);
+  margin: 5px 8px;
+  background: var(--overlay-divider);
 }
 
 .device-picker-footer {
@@ -198,6 +204,10 @@
 .device-picker-footer .device-picker-row {
   flex: 1;
   color: var(--text-dim);
+}
+
+.device-picker-footer .device-picker-row:hover {
+  color: var(--text);
 }
 
 .device-picker-error {

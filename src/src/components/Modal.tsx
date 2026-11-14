@@ -21,8 +21,18 @@ export default function Modal(props: {
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
     const el = ref.current;
-    const first = el?.querySelector<HTMLElement>(FOCUSABLE);
-    (first ?? el)?.focus();
+    if (el) {
+      const active = document.activeElement as HTMLElement | null;
+      const alreadyInside = active !== null && active !== el && el.contains(active);
+      if (!alreadyInside) {
+        // Skip the header close control: dialogs should open on their first
+        // content control (or the panel itself when they have none).
+        const first = Array.from(el.querySelectorAll<HTMLElement>(FOCUSABLE)).find(
+          (node) => node.offsetParent !== null && !node.closest(".modal-head"),
+        );
+        (first ?? el).focus();
+      }
+    }
     return () => {
       prev?.focus?.();
     };
@@ -74,7 +84,14 @@ export default function Modal(props: {
         <div className="modal-head">
           <h2>{props.title}</h2>
           <button className="icon-btn" onClick={props.onClose} aria-label={t("dialog.close")}>
-            ✕
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
+              <path
+                d="M2 2l7 7M9 2l-7 7"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
           </button>
         </div>
         <div className="modal-body">{props.children}</div>

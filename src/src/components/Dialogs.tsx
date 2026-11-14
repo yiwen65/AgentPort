@@ -28,7 +28,7 @@ export function ConfirmDialogHost() {
         </>
       }
     >
-      {confirm.body ? <p className="dim" style={{ margin: 0, lineHeight: 1.7 }}>{confirm.body}</p> : null}
+      {confirm.body ? <p className="modal-description">{confirm.body}</p> : null}
       {confirm.details?.length ? (
         <ul className="confirm-details">
           {confirm.details.map((detail) => <li key={detail}>{detail}</li>)}
