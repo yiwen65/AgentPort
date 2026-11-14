@@ -3627,16 +3627,7 @@ impl Db {
 
     // -- status events --------------------------------------------------------
     pub fn record_status_event(&self, e: &StatusEvent) -> Result<()> {
-        if let Some(cursor) = e.log_cursor.as_ref() {
-            validate_run_identity(&cursor.run_id, cursor.run_ordinal)?;
-            if cursor.run_id != e.run_id || cursor.run_ordinal != e.run_ordinal {
-                return Err(CoreError::Validation(format!(
-                    "status event run {}/{} does not match log cursor run {}/{}",
-                    e.run_id, e.run_ordinal, cursor.run_id, cursor.run_ordinal
-                )));
-            }
-        }
-        validate_run_identity(&e.run_id, e.run_ordinal)?;
+        Self::validate_status_event(e)?;
         let mut conn = self.conn.lock().unwrap();
         // Startup replays historical journals. Exact duplicates do not need a
         // write transaction or updates to run/recovery projections.
@@ -3647,7 +3638,47 @@ impl Db {
         // A deferred transaction can otherwise fail its read-to-write upgrade
         // immediately when another monitor commits between those operations.
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        ensure_session_run_tx(&tx, &e.session_id, &e.run_id, e.run_ordinal, &e.occurred_at)?;
+        Self::record_status_event_tx(&tx, e)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Apply a batch of already-parsed journal events in one transaction.
+    pub fn record_status_events(&self, events: &[StatusEvent]) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        for event in events {
+            Self::validate_status_event(event)?;
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for event in events {
+            Self::record_status_event_tx(&tx, event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn validate_status_event(e: &StatusEvent) -> Result<()> {
+        if let Some(cursor) = e.log_cursor.as_ref() {
+            validate_run_identity(&cursor.run_id, cursor.run_ordinal)?;
+            if cursor.run_id != e.run_id || cursor.run_ordinal != e.run_ordinal {
+                return Err(CoreError::Validation(format!(
+                    "status event run {}/{} does not match log cursor run {}/{}",
+                    e.run_id, e.run_ordinal, cursor.run_id, cursor.run_ordinal
+                )));
+            }
+        }
+        validate_run_identity(&e.run_id, e.run_ordinal)?;
+        Ok(())
+    }
+
+    fn record_status_event_tx(tx: &Transaction<'_>, e: &StatusEvent) -> Result<()> {
+        if check_status_event_retry(tx, e)? {
+            return Ok(());
+        }
+        ensure_session_run_tx(tx, &e.session_id, &e.run_id, e.run_ordinal, &e.occurred_at)?;
         let occurred_at = dt_str(&e.occurred_at);
         let changed = tx.execute(
             "INSERT OR IGNORE INTO status_events(
@@ -3713,14 +3744,11 @@ impl Db {
                     summary.as_str()
                 ],
             )?;
-        } else {
+        } else if !check_status_event_retry(tx, e)? {
             // A concurrent writer may have inserted this event after the fast
             // check. It must still be the exact same durable fact.
-            if !check_status_event_retry(&tx, e)? {
-                return Err(CoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
-            }
+            return Err(CoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
         }
-        tx.commit()?;
         Ok(())
     }
 

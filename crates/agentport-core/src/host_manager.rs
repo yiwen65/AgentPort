@@ -1092,6 +1092,7 @@ impl<'a> HostManager<'a> {
         let mut imported = 0u64;
         let mut skipped = 0u64;
         let mut consumed = offset;
+        let mut batch = Vec::new();
         let mut line = String::new();
         loop {
             line.clear();
@@ -1114,11 +1115,23 @@ impl<'a> HostManager<'a> {
                 continue;
             }
             match serde_json::from_str::<StatusEvent>(trimmed) {
-                Ok(ev) if ev.session_id == session_id => match self.db.record_status_event(&ev) {
-                    Ok(()) => imported += 1,
-                    Err(_) => skipped += 1,
-                },
+                Ok(ev) if ev.session_id == session_id => {
+                    batch.push(ev);
+                    if batch.len() >= 256 {
+                        match self.db.record_status_events(&batch) {
+                            Ok(()) => imported += batch.len() as u64,
+                            Err(_) => skipped += batch.len() as u64,
+                        }
+                        batch.clear();
+                    }
+                }
                 _ => skipped += 1,
+            }
+        }
+        if !batch.is_empty() {
+            match self.db.record_status_events(&batch) {
+                Ok(()) => imported += batch.len() as u64,
+                Err(_) => skipped += batch.len() as u64,
             }
         }
         if consumed > offset {
