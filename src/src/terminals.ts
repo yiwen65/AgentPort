@@ -3871,7 +3871,8 @@ function onChannelMsg(handle: TermHandle, msg: ChannelMsg) {
       break;
     }
     case "heartbeat": {
-      patchRuntime(sessionId, { logBytes: msg.logBytes });
+      // Telemetry only. Global-store writes here re-rendered every subscriber
+      // once per second; diagnostics read live Host facts from the backend.
       break;
     }
     case "resize_ack": {
@@ -4147,6 +4148,9 @@ export async function releaseTerminal(sessionId: string): Promise<void> {
   }
 }
 
+let terminalSnapshotPruneAt = 0;
+let terminalSnapshotAliveSignature: string | null = null;
+
 /** Release hidden Sessions' renderers and attachments without stopping Hosts. */
 export function pruneHandles() {
   const s = getState();
@@ -4166,11 +4170,31 @@ export function pruneHandles() {
   ]) {
     alive.add(key);
   }
+  let released = false;
   for (const id of [...handles.keys()]) {
-    if (!alive.has(id)) void releaseTerminal(id);
+    if (!alive.has(id)) {
+      released = true;
+      void releaseTerminal(id);
+    }
   }
-  setState({ attachedIds: s.attachedIds.filter((id) => alive.has(id)) });
+  const attachedIds = s.attachedIds.filter((id) => alive.has(id));
+  if (
+    attachedIds.length !== s.attachedIds.length ||
+    attachedIds.some((id, index) => id !== s.attachedIds[index])
+  ) {
+    setState({ attachedIds });
+  }
   // Deleted Sessions cannot be switched back to; their checkpoints otherwise
   // accumulate until the shared LocalStorage quota blocks new ones.
-  pruneStaleTerminalSnapshots();
+  const aliveSignature = [...alive].sort().join("\u0000");
+  const now = Date.now();
+  if (
+    released ||
+    aliveSignature !== terminalSnapshotAliveSignature ||
+    now - terminalSnapshotPruneAt >= 30_000
+  ) {
+    terminalSnapshotAliveSignature = aliveSignature;
+    terminalSnapshotPruneAt = now;
+    pruneStaleTerminalSnapshots();
+  }
 }

@@ -2,7 +2,7 @@
 // xterm instances themselves live outside React in terminals.ts (they are
 // imperative, non-serializable and must survive tab switches).
 
-import { useSyncExternalStore } from "react";
+import { useCallback, useRef, useSyncExternalStore } from "react";
 import {
   activeDeviceContext,
   isDeviceScopedStorageKey,
@@ -647,6 +647,51 @@ export function getState(): AppState {
   return state;
 }
 
+function shallowEqualRecord(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): boolean {
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  return leftKeys.every(
+    (key) =>
+      Object.prototype.hasOwnProperty.call(right, key) &&
+      Object.is(left[key], right[key]),
+  );
+}
+
+function deepEqualValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (
+    typeof left !== "object" ||
+    typeof right !== "object" ||
+    left === null ||
+    right === null
+  ) {
+    return false;
+  }
+  const leftIsArray = Array.isArray(left);
+  const rightIsArray = Array.isArray(right);
+  if (leftIsArray !== rightIsArray) return false;
+  if (leftIsArray) {
+    return (
+      left.length === (right as unknown[]).length &&
+      left.every((value, index) =>
+        deepEqualValue(value, (right as unknown[])[index]),
+      )
+    );
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord);
+  if (leftKeys.length !== Object.keys(rightRecord).length) return false;
+  return leftKeys.every(
+    (key) =>
+      Object.prototype.hasOwnProperty.call(rightRecord, key) &&
+      deepEqualValue(leftRecord[key], rightRecord[key]),
+  );
+}
+
 function collectSuspendedSessionIds(
   runtime: Record<string, SessionRuntime>,
 ): ReadonlySet<string> {
@@ -669,6 +714,7 @@ export function setState(partial: Partial<AppState>) {
           : collectSuspendedSessionIds(partial.runtime),
       }
     : partial;
+  if (Object.keys(synchronized).length === 0) return;
   state = { ...state, ...synchronized };
   emit();
 }
@@ -737,8 +783,66 @@ export function subscribe(l: () => void): () => void {
 export function useStore(): AppState;
 export function useStore<T>(selector: (snapshot: AppState) => T): T;
 export function useStore<T>(selector?: (snapshot: AppState) => T): AppState | T {
-  if (selector) return useSyncExternalStore(subscribe, () => selector(state));
-  return useSyncExternalStore(subscribe, getState);
+  const selectorRef = useRef(selector);
+  selectorRef.current = selector;
+  const cache = useRef<{
+    state: AppState;
+    selector: typeof selector;
+    value: unknown;
+  } | null>(null);
+  const getSnapshot = useCallback(() => {
+    const currentSelector = selectorRef.current;
+    if (!currentSelector) return state;
+    const cached = cache.current;
+    if (
+      cached &&
+      cached.state === state &&
+      cached.selector === currentSelector
+    ) {
+      return cached.value as T;
+    }
+    const value = currentSelector(state);
+    if (cached && Object.is(cached.value, value)) {
+      cached.state = state;
+      cached.selector = currentSelector;
+      return cached.value as T;
+    }
+    cache.current = { state, selector: currentSelector, value };
+    return value;
+  }, []);
+  return useSyncExternalStore(subscribe, getSnapshot);
+}
+
+export function useShallowStore<T extends Record<string, unknown>>(
+  selector: (snapshot: AppState) => T,
+): T {
+  const selectorRef = useRef(selector);
+  selectorRef.current = selector;
+  const cache = useRef<{
+    state: AppState;
+    selector: typeof selector;
+    value: T;
+  } | null>(null);
+  const getSnapshot = useCallback(() => {
+    const currentSelector = selectorRef.current;
+    const cached = cache.current;
+    if (
+      cached &&
+      cached.state === state &&
+      cached.selector === currentSelector
+    ) {
+      return cached.value;
+    }
+    const value = currentSelector(state);
+    if (cached && shallowEqualRecord(cached.value, value)) {
+      cached.state = state;
+      cached.selector = currentSelector;
+      return cached.value;
+    }
+    cache.current = { state, selector: currentSelector, value };
+    return value;
+  }, []);
+  return useSyncExternalStore(subscribe, getSnapshot);
 }
 
 // ---------------------------------------------------------------------------
@@ -846,6 +950,15 @@ export function patchRuntime(sessionId: string, patch: Partial<SessionRuntime>) 
       if (nextRuntime.suspended) nextSuspendedSessionIds.add(sessionId);
       else nextSuspendedSessionIds.delete(sessionId);
       suspendedSessionIds = nextSuspendedSessionIds;
+    }
+    if (
+      suspendedSessionIds === s.suspendedSessionIds &&
+      shallowEqualRecord(
+        runtime as unknown as Record<string, unknown>,
+        nextRuntime as unknown as Record<string, unknown>,
+      )
+    ) {
+      return {};
     }
     return {
       runtime: {
@@ -1045,25 +1158,6 @@ export function applyProjectsSnapshot(
   if (nextActiveDevice) setDeviceContext(nextActiveDevice);
   update((s) => {
     const activeDevice = nextActiveDevice ?? s.activeDevice;
-    const worktreeIds = new Set(projects.flatMap((p) => p.worktrees.map((w) => w.id)));
-    const projectIds = new Set(projects.map((p) => p.id));
-    const currentSessions = new Map<string, SessionView>();
-    for (const project of s.projects) {
-      for (const session of project.sessions) currentSessions.set(session.id, session);
-    }
-    const nextProjects = projects.map((project) => ({
-      ...project,
-      sessions: project.sessions.map((session) => {
-        const current = currentSessions.get(session.id);
-        if (!current) return session;
-        const status = latestStatus(current.status, session.status) ?? null;
-        // Keeping only the newer status would pair a new run's badge with an
-        // old run's stopped lifecycle/overlay. These facts share one run fence.
-        const stale = session.status && status !== session.status;
-        return { ...session, status, ...(stale ? { lifecycle: current.lifecycle, hostAlive: current.hostAlive } : {}) };
-      }),
-    }));
-    const aliveSessionIds = sessionIds(nextProjects);
     const activeDeviceKey = deviceKeyForContext(activeDevice);
     // A switch must restore the target device's own disclosure state. Cached
     // local/light snapshots bypass applyBootInfo, so reload here — before the
@@ -1071,9 +1165,42 @@ export function applyProjectsSnapshot(
     // expansion or its transient reveals.
     const switchedDevice =
       activeDeviceKey !== deviceKeyForContext(s.activeDevice);
-    return {
+    const currentSessions = new Map<string, SessionView>();
+    for (const project of s.projects) {
+      for (const session of project.sessions) currentSessions.set(session.id, session);
+    }
+    const currentProjects = new Map(s.projects.map((project) => [project.id, project]));
+    const nextProjects = projects.map((project) => {
+      const sessions = project.sessions.map((session) => {
+        const current = currentSessions.get(session.id);
+        if (!current) return session;
+        const status = latestStatus(current.status, session.status) ?? null;
+        // Keeping only the newer status would pair a new run's badge with an
+        // old run's stopped lifecycle/overlay. These facts share one run fence.
+        const stale = session.status && status !== session.status;
+        const merged = { ...session, status, ...(stale ? { lifecycle: current.lifecycle, hostAlive: current.hostAlive } : {}) };
+        return deepEqualValue(current, merged) ? current : merged;
+      });
+      const currentProject = currentProjects.get(project.id);
+      if (!currentProject) return { ...project, sessions };
+      const { sessions: currentProjectSessions, ...currentProjectFields } = currentProject;
+      const { sessions: _incomingSessions, ...incomingProjectFields } = project;
+      const sameSessions =
+        currentProjectSessions.length === sessions.length &&
+        sessions.every((session, index) => session === currentProjectSessions[index]);
+      if (
+        sameSessions &&
+        deepEqualValue(currentProjectFields, incomingProjectFields)
+      ) {
+        return currentProject;
+      }
+      return { ...project, sessions };
+    });
+    const aliveSessionIds = sessionIds(nextProjects);
+    const worktreeIds = new Set(projects.flatMap((p) => p.worktrees.map((w) => w.id)));
+    const projectIds = new Set(projects.map((p) => p.id));
+    const nextState = {
       ...(nextActiveDevice ? { activeDevice: nextActiveDevice } : {}),
-      projectsAuthorityRevision: s.projectsAuthorityRevision + 1,
       projects: nextProjects,
       archivingSessionIds: s.archivingSessionIds.filter((key) => {
         const parts = parseSessionKey(key);
@@ -1112,6 +1239,17 @@ export function applyProjectsSnapshot(
             ),
           ),
       ...sessionScopedState(s, nextProjects, aliveSessionIds, {}, activeDevice),
+    };
+    const unchanged = Object.entries(nextState).every(([key, value]) =>
+      deepEqualValue(
+        (s as unknown as Record<string, unknown>)[key],
+        value,
+      ),
+    );
+    if (unchanged) return {};
+    return {
+      projectsAuthorityRevision: s.projectsAuthorityRevision + 1,
+      ...nextState,
     };
   });
 }
