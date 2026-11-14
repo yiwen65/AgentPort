@@ -244,15 +244,44 @@ describe("active Agent sidebar", () => {
     ]);
   });
 
-  it("keeps the full Session title available on hover", () => {
+  it("shows the full Session title on the whole row only while truncated", () => {
     const title = "请检查这个很长的中文输入内容是否能够正确截断并显示";
     const base = projects();
     base[0].sessions = [session(title, "working", { adapter: "shell" })];
     setState({ projects: base });
 
+    const clientWidth = vi
+      .spyOn(Element.prototype, "clientWidth", "get")
+      .mockReturnValue(120);
+    const scrollWidth = vi
+      .spyOn(Element.prototype, "scrollWidth", "get")
+      .mockReturnValue(240);
+    try {
+      render(<Sidebar collapsed={false} width={296} />);
+
+      const label = screen.getByText(title);
+      const row = label.closest(".tree-row.session");
+      expect(row?.getAttribute("data-tip")).toBe(title);
+      expect(label.getAttribute("data-tip")).toBeNull();
+    } finally {
+      clientWidth.mockRestore();
+      scrollWidth.mockRestore();
+    }
+  });
+
+  it("leaves Session rows tip-free when the title fits", () => {
     render(<Sidebar collapsed={false} width={296} />);
 
-    expect(screen.getByText(title).getAttribute("data-tip")).toBe(title);
+    const label = screen.getByText("Needs review");
+    expect(label.closest(".tree-row.session")?.getAttribute("data-tip")).toBeNull();
+  });
+
+  it("does not give device labels their own tooltip", () => {
+    render(<Sidebar collapsed={false} width={296} />);
+
+    for (const deviceName of screen.getAllByText("Apollo · main")) {
+      expect(deviceName.getAttribute("data-tip")).toBeNull();
+    }
   });
 
   it("renders one global flat list with compact project and branch sources", () => {

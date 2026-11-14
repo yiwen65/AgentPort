@@ -68,6 +68,7 @@ import type {
 import {
   memo,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -857,6 +858,16 @@ function SessionRow({
       : undefined;
   const [editing, setEditing] = useState(false);
   const [draggingPaneSession, setDraggingPaneSession] = useState(false);
+  const titleRef = useRef<HTMLSpanElement>(null);
+  const [titleTruncated, setTitleTruncated] = useState(false);
+  // The full-name tooltip only makes sense while the row actually clips the
+  // title; trigger it from the whole row so small pointer drift cannot drop
+  // the tip before the user can read it.
+  useLayoutEffect(() => {
+    const label = titleRef.current;
+    const truncated = label !== null && label.scrollWidth > label.clientWidth + 1;
+    setTitleTruncated((current) => (current === truncated ? current : truncated));
+  });
   const [draftTitle, setDraftTitle] = useState(ses.title);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -932,6 +943,7 @@ function SessionRow({
       }
       data-pane-group-accent={paneAccent ?? undefined}
       data-device-accent={deviceAccent ?? undefined}
+      data-tip={titleTruncated && !editing ? ses.title : undefined}
       style={rowStyle}
       draggable={!editing}
       data-pane-drag-label={t("shell:pane.dragLabel", { title: ses.title })}
@@ -997,9 +1009,7 @@ function SessionRow({
         {deviceName ? (
           <span className="session-device">
             <span className="session-device-dot" aria-hidden="true" />
-            <span className="session-device-name" data-tip={deviceName}>
-              {deviceName}
-            </span>
+            <span className="session-device-name">{deviceName}</span>
           </span>
         ) : null}
         {editing ? (
@@ -1024,7 +1034,7 @@ function SessionRow({
             }}
           />
         ) : (
-          <span className="tree-label" data-tip={ses.title}>
+          <span className="tree-label" ref={titleRef}>
             {ses.title}
           </span>
         )}
