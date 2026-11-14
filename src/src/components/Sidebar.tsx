@@ -1113,6 +1113,8 @@ function SessionRow({
   );
 }
 
+const MemoSessionRow = memo(SessionRow);
+
 function WorktreeNode({
   p,
   w,
@@ -1206,7 +1208,7 @@ function WorktreeNode({
       {collapsed ? null : (
         <div role="group">
           {sessions.map((ses) => (
-            <SessionRow key={ses.id} ses={ses} nested />
+            <MemoSessionRow key={ses.id} ses={ses} nested />
           ))}
         </div>
       )}
@@ -1400,7 +1402,7 @@ const ActiveAgentSessionItem = memo(function ActiveAgentSessionItem({
 }) {
   return (
     <div role="listitem">
-      <SessionRow
+      <MemoSessionRow
         ses={entry.session}
         sourceLabel={entry.sourceLabel}
         deviceId={entry.deviceId}
@@ -2126,7 +2128,7 @@ function ProjectNode({
               project context menu). */}
           {p.worktrees.length > 0 ? <WorktreesEntryRow p={p} /> : null}
           {mainSessions.map((ses) => (
-            <SessionRow key={ses.id} ses={ses} />
+            <MemoSessionRow key={ses.id} ses={ses} />
           ))}
           {visibleSessions.length === 0 && p.worktrees.length === 0 ? (
             <div className="tree-empty">
@@ -2337,7 +2339,7 @@ function PaneGroupNode({
             if (!located) return [];
             const localSession = located.deviceId === LOCAL_DEVICE_KEY;
             return [
-              <SessionRow
+              <MemoSessionRow
                 key={key}
                 ses={located.session}
                 nested
