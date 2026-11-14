@@ -27,7 +27,19 @@ export default function GitContextHeader() {
     <>
       <header className="git-context-header">
         <div className="git-context-title">
-          <span className="git-context-mark" aria-hidden="true">⌘</span>
+          <span className="git-context-mark" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+              <circle cx="5" cy="4" r="2" stroke="currentColor" strokeWidth="1.5" />
+              <circle cx="5" cy="14" r="2" stroke="currentColor" strokeWidth="1.5" />
+              <circle cx="13" cy="14" r="2" stroke="currentColor" strokeWidth="1.5" />
+              <path
+                d="M5 6v6M7 4h2a4 4 0 0 1 4 4v4"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
+          </span>
           <div>
             <strong>{t("title")}</strong>
             {context ? (
@@ -66,7 +78,7 @@ export default function GitContextHeader() {
         ) : null}
         <div className="git-context-actions">
           <button
-            className="btn small ghost"
+            className="btn small"
             onClick={() => {
               void refreshGitChanges();
               if (center.view === "history") void refreshGitHistory({ reset: true });
@@ -76,11 +88,18 @@ export default function GitContextHeader() {
             {refreshing ? t("refreshing") : t("refresh")}
           </button>
           <button
-            className="icon-btn"
+            className="icon-btn git-context-close"
             onClick={closeGitCenter}
             aria-label={t("close")}
           >
-            ✕
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
+              <path
+                d="M2 2l7 7M9 2l-7 7"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
           </button>
         </div>
       </header>
