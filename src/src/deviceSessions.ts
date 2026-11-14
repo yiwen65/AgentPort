@@ -144,7 +144,7 @@ export async function refreshDeviceSnapshot(
     loading: true,
     error: null,
   };
-  publish(snapshot);
+  if (!previous || previous.loading || previous.error) publish(snapshot);
   setRefreshing(1);
   try {
     let projects: ProjectView[];
@@ -178,9 +178,19 @@ export async function refreshDeviceSnapshot(
       }
     }
     if (generations.get(deviceId) !== generation) return false;
+    const merged = mergeSessionStates(projects, previous?.projects);
+    if (
+      previous &&
+      !previous.loading &&
+      previous.error === null &&
+      previous.deviceId === deviceId &&
+      JSON.stringify(previous.projects) === JSON.stringify(merged)
+    ) {
+      return true;
+    }
     publish({
       ...snapshot,
-      projects: mergeSessionStates(projects, previous?.projects),
+      projects: merged,
       fetchedAt: Date.now(),
       metadataFetchedAt,
       loading: false,

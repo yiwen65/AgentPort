@@ -1443,19 +1443,24 @@ function ActiveAgentSessionsView({ projects }: { projects: ProjectView[] }) {
     activeDevice.kind === "remote" ? activeDevice.deviceName : localLabel;
 
   useEffect(() => {
-    const refresh = () => {
+    let lastRefreshAt = 0;
+    const refresh = (force = false) => {
+      const now = Date.now();
+      if (!force && now - lastRefreshAt < 3_000) return;
+      lastRefreshAt = now;
       if (!document.hidden) void refreshConnectedDeviceSnapshots();
     };
-    refresh();
-    const timer = window.setInterval(refresh, 5_000);
+    refresh(true);
+    const timer = window.setInterval(refresh, 10_000);
     const onVisibility = () => {
       if (!document.hidden) refresh();
     };
-    window.addEventListener("focus", refresh);
+    const onFocus = () => refresh();
+    window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.clearInterval(timer);
-      window.removeEventListener("focus", refresh);
+      window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
