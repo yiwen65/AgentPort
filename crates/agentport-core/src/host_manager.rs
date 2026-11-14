@@ -30,6 +30,28 @@ const DEFAULT_SIGTERM_GRACE_MS: u64 = 2_500;
 const DEFAULT_COLS: u16 = 120;
 const DEFAULT_ROWS: u16 = 32;
 
+fn host_command(binary: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new(binary);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    use std::os::unix::process::CommandExt;
+    // Hosts outlive the GUI/CLI that launches them. Null stdio alone does not
+    // prevent launcher process-group signals from reaching a Session Host.
+    // SAFETY: setsid is async-signal-safe; this closure allocates nothing and
+    // accesses no parent-process locks between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command
+}
+
 /// Locate the agentport-host binary: $AGENTPORT_HOST_BIN, else next to the
 /// current executable, else PATH lookup.
 pub fn host_binary_path() -> Result<PathBuf> {
@@ -421,12 +443,8 @@ impl<'a> HostManager<'a> {
             cfg.validate()?;
             write_host_config(&config_path, &cfg)?;
 
-            let mut cmd = std::process::Command::new(&bin);
-            cmd.arg("--config")
-                .arg(&config_path)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
+            let mut cmd = host_command(&bin);
+            cmd.arg("--config").arg(&config_path);
             // Secrets travel ONLY through the spawn environment. The rest of
             // the parent env is inherited; the host itself restricts pass-
             // through to the agent child to `secret_env_names` (PRD 3.7).
@@ -1599,6 +1617,44 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::thread::JoinHandle;
+
+    #[test]
+    fn host_command_isolates_launcher_session_and_process_group() {
+        // Exercise the real Host command preparation without starting a live
+        // Session or sending a signal to the test runner's process group.
+        let mut child = host_command(Path::new("/bin/sleep"))
+            .arg("60")
+            .spawn()
+            .expect("spawn disposable Host stand-in");
+        let pid = child.id() as i32;
+        // SAFETY: these calls only query process/session identities. spawn()
+        // returns after pre_exec and exec, so there is no setsid race here.
+        let (child_pgid, child_sid, parent_pgid, parent_sid) = unsafe {
+            (
+                libc::getpgid(pid),
+                libc::getsid(pid),
+                libc::getpgrp(),
+                libc::getsid(0),
+            )
+        };
+        // Clean up before asserting, including on the expected pre-fix failure.
+        let _ = child.kill();
+        child.wait().expect("reap disposable Host stand-in");
+        assert!(
+            child_pgid > 0 && child_sid > 0,
+            "child identities must be readable"
+        );
+        assert_ne!(
+            child_pgid, parent_pgid,
+            "Host must not inherit launcher process group"
+        );
+        assert_ne!(
+            child_sid, parent_sid,
+            "Host must not inherit launcher session"
+        );
+        assert_eq!(child_pgid, pid, "Host must lead its own process group");
+        assert_eq!(child_sid, pid, "Host must lead its own POSIX session");
+    }
 
     #[derive(Clone, Copy)]
     enum MockMode {
