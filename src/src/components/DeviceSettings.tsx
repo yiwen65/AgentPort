@@ -139,17 +139,18 @@ export default function DeviceSettings() {
           {actionError}
         </p>
       ) : null}
-      <table className="table devices-table" aria-label={t("settings:ui.devices.tableAriaLabel")}>
-        <thead>
-          <tr>
-            <th>{t("settings:ui.devices.columns.name")}</th>
-            <th>{t("settings:ui.devices.columns.transport")}</th>
-            <th>{t("settings:ui.devices.columns.target")}</th>
-            <th>{t("settings:ui.devices.columns.lastConnected")}</th>
-            <th>{t("settings:ui.devices.columns.status")}</th>
-            <th aria-label={t("settings:ui.columns.actions")} />
-          </tr>
-        </thead>
+      <div className="settings-table-scroll">
+        <table className="table devices-table" aria-label={t("settings:ui.devices.tableAriaLabel")}>
+          <thead>
+            <tr>
+              <th>{t("settings:ui.devices.columns.name")}</th>
+              <th>{t("settings:ui.devices.columns.transport")}</th>
+              <th>{t("settings:ui.devices.columns.target")}</th>
+              <th>{t("settings:ui.devices.columns.lastConnected")}</th>
+              <th>{t("settings:ui.devices.columns.status")}</th>
+              <th aria-label={t("settings:ui.columns.actions")} />
+            </tr>
+          </thead>
         <tbody>
           {(devices ?? []).map((device) => (
             <tr key={device.id}>
@@ -246,7 +247,8 @@ export default function DeviceSettings() {
             </tr>
           ) : null}
         </tbody>
-      </table>
+        </table>
+      </div>
       {removing ? (
         <div className="device-confirm" role="alert">
           <p>

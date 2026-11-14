@@ -113,7 +113,10 @@ export function PairingSection() {
   };
   const pair = status?.pairing;
   return <section className="pairing-section">
-    <p>{t("settings:ui.pairing.description")}</p>
+    <div className="settings-section-heading">
+      <div className="section-title">{t("settings:ui.sections.pairing")}</div>
+      <p className="form-hint">{t("settings:ui.pairing.description")}</p>
+    </div>
     <p className="form-hint">{t("settings:ui.pairing.requirements")}</p>
     <p role="status">{t(`settings:ui.pairing.background.${status?.phase ?? "stopped"}`)}</p>
     <div className="form-grid">

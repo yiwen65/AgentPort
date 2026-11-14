@@ -1,9 +1,29 @@
 .pairing-section { max-width: 720px; }
 .pairing-section > p { line-height: 1.6; }
-.pairing-buttons { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
-.pairing-qr { display: block; width: 320px; max-width: 100%; height: auto; margin: 20px 0; border-radius: 8px; }
+.pairing-section .form-grid {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 13px 18px;
+  align-items: center;
+  margin: 16px 0;
+}
+.pairing-section .form-grid > label {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.pairing-section .form-grid .control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.pairing-section .form-grid input { max-width: 360px; }
+.pairing-section h3 { margin: 24px 0 6px; font-size: 14px; font-weight: 650; }
+.pairing-buttons { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; }
+.pairing-qr { display: block; width: 320px; max-width: 100%; height: auto; margin: 20px 0; border-radius: 12px; }
 .pairing-candidate { margin: 20px 0; }
 .pairing-fingerprint { display: block; overflow-wrap: anywhere; margin: 8px 0; }
 .pairing-verification { display: block; font: 700 28px/1.5 var(--font-mono, monospace); letter-spacing: .12em; }
 .pairing-devices { list-style: none; padding: 0; }
-.pairing-devices > li { padding: 16px 0; border-top: 1px solid var(--border); }
+.pairing-devices > li { padding: 16px 0; border-top: 1px solid var(--overlay-divider); }

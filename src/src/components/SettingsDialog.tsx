@@ -430,10 +430,10 @@ function AdapterSection({
 
   return (
     <>
-      <div className="section-title">{t("settings:ui.sections.adapters")}</div>
-      <p className="dim" style={{ margin: 0 }}>
-        {t("settings:ui.adapters.description")}
-      </p>
+      <div className="settings-section-heading">
+        <div className="section-title">{t("settings:ui.sections.adapters")}</div>
+        <p className="form-hint">{t("settings:ui.adapters.description")}</p>
+      </div>
       {orderedAdapters.length === 0 ? (
         <p className="dim" style={{ margin: 0 }}>
           {t("settings:ui.adapters.empty")}
@@ -1086,9 +1086,7 @@ export default function SettingsDialog({
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
-    const page = pageRef.current;
-    const first = page?.querySelector<HTMLElement>(FOCUSABLE);
-    (first ?? page)?.focus();
+    pageRef.current?.focus();
     return () => previous?.focus?.();
   }, []);
 
@@ -1556,6 +1554,15 @@ export default function SettingsDialog({
       <div className="settings-shell">
         <nav className="settings-nav" aria-label={t("settings:ui.navigationAriaLabel")}>
           <button className="settings-back" disabled={closeBlocked} onClick={requestClose}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <path
+                d="M7.5 2.5 3 6l4.5 3.5"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
             {t("common:actions.back")}
           </button>
           {SETTINGS_SECTIONS.map((item) => (
@@ -1587,8 +1594,10 @@ export default function SettingsDialog({
         </nav>
         <section className="settings-page-panel" aria-label={t("settings:ui.contentAriaLabel")}>
           <div ref={contentScrollRef} className="settings-content">
-            {error ? <div className="error-bar" role="alert">{error}</div> : null}
-            {content}
+            <div className="settings-section-surface">
+              {error ? <div className="error-bar" role="alert">{error}</div> : null}
+              {content}
+            </div>
           </div>
           {dirty && section !== "archive" && section !== "backup" ? (
             <footer className="settings-page-footer" data-tauri-drag-region="false">

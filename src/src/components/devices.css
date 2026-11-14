@@ -281,6 +281,17 @@
   font-size: 11.5px;
 }
 
+.settings-table-scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  border-radius: 10px;
+}
+
+.settings-table-scroll .table {
+  min-width: 760px;
+}
+
 .devices-table .device-actions-cell {
   display: flex;
   gap: 6px;
