@@ -4500,6 +4500,7 @@ body.is-resizing-pane {
 }
 
 .doc-preview-host {
+  position: relative;
   flex: 1;
   min-height: 0;
   /* The host is the preview's scroll container; the body above clips. */
@@ -5225,6 +5226,86 @@ body.is-resizing-pane {
   opacity: 0.55;
   pointer-events: none;
   z-index: 4;
+}
+
+.doc-find-bar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+.doc-find-input {
+  width: 180px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+
+.doc-find-input:focus {
+  border-color: var(--accent);
+}
+
+.doc-find-count {
+  min-width: 42px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.doc-find-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.doc-find-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.doc-find-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.md-find-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.md-find-hit {
+  position: absolute;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--term-yellow) 38%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--term-yellow) 55%, transparent);
+}
+
+.md-find-hit.active {
+  background: color-mix(in srgb, var(--term-accent) 45%, transparent);
+  box-shadow: 0 0 0 1px var(--term-accent);
 }
 
 .doc-theme-select {

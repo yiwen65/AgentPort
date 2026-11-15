@@ -711,4 +711,42 @@ describe("DocumentPanel", () => {
     expect(getState().docPanelExpanded).toBe(false);
     expect(container.querySelector(".doc-toc-rail")).toBeNull();
   });
+
+  it("finds text in the preview and navigates matches", async () => {
+    readMock.mockResolvedValue({ ...DEMO_DOC, content: "alpha beta alpha" });
+    const { container } = render(<DocumentPanel />);
+    await waitFor(() =>
+      expect(container.querySelector(".md-preview")?.textContent).toContain("alpha beta alpha"),
+    );
+    fireEvent.click(screen.getByLabelText("查找"));
+    const input = await screen.findByLabelText("查找内容");
+    fireEvent.change(input, { target: { value: "alpha" } });
+    await waitFor(() => expect(screen.getByText("1/2")).not.toBeNull());
+    fireEvent.click(screen.getByLabelText("下一个匹配"));
+    await waitFor(() => expect(screen.getByText("2/2")).not.toBeNull());
+    fireEvent.keyDown(input, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByLabelText("查找内容")).toBeNull());
+  });
+
+  it("finds text in the raw editor and selects it", async () => {
+    render(<DocumentPanel />);
+    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+    fireEvent.click(screen.getByLabelText("查找"));
+    const input = await screen.findByLabelText("查找内容");
+    fireEvent.change(input, { target: { value: "正文" } });
+    await waitFor(() => {
+      expect(editor.selectionStart).toBe(6);
+      expect(editor.selectionEnd).toBe(8);
+    });
+    expect(editor.value.slice(editor.selectionStart, editor.selectionEnd)).toBe("正文");
+  });
+
+  it("opens find with Cmd/Ctrl+F while reading", async () => {
+    render(<DocumentPanel />);
+    await screen.findByText("正文");
+    fireEvent.click(screen.getByLabelText("阅读模式"));
+    await waitFor(() => expect(getState().docReadingMode).toBe(true));
+    fireEvent.keyDown(window, { key: "f", metaKey: true });
+    expect(await screen.findByLabelText("查找内容")).not.toBeNull();
+  });
 });

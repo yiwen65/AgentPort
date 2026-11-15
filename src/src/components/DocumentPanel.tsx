@@ -40,6 +40,9 @@ import { MarkdownView } from "../markdown";
 import { setDocReadingTheme } from "../docReadingPrefs";
 import { relativePathInRoot } from "../markdownReader/links";
 import type { DocReadingTheme, OutlineItem } from "../markdownReader/types";
+import { buildFindText, findMatchesIn, findTextOccurrences, rangeForMatch, type FindTextMap } from "../docFind";
+import { getLastZoomArea } from "../fontZoom";
+import DocFindBar from "./DocFindBar";
 import DocToc from "./DocToc";
 import { i18n } from "../i18n";
 import { runtimeMessageEnvelope } from "../runtimeMessages";
@@ -53,6 +56,7 @@ import {
   findSession,
   getActiveDocumentTab,
   getState,
+  hasOpenDocuments,
   openContextMenu,
   setState,
   toast,
@@ -76,6 +80,36 @@ const TAB_DND_TYPE = "application/x-agentport-doc-tab";
 
 function fileName(path: string): string {
   return path.split("/").pop() ?? path;
+}
+
+/** Paint match rectangles into the read-only overlay. Positions are converted
+ * to the host's scroll-content coordinates so scrolling needs no repaint. */
+function paintFindLayer(
+  layer: HTMLElement,
+  host: HTMLElement,
+  map: FindTextMap,
+  matches: number[],
+  active: number,
+  queryLength: number,
+): void {
+  layer.replaceChildren();
+  if (typeof Range === "undefined") return;
+  const hostRect = host.getBoundingClientRect();
+  const limit = Math.min(matches.length, 500);
+  for (let index = 0; index < limit; index += 1) {
+    const range = rangeForMatch(map, matches[index], queryLength);
+    if (!range || typeof range.getClientRects !== "function") continue;
+    for (const rect of range.getClientRects()) {
+      if (rect.width <= 0 && rect.height <= 0) continue;
+      const hit = document.createElement("span");
+      hit.className = index === active ? "md-find-hit active" : "md-find-hit";
+      hit.style.top = `${rect.top - hostRect.top + host.scrollTop}px`;
+      hit.style.left = `${rect.left - hostRect.left + host.scrollLeft}px`;
+      hit.style.width = `${rect.width}px`;
+      hit.style.height = `${rect.height}px`;
+      layer.append(hit);
+    }
+  }
 }
 
 /* Drag-select auto-scroll constants: the pointer is treated as "pushing the
@@ -697,8 +731,15 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   const gutterRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
+  const findLayerRef = useRef<HTMLDivElement>(null);
+  const [findMap, setFindMap] = useState<FindTextMap | null>(null);
+  const [findMatches, setFindMatches] = useState<number[]>([]);
   const readingMode = useStore((state) => state.docReadingMode);
   const readingTheme = useStore((state) => state.docReadingTheme);
+  const activeFindIndex =
+    findMatches.length > 0
+      ? Math.min(Math.max(runtime.findIndex, 0), findMatches.length - 1)
+      : 0;
 
   const handleOutlineChange = useCallback(
     (items: OutlineItem[]) => {
@@ -882,6 +923,133 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     [tab.id],
   );
 
+  // Find: preview scans the rendered DOM, raw scans the draft. The preview
+  // highlight overlay is painted imperatively so React never sees the marks.
+  useEffect(() => {
+    if (!runtime.findOpen || !runtime.findQuery || !runtime.doc) {
+      setFindMap(null);
+      setFindMatches([]);
+      return;
+    }
+    if (runtime.mode === "raw") {
+      setFindMap(null);
+      setFindMatches(findTextOccurrences(runtime.draft, runtime.findQuery));
+      return;
+    }
+    const host = previewRef.current;
+    if (!host) return;
+    const map = buildFindText(host);
+    setFindMap(map);
+    setFindMatches(findMatchesIn(map.text, runtime.findQuery));
+  }, [runtime.findOpen, runtime.findQuery, runtime.mode, runtime.doc, runtime.draft]);
+
+  useEffect(() => {
+    const host = previewRef.current;
+    const layer = findLayerRef.current;
+    if (!host || !layer) return;
+    layer.replaceChildren();
+    if (
+      runtime.mode !== "preview" ||
+      !runtime.findOpen ||
+      !findMap ||
+      findMatches.length === 0
+    ) {
+      return;
+    }
+    let frame: number | null = null;
+    const paint = () => {
+      frame = null;
+      paintFindLayer(
+        layer,
+        host,
+        findMap,
+        findMatches,
+        activeFindIndex,
+        runtime.findQuery.length,
+      );
+    };
+    const schedule = () => {
+      if (frame === null) frame = window.requestAnimationFrame(paint);
+    };
+    paint();
+    const preview = host.querySelector(".md-preview");
+    let observer: MutationObserver | null = null;
+    if (preview && typeof MutationObserver !== "undefined") {
+      observer = new MutationObserver(schedule);
+      observer.observe(preview, { childList: true, subtree: true, characterData: true });
+    }
+    let resize: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resize = new ResizeObserver(schedule);
+      resize.observe(host);
+    }
+    return () => {
+      observer?.disconnect();
+      resize?.disconnect();
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      layer.replaceChildren();
+    };
+  }, [
+    runtime.mode,
+    runtime.findOpen,
+    runtime.findQuery.length,
+    findMap,
+    findMatches,
+    activeFindIndex,
+  ]);
+
+  useEffect(() => {
+    if (
+      runtime.mode !== "preview" ||
+      !runtime.findOpen ||
+      !findMap ||
+      findMatches.length === 0
+    ) {
+      return;
+    }
+    const host = previewRef.current;
+    if (!host) return;
+    const range = rangeForMatch(
+      findMap,
+      findMatches[activeFindIndex],
+      runtime.findQuery.length,
+    );
+    if (!range || typeof range.getBoundingClientRect !== "function") return;
+    const rect = range.getBoundingClientRect();
+    if (!rect || (rect.width === 0 && rect.height === 0)) return;
+    const hostRect = host.getBoundingClientRect();
+    host.scrollTop += rect.top - hostRect.top - host.clientHeight / 2 + rect.height / 2;
+  }, [
+    runtime.mode,
+    runtime.findOpen,
+    runtime.findQuery.length,
+    findMap,
+    findMatches,
+    activeFindIndex,
+  ]);
+
+  useEffect(() => {
+    if (runtime.mode !== "raw" || !runtime.findOpen || findMatches.length === 0) return;
+    const textarea = editorRef.current;
+    if (!textarea) return;
+    const start = findMatches[activeFindIndex];
+    if (start === undefined) return;
+    textarea.focus();
+    textarea.setSelectionRange(start, start + runtime.findQuery.length);
+    const line = runtime.draft.slice(0, start).split("\n").length;
+    const lineHeight = Number.parseFloat(getComputedStyle(textarea).lineHeight) || 18;
+    textarea.scrollTop = Math.max(0, (line - 1) * lineHeight - textarea.clientHeight / 2);
+    syncEditorSelection(textarea);
+  }, [
+    runtime.mode,
+    runtime.findOpen,
+    runtime.findQuery,
+    runtime.draft,
+    findMatches,
+    activeFindIndex,
+    syncEditorSelection,
+  ]);
+
   /* Drag-select auto-scroll. WKWebView never autoscrolls the raw editor
      while a selection drag leaves its bounds — and the panel sits flush
      with the window's right edge, so the pointer often cannot even travel
@@ -1033,6 +1201,30 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   return (
     <div className="doc-tab-body" hidden={!visible}>
       {runtime.doc ? <div className="doc-progress" ref={progressRef} aria-hidden="true" /> : null}
+      {runtime.findOpen && runtime.doc ? (
+        <DocFindBar
+          query={runtime.findQuery}
+          count={findMatches.length}
+          index={activeFindIndex}
+          focusRequest={runtime.findRequest}
+          onChange={(query) =>
+            updateDocumentTabRuntime(tab.id, { findQuery: query, findIndex: 0 })
+          }
+          onPrev={() => {
+            if (!findMatches.length) return;
+            updateDocumentTabRuntime(tab.id, {
+              findIndex: (activeFindIndex - 1 + findMatches.length) % findMatches.length,
+            });
+          }}
+          onNext={() => {
+            if (!findMatches.length) return;
+            updateDocumentTabRuntime(tab.id, {
+              findIndex: (activeFindIndex + 1) % findMatches.length,
+            });
+          }}
+          onClose={() => updateDocumentTabRuntime(tab.id, { findOpen: false })}
+        />
+      ) : null}
       {runtime.doc?.truncated ? (
         <div className="banner info" role="status">
           <span>{t("ui.document.truncated")}</span>
@@ -1093,6 +1285,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
                 ) : (
                   <div className="doc-prose">{runtime.doc.content}</div>
                 )}
+                <div ref={findLayerRef} className="md-find-layer" aria-hidden="true" />
               </div>
               {!readingMode && runtime.tocOpen ? (
                 <button
@@ -1321,6 +1514,33 @@ export default function DocumentPanel() {
       window.removeEventListener("pointerup", onEnd);
       window.removeEventListener("pointercancel", onEnd);
     };
+  }, []);
+
+  // Cmd/Ctrl+F opens the active document's find bar. The terminal keeps the
+  // key (Ctrl+F is a normal PTY control), so only the document context
+  // consumes it — last-focus tracking covers the non-focusable preview.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+      if (event.key.toLowerCase() !== "f") return;
+      if (getState().dialog) return;
+      const target = event.target as Element | null;
+      const inPanel = !!target?.closest?.(".doc-panel");
+      const state = getState();
+      if (!inPanel && !state.docReadingMode && getLastZoomArea() !== "doc") return;
+      if (!hasOpenDocuments(state)) return;
+      const tab = getActiveDocumentTab(state);
+      if (!tab) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const runtime = getDocumentTabRuntime(tab.id);
+      updateDocumentTabRuntime(tab.id, {
+        findOpen: true,
+        findRequest: (runtime?.findRequest ?? 0) + 1,
+      });
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
   const hasDocs = groups.length > 0;
