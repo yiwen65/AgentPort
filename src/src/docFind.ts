@@ -68,22 +68,19 @@ export interface TextPosition {
   height: number;
 }
 
-/** Content-box geometry for one raw-editor match. The raw textarea has
- * `wrap="off"`, so a match always stays on one visual line. */
-export function rawMatchMetrics(
+export interface RawMatchPosition extends TextPosition {
+  start: number;
+}
+
+/** Content-box geometry for raw-editor matches. The raw textarea has
+ * `wrap="off"`, so every match stays on one visual line. All matches on a
+ * line share one measured text node; Range rects account for tabs and CJK. */
+export function rawMatchMetricsBatch(
   textarea: HTMLTextAreaElement,
   text: string,
-  start: number,
+  starts: number[],
   length: number,
-): TextPosition | null {
-  if (start < 0 || start > text.length) return null;
-  const lineStart = text.lastIndexOf("\n", start - 1) + 1;
-  let lineEnd = text.indexOf("\n", start);
-  if (lineEnd < 0) lineEnd = text.length;
-  let lineIndex = 0;
-  for (let index = 0; index < lineStart; index += 1) {
-    if (text[index] === "\n") lineIndex += 1;
-  }
+): RawMatchPosition[] {
   const style = window.getComputedStyle(textarea);
   const fontSize = Number.parseFloat(style.fontSize) || 12;
   const lineHeight = Number.parseFloat(style.lineHeight) || fontSize * 1.55;
@@ -91,6 +88,8 @@ export function rawMatchMetrics(
   const paddingTop = Number.parseFloat(style.paddingTop) || 0;
   const measurer = document.createElement("span");
   measurer.style.position = "absolute";
+  measurer.style.left = "0";
+  measurer.style.top = "0";
   measurer.style.visibility = "hidden";
   measurer.style.pointerEvents = "none";
   measurer.style.whiteSpace = "pre";
@@ -101,20 +100,59 @@ export function rawMatchMetrics(
   measurer.style.letterSpacing = style.letterSpacing;
   measurer.style.wordSpacing = style.wordSpacing;
   measurer.style.tabSize = style.tabSize || "8";
+  const textNode = document.createTextNode("");
+  measurer.append(textNode);
   document.body.append(measurer);
-  const measure = (value: string) => {
-    measurer.textContent = value;
-    return measurer.getBoundingClientRect().width;
-  };
-  const startX = measure(text.slice(lineStart, start));
-  const endX = measure(text.slice(lineStart, Math.min(start + length, lineEnd)));
+  const origin = measurer.getBoundingClientRect().left;
+  const ordered = [...starts].sort((a, b) => a - b);
+  const results: RawMatchPosition[] = [];
+  let lineStart = 0;
+  let lineEnd = text.indexOf("\n");
+  if (lineEnd < 0) lineEnd = text.length;
+  let lineIndex = 0;
+  let loadedLine = -1;
+  for (const start of ordered) {
+    if (start < 0 || start > text.length) continue;
+    while (start > lineEnd && lineEnd < text.length) {
+      lineStart = lineEnd + 1;
+      lineIndex += 1;
+      lineEnd = text.indexOf("\n", lineStart);
+      if (lineEnd < 0) lineEnd = text.length;
+    }
+    if (lineStart !== loadedLine) {
+      textNode.nodeValue = text.slice(lineStart, lineEnd);
+      loadedLine = lineStart;
+    }
+    const lineLength = textNode.nodeValue?.length ?? 0;
+    const from = Math.max(0, Math.min(start - lineStart, lineLength));
+    const to = Math.max(from, Math.min(start - lineStart + length, lineLength));
+    const range = document.createRange();
+    range.setStart(textNode, from);
+    range.setEnd(textNode, to);
+    const rect =
+      typeof range.getBoundingClientRect === "function"
+        ? range.getBoundingClientRect()
+        : { left: 0, width: 0 };
+    results.push({
+      start,
+      left: paddingLeft + rect.left - origin,
+      top: paddingTop + lineIndex * lineHeight,
+      width: Math.max(1, rect.width),
+      height: lineHeight,
+    });
+  }
   measurer.remove();
-  return {
-    left: paddingLeft + startX,
-    top: paddingTop + lineIndex * lineHeight,
-    width: Math.max(1, endX - startX),
-    height: lineHeight,
-  };
+  return results;
+}
+
+/** Content-box geometry for one raw-editor match. */
+export function rawMatchMetrics(
+  textarea: HTMLTextAreaElement,
+  text: string,
+  start: number,
+  length: number,
+): TextPosition | null {
+  return rawMatchMetricsBatch(textarea, text, [start], length)[0] ?? null;
 }
 
 /** Replace every case-insensitive occurrence without overlapping. */

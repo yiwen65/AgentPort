@@ -746,6 +746,25 @@ describe("DocumentPanel", () => {
     expect(layer?.querySelector(".md-find-raw-hit")).not.toBeNull();
   });
 
+  it("highlights every raw match with the active one emphasized", async () => {
+    readMock.mockResolvedValue({
+      ...DEMO_DOC,
+      content: "# 标题\n\n正文 正文\n",
+    });
+    const { container } = render(<DocumentPanel />);
+    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+    fireEvent.click(screen.getByLabelText("查找"));
+    const input = await screen.findByLabelText("查找内容");
+    fireEvent.change(input, { target: { value: "正文" } });
+    await waitFor(() => expect(screen.getByText("1/2")).not.toBeNull());
+    const layer = container.querySelector<HTMLElement>(".doc-find-raw-layer");
+    await waitFor(() =>
+      expect(layer?.querySelectorAll(".md-find-raw-hit").length).toBe(2),
+    );
+    expect(layer?.querySelectorAll(".md-find-raw-hit.active").length).toBe(1);
+    expect(editor.value.slice(editor.selectionStart, editor.selectionEnd)).toBe("正文");
+  });
+
   it("replaces the current raw match without moving focus into the editor", async () => {
     render(<DocumentPanel />);
     const editor = (await findRawEditor()) as HTMLTextAreaElement;

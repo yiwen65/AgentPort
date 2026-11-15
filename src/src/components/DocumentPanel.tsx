@@ -43,7 +43,7 @@ import { relativePathInRoot, scrollToAnchor } from "../markdownReader/links";
 import { rememberExternalLinkChoice, shouldConfirmExternalLink } from "../docExternalLinks";
 import { replaceSelectionUndoable, undoTextareaEdit } from "../textEdit";
 import type { DocReadingTheme, OutlineItem } from "../markdownReader/types";
-import { buildFindText, findMatchesIn, findTextOccurrences, rangeForMatch, rawMatchMetrics, replaceAllOccurrences, type FindTextMap } from "../docFind";
+import { buildFindText, findMatchesIn, findTextOccurrences, rangeForMatch, rawMatchMetrics, rawMatchMetricsBatch, replaceAllOccurrences, type FindTextMap } from "../docFind";
 import { getLastZoomArea } from "../fontZoom";
 import DocFindBar from "./DocFindBar";
 import DocToc from "./DocToc";
@@ -78,6 +78,8 @@ const MAX_DOC_TREE_WIDTH = 420;
 /* In dual mode the editor column never gets squeezed below this by a wide
    tree. */
 const MIN_DOC_EDITOR_WIDTH = 280;
+/** Same overlay budget as the preview: scan up to 2000 matches but paint 500. */
+const MAX_RAW_HITS = 500;
 
 /** dataTransfer type for tab drags (reorder, cross-group move, split). */
 const TAB_DND_TYPE = "application/x-agentport-doc-tab";
@@ -739,7 +741,6 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   const findLayerRef = useRef<HTMLDivElement>(null);
   const rawFindLayerRef = useRef<HTMLDivElement>(null);
   const rawFindHitsRef = useRef<HTMLDivElement>(null);
-  const rawFindHitRef = useRef<HTMLDivElement>(null);
   const lastPreviewPointer = useRef({ x: 0, y: 0 });
   const replaceUndoSnapshot = useRef<string | null>(null);
   const applyingReplace = useRef(false);
@@ -1168,9 +1169,8 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   useEffect(() => {
     const layer = rawFindLayerRef.current;
     const hits = rawFindHitsRef.current;
-    const hit = rawFindHitRef.current;
     const textarea = editorRef.current;
-    if (!layer || !hits || !hit || !textarea) return;
+    if (!layer || !hits || !textarea) return;
     if (
       runtime.mode !== "raw" ||
       !runtime.findOpen ||
@@ -1178,21 +1178,25 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
       !visible
     ) {
       layer.style.display = "none";
+      hits.replaceChildren();
       return;
     }
-    const start = findMatches[activeFindIndex];
-    if (start === undefined) {
-      layer.style.display = "none";
-      return;
+    const activeStart = findMatches[activeFindIndex];
+    let starts = findMatches;
+    if (findMatches.length > MAX_RAW_HITS) {
+      starts = Array.from(
+        new Set([...findMatches.slice(0, MAX_RAW_HITS - 1), activeStart]),
+      ).sort((a, b) => a - b);
     }
-    const metrics = rawMatchMetrics(
+    const positions = rawMatchMetricsBatch(
       textarea,
       runtime.draft,
-      start,
+      starts,
       runtime.findQuery.length,
     );
-    if (!metrics) {
+    if (positions.length === 0) {
       layer.style.display = "none";
+      hits.replaceChildren();
       return;
     }
     layer.style.display = "block";
@@ -1200,10 +1204,19 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     layer.style.top = `${textarea.offsetTop}px`;
     layer.style.width = `${textarea.clientWidth}px`;
     layer.style.height = `${textarea.clientHeight}px`;
-    hit.style.left = `${metrics.left}px`;
-    hit.style.top = `${metrics.top}px`;
-    hit.style.width = `${metrics.width}px`;
-    hit.style.height = `${metrics.height}px`;
+    hits.replaceChildren();
+    for (const position of positions) {
+      const hit = document.createElement("span");
+      hit.className =
+        position.start === activeStart
+          ? "md-find-hit active md-find-raw-hit"
+          : "md-find-hit md-find-raw-hit";
+      hit.style.left = `${position.left}px`;
+      hit.style.top = `${position.top}px`;
+      hit.style.width = `${position.width}px`;
+      hit.style.height = `${position.height}px`;
+      hits.append(hit);
+    }
     hits.style.transform = `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
   }, [
     runtime.mode,
@@ -1695,9 +1708,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
                 }}
               />
               <div ref={rawFindLayerRef} className="doc-find-raw-layer" aria-hidden="true">
-                <div ref={rawFindHitsRef} className="doc-find-raw-hits">
-                  <div ref={rawFindHitRef} className="md-find-hit active md-find-raw-hit" />
-                </div>
+                <div ref={rawFindHitsRef} className="doc-find-raw-hits" />
               </div>
             </div>
           )
