@@ -136,6 +136,40 @@ try {
           };
           return { plain: measure(false), tree: measure(true) };
         };
+        window.testTreeHeader = () => {
+          const tree = document.createElement('div');
+          tree.className = 'doc-tree';
+          tree.style.cssText = 'position:fixed;left:-2000px;top:0;width:240px;height:200px;';
+          const header = document.createElement('div');
+          header.className = 'doc-tree-header';
+          const title = document.createElement('span');
+          title.className = 'doc-tree-root';
+          title.textContent = 'Agent Sessions Project';
+          const spacer = document.createElement('span');
+          spacer.className = 'spacer';
+          const actions = document.createElement('span');
+          actions.className = 'doc-tree-actions';
+          actions.style.transition = 'none';
+          for (let index = 0; index < 5; index += 1) {
+            const button = document.createElement('button');
+            button.className = 'btn small ghost';
+            button.textContent = '#';
+            actions.append(button);
+          }
+          header.append(title, spacer, actions);
+          tree.append(header);
+          document.body.append(tree);
+          const measure = () => ({
+            title: title.clientWidth,
+            actions: actions.getBoundingClientRect().width,
+            overflow: title.scrollWidth > title.clientWidth,
+          });
+          const hidden = measure();
+          tree.classList.add('searching');
+          const shown = measure();
+          tree.remove();
+          return { hidden, shown };
+        };
         window.testRawHighlightGeometry = () => {
           const textarea = document.createElement('textarea');
           textarea.setAttribute('wrap', 'off');
@@ -306,6 +340,13 @@ try {
   assert.equal(rawMetrics.metrics.height, 24);
   assert.ok(rawMetrics.metrics.left > 12, JSON.stringify(rawMetrics));
   assert.ok(rawMetrics.metrics.width > 0, JSON.stringify(rawMetrics));
+
+  const treeHeader = await evaluate('window.testTreeHeader()');
+  assert.equal(treeHeader.hidden.actions, 0);
+  assert.ok(treeHeader.shown.actions > 0, JSON.stringify(treeHeader));
+  assert.equal(treeHeader.hidden.overflow, false, JSON.stringify(treeHeader));
+  assert.ok(treeHeader.hidden.title > treeHeader.shown.title, JSON.stringify(treeHeader));
+  assert.equal(treeHeader.shown.overflow, true, JSON.stringify(treeHeader));
 
   const split = await evaluate('window.testPanelSplit()');
   assert.equal(split.plain.panel, 600);
