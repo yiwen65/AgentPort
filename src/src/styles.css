@@ -5270,17 +5270,27 @@ body.is-resizing-pane {
   right: 8px;
   z-index: 8;
   display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 6px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  width: min(320px, calc(100% - 16px));
+  padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-panel);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
 }
 
+.doc-find-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
 .doc-find-input {
-  width: 180px;
+  flex: 1;
+  min-width: 0;
   height: 22px;
   padding: 0 8px;
   border: 1px solid var(--border);
@@ -5321,6 +5331,28 @@ body.is-resizing-pane {
 }
 
 .doc-find-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.doc-find-text-btn {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.doc-find-text-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.doc-find-text-btn:disabled {
   opacity: 0.4;
   cursor: default;
 }

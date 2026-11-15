@@ -120,6 +120,7 @@ export interface DocumentTabRuntime {
   /** In-document find state, kept per tab like the draft and mode. */
   findOpen: boolean;
   findQuery: string;
+  findReplacement: string;
   findIndex: number;
   /** Monotonic focus request so repeated Cmd/Ctrl+F refocuses the field. */
   findRequest: number;
@@ -170,6 +171,7 @@ function defaultRuntime(tab: DocumentTab): DocumentTabRuntime {
     tocOpen: false,
     findOpen: false,
     findQuery: "",
+    findReplacement: "",
     findIndex: 0,
     findRequest: 0,
     loadedPath: null,

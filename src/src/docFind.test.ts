@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { buildFindText, findMatchesIn, findTextOccurrences, rangeForMatch } from "./docFind";
+import { buildFindText, findMatchesIn, findTextOccurrences, rangeForMatch, replaceAllOccurrences } from "./docFind";
 
 function fixture(): HTMLElement {
   const root = document.createElement("div");
@@ -29,5 +29,20 @@ describe("docFind", () => {
   it("finds raw occurrences without overlapping", () => {
     expect(findTextOccurrences("aaaa", "aa")).toEqual([0, 2]);
     expect(findTextOccurrences("正文正文", "正文")).toEqual([0, 2]);
+  });
+
+  it("replaces every case-insensitive occurrence", () => {
+    expect(replaceAllOccurrences("Foo foo, food", "foo", "bar")).toEqual({
+      text: "bar bar, bard",
+      count: 3,
+    });
+    expect(replaceAllOccurrences("正文正文", "正文", "文")).toEqual({
+      text: "文文",
+      count: 2,
+    });
+    expect(replaceAllOccurrences("none", "missing", "x")).toEqual({
+      text: "none",
+      count: 0,
+    });
   });
 });

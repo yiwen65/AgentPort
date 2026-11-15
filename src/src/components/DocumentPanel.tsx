@@ -42,7 +42,7 @@ import { setDocReadingTheme } from "../docReadingPrefs";
 import { relativePathInRoot, scrollToAnchor } from "../markdownReader/links";
 import { rememberExternalLinkChoice, shouldConfirmExternalLink } from "../docExternalLinks";
 import type { DocReadingTheme, OutlineItem } from "../markdownReader/types";
-import { buildFindText, findMatchesIn, findTextOccurrences, rangeForMatch, type FindTextMap } from "../docFind";
+import { buildFindText, findMatchesIn, findTextOccurrences, rangeForMatch, replaceAllOccurrences, type FindTextMap } from "../docFind";
 import { getLastZoomArea } from "../fontZoom";
 import DocFindBar from "./DocFindBar";
 import DocToc from "./DocToc";
@@ -286,6 +286,7 @@ const EMPTY_RUNTIME: DocumentTabRuntime = {
   tocOpen: false,
   findOpen: false,
   findQuery: "",
+  findReplacement: "",
   findIndex: 0,
   findRequest: 0,
   loadedPath: null,
@@ -1116,11 +1117,13 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     if (!textarea) return;
     const start = findMatches[activeFindIndex];
     if (start === undefined) return;
-    textarea.focus();
+    // Do not focus the editor here: the find field must keep the caret while
+    // the user types. Selection and scrolling still reveal the match.
     textarea.setSelectionRange(start, start + runtime.findQuery.length);
     const line = runtime.draft.slice(0, start).split("\n").length;
     const lineHeight = Number.parseFloat(getComputedStyle(textarea).lineHeight) || 18;
     textarea.scrollTop = Math.max(0, (line - 1) * lineHeight - textarea.clientHeight / 2);
+    if (gutterRef.current) gutterRef.current.scrollTop = textarea.scrollTop;
     syncEditorSelection(textarea);
   }, [
     runtime.mode,
@@ -1130,6 +1133,51 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     findMatches,
     activeFindIndex,
     syncEditorSelection,
+  ]);
+
+  const replaceCurrentMatch = useCallback(() => {
+    if (runtime.mode !== "raw" || !runtime.doc || runtime.doc.truncated) return;
+    if (findMatches.length === 0) return;
+    const start = findMatches[activeFindIndex];
+    if (start === undefined) return;
+    if (!tab.pinned) pinDocumentTab(tab.id);
+    const nextDraft =
+      runtime.draft.slice(0, start) +
+      runtime.findReplacement +
+      runtime.draft.slice(start + runtime.findQuery.length);
+    updateDocumentTabRuntime(tab.id, { draft: nextDraft });
+  }, [
+    activeFindIndex,
+    findMatches,
+    runtime.doc,
+    runtime.draft,
+    runtime.findQuery.length,
+    runtime.findReplacement,
+    runtime.mode,
+    tab.id,
+    tab.pinned,
+  ]);
+
+  const replaceAllMatches = useCallback(() => {
+    if (runtime.mode !== "raw" || !runtime.doc || runtime.doc.truncated) return;
+    const result = replaceAllOccurrences(
+      runtime.draft,
+      runtime.findQuery,
+      runtime.findReplacement,
+    );
+    if (result.count === 0) return;
+    if (!tab.pinned) pinDocumentTab(tab.id);
+    updateDocumentTabRuntime(tab.id, { draft: result.text, findIndex: 0 });
+    toast(t("ui.document.replacedCount", { count: result.count }), "success");
+  }, [
+    runtime.doc,
+    runtime.draft,
+    runtime.findQuery,
+    runtime.findReplacement,
+    runtime.mode,
+    tab.id,
+    tab.pinned,
+    t,
   ]);
 
   /* Drag-select auto-scroll. WKWebView never autoscrolls the raw editor
@@ -1289,6 +1337,13 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
           count={findMatches.length}
           index={activeFindIndex}
           focusRequest={runtime.findRequest}
+          canReplace={runtime.mode === "raw" && !runtime.doc.truncated}
+          replacement={runtime.findReplacement}
+          onReplacementChange={(findReplacement) =>
+            updateDocumentTabRuntime(tab.id, { findReplacement })
+          }
+          onReplace={replaceCurrentMatch}
+          onReplaceAll={replaceAllMatches}
           onChange={(query) =>
             updateDocumentTabRuntime(tab.id, { findQuery: query, findIndex: 0 })
           }

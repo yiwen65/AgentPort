@@ -729,7 +729,7 @@ describe("DocumentPanel", () => {
     await waitFor(() => expect(screen.queryByLabelText("查找内容")).toBeNull());
   });
 
-  it("finds text in the raw editor and selects it", async () => {
+  it("finds text in the raw editor and keeps focus in the find field", async () => {
     render(<DocumentPanel />);
     const editor = (await findRawEditor()) as HTMLTextAreaElement;
     fireEvent.click(screen.getByLabelText("查找"));
@@ -740,6 +740,38 @@ describe("DocumentPanel", () => {
       expect(editor.selectionEnd).toBe(8);
     });
     expect(editor.value.slice(editor.selectionStart, editor.selectionEnd)).toBe("正文");
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("replaces the current raw match without moving focus into the editor", async () => {
+    render(<DocumentPanel />);
+    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+    fireEvent.click(screen.getByLabelText("查找"));
+    const input = await screen.findByLabelText("查找内容");
+    fireEvent.change(input, { target: { value: "正文" } });
+    await waitFor(() => expect(editor.selectionStart).toBe(6));
+    const replacement = screen.getByLabelText("替换为");
+    fireEvent.change(replacement, { target: { value: "正文改" } });
+    fireEvent.click(screen.getByRole("button", { name: "替换" }));
+    await waitFor(() => expect(editor.value).toBe("# 标题\n\n正文改\n"));
+    expect(document.activeElement).not.toBe(editor);
+    expect(screen.getByLabelText("查找内容")).not.toBeNull();
+  });
+
+  it("replaces all raw matches", async () => {
+    readMock.mockResolvedValue({
+      ...DEMO_DOC,
+      content: "# 标题\n\n正文 正文\n",
+    });
+    render(<DocumentPanel />);
+    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+    fireEvent.click(screen.getByLabelText("查找"));
+    const input = await screen.findByLabelText("查找内容");
+    fireEvent.change(input, { target: { value: "正文" } });
+    await waitFor(() => expect(screen.getByText("1/2")).not.toBeNull());
+    fireEvent.change(screen.getByLabelText("替换为"), { target: { value: "文" } });
+    fireEvent.click(screen.getByRole("button", { name: "全部替换" }));
+    await waitFor(() => expect(editor.value).toBe("# 标题\n\n文 文\n"));
   });
 
   it("opens find with Cmd/Ctrl+F while reading", async () => {

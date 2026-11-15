@@ -61,6 +61,29 @@ export function findTextOccurrences(text: string, query: string, limit = MAX_MAT
   return findMatchesIn(text, query, limit);
 }
 
+/** Replace every case-insensitive occurrence without overlapping. */
+export function replaceAllOccurrences(
+  text: string,
+  query: string,
+  replacement: string,
+): { text: string; count: number } {
+  const needle = query.toLocaleLowerCase();
+  if (!needle) return { text, count: 0 };
+  const haystack = text.toLocaleLowerCase();
+  let result = "";
+  let cursor = 0;
+  let count = 0;
+  let found = haystack.indexOf(needle, cursor);
+  while (found >= 0) {
+    result += text.slice(cursor, found) + replacement;
+    cursor = found + query.length;
+    count += 1;
+    found = haystack.indexOf(needle, cursor);
+  }
+  result += text.slice(cursor);
+  return { text: result, count };
+}
+
 function nodeAt(nodes: FindTextNode[], offset: number, end: boolean): FindTextNode | null {
   let low = 0;
   let high = nodes.length - 1;
