@@ -29,13 +29,12 @@ describe("markdown reader CSS", () => {
     expect(ruleBody(".doc-reading-layout")).toContain("display: flex");
   });
 
-  it("keeps code wrap and heading anchors token-driven", () => {
-    expect(ruleBody('.md-preview[data-code-wrap="on"] .md-code-pre')).toContain(
-      "white-space: pre-wrap",
-    );
-    expect(ruleBody('.md-preview[data-code-wrap="off"] .md-code-pre')).toContain(
+  it("keeps code wrap, line numbers and heading anchors token-driven", () => {
+    expect(ruleBody(".md-code-line-content")).toContain("white-space: pre-wrap");
+    expect(ruleBody('.md-preview[data-code-wrap="off"] .md-code-line-content')).toContain(
       "white-space: pre",
     );
+    expect(ruleBody(".md-code-line::before")).toContain("counter(md-code-line)");
     expect(ruleBody(".md-heading-anchor")).toContain("position: absolute");
   });
 });

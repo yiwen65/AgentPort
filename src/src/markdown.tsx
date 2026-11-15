@@ -32,6 +32,7 @@ export function MarkdownView({
   const { t } = useTranslation("shell");
   const rootRef = useRef<HTMLDivElement>(null);
   const codeWrap = useStore((state) => state.docCodeWrap);
+  const codeLineNumbers = useStore((state) => state.docCodeLineNumbers);
   const footnoteLabel = t("ui.document.footnotes");
   const parsed = useMemo(
     () =>
@@ -98,6 +99,7 @@ export function MarkdownView({
         ref={rootRef}
         className="md-preview"
         data-code-wrap={codeWrap ? "on" : "off"}
+        data-code-line-numbers={codeLineNumbers ? "on" : "off"}
         onClick={(event) => {
           const target = event.target as Element | null;
           const documentLink = target?.closest<HTMLAnchorElement>("a.md-doc-link");
