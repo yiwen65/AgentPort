@@ -1215,6 +1215,7 @@ fn prepare_request(
         | "document.images.close"
         | "document.read"
         | "document.list"
+        | "document.search"
         | "document.create") => PreparedRequest::Extended(
             method.into(),
             serde_json::from_str(params).map_err(ProtocolError::InvalidJson)?,
@@ -1973,6 +1974,7 @@ mod tests {
             json!({"type":"request","requestId":"d2","method":"document.write","params":{"path":"/tmp/doc","content":"DOCUMENT_CONTENT_DO_NOT_ECHO"}}),
             json!({"type":"request","requestId":"d3","method":"document.list","params":{}}),
             json!({"type":"request","requestId":"d4","method":"document.create","params":{}}),
+            json!({"type":"request","requestId":"d5","method":"document.search","params":{"path":"/tmp","query":"readme"}}),
         ];
         let facade_methods = requests
             .iter()

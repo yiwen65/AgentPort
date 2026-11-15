@@ -59,6 +59,7 @@ const REFRESH_SKIP_METHODS: ReadonlySet<string> = new Set([
   "backup.verify",
   "document.read",
   "document.list",
+  "document.search",
   "worktree.preview",
   "worktree.list",
   "worktree.status",

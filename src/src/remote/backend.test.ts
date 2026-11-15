@@ -772,12 +772,13 @@ describe("search/history/timeline/documents/secrets/backup/export/diagnostics", 
     expect(request).toHaveBeenCalledTimes(1);
   });
 
-  it("document read/write/list/create pass paths through", async () => {
+  it("document read/write/list/search/create pass paths through", async () => {
     request.mockResolvedValue({});
     const backend = makeBackend();
     await backend.readSessionDocument("/p/a.md");
     await backend.writeSessionDocument("/p/a.md", "body");
     await backend.listDocumentDirectory("/p");
+    await backend.searchDocumentFiles("/p", "read");
     await backend.createDocumentEntry("/p/b", "dir");
     expect(request).toHaveBeenNthCalledWith(1, "document.read", { path: "/p/a.md" });
     expect(request).toHaveBeenNthCalledWith(2, "document.write", {
@@ -785,7 +786,11 @@ describe("search/history/timeline/documents/secrets/backup/export/diagnostics", 
       content: "body",
     });
     expect(request).toHaveBeenNthCalledWith(3, "document.list", { path: "/p" });
-    expect(request).toHaveBeenNthCalledWith(4, "document.create", {
+    expect(request).toHaveBeenNthCalledWith(4, "document.search", {
+      path: "/p",
+      query: "read",
+    });
+    expect(request).toHaveBeenNthCalledWith(5, "document.create", {
       path: "/p/b",
       kind: "dir",
     });

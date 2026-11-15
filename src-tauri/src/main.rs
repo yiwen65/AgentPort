@@ -4218,6 +4218,243 @@ async fn list_document_directory(path: String) -> std::result::Result<Value, Val
     list_document_directory_impl(&path)
 }
 
+const DOCUMENT_SEARCH_MAX_RESULTS: usize = 200;
+const DOCUMENT_SEARCH_MAX_VISITED: usize = 50_000;
+const DOCUMENT_SEARCH_MAX_DEPTH: usize = 32;
+const DOCUMENT_SEARCH_MAX_MILLIS: u128 = 2_000;
+const DOCUMENT_SEARCH_MAX_QUERY_CHARS: usize = 256;
+
+/// Candidate files below a searched root. Inside a git worktree `ls-files`
+/// returns tracked plus untracked non-ignored paths, so generated trees
+/// (node_modules, target, dist, …) never bury real project files. Non-git
+/// directories fall back to a bounded walk.
+fn collect_git_search_candidates(
+    root: &std::path::Path,
+) -> Option<(Vec<String>, bool)> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut paths = Vec::new();
+    let mut truncated = false;
+    for chunk in output.stdout.split(|byte| *byte == 0) {
+        if chunk.is_empty() {
+            continue;
+        }
+        if paths.len() >= DOCUMENT_SEARCH_MAX_VISITED {
+            truncated = true;
+            break;
+        }
+        let relative = String::from_utf8_lossy(chunk).into_owned();
+        if relative == ".git" || relative.starts_with(".git/") {
+            continue;
+        }
+        paths.push(relative);
+    }
+    Some((paths, truncated))
+}
+
+fn collect_walk_search_candidates(
+    root: &std::path::Path,
+    started: std::time::Instant,
+) -> (Vec<String>, bool) {
+    let mut paths = Vec::new();
+    let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
+    let mut visited = 0usize;
+    let mut truncated = false;
+
+    while let Some((dir, depth)) = stack.pop() {
+        if started.elapsed().as_millis() >= DOCUMENT_SEARCH_MAX_MILLIS {
+            truncated = true;
+            break;
+        }
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => {
+                // An unreadable subdirectory makes the result set incomplete,
+                // but must not fail the whole search.
+                truncated = true;
+                continue;
+            }
+        };
+        for entry in entries.flatten() {
+            if visited >= DOCUMENT_SEARCH_MAX_VISITED
+                || started.elapsed().as_millis() >= DOCUMENT_SEARCH_MAX_MILLIS
+            {
+                truncated = true;
+                break;
+            }
+            visited += 1;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // The git object store is never useful in file search and can
+            // hold tens of thousands of loose objects.
+            if name == ".git" {
+                continue;
+            }
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+            // Never follow symlinks: they can loop or escape the root.
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                if depth + 1 > DOCUMENT_SEARCH_MAX_DEPTH {
+                    truncated = true;
+                    continue;
+                }
+                // Re-canonicalize each descent so a directory swapped for a
+                // symlink after enumeration cannot escape the searched root.
+                match std::fs::canonicalize(entry.path()) {
+                    Ok(child) if child.starts_with(root) => {
+                        stack.push((child, depth + 1));
+                    }
+                    _ => truncated = true,
+                }
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            if let Ok(relative) = entry.path().strip_prefix(root) {
+                paths.push(relative.to_string_lossy().into_owned());
+            }
+        }
+        if truncated {
+            break;
+        }
+    }
+    (paths, truncated)
+}
+
+fn search_document_files_impl(path: &str, query: &str) -> std::result::Result<Value, Value> {
+    let reject = |code: &str, message: String| {
+        runtime_command_error(code, json!({ "path": path }), message.clone(), message)
+    };
+
+    let raw = std::path::Path::new(path);
+    if !raw.is_absolute() {
+        return Err(reject(
+            "document_path_relative",
+            format!("只能搜索绝对路径的目录：{path}"),
+        ));
+    }
+    let canonical = std::fs::canonicalize(raw).map_err(|e| {
+        reject(
+            "document_not_found",
+            format!("目录不存在或无法访问：{path}（{e}）"),
+        )
+    })?;
+    if !canonical.is_dir() {
+        return Err(reject(
+            "document_not_directory",
+            format!("该路径不是目录，无法搜索文件：{path}"),
+        ));
+    }
+
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() || needle.chars().count() > DOCUMENT_SEARCH_MAX_QUERY_CHARS {
+        return Ok(json!({
+            "path": canonical.to_string_lossy(),
+            "entries": [],
+            "truncated": false,
+        }));
+    }
+
+    let started = std::time::Instant::now();
+    let (candidates, mut truncated) = match collect_git_search_candidates(&canonical) {
+        Some((paths, truncated)) if !paths.is_empty() => (paths, truncated),
+        _ => collect_walk_search_candidates(&canonical, started),
+    };
+    let matching_started = std::time::Instant::now();
+
+    // (rank, relative path length, lowercased relative path, wire entry)
+    let mut hits: Vec<(u8, usize, String, Value)> = Vec::new();
+    for relative in candidates {
+        if matching_started.elapsed().as_millis() >= DOCUMENT_SEARCH_MAX_MILLIS {
+            truncated = true;
+            break;
+        }
+        if relative.starts_with('/')
+            || relative.split('/').any(|part| part == "..")
+        {
+            continue;
+        }
+        let relative_lower = relative.to_lowercase();
+        if !relative_lower.contains(&needle) {
+            continue;
+        }
+        let absolute = canonical.join(&relative);
+        // ls-files also reports tracked-but-deleted entries and symlinks;
+        // only present regular files can open in the viewer.
+        let metadata = match std::fs::symlink_metadata(&absolute) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        if !metadata.file_type().is_file() {
+            continue;
+        }
+        let name = match absolute.file_name() {
+            Some(name) => name.to_string_lossy().into_owned(),
+            None => continue,
+        };
+        let name_lower = name.to_lowercase();
+        let rank = if name_lower == needle {
+            0
+        } else if name_lower.starts_with(&needle) {
+            1
+        } else if name_lower.contains(&needle) {
+            2
+        } else {
+            3
+        };
+        hits.push((
+            rank,
+            relative.len(),
+            relative_lower,
+            json!({
+                "name": name,
+                "path": absolute.to_string_lossy(),
+                "isDir": false,
+            }),
+        ));
+        if hits.len() >= DOCUMENT_SEARCH_MAX_RESULTS * 4 {
+            truncated = true;
+            break;
+        }
+    }
+
+    hits.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    if hits.len() > DOCUMENT_SEARCH_MAX_RESULTS {
+        hits.truncate(DOCUMENT_SEARCH_MAX_RESULTS);
+        truncated = true;
+    }
+    let entries: Vec<Value> = hits.into_iter().map(|hit| hit.3).collect();
+    Ok(json!({
+        "path": canonical.to_string_lossy(),
+        "entries": entries,
+        "truncated": truncated,
+    }))
+}
+
+#[tauri::command]
+async fn search_document_files(
+    path: String,
+    query: String,
+) -> std::result::Result<Value, Value> {
+    search_document_files_impl(&path, &query)
+}
+
 fn create_document_entry_impl(path: &str, kind: &str) -> std::result::Result<Value, Value> {
     let reject = |code: &str, message: String| {
         runtime_command_error(code, json!({ "path": path }), message.clone(), message)
@@ -4906,6 +5143,7 @@ fn main() {
             read_session_document,
             write_session_document,
             list_document_directory,
+            search_document_files,
             create_document_entry,
             rename_document_entry,
             duplicate_document_entry,
@@ -5354,6 +5592,163 @@ mod cleanup_tests {
 
         let relative = list_document_directory_impl("some/dir").unwrap_err();
         assert_eq!(relative["code"], "document_path_relative");
+    }
+
+    #[test]
+    fn search_document_files_matches_nested_paths_case_insensitively() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("docs/notes")).unwrap();
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        std::fs::create_dir_all(temp.path().join(".git/hooks")).unwrap();
+        std::fs::write(temp.path().join("docs/notes/ReadMe.md"), "x").unwrap();
+        std::fs::write(temp.path().join("src/app.ts"), "x").unwrap();
+        std::fs::write(temp.path().join(".git/hooks/readme.sample"), "x").unwrap();
+
+        let value = search_document_files_impl(temp.path().to_str().unwrap(), "readme").unwrap();
+        let canonical = std::fs::canonicalize(temp.path()).unwrap();
+        assert_eq!(value["path"], canonical.to_string_lossy().as_ref());
+        let entries = value["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["name"], "ReadMe.md");
+        assert_eq!(entries[0]["isDir"], false);
+        assert!(entries[0]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("/docs/notes/ReadMe.md"));
+        assert_eq!(value["truncated"], false);
+
+        // Directory components match too, but only files are returned.
+        let path_hit = search_document_files_impl(temp.path().to_str().unwrap(), "NOTES").unwrap();
+        let entries = path_hit["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["isDir"], false);
+    }
+
+    #[test]
+    fn search_document_files_ranks_basename_matches_first() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("a")).unwrap();
+        std::fs::create_dir_all(temp.path().join("b")).unwrap();
+        std::fs::create_dir_all(temp.path().join("c")).unwrap();
+        std::fs::create_dir_all(temp.path().join("z/readme")).unwrap();
+        std::fs::write(temp.path().join("a/readme.md"), "x").unwrap();
+        std::fs::write(temp.path().join("b/readme-notes.md"), "x").unwrap();
+        std::fs::write(temp.path().join("c/notes-readme.md"), "x").unwrap();
+        std::fs::write(temp.path().join("z/readme/index.txt"), "x").unwrap();
+
+        let value = search_document_files_impl(temp.path().to_str().unwrap(), "readme").unwrap();
+        let names: Vec<&str> = value["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            ["readme.md", "readme-notes.md", "notes-readme.md", "index.txt"]
+        );
+    }
+
+    #[test]
+    fn search_document_files_caps_results_and_reports_truncation() {
+        let temp = tempfile::tempdir().unwrap();
+        for index in 0..=DOCUMENT_SEARCH_MAX_RESULTS {
+            std::fs::write(temp.path().join(format!("match-{index}.txt")), "x").unwrap();
+        }
+
+        let value =
+            search_document_files_impl(temp.path().to_str().unwrap(), "match-").unwrap();
+        assert_eq!(
+            value["entries"].as_array().unwrap().len(),
+            DOCUMENT_SEARCH_MAX_RESULTS
+        );
+        assert_eq!(value["truncated"], true);
+    }
+
+    #[test]
+    fn search_document_files_rejects_invalid_roots_and_empty_queries() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("a.md");
+        std::fs::write(&file, "x").unwrap();
+
+        let relative = search_document_files_impl("some/dir", "readme").unwrap_err();
+        assert_eq!(relative["code"], "document_path_relative");
+
+        let missing = search_document_files_impl(
+            temp.path().join("missing").to_str().unwrap(),
+            "readme",
+        )
+        .unwrap_err();
+        assert_eq!(missing["code"], "document_not_found");
+
+        let not_dir = search_document_files_impl(file.to_str().unwrap(), "readme").unwrap_err();
+        assert_eq!(not_dir["code"], "document_not_directory");
+
+        let empty =
+            search_document_files_impl(temp.path().to_str().unwrap(), "   ").unwrap();
+        assert!(empty["entries"].as_array().unwrap().is_empty());
+        assert_eq!(empty["truncated"], false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_document_files_skips_symlinked_files_and_directories() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("real")).unwrap();
+        std::fs::write(temp.path().join("real/readme.md"), "x").unwrap();
+        std::fs::write(outside.path().join("secret-readme.txt"), "x").unwrap();
+        symlink(
+            outside.path().join("secret-readme.txt"),
+            temp.path().join("linked-readme.txt"),
+        )
+        .unwrap();
+        symlink(outside.path(), temp.path().join("linked-dir")).unwrap();
+
+        let value = search_document_files_impl(temp.path().to_str().unwrap(), "readme").unwrap();
+        let names: Vec<&str> = value["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["readme.md"]);
+    }
+
+    #[test]
+    fn search_document_files_skips_git_ignored_trees() {
+        let temp = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(temp.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}");
+        };
+        git(&["init", "--quiet"]);
+        git(&["config", "user.email", "search@example.invalid"]);
+        git(&["config", "user.name", "Search Test"]);
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        std::fs::create_dir_all(temp.path().join("node_modules/pkg")).unwrap();
+        std::fs::write(temp.path().join(".gitignore"), "node_modules/\n").unwrap();
+        std::fs::write(temp.path().join("src/component.tsx"), "x").unwrap();
+        std::fs::write(temp.path().join("node_modules/pkg/component.js"), "x").unwrap();
+        git(&["add", ".gitignore", "src/component.tsx"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+
+        let value =
+            search_document_files_impl(temp.path().to_str().unwrap(), "component").unwrap();
+        let paths: Vec<&str> = value["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].ends_with("/src/component.tsx"));
     }
 
     #[test]

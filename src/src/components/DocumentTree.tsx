@@ -34,14 +34,17 @@ import {
   toast,
   useStore,
 } from "../store";
-import { isRemoteUnavailableError } from "../remote/errors";
-import type { DocumentDirEntry } from "../types";
+import { isRemoteRequestError, isRemoteUnavailableError } from "../remote/errors";
+import type { DocumentDirEntry, DocumentFileSearchResult } from "../types";
 
 interface DirState {
   entries: DocumentDirEntry[] | null;
   error: string | null;
   expanded: boolean;
 }
+
+const SEARCH_DEBOUNCE_MS = 150;
+const MAX_SEARCH_QUERY_CHARS = 256;
 
 function baseName(path: string): string {
   const trimmed = path.replace(/\/+$/, "");
@@ -52,6 +55,38 @@ function parentDir(path: string): string {
   const trimmed = path.replace(/\/+$/, "");
   const slash = trimmed.lastIndexOf("/");
   return slash > 0 ? trimmed.slice(0, slash) : "/";
+}
+
+function relativeToRoot(path: string, root: string): string {
+  if (root === "/") return path.replace(/^\/+/, "");
+  return path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
+}
+
+/** Splits text around case-insensitive query hits so matches can be marked
+ * without injecting raw HTML. */
+function highlightMatches(text: string, query: string): React.ReactNode {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return text;
+  const haystack = text.toLowerCase();
+  const nodes: React.ReactNode[] = [];
+  let from = 0;
+  let key = 0;
+  while (from < text.length) {
+    const hit = haystack.indexOf(needle, from);
+    if (hit < 0) {
+      nodes.push(text.slice(from));
+      break;
+    }
+    if (hit > from) nodes.push(text.slice(from, hit));
+    nodes.push(
+      <mark key={key} className="doc-tree-search-hit">
+        {text.slice(hit, hit + needle.length)}
+      </mark>,
+    );
+    key += 1;
+    from = hit + needle.length;
+  }
+  return nodes;
 }
 
 function IconChevron({ expanded }: { expanded: boolean }) {
@@ -89,6 +124,15 @@ function IconCollapseAll() {
   );
 }
 
+function IconSearch() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="7" cy="7" r="4.1" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M10.2 10.2 13.5 13.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function IconNewFile() {
   return (
     <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -120,6 +164,11 @@ function IconNewFolder() {
 export default function DocumentTree() {
   const { t } = useTranslation("shell");
   const root = useStore((state) => state.explorerRoot);
+  const activeDeviceKey = useStore((state) =>
+    state.activeDevice.kind === "remote"
+      ? `remote:${state.activeDevice.deviceId}`
+      : "local",
+  );
   const openPath = useStore((state) => getActiveDocumentTab(state)?.path ?? null);
   const treeGit = useSyncExternalStore(subscribeTreeGit, () =>
     getTreeGitState(root ?? ""),
@@ -156,6 +205,16 @@ export default function DocumentTree() {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchListing, setSearchListing] = useState<DocumentFileSearchResult | null>(null);
+  const [searchBusy, setSearchBusy] = useState(false);
+  const [searchError, setSearchError] = useState<{
+    text: string;
+    remoteUnsupported: boolean;
+  } | null>(null);
+  const [searchActive, setSearchActive] = useState(0);
+  const activeSearchRowRef = useRef<HTMLButtonElement>(null);
 
   const createBaseDir = activeDir ?? root;
 
@@ -190,11 +249,76 @@ export default function DocumentTree() {
 
   // Load (or reload) the root directory and its git decorations.
   useEffect(() => {
-    if (!root) return;
+    setSearchQuery("");
+    setSearchListing(null);
+    setSearchError(null);
+    setSearchBusy(false);
+    setSearchActive(0);
+    if (!root) {
+      setSearchOpen(false);
+      return;
+    }
     setDirs(new Map());
     loadDir(root, true);
     void refreshTreeGit(root);
   }, [root, loadDir]);
+
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setSearchQuery("");
+    setSearchListing(null);
+    setSearchError(null);
+    setSearchBusy(false);
+    setSearchActive(0);
+  };
+
+  // Debounced recursive search. Results are device- and root-scoped: a
+  // response that settles after a switch must never repaint the new tree.
+  useEffect(() => {
+    if (!root || !searchOpen) return;
+    const query = searchQuery.trim();
+    if (!query) {
+      setSearchListing(null);
+      setSearchError(null);
+      setSearchBusy(false);
+      return;
+    }
+    let cancelled = false;
+    setSearchBusy(true);
+    setSearchError(null);
+    const timer = window.setTimeout(() => {
+      void api
+        .searchDocumentFiles(root, query)
+        .then((listing) => {
+          if (cancelled) return;
+          setSearchListing(listing);
+          setSearchActive(0);
+        })
+        .catch((e) => {
+          if (cancelled) return;
+          setSearchListing(null);
+          setSearchError({
+            text: errorText(e),
+            remoteUnsupported:
+              isRemoteRequestError(e) &&
+              (e.code === "unknown_method" || e.code === "capability_disabled"),
+          });
+        })
+        .finally(() => {
+          if (!cancelled) setSearchBusy(false);
+        });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [root, activeDeviceKey, searchOpen, searchQuery]);
+
+  // Keep the keyboard-selected result visible while arrowing through a long
+  // flat list.
+  useEffect(() => {
+    activeSearchRowRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [searchActive, searchListing]);
 
   /** Manual refresh: re-read every directory that was ever loaded while
    * keeping each one's expanded/collapsed state (a refresh must not fold
@@ -242,11 +366,55 @@ export default function DocumentTree() {
   const startCreate = (kind: "file" | "dir", baseDir?: string) => {
     const base = baseDir ?? createBaseDir;
     if (!base) return;
+    closeSearch();
     setActiveDir(base);
     setRenaming(null);
     setCreating(kind);
     setNameDraft("");
     setCreateError(null);
+  };
+
+  const toggleSearch = () => {
+    if (searchOpen) {
+      closeSearch();
+      return;
+    }
+    // Search results and inline create/rename rows compete for the tree
+    // body; only one editing affordance may be open at a time.
+    setCreating(null);
+    setCreateError(null);
+    setRenaming(null);
+    setRenameError(null);
+    setSearchOpen(true);
+  };
+
+  const openSearchResult = (entry: DocumentDirEntry) => {
+    setActiveDir(parentDir(entry.path));
+    openDocumentTarget({ path: entry.path, line: null }, { pinned: true });
+  };
+
+  const onSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSearch();
+      return;
+    }
+    const entries = searchListing?.entries ?? [];
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      if (entries.length === 0) return;
+      event.preventDefault();
+      setSearchActive((index) => {
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        return (index + step + entries.length) % entries.length;
+      });
+      return;
+    }
+    if (event.key === "Enter" && entries.length > 0) {
+      event.preventDefault();
+      const entry = entries[Math.min(searchActive, entries.length - 1)];
+      if (entry) openSearchResult(entry);
+    }
   };
 
   /** Error toast wrapper for fire-and-forget menu actions. */
@@ -554,14 +722,28 @@ export default function DocumentTree() {
     });
 
   const rootState = root ? dirs.get(root) : null;
+  const searching = searchOpen && searchQuery.trim().length > 0;
 
   return (
-    <div className="doc-tree" aria-label={t("ui.document.treeLabel")}>
+    <div
+      className={`doc-tree${searchOpen ? " searching" : ""}`}
+      aria-label={t("ui.document.treeLabel")}
+    >
       <div className="doc-tree-header">
         <span className="doc-tree-root">
           {root ? baseName(root) : t("ui.document.treeLabel")}
         </span>
         <span className="spacer" />
+        <button
+          className="btn small ghost"
+          data-tip={t("ui.document.searchFilesTip")}
+          aria-label={t("ui.document.searchFiles")}
+          aria-pressed={searchOpen}
+          disabled={!root}
+          onClick={toggleSearch}
+        >
+          <IconSearch />
+        </button>
         <button
           className="btn small ghost"
           data-tip={t("ui.document.newFileTip")}
@@ -608,8 +790,33 @@ export default function DocumentTree() {
           <IconCollapseAll />
         </button>
       </div>
-      <div className="doc-tree-body" role="tree">
-        {creating && createBaseDir ? (
+      {searchOpen ? (
+        <div className="doc-tree-search">
+          <IconSearch />
+          <input
+            type="text"
+            value={searchQuery}
+            placeholder={t("ui.document.searchPlaceholder")}
+            aria-label={t("ui.document.searchFiles")}
+            maxLength={MAX_SEARCH_QUERY_CHARS}
+            autoFocus
+            onChange={(event) => {
+              setSearchQuery(event.target.value);
+              setSearchActive(0);
+            }}
+            onKeyDown={onSearchKeyDown}
+          />
+          {searchBusy ? (
+            <span className="doc-tree-search-busy" aria-hidden="true" />
+          ) : null}
+        </div>
+      ) : null}
+      <div
+        className="doc-tree-body"
+        role={searching ? "listbox" : "tree"}
+        aria-label={searching ? t("ui.document.searchResultsLabel") : undefined}
+      >
+        {!searching && creating && createBaseDir ? (
           <div className="doc-tree-create">
             <span className="doc-tree-create-base">
               {creating === "dir" ? "📁" : "📄"} {baseName(createBaseDir)}/
@@ -646,7 +853,73 @@ export default function DocumentTree() {
             ) : null}
           </div>
         ) : null}
-        {!root ? (
+        {searching ? (
+          searchError ? (
+            <div className="doc-tree-note error" role="alert">
+              {searchError.remoteUnsupported
+                ? t("ui.document.searchRemoteUnsupported")
+                : t("ui.document.searchFailed", { detail: searchError.text })}
+            </div>
+          ) : searchListing ? (
+            searchListing.entries.length ? (
+              <>
+                {searchListing.entries.map((entry, index) => {
+                  const relative = relativeToRoot(entry.path, searchListing.path);
+                  const slash = relative.lastIndexOf("/");
+                  const dirPart = slash >= 0 ? relative.slice(0, slash + 1) : "";
+                  const namePart = relative.slice(slash + 1);
+                  return (
+                    <button
+                      key={entry.path}
+                      type="button"
+                      role="option"
+                      aria-selected={index === searchActive}
+                      aria-label={relative}
+                      ref={index === searchActive ? activeSearchRowRef : undefined}
+                      className={`doc-tree-row file doc-tree-search-row${
+                        openPath === entry.path ? " selected" : ""
+                      }${index === searchActive ? " active" : ""}`}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onMouseEnter={() => setSearchActive(index)}
+                      onClick={() => openSearchResult(entry)}
+                    >
+                      <span className="doc-tree-kind file" aria-hidden="true">
+                        <DocFileIcon name={entry.name} />
+                      </span>
+                      <span className="doc-tree-search-path">
+                        <span className="doc-tree-name">
+                          {highlightMatches(namePart, searchQuery)}
+                        </span>
+                        {dirPart ? (
+                          <span className="doc-tree-search-dir">
+                            {highlightMatches(dirPart, searchQuery)}
+                          </span>
+                        ) : null}
+                      </span>
+                    </button>
+                  );
+                })}
+                {searchListing.truncated ? (
+                  <div className="doc-tree-note">
+                    {t("ui.document.searchTruncated")}
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <div className="doc-tree-note">
+                {searchBusy
+                  ? t("ui.document.searchBusy")
+                  : t("ui.document.searchNoResults")}
+              </div>
+            )
+          ) : (
+            <div className="doc-tree-note">
+              {searchBusy
+                ? t("ui.document.searchBusy")
+                : t("ui.document.searchNoResults")}
+            </div>
+          )
+        ) : !root ? (
           <div className="doc-tree-note">{t("ui.document.treeNoRoot")}</div>
         ) : rootState?.error ? (
           <div className="doc-tree-note error" role="alert">

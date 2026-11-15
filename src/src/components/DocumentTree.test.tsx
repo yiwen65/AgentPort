@@ -2,9 +2,10 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { listMock, createMock, renameMock, duplicateMock, deleteMock, vscodeMock, revealMock, copyMock, gitMock } =
+const { listMock, searchMock, createMock, renameMock, duplicateMock, deleteMock, vscodeMock, revealMock, copyMock, gitMock } =
   vi.hoisted(() => ({
     listMock: vi.fn(),
+    searchMock: vi.fn(),
     createMock: vi.fn(),
     renameMock: vi.fn(),
     duplicateMock: vi.fn(),
@@ -18,6 +19,7 @@ const { listMock, createMock, renameMock, duplicateMock, deleteMock, vscodeMock,
 vi.mock("../api", () => ({
   api: {
     listDocumentDirectory: listMock,
+    searchDocumentFiles: searchMock,
     createDocumentEntry: createMock,
     renameDocumentEntry: renameMock,
     duplicateDocumentEntry: duplicateMock,
@@ -36,7 +38,7 @@ import { act } from "@testing-library/react";
 import { openDocumentTarget } from "../documents";
 import { resetTreeGitForTests } from "../docTreeGit";
 import { getActiveDocumentTab, getState, resolveConfirm, setActiveDevice, setState } from "../store";
-import { RemoteUnavailableError } from "../remote/errors";
+import { RemoteUnavailableError, RemoteRequestError } from "../remote/errors";
 import type { GitChangeEntry, GitChangeKind } from "../types";
 
 /** Active viewer tab as `{path, line}` (mirrors the old `openDocument`). */
@@ -65,6 +67,7 @@ function listing(path: string, entries: Array<[string, boolean]>) {
 describe("DocumentTree", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    searchMock.mockReset();
     createMock.mockImplementation((path: string) => Promise.resolve({ path }));
     listMock.mockImplementation((path: string) => {
       if (path === ROOT) {
@@ -502,5 +505,147 @@ describe("DocumentTree", () => {
       expect(toasts.some((entry) => entry.kind === "info" && entry.text === "该操作在远程设备上不可用")).toBe(true);
     });
     expect(getState().toasts.some((entry) => entry.kind === "error")).toBe(false);
+  });
+
+  it("searches the whole project recursively from the tree header", async () => {
+    searchMock.mockResolvedValue({
+      path: "/private/tmp/demo",
+      truncated: false,
+      entries: [
+        { name: "报告.md", path: "/private/tmp/demo/docs/报告.md", isDir: false },
+        { name: "README.md", path: "/private/tmp/demo/README.md", isDir: false },
+      ],
+    });
+    render(<DocumentTree />);
+    await screen.findByText("src");
+    fireEvent.click(screen.getByLabelText("搜索文件"));
+
+    const input = screen.getByPlaceholderText("搜索文件名或路径");
+    fireEvent.change(input, { target: { value: "报告" } });
+    await waitFor(() => expect(searchMock).toHaveBeenCalledWith(ROOT, "报告"));
+
+    const options = await screen.findAllByRole("option");
+    expect(options).toHaveLength(2);
+    // Display paths are relative to the canonical root returned by the
+    // backend, not to the store's (possibly non-canonical) explorer root.
+    expect(options[0]?.getAttribute("aria-label")).toBe("docs/报告.md");
+    expect(options[1]?.getAttribute("aria-label")).toBe("README.md");
+    // The basename leads the row; the muted directory follows it so narrow
+    // tree columns never truncate the file name away first.
+    expect(options[0]?.textContent?.indexOf("报告.md")).toBe(0);
+    // The flat result list replaces the lazy tree while searching.
+    expect(screen.queryByText("src")).toBeNull();
+
+    fireEvent.click(options[0]!);
+    expect(openedDoc()).toEqual({
+      path: "/private/tmp/demo/docs/报告.md",
+      line: null,
+    });
+    expect(getState().docGroups[0]?.tabs[0]?.pinned).toBe(true);
+  });
+
+  it("navigates search results with arrow keys and closes with Escape", async () => {
+    searchMock.mockResolvedValue({
+      path: ROOT,
+      truncated: false,
+      entries: [
+        { name: "a.md", path: `${ROOT}/a.md`, isDir: false },
+        { name: "b.md", path: `${ROOT}/docs/b.md`, isDir: false },
+      ],
+    });
+    render(<DocumentTree />);
+    fireEvent.click(await screen.findByLabelText("搜索文件"));
+    const input = screen.getByPlaceholderText("搜索文件名或路径");
+    fireEvent.change(input, { target: { value: "md" } });
+    await screen.findAllByRole("option");
+
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(openedDoc()).toEqual({ path: `${ROOT}/docs/b.md`, line: null });
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByPlaceholderText("搜索文件名或路径")).toBeNull();
+    // Clearing the search restores the lazily loaded tree untouched.
+    expect(screen.getByText("src")).toBeTruthy();
+    expect(screen.getByText("README.md")).toBeTruthy();
+  });
+
+  it("shows no-result and truncation notes", async () => {
+    searchMock.mockResolvedValueOnce({ path: ROOT, truncated: false, entries: [] });
+    const first = render(<DocumentTree />);
+    fireEvent.click(await screen.findByLabelText("搜索文件"));
+    fireEvent.change(screen.getByPlaceholderText("搜索文件名或路径"), {
+      target: { value: "zzz" },
+    });
+    await screen.findByText("没有匹配的文件");
+    first.unmount();
+
+    searchMock.mockResolvedValueOnce({
+      path: ROOT,
+      truncated: true,
+      entries: [{ name: "a.md", path: `${ROOT}/a.md`, isDir: false }],
+    });
+    render(<DocumentTree />);
+    fireEvent.click(await screen.findByLabelText("搜索文件"));
+    fireEvent.change(screen.getByPlaceholderText("搜索文件名或路径"), {
+      target: { value: "a" },
+    });
+    await screen.findByText("结果可能不完整：搜索范围过大或匹配过多");
+  });
+
+  it("ignores a stale search response after the query changed", async () => {
+    let resolveOld!: (value: unknown) => void;
+    let resolveNew!: (value: unknown) => void;
+    searchMock
+      .mockImplementationOnce(
+        () => new Promise<unknown>((resolve) => { resolveOld = resolve; }),
+      )
+      .mockImplementationOnce(
+        () => new Promise<unknown>((resolve) => { resolveNew = resolve; }),
+      );
+
+    render(<DocumentTree />);
+    fireEvent.click(await screen.findByLabelText("搜索文件"));
+    const input = screen.getByPlaceholderText("搜索文件名或路径");
+    fireEvent.change(input, { target: { value: "old" } });
+    await waitFor(() => expect(searchMock).toHaveBeenCalledTimes(1));
+    fireEvent.change(input, { target: { value: "new" } });
+    await waitFor(() => expect(searchMock).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      resolveNew({
+        path: ROOT,
+        truncated: false,
+        entries: [{ name: "new.md", path: `${ROOT}/new.md`, isDir: false }],
+      });
+    });
+    await screen.findByLabelText("new.md");
+    await act(async () => {
+      resolveOld({
+        path: ROOT,
+        truncated: false,
+        entries: [{ name: "old.md", path: `${ROOT}/old.md`, isDir: false }],
+      });
+    });
+    expect(screen.queryByLabelText("old.md")).toBeNull();
+    expect(screen.getByLabelText("new.md")).toBeTruthy();
+  });
+
+  it("explains an outdated remote host that cannot search files", async () => {
+    setActiveDevice({
+      kind: "remote",
+      deviceId: "dev_1",
+      deviceName: "Linux box",
+      capabilities: [],
+    });
+    searchMock.mockRejectedValue(
+      new RemoteRequestError("unknown_method", "unknown method"),
+    );
+    render(<DocumentTree />);
+    fireEvent.click(await screen.findByLabelText("搜索文件"));
+    fireEvent.change(screen.getByPlaceholderText("搜索文件名或路径"), {
+      target: { value: "readme" },
+    });
+    await screen.findByText("远程设备版本过旧，暂不支持文件搜索");
   });
 });

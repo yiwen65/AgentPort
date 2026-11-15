@@ -17,6 +17,7 @@ import type {
   CreateWorktreeResult,
   DestructiveRemovalOutcome,
   DocumentDirListing,
+  DocumentFileSearchResult,
   GitChangesSnapshot,
   GitCheckoutDescriptor,
   GitCommitDetail,
@@ -262,6 +263,7 @@ export const ROUTING = {
     "readSessionDocument",
     "writeSessionDocument",
     "listDocumentDirectory",
+    "searchDocumentFiles",
     "createDocumentEntry",
   ],
 } as const;
@@ -1479,6 +1481,10 @@ export class RemoteBackend {
 
   listDocumentDirectory(path: string): Promise<DocumentDirListing> {
     return this.request<DocumentDirListing>("document.list", { path });
+  }
+
+  searchDocumentFiles(path: string, query: string): Promise<DocumentFileSearchResult> {
+    return this.request<DocumentFileSearchResult>("document.search", { path, query });
   }
 
   createDocumentEntry(

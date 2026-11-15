@@ -60,6 +60,10 @@ describe("apiRouteFor", () => {
     expect(apiRouteFor("someFutureCommand")).toBe("defaultLocal");
     expect(apiRouteFor("boot")).toBe("defaultLocal");
   });
+
+  it("routes file-tree search to the active device", () => {
+    expect(apiRouteFor("searchDocumentFiles")).toBe("remoteRouted");
+  });
 });
 
 describe("createRoutedApi", () => {

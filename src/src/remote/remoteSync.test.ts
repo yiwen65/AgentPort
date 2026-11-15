@@ -196,6 +196,7 @@ describe("remoteSync engine", () => {
     // Skipped read methods and failed requests earn nothing.
     sync.onRemoteRequest("session.list", true);
     sync.onRemoteRequest("project.list", true);
+    sync.onRemoteRequest("document.search", true);
     sync.onRemoteRequest("session.stop", false);
     expect(h.refreshProjectsSoon).toHaveBeenCalledTimes(2);
     sync.stop();

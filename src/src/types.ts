@@ -970,3 +970,11 @@ export interface DocumentDirListing {
   entries: DocumentDirEntry[];
   truncated: boolean;
 }
+
+/** search_document_files response: files whose root-relative path matches. */
+export interface DocumentFileSearchResult {
+  /** Canonical searched root; relative display paths derive from it. */
+  path: string;
+  entries: DocumentDirEntry[];
+  truncated: boolean;
+}

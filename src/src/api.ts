@@ -60,6 +60,7 @@ import type {
   DestructiveRemovalOutcome,
   RestartResult,
   DocumentDirListing,
+  DocumentFileSearchResult,
   SearchResult,
   SecretMeta,
   SessionDocument,
@@ -640,6 +641,8 @@ export const localApi = {
     invoke<{ path: string; sizeBytes: number }>("write_session_document", { path, content }),
   listDocumentDirectory: (path: string) =>
     invoke<DocumentDirListing>("list_document_directory", { path }),
+  searchDocumentFiles: (path: string, query: string) =>
+    invoke<DocumentFileSearchResult>("search_document_files", { path, query }),
   createDocumentEntry: (path: string, kind: "file" | "dir") =>
     invoke<{ path: string }>("create_document_entry", { path, kind }),
   renameDocumentEntry: (oldPath: string, newPath: string) =>

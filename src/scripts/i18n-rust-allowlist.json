@@ -20,7 +20,8 @@
     "未找到可执行文件",
     "已从 {total} 个候选中自动选择优先级最高且可用的路径；可在下方指定其他路径。",
     "发现 {total} 个候选，但均无法通过只读探测：{detail}",
-    "未知错误"
+    "未知错误",
+    "{message}；该可执行文件带 macOS 隔离属性（com.apple.quarantine），Gatekeeper 会在进程启动前拦截它，探测只能看到超时。请在终端执行 `xattr -dr com.apple.quarantine {}` 后重新检测。"
   ],
   "crates/agentport-core/src/adapters/claude.rs": [
     "该版本无 --settings，hook 降级为 PTY 启发式",
@@ -79,6 +80,8 @@
     "目录不存在或无法访问：{path}（{e}）",
     "无法读取目录：{path}（{e}）",
     "该路径不是目录，无法在目录树中展开：{path}",
+    "只能搜索绝对路径的目录：{path}",
+    "该路径不是目录，无法搜索文件：{path}",
     "只能创建绝对路径的文件或目录：{path}",
     "路径不允许包含 .. 片段：{path}",
     "同名文件或目录已存在：{path}",

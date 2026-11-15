@@ -3961,13 +3961,15 @@ body.is-resizing-pane {
   min-width: 0;
   display: flex;
   align-items: baseline;
+  gap: 6px;
   overflow: hidden;
   white-space: nowrap;
 }
 
-/* The directory prefix yields space first; the basename keeps priority. */
+/* Basename keeps priority; the directory prefix absorbs the remaining width
+   and truncates first. */
 .doc-tree-search-dir {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

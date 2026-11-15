@@ -130,6 +130,7 @@ pub const METHOD_REGISTRY: &[&str] = &[
     "document.read",
     "document.write",
     "document.list",
+    "document.search",
     "document.create",
     "secret.status",
     "secret.list",
@@ -422,6 +423,7 @@ pub fn classify_method(method: &str) -> RetryClass {
         | "document.images.close"
         | "document.read"
         | "document.list"
+        | "document.search"
         | "secret.list" => RetryClass::Read,
         "session.mark_seen"
         | "settings.replace"
@@ -1292,6 +1294,14 @@ mod tests {
             assert_eq!(classify_method(method), RetryClass::Read);
             assert!(!MOBILE_V2_METHOD_ALLOWLIST.contains(&method));
         }
+    }
+
+    #[test]
+    fn document_search_is_a_desktop_only_read() {
+        assert!(METHOD_REGISTRY.contains(&"document.search"));
+        assert_eq!(classify_method("document.search"), RetryClass::Read);
+        assert!(classify_method("document.search").allows_automatic_retry());
+        assert!(!MOBILE_V2_METHOD_ALLOWLIST.contains(&"document.search"));
     }
 
     #[test]
