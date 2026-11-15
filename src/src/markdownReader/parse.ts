@@ -11,9 +11,9 @@ import remarkRehype from "remark-rehype";
 import type { Root as HastRoot } from "hast";
 import type { Root as MdastRoot } from "mdast";
 import {
+  rehypeImageIndex,
   remarkGithubAlerts,
   remarkHeadingIds,
-  remarkImageIndex,
   remarkReaderNodes,
 } from "./plugins";
 import type { MarkdownImageInfo, OutlineItem, ParsedMarkdown } from "./types";
@@ -157,13 +157,13 @@ export function parseMarkdown(source: string, options: ParseMarkdownOptions): Pa
       .use(remarkMath)
       .use(remarkGithubAlerts)
       .use(remarkHeadingIds, { outline })
-      .use(remarkImageIndex, { images })
       .use(remarkReaderNodes)
       .use(remarkRehype, {
         allowDangerousHtml: true,
         footnoteLabel: options.footnoteLabel,
         footnoteBackLabel: options.footnoteBackLabel,
-      });
+      })
+      .use(rehypeImageIndex, { images });
     const tree = processor.runSync(
       processor.parse(normalizeImageDestinations(normalized)) as MdastRoot,
     ) as HastRoot;

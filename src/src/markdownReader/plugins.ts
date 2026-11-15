@@ -5,7 +5,8 @@
 import GithubSlugger from "github-slugger";
 import { toString } from "mdast-util-to-string";
 import { visit } from "unist-util-visit";
-import type { Blockquote, Heading, Image, Root } from "mdast";
+import type { Blockquote, Heading, Root } from "mdast";
+import type { Root as HastRoot, RootContent as HastRootContent } from "hast";
 import type { AlertType, MarkdownImageInfo, OutlineItem } from "./types";
 
 const ALERT_PATTERN = /^\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/i;
@@ -74,21 +75,32 @@ export function remarkHeadingIds(options: { outline: OutlineItem[] }) {
   };
 }
 
-/** Document-order image index; used by the shared lightbox navigation. */
-export function remarkImageIndex(options: { images: MarkdownImageInfo[] }) {
-  return (tree: Root) => {
-    visit(tree, "image", (node: Image) => {
-      const index = options.images.length;
-      const info: MarkdownImageInfo = {
-        index,
-        source: node.url,
-        alt: node.alt ?? "",
-        title: node.title ?? null,
-        line: node.position?.start.line ?? 1,
-      };
-      options.images.push(info);
-      mergeProperties(node, { "data-image-index": index });
-    });
+/** Document-order image index after reference images have been resolved.
+ * Assigning it on hast also covers `imageReference` nodes, which do not
+ * exist as `image` nodes in the mdast tree. */
+export function rehypeImageIndex(options: { images: MarkdownImageInfo[] }) {
+  return (tree: HastRoot) => {
+    let index = 0;
+    const walk = (node: HastRootContent): void => {
+      if (node.type !== "element") return;
+      if (node.tagName === "img") {
+        const source = typeof node.properties?.src === "string" ? node.properties.src : "";
+        const alt = typeof node.properties?.alt === "string" ? node.properties.alt : "";
+        const title =
+          typeof node.properties?.title === "string" ? node.properties.title : null;
+        node.properties = { ...node.properties, "data-image-index": index };
+        options.images.push({
+          index,
+          source,
+          alt,
+          title,
+          line: node.position?.start.line ?? 1,
+        });
+        index += 1;
+      }
+      for (const child of node.children) walk(child);
+    };
+    for (const child of tree.children) walk(child);
   };
 }
 

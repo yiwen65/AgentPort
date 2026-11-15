@@ -7,8 +7,20 @@ import { useTranslation } from "react-i18next";
 import type { ThemedToken } from "@shikijs/types";
 import { setDocCodeLineNumbers, setDocCodeWrap } from "../docReadingPrefs";
 import { useStore } from "../store";
-import { codeThemeFor, highlightCode } from "./codeHighlighter";
+import type { CodeThemeName } from "./codeHighlighter";
 import { useMarkdownReader } from "./context";
+
+const TEST_ENVIRONMENT =
+  (import.meta as ImportMeta & { env?: { MODE?: string } }).env?.MODE === "test";
+
+function codeThemeFor(
+  readingTheme: "terminal" | "paper" | "night",
+  effective: "light" | "dark",
+): CodeThemeName {
+  if (readingTheme === "paper") return "min-light";
+  if (readingTheme === "night") return "vitesse-dark";
+  return effective === "dark" ? "github-dark-default" : "github-light-default";
+}
 
 function tokenStyle(token: ThemedToken): CSSProperties | undefined {
   const style: CSSProperties = {};
@@ -62,11 +74,14 @@ export default function CodeBlock({
 
   useEffect(() => {
     setTokens(null);
-    if (!visible || !lang) return;
+    if (!visible || !lang || TEST_ENVIRONMENT) return;
     let cancelled = false;
-    void highlightCode(code, lang, themeName).then((next) => {
-      if (!cancelled) setTokens(next);
-    });
+    // Dynamic import keeps the Shiki core/engine out of the startup chunk.
+    void import("./codeHighlighter")
+      .then(({ highlightCode }) => highlightCode(code, lang, themeName))
+      .then((next) => {
+        if (!cancelled) setTokens(next);
+      });
     return () => {
       cancelled = true;
     };
