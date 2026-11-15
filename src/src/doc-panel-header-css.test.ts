@@ -32,7 +32,12 @@ describe("document panel header tab strip", () => {
     expect(compact).toContain(".doc-panel-header {");
     expect(compact).toContain("gap: 2px");
     expect(compact).toContain("padding: 3px 3px");
-    expect(compact).toContain("max-width: 88px");
+    expect(compact).toContain("max-width: 80px");
+  });
+
+  it("keeps the reader theme control compact", () => {
+    const select = styles.match(/^\.doc-theme-select\s*\{([\s\S]*?)\n\}/m)?.[1];
+    expect(select).toContain("max-width: 96px");
   });
 
   it("moves Quote Selection to its own row in narrow editor columns", () => {

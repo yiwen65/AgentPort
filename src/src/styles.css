@@ -4622,7 +4622,7 @@ body.is-resizing-pane {
   }
 
   .doc-panel-header .doc-theme-select {
-    max-width: 100px;
+    max-width: 88px;
   }
 }
 
@@ -4641,7 +4641,7 @@ body.is-resizing-pane {
   }
 
   .doc-panel-header .doc-theme-select {
-    max-width: 88px;
+    max-width: 80px;
   }
 }
 
@@ -5607,7 +5607,7 @@ body.is-resizing-pane {
 .doc-theme-select {
   flex: 0 0 auto;
   height: 24px;
-  max-width: 108px;
+  max-width: 96px;
   padding: 0 4px;
   border: 1px solid var(--border);
   border-radius: 5px;
