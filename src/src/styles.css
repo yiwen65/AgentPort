@@ -121,6 +121,11 @@
       rgba(255, 255, 255, 0.01) 0%,
       rgba(0, 0, 0, 0.3) 100%
     );
+  /* The tree surface's top stop, repeated flat so the title-bar backdrop can
+     continue the tree at its seam instead of compressing the full gradient
+     into 48px. */
+  --sidebar-top-layer-1: rgba(255, 255, 255, 0.05);
+  --sidebar-top-layer-2: rgba(255, 255, 255, 0.01);
   --sidebar-border: rgba(255, 255, 255, 0.075);
   --sidebar-chip: rgba(32, 32, 39, 0.78);
   /* Frosted selection chip: inset top highlight + accent hairline ring, so
@@ -259,6 +264,8 @@
       rgba(255, 255, 255, 0) 55%,
       rgba(196, 201, 218, 0.38) 100%
     );
+  --sidebar-top-layer-1: rgba(255, 255, 255, 0.32);
+  --sidebar-top-layer-2: rgba(255, 255, 255, 0);
   --sidebar-border: rgba(17, 18, 23, 0.08);
   --sidebar-chip: rgba(255, 255, 255, 0.75);
   --sidebar-active-ring: rgba(0, 122, 255, 0.26);
@@ -307,11 +314,15 @@
 :root[data-vibrancy="off"][data-theme="dark"] {
   --sidebar-glass: #27272b;
   --sidebar-glass-layers: none;
+  --sidebar-top-layer-1: transparent;
+  --sidebar-top-layer-2: transparent;
 }
 
 :root[data-vibrancy="off"][data-theme="light"] {
   --sidebar-glass: #efefef;
   --sidebar-glass-layers: none;
+  --sidebar-top-layer-1: transparent;
+  --sidebar-top-layer-2: transparent;
 }
 
 /* ------------------------------------------------------------------ */
@@ -489,7 +500,17 @@ button {
   pointer-events: none;
   border-left: 1px solid var(--sidebar-border);
   background-color: var(--sidebar-glass);
-  background-image: var(--sidebar-glass-layers, none);
+  /* Reproduce the tree surface's top gradient stop as a flat glaze so the
+     48px strip matches the tree exactly at the seam. */
+  background-image:
+    linear-gradient(
+      var(--sidebar-top-layer-1, transparent),
+      var(--sidebar-top-layer-1, transparent)
+    ),
+    linear-gradient(
+      var(--sidebar-top-layer-2, transparent),
+      var(--sidebar-top-layer-2, transparent)
+    );
 }
 
 .topbar-leading {

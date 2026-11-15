@@ -53,8 +53,13 @@ describe("document tree sidebar design language", () => {
     )?.[1];
     expect(backdrop).toContain("width: var(--doc-tree-topbar-width, 0px)");
     expect(backdrop).toContain("background-color: var(--sidebar-glass)");
-    expect(backdrop).toContain("background-image: var(--sidebar-glass-layers, none)");
+    expect(backdrop).toContain("var(--sidebar-top-layer-1, transparent)");
+    expect(backdrop).toContain("var(--sidebar-top-layer-2, transparent)");
     expect(backdrop).toContain("z-index: 0");
+    // The flat glaze must copy the tree gradient's 0% stops per theme.
+    expect(styles).toContain("--sidebar-top-layer-1: rgba(255, 255, 255, 0.05)");
+    expect(styles).toContain("--sidebar-top-layer-1: rgba(255, 255, 255, 0.32)");
+    expect(styles).toContain("--sidebar-top-layer-1: transparent");
   });
 
   it("collapses header actions out of layout until they are shown", () => {
