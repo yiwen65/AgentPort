@@ -20,6 +20,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { api, copyText, errorText, readDocumentForDevice, writeDocumentForDevice } from "../api";
 import {
+  clearDocumentPendingAnchor,
   clearDocumentPendingLine,
   closeDocumentTab,
   documentPathFallbacks,
@@ -38,12 +39,14 @@ import {
 } from "../documents";
 import { MarkdownView } from "../markdown";
 import { setDocReadingTheme } from "../docReadingPrefs";
-import { relativePathInRoot } from "../markdownReader/links";
+import { relativePathInRoot, scrollToAnchor } from "../markdownReader/links";
+import { rememberExternalLinkChoice, shouldConfirmExternalLink } from "../docExternalLinks";
 import type { DocReadingTheme, OutlineItem } from "../markdownReader/types";
 import { buildFindText, findMatchesIn, findTextOccurrences, rangeForMatch, type FindTextMap } from "../docFind";
 import { getLastZoomArea } from "../fontZoom";
 import DocFindBar from "./DocFindBar";
 import DocToc from "./DocToc";
+import ExternalLinkBubble from "./ExternalLinkBubble";
 import { i18n } from "../i18n";
 import { runtimeMessageEnvelope } from "../runtimeMessages";
 import { insertTextIntoTerminal } from "../terminals";
@@ -732,8 +735,15 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   const previewRef = useRef<HTMLDivElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
   const findLayerRef = useRef<HTMLDivElement>(null);
+  const lastPreviewPointer = useRef({ x: 0, y: 0 });
   const [findMap, setFindMap] = useState<FindTextMap | null>(null);
   const [findMatches, setFindMatches] = useState<number[]>([]);
+  const [externalLink, setExternalLink] = useState<{
+    href: string;
+    domain: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const readingMode = useStore((state) => state.docReadingMode);
   const readingTheme = useStore((state) => state.docReadingTheme);
   const activeFindIndex =
@@ -787,6 +797,38 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
 
   const handleCopyText = useCallback((text: string) => copyText(text), []);
   const handleNotice = useCallback((message: string) => toast(message, "error"), []);
+
+  const openExternal = useCallback(
+    (href: string) => {
+      void api.openExternalUrl(href).catch((e) => {
+        toast(t("ui.sidebar.openFailed", { detail: errorText(e) }), "error");
+      });
+    },
+    [t],
+  );
+
+  const handleExternalLink = useCallback(
+    (href: string) => {
+      if (!shouldConfirmExternalLink()) {
+        openExternal(href);
+        return;
+      }
+      let domain = href;
+      try {
+        domain = new URL(href).hostname || href;
+      } catch {
+        // Keep the raw href as the label.
+      }
+      const point = lastPreviewPointer.current;
+      setExternalLink({
+        href,
+        domain,
+        x: point.x || window.innerWidth / 2,
+        y: point.y || 120,
+      });
+    },
+    [openExternal],
+  );
 
   const linkContext = useMemo(
     () =>
@@ -910,6 +952,46 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
       (targetLine - 1) * lineHeight - textarea.clientHeight / 2,
     );
   }, [visible, runtime.mode, runtime.doc, tab.pendingLine, tab.id]);
+
+  // Heading anchors and `path:line` targets from Markdown links reveal in the
+  // preview; a heading link switches a markdown tab back from raw first.
+  useEffect(() => {
+    if (!visible || !runtime.doc) return;
+    if (tab.pendingAnchor) {
+      if (!isMarkdownPath(tab.path)) {
+        clearDocumentPendingAnchor(tab.id);
+        return;
+      }
+      if (runtime.mode !== "preview") {
+        updateDocumentTabRuntime(tab.id, { mode: "preview" });
+        return;
+      }
+      const anchor = tab.pendingAnchor;
+      clearDocumentPendingAnchor(tab.id);
+      const host = previewRef.current;
+      if (host && anchor && !scrollToAnchor(host, anchor, "auto")) {
+        toast(t("ui.document.anchorMissing"), "error");
+      }
+      return;
+    }
+    if (runtime.mode === "preview" && tab.pendingLine != null) {
+      const line = tab.pendingLine;
+      clearDocumentPendingLine(tab.id);
+      const marker = previewRef.current?.querySelector<HTMLElement>(
+        `[data-source-line="${line}"]`,
+      );
+      marker?.scrollIntoView?.({ block: "start", behavior: "auto" });
+    }
+  }, [
+    visible,
+    runtime.mode,
+    runtime.doc,
+    tab.pendingAnchor,
+    tab.pendingLine,
+    tab.id,
+    tab.path,
+    t,
+  ]);
 
   const syncEditorSelection = useCallback(
     (el: HTMLTextAreaElement) => {
@@ -1225,6 +1307,27 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
           onClose={() => updateDocumentTabRuntime(tab.id, { findOpen: false })}
         />
       ) : null}
+      {externalLink ? (
+        <ExternalLinkBubble
+          href={externalLink.href}
+          domain={externalLink.domain}
+          x={externalLink.x}
+          y={externalLink.y}
+          theme={readingTheme}
+          onOpen={(remember) => {
+            if (remember) rememberExternalLinkChoice();
+            setExternalLink(null);
+            openExternal(externalLink.href);
+          }}
+          onCopy={() => {
+            void copyText(externalLink.href).then((ok) => {
+              if (ok) toast(t("ui.document.linkCopied"), "success");
+            });
+            setExternalLink(null);
+          }}
+          onClose={() => setExternalLink(null)}
+        />
+      ) : null}
       {runtime.doc?.truncated ? (
         <div className="banner info" role="status">
           <span>{t("ui.document.truncated")}</span>
@@ -1263,6 +1366,9 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
                 ref={previewRef}
                 className="doc-preview-host"
                 onMouseUp={capturePreviewSelection}
+                onPointerDownCapture={(event) => {
+                  lastPreviewPointer.current = { x: event.clientX, y: event.clientY };
+                }}
               >
                 {markdown ? (
                   <MarkdownView
@@ -1276,11 +1382,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
                     onCopyText={handleCopyText}
                     onCopyHeadingLink={handleCopyHeadingLink}
                     onNotice={handleNotice}
-                    onLinkClick={(href) =>
-                      void api.openExternalUrl(href).catch((e) => {
-                        toast(t("ui.sidebar.openFailed", { detail: errorText(e) }), "error");
-                      })
-                    }
+                    onLinkClick={handleExternalLink}
                   />
                 ) : (
                   <div className="doc-prose">{runtime.doc.content}</div>

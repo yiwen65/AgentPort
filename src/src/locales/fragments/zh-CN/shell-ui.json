@@ -188,6 +188,12 @@
       "entryActionFailed": "操作失败：{{detail}}",
       "expand": "展开为全页",
       "expandTip": "文档查看器占据整个终端页面",
+      "externalLinkClose": "关闭",
+      "externalLinkCopy": "复制链接",
+      "externalLinkHint": "将在系统浏览器中打开",
+      "externalLinkOpen": "打开",
+      "externalLinkRemember": "记住此选择",
+      "externalLinkTitle": "打开外部链接",
       "footnoteBack": "返回引用 {{index}}",
       "footnotes": "脚注",
       "gitStatus": {

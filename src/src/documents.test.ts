@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  clearDocumentPendingAnchor,
   clearDocumentPendingLine,
   closeDocumentTab,
   closeDocumentTabsUnder,
@@ -300,5 +301,26 @@ describe("document tab groups", () => {
     expect(getActiveDocumentTab(getState())?.pendingLine).toBe(5);
     clearDocumentPendingLine("/a.md");
     expect(getActiveDocumentTab(getState())?.pendingLine).toBeNull();
+  });
+
+  it("stores and consumes a pending heading anchor", () => {
+    openDocumentTarget({ path: "/a.md", line: null, anchor: "小节" });
+    expect(getActiveDocumentTab(getState())?.pendingAnchor).toBe("小节");
+    clearDocumentPendingAnchor("/a.md");
+    expect(getActiveDocumentTab(getState())?.pendingAnchor).toBeNull();
+  });
+
+  it("inherits the source document image context for linked files", () => {
+    openDocumentTarget(
+      { path: "/root/guide/a.md", line: null },
+      {
+        imageContext: {
+          path: "/root/guide/a.md",
+          rootPath: "/root",
+          device: { kind: "local" },
+        },
+      },
+    );
+    expect(getActiveDocumentTab(getState())?.imageContext?.rootPath).toBe("/root");
   });
 });

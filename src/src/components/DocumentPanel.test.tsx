@@ -16,8 +16,8 @@ const { readMock, writeMock, revealMock, openUrlMock, openDefaultMock, insertMoc
     readMock: vi.fn(),
     writeMock: vi.fn(),
     revealMock: vi.fn(),
-    openUrlMock: vi.fn(),
-    openDefaultMock: vi.fn(),
+    openUrlMock: vi.fn().mockResolvedValue(undefined),
+    openDefaultMock: vi.fn().mockResolvedValue(undefined),
     insertMock: vi.fn().mockReturnValue(true),
     listMock: vi.fn(),
     createMock: vi.fn(),
@@ -125,6 +125,7 @@ describe("DocumentPanel", () => {
       confirm: null,
     });
     window.localStorage.removeItem("agentport-doc-reading-theme");
+    window.localStorage.removeItem("agentport-doc-external-link-confirm");
     resetDocumentTabRuntimes();
     window.getSelection()?.removeAllRanges();
   });
@@ -748,5 +749,91 @@ describe("DocumentPanel", () => {
     await waitFor(() => expect(getState().docReadingMode).toBe(true));
     fireEvent.keyDown(window, { key: "f", metaKey: true });
     expect(await screen.findByLabelText("查找内容")).not.toBeNull();
+  });
+
+  it("opens workspace-relative links in a new preview tab", async () => {
+    readMock.mockResolvedValue({
+      ...DEMO_DOC,
+      content: "[下一章](下一章.md#小节)",
+    });
+    const { container } = render(<DocumentPanel />);
+    await waitFor(() => expect(container.querySelector("a.md-doc-link")).not.toBeNull());
+    fireEvent.click(container.querySelector("a.md-doc-link")!);
+    await waitFor(() =>
+      expect(
+        getState().docGroups[0]?.tabs.some((tab) => tab.path === "/tmp/demo/下一章.md"),
+      ).toBe(true),
+    );
+  });
+
+  it("confirms external links and remembers the choice", async () => {
+    readMock.mockResolvedValue({
+      ...DEMO_DOC,
+      content: "[站点](https://example.com/docs)",
+    });
+    const { container } = render(<DocumentPanel />);
+    await waitFor(() => expect(container.querySelector("a.md-link")).not.toBeNull());
+    fireEvent.click(container.querySelector("a.md-link")!);
+    const bubble = await screen.findByRole("dialog", { name: "打开外部链接" });
+    expect(bubble.textContent).toContain("example.com");
+    expect(openUrlMock).not.toHaveBeenCalled();
+
+    fireEvent.click(within(bubble).getByText("打开"));
+    await waitFor(() =>
+      expect(openUrlMock).toHaveBeenCalledWith("https://example.com/docs"),
+    );
+
+    fireEvent.click(container.querySelector("a.md-link")!);
+    const second = await screen.findByRole("dialog", { name: "打开外部链接" });
+    fireEvent.click(within(second).getByLabelText("记住此选择"));
+    fireEvent.click(within(second).getByText("打开"));
+    await waitFor(() =>
+      expect(window.localStorage.getItem("agentport-doc-external-link-confirm")).toBe("skip"),
+    );
+    expect(openUrlMock).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(container.querySelector("a.md-link")!);
+    await waitFor(() => expect(openUrlMock).toHaveBeenCalledTimes(3));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("copies a Markdown link from a heading anchor", async () => {
+    render(<DocumentPanel />);
+    await screen.findByText("标题");
+    fireEvent.click(screen.getByLabelText("复制标题链接"));
+    await waitFor(() =>
+      expect(copyMock).toHaveBeenCalledWith("[标题](报告.md#标题)"),
+    );
+  });
+
+  it("reveals a heading anchor when a document opens", async () => {
+    readMock.mockResolvedValue({
+      ...DEMO_DOC,
+      content: "# 第一节\n\n## 小节\n\n正文",
+    });
+    const scroll = vi.fn();
+    const proto = Element.prototype as Element & { scrollIntoView?: unknown };
+    const original = proto.scrollIntoView;
+    Object.defineProperty(Element.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scroll,
+    });
+    try {
+      act(() => {
+        openDocumentTarget({ path: DEMO_DOC.path, line: null, anchor: "小节" });
+      });
+      render(<DocumentPanel />);
+      await screen.findByText("小节");
+      await waitFor(() => expect(scroll).toHaveBeenCalled());
+    } finally {
+      if (original) {
+        Object.defineProperty(Element.prototype, "scrollIntoView", {
+          configurable: true,
+          value: original,
+        });
+      } else {
+        delete proto.scrollIntoView;
+      }
+    }
   });
 });

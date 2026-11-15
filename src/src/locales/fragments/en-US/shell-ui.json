@@ -188,6 +188,12 @@
       "entryActionFailed": "Action failed: {{detail}}",
       "expand": "Expand to full page",
       "expandTip": "Let the document viewer take over the whole terminal page",
+      "externalLinkClose": "Close",
+      "externalLinkCopy": "Copy link",
+      "externalLinkHint": "This opens in your system browser",
+      "externalLinkOpen": "Open",
+      "externalLinkRemember": "Remember this choice",
+      "externalLinkTitle": "Open external link",
       "footnoteBack": "Back to reference {{index}}",
       "footnotes": "Footnotes",
       "gitStatus": {
