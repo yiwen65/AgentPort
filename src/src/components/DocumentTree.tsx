@@ -6,10 +6,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { api, copyText, errorText } from "../api";
+import { isMac } from "../actions";
 import {
   closeDocumentTabsUnder,
+  consumeDocumentTreeSearchRequest,
+  getDocumentTreeSearchVersion,
   openDocumentTarget,
   openDocumentTargetToSide,
+  subscribeDocumentTreeSearch,
   updateDocumentTabPath,
 } from "../documents";
 import {
@@ -173,6 +177,10 @@ export default function DocumentTree() {
   const treeGit = useSyncExternalStore(subscribeTreeGit, () =>
     getTreeGitState(root ?? ""),
   );
+  const treeSearchVersion = useSyncExternalStore(
+    subscribeDocumentTreeSearch,
+    getDocumentTreeSearchVersion,
+  );
   // A Git Center snapshot for the same checkout supersedes ours when newer
   // (stage/discard there must repaint the tree without a manual refresh).
   const checkoutRoot = treeGit?.checkoutRoot ?? null;
@@ -214,7 +222,9 @@ export default function DocumentTree() {
     remoteUnsupported: boolean;
   } | null>(null);
   const [searchActive, setSearchActive] = useState(0);
+  const [searchFocusRequest, setSearchFocusRequest] = useState(0);
   const activeSearchRowRef = useRef<HTMLButtonElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const createBaseDir = activeDir ?? root;
 
@@ -271,6 +281,29 @@ export default function DocumentTree() {
     setSearchBusy(false);
     setSearchActive(0);
   };
+
+  const openSearch = useCallback(() => {
+    // Search results and inline create/rename rows compete for the tree
+    // body; only one editing affordance may be open at a time.
+    setCreating(null);
+    setCreateError(null);
+    setRenaming(null);
+    setRenameError(null);
+    setSearchOpen(true);
+    setSearchFocusRequest((request) => request + 1);
+  }, []);
+
+  // ⌘⇧F / Ctrl+Shift+F may arrive while the explorer is closed; the request
+  // waits for the tree to mount and a real root before it is consumed.
+  useEffect(() => {
+    if (!root) return;
+    if (!consumeDocumentTreeSearchRequest()) return;
+    openSearch();
+  }, [treeSearchVersion, root, openSearch]);
+
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus();
+  }, [searchOpen, searchFocusRequest]);
 
   // Debounced recursive search. Results are device- and root-scoped: a
   // response that settles after a switch must never repaint the new tree.
@@ -379,13 +412,7 @@ export default function DocumentTree() {
       closeSearch();
       return;
     }
-    // Search results and inline create/rename rows compete for the tree
-    // body; only one editing affordance may be open at a time.
-    setCreating(null);
-    setCreateError(null);
-    setRenaming(null);
-    setRenameError(null);
-    setSearchOpen(true);
+    openSearch();
   };
 
   const openSearchResult = (entry: DocumentDirEntry) => {
@@ -723,6 +750,7 @@ export default function DocumentTree() {
 
   const rootState = root ? dirs.get(root) : null;
   const searching = searchOpen && searchQuery.trim().length > 0;
+  const searchShortcut = isMac() ? "⌘⇧F" : "Ctrl+Shift+F";
 
   return (
     <div
@@ -736,7 +764,7 @@ export default function DocumentTree() {
         <span className="spacer" />
         <button
           className="btn small ghost"
-          data-tip={t("ui.document.searchFilesTip")}
+          data-tip={t("ui.document.searchFilesTip", { shortcut: searchShortcut })}
           aria-label={t("ui.document.searchFiles")}
           aria-pressed={searchOpen}
           disabled={!root}
@@ -794,6 +822,7 @@ export default function DocumentTree() {
         <div className="doc-tree-search">
           <IconSearch />
           <input
+            ref={searchInputRef}
             type="text"
             value={searchQuery}
             placeholder={t("ui.document.searchPlaceholder")}

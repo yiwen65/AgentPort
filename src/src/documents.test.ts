@@ -4,17 +4,21 @@ import {
   clearDocumentPendingLine,
   closeDocumentTab,
   closeDocumentTabsUnder,
+  consumeDocumentTreeSearchRequest,
   documentPathFallbacks,
   ensureDocumentTabRuntime,
   getDocumentTabRuntime,
   isDocumentTabDirty,
+  isDocumentTreeSearchShortcut,
   isMarkdownPath,
   moveDocumentTab,
   openDocumentTarget,
   openDocumentTargetToSide,
+  openDocumentTreeSearch,
   parseDocumentLinkTarget,
   pinDocumentTab,
   resetDocumentTabRuntimes,
+  resetDocumentTreeSearchRequests,
   setActiveDocumentTab,
   updateDocumentTabPath,
   updateDocumentTabRuntime,
@@ -101,6 +105,48 @@ describe("isMarkdownPath", () => {
     expect(isMarkdownPath("/a/b/page.mdx")).toBe(true);
     expect(isMarkdownPath("/a/b/script.ts")).toBe(false);
     expect(isMarkdownPath("/a/b/Makefile")).toBe(false);
+  });
+});
+
+describe("document tree search requests", () => {
+  afterEach(() => {
+    resetDocumentTreeSearchRequests();
+    setState({
+      explorerOpen: false,
+      explorerRoot: null,
+      activeSessionId: null,
+      projects: [],
+    });
+  });
+
+  it("opens the explorer and leaves a one-shot request for the tree", () => {
+    setState({ explorerOpen: false, explorerRoot: "/tmp/demo" });
+    openDocumentTreeSearch();
+    expect(getState().explorerOpen).toBe(true);
+    expect(getState().explorerRoot).toBe("/tmp/demo");
+    expect(consumeDocumentTreeSearchRequest()).toBe(true);
+    // A remount must not reopen the search from the same request.
+    expect(consumeDocumentTreeSearchRequest()).toBe(false);
+  });
+
+  it("matches ⌘⇧F on macOS and Ctrl+Shift+F elsewhere", () => {
+    type ShortcutEvent = Parameters<typeof isDocumentTreeSearchShortcut>[0];
+    const key = (init: Partial<ShortcutEvent>): ShortcutEvent => ({
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      key: "f",
+      ...init,
+    });
+
+    expect(isDocumentTreeSearchShortcut(key({ metaKey: true, shiftKey: true }), true)).toBe(true);
+    expect(isDocumentTreeSearchShortcut(key({ metaKey: true, shiftKey: true, key: "F" }), true)).toBe(true);
+    expect(isDocumentTreeSearchShortcut(key({ metaKey: true }), true)).toBe(false);
+    expect(isDocumentTreeSearchShortcut(key({ metaKey: true, shiftKey: true }), false)).toBe(false);
+    expect(isDocumentTreeSearchShortcut(key({ ctrlKey: true, shiftKey: true }), false)).toBe(true);
+    expect(isDocumentTreeSearchShortcut(key({ ctrlKey: true, shiftKey: true }), true)).toBe(false);
+    expect(isDocumentTreeSearchShortcut(key({ ctrlKey: true, shiftKey: true, altKey: true }), false)).toBe(false);
   });
 });
 

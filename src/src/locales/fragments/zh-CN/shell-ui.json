@@ -257,7 +257,7 @@
       "searchBusy": "搜索中…",
       "searchFailed": "搜索失败：{{detail}}",
       "searchFiles": "搜索文件",
-      "searchFilesTip": "按文件名或路径搜索项目文件（跳过 Git 忽略项）",
+      "searchFilesTip": "按文件名或路径搜索项目文件（{{shortcut}}，跳过 Git 忽略项）",
       "searchNoResults": "没有匹配的文件",
       "searchPlaceholder": "搜索文件名或路径",
       "searchRemoteUnsupported": "远程设备版本过旧，暂不支持文件搜索",

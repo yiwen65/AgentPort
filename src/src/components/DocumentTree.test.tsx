@@ -35,7 +35,7 @@ vi.mock("../api", () => ({
 vi.mock("../terminals", () => ({ insertTextIntoTerminal: vi.fn() }));
 
 import { act } from "@testing-library/react";
-import { openDocumentTarget } from "../documents";
+import { openDocumentTarget, openDocumentTreeSearch, resetDocumentTreeSearchRequests } from "../documents";
 import { resetTreeGitForTests } from "../docTreeGit";
 import { getActiveDocumentTab, getState, resolveConfirm, setActiveDevice, setState } from "../store";
 import { RemoteUnavailableError, RemoteRequestError } from "../remote/errors";
@@ -83,6 +83,7 @@ describe("DocumentTree", () => {
 
   afterEach(() => {
     cleanup();
+    resetDocumentTreeSearchRequests();
     setActiveDevice({ kind: "local" });
     setState({ explorerRoot: null, explorerOpen: false, docGroups: [], activeDocGroupIndex: 0, contextMenu: null, confirm: null, projects: [] });
     resetTreeGitForTests();
@@ -629,6 +630,27 @@ describe("DocumentTree", () => {
     });
     expect(screen.queryByLabelText("old.md")).toBeNull();
     expect(screen.getByLabelText("new.md")).toBeTruthy();
+  });
+
+  it("opens and focuses the search box from the global shortcut", async () => {
+    render(<DocumentTree />);
+    await screen.findByText("src");
+
+    act(() => openDocumentTreeSearch());
+    const input = await screen.findByPlaceholderText("搜索文件名或路径");
+    await waitFor(() => expect(document.activeElement).toBe(input));
+
+    // The request is one-shot: a later remount does not reopen the search.
+    cleanup();
+    render(<DocumentTree />);
+    await screen.findByText("src");
+    expect(screen.queryByPlaceholderText("搜索文件名或路径")).toBeNull();
+  });
+
+  it("opens the search when the shortcut arrives before the tree mounts", async () => {
+    act(() => openDocumentTreeSearch());
+    render(<DocumentTree />);
+    expect(await screen.findByPlaceholderText("搜索文件名或路径")).toBeTruthy();
   });
 
   it("explains an outdated remote host that cannot search files", async () => {

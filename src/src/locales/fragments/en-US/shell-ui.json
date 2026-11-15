@@ -257,7 +257,7 @@
       "searchBusy": "Searching…",
       "searchFailed": "Search failed: {{detail}}",
       "searchFiles": "Search files",
-      "searchFilesTip": "Search project files by name or path (Git-ignored files are skipped)",
+      "searchFilesTip": "Search project files by name or path ({{shortcut}}; Git-ignored files are skipped)",
       "searchNoResults": "No matching files",
       "searchPlaceholder": "Search file names or paths",
       "searchRemoteUnsupported": "This remote device is too old to search files",

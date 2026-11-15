@@ -32,6 +32,10 @@ import {
   noteActiveSessionForGitCenter,
 } from "./gitCenter";
 import {
+  isDocumentTreeSearchShortcut,
+  openDocumentTreeSearch,
+} from "./documents";
+import {
   applyProjectsSnapshot,
   applyRepositoryStatusSnapshot,
   findSession,
@@ -327,6 +331,15 @@ function useHotkeys() {
       }
 
       if (anyModal || s.showOnboarding) return;
+
+      // Project file search: ⌘⇧F / Ctrl+Shift+F opens the tree and focuses
+      // its search box (⌘F stays the in-document find).
+      if (isDocumentTreeSearchShortcut(e, mac)) {
+        e.preventDefault();
+        e.stopPropagation();
+        openDocumentTreeSearch();
+        return;
+      }
 
       const activeSession = findSession(s.projects, s.activeSessionId);
       const terminalTarget =

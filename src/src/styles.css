@@ -3968,6 +3968,11 @@ body.is-resizing-pane {
 
 /* Basename keeps priority; the directory prefix absorbs the remaining width
    and truncates first. */
+.doc-tree-search-path .doc-tree-name {
+  flex: 0 0 auto;
+  max-width: 65%;
+}
+
 .doc-tree-search-dir {
   flex: 1 1 auto;
   min-width: 0;

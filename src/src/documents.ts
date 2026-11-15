@@ -532,6 +532,63 @@ export function toggleExplorer(): void {
   });
 }
 
+/* ------------------------- tree search requests ------------------------- *
+ * ⌘⇧F / Ctrl+Shift+F must work while the tree is closed, so the shortcut
+ * only records a one-shot request; the tree consumes it when it mounts (or
+ * immediately, when it already is). */
+
+let treeSearchRequestVersion = 0;
+let treeSearchPending = false;
+const treeSearchRequestListeners = new Set<() => void>();
+
+function emitTreeSearchRequest(): void {
+  for (const listener of treeSearchRequestListeners) listener();
+}
+
+export function subscribeDocumentTreeSearch(listener: () => void): () => void {
+  treeSearchRequestListeners.add(listener);
+  return () => {
+    treeSearchRequestListeners.delete(listener);
+  };
+}
+
+export function getDocumentTreeSearchVersion(): number {
+  return treeSearchRequestVersion;
+}
+
+/** Opens the explorer when needed and asks the tree to focus its search box. */
+export function openDocumentTreeSearch(): void {
+  if (!getState().explorerOpen) toggleExplorer();
+  treeSearchPending = true;
+  treeSearchRequestVersion += 1;
+  emitTreeSearchRequest();
+}
+
+/** One-shot consumption so a later tree remount never reopens the search. */
+export function consumeDocumentTreeSearchRequest(): boolean {
+  if (!treeSearchPending) return false;
+  treeSearchPending = false;
+  return true;
+}
+
+/** Test hook: drops pending requests between cases. */
+export function resetDocumentTreeSearchRequests(): void {
+  treeSearchPending = false;
+  treeSearchRequestVersion = 0;
+  emitTreeSearchRequest();
+}
+
+/** Global shortcut matcher (⌘⇧F on macOS, Ctrl+Shift+F elsewhere). */
+export function isDocumentTreeSearchShortcut(
+  event: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "shiftKey" | "altKey" | "key">,
+  mac: boolean,
+): boolean {
+  if (event.key.toLowerCase() !== "f") return false;
+  return mac
+    ? event.metaKey && event.shiftKey && !event.ctrlKey && !event.altKey
+    : event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey;
+}
+
 /**
  * Fallback path candidates when the literal link target does not exist.
  * Agents print paths inside prose (`…/报告.md, 包含…`), so even with a
