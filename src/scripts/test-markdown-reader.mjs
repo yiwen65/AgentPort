@@ -209,6 +209,34 @@ try {
           column.remove();
           return { width, height };
         };
+        window.testTopbarTreeBackdrop = () => {
+          document.documentElement.style.setProperty('--doc-tree-topbar-width', '245px');
+          const wrap = document.createElement('div');
+          wrap.style.cssText = 'position:fixed;left:-2000px;top:0;width:800px;height:200px;';
+          const topbar = document.createElement('header');
+          topbar.className = 'topbar';
+          const backdrop = document.createElement('div');
+          backdrop.className = 'topbar-tree-backdrop';
+          topbar.append(backdrop);
+          const tree = document.createElement('div');
+          tree.className = 'doc-tree';
+          tree.style.setProperty('--doc-tree-width', '240px');
+          wrap.append(topbar, tree);
+          document.body.append(wrap);
+          const rect = backdrop.getBoundingClientRect();
+          const wrapRect = wrap.getBoundingClientRect();
+          const result = {
+            width: rect.width,
+            height: rect.height,
+            rightGap: wrapRect.right - rect.right,
+            zIndex: getComputedStyle(backdrop).zIndex,
+            backdropColor: getComputedStyle(backdrop).backgroundColor,
+            treeColor: getComputedStyle(tree).backgroundColor,
+          };
+          wrap.remove();
+          document.documentElement.style.removeProperty('--doc-tree-topbar-width');
+          return result;
+        };
         window.testRawHighlightGeometry = () => {
           const textarea = document.createElement('textarea');
           textarea.setAttribute('wrap', 'off');
@@ -386,6 +414,13 @@ try {
   assert.equal(treeHeader.hidden.overflow, false, JSON.stringify(treeHeader));
   assert.ok(treeHeader.hidden.title > treeHeader.shown.title, JSON.stringify(treeHeader));
   assert.equal(treeHeader.shown.overflow, true, JSON.stringify(treeHeader));
+
+  const topbarBackdrop = await evaluate('window.testTopbarTreeBackdrop()');
+  assert.equal(topbarBackdrop.width, 245);
+  assert.equal(topbarBackdrop.height, 48);
+  assert.ok(topbarBackdrop.rightGap < 1, JSON.stringify(topbarBackdrop));
+  assert.equal(topbarBackdrop.zIndex, '0');
+  assert.equal(topbarBackdrop.backdropColor, topbarBackdrop.treeColor);
 
   const toolbar620 = await evaluate('window.testToolbarRows(620)');
   const toolbar900 = await evaluate('window.testToolbarRows(900)');

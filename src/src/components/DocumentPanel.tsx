@@ -1928,8 +1928,6 @@ export default function DocumentPanel() {
   }, []);
 
   const hasDocs = groups.length > 0;
-  if (!hasDocs && !explorerOpen) return null;
-
   // Tree-only mode (explorer open, no file picked yet): show just the tree
   // column — the editor area appears once a file opens.
   const treeOnly = !hasDocs;
@@ -1948,6 +1946,24 @@ export default function DocumentPanel() {
             effectivePanelWidth - MIN_DOC_EDITOR_WIDTH - DOC_TREE_SASH_WIDTH,
           ),
         );
+  // Let the transparent title bar paint the same surface as the tree column
+  // above it. Tree-only mode includes the panel's 1px separator; dual mode
+  // includes the in-flow tree sash.
+  const topbarTreeWidth = treeOnly ? treeBasis + 1 : treeBasis + DOC_TREE_SASH_WIDTH;
+  useEffect(() => {
+    const root = document.documentElement;
+    if (!explorerOpen) {
+      root.style.removeProperty("--doc-tree-topbar-width");
+      return;
+    }
+    root.style.setProperty("--doc-tree-topbar-width", `${topbarTreeWidth}px`);
+    return () => {
+      root.style.removeProperty("--doc-tree-topbar-width");
+    };
+  }, [explorerOpen, topbarTreeWidth]);
+
+  if (!hasDocs && !explorerOpen) return null;
+
   const panelStyle = {
     "--doc-tree-width": `${treeBasis}px`,
     ...(treeOnly ? { width: treeBasis + 1 } : expanded || widthAuto ? {} : { width }),

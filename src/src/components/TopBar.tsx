@@ -172,6 +172,7 @@ export default function TopBar() {
   const sidebarCollapsed = useStore((state) => state.sidebarCollapsed);
   const sidebarViewMode = useStore((state) => state.sidebarViewMode);
   const gitCenterOpen = useStore((state) => state.gitCenter.open);
+  const treeOpen = useStore((state) => state.explorerOpen);
   const sidebarShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘B" : "Ctrl+B";
   const gitCenterToggleLabel = t(gitCenterOpen ? "git:close" : "git:open");
   const activeAgentsOpen = sidebarViewMode === "activeAgents";
@@ -259,6 +260,7 @@ export default function TopBar() {
       onMouseDown={startWindowDrag}
       onDoubleClick={maximizeOnDoubleClick}
     >
+      {treeOpen ? <div className="topbar-tree-backdrop" aria-hidden="true" /> : null}
       <div className="topbar-leading" data-tauri-drag-region="false">
         <button
           className="window-control sidebar-toggle"

@@ -476,6 +476,22 @@ button {
   z-index: 1;
 }
 
+/* The transparent title bar continues the file tree's glass surface above
+   the tree column, so the tree reads as one panel all the way to the window
+   chrome. Removed from the DOM when the tree is collapsed. */
+.topbar > .topbar-tree-backdrop {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--doc-tree-topbar-width, 0px);
+  z-index: 0;
+  pointer-events: none;
+  border-left: 1px solid var(--sidebar-border);
+  background-color: var(--sidebar-glass);
+  background-image: var(--sidebar-glass-layers, none);
+}
+
 .topbar-leading {
   display: flex;
   align-items: center;

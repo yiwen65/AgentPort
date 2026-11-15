@@ -130,6 +130,7 @@ describe("DocumentPanel", () => {
     });
     window.localStorage.removeItem("agentport-doc-reading-theme");
     window.localStorage.removeItem("agentport-doc-external-link-confirm");
+    document.documentElement.style.removeProperty("--doc-tree-topbar-width");
     resetDocumentTabRuntimes();
     window.getSelection()?.removeAllRanges();
   });
@@ -175,6 +176,11 @@ describe("DocumentPanel", () => {
     const panelStyle = container.querySelector(".doc-panel")?.getAttribute("style") ?? "";
     expect(panelStyle).toContain("width: 241px");
     expect(panelStyle).toContain("--doc-tree-width: 240px");
+    await waitFor(() =>
+      expect(
+        document.documentElement.style.getPropertyValue("--doc-tree-topbar-width"),
+      ).toBe("241px"),
+    );
 
     // Picking a file brings the editor area back alongside the tree.
     act(() => openDemo());
@@ -243,6 +249,27 @@ describe("DocumentPanel", () => {
     expect(panel?.className).toContain("auto-width");
     expect(panel?.className).toContain("with-tree");
     expect(panel?.getAttribute("style") ?? "").toContain("--doc-tree-width: 240px");
+    await waitFor(() =>
+      expect(
+        document.documentElement.style.getPropertyValue("--doc-tree-topbar-width"),
+      ).toBe("245px"),
+    );
+  });
+
+  it("removes the title-bar tree width when the panel unmounts", async () => {
+    listMock.mockResolvedValue({ path: "/tmp/demo", truncated: false, entries: [] });
+    setState({ explorerOpen: true, explorerRoot: "/tmp/demo" });
+    const { unmount } = render(<DocumentPanel />);
+    await screen.findByRole("tab", { name: "报告.md" });
+    await waitFor(() =>
+      expect(
+        document.documentElement.style.getPropertyValue("--doc-tree-topbar-width"),
+      ).toBe("245px"),
+    );
+    unmount();
+    expect(
+      document.documentElement.style.getPropertyValue("--doc-tree-topbar-width"),
+    ).toBe("");
   });
 
   it("drags the inner sash to resize the tree column in dual mode", async () => {

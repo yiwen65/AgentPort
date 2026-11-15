@@ -47,6 +47,16 @@ describe("document tree sidebar design language", () => {
     expect(ruleBody(".doc-tree-kind.file")).not.toContain("--amber");
   });
 
+  it("carries the tree surface into the title bar", () => {
+    const backdrop = styles.match(
+      /\.topbar > \.topbar-tree-backdrop\s*\{([\s\S]*?)\n\}/,
+    )?.[1];
+    expect(backdrop).toContain("width: var(--doc-tree-topbar-width, 0px)");
+    expect(backdrop).toContain("background-color: var(--sidebar-glass)");
+    expect(backdrop).toContain("background-image: var(--sidebar-glass-layers, none)");
+    expect(backdrop).toContain("z-index: 0");
+  });
+
   it("collapses header actions out of layout until they are shown", () => {
     const actions = ruleBody(".doc-tree-actions");
     expect(actions).toContain("max-width: 0");

@@ -85,6 +85,16 @@ describe("topbar project branch", () => {
 
   afterEach(cleanup);
 
+  it("renders the tree-surface backdrop only while the explorer is open", () => {
+    setState({ projects: [project(session(null))], explorerOpen: false });
+    const { container } = render(<TopBar />);
+    expect(container.querySelector(".topbar-tree-backdrop")).toBeNull();
+    act(() => setState({ explorerOpen: true }));
+    expect(container.querySelector(".topbar-tree-backdrop")).not.toBeNull();
+    act(() => setState({ explorerOpen: false }));
+    expect(container.querySelector(".topbar-tree-backdrop")).toBeNull();
+  });
+
   it("shows the current branch for a Session in the project checkout", () => {
     setState({ projects: [project(session(null))] });
 
