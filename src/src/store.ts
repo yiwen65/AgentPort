@@ -414,6 +414,9 @@ export interface AppState {
   explorerRoot: string | null;
   /** Ephemeral width of the document viewer split in CSS pixels. */
   docPanelWidth: number;
+  /** True until the user drags the panel sash: the docked viewer then takes
+   * half of the terminal page instead of the stored pixel width. */
+  docPanelWidthAuto: boolean;
   /** Ephemeral width of the file tree column in CSS pixels (sash-draggable). */
   docTreeWidth: number;
   /** Whether the document viewer is expanded over the whole terminal page. */
@@ -634,6 +637,7 @@ const initialState: AppState = {
   explorerOpen: false,
   explorerRoot: null,
   docPanelWidth: 480,
+  docPanelWidthAuto: true,
   docTreeWidth: 240,
   docPanelExpanded: false,
   docReadingMode: false,

@@ -1796,7 +1796,23 @@ export default function DocumentPanel() {
   const groups = useStore((state) => state.docGroups);
   const activeGroupIndex = useStore((state) => state.activeDocGroupIndex);
   const width = useStore((state) => state.docPanelWidth);
+  const widthAuto = useStore((state) => state.docPanelWidthAuto);
   const treeWidth = useStore((state) => state.docTreeWidth);
+  const [panelWidth, setPanelWidth] = useState<number | null>(null);
+  const panelObserver = useRef<ResizeObserver | null>(null);
+  const widthAutoRef = useRef(widthAuto);
+  widthAutoRef.current = widthAuto;
+  const attachPanel = useCallback((node: HTMLElement | null) => {
+    panelObserver.current?.disconnect();
+    panelObserver.current = null;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const measured = entries[0]?.contentRect.width ?? 0;
+      if (widthAutoRef.current && measured > 0) setPanelWidth(measured);
+    });
+    observer.observe(node);
+    panelObserver.current = observer;
+  }, []);
   const expanded = useStore((state) => state.docPanelExpanded);
   const readingMode = useStore((state) => state.docReadingMode);
   const readingTheme = useStore((state) => state.docReadingTheme);
@@ -1834,6 +1850,7 @@ export default function DocumentPanel() {
         docPanelWidth: Math.round(
           Math.min(viewportMax, Math.max(MIN_DOC_PANEL_WIDTH, next)),
         ),
+        docPanelWidthAuto: false,
       });
     };
     const flush = () => {
@@ -1919,19 +1936,23 @@ export default function DocumentPanel() {
   // editor keeps at least MIN_DOC_EDITOR_WIDTH regardless of the stored tree
   // width. The expanded panel is window-wide, so the stored (docked) panel
   // width must not cap the tree there.
-  const treeBasis = treeOnly
-    ? treeWidth
-    : expanded
+  const effectivePanelWidth = widthAuto && panelWidth ? panelWidth : width;
+  const treeBasis =
+    treeOnly || expanded
       ? treeWidth
-      : Math.min(treeWidth, Math.max(MIN_DOC_TREE_WIDTH, width - MIN_DOC_EDITOR_WIDTH));
+      : Math.min(
+          treeWidth,
+          Math.max(MIN_DOC_TREE_WIDTH, effectivePanelWidth - MIN_DOC_EDITOR_WIDTH),
+        );
   const panelStyle = {
     "--doc-tree-width": `${treeBasis}px`,
-    ...(treeOnly ? { width: treeBasis + 1 } : expanded ? {} : { width }),
+    ...(treeOnly ? { width: treeBasis + 1 } : expanded || widthAuto ? {} : { width }),
   } as CSSProperties;
 
   return (
     <aside
-      className={`doc-panel${expanded ? " expanded" : ""}${treeOnly ? " tree-only" : ""}${readingMode ? " reading" : ""}`}
+      ref={attachPanel}
+      className={`doc-panel${expanded ? " expanded" : ""}${treeOnly ? " tree-only" : ""}${readingMode ? " reading" : ""}${!treeOnly && !expanded && widthAuto ? " auto-width" : ""}`}
       data-doc-theme={readingTheme}
       style={panelStyle}
       aria-label={t("ui.document.label")}
@@ -1947,11 +1968,18 @@ export default function DocumentPanel() {
             event.preventDefault();
             dragStart.current = {
               x: event.clientX,
-              width: treeOnly ? treeWidth : width,
+              width: treeOnly
+                ? treeWidth
+                : widthAuto
+                  ? (panelWidth ?? width)
+                  : width,
               tree: treeOnly,
             };
             setActiveSash("panel");
             document.body.classList.add("is-resizing-split");
+          }}
+          onDoubleClick={() => {
+            if (!treeOnly) setState({ docPanelWidthAuto: true });
           }}
         />
       )}

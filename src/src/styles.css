@@ -3725,6 +3725,12 @@ body.is-resizing-pane {
 }
 
 /* Document viewer split (opened from terminal document links). */
+/* Until the user drags the sash, the docked viewer shares the terminal page
+   evenly with the terminal stack. */
+.doc-panel.auto-width {
+  width: max(50%, 320px);
+}
+
 .doc-panel {
   position: relative;
   flex: 0 0 auto;
@@ -3805,6 +3811,45 @@ body.is-resizing-pane {
 .doc-tree:hover .doc-tree-header .btn,
 .doc-tree-header:focus-within .btn {
   opacity: 1;
+}
+
+/* The search button must stay reachable while its input owns focus, even
+   when the pointer has left the tree column. */
+.doc-tree.searching .doc-tree-header .btn {
+  opacity: 1;
+}
+
+/* Recursive file-search input row, between the header and the tree body. */
+.doc-tree-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 6px;
+  border-bottom: 1px solid var(--sidebar-border);
+  color: var(--sidebar-text-faint);
+  flex: 0 0 auto;
+}
+
+.doc-tree-search input {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--bg-term);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  padding: 3px 7px;
+  outline: none;
+}
+
+.doc-tree-search-busy {
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: dot-pulse 1.2s ease-in-out infinite;
 }
 
 .doc-tree-body {
@@ -3891,6 +3936,36 @@ body.is-resizing-pane {
 
 .doc-tree-row.selected .doc-tree-kind {
   color: var(--sidebar-text-strong);
+}
+
+/* Flat search results: keyboard selection gets the hover chip without
+   impersonating the open-file "selected" state. */
+.doc-tree-search-row.active:not(.selected) {
+  background: var(--sidebar-row-hover);
+}
+
+.doc-tree-search-path {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* The directory prefix yields space first; the basename keeps priority. */
+.doc-tree-search-dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--sidebar-text-faint);
+}
+
+.doc-tree-search-hit {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  border-radius: 2px;
 }
 
 /* Directory rows are icon-free: the chevron alone marks them, occupying

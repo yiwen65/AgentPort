@@ -76,6 +76,8 @@ describe("DocumentPanel", () => {
       docGroups: [],
       activeDocGroupIndex: 0,
       docPanelExpanded: false,
+      docPanelWidth: 480,
+      docPanelWidthAuto: true,
       docReadingMode: false,
       docReadingTheme: "terminal",
       docCodeLineNumbers: false,
@@ -116,6 +118,8 @@ describe("DocumentPanel", () => {
       docGroups: [],
       activeDocGroupIndex: 0,
       docPanelExpanded: false,
+      docPanelWidth: 480,
+      docPanelWidthAuto: true,
       docReadingMode: false,
       docReadingTheme: "terminal",
       docCodeLineNumbers: false,
@@ -204,6 +208,30 @@ describe("DocumentPanel", () => {
     act(() => {
       window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
     });
+  });
+
+  it("splits the docked viewer evenly until the sash is dragged", async () => {
+    const { container } = render(<DocumentPanel />);
+    await screen.findByRole("tab", { name: "报告.md" });
+    const panel = container.querySelector<HTMLElement>(".doc-panel");
+    expect(panel?.className).toContain("auto-width");
+    const sash = container.querySelector(".doc-panel-resize");
+    expect(sash).not.toBeNull();
+    act(() => {
+      (sash as Element).dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 500 }),
+      );
+    });
+    await movePointer(400);
+    expect(getState().docPanelWidthAuto).toBe(false);
+    expect(panel?.className).not.toContain("auto-width");
+    expect(panel?.getAttribute("style") ?? "").toContain("width: 580px");
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+    });
+    fireEvent.doubleClick(sash as Element);
+    await waitFor(() => expect(getState().docPanelWidthAuto).toBe(true));
+    expect(panel?.className).toContain("auto-width");
   });
 
   it("drags the inner sash to resize the tree column in dual mode", async () => {

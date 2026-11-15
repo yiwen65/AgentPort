@@ -105,6 +105,22 @@ try {
           textarea.remove();
           return { ok, after, undoneOk, undone };
         };
+        window.testPanelSplit = () => {
+          const wrap = document.createElement('div');
+          wrap.style.cssText = 'position:fixed;left:-2000px;top:0;width:1200px;display:flex;';
+          const terminal = document.createElement('div');
+          terminal.className = 'term-stack';
+          const panel = document.createElement('div');
+          panel.className = 'doc-panel auto-width';
+          wrap.append(terminal, panel);
+          document.body.append(wrap);
+          const result = {
+            terminal: terminal.getBoundingClientRect().width,
+            panel: panel.getBoundingClientRect().width,
+          };
+          wrap.remove();
+          return result;
+        };
         window.testRawHighlightGeometry = () => {
           const textarea = document.createElement('textarea');
           textarea.setAttribute('wrap', 'off');
@@ -276,7 +292,11 @@ try {
   assert.ok(rawMetrics.metrics.left > 12, JSON.stringify(rawMetrics));
   assert.ok(rawMetrics.metrics.width > 0, JSON.stringify(rawMetrics));
 
-  console.log('PASS: production reader renders Shiki tokens, KaTeX (fonts), GFM/alerts/frontmatter under the Tauri CSP with no violations or WASM, lazy chunks load, paper/night reader palettes apply, replace edits enter the native undo stack, and raw match geometry aligns with the editor. No native Session or network used.');
+  const split = await evaluate('window.testPanelSplit()');
+  assert.equal(split.panel, 600);
+  assert.equal(split.terminal, 600);
+
+  console.log('PASS: production reader renders Shiki tokens, KaTeX (fonts), GFM/alerts/frontmatter under the Tauri CSP with no violations or WASM, lazy chunks load, paper/night reader palettes apply, replace edits enter the native undo stack, raw match geometry aligns with the editor, and the docked viewer splits 1200px evenly (600/600). No native Session or network used.');
 } finally {
   ws?.close();
   if (chrome && chrome.exitCode === null) { chrome.kill('SIGTERM'); await new Promise(r => chrome.once('exit', r)); }
