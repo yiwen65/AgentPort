@@ -4651,6 +4651,176 @@ body.is-resizing-pane {
   margin: 1.5em 0;
 }
 
+/* Reader blocks introduced by the unified/remark renderer. */
+.md-code {
+  margin: 0.9em 0;
+  border: 1px solid var(--term-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--term-code-bg);
+}
+
+.md-code-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--term-border);
+  color: var(--term-muted);
+  font-size: 11px;
+  user-select: none;
+}
+
+.md-code-lang {
+  font-family: var(--font-mono);
+  text-transform: lowercase;
+}
+
+.md-code-copy {
+  border: none;
+  background: transparent;
+  color: var(--term-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+}
+
+.md-code-copy:hover {
+  color: var(--term-accent);
+}
+
+.md-code .md-code-pre {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.md-table-scroll {
+  max-width: 100%;
+  margin: 0.9em 0;
+  overflow-x: auto;
+}
+
+.md-table-scroll table {
+  margin: 0;
+}
+
+.md-alert {
+  margin: 1em 0;
+  padding: 0.7em 1em;
+  border-left: 3px solid var(--term-accent);
+  border-radius: 0 6px 6px 0;
+  background: color-mix(in srgb, var(--term-accent) 7%, transparent);
+}
+
+.md-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 0.35em;
+  font-size: 0.9em;
+  font-weight: 600;
+  color: var(--term-heading);
+}
+
+.md-alert-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--term-accent);
+}
+
+.md-alert-tip {
+  border-left-color: var(--term-green);
+  background: color-mix(in srgb, var(--term-green) 7%, transparent);
+}
+.md-alert-tip .md-alert-dot {
+  background: var(--term-green);
+}
+.md-alert-important {
+  border-left-color: var(--term-magenta);
+  background: color-mix(in srgb, var(--term-magenta) 7%, transparent);
+}
+.md-alert-important .md-alert-dot {
+  background: var(--term-magenta);
+}
+.md-alert-warning {
+  border-left-color: var(--term-yellow);
+  background: color-mix(in srgb, var(--term-yellow) 8%, transparent);
+}
+.md-alert-warning .md-alert-dot {
+  background: var(--term-yellow);
+}
+.md-alert-caution {
+  border-left-color: var(--term-red);
+  background: color-mix(in srgb, var(--term-red) 7%, transparent);
+}
+.md-alert-caution .md-alert-dot {
+  background: var(--term-red);
+}
+
+.md-footnotes {
+  margin-top: 2.2em;
+  padding-top: 0.8em;
+  border-top: 1px solid var(--term-border);
+  color: var(--term-muted);
+  font-size: 0.9em;
+}
+
+.md-frontmatter {
+  margin: 0 0 1.2em;
+  padding: 0.55em 0.8em;
+  border: 1px solid var(--term-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--term-surface-raised) 70%, transparent);
+  font-size: 0.9em;
+}
+
+.md-frontmatter summary {
+  cursor: pointer;
+  color: var(--term-muted);
+  user-select: none;
+}
+
+.md-frontmatter-raw {
+  margin: 0.6em 0 0;
+  border: none;
+  background: transparent;
+}
+
+.md-task-checkbox {
+  accent-color: var(--term-accent);
+  margin-inline-end: 0.45em;
+}
+
+.md-math-display {
+  display: block;
+  margin: 1em 0;
+  overflow-x: auto;
+  text-align: center;
+}
+
+.md-math-source {
+  font-family: var(--font-mono);
+}
+
+.md-link-blocked {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--term-muted);
+}
+
+.md-parse-error {
+  margin: 0.6em 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--term-yellow) 12%, transparent);
+  color: var(--term-muted);
+  font-size: 0.9em;
+}
+
 /* Mermaid diagrams inside the document preview. */
 .md-mermaid {
   margin: 0.7em 0;

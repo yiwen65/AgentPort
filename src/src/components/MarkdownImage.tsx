@@ -47,7 +47,21 @@ export function MarkdownImageViewer({ url, alt, onClose }: { url: string; alt: s
   </div>, document.body);
 }
 
-export default function MarkdownImage({ source, alt, session }: { source: string; alt: string; session?: MarkdownImageSession }) {
+export default function MarkdownImage({
+  source,
+  alt,
+  title,
+  imageIndex,
+  sourceLine,
+  session,
+}: {
+  source: string;
+  alt: string;
+  title?: string;
+  imageIndex?: number;
+  sourceLine?: number;
+  session?: MarkdownImageSession;
+}) {
   const { t } = useTranslation("shell");
   const state = useSyncExternalStore(session?.subscribe ?? (() => () => {}), () => session?.snapshot(source) ?? null);
   const host = useRef<HTMLSpanElement>(null);
@@ -70,8 +84,8 @@ export default function MarkdownImage({ source, alt, session }: { source: string
   }, [session, source]);
   useEffect(() => { if (visible && session && (!state || state.status === "idle" || state.status === "blocked" && session.consent)) void session.load(source); }, [visible, session, source, state]);
   useEffect(() => { if (viewer && session) { session.retain(source); return () => session.release(source); } }, [viewer, session, source]);
-  return <span ref={host} className="md-image" onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}>
-    {state?.status === "ready" ? <button type="button" className="md-image-open" aria-label={t("markdownImage.openImage", { alt: alt || t("markdownImage.image") })} onClick={() => setViewer(true)}><img src={state.url} width={state.width} height={state.height} alt={alt} loading="lazy" onError={() => session?.decodeFailed(source)} /></button>
+  return <span ref={host} className="md-image" data-image-index={imageIndex} {...(sourceLine !== undefined ? { "data-source-line": sourceLine } : {})} onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}>
+    {state?.status === "ready" ? <button type="button" className="md-image-open" aria-label={t("markdownImage.openImage", { alt: alt || t("markdownImage.image") })} onClick={() => setViewer(true)}><img src={state.url} width={state.width} height={state.height} alt={alt} title={title || undefined} loading="lazy" onError={() => session?.decodeFailed(source)} /></button>
       : <span className="md-image-placeholder" role={state?.status === "error" ? "alert" : "status"}>{alt || t("markdownImage.image")} — {!session ? t("markdownImage.contextUnavailable") : state?.status === "blocked" ? t("markdownImage.remoteBlocked") : state?.status === "error" ? state.error : t("markdownImage.loading")}{state?.status === "error" ? <button className="btn small" onClick={() => void session?.load(source, true)}>{t("markdownImage.retry")}</button> : null}</span>}
     {viewer && state?.status === "ready" ? <MarkdownImageViewer url={state.url} alt={alt} onClose={closeViewer} /> : null}
   </span>;

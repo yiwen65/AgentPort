@@ -4,6 +4,9 @@
   "version": "0.1.8",
   "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
@@ -13,6 +16,8 @@
   },
   "dependencies": {
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@shikijs/langs": "^4.6.0",
+    "@shikijs/themes": "^4.6.0",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
     "@xterm/addon-canvas": "^0.7.0",
@@ -23,12 +28,24 @@
     "@xterm/xterm": "^5.5.0",
     "dagre": "^0.8.5",
     "dompurify": "^3.4.17",
+    "github-slugger": "^2.0.0",
     "i18next": "^26.3.6",
+    "katex": "^0.16.47",
+    "mdast-util-to-string": "^4.0.0",
     "mermaid": "^11.16.0",
     "qrcode": "1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-i18next": "^17.0.11"
+    "react-i18next": "^17.0.11",
+    "remark-frontmatter": "^5.0.0",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
+    "shiki": "^4.6.0",
+    "unified": "^11.0.5",
+    "unist-util-visit": "^5.2.0",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
