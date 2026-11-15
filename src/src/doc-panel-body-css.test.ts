@@ -20,11 +20,14 @@ describe("document panel body scroll model", () => {
     expect(rule).toContain("overflow: hidden");
   });
 
-  it("lets the textarea scroll internally on both axes", () => {
-    expect(ruleBody(".doc-editor-textarea")).toContain("overflow: auto");
+  it("lets the code editor scroll internally on both axes", () => {
+    expect(ruleBody(".doc-code-editor .cm-scroller")).toContain("overflow: auto");
     const editor = ruleBody(".doc-editor");
     expect(editor).toContain("flex: 1");
     expect(editor).toContain("min-height: 0");
+    const host = ruleBody(".doc-code-editor");
+    expect(host).toContain("flex: 1");
+    expect(host).toContain("min-width: 0");
   });
 
   it("makes the preview host its own scroll container", () => {

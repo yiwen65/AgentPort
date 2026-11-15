@@ -8,7 +8,9 @@
 // wrapped prose read-only.
 
 import {
+  lazy,
   memo,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -29,6 +31,7 @@ import {
   isDocumentTabDirty,
   isMarkdownPath,
   moveDocumentTab,
+  normalizeDocumentEol,
   openDocumentTarget,
   pinDocumentTab,
   setActiveDocumentGroup,
@@ -41,9 +44,8 @@ import { MarkdownView } from "../markdown";
 import { setDocReadingTheme } from "../docReadingPrefs";
 import { relativePathInRoot, scrollToAnchor } from "../markdownReader/links";
 import { rememberExternalLinkChoice, shouldConfirmExternalLink } from "../docExternalLinks";
-import { replaceSelectionUndoable, undoTextareaEdit } from "../textEdit";
 import type { DocReadingTheme, OutlineItem } from "../markdownReader/types";
-import { buildFindText, findMatchesIn, findTextOccurrences, rangeForMatch, rawMatchMetrics, rawMatchMetricsBatch, replaceAllOccurrences, type FindTextMap } from "../docFind";
+import { buildFindText, findMatchesIn, rangeForMatch, type FindTextMap } from "../docFind";
 import { getLastZoomArea } from "../fontZoom";
 import DocFindBar from "./DocFindBar";
 import DocToc from "./DocToc";
@@ -52,7 +54,7 @@ import { i18n } from "../i18n";
 import { runtimeMessageEnvelope } from "../runtimeMessages";
 import { insertTextIntoTerminal } from "../terminals";
 import { activeSessionKey } from "../sessionIdentity";
-import { computeLineRange, formatSelectionReference } from "../terminalDrop";
+import { formatSelectionReference } from "../terminalDrop";
 import { previewSelectionLineRange } from "../documentSelection";
 import {
   canUseLocalOsIntegration,
@@ -69,7 +71,37 @@ import {
 } from "../store";
 import type { DocumentGroup, DocumentTab } from "../store";
 import type { SessionView } from "../types";
+import type { CodeEditorHandle, CodeSelection } from "../codeEditor/CodeEditor";
+import { detectLanguage } from "../codeEditor/languages";
+import {
+  effectiveIndent,
+  setDocEditorIndent,
+  setDocEditorIndentStyle,
+  setDocEditorTheme,
+  setDocEditorWhitespace,
+  setDocEditorWrap,
+  type EditorIndentStyle,
+  type EditorIndentWidth,
+} from "../codeEditor/editorPrefs";
+import {
+  EDITOR_THEME_OPTIONS,
+  resolveEditorTheme,
+  type EditorThemePref,
+} from "../codeEditor/themePref";
+import { fetchGitLineMarks } from "../codeEditor/gitGutterSource";
+import type { EditorFindOptions } from "../codeEditor/findController";
 import DocumentTree from "./DocumentTree";
+
+const LazyCodeEditor = lazy(() => import("../codeEditor/CodeEditor"));
+const CODE_EDITOR_LARGE_FILE_BYTES = 512 * 1024;
+
+const EDITOR_THEME_LABEL_KEYS = {
+  follow: "ui.document.editorThemeFollow",
+  "github-light-default": "ui.document.editorThemeGithubLight",
+  "github-dark-default": "ui.document.editorThemeGithubDark",
+  "min-light": "ui.document.editorThemeMinLight",
+  "vitesse-dark": "ui.document.editorThemeVitesseDark",
+} as const satisfies Record<EditorThemePref, string>;
 
 const MIN_DOC_PANEL_WIDTH = 320;
 const MAX_DOC_PANEL_RATIO = 0.6;
@@ -79,8 +111,6 @@ const MAX_DOC_TREE_WIDTH = 420;
    tree. */
 const MIN_DOC_EDITOR_WIDTH = 280;
 const DOC_TREE_SASH_WIDTH = 5;
-/** Same overlay budget as the preview: scan up to 2000 matches but paint 500. */
-const MAX_RAW_HITS = 500;
 
 /** dataTransfer type for tab drags (reorder, cross-group move, split). */
 const TAB_DND_TYPE = "application/x-agentport-doc-tab";
@@ -117,46 +147,6 @@ function paintFindLayer(
       layer.append(hit);
     }
   }
-}
-
-/* Drag-select auto-scroll constants: the pointer is treated as "pushing the
-   edge" from EDGE px inside the editor (the panel sits flush with the
-   window's right edge, so the pointer often cannot travel past it), and the
-   scroll timer ticks at roughly display rate. */
-const SELECT_DRAG_EDGE_PX = 24;
-const SELECT_DRAG_TICK_MS = 16;
-
-/** Scroll speed per tick grows with how far the pointer pushes past the
- * edge, clamped so a far-flung pointer does not teleport the view. */
-function selectDragSpeed(overshoot: number): number {
-  return Math.min(28, Math.max(3, overshoot * 0.5));
-}
-
-/* Monospace advance width via a shared canvas, measured once per font — the
-   raw editor is monospace, so caret columns map linearly to pixels. */
-let monoMeasureContext: CanvasRenderingContext2D | null | undefined;
-
-function monoCharWidth(fontSize: string, fontFamily: string): number {
-  if (monoMeasureContext === undefined) {
-    monoMeasureContext = document.createElement("canvas").getContext("2d");
-  }
-  if (!monoMeasureContext) return 0;
-  monoMeasureContext.font = `${fontSize} ${fontFamily}`;
-  return monoMeasureContext.measureText("0").width;
-}
-
-/** Text offset of (row, col), walking newlines without allocating a
- * lines array — this runs on every auto-scroll tick on large files. */
-function caretOffsetAt(text: string, row: number, col: number): number {
-  let offset = 0;
-  for (let line = 0; line < row; line += 1) {
-    const next = text.indexOf("\n", offset);
-    if (next === -1) return text.length;
-    offset = next + 1;
-  }
-  const newline = text.indexOf("\n", offset);
-  const lineEnd = newline === -1 ? text.length : newline;
-  return Math.min(offset + col, lineEnd);
 }
 
 /* Compact preview-mode glyph: the mode tab strip shares the toolbar with the
@@ -279,6 +269,7 @@ function UnsupportedFileNotice({
 const EMPTY_RUNTIME: DocumentTabRuntime = {
   doc: null,
   draft: "",
+  eol: "lf",
   loading: false,
   error: null,
   errorCode: null,
@@ -292,7 +283,13 @@ const EMPTY_RUNTIME: DocumentTabRuntime = {
   findQuery: "",
   findReplacement: "",
   findIndex: 0,
+  findCaseSensitive: false,
+  findRegex: false,
+  findWholeWord: false,
   findRequest: 0,
+  findReplaceRequest: 0,
+  gotoOpen: false,
+  gotoRequest: null,
   loadedPath: null,
   loadedToken: -1,
 };
@@ -301,15 +298,19 @@ const EMPTY_RUNTIME: DocumentTabRuntime = {
  * line-ending style. Shared by the toolbar button and the editor's ⌘S. */
 async function saveDocumentTab(tabId: string): Promise<void> {
   const runtime = getDocumentTabRuntime(tabId);
-  if (!runtime || !runtime.doc || runtime.saving || runtime.draft === runtime.doc.content) {
+  if (
+    !runtime ||
+    !runtime.doc ||
+    runtime.saving ||
+    normalizeDocumentEol(runtime.draft) === normalizeDocumentEol(runtime.doc.content)
+  ) {
     return;
   }
   const savedDraft = runtime.draft;
   updateDocumentTabRuntime(tabId, { saving: true });
   try {
-    const payload = runtime.doc.content.includes("\r\n")
-      ? savedDraft.replace(/\n/g, "\r\n")
-      : savedDraft;
+    const payload =
+      runtime.eol === "crlf" ? savedDraft.replace(/\n/g, "\r\n") : savedDraft;
     const result = await writeDocumentForDevice(runtime.doc.path, payload, runtime.imageContext?.device);
     const current = getDocumentTabRuntime(tabId);
     if (current?.doc) {
@@ -377,11 +378,42 @@ function DocToolbar({
   const findRequest = useSyncExternalStore(subscribeDocumentRuntime, () =>
     tabId ? (getDocumentTabRuntime(tabId)?.findRequest ?? 0) : 0,
   );
+  const gotoOpen = useSyncExternalStore(subscribeDocumentRuntime, () =>
+    tabId ? (getDocumentTabRuntime(tabId)?.gotoOpen ?? false) : false,
+  );
   const readingMode = useStore((state) => state.docReadingMode);
   const readingTheme = useStore((state) => state.docReadingTheme);
+  const editorTheme = useStore((state) => state.docEditorTheme);
+  const editorIndent = useStore((state) => state.docEditorIndent);
+  const editorIndentStyle = useStore((state) => state.docEditorIndentStyle);
+  const editorWrap = useStore((state) => state.docEditorWrap);
+  const editorWhitespace = useStore((state) => state.docEditorWhitespace);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [gotoValue, setGotoValue] = useState("");
+  const settingsRef = useRef<HTMLDivElement>(null);
+  const gotoInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!settingsRef.current?.contains(event.target as Node)) setSettingsOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => window.removeEventListener("pointerdown", onPointerDown, true);
+  }, [settingsOpen]);
+
+  useEffect(() => {
+    if (!gotoOpen) {
+      setGotoValue("");
+      return;
+    }
+    gotoInputRef.current?.focus();
+    gotoInputRef.current?.select();
+  }, [gotoOpen]);
 
   if (!tab || !tabId) return null;
   const markdown = isMarkdownPath(tab.path);
+  const codeSurface = mode === "raw" || (mode === "preview" && !markdown);
   const showToc = markdown && mode === "preview" && (outline?.length ?? 0) > 0;
   const effectivePath = getDocumentTabRuntime(tabId)?.doc?.path ?? tab.path;
   const selectionLineCount = selection
@@ -389,6 +421,19 @@ function DocToolbar({
       ? selection.endLine - selection.startLine + 1
       : selection.text.split("\n").length
     : 0;
+
+  const submitGoto = () => {
+    const line = Number(gotoValue);
+    if (!Number.isFinite(line) || line < 1) {
+      updateDocumentTabRuntime(tabId, { gotoOpen: false });
+      return;
+    }
+    updateDocumentTabRuntime(tabId, {
+      gotoOpen: false,
+      gotoRequest: { line: Math.round(line), token: Date.now() },
+    });
+    setGotoValue("");
+  };
 
   return (
     <div className="doc-panel-header">
@@ -424,6 +469,135 @@ function DocToolbar({
           <option value="paper">{t("ui.document.readingThemePaper")}</option>
           <option value="night">{t("ui.document.readingThemeNight")}</option>
         </select>
+      ) : null}
+      {codeSurface ? (
+        <div className="doc-editor-tools" ref={settingsRef}>
+          <button
+            className="btn small ghost"
+            data-tip={t("ui.document.editorSettings")}
+            aria-label={t("ui.document.editorSettings")}
+            aria-pressed={settingsOpen}
+            aria-expanded={settingsOpen}
+            onClick={() => setSettingsOpen((open) => !open)}
+          >
+            Aa
+          </button>
+          {settingsOpen ? (
+            <div
+              className="doc-editor-settings-panel"
+              role="dialog"
+              aria-label={t("ui.document.editorSettings")}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") setSettingsOpen(false);
+              }}
+            >
+              <label className="doc-editor-settings-row">
+                <span>{t("ui.document.editorTheme")}</span>
+                <select
+                  value={editorTheme}
+                  onChange={(event) =>
+                    setDocEditorTheme(event.target.value as EditorThemePref)
+                  }
+                >
+                  {EDITOR_THEME_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {t(EDITOR_THEME_LABEL_KEYS[option])}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="doc-editor-settings-row">
+                <span>{t("ui.document.editorIndent")}</span>
+                <select
+                  value={String(editorIndent)}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setDocEditorIndent(
+                      value === "auto" ? "auto" : (Number(value) as EditorIndentWidth),
+                    );
+                  }}
+                >
+                  <option value="auto">{t("ui.document.editorIndentAuto")}</option>
+                  <option value="2">2</option>
+                  <option value="4">4</option>
+                  <option value="8">8</option>
+                </select>
+              </label>
+              <label className="doc-editor-settings-row">
+                <span>{t("ui.document.editorIndentStyle")}</span>
+                <select
+                  value={editorIndentStyle}
+                  onChange={(event) =>
+                    setDocEditorIndentStyle(event.target.value as EditorIndentStyle)
+                  }
+                >
+                  <option value="auto">{t("ui.document.editorIndentStyleAuto")}</option>
+                  <option value="spaces">{t("ui.document.editorIndentSpaces")}</option>
+                  <option value="tabs">{t("ui.document.editorIndentTabs")}</option>
+                </select>
+              </label>
+              <label className="doc-editor-settings-check">
+                <input
+                  type="checkbox"
+                  checked={editorWrap}
+                  onChange={(event) => setDocEditorWrap(event.target.checked)}
+                />
+                <span>{t("ui.document.wordWrap")}</span>
+              </label>
+              <label className="doc-editor-settings-check">
+                <input
+                  type="checkbox"
+                  checked={editorWhitespace}
+                  onChange={(event) => setDocEditorWhitespace(event.target.checked)}
+                />
+                <span>{t("ui.document.showWhitespace")}</span>
+              </label>
+            </div>
+          ) : null}
+          <div className="doc-goto-wrap">
+            <button
+              className="btn small ghost"
+              data-tip={t("ui.document.goToLine")}
+              aria-label={t("ui.document.goToLine")}
+              aria-pressed={gotoOpen}
+              onClick={() =>
+                updateDocumentTabRuntime(tabId, { gotoOpen: !gotoOpen })
+              }
+            >
+              ↦
+            </button>
+            {gotoOpen ? (
+              <div className="doc-goto-line">
+                <input
+                  ref={gotoInputRef}
+                  className="doc-goto-input"
+                  type="number"
+                  min={1}
+                  value={gotoValue}
+                  placeholder={t("ui.document.goToLinePlaceholder")}
+                  aria-label={t("ui.document.goToLinePlaceholder")}
+                  onChange={(event) => setGotoValue(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      submitGoto();
+                    } else if (event.key === "Escape") {
+                      event.preventDefault();
+                      updateDocumentTabRuntime(tabId, { gotoOpen: false });
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="doc-find-text-btn"
+                  onClick={submitGoto}
+                >
+                  ↵
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
       ) : null}
       <span className="spacer" />
       {selection && activeSession?.transport === "pty" ? (
@@ -735,19 +909,20 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     subscribeDocumentRuntime,
     () => getDocumentTabRuntime(tab.id) ?? EMPTY_RUNTIME,
   );
-  const editorRef = useRef<HTMLTextAreaElement>(null);
-  const gutterRef = useRef<HTMLDivElement>(null);
+  const rawEditorRef = useRef<CodeEditorHandle>(null);
+  const previewEditorRef = useRef<CodeEditorHandle>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
   const findLayerRef = useRef<HTMLDivElement>(null);
-  const rawFindLayerRef = useRef<HTMLDivElement>(null);
-  const rawFindHitsRef = useRef<HTMLDivElement>(null);
   const lastPreviewPointer = useRef({ x: 0, y: 0 });
-  const replaceUndoSnapshot = useRef<string | null>(null);
-  const applyingReplace = useRef(false);
+  const replaceActionRef = useRef(false);
+  const gitRequestRef = useRef(0);
   const [replaceUndoAvailable, setReplaceUndoAvailable] = useState(false);
   const [findMap, setFindMap] = useState<FindTextMap | null>(null);
   const [findMatches, setFindMatches] = useState<number[]>([]);
+  const [codeFind, setCodeFind] = useState({ count: 0, index: 0, invalid: false });
+  const [readySurface, setReadySurface] = useState<string | null>(null);
+  const [gitRefreshToken, setGitRefreshToken] = useState(0);
   const [externalLink, setExternalLink] = useState<{
     href: string;
     domain: string;
@@ -757,10 +932,44 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   const readingMode = useStore((state) => state.docReadingMode);
   const readingTheme = useStore((state) => state.docReadingTheme);
   const docFontScale = useStore((state) => state.docFontScale);
+  const themeEffective = useStore((state) => state.themeEffective);
+  const editorThemePref = useStore((state) => state.docEditorTheme);
+  const editorIndentPref = useStore((state) => state.docEditorIndent);
+  const editorIndentStyle = useStore((state) => state.docEditorIndentStyle);
+  const editorWrap = useStore((state) => state.docEditorWrap);
+  const editorWhitespace = useStore((state) => state.docEditorWhitespace);
   const activeFindIndex =
     findMatches.length > 0
       ? Math.min(Math.max(runtime.findIndex, 0), findMatches.length - 1)
       : 0;
+
+  const markdown = isMarkdownPath(tab.path);
+  const effectivePath = runtime.doc?.path ?? tab.path;
+  const codePreview = runtime.mode === "preview" && !markdown;
+  const codeSurface = runtime.mode === "raw" || codePreview;
+  const activeEditorRef = runtime.mode === "raw" ? rawEditorRef : previewEditorRef;
+  const surfaceKey = `${runtime.mode}:${effectivePath}`;
+  const activeReady = readySurface === surfaceKey;
+  const tabDirty = isDocumentTabDirty(tab.id);
+  const codeLanguage = useMemo(() => {
+    const firstLine = (runtime.doc?.content ?? "").split("\n", 1)[0]?.replace(/\r$/, "");
+    return detectLanguage(tab.path, firstLine);
+  }, [runtime.doc?.content, tab.path]);
+  const largeFile =
+    (runtime.doc?.sizeBytes ?? 0) > CODE_EDITOR_LARGE_FILE_BYTES ||
+    (runtime.doc?.content.length ?? 0) > CODE_EDITOR_LARGE_FILE_BYTES;
+  const codeThemeName = resolveEditorTheme(editorThemePref, readingTheme, themeEffective);
+  const codeIndent = effectiveIndent(
+    { indent: editorIndentPref, indentStyle: editorIndentStyle },
+    codeLanguage,
+  );
+  const codeText =
+    runtime.mode === "raw"
+      ? runtime.draft
+      : normalizeDocumentEol(runtime.doc?.content ?? "");
+  const codeFindActive = codeSurface;
+  const displayFindCount = codeFindActive ? codeFind.count : findMatches.length;
+  const displayFindIndex = codeFindActive ? codeFind.index : activeFindIndex;
 
   const handleOutlineChange = useCallback(
     (items: OutlineItem[]) => {
@@ -852,7 +1061,8 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   // Reading progress: write a CSS transform directly on the 2px bar so scroll
   // events never re-render the preview.
   useEffect(() => {
-    const element = runtime.mode === "preview" ? previewRef.current : editorRef.current;
+    if (runtime.mode !== "preview" || !markdown) return;
+    const element = previewRef.current;
     const bar = progressRef.current;
     if (!element || !bar || !runtime.doc) return;
     let frame: number | null = null;
@@ -876,7 +1086,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
       observer?.disconnect();
       if (frame !== null) window.cancelAnimationFrame(frame);
     };
-  }, [runtime.doc, runtime.mode, visible]);
+  }, [runtime.doc, runtime.mode, visible, markdown]);
 
   // Load the file (with punctuation-trimmed fallbacks for link targets
   // printed inside prose). Loads are guarded by (path, reloadToken) recorded
@@ -913,7 +1123,8 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
           if (!isCurrent()) return;
           updateDocumentTabRuntime(tab.id, {
             doc: result,
-            draft: result.content,
+            draft: normalizeDocumentEol(result.content),
+            eol: result.content.includes("\r\n") ? "crlf" : "lf",
             loading: false,
             error: null,
             errorCode: null,
@@ -936,33 +1147,39 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     })();
   }, [tab.id, tab.path, runtime.reloadToken]);
 
-  // Reveal a `path:line` target in the raw editor once the content is
-  // visible: caret to the line start, scrolled into view, then the one-shot
-  // request is consumed.
+  // Reveal `path:line` targets in the code editor (raw or code preview).
   useEffect(() => {
-    if (!visible || runtime.mode !== "raw" || tab.pendingLine == null || !runtime.doc) {
+    if (
+      !visible ||
+      !codeSurface ||
+      !activeReady ||
+      tab.pendingLine == null ||
+      !runtime.doc
+    ) {
       return;
     }
-    const textarea = editorRef.current;
-    if (!textarea) return;
-    const targetLine = tab.pendingLine;
+    const editor = activeEditorRef.current;
+    if (!editor) return;
+    const line = tab.pendingLine;
     clearDocumentPendingLine(tab.id);
-    let offset = 0;
-    let line = 1;
-    while (line < targetLine) {
-      const next = runtime.doc.content.indexOf("\n", offset);
-      if (next === -1) return; // Line past EOF: consumed, nothing to reveal.
-      offset = next + 1;
-      line += 1;
-    }
-    textarea.focus();
-    textarea.setSelectionRange(offset, offset);
-    const lineHeight = Number.parseFloat(getComputedStyle(textarea).lineHeight) || 18;
-    textarea.scrollTop = Math.max(
-      0,
-      (targetLine - 1) * lineHeight - textarea.clientHeight / 2,
-    );
-  }, [visible, runtime.mode, runtime.doc, tab.pendingLine, tab.id]);
+    editor.revealLine(line);
+  }, [
+    visible,
+    codeSurface,
+    activeReady,
+    runtime.mode,
+    runtime.doc,
+    tab.pendingLine,
+    tab.id,
+  ]);
+
+  // Consume the toolbar / ⌘G go-to-line request.
+  useEffect(() => {
+    if (!codeSurface || !activeReady || !runtime.gotoRequest) return;
+    const request = runtime.gotoRequest;
+    updateDocumentTabRuntime(tab.id, { gotoRequest: null });
+    activeEditorRef.current?.revealLine(request.line);
+  }, [codeSurface, activeReady, runtime.gotoRequest, runtime.mode, tab.id]);
 
   // Heading anchors and `path:line` targets from Markdown links reveal in the
   // preview; a heading link switches a markdown tab back from raw first.
@@ -985,7 +1202,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
       }
       return;
     }
-    if (runtime.mode === "preview" && tab.pendingLine != null) {
+    if (runtime.mode === "preview" && markdown && tab.pendingLine != null) {
       const line = tab.pendingLine;
       clearDocumentPendingLine(tab.id);
       const marker = previewRef.current?.querySelector<HTMLElement>(
@@ -1001,32 +1218,49 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     tab.pendingLine,
     tab.id,
     tab.path,
+    markdown,
     t,
   ]);
 
-  const syncEditorSelection = useCallback(
-    (el: HTMLTextAreaElement) => {
-      const text = el.value.slice(el.selectionStart, el.selectionEnd);
-      updateDocumentTabRuntime(tab.id, {
-        selection: text
-          ? { text, ...computeLineRange(el.value, el.selectionStart, el.selectionEnd) }
-          : null,
-      });
+  const handleCodeSelection = useCallback(
+    (selection: CodeSelection | null) => {
+      updateDocumentTabRuntime(tab.id, { selection });
     },
     [tab.id],
   );
 
-  // Find: preview scans the rendered DOM, raw scans the draft. The preview
-  // highlight overlay is painted imperatively so React never sees the marks.
+  const clearReplaceUndo = useCallback(() => {
+    setReplaceUndoAvailable(false);
+  }, []);
+
+  const handleCodeChange = useCallback(
+    (text: string) => {
+      if (!replaceActionRef.current) clearReplaceUndo();
+      if (!tab.pinned) pinDocumentTab(tab.id);
+      updateDocumentTabRuntime(tab.id, { draft: text });
+    },
+    [clearReplaceUndo, tab.id, tab.pinned],
+  );
+
+  const handleCodeSave = useCallback(() => {
+    void saveDocumentTab(tab.id);
+  }, [tab.id]);
+
+  const handleEditorReady = useCallback(() => {
+    setReadySurface(surfaceKey);
+  }, [surfaceKey]);
+
+  // Markdown preview find scans the rendered DOM; code surfaces drive the
+  // CodeMirror controller through the editor handle.
   useEffect(() => {
     if (!runtime.findOpen || !runtime.findQuery || !runtime.doc) {
       setFindMap(null);
       setFindMatches([]);
       return;
     }
-    if (runtime.mode === "raw") {
+    if (runtime.mode !== "preview" || !markdown) {
       setFindMap(null);
-      setFindMatches(findTextOccurrences(runtime.draft, runtime.findQuery));
+      setFindMatches([]);
       return;
     }
     const host = previewRef.current;
@@ -1034,7 +1268,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     const map = buildFindText(host);
     setFindMap(map);
     setFindMatches(findMatchesIn(map.text, runtime.findQuery));
-  }, [runtime.findOpen, runtime.findQuery, runtime.mode, runtime.doc, runtime.draft]);
+  }, [runtime.findOpen, runtime.findQuery, runtime.mode, runtime.doc, markdown]);
 
   useEffect(() => {
     const host = previewRef.current;
@@ -1043,6 +1277,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     layer.replaceChildren();
     if (
       runtime.mode !== "preview" ||
+      !markdown ||
       !runtime.findOpen ||
       !findMap ||
       findMatches.length === 0
@@ -1084,6 +1319,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     };
   }, [
     runtime.mode,
+    markdown,
     runtime.findOpen,
     runtime.findQuery.length,
     findMap,
@@ -1094,6 +1330,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   useEffect(() => {
     if (
       runtime.mode !== "preview" ||
+      !markdown ||
       !runtime.findOpen ||
       !findMap ||
       findMatches.length === 0
@@ -1114,6 +1351,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     host.scrollTop += rect.top - hostRect.top - host.clientHeight / 2 + rect.height / 2;
   }, [
     runtime.mode,
+    markdown,
     runtime.findOpen,
     runtime.findQuery.length,
     findMap,
@@ -1121,224 +1359,162 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     activeFindIndex,
   ]);
 
+  // Code surfaces: debounce query/draft changes, then drive the CM search
+  // controller. The editor handle owns highlighting and selection jumps.
   useEffect(() => {
-    if (runtime.mode !== "raw" || !runtime.findOpen || findMatches.length === 0) return;
-    const textarea = editorRef.current;
-    if (!textarea) return;
-    const start = findMatches[activeFindIndex];
-    if (start === undefined) return;
-    // Do not focus the editor here: the find field must keep the caret while
-    // the user types. Selection and scrolling still reveal the match.
-    textarea.setSelectionRange(start, start + runtime.findQuery.length);
-    const metrics = rawMatchMetrics(
-      textarea,
-      runtime.draft,
-      start,
-      runtime.findQuery.length,
-    );
-    if (metrics) {
-      const margin = 24;
-      const viewLeft = textarea.scrollLeft;
-      const viewRight = viewLeft + textarea.clientWidth;
-      if (metrics.left < viewLeft + margin) {
-        textarea.scrollLeft = Math.max(0, metrics.left - margin);
-      } else if (metrics.left + metrics.width > viewRight - margin) {
-        textarea.scrollLeft = Math.max(
-          0,
-          metrics.left + metrics.width - textarea.clientWidth + margin,
-        );
-      }
+    if (!codeSurface || !activeReady) return;
+    const editor = activeEditorRef.current;
+    if (!editor) return;
+    if (!runtime.findOpen || !runtime.findQuery || (largeFile && runtime.findRegex)) {
+      editor.clearFind();
+      setCodeFind({ count: 0, index: 0, invalid: false });
+      return;
     }
-    const line = runtime.draft.slice(0, start).split("\n").length;
-    const lineHeight = Number.parseFloat(getComputedStyle(textarea).lineHeight) || 18;
-    textarea.scrollTop = Math.max(0, (line - 1) * lineHeight - textarea.clientHeight / 2);
-    if (gutterRef.current) gutterRef.current.scrollTop = textarea.scrollTop;
-    syncEditorSelection(textarea);
+    const handle = window.setTimeout(() => {
+      const result = editor.find({
+        query: runtime.findQuery,
+        caseSensitive: runtime.findCaseSensitive,
+        regex: runtime.findRegex,
+        wholeWord: runtime.findWholeWord,
+        index: runtime.findIndex,
+      });
+      setCodeFind(result);
+      if (!result.invalid && result.count > 0 && result.index !== runtime.findIndex) {
+        updateDocumentTabRuntime(tab.id, { findIndex: result.index });
+      }
+    }, 120);
+    return () => window.clearTimeout(handle);
   }, [
-    runtime.mode,
+    codeSurface,
+    activeReady,
     runtime.findOpen,
     runtime.findQuery,
-    runtime.draft,
-    findMatches,
-    activeFindIndex,
-    syncEditorSelection,
-  ]);
-
-  // The textarea is not focused while searching, so an inactive selection is
-  // invisible in WKWebView. Paint the active match in a read-only overlay
-  // aligned with the textarea's monospace content box.
-  useEffect(() => {
-    const layer = rawFindLayerRef.current;
-    const hits = rawFindHitsRef.current;
-    const textarea = editorRef.current;
-    if (!layer || !hits || !textarea) return;
-    if (
-      runtime.mode !== "raw" ||
-      !runtime.findOpen ||
-      findMatches.length === 0 ||
-      !visible
-    ) {
-      layer.style.display = "none";
-      hits.replaceChildren();
-      return;
-    }
-    const activeStart = findMatches[activeFindIndex];
-    let starts = findMatches;
-    if (findMatches.length > MAX_RAW_HITS) {
-      starts = Array.from(
-        new Set([...findMatches.slice(0, MAX_RAW_HITS - 1), activeStart]),
-      ).sort((a, b) => a - b);
-    }
-    const positions = rawMatchMetricsBatch(
-      textarea,
-      runtime.draft,
-      starts,
-      runtime.findQuery.length,
-    );
-    if (positions.length === 0) {
-      layer.style.display = "none";
-      hits.replaceChildren();
-      return;
-    }
-    layer.style.display = "block";
-    layer.style.left = `${textarea.offsetLeft}px`;
-    layer.style.top = `${textarea.offsetTop}px`;
-    layer.style.width = `${textarea.clientWidth}px`;
-    layer.style.height = `${textarea.clientHeight}px`;
-    hits.replaceChildren();
-    for (const position of positions) {
-      const hit = document.createElement("span");
-      hit.className =
-        position.start === activeStart
-          ? "md-find-hit active md-find-raw-hit"
-          : "md-find-hit md-find-raw-hit";
-      hit.style.left = `${position.left}px`;
-      hit.style.top = `${position.top}px`;
-      hit.style.width = `${position.width}px`;
-      hit.style.height = `${position.height}px`;
-      hits.append(hit);
-    }
-    hits.style.transform = `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
-  }, [
+    runtime.findCaseSensitive,
+    runtime.findRegex,
+    runtime.findWholeWord,
+    runtime.findIndex,
     runtime.mode,
-    runtime.findOpen,
-    findMatches,
-    activeFindIndex,
-    runtime.findQuery.length,
     runtime.draft,
-    docFontScale,
-    visible,
+    runtime.doc?.content,
+    tab.id,
+    largeFile,
   ]);
 
   useEffect(() => {
-    const textarea = editorRef.current;
-    if (!textarea || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      const layer = rawFindLayerRef.current;
-      const hits = rawFindHitsRef.current;
-      if (!layer || !hits || layer.style.display === "none") return;
-      layer.style.left = `${textarea.offsetLeft}px`;
-      layer.style.top = `${textarea.offsetTop}px`;
-      layer.style.width = `${textarea.clientWidth}px`;
-      layer.style.height = `${textarea.clientHeight}px`;
-      hits.style.transform = `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
+    if (!codeSurface) return;
+    activeEditorRef.current?.requestMeasure();
+  }, [docFontScale, codeSurface, runtime.mode]);
+
+  useEffect(() => {
+    if (!visible || !codeSurface) return;
+    const onFocus = () => setGitRefreshToken((value) => value + 1);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [visible, codeSurface]);
+
+  // Unstaged git marks for the active code surface. Marks are hidden while
+  // the draft is dirty because they would point at stale line numbers.
+  useEffect(() => {
+    if (!visible || !codeSurface || !activeReady) return;
+    const editor = activeEditorRef.current;
+    if (!editor) return;
+    if (tabDirty || largeFile || !runtime.doc) {
+      editor.setGitMarks(null);
+      return;
+    }
+    let cancelled = false;
+    const token = ++gitRequestRef.current;
+    void fetchGitLineMarks({
+      path: runtime.doc.path,
+      rootPath: runtime.imageContext?.rootPath,
+      device: runtime.imageContext?.device,
+    }).then((marks) => {
+      if (cancelled || token !== gitRequestRef.current) return;
+      editor.setGitMarks(marks.length > 0 ? marks : null);
     });
-    observer.observe(textarea);
-    return () => observer.disconnect();
-  }, [runtime.mode]);
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    visible,
+    codeSurface,
+    activeReady,
+    tabDirty,
+    largeFile,
+    runtime.doc?.path,
+    runtime.doc?.content,
+    runtime.imageContext,
+    runtime.mode,
+    gitRefreshToken,
+    tab.id,
+  ]);
 
-  const clearReplaceUndo = useCallback(() => {
-    replaceUndoSnapshot.current = null;
-    setReplaceUndoAvailable(false);
-  }, []);
+  const applyCodeFindAfterReplace = useCallback(
+    (count: number, index: number) => {
+      setCodeFind({ count, index, invalid: false });
+      updateDocumentTabRuntime(tab.id, { findIndex: index });
+    },
+    [tab.id],
+  );
 
-  const replaceCurrentMatch = useCallback(() => {
+  const codeFindOptions = useCallback(
+    (index: number): EditorFindOptions => ({
+      query: runtime.findQuery,
+      caseSensitive: runtime.findCaseSensitive,
+      regex: runtime.findRegex,
+      wholeWord: runtime.findWholeWord,
+      index,
+    }),
+    [runtime.findCaseSensitive, runtime.findQuery, runtime.findRegex, runtime.findWholeWord],
+  );
+
+  const handleReplaceCurrent = useCallback(() => {
     if (runtime.mode !== "raw" || !runtime.doc || runtime.doc.truncated) return;
-    if (findMatches.length === 0) return;
-    const start = findMatches[activeFindIndex];
-    if (start === undefined) return;
+    const editor = rawEditorRef.current;
+    if (!editor) return;
     if (!tab.pinned) pinDocumentTab(tab.id);
-    const focusBefore = document.activeElement as HTMLElement | null;
-    replaceUndoSnapshot.current = runtime.draft;
-    const textarea = editorRef.current;
-    let applied = false;
-    if (textarea) {
-      applyingReplace.current = true;
-      try {
-        applied = replaceSelectionUndoable(
-          textarea,
-          start,
-          start + runtime.findQuery.length,
-          runtime.findReplacement,
-        );
-      } finally {
-        applyingReplace.current = false;
-      }
+    replaceActionRef.current = true;
+    try {
+      const result = editor.replaceCurrent(
+        codeFindOptions(runtime.findIndex),
+        runtime.findReplacement,
+      );
+      applyCodeFindAfterReplace(result.count, result.index);
+    } finally {
+      replaceActionRef.current = false;
     }
-    if (applied && textarea) {
-      updateDocumentTabRuntime(tab.id, { draft: textarea.value });
-    } else {
-      const nextDraft =
-        runtime.draft.slice(0, start) +
-        runtime.findReplacement +
-        runtime.draft.slice(start + runtime.findQuery.length);
-      updateDocumentTabRuntime(tab.id, { draft: nextDraft });
-    }
-    if (focusBefore?.isConnected) focusBefore.focus({ preventScroll: true });
     setReplaceUndoAvailable(true);
   }, [
-    activeFindIndex,
-    findMatches,
+    applyCodeFindAfterReplace,
+    codeFindOptions,
     runtime.doc,
-    runtime.draft,
-    runtime.findQuery.length,
+    runtime.findIndex,
     runtime.findReplacement,
     runtime.mode,
     tab.id,
     tab.pinned,
   ]);
 
-  const replaceAllMatches = useCallback(() => {
+  const handleReplaceAll = useCallback(() => {
     if (runtime.mode !== "raw" || !runtime.doc || runtime.doc.truncated) return;
-    const result = replaceAllOccurrences(
-      runtime.draft,
-      runtime.findQuery,
-      runtime.findReplacement,
-    );
-    if (result.count === 0) return;
+    const editor = rawEditorRef.current;
+    if (!editor) return;
     if (!tab.pinned) pinDocumentTab(tab.id);
-    const focusBefore = document.activeElement as HTMLElement | null;
-    replaceUndoSnapshot.current = runtime.draft;
-    const textarea = editorRef.current;
-    let applied = false;
-    if (textarea) {
-      applyingReplace.current = true;
-      try {
-        applied = replaceSelectionUndoable(
-          textarea,
-          0,
-          textarea.value.length,
-          result.text,
-        );
-      } finally {
-        applyingReplace.current = false;
-      }
+    replaceActionRef.current = true;
+    let count = 0;
+    try {
+      count = editor.replaceAll(codeFindOptions(0), runtime.findReplacement);
+      if (count > 0) applyCodeFindAfterReplace(0, 0);
+    } finally {
+      replaceActionRef.current = false;
     }
-    if (applied && textarea) {
-      textarea.setSelectionRange(0, 0);
-      textarea.scrollTop = 0;
-      if (gutterRef.current) gutterRef.current.scrollTop = 0;
-      updateDocumentTabRuntime(tab.id, { draft: textarea.value, findIndex: 0 });
-    } else {
-      updateDocumentTabRuntime(tab.id, { draft: result.text, findIndex: 0 });
-    }
-    if (focusBefore?.isConnected) focusBefore.focus({ preventScroll: true });
+    if (count === 0) return;
     setReplaceUndoAvailable(true);
-    toast(t("ui.document.replacedCount", { count: result.count }), "success");
+    toast(t("ui.document.replacedCount", { count }), "success");
   }, [
+    applyCodeFindAfterReplace,
+    codeFindOptions,
     runtime.doc,
-    runtime.draft,
-    runtime.findQuery,
     runtime.findReplacement,
     runtime.mode,
     tab.id,
@@ -1346,27 +1522,17 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     t,
   ]);
 
-  const undoReplace = useCallback(() => {
-    const textarea = editorRef.current;
-    const snapshot = replaceUndoSnapshot.current;
-    const active = document.activeElement as HTMLElement | null;
-    let value: string | null = null;
-    if (textarea) {
-      // Suppress the resulting input event from clearing the replace undo
-      // state, then fall back to the snapshot when the WebView has no native
-      // undo available.
-      const before = textarea.value;
-      applyingReplace.current = true;
-      try {
-        undoTextareaEdit(textarea);
-      } finally {
-        applyingReplace.current = false;
-      }
-      value = textarea.value !== before ? textarea.value : snapshot;
+  const handleUndoReplace = useCallback(() => {
+    const editor = rawEditorRef.current;
+    if (!editor) return;
+    replaceActionRef.current = true;
+    try {
+      editor.undoReplace();
+    } finally {
+      replaceActionRef.current = false;
     }
-    if (value !== null) updateDocumentTabRuntime(tab.id, { draft: value });
-    active?.focus?.({ preventScroll: true });
-  }, [tab.id]);
+    setReplaceUndoAvailable(false);
+  }, []);
 
   useEffect(() => {
     if (runtime.mode !== "raw") clearReplaceUndo();
@@ -1375,132 +1541,6 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   useEffect(() => {
     clearReplaceUndo();
   }, [runtime.doc?.path, runtime.doc?.content, clearReplaceUndo]);
-
-  /* Drag-select auto-scroll. WKWebView never autoscrolls the raw editor
-     while a selection drag leaves its bounds — and the panel sits flush
-     with the window's right edge, so the pointer often cannot even travel
-     past it. While the pointer pushes an edge we scroll on a timer and
-     extend the selection to the caret under the pointer, like a native
-     editor. Listeners attach on editor mousedown and detach on mouseup, so
-     idle cost is zero; style metrics and the drag anchor are cached once
-     per drag, and each tick is allocation-free. */
-  const selectDragCleanupRef = useRef<(() => void) | null>(null);
-
-  const armSelectDrag = useCallback(
-    (event: React.MouseEvent<HTMLTextAreaElement>) => {
-      if (event.button !== 0) return;
-      selectDragCleanupRef.current?.();
-      const el = event.currentTarget;
-      const drag = {
-        x: 0,
-        y: 0,
-        dx: 0,
-        dy: 0,
-        anchor: 0,
-        timer: null as number | null,
-        metrics: null as {
-          charWidth: number;
-          lineHeight: number;
-          padLeft: number;
-          padTop: number;
-        } | null,
-      };
-
-      const measure = () => {
-        const style = getComputedStyle(el);
-        drag.metrics = {
-          charWidth: monoCharWidth(style.fontSize, style.fontFamily),
-          lineHeight: Number.parseFloat(style.lineHeight),
-          padLeft: Number.parseFloat(style.paddingLeft) || 0,
-          padTop: Number.parseFloat(style.paddingTop) || 0,
-        };
-        // The fixed end of the in-progress selection drag.
-        drag.anchor =
-          el.selectionDirection === "backward" ? el.selectionEnd : el.selectionStart;
-      };
-
-      const extendSelection = () => {
-        const m = drag.metrics;
-        if (!m || !(m.charWidth > 0) || !(m.lineHeight > 0)) return;
-        const rect = el.getBoundingClientRect();
-        const col = Math.max(
-          0,
-          Math.round((drag.x - rect.left - m.padLeft + el.scrollLeft) / m.charWidth),
-        );
-        const row = Math.max(
-          0,
-          Math.floor((drag.y - rect.top - m.padTop + el.scrollTop) / m.lineHeight),
-        );
-        const offset = caretOffsetAt(el.value, row, col);
-        if (offset < drag.anchor) {
-          el.setSelectionRange(offset, drag.anchor, "backward");
-        } else {
-          el.setSelectionRange(drag.anchor, offset, "forward");
-        }
-        // Programmatic selection changes fire no `select` event; keep the
-        // quote-selection state in sync ourselves.
-        syncEditorSelection(el);
-      };
-
-      const tick = () => {
-        if (drag.dx === 0 && drag.dy === 0) return;
-        el.scrollLeft += drag.dx;
-        el.scrollTop += drag.dy;
-        extendSelection();
-      };
-
-      const cleanup = () => {
-        if (drag.timer != null) window.clearInterval(drag.timer);
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", cleanup);
-        window.removeEventListener("blur", cleanup);
-        if (selectDragCleanupRef.current === cleanup) {
-          selectDragCleanupRef.current = null;
-        }
-      };
-
-      const onMove = (move: MouseEvent) => {
-        if (!(move.buttons & 1)) {
-          cleanup();
-          return;
-        }
-        const rect = el.getBoundingClientRect();
-        const overRight = move.clientX - (rect.right - SELECT_DRAG_EDGE_PX);
-        const overLeft = rect.left + SELECT_DRAG_EDGE_PX - move.clientX;
-        const overBottom = move.clientY - (rect.bottom - SELECT_DRAG_EDGE_PX);
-        const overTop = rect.top + SELECT_DRAG_EDGE_PX - move.clientY;
-        drag.dx =
-          overRight > 0
-            ? selectDragSpeed(overRight)
-            : overLeft > 0
-              ? -selectDragSpeed(overLeft)
-              : 0;
-        drag.dy =
-          overBottom > 0
-            ? selectDragSpeed(overBottom)
-            : overTop > 0
-              ? -selectDragSpeed(overTop)
-              : 0;
-        drag.x = move.clientX;
-        drag.y = move.clientY;
-        if (drag.dx === 0 && drag.dy === 0) return;
-        if (drag.metrics == null) measure();
-        if (drag.timer == null) {
-          drag.timer = window.setInterval(tick, SELECT_DRAG_TICK_MS);
-        }
-      };
-
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", cleanup);
-      window.addEventListener("blur", cleanup);
-      selectDragCleanupRef.current = cleanup;
-    },
-    [syncEditorSelection],
-  );
-
-  // Switching modes or closing the tab unmounts the textarea mid-drag; drop
-  // the tracking listeners with it.
-  useEffect(() => () => selectDragCleanupRef.current?.(), [runtime.mode, tab.id]);
 
   const capturePreviewSelection = useCallback(() => {
     const sel = window.getSelection();
@@ -1515,48 +1555,69 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     });
   }, [tab.id, runtime.doc]);
 
-  const gutterLines = useMemo(
-    () => (runtime.doc ? runtime.draft.split("\n").length : 0),
-    [runtime.doc, runtime.draft],
-  );
-
-  // Prefer the backend-canonical path (also reflects a fallback hit).
-  const effectivePath = runtime.doc?.path ?? tab.path;
-  const markdown = isMarkdownPath(tab.path);
-
   return (
     <div className="doc-tab-body" hidden={!visible}>
-      {runtime.doc ? <div className="doc-progress" ref={progressRef} aria-hidden="true" /> : null}
+      {runtime.doc && runtime.mode === "preview" && markdown ? (
+        <div className="doc-progress" ref={progressRef} aria-hidden="true" />
+      ) : null}
       {runtime.findOpen && runtime.doc ? (
         <DocFindBar
           query={runtime.findQuery}
-          count={findMatches.length}
-          index={activeFindIndex}
+          count={displayFindCount}
+          index={displayFindIndex}
           focusRequest={runtime.findRequest}
+          replaceFocusRequest={runtime.findReplaceRequest}
+          showOptions={codeFindActive}
+          caseSensitive={runtime.findCaseSensitive}
+          wholeWord={runtime.findWholeWord}
+          regex={runtime.findRegex}
+          regexDisabled={largeFile}
+          onToggleCaseSensitive={() => {
+            clearReplaceUndo();
+            updateDocumentTabRuntime(tab.id, {
+              findCaseSensitive: !runtime.findCaseSensitive,
+              findIndex: 0,
+            });
+          }}
+          onToggleWholeWord={() => {
+            clearReplaceUndo();
+            updateDocumentTabRuntime(tab.id, {
+              findWholeWord: !runtime.findWholeWord,
+              findIndex: 0,
+            });
+          }}
+          onToggleRegex={() => {
+            clearReplaceUndo();
+            updateDocumentTabRuntime(tab.id, {
+              findRegex: !runtime.findRegex,
+              findIndex: 0,
+            });
+          }}
           canReplace={runtime.mode === "raw" && !runtime.doc.truncated}
-          canUndoReplace={replaceUndoAvailable}
+          canUndoReplace={replaceUndoAvailable && codeFindActive}
           replacement={runtime.findReplacement}
           onReplacementChange={(findReplacement) => {
             clearReplaceUndo();
             updateDocumentTabRuntime(tab.id, { findReplacement });
           }}
-          onReplace={replaceCurrentMatch}
-          onReplaceAll={replaceAllMatches}
-          onUndoReplace={undoReplace}
+          onReplace={handleReplaceCurrent}
+          onReplaceAll={handleReplaceAll}
+          onUndoReplace={handleUndoReplace}
           onChange={(query) => {
             clearReplaceUndo();
             updateDocumentTabRuntime(tab.id, { findQuery: query, findIndex: 0 });
           }}
           onPrev={() => {
-            if (!findMatches.length) return;
+            if (displayFindCount === 0) return;
             updateDocumentTabRuntime(tab.id, {
-              findIndex: (activeFindIndex - 1 + findMatches.length) % findMatches.length,
+              findIndex:
+                (displayFindIndex - 1 + displayFindCount) % displayFindCount,
             });
           }}
           onNext={() => {
-            if (!findMatches.length) return;
+            if (displayFindCount === 0) return;
             updateDocumentTabRuntime(tab.id, {
-              findIndex: (activeFindIndex + 1) % findMatches.length,
+              findIndex: (displayFindIndex + 1) % displayFindCount,
             });
           }}
           onClose={() => {
@@ -1602,33 +1663,33 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
           />
         ) : runtime.doc ? (
           runtime.mode === "preview" ? (
-            <div className={`doc-reading-layout${readingMode ? " reading" : ""}`}>
-              {markdown && runtime.tocOpen && (runtime.outline?.length ?? 0) > 0 ? (
-                <DocToc
-                  items={runtime.outline ?? []}
-                  hostRef={previewRef}
-                  variant={readingMode ? "rail" : "drawer"}
-                  label={t("ui.document.outline")}
-                  closeLabel={t("ui.document.closeOutline")}
-                  onSelect={() => {
-                    if (!readingMode) updateDocumentTabRuntime(tab.id, { tocOpen: false });
+            markdown ? (
+              <div className={`doc-reading-layout${readingMode ? " reading" : ""}`}>
+                {runtime.tocOpen && (runtime.outline?.length ?? 0) > 0 ? (
+                  <DocToc
+                    items={runtime.outline ?? []}
+                    hostRef={previewRef}
+                    variant={readingMode ? "rail" : "drawer"}
+                    label={t("ui.document.outline")}
+                    closeLabel={t("ui.document.closeOutline")}
+                    onSelect={() => {
+                      if (!readingMode) updateDocumentTabRuntime(tab.id, { tocOpen: false });
+                    }}
+                    onClose={
+                      readingMode
+                        ? undefined
+                        : () => updateDocumentTabRuntime(tab.id, { tocOpen: false })
+                    }
+                  />
+                ) : null}
+                <div
+                  ref={previewRef}
+                  className="doc-preview-host"
+                  onMouseUp={capturePreviewSelection}
+                  onPointerDownCapture={(event) => {
+                    lastPreviewPointer.current = { x: event.clientX, y: event.clientY };
                   }}
-                  onClose={
-                    readingMode
-                      ? undefined
-                      : () => updateDocumentTabRuntime(tab.id, { tocOpen: false })
-                  }
-                />
-              ) : null}
-              <div
-                ref={previewRef}
-                className="doc-preview-host"
-                onMouseUp={capturePreviewSelection}
-                onPointerDownCapture={(event) => {
-                  lastPreviewPointer.current = { x: event.clientX, y: event.clientY };
-                }}
-              >
-                {markdown ? (
+                >
                   <MarkdownView
                     source={runtime.doc.content}
                     sourceLocations
@@ -1642,75 +1703,73 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
                     onNotice={handleNotice}
                     onLinkClick={handleExternalLink}
                   />
-                ) : (
-                  <div className="doc-prose">{runtime.doc.content}</div>
-                )}
-                <div ref={findLayerRef} className="md-find-layer" aria-hidden="true" />
+                  <div ref={findLayerRef} className="md-find-layer" aria-hidden="true" />
+                </div>
+                {!readingMode && runtime.tocOpen ? (
+                  <button
+                    type="button"
+                    className="doc-toc-backdrop"
+                    aria-label={t("ui.document.closeOutline")}
+                    onClick={() => updateDocumentTabRuntime(tab.id, { tocOpen: false })}
+                  />
+                ) : null}
               </div>
-              {!readingMode && runtime.tocOpen ? (
-                <button
-                  type="button"
-                  className="doc-toc-backdrop"
-                  aria-label={t("ui.document.closeOutline")}
-                  onClick={() => updateDocumentTabRuntime(tab.id, { tocOpen: false })}
-                />
-              ) : null}
-            </div>
+            ) : (
+              <div className="doc-editor doc-editor-code">
+                <Suspense
+                  fallback={<div className="doc-panel-status">{t("ui.document.loading")}</div>}
+                >
+                  <LazyCodeEditor
+                    key={surfaceKey}
+                    ref={previewEditorRef}
+                    text={codeText}
+                    readOnly
+                    language={largeFile ? null : codeLanguage}
+                    themeName={codeThemeName}
+                    wrap={editorWrap}
+                    whitespace={editorWhitespace}
+                    indentWidth={codeIndent.width}
+                    useSpaces={codeIndent.useSpaces}
+                    visible={visible}
+                    ariaLabel={t("ui.document.editorLabel")}
+                    enableFolding={!largeFile}
+                    enableGitGutter={!largeFile}
+                    enableIndentGuides={!largeFile}
+                    onDocChange={handleCodeChange}
+                    onSelectionChange={handleCodeSelection}
+                    onSave={handleCodeSave}
+                    onReady={handleEditorReady}
+                  />
+                </Suspense>
+              </div>
+            )
           ) : (
-            <div className="doc-editor">
-              <div className="doc-editor-gutter" ref={gutterRef} aria-hidden="true">
-                {Array.from({ length: gutterLines }, (_, index) => (
-                  <span key={index} className="doc-editor-gutter-line">
-                    {index + 1}
-                  </span>
-                ))}
-              </div>
-              <textarea
-                ref={editorRef}
-                className="doc-editor-textarea"
-                value={runtime.draft}
-                readOnly={runtime.doc.truncated}
-                wrap="off"
-                spellCheck={false}
-                autoCapitalize="off"
-                autoCorrect="off"
-                aria-label={t("ui.document.editorLabel")}
-                onChange={(event) => {
-                  // Editing a preview tab pins it (VSCode semantics), so a
-                  // dirty tab is never silently replaced by the next click.
-                  if (!applyingReplace.current) clearReplaceUndo();
-                  if (!tab.pinned) pinDocumentTab(tab.id);
-                  updateDocumentTabRuntime(tab.id, { draft: event.target.value });
-                }}
-                onMouseDown={armSelectDrag}
-                onSelect={(event) => syncEditorSelection(event.currentTarget)}
-                onScroll={(event) => {
-                  if (gutterRef.current) {
-                    gutterRef.current.scrollTop = event.currentTarget.scrollTop;
-                  }
-                  if (rawFindHitsRef.current) {
-                    rawFindHitsRef.current.style.transform = `translate(${-event.currentTarget.scrollLeft}px, ${-event.currentTarget.scrollTop}px)`;
-                  }
-                }}
-                onKeyDown={(event) => {
-                  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-                    event.preventDefault();
-                    void saveDocumentTab(tab.id);
-                    return;
-                  }
-                  // Keep Tab inside the editor instead of moving focus.
-                  if (event.key === "Tab" && !runtime.doc?.truncated) {
-                    event.preventDefault();
-                    const el = event.currentTarget;
-                    el.setRangeText("\t", el.selectionStart, el.selectionEnd, "end");
-                    if (!tab.pinned) pinDocumentTab(tab.id);
-                    updateDocumentTabRuntime(tab.id, { draft: el.value });
-                  }
-                }}
-              />
-              <div ref={rawFindLayerRef} className="doc-find-raw-layer" aria-hidden="true">
-                <div ref={rawFindHitsRef} className="doc-find-raw-hits" />
-              </div>
+            <div className="doc-editor doc-editor-code">
+              <Suspense
+                fallback={<div className="doc-panel-status">{t("ui.document.loading")}</div>}
+              >
+                <LazyCodeEditor
+                  key={surfaceKey}
+                  ref={rawEditorRef}
+                  text={codeText}
+                  readOnly={runtime.doc.truncated}
+                  language={largeFile ? null : codeLanguage}
+                  themeName={codeThemeName}
+                  wrap={editorWrap}
+                  whitespace={editorWhitespace}
+                  indentWidth={codeIndent.width}
+                  useSpaces={codeIndent.useSpaces}
+                  visible={visible}
+                  ariaLabel={t("ui.document.editorLabel")}
+                  enableFolding={!largeFile}
+                  enableGitGutter={!largeFile}
+                  enableIndentGuides={!largeFile}
+                  onDocChange={handleCodeChange}
+                  onSelectionChange={handleCodeSelection}
+                  onSave={handleCodeSave}
+                  onReady={handleEditorReady}
+                />
+              </Suspense>
             </div>
           )
         ) : null}
@@ -1900,13 +1959,21 @@ export default function DocumentPanel() {
     };
   }, []);
 
-  // Cmd/Ctrl+F opens the active document's find bar. The terminal keeps the
-  // key (Ctrl+F is a normal PTY control), so only the document context
-  // consumes it — last-focus tracking covers the non-focusable preview.
+  // Document-context shortcuts: ⌘F find, ⌥⌘F (Ctrl+H elsewhere) replace,
+  // ⌘G go to line. The terminal keeps Ctrl+F for the PTY; only document
+  // focus (or reading mode / last zoom area) consumes these keys.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
-      if (event.key.toLowerCase() !== "f") return;
+      const mod = event.metaKey || event.ctrlKey;
+      if (!mod) return;
+      const key = event.key.toLowerCase();
+      const isSave = key === "s" && !event.altKey && !event.shiftKey;
+      const isFind = key === "f" && !event.altKey && !event.shiftKey;
+      const isReplace =
+        (key === "f" && event.metaKey && event.altKey && !event.shiftKey) ||
+        (key === "h" && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey);
+      const isGoto = key === "g" && !event.altKey && !event.shiftKey;
+      if (!isSave && !isFind && !isReplace && !isGoto) return;
       if (getState().dialog) return;
       const target = event.target as Element | null;
       const inPanel = !!target?.closest?.(".doc-panel");
@@ -1915,13 +1982,26 @@ export default function DocumentPanel() {
       if (!hasOpenDocuments(state)) return;
       const tab = getActiveDocumentTab(state);
       if (!tab) return;
+      const runtime = getDocumentTabRuntime(tab.id);
+      if (!runtime) return;
+      if (isGoto && runtime.mode !== "raw" && isMarkdownPath(tab.path)) return;
       event.preventDefault();
       event.stopPropagation();
-      const runtime = getDocumentTabRuntime(tab.id);
-      updateDocumentTabRuntime(tab.id, {
-        findOpen: true,
-        findRequest: (runtime?.findRequest ?? 0) + 1,
-      });
+      if (isSave) {
+        void saveDocumentTab(tab.id);
+      } else if (isFind) {
+        updateDocumentTabRuntime(tab.id, {
+          findOpen: true,
+          findRequest: (runtime.findRequest ?? 0) + 1,
+        });
+      } else if (isReplace) {
+        updateDocumentTabRuntime(tab.id, {
+          findOpen: true,
+          findReplaceRequest: (runtime.findReplaceRequest ?? 0) + 1,
+        });
+      } else {
+        updateDocumentTabRuntime(tab.id, { gotoOpen: true, findOpen: false });
+      }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);

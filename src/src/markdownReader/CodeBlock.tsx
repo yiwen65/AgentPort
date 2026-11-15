@@ -7,20 +7,11 @@ import { useTranslation } from "react-i18next";
 import type { ThemedToken } from "@shikijs/types";
 import { setDocCodeLineNumbers, setDocCodeWrap } from "../docReadingPrefs";
 import { useStore } from "../store";
-import type { CodeThemeName } from "./codeHighlighter";
+import { codeThemeFor } from "./codeThemeName";
 import { useMarkdownReader } from "./context";
 
 const TEST_ENVIRONMENT =
   (import.meta as ImportMeta & { env?: { MODE?: string } }).env?.MODE === "test";
-
-function codeThemeFor(
-  readingTheme: "terminal" | "paper" | "night",
-  effective: "light" | "dark",
-): CodeThemeName {
-  if (readingTheme === "paper") return "min-light";
-  if (readingTheme === "night") return "vitesse-dark";
-  return effective === "dark" ? "github-dark-default" : "github-light-default";
-}
 
 function tokenStyle(token: ThemedToken): CSSProperties | undefined {
   const style: CSSProperties = {};

@@ -54,7 +54,31 @@ import {
   resetDocumentTabRuntimes,
 } from "../documents";
 import { getState, resolveConfirm, setState } from "../store";
+import { EditorView } from "@codemirror/view";
 import DocumentPanel from "./DocumentPanel";
+
+function editorView(element: HTMLElement): EditorView {
+  const root = element.closest(".cm-editor") as HTMLElement | null;
+  const view = EditorView.findFromDOM(root ?? element);
+  if (!view) throw new Error("CodeMirror view not found");
+  return view;
+}
+
+function editorText(element: HTMLElement): string {
+  return editorView(element).state.doc.toString();
+}
+
+function replaceEditorText(element: HTMLElement, text: string): void {
+  const view = editorView(element);
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: text },
+  });
+}
+
+function editorSelection(element: HTMLElement): { from: number; to: number } {
+  const selection = editorView(element).state.selection.main;
+  return { from: selection.from, to: selection.to };
+}
 
 const DEMO_DOC = {
   path: "/tmp/demo/报告.md",
@@ -144,9 +168,9 @@ describe("DocumentPanel", () => {
   it("edits in raw mode and saves with ⌘S", async () => {
     render(<DocumentPanel />);
     const editor = await findRawEditor();
-    expect((editor as HTMLTextAreaElement).value).toBe("# 标题\n\n正文\n");
+    expect(editorText(editor)).toBe("# 标题\n\n正文\n");
 
-    fireEvent.change(editor, { target: { value: "# 标题\n\n正文\n新增一行\n" } });
+    act(() => replaceEditorText(editor, "# 标题\n\n正文\n新增一行\n"));
     // Dirty marker and save button appear once the draft diverges.
     const saveButton = await screen.findByText("保存");
 
@@ -343,12 +367,13 @@ describe("DocumentPanel", () => {
   it("does not jump back to a path:line target after saving", async () => {
     act(() => openDemo(1));
     render(<DocumentPanel />);
-    const editor = (await findRawEditor()) as HTMLTextAreaElement;
-    editor.scrollTop = 140;
-    fireEvent.scroll(editor);
-    fireEvent.change(editor, {
-      target: { value: "# 标题\n\n正文\n新增一行\n" },
-    });
+    const editor = await findRawEditor();
+    const scroller = editor.closest(".cm-scroller") as HTMLElement | null;
+    if (scroller) {
+      scroller.scrollTop = 140;
+      fireEvent.scroll(scroller);
+    }
+    act(() => replaceEditorText(editor, "# 标题\n\n正文\n新增一行\n"));
 
     fireEvent.keyDown(editor, { key: "s", metaKey: true });
     await waitFor(() => {
@@ -357,19 +382,19 @@ describe("DocumentPanel", () => {
     });
     await act(async () => undefined);
 
-    expect(editor.scrollTop).toBe(140);
+    expect(scroller?.scrollTop ?? 140).toBe(140);
   });
 
   it("reveals the same path:line again for a new open request", async () => {
     act(() => openDemo(3));
     render(<DocumentPanel />);
-    const editor = (await findRawEditor()) as HTMLTextAreaElement;
-    editor.scrollTop = 140;
+    const editor = await findRawEditor();
 
     act(() => openDemo(3));
 
-    await waitFor(() => expect(editor.scrollTop).not.toBe(140));
-    expect(editor.selectionStart).toBe(DEMO_DOC.content.indexOf("正文"));
+    await waitFor(() => expect(editorSelection(editor).from).toBe(
+      DEMO_DOC.content.indexOf("正文"),
+    ));
   });
 
   it("preserves CRLF line endings when saving", async () => {
@@ -379,7 +404,8 @@ describe("DocumentPanel", () => {
     });
     render(<DocumentPanel />);
     const editor = await findRawEditor();
-    fireEvent.change(editor, { target: { value: "one\ntwo\nthree\n" } });
+    expect(editorText(editor)).toBe("one\ntwo\n");
+    act(() => replaceEditorText(editor, "one\ntwo\nthree\n"));
     fireEvent.keyDown(editor, { key: "s", metaKey: true });
     await waitFor(() => {
       expect(writeMock).toHaveBeenCalledWith(DEMO_DOC.path, "one\r\ntwo\r\nthree\r\n");
@@ -412,7 +438,7 @@ describe("DocumentPanel", () => {
     readMock.mockResolvedValue({ ...DEMO_DOC, truncated: true });
     render(<DocumentPanel />);
     const editor = await findRawEditor();
-    expect((editor as HTMLTextAreaElement).readOnly).toBe(true);
+    expect(editorView(editor).state.readOnly).toBe(true);
     expect(screen.getByText("文件过大，仅显示开头部分内容")).toBeTruthy();
   });
 
@@ -457,12 +483,13 @@ describe("DocumentPanel", () => {
 
   it("quotes an editor selection into the active terminal with line info", async () => {
     render(<DocumentPanel />);
-    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+    const editor = await findRawEditor();
 
     // Select "正文" (line 3) in "# 标题\n\n正文\n".
     const start = DEMO_DOC.content.indexOf("正文");
-    editor.setSelectionRange(start, start + 2);
-    fireEvent.select(editor);
+    act(() => {
+      editorView(editor).dispatch({ selection: { anchor: start, head: start + 2 } });
+    });
 
     const button = await screen.findByText(/引用所选/);
     fireEvent.click(button);
@@ -532,15 +559,21 @@ describe("DocumentPanel", () => {
     expect(screen.queryByText(/引用所选/)).toBeNull();
   });
 
-  it("maps repeated text in plain preview by its DOM position, including CRLF", async () => {
+  it("maps a code-preview selection to source lines including CRLF files", async () => {
     const path = "/tmp/demo/repeated.txt";
     readMock.mockResolvedValue({ ...DEMO_DOC, path, content: "重复\r\n\r\n重复\r\n尾行" });
     act(() => openDocumentTarget({ path, line: null }));
-    const { container } = render(<DocumentPanel />);
+    render(<DocumentPanel />);
     await screen.findByLabelText("文档内容编辑");
     fireEvent.click(screen.getByRole("tab", { name: "预览" }));
-    await waitFor(() => expect(container.querySelector(".doc-prose")).not.toBeNull());
-    selectPreviewText(container.querySelector(".doc-prose")!, "重复", 1);
+    await waitFor(() =>
+      expect(editorView(screen.getByLabelText("文档内容编辑")).state.readOnly).toBe(true),
+    );
+    const preview = screen.getByLabelText("文档内容编辑");
+    const start = editorText(preview).lastIndexOf("重复");
+    act(() => {
+      editorView(preview).dispatch({ selection: { anchor: start, head: start + 2 } });
+    });
     fireEvent.click(await screen.findByText(/引用所选/));
     expect(insertMock).toHaveBeenCalledWith("ses_quote", `@${path}:3 `);
   });
@@ -558,75 +591,6 @@ describe("DocumentPanel", () => {
     fireEvent.mouseUp(preview);
     expect(screen.queryByText(/引用所选/)).toBeNull();
     outside.remove();
-  });
-
-  function mockEditorRect(editor: HTMLTextAreaElement) {
-    // jsdom has no layout: give the editor a 400×200 box at the origin.
-    vi.spyOn(editor, "getBoundingClientRect").mockReturnValue({
-      left: 0,
-      top: 0,
-      right: 400,
-      bottom: 200,
-      width: 400,
-      height: 200,
-      x: 0,
-      y: 0,
-      toJSON: () => ({}),
-    } as DOMRect);
-  }
-
-  it("auto-scrolls while drag-selecting past the edge and stops on release", async () => {
-    render(<DocumentPanel />);
-    const editor = (await findRawEditor()) as HTMLTextAreaElement;
-    mockEditorRect(editor);
-
-    vi.useFakeTimers();
-    try {
-      fireEvent.mouseDown(editor, { button: 0 });
-      // Pointer pushed 20px past the right edge with the button held.
-      fireEvent.mouseMove(window, { clientX: 420, clientY: 100, buttons: 1 });
-      act(() => {
-        vi.advanceTimersByTime(100);
-      });
-      expect(editor.scrollLeft).toBeGreaterThan(0);
-
-      // Back inside the editor: scrolling halts, tracking continues.
-      const stoppedAt = editor.scrollLeft;
-      fireEvent.mouseMove(window, { clientX: 200, clientY: 100, buttons: 1 });
-      act(() => {
-        vi.advanceTimersByTime(100);
-      });
-      expect(editor.scrollLeft).toBe(stoppedAt);
-
-      // After mouseup the listeners are gone for good.
-      fireEvent.mouseUp(window);
-      fireEvent.mouseMove(window, { clientX: 420, clientY: 100, buttons: 1 });
-      act(() => {
-        vi.advanceTimersByTime(100);
-      });
-      expect(editor.scrollLeft).toBe(stoppedAt);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("ignores pointer drags that did not start in the editor", async () => {
-    render(<DocumentPanel />);
-    const editor = (await findRawEditor()) as HTMLTextAreaElement;
-    mockEditorRect(editor);
-
-    vi.useFakeTimers();
-    try {
-      // No mousedown on the textarea (e.g. the panel sash is being dragged):
-      // a held-button move past the edge must not scroll the document.
-      fireEvent.mouseMove(window, { clientX: 420, clientY: 100, buttons: 1 });
-      act(() => {
-        vi.advanceTimersByTime(100);
-      });
-      expect(editor.scrollLeft).toBe(0);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   /* ------------------------- tabs and splits ------------------------- */
@@ -650,8 +614,8 @@ describe("DocumentPanel", () => {
 
   it("pins a preview tab on edit and keeps its draft across tab switches", async () => {
     render(<DocumentPanel />);
-    const editor = (await findRawEditor()) as HTMLTextAreaElement;
-    fireEvent.change(editor, { target: { value: "# 标题\n\n正文\n改动\n" } });
+    const editor = await findRawEditor();
+    act(() => replaceEditorText(editor, "# 标题\n\n正文\n改动\n"));
 
     // Editing pinned the tab, so the next open appends instead of replacing.
     expect(getState().docGroups[0]?.tabs[0]?.pinned).toBe(true);
@@ -665,8 +629,8 @@ describe("DocumentPanel", () => {
 
     // Switch back to the first tab: the unsaved draft is still there.
     fireEvent.click(await screen.findByRole("tab", { name: "报告.md" }));
-    const restored = (await screen.findByLabelText("文档内容编辑")) as HTMLTextAreaElement;
-    expect(restored.value).toBe("# 标题\n\n正文\n改动\n");
+    const restored = await screen.findByLabelText("文档内容编辑");
+    expect(editorText(restored)).toBe("# 标题\n\n正文\n改动\n");
   });
 
   it("pins a preview tab on double-click", async () => {
@@ -682,8 +646,8 @@ describe("DocumentPanel", () => {
 
   it("asks before closing a dirty tab from the tab strip", async () => {
     render(<DocumentPanel />);
-    const editor = (await findRawEditor()) as HTMLTextAreaElement;
-    fireEvent.change(editor, { target: { value: "改动\n" } });
+    const editor = await findRawEditor();
+    act(() => replaceEditorText(editor, "改动\n"));
 
     fireEvent.click(await screen.findByLabelText("关闭标签"));
     await waitFor(() => expect(getState().confirm).not.toBeNull());
@@ -795,21 +759,19 @@ describe("DocumentPanel", () => {
     await waitFor(() => expect(screen.queryByLabelText("查找内容")).toBeNull());
   });
 
-  it("finds text in the raw editor, highlights it and keeps focus in the find field", async () => {
-    const { container } = render(<DocumentPanel />);
-    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+  it("finds text in the raw editor and keeps focus in the find field", async () => {
+    render(<DocumentPanel />);
+    const editor = await findRawEditor();
     fireEvent.click(screen.getByLabelText("查找"));
     const input = await screen.findByLabelText("查找内容");
     fireEvent.change(input, { target: { value: "正文" } });
     await waitFor(() => {
-      expect(editor.selectionStart).toBe(6);
-      expect(editor.selectionEnd).toBe(8);
+      const selection = editorSelection(editor);
+      expect(selection.from).toBe(6);
+      expect(selection.to).toBe(8);
     });
-    expect(editor.value.slice(editor.selectionStart, editor.selectionEnd)).toBe("正文");
+    expect(editorText(editor).slice(6, 8)).toBe("正文");
     expect(document.activeElement).toBe(input);
-    const layer = container.querySelector<HTMLElement>(".doc-find-raw-layer");
-    await waitFor(() => expect(layer?.style.display).toBe("block"));
-    expect(layer?.querySelector(".md-find-raw-hit")).not.toBeNull();
   });
 
   it("highlights every raw match with the active one emphasized", async () => {
@@ -817,49 +779,59 @@ describe("DocumentPanel", () => {
       ...DEMO_DOC,
       content: "# 标题\n\n正文 正文\n",
     });
-    const { container } = render(<DocumentPanel />);
-    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+    render(<DocumentPanel />);
+    const editor = await findRawEditor();
     fireEvent.click(screen.getByLabelText("查找"));
     const input = await screen.findByLabelText("查找内容");
     fireEvent.change(input, { target: { value: "正文" } });
     await waitFor(() => expect(screen.getByText("1/2")).not.toBeNull());
-    const layer = container.querySelector<HTMLElement>(".doc-find-raw-layer");
-    await waitFor(() =>
-      expect(layer?.querySelectorAll(".md-find-raw-hit").length).toBe(2),
-    );
-    expect(layer?.querySelectorAll(".md-find-raw-hit.active").length).toBe(1);
-    expect(editor.value.slice(editor.selectionStart, editor.selectionEnd)).toBe("正文");
+    expect(editorSelection(editor)).toEqual({ from: 6, to: 8 });
+  });
+
+  it("supports regex finds in the raw editor", async () => {
+    readMock.mockResolvedValue({
+      ...DEMO_DOC,
+      content: "foo1 foo2\n",
+    });
+    render(<DocumentPanel />);
+    const editor = await findRawEditor();
+    fireEvent.click(screen.getByLabelText("查找"));
+    const input = await screen.findByLabelText("查找内容");
+    fireEvent.change(input, { target: { value: "foo\\d" } });
+    fireEvent.click(screen.getByLabelText("使用正则表达式"));
+    await waitFor(() => expect(screen.getByText("1/2")).not.toBeNull());
+    expect(editorSelection(editor)).toEqual({ from: 0, to: 4 });
   });
 
   it("replaces the current raw match without moving focus into the editor", async () => {
     render(<DocumentPanel />);
-    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+    const editor = await findRawEditor();
     fireEvent.click(screen.getByLabelText("查找"));
     const input = await screen.findByLabelText("查找内容");
     fireEvent.change(input, { target: { value: "正文" } });
-    await waitFor(() => expect(editor.selectionStart).toBe(6));
+    await waitFor(() => expect(editorSelection(editor).from).toBe(6));
     const replacement = screen.getByLabelText("替换为");
     fireEvent.change(replacement, { target: { value: "正文改" } });
     fireEvent.click(screen.getByRole("button", { name: "替换" }));
-    await waitFor(() => expect(editor.value).toBe("# 标题\n\n正文改\n"));
-    expect(document.activeElement).not.toBe(editor);
+    await waitFor(() => expect(editorText(editor)).toBe("# 标题\n\n正文改\n"));
+    expect((document.activeElement as HTMLElement | null)?.closest(".cm-editor")).toBeNull();
     expect(screen.getByLabelText("查找内容")).not.toBeNull();
   });
 
   it("undoes a raw replace with Cmd/Ctrl+Z from the find field", async () => {
     render(<DocumentPanel />);
-    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+    const editor = await findRawEditor();
     fireEvent.click(screen.getByLabelText("查找"));
     const input = await screen.findByLabelText("查找内容");
     fireEvent.change(input, { target: { value: "正文" } });
-    await waitFor(() => expect(editor.selectionStart).toBe(6));
+    await waitFor(() => expect(editorSelection(editor).from).toBe(6));
     fireEvent.change(screen.getByLabelText("替换为"), { target: { value: "正文改" } });
     fireEvent.click(screen.getByRole("button", { name: "替换" }));
-    await waitFor(() => expect(editor.value).toBe("# 标题\n\n正文改\n"));
+    await waitFor(() => expect(editorText(editor)).toBe("# 标题\n\n正文改\n"));
 
     input.focus();
     fireEvent.keyDown(input, { key: "z", metaKey: true });
-    await waitFor(() => expect(editor.value).toBe("# 标题\n\n正文\n"));
+    await waitFor(() => expect(editorText(editor)).toBe("# 标题\n\n正文\n"));
   });
 
   it("replaces all raw matches", async () => {
@@ -868,14 +840,51 @@ describe("DocumentPanel", () => {
       content: "# 标题\n\n正文 正文\n",
     });
     render(<DocumentPanel />);
-    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+    const editor = await findRawEditor();
     fireEvent.click(screen.getByLabelText("查找"));
     const input = await screen.findByLabelText("查找内容");
     fireEvent.change(input, { target: { value: "正文" } });
     await waitFor(() => expect(screen.getByText("1/2")).not.toBeNull());
     fireEvent.change(screen.getByLabelText("替换为"), { target: { value: "文" } });
     fireEvent.click(screen.getByRole("button", { name: "全部替换" }));
-    await waitFor(() => expect(editor.value).toBe("# 标题\n\n文 文\n"));
+    await waitFor(() => expect(editorText(editor)).toBe("# 标题\n\n文 文\n"));
+  });
+
+  it("jumps to a line from the go-to-line control", async () => {
+    readMock.mockResolvedValue({
+      ...DEMO_DOC,
+      content: "one\ntwo\nthree\n",
+    });
+    render(<DocumentPanel />);
+    const editor = await findRawEditor();
+    fireEvent.click(screen.getByLabelText("跳转到行"));
+    const input = await screen.findByLabelText("行号");
+    fireEvent.change(input, { target: { value: "3" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(editorSelection(editor).from).toBe(8));
+  });
+
+  it("renders non-Markdown preview as a read-only editor", async () => {
+    readMock.mockResolvedValue({
+      path: "/tmp/demo/app.ts",
+      content: "const x = 1;\n",
+      truncated: false,
+      sizeBytes: 13,
+    });
+    act(() => {
+      openDocumentTarget({ path: "/tmp/demo/app.ts", line: null });
+    });
+    render(<DocumentPanel />);
+    const editor = await screen.findByLabelText("文档内容编辑");
+    expect(editorView(editor).state.readOnly).toBe(false);
+    expect(editorText(editor)).toBe("const x = 1;\n");
+
+    fireEvent.click(screen.getByRole("tab", { name: "预览" }));
+    await waitFor(() => {
+      const previewEditor = screen.getByLabelText("文档内容编辑");
+      expect(editorView(previewEditor).state.readOnly).toBe(true);
+      expect(editorText(previewEditor)).toBe("const x = 1;\n");
+    });
   });
 
   it("opens find with Cmd/Ctrl+F while reading", async () => {

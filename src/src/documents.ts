@@ -101,7 +101,9 @@ export interface DocumentTabRuntime {
   imageContext?: MarkdownImageContext;
   imageSession?: MarkdownImageSession | null;
   doc: SessionDocument | null;
+  /** Draft is always LF-normalized; `eol` restores the file style on save. */
   draft: string;
+  eol: "lf" | "crlf";
   loading: boolean;
   error: string | null;
   errorCode: string | null;
@@ -122,8 +124,17 @@ export interface DocumentTabRuntime {
   findQuery: string;
   findReplacement: string;
   findIndex: number;
+  /** Code-editor find options; Markdown preview ignores them. */
+  findCaseSensitive: boolean;
+  findRegex: boolean;
+  findWholeWord: boolean;
   /** Monotonic focus request so repeated Cmd/Ctrl+F refocuses the field. */
   findRequest: number;
+  /** Monotonic focus request for the replace input (Cmd/Ctrl+H). */
+  findReplaceRequest: number;
+  /** One-shot go-to-line popover state for the active code surface. */
+  gotoOpen: boolean;
+  gotoRequest: { line: number; token: number } | null;
   /** Load guard: the (path, token) a fetch was started for, so a remount
    * after a split move neither refetches nor double-fetches. */
   loadedPath: string | null;
@@ -159,6 +170,7 @@ function defaultRuntime(tab: DocumentTab): DocumentTabRuntime {
     imageSession: null,
     doc: null,
     draft: "",
+    eol: "lf",
     loading: false,
     error: null,
     errorCode: null,
@@ -173,7 +185,13 @@ function defaultRuntime(tab: DocumentTab): DocumentTabRuntime {
     findQuery: "",
     findReplacement: "",
     findIndex: 0,
+    findCaseSensitive: false,
+    findRegex: false,
+    findWholeWord: false,
     findRequest: 0,
+    findReplaceRequest: 0,
+    gotoOpen: false,
+    gotoRequest: null,
     loadedPath: null,
     loadedToken: -1,
   };
@@ -218,9 +236,18 @@ export function dropDocumentTabRuntime(tabId: string): void {
   if (tabRuntime.delete(tabId)) emitRuntimeChange();
 }
 
+/** Normalizes line endings to the editor's internal LF form. */
+export function normalizeDocumentEol(text: string): string {
+  return text.replace(/\r\n?/g, "\n");
+}
+
 export function isDocumentTabDirty(tabId: string): boolean {
   const runtime = tabRuntime.get(tabId);
-  return runtime !== undefined && runtime.doc !== null && runtime.draft !== runtime.doc.content;
+  return (
+    runtime !== undefined &&
+    runtime.doc !== null &&
+    normalizeDocumentEol(runtime.draft) !== normalizeDocumentEol(runtime.doc.content)
+  );
 }
 
 /** Test hook: drops every tab runtime (drafts, load state) between cases. */

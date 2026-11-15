@@ -34,6 +34,11 @@ import {
 import type { PaneLayout, PaneSplitDirection } from "./paneLayout";
 import type { DocReadingTheme } from "./markdownReader/types";
 import type {
+  EditorIndentStyle,
+  EditorIndentWidth,
+  EditorThemePref,
+} from "./codeEditor/editorPrefs";
+import type {
   AdapterInstall,
   PlatformInfo,
   ProjectView,
@@ -429,6 +434,16 @@ export interface AppState {
   docCodeLineNumbers: boolean;
   /** Global code-block soft-wrap preference. */
   docCodeWrap: boolean;
+  /** Code-editor color theme: follow the reading theme or a pinned palette. */
+  docEditorTheme: EditorThemePref;
+  /** Code-editor indentation width; "auto" follows the detected language. */
+  docEditorIndent: EditorIndentWidth;
+  /** Code-editor indentation style; "auto" follows the detected language. */
+  docEditorIndentStyle: EditorIndentStyle;
+  /** Soft-wrap code editor lines. */
+  docEditorWrap: boolean;
+  /** Render whitespace characters in the code editor. */
+  docEditorWhitespace: boolean;
   /** Transient font zoom of the terminal area (xterm fontSize multiplier and
    * the pi timeline's `--term-font-scale`), adjusted via Ctrl/⌘ +/-. */
   termFontScale: number;
@@ -644,6 +659,11 @@ const initialState: AppState = {
   docReadingTheme: "terminal",
   docCodeLineNumbers: false,
   docCodeWrap: true,
+  docEditorTheme: "follow",
+  docEditorIndent: "auto",
+  docEditorIndentStyle: "auto",
+  docEditorWrap: false,
+  docEditorWhitespace: false,
   termFontScale: 1,
   docFontScale: 1,
   sidebarWorktreeProjectId: null,

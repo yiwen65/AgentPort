@@ -7,16 +7,10 @@ import { createHighlighterCore } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 import type { HighlighterCore } from "shiki/core";
 import type { LanguageRegistration, ThemedToken, ThemeRegistration } from "@shikijs/types";
-import type { DocReadingTheme } from "./types";
+import type { CodeThemeName } from "./codeThemeName";
 
 type ThemeLoader = () => Promise<{ default: ThemeRegistration }>;
 type LangLoader = () => Promise<{ default: LanguageRegistration[] }>;
-
-export type CodeThemeName =
-  | "github-light-default"
-  | "github-dark-default"
-  | "min-light"
-  | "vitesse-dark";
 
 const THEME_LOADERS: Record<CodeThemeName, ThemeLoader> = {
   "github-light-default": () => import("@shikijs/themes/github-light-default"),
@@ -113,15 +107,6 @@ function getHighlighter(): Promise<HighlighterCore> {
     warnings: false,
   });
   return highlighterPromise;
-}
-
-export function codeThemeFor(
-  readingTheme: DocReadingTheme,
-  effective: "light" | "dark",
-): CodeThemeName {
-  if (readingTheme === "paper") return "min-light";
-  if (readingTheme === "night") return "vitesse-dark";
-  return effective === "dark" ? "github-dark-default" : "github-light-default";
 }
 
 function canonicalLanguage(lang: string): string {

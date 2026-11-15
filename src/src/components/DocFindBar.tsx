@@ -6,6 +6,12 @@ export default function DocFindBar({
   count,
   index,
   focusRequest,
+  replaceFocusRequest,
+  showOptions,
+  caseSensitive,
+  wholeWord,
+  regex,
+  regexDisabled,
   canReplace,
   canUndoReplace,
   replacement,
@@ -17,11 +23,20 @@ export default function DocFindBar({
   onReplace,
   onReplaceAll,
   onUndoReplace,
+  onToggleCaseSensitive,
+  onToggleWholeWord,
+  onToggleRegex,
 }: {
   query: string;
   count: number;
   index: number;
   focusRequest: number;
+  replaceFocusRequest: number;
+  showOptions: boolean;
+  caseSensitive: boolean;
+  wholeWord: boolean;
+  regex: boolean;
+  regexDisabled: boolean;
   canReplace: boolean;
   canUndoReplace: boolean;
   replacement: string;
@@ -33,9 +48,13 @@ export default function DocFindBar({
   onReplace: () => void;
   onReplaceAll: () => void;
   onUndoReplace: () => void;
+  onToggleCaseSensitive: () => void;
+  onToggleWholeWord: () => void;
+  onToggleRegex: () => void;
 }) {
   const { t } = useTranslation("shell");
   const inputRef = useRef<HTMLInputElement>(null);
+  const replaceRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const input = inputRef.current;
@@ -43,6 +62,14 @@ export default function DocFindBar({
     input.focus();
     input.select();
   }, [focusRequest]);
+
+  useEffect(() => {
+    if (replaceFocusRequest <= 0) return;
+    const input = replaceRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, [replaceFocusRequest]);
 
   const position = count > 0 ? `${index + 1}/${count}` : "0/0";
   return (
@@ -85,6 +112,45 @@ export default function DocFindBar({
           aria-label={t("ui.document.findInput")}
           onChange={(event) => onChange(event.target.value)}
         />
+        {showOptions ? (
+          <span className="doc-find-options" role="group">
+            <button
+              type="button"
+              className="doc-find-btn doc-find-toggle"
+              aria-label={t("ui.document.findCaseSensitive")}
+              data-tip={t("ui.document.findCaseSensitive")}
+              aria-pressed={caseSensitive}
+              onClick={onToggleCaseSensitive}
+            >
+              Aa
+            </button>
+            <button
+              type="button"
+              className="doc-find-btn doc-find-toggle"
+              aria-label={t("ui.document.findWholeWord")}
+              data-tip={t("ui.document.findWholeWord")}
+              aria-pressed={wholeWord}
+              onClick={onToggleWholeWord}
+            >
+              ab
+            </button>
+            <button
+              type="button"
+              className="doc-find-btn doc-find-toggle"
+              aria-label={t("ui.document.findRegex")}
+              data-tip={
+                regexDisabled
+                  ? t("ui.document.findRegexDisabled")
+                  : t("ui.document.findRegex")
+              }
+              aria-pressed={regex}
+              disabled={regexDisabled}
+              onClick={onToggleRegex}
+            >
+              .*
+            </button>
+          </span>
+        ) : null}
         <span className="doc-find-count" aria-live="polite">
           {query ? position : ""}
         </span>
@@ -121,6 +187,7 @@ export default function DocFindBar({
       {canReplace ? (
         <div className="doc-find-row doc-find-replace-row">
           <input
+            ref={replaceRef}
             className="doc-find-input"
             type="text"
             value={replacement}

@@ -10,11 +10,11 @@ function ruleBody(selector: string): string | undefined {
 }
 
 describe("font zoom CSS wiring", () => {
-  it("scales the document raw editor and gutter together", () => {
-    expect(ruleBody(".doc-editor-textarea")).toContain(
+  it("scales the document code editor and gutters together", () => {
+    expect(ruleBody(".doc-code-editor .cm-scroller")).toContain(
       "calc(12px * var(--doc-font-scale, 1))",
     );
-    expect(ruleBody(".doc-editor-gutter")).toContain(
+    expect(ruleBody(".doc-code-editor .cm-gutters")).toContain(
       "calc(12px * var(--doc-font-scale, 1))",
     );
   });
