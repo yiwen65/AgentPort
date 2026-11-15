@@ -42,7 +42,7 @@ try {
     window.newDocument=()=>{window.session.dispose();window.session=new MarkdownImageSession({...context,path:'/fixture/project/SECOND.md'},transport);window.renderDocument()};
     window.checkLate=async()=>{const late=new MarkdownImageSession(context,transport);late.allowRemote();const loading=late.load('https://example.com/late.svg');while(!window.finishLate)await new Promise(r=>setTimeout(r,5));const before=window.imageBlobs.length;late.dispose();window.finishLate();await loading;return {before,after:window.imageBlobs.length,status:late.snapshot('https://example.com/late.svg').status}};
     window.renderDocument();
-  `,resolveDir:root,loader:'tsx'},outfile:resolve(dir,'fixture.js'),bundle:true,minify:true,jsx:'automatic',loader:{'.ttf':'dataurl','.otf':'dataurl','.svg':'text','.png':'dataurl'},define:{'process.env.NODE_ENV':'"production"'}});
+  `,resolveDir:root,loader:'tsx'},outfile:resolve(dir,'fixture.js'),bundle:true,minify:true,jsx:'automatic',loader:{'.ttf':'dataurl','.otf':'dataurl','.woff':'dataurl','.woff2':'dataurl','.svg':'text','.png':'dataurl'},external:['katex','katex/dist/katex.min.css'],define:{'process.env.NODE_ENV':'"production"'}});
   server = createServer(async(req,res)=>{
     requests.push(req.url);
     const name = req.url==='/fixture.js'?'fixture.js':req.url==='/fixture.css'?'fixture.css':null;
@@ -90,8 +90,13 @@ try {
   await call('Page.navigate',{url:`http://127.0.0.1:${server.address().port}`});
   await until(`document.querySelector('img[alt="local SVG"]')?.naturalWidth>0`);
   assert.equal(await evaluate(`imageCalls.filter(c=>c.kind==='remote').length`),0);
-  await click('.md-image-consent button');await until(`document.querySelector('img[alt="remote SVG"]')?.naturalWidth>0`);
+  await click('.md-image-consent button');
+  // The reader's comfortable line height pushes remote images below the lazy
+  // viewport; reveal it so IntersectionObserver triggers the consented load.
+  await evaluate(`document.querySelector('[data-image-index="4"]')?.scrollIntoView({block:'center'});true`);
+  await until(`document.querySelector('img[alt="remote SVG"]')?.naturalWidth>0`);
   assert.equal(await evaluate(`imageCalls.filter(c=>c.kind==='remote').length`),1,'One grant loads current document');
+  await evaluate(`document.querySelector('.md-image-placeholder button')?.closest('.md-image')?.scrollIntoView({block:'center'});true`);
   await click('.md-image-placeholder button');await until(`document.querySelector('img[alt="retry SVG"]')?.naturalWidth>0`);
   await until(`document.querySelector('img[alt="reference PNG"]')?.naturalWidth===1`);
   const geometry=await evaluate(`Array.from(document.querySelectorAll('.md-image-open img')).map(e=>({alt:e.alt,src:e.src,nw:e.naturalWidth,nh:e.naturalHeight,w:e.getBoundingClientRect().width,h:e.getBoundingClientRect().height}))`);
