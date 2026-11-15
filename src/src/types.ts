@@ -231,7 +231,6 @@ export interface TimelineData {
 
 export type SettingsSection =
   | "appearance"
-  | "notifications"
   | "adapters"
   | "commitAi"
   | "archive"

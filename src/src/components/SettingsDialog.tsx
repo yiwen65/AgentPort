@@ -1083,7 +1083,6 @@ function ArchiveSection() {
 
 const SETTINGS_SECTIONS = [
   { id: "appearance", labelKey: "settings:ui.sections.appearance" },
-  { id: "notifications", labelKey: "settings:ui.sections.notifications" },
   { id: "adapters", labelKey: "settings:ui.sections.adapters" },
   { id: "commitAi", labelKey: "settings:ui.sections.commitAi" },
   { id: "archive", labelKey: "settings:ui.sections.archive" },
@@ -1468,29 +1467,23 @@ export default function SettingsDialog({
             <span>{t("settings:ui.appearance.screenReader.hint")}</span>
           </label>
         </div>
-      </div>
-    </>
-  );
 
-  const notificationsSection = (
-    <>
-      <div className="settings-section-heading">
-        <div className="section-title">{t("settings:ui.sections.notifications")}</div>
-        <p className="form-hint">{t("settings:ui.notifications.description")}</p>
-      </div>
-      <div className="settings-grid">
-        <label htmlFor="set-notify">{t("settings:ui.notifications.systemLabel")}</label>
+        <label
+          htmlFor="set-notify"
+          data-tip={t("settings:ui.notifications.systemHint")}
+        >
+          {t("settings:ui.notifications.systemLabel")}
+        </label>
         <div className="control">
-          <label className="check-row">
-            <input
-              id="set-notify"
-              type="checkbox"
-              checked={draft.notificationsEnabled}
-              onChange={(e) => patch({ notificationsEnabled: e.target.checked })}
-            />
-            <span>{t("settings:ui.notifications.systemHint")}</span>
-          </label>
-          <span className="form-hint">
+          <input
+            id="set-notify"
+            type="checkbox"
+            checked={draft.notificationsEnabled}
+            onChange={(e) => patch({ notificationsEnabled: e.target.checked })}
+            aria-describedby="set-notify-hint"
+          />
+          <span id="set-notify-hint" className="sr-only">
+            {t("settings:ui.notifications.systemHint")}{" "}
             {s.platform?.os === "macos"
               ? t("settings:ui.notifications.permissionHintMacos")
               : t("settings:ui.notifications.permissionHintLinux")}
@@ -1516,14 +1509,12 @@ export default function SettingsDialog({
             </div>
           </>
         ) : null}
-
       </div>
     </>
   );
 
   const content = {
     appearance: appearanceSection,
-    notifications: notificationsSection,
     adapters: <AdapterSection agentOrder={draft.agentOrder} agentHidden={draft.agentHidden} onAgentOrderChange={(agentOrder) => patch({ agentOrder })} onAgentHiddenChange={(agentHidden) => patch({ agentHidden })} />,
     commitAi: <CommitAiSection />,
     archive: <ArchiveSection />,

@@ -90,7 +90,7 @@ describe("Settings language preference", () => {
     if (!content) throw new Error("settings content missing");
     content.scrollTop = 240;
 
-    fireEvent.click(screen.getByRole("button", { name: "通知" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agent 适配器" }));
 
     expect(content.scrollTop).toBe(0);
   });
