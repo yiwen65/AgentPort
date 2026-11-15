@@ -4878,6 +4878,36 @@ body.is-resizing-pane {
   background: transparent;
 }
 
+.md-frontmatter-grid {
+  display: grid;
+  gap: 4px;
+  margin: 0.6em 0 0;
+}
+
+.md-frontmatter-row {
+  display: grid;
+  grid-template-columns: minmax(90px, max-content) 1fr;
+  gap: 10px;
+  align-items: start;
+}
+
+.md-frontmatter-row dt {
+  color: var(--term-muted);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.md-frontmatter-row dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.md-frontmatter-row dd pre {
+  margin: 0;
+  padding: 4px 8px;
+  font-size: 0.9em;
+}
+
 .md-task-checkbox {
   accent-color: var(--term-accent);
   margin-inline-end: 0.45em;
@@ -4892,6 +4922,22 @@ body.is-resizing-pane {
 
 .md-math-source {
   font-family: var(--font-mono);
+}
+
+.md-math-rendered {
+  display: inline-block;
+}
+
+.md-math-display .md-math-rendered {
+  display: block;
+}
+
+.md-math-inline .katex {
+  font-size: 1.05em;
+}
+
+.md-math-display .katex {
+  font-size: 1.15em;
 }
 
 .md-link-blocked {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { render } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import { MarkdownView } from "./markdown";
 import { normalizeImageDestinations } from "./markdownReader/parse";
 
@@ -53,29 +53,55 @@ describe("MarkdownView advanced syntax", () => {
     expect(container.querySelector(".md-footnotes")?.textContent).toContain("脚注");
   });
 
-  it("renders inline and block math wrappers with source lines", () => {
+  it("renders inline and block math with KaTeX and source lines", async () => {
     const { container } = render(
       <MarkdownView source={"行内 $a^2$\n\n$$\nx = 1\n$$"} sourceLocations />,
     );
+    await waitFor(() => expect(container.querySelector(".katex")).not.toBeNull());
     const inline = container.querySelector(".md-math-inline");
-    expect(inline?.textContent).toBe("a^2");
     expect(inline?.getAttribute("data-source-line")).toBe("1");
+    expect(inline?.querySelector(".katex")).not.toBeNull();
     const display = container.querySelector(".md-math-display");
-    expect(display?.textContent).toContain("x = 1");
+    expect(display?.querySelector(".katex")).not.toBeNull();
+    expect(display?.querySelector(".katex-display")).not.toBeNull();
   });
 
-  it("collapses YAML front matter into a metadata card", () => {
+  it("collapses YAML front matter into a metadata card", async () => {
     const { container } = render(
       <MarkdownView source={"---\ntitle: 测试\ntags: [a, b]\n---\n\n# 标题"} sourceLocations />,
     );
     const details = container.querySelector("details.md-frontmatter");
     expect(details).not.toBeNull();
     expect(details?.querySelector("summary")?.textContent).toBe("元数据");
-    expect(details?.textContent).toContain("title: 测试");
-    expect(details?.querySelector("[data-source-line='2']")?.textContent).toContain("title");
+    await waitFor(() =>
+      expect(details?.querySelector(".md-frontmatter-grid")).not.toBeNull(),
+    );
+    const text = details?.textContent ?? "";
+    expect(text).toContain("title");
+    expect(text).toContain("测试");
+    expect(text).toContain("tags");
     const heading = container.querySelector("h1");
     expect(heading?.textContent).toBe("标题");
     expect(heading?.querySelector("[data-source-line='6']")).not.toBeNull();
+  });
+
+  it("falls back to TeX for oversized formulas", () => {
+    const tex = "x".repeat(5000);
+    const { container } = render(<MarkdownView source={`$${tex}$`} />);
+    expect(container.querySelector(".md-math-inline .md-math-source")?.textContent).toBe(tex);
+    expect(container.querySelector(".katex")).toBeNull();
+  });
+
+  it("keeps oversized front matter as annotated source", () => {
+    const { container } = render(
+      <MarkdownView
+        source={`---\nbig: ${"x".repeat(70_000)}\n---\n\n正文`}
+        sourceLocations
+      />,
+    );
+    const details = container.querySelector("details.md-frontmatter");
+    expect(details?.querySelector(".md-frontmatter-raw")).not.toBeNull();
+    expect(details?.querySelector("[data-source-line='2']")).not.toBeNull();
   });
 
   it("still escapes raw HTML", () => {
