@@ -206,6 +206,9 @@
         "ignored": "Ignored by Git"
       },
       "label": "Document viewer",
+      "largeDocumentNotice": "This document is large; a fast source preview keeps the reader responsive.",
+      "largeDocumentRender": "Render full reading view",
+      "largeDocumentRendering": "Rendering the full reading view…",
       "linkCopied": "Link copied",
       "linkOutsideRoot": "This link points outside the workspace or uses an unsupported target",
       "loading": "Loading document…",

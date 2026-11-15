@@ -206,6 +206,9 @@
         "ignored": "已被 Git 忽略"
       },
       "label": "文档查看器",
+      "largeDocumentNotice": "文档较大，已使用快速预览以保持流畅。",
+      "largeDocumentRender": "渲染完整阅读视图",
+      "largeDocumentRendering": "正在渲染完整阅读视图…",
       "linkCopied": "链接已复制",
       "linkOutsideRoot": "链接指向工作区外或不受支持的位置",
       "loading": "正在加载文档…",
