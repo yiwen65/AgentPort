@@ -215,6 +215,7 @@
       "metadata": "Metadata",
       "modeLabel": "Document display mode",
       "outline": "Outline",
+      "outlineTruncated": "Showing the first {{count}} headings",
       "moveToOtherGroup": "Move to other group",
       "newDir": "New folder",
       "newDirTip": "Create a new folder under the current directory",

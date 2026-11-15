@@ -1,15 +1,13 @@
 // Outline for the active Markdown preview. Reading mode pins it as a rail;
 // the docked viewer opens the same list as a drawer.
 
-import { useEffect, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import { useTranslation } from "react-i18next";
 import type { OutlineItem } from "../markdownReader/types";
 
-function findHeading(root: HTMLElement, id: string): HTMLElement | null {
-  for (const node of root.querySelectorAll<HTMLElement>("[id]")) {
-    if (node.id === id) return node;
-  }
-  return null;
-}
+/** Pathological documents can have thousands of headings; keep the rail
+ * responsive rather than rendering every entry. */
+const MAX_TOC_ITEMS = 2000;
 
 export default function DocToc({
   items,
@@ -28,21 +26,33 @@ export default function DocToc({
   onSelect: (item: OutlineItem) => void;
   onClose?: () => void;
 }) {
-  const [active, setActive] = useState<string | null>(items[0]?.id ?? null);
+  const { t } = useTranslation("shell");
+  const visible = items.slice(0, MAX_TOC_ITEMS);
+  const [active, setActive] = useState<string | null>(visible[0]?.id ?? null);
+  const headingsRef = useRef<Map<string, HTMLElement>>(new Map());
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    const byId = new Map<string, HTMLElement>();
+    for (const node of host.querySelectorAll<HTMLElement>("[id]")) {
+      byId.set(node.id, node);
+    }
+    headingsRef.current = byId;
+    const headings = visible
+      .map((item) => ({ item, element: byId.get(item.id) }))
+      .filter((entry): entry is { item: OutlineItem; element: HTMLElement } => !!entry.element);
     let frame: number | null = null;
     const update = () => {
       frame = null;
       const hostTop = host.getBoundingClientRect().top;
-      let current = items[0]?.id ?? null;
-      for (const item of items) {
-        const heading = findHeading(host, item.id);
-        if (!heading) continue;
-        if (heading.getBoundingClientRect().top - hostTop <= 96) current = item.id;
-        else break;
+      let current = visible[0]?.id ?? null;
+      for (const entry of headings) {
+        if (entry.element.getBoundingClientRect().top - hostTop <= 96) {
+          current = entry.item.id;
+        } else {
+          break;
+        }
       }
       setActive(current);
     };
@@ -68,7 +78,7 @@ export default function DocToc({
         ) : null}
       </div>
       <nav className="doc-toc-list">
-        {items.map((item) => (
+        {visible.map((item) => (
           <button
             key={item.id}
             type="button"
@@ -77,13 +87,10 @@ export default function DocToc({
             aria-current={active === item.id ? "location" : undefined}
             title={item.text}
             onClick={() => {
-              const host = hostRef.current;
-              if (host) {
-                findHeading(host, item.id)?.scrollIntoView?.({
-                  block: "start",
-                  behavior: "smooth",
-                });
-              }
+              headingsRef.current.get(item.id)?.scrollIntoView?.({
+                block: "start",
+                behavior: "smooth",
+              });
               setActive(item.id);
               onSelect(item);
             }}
@@ -91,6 +98,11 @@ export default function DocToc({
             {item.text}
           </button>
         ))}
+        {items.length > MAX_TOC_ITEMS ? (
+          <div className="doc-toc-more">
+            {t("ui.document.outlineTruncated", { count: MAX_TOC_ITEMS })}
+          </div>
+        ) : null}
       </nav>
     </aside>
   );

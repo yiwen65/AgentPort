@@ -5235,6 +5235,12 @@ body.is-resizing-pane {
   font-weight: 600;
 }
 
+.doc-toc-more {
+  padding: 8px 10px;
+  color: var(--term-muted);
+  font-size: 11px;
+}
+
 .doc-toc-backdrop {
   position: absolute;
   inset: 0;

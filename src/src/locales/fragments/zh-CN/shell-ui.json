@@ -215,6 +215,7 @@
       "metadata": "元数据",
       "modeLabel": "文档显示模式",
       "outline": "大纲",
+      "outlineTruncated": "仅显示前 {{count}} 个标题",
       "moveToOtherGroup": "移到另一栏",
       "newDir": "新建文件夹",
       "newDirTip": "在当前目录下新建文件夹",
