@@ -11,7 +11,7 @@ async function movePointer(clientX: number) {
   });
 }
 
-const { readMock, writeMock, revealMock, openUrlMock, openDefaultMock, insertMock, listMock, createMock } =
+const { readMock, writeMock, revealMock, openUrlMock, openDefaultMock, insertMock, listMock, createMock, copyMock } =
   vi.hoisted(() => ({
     readMock: vi.fn(),
     writeMock: vi.fn(),
@@ -21,6 +21,7 @@ const { readMock, writeMock, revealMock, openUrlMock, openDefaultMock, insertMoc
     insertMock: vi.fn().mockReturnValue(true),
     listMock: vi.fn(),
     createMock: vi.fn(),
+    copyMock: vi.fn().mockResolvedValue(true),
   }));
 
 vi.mock("../api", () => ({
@@ -35,6 +36,7 @@ vi.mock("../api", () => ({
     listDocumentDirectory: listMock,
     createDocumentEntry: createMock,
   },
+  copyText: (text: string) => copyMock(text),
   errorText: (error: unknown) =>
     typeof error === "object" && error !== null && "message" in error
       ? String((error as { message: unknown }).message)
@@ -74,6 +76,10 @@ describe("DocumentPanel", () => {
       docGroups: [],
       activeDocGroupIndex: 0,
       docPanelExpanded: false,
+      docReadingMode: false,
+      docReadingTheme: "terminal",
+      docCodeLineNumbers: false,
+      docCodeWrap: true,
       activeSessionId: "ses_quote",
       projects: [{
         id: "prj_quote",
@@ -110,10 +116,15 @@ describe("DocumentPanel", () => {
       docGroups: [],
       activeDocGroupIndex: 0,
       docPanelExpanded: false,
+      docReadingMode: false,
+      docReadingTheme: "terminal",
+      docCodeLineNumbers: false,
+      docCodeWrap: true,
       explorerOpen: false,
       docTreeWidth: 240,
       confirm: null,
     });
+    window.localStorage.removeItem("agentport-doc-reading-theme");
     resetDocumentTabRuntimes();
     window.getSelection()?.removeAllRanges();
   });
@@ -663,5 +674,41 @@ describe("DocumentPanel", () => {
     });
     expect(getState().docGroups).toHaveLength(1);
     expect(getState().docGroups[0]?.tabs.map((tab) => tab.path)).toEqual([DEMO_DOC.path]);
+  });
+
+  it("switches reading themes from the toolbar", async () => {
+    const { container } = render(<DocumentPanel />);
+    await screen.findByText("正文");
+    const select = await screen.findByLabelText("阅读主题");
+    fireEvent.change(select, { target: { value: "paper" } });
+    expect(getState().docReadingTheme).toBe("paper");
+    await waitFor(() =>
+      expect(container.querySelector(".doc-panel")?.getAttribute("data-doc-theme")).toBe("paper"),
+    );
+    fireEvent.change(select, { target: { value: "night" } });
+    await waitFor(() =>
+      expect(container.querySelector(".doc-panel")?.getAttribute("data-doc-theme")).toBe("night"),
+    );
+  });
+
+  it("opens reading mode with an outline rail and restores the docked layout", async () => {
+    readMock.mockResolvedValue({
+      ...DEMO_DOC,
+      content: "# 第一章\n\n## 小节\n\n正文\n",
+    });
+    const { container } = render(<DocumentPanel />);
+    await screen.findByText("第一章");
+    await waitFor(() => expect(screen.queryByLabelText("阅读模式")).not.toBeNull());
+    fireEvent.click(screen.getByLabelText("阅读模式"));
+    await waitFor(() => expect(getState().docReadingMode).toBe(true));
+    expect(getState().docPanelExpanded).toBe(true);
+    expect(container.querySelector(".doc-panel.reading")).not.toBeNull();
+    await waitFor(() => expect(container.querySelector(".doc-toc-rail")).not.toBeNull());
+    expect(container.querySelector(".doc-toc-rail")?.textContent).toContain("第一章");
+
+    fireEvent.click(screen.getByLabelText("阅读模式"));
+    await waitFor(() => expect(getState().docReadingMode).toBe(false));
+    expect(getState().docPanelExpanded).toBe(false);
+    expect(container.querySelector(".doc-toc-rail")).toBeNull();
   });
 });

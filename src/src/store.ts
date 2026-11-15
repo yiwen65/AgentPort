@@ -32,6 +32,7 @@ import {
   singletonPaneLayout,
 } from "./paneLayout";
 import type { PaneLayout, PaneSplitDirection } from "./paneLayout";
+import type { DocReadingTheme } from "./markdownReader/types";
 import type {
   AdapterInstall,
   PlatformInfo,
@@ -417,6 +418,14 @@ export interface AppState {
   docTreeWidth: number;
   /** Whether the document viewer is expanded over the whole terminal page. */
   docPanelExpanded: boolean;
+  /** Immersive reading layout: full width, centered column, outline rail. */
+  docReadingMode: boolean;
+  /** Reading surface palette: follow the terminal, or a dedicated paper/night theme. */
+  docReadingTheme: DocReadingTheme;
+  /** Global code-block line numbers preference. */
+  docCodeLineNumbers: boolean;
+  /** Global code-block soft-wrap preference. */
+  docCodeWrap: boolean;
   /** Transient font zoom of the terminal area (xterm fontSize multiplier and
    * the pi timeline's `--term-font-scale`), adjusted via Ctrl/⌘ +/-. */
   termFontScale: number;
@@ -447,6 +456,8 @@ export interface DocumentTab {
   /** One-shot line reveal request from `path:line` links, consumed by the
    * raw editor once the content is visible. */
   pendingLine: number | null;
+  /** One-shot heading anchor reveal from a workspace-relative link. */
+  pendingAnchor?: string | null;
 }
 
 export interface DocumentGroup {
@@ -625,6 +636,10 @@ const initialState: AppState = {
   docPanelWidth: 480,
   docTreeWidth: 240,
   docPanelExpanded: false,
+  docReadingMode: false,
+  docReadingTheme: "terminal",
+  docCodeLineNumbers: false,
+  docCodeWrap: true,
   termFontScale: 1,
   docFontScale: 1,
   sidebarWorktreeProjectId: null,

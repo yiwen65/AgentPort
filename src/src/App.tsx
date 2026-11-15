@@ -66,6 +66,7 @@ import { refreshDevices, registerDeviceSwitchHandler } from "./devicesStore";
 import { restoreExplicitConnections } from "./deviceConnections";
 import { refreshConnectedDeviceSnapshots } from "./deviceSessions";
 import { handleFontZoomKey, initFontZoom } from "./fontZoom";
+import { initDocReadingPrefs } from "./docReadingPrefs";
 import { piTerminalShortcutSequence } from "./piTerminalShortcuts";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -430,6 +431,7 @@ function useHotkeys() {
     };
     window.addEventListener("keydown", onKey, true);
     const disposeFontZoom = initFontZoom();
+    initDocReadingPrefs();
     return () => {
       window.removeEventListener("keydown", onKey, true);
       disposeFontZoom();

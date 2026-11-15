@@ -35,6 +35,11 @@ export function resolveZoomArea(docPanelVisible: boolean): ZoomArea {
   return docPanelVisible ? lastArea : "terminal";
 }
 
+/** The last surface that saw focus/pointer input; document shortcuts use it. */
+export function getLastZoomArea(): ZoomArea {
+  return lastArea;
+}
+
 /** Test hook: reset the tracked focus area between cases. */
 export function resetFontZoomFocus(): void {
   lastArea = "terminal";

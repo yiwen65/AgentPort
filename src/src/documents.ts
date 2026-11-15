@@ -7,11 +7,14 @@ import type { DocumentGroup, DocumentTab } from "./store";
 import type { SessionDocument } from "./types";
 import { i18n } from "./i18n";
 import { MarkdownImageSession, type MarkdownImageContext } from "./markdownImages";
+import type { OutlineItem } from "./markdownReader/types";
 
 export interface DocumentLinkTarget {
   path: string;
   /** One-based line from a trailing `:line[:column]` suffix. */
   line: number | null;
+  /** Heading anchor from a `#fragment` suffix. */
+  anchor?: string | null;
 }
 
 /**
@@ -110,6 +113,16 @@ export interface DocumentTabRuntime {
     startLine: number | null;
     endLine: number | null;
   } | null;
+  /** Heading outline reported by the Markdown preview (null until parsed). */
+  outline: OutlineItem[] | null;
+  /** Outline rail/drawer visibility for this tab. */
+  tocOpen: boolean;
+  /** In-document find state, kept per tab like the draft and mode. */
+  findOpen: boolean;
+  findQuery: string;
+  findIndex: number;
+  /** Monotonic focus request so repeated Cmd/Ctrl+F refocuses the field. */
+  findRequest: number;
   /** Load guard: the (path, token) a fetch was started for, so a remount
    * after a split move neither refetches nor double-fetches. */
   loadedPath: string | null;
@@ -153,6 +166,12 @@ function defaultRuntime(tab: DocumentTab): DocumentTabRuntime {
     reloadToken: 0,
     saving: false,
     selection: null,
+    outline: null,
+    tocOpen: false,
+    findOpen: false,
+    findQuery: "",
+    findIndex: 0,
+    findRequest: 0,
     loadedPath: null,
     loadedToken: -1,
   };
@@ -181,7 +200,12 @@ export function updateDocumentTabRuntime(
   if (patch.doc !== undefined && (patch.doc?.path !== current.doc?.path || patch.doc?.content !== current.doc?.content)) {
     current.imageSession?.dispose();
     const context = current.imageContext;
-    patch = { ...patch, imageSession: patch.doc && context ? new MarkdownImageSession({ ...context, path: patch.doc.path }) : null };
+    patch = {
+      ...patch,
+      imageSession: patch.doc && context ? new MarkdownImageSession({ ...context, path: patch.doc.path }) : null,
+      ...(patch.outline === undefined ? { outline: null } : {}),
+      ...(patch.findIndex === undefined ? { findIndex: 0 } : {}),
+    };
   }
   tabRuntime.set(tabId, { ...current, ...patch });
   emitRuntimeChange();
@@ -236,7 +260,7 @@ function commitGroups(groups: DocumentGroup[], active: DocumentGroup | null): vo
     // closeDocument did the same): a tree-only panel keeping the expanded
     // flex class stretches full-width and leaves a blank area beside the
     // tree.
-    ...(kept.length === 0 ? { docPanelExpanded: false } : {}),
+    ...(kept.length === 0 ? { docPanelExpanded: false, docReadingMode: false } : {}),
   });
 }
 
@@ -244,16 +268,17 @@ function commitGroups(groups: DocumentGroup[], active: DocumentGroup | null): vo
  * preview tab unless this is an explicit pinned open (file-tree clicks). */
 export function openDocumentTarget(
   target: DocumentLinkTarget,
-  options?: { pinned?: boolean },
+  options?: { pinned?: boolean; imageContext?: MarkdownImageContext },
 ): void {
   const state = getState();
   const groups = cloneGroups(state.docGroups);
 
-  // Same path already open anywhere: activate it (a line target re-reveals).
+  // Same path already open anywhere: activate it (a line/anchor target re-reveals).
   const existing = locateTab(groups, target.path);
   if (existing) {
     const tab = { ...existing.tab };
     if (target.line != null) tab.pendingLine = target.line;
+    if (target.anchor) tab.pendingAnchor = target.anchor;
     if (options?.pinned) tab.pinned = true;
     const group = groups[existing.groupIndex];
     group.tabs[existing.tabIndex] = tab;
@@ -267,7 +292,9 @@ export function openDocumentTarget(
     path: target.path,
     pinned: options?.pinned ?? false,
     pendingLine: target.line,
-    imageContext: captureDocumentImageContext(target.path),
+    pendingAnchor: target.anchor ?? null,
+    // Links inside a remote document must keep that document's device/root.
+    imageContext: options?.imageContext ?? captureDocumentImageContext(target.path),
   };
   let group = groups[state.activeDocGroupIndex] ?? groups[groups.length - 1];
   if (!group) {
@@ -298,6 +325,15 @@ export function openDocumentTargetToSide(target: DocumentLinkTarget): void {
   const state = getState();
   const existing = locateTab(state.docGroups, target.path);
   if (existing) {
+    if (target.line != null || target.anchor) {
+      const groups = cloneGroups(state.docGroups);
+      const group = groups[existing.groupIndex];
+      const tab = { ...existing.tab };
+      if (target.line != null) tab.pendingLine = target.line;
+      if (target.anchor) tab.pendingAnchor = target.anchor;
+      group.tabs[existing.tabIndex] = tab;
+      commitGroups(groups, group);
+    }
     const sideEmpty =
       state.docGroups.length === 1 && state.docGroups[0].tabs.length === 1;
     // The only open file cannot split against itself; just activate it.
@@ -324,6 +360,7 @@ export function openDocumentTargetToSide(target: DocumentLinkTarget): void {
     path: target.path,
     pinned: true,
     pendingLine: target.line,
+    pendingAnchor: target.anchor ?? null,
     imageContext: captureDocumentImageContext(target.path),
   };
   group.tabs.push(tab);
@@ -464,6 +501,16 @@ export function clearDocumentPendingLine(tabId: string): void {
   if (!located || located.tab.pendingLine == null) return;
   const groups = cloneGroups(state.docGroups);
   groups[located.groupIndex].tabs[located.tabIndex] = { ...located.tab, pendingLine: null };
+  commitGroups(groups, groups[located.groupIndex]);
+}
+
+/** One-shot consumption of a heading anchor reveal. */
+export function clearDocumentPendingAnchor(tabId: string): void {
+  const state = getState();
+  const located = locateTab(state.docGroups, tabId);
+  if (!located || !located.tab.pendingAnchor) return;
+  const groups = cloneGroups(state.docGroups);
+  groups[located.groupIndex].tabs[located.tabIndex] = { ...located.tab, pendingAnchor: null };
   commitGroups(groups, groups[located.groupIndex]);
 }
 

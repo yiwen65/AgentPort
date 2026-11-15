@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 import { useStore } from "../store";
 import { parseFlowchart } from "../flowchart";
 import { getTerminalPalette, type TerminalPalette } from "../terminalThemes";
+import { getDocReadingPalette } from "../docReadingPalette";
 
 const FlowGraph = lazy(() => import("./FlowGraph"));
 
@@ -67,6 +68,7 @@ export default function MermaidBlock({ source, sourceLine }: { source: string; s
   // Palette objects are module-level and stable, so returning null while the
   // opaque Settings page is open also prevents hidden blocks from re-rendering
   // on every theme click—not only from rerunning the Mermaid engine.
+  const docReadingTheme = useStore((state) => state.docReadingTheme);
   const terminalPalette = useStore((state) =>
     state.dialog?.kind === "settings"
       ? null
@@ -75,6 +77,12 @@ export default function MermaidBlock({ source, sourceLine }: { source: string; s
           state.themeEffective,
         ),
   );
+  const palette =
+    docReadingTheme === "terminal"
+      ? terminalPalette
+      : terminalPalette
+        ? getDocReadingPalette(docReadingTheme)
+        : null;
   const [svg, setSvg] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [visible, setVisible] = useState(false);
@@ -112,7 +120,7 @@ export default function MermaidBlock({ source, sourceLine }: { source: string; s
     // non-cancellable Mermaid parse/layout per hidden block and per click.
     // Keep the last SVG while covered, then render only the final palette when
     // Settings closes.
-    if (!terminalPalette) return;
+    if (!palette) return;
     let stale = false;
     // Preserve a successfully rendered diagram while only its palette refreshes;
     // clearing it here would expose a loading-state flash as Settings closes.
@@ -124,7 +132,7 @@ export default function MermaidBlock({ source, sourceLine }: { source: string; s
         mermaid.initialize({
           startOnLoad: false,
           theme: "base",
-          themeVariables: themeVariablesFor(terminalPalette),
+          themeVariables: themeVariablesFor(palette),
           flowchart: { curve: "basis" },
           // Never render raw HTML from labels — documents are untrusted.
           securityLevel: "strict",
@@ -148,7 +156,7 @@ export default function MermaidBlock({ source, sourceLine }: { source: string; s
     return () => {
       stale = true;
     };
-  }, [source, terminalPalette, flowGraph, visible]);
+  }, [source, palette, flowGraph, visible]);
 
   if (flowGraph) {
     return (

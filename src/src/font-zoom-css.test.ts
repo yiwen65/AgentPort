@@ -21,7 +21,7 @@ describe("font zoom CSS wiring", () => {
 
   it("scales the document preview and prose", () => {
     expect(ruleBody(".md-preview")).toContain(
-      "font-size: calc(13px * var(--doc-font-scale, 1))",
+      "font-size: calc(14.5px * var(--doc-font-scale, 1))",
     );
     expect(ruleBody(".doc-prose")).toContain(
       "font-size: calc(13px * var(--doc-font-scale, 1))",

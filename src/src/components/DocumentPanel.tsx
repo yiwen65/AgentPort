@@ -18,7 +18,7 @@ import {
   type CSSProperties,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { api, errorText, readDocumentForDevice, writeDocumentForDevice } from "../api";
+import { api, copyText, errorText, readDocumentForDevice, writeDocumentForDevice } from "../api";
 import {
   clearDocumentPendingLine,
   closeDocumentTab,
@@ -28,6 +28,7 @@ import {
   isDocumentTabDirty,
   isMarkdownPath,
   moveDocumentTab,
+  openDocumentTarget,
   pinDocumentTab,
   setActiveDocumentGroup,
   setActiveDocumentTab,
@@ -36,6 +37,10 @@ import {
   type DocumentTabRuntime,
 } from "../documents";
 import { MarkdownView } from "../markdown";
+import { setDocReadingTheme } from "../docReadingPrefs";
+import { relativePathInRoot } from "../markdownReader/links";
+import type { DocReadingTheme, OutlineItem } from "../markdownReader/types";
+import DocToc from "./DocToc";
 import { i18n } from "../i18n";
 import { runtimeMessageEnvelope } from "../runtimeMessages";
 import { insertTextIntoTerminal } from "../terminals";
@@ -130,6 +135,41 @@ function IconEye() {
   );
 }
 
+function IconSearch() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="7" cy="7" r="4.1" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M10.2 10.2 13.5 13.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconOutline() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M3 4h4M6 8h4M3 12h6M11 4h2M11 8h2M11 12h2"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconBook() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M2.5 3.4c1.6-.5 3.1-.3 4.4.6v8.6c-1.3-.9-2.8-1.1-4.4-.6V3.4Zm11 0c-1.6-.5-3.1-.3-4.4.6v8.6c1.3-.9 2.8-1.1 4.4-.6V3.4Z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 /** Friendly empty state for files the viewer cannot display. Binary files
  * (PDF, images, archives, …) get an explanation plus actions to open the
  * file with the system default app or reveal it in the file manager. */
@@ -205,6 +245,12 @@ const EMPTY_RUNTIME: DocumentTabRuntime = {
   reloadToken: 0,
   saving: false,
   selection: null,
+  outline: null,
+  tocOpen: false,
+  findOpen: false,
+  findQuery: "",
+  findIndex: 0,
+  findRequest: 0,
   loadedPath: null,
   loadedToken: -1,
 };
@@ -277,8 +323,24 @@ function DocToolbar({
   const selection = useSyncExternalStore(subscribeDocumentRuntime, () =>
     tabId ? (getDocumentTabRuntime(tabId)?.selection ?? null) : null,
   );
+  const outline = useSyncExternalStore(subscribeDocumentRuntime, () =>
+    tabId ? (getDocumentTabRuntime(tabId)?.outline ?? null) : null,
+  );
+  const tocOpen = useSyncExternalStore(subscribeDocumentRuntime, () =>
+    tabId ? (getDocumentTabRuntime(tabId)?.tocOpen ?? false) : false,
+  );
+  const findOpen = useSyncExternalStore(subscribeDocumentRuntime, () =>
+    tabId ? (getDocumentTabRuntime(tabId)?.findOpen ?? false) : false,
+  );
+  const findRequest = useSyncExternalStore(subscribeDocumentRuntime, () =>
+    tabId ? (getDocumentTabRuntime(tabId)?.findRequest ?? 0) : 0,
+  );
+  const readingMode = useStore((state) => state.docReadingMode);
+  const readingTheme = useStore((state) => state.docReadingTheme);
 
   if (!tab || !tabId) return null;
+  const markdown = isMarkdownPath(tab.path);
+  const showToc = markdown && mode === "preview" && (outline?.length ?? 0) > 0;
   const effectivePath = getDocumentTabRuntime(tabId)?.doc?.path ?? tab.path;
   const selectionLineCount = selection
     ? selection.startLine !== null && selection.endLine !== null
@@ -308,6 +370,19 @@ function DocToolbar({
           <IconEye />
         </button>
       </div>
+      {mode === "preview" ? (
+        <select
+          className="doc-theme-select"
+          value={readingTheme}
+          aria-label={t("ui.document.readingTheme")}
+          data-tip={t("ui.document.readingTheme")}
+          onChange={(event) => setDocReadingTheme(event.target.value as DocReadingTheme)}
+        >
+          <option value="terminal">{t("ui.document.readingThemeTerminal")}</option>
+          <option value="paper">{t("ui.document.readingThemePaper")}</option>
+          <option value="night">{t("ui.document.readingThemeNight")}</option>
+        </select>
+      ) : null}
       <span className="spacer" />
       {selection && activeSession?.transport === "pty" ? (
         <button
@@ -344,9 +419,60 @@ function DocToolbar({
       ) : null}
       <button
         className="btn small ghost"
+        data-tip={t("ui.document.find")}
+        aria-label={t("ui.document.find")}
+        aria-pressed={findOpen}
+        onClick={() =>
+          updateDocumentTabRuntime(tabId, {
+            findOpen: !findOpen,
+            findRequest: findRequest + 1,
+          })
+        }
+      >
+        <IconSearch />
+      </button>
+      {showToc ? (
+        <button
+          className="btn small ghost"
+          data-tip={t("ui.document.outline")}
+          aria-label={t("ui.document.outline")}
+          aria-pressed={tocOpen}
+          onClick={() => updateDocumentTabRuntime(tabId, { tocOpen: !tocOpen })}
+        >
+          <IconOutline />
+        </button>
+      ) : null}
+      <button
+        className="btn small ghost"
+        data-tip={t("ui.document.readingModeTip")}
+        aria-label={t("ui.document.readingMode")}
+        aria-pressed={readingMode}
+        onClick={() => {
+          if (readingMode) {
+            updateDocumentTabRuntime(tabId, { tocOpen: false });
+            setState({ docReadingMode: false, docPanelExpanded: false });
+            return;
+          }
+          updateDocumentTabRuntime(tabId, {
+            tocOpen: true,
+            ...(markdown ? { mode: "preview" as const } : {}),
+          });
+          setState({ docReadingMode: true, docPanelExpanded: true });
+        }}
+      >
+        <IconBook />
+      </button>
+      <button
+        className="btn small ghost"
         data-tip={expanded ? t("ui.document.collapseTip") : t("ui.document.expandTip")}
         aria-label={expanded ? t("ui.document.collapse") : t("ui.document.expand")}
-        onClick={() => setState({ docPanelExpanded: !expanded })}
+        onClick={() =>
+          setState(
+            expanded
+              ? { docPanelExpanded: false, docReadingMode: false }
+              : { docPanelExpanded: true },
+          )
+        }
       >
         {expanded ? "⤡" : "⤢"}
       </button>
@@ -570,6 +696,93 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
+  const progressRef = useRef<HTMLDivElement>(null);
+  const readingMode = useStore((state) => state.docReadingMode);
+  const readingTheme = useStore((state) => state.docReadingTheme);
+
+  const handleOutlineChange = useCallback(
+    (items: OutlineItem[]) => {
+      const current = getDocumentTabRuntime(tab.id);
+      if (!current) return;
+      const previous = current.outline;
+      if (
+        previous &&
+        previous.length === items.length &&
+        previous.every(
+          (item, index) =>
+            item.id === items[index].id &&
+            item.level === items[index].level &&
+            item.text === items[index].text &&
+            item.line === items[index].line,
+        )
+      ) {
+        return;
+      }
+      updateDocumentTabRuntime(tab.id, { outline: items });
+    },
+    [tab.id],
+  );
+
+  const handleCopyHeadingLink = useCallback(
+    (text: string, id: string) => {
+      const path = runtime.doc?.path ?? tab.path;
+      const context = runtime.imageContext;
+      const relative = context ? relativePathInRoot(path, context.rootPath) : null;
+      const target = `${relative ?? path}#${id}`;
+      const destination = /[\s()<>]/.test(target) ? `<${target}>` : target;
+      void copyText(`[${text}](${destination})`).then((ok) => {
+        if (ok) toast(t("ui.document.linkCopied"), "success");
+      });
+    },
+    [runtime.doc?.path, runtime.imageContext, tab.path, t],
+  );
+
+  const handleOpenDocument = useCallback(
+    (target: { path: string; line: number | null; anchor: string | null }) => {
+      openDocumentTarget(target, { imageContext: runtime.imageContext });
+    },
+    [runtime.imageContext],
+  );
+
+  const handleCopyText = useCallback((text: string) => copyText(text), []);
+  const handleNotice = useCallback((message: string) => toast(message, "error"), []);
+
+  const linkContext = useMemo(
+    () =>
+      runtime.imageContext
+        ? { path: runtime.doc?.path ?? tab.path, rootPath: runtime.imageContext.rootPath }
+        : undefined,
+    [runtime.doc?.path, runtime.imageContext, tab.path],
+  );
+
+  // Reading progress: write a CSS transform directly on the 2px bar so scroll
+  // events never re-render the preview.
+  useEffect(() => {
+    const element = runtime.mode === "preview" ? previewRef.current : editorRef.current;
+    const bar = progressRef.current;
+    if (!element || !bar || !runtime.doc) return;
+    let frame: number | null = null;
+    const update = () => {
+      frame = null;
+      const max = element.scrollHeight - element.clientHeight;
+      bar.style.transform = `scaleX(${max > 0 ? Math.min(1, Math.max(0, element.scrollTop / max)) : 0})`;
+    };
+    const schedule = () => {
+      if (frame === null) frame = window.requestAnimationFrame(update);
+    };
+    update();
+    element.addEventListener("scroll", schedule, { passive: true });
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(schedule);
+      observer.observe(element);
+    }
+    return () => {
+      element.removeEventListener("scroll", schedule);
+      observer?.disconnect();
+      if (frame !== null) window.cancelAnimationFrame(frame);
+    };
+  }, [runtime.doc, runtime.mode, visible]);
 
   // Load the file (with punctuation-trimmed fallbacks for link targets
   // printed inside prose). Loads are guarded by (path, reloadToken) recorded
@@ -819,6 +1032,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
 
   return (
     <div className="doc-tab-body" hidden={!visible}>
+      {runtime.doc ? <div className="doc-progress" ref={progressRef} aria-hidden="true" /> : null}
       {runtime.doc?.truncated ? (
         <div className="banner info" role="status">
           <span>{t("ui.document.truncated")}</span>
@@ -835,25 +1049,59 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
           />
         ) : runtime.doc ? (
           runtime.mode === "preview" ? (
-            <div
-              ref={previewRef}
-              className="doc-preview-host"
-              onMouseUp={capturePreviewSelection}
-            >
-              {markdown ? (
-                <MarkdownView
-                  source={runtime.doc.content}
-                  sourceLocations
-                  imageSession={runtime.imageSession ?? undefined}
-                  onLinkClick={(href) =>
-                    void api.openExternalUrl(href).catch((e) => {
-                      toast(t("ui.sidebar.openFailed", { detail: errorText(e) }), "error");
-                    })
+            <div className={`doc-reading-layout${readingMode ? " reading" : ""}`}>
+              {markdown && runtime.tocOpen && (runtime.outline?.length ?? 0) > 0 ? (
+                <DocToc
+                  items={runtime.outline ?? []}
+                  hostRef={previewRef}
+                  variant={readingMode ? "rail" : "drawer"}
+                  label={t("ui.document.outline")}
+                  closeLabel={t("ui.document.closeOutline")}
+                  onSelect={() => {
+                    if (!readingMode) updateDocumentTabRuntime(tab.id, { tocOpen: false });
+                  }}
+                  onClose={
+                    readingMode
+                      ? undefined
+                      : () => updateDocumentTabRuntime(tab.id, { tocOpen: false })
                   }
                 />
-              ) : (
-                <div className="doc-prose">{runtime.doc.content}</div>
-              )}
+              ) : null}
+              <div
+                ref={previewRef}
+                className="doc-preview-host"
+                onMouseUp={capturePreviewSelection}
+              >
+                {markdown ? (
+                  <MarkdownView
+                    source={runtime.doc.content}
+                    sourceLocations
+                    imageSession={runtime.imageSession ?? undefined}
+                    linkContext={linkContext}
+                    readingTheme={readingTheme}
+                    onOpenDocument={handleOpenDocument}
+                    onOutlineChange={handleOutlineChange}
+                    onCopyText={handleCopyText}
+                    onCopyHeadingLink={handleCopyHeadingLink}
+                    onNotice={handleNotice}
+                    onLinkClick={(href) =>
+                      void api.openExternalUrl(href).catch((e) => {
+                        toast(t("ui.sidebar.openFailed", { detail: errorText(e) }), "error");
+                      })
+                    }
+                  />
+                ) : (
+                  <div className="doc-prose">{runtime.doc.content}</div>
+                )}
+              </div>
+              {!readingMode && runtime.tocOpen ? (
+                <button
+                  type="button"
+                  className="doc-toc-backdrop"
+                  aria-label={t("ui.document.closeOutline")}
+                  onClick={() => updateDocumentTabRuntime(tab.id, { tocOpen: false })}
+                />
+              ) : null}
             </div>
           ) : (
             <div className="doc-editor">
@@ -991,6 +1239,8 @@ export default function DocumentPanel() {
   const width = useStore((state) => state.docPanelWidth);
   const treeWidth = useStore((state) => state.docTreeWidth);
   const expanded = useStore((state) => state.docPanelExpanded);
+  const readingMode = useStore((state) => state.docReadingMode);
+  const readingTheme = useStore((state) => state.docReadingTheme);
   const explorerOpen = useStore((state) => state.explorerOpen);
   const activeTab = useStore((state) => getActiveDocumentTab(state));
   const activeSession = useStore((state) =>
@@ -1095,7 +1345,8 @@ export default function DocumentPanel() {
 
   return (
     <aside
-      className={`doc-panel${expanded ? " expanded" : ""}${treeOnly ? " tree-only" : ""}`}
+      className={`doc-panel${expanded ? " expanded" : ""}${treeOnly ? " tree-only" : ""}${readingMode ? " reading" : ""}`}
+      data-doc-theme={readingTheme}
       style={panelStyle}
       aria-label={t("ui.document.label")}
     >
