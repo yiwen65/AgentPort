@@ -1947,9 +1947,9 @@ export default function DocumentPanel() {
           ),
         );
   // Let the transparent title bar paint the same surface as the tree column
-  // above it. Tree-only mode includes the panel's 1px separator; dual mode
-  // includes the in-flow tree sash.
-  const topbarTreeWidth = treeOnly ? treeBasis + 1 : treeBasis + DOC_TREE_SASH_WIDTH;
+  // above it, ending at the tree's own edge. Tree-only mode includes the
+  // panel's 1px separator; the dual-mode sash stays with the editor.
+  const topbarTreeWidth = treeOnly ? treeBasis + 1 : treeBasis;
   useEffect(() => {
     const root = document.documentElement;
     if (!explorerOpen) {

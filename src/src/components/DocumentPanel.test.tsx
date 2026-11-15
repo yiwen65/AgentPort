@@ -252,7 +252,7 @@ describe("DocumentPanel", () => {
     await waitFor(() =>
       expect(
         document.documentElement.style.getPropertyValue("--doc-tree-topbar-width"),
-      ).toBe("245px"),
+      ).toBe("240px"),
     );
   });
 
@@ -264,7 +264,7 @@ describe("DocumentPanel", () => {
     await waitFor(() =>
       expect(
         document.documentElement.style.getPropertyValue("--doc-tree-topbar-width"),
-      ).toBe("245px"),
+      ).toBe("240px"),
     );
     unmount();
     expect(

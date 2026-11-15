@@ -498,7 +498,6 @@ button {
   width: var(--doc-tree-topbar-width, 0px);
   z-index: 0;
   pointer-events: none;
-  border-left: 1px solid var(--sidebar-border);
   background-color: var(--sidebar-glass);
   /* Reproduce the tree surface's top gradient stop as a flat glaze so the
      48px strip matches the tree exactly at the seam. */

@@ -210,7 +210,7 @@ try {
           return { width, height };
         };
         window.testTopbarTreeBackdrop = () => {
-          document.documentElement.style.setProperty('--doc-tree-topbar-width', '245px');
+          document.documentElement.style.setProperty('--doc-tree-topbar-width', '240px');
           const wrap = document.createElement('div');
           wrap.style.cssText = 'position:fixed;left:-2000px;top:0;width:800px;height:200px;';
           const topbar = document.createElement('header');
@@ -416,7 +416,7 @@ try {
   assert.equal(treeHeader.shown.overflow, true, JSON.stringify(treeHeader));
 
   const topbarBackdrop = await evaluate('window.testTopbarTreeBackdrop()');
-  assert.equal(topbarBackdrop.width, 245);
+  assert.equal(topbarBackdrop.width, 240);
   assert.equal(topbarBackdrop.height, 48);
   assert.ok(topbarBackdrop.rightGap < 1, JSON.stringify(topbarBackdrop));
   assert.equal(topbarBackdrop.zIndex, '0');
