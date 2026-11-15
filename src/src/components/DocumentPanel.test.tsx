@@ -758,6 +758,22 @@ describe("DocumentPanel", () => {
     expect(screen.getByLabelText("查找内容")).not.toBeNull();
   });
 
+  it("undoes a raw replace with Cmd/Ctrl+Z from the find field", async () => {
+    render(<DocumentPanel />);
+    const editor = (await findRawEditor()) as HTMLTextAreaElement;
+    fireEvent.click(screen.getByLabelText("查找"));
+    const input = await screen.findByLabelText("查找内容");
+    fireEvent.change(input, { target: { value: "正文" } });
+    await waitFor(() => expect(editor.selectionStart).toBe(6));
+    fireEvent.change(screen.getByLabelText("替换为"), { target: { value: "正文改" } });
+    fireEvent.click(screen.getByRole("button", { name: "替换" }));
+    await waitFor(() => expect(editor.value).toBe("# 标题\n\n正文改\n"));
+
+    input.focus();
+    fireEvent.keyDown(input, { key: "z", metaKey: true });
+    await waitFor(() => expect(editor.value).toBe("# 标题\n\n正文\n"));
+  });
+
   it("replaces all raw matches", async () => {
     readMock.mockResolvedValue({
       ...DEMO_DOC,

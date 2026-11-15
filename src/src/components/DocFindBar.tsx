@@ -7,6 +7,7 @@ export default function DocFindBar({
   index,
   focusRequest,
   canReplace,
+  canUndoReplace,
   replacement,
   onChange,
   onPrev,
@@ -15,12 +16,14 @@ export default function DocFindBar({
   onReplacementChange,
   onReplace,
   onReplaceAll,
+  onUndoReplace,
 }: {
   query: string;
   count: number;
   index: number;
   focusRequest: number;
   canReplace: boolean;
+  canUndoReplace: boolean;
   replacement: string;
   onChange: (query: string) => void;
   onPrev: () => void;
@@ -29,6 +32,7 @@ export default function DocFindBar({
   onReplacementChange: (replacement: string) => void;
   onReplace: () => void;
   onReplaceAll: () => void;
+  onUndoReplace: () => void;
 }) {
   const { t } = useTranslation("shell");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -46,6 +50,18 @@ export default function DocFindBar({
       className="doc-find-bar"
       role="search"
       onKeyDown={(event) => {
+        if (
+          (event.metaKey || event.ctrlKey) &&
+          !event.altKey &&
+          !event.shiftKey &&
+          event.key.toLowerCase() === "z" &&
+          canUndoReplace
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          onUndoReplace();
+          return;
+        }
         if (event.key === "Escape") {
           event.preventDefault();
           event.stopPropagation();

@@ -41,6 +41,7 @@ import { MarkdownView } from "../markdown";
 import { setDocReadingTheme } from "../docReadingPrefs";
 import { relativePathInRoot, scrollToAnchor } from "../markdownReader/links";
 import { rememberExternalLinkChoice, shouldConfirmExternalLink } from "../docExternalLinks";
+import { replaceSelectionUndoable, undoTextareaEdit } from "../textEdit";
 import type { DocReadingTheme, OutlineItem } from "../markdownReader/types";
 import { buildFindText, findMatchesIn, findTextOccurrences, rangeForMatch, replaceAllOccurrences, type FindTextMap } from "../docFind";
 import { getLastZoomArea } from "../fontZoom";
@@ -737,6 +738,9 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   const progressRef = useRef<HTMLDivElement>(null);
   const findLayerRef = useRef<HTMLDivElement>(null);
   const lastPreviewPointer = useRef({ x: 0, y: 0 });
+  const replaceUndoSnapshot = useRef<string | null>(null);
+  const applyingReplace = useRef(false);
+  const [replaceUndoAvailable, setReplaceUndoAvailable] = useState(false);
   const [findMap, setFindMap] = useState<FindTextMap | null>(null);
   const [findMatches, setFindMatches] = useState<number[]>([]);
   const [externalLink, setExternalLink] = useState<{
@@ -1135,17 +1139,45 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     syncEditorSelection,
   ]);
 
+  const clearReplaceUndo = useCallback(() => {
+    replaceUndoSnapshot.current = null;
+    setReplaceUndoAvailable(false);
+  }, []);
+
   const replaceCurrentMatch = useCallback(() => {
     if (runtime.mode !== "raw" || !runtime.doc || runtime.doc.truncated) return;
     if (findMatches.length === 0) return;
     const start = findMatches[activeFindIndex];
     if (start === undefined) return;
     if (!tab.pinned) pinDocumentTab(tab.id);
-    const nextDraft =
-      runtime.draft.slice(0, start) +
-      runtime.findReplacement +
-      runtime.draft.slice(start + runtime.findQuery.length);
-    updateDocumentTabRuntime(tab.id, { draft: nextDraft });
+    const focusBefore = document.activeElement as HTMLElement | null;
+    replaceUndoSnapshot.current = runtime.draft;
+    const textarea = editorRef.current;
+    let applied = false;
+    if (textarea) {
+      applyingReplace.current = true;
+      try {
+        applied = replaceSelectionUndoable(
+          textarea,
+          start,
+          start + runtime.findQuery.length,
+          runtime.findReplacement,
+        );
+      } finally {
+        applyingReplace.current = false;
+      }
+    }
+    if (applied && textarea) {
+      updateDocumentTabRuntime(tab.id, { draft: textarea.value });
+    } else {
+      const nextDraft =
+        runtime.draft.slice(0, start) +
+        runtime.findReplacement +
+        runtime.draft.slice(start + runtime.findQuery.length);
+      updateDocumentTabRuntime(tab.id, { draft: nextDraft });
+    }
+    if (focusBefore?.isConnected) focusBefore.focus({ preventScroll: true });
+    setReplaceUndoAvailable(true);
   }, [
     activeFindIndex,
     findMatches,
@@ -1167,7 +1199,33 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     );
     if (result.count === 0) return;
     if (!tab.pinned) pinDocumentTab(tab.id);
-    updateDocumentTabRuntime(tab.id, { draft: result.text, findIndex: 0 });
+    const focusBefore = document.activeElement as HTMLElement | null;
+    replaceUndoSnapshot.current = runtime.draft;
+    const textarea = editorRef.current;
+    let applied = false;
+    if (textarea) {
+      applyingReplace.current = true;
+      try {
+        applied = replaceSelectionUndoable(
+          textarea,
+          0,
+          textarea.value.length,
+          result.text,
+        );
+      } finally {
+        applyingReplace.current = false;
+      }
+    }
+    if (applied && textarea) {
+      textarea.setSelectionRange(0, 0);
+      textarea.scrollTop = 0;
+      if (gutterRef.current) gutterRef.current.scrollTop = 0;
+      updateDocumentTabRuntime(tab.id, { draft: textarea.value, findIndex: 0 });
+    } else {
+      updateDocumentTabRuntime(tab.id, { draft: result.text, findIndex: 0 });
+    }
+    if (focusBefore?.isConnected) focusBefore.focus({ preventScroll: true });
+    setReplaceUndoAvailable(true);
     toast(t("ui.document.replacedCount", { count: result.count }), "success");
   }, [
     runtime.doc,
@@ -1179,6 +1237,36 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     tab.pinned,
     t,
   ]);
+
+  const undoReplace = useCallback(() => {
+    const textarea = editorRef.current;
+    const snapshot = replaceUndoSnapshot.current;
+    const active = document.activeElement as HTMLElement | null;
+    let value: string | null = null;
+    if (textarea) {
+      // Suppress the resulting input event from clearing the replace undo
+      // state, then fall back to the snapshot when the WebView has no native
+      // undo available.
+      const before = textarea.value;
+      applyingReplace.current = true;
+      try {
+        undoTextareaEdit(textarea);
+      } finally {
+        applyingReplace.current = false;
+      }
+      value = textarea.value !== before ? textarea.value : snapshot;
+    }
+    if (value !== null) updateDocumentTabRuntime(tab.id, { draft: value });
+    active?.focus?.({ preventScroll: true });
+  }, [tab.id]);
+
+  useEffect(() => {
+    if (runtime.mode !== "raw") clearReplaceUndo();
+  }, [runtime.mode, clearReplaceUndo]);
+
+  useEffect(() => {
+    clearReplaceUndo();
+  }, [runtime.doc?.path, runtime.doc?.content, clearReplaceUndo]);
 
   /* Drag-select auto-scroll. WKWebView never autoscrolls the raw editor
      while a selection drag leaves its bounds — and the panel sits flush
@@ -1338,15 +1426,19 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
           index={activeFindIndex}
           focusRequest={runtime.findRequest}
           canReplace={runtime.mode === "raw" && !runtime.doc.truncated}
+          canUndoReplace={replaceUndoAvailable}
           replacement={runtime.findReplacement}
-          onReplacementChange={(findReplacement) =>
-            updateDocumentTabRuntime(tab.id, { findReplacement })
-          }
+          onReplacementChange={(findReplacement) => {
+            clearReplaceUndo();
+            updateDocumentTabRuntime(tab.id, { findReplacement });
+          }}
           onReplace={replaceCurrentMatch}
           onReplaceAll={replaceAllMatches}
-          onChange={(query) =>
-            updateDocumentTabRuntime(tab.id, { findQuery: query, findIndex: 0 })
-          }
+          onUndoReplace={undoReplace}
+          onChange={(query) => {
+            clearReplaceUndo();
+            updateDocumentTabRuntime(tab.id, { findQuery: query, findIndex: 0 });
+          }}
           onPrev={() => {
             if (!findMatches.length) return;
             updateDocumentTabRuntime(tab.id, {
@@ -1359,7 +1451,10 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
               findIndex: (activeFindIndex + 1) % findMatches.length,
             });
           }}
-          onClose={() => updateDocumentTabRuntime(tab.id, { findOpen: false })}
+          onClose={() => {
+            clearReplaceUndo();
+            updateDocumentTabRuntime(tab.id, { findOpen: false });
+          }}
         />
       ) : null}
       {externalLink ? (
@@ -1475,6 +1570,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
                 onChange={(event) => {
                   // Editing a preview tab pins it (VSCode semantics), so a
                   // dirty tab is never silently replaced by the next click.
+                  if (!applyingReplace.current) clearReplaceUndo();
                   if (!tab.pinned) pinDocumentTab(tab.id);
                   updateDocumentTabRuntime(tab.id, { draft: event.target.value });
                 }}

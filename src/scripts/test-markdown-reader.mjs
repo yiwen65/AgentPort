@@ -72,6 +72,7 @@ try {
         import { MarkdownView } from './src/markdown';
         import { setState, useStore } from './src/store';
         import { i18n } from './src/i18n';
+        import { replaceSelectionUndoable } from './src/textEdit';
         import 'katex/dist/katex.min.css';
         import './src/styles.css';
         i18n.changeLanguage('en-US');
@@ -92,6 +93,17 @@ try {
           );
         }
         window.setReaderTheme = (theme) => setState({ docReadingTheme: theme });
+        window.testUndoableReplace = () => {
+          const textarea = document.createElement('textarea');
+          textarea.value = 'alpha beta alpha';
+          document.body.append(textarea);
+          const ok = replaceSelectionUndoable(textarea, 0, 5, 'omega');
+          const after = textarea.value;
+          const undoneOk = document.execCommand('undo');
+          const undone = textarea.value;
+          textarea.remove();
+          return { ok, after, undoneOk, undone };
+        };
         createRoot(document.getElementById('root')).render(<App />);
       `,
     },
@@ -239,7 +251,13 @@ try {
   })()`);
   assert.ok(findCount.matches >= 1, JSON.stringify(findCount));
 
-  console.log('PASS: production reader renders Shiki tokens, KaTeX (fonts), GFM/alerts/frontmatter under the Tauri CSP with no violations or WASM, lazy chunks load, and paper/night reader palettes apply. No native Session or network used.');
+  const undoable = await evaluate('window.testUndoableReplace()');
+  assert.equal(undoable.ok, true);
+  assert.equal(undoable.after, 'omega beta alpha');
+  assert.equal(undoable.undoneOk, true);
+  assert.equal(undoable.undone, 'alpha beta alpha');
+
+  console.log('PASS: production reader renders Shiki tokens, KaTeX (fonts), GFM/alerts/frontmatter under the Tauri CSP with no violations or WASM, lazy chunks load, paper/night reader palettes apply, and replace edits enter the native undo stack. No native Session or network used.');
 } finally {
   ws?.close();
   if (chrome && chrome.exitCode === null) { chrome.kill('SIGTERM'); await new Promise(r => chrome.once('exit', r)); }
