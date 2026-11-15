@@ -3726,12 +3726,24 @@ body.is-resizing-pane {
 
 /* Document viewer split (opened from terminal document links). */
 /* Until the user drags the sash, the docked viewer shares the terminal page
-   evenly with the terminal stack. */
+   evenly with the terminal stack. With the file tree open, the tree (and its
+   sash) is taken out first; the remaining width is split evenly between the
+   terminal and the editor column, so the panel gains half of the tree. */
 .doc-panel.auto-width {
   width: max(50%, 320px);
 }
 
+.doc-panel.auto-width.with-tree {
+  width: max(
+    calc(
+      50% + var(--doc-tree-width, 240px) / 2 + var(--doc-tree-sash, 5px) / 2
+    ),
+    320px
+  );
+}
+
 .doc-panel {
+  --doc-tree-sash: 5px;
   position: relative;
   flex: 0 0 auto;
   min-width: 0;
@@ -4181,7 +4193,7 @@ body.is-resizing-pane {
    in-flow so it tracks the tree's left edge, same hover/drag accent as the
    panel sash. */
 .doc-tree-resize {
-  flex: 0 0 5px;
+  flex: 0 0 var(--doc-tree-sash, 5px);
   position: relative;
   z-index: 5;
   cursor: col-resize;

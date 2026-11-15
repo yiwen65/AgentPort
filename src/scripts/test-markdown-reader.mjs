@@ -106,20 +106,35 @@ try {
           return { ok, after, undoneOk, undone };
         };
         window.testPanelSplit = () => {
-          const wrap = document.createElement('div');
-          wrap.style.cssText = 'position:fixed;left:-2000px;top:0;width:1200px;display:flex;';
-          const terminal = document.createElement('div');
-          terminal.className = 'term-stack';
-          const panel = document.createElement('div');
-          panel.className = 'doc-panel auto-width';
-          wrap.append(terminal, panel);
-          document.body.append(wrap);
-          const result = {
-            terminal: terminal.getBoundingClientRect().width,
-            panel: panel.getBoundingClientRect().width,
+          const measure = (withTree) => {
+            const wrap = document.createElement('div');
+            wrap.style.cssText = 'position:fixed;left:-2000px;top:0;width:1200px;display:flex;';
+            const terminal = document.createElement('div');
+            terminal.className = 'term-stack';
+            const panel = document.createElement('div');
+            panel.className = withTree ? 'doc-panel auto-width with-tree' : 'doc-panel auto-width';
+            let editor = panel;
+            if (withTree) {
+              panel.style.setProperty('--doc-tree-width', '240px');
+              editor = document.createElement('div');
+              editor.className = 'doc-editor-column';
+              const sash = document.createElement('div');
+              sash.className = 'doc-tree-resize';
+              const tree = document.createElement('div');
+              tree.className = 'doc-tree';
+              panel.append(editor, sash, tree);
+            }
+            wrap.append(terminal, panel);
+            document.body.append(wrap);
+            const result = {
+              terminal: terminal.getBoundingClientRect().width,
+              panel: panel.getBoundingClientRect().width,
+              editor: editor.getBoundingClientRect().width,
+            };
+            wrap.remove();
+            return result;
           };
-          wrap.remove();
-          return result;
+          return { plain: measure(false), tree: measure(true) };
         };
         window.testRawHighlightGeometry = () => {
           const textarea = document.createElement('textarea');
@@ -293,10 +308,13 @@ try {
   assert.ok(rawMetrics.metrics.width > 0, JSON.stringify(rawMetrics));
 
   const split = await evaluate('window.testPanelSplit()');
-  assert.equal(split.panel, 600);
-  assert.equal(split.terminal, 600);
+  assert.equal(split.plain.panel, 600);
+  assert.equal(split.plain.terminal, 600);
+  assert.ok(Math.abs(split.tree.editor - split.tree.terminal) <= 1, JSON.stringify(split.tree));
+  assert.ok(Math.abs(split.tree.panel - 722.5) < 1, JSON.stringify(split.tree));
+  assert.ok(Math.abs(split.tree.terminal - 477.5) < 1, JSON.stringify(split.tree));
 
-  console.log('PASS: production reader renders Shiki tokens, KaTeX (fonts), GFM/alerts/frontmatter under the Tauri CSP with no violations or WASM, lazy chunks load, paper/night reader palettes apply, replace edits enter the native undo stack, raw match geometry aligns with the editor, and the docked viewer splits 1200px evenly (600/600). No native Session or network used.');
+  console.log('PASS: production reader renders Shiki tokens, KaTeX (fonts), GFM/alerts/frontmatter under the Tauri CSP with no violations or WASM, lazy chunks load, paper/night reader palettes apply, replace edits enter the native undo stack, raw match geometry aligns with the editor, and the docked viewer splits 1200px as 600/600 without a tree and an equal editor/terminal split (within the 1px panel border) plus a 245px tree with one. No native Session or network used.');
 } finally {
   ws?.close();
   if (chrome && chrome.exitCode === null) { chrome.kill('SIGTERM'); await new Promise(r => chrome.once('exit', r)); }

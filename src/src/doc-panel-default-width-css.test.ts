@@ -9,4 +9,12 @@ describe("document panel default width", () => {
     const rule = styles.match(/\.doc-panel\.auto-width\s*\{([\s\S]*?)\n\}/)?.[1];
     expect(rule).toContain("width: max(50%, 320px)");
   });
+
+  it("adds only half of the tree column to the panel width", () => {
+    const rule = styles.match(
+      /\.doc-panel\.auto-width\.with-tree\s*\{([\s\S]*?)\n\}/,
+    )?.[1];
+    expect(rule).toContain("var(--doc-tree-width, 240px) / 2");
+    expect(rule).toContain("var(--doc-tree-sash, 5px) / 2");
+  });
 });

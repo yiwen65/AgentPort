@@ -234,6 +234,17 @@ describe("DocumentPanel", () => {
     expect(panel?.className).toContain("auto-width");
   });
 
+  it("keeps the editor and terminal even while the tree adds its own width", async () => {
+    listMock.mockResolvedValue({ path: "/tmp/demo", truncated: false, entries: [] });
+    setState({ explorerOpen: true, explorerRoot: "/tmp/demo" });
+    const { container } = render(<DocumentPanel />);
+    await screen.findByRole("tab", { name: "报告.md" });
+    const panel = container.querySelector<HTMLElement>(".doc-panel");
+    expect(panel?.className).toContain("auto-width");
+    expect(panel?.className).toContain("with-tree");
+    expect(panel?.getAttribute("style") ?? "").toContain("--doc-tree-width: 240px");
+  });
+
   it("drags the inner sash to resize the tree column in dual mode", async () => {
     listMock.mockResolvedValue({ path: "/tmp/demo", truncated: false, entries: [] });
     setState({ explorerOpen: true, explorerRoot: "/tmp/demo", docTreeWidth: 184 });

@@ -78,6 +78,7 @@ const MAX_DOC_TREE_WIDTH = 420;
 /* In dual mode the editor column never gets squeezed below this by a wide
    tree. */
 const MIN_DOC_EDITOR_WIDTH = 280;
+const DOC_TREE_SASH_WIDTH = 5;
 /** Same overlay budget as the preview: scan up to 2000 matches but paint 500. */
 const MAX_RAW_HITS = 500;
 
@@ -1938,11 +1939,14 @@ export default function DocumentPanel() {
   // width must not cap the tree there.
   const effectivePanelWidth = widthAuto && panelWidth ? panelWidth : width;
   const treeBasis =
-    treeOnly || expanded
+    treeOnly || expanded || (widthAuto && panelWidth === null)
       ? treeWidth
       : Math.min(
           treeWidth,
-          Math.max(MIN_DOC_TREE_WIDTH, effectivePanelWidth - MIN_DOC_EDITOR_WIDTH),
+          Math.max(
+            MIN_DOC_TREE_WIDTH,
+            effectivePanelWidth - MIN_DOC_EDITOR_WIDTH - DOC_TREE_SASH_WIDTH,
+          ),
         );
   const panelStyle = {
     "--doc-tree-width": `${treeBasis}px`,
@@ -1952,7 +1956,7 @@ export default function DocumentPanel() {
   return (
     <aside
       ref={attachPanel}
-      className={`doc-panel${expanded ? " expanded" : ""}${treeOnly ? " tree-only" : ""}${readingMode ? " reading" : ""}${!treeOnly && !expanded && widthAuto ? " auto-width" : ""}`}
+      className={`doc-panel${expanded ? " expanded" : ""}${treeOnly ? " tree-only" : ""}${readingMode ? " reading" : ""}${!treeOnly && !expanded && widthAuto ? ` auto-width${explorerOpen ? " with-tree" : ""}` : ""}`}
       data-doc-theme={readingTheme}
       style={panelStyle}
       aria-label={t("ui.document.label")}
