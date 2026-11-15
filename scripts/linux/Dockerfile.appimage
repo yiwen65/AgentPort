@@ -10,7 +10,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN ARCH=$(uname -m) && case "$ARCH" in x86_64) NARCH=x64;; aarch64) NARCH=arm64;; *) echo "unsupported $ARCH"; exit 1;; esac \
  && curl -fsSL "https://nodejs.org/dist/v20.18.1/node-v20.18.1-linux-${NARCH}.tar.xz" -o /tmp/node.tar.xz \
  && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && rm /tmp/node.tar.xz
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+# Cargo 1.100 changed the build-dir layout; tauri-build 2.6 assumes the old
+# one and panics while copying sidecars. Stay on the toolchain that built
+# v0.1.6 until the Tauri crates are upgraded.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.99.1
 ENV PATH=/root/.cargo/bin:$PATH
 WORKDIR /src
 COPY . .

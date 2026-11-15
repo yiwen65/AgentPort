@@ -109,9 +109,14 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: src/package-lock.json
+          cache-dependency-path: |
+            src/package-lock.json
+            mobile/package-lock.json
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Cargo 1.100 changed the build-dir layout; tauri-build 2.6 assumes the
+      # old one and panics while copying sidecars. Stay on the toolchain that
+      # built v0.1.6 until the Tauri crates are upgraded.
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
@@ -121,6 +126,9 @@ jobs:
 
       - name: Frontend dependencies
         run: npm --prefix src ci
+
+      - name: Mobile dependencies
+        run: npm --prefix mobile ci
 
       - name: Check terminal snapshot assets
         run: node scripts/build-terminal-snapshot.mjs --check

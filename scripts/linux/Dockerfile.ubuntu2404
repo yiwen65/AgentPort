@@ -9,7 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs npm \
  && rm -rf /var/lib/apt/lists/*
 
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+# Cargo 1.100 changed the build-dir layout; tauri-build 2.6 assumes the old
+# one and panics while copying sidecars. Stay on the toolchain that built
+# v0.1.6 until the Tauri crates are upgraded.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.99.1
 ENV PATH=/root/.cargo/bin:$PATH
 
 WORKDIR /src

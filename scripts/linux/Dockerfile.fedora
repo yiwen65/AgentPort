@@ -7,7 +7,10 @@ RUN dnf -y install \
     webkit2gtk4.1-devel openssl-devel libappindicator-gtk3-devel librsvg2-devel \
     libxdo-devel dbus-devel xdg-utils nodejs npm \
  && dnf clean all
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+# Cargo 1.100 changed the build-dir layout; tauri-build 2.6 assumes the old
+# one and panics while copying sidecars. Stay on the toolchain that built
+# v0.1.6 until the Tauri crates are upgraded.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.99.1
 ENV PATH=/root/.cargo/bin:$PATH
 WORKDIR /src
 COPY . .
