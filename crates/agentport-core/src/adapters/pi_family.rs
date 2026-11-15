@@ -228,10 +228,8 @@ fn native_permission_notices(agent: AgentType, mode: PermissionMode) -> Vec<supe
             "omp_native_permission_defaults",
             "Oh My Pi preserves its native permission settings. Its upstream default is yolo (automatic tool approval); configure approvals in Oh My Pi if needed.",
         )],
-        AgentType::EasyPi => vec![super::LaunchNotice::new(
-            "easy_pi_native_permission_defaults",
-            "easy-pi preserves its native permission settings. Its upstream initial mode is full-access; use /permissions inside easy-pi to change it.",
-        )],
+        // EasyPi's warning lives in the New Session form; repeating it as a
+        // launch notice would duplicate it as a toast after the form closes.
         _ => vec![],
     }
 }
@@ -624,23 +622,34 @@ mod tests {
 
     #[test]
     fn native_permission_notices_warn_without_claiming_the_users_actual_setting() {
-        for (agent, flags, code) in [
-            (AgentType::Omp, OMP_FLAGS, "omp_native_permission_defaults"),
-            (
+        let launch = PiFamilyAdapter(AgentType::Omp)
+            .build_launch(&fx::launch_ctx(
+                AgentType::Omp,
+                OMP_FLAGS,
+                PermissionMode::Native,
+            ))
+            .unwrap();
+        assert!(launch
+            .notices
+            .iter()
+            .any(|notice| notice.code == "omp_native_permission_defaults"));
+        let resume = PiFamilyAdapter(AgentType::Omp)
+            .build_resume(&fx::resume_ctx(AgentType::Omp, OMP_FLAGS, Some(ID)))
+            .unwrap();
+        assert!(resume
+            .notices
+            .iter()
+            .any(|notice| notice.code == "omp_native_permission_defaults"));
+        // The EasyPi warning is shown inline in the New Session form; a launch
+        // notice would duplicate it as a toast after the form closes.
+        let easy = PiFamilyAdapter(AgentType::EasyPi)
+            .build_launch(&fx::launch_ctx(
                 AgentType::EasyPi,
                 EASY_FLAGS,
-                "easy_pi_native_permission_defaults",
-            ),
-        ] {
-            let launch = PiFamilyAdapter(agent)
-                .build_launch(&fx::launch_ctx(agent, flags, PermissionMode::Native))
-                .unwrap();
-            assert!(launch.notices.iter().any(|notice| notice.code == code));
-            let resume = PiFamilyAdapter(agent)
-                .build_resume(&fx::resume_ctx(agent, flags, Some(ID)))
-                .unwrap();
-            assert!(resume.notices.iter().any(|notice| notice.code == code));
-        }
+                PermissionMode::Native,
+            ))
+            .unwrap();
+        assert!(easy.notices.is_empty());
         let auto = PiFamilyAdapter(AgentType::Omp)
             .build_launch(&fx::launch_ctx(
                 AgentType::Omp,
