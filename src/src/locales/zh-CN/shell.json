@@ -7,7 +7,7 @@
   "markdownImage": {
     "consentDescription": "外链图片已阻止。加载后，本设备将匿名访问公开 HTTPS 图片服务器。",
     "allowRemote": "加载本文档的外链图片",
-    "image": "图片", "viewer": "图片查看器", "zoomOut": "缩小", "zoomReset": "重置缩放", "zoomIn": "放大",
+    "image": "图片", "viewer": "图片查看器", "zoomOut": "缩小", "zoomReset": "重置缩放", "zoomIn": "放大", "previous": "上一张图片", "next": "下一张图片",
     "close": "关闭", "closeViewer": "关闭图片查看器", "openImage": "查看图片：{{alt}}",
     "contextUnavailable": "图片阅读上下文不可用", "remoteBlocked": "外链图片已阻止", "loading": "正在加载图片…", "retry": "重试"
   },

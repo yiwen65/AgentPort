@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import { useStore } from "./store";
 import { MarkdownImageConsent } from "./components/MarkdownImage";
 import { MarkdownReaderContext, type MarkdownReaderContextValue, type MarkdownReaderLabels } from "./markdownReader/context";
+import { ImageViewerProvider } from "./markdownReader/imageViewer";
 import { scrollToAnchor } from "./markdownReader/links";
 import { parseMarkdown } from "./markdownReader/parse";
 import { renderHast } from "./markdownReader/render";
@@ -95,6 +96,7 @@ export function MarkdownView({
 
   return (
     <MarkdownReaderContext.Provider value={readerContext}>
+      <ImageViewerProvider theme={readingTheme}>
       <div
         ref={rootRef}
         className="md-preview"
@@ -138,6 +140,7 @@ export function MarkdownView({
         ) : null}
         {content}
       </div>
+      </ImageViewerProvider>
     </MarkdownReaderContext.Provider>
   );
 }

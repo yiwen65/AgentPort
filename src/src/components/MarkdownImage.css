@@ -4,12 +4,17 @@
 .md-image-open { display: block; max-width: 100%; padding: 0; border: 0; background: transparent; cursor: zoom-in; }
 .md-image-open img { display: block; max-width: 100%; max-height: 65vh; width: auto; height: auto; object-fit: contain; }
 .md-image-placeholder { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-muted); overflow-wrap: anywhere; }
+.md-image-caption { display: block; margin-top: 6px; color: var(--term-muted); font-size: 0.82em; line-height: 1.5; text-align: center; }
 .md-image-consent { padding: 10px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-muted); font-size: 12px; }
 .md-image-consent button { margin: 6px 0 0 8px; }
 .md-image-viewer { position: fixed; inset: 0; z-index: 100000; background: var(--bg, #17191e); color: var(--text, #eee); display: flex; flex-direction: column; }
+.md-image-viewer[data-doc-theme="paper"] { --bg: #f7f3e8; --bg-panel: #f7f3e8; --bg-hover: #efe7d6; --border: #ddd2bd; --text: #3a342b; --text-muted: #7a7061; --accent: #8a5a32; background: #f7f3e8; color: #3a342b; }
+.md-image-viewer[data-doc-theme="night"] { --bg: #1b1f27; --bg-panel: #222833; --bg-hover: #2b3240; --border: #2f3642; --text: #d8d3c8; --text-muted: #8e95a3; --accent: #c9b48f; background: #1b1f27; color: #d8d3c8; }
 .md-image-viewer-toolbar { display: flex; align-items: center; gap: 8px; padding: 12px; border-bottom: 1px solid var(--border); }
-.md-image-viewer-toolbar > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md-image-viewer-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md-image-viewer-count { flex: 0 0 auto; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .md-image-viewer-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: none; cursor: grab; overscroll-behavior: contain; }
 .md-image-viewer-stage:active { cursor: grabbing; }
 .md-image-viewer-stage img { max-width: 95%; max-height: 95%; object-fit: contain; user-select: none; pointer-events: none; }
+.md-image-viewer-caption { padding: 6px 12px 12px; color: var(--text-muted); font-size: 12px; text-align: center; }
 .md-image-open:focus-visible, .md-image-viewer button:focus-visible { outline: 2px solid var(--accent, #5d9dff); outline-offset: 3px; }

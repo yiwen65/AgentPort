@@ -812,7 +812,7 @@ describe("DocumentPanel", () => {
       content: "# 第一节\n\n## 小节\n\n正文",
     });
     const scroll = vi.fn();
-    const proto = Element.prototype as Element & { scrollIntoView?: unknown };
+    const proto = Element.prototype as unknown as { scrollIntoView?: unknown };
     const original = proto.scrollIntoView;
     Object.defineProperty(Element.prototype, "scrollIntoView", {
       configurable: true,

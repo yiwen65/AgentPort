@@ -7,7 +7,7 @@
   "markdownImage": {
     "consentDescription": "External images are blocked. Loading them anonymously contacts public HTTPS servers from this device.",
     "allowRemote": "Load external images for this document",
-    "image": "Image", "viewer": "Image viewer", "zoomOut": "Zoom out", "zoomReset": "Reset zoom", "zoomIn": "Zoom in",
+    "image": "Image", "viewer": "Image viewer", "zoomOut": "Zoom out", "zoomReset": "Reset zoom", "zoomIn": "Zoom in", "previous": "Previous image", "next": "Next image",
     "close": "Close", "closeViewer": "Close image viewer", "openImage": "View image: {{alt}}",
     "contextUnavailable": "Image context unavailable", "remoteBlocked": "External image blocked", "loading": "Loading image…", "retry": "Retry"
   },

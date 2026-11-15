@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MarkdownView } from "../markdown";
 import { applyUiLanguage } from "../i18n";
@@ -38,6 +38,34 @@ it("image-wrapped links open zoom viewer, Escape closes and restores reading foc
   fireEvent.keyDown(window, { key: "Escape" }); expect(screen.queryByRole("dialog")).toBeNull(); expect(document.activeElement).toBe(opener); expect(reading.scrollTop).toBe(83); expect(navigate).not.toHaveBeenCalled();
   view.unmount(); images.dispose();
 });
+it("shows figure captions and navigates between loaded images", async () => {
+  const { images } = session();
+  const view = render(
+    <MarkdownView
+      source={'![one](a.png "Figure one") ![two](b.png "Figure two")'}
+      imageSession={images}
+    />,
+  );
+  await screen.findAllByRole("img");
+  expect(screen.getByText("Figure one")).not.toBeNull();
+  expect(screen.getByText("Figure two")).not.toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: "View image: one" }));
+  const first = await screen.findByRole("dialog", { name: "Figure one" });
+  expect(within(first).getByText("1 / 2")).not.toBeNull();
+
+  fireEvent.keyDown(window, { key: "ArrowRight" });
+  const second = await screen.findByRole("dialog", { name: "Figure two" });
+  expect(within(second).getByText("2 / 2")).not.toBeNull();
+
+  fireEvent.keyDown(window, { key: "ArrowLeft" });
+  await waitFor(() =>
+    expect(screen.getByRole("dialog", { name: "Figure one" })).not.toBeNull(),
+  );
+  view.unmount();
+  images.dispose();
+});
+
 it("shows errors/retry and does not request an offscreen local asset until intersecting", async () => {
   let intersect!: (entries: Array<{ isIntersecting: boolean }>) => void;
   vi.stubGlobal("IntersectionObserver", class { constructor(cb: typeof intersect) { intersect = cb; } observe() {} disconnect() {} });
