@@ -729,8 +729,8 @@ describe("DocumentPanel", () => {
     await waitFor(() => expect(screen.queryByLabelText("查找内容")).toBeNull());
   });
 
-  it("finds text in the raw editor and keeps focus in the find field", async () => {
-    render(<DocumentPanel />);
+  it("finds text in the raw editor, highlights it and keeps focus in the find field", async () => {
+    const { container } = render(<DocumentPanel />);
     const editor = (await findRawEditor()) as HTMLTextAreaElement;
     fireEvent.click(screen.getByLabelText("查找"));
     const input = await screen.findByLabelText("查找内容");
@@ -741,6 +741,9 @@ describe("DocumentPanel", () => {
     });
     expect(editor.value.slice(editor.selectionStart, editor.selectionEnd)).toBe("正文");
     expect(document.activeElement).toBe(input);
+    const layer = container.querySelector<HTMLElement>(".doc-find-raw-layer");
+    await waitFor(() => expect(layer?.style.display).toBe("block"));
+    expect(layer?.querySelector(".md-find-raw-hit")).not.toBeNull();
   });
 
   it("replaces the current raw match without moving focus into the editor", async () => {

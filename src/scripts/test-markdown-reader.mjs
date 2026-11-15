@@ -73,6 +73,7 @@ try {
         import { setState, useStore } from './src/store';
         import { i18n } from './src/i18n';
         import { replaceSelectionUndoable } from './src/textEdit';
+        import { rawMatchMetrics } from './src/docFind';
         import 'katex/dist/katex.min.css';
         import './src/styles.css';
         i18n.changeLanguage('en-US');
@@ -103,6 +104,17 @@ try {
           const undone = textarea.value;
           textarea.remove();
           return { ok, after, undoneOk, undone };
+        };
+        window.testRawHighlightGeometry = () => {
+          const textarea = document.createElement('textarea');
+          textarea.setAttribute('wrap', 'off');
+          textarea.value = 'alpha beta\\ngamma alpha';
+          textarea.style.cssText = 'position:fixed;left:-9999px;top:0;width:400px;height:120px;font:16px/24px monospace;padding:8px 12px;white-space:pre;tab-size:8;';
+          document.body.append(textarea);
+          const metrics = rawMatchMetrics(textarea, textarea.value, 17, 5);
+          const selected = textarea.value.slice(17, 22);
+          textarea.remove();
+          return { metrics, selected };
         };
         createRoot(document.getElementById('root')).render(<App />);
       `,
@@ -257,7 +269,14 @@ try {
   assert.equal(undoable.undoneOk, true);
   assert.equal(undoable.undone, 'alpha beta alpha');
 
-  console.log('PASS: production reader renders Shiki tokens, KaTeX (fonts), GFM/alerts/frontmatter under the Tauri CSP with no violations or WASM, lazy chunks load, paper/night reader palettes apply, and replace edits enter the native undo stack. No native Session or network used.');
+  const rawMetrics = await evaluate('window.testRawHighlightGeometry()');
+  assert.equal(rawMetrics.selected, 'alpha');
+  assert.equal(rawMetrics.metrics.top, 32);
+  assert.equal(rawMetrics.metrics.height, 24);
+  assert.ok(rawMetrics.metrics.left > 12, JSON.stringify(rawMetrics));
+  assert.ok(rawMetrics.metrics.width > 0, JSON.stringify(rawMetrics));
+
+  console.log('PASS: production reader renders Shiki tokens, KaTeX (fonts), GFM/alerts/frontmatter under the Tauri CSP with no violations or WASM, lazy chunks load, paper/night reader palettes apply, replace edits enter the native undo stack, and raw match geometry aligns with the editor. No native Session or network used.');
 } finally {
   ws?.close();
   if (chrome && chrome.exitCode === null) { chrome.kill('SIGTERM'); await new Promise(r => chrome.once('exit', r)); }

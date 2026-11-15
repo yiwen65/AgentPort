@@ -43,7 +43,7 @@ import { relativePathInRoot, scrollToAnchor } from "../markdownReader/links";
 import { rememberExternalLinkChoice, shouldConfirmExternalLink } from "../docExternalLinks";
 import { replaceSelectionUndoable, undoTextareaEdit } from "../textEdit";
 import type { DocReadingTheme, OutlineItem } from "../markdownReader/types";
-import { buildFindText, findMatchesIn, findTextOccurrences, rangeForMatch, replaceAllOccurrences, type FindTextMap } from "../docFind";
+import { buildFindText, findMatchesIn, findTextOccurrences, rangeForMatch, rawMatchMetrics, replaceAllOccurrences, type FindTextMap } from "../docFind";
 import { getLastZoomArea } from "../fontZoom";
 import DocFindBar from "./DocFindBar";
 import DocToc from "./DocToc";
@@ -737,6 +737,9 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   const previewRef = useRef<HTMLDivElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
   const findLayerRef = useRef<HTMLDivElement>(null);
+  const rawFindLayerRef = useRef<HTMLDivElement>(null);
+  const rawFindHitsRef = useRef<HTMLDivElement>(null);
+  const rawFindHitRef = useRef<HTMLDivElement>(null);
   const lastPreviewPointer = useRef({ x: 0, y: 0 });
   const replaceUndoSnapshot = useRef<string | null>(null);
   const applyingReplace = useRef(false);
@@ -751,6 +754,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   } | null>(null);
   const readingMode = useStore((state) => state.docReadingMode);
   const readingTheme = useStore((state) => state.docReadingTheme);
+  const docFontScale = useStore((state) => state.docFontScale);
   const activeFindIndex =
     findMatches.length > 0
       ? Math.min(Math.max(runtime.findIndex, 0), findMatches.length - 1)
@@ -1124,6 +1128,25 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     // Do not focus the editor here: the find field must keep the caret while
     // the user types. Selection and scrolling still reveal the match.
     textarea.setSelectionRange(start, start + runtime.findQuery.length);
+    const metrics = rawMatchMetrics(
+      textarea,
+      runtime.draft,
+      start,
+      runtime.findQuery.length,
+    );
+    if (metrics) {
+      const margin = 24;
+      const viewLeft = textarea.scrollLeft;
+      const viewRight = viewLeft + textarea.clientWidth;
+      if (metrics.left < viewLeft + margin) {
+        textarea.scrollLeft = Math.max(0, metrics.left - margin);
+      } else if (metrics.left + metrics.width > viewRight - margin) {
+        textarea.scrollLeft = Math.max(
+          0,
+          metrics.left + metrics.width - textarea.clientWidth + margin,
+        );
+      }
+    }
     const line = runtime.draft.slice(0, start).split("\n").length;
     const lineHeight = Number.parseFloat(getComputedStyle(textarea).lineHeight) || 18;
     textarea.scrollTop = Math.max(0, (line - 1) * lineHeight - textarea.clientHeight / 2);
@@ -1138,6 +1161,77 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     activeFindIndex,
     syncEditorSelection,
   ]);
+
+  // The textarea is not focused while searching, so an inactive selection is
+  // invisible in WKWebView. Paint the active match in a read-only overlay
+  // aligned with the textarea's monospace content box.
+  useEffect(() => {
+    const layer = rawFindLayerRef.current;
+    const hits = rawFindHitsRef.current;
+    const hit = rawFindHitRef.current;
+    const textarea = editorRef.current;
+    if (!layer || !hits || !hit || !textarea) return;
+    if (
+      runtime.mode !== "raw" ||
+      !runtime.findOpen ||
+      findMatches.length === 0 ||
+      !visible
+    ) {
+      layer.style.display = "none";
+      return;
+    }
+    const start = findMatches[activeFindIndex];
+    if (start === undefined) {
+      layer.style.display = "none";
+      return;
+    }
+    const metrics = rawMatchMetrics(
+      textarea,
+      runtime.draft,
+      start,
+      runtime.findQuery.length,
+    );
+    if (!metrics) {
+      layer.style.display = "none";
+      return;
+    }
+    layer.style.display = "block";
+    layer.style.left = `${textarea.offsetLeft}px`;
+    layer.style.top = `${textarea.offsetTop}px`;
+    layer.style.width = `${textarea.clientWidth}px`;
+    layer.style.height = `${textarea.clientHeight}px`;
+    hit.style.left = `${metrics.left}px`;
+    hit.style.top = `${metrics.top}px`;
+    hit.style.width = `${metrics.width}px`;
+    hit.style.height = `${metrics.height}px`;
+    hits.style.transform = `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
+  }, [
+    runtime.mode,
+    runtime.findOpen,
+    findMatches,
+    activeFindIndex,
+    runtime.findQuery.length,
+    runtime.draft,
+    docFontScale,
+    visible,
+  ]);
+
+  useEffect(() => {
+    const textarea = editorRef.current;
+    if (!textarea || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      const layer = rawFindLayerRef.current;
+      const hits = rawFindHitsRef.current;
+      if (!layer || !hits || layer.style.display === "none") return;
+      layer.style.left = `${textarea.offsetLeft}px`;
+      layer.style.top = `${textarea.offsetTop}px`;
+      layer.style.width = `${textarea.clientWidth}px`;
+      layer.style.height = `${textarea.clientHeight}px`;
+      hits.style.transform = `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
+    });
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [runtime.mode]);
 
   const clearReplaceUndo = useCallback(() => {
     replaceUndoSnapshot.current = null;
@@ -1580,6 +1674,9 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
                   if (gutterRef.current) {
                     gutterRef.current.scrollTop = event.currentTarget.scrollTop;
                   }
+                  if (rawFindHitsRef.current) {
+                    rawFindHitsRef.current.style.transform = `translate(${-event.currentTarget.scrollLeft}px, ${-event.currentTarget.scrollTop}px)`;
+                  }
                 }}
                 onKeyDown={(event) => {
                   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
@@ -1597,6 +1694,11 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
                   }
                 }}
               />
+              <div ref={rawFindLayerRef} className="doc-find-raw-layer" aria-hidden="true">
+                <div ref={rawFindHitsRef} className="doc-find-raw-hits">
+                  <div ref={rawFindHitRef} className="md-find-hit active md-find-raw-hit" />
+                </div>
+              </div>
             </div>
           )
         ) : null}

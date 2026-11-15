@@ -4428,10 +4428,30 @@ body.is-resizing-pane {
 }
 
 .doc-editor {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
   overflow: hidden;
+}
+
+.doc-find-raw-layer {
+  position: absolute;
+  display: none;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.doc-find-raw-hits {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+}
+
+.md-find-raw-hit {
+  border-radius: 2px;
 }
 
 .doc-editor-gutter {

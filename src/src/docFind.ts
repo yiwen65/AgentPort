@@ -61,6 +61,62 @@ export function findTextOccurrences(text: string, query: string, limit = MAX_MAT
   return findMatchesIn(text, query, limit);
 }
 
+export interface TextPosition {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** Content-box geometry for one raw-editor match. The raw textarea has
+ * `wrap="off"`, so a match always stays on one visual line. */
+export function rawMatchMetrics(
+  textarea: HTMLTextAreaElement,
+  text: string,
+  start: number,
+  length: number,
+): TextPosition | null {
+  if (start < 0 || start > text.length) return null;
+  const lineStart = text.lastIndexOf("\n", start - 1) + 1;
+  let lineEnd = text.indexOf("\n", start);
+  if (lineEnd < 0) lineEnd = text.length;
+  let lineIndex = 0;
+  for (let index = 0; index < lineStart; index += 1) {
+    if (text[index] === "\n") lineIndex += 1;
+  }
+  const style = window.getComputedStyle(textarea);
+  const fontSize = Number.parseFloat(style.fontSize) || 12;
+  const lineHeight = Number.parseFloat(style.lineHeight) || fontSize * 1.55;
+  const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
+  const paddingTop = Number.parseFloat(style.paddingTop) || 0;
+  const measurer = document.createElement("span");
+  measurer.style.position = "absolute";
+  measurer.style.visibility = "hidden";
+  measurer.style.pointerEvents = "none";
+  measurer.style.whiteSpace = "pre";
+  measurer.style.fontFamily = style.fontFamily;
+  measurer.style.fontSize = style.fontSize;
+  measurer.style.fontWeight = style.fontWeight;
+  measurer.style.fontStyle = style.fontStyle;
+  measurer.style.letterSpacing = style.letterSpacing;
+  measurer.style.wordSpacing = style.wordSpacing;
+  measurer.style.tabSize = style.tabSize || "8";
+  document.body.append(measurer);
+  const measure = (value: string) => {
+    measurer.textContent = value;
+    return measurer.getBoundingClientRect().width;
+  };
+  const startX = measure(text.slice(lineStart, start));
+  const endX = measure(text.slice(lineStart, Math.min(start + length, lineEnd)));
+  measurer.remove();
+  return {
+    left: paddingLeft + startX,
+    top: paddingTop + lineIndex * lineHeight,
+    width: Math.max(1, endX - startX),
+    height: lineHeight,
+  };
+}
+
 /** Replace every case-insensitive occurrence without overlapping. */
 export function replaceAllOccurrences(
   text: string,
