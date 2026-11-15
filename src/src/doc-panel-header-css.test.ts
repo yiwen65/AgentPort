@@ -25,6 +25,16 @@ describe("document panel header tab strip", () => {
     expect(quote).toContain("overflow: hidden");
   });
 
+  it("compacts toolbar spacing before an action wraps alone", () => {
+    const compact = styles.match(
+      /@container doc-editor \(max-width: 720px\)\s*\{([\s\S]*?)\n\}/,
+    )?.[1];
+    expect(compact).toContain(".doc-panel-header {");
+    expect(compact).toContain("gap: 2px");
+    expect(compact).toContain("padding: 3px 3px");
+    expect(compact).toContain("max-width: 88px");
+  });
+
   it("moves Quote Selection to its own row in narrow editor columns", () => {
     const compact = styles.match(/@container doc-editor \(max-width: 560px\)\s*\{\s*\.doc-quote\s*\{([\s\S]*?)\n  \}/)?.[1];
     expect(compact).toContain("order: 1");

@@ -170,6 +170,45 @@ try {
           tree.remove();
           return { hidden, shown };
         };
+        window.testToolbarRows = (width) => {
+          const column = document.createElement('div');
+          column.className = 'doc-editor-column';
+          column.style.cssText = 'position:fixed;left:-2000px;top:0;width:' + width + 'px;';
+          const header = document.createElement('div');
+          header.className = 'doc-panel-header';
+          const modes = document.createElement('div');
+          modes.className = 'doc-panel-modes';
+          const raw = document.createElement('button');
+          raw.className = 'doc-mode';
+          raw.textContent = 'Raw';
+          const eye = document.createElement('button');
+          eye.className = 'doc-mode doc-mode-icon';
+          const eyeIcon = document.createElement('span');
+          eyeIcon.style.cssText = 'display:block;width:14px;height:14px;';
+          eye.append(eyeIcon);
+          modes.append(raw, eye);
+          const select = document.createElement('select');
+          select.className = 'doc-theme-select';
+          const option = document.createElement('option');
+          option.textContent = 'Paper';
+          select.append(option);
+          const spacer = document.createElement('span');
+          spacer.className = 'spacer';
+          header.append(modes, select, spacer);
+          for (let index = 0; index < 7; index += 1) {
+            const button = document.createElement('button');
+            button.className = 'btn small ghost';
+            const icon = document.createElement('span');
+            icon.style.cssText = 'display:block;width:14px;height:14px;';
+            button.append(icon);
+            header.append(button);
+          }
+          column.append(header);
+          document.body.append(column);
+          const height = header.getBoundingClientRect().height;
+          column.remove();
+          return { width, height };
+        };
         window.testRawHighlightGeometry = () => {
           const textarea = document.createElement('textarea');
           textarea.setAttribute('wrap', 'off');
@@ -347,6 +386,11 @@ try {
   assert.equal(treeHeader.hidden.overflow, false, JSON.stringify(treeHeader));
   assert.ok(treeHeader.hidden.title > treeHeader.shown.title, JSON.stringify(treeHeader));
   assert.equal(treeHeader.shown.overflow, true, JSON.stringify(treeHeader));
+
+  const toolbar620 = await evaluate('window.testToolbarRows(620)');
+  const toolbar900 = await evaluate('window.testToolbarRows(900)');
+  assert.ok(toolbar620.height < 50, JSON.stringify(toolbar620));
+  assert.ok(toolbar900.height < 50, JSON.stringify(toolbar900));
 
   const split = await evaluate('window.testPanelSplit()');
   assert.equal(split.plain.panel, 600);

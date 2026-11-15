@@ -4609,6 +4609,42 @@ body.is-resizing-pane {
 
 /* Use the editor column's width: the adjacent file tree and terminal splits
    can leave it narrow even in a wide window. Keep utility actions reachable. */
+/* Compact the toolbar before an action has to wrap alone: tighten gaps and
+   horizontal padding (and narrow the theme select) so the whole button row
+   keeps one line while it can still fit. */
+@container doc-editor (max-width: 1100px) {
+  .doc-panel-header {
+    gap: 4px;
+  }
+
+  .doc-panel-header .btn.small {
+    padding: 3px 5px;
+  }
+
+  .doc-panel-header .doc-theme-select {
+    max-width: 100px;
+  }
+}
+
+@container doc-editor (max-width: 720px) {
+  .doc-panel-header {
+    gap: 2px;
+    padding-inline: 8px;
+  }
+
+  .doc-panel-header .btn.small {
+    padding: 3px 3px;
+  }
+
+  .doc-panel-header .doc-mode {
+    padding: 3px 7px;
+  }
+
+  .doc-panel-header .doc-theme-select {
+    max-width: 88px;
+  }
+}
+
 @container doc-editor (max-width: 560px) {
   .doc-quote {
     order: 1;
