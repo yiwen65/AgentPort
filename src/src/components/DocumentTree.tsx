@@ -762,61 +762,63 @@ export default function DocumentTree() {
           {root ? baseName(root) : t("ui.document.treeLabel")}
         </span>
         <span className="spacer" />
-        <button
-          className="btn small ghost"
-          data-tip={t("ui.document.searchFilesTip", { shortcut: searchShortcut })}
-          aria-label={t("ui.document.searchFiles")}
-          aria-pressed={searchOpen}
-          disabled={!root}
-          onClick={toggleSearch}
-        >
-          <IconSearch />
-        </button>
-        <button
-          className="btn small ghost"
-          data-tip={t("ui.document.newFileTip")}
-          aria-label={t("ui.document.newFile")}
-          disabled={!createBaseDir}
-          onClick={() => startCreate("file")}
-        >
-          <IconNewFile />
-        </button>
-        <button
-          className="btn small ghost"
-          data-tip={t("ui.document.newDirTip")}
-          aria-label={t("ui.document.newDir")}
-          disabled={!createBaseDir}
-          onClick={() => startCreate("dir")}
-        >
-          <IconNewFolder />
-        </button>
-        <button
-          className="btn small ghost"
-          data-tip={t("ui.document.refreshTreeTip")}
-          aria-label={t("ui.document.refreshTree")}
-          onClick={refreshAll}
-        >
-          ⟳
-        </button>
-        <button
-          className="btn small ghost"
-          data-tip={t("ui.document.collapseAllTip")}
-          aria-label={t("ui.document.collapseAll")}
-          onClick={() => {
-            // Collapse every loaded directory except the root itself.
-            setDirs((current) => {
-              const next = new Map(current);
-              for (const [path, dirState] of next) {
-                if (path !== root && dirState.expanded) {
-                  next.set(path, { ...dirState, expanded: false });
+        <span className="doc-tree-actions">
+          <button
+            className="btn small ghost"
+            data-tip={t("ui.document.searchFilesTip", { shortcut: searchShortcut })}
+            aria-label={t("ui.document.searchFiles")}
+            aria-pressed={searchOpen}
+            disabled={!root}
+            onClick={toggleSearch}
+          >
+            <IconSearch />
+          </button>
+          <button
+            className="btn small ghost"
+            data-tip={t("ui.document.newFileTip")}
+            aria-label={t("ui.document.newFile")}
+            disabled={!createBaseDir}
+            onClick={() => startCreate("file")}
+          >
+            <IconNewFile />
+          </button>
+          <button
+            className="btn small ghost"
+            data-tip={t("ui.document.newDirTip")}
+            aria-label={t("ui.document.newDir")}
+            disabled={!createBaseDir}
+            onClick={() => startCreate("dir")}
+          >
+            <IconNewFolder />
+          </button>
+          <button
+            className="btn small ghost"
+            data-tip={t("ui.document.refreshTreeTip")}
+            aria-label={t("ui.document.refreshTree")}
+            onClick={refreshAll}
+          >
+            ⟳
+          </button>
+          <button
+            className="btn small ghost"
+            data-tip={t("ui.document.collapseAllTip")}
+            aria-label={t("ui.document.collapseAll")}
+            onClick={() => {
+              // Collapse every loaded directory except the root itself.
+              setDirs((current) => {
+                const next = new Map(current);
+                for (const [path, dirState] of next) {
+                  if (path !== root && dirState.expanded) {
+                    next.set(path, { ...dirState, expanded: false });
+                  }
                 }
-              }
-              return next;
-            });
-          }}
-        >
-          <IconCollapseAll />
-        </button>
+                return next;
+              });
+            }}
+          >
+            <IconCollapseAll />
+          </button>
+        </span>
       </div>
       {searchOpen ? (
         <div className="doc-tree-search">

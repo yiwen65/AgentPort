@@ -46,4 +46,16 @@ describe("document tree sidebar design language", () => {
     );
     expect(ruleBody(".doc-tree-kind.file")).not.toContain("--amber");
   });
+
+  it("collapses header actions out of layout until they are shown", () => {
+    const actions = ruleBody(".doc-tree-actions");
+    expect(actions).toContain("max-width: 0");
+    expect(actions).toContain("overflow: hidden");
+    expect(actions).toContain("pointer-events: none");
+    const expanded = styles.match(
+      /\.doc-tree:hover \.doc-tree-actions,[\s\S]*?\{([\s\S]*?)\n\}/,
+    )?.[1];
+    expect(expanded).toContain("max-width: 180px");
+    expect(expanded).toContain("pointer-events: auto");
+  });
 });

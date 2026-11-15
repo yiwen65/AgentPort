@@ -3812,23 +3812,26 @@ body.is-resizing-pane {
   flex: 1;
 }
 
-/* Header actions stay out of the way until the column is hovered (or one of
-   them is tabbed to), so the root name keeps the full header width instead
-   of truncating behind four buttons. */
-.doc-tree-header .btn {
+/* Header actions collapse out of the layout until the column is hovered (or
+   one of them is tabbed to), so the root name can use the full header width
+   and only truncates when the buttons are actually visible. */
+.doc-tree-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 0;
+  overflow: hidden;
   opacity: 0;
-  transition: opacity 0.12s ease;
+  pointer-events: none;
+  transition: opacity 0.12s ease, max-width 0.15s ease;
 }
 
-.doc-tree:hover .doc-tree-header .btn,
-.doc-tree-header:focus-within .btn {
+.doc-tree:hover .doc-tree-actions,
+.doc-tree-header:focus-within .doc-tree-actions,
+.doc-tree.searching .doc-tree-actions {
+  max-width: 180px;
   opacity: 1;
-}
-
-/* The search button must stay reachable while its input owns focus, even
-   when the pointer has left the tree column. */
-.doc-tree.searching .doc-tree-header .btn {
-  opacity: 1;
+  pointer-events: auto;
 }
 
 /* Recursive file-search input row, between the header and the tree body. */
