@@ -40,6 +40,7 @@
 敏感环境变量（如 API Key）的存储与使用遵守以下硬边界：
 
 - **只存系统安全存储**：macOS Keychain 或 Linux Secret Service（service 名称为 `agentport`）。SQLite 中只保存引用（变量名、后端、账户键），不保存原值。
+- **连接器自身凭据**：`agentport-connector` 的 Relay 身份密钥、注册令牌与 APNs 密钥不是用户 Secret；macOS 上存放在该连接器私有状态目录（0700）下的 0600 文件中，首次启动把旧的 `com.agentport.relay.connector.v1` Keychain 账户一次性迁入后不再访问 Keychain，Linux 继续使用 Secret Service。原因是 Keychain ACL 绑定创建条目的二进制，App 升级替换 sidecar 后会反复要求登录钥匙串密码。该存储对同一登录用户下的其他进程可读，隔离边界与上面的用户 Secret 不同。
 - **AgentPort 内的流动路径**：系统安全存储 → 启动瞬间经 Credential Broker 读入受限内存 → 作为环境变量注入目标 Agent 子进程 → 立即清除临时缓冲。原值不进入 AgentPort 前端状态、SQLite、进程参数、正文索引或诊断包。目标 Agent 自己的原生日志属于其安全边界。
 - **无明文回退**：后端不可用（如 Linux 未运行 Secret Service）时，保存 Secret 的功能直接禁用，绝不退化为明文配置文件；此时仍可使用 Shell 环境中已有的变量。
 - **实时输出脱敏**：PTY 输出一旦命中已登记 Secret 的字节序列，进入 AgentPort 实时内存尾部和前端前即替换为固定掩码 `[redacted]`，并只记录命中计数。AgentPort 不改写 Agent 原生日志。

@@ -13,7 +13,7 @@ use crate::{
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
-pub use storage::{private_directory, Store};
+pub use storage::{private_directory, FileVault, Store};
 use tokio::{
     sync::{watch, Mutex, Semaphore},
     task::{JoinHandle, JoinSet},
@@ -51,6 +51,46 @@ impl Vault for Keychain {
             return Err(Error::Credential);
         }
         Ok(account)
+    }
+}
+/// Moves legacy Keychain-backed accounts into the connector's private state
+/// directory on first read. New accounts are written there directly, so an
+/// app update no longer triggers the Keychain password prompt.
+pub struct MigratingVault<V: Vault> {
+    files: FileVault,
+    legacy: V,
+}
+impl<V: Vault> MigratingVault<V> {
+    pub fn new(root: &std::path::Path, legacy: V) -> Result<Self> {
+        Ok(Self {
+            files: FileVault::open(root)?,
+            legacy,
+        })
+    }
+}
+impl<V: Vault> Vault for MigratingVault<V> {
+    fn load(&self, account: &str) -> Result<Zeroizing<Vec<u8>>> {
+        if let Some(secret) = self.files.read(account)? {
+            return Ok(secret);
+        }
+        let secret = self.legacy.load(account)?;
+        match self.files.write_new(account, &secret) {
+            Ok(()) => Ok(secret),
+            // A concurrent migration may have won the create; only accept the
+            // file when it holds the same secret.
+            Err(Error::Storage) => {
+                let stored = self.files.load(account)?;
+                if stored.as_slice() == secret.as_slice() {
+                    Ok(stored)
+                } else {
+                    Err(Error::Storage)
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+    fn create(&self, secret: &[u8]) -> Result<String> {
+        self.files.create(secret)
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -98,7 +138,7 @@ struct ApnsSettings {
     topic: String,
     environment: PushEnvironment,
 }
-/// Key material is loaded only from the Keychain and never serialized into state or status.
+/// Key material is loaded only from the connector vault and never serialized into state or status.
 pub struct ApnsCredentials {
     pub key_p8_pem: Zeroizing<Vec<u8>>,
     pub key_id: String,
@@ -394,8 +434,8 @@ impl Runtime {
     pub async fn set_apns_delivery_active(&self, active: bool) {
         self.inner.lock().await.apns_delivery_active = active;
     }
-    /// Import the APNs signing key into the same-user Keychain, then persist
-    /// only the new account identifier and nonsecret metadata atomically.
+    /// Import the APNs signing key into the connector credential store, then
+    /// persist only the new account identifier and nonsecret metadata atomically.
     pub async fn configure_apns(
         &self,
         key_p8_pem: Zeroizing<String>,
@@ -450,7 +490,7 @@ impl Runtime {
         inner.apns_available = true;
         Ok(())
     }
-    /// An absent or unavailable Keychain account never produces signing material.
+    /// An absent or unavailable credential never produces signing material.
     pub async fn apns_credentials(&self) -> Result<Option<ApnsCredentials>> {
         let inner = self.inner.lock().await;
         if inner.stopping || inner.phase == Phase::StorageFailed {
@@ -484,7 +524,7 @@ impl Runtime {
         }
         let old = inner.durable.settings.clone();
         let vault = self.vault.clone();
-        // Existing identity is loaded, never silently regenerated on keychain failure.
+        // Existing identity is loaded, never silently regenerated on credential failure.
         let (settings, configured) = tokio::task::spawn_blocking(move || {
             let (identity, identity_account) = if let Some(old) = old {
                 let identity = Identity::from_private(vault.load(&old.identity_account)?)?;
@@ -1267,6 +1307,75 @@ mod apns_configuration_tests {
         assert!(!serde_json::to_string(&status).unwrap().contains(&pem));
         runtime.stop().await;
         server.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod vault_migration_tests {
+    use super::*;
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        sync::{Arc as StdArc, Mutex as SyncMutex},
+    };
+
+    #[derive(Clone, Default)]
+    struct MemoryVault(StdArc<SyncMutex<HashMap<String, Zeroizing<Vec<u8>>>>>);
+    impl Vault for MemoryVault {
+        fn load(&self, account: &str) -> Result<Zeroizing<Vec<u8>>> {
+            self.0
+                .lock()
+                .unwrap()
+                .get(account)
+                .cloned()
+                .ok_or(Error::Credential)
+        }
+        fn create(&self, secret: &[u8]) -> Result<String> {
+            let account = identifier()?;
+            self.0
+                .lock()
+                .unwrap()
+                .insert(account.clone(), Zeroizing::new(secret.to_vec()));
+            Ok(account)
+        }
+    }
+
+    #[test]
+    fn legacy_secret_is_migrated_once_into_private_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("connector");
+        let legacy = MemoryVault::default();
+        let account = legacy.create(b"legacy-secret").unwrap();
+        let vault = MigratingVault::new(&root, legacy.clone()).unwrap();
+
+        assert_eq!(vault.load(&account).unwrap().as_slice(), b"legacy-secret");
+        let path = root.join("secrets").join(&account);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        // Once copied, the file is authoritative: deleting the legacy entry
+        // must not make the connector fall back to Keychain again.
+        legacy.0.lock().unwrap().remove(&account);
+        assert_eq!(vault.load(&account).unwrap().as_slice(), b"legacy-secret");
+
+        // New credentials never touch the legacy store.
+        let created = vault.create(b"new-secret").unwrap();
+        assert!(legacy.0.lock().unwrap().get(&created).is_none());
+        assert_eq!(vault.load(&created).unwrap().as_slice(), b"new-secret");
+    }
+
+    #[test]
+    fn denied_legacy_read_leaves_no_partial_secret_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("connector");
+        let vault = MigratingVault::new(&root, MemoryVault::default()).unwrap();
+        assert!(matches!(
+            vault.load(&identifier().unwrap()),
+            Err(Error::Credential)
+        ));
+        assert_eq!(fs::read_dir(root.join("secrets")).unwrap().count(), 0);
     }
 }
 

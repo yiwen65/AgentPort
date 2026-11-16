@@ -1,5 +1,8 @@
 //! Connector-only local state. No private keys or deployment tokens in JSON.
-use crate::{protocol::identifier, Error, Result};
+use crate::{
+    protocol::{decode, identifier},
+    Error, Result,
+};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -10,7 +13,9 @@ use std::{
     },
     path::{Path, PathBuf},
 };
+use zeroize::Zeroizing;
 const MAX_STATE: u64 = 65536;
+const MAX_SECRET: u64 = 65536;
 
 pub fn private_directory(path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() {
@@ -123,9 +128,90 @@ impl Store {
     }
 }
 
+/// Connector-owned credentials (identity key, registration token, APNs key)
+/// in the same owner-only directory as the rest of the connector state.
+///
+/// macOS Keychain items created by a previous connector build are bound to
+/// that binary's code requirement. The app updater replaces the sidecar, so
+/// every update re-asked for the login-keychain password. These credentials
+/// are machine-local and never leave the connector, so keeping them in 0600
+/// files next to the state avoids that recurring system dialog. User-supplied
+/// secrets elsewhere still use the platform credential store.
+pub struct FileVault {
+    directory: PathBuf,
+}
+impl FileVault {
+    pub fn open(root: &Path) -> Result<Self> {
+        let directory = private_directory(&private_directory(root)?.join("secrets"))?;
+        Ok(Self { directory })
+    }
+    fn path(&self, account: &str) -> Result<PathBuf> {
+        decode::<16>(account).map_err(|_| Error::Credential)?;
+        Ok(self.directory.join(account))
+    }
+    pub(super) fn read(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>> {
+        let file = match options().read(true).open(self.path(account)?) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(Error::Storage),
+        };
+        check_file(&file)?;
+        let mut bytes = Zeroizing::new(Vec::new());
+        file.take(MAX_SECRET + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| Error::Storage)?;
+        if bytes.is_empty() || bytes.len() as u64 > MAX_SECRET {
+            return Err(Error::Storage);
+        }
+        Ok(Some(bytes))
+    }
+    pub(super) fn write_new(&self, account: &str, secret: &[u8]) -> Result<()> {
+        if secret.is_empty() || secret.len() as u64 > MAX_SECRET {
+            return Err(Error::Storage);
+        }
+        let target = self.path(account)?;
+        if fs::symlink_metadata(&target).is_ok() {
+            return Err(Error::Storage);
+        }
+        let temporary = self.directory.join(format!(".secret-{}", identifier()?));
+        let result = (|| {
+            let mut file = options()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .map_err(|_| Error::Storage)?;
+            file.write_all(secret).map_err(|_| Error::Storage)?;
+            file.sync_all().map_err(|_| Error::Storage)?;
+            fs::rename(&temporary, &target).map_err(|_| Error::Storage)?;
+            File::open(&self.directory)
+                .and_then(|dir| dir.sync_all())
+                .map_err(|_| Error::Storage)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(temporary);
+        }
+        result
+    }
+}
+impl super::Vault for FileVault {
+    fn load(&self, account: &str) -> Result<Zeroizing<Vec<u8>>> {
+        self.read(account)?.ok_or(Error::Credential)
+    }
+    fn create(&self, secret: &[u8]) -> Result<String> {
+        let account = identifier()?;
+        self.write_new(&account, secret)?;
+        if self.load(&account)?.as_slice() != secret {
+            return Err(Error::Credential);
+        }
+        Ok(account)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connector::Vault;
     use std::os::unix::fs::{symlink, PermissionsExt};
     #[test]
     fn private_state_lock_links_permissions_and_atomic_roundtrip() {
@@ -151,5 +237,52 @@ mod tests {
         let linked_root = temp.path().join("linked");
         symlink(&root, &linked_root).unwrap();
         assert!(Store::open(&linked_root).is_err());
+    }
+
+    #[test]
+    fn file_vault_roundtrips_owner_only_and_rejects_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("connector");
+        let vault = FileVault::open(&root).unwrap();
+        let account = vault.create(b"identity-key").unwrap();
+        assert_eq!(vault.load(&account).unwrap().as_slice(), b"identity-key");
+        let path = root.join("secrets").join(&account);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            FileVault::open(&root)
+                .unwrap()
+                .load(&account)
+                .unwrap()
+                .as_slice(),
+            b"identity-key"
+        );
+        assert!(matches!(
+            vault.load(&identifier().unwrap()),
+            Err(Error::Credential)
+        ));
+
+        fs::remove_file(&path).unwrap();
+        let sentinel = temp.path().join("sentinel");
+        fs::write(&sentinel, "unchanged").unwrap();
+        symlink(&sentinel, &path).unwrap();
+        assert!(matches!(vault.load(&account), Err(Error::Storage)));
+        assert_eq!(fs::read_to_string(sentinel).unwrap(), "unchanged");
+    }
+
+    #[test]
+    fn file_vault_rejects_unsafe_roots_and_secrets() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("connector");
+        let vault = FileVault::open(&root).unwrap();
+        assert!(matches!(vault.create(b""), Err(Error::Storage)));
+        assert!(matches!(
+            vault.create(&vec![0u8; MAX_SECRET as usize + 1]),
+            Err(Error::Storage)
+        ));
+        fs::set_permissions(root.join("secrets"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(FileVault::open(&root).is_err());
     }
 }

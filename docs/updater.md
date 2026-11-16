@@ -173,6 +173,7 @@ macOS TCC（文稿/桌面/下载等文件夹授权）按 App 的 designated requ
 | 下载完成但提示签名/校验失败 | `TAURI_SIGNING_PRIVATE_KEY` 与 `pubkey` 不匹配；构建日志会出现 “does not match the public key” 警告 |
 | 安装按钮点不动 / 报 “could not be stopped safely” | 某个 Session Host 的进程组清理无法确认，安装被主动中止；先手工停止该 Session 再重试 |
 | 点了「退出并更新」后窗口消失但没升级 | macOS 安装需要 App 包可写：把 App 放在 `/Applications` 等可写位置，不要直接从只读 DMG 运行 |
+| 升级后反复弹「agentport-connector 想要使用你存储在钥匙串的 … 中的机密信息」 | 旧版连接器把内部凭据存在 Keychain，ACL 绑定创建它的二进制。当前构建首次启动会把旧条目迁入 connector 私有目录（每个旧条目最后一次授权），之后不再访问 Keychain；仍重复时确认运行的是新版本 connector |
 | Debug App 从不提示更新 | 预期行为，见上文 “Debug / 开发构建永远不升级” |
 
 ## 相关文件

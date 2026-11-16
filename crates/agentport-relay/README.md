@@ -153,8 +153,8 @@ replacement, queue/socket/frame limits, private token files, and bidirectional
 multi-chunk encrypted streams (including flush-before-drop), exact approval,
 unknown approval key custody, durable device state, revocation closing all and
 only the selected device's channels, Relay restart recovery and bounded local IPC.
-Tests inject an in-memory credential vault; platform Keychain access is not
-claimed from these tests.
+Tests inject an in-memory credential vault; platform credential-store access is
+not claimed from these tests.
 
 To exercise the actual bundled Bridge with a new isolated data/socket root:
 
@@ -218,17 +218,20 @@ clients, 8 KiB requests, 64 KiB responses and read/write deadlines. This is a
 **same-OS-user boundary**, not protection from malicious code already running as
 that user, root, or a compromised GUI; such principals can approve remote access.
 
-Keychain stores newly generated computer identity and registration token under
-random accounts in `com.agentport.relay.connector.v1`. JSON holds only public
-identity, opaque account references and allowed device keys/names/timestamps.
-Configuration is written/read back in Keychain before its metadata is persisted
-or a Relay connection is attempted. Missing/locked credentials fail closed;
-existing identities are never regenerated automatically and no plaintext fallback
-exists. Reconfiguration preserves computer/device identities, stores a new token
-account and closes old Relay channels. Old/new orphan accounts are deliberately
-not deleted after unknown configuration outcomes; operators should retain them
-until the authoritative config is known. Existing manual SSH credentials and
-`authorized_keys` are not read, written, migrated or removed by the connector.
+macOS stores newly generated computer identity, registration token and APNs key
+as owner-only (0600) files under `relay-connectors/<namespace>/secrets/`; Linux
+keeps them in Secret Service. JSON holds only public identity, opaque account
+references and allowed device keys/names/timestamps. On macOS the connector
+first copies legacy `com.agentport.relay.connector.v1` Keychain accounts into
+that directory (one system authorization per existing item), then reads only
+the private files, so replacing the sidecar on an app update no longer re-prompts
+for the login keychain. Missing/locked credentials fail closed; existing
+identities are never regenerated automatically. Reconfiguration preserves
+computer/device identities, stores a new token account and closes old Relay
+channels. Old/new orphan accounts are deliberately not deleted after unknown
+configuration outcomes; operators should retain them until the authoritative
+config is known. Existing manual SSH credentials and `authorized_keys` are not
+read, written, migrated or removed by the connector.
 
 Only an authenticated pairing handshake claims an invitation; the exact
 invitation/request/phone key must match desktop approval. Approval is persisted

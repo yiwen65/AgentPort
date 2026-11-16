@@ -149,6 +149,8 @@ async fn start_push_worker(
 
 #[cfg(unix)]
 async fn run() -> agentport_relay::Result<()> {
+    #[cfg(target_os = "macos")]
+    use agentport_relay::connector::MigratingVault;
     use agentport_relay::{
         connector::{ipc, Keychain, Runtime, Store},
         endpoint::PushEnvironment,
@@ -243,9 +245,18 @@ async fn run() -> agentport_relay::Result<()> {
         };
     }
     let host_sockets = std::env::var_os("AGENTPORT_SOCKET_DIR").map(PathBuf::from);
+    // macOS Keychain ACLs are bound to the connector binary that created the
+    // item, so replacing the sidecar on every app update re-prompts for the
+    // login password. Read any legacy item once into the owner-only state
+    // directory, then serve credentials from there without Keychain access.
+    #[cfg(target_os = "macos")]
+    let vault: Arc<dyn agentport_relay::connector::Vault> =
+        Arc::new(MigratingVault::new(&state, Keychain)?);
+    #[cfg(not(target_os = "macos"))]
+    let vault: Arc<dyn agentport_relay::connector::Vault> = Arc::new(Keychain);
     let runtime = Runtime::open(
         Store::open(&state)?,
-        Arc::new(Keychain),
+        vault,
         bin.join("agentport-remote-bridge"),
         data.clone(),
         host_sockets,

@@ -26,7 +26,7 @@ pub enum Error {
     Offline,
     #[error("Relay capacity is busy; try again later")]
     Busy,
-    #[error("Relay secure credential storage is unavailable; no plaintext fallback")]
+    #[error("Relay credential storage is unavailable")]
     Credential,
     #[error("Relay local state could not be safely read or persisted")]
     Storage,
