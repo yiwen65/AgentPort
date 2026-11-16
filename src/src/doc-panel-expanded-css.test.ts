@@ -17,12 +17,22 @@ describe("expanded document panel layout", () => {
     expect(rule ?? "").not.toContain("max-width");
   });
 
-  it("widens the preview/prose reading column with the window", () => {
-    // The preview keeps a readable measure, but it follows the window up to
-    // a generous cap instead of the docked panel's fixed 780px column.
-    const rule = ruleBody(".doc-panel.expanded .doc-prose");
-    expect(rule).toContain("max-width: 1120px");
-    expect(rule).toContain("margin-inline: auto");
-    expect(rule).toContain("padding-inline: clamp(24px, 5vw, 64px)");
+  it("centers the preview reading column and lets it follow the pane", () => {
+    // One measure for docked, widened and expanded panels: centered in the
+    // pane and grown with the editor column (cqw) up to a readable cap, so a
+    // wide window no longer leaves a narrow strip pinned to one edge.
+    const prose = ruleBody(".doc-prose") ?? "";
+    expect(prose).toContain("margin-inline: auto");
+    expect(prose).toContain("max-width: clamp(46rem, 72cqw, 70rem)");
+    expect(prose).toContain("padding: 20px clamp(24px, 4cqw, 56px) 36px");
+
+    const preview = ruleBody(".md-preview") ?? "";
+    expect(preview).toContain("margin-inline: auto");
+    expect(preview).toContain("max-width: clamp(46rem, 72cqw, 70rem)");
+    expect(preview).toContain("padding: 24px clamp(24px, 4cqw, 56px) 48px");
+  });
+
+  it("does not shrink the expanded preview back to the docked measure", () => {
+    expect(styles).not.toContain(".doc-panel.expanded .md-preview");
   });
 });

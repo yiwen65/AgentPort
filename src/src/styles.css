@@ -4196,17 +4196,6 @@ body.is-resizing-pane {
   border-left: none;
 }
 
-/* Expanded mode: the raw editor is a full-bleed code surface — no centered
-   column cap — so long lines use the whole window before scrolling, like a
-   real editor. Only the preview keeps a (widened, window-following) reading
-   measure, centered so ultrawide windows stay readable. */
-.doc-panel.expanded .md-preview,
-.doc-panel.expanded .doc-prose {
-  max-width: 1120px;
-  margin-inline: auto;
-  padding-inline: clamp(24px, 5vw, 64px);
-}
-
 .doc-panel-resize {
   position: absolute;
   left: -3px;
@@ -4751,9 +4740,16 @@ body.is-resizing-pane {
   user-select: text;
 }
 
+/* Preview reading column, shared by prose and Markdown: always centered in
+   the pane, and the measure grows with the editor column (container units
+   already exclude the docked terminal split and file tree) from a compact
+   docked column to a generous fullscreen one. The raw editor stays
+   full-bleed on purpose — only the reading surfaces are capped. */
 .doc-prose {
-  padding: 20px 24px 36px;
-  max-width: 780px;
+  width: 100%;
+  max-width: clamp(46rem, 72cqw, 70rem);
+  margin-inline: auto;
+  padding: 20px clamp(24px, 4cqw, 56px) 36px;
   font-size: calc(13px * var(--doc-font-scale, 1));
   line-height: 1.75;
   /* Body text shares the selected xterm foreground. */
@@ -4766,8 +4762,10 @@ body.is-resizing-pane {
    h1 21 > h2 17 > h3 15 > h4 13.5 > h5/h6 12.5 against 13px body, with
    weight doing the rest of the separation. */
 .md-preview {
-  padding: 24px 28px 48px;
-  max-width: 46rem;
+  width: 100%;
+  max-width: clamp(46rem, 72cqw, 70rem);
+  margin-inline: auto;
+  padding: 24px clamp(24px, 4cqw, 56px) 48px;
   font-family: var(--font-reading);
   font-size: calc(14.5px * var(--doc-font-scale, 1));
   line-height: 1.8;
@@ -5375,13 +5373,6 @@ body.is-resizing-pane {
 .doc-reading-layout .doc-preview-host {
   flex: 1;
   min-width: 0;
-}
-
-/* Expanded/reading mode keeps a readable measure centered in the page. */
-.doc-panel.expanded .md-preview {
-  max-width: 46rem;
-  margin-inline: auto;
-  padding-inline: clamp(24px, 5vw, 64px);
 }
 
 .doc-panel.reading .md-preview {
