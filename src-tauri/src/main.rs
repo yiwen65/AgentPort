@@ -4770,6 +4770,61 @@ async fn delete_document_entry(path: String) -> std::result::Result<Value, Value
     delete_document_entry_impl(&path)
 }
 
+fn add_document_entry_to_gitignore_impl(
+    root: &str,
+    path: &str,
+) -> std::result::Result<Value, Value> {
+    let reject = |code: &str, message: String| {
+        runtime_command_error(code, json!({ "path": path }), message.clone(), message)
+    };
+
+    let raw = std::path::Path::new(path);
+    let checkout_root = std::path::Path::new(root);
+    if !raw.is_absolute() || !checkout_root.is_absolute() {
+        return Err(reject(
+            "document_path_relative",
+            format!("只能忽略绝对路径的文件或目录：{path}"),
+        ));
+    }
+    let has_parent_dir = |p: &std::path::Path| {
+        p.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    };
+    if has_parent_dir(raw) || has_parent_dir(checkout_root) {
+        return Err(reject(
+            "document_ignore_failed",
+            format!("路径不允许包含 .. 片段：{path}"),
+        ));
+    }
+    if std::fs::symlink_metadata(raw).is_err() {
+        return Err(reject(
+            "document_not_found",
+            format!("文件或目录不存在：{path}"),
+        ));
+    }
+    let repo = agentport_core::git::GitRepo::discover(checkout_root).map_err(|_| {
+        reject(
+            "document_ignore_failed",
+            format!("不是 Git 仓库：{root}"),
+        )
+    })?;
+    agentport_core::git::add_path_to_repository_ignore(&repo.root, raw).map_err(|e| {
+        reject(
+            "document_ignore_failed",
+            format!("无法加入 .gitignore：{path}（{e}）"),
+        )
+    })?;
+    Ok(json!({}))
+}
+
+#[tauri::command]
+async fn add_document_entry_to_gitignore(
+    root: String,
+    path: String,
+) -> std::result::Result<Value, Value> {
+    add_document_entry_to_gitignore_impl(&root, &path)
+}
+
 /// Opens a local file with the system's default application (Preview for a
 /// PDF, an image viewer for a PNG, …). This is the escape hatch the document
 /// viewer offers for files it cannot display itself.
@@ -5150,6 +5205,7 @@ fn main() {
             rename_document_entry,
             duplicate_document_entry,
             delete_document_entry,
+            add_document_entry_to_gitignore,
             open_with_default_app,
             open_in_vs_code,
             pick_directory,
@@ -5983,6 +6039,96 @@ mod cleanup_tests {
         )
         .unwrap_err();
         assert_eq!(traversal["code"], "document_delete_failed");
+    }
+
+    #[test]
+    fn add_document_entry_to_gitignore_appends_root_relative_rules() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(repo.join("src/build")).unwrap();
+        std::fs::write(repo.join("src/a b.md"), "x").unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}");
+        };
+        git(&["init", "--quiet"]);
+
+        let file = repo.join("src/a b.md");
+        let value = add_document_entry_to_gitignore_impl(
+            repo.to_str().unwrap(),
+            file.to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value, json!({}));
+
+        // A nested checkout root still anchors the rule at the repo root.
+        add_document_entry_to_gitignore_impl(
+            repo.join("src").to_str().unwrap(),
+            repo.join("src/build").to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo.join(".gitignore")).unwrap(),
+            "/src/a\\ b.md\n/src/build\n"
+        );
+    }
+
+    #[test]
+    fn add_document_entry_to_gitignore_rejects_invalid_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let plain = temp.path().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let plain_file = plain.join("a.md");
+        std::fs::write(&plain_file, "x").unwrap();
+        let not_git = add_document_entry_to_gitignore_impl(
+            plain.to_str().unwrap(),
+            plain_file.to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(not_git["code"], "document_ignore_failed");
+
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let output = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["init", "--quiet"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+
+        let relative = add_document_entry_to_gitignore_impl(
+            repo.to_str().unwrap(),
+            "a.md",
+        )
+        .unwrap_err();
+        assert_eq!(relative["code"], "document_path_relative");
+
+        let missing = add_document_entry_to_gitignore_impl(
+            repo.to_str().unwrap(),
+            repo.join("missing.md").to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(missing["code"], "document_not_found");
+
+        let outside = temp.path().join("outside.md");
+        std::fs::write(&outside, "x").unwrap();
+        let escaped = add_document_entry_to_gitignore_impl(
+            repo.to_str().unwrap(),
+            outside.to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(escaped["code"], "document_ignore_failed");
+
+        let traversal = add_document_entry_to_gitignore_impl(
+            repo.to_str().unwrap(),
+            repo.join("..").join("outside.md").to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(traversal["code"], "document_ignore_failed");
     }
 
     fn insert_attachment_test_session(paths: &AppPaths, db: &Db) -> String {

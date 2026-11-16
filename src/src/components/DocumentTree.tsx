@@ -590,6 +590,9 @@ export default function DocumentTree() {
       root && entry.path.startsWith(`${root}/`)
         ? entry.path.slice(root.length + 1)
         : entry.path;
+    // Git decorations are best-effort; the root only names a checkout once
+    // the tree-git snapshot proved this tree is inside a Git repository.
+    const gitCheckoutRoot = treeGit?.checkoutRoot ?? null;
     openContextMenu(event.clientX, event.clientY, [
       { label: t("ui.document.newFile"), action: () => startCreate("file", parent) },
       { label: t("ui.document.newDir"), action: () => startCreate("dir", parent) },
@@ -633,6 +636,26 @@ export default function DocumentTree() {
           void runAction(() => api.revealInFileManager(entry.path));
         },
       },
+      ...(gitCheckoutRoot
+        ? [
+            { label: "", separator: true },
+            {
+              label: t("ui.document.addToGitignore"),
+              disabled: !entryMutation,
+              tip: entryMutation ? undefined : t("ui.document.remoteMutationUnavailable"),
+              action: () => {
+                if (device.kind !== "local") {
+                  toast(t("ui.document.remoteActionUnavailable"), "info");
+                  return;
+                }
+                void runAction(async () => {
+                  await api.addDocumentEntryToGitignore(gitCheckoutRoot, entry.path);
+                  await refreshTreeGit(root ?? gitCheckoutRoot);
+                });
+              },
+            },
+          ]
+        : []),
       { label: "", separator: true },
       {
         label: t("ui.document.rename"),

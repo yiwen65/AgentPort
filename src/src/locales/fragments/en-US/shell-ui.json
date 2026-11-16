@@ -147,6 +147,7 @@
       "backToLatestTip": "Shortcut: ⌘↓ (Linux: Ctrl+Shift+↓)"
     },
     "document": {
+      "addToGitignore": "Add to .gitignore",
       "alertCaution": "Caution",
       "alertImportant": "Important",
       "alertNote": "Note",

@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { listMock, searchMock, createMock, renameMock, duplicateMock, deleteMock, vscodeMock, revealMock, copyMock, gitMock } =
+const { listMock, searchMock, createMock, renameMock, duplicateMock, deleteMock, vscodeMock, revealMock, copyMock, gitMock, ignoreMock } =
   vi.hoisted(() => ({
     listMock: vi.fn(),
     searchMock: vi.fn(),
@@ -14,6 +14,7 @@ const { listMock, searchMock, createMock, renameMock, duplicateMock, deleteMock,
     revealMock: vi.fn(),
     copyMock: vi.fn(),
     gitMock: vi.fn(),
+    ignoreMock: vi.fn(),
   }));
 
 vi.mock("../api", () => ({
@@ -24,6 +25,7 @@ vi.mock("../api", () => ({
     renameDocumentEntry: renameMock,
     duplicateDocumentEntry: duplicateMock,
     deleteDocumentEntry: deleteMock,
+    addDocumentEntryToGitignore: ignoreMock,
     openInVsCode: vscodeMock,
     revealInFileManager: revealMock,
     getGitChanges: gitMock,
@@ -471,6 +473,47 @@ describe("DocumentTree", () => {
     expect(container.querySelector(".doc-tree-git-badge")).toBeNull();
     expect(container.querySelector(".doc-tree-git-dot")).toBeNull();
     expect(container.querySelector(".doc-tree-row.git-modified")).toBeNull();
+  });
+
+  it("adds an entry to .gitignore from the context menu and refreshes decorations", async () => {
+    gitMock.mockResolvedValue(gitSnapshot([gitEntry("README.md", "untracked")]));
+    gitProject();
+    ignoreMock.mockResolvedValue(undefined);
+    render(<DocumentTree />);
+    await waitFor(() => {
+      fireEvent.contextMenu(screen.getByText("README.md"));
+      expect(menuItems().map((item) => item.label)).toContain("加入 .gitignore");
+    });
+    const readsBefore = gitMock.mock.calls.length;
+
+    await act(async () => {
+      menuItems().find((item) => item.label === "加入 .gitignore")?.action?.();
+    });
+
+    expect(ignoreMock).toHaveBeenCalledWith(ROOT, `${ROOT}/README.md`);
+    await waitFor(() => expect(gitMock.mock.calls.length).toBeGreaterThan(readsBefore));
+  });
+
+  it("disables Add to .gitignore on a remote device", async () => {
+    setActiveDevice({
+      kind: "remote",
+      deviceId: "dev_1",
+      deviceName: "Linux box",
+      capabilities: [],
+    });
+    gitMock.mockResolvedValue(gitSnapshot([]));
+    gitProject();
+    render(<DocumentTree />);
+    await waitFor(() => {
+      fireEvent.contextMenu(screen.getByText("README.md"));
+      expect(
+        menuItems().find((item) => item.label === "加入 .gitignore")?.disabled,
+      ).toBe(true);
+    });
+    expect(
+      menuItems().find((item) => item.label === "加入 .gitignore")?.tip,
+    ).toBe("远程设备上暂不支持该文档操作");
+    expect(ignoreMock).not.toHaveBeenCalled();
   });
 
   it("keeps expanded directories open across a manual refresh", async () => {

@@ -2,7 +2,8 @@ mod support;
 
 use agentport_core::db::Db;
 use agentport_core::git::{
-    GitContextLocator, GitIgnoreTarget, GitPathSelection, GitWorkspaceManager,
+    add_path_to_repository_ignore, GitContextLocator, GitIgnoreTarget, GitPathSelection,
+    GitWorkspaceManager,
 };
 use support::mock_repo::MockRepo;
 
@@ -16,6 +17,36 @@ fn selection(snapshot: &agentport_core::git::GitChangesSnapshot, path: &str) -> 
         path_token: entry.path_token.clone(),
         entry_token: entry.entry_token.clone(),
     }
+}
+
+#[test]
+fn tree_ignore_rules_are_root_anchored_escaped_and_deduplicated() {
+    let fixture = MockRepo::new();
+    fixture.write("src/a b*[x].md", "notes\n");
+    fixture.write("build/cache.bin", "cache\n");
+
+    let file = fixture.root().join("src/a b*[x].md");
+    add_path_to_repository_ignore(fixture.root(), &file).unwrap();
+    let dir = fixture.root().join("build");
+    add_path_to_repository_ignore(fixture.root(), &dir).unwrap();
+    // Re-adding the same entry must not duplicate the rule.
+    add_path_to_repository_ignore(fixture.root(), &dir).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(fixture.root().join(".gitignore")).unwrap(),
+        "/src/a\\ b\\*\\[x\\].md\n/build\n"
+    );
+
+    let outside = fixture.workspace().join("outside.txt");
+    std::fs::write(&outside, "x").unwrap();
+    let error = add_path_to_repository_ignore(fixture.root(), &outside).unwrap_err();
+    assert!(matches!(error, agentport_core::error::CoreError::Validation(_)));
+
+    let root_error = add_path_to_repository_ignore(fixture.root(), fixture.root()).unwrap_err();
+    assert!(matches!(
+        root_error,
+        agentport_core::error::CoreError::Validation(_)
+    ));
 }
 
 #[test]

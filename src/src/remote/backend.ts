@@ -163,6 +163,7 @@ export const ROUTING = {
     "renameDocumentEntry",
     "duplicateDocumentEntry",
     "deleteDocumentEntry",
+    "addDocumentEntryToGitignore",
     "rollbackNotificationSetup",
     "backupRestore",
     "revealInFileManager",
@@ -1504,6 +1505,10 @@ export class RemoteBackend {
 
   deleteDocumentEntry(_path: string): Promise<never> {
     return Promise.reject(new RemoteUnavailableError("document.delete"));
+  }
+
+  addDocumentEntryToGitignore(_root: string, _path: string): Promise<never> {
+    return Promise.reject(new RemoteUnavailableError("document.ignore"));
   }
 
   // -----------------------------------------------------------------------

@@ -13,6 +13,7 @@ export type RemoteFeatureTag =
   | "document.rename"
   | "document.duplicate"
   | "document.delete"
+  | "document.ignore"
   | "notification.rollback"
   | "backup.restore"
   | "export.options"

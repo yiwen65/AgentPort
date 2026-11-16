@@ -43,7 +43,7 @@ pub use context::{
     GitWorkspaceManager, ResolvedGitContext,
 };
 pub use diff::{GitDiffFormat, GitDiffSide, GitFileDiff};
-pub use file_actions::{GitIgnoreTarget, GitResolvedFile};
+pub use file_actions::{add_path_to_repository_ignore, GitIgnoreTarget, GitResolvedFile};
 pub use history::{
     GitCommitDetail, GitCommitFile, GitCommitPatch, GitCommitSummary, GitHistoryPage,
 };

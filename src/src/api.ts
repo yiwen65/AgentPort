@@ -651,6 +651,8 @@ export const localApi = {
     invoke<{ path: string }>("duplicate_document_entry", { path }),
   deleteDocumentEntry: (path: string) =>
     invoke<void>("delete_document_entry", { path }),
+  addDocumentEntryToGitignore: (root: string, path: string) =>
+    invoke<void>("add_document_entry_to_gitignore", { root, path }),
   openInVsCode: (path: string) => invoke<void>("open_in_vs_code", { path }),
   openWithDefaultApp: (path: string) => invoke<void>("open_with_default_app", { path }),
   pickDirectory: () => invoke<string | null>("pick_directory"),

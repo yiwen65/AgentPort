@@ -881,6 +881,11 @@ describe("REMOTE_UNAVAILABLE surface", () => {
     ["renameDocumentEntry", (b) => b.renameDocumentEntry("/p/a", "/p/b"), "document.rename"],
     ["duplicateDocumentEntry", (b) => b.duplicateDocumentEntry("/p/a"), "document.duplicate"],
     ["deleteDocumentEntry", (b) => b.deleteDocumentEntry("/p/a"), "document.delete"],
+    [
+      "addDocumentEntryToGitignore",
+      (b) => b.addDocumentEntryToGitignore("/p", "/p/a"),
+      "document.ignore",
+    ],
     ["backupRestore", (b) => b.backupRestore(), "backup.restore"],
     ["revealInFileManager", (b) => b.revealInFileManager(), "os.revealInFileManager"],
     ["openInSystemTerminal", (b) => b.openInSystemTerminal(), "os.openInSystemTerminal"],

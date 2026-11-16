@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Component, Path};
 
 const MAX_IGNORE_FILE_BYTES: u64 = 1024 * 1024;
 
@@ -199,6 +199,52 @@ impl<'a> GitWorkspaceManager<'a> {
             changes: self.changes(locator, true)?,
         })
     }
+}
+
+/// Appends an exact repository-relative rule for one worktree entry to the
+/// repository `.gitignore`. Unlike [`GitWorkspaceManager::ignore_path`], the
+/// entry does not need to be untracked or part of the current status
+/// snapshot: the explorer offers this action for any row of a Git repo.
+pub fn add_path_to_repository_ignore(checkout_root: &Path, path: &Path) -> Result<()> {
+    let canonical_root = std::fs::canonicalize(checkout_root).map_err(|_| {
+        CoreError::NotFound(format!(
+            "checkout root no longer exists: {}",
+            checkout_root.display()
+        ))
+    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| CoreError::Validation("cannot ignore the filesystem root".into()))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| CoreError::Validation("invalid ignore path".into()))?;
+    let canonical_parent = std::fs::canonicalize(parent)
+        .map_err(|_| CoreError::NotFound(format!("file no longer exists: {}", path.display())))?;
+    let relative = canonical_parent
+        .strip_prefix(&canonical_root)
+        .map_err(|_| CoreError::Validation("path is outside this repository".into()))?
+        .join(name);
+    let mut segments = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(part) => segments.push(part.to_str().ok_or_else(|| {
+                CoreError::Validation("non-UTF-8 paths cannot be ignored safely".into())
+            })?),
+            _ => {
+                return Err(CoreError::Validation(
+                    "path is outside this repository".into(),
+                ))
+            }
+        }
+    }
+    if segments.is_empty() {
+        return Err(CoreError::Validation(
+            "cannot ignore the repository root".into(),
+        ));
+    }
+    // Git ignore patterns always use forward slashes, also on Windows.
+    let rule = exact_ignore_rule(&segments.join("/"))?;
+    append_ignore_rule(&canonical_root.join(".gitignore"), &rule)
 }
 
 fn validate_checkout_id(actual: &str, expected: &str) -> Result<()> {
