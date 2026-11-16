@@ -17,6 +17,8 @@ import {
   testDeviceConnection,
   type DeviceProfile,
 } from "./devicesStore";
+import { activeDeviceContext } from "./deviceContext";
+import { getState, setActiveDevice } from "./store";
 
 const sshDevice: DeviceProfile = {
   id: "dev_ssh",
@@ -46,6 +48,7 @@ beforeEach(() => {
   setDevicesInvokerForTests(invoker);
   resetDevicesStoreForTests();
   registerDeviceSwitchHandler(null);
+  setActiveDevice({ kind: "local" });
 });
 
 describe("normalizeDeviceProfile", () => {
@@ -137,6 +140,43 @@ describe("store actions", () => {
       name: "Renamed",
     });
     expect(getDevicesState().devices?.[0].name).toBe("Renamed");
+  });
+
+  it("renameDevice syncs the active device display name without a restart", async () => {
+    invoker.mockResolvedValueOnce([sshDevice, relayDevice]);
+    await refreshDevices();
+    setActiveDevice({
+      kind: "remote",
+      deviceId: "dev_ssh",
+      deviceName: "Linux box",
+      capabilities: ["terminal"],
+    });
+    invoker.mockResolvedValueOnce(undefined);
+    await renameDevice("dev_ssh", "Renamed box");
+    expect(getState().activeDevice).toEqual({
+      kind: "remote",
+      deviceId: "dev_ssh",
+      deviceName: "Renamed box",
+      capabilities: ["terminal"],
+    });
+    expect(activeDeviceContext()).toEqual(getState().activeDevice);
+  });
+
+  it("renameDevice leaves a different active device's display name alone", async () => {
+    invoker.mockResolvedValueOnce([sshDevice, relayDevice]);
+    await refreshDevices();
+    setActiveDevice({
+      kind: "remote",
+      deviceId: "dev_relay",
+      deviceName: "Office PC",
+      capabilities: [],
+    });
+    invoker.mockResolvedValueOnce(undefined);
+    await renameDevice("dev_ssh", "Renamed box");
+    expect(getState().activeDevice).toMatchObject({
+      deviceId: "dev_relay",
+      deviceName: "Office PC",
+    });
   });
 
   it("removeDevice threads deleteCredentials and drops test state", async () => {

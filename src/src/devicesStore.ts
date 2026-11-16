@@ -6,6 +6,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useSyncExternalStore } from "react";
 import type { DeviceContext } from "./deviceContext";
+import { getState, setActiveDevice } from "./store";
 
 // ---------------------------------------------------------------------------
 // Types (wire-tolerant: the Rust registry task freezes its exact enum tagging
@@ -253,6 +254,13 @@ export async function renameDevice(id: string, name: string): Promise<void> {
     device.id === id ? { ...device, name } : device,
   );
   setState({ devices });
+  // The active device's display name is mirrored into AppState (topbar,
+  // pane badges, active-agents labels); without this it stays stale until the
+  // next reconnect or restart re-hydrates it from the registry.
+  const active = getState().activeDevice;
+  if (active.kind === "remote" && active.deviceId === id) {
+    setActiveDevice({ ...active, deviceName: name });
+  }
 }
 
 /**
