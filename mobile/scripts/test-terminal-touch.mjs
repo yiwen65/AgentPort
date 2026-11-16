@@ -129,6 +129,20 @@ try {
   assert.equal(await evaluate('document.activeElement === term.textarea'), true, 'Entry could not refocus a dismissed keyboard');
   assert.deepEqual(await evaluate('input'), [], 'Refocusing sent terminal input');
   await evaluate('term.textarea.blur()'); await wait(100);
+  // A keyboard relayout can reset the nested scroller. xterm maps native
+  // scroll events back into its buffer, so the reading row must survive and
+  // the DOM position must be realigned before that handler runs.
+  await evaluate('term.scrollLines(-40)');
+  const readingRow = await evaluate('term.buffer.active.viewportY');
+  const nativeReset = await evaluate(`(() => {
+    const viewport = term.element.querySelector('.xterm-viewport');
+    viewport.scrollTop = 0;
+    viewport.dispatchEvent(new Event('scroll'));
+    return { viewportY: term.buffer.active.viewportY, scrollTop: viewport.scrollTop, rowHeight: term._core.viewport._currentRowHeight };
+  })()`);
+  assert.equal(nativeReset.viewportY, readingRow, 'Native scroll reset stole the reading row: ' + JSON.stringify({ readingRow, nativeReset }));
+  assert.ok(Math.abs(nativeReset.scrollTop - readingRow * nativeReset.rowHeight) <= 1, 'Native scroll position was not realigned: ' + JSON.stringify({ readingRow, nativeReset }));
+  await evaluate('term.scrollToBottom()');
   // Kimi clears scrollback on resize, then streams its redraw in later chunks.
   // Deliver the queued native scroll before xterm's next animation-frame refresh.
   await evaluate(`new Promise(r => term.write('\\x1b[3J\\x1b[2J\\x1b[H', r))`);

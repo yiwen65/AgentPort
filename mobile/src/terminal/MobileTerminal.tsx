@@ -540,6 +540,31 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       if (reason === "paint") diagnosticsRef.current?.mark("paintBlocked");
       else diagnosticsRef.current?.mark(held ? "syncBegin" : "syncEnd", reason === "timeout" ? 2 : reason === "reset" ? 3 : 1);
     } : undefined);
+    // WebKit can reset this nested scroller's position while the software
+    // keyboard changes the layout. xterm maps every native scroll event back
+    // into its buffer, so an unsolicited reset would drag the reader to the
+    // oldest row. Touch scrolling never uses the native scroller here, so the
+    // buffer is authoritative; realign the DOM before xterm reads the event.
+    const nativeViewport = container.querySelector<HTMLElement>(".xterm-viewport");
+    let wheelIntentUntil = 0;
+    const noteWheelIntent = () => { wheelIntentUntil = performance.now() + 500; };
+    const reconcileNativeScroll = (event: Event) => {
+      if (!nativeViewport || event.target !== nativeViewport) return;
+      const buffer = terminal.buffer.active;
+      if (buffer.type !== "normal" || performance.now() < wheelIntentUntil) return;
+      const rowHeight = (terminal as unknown as {
+        _core: { viewport: { _currentRowHeight: number } };
+      })._core.viewport._currentRowHeight;
+      if (!(rowHeight > 0)) return;
+      const expected = buffer.viewportY * rowHeight;
+      if (Math.abs(nativeViewport.scrollTop - expected) <= rowHeight) return;
+      nativeViewport.scrollTop = expected;
+      // A scroll area too short to hold the reading row clamps that write; the
+      // clamped position must not be mapped back onto the buffer either.
+      if (Math.abs(nativeViewport.scrollTop - expected) > 0.5) event.stopPropagation();
+    };
+    container.addEventListener("wheel", noteWheelIntent, { capture: true, passive: true });
+    container.addEventListener("scroll", reconcileNativeScroll, true);
     const syncScrollState = () => {
       const buffer = terminal.buffer.active;
       setAtBottom(buffer.type !== "normal" || buffer.viewportY >= buffer.baseY);
@@ -603,7 +628,16 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       // its Host stays at the old size. xterm cannot undo a shrink by growing:
       // TUI rows below the cursor (and alternate-screen rows) are discarded.
       if (restoring.current || !activeRef.current) return;
+      const beforeFit = terminal.buffer.active;
+      const readingLine = beforeFit.type === "normal" && beforeFit.viewportY > 0
+        && beforeFit.viewportY < beforeFit.baseY ? beforeFit.viewportY : undefined;
       fit.fit();
+      const afterFit = terminal.buffer.active;
+      // A column reflow can drop xterm's viewport to the oldest row; that is
+      // never the reading user's intent during a keyboard-driven refit.
+      if (readingLine !== undefined && afterFit.type === "normal" && afterFit.viewportY === 0) {
+        terminal.scrollToLine(Math.min(readingLine, afterFit.baseY));
+      }
       positionSelectionMenu();
       if (!reportRemote || terminal.cols <= 0 || terminal.rows <= 0) return;
       if (lastReportedSize.current?.cols === terminal.cols && lastReportedSize.current.rows === terminal.rows) return;
@@ -1114,6 +1148,8 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       scrollWheelFrame = undefined;
       pendingWheel = undefined;
       document.removeEventListener("mousedown", guardCompatibilityMouse, true);
+      container.removeEventListener("wheel", noteWheelIntent, true);
+      container.removeEventListener("scroll", reconcileNativeScroll, true);
       container.removeEventListener("touchmove", scrollTouch, true);
       container.removeEventListener("touchend", finishTouch, true);
       container.removeEventListener("touchcancel", finishTouch, true);

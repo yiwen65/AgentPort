@@ -56,7 +56,10 @@ vi.mock("@xterm/addon-serialize", () => ({
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
-    _core = { _renderService: { _renderRows() {}, _renderer: { value: { renderRows() {} } } } };
+    _core = {
+      viewport: { _currentRowHeight: 16, syncScrollArea() {} },
+      _renderService: { _renderRows() {}, _renderer: { value: { renderRows() {} } } },
+    };
     parser = {
       registerCsiHandler: () => ({ dispose() {} }),
       registerEscHandler: () => ({ dispose() {} }),
@@ -154,6 +157,38 @@ describe("MobileTerminal input accessory", () => {
     expect(terminalHarness.viewportY).toBe(60);
     expect(terminalHarness.viewport!.scrollTop).toBe(19300);
     expect(button).not.toBeVisible();
+  });
+
+  it("keeps the reading row when a layout change resets the native scroll position", () => {
+    render(<MobileTerminal showProbeOutput={false} />);
+    const viewport = terminalHarness.viewport!;
+    terminalHarness.baseY = 80;
+    terminalHarness.viewportY = 40;
+    viewport.scrollTop = 40 * 16;
+    // xterm's own target listener maps the DOM position back onto the buffer.
+    viewport.addEventListener("scroll", () => {
+      terminalHarness.viewportY = Math.round(viewport.scrollTop / 16);
+    });
+    // WebKit can reset the nested scroller while the keyboard relayouts.
+    viewport.scrollTop = 0;
+    act(() => { viewport.dispatchEvent(new Event("scroll")); });
+    expect(viewport.scrollTop).toBe(40 * 16);
+    expect(terminalHarness.viewportY).toBe(40);
+  });
+
+  it("leaves a wheel-driven native scroll to xterm", () => {
+    render(<MobileTerminal showProbeOutput={false} />);
+    const viewport = terminalHarness.viewport!;
+    terminalHarness.baseY = 80;
+    terminalHarness.viewportY = 40;
+    viewport.scrollTop = 40 * 16;
+    viewport.addEventListener("scroll", () => {
+      terminalHarness.viewportY = Math.round(viewport.scrollTop / 16);
+    });
+    act(() => { viewport.dispatchEvent(new WheelEvent("wheel", { bubbles: true })); });
+    viewport.scrollTop = 30 * 16;
+    act(() => { viewport.dispatchEvent(new Event("scroll")); });
+    expect(terminalHarness.viewportY).toBe(30);
   });
 
   it("tracks keyboard viewport changes even without a Session workspace or a focus change", () => {
