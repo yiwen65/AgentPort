@@ -367,7 +367,7 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
             </li>;
           })}</ul>
           {!worktreeContext ? <div className="git-new-branch">
-            <input value={newBranch} maxLength={255} placeholder={t("git.branch.newBranchPlaceholder")} aria-label={t("git.branch.newBranch")} onChange={event => setNewBranch(event.target.value)} />
+            <input value={newBranch} maxLength={255} autoCapitalize="off" autoCorrect="off" spellCheck={false} placeholder={t("git.branch.newBranchPlaceholder")} aria-label={t("git.branch.newBranch")} onChange={event => setNewBranch(event.target.value)} />
             <button type="button" disabled={!newBranch.trim() || Boolean(mutation)} onClick={() => void runBranch(() => createAndSwitchGitBranch(client, hostId, context.target.projectId, newBranch.trim()))}>{t("git.branch.createAndSwitch")}</button>
           </div> : null}
         </> : null}
