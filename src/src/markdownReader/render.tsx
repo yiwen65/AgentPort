@@ -1,6 +1,7 @@
-// hast → React renderer. It never produces HTML strings; raw HTML nodes are
-// rendered as text. Every source-text leaf is annotated with its original
-// line so the preview selection can be quoted back as `path:line`.
+// hast → React renderer. It never produces HTML strings; raw nodes that the
+// parser did not turn into safe inline elements are rendered as text. Every
+// source-text leaf is annotated with its original line so the preview
+// selection can be quoted back as `path:line`.
 
 import { createElement, type CSSProperties, type ReactNode } from "react";
 import type { Element, Properties, Root as HastRoot, RootContent, Text as HastText } from "hast";
@@ -176,6 +177,9 @@ function renderElement(
     return createElement(tag, { key, ...elementProps(node), style }, children);
   }
   if (tag === "input") return renderInput(node, key);
+  if (tag === "br" || tag === "wbr") {
+    return createElement(tag, { key, ...elementProps(node) });
+  }
   if (classNames.includes("md-math-inline") || classNames.includes("md-math-display")) {
     return renderMath(node, key, context, classNames.includes("md-math-display"));
   }

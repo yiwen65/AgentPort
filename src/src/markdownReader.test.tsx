@@ -123,6 +123,36 @@ describe("MarkdownView advanced syntax", () => {
     expect(container.textContent).toContain('<script>alert("x")</script>');
   });
 
+  it("renders allowlisted inline HTML such as <sub>", () => {
+    const { container } = render(
+      <MarkdownView
+        source={
+          "<sub>图注 H<sub>2</sub>O</sub>\n\n" +
+          '按 <kbd title="Control">Ctrl</kbd> + C<br>换行\n\n' +
+          '<a href="javascript:alert(1)">链接</a> <img src="x">'
+        }
+        sourceLocations
+      />,
+    );
+    const sub = container.querySelector("sub");
+    expect(sub?.textContent).toBe("图注 H2O");
+    expect(sub?.querySelector("sub")?.textContent).toBe("2");
+    const kbd = container.querySelector("kbd");
+    expect(kbd?.textContent).toBe("Ctrl");
+    expect(kbd?.getAttribute("title")).toBe("Control");
+    expect(container.querySelectorAll("br")).toHaveLength(1);
+    expect(container.querySelector("a")).toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.textContent).toContain('<a href="javascript:alert(1)">链接</a>');
+    expect(sub?.querySelector("[data-source-line='1']")).not.toBeNull();
+  });
+
+  it("leaves unclosed inline HTML as escaped text", () => {
+    const { container } = render(<MarkdownView source={"<sub>未闭合"} />);
+    expect(container.querySelector("sub")).toBeNull();
+    expect(container.textContent).toContain("<sub>未闭合");
+  });
+
   it("keeps image destinations with spaces working", () => {
     const { container } = render(<MarkdownView source={"![示意图](some file.png)"} />);
     expect(container.querySelector(".md-image")).not.toBeNull();
