@@ -371,7 +371,8 @@
           "passwordRequired": "请输入密码。",
           "pemRequired": "请粘贴私钥 PEM。"
         }
-      }
+      },
+      "sshHint": "目标电脑需已安装 AgentPort 并开启 SSH 服务；首次连接将记录主机密钥（TOFU）。凭据仅保存在本机私有文件（0600），不写入设备配置或日志；旧版钥匙串凭据需要重新输入。"
     },
     "pairing": {
       "description": "通过端到端加密的 Relay 配对手机并访问终端会话。",

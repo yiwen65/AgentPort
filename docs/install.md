@@ -138,13 +138,14 @@ rm -rf /Applications/AgentPort.app
 rm -rf ~/Library/Application\ Support/AgentPort
 ```
 
-旧版本可能仍在 Keychain 中留下 `service=agentport` 的条目（当前版本不再使用钥匙串），需手动删除：打开"钥匙串访问"搜索 `agentport` 删除，或使用命令：
+旧版本可能仍在 Keychain 中留下 `agentport`（Secret/AI Key）与 `agentport-devices`（手动 SSH 凭据）的条目；当前版本都不再使用钥匙串，可手动删除：打开"钥匙串访问"搜索 `agentport` 删除，或使用命令：
 
 ```bash
 security delete-generic-password -s agentport
+security delete-generic-password -s agentport-devices
 ```
 
-保存过多个敏感变量时条目不止一条，可重复执行直至提示找不到。
+保存过多个条目时可重复执行直至提示找不到。
 
 ### Ubuntu
 

@@ -5015,7 +5015,9 @@ fn main() {
         remote::RemoteConnectionManager::new(&paths).expect("remote connection manager"),
     );
     let device_credentials: std::sync::Arc<dyn remote::credentials::DeviceCredentialStore> =
-        std::sync::Arc::new(remote::credentials::KeychainCredentialStore);
+        std::sync::Arc::new(remote::credentials::FileCredentialStore::new(
+            paths.root().to_path_buf(),
+        ));
     let device_registry_path = paths.root().join("devices").join("devices.json");
     let device_registry = remote::registry::DeviceRegistry::open(
         device_registry_path.clone(),

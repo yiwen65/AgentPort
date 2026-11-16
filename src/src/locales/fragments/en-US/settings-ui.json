@@ -371,7 +371,8 @@
           "passwordRequired": "Enter the password.",
           "pemRequired": "Paste the private key PEM."
         }
-      }
+      },
+      "sshHint": "The target computer must have AgentPort installed and SSH enabled; its host key is pinned on first connect (TOFU). Credentials are stored only in owner-only private files (0600), never in device profiles or logs; a legacy Keychain credential must be re-entered."
     },
     "pairing": {
       "description": "Pair a phone and use terminal sessions through an end-to-end encrypted Relay.",

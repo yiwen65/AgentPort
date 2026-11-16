@@ -82,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "agentport"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "agentport-core",
  "agentport-relay",
@@ -93,7 +93,6 @@ dependencies = [
  "block2",
  "chrono",
  "image",
- "keyring",
  "libc",
  "objc2",
  "objc2-foundation",
@@ -119,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "agentport-cli"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "agentport-core",
  "chrono",
@@ -130,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "agentport-core"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -156,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "agentport-host"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "agentport-core",
  "chrono",
@@ -173,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "agentport-mosh-attach"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "agentport-remote-protocol",
  "agentport-service",

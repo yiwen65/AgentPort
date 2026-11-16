@@ -1,10 +1,11 @@
-//! Device SSH secrets in the platform keychain.
+//! Device SSH secrets in the app's owner-only private files.
 //!
-//! Passwords and private keys are stored ONLY in the OS keychain (service
-//! `agentport-devices`, account `cred_<deviceId>`) as a small JSON document.
-//! They never touch disk, logs, or any `DeviceProfile` serialization — the
+//! Passwords and private keys are stored ONLY in `<data>/secrets/` (0700
+//! directory, 0600 files, hashed account names) as a small JSON document.
+//! They never touch logs or any `DeviceTransportProfile` serialization — the
 //! profile carries only the account name (`auth_ref`). The store sits behind
-//! a trait so registry/command flows are testable hermetically.
+//! a trait so registry/command flows are testable hermetically. The whole
+//! `secrets/` directory is excluded from full-data backups.
 
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -12,10 +13,8 @@ use zeroize::Zeroizing;
 use crate::remote::ssh::SshSecret;
 use crate::remote::RemoteCommandError;
 
-pub const KEYCHAIN_SERVICE: &str = "agentport-devices";
-
-/// Keychain account holding one device's SSH secret. Mirrors the `auth_ref`
-/// field persisted inside `DeviceTransportProfile::Ssh`.
+/// Private-file account holding one device's SSH secret. Mirrors the
+/// `auth_ref` field persisted inside `DeviceTransportProfile::Ssh`.
 pub fn credential_account(device_id: &str) -> String {
     format!("cred_{device_id}")
 }
@@ -71,47 +70,50 @@ pub trait DeviceCredentialStore: Send + Sync {
     fn delete(&self, device_id: &str) -> Result<(), RemoteCommandError>;
 }
 
-/// Production store backed by the platform keychain (macOS Keychain /
-/// Linux Secret Service via the `keyring` crate).
-pub struct KeychainCredentialStore;
+/// Production store backed by the app's owner-only private files. Opening the
+/// store validates the data-root and `secrets/` permissions on every call, so
+/// a permission regression fails closed instead of falling back to Keychain.
+pub struct FileCredentialStore {
+    root: std::path::PathBuf,
+}
 
-impl KeychainCredentialStore {
-    fn entry(&self, device_id: &str) -> Result<keyring::Entry, RemoteCommandError> {
-        keyring::Entry::new(KEYCHAIN_SERVICE, &credential_account(device_id))
+impl FileCredentialStore {
+    pub fn new(root: std::path::PathBuf) -> Self {
+        Self { root }
+    }
+
+    fn files(&self) -> Result<agentport_core::secrets::FileStore, RemoteCommandError> {
+        agentport_core::secrets::FileStore::open(&self.root)
             .map_err(|error| RemoteCommandError::new("credential_store_failed", error.to_string()))
     }
 }
 
-impl DeviceCredentialStore for KeychainCredentialStore {
+impl DeviceCredentialStore for FileCredentialStore {
     fn store(&self, device_id: &str, secret: &SshSecret) -> Result<(), RemoteCommandError> {
         let payload = encode_secret(secret)?;
-        self.entry(device_id)?
-            .set_secret(payload.as_str().as_bytes())
+        self.files()?
+            .write(&credential_account(device_id), payload.as_str().as_bytes())
             .map_err(|error| RemoteCommandError::new("credential_store_failed", error.to_string()))
     }
 
     fn load(&self, device_id: &str) -> Result<Option<SshSecret>, RemoteCommandError> {
-        let payload = match self.entry(device_id)?.get_secret() {
-            Ok(payload) => payload,
-            Err(keyring::Error::NoEntry) => return Ok(None),
-            Err(error) => {
-                return Err(RemoteCommandError::new(
-                    "credential_load_failed",
-                    error.to_string(),
-                ))
-            }
-        };
-        decode_secret(&payload).map(Some)
+        let payload = self
+            .files()?
+            .read(&credential_account(device_id))
+            .map_err(|error| {
+                RemoteCommandError::new("credential_load_failed", error.to_string())
+            })?;
+        payload
+            .map(|payload| decode_secret(&payload))
+            .transpose()
     }
 
     fn delete(&self, device_id: &str) -> Result<(), RemoteCommandError> {
-        match self.entry(device_id)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(error) => Err(RemoteCommandError::new(
-                "credential_delete_failed",
-                error.to_string(),
-            )),
-        }
+        self.files()?
+            .delete(&credential_account(device_id))
+            .map_err(|error| {
+                RemoteCommandError::new("credential_delete_failed", error.to_string())
+            })
     }
 }
 
@@ -171,6 +173,35 @@ impl DeviceCredentialStore for MemoryCredentialStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn file_store_round_trip_delete_and_permissions() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let store = FileCredentialStore::new(temp.path().to_path_buf());
+        assert!(store.load("dev_file").unwrap().is_none());
+
+        let secret = SshSecret::Password(Zeroizing::new("pw-file".to_string()));
+        store.store("dev_file", &secret).unwrap();
+        let directory = temp.path().join("secrets");
+        let entries: Vec<_> = std::fs::read_dir(&directory).unwrap().collect();
+        assert_eq!(entries.len(), 1);
+        let path = entries[0].as_ref().unwrap().path();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        match store.load("dev_file").unwrap() {
+            Some(SshSecret::Password(password)) => assert_eq!(password.as_str(), "pw-file"),
+            _ => panic!("wrong secret"),
+        }
+        store.delete("dev_file").unwrap();
+        assert!(store.load("dev_file").unwrap().is_none());
+        // Deleting a missing credential is idempotent.
+        store.delete("dev_file").unwrap();
+    }
 
     #[test]
     fn password_secret_round_trips_through_document() {

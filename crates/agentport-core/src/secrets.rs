@@ -74,12 +74,12 @@ pub struct CredentialBroker {
 
 /// Owner-only secret files for macOS. The filename is the SHA-256 of the
 /// opaque account key, so user-controlled names never become paths.
-struct FileStore {
+pub struct FileStore {
     directory: PathBuf,
 }
 
 impl FileStore {
-    fn open(root: &Path) -> Result<Self> {
+    pub fn open(root: &Path) -> Result<Self> {
         let root = prepare_private_dir(root)?;
         let directory = prepare_private_dir(&root.join("secrets"))?;
         Ok(Self { directory })
@@ -95,7 +95,7 @@ impl FileStore {
         self.directory.join(name)
     }
 
-    fn read(&self, account: &str) -> Result<Option<Vec<u8>>> {
+    pub fn read(&self, account: &str) -> Result<Option<Vec<u8>>> {
         let file = match std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
@@ -122,7 +122,7 @@ impl FileStore {
         Ok(Some(bytes))
     }
 
-    fn write(&self, account: &str, value: &[u8]) -> Result<()> {
+    pub fn write(&self, account: &str, value: &[u8]) -> Result<()> {
         if value.is_empty() || value.len() as u64 > MAX_SECRET_BYTES {
             return Err(CoreError::Validation(
                 "secret value has an invalid size".into(),
@@ -159,7 +159,7 @@ impl FileStore {
         result
     }
 
-    fn delete(&self, account: &str) -> Result<()> {
+    pub fn delete(&self, account: &str) -> Result<()> {
         match std::fs::remove_file(self.path(account)) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

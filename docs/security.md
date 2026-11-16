@@ -40,6 +40,7 @@
 敏感环境变量（如 API Key）的存储与使用遵守以下硬边界：
 
 - **macOS 私有文件 / Linux Secret Service**：macOS 上 Secret 原值存放在应用私有目录 `secrets/`（目录 0700、文件 0600，文件名是账户键的 SHA-256），不再使用 Keychain，避免升级替换 App 后反复弹出系统授权框；Linux 继续使用 Secret Service（service 名称为 `agentport`）。SQLite 中只保存引用（变量名、后端、账户键），不保存原值。该 macOS 文件对同一登录用户下的其他进程可读，隔离边界弱于钥匙串，但不进入全量备份。
+- **手动 SSH 设备凭据**：密码/私钥只存放在应用私有目录 `secrets/` 的 0600 文件中（文件名是账户键的 SHA-256），不写入设备配置、日志或前端状态，也不进入全量备份；不再使用 `agentport-devices` Keychain 服务。旧版钥匙串条目需要重新输入一次。
 - **连接器自身凭据**：`agentport-connector` 的 Relay 身份密钥、注册令牌与 APNs 密钥不是用户 Secret；macOS 上存放在该连接器私有状态目录（0700）下的 0600 文件中，首次启动把旧的 `com.agentport.relay.connector.v1` Keychain 账户一次性迁入后不再访问 Keychain，Linux 继续使用 Secret Service。原因是 Keychain ACL 绑定创建条目的二进制，App 升级替换 sidecar 后会反复要求登录钥匙串密码。该存储对同一登录用户下的其他进程可读，隔离边界与上面的用户 Secret 不同。
 - **AgentPort 内的流动路径**：macOS 私有文件 / Linux Secret Service → 启动瞬间经 Credential Broker 读入受限内存 → 作为环境变量注入目标 Agent 子进程 → 立即清除临时缓冲。原值不进入 AgentPort 前端状态、SQLite、进程参数、正文索引或诊断包。目标 Agent 自己的原生日志属于其安全边界。
 - **不可用即禁用**：macOS 私有目录权限不安全（非 0700/0600 或属主不符），或 Linux 未运行 Secret Service 时，保存 Secret 的功能直接禁用；不会退化为额外的明文位置，此时仍可使用 Shell 环境中已有的变量。
