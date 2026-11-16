@@ -13,6 +13,7 @@ import {
   isDeviceConnected,
 } from "./deviceConnections";
 import { deviceSnapshotFor, seedActiveDeviceSnapshot } from "./deviceSessions";
+import { getDevicesState } from "./devicesStore";
 import { cachedRemoteAdapters } from "./remoteAdapterCache";
 import {
   ACTIVE_DEVICE_STORAGE_KEY,
@@ -333,10 +334,15 @@ function remoteContextFromHello(
   target: DeviceContext & { kind: "remote" },
   hello: { deviceName: string; capabilities: string[] } | null | undefined,
 ): DeviceContext {
+  // The cached hello is a snapshot of the registry name at dial time; a
+  // settings rename must not require reconnecting for the next switch.
+  const registered = getDevicesState().devices?.find(
+    (device) => device.id === target.deviceId,
+  )?.name;
   return {
     kind: "remote",
     deviceId: target.deviceId,
-    deviceName: hello?.deviceName || target.deviceName,
+    deviceName: registered || hello?.deviceName || target.deviceName,
     capabilities: hello?.capabilities ?? [],
   };
 }

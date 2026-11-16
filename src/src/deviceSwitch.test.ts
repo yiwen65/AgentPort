@@ -65,6 +65,11 @@ import {
   resetDeviceSessionsForTests,
 } from "./deviceSessions";
 import {
+  refreshDevices,
+  resetDevicesStoreForTests,
+  setDevicesInvokerForTests,
+} from "./devicesStore";
+import {
   getState,
   emptyGitCenterState,
   setActiveDevice,
@@ -197,6 +202,8 @@ beforeEach(() => {
   resetDeviceSwitchForTests();
   resetDeviceConnectionsForTests();
   resetDeviceSessionsForTests();
+  resetDevicesStoreForTests();
+  setDevicesInvokerForTests(undefined);
   resetLocalBootBaseForTests();
   cacheLocalBootBase(localBoot);
   apiMock.boot.mockResolvedValue(localBoot);
@@ -329,6 +336,37 @@ describe("switchDevice", () => {
     expect(remoteSyncMock.startRemoteSync).toHaveBeenCalledWith("dev_1");
     expect(apiMock.boot).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(backend.boot).toHaveBeenCalled());
+  });
+
+  it("uses the current registry name over a stale cached hello after a rename", async () => {
+    const backend = makeBackend();
+    runtimeMock.remoteBackendFor.mockReturnValue(backend);
+    // The connection caches the name it was dialed with ("Linux Box").
+    await connectDevice("dev_1");
+    await refreshDeviceSnapshot("dev_1");
+    setDevicesInvokerForTests(async (command) =>
+      command === "device_list"
+        ? [
+            {
+              id: "dev_1",
+              name: "Work",
+              transport: "ssh",
+              hostname: "h",
+              port: 22,
+              username: "u",
+            },
+          ]
+        : [],
+    );
+    await refreshDevices();
+
+    await switchDevice(remoteContext("dev_1"));
+
+    expect(getState().activeDevice).toMatchObject({
+      kind: "remote",
+      deviceId: "dev_1",
+      deviceName: "Work",
+    });
   });
 
   it("shows the light session list on a first switch without a snapshot", async () => {
