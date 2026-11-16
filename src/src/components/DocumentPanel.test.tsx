@@ -11,6 +11,21 @@ async function movePointer(clientX: number) {
   });
 }
 
+/** jsdom has no DragEvent; a plain Event drops clientX, which the split-zone
+ * hit test reads. Build the MouseEvent and attach the transfer explicitly. */
+function docDragEvent(
+  type: "dragstart" | "dragover" | "drop",
+  init: { dataTransfer: DataTransfer; clientX?: number },
+): Event {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    clientX: init.clientX ?? 0,
+  });
+  Object.defineProperty(event, "dataTransfer", { value: init.dataTransfer });
+  return event;
+}
+
 const { readMock, writeMock, revealMock, openUrlMock, openDefaultMock, insertMock, listMock, createMock, copyMock } =
   vi.hoisted(() => ({
     readMock: vi.fn(),
@@ -732,6 +747,91 @@ describe("DocumentPanel", () => {
     });
     expect(getState().docGroups).toHaveLength(1);
     expect(getState().docGroups[0]?.tabs.map((tab) => tab.path)).toEqual([DEMO_DOC.path]);
+  });
+
+  it("splits a group when a dragged tab is dropped over its right edge", async () => {
+    act(() => pinDocumentTab(DEMO_DOC.path));
+    act(() => {
+      openDocumentTarget({ path: "/tmp/demo/第二.md", line: null });
+    });
+    const { container } = render(<DocumentPanel />);
+    const tab = await screen.findByRole("tab", { name: "第二.md" });
+    const data = new Map<string, string>();
+    // WKWebView may hide the custom MIME from `types`, so tab drags must be
+    // driven by the app's own drag state, not the DataTransfer type list.
+    const dataTransfer = {
+      effectAllowed: "move",
+      dropEffect: "none",
+      setData: (type: string, value: string) => data.set(type, value),
+      getData: (type: string) => data.get(type) ?? "",
+    } as unknown as DataTransfer;
+    fireEvent(tab, docDragEvent("dragstart", { dataTransfer }));
+
+    const body = container.querySelector(".doc-group-body") as HTMLElement;
+    body.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 600,
+        bottom: 400,
+        width: 600,
+        height: 400,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+
+    // The left side is not a split target: dropping there stays put.
+    fireEvent(body, docDragEvent("dragover", { dataTransfer, clientX: 120 }));
+    fireEvent(body, docDragEvent("drop", { dataTransfer, clientX: 120 }));
+    expect(getState().docGroups).toHaveLength(1);
+
+    fireEvent(body, docDragEvent("dragover", { dataTransfer, clientX: 560 }));
+    fireEvent(body, docDragEvent("drop", { dataTransfer, clientX: 560 }));
+    await waitFor(() => expect(getState().docGroups).toHaveLength(2));
+    expect(getState().docGroups[1]?.tabs.map((item) => item.path)).toEqual([
+      "/tmp/demo/第二.md",
+    ]);
+  });
+
+  it("reorders tabs when a dragged tab is dropped before another tab", async () => {
+    act(() => pinDocumentTab(DEMO_DOC.path));
+    act(() => {
+      openDocumentTarget({ path: "/tmp/demo/第二.md", line: null });
+    });
+    const { container } = render(<DocumentPanel />);
+    const dragged = await screen.findByRole("tab", { name: "第二.md" });
+    const data = new Map<string, string>();
+    const dataTransfer = {
+      effectAllowed: "move",
+      dropEffect: "none",
+      setData: (type: string, value: string) => data.set(type, value),
+      getData: (type: string) => data.get(type) ?? "",
+    } as unknown as DataTransfer;
+    fireEvent(dragged, docDragEvent("dragstart", { dataTransfer }));
+
+    const first = container.querySelector(".doc-tab") as HTMLElement;
+    first.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 120,
+        bottom: 30,
+        width: 120,
+        height: 30,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    fireEvent(first, docDragEvent("dragover", { dataTransfer, clientX: 20 }));
+    fireEvent(first, docDragEvent("drop", { dataTransfer, clientX: 20 }));
+
+    await waitFor(() =>
+      expect(getState().docGroups[0]?.tabs.map((item) => item.path)).toEqual([
+        "/tmp/demo/第二.md",
+        DEMO_DOC.path,
+      ]),
+    );
   });
 
   it("switches reading themes from the toolbar", async () => {

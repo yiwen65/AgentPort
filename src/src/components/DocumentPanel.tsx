@@ -122,6 +122,9 @@ const DOC_TREE_SASH_WIDTH = 5;
 
 /** dataTransfer type for tab drags (reorder, cross-group move, split). */
 const TAB_DND_TYPE = "application/x-agentport-doc-tab";
+/* Rightmost share of a single group that turns a tab drop into a split;
+   mirrors the .doc-split-hint width. */
+const SPLIT_DROP_RATIO = 0.42;
 
 function fileName(path: string): string {
   return path.split("/").pop() ?? path;
@@ -754,6 +757,7 @@ function DocTab({
   groupIndex,
   active,
   dropBefore,
+  dragActive,
   setDragTabId,
   setDropTarget,
 }: {
@@ -761,6 +765,7 @@ function DocTab({
   groupIndex: number;
   active: boolean;
   dropBefore: boolean;
+  dragActive: boolean;
   setDragTabId: (tabId: string | null) => void;
   setDropTarget: (
     target: { groupIndex: number; beforeTabId: string | null } | null,
@@ -828,7 +833,9 @@ function DocTab({
         setDropTarget(null);
       }}
       onDragOver={(event) => {
-        if (!event.dataTransfer.types.includes(TAB_DND_TYPE)) return;
+        // `dragTabId` is our own drag source; WKWebView's DataTransfer.types
+        // hides custom MIME types (and lacks `.includes` on some builds).
+        if (!dragActive) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = "move";
         const rect = event.currentTarget.getBoundingClientRect();
@@ -888,7 +895,7 @@ function DocTabStrip({
       role="tablist"
       aria-label={t("ui.document.tabs")}
       onDragOver={(event) => {
-        if (event.dataTransfer.types.includes(TAB_DND_TYPE)) {
+        if (dragTabId) {
           event.preventDefault();
           event.dataTransfer.dropEffect = "move";
         }
@@ -909,6 +916,7 @@ function DocTabStrip({
           groupIndex={groupIndex}
           active={tab.id === group.activeTabId}
           dropBefore={dropTarget?.groupIndex === groupIndex && dropTarget.beforeTabId === tab.id}
+          dragActive={dragTabId !== null}
           setDragTabId={setDragTabId}
           setDropTarget={setDropTarget}
         />
@@ -1963,6 +1971,15 @@ function DocGroupView({
   splitHot: boolean;
   setSplitHot: (hot: boolean) => void;
 }) {
+  // The split hint is a passive overlay: mounting a fresh drop target under
+  // the pointer mid-drag makes WebKit keep delivering drag events to the old
+  // element, so the stable group body owns the drop and only a pointer inside
+  // the hint's right-hand band splits.
+  const inSplitZone = (event: React.DragEvent<HTMLElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return event.clientX >= rect.left + rect.width * (1 - SPLIT_DROP_RATIO);
+  };
+
   return (
     <section
       className={`doc-group${isActive ? " active" : ""}`}
@@ -1976,33 +1993,44 @@ function DocGroupView({
         dropTarget={dropTarget}
         setDropTarget={setDropTarget}
       />
-      <div className="doc-group-body">
+      <div
+        className="doc-group-body"
+        onDragOver={(event) => {
+          if (!single || !dragTabId) return;
+          if (!inSplitZone(event)) {
+            if (splitHot) setSplitHot(false);
+            return;
+          }
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          if (!splitHot) setSplitHot(true);
+        }}
+        onDragLeave={(event) => {
+          if (!splitHot) return;
+          const next = event.relatedTarget as Node | null;
+          if (next && event.currentTarget.contains(next)) return;
+          setSplitHot(false);
+        }}
+        onDrop={(event) => {
+          if (!single || !dragTabId || !inSplitZone(event)) return;
+          event.preventDefault();
+          const tabId = event.dataTransfer.getData(TAB_DND_TYPE) || dragTabId;
+          setSplitHot(false);
+          setDragTabId(null);
+          setDropTarget(null);
+          if (tabId) moveDocumentTab(tabId, 1);
+        }}
+      >
         {group.tabs.map((tab) => (
           <MemoDocTabEditor key={tab.id} tab={tab} visible={tab.id === group.activeTabId} />
         ))}
+        {single && dragTabId ? (
+          <div
+            className={`doc-split-hint${splitHot ? " hot" : ""}`}
+            aria-hidden="true"
+          />
+        ) : null}
       </div>
-      {single && dragTabId ? (
-        <div
-          className={`doc-split-hint${splitHot ? " hot" : ""}`}
-          aria-hidden="true"
-          onDragOver={(event) => {
-            if (event.dataTransfer.types.includes(TAB_DND_TYPE)) {
-              event.preventDefault();
-              event.dataTransfer.dropEffect = "move";
-              setSplitHot(true);
-            }
-          }}
-          onDragLeave={() => setSplitHot(false)}
-          onDrop={(event) => {
-            event.preventDefault();
-            const tabId = event.dataTransfer.getData(TAB_DND_TYPE) || dragTabId;
-            setSplitHot(false);
-            setDragTabId(null);
-            setDropTarget(null);
-            if (tabId) moveDocumentTab(tabId, 1);
-          }}
-        />
-      ) : null}
     </section>
   );
 }

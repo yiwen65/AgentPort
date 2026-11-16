@@ -4466,6 +4466,7 @@ body.is-resizing-pane {
 
 /* Split drop hint: overlays the right side of a single group while a tab is
    dragged; dropping there creates the second split. */
+/* Purely visual: the stable group body owns the split drop (see DocGroupView). */
 .doc-split-hint {
   position: absolute;
   top: 0;
@@ -4473,6 +4474,7 @@ body.is-resizing-pane {
   bottom: 0;
   width: 42%;
   z-index: 6;
+  pointer-events: none;
   background: color-mix(in srgb, var(--term-accent) 8%, transparent);
   border-left: 2px dashed color-mix(in srgb, var(--term-accent) 45%, transparent);
 }
