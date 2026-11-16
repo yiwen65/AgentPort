@@ -95,6 +95,33 @@
 .mobile-terminal-spike[data-input-active="true"] .mobile-terminal-show-keyboard {
   bottom: calc(164px + env(safe-area-inset-bottom));
 }
+
+/* Sits one gap above the keyboard entry, shown only while reading history. */
+.mobile-terminal-scroll-bottom {
+  position: absolute;
+  z-index: 5;
+  right: max(8px, env(safe-area-inset-right));
+  bottom: calc(156px + env(safe-area-inset-bottom));
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 10px;
+  border: 1px solid rgba(128, 128, 128, .28);
+  border-radius: 50%;
+  background: rgba(128, 128, 128, .16);
+  color: var(--terminal-fg);
+  box-shadow: none;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.mobile-terminal-scroll-bottom[hidden] { display: none; }
+.mobile-terminal-scroll-bottom:active { background: rgba(128, 128, 128, .3); }
+.mobile-terminal-scroll-bottom:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mobile-terminal-scroll-bottom svg { width: 22px; height: 22px; opacity: .8; }
+.mobile-terminal-spike[data-input-active="true"] .mobile-terminal-scroll-bottom {
+  bottom: calc(216px + env(safe-area-inset-bottom));
+}
 .mobile-terminal-key-scroll {
   display: flex;
   flex: 1 1 auto;

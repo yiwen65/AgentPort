@@ -162,6 +162,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const pendingRemoteReport = useRef(false);
   const scheduleFitRef = useRef<(reportRemote?: boolean) => void>(() => undefined);
   const fitTerminalRef = useRef<(reportRemote: boolean) => void>(() => undefined);
+  const syncScrollStateRef = useRef<() => void>(() => undefined);
   const cancelRestoreRender = useRef<(() => void) | undefined>(undefined);
   const inputHandlerRef = useRef<(data: string) => void>(() => undefined);
   const invalidateIosImeRef = useRef<() => void>(() => undefined);
@@ -188,6 +189,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
   const [copyFailed, setCopyFailed] = useState(false);
   const [inputActive, setInputActive] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [atBottom, setAtBottom] = useState(true);
   const [shiftActive, setShiftActive] = useState(false);
   const [controlActive, setControlActive] = useState(false);
   const [commandActive, setCommandActive] = useState(false);
@@ -309,6 +311,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
         const viewport = terminal.element?.querySelector<HTMLElement>(".xterm-viewport");
         if (viewport) viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
       }
+      syncScrollStateRef.current();
       if (terminal && onRendered) {
         const subscription = terminal.onRender(() => {
           subscription.dispose();
@@ -537,6 +540,12 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       if (reason === "paint") diagnosticsRef.current?.mark("paintBlocked");
       else diagnosticsRef.current?.mark(held ? "syncBegin" : "syncEnd", reason === "timeout" ? 2 : reason === "reset" ? 3 : 1);
     } : undefined);
+    const syncScrollState = () => {
+      const buffer = terminal.buffer.active;
+      setAtBottom(buffer.type !== "normal" || buffer.viewportY >= buffer.baseY);
+    };
+    syncScrollStateRef.current = syncScrollState;
+    syncScrollState();
     // xterm 5.5 defers its DOM viewport refresh to rAF. After a TUI clears
     // scrollback and streams a redraw, an older native scroll event can map
     // DOM row 0 back onto the rebuilt buffer before that frame runs. Flush
@@ -547,6 +556,9 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
         _core: { viewport: { syncScrollArea(immediate: boolean): void } };
       })._core;
       core.viewport.syncScrollArea(true);
+      // New output grows baseY without a scroll event; reveal the jump entry
+      // as soon as the reader is no longer following the tail.
+      syncScrollState();
       diagnosticsRef.current?.mark("parsed");
     });
     const diagnosticRender = SCROLL_DIAGNOSTICS_ENABLED ? terminal.onRender(() => diagnosticsRef.current?.mark("render")) : undefined;
@@ -582,7 +594,10 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       });
     };
     positionSelectionMenuRef.current = positionSelectionMenu;
-    const selectionScrolled = terminal.onScroll(() => positionSelectionMenu());
+    const selectionScrolled = terminal.onScroll(() => {
+      positionSelectionMenu();
+      syncScrollState();
+    });
     const fitTerminal = (reportRemote: boolean) => {
       // A keyboard on another page must not shrink this retained buffer while
       // its Host stays at the old size. xterm cannot undo a shrink by growing:
@@ -1124,6 +1139,7 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
       discardSelectionFreeze();
       if (selectionFrame !== undefined) window.cancelAnimationFrame(selectionFrame);
       positionSelectionMenuRef.current = () => undefined;
+      syncScrollStateRef.current = () => undefined;
       osc52.dispose();
       disposeSynchronizedOutput();
       disposeWebglAtlas();
@@ -1208,6 +1224,18 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
     terminal.focus();
   };
 
+  const scrollToBottom = () => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    terminal.scrollToBottom();
+    // xterm 5.5 can report the buffer tail before its native viewport catches
+    // up; reconcile both before the scroll state is read back.
+    const viewport = terminal.element?.querySelector<HTMLElement>(".xterm-viewport")
+      ?? containerRef.current?.querySelector<HTMLElement>(".xterm-viewport");
+    if (viewport) viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    syncScrollStateRef.current();
+  };
+
   const send = (data: string) => {
     terminalRef.current?.focus();
     inputHandlerRef.current(data);
@@ -1279,6 +1307,15 @@ export const MobileTerminal = forwardRef<MobileTerminalHandle, MobileTerminalPro
           <button className="mobile-terminal-shortcut-settings" type="button" aria-label={t("shortcuts.title", { defaultValue: "Terminal shortcuts" })} aria-haspopup="dialog" onMouseDown={event => event.preventDefault()} onClick={() => { clearModifiers(); setShortcutsOpen(true); }}><ShortcutSettingsIcon /></button>
         </div>
       </div>
+      <button className="mobile-terminal-scroll-bottom" type="button"
+        aria-label={t("session.scrollToBottom")} title={t("session.scrollToBottom")}
+        hidden={atBottom || obscured || shortcutsOpen}
+        onMouseDown={event => event.preventDefault()} onClick={scrollToBottom}>
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 5v14" />
+          <path d="m6 13 6 6 6-6" />
+        </svg>
+      </button>
       <button className="mobile-terminal-show-keyboard" type="button"
         aria-label={t("session.showKeyboard")} title={t("session.showKeyboard")}
         hidden={keyboardVisible || obscured || shortcutsOpen} disabled={!keyboardEnabled || recovering}

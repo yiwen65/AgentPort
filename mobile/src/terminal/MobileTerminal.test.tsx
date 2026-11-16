@@ -142,6 +142,20 @@ describe("MobileTerminal input accessory", () => {
     expect(onInput).not.toHaveBeenCalled();
   });
 
+  it("offers a scroll-to-bottom entry only while the viewport is above the tail", () => {
+    render(<MobileTerminal showProbeOutput={false} />);
+    const button = screen.getByLabelText("Scroll to bottom");
+    expect(button).not.toBeVisible();
+    terminalHarness.baseY = 60;
+    terminalHarness.viewportY = 10;
+    act(() => terminalHarness.scrolled(10));
+    expect(button).toBeVisible();
+    fireEvent.click(button);
+    expect(terminalHarness.viewportY).toBe(60);
+    expect(terminalHarness.viewport!.scrollTop).toBe(19300);
+    expect(button).not.toBeVisible();
+  });
+
   it("tracks keyboard viewport changes even without a Session workspace or a focus change", () => {
     vi.stubGlobal("innerHeight", 844);
     vi.stubGlobal("screen", { width: 390, height: 844, orientation: { type: "portrait-primary" } });
