@@ -863,6 +863,9 @@ struct GitDiffParams {
     expected_status_token: String,
     side: GitDiffSide,
     path_token: String,
+    /// Must match the caller's Git Changes read so status tokens agree.
+    #[serde(default = "default_true")]
+    include_ignored: bool,
 }
 
 #[derive(Deserialize)]
@@ -900,6 +903,8 @@ struct GitPathsParams {
     expected_checkout_id: String,
     expected_status_token: String,
     selections: Vec<GitPathSelection>,
+    #[serde(default = "default_true")]
+    include_ignored: bool,
 }
 
 #[derive(Deserialize)]
@@ -937,6 +942,8 @@ struct GitPrepareCommitParams {
     expected_checkout_id: String,
     expected_status_token: String,
     message: String,
+    #[serde(default = "default_true")]
+    include_ignored: bool,
 }
 
 #[derive(Deserialize)]
@@ -946,6 +953,8 @@ struct GitCommitParams {
     expected_checkout_id: String,
     expected_commit_token: String,
     message: String,
+    #[serde(default = "default_true")]
+    include_ignored: bool,
 }
 
 fn default_true() -> bool {
@@ -1742,11 +1751,12 @@ impl RemoteService for CoreService {
             }
             "git.diff" => {
                 let params: GitDiffParams = parse_extended(params)?;
-                serialize_extended(manager.diff(
+                serialize_extended(manager.diff_with_ignored(
                     &params.locator,
                     &params.expected_status_token,
                     params.side,
                     &params.path_token,
+                    params.include_ignored,
                 )?)?
             }
             "git.history" => {
@@ -1772,29 +1782,32 @@ impl RemoteService for CoreService {
             }
             "git.stage" => {
                 let params: GitPathsParams = parse_extended(params)?;
-                serialize_extended(manager.stage_paths(
+                serialize_extended(manager.stage_paths_with_ignored(
                     &params.locator,
                     &params.expected_checkout_id,
                     &params.expected_status_token,
                     &params.selections,
+                    params.include_ignored,
                 )?)?
             }
             "git.unstage" => {
                 let params: GitPathsParams = parse_extended(params)?;
-                serialize_extended(manager.unstage_paths(
+                serialize_extended(manager.unstage_paths_with_ignored(
                     &params.locator,
                     &params.expected_checkout_id,
                     &params.expected_status_token,
                     &params.selections,
+                    params.include_ignored,
                 )?)?
             }
             "git.discard" => {
                 let params: GitPathsParams = parse_extended(params)?;
-                serialize_extended(manager.discard_paths(
+                serialize_extended(manager.discard_paths_with_ignored(
                     &params.locator,
                     &params.expected_checkout_id,
                     &params.expected_status_token,
                     &params.selections,
+                    params.include_ignored,
                 )?)?
             }
             "git.ignore" => {
@@ -1837,20 +1850,22 @@ impl RemoteService for CoreService {
             }
             "git.commit.prepare" => {
                 let params: GitPrepareCommitParams = parse_extended(params)?;
-                serialize_extended(manager.prepare_commit(
+                serialize_extended(manager.prepare_commit_with_ignored(
                     &params.locator,
                     &params.expected_checkout_id,
                     &params.expected_status_token,
                     &params.message,
+                    params.include_ignored,
                 )?)?
             }
             "git.commit.execute" => {
                 let params: GitCommitParams = parse_extended(params)?;
-                serialize_extended(manager.commit_changes(
+                serialize_extended(manager.commit_changes_with_ignored(
                     &params.locator,
                     &params.expected_checkout_id,
                     &params.expected_commit_token,
                     &params.message,
+                    params.include_ignored,
                 )?)?
             }
             "git.commit.reconcile" => {

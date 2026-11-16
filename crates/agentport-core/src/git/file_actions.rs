@@ -35,6 +35,23 @@ impl<'a> GitWorkspaceManager<'a> {
         expected_status_token: &str,
         selections: &[GitPathSelection],
     ) -> Result<GitMutationResult> {
+        self.discard_paths_with_ignored(
+            locator,
+            expected_checkout_id,
+            expected_status_token,
+            selections,
+            true,
+        )
+    }
+
+    pub fn discard_paths_with_ignored(
+        &self,
+        locator: &GitContextLocator,
+        expected_checkout_id: &str,
+        expected_status_token: &str,
+        selections: &[GitPathSelection],
+        include_ignored: bool,
+    ) -> Result<GitMutationResult> {
         if selections.is_empty() {
             return Err(CoreError::Validation(
                 "select at least one unstaged Git Changes file".into(),
@@ -47,7 +64,7 @@ impl<'a> GitWorkspaceManager<'a> {
         let locked = self.resolve_internal(locator)?;
         validate_checkout_id(&locked.descriptor.checkout_id, expected_checkout_id)?;
         let _file_guard = RepositoryFileLock::acquire(&locked.identity.common_dir)?;
-        let snapshot = self.changes(locator, true)?;
+        let snapshot = self.changes(locator, include_ignored)?;
         validate_snapshot(&snapshot, expected_checkout_id, expected_status_token)?;
         let paths = selected_paths(&snapshot, selections, |entry| {
             entry.unstaged && !entry.untracked && !entry.ignored && !entry.conflicted
@@ -73,7 +90,7 @@ impl<'a> GitWorkspaceManager<'a> {
             .require_success()?;
         Ok(GitMutationResult {
             operation_id: operation_id(),
-            changes: self.changes(locator, true)?,
+            changes: self.changes(locator, include_ignored)?,
         })
     }
 

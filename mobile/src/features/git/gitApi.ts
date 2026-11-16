@@ -38,6 +38,7 @@ export function readGitDiff(
     expectedStatusToken: changes.statusToken,
     side,
     pathToken: entry.pathToken,
+    includeIgnored: false,
   });
 }
 
@@ -54,6 +55,7 @@ export function mutateGitPaths(
     expectedCheckoutId: changes.context.checkoutId,
     expectedStatusToken: changes.statusToken,
     selections,
+    includeIgnored: false,
   });
 }
 
@@ -81,6 +83,7 @@ export function prepareGitCommit(
     expectedCheckoutId: changes.context.checkoutId,
     expectedStatusToken: changes.statusToken,
     message,
+    includeIgnored: false,
   });
 }
 
@@ -95,6 +98,7 @@ export function executeGitCommit(
     expectedCheckoutId: review.context.checkoutId,
     expectedCommitToken: review.commitToken,
     message: review.message,
+    includeIgnored: false,
   });
 }
 

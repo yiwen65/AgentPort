@@ -2436,6 +2436,10 @@ impl<'a> BranchManager<'a> {
             .filter(|path| !path.is_empty())
             .map(|path| bytes_to_string(path).map(PathBuf::from))
             .collect::<Result<std::collections::BTreeSet<_>>>()?;
+        // Collapse fully ignored directories instead of enumerating every
+        // build artifact. The raw listing can be tens or hundreds of MiB in a
+        // large checkout, which used to block branch switches at the listing
+        // budget even though no target path collided.
         let ignored_output = self.run_listing(
             identity,
             [
@@ -2443,6 +2447,7 @@ impl<'a> BranchManager<'a> {
                 "--others",
                 "--ignored",
                 "--exclude-standard",
+                "--directory",
                 "-z",
             ],
         )?;
@@ -2450,7 +2455,10 @@ impl<'a> BranchManager<'a> {
             .stdout
             .split(|byte| *byte == 0)
             .filter(|path| !path.is_empty())
-            .map(|path| bytes_to_string(path).map(PathBuf::from))
+            .map(|path| {
+                let text = bytes_to_string(path)?;
+                Ok(PathBuf::from(text.trim_end_matches('/')))
+            })
             .collect::<Result<std::collections::BTreeSet<_>>>()?;
         // Ordered set lookups keep this O((tree + ignored) log n). The
         // previous nested scan compared every target path against every
@@ -2542,6 +2550,8 @@ impl<'a> BranchManager<'a> {
         paths.sort_by(|a, b| a.path.cmp(&b.path));
         let mut ignored = Vec::new();
         if include_protected_files {
+            // Metadata signatures protect ignored data without enumerating
+            // every build artifact; whole ignored directories are collapsed.
             let ignored_output = self.run_listing(
                 identity,
                 [
@@ -2549,6 +2559,7 @@ impl<'a> BranchManager<'a> {
                     "--others",
                     "--ignored",
                     "--exclude-standard",
+                    "--directory",
                     "-z",
                 ],
             )?;
@@ -2756,18 +2767,32 @@ impl<'a> BranchManager<'a> {
         let ignored = snapshot
             .ignored
             .iter()
-            .map(|path| (&path.path, (&path.worktree_hash, &path.worktree_mode)))
+            .map(|path| (path.path.as_str(), path))
             .collect::<BTreeMap<_, _>>();
         if status.paths.is_empty() {
             return Ok(true);
         }
         for path in &status.paths {
-            let Some((expected_hash, expected_mode)) = ignored.get(&path.path) else {
+            let matched = ignored.get(path.path.as_str()).copied().or_else(|| {
+                // A whole ignored directory is protected as one entry; any
+                // visible path under it is still the user's local data.
+                Path::new(path.path.trim_end_matches('/'))
+                    .ancestors()
+                    .skip(1)
+                    .find_map(|ancestor| {
+                        let candidate = ancestor.to_string_lossy();
+                        ignored
+                            .get(candidate.as_ref())
+                            .copied()
+                            .or_else(|| ignored.get(format!("{candidate}/").as_str()).copied())
+                    })
+            });
+            let Some(entry) = matched else {
                 return Ok(false);
             };
-            let absolute = identity.root.join(&path.path);
-            if ignored_path_signature(&absolute)? != **expected_hash
-                || path_mode(&absolute)? != **expected_mode
+            let absolute = identity.root.join(entry.path.trim_end_matches('/'));
+            if ignored_path_signature(&absolute)? != entry.worktree_hash
+                || path_mode(&absolute)? != entry.worktree_mode
             {
                 return Ok(false);
             }
@@ -3474,10 +3499,15 @@ impl<'a> BranchManager<'a> {
 
     fn ensure_complete_listing(output: &GitOutput) -> Result<()> {
         if output.stdout_truncated {
-            return Err(CoreError::Blocked(
-                "Git output exceeded the safety limit; refusing to use an incomplete repository listing"
-                    .into(),
-            ));
+            let command = output
+                .argv
+                .iter()
+                .map(|arg| arg.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ");
+            return Err(CoreError::Blocked(format!(
+                "Git output exceeded the safety limit while running `{command}`; refusing to use an incomplete repository listing"
+            )));
         }
         Ok(())
     }
@@ -3724,6 +3754,11 @@ fn hash_path(path: &Path) -> Result<Option<String>> {
 /// prohibitively expensive: this checkout alone holds ~400k ignored files /
 /// ~138 GiB, which a dirty branch switch used to read several times while
 /// holding both repository locks.
+///
+/// Whole ignored directories are listed as one entry. Their mtime/size change
+/// whenever a build writes another artifact, so directory protection only
+/// tracks identity (mode + inode): deletion or replacement is caught while
+/// new ignored files inside stay allowed.
 fn ignored_path_signature(path: &Path) -> Result<Option<String>> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -3731,6 +3766,18 @@ fn ignored_path_signature(path: &Path) -> Result<Option<String>> {
         Err(error) => return Err(CoreError::Io(error)),
     };
     let mut hash = Sha256::new();
+    if metadata.file_type().is_dir() {
+        hash.update(b"dir\0");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            hash.update(metadata.mode().to_le_bytes());
+            hash.update(metadata.ino().to_le_bytes());
+        }
+        #[cfg(not(unix))]
+        hash.update(u32::from(metadata.permissions().readonly()).to_le_bytes());
+        return Ok(Some(format!("{:x}", hash.finalize())));
+    }
     hash.update(metadata.len().to_le_bytes());
     if let Ok(modified) = metadata.modified() {
         if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
@@ -4289,6 +4336,46 @@ mod tests {
             std::fs::read_to_string(fixture.root.join("scratch/local")).unwrap(),
             "keep\n"
         );
+    }
+
+    #[test]
+    fn branch_switch_collapses_ignored_directories_in_the_listing() {
+        let fixture = fixture();
+        make_branch(&fixture.root, "target");
+        std::fs::write(fixture.root.join(".gitignore"), "scratch/\n").unwrap();
+        std::fs::create_dir_all(fixture.root.join("scratch/deep")).unwrap();
+        for index in 0..200 {
+            std::fs::write(
+                fixture.root.join(format!("scratch/deep/artifact-{index}")),
+                "ignored\n",
+            )
+            .unwrap();
+        }
+        let (runner, recorded) = GitRunner::recording();
+        let manager = BranchManager {
+            db: &fixture.db,
+            runner,
+        };
+        manager
+            .switch(&fixture.project_id, "target")
+            .expect("small ignored tree must not block a switch");
+        let calls = recorded.lock().unwrap();
+        let listings = calls
+            .iter()
+            .filter(|argv| {
+                argv.iter().any(|arg| arg.to_string_lossy() == "ls-files")
+                    && argv.iter().any(|arg| arg.to_string_lossy() == "--ignored")
+            })
+            .collect::<Vec<_>>();
+        assert!(!listings.is_empty(), "ignored listing was not recorded");
+        for listing in listings {
+            assert!(
+                listing
+                    .iter()
+                    .any(|arg| arg.to_string_lossy() == "--directory"),
+                "{listing:?}"
+            );
+        }
     }
 
     #[test]

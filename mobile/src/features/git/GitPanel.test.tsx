@@ -99,6 +99,7 @@ describe("mobile Git Center", () => {
     await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "git.stage", expect.objectContaining({
       expectedCheckoutId: "co-1",
       expectedStatusToken: "status-1",
+      includeIgnored: false,
       selections: [{ pathToken: "p1", entryToken: "e1" }],
     })));
     expect(await screen.findByText("Staged")).toBeInTheDocument();
@@ -111,7 +112,7 @@ describe("mobile Git Center", () => {
     renderPanel(client);
     fireEvent.click(await screen.findByRole("button", { name: /src\/App\.tsx/ }));
     expect(await screen.findByText(/\+new line/)).toBeInTheDocument();
-    expect(request).toHaveBeenCalledWith("host-1", "git.diff", expect.objectContaining({ expectedStatusToken: "status-1", side: "unstaged", pathToken: "p1" }));
+    expect(request).toHaveBeenCalledWith("host-1", "git.diff", expect.objectContaining({ expectedStatusToken: "status-1", side: "unstaged", pathToken: "p1", includeIgnored: false }));
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     const confirm = within(screen.getByRole("alertdialog"));
     expect(confirm.getByText(/Discard changes to src\/App\.tsx/)).toBeInTheDocument();
@@ -131,11 +132,12 @@ describe("mobile Git Center", () => {
     const reviewButton = screen.getByRole("button", { name: "Review commit" });
     expect(reviewButton).toBeEnabled();
     fireEvent.click(reviewButton);
+    expect(request).toHaveBeenCalledWith("host-1", "git.commit.prepare", expect.objectContaining({ includeIgnored: false }));
     await waitFor(() => expect(screen.getByRole("dialog").innerHTML).toContain("git-commit-review"));
     expect(await screen.findByText("Ship the UI")).toBeInTheDocument();
     fireEvent.click(within(screen.getByRole("region", { name: "Review commit" })).getByRole("button", { name: "Commit" }));
     await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "git.commit.execute", expect.objectContaining({
-      expectedCheckoutId: "co-1", expectedCommitToken: "commit-token", message: "Ship the UI",
+      expectedCheckoutId: "co-1", expectedCommitToken: "commit-token", message: "Ship the UI", includeIgnored: false,
     })));
     expect(await screen.findByText("Commit created.")).toBeInTheDocument();
   });

@@ -120,12 +120,30 @@ impl<'a> GitWorkspaceManager<'a> {
         expected_status_token: &str,
         selections: &[GitPathSelection],
     ) -> Result<GitMutationResult> {
+        self.stage_paths_with_ignored(
+            locator,
+            expected_checkout_id,
+            expected_status_token,
+            selections,
+            true,
+        )
+    }
+
+    pub fn stage_paths_with_ignored(
+        &self,
+        locator: &GitContextLocator,
+        expected_checkout_id: &str,
+        expected_status_token: &str,
+        selections: &[GitPathSelection],
+        include_ignored: bool,
+    ) -> Result<GitMutationResult> {
         self.mutate_index(
             locator,
             expected_checkout_id,
             expected_status_token,
             selections,
             IndexMutation::Stage,
+            include_ignored,
         )
     }
 
@@ -136,12 +154,30 @@ impl<'a> GitWorkspaceManager<'a> {
         expected_status_token: &str,
         selections: &[GitPathSelection],
     ) -> Result<GitMutationResult> {
+        self.unstage_paths_with_ignored(
+            locator,
+            expected_checkout_id,
+            expected_status_token,
+            selections,
+            true,
+        )
+    }
+
+    pub fn unstage_paths_with_ignored(
+        &self,
+        locator: &GitContextLocator,
+        expected_checkout_id: &str,
+        expected_status_token: &str,
+        selections: &[GitPathSelection],
+        include_ignored: bool,
+    ) -> Result<GitMutationResult> {
         self.mutate_index(
             locator,
             expected_checkout_id,
             expected_status_token,
             selections,
             IndexMutation::Unstage,
+            include_ignored,
         )
     }
 
@@ -152,11 +188,29 @@ impl<'a> GitWorkspaceManager<'a> {
         expected_status_token: &str,
         message: &str,
     ) -> Result<GitCommitReview> {
+        self.prepare_commit_with_ignored(
+            locator,
+            expected_checkout_id,
+            expected_status_token,
+            message,
+            true,
+        )
+    }
+
+    pub fn prepare_commit_with_ignored(
+        &self,
+        locator: &GitContextLocator,
+        expected_checkout_id: &str,
+        expected_status_token: &str,
+        message: &str,
+        include_ignored: bool,
+    ) -> Result<GitCommitReview> {
         self.build_commit_review(
             locator,
             expected_checkout_id,
             Some(expected_status_token),
             message,
+            include_ignored,
         )
     }
 
@@ -166,6 +220,23 @@ impl<'a> GitWorkspaceManager<'a> {
         expected_checkout_id: &str,
         expected_commit_token: &str,
         message: &str,
+    ) -> Result<GitCommitResult> {
+        self.commit_changes_with_ignored(
+            locator,
+            expected_checkout_id,
+            expected_commit_token,
+            message,
+            true,
+        )
+    }
+
+    pub fn commit_changes_with_ignored(
+        &self,
+        locator: &GitContextLocator,
+        expected_checkout_id: &str,
+        expected_commit_token: &str,
+        message: &str,
+        include_ignored: bool,
     ) -> Result<GitCommitResult> {
         validate_commit_message(message)?;
         let initial = self.resolve_internal(locator)?;
@@ -177,7 +248,13 @@ impl<'a> GitWorkspaceManager<'a> {
         let _file_guard = RepositoryFileLock::acquire(&locked.identity.common_dir)?;
         let resolved = self.resolve_internal(locator)?;
         validate_checkout(&resolved.descriptor, expected_checkout_id)?;
-        let review = self.build_commit_review(locator, expected_checkout_id, None, message)?;
+        let review = self.build_commit_review(
+            locator,
+            expected_checkout_id,
+            None,
+            message,
+            include_ignored,
+        )?;
         if review.commit_token != expected_commit_token {
             return Err(CoreError::Conflict(
                 "commit scope changed; review the staged files again".into(),
@@ -231,7 +308,7 @@ impl<'a> GitWorkspaceManager<'a> {
                 "commit landed, but its journal could not be finalised: {error}"
             ));
         }
-        let changes = match self.changes(locator, true) {
+        let changes = match self.changes(locator, include_ignored) {
             Ok(changes) => changes,
             Err(error) => {
                 tracing::warn!(
@@ -447,6 +524,7 @@ impl<'a> GitWorkspaceManager<'a> {
         expected_status_token: &str,
         selections: &[GitPathSelection],
         mutation: IndexMutation,
+        include_ignored: bool,
     ) -> Result<GitMutationResult> {
         if selections.is_empty() {
             return Err(CoreError::Validation(
@@ -462,7 +540,7 @@ impl<'a> GitWorkspaceManager<'a> {
         let _file_guard = RepositoryFileLock::acquire(&locked.identity.common_dir)?;
         let resolved = self.resolve_internal(locator)?;
         validate_checkout(&resolved.descriptor, expected_checkout_id)?;
-        let snapshot = self.changes(locator, true)?;
+        let snapshot = self.changes(locator, include_ignored)?;
         if !snapshot.complete {
             return Err(CoreError::Blocked(
                 "Git Changes is partial; index writes are disabled".into(),
@@ -574,7 +652,7 @@ impl<'a> GitWorkspaceManager<'a> {
                 },
             )?
             .require_success()?;
-        let changes = self.changes(locator, true)?;
+        let changes = self.changes(locator, include_ignored)?;
         Ok(GitMutationResult {
             operation_id: format!("gitop_{}", uuid::Uuid::new_v4().simple()),
             changes,
@@ -587,6 +665,7 @@ impl<'a> GitWorkspaceManager<'a> {
         expected_checkout_id: &str,
         expected_status_token: Option<&str>,
         message: &str,
+        include_ignored: bool,
     ) -> Result<GitCommitReview> {
         let subject_over_72 = validate_commit_message(message)?;
         let resolved = self.resolve_internal(locator)?;
@@ -601,7 +680,7 @@ impl<'a> GitWorkspaceManager<'a> {
                 "ordinary Commit is disabled while {operation} is in progress"
             )));
         }
-        let snapshot = self.changes(locator, true)?;
+        let snapshot = self.changes(locator, include_ignored)?;
         if !snapshot.complete {
             return Err(CoreError::Blocked(
                 "Git Changes is partial; Commit is disabled".into(),

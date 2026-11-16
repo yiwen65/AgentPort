@@ -53,7 +53,20 @@ impl<'a> GitWorkspaceManager<'a> {
         side: GitDiffSide,
         path_token: &str,
     ) -> Result<GitFileDiff> {
-        let snapshot = self.changes(locator, true)?;
+        self.diff_with_ignored(locator, expected_status_token, side, path_token, true)
+    }
+
+    /// The caller's status token comes from its own `changes` read. Ignored
+    /// entries must be included or excluded consistently so the tokens match.
+    pub fn diff_with_ignored(
+        &self,
+        locator: &GitContextLocator,
+        expected_status_token: &str,
+        side: GitDiffSide,
+        path_token: &str,
+        include_ignored: bool,
+    ) -> Result<GitFileDiff> {
+        let snapshot = self.changes(locator, include_ignored)?;
         if !snapshot.complete {
             return Err(CoreError::Blocked(
                 "Git Changes is partial; refresh before opening a Diff".into(),

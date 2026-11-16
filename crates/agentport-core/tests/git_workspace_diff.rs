@@ -1,6 +1,7 @@
 mod support;
 
 use agentport_core::db::Db;
+use agentport_core::error::CoreError;
 use agentport_core::git::{GitContextLocator, GitDiffFormat, GitDiffSide, GitWorkspaceManager};
 use support::mock_repo::MockRepo;
 
@@ -64,6 +65,52 @@ fn diff_keeps_staged_unstaged_and_untracked_semantics_separate() {
         .contains("+working value"));
     assert!(new_file.patch.as_deref().unwrap().contains("+first"));
     assert_eq!(new_file.additions, Some(2));
+}
+
+#[test]
+fn ignored_entries_must_match_the_callers_changes_tokens() {
+    let fixture = MockRepo::new();
+    let db = Db::open_memory().unwrap();
+    fixture.add_project(&db, "project-a");
+    fixture.write(".gitignore", "ignored/\n");
+    fixture.git(fixture.root(), &["add", "--", ".gitignore"]);
+    fixture.git(
+        fixture.root(),
+        &["-c", "commit.gpgsign=false", "commit", "-m", "ignore"],
+    );
+    fixture.write("ignored/artifact.bin", "ignored build artifact\n");
+    fixture.write("tracked.txt", "working value\n");
+    let locator = GitContextLocator::ProjectMain {
+        project_id: "project-a".into(),
+    };
+    let manager = GitWorkspaceManager::new(&db);
+    let changes = manager.changes(&locator, false).unwrap();
+    let tracked = changes
+        .entries
+        .iter()
+        .find(|entry| entry.display_path == "tracked.txt")
+        .unwrap();
+
+    let diff = manager
+        .diff_with_ignored(
+            &locator,
+            &changes.status_token,
+            GitDiffSide::Unstaged,
+            &tracked.path_token,
+            false,
+        )
+        .unwrap();
+    assert!(diff.patch.as_deref().unwrap().contains("+working value"));
+    assert!(matches!(
+        manager.diff_with_ignored(
+            &locator,
+            &changes.status_token,
+            GitDiffSide::Unstaged,
+            &tracked.path_token,
+            true,
+        ),
+        Err(CoreError::Conflict(_))
+    ));
 }
 
 #[test]
