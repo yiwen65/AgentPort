@@ -1423,14 +1423,20 @@ fn core_error_message(error: &agentport_core::CoreError) -> String {
     }
 }
 
-fn core_error_is_precondition(error: &agentport_core::CoreError) -> bool {
-    matches!(
-        error,
+/// Core errors that prove the request had no side effects yet. `Conflict` is
+/// deliberately excluded for non-idempotent writes: checkout recovery reports
+/// it after a partial `git stash apply`/`git switch`, so a destructive write
+/// that may have executed must not claim it was not executed. Reads and
+/// idempotent writes stay retry-safe even when a post-mutation conflict is
+/// reported as a precondition failure.
+fn core_error_is_precondition(error: &agentport_core::CoreError, retry_class: &RetryClass) -> bool {
+    match error {
+        agentport_core::CoreError::Conflict(_) => *retry_class != RetryClass::NonIdempotentWrite,
         agentport_core::CoreError::Blocked(_)
-            | agentport_core::CoreError::Conflict(_)
-            | agentport_core::CoreError::NotFound(_)
-            | agentport_core::CoreError::Validation(_)
-    )
+        | agentport_core::CoreError::NotFound(_)
+        | agentport_core::CoreError::Validation(_) => true,
+        _ => false,
+    }
 }
 
 fn service_error_result(
@@ -1441,7 +1447,7 @@ fn service_error_result(
         ServiceError::ProjectDirectory(error) => (ResultStatus::NotExecuted, error.code()),
         ServiceError::SessionFiles(error) => (ResultStatus::NotExecuted, error.code()),
         ServiceError::NotExecutedCore(_) => (ResultStatus::NotExecuted, "request_not_executed"),
-        ServiceError::Core(error) if core_error_is_precondition(error) => {
+        ServiceError::Core(error) if core_error_is_precondition(error, retry_class) => {
             (ResultStatus::NotExecuted, "request_not_executed")
         }
         ServiceError::AttachmentNotFound
@@ -1933,6 +1939,29 @@ mod tests {
         assert_eq!(
             service_error_message(&error),
             "request failed on the remote host"
+        );
+    }
+
+    #[test]
+    fn destructive_conflicts_are_not_reported_as_not_executed() {
+        let error = ServiceError::Core(agentport_core::CoreError::Conflict(
+            "stash apply requires manual conflict resolution".into(),
+        ));
+        // Autostash restore can report Conflict after the stash was partially
+        // applied, so a destructive write that may have executed is unknown.
+        assert_eq!(
+            service_error_result(&error, &RetryClass::NonIdempotentWrite),
+            (ResultStatus::Unknown, "result_unknown")
+        );
+        // Idempotent writes and reads are safe to retry, so precondition
+        // conflicts keep the explicit not-executed status.
+        assert_eq!(
+            service_error_result(&error, &RetryClass::IdempotentWrite),
+            (ResultStatus::NotExecuted, "request_not_executed")
+        );
+        assert_eq!(
+            service_error_result(&error, &RetryClass::Read),
+            (ResultStatus::NotExecuted, "request_not_executed")
         );
     }
 
