@@ -112,7 +112,7 @@ describe("Global mobile Active Sessions", () => {
     const laptop = await screen.findByRole("button", { name: "Laptop task" });
     const studio = await screen.findByRole("button", { name: "Studio shell" });
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
-    expect(screen.getByText("All connected devices · 2")).toBeInTheDocument();
+    expect(screen.getByText("All connected devices · 2").closest(".visually-hidden")).not.toBeNull();
     expect(laptop).toHaveAccessibleDescription(/Laptop/); expect(studio).toHaveAccessibleDescription(/Studio/);
     const laptopRow = laptop.closest("li")!, studioRow = studio.closest("li")!;
     expect(laptopRow.querySelector(".session-row-device .session-device-name")).toHaveTextContent("Laptop");

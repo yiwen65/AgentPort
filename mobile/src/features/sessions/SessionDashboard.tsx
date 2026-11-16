@@ -727,7 +727,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         <button type="button" className="toolbar-icon-button" style={{ "--toolbar-color": "#a8b8ff" } as CSSProperties} onClick={onManageDevices} aria-label={t("hosts.manage")} aria-haspopup="dialog">
           <Icon name="computer" />
         </button>
-        {globalActivity ? <span className="global-device-scope" role="status">{t("dashboard.allConnectedDevices", { count: connectedHosts.length })}</span> : <label className="compact-device-picker">
+        {globalActivity ? <span className="global-device-scope" role="status"><span className="visually-hidden">{t("dashboard.allConnectedDevices", { count: connectedHosts.length })}</span></span> : <label className="compact-device-picker">
           <span className={`device-state ${selectedHost?.connectionState ?? "disconnected"}`} aria-hidden="true" />
           <select value={selectedDeviceId} onChange={(event) => {
             closePicker();

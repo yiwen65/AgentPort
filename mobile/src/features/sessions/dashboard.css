@@ -8,7 +8,9 @@
 .session-dashboard .compact-device-picker { min-width: 64px; flex: 1 1 64px; }
 .session-dashboard .compact-device-picker select { min-height: 44px; width: 100%; min-width: 0; }
 .session-dashboard .toolbar-spacer { display: none; }
-.session-dashboard .global-device-scope { flex: 1 1 130px; min-width: 0; padding: 8px 4px; color: var(--text); font-size: 13px; overflow-wrap: anywhere; }
+/* Layout-only spacer: the active-session scope keeps action icons right-aligned
+   without showing a visible header label. */
+.session-dashboard .global-device-scope { flex: 1 1 130px; min-width: 0; }
 /* Long row titles must not widen the grid beyond the clipped mobile scroller. */
 .session-dashboard .active-agent-list { grid-template-columns: minmax(0, 1fr); }
 /* One stable tint per device, same family as the project card tones. */
