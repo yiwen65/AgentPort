@@ -1373,12 +1373,63 @@ fn finish_service_error<E: Write>(
         None,
         Some(RemoteError {
             code: code.into(),
-            message: match &error {
-                ServiceError::ProjectDirectory(error) => error.to_string(),
-                ServiceError::SessionFiles(error) => error.to_string(),
-                _ => "request failed on the remote host".into(),
-            },
+            message: service_error_message(&error),
         }),
+    )
+}
+
+/// User-facing explanation for safe, actionable service errors. Internal
+/// database/IO/serialization failures stay generic so they cannot leak host
+/// implementation details to a remote client.
+fn service_error_message(error: &ServiceError) -> String {
+    match error {
+        ServiceError::ProjectDirectory(error) => error.to_string(),
+        ServiceError::SessionFiles(error) => error.to_string(),
+        ServiceError::Core(error) | ServiceError::NotExecutedCore(error) => {
+            core_error_message(error)
+        }
+        ServiceError::AttachmentNotFound => "remote attachment was not found".into(),
+        ServiceError::InvalidRequest => "remote request is invalid".into(),
+        ServiceError::InputOutcomeUnknown => "terminal input outcome is unknown".into(),
+        ServiceError::AttachmentState => "remote attachment state is unavailable".into(),
+        ServiceError::Serialization => "remote response serialization failed".into(),
+        ServiceError::PreconditionFailed => {
+            "remote precondition no longer matches; refresh and retry".into()
+        }
+        ServiceError::RiskAcknowledgementRequired => "risk acknowledgement is required".into(),
+        ServiceError::CommitAi(message) => format!("Commit-AI operation failed: {message}"),
+        ServiceError::CommitAiOutcomeUnknown => "Commit-AI request outcome is unknown".into(),
+    }
+}
+
+fn core_error_message(error: &agentport_core::CoreError) -> String {
+    let message = match error {
+        agentport_core::CoreError::Blocked(message) => format!("blocked: {message}"),
+        agentport_core::CoreError::Conflict(message) => format!("conflict: {message}"),
+        agentport_core::CoreError::NotFound(message) => format!("not found: {message}"),
+        agentport_core::CoreError::Validation(message) => format!("validation: {message}"),
+        agentport_core::CoreError::Git(message) => format!("git: {message}"),
+        agentport_core::CoreError::Timeout(message) => format!("timeout: {message}"),
+        agentport_core::CoreError::RuntimeMessage { message, .. } => message.clone(),
+        _ => return "request failed on the remote host".into(),
+    };
+    const MAX: usize = 800;
+    if message.chars().count() <= MAX {
+        message
+    } else {
+        let mut bounded: String = message.chars().take(MAX).collect();
+        bounded.push('…');
+        bounded
+    }
+}
+
+fn core_error_is_precondition(error: &agentport_core::CoreError) -> bool {
+    matches!(
+        error,
+        agentport_core::CoreError::Blocked(_)
+            | agentport_core::CoreError::Conflict(_)
+            | agentport_core::CoreError::NotFound(_)
+            | agentport_core::CoreError::Validation(_)
     )
 }
 
@@ -1389,8 +1440,11 @@ fn service_error_result(
     match error {
         ServiceError::ProjectDirectory(error) => (ResultStatus::NotExecuted, error.code()),
         ServiceError::SessionFiles(error) => (ResultStatus::NotExecuted, error.code()),
+        ServiceError::NotExecutedCore(_) => (ResultStatus::NotExecuted, "request_not_executed"),
+        ServiceError::Core(error) if core_error_is_precondition(error) => {
+            (ResultStatus::NotExecuted, "request_not_executed")
+        }
         ServiceError::AttachmentNotFound
-        | ServiceError::NotExecutedCore(_)
         | ServiceError::InvalidRequest
         | ServiceError::PreconditionFailed
         | ServiceError::RiskAcknowledgementRequired => {
@@ -1851,6 +1905,35 @@ mod tests {
             },
             requested_capabilities: vec!["session.read".into(), "future.capability".into()],
         }
+    }
+
+    #[test]
+    fn actionable_core_errors_are_exposed_and_not_executed() {
+        let error = ServiceError::Core(agentport_core::CoreError::Blocked(
+            "ignored listing exceeded the safety limit".into(),
+        ));
+        assert_eq!(
+            service_error_result(&error, &RetryClass::NonIdempotentWrite),
+            (ResultStatus::NotExecuted, "request_not_executed")
+        );
+        let message = service_error_message(&error);
+        assert!(message.contains("ignored listing exceeded"), "{message}");
+        assert_ne!(message, "request failed on the remote host");
+    }
+
+    #[test]
+    fn internal_core_errors_keep_a_generic_message() {
+        let error = ServiceError::Core(agentport_core::CoreError::Internal(
+            "database path should not leak".into(),
+        ));
+        assert_eq!(
+            service_error_result(&error, &RetryClass::NonIdempotentWrite),
+            (ResultStatus::Unknown, "result_unknown")
+        );
+        assert_eq!(
+            service_error_message(&error),
+            "request failed on the remote host"
+        );
     }
 
     #[test]
