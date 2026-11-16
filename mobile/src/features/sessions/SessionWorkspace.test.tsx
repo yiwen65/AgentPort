@@ -1038,6 +1038,14 @@ describe("SessionWorkspace", () => {
     expect(request.mock.calls.some(([, method]) => method === "git.changes")).toBe(true);
   });
 
+  it("opens the actions sheet from the floating menu while chrome is hidden", async () => {
+    const { client } = setupClient();
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Session menu" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: "Git" })).toBeInTheDocument();
+  });
+
   it("starts immersive, reveals only title/actions, and returns to the list without detaching", async () => {
     const { client, request } = setupClient();
     const onClose = vi.fn();
@@ -1046,6 +1054,7 @@ describe("SessionWorkspace", () => {
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     expect(screen.queryByRole("heading", { name: "Agent task" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Session actions" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Session menu" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back to sessions" })).not.toBeInTheDocument();
     expect(screen.queryByTestId("session-project-branch")).not.toBeInTheDocument();
     expect(request.mock.calls.some(([, method]) => method === "git.context.resolve")).toBe(true);

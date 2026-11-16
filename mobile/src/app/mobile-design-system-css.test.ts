@@ -124,7 +124,8 @@ describe("mobile semantic design system", () => {
   });
 
   it("places immersive chrome out of flow and keeps logs just below the cutout", () => {
-    expect(terminalStyles).toMatch(/\.terminal-chrome-reveal,\s*\.session-workspace-header \{[^}]*position: absolute;[^}]*top: 0;/s);
+    expect(terminalStyles).toMatch(/\.terminal-chrome-reveal,\s*\.session-workspace-header \{[^}]*position: absolute;[^}]*top: env\(safe-area-inset-top\);[^}]*height: 44px;/s);
+    expect(terminalStyles).toMatch(/\.session-actions-fab \{[^}]*position: absolute;[^}]*top: calc\(env\(safe-area-inset-top\) \+ 8px\);/s);
     expect(terminalStyles).toContain("grid-template-columns: minmax(0, 1fr) 40% minmax(0, 1fr)");
     expect(terminalStyles).toContain(".session-workspace-header[hidden] { display: none; }");
     expect(terminalStyles).toMatch(/\.session-workspace \.mobile-terminal-surface \{[^}]*padding:\s*2px/s);

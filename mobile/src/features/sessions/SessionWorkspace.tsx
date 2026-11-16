@@ -902,7 +902,6 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
         aria-label={t("session.showControls")}
         aria-expanded={chromeVisible}
         aria-controls="session-chrome"
-        onPointerDown={(event) => event.preventDefault()}
         onClick={(event) => {
           setChromeVisible(true);
           // Touch only reveals an overlay: retain terminal input and keyboard.
@@ -910,6 +909,8 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
           if (event.detail === 0) window.requestAnimationFrame(() => actionsTrigger.current?.focus({ preventScroll: true }));
         }}
       />
+      {!chromeVisible ? <button className="session-actions-fab" type="button" aria-label={t("session.menu")}
+        onClick={() => { setChromeVisible(true); setActionsOpen(true); }}>•••</button> : null}
       <header id="session-chrome" className="session-workspace-header" hidden={!chromeVisible}
         onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); hideChrome(); } }}>
         <h1 id="session-title" title={open.session.title}><button className="terminal-title-back" type="button" aria-label={t("session.back")} onClick={onClose}>{open.session.title}</button></h1>
