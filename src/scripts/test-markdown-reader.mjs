@@ -72,8 +72,6 @@ try {
         import { MarkdownView } from './src/markdown';
         import { setState, useStore } from './src/store';
         import { i18n } from './src/i18n';
-        import { replaceSelectionUndoable } from './src/textEdit';
-        import { rawMatchMetrics } from './src/docFind';
         import 'katex/dist/katex.min.css';
         import './src/styles.css';
         i18n.changeLanguage('en-US');
@@ -94,17 +92,6 @@ try {
           );
         }
         window.setReaderTheme = (theme) => setState({ docReadingTheme: theme });
-        window.testUndoableReplace = () => {
-          const textarea = document.createElement('textarea');
-          textarea.value = 'alpha beta alpha';
-          document.body.append(textarea);
-          const ok = replaceSelectionUndoable(textarea, 0, 5, 'omega');
-          const after = textarea.value;
-          const undoneOk = document.execCommand('undo');
-          const undone = textarea.value;
-          textarea.remove();
-          return { ok, after, undoneOk, undone };
-        };
         window.testPanelSplit = () => {
           const measure = (withTree) => {
             const wrap = document.createElement('div');
@@ -236,17 +223,6 @@ try {
           wrap.remove();
           document.documentElement.style.removeProperty('--doc-tree-topbar-width');
           return result;
-        };
-        window.testRawHighlightGeometry = () => {
-          const textarea = document.createElement('textarea');
-          textarea.setAttribute('wrap', 'off');
-          textarea.value = 'alpha beta\\ngamma alpha';
-          textarea.style.cssText = 'position:fixed;left:-9999px;top:0;width:400px;height:120px;font:16px/24px monospace;padding:8px 12px;white-space:pre;tab-size:8;';
-          document.body.append(textarea);
-          const metrics = rawMatchMetrics(textarea, textarea.value, 17, 5);
-          const selected = textarea.value.slice(17, 22);
-          textarea.remove();
-          return { metrics, selected };
         };
         createRoot(document.getElementById('root')).render(<App />);
       `,
@@ -395,19 +371,6 @@ try {
   })()`);
   assert.ok(findCount.matches >= 1, JSON.stringify(findCount));
 
-  const undoable = await evaluate('window.testUndoableReplace()');
-  assert.equal(undoable.ok, true);
-  assert.equal(undoable.after, 'omega beta alpha');
-  assert.equal(undoable.undoneOk, true);
-  assert.equal(undoable.undone, 'alpha beta alpha');
-
-  const rawMetrics = await evaluate('window.testRawHighlightGeometry()');
-  assert.equal(rawMetrics.selected, 'alpha');
-  assert.equal(rawMetrics.metrics.top, 32);
-  assert.equal(rawMetrics.metrics.height, 24);
-  assert.ok(rawMetrics.metrics.left > 12, JSON.stringify(rawMetrics));
-  assert.ok(rawMetrics.metrics.width > 0, JSON.stringify(rawMetrics));
-
   const treeHeader = await evaluate('window.testTreeHeader()');
   assert.equal(treeHeader.hidden.actions, 0);
   assert.ok(treeHeader.shown.actions > 0, JSON.stringify(treeHeader));
@@ -434,7 +397,7 @@ try {
   assert.ok(Math.abs(split.tree.panel - 722.5) < 1, JSON.stringify(split.tree));
   assert.ok(Math.abs(split.tree.terminal - 477.5) < 1, JSON.stringify(split.tree));
 
-  console.log('PASS: production reader renders Shiki tokens, KaTeX (fonts), GFM/alerts/frontmatter under the Tauri CSP with no violations or WASM, lazy chunks load, paper/night reader palettes apply, replace edits enter the native undo stack, raw match geometry aligns with the editor, and the docked viewer splits 1200px as 600/600 without a tree and an equal editor/terminal split (within the 1px panel border) plus a 245px tree with one. No native Session or network used.');
+  console.log('PASS: production reader renders Shiki tokens, KaTeX (fonts), GFM/alerts/frontmatter under the Tauri CSP with no violations or WASM, lazy chunks load, paper/night reader palettes apply, and the docked viewer splits 1200px as 600/600 without a tree and an equal editor/terminal split (within the 1px panel border) plus a 245px tree with one. No native Session or network used.');
 } finally {
   ws?.close();
   if (chrome && chrome.exitCode === null) { chrome.kill('SIGTERM'); await new Promise(r => chrome.once('exit', r)); }

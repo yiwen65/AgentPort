@@ -210,6 +210,7 @@
       "replaceAll": "Replace all",
       "replaceInput": "Replace with",
       "replacedCount": "Replaced {{count}} occurrences",
+      "replaceTruncated": "Replaced the first {{count}} occurrences; more matches remain. Run Replace all again.",
       "entryActionFailed": "Action failed: {{detail}}",
       "expand": "Expand to full page",
       "expandTip": "Let the document viewer take over the whole terminal page",

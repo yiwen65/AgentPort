@@ -330,6 +330,8 @@ describe("document tab groups", () => {
     updateDocumentTabRuntime("/old.md", {
       doc: { path: "/old.md", content: "saved", truncated: false, sizeBytes: 5 },
       draft: "edited",
+      loadedPath: "/old.md",
+      loadedToken: 1,
     });
     updateDocumentTabPath("/old.md", "/new.md");
     expect(tabIds()).toEqual(["/new.md"]);
@@ -337,6 +339,7 @@ describe("document tab groups", () => {
     expect(getDocumentTabRuntime("/old.md")).toBeNull();
     expect(getDocumentTabRuntime("/new.md")?.draft).toBe("edited");
     expect(getDocumentTabRuntime("/new.md")?.doc?.path).toBe("/new.md");
+    expect(getDocumentTabRuntime("/new.md")?.loadedPath).toBe("/new.md");
   });
 
   it("leaves expanded mode when the last tab closes", () => {

@@ -550,6 +550,10 @@ export function updateDocumentTabPath(
     tabRuntime.set(newId, {
       ...runtime,
       doc: runtime.doc ? { ...runtime.doc, path: newPath } : null,
+      // The draft now belongs to the new path; without moving loadedPath the
+      // remounted editor treats the rename as a different file and reloads
+      // the disk contents over unsaved edits.
+      loadedPath: runtime.loadedPath === oldPath ? newPath : runtime.loadedPath,
       imageContext: runtime.imageContext ? { ...runtime.imageContext, path: newPath } : undefined,
       imageSession: runtime.doc && runtime.imageContext ? new MarkdownImageSession({ ...runtime.imageContext, path: newPath }) : null,
     });

@@ -60,6 +60,13 @@ let state: DeviceConnectionsState = {
 };
 const listeners = new Set<() => void>();
 const pendingConnects = new Map<string, Promise<RemoteHello>>();
+/** Per-device attempt fence. Disconnect/forget invalidates an in-flight dial. */
+const connectGenerations = new Map<string, number>();
+
+function invalidatePendingConnect(deviceId: string) {
+  connectGenerations.set(deviceId, (connectGenerations.get(deviceId) ?? 0) + 1);
+  pendingConnects.delete(deviceId);
+}
 
 function emit() {
   for (const listener of listeners) listener();
@@ -163,20 +170,35 @@ export function connectDevice(deviceId: string): Promise<RemoteHello> {
 
   setConnection(deviceId, { phase: "connecting", error: null });
   const backend = remoteBackendFor(deviceId);
-  const attempt = backend.client.connect().then(
+  const generation = (connectGenerations.get(deviceId) ?? 0) + 1;
+  connectGenerations.set(deviceId, generation);
+  let attempt!: Promise<RemoteHello>;
+  attempt = backend.client.connect().then(
     (hello) => {
-      pendingConnects.delete(deviceId);
+      if (pendingConnects.get(deviceId) === attempt) {
+        pendingConnects.delete(deviceId);
+      }
+      if (connectGenerations.get(deviceId) !== generation) {
+        // The user disconnected/removed the device while the dial was in
+        // flight. Do not resurrect it or persist it as explicitly connected.
+        void backend.client.disconnect().catch(() => undefined);
+        return hello;
+      }
       setConnection(deviceId, { phase: "connected", error: null, hello });
       rememberExplicit(deviceId);
       return hello;
     },
     (cause) => {
-      pendingConnects.delete(deviceId);
-      setConnection(deviceId, {
-        phase: "error",
-        error: deviceCommandError(cause).message,
-        hello: null,
-      });
+      if (pendingConnects.get(deviceId) === attempt) {
+        pendingConnects.delete(deviceId);
+      }
+      if (connectGenerations.get(deviceId) === generation) {
+        setConnection(deviceId, {
+          phase: "error",
+          error: deviceCommandError(cause).message,
+          hello: null,
+        });
+      }
       throw cause;
     },
   );
@@ -187,6 +209,7 @@ export function connectDevice(deviceId: string): Promise<RemoteHello> {
 /** Explicit disconnect: release the transport and forget the explicit set. */
 export async function disconnectDevice(deviceId: string): Promise<void> {
   if (isLocalDevice(deviceId)) return;
+  invalidatePendingConnect(deviceId);
   const backend = remoteBackendFor(deviceId);
   try {
     await backend.client.disconnect();
@@ -216,6 +239,7 @@ export function markDeviceDisconnected(deviceId: string, error?: string): void {
   if (isLocalDevice(deviceId)) return;
   const current = state.connections[deviceId];
   if (current?.phase === "disconnected" && !error) return;
+  invalidatePendingConnect(deviceId);
   const backend = remoteBackendFor(deviceId);
   void backend.client.disconnect().catch(() => undefined);
   dropRemoteBackend(deviceId);
@@ -229,6 +253,7 @@ export function markDeviceDisconnected(deviceId: string, error?: string): void {
 /** Remove every trace of a deleted device profile. */
 export function forgetDeviceConnection(deviceId: string): void {
   if (isLocalDevice(deviceId)) return;
+  invalidatePendingConnect(deviceId);
   void remoteBackendFor(deviceId).client.disconnect().catch(() => undefined);
   dropRemoteBackend(deviceId);
   const connections = { ...state.connections };
@@ -261,6 +286,7 @@ export async function restoreExplicitConnections(
 /** Test hook: clear in-memory and persisted state. */
 export function resetDeviceConnectionsForTests(persist = false): void {
   pendingConnects.clear();
+  connectGenerations.clear();
   state = {
     connections: {},
     explicitDeviceIds: persist ? readPersistedDeviceIds() : [],

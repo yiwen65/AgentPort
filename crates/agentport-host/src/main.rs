@@ -107,6 +107,13 @@ impl OutputTail {
         if self.screen.is_some() {
             return true;
         }
+        // A lazy screen is only authoritative when the retained ring still
+        // starts at the process's first byte. Replaying a trimmed suffix can
+        // begin inside an escape sequence and silently loses earlier mode
+        // switches, so fall back to byte replay instead of fabricating state.
+        if self.start_offset != 0 {
+            return false;
+        }
         let screen = match terminal_screen::TerminalScreen::new(self.cols, self.rows) {
             Ok(screen) => screen,
             Err(error) => {
@@ -209,6 +216,29 @@ mod output_tail_tests {
         );
         tail.append(b"\x1b[?1049l\x1b[?1003l");
         assert_eq!(tail.terminal_seed.bytes(), b"\x1b[?1003l\x1b[?1006h");
+    }
+
+    #[test]
+    fn lazy_screen_refuses_a_trimmed_retained_tail() {
+        let mut tail = OutputTail::new(80, 24);
+        tail.append(&vec![b'x'; LIVE_OUTPUT_TAIL_BYTES + 1]);
+        assert!(tail.retained_start() > 0);
+        assert!(!tail.ensure_screen());
+        assert!(tail.screen.is_none());
+        assert!(tail.screen.as_ref().and_then(|screen| screen.snapshot()).is_none());
+    }
+
+    #[test]
+    fn eager_screen_still_serves_snapshots_after_tail_eviction() {
+        let mut tail = OutputTail::with_screen(80, 24);
+        assert!(tail.ensure_screen());
+        tail.append(b"\x1b[?1049hREADY");
+        let chunk = vec![b'x'; 64 * 1024];
+        while tail.retained_start() == 0 {
+            tail.append(&chunk);
+        }
+        assert!(tail.ensure_screen());
+        assert!(tail.screen.as_ref().and_then(|screen| screen.snapshot()).is_some());
     }
 
     #[test]

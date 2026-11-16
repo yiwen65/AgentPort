@@ -365,8 +365,9 @@ function activateDeviceFromProjects(
 ): boolean {
   applyProjectsSnapshot(projects, context);
   if (context.kind === "remote") {
-    const cachedAdapters = cachedRemoteAdapters(context.deviceId);
-    if (cachedAdapters) setState({ adapters: cachedAdapters });
+    // An empty list is accurate until this device's own cache arrives; a
+    // previous device's adapters must never be shown as this one's.
+    setState({ adapters: cachedRemoteAdapters(context.deviceId) ?? [] });
   } else {
     const cachedAdapters = cachedLocalAdapters();
     if (cachedAdapters.length > 0) setState({ adapters: cachedAdapters });
@@ -477,7 +478,6 @@ async function connectAndBoot(target: DeviceContext): Promise<ConnectedBoot> {
   };
   const boot = await composeRemoteBoot(backend, {
     deviceId: target.deviceId,
-    fallbackAdapters: getState().adapters,
   });
   return { boot, context };
 }
@@ -513,9 +513,9 @@ async function rollbackTo(
   }
 }
 
-registerFocusSessionKeyHandler((key) => {
-  void focusSessionKey(key);
-});
+registerFocusSessionKeyHandler((key) =>
+  focusSessionKey(key).catch(() => false),
+);
 
 /** Test hook: reset the serialization chain and generation counter. */
 export function resetDeviceSwitchForTests(): void {

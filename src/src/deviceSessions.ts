@@ -212,7 +212,9 @@ export async function refreshDeviceSnapshot(
     });
     return false;
   } finally {
-    if (generations.get(deviceId) === generation) setRefreshing(-1);
+    // Every increment must be paired, including a refresh superseded by a
+    // newer generation; otherwise `refreshing` sticks on permanently.
+    setRefreshing(-1);
   }
 }
 

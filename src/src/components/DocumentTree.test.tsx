@@ -441,7 +441,7 @@ describe("DocumentTree", () => {
     await waitFor(() => expect(gitMock).toHaveBeenCalled());
     // Modified file: gold name class + M badge.
     const readmeRow = (await screen.findByText("README.md")).closest("button");
-    expect(readmeRow?.className).toContain("git-modified");
+    expect(readmeRow?.classList.contains("git-modified")).toBe(true);
     const badge = container.querySelector(".doc-tree-git-badge");
     expect(badge?.textContent).toBe("M");
     expect(badge?.className).toContain("git-modified");
@@ -453,12 +453,12 @@ describe("DocumentTree", () => {
 
     // Ignored directory is dimmed.
     const nmRow = (await screen.findByText("node_modules")).closest("button");
-    expect(nmRow?.className).toContain("git-dimmed");
+    expect(nmRow?.classList.contains("git-dimmed")).toBe(true);
 
     // Expanding src shows the untracked file itself.
     fireEvent.click(screen.getByText("src"));
     const appRow = (await screen.findByText("app.ts")).closest("button");
-    expect(appRow?.className).toContain("git-untracked");
+    expect(appRow?.classList.contains("git-untracked")).toBe(true);
     expect(appRow?.querySelector(".doc-tree-git-badge")?.textContent).toBe("U");
   });
 

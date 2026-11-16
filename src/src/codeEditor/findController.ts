@@ -20,12 +20,20 @@ export interface EditorFindOptions {
   wholeWord: boolean;
   /** Requested active match index; clamped to the found range. */
   index: number;
+  /** Whether finding should move the editor selection to the active match.
+   * Document edits refresh highlights without stealing the caret. */
+  moveSelection?: boolean;
 }
 
 export interface EditorFindResult {
   count: number;
   index: number;
   invalid: boolean;
+}
+
+export interface ReplaceAllResult {
+  count: number;
+  truncated: boolean;
 }
 
 export interface FindMatch {
@@ -144,12 +152,17 @@ export function applyFind(view: EditorView, options: EditorFindOptions): EditorF
   }
   const index = Math.min(Math.max(options.index, 0), matches.length - 1);
   const active = matches[index];
+  const moveSelection = options.moveSelection !== false;
   view.dispatch({
     effects: [
       setFindMatches.of({ matches, active: index }),
-      EditorView.scrollIntoView(active.from, { y: "center" }),
+      ...(moveSelection
+        ? [EditorView.scrollIntoView(active.from, { y: "center" })]
+        : []),
     ],
-    selection: { anchor: active.from, head: active.to },
+    ...(moveSelection
+      ? { selection: { anchor: active.from, head: active.to } }
+      : {}),
   });
   return { count: matches.length, index, invalid: false };
 }
@@ -193,16 +206,20 @@ export function replaceCurrentMatch(
   return { count: remaining.length, index: nextIndex, invalid: false };
 }
 
-/** Replaces every match in one undoable transaction. */
+/** Replaces every match in one undoable transaction. Reports whether the
+ * match cap left newer matches untouched. */
 export function replaceAllMatches(
   view: EditorView,
   options: EditorFindOptions,
   replacement: string,
-): number {
+): ReplaceAllResult {
   const { query } = buildQuery(options);
-  if (!query) return 0;
+  if (!query) return { count: 0, truncated: false };
   const matches = enumerate(view.state, query);
-  if (matches.length === 0) return 0;
+  if (matches.length === 0) return { count: 0, truncated: false };
+  const truncated =
+    matches.length >= MAX_MATCHES &&
+    !query.getCursor(view.state, matches[matches.length - 1].to).next().done;
   view.dispatch({
     changes: matches.map((match) => ({
       from: match.from,
@@ -214,7 +231,7 @@ export function replaceAllMatches(
     userEvent: "input.replace.all",
   });
   clearFind(view);
-  return matches.length;
+  return { count: matches.length, truncated };
 }
 
 export function undoReplace(view: EditorView): void {

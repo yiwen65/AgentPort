@@ -5,6 +5,7 @@
 //! device registry + credential store without touching this module.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, RwLock};
 use std::time::Duration;
 
@@ -158,6 +159,9 @@ pub struct RemoteConnectionManager {
     /// Connect dedupe: the first caller per device leads, followers wait.
     connecting: Mutex<HashSet<String>>,
     connecting_cv: Condvar,
+    /// Per-device connect fences. Disconnect bumps the epoch so a dial that
+    /// finishes later cannot publish a connection slot.
+    connect_epochs: Mutex<HashMap<String, Arc<AtomicU64>>>,
     client_identity: ClientIdentity,
 }
 
@@ -186,6 +190,7 @@ impl RemoteConnectionManager {
             input_queues: Mutex::new(HashMap::new()),
             connecting: Mutex::new(HashSet::new()),
             connecting_cv: Condvar::new(),
+            connect_epochs: Mutex::new(HashMap::new()),
             client_identity,
         })
     }
@@ -193,6 +198,15 @@ impl RemoteConnectionManager {
     /// Swaps the device resolver (T-003 registry drops in here).
     pub fn set_resolver(&self, resolver: Arc<dyn DeviceResolver>) {
         *self.resolver.write().unwrap() = resolver;
+    }
+
+    fn connect_epoch(&self, device_id: &str) -> Arc<AtomicU64> {
+        self.connect_epochs
+            .lock()
+            .unwrap()
+            .entry(device_id.to_string())
+            .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+            .clone()
     }
 
     /// The prober `device_add_ssh` onboards through (live SSH by default).
@@ -268,6 +282,8 @@ impl RemoteConnectionManager {
         if let Some(stale) = self.connections.lock().unwrap().remove(device_id) {
             stale.connection.shutdown();
         }
+        let epoch = self.connect_epoch(device_id);
+        let epoch_started = epoch.load(Ordering::SeqCst);
         let info = self.resolver.read().unwrap().resolve(device_id)?;
         let attempt = self.dial(device_id, &info);
         self.resolver
@@ -275,13 +291,24 @@ impl RemoteConnectionManager {
             .unwrap()
             .record_connect_outcome(device_id, attempt.as_ref().err());
         let (connection, hello) = attempt?;
-        self.connections.lock().unwrap().insert(
+        let mut connections = self.connections.lock().unwrap();
+        connections.insert(
             device_id.to_string(),
             ConnectionSlot {
                 connection,
                 hello: hello.clone(),
             },
         );
+        if epoch.load(Ordering::SeqCst) != epoch_started {
+            if let Some(slot) = connections.remove(device_id) {
+                slot.connection.shutdown();
+            }
+            drop(connections);
+            return Err(RemoteCommandError::new(
+                "connect_cancelled",
+                "the device was disconnected while connecting",
+            ));
+        }
         Ok(hello)
     }
 
@@ -411,6 +438,7 @@ impl RemoteConnectionManager {
     }
 
     pub fn disconnect(&self, device_id: &str) {
+        self.connect_epoch(device_id).fetch_add(1, Ordering::SeqCst);
         self.drop_input_queue(device_id);
         if let Some(slot) = self.connections.lock().unwrap().remove(device_id) {
             slot.connection.shutdown();
@@ -419,6 +447,9 @@ impl RemoteConnectionManager {
 
     /// Disconnects every device (app teardown / test cleanup).
     pub fn disconnect_all(&self) {
+        for epoch in self.connect_epochs.lock().unwrap().values() {
+            epoch.fetch_add(1, Ordering::SeqCst);
+        }
         self.input_queues.lock().unwrap().clear();
         let slots: Vec<ConnectionSlot> = self
             .connections

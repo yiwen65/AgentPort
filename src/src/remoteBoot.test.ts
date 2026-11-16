@@ -130,14 +130,13 @@ describe("composeRemoteBoot", () => {
     const { backend } = makeBackend();
     const info = await composeRemoteBoot(backend, {
       deviceId: "dev_1",
-      fallbackAdapters: [remoteAdapter],
     });
     expect(info.platform).toEqual(localBoot.platform);
     expect(info.webview).toBe("system");
     expect(info.exportsDir).toBe("/tmp/exports");
     expect(info.settings).toEqual(settings);
     expect(apiMock.getSettings).toHaveBeenCalledTimes(1);
-    expect(info.adapters).toEqual([remoteAdapter]);
+    expect(info.adapters).toEqual([]);
     expect(backend.probeAgents).not.toHaveBeenCalled();
     expect(info.projects.map((p) => p.id)).toEqual(["prj_local"]);
     expect(info.timeline.completed).toBe(1);
@@ -162,12 +161,18 @@ describe("composeRemoteBoot", () => {
     const { backend } = makeBackend();
     const info = await composeRemoteBoot(backend, {
       deviceId: "dev_1",
-      fallbackAdapters: [remoteAdapter],
     });
     expect(info.adapters.map((adapter) => adapter.executablePath)).toEqual([
       "/opt/remote/pi",
     ]);
     expect(backend.probeAgents).not.toHaveBeenCalled();
+  });
+
+  it("does not lend the local boot's adapters to an unknown remote", async () => {
+    cacheLocalBootBase({ ...localBoot, adapters: [remoteAdapter] });
+    const { backend } = makeBackend();
+    const info = await composeRemoteBoot(backend, { deviceId: "dev_unknown" });
+    expect(info.adapters).toEqual([]);
   });
 
   it("runs the server-side reconcile before composing slices", async () => {

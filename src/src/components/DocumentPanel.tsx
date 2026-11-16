@@ -73,6 +73,7 @@ import type { DocumentGroup, DocumentTab } from "../store";
 import type { DeviceContext } from "../deviceContext";
 import type { SessionView } from "../types";
 import type { CodeEditorHandle, CodeSelection } from "../codeEditor/CodeEditor";
+import type { ReplaceAllResult } from "../codeEditor/findController";
 import { detectLanguage } from "../codeEditor/languages";
 import {
   effectiveIndent,
@@ -927,6 +928,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   const findLayerRef = useRef<HTMLDivElement>(null);
   const lastPreviewPointer = useRef({ x: 0, y: 0 });
   const replaceActionRef = useRef(false);
+  const lastCodeFindRef = useRef<{ signature: string; draft: string } | null>(null);
   const gitRequestRef = useRef(0);
   const [replaceUndoAvailable, setReplaceUndoAvailable] = useState(false);
   const [findMap, setFindMap] = useState<FindTextMap | null>(null);
@@ -1262,7 +1264,9 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   }, [surfaceKey]);
 
   // Markdown preview find scans the rendered DOM; code surfaces drive the
-  // CodeMirror controller through the editor handle.
+  // CodeMirror controller through the editor handle. Lazy Shiki/Mermaid work,
+  // theme switches and image swaps replace the preview's Text nodes, so the
+  // map must be rebuilt from the live DOM instead of reused.
   useEffect(() => {
     if (!runtime.findOpen || !runtime.findQuery || !runtime.doc) {
       setFindMap(null);
@@ -1276,9 +1280,27 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     }
     const host = previewRef.current;
     if (!host) return;
-    const map = buildFindText(host);
-    setFindMap(map);
-    setFindMatches(findMatchesIn(map.text, runtime.findQuery));
+    let frame: number | null = null;
+    const rebuild = () => {
+      frame = null;
+      const map = buildFindText(host);
+      setFindMap(map);
+      setFindMatches(findMatchesIn(map.text, runtime.findQuery));
+    };
+    const schedule = () => {
+      if (frame === null) frame = window.requestAnimationFrame(rebuild);
+    };
+    rebuild();
+    const preview = host.querySelector(".md-preview");
+    let observer: MutationObserver | null = null;
+    if (preview && typeof MutationObserver !== "undefined") {
+      observer = new MutationObserver(schedule);
+      observer.observe(preview, { childList: true, subtree: true, characterData: true });
+    }
+    return () => {
+      observer?.disconnect();
+      if (frame !== null) window.cancelAnimationFrame(frame);
+    };
   }, [runtime.findOpen, runtime.findQuery, runtime.mode, runtime.doc, markdown]);
 
   useEffect(() => {
@@ -1311,19 +1333,12 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
       if (frame === null) frame = window.requestAnimationFrame(paint);
     };
     paint();
-    const preview = host.querySelector(".md-preview");
-    let observer: MutationObserver | null = null;
-    if (preview && typeof MutationObserver !== "undefined") {
-      observer = new MutationObserver(schedule);
-      observer.observe(preview, { childList: true, subtree: true, characterData: true });
-    }
     let resize: ResizeObserver | null = null;
     if (typeof ResizeObserver !== "undefined") {
       resize = new ResizeObserver(schedule);
       resize.observe(host);
     }
     return () => {
-      observer?.disconnect();
       resize?.disconnect();
       if (frame !== null) window.cancelAnimationFrame(frame);
       layer.replaceChildren();
@@ -1377,20 +1392,44 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     const editor = activeEditorRef.current;
     if (!editor) return;
     if (!runtime.findOpen || !runtime.findQuery || (largeFile && runtime.findRegex)) {
+      lastCodeFindRef.current = null;
       editor.clearFind();
       setCodeFind({ count: 0, index: 0, invalid: false });
       return;
     }
     const handle = window.setTimeout(() => {
+      const signature = JSON.stringify([
+        runtime.findQuery,
+        runtime.findCaseSensitive,
+        runtime.findRegex,
+        runtime.findWholeWord,
+        runtime.findIndex,
+      ]);
+      const previous = lastCodeFindRef.current;
+      const queryChanged = previous === null || previous.signature !== signature;
+      const draftChanged =
+        previous !== null &&
+        previous.signature === signature &&
+        previous.draft !== runtime.draft;
+      // Editing the document refreshes matches without pulling the caret to
+      // the active match; the next keystroke would otherwise replace it.
+      const moveSelection = queryChanged || !draftChanged;
+      lastCodeFindRef.current = { signature, draft: runtime.draft };
       const result = editor.find({
         query: runtime.findQuery,
         caseSensitive: runtime.findCaseSensitive,
         regex: runtime.findRegex,
         wholeWord: runtime.findWholeWord,
         index: runtime.findIndex,
+        moveSelection,
       });
       setCodeFind(result);
-      if (!result.invalid && result.count > 0 && result.index !== runtime.findIndex) {
+      if (
+        moveSelection &&
+        !result.invalid &&
+        result.count > 0 &&
+        result.index !== runtime.findIndex
+      ) {
         updateDocumentTabRuntime(tab.id, { findIndex: result.index });
       }
     }, 120);
@@ -1512,16 +1551,19 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     if (!editor) return;
     if (!tab.pinned) pinDocumentTab(tab.id);
     replaceActionRef.current = true;
-    let count = 0;
+    let result: ReplaceAllResult = { count: 0, truncated: false };
     try {
-      count = editor.replaceAll(codeFindOptions(0), runtime.findReplacement);
-      if (count > 0) applyCodeFindAfterReplace(0, 0);
+      result = editor.replaceAll(codeFindOptions(0), runtime.findReplacement);
+      if (result.count > 0) applyCodeFindAfterReplace(0, 0);
     } finally {
       replaceActionRef.current = false;
     }
-    if (count === 0) return;
+    if (result.count === 0) return;
     setReplaceUndoAvailable(true);
-    toast(t("ui.document.replacedCount", { count }), "success");
+    toast(t("ui.document.replacedCount", { count: result.count }), "success");
+    if (result.truncated) {
+      toast(t("ui.document.replaceTruncated", { count: result.count }), "info");
+    }
   }, [
     applyCodeFindAfterReplace,
     codeFindOptions,

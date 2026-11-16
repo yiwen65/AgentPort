@@ -210,6 +210,7 @@
       "replaceAll": "全部替换",
       "replaceInput": "替换为",
       "replacedCount": "已替换 {{count}} 处",
+      "replaceTruncated": "已替换前 {{count}} 处；仍有匹配未替换，请再次执行全部替换",
       "entryActionFailed": "操作失败：{{detail}}",
       "expand": "展开为全页",
       "expandTip": "文档查看器占据整个终端页面",

@@ -118,4 +118,27 @@ describe("deviceConnections", () => {
     expect(isDeviceConnected("local")).toBe(true);
     expect(deviceConnectionFor("local").phase).toBe("connected");
   });
+
+  it("does not resurrect a device disconnected while its dial was in flight", async () => {
+    let resolveConnect!: (value: typeof hello) => void;
+    connectMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveConnect = resolve;
+      }),
+    );
+    disconnectMock.mockResolvedValue(undefined);
+
+    const pending = connectDevice("dev_race");
+    expect(deviceConnectionFor("dev_race").phase).toBe("connecting");
+
+    await disconnectDevice("dev_race");
+    resolveConnect(hello);
+    await pending;
+
+    expect(deviceConnectionFor("dev_race").phase).toBe("disconnected");
+    expect(getDeviceConnectionsState().explicitDeviceIds).not.toContain(
+      "dev_race",
+    );
+    expect(disconnectMock).toHaveBeenCalled();
+  });
 });

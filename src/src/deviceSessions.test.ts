@@ -166,6 +166,29 @@ describe("deviceSessions", () => {
     expect(snapshot.projects[0].sessions[0].id).toBe("ses_new");
   });
 
+  it("does not leak the refreshing count when a refresh is superseded", async () => {
+    setState({ activeDevice: remoteActive, projects: [] });
+    let resolveFirst!: (value: ProjectView[]) => void;
+    let resolveSecond!: (value: ProjectView[]) => void;
+    localListProjectsMock
+      .mockImplementationOnce(
+        () => new Promise<ProjectView[]>((resolve) => (resolveFirst = resolve)),
+      )
+      .mockImplementationOnce(
+        () => new Promise<ProjectView[]>((resolve) => (resolveSecond = resolve)),
+      );
+
+    const first = refreshDeviceSnapshot("local");
+    const second = refreshDeviceSnapshot("local");
+    expect(getDeviceSessionsState().refreshing).toBe(true);
+    resolveFirst([project("prj_old", "ses_old")]);
+    await first;
+    resolveSecond([project("prj_new", "ses_new")]);
+    await second;
+
+    expect(getDeviceSessionsState().refreshing).toBe(false);
+  });
+
   it("reads a background remote through its own backend", async () => {
     setState({ activeDevice: { kind: "local" }, projects: [] });
     connectionsState.explicitDeviceIds.push("dev_b");

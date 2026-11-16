@@ -10,7 +10,10 @@ import {
   removeSessionFromSnapshot,
 } from "./deviceSessions";
 import { deviceSessionApiFor } from "./deviceApi";
-import { focusSessionKeyViaRegistry } from "./sessionFocusRegistry";
+import {
+  focusSessionKeyViaRegistry,
+  focusSessionKeyViaRegistryAsync,
+} from "./sessionFocusRegistry";
 import {
   activeSessionKey,
   deviceKeyForContext,
@@ -631,10 +634,10 @@ export function selectSession(
   acknowledgeSession(id);
 }
 
-export function openSplitSessionDialog(
+export async function openSplitSessionDialog(
   targetKey: string,
   direction: PaneSplitDirection,
-): boolean {
+): Promise<boolean> {
   const state = getState();
   const target = findSessionByKey(targetKey);
   const displayLayout = visiblePaneLayout(
@@ -645,6 +648,31 @@ export function openSplitSessionDialog(
   if (!canSplitSessionPane(targetKey, direction)) {
     toast(i18n.t("shell:pane.tooSmall"), "info");
     return false;
+  }
+  // The target pane may belong to another device. Creation follows the
+  // active device, so switch first and then re-resolve the target against
+  // that device's project tree instead of passing a foreign project id.
+  if (parseSessionKey(targetKey).deviceKey !== activeDeviceKey()) {
+    if (!(await focusSessionKeyViaRegistryAsync(targetKey))) return false;
+    const switched = findSessionByKey(targetKey);
+    const switchedLayout = visiblePaneLayout(
+      getState().terminalLayout,
+      activeSessionKey(getState()),
+    );
+    if (!switched || !layoutContains(switchedLayout, targetKey)) return false;
+    if (!canSplitSessionPane(targetKey, direction)) {
+      toast(i18n.t("shell:pane.tooSmall"), "info");
+      return false;
+    }
+    selectSession(switched.session.id);
+    openDialog({
+      kind: "newSession",
+      projectId: switched.project.id,
+      worktreeId: switched.session.worktreeId ?? undefined,
+      splitTargetSessionId: targetKey,
+      splitDirection: direction,
+    });
+    return true;
   }
   selectSession(target.session.id);
   openDialog({
@@ -658,10 +686,10 @@ export function openSplitSessionDialog(
 }
 
 /** Open the lightweight Agent chooser used by pane context-menu splits. */
-export function openSplitAgentPicker(
+export async function openSplitAgentPicker(
   targetKey: string,
   direction: PaneSplitDirection,
-): boolean {
+): Promise<boolean> {
   const state = getState();
   const target = findSessionByKey(targetKey);
   const displayLayout = visiblePaneLayout(
@@ -672,6 +700,19 @@ export function openSplitAgentPicker(
   if (!canSplitSessionPane(targetKey, direction)) {
     toast(i18n.t("shell:pane.tooSmall"), "info");
     return false;
+  }
+  if (parseSessionKey(targetKey).deviceKey !== activeDeviceKey()) {
+    if (!(await focusSessionKeyViaRegistryAsync(targetKey))) return false;
+    const switched = findSessionByKey(targetKey);
+    const switchedLayout = visiblePaneLayout(
+      getState().terminalLayout,
+      activeSessionKey(getState()),
+    );
+    if (!switched || !layoutContains(switchedLayout, targetKey)) return false;
+    if (!canSplitSessionPane(targetKey, direction)) {
+      toast(i18n.t("shell:pane.tooSmall"), "info");
+      return false;
+    }
   }
   selectSession(target.session.id);
   openDialog({ kind: "splitAgentPicker", targetSessionId: targetKey, direction });

@@ -298,6 +298,7 @@ import {
   resetRemoteBackendsForTests,
   setRemoteBackendFactoryForTests,
 } from "./remote/runtime";
+import { RemoteRequestError } from "./remote/errors";
 import { applyUiLanguage } from "./i18n";
 import { applyProjectsSnapshot, emptyRuntime, getState, setState } from "./store";
 import {
@@ -722,7 +723,7 @@ describe("terminal renderer", () => {
     expect(rendered).not.toContain("\u001b[2J remains plain text");
   });
 
-  it("does not retry or re-toast a native history page that already failed", async () => {
+  it("retries a transient native history failure without re-toasting", async () => {
     setState({
       toasts: [],
       projects: getState().projects.map((project) => ({
@@ -740,12 +741,89 @@ describe("terminal renderer", () => {
 
     mountTerminal("renderer-test", document.createElement("div"));
     await vi.waitFor(() => expect(getState().toasts).toHaveLength(1));
+    expect(
+      getHandle("renderer-test")?.nativeHistoryFailedCursor,
+    ).toBeUndefined();
+
+    await expect(loadOlderNativeHistory("renderer-test")).resolves.toBe(false);
+    await expect(loadOlderNativeHistory("renderer-test")).resolves.toBe(false);
+    expect(rendererMocks.apiMock.getNativeHistory).toHaveBeenCalledTimes(3);
+    expect(getState().toasts).toHaveLength(1);
+  });
+
+  it("latches a permanent native history failure for the same cursor", async () => {
+    setState({
+      toasts: [],
+      projects: getState().projects.map((project) => ({
+        ...project,
+        sessions: project.sessions.map((session) => ({
+          ...session,
+          adapter: "codex",
+          lifecycle: "stopped" as const,
+        })),
+      })),
+    });
+    rendererMocks.apiMock.getNativeHistory.mockRejectedValue(
+      new RemoteRequestError("not_executed", "native history is unavailable"),
+    );
+
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() => expect(getState().toasts).toHaveLength(1));
     expect(getHandle("renderer-test")?.nativeHistoryFailedCursor).toBeNull();
 
     await expect(loadOlderNativeHistory("renderer-test")).resolves.toBe(false);
     await expect(loadOlderNativeHistory("renderer-test")).resolves.toBe(false);
     expect(rendererMocks.apiMock.getNativeHistory).toHaveBeenCalledTimes(1);
     expect(getState().toasts).toHaveLength(1);
+  });
+
+  it("loads native history for an ended pane on a device-qualified key", async () => {
+    const getNativeHistory = vi.fn().mockResolvedValue({
+      sourceStatus: { status: "available", sources: [] },
+      events: [],
+      nextCursor: null,
+      skippedLines: 0,
+    });
+    resetRemoteBackendsForTests();
+    setRemoteBackendFactoryForTests(
+      () =>
+        ({
+          attachSession: vi.fn(),
+          detachSession: vi.fn().mockResolvedValue(undefined),
+          getNativeHistory,
+        }) as never,
+    );
+    try {
+      setState({
+        activeDevice: {
+          kind: "remote",
+          deviceId: "dev_b",
+          deviceName: "B",
+          capabilities: [],
+        },
+        projects: getState().projects.map((project) => ({
+          ...project,
+          sessions: project.sessions.map((session) => ({
+            ...session,
+            adapter: "codex",
+            lifecycle: "stopped" as const,
+          })),
+        })),
+      });
+      mountTerminal("dev_b:renderer-test", document.createElement("div"));
+      await vi.waitFor(() =>
+        expect(getNativeHistory).toHaveBeenCalledWith(
+          "renderer-test",
+          null,
+          200,
+          false,
+        ),
+      );
+      disposeHandle("dev_b:renderer-test");
+    } finally {
+      disposeHandle("dev_b:renderer-test");
+      resetRemoteBackendsForTests();
+    }
   });
 
   it("deduplicates an in-flight native page request", async () => {
@@ -4189,6 +4267,42 @@ describe("terminal renderer", () => {
 
     expect(terminal.scrollToLine).toHaveBeenCalledWith(700);
     expect(getState().runtime["renderer-test"]?.scrolledUp).toBe(true);
+    localStorage.removeItem(key);
+  });
+
+  it("does not persist a checkpoint while hidden output is ahead of xterm", async () => {
+    const key = "agentport:terminal-snapshot:v2:renderer-test";
+    localStorage.removeItem(key);
+    mountTerminal("renderer-test", document.createElement("div"));
+    await vi.waitFor(() =>
+      expect(rendererMocks.apiMock.attachSession).toHaveBeenCalled(),
+    );
+    const handle = getHandle("renderer-test")!;
+    const terminal = rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    handle.displayReady = true;
+    handle.attached = true;
+    handle.attachmentId = 1;
+    setTerminalActive("renderer-test", false);
+    rendererMocks.channels[0].onmessage?.({
+      t: "output",
+      data: btoa("hidden bytes"),
+      offset: 0,
+      cursor: { runId: "run_hidden", runOrdinal: 1, generation: 0, offset: 0 },
+    });
+    expect(handle.hiddenOutput.length).toBeGreaterThan(0);
+    expect(handle.logCursor?.offset).toBe("hidden bytes".length);
+    vi.mocked(handle.serialize.serialize).mockReturnValue("hidden checkpoint");
+    for (const call of terminal.write.mock.calls) {
+      if (typeof call[1] === "function") invokeWriteCallback(call);
+    }
+
+    const released = releaseTerminal("renderer-test");
+    invokeWriteCallback(
+      terminal.write.mock.calls[terminal.write.mock.calls.length - 1],
+    );
+    await released;
+
+    expect(localStorage.getItem(key)).toBeNull();
     localStorage.removeItem(key);
   });
 

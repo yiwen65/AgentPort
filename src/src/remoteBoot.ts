@@ -45,9 +45,9 @@ function emptyTimeline(): TimelineData {
 /**
  * Remote adapter discovery is a slow, server-blocking probe (several seconds
  * on hosts that check every agent sequentially). A switch must not wait for
- * it; reuse the last successful result or the current device's list so the
- * workspace appears immediately. Explicit rechecks refresh the cache through
- * RemoteBackend.probeAgents.
+ * it; reuse the last successful result for this device, or leave the list
+ * empty until the Host cache fills it. Never borrow another device's list.
+ * Explicit rechecks refresh the cache through RemoteBackend.probeAgents.
  */
 /** Adapter list from the most recent local boot, used to paint local
  * switches immediately before the background boot refreshes it. */
@@ -57,7 +57,6 @@ export function cachedLocalAdapters(): AdapterInstall[] {
 
 export interface ComposeRemoteBootOptions {
   deviceId?: string;
-  fallbackAdapters?: AdapterInstall[];
 }
 
 /**
@@ -89,10 +88,9 @@ export async function composeRemoteBoot(
       })),
     backend.secretStatus(),
   ]);
-  const adapters =
-    (options.deviceId ? cachedRemoteAdapters(options.deviceId) : null) ??
-    (options.fallbackAdapters?.length ? options.fallbackAdapters : null) ??
-    localBase.adapters;
+  const adapters = options.deviceId
+    ? cachedRemoteAdapters(options.deviceId) ?? []
+    : localBase.adapters;
   return {
     platform: localBase.platform,
     settings,

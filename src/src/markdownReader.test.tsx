@@ -51,6 +51,17 @@ describe("MarkdownView advanced syntax", () => {
     );
     expect(container.querySelector(".md-footnotes")?.textContent).toContain("脚注内容");
     expect(container.querySelector(".md-footnotes")?.textContent).toContain("脚注");
+    // The back reference targets the reference anchor's id; dropping that id
+    // turns every "return to text" click into a missing-anchor notice.
+    const reference = container.querySelector<HTMLAnchorElement>(
+      'a[id="user-content-fnref-1"]',
+    );
+    expect(reference).not.toBeNull();
+    expect(
+      container.querySelector<HTMLAnchorElement>(
+        'a[href="#user-content-fnref-1"]',
+      ),
+    ).not.toBeNull();
   });
 
   it("renders inline and block math with KaTeX and source lines", async () => {

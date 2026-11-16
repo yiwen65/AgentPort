@@ -767,7 +767,7 @@ export default function DocumentTree() {
             </div>
           ) : (
           <button
-            className={`doc-tree-row${entry.isDir ? " dir" : " file"}${selected ? " selected" : ""}${gitClass}}`}
+            className={`doc-tree-row${entry.isDir ? " dir" : " file"}${selected ? " selected" : ""}${gitClass}`}
             style={{ paddingLeft: 6 + depth * 16 }}
             draggable
             onContextMenu={(event) => openEntryMenu(event, entry)}

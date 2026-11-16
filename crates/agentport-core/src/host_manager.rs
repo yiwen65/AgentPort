@@ -1059,6 +1059,16 @@ impl<'a> HostManager<'a> {
     /// via INSERT OR IGNORE; unparseable/foreign lines are skipped and counted.
     /// Returns (imported, skipped).
     fn import_status_events(&self, session_id: &str) -> (u64, u64) {
+        self.import_status_events_with(session_id, |batch| {
+            self.db.record_status_events(batch)
+        })
+    }
+
+    /// Import with an injectable sink so the cursor contract is testable.
+    fn import_status_events_with<F>(&self, session_id: &str, mut record: F) -> (u64, u64)
+    where
+        F: FnMut(&[StatusEvent]) -> Result<()>,
+    {
         let path = self
             .paths
             .session_dir(session_id)
@@ -1091,8 +1101,12 @@ impl<'a> HostManager<'a> {
         }
         let mut imported = 0u64;
         let mut skipped = 0u64;
+        // Only advance the persisted cursor past lines that are either
+        // committed or permanently invalid. A failed batch must be retried.
+        let mut committed = offset;
         let mut consumed = offset;
         let mut batch = Vec::new();
+        let mut batch_end = offset;
         let mut line = String::new();
         loop {
             line.clear();
@@ -1112,32 +1126,71 @@ impl<'a> HostManager<'a> {
             consumed += read as u64;
             let trimmed = line.trim();
             if trimmed.is_empty() {
+                committed = consumed;
                 continue;
             }
             match serde_json::from_str::<StatusEvent>(trimmed) {
                 Ok(ev) if ev.session_id == session_id => {
+                    // Events that can never be inserted are permanent skips.
+                    // Filtering them here keeps one bad line from failing a
+                    // whole batch after the cursor has already moved past it.
+                    if Db::validate_status_event(&ev).is_err() {
+                        skipped += 1;
+                        committed = consumed;
+                        continue;
+                    }
                     batch.push(ev);
+                    batch_end = consumed;
                     if batch.len() >= 256 {
-                        match self.db.record_status_events(&batch) {
-                            Ok(()) => imported += batch.len() as u64,
-                            Err(_) => skipped += batch.len() as u64,
+                        match record(&batch) {
+                            Ok(()) => {
+                                imported += batch.len() as u64;
+                                committed = batch_end;
+                            }
+                            Err(error) => {
+                                // Leave the cursor before this batch so the
+                                // next import retries instead of dropping it.
+                                tracing::warn!(
+                                    session = %session_id,
+                                    %error,
+                                    "status import paused on a failed batch"
+                                );
+                                batch.clear();
+                                break;
+                            }
                         }
                         batch.clear();
                     }
                 }
-                _ => skipped += 1,
+                _ => {
+                    skipped += 1;
+                    committed = consumed;
+                }
             }
         }
         if !batch.is_empty() {
-            match self.db.record_status_events(&batch) {
-                Ok(()) => imported += batch.len() as u64,
-                Err(_) => skipped += batch.len() as u64,
+            match record(&batch) {
+                Ok(()) => {
+                    imported += batch.len() as u64;
+                    committed = batch_end;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        session = %session_id,
+                        %error,
+                        "status import paused on a failed batch"
+                    );
+                }
             }
         }
-        if consumed > offset {
-            let _ = self
-                .db
-                .set_status_import_cursor(session_id, &path_string, inode, consumed, mtime_ns);
+        if committed > offset {
+            let _ = self.db.set_status_import_cursor(
+                session_id,
+                &path_string,
+                inode,
+                committed,
+                mtime_ns,
+            );
         }
         (imported, skipped)
     }
@@ -2532,6 +2585,63 @@ mod tests {
             db.get_session(&dead).unwrap().lifecycle,
             Lifecycle::Interrupted
         );
+    }
+
+    #[test]
+    fn status_import_does_not_advance_the_cursor_past_a_failed_batch() {
+        let (_dir, paths, db) = fixture();
+        add_project(&db, "prj_import");
+        let sid = ids::new_id("ses");
+        db.insert_session(&session(&sid, "prj_import", Lifecycle::Exited))
+            .unwrap();
+        let dir = paths.session_dir(&sid);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut jsonl = String::new();
+        for sequence in 1..=300 {
+            let event = StatusEvent {
+                session_id: sid.clone(),
+                run_id: LEGACY_RUN_ID.into(),
+                run_ordinal: LEGACY_RUN_ORDINAL,
+                sequence,
+                state: AgentState::Working,
+                source: StateSource::Hook,
+                confidence: Confidence::High,
+                evidence: None,
+                log_cursor: None,
+                occurred_at: Utc::now(),
+            };
+            jsonl.push_str(&serde_json::to_string(&event).unwrap());
+            jsonl.push('\n');
+        }
+        std::fs::write(dir.join("status-events.jsonl"), &jsonl).unwrap();
+        let mgr = HostManager {
+            paths: &paths,
+            db: &db,
+        };
+
+        let mut calls = 0;
+        let (imported, _) = mgr.import_status_events_with(&sid, |batch| {
+            calls += 1;
+            if calls == 1 {
+                Err(CoreError::Validation("simulated database failure".into()))
+            } else {
+                db.record_status_events(batch)
+            }
+        });
+        assert_eq!(calls, 1);
+        assert_eq!(imported, 0);
+        assert!(
+            db.status_import_cursor(&sid).unwrap().is_none(),
+            "a failed batch must leave the cursor before the batch"
+        );
+
+        let (imported, skipped) = mgr.import_status_events(&sid);
+        assert_eq!((imported, skipped), (300, 0));
+        assert_eq!(
+            db.status_import_cursor(&sid).unwrap().unwrap().offset,
+            jsonl.len() as u64
+        );
+        assert_eq!(db.status_history(&sid, 1000).unwrap().len(), 300);
     }
 
     #[test]

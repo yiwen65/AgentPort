@@ -59,6 +59,8 @@ import {
   splitPane,
 } from "./paneLayout";
 import { getState, setState } from "./store";
+import { getDeviceSessionsState } from "./deviceSessions";
+import { registerFocusSessionKeyHandler } from "./sessionFocusRegistry";
 import type { SessionView } from "./types";
 
 const oldSession = {
@@ -540,7 +542,7 @@ describe("selectSession", () => {
     expect(getState().attachedIds).toEqual([oldSession.id, newSession.id]);
   });
 
-  it("can start a replacement split from the temporary singleton", () => {
+  it("can start a replacement split from the temporary singleton", async () => {
     const rememberedLayout = splitPane(
       singletonPaneLayout(oldSession.id),
       oldSession.id,
@@ -556,7 +558,7 @@ describe("selectSession", () => {
     });
     selectSession(rpcSession.id);
 
-    expect(openSplitSessionDialog(rpcSession.id, "down")).toBe(true);
+    expect(await openSplitSessionDialog(rpcSession.id, "down")).toBe(true);
     expect(splitSessionIntoPane(rpcSession.id, oldSession.id, "down")).toBe(true);
 
     expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
@@ -692,7 +694,7 @@ describe("selectSession", () => {
     expect(getState().attachedIds).toEqual([oldSession.id, newSession.id]);
   });
 
-  it("enforces the confirmed split minimum and opens a typed split dialog", () => {
+  it("enforces the confirmed split minimum and opens a typed split dialog", async () => {
     expect(canSplitPaneSize("right", 646, 180)).toBe(true);
     expect(canSplitPaneSize("right", 645, 500)).toBe(false);
     expect(canSplitPaneSize("right", 646, 179)).toBe(false);
@@ -700,7 +702,7 @@ describe("selectSession", () => {
     expect(canSplitPaneSize("down", 800, 365)).toBe(false);
     expect(canSplitPaneSize("down", 319, 366)).toBe(false);
 
-    expect(openSplitSessionDialog(oldSession.id, "down")).toBe(true);
+    expect(await openSplitSessionDialog(oldSession.id, "down")).toBe(true);
     expect(getState().dialog).toMatchObject({
       kind: "newSession",
       projectId: oldSession.projectId,
@@ -709,13 +711,93 @@ describe("selectSession", () => {
     });
   });
 
-  it("opens the lightweight Agent picker for a context-menu split", () => {
-    expect(openSplitAgentPicker(oldSession.id, "right")).toBe(true);
+  it("opens the lightweight Agent picker for a context-menu split", async () => {
+    expect(await openSplitAgentPicker(oldSession.id, "right")).toBe(true);
     expect(getState().dialog).toEqual({
       kind: "splitAgentPicker",
       targetSessionId: oldSession.id,
       direction: "right",
     });
+  });
+
+  it("switches devices before opening a cross-device split dialog", async () => {
+    const remoteSession = {
+      ...oldSession,
+      id: "ses_remote",
+      projectId: "prj_remote",
+      title: "remote",
+    };
+    const remoteProject = {
+      ...projectWith(remoteSession)[0],
+      id: "prj_remote",
+      name: "Remote",
+      rootPath: "/tmp/remote",
+    };
+    const remoteKey = "dev_b:ses_remote";
+    const layout = splitPane(
+      singletonPaneLayout(oldSession.id),
+      oldSession.id,
+      remoteKey,
+      "right",
+    );
+    setState({
+      activeDevice: { kind: "local" },
+      projects: projectWith(oldSession),
+      terminalLayout: layout,
+      terminalLayoutGroups: [],
+      activeSessionId: oldSession.id,
+      attachedIds: [oldSession.id, remoteKey],
+      dialog: null,
+    });
+    getDeviceSessionsState().snapshots.dev_b = {
+      deviceId: "dev_b",
+      deviceName: "Beta",
+      transport: "ssh",
+      projects: [remoteProject],
+      fetchedAt: 1,
+      metadataFetchedAt: 1,
+      loading: false,
+      error: null,
+    };
+    registerFocusSessionKeyHandler((key) => {
+      expect(key).toBe(remoteKey);
+      setState({
+        activeDevice: {
+          kind: "remote",
+          deviceId: "dev_b",
+          deviceName: "Beta",
+          capabilities: [],
+        },
+        projects: [remoteProject],
+        terminalLayout: layout,
+        activeSessionId: remoteSession.id,
+      });
+      return true;
+    });
+    try {
+      await expect(
+        openSplitSessionDialog(remoteKey, "right"),
+      ).resolves.toBe(true);
+      expect(getState().activeDevice).toMatchObject({
+        kind: "remote",
+        deviceId: "dev_b",
+      });
+      expect(getState().dialog).toMatchObject({
+        kind: "newSession",
+        projectId: "prj_remote",
+        splitTargetSessionId: remoteKey,
+        splitDirection: "right",
+      });
+    } finally {
+      registerFocusSessionKeyHandler(null);
+      delete getDeviceSessionsState().snapshots.dev_b;
+      setState({
+        activeDevice: { kind: "local" },
+        projects: projectWith(oldSession),
+        terminalLayout: singletonPaneLayout(oldSession.id),
+        activeSessionId: oldSession.id,
+      });
+    }
   });
 
   it("rejects a late split when the pane no longer has the minimum size", () => {

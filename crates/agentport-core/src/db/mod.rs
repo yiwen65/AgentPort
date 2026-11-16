@@ -394,6 +394,24 @@ pub mod schema {
             updated_at TEXT NOT NULL
         );
         "#,
+        // v19 -> v20: a cursor is derived state, so it must never block the
+        // parent Session from being purged.
+        r#"
+        CREATE TABLE status_import_cursors_new (
+            session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+            path TEXT NOT NULL,
+            inode INTEGER NOT NULL DEFAULT 0,
+            offset INTEGER NOT NULL,
+            mtime_ns INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO status_import_cursors_new(session_id,path,inode,"offset",mtime_ns,updated_at)
+            SELECT c.session_id,c.path,c.inode,c."offset",c.mtime_ns,c.updated_at
+            FROM status_import_cursors c
+            WHERE EXISTS (SELECT 1 FROM sessions s WHERE s.id = c.session_id);
+        DROP TABLE status_import_cursors;
+        ALTER TABLE status_import_cursors_new RENAME TO status_import_cursors;
+        "#,
     ];
 }
 
@@ -531,6 +549,12 @@ fn purge_session_rows(tx: &Transaction<'_>, id: &str) -> Result<()> {
         params![auto_title_pending_key(id)],
     )?;
     tx.execute("DELETE FROM session_runs WHERE session_id=?1", params![id])?;
+    // The v20 schema cascades this row, but keep the explicit delete so an
+    // older database that missed the migration still purges cleanly.
+    tx.execute(
+        "DELETE FROM status_import_cursors WHERE session_id=?1",
+        params![id],
+    )?;
     tx.execute("DELETE FROM sessions WHERE id=?1", params![id])?;
     Ok(())
 }
@@ -3415,6 +3439,11 @@ impl Db {
              (SELECT id FROM sessions WHERE archived_at IS NOT NULL)",
             [],
         )?;
+        tx.execute(
+            "DELETE FROM status_import_cursors WHERE session_id IN
+             (SELECT id FROM sessions WHERE archived_at IS NOT NULL)",
+            [],
+        )?;
         tx.execute("DELETE FROM sessions WHERE archived_at IS NOT NULL", [])?;
         tx.commit()?;
         Ok(ids)
@@ -3660,7 +3689,7 @@ impl Db {
         Ok(())
     }
 
-    fn validate_status_event(e: &StatusEvent) -> Result<()> {
+    pub(crate) fn validate_status_event(e: &StatusEvent) -> Result<()> {
         if let Some(cursor) = e.log_cursor.as_ref() {
             validate_run_identity(&cursor.run_id, cursor.run_ordinal)?;
             if cursor.run_id != e.run_id || cursor.run_ordinal != e.run_ordinal {
@@ -6032,6 +6061,52 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["ses_purge"]
         );
+    }
+
+    #[test]
+    fn status_import_cursors_are_cascaded_and_purged_with_sessions() {
+        let db = db();
+        db.add_project(&project("prj_1")).unwrap();
+        db.insert_session(&session("ses_cursor", "prj_1")).unwrap();
+        db.set_status_import_cursor(
+            "ses_cursor",
+            "/tmp/ses_cursor/status-events.jsonl",
+            11,
+            42,
+            9,
+        )
+        .unwrap();
+        let on_delete: String = {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT on_delete FROM pragma_foreign_key_list('status_import_cursors')
+                 WHERE \"table\"='sessions'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(on_delete, "CASCADE");
+
+        db.archive_session("ses_cursor").unwrap();
+        db.purge_archived_session("ses_cursor").unwrap();
+        assert!(db.status_import_cursor("ses_cursor").unwrap().is_none());
+
+        db.insert_session(&session("ses_bulk", "prj_1")).unwrap();
+        db.set_status_import_cursor(
+            "ses_bulk",
+            "/tmp/ses_bulk/status-events.jsonl",
+            12,
+            7,
+            9,
+        )
+        .unwrap();
+        db.archive_session("ses_bulk").unwrap();
+        assert_eq!(
+            db.purge_all_archived_sessions().unwrap(),
+            vec!["ses_bulk".to_string()]
+        );
+        assert!(db.status_import_cursor("ses_bulk").unwrap().is_none());
     }
 
     #[test]

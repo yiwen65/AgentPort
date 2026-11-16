@@ -68,7 +68,8 @@ it("fills adapters from the Host cache without running probes", async () => {
   expect(cachedRemoteAdapters("dev_1")).toEqual([claude]);
 });
 
-it("leaves the fallback adapter list when the Host cache is empty", async () => {
+it("caches an empty Host adapter list instead of leaving another device's list", async () => {
+  setState({ adapters: [claude] });
   backendMock.listCachedAdapterInstalls.mockResolvedValueOnce([]);
 
   refreshActiveRemoteAdaptersIfStale();
@@ -78,7 +79,7 @@ it("leaves the fallback adapter list when the Host cache is empty", async () => 
   await Promise.resolve();
 
   expect(getState().adapters).toEqual([]);
-  expect(cachedRemoteAdapters("dev_1")).toBeNull();
+  expect(cachedRemoteAdapters("dev_1")).toEqual([]);
 });
 
 it("does nothing while the cached adapter list is fresh", async () => {

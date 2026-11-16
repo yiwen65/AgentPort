@@ -55,6 +55,7 @@ import {
   undoReplace,
   type EditorFindOptions,
   type EditorFindResult,
+  type ReplaceAllResult,
 } from "./findController";
 import { createGitGutter, setGitMarks, type GitLineMark } from "./gitGutter";
 import { loadLanguage, type CodeLanguageId } from "./languages";
@@ -92,7 +93,7 @@ export interface CodeEditorHandle {
   find(options: EditorFindOptions): EditorFindResult;
   clearFind(): void;
   replaceCurrent(options: EditorFindOptions, replacement: string): EditorFindResult;
-  replaceAll(options: EditorFindOptions, replacement: string): number;
+  replaceAll(options: EditorFindOptions, replacement: string): ReplaceAllResult;
   undoReplace(): void;
   setGitMarks(marks: GitLineMark[] | null): void;
   getView(): EditorView | null;
@@ -367,7 +368,9 @@ const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEd
           ? replaceCurrentMatch(viewRef.current, options, replacement)
           : EMPTY_FIND_RESULT,
       replaceAll: (options, replacement) =>
-        viewRef.current ? replaceAllMatches(viewRef.current, options, replacement) : 0,
+        viewRef.current
+          ? replaceAllMatches(viewRef.current, options, replacement)
+          : { count: 0, truncated: false },
       undoReplace: () => {
         if (viewRef.current) undoReplace(viewRef.current);
       },

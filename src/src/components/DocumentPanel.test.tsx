@@ -63,6 +63,7 @@ import {
   openDocumentTargetToSide,
   pinDocumentTab,
   resetDocumentTabRuntimes,
+  updateDocumentTabPath,
 } from "../documents";
 import { getState, resolveConfirm, setState } from "../store";
 import { EditorView } from "@codemirror/view";
@@ -195,6 +196,21 @@ describe("DocumentPanel", () => {
       expect(getState().toasts.some((item) => item.text === "文档已保存")).toBe(true);
     });
     void saveButton;
+  });
+
+  it("keeps unsaved edits when the open file is renamed", async () => {
+    render(<DocumentPanel />);
+    const editor = await findRawEditor();
+    act(() => replaceEditorText(editor, "# 标题\n\n正文\n未保存\n"));
+    expect(await screen.findByText("保存")).not.toBeNull();
+    expect(readMock).toHaveBeenCalledTimes(1);
+
+    act(() => updateDocumentTabPath(DEMO_DOC.path, "/tmp/demo/改名.md"));
+
+    const renamedEditor = await screen.findByLabelText("文档内容编辑");
+    expect(editorText(renamedEditor)).toContain("未保存");
+    expect(screen.getByText("保存")).not.toBeNull();
+    expect(readMock).toHaveBeenCalledTimes(1);
   });
 
   it("shows only the tree when the explorer opens without a file", async () => {
@@ -770,6 +786,35 @@ describe("DocumentPanel", () => {
     await waitFor(() => expect(screen.queryByLabelText("查找内容")).toBeNull());
   });
 
+  it("rebuilds preview find matches after the rendered DOM changes", async () => {
+    readMock.mockResolvedValue({ ...DEMO_DOC, content: "alpha beta alpha" });
+    const { container } = render(<DocumentPanel />);
+    await waitFor(() =>
+      expect(container.querySelector(".md-preview")?.textContent).toContain(
+        "alpha beta alpha",
+      ),
+    );
+    fireEvent.click(screen.getByLabelText("查找"));
+    const input = await screen.findByLabelText("查找内容");
+    fireEvent.change(input, { target: { value: "alpha" } });
+    await waitFor(() => expect(screen.getByText("1/2")).not.toBeNull());
+
+    const preview = container.querySelector(".md-preview") as HTMLElement;
+    const walker = document.createTreeWalker(preview, NodeFilter.SHOW_TEXT);
+    const targets: Text[] = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.nodeValue?.includes("alpha")) targets.push(node as Text);
+    }
+    expect(targets.length).toBeGreaterThan(0);
+    await act(async () => {
+      for (const target of targets) {
+        target.nodeValue = target.nodeValue?.replaceAll("alpha", "beta") ?? "";
+      }
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+    await waitFor(() => expect(screen.getByText("0/0")).not.toBeNull());
+  });
+
   it("finds text in the raw editor and keeps focus in the find field", async () => {
     render(<DocumentPanel />);
     const editor = await findRawEditor();
@@ -783,6 +828,34 @@ describe("DocumentPanel", () => {
     });
     expect(editorText(editor).slice(6, 8)).toBe("正文");
     expect(document.activeElement).toBe(input);
+  });
+
+  it("does not steal the editor caret while typing with find open", async () => {
+    readMock.mockResolvedValue({ ...DEMO_DOC, content: "# 标题\n\n正文 正文\n" });
+    render(<DocumentPanel />);
+    const editor = await findRawEditor();
+    fireEvent.click(screen.getByLabelText("查找"));
+    const input = await screen.findByLabelText("查找内容");
+    fireEvent.change(input, { target: { value: "正文" } });
+    await waitFor(() =>
+      expect(editorSelection(editor)).toEqual({ from: 6, to: 8 }),
+    );
+
+    const view = editorView(editor);
+    const end = view.state.doc.length;
+    act(() => {
+      view.focus();
+      view.dispatch({
+        changes: { from: end, insert: "X" },
+        selection: { anchor: end + 1 },
+      });
+    });
+    expect(view.hasFocus).toBe(true);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 180));
+    });
+    expect(editorSelection(editor)).toEqual({ from: end + 1, to: end + 1 });
   });
 
   it("highlights every raw match with the active one emphasized", async () => {

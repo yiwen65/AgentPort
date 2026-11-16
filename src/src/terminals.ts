@@ -940,9 +940,13 @@ export interface TermHandle {
   /** Agent-native history is a prefix of this same xterm buffer. `undefined`
    * means not requested yet; `null` means the oldest source line was reached. */
   nativeHistoryCursor: string | null | undefined;
-  /** Cursor whose page request already failed. Wheel gestures must not retry
-   * it (or re-toast) until the handle resets; `undefined` means no failure. */
+  /** Cursor whose page request already failed permanently. Wheel gestures must
+   * not retry it (or re-toast) until the handle resets; `undefined` means no
+   * permanent failure. Transient errors are retried. */
   nativeHistoryFailedCursor: string | null | undefined;
+  /** Cursor already toasted for a retryable failure, so a later retry does not
+   * repeat the same error message. */
+  nativeHistoryNotifiedCursor: string | null | undefined;
   nativeHistoryEvents: HistoryEvent[];
   nativeHistorySkippedLines: number;
   nativeHistoryRequest: Promise<boolean> | null;
@@ -1543,6 +1547,7 @@ export function getOrCreateHandle(key: string): TermHandle {
     historyLoading: false,
     nativeHistoryCursor: undefined,
     nativeHistoryFailedCursor: undefined,
+    nativeHistoryNotifiedCursor: undefined,
     nativeHistoryEvents: [],
     nativeHistorySkippedLines: 0,
     nativeHistoryRequest: null,
@@ -1901,6 +1906,9 @@ function flushHiddenOutput(handle: TermHandle) {
     offset += chunk.byteLength;
   }
   handle.writes.writeOutput(merged);
+  // Hidden bytes are only now visible to the parser; report them as rendered
+  // and let the snapshot timer store a checkpoint that matches the screen.
+  if (handle.logCursor) queueRenderedLogObservation(handle, handle.logCursor);
 }
 
 function writeTerminalOutput(handle: TermHandle, bytes: Uint8Array) {
@@ -2226,6 +2234,12 @@ function storeTerminalSnapshot(
   snapshotRevision: number,
 ): boolean {
   if (!findSessionByKey(handle.sessionId)) return false;
+  // Hidden output advances `logCursor` before it reaches xterm. Persisting in
+  // that window would pair a cursor past unseen bytes with an older screen, so
+  // keep the previous checkpoint and let the next attach replay the gap.
+  if (handle.hiddenOutput.length > 0 || handle.hiddenOutputOverflowed) {
+    return false;
+  }
   try {
     const content = serializeTerminalCheckpoint(handle);
     if (content === null) return false;
@@ -2929,9 +2943,9 @@ export function mountTerminal(sessionId: string, container: HTMLDivElement) {
   }
   // A PTY Session always owns this same xterm. Ended/interrupted Sessions do
   // not have a Host to attach; seed their buffer from the agent-native log.
-  const ses = getState()
-    .projects.flatMap((p) => p.sessions)
-    .find((x) => x.id === sessionId);
+  // The handle key carries the device prefix, so resolve through the keyed
+  // snapshots instead of the active device's plain-id project tree.
+  const ses = findSessionByKey(sessionId)?.session;
   const ended =
     ses &&
     (ses.lifecycle === "exited" ||
@@ -2951,6 +2965,7 @@ function resetNativeHistory(handle: TermHandle) {
   handle.nativeHistoryBoundaryMarker?.dispose();
   handle.nativeHistoryCursor = undefined;
   handle.nativeHistoryFailedCursor = undefined;
+  handle.nativeHistoryNotifiedCursor = undefined;
   handle.nativeHistoryEvents = [];
   handle.nativeHistorySkippedLines = 0;
   handle.nativeHistoryRequest = null;
@@ -3046,9 +3061,7 @@ function rebuildWithNativeHistory(handle: TermHandle): Promise<void> {
           : null;
         const viewportRevision = handle.viewport.revision;
         const mouseEncoding = handle.mouseEncoding;
-        const session = getState()
-          .projects.flatMap((project) => project.sessions)
-          .find((item) => item.id === handle.sessionId);
+        const session = findSessionByKey(handle.sessionId)?.session;
         const hasTerminalTail =
           handle.nativeHistoryBoundaryMarker !== null ||
           session?.lifecycle === "creating" ||
@@ -3170,6 +3183,7 @@ export function loadOlderNativeHistory(sessionId: string): Promise<boolean> {
       }
       handle.nativeHistoryCursor = page.nextCursor;
       handle.nativeHistoryFailedCursor = undefined;
+      handle.nativeHistoryNotifiedCursor = undefined;
       handle.nativeHistorySkippedLines += page.skippedLines;
       if (page.sourceStatus.status !== "available") return false;
       if (page.events.length === 0) return page.nextCursor !== null;
@@ -3184,8 +3198,18 @@ export function loadOlderNativeHistory(sessionId: string): Promise<boolean> {
         handles.get(sessionId) === handle &&
         handle.generation === generation
       ) {
-        handle.nativeHistoryFailedCursor = cursor;
-        toast(errorText(error), "error");
+        // `not_executed` (an older sidecar that cannot serve this request) is
+        // deterministic; transport and timeout errors must remain retryable.
+        const code =
+          runtimeMessageEnvelope(error)?.code ??
+          (isRemoteRequestError(error) ? error.code : undefined);
+        if (code === "not_executed") {
+          handle.nativeHistoryFailedCursor = cursor;
+        }
+        if (handle.nativeHistoryNotifiedCursor !== cursor) {
+          handle.nativeHistoryNotifiedCursor = cursor;
+          toast(errorText(error), "error");
+        }
       }
       return false;
     } finally {
@@ -3766,6 +3790,7 @@ function queueRenderedLogObservation(
     const attachmentId = handle.attachmentId;
     if (
       attachmentId !== null &&
+      handle.active &&
       activeSessionKey(getState()) === handle.sessionId
     ) {
       void apiForHandle(handle)

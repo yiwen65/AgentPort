@@ -238,7 +238,13 @@ function renderLink(
 
   if (/^https?:\/\//i.test(href)) {
     return (
-      <a key={key} className="md-link" href={href} data-href={href}>
+      <a
+        key={key}
+        {...elementProps(node)}
+        className="md-link"
+        href={href}
+        data-href={href}
+      >
         {children}
       </a>
     );
@@ -251,7 +257,13 @@ function renderLink(
       // Keep the raw fragment.
     }
     return (
-      <a key={key} className="md-anchor-link" href={href} data-anchor={anchor}>
+      <a
+        key={key}
+        {...elementProps(node)}
+        className="md-anchor-link"
+        href={href}
+        data-anchor={anchor}
+      >
         {children}
       </a>
     );
@@ -260,7 +272,13 @@ function renderLink(
     const resolved = resolveDocumentLink(href, context.linkContext);
     if (resolved.kind === "external") {
       return (
-        <a key={key} className="md-link" href={resolved.href} data-href={resolved.href}>
+        <a
+          key={key}
+          {...elementProps(node)}
+          className="md-link"
+          href={resolved.href}
+          data-href={resolved.href}
+        >
           {children}
         </a>
       );
@@ -269,6 +287,7 @@ function renderLink(
       return (
         <a
           key={key}
+          {...elementProps(node)}
           className="md-doc-link"
           href={href}
           data-doc-path={resolved.path}
@@ -281,7 +300,12 @@ function renderLink(
     }
     if (resolved.kind === "unresolved" && resolved.reason === "outside-root") {
       return (
-        <span key={key} className="md-link-blocked" data-tip={context.labels.linkOutsideRoot}>
+        <span
+          key={key}
+          {...elementProps(node)}
+          className="md-link-blocked"
+          data-tip={context.labels.linkOutsideRoot}
+        >
           {literalLink(node, href)}
         </span>
       );

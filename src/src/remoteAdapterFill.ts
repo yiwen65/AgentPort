@@ -31,9 +31,11 @@ export function refreshActiveRemoteAdaptersIfStale(
     const installs = await remoteBackendFor(deviceId)
       .listCachedAdapterInstalls()
       .catch(() => null);
-    if (!installs?.length) return;
+    if (!installs) return;
     const current = getState().activeDevice;
     if (current.kind !== "remote" || current.deviceId !== deviceId) return;
+    // An empty Host cache is a real answer: remember it so the UI stops
+    // showing a previous device's agents and does not refill on every render.
     rememberRemoteAdapters(deviceId, installs);
     setState({ adapters: installs });
   })();
