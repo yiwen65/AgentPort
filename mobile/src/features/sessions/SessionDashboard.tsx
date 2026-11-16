@@ -12,6 +12,7 @@ import { SessionAgentBadge } from "./SessionAgentBadge";
 import { AgentIcon, hasAgentIcon } from "../../components/AgentIcons";
 import { useAppAppearance } from "../../app/appAppearance";
 import { useActiveGitProjects } from "../git/useActiveGitProjects";
+import { GitPanel } from "../git/GitPanel";
 import { Modal } from "../../components/Modal";
 import "./dashboard.css";
 import { useTranslation } from "react-i18next";
@@ -228,6 +229,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   const [openingRecent, setOpeningRecent] = useState<string>();
   const recentOpening = useRef(false);
   const [rowActions, setRowActions] = useState<{ hostId: string; session: SessionSummary }>();
+  const [gitSession, setGitSession] = useState<{ hostId: string; session: SessionSummary }>();
   const [removingSessions, setRemovingSessions] = useState<string[]>([]);
   const refreshEpoch = useRef(0);
   const refreshes = useRef(new Map<string, { again: boolean; promise: Promise<void> }>());
@@ -282,7 +284,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
 
   const globalActivity = workspace.layout === "active";
   const activity = useActiveSessionSnapshots(client, hosts, visible && globalActivity);
-  const gitProjects = useActiveGitProjects(client, hosts, visible && globalActivity);
+  const activeGit = useActiveGitProjects(client, hosts, visible && globalActivity);
   const connectedHosts = hosts.filter(host => host.connectionState === "connected");
   const deviceTones = deviceToneAssignments(connectedHosts.map(host => host.id));
   // A pending refresh must not turn known data (including an empty/error result)
@@ -610,7 +612,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   };
 
   const sourceLabel = (host: HostProfileSummary, session: SessionSummary) => {
-    const project = gitProjects.get(host.id)?.get(session.projectId);
+    const project = activeGit.projects.get(host.id)?.get(session.projectId);
     if (!project) return undefined;
     const branch = session.worktreeId ? project.worktrees.get(session.worktreeId) : project.branch;
     return [project.name, branch].filter(Boolean).join(" · ");
@@ -841,6 +843,11 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
       {rowActions && actionsAvailable && (globalActivity || rowActions.hostId === selectedDeviceId) ? <SessionRowActions
         key={JSON.stringify([rowActions.hostId, rowActions.session.id])}
         session={rowActions.session} hostId={rowActions.hostId} client={client}
+        onOpenGit={() => {
+          const target = rowActions;
+          setRowActions(undefined);
+          setGitSession({ hostId: target.hostId, session: target.session });
+        }}
         onClose={() => setRowActions(current => current?.hostId === rowActions.hostId && current.session.id === rowActions.session.id ? undefined : current)}
         onChanged={() => globalActivity ? activity.refresh(rowActions.hostId) : refreshDevice(rowActions.hostId)}
         onRemovalPending={pending => {
@@ -849,6 +856,11 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         }}
         onRemovalError={message => setActionError(`${rowActions.session.title}: ${message}`)}
       /> : null}
+
+      {gitSession ? <GitPanel key={`${gitSession.hostId}:${gitSession.session.id}`} client={client}
+        hostId={gitSession.hostId} sessionId={gitSession.session.id} sessionTitle={gitSession.session.title}
+        onClose={() => setGitSession(undefined)}
+        onChanged={() => activeGit.refresh(gitSession.hostId)} /> : null}
 
       {workspace.recentOpen ? <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) updateWorkspace({ ...workspace, recentOpen: false }); }}>
         <section className="modal-sheet recent-sheet" role="dialog" aria-modal="true" aria-labelledby="recent-title">

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { i18n } from "../../i18n";
 import type { HostProfileSummary, RemoteClient, RemoteConnectionStateEvent } from "../../protocol/remoteClient";
@@ -15,6 +15,17 @@ function session(title: string, overrides: Partial<SessionSummary> = {}): Sessio
     resumePrecision: "exact", adapterType: "shell", transport: "pty", permissionMode: "native", hostAlive: true,
     createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:00:00Z", ...overrides };
 }
+function gitContext(hostId: string) {
+  return {
+    target: { projectId: "project", kind: "main" as const, worktreeId: null },
+    checkoutId: `co-${hostId}`, repoKey: `repo-${hostId}`, projectName: `${hostId} project`,
+    projectRoot: "/repo", checkoutRoot: "/repo", expectedBranch: null, actualBranch: "main",
+    headOid: "head", detached: false, unborn: false, ongoingOperation: null, hasRemote: false,
+    remote: null, remoteUrl: null, upstream: null, ahead: 0, behind: 0, worktreeHealth: null,
+    liveSessionIds: [], writable: true, blockers: [], warnings: [],
+  };
+}
+
 function setup(profiles = hosts) {
   const listeners = new Set<(event: RemoteConnectionStateEvent) => void>();
   const remote: RemoteClient = {
@@ -24,7 +35,17 @@ function setup(profiles = hosts) {
       if (method === "session.list") return [session(id === "host-1" ? "Studio shell" : "Laptop task", { unreadAttention: id === "host-2" })];
       if (method === "project.list") return [{ id: "project", name: `${id} project`, rootPath: "/repo", pinned: false, sortOrder: 0 }];
       if (method === "worktree.list") return [];
-      if (method === "git.context.resolve") return { actualBranch: "main" };
+      if (method === "git.context.resolve") return gitContext(id);
+      if (method === "git.changes") return {
+        context: gitContext(id), statusToken: "status", complete: true, partialReason: null,
+        counts: { staged: 0, unstaged: 0, untracked: 0, ignored: 0, conflict: 0, renamed: 0, submodule: 0 },
+        entries: [], observedAt: "2026-09-02T00:00:00Z",
+      };
+      if (method === "branch.list") return {
+        repositoryRoot: "/repo", repoKey: `repo-${id}`,
+        status: { checkout: { branch: "main" }, paths: [], staged: false, unstaged: false, untracked: false, unmerged: false, dirtySubmodule: false, operationState: null },
+        branches: [{ name: "main", oid: "head", current: true, occupiedWorktree: null }],
+      };
       if (method === "agent.supported") return [];
       if (method === "agent.preferences") return { revision: 1, agentOrder: [], agentHidden: [] };
       if (method === "attention.poll") return { events: [] };
@@ -134,6 +155,17 @@ describe("Global mobile Active Sessions", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(lists(remote).some(([id]) => id === "host-3")).toBe(false);
     expect(remote.connect).not.toHaveBeenCalled(); expect(remote.disconnect).not.toHaveBeenCalled();
+  });
+
+  it("opens the Git Center from a row action", async () => {
+    const { remote } = setup();
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    const row = await screen.findByRole("button", { name: "Studio shell" });
+    fireEvent.contextMenu(row);
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Git" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("tab", { name: "Changes" })).toBeInTheDocument();
+    expect(await within(dialog).findByText("No uncommitted changes.")).toBeInTheDocument();
   });
 
   it("labels worktree Sessions with the worktree branch", async () => {

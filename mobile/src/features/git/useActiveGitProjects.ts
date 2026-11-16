@@ -21,7 +21,10 @@ export function useActiveGitProjects(
   client: RemoteClient,
   hosts: readonly HostProfileSummary[],
   active: boolean,
-): ReadonlyMap<string, ReadonlyMap<string, ActiveGitProject>> {
+): {
+  projects: ReadonlyMap<string, ReadonlyMap<string, ActiveGitProject>>;
+  refresh: (hostId?: string) => void;
+} {
   const store = useRef({
     client,
     mounted: false,
@@ -64,6 +67,11 @@ export function useActiveGitProjects(
 
   const connectedKey = JSON.stringify(hosts.filter(host => host.connectionState === "connected").map(host => host.id).sort());
 
+  const refresh = useCallback((hostId?: string) => {
+    const ids = hostId ? [hostId] : JSON.parse(connectedKey) as string[];
+    for (const id of ids) void load(id);
+  }, [connectedKey, load]);
+
   useEffect(() => {
     store.current.mounted = true;
     return () => { store.current.mounted = false; };
@@ -88,5 +96,5 @@ export function useActiveGitProjects(
     return () => window.clearInterval(timer);
   }, [active, connectedKey, load]);
 
-  return projects;
+  return { projects, refresh };
 }

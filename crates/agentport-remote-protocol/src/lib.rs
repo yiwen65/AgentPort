@@ -167,6 +167,20 @@ pub const MOBILE_V2_METHOD_ALLOWLIST: &[&str] = &[
     "project.add",
     // Read-only directory compatibility for Bridges predating project.directory.*.
     "document.list",
+    // Mobile Git Center: context, changes, review mutations and local branches.
+    "worktree.list",
+    "git.context.resolve",
+    "git.changes",
+    "git.diff",
+    "git.stage",
+    "git.unstage",
+    "git.discard",
+    "git.commit.prepare",
+    "git.commit.execute",
+    "branch.list",
+    "branch.status",
+    "branch.switch",
+    "branch.create_switch",
 ];
 
 #[derive(Debug, Error)]
@@ -1293,6 +1307,28 @@ mod tests {
             assert!(METHOD_REGISTRY.contains(&method));
             assert_eq!(classify_method(method), RetryClass::Read);
             assert!(!MOBILE_V2_METHOD_ALLOWLIST.contains(&method));
+        }
+    }
+
+    #[test]
+    fn mobile_git_center_methods_are_pinned_to_the_mobile_surface() {
+        for method in [
+            "worktree.list",
+            "git.context.resolve",
+            "git.changes",
+            "git.diff",
+            "git.stage",
+            "git.unstage",
+            "git.discard",
+            "git.commit.prepare",
+            "git.commit.execute",
+            "branch.list",
+            "branch.status",
+            "branch.switch",
+            "branch.create_switch",
+        ] {
+            assert!(METHOD_REGISTRY.contains(&method), "{method}");
+            assert!(MOBILE_V2_METHOD_ALLOWLIST.contains(&method), "{method}");
         }
     }
 

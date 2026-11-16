@@ -78,7 +78,22 @@ function setupClient({ rejectResize = false, autoReplay = true, probeHealthy = t
   const request = vi.fn().mockImplementation((_profileId, method, params) => {
     if (method === "session.attach") { if (autoReplay) listener?.({ subscriptionId: "att-1", eventType: "replay_done", cursor: null, payload: { session_id: "ses-1" } }); return Promise.resolve({ attachmentId: "att-1", sessionId: "ses-1", childAlive: true, cursor: null, features: ["input_batch_v1", "terminal.geometry_v1"], runId: "run", runOrdinal: 1, terminalGeometry: null }); }
     if (method === "agent.preferences" && !probeHealthy) return Promise.reject(new Error("Suspended transport"));
-    if (method === "git.context.resolve") return Promise.resolve({ actualBranch: "main", expectedBranch: "main" });
+    if (method === "git.context.resolve") return Promise.resolve({
+      target: { projectId: "prj-1", kind: "main", worktreeId: null }, checkoutId: "co-1", repoKey: "repo-1",
+      projectName: "AgentSessions", projectRoot: "/repo", checkoutRoot: "/repo", expectedBranch: null, actualBranch: "main",
+      headOid: "head", detached: false, unborn: false, ongoingOperation: null, hasRemote: false, remote: null, remoteUrl: null,
+      upstream: null, ahead: 0, behind: 0, worktreeHealth: null, liveSessionIds: [], writable: true, blockers: [], warnings: [],
+    });
+    if (method === "git.changes") return Promise.resolve({
+      context: { actualBranch: "main" }, statusToken: "status", complete: true, partialReason: null,
+      counts: { staged: 0, unstaged: 0, untracked: 0, ignored: 0, conflict: 0, renamed: 0, submodule: 0 },
+      entries: [], observedAt: "2026-11-16T12:00:00Z",
+    });
+    if (method === "branch.list") return Promise.resolve({
+      repositoryRoot: "/repo", repoKey: "repo-1",
+      status: { checkout: { branch: "main" }, paths: [], staged: false, unstaged: false, untracked: false, unmerged: false, dirtySubmodule: false, operationState: null },
+      branches: [{ name: "main", oid: "head", current: true, occupiedWorktree: null }],
+    });
     if (method === "session.list") return Promise.resolve([]);
     if (method === "session.stop") return Promise.resolve({ groupCleaned: true });
     if (method === "session.input") return Promise.resolve({ batchId: "batch", serverSequence: 1, phase: "completed" });
@@ -1011,6 +1026,18 @@ describe("SessionWorkspace", () => {
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 
+  it("opens the Git Center from the Session actions sheet", async () => {
+    const { client, request } = setupClient();
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Show session title and actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Git" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("tab", { name: "Changes" })).toBeInTheDocument();
+    expect(await within(dialog).findByText("No uncommitted changes.")).toBeInTheDocument();
+    expect(request.mock.calls.some(([, method]) => method === "git.changes")).toBe(true);
+  });
+
   it("starts immersive, reveals only title/actions, and returns to the list without detaching", async () => {
     const { client, request } = setupClient();
     const onClose = vi.fn();
@@ -1033,7 +1060,7 @@ describe("SessionWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
     fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
     const menu = screen.getByRole("dialog");
-    expect([...menu.querySelectorAll(".terminal-action-grid button")].map(button => button.textContent)).toEqual(["Rename", "Pin", "Restart", "Stop", "A−", "A+"]);
+    expect([...menu.querySelectorAll(".terminal-action-grid button")].map(button => button.textContent)).toEqual(["Rename", "Pin", "Restart", "Stop", "Git", "A−", "A+"]);
     expect(menu).toHaveTextContent("AgentSessions · main");
     expect(menu).not.toHaveTextContent("running · native");
     fireEvent.click(within(menu).getByRole("button", { name: "Close" }));

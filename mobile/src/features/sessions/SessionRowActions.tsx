@@ -5,8 +5,9 @@ import type { RemoteClient } from "../../protocol/remoteClient";
 import type { SessionSummary } from "./types";
 
 type Action = "rename" | "pin" | "stop" | "archive" | "remove";
-export function SessionRowActions({ session, hostId, client, onClose, onChanged, onRemovalPending, onRemovalError }: {
+export function SessionRowActions({ session, hostId, client, onClose, onChanged, onOpenGit, onRemovalPending, onRemovalError }: {
   session: SessionSummary; hostId: string; client: RemoteClient; onClose: () => void; onChanged: () => void | Promise<void>;
+  onOpenGit?: () => void;
   onRemovalPending?: (pending: boolean) => void;
   onRemovalError?: (message: string) => void;
 }) {
@@ -60,6 +61,7 @@ export function SessionRowActions({ session, hostId, client, onClose, onChanged,
         : <p>{t(action === "remove" ? "session.removeBody" : "session.archiveBody")}</p>}
       <div className="modal-actions"><button type="button" disabled={busy} onClick={() => setAction(undefined)}>{t("common.cancel")}</button><button type="submit" className={action === "rename" ? "primary-button" : "danger-button"} disabled={busy || (action === "rename" && !title.trim())}>{t(`session.${action}`)}</button></div>
     </form> : <div className="terminal-action-grid">
+      {onOpenGit ? <button type="button" disabled={busy} onClick={onOpenGit}>{t("git.open")}</button> : null}
       {(["rename", "pin", "stop", "archive", "remove"] as const).map(name => <button type="button" key={name} disabled={busy} className={name === "remove" ? "danger-text" : undefined} onClick={() => (name === "pin" || name === "stop") ? void run(name) : setAction(name)}>{t(name === "pin" && session.pinnedAt ? "session.unpin" : `session.${name}`)}</button>)}
     </div>}
   </Modal>;

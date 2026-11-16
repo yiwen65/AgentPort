@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { Modal } from "../../components/Modal";
+import { GitPanel } from "../git/GitPanel";
 import { useTranslation } from "react-i18next";
 import type { RemoteClient, RemoteEvent } from "../../protocol/remoteClient";
 import { recoverConnection } from "../../protocol/connectionRecovery";
@@ -112,6 +113,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
   const onOpenedRef = useRef(onOpened);
   onOpenedRef.current = onOpened;
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [gitOpen, setGitOpen] = useState(false);
   const [busyAction, setBusyAction] = useState("");
   const [terminalGeometry, setTerminalGeometry] = useState<TerminalGeometry>();
   const actionsTrigger = useRef<HTMLButtonElement>(null);
@@ -976,10 +978,14 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
             <button type="button" disabled={Boolean(busyAction)} onClick={() => void action("pin")}>{open.session.pinnedAt ? t("session.unpin") : t("session.pin")}</button>
             <button type="button" disabled={Boolean(busyAction)} onClick={() => void action("restart")}>{t("session.restart")}</button>
             <button className="danger-text" type="button" disabled={Boolean(busyAction)} onClick={() => void stop()}>{t("session.stop")}</button>
+            <button type="button" onClick={() => { setActionsOpen(false); setGitOpen(true); }}>{t("git.open")}</button>
             <button type="button" onClick={() => setFontSize(value => Math.max(11, value - 1))}>A−</button>
             <button type="button" onClick={() => setFontSize(value => Math.min(24, value + 1))}>A+</button>
           </div>
       </Modal> : null}
+      {gitOpen ? <GitPanel client={client} hostId={open.hostProfileId} sessionId={open.session.id}
+        sessionTitle={open.session.title} onClose={() => setGitOpen(false)}
+        onBranchChanged={branch => setBranchName(branch)} /> : null}
     </article>
   );
 }

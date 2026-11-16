@@ -589,7 +589,7 @@ describe("V2 Session workspace", () => {
     const row = await screen.findByRole("button", { name: "Approval task" });
     fireEvent.keyDown(row, { key: "F10", shiftKey: true });
     const dialog = screen.getByRole("dialog", { name: "Approval task" });
-    expect([...dialog.querySelectorAll(".terminal-action-grid button")].map(button => button.textContent)).toEqual(["Rename", "Pin", "Stop", "Archive", "Remove"]);
+    expect([...dialog.querySelectorAll(".terminal-action-grid button")].map(button => button.textContent)).toEqual(["Git", "Rename", "Pin", "Stop", "Archive", "Remove"]);
     expect(onOpenSession).not.toHaveBeenCalled();
   });
 
