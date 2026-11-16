@@ -469,6 +469,13 @@ export function moveDocumentTab(
   const groups = cloneGroups(state.docGroups);
   const source = groups[located.groupIndex];
   source.tabs.splice(located.tabIndex, 1);
+  // Moving the active tab away hands the source group to its neighbour;
+  // otherwise activeTabId keeps pointing at the moved tab and the group
+  // renders blank.
+  if (source.activeTabId === located.tab.id) {
+    source.activeTabId =
+      source.tabs[Math.min(located.tabIndex, source.tabs.length - 1)]?.id ?? null;
+  }
 
   let target = groups[targetGroupIndex];
   if (!target) {

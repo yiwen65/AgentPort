@@ -76,6 +76,7 @@ vi.mock("../terminals", () => ({
 }));
 
 import {
+  moveDocumentTab,
   openDocumentTarget,
   openDocumentTargetToSide,
   pinDocumentTab,
@@ -836,6 +837,34 @@ describe("DocumentPanel", () => {
         DEMO_DOC.path,
       ]),
     );
+  });
+
+  it("keeps the source group on a neighbouring tab when its active tab moves away", async () => {
+    act(() => pinDocumentTab(DEMO_DOC.path));
+    act(() => {
+      openDocumentTargetToSide({ path: "/tmp/demo/第二.md", line: null });
+    });
+    act(() => {
+      openDocumentTarget({ path: "/tmp/demo/第三.md", line: null });
+    });
+    const thirdId = getState().docGroups[1]?.tabs.find(
+      (tab) => tab.path === "/tmp/demo/第三.md",
+    )?.id;
+    expect(thirdId).toBeTruthy();
+
+    const { container } = render(<DocumentPanel />);
+    await screen.findByRole("tab", { name: "第三.md" });
+
+    act(() => moveDocumentTab(thirdId!, 0));
+
+    await waitFor(() => {
+      const groups = getState().docGroups;
+      expect(groups).toHaveLength(2);
+      expect(groups[1]?.tabs.map((tab) => tab.path)).toEqual(["/tmp/demo/第二.md"]);
+      expect(groups[1]?.activeTabId).toBe(groups[1]?.tabs[0]?.id);
+    });
+    const groups = container.querySelectorAll(".doc-group");
+    expect(groups[1]?.querySelector(".doc-tab-body:not([hidden])")).not.toBeNull();
   });
 
   it("switches reading themes from the toolbar", async () => {
