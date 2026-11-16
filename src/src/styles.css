@@ -370,6 +370,7 @@ body.is-resizing-split * {
 body.is-dragging-doc-tab,
 body.is-dragging-doc-tab * {
   cursor: grabbing !important;
+  -webkit-user-select: none !important;
   user-select: none !important;
 }
 

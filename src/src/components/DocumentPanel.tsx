@@ -803,6 +803,12 @@ function DocTab({
       }`}
       data-tip={tab.path}
       data-doc-tab-id={tab.id}
+      // Stop WebKit from anchoring a text selection when the drag starts on
+      // the tab; click/double-click still work (only the mousedown default is
+      // suppressed).
+      onMouseDown={(event) => {
+        if (event.button === 0) event.preventDefault();
+      }}
       onPointerDown={(event) => onDragPointerDown(tab, event)}
       onClick={() => setActiveDocumentTab(tab.id)}
       onDoubleClick={() => pinDocumentTab(tab.id)}
