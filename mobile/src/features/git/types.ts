@@ -166,6 +166,28 @@ export interface SwitchOutcome {
   pendingRestore: boolean;
 }
 
+export type RestoreStrategy = "target" | "source";
+
+export interface AutoStash {
+  operationId: string;
+  phase: string;
+  selector: string;
+  oid: string;
+  marker: string;
+  sourceBranch: string | null;
+  sourceCommit: string;
+  targetBranch: string;
+  createdAt: string;
+}
+
+export interface BranchOperation {
+  id: string;
+  projectId: string;
+  phase: string;
+  sourceBranch: string | null;
+  targetBranch: string;
+}
+
 export interface GitCommitScopeFile {
   status: string;
   pathToken: string;

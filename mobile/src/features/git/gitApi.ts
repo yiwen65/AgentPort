@@ -1,8 +1,8 @@
 import type { RemoteClient } from "../../protocol/remoteClient";
 import type {
-  BranchSnapshot, GitChangeEntry, GitChangesSnapshot, GitCheckoutDescriptor,
-  GitCommitResult, GitCommitReview, GitContextLocator, GitDiffSide, GitFileDiff,
-  GitMutationResult, GitPathSelection, RepoStatus, SwitchOutcome,
+  AutoStash, BranchOperation, BranchSnapshot, GitChangeEntry, GitChangesSnapshot,
+  GitCheckoutDescriptor, GitCommitResult, GitCommitReview, GitContextLocator, GitDiffSide,
+  GitFileDiff, GitMutationResult, GitPathSelection, RepoStatus, RestoreStrategy, SwitchOutcome,
 } from "./types";
 
 export function sessionLocator(sessionId: string): GitContextLocator {
@@ -69,6 +69,18 @@ export function switchGitBranch(client: RemoteClient, hostId: string, projectId:
 
 export function createAndSwitchGitBranch(client: RemoteClient, hostId: string, projectId: string, name: string) {
   return client.request<SwitchOutcome>(hostId, "branch.create_switch", { projectId, name, startPoint: null });
+}
+
+export function listAutoStashes(client: RemoteClient, hostId: string, projectId: string) {
+  return client.request<AutoStash[]>(hostId, "branch.autostash.list", { projectId });
+}
+
+export function restoreAutoStash(client: RemoteClient, hostId: string, operationId: string, strategy: RestoreStrategy) {
+  return client.request<BranchOperation>(hostId, "branch.autostash.restore", { operationId, strategy });
+}
+
+export function cleanupAutoStash(client: RemoteClient, hostId: string, operationId: string) {
+  return client.request<BranchOperation>(hostId, "branch.autostash.cleanup", { operationId });
 }
 
 export function prepareGitCommit(

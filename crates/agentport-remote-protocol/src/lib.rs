@@ -181,6 +181,9 @@ pub const MOBILE_V2_METHOD_ALLOWLIST: &[&str] = &[
     "branch.status",
     "branch.switch",
     "branch.create_switch",
+    "branch.autostash.list",
+    "branch.autostash.restore",
+    "branch.autostash.cleanup",
 ];
 
 #[derive(Debug, Error)]
@@ -1326,6 +1329,9 @@ mod tests {
             "branch.status",
             "branch.switch",
             "branch.create_switch",
+            "branch.autostash.list",
+            "branch.autostash.restore",
+            "branch.autostash.cleanup",
         ] {
             assert!(METHOD_REGISTRY.contains(&method), "{method}");
             assert!(MOBILE_V2_METHOD_ALLOWLIST.contains(&method), "{method}");

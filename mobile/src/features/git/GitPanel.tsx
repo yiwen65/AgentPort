@@ -4,9 +4,9 @@ import { Modal } from "../../components/Modal";
 import { remoteErrorMessage } from "../../protocol/remoteError";
 import type { RemoteClient } from "../../protocol/remoteClient";
 import {
-  branchNameOf, createAndSwitchGitBranch, executeGitCommit, listGitBranches, mutateGitPaths,
-  prepareGitCommit, readGitChanges, readGitDiff, resolveGitContext, sessionLocator,
-  switchGitBranch,
+  branchNameOf, cleanupAutoStash, createAndSwitchGitBranch, executeGitCommit, listAutoStashes,
+  listGitBranches, mutateGitPaths, prepareGitCommit, readGitChanges, readGitDiff,
+  resolveGitContext, restoreAutoStash, sessionLocator, switchGitBranch,
 } from "./gitApi";
 import type {
   BranchSnapshot, GitChangeEntry, GitChangeKind, GitChangesSnapshot, GitCheckoutDescriptor,
@@ -161,18 +161,38 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
     }
   };
 
-  const finishSwitch = (outcome: SwitchOutcome) => {
+  const finishSwitch = async (outcome: SwitchOutcome) => {
     setSwitchTarget(undefined);
     setNewBranch("");
-    setNotice(outcome.pendingRestore ? t("git.branch.pendingRestore")
-      : outcome.stashed ? t("git.branch.stashed", { branch: outcome.targetBranch })
-        : t("git.branch.switched", { branch: outcome.targetBranch }));
+    // Only claim changes were restored when the backend did so without a
+    // pending recovery; otherwise the recovered notice is set below.
+    let message = !outcome.pendingRestore && outcome.stashed
+      ? t("git.branch.stashed", { branch: outcome.targetBranch })
+      : t("git.branch.switched", { branch: outcome.targetBranch });
+    if (outcome.pendingRestore && context) {
+      const projectId = context.target.projectId;
+      try {
+        const stashes = await listAutoStashes(client, hostId, projectId);
+        const stash = stashes.find(item => item.operationId === outcome.operationId);
+        if (stash && stash.phase !== "restored_verified") {
+          await restoreAutoStash(client, hostId, outcome.operationId, "target");
+        }
+        // A verified restore is enough; dropping the stash is best effort.
+        try { await cleanupAutoStash(client, hostId, outcome.operationId); } catch { /* cleanup is retryable */ }
+        message = t("git.branch.restored", { branch: outcome.targetBranch });
+      } catch (error) {
+        // Keep the real host error; the stash stays intact for a later retry.
+        setActionError(t("git.branch.restoreFailed", {
+          branch: outcome.targetBranch,
+          error: remoteErrorMessage(error),
+        }));
+      }
+    }
+    setNotice(message);
     onBranchChanged?.(outcome.targetBranch);
     onChanged?.();
-    void (async () => {
-      try { await refreshContext(); } catch { /* keep the reported outcome */ }
-      await Promise.all([loadChanges(), loadBranches()]);
-    })();
+    try { await refreshContext(); } catch { /* keep the reported outcome */ }
+    await Promise.all([loadChanges(), loadBranches()]);
   };
 
   const runBranch = async (action: () => Promise<SwitchOutcome>) => {
@@ -181,7 +201,7 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
     setActionError("");
     setNotice("");
     try {
-      finishSwitch(await action());
+      await finishSwitch(await action());
     } catch (error) {
       setActionError(remoteErrorMessage(error));
     } finally {

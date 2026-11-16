@@ -42,7 +42,7 @@ const branches: BranchSnapshot = {
   ],
 };
 
-function setup(initial = snapshot([entry({}), entry({ entryToken: "e2", pathToken: "p2", displayPath: "README.md", kind: "untracked", worktreeStatus: null, unstaged: false, untracked: true })])) {
+function setup(initial = snapshot([entry({}), entry({ entryToken: "e2", pathToken: "p2", displayPath: "README.md", kind: "untracked", worktreeStatus: null, unstaged: false, untracked: true })]), options: { pendingRestore?: boolean } = {}) {
   let changes = initial;
   const review: GitCommitReview = {
     context, commitToken: "commit-token", message: "Test commit", messageHash: "hash",
@@ -70,8 +70,11 @@ function setup(initial = snapshot([entry({}), entry({ entryToken: "e2", pathToke
       return { operationId: "discard", changes };
     }
     if (method === "branch.list") return branches;
-    if (method === "branch.switch") return { operationId: "switch", source: { branch: "main" }, targetBranch: params.branch, stashed: false, restored: false, pendingRestore: false };
+    if (method === "branch.switch") return { operationId: "switch", source: { branch: "main" }, targetBranch: params.branch, stashed: Boolean(options.pendingRestore), restored: false, pendingRestore: Boolean(options.pendingRestore) };
     if (method === "branch.create_switch") return { operationId: "create-switch", source: { branch: "main" }, targetBranch: params.name, stashed: false, restored: false, pendingRestore: false };
+    if (method === "branch.autostash.list") return [{ operationId: "switch", phase: "switched", selector: "stash@{0}", oid: "stash-oid", marker: "marker", sourceBranch: "main", sourceCommit: "head-1", targetBranch: "feature/ui", createdAt: "2026-11-16T12:00:00Z" }];
+    if (method === "branch.autostash.restore") return { id: "switch", projectId: "prj-1", phase: "restored_verified", sourceBranch: "main", targetBranch: "feature/ui" };
+    if (method === "branch.autostash.cleanup") return { id: "switch", projectId: "prj-1", phase: "completed", sourceBranch: "main", targetBranch: "feature/ui" };
     if (method === "git.commit.prepare") return { ...review, message: params.message };
     if (method === "git.commit.execute") return { operationId: "commit", outcome: "succeeded", beforeHead: "head-1", afterHead: "head-2", expectedTreeOid: "tree", actualTreeOid: "tree", changes: snapshot([], "clean"), error: null };
     throw new Error(`unexpected ${method}`);
@@ -154,6 +157,19 @@ describe("mobile Git Center", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "New branch" }), { target: { value: "feature/mobile" } });
     fireEvent.click(screen.getByRole("button", { name: "Create & switch" }));
     await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "branch.create_switch", { projectId: "prj-1", name: "feature/mobile", startPoint: null }));
+  });
+
+  it("restores the switch autostash automatically", async () => {
+    const { client, request } = setup(undefined, { pendingRestore: true });
+    renderPanel(client);
+    fireEvent.click(await screen.findByRole("tab", { name: "Branches" }));
+    fireEvent.click(await screen.findByRole("button", { name: /feature\/ui/ }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Switch" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "branch.autostash.list", { projectId: "prj-1" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "branch.autostash.restore", { operationId: "switch", strategy: "target" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "branch.autostash.cleanup", { operationId: "switch" }));
+    expect(await screen.findByText("Switched to feature/ui; local changes restored.")).toBeInTheDocument();
+    expect(screen.queryByText(/desktop/i)).not.toBeInTheDocument();
   });
 
   it("keeps worktree branches read-only", async () => {
