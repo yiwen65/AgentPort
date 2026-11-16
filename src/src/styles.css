@@ -5194,6 +5194,32 @@ body.is-resizing-pane {
   font-size: 0.9em;
 }
 
+/* Large-document source preview: the banner stays pinned while the
+   virtualized read-only editor below owns scrolling, so a multi-megabyte
+   file never builds one DOM node per line. */
+.doc-large-preview {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.doc-large-preview .md-large-banner {
+  flex: 0 0 auto;
+  margin: 16px 20px 0;
+}
+
+.doc-large-preview .doc-editor {
+  flex: 1;
+  min-height: 0;
+  margin-top: 8px;
+}
+
+.doc-large-preview-note {
+  flex: 0 1 auto;
+  text-align: right;
+}
+
 .md-large-banner {
   display: flex;
   align-items: center;
@@ -5206,22 +5232,6 @@ body.is-resizing-pane {
   background: color-mix(in srgb, var(--term-accent) 8%, transparent);
   color: var(--term-muted);
   font-size: 0.9em;
-}
-
-.md-large-source {
-  margin: 0;
-  padding: 0;
-  border: none;
-  background: transparent;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font: calc(12px * var(--doc-font-scale, 1)) / 1.7 var(--font-mono);
-}
-
-.md-large-source code {
-  padding: 0;
-  background: transparent;
-  font-size: inherit;
 }
 
 /* Mermaid diagrams inside the document preview. */

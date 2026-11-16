@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import { MarkdownView } from "./markdown";
 import { normalizeImageDestinations } from "./markdownReader/parse";
 
@@ -94,20 +94,6 @@ describe("MarkdownView advanced syntax", () => {
     const heading = container.querySelector("h1");
     expect(heading?.textContent).toBe("标题");
     expect(heading?.querySelector("[data-source-line='6']")).not.toBeNull();
-  });
-
-  it("uses a fast preview for very large documents with an opt-in rich render", async () => {
-    const source = `# Large\n\n${"Paragraph text. ".repeat(20_000)}`;
-    const { container } = render(<MarkdownView source={source} sourceLocations />);
-    expect(container.querySelector(".md-large-source")).not.toBeNull();
-    expect(container.querySelector(".md-large-banner")).not.toBeNull();
-    expect(container.querySelector("h1")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "渲染完整阅读视图" }));
-    await waitFor(
-      () => expect(container.querySelector("h1")?.textContent).toBe("Large"),
-      { timeout: 10_000 },
-    );
-    expect(container.querySelector(".md-large-source")).toBeNull();
   });
 
   it("falls back to TeX for oversized formulas", () => {

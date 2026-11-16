@@ -971,6 +971,43 @@ describe("DocumentPanel", () => {
     });
   });
 
+  it("starts large Markdown previews in a virtualized source view with an opt-in rich render", async () => {
+    const content = `# Large\n\n${"Paragraph text. ".repeat(20_000)}`;
+    readMock.mockResolvedValue({
+      path: "/tmp/demo/large.md",
+      content,
+      truncated: false,
+      sizeBytes: content.length,
+    });
+    act(() => {
+      openDocumentTarget({ path: "/tmp/demo/large.md", line: null });
+    });
+    const { container } = render(<DocumentPanel />);
+    expect(await screen.findByText("文档较大，已使用快速预览以保持流畅。")).not.toBeNull();
+    expect(container.querySelector(".md-preview")).toBeNull();
+    const source = screen.getByLabelText("文档内容编辑");
+    expect(editorView(source).state.readOnly).toBe(true);
+    expect(editorText(source)).toBe(content);
+
+    fireEvent.click(screen.getByRole("button", { name: "渲染完整阅读视图" }));
+    await waitFor(() => expect(container.querySelector("h1")?.textContent).toBe("Large"), {
+      timeout: 10_000,
+    });
+    expect(screen.queryByText("文档较大，已使用快速预览以保持流畅。")).toBeNull();
+  });
+
+  it("offers opening a truncated document with the default app", async () => {
+    readMock.mockResolvedValue({
+      ...DEMO_DOC,
+      truncated: true,
+      sizeBytes: 9 * 1024 * 1024,
+    });
+    render(<DocumentPanel />);
+    expect(await screen.findByText("文件过大，仅显示开头部分内容")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "用默认应用打开" }));
+    expect(openDefaultMock).toHaveBeenCalledWith(DEMO_DOC.path);
+  });
+
   it("opens find with Cmd/Ctrl+F while reading", async () => {
     render(<DocumentPanel />);
     await screen.findByText("正文");

@@ -3916,7 +3916,9 @@ async fn pick_save_path(app: AppHandle, default_name: String) -> Option<String> 
 }
 
 fn read_session_document_impl(path: &str) -> std::result::Result<Value, Value> {
-    const MAX_DOCUMENT_BYTES: u64 = 1024 * 1024;
+    // Matches the write cap: files below it load completely and stay
+    // editable; larger text files are truncated with an external-open action.
+    const MAX_DOCUMENT_BYTES: u64 = 8 * 1024 * 1024;
     const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 
     let reject = |code: &str, message: String| {
@@ -5508,6 +5510,18 @@ mod cleanup_tests {
             value["content"].as_str().unwrap().len() as u64
         );
         assert!(value["path"].as_str().unwrap().ends_with("报告.md"));
+    }
+
+    #[test]
+    fn read_session_document_truncates_at_the_read_cap() {
+        const CAP: u64 = 8 * 1024 * 1024;
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("huge.md");
+        std::fs::write(&file, vec![b'a'; CAP as usize + 1]).unwrap();
+        let value = read_session_document_impl(file.to_str().unwrap()).unwrap();
+        assert_eq!(value["truncated"], true);
+        assert_eq!(value["sizeBytes"], CAP + 1);
+        assert_eq!(value["content"].as_str().unwrap().len() as u64, CAP);
     }
 
     #[test]

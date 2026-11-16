@@ -3403,7 +3403,8 @@ fn absolute_path(path: &str) -> Result<&std::path::Path> {
 }
 
 fn read_document(path: &str) -> Result<serde_json::Value> {
-    const MAX_BYTES: u64 = 1024 * 1024;
+    // Matches the write cap so documents under it load completely.
+    const MAX_BYTES: u64 = 8 * 1024 * 1024;
     const SNIFF_BYTES: usize = 8 * 1024;
     let canonical = std::fs::canonicalize(absolute_path(path)?).map_err(io_error)?;
     let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
@@ -6038,6 +6039,15 @@ mod tests {
             .extended_facade("document.read", serde_json::json!({"path": document}))
             .unwrap();
         assert_eq!(read["content"], "before");
+        let huge_dir = tempfile::tempdir().unwrap();
+        let huge = huge_dir.path().join("huge.md");
+        std::fs::write(&huge, vec![b'a'; 8 * 1024 * 1024 + 1]).unwrap();
+        let read = service
+            .extended_facade("document.read", serde_json::json!({"path": huge}))
+            .unwrap();
+        assert_eq!(read["truncated"], true);
+        assert_eq!(read["sizeBytes"], 8 * 1024 * 1024 + 1);
+        assert_eq!(read["content"].as_str().unwrap().len(), 8 * 1024 * 1024);
         service
             .write_document(DocumentWriteParams::new(
                 document.to_string_lossy().into_owned(),

@@ -235,6 +235,7 @@
       "largeDocumentNotice": "This document is large; a fast source preview keeps the reader responsive.",
       "largeDocumentRender": "Render full reading view",
       "largeDocumentRendering": "Rendering the full reading view…",
+      "largeDocumentSourceOnly": "This document is too large for the full reading view; use the source view or open it with the default app.",
       "linkCopied": "Link copied",
       "linkOutsideRoot": "This link points outside the workspace or uses an unsupported target",
       "loading": "Loading document…",

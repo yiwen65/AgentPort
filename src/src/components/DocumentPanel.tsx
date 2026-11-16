@@ -96,6 +96,12 @@ import DocumentTree from "./DocumentTree";
 
 const LazyCodeEditor = lazy(() => import("../codeEditor/CodeEditor"));
 const CODE_EDITOR_LARGE_FILE_BYTES = 512 * 1024;
+/* Above this many characters a Markdown preview starts as a virtualized
+   read-only source view; the rich reader is one click away. */
+const RICH_MARKDOWN_SOURCE_LIMIT = 256 * 1024;
+/* A remark/React render at this size would stall the renderer for seconds,
+   so beyond it the source view is the only preview. */
+const RICH_MARKDOWN_RENDER_LIMIT = 2 * 1024 * 1024;
 
 const EDITOR_THEME_LABEL_KEYS = {
   follow: "ui.document.editorThemeFollow",
@@ -930,12 +936,15 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   const replaceActionRef = useRef(false);
   const lastCodeFindRef = useRef<{ signature: string; draft: string } | null>(null);
   const gitRequestRef = useRef(0);
+  const richPreviewTimer = useRef<number | null>(null);
   const [replaceUndoAvailable, setReplaceUndoAvailable] = useState(false);
   const [findMap, setFindMap] = useState<FindTextMap | null>(null);
   const [findMatches, setFindMatches] = useState<number[]>([]);
   const [codeFind, setCodeFind] = useState({ count: 0, index: 0, invalid: false });
   const [readySurface, setReadySurface] = useState<string | null>(null);
   const [gitRefreshToken, setGitRefreshToken] = useState(0);
+  const [richPreviewApproved, setRichPreviewApproved] = useState(false);
+  const [richPreviewRendering, setRichPreviewRendering] = useState(false);
   const [externalLink, setExternalLink] = useState<{
     href: string;
     domain: string;
@@ -951,6 +960,12 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   const editorIndentStyle = useStore((state) => state.docEditorIndentStyle);
   const editorWrap = useStore((state) => state.docEditorWrap);
   const editorWhitespace = useStore((state) => state.docEditorWhitespace);
+  const activeOsIntegration = useStore(canUseLocalOsIntegration);
+  // Opening natively is only possible when the document's origin is this
+  // computer; remote documents keep the action disabled.
+  const osIntegration = runtime.imageContext
+    ? runtime.imageContext.device.kind === "local"
+    : activeOsIntegration;
   const activeFindIndex =
     findMatches.length > 0
       ? Math.min(Math.max(runtime.findIndex, 0), findMatches.length - 1)
@@ -958,7 +973,19 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
 
   const markdown = isMarkdownPath(tab.path);
   const effectivePath = runtime.doc?.path ?? tab.path;
-  const codePreview = runtime.mode === "preview" && !markdown;
+  const markdownText = useMemo(
+    () => normalizeDocumentEol(runtime.doc?.content ?? ""),
+    [runtime.doc?.content],
+  );
+  // Large Markdown previews start in the virtualized source view: one DOM
+  // node per line would lock the renderer long before the read cap is hit.
+  const largeMarkdownSource =
+    markdown &&
+    runtime.mode === "preview" &&
+    (markdownText.length > RICH_MARKDOWN_RENDER_LIMIT ||
+      (markdownText.length > RICH_MARKDOWN_SOURCE_LIMIT && !richPreviewApproved));
+  const richMarkdownAvailable = markdownText.length <= RICH_MARKDOWN_RENDER_LIMIT;
+  const codePreview = runtime.mode === "preview" && (!markdown || largeMarkdownSource);
   const codeSurface = runtime.mode === "raw" || codePreview;
   const activeEditorRef = runtime.mode === "raw" ? rawEditorRef : previewEditorRef;
   const surfaceKey = `${runtime.mode}:${effectivePath}`;
@@ -976,10 +1003,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     { indent: editorIndentPref, indentStyle: editorIndentStyle },
     codeLanguage,
   );
-  const codeText =
-    runtime.mode === "raw"
-      ? runtime.draft
-      : normalizeDocumentEol(runtime.doc?.content ?? "");
+  const codeText = runtime.mode === "raw" ? runtime.draft : markdownText;
   const codeFindActive = codeSurface;
   const displayFindCount = codeFindActive ? codeFind.count : findMatches.length;
   const displayFindIndex = codeFindActive ? codeFind.index : activeFindIndex;
@@ -1074,7 +1098,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   // Reading progress: write a CSS transform directly on the 2px bar so scroll
   // events never re-render the preview.
   useEffect(() => {
-    if (runtime.mode !== "preview" || !markdown) return;
+    if (runtime.mode !== "preview" || !markdown || largeMarkdownSource) return;
     const element = previewRef.current;
     const bar = progressRef.current;
     if (!element || !bar || !runtime.doc) return;
@@ -1099,7 +1123,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
       observer?.disconnect();
       if (frame !== null) window.cancelAnimationFrame(frame);
     };
-  }, [runtime.doc, runtime.mode, visible, markdown]);
+  }, [runtime.doc, runtime.mode, visible, markdown, largeMarkdownSource]);
 
   // Load the file (with punctuation-trimmed fallbacks for link targets
   // printed inside prose). Loads are guarded by (path, reloadToken) recorded
@@ -1215,7 +1239,12 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
       }
       return;
     }
-    if (runtime.mode === "preview" && markdown && tab.pendingLine != null) {
+    if (
+      runtime.mode === "preview" &&
+      markdown &&
+      !largeMarkdownSource &&
+      tab.pendingLine != null
+    ) {
       const line = tab.pendingLine;
       clearDocumentPendingLine(tab.id);
       const marker = previewRef.current?.querySelector<HTMLElement>(
@@ -1232,6 +1261,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     tab.id,
     tab.path,
     markdown,
+    largeMarkdownSource,
     t,
   ]);
 
@@ -1263,6 +1293,46 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     setReadySurface(surfaceKey);
   }, [surfaceKey]);
 
+  // The rich-render opt-in belongs to the loaded document; a reload or a new
+  // source starts back in the fast source view.
+  useEffect(() => {
+    setRichPreviewApproved(false);
+    setRichPreviewRendering(false);
+    if (richPreviewTimer.current !== null) {
+      window.clearTimeout(richPreviewTimer.current);
+      richPreviewTimer.current = null;
+    }
+  }, [runtime.doc?.content, tab.path]);
+
+  useEffect(
+    () => () => {
+      if (richPreviewTimer.current !== null) window.clearTimeout(richPreviewTimer.current);
+    },
+    [],
+  );
+
+  // The outline belongs to the rich reader; the virtualized source view has no
+  // rendered headings, so drop stale entries (and its toolbar toggle).
+  useEffect(() => {
+    if (!largeMarkdownSource) return;
+    const current = getDocumentTabRuntime(tab.id);
+    if (current?.outline && current.outline.length > 0) {
+      updateDocumentTabRuntime(tab.id, { outline: [] });
+    }
+  }, [largeMarkdownSource, tab.id]);
+
+  const requestRichPreview = useCallback(() => {
+    if (!richMarkdownAvailable || richPreviewRendering) return;
+    setRichPreviewRendering(true);
+    if (richPreviewTimer.current !== null) window.clearTimeout(richPreviewTimer.current);
+    // Paint the busy button state before the synchronous parse takes the thread.
+    richPreviewTimer.current = window.setTimeout(() => {
+      richPreviewTimer.current = null;
+      setRichPreviewApproved(true);
+      setRichPreviewRendering(false);
+    }, 30);
+  }, [richMarkdownAvailable, richPreviewRendering]);
+
   // Markdown preview find scans the rendered DOM; code surfaces drive the
   // CodeMirror controller through the editor handle. Lazy Shiki/Mermaid work,
   // theme switches and image swaps replace the preview's Text nodes, so the
@@ -1273,7 +1343,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
       setFindMatches([]);
       return;
     }
-    if (runtime.mode !== "preview" || !markdown) {
+    if (runtime.mode !== "preview" || !markdown || largeMarkdownSource) {
       setFindMap(null);
       setFindMatches([]);
       return;
@@ -1301,7 +1371,14 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
       observer?.disconnect();
       if (frame !== null) window.cancelAnimationFrame(frame);
     };
-  }, [runtime.findOpen, runtime.findQuery, runtime.mode, runtime.doc, markdown]);
+  }, [
+    runtime.findOpen,
+    runtime.findQuery,
+    runtime.mode,
+    runtime.doc,
+    markdown,
+    largeMarkdownSource,
+  ]);
 
   useEffect(() => {
     const host = previewRef.current;
@@ -1311,6 +1388,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     if (
       runtime.mode !== "preview" ||
       !markdown ||
+      largeMarkdownSource ||
       !runtime.findOpen ||
       !findMap ||
       findMatches.length === 0
@@ -1346,6 +1424,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   }, [
     runtime.mode,
     markdown,
+    largeMarkdownSource,
     runtime.findOpen,
     runtime.findQuery.length,
     findMap,
@@ -1357,6 +1436,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     if (
       runtime.mode !== "preview" ||
       !markdown ||
+      largeMarkdownSource ||
       !runtime.findOpen ||
       !findMap ||
       findMatches.length === 0
@@ -1378,6 +1458,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
   }, [
     runtime.mode,
     markdown,
+    largeMarkdownSource,
     runtime.findOpen,
     runtime.findQuery.length,
     findMap,
@@ -1468,7 +1549,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     if (!visible || !codeSurface || !activeReady) return;
     const editor = activeEditorRef.current;
     if (!editor) return;
-    if (tabDirty || largeFile || !runtime.doc) {
+    if (tabDirty || largeFile || largeMarkdownSource || !runtime.doc) {
       editor.setGitMarks(null);
       return;
     }
@@ -1491,6 +1572,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     activeReady,
     tabDirty,
     largeFile,
+    largeMarkdownSource,
     runtime.doc?.path,
     runtime.doc?.content,
     runtime.imageContext,
@@ -1608,9 +1690,43 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
     });
   }, [tab.id, runtime.doc]);
 
+  const renderCodeSurface = (
+    ref: typeof rawEditorRef,
+    readOnly: boolean,
+    sourcePreview: boolean,
+  ) => (
+    <div className="doc-editor doc-editor-code">
+      <Suspense
+        fallback={<div className="doc-panel-status">{t("ui.document.loading")}</div>}
+      >
+        <LazyCodeEditor
+          key={surfaceKey}
+          ref={ref}
+          text={codeText}
+          readOnly={readOnly}
+          language={sourcePreview || largeFile ? null : codeLanguage}
+          themeName={codeThemeName}
+          wrap={editorWrap}
+          whitespace={editorWhitespace}
+          indentWidth={codeIndent.width}
+          useSpaces={codeIndent.useSpaces}
+          visible={visible}
+          ariaLabel={t("ui.document.editorLabel")}
+          enableFolding={!largeFile && !sourcePreview}
+          enableGitGutter={!largeFile && !sourcePreview}
+          enableIndentGuides={!largeFile && !sourcePreview}
+          onDocChange={handleCodeChange}
+          onSelectionChange={handleCodeSelection}
+          onSave={handleCodeSave}
+          onReady={handleEditorReady}
+        />
+      </Suspense>
+    </div>
+  );
+
   return (
     <div className="doc-tab-body" hidden={!visible}>
-      {runtime.doc && runtime.mode === "preview" && markdown ? (
+      {runtime.doc && runtime.mode === "preview" && markdown && !largeMarkdownSource ? (
         <div className="doc-progress" ref={progressRef} aria-hidden="true" />
       ) : null}
       {runtime.findOpen && runtime.doc ? (
@@ -1703,6 +1819,19 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
       {runtime.doc?.truncated ? (
         <div className="banner info" role="status">
           <span>{t("ui.document.truncated")}</span>
+          <span className="spacer" />
+          <button
+            className="btn small primary"
+            disabled={!osIntegration}
+            title={osIntegration ? undefined : t("ui.document.remoteOsIntegration")}
+            onClick={() =>
+              void api.openWithDefaultApp(effectivePath).catch((e) => {
+                toast(t("ui.sidebar.openFailed", { detail: errorText(e) }), "error");
+              })
+            }
+          >
+            {t("ui.document.unsupported.openDefault")}
+          </button>
         </div>
       ) : null}
       <div className="doc-panel-body">
@@ -1718,113 +1847,86 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
         ) : runtime.doc ? (
           runtime.mode === "preview" ? (
             markdown ? (
-              <div className={`doc-reading-layout${readingMode ? " reading" : ""}`}>
-                {runtime.tocOpen && (runtime.outline?.length ?? 0) > 0 ? (
-                  <DocToc
-                    items={runtime.outline ?? []}
-                    hostRef={previewRef}
-                    variant={readingMode ? "rail" : "drawer"}
-                    label={t("ui.document.outline")}
-                    closeLabel={t("ui.document.closeOutline")}
-                    onSelect={() => {
-                      if (!readingMode) updateDocumentTabRuntime(tab.id, { tocOpen: false });
-                    }}
-                    onClose={
-                      readingMode
-                        ? undefined
-                        : () => updateDocumentTabRuntime(tab.id, { tocOpen: false })
-                    }
-                  />
-                ) : null}
-                <div
-                  ref={previewRef}
-                  className="doc-preview-host"
-                  onMouseUp={capturePreviewSelection}
-                  onPointerDownCapture={(event) => {
-                    lastPreviewPointer.current = { x: event.clientX, y: event.clientY };
-                  }}
-                >
-                  <MarkdownView
-                    source={runtime.doc.content}
-                    sourceLocations
-                    imageSession={runtime.imageSession ?? undefined}
-                    linkContext={linkContext}
-                    readingTheme={readingTheme}
-                    onOpenDocument={handleOpenDocument}
-                    onOutlineChange={handleOutlineChange}
-                    onCopyText={handleCopyText}
-                    onCopyHeadingLink={handleCopyHeadingLink}
-                    onNotice={handleNotice}
-                    onLinkClick={handleExternalLink}
-                  />
-                  <div ref={findLayerRef} className="md-find-layer" aria-hidden="true" />
+              largeMarkdownSource ? (
+                <div className="doc-large-preview">
+                  <div className="md-large-banner" role="status" data-search-skip="true">
+                    <span>{t("ui.document.largeDocumentNotice")}</span>
+                    {richMarkdownAvailable ? (
+                      <button
+                        type="button"
+                        className="btn small primary"
+                        disabled={richPreviewRendering}
+                        onClick={requestRichPreview}
+                      >
+                        {richPreviewRendering
+                          ? t("ui.document.largeDocumentRendering")
+                          : t("ui.document.largeDocumentRender")}
+                      </button>
+                    ) : (
+                      <span className="doc-large-preview-note">
+                        {t("ui.document.largeDocumentSourceOnly")}
+                      </span>
+                    )}
+                  </div>
+                  {renderCodeSurface(previewEditorRef, true, true)}
                 </div>
-                {!readingMode && runtime.tocOpen ? (
-                  <button
-                    type="button"
-                    className="doc-toc-backdrop"
-                    aria-label={t("ui.document.closeOutline")}
-                    onClick={() => updateDocumentTabRuntime(tab.id, { tocOpen: false })}
-                  />
-                ) : null}
-              </div>
+              ) : (
+                <div className={`doc-reading-layout${readingMode ? " reading" : ""}`}>
+                  {runtime.tocOpen && (runtime.outline?.length ?? 0) > 0 ? (
+                    <DocToc
+                      items={runtime.outline ?? []}
+                      hostRef={previewRef}
+                      variant={readingMode ? "rail" : "drawer"}
+                      label={t("ui.document.outline")}
+                      closeLabel={t("ui.document.closeOutline")}
+                      onSelect={() => {
+                        if (!readingMode) updateDocumentTabRuntime(tab.id, { tocOpen: false });
+                      }}
+                      onClose={
+                        readingMode
+                          ? undefined
+                          : () => updateDocumentTabRuntime(tab.id, { tocOpen: false })
+                      }
+                    />
+                  ) : null}
+                  <div
+                    ref={previewRef}
+                    className="doc-preview-host"
+                    onMouseUp={capturePreviewSelection}
+                    onPointerDownCapture={(event) => {
+                      lastPreviewPointer.current = { x: event.clientX, y: event.clientY };
+                    }}
+                  >
+                    <MarkdownView
+                      source={runtime.doc.content}
+                      sourceLocations
+                      imageSession={runtime.imageSession ?? undefined}
+                      linkContext={linkContext}
+                      readingTheme={readingTheme}
+                      onOpenDocument={handleOpenDocument}
+                      onOutlineChange={handleOutlineChange}
+                      onCopyText={handleCopyText}
+                      onCopyHeadingLink={handleCopyHeadingLink}
+                      onNotice={handleNotice}
+                      onLinkClick={handleExternalLink}
+                    />
+                    <div ref={findLayerRef} className="md-find-layer" aria-hidden="true" />
+                  </div>
+                  {!readingMode && runtime.tocOpen ? (
+                    <button
+                      type="button"
+                      className="doc-toc-backdrop"
+                      aria-label={t("ui.document.closeOutline")}
+                      onClick={() => updateDocumentTabRuntime(tab.id, { tocOpen: false })}
+                    />
+                  ) : null}
+                </div>
+              )
             ) : (
-              <div className="doc-editor doc-editor-code">
-                <Suspense
-                  fallback={<div className="doc-panel-status">{t("ui.document.loading")}</div>}
-                >
-                  <LazyCodeEditor
-                    key={surfaceKey}
-                    ref={previewEditorRef}
-                    text={codeText}
-                    readOnly
-                    language={largeFile ? null : codeLanguage}
-                    themeName={codeThemeName}
-                    wrap={editorWrap}
-                    whitespace={editorWhitespace}
-                    indentWidth={codeIndent.width}
-                    useSpaces={codeIndent.useSpaces}
-                    visible={visible}
-                    ariaLabel={t("ui.document.editorLabel")}
-                    enableFolding={!largeFile}
-                    enableGitGutter={!largeFile}
-                    enableIndentGuides={!largeFile}
-                    onDocChange={handleCodeChange}
-                    onSelectionChange={handleCodeSelection}
-                    onSave={handleCodeSave}
-                    onReady={handleEditorReady}
-                  />
-                </Suspense>
-              </div>
+              renderCodeSurface(previewEditorRef, true, false)
             )
           ) : (
-            <div className="doc-editor doc-editor-code">
-              <Suspense
-                fallback={<div className="doc-panel-status">{t("ui.document.loading")}</div>}
-              >
-                <LazyCodeEditor
-                  key={surfaceKey}
-                  ref={rawEditorRef}
-                  text={codeText}
-                  readOnly={runtime.doc.truncated}
-                  language={largeFile ? null : codeLanguage}
-                  themeName={codeThemeName}
-                  wrap={editorWrap}
-                  whitespace={editorWhitespace}
-                  indentWidth={codeIndent.width}
-                  useSpaces={codeIndent.useSpaces}
-                  visible={visible}
-                  ariaLabel={t("ui.document.editorLabel")}
-                  enableFolding={!largeFile}
-                  enableGitGutter={!largeFile}
-                  enableIndentGuides={!largeFile}
-                  onDocChange={handleCodeChange}
-                  onSelectionChange={handleCodeSelection}
-                  onSave={handleCodeSave}
-                  onReady={handleEditorReady}
-                />
-              </Suspense>
-            </div>
+            renderCodeSurface(rawEditorRef, runtime.doc.truncated, false)
           )
         ) : null}
       </div>
