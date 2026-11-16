@@ -970,7 +970,7 @@ impl<'a> BranchManager<'a> {
         let source_branch = match &status.checkout {
             CheckoutState::Branch(branch) => Some(branch.clone()),
             CheckoutState::Detached(_) => None,
-            CheckoutState::Unborn(_) => unreachable!("blocked by ensure_mutation_allowed"),
+            CheckoutState::Unborn(_) => unreachable!("blocked by ensure_checkout_state_allowed"),
         };
         let operation_id = format!("op_{}", uuid::Uuid::new_v4().simple());
         let dirty = status.is_dirty();
@@ -2025,15 +2025,6 @@ impl<'a> BranchManager<'a> {
         }
     }
 
-    fn ensure_mutation_allowed(
-        &self,
-        identity: &RepositoryIdentity,
-        status: &RepoStatus,
-    ) -> Result<()> {
-        self.ensure_operation_conflicts_and_sessions(identity, status)?;
-        self.ensure_checkout_state_allowed(status)
-    }
-
     fn ensure_delete_allowed(&self, status: &RepoStatus) -> Result<()> {
         if let Some(state) = &status.operation_state {
             return Err(CoreError::Blocked(format!(
@@ -2354,7 +2345,8 @@ impl<'a> BranchManager<'a> {
         Ok(())
     }
 
-    // Create/switch may run alongside Sessions; Git safety guards still apply.
+    // Branch mutations, including autostash restore, may run alongside
+    // Sessions; Git safety guards still apply.
     fn ensure_operation_conflicts(&self, status: &RepoStatus) -> Result<()> {
         if let Some(state) = &status.operation_state {
             return Err(CoreError::Blocked(format!(
@@ -2365,24 +2357,6 @@ impl<'a> BranchManager<'a> {
             return Err(CoreError::Blocked(
                 "branch mutation is blocked by unresolved index conflicts".into(),
             ));
-        }
-        Ok(())
-    }
-
-    // Restore/recovery retains its stricter checkout ownership requirement.
-    fn ensure_operation_conflicts_and_sessions(
-        &self,
-        identity: &RepositoryIdentity,
-        status: &RepoStatus,
-    ) -> Result<()> {
-        self.ensure_operation_conflicts(status)?;
-        if let Some(session_id) = self.live_session_ids_for_checkout(identity)?.first() {
-            let session = self.db.get_session(session_id)?;
-            return Err(CoreError::Blocked(format!(
-                "session {} is {} in this checkout",
-                session.id,
-                session.lifecycle.as_str()
-            )));
         }
         Ok(())
     }
@@ -2846,7 +2820,7 @@ impl<'a> BranchManager<'a> {
         // only path forward.
         let _ = stash?;
         let status = self.status(identity)?;
-        self.ensure_mutation_allowed(identity, &status)?;
+        self.ensure_checkout_state_allowed(&status)?;
         if let Some(state) = &status.operation_state {
             return Err(CoreError::Blocked(format!(
                 "cannot recover an automatic stash while Git operation is active: {state}"
@@ -2977,7 +2951,10 @@ impl<'a> BranchManager<'a> {
             Ok(output) => Some(git_output_error(output)),
             Err(error) => Some(error.to_string()),
         });
-        if let Err(error) = self.ensure_mutation_allowed(identity, &post_checkout_status) {
+        if let Err(error) = self
+            .ensure_operation_conflicts(&post_checkout_status)
+            .and_then(|()| self.ensure_checkout_state_allowed(&post_checkout_status))
+        {
             journal.update(
                 &operation.id,
                 BranchOperationPhase::RecoveryRequired,
@@ -3347,7 +3324,8 @@ impl<'a> BranchManager<'a> {
         snapshot: &WorktreeSnapshot,
     ) -> Result<(RepoStatus, String)> {
         let status = self.status(identity)?;
-        self.ensure_mutation_allowed(identity, &status)?;
+        self.ensure_operation_conflicts(&status)?;
+        self.ensure_checkout_state_allowed(&status)?;
         if !self.snapshot_matches(identity, snapshot)? {
             return Err(CoreError::Blocked(
                 "restored checkout changed after verification; automatic stash is retained".into(),
@@ -3911,6 +3889,34 @@ mod tests {
 
     fn make_branch(root: &Path, name: &str) {
         git(root, &["branch", name]);
+    }
+
+    fn insert_live_session(fixture: &Fixture, id: &str) {
+        fixture
+            .db
+            .insert_session(&Session {
+                id: id.into(),
+                project_id: fixture.project_id.clone(),
+                worktree_id: None,
+                preset_id: "preset".into(),
+                title: "live".into(),
+                cwd: fixture.root.to_string_lossy().into_owned(),
+                host_pid: None,
+                host_socket: None,
+                host_token: "token".into(),
+                lifecycle: Lifecycle::Running,
+                agent_session_id: None,
+                resume_precision: ResumePrecision::Unavailable,
+                adapter_type: AgentType::Shell,
+                transport: AgentTransport::Pty,
+                command: vec![],
+                permission_mode: PermissionMode::Native,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                pinned_at: None,
+                archived_at: None,
+            })
+            .unwrap();
     }
 
     fn assert_current_switch_noop(fixture: &Fixture) {
@@ -5144,50 +5150,35 @@ mod tests {
     }
 
     #[test]
-    fn live_session_started_after_switch_blocks_restore_and_preserves_stash() {
-        let fixture = fixture();
-        make_branch(&fixture.root, "target");
-        std::fs::write(fixture.root.join("tracked.txt"), "dirty\n").unwrap();
-        let outcome = manager(&fixture)
-            .switch(&fixture.project_id, "target")
-            .unwrap();
-        fixture
-            .db
-            .insert_session(&Session {
-                id: "ses_after_switch".into(),
-                project_id: fixture.project_id.clone(),
-                worktree_id: None,
-                preset_id: "preset".into(),
-                title: "after switch".into(),
-                cwd: fixture.root.to_string_lossy().into_owned(),
-                host_pid: None,
-                host_socket: None,
-                host_token: "token".into(),
-                lifecycle: Lifecycle::Running,
-                agent_session_id: None,
-                resume_precision: ResumePrecision::Unavailable,
-                adapter_type: AgentType::Shell,
-                transport: AgentTransport::Pty,
-                command: vec![],
-                permission_mode: PermissionMode::Native,
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-                pinned_at: None,
-                archived_at: None,
-            })
-            .unwrap();
-        assert!(matches!(
-            manager(&fixture).recover(&outcome.operation_id, RestoreStrategy::Source),
-            Err(CoreError::Blocked(_))
-        ));
-        assert_eq!(
-            manager(&fixture)
-                .operation(&outcome.operation_id)
-                .unwrap()
-                .phase,
-            BranchOperationPhase::Switched
-        );
-        assert!(!git(&fixture.root, &["stash", "list"]).trim().is_empty());
+    fn live_session_in_checkout_does_not_block_autostash_restore() {
+        for session_before_switch in [false, true] {
+            let fixture = fixture();
+            make_branch(&fixture.root, "target");
+            if session_before_switch {
+                insert_live_session(&fixture, "ses_before_switch");
+            }
+            std::fs::write(fixture.root.join("tracked.txt"), "dirty\n").unwrap();
+            let outcome = manager(&fixture)
+                .switch(&fixture.project_id, "target")
+                .unwrap();
+            assert!(outcome.stashed && outcome.pending_restore);
+            if !session_before_switch {
+                insert_live_session(&fixture, "ses_after_switch");
+            }
+
+            let restored = manager(&fixture)
+                .recover(&outcome.operation_id, RestoreStrategy::Target)
+                .unwrap();
+            assert_eq!(restored.phase, BranchOperationPhase::RestoredVerified);
+            assert_eq!(
+                std::fs::read_to_string(fixture.root.join("tracked.txt")).unwrap(),
+                "dirty\n"
+            );
+
+            let cleaned = manager(&fixture).cleanup(&outcome.operation_id).unwrap();
+            assert_eq!(cleaned.phase, BranchOperationPhase::Completed);
+            assert!(git(&fixture.root, &["stash", "list"]).trim().is_empty());
+        }
     }
 
     #[test]
