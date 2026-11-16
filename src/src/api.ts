@@ -79,7 +79,7 @@ import type {
 import { runtimeMessageEnvelope, runtimeMessageText } from "./runtimeMessages";
 import { createRoutedApi } from "./remote/dispatch";
 import type { RemoteAttentionNotifyInput } from "./remote/types";
-import { activeDeviceContext, type DeviceContext } from "./deviceContext";
+import { activeDeviceContext, sameDeviceContext, type DeviceContext } from "./deviceContext";
 import { remoteBackendFor } from "./remote/runtime";
 
 // ---------------------------------------------------------------------------
@@ -677,15 +677,85 @@ export const api = createRoutedApi(localApi);
 /** Pin document writes to the same origin as the loaded tab. */
 export function writeDocumentForDevice(path: string, content: string, device?: DeviceContext): Promise<{ path: string; sizeBytes: number }> {
   const active = activeDeviceContext();
-  if (!device || device.kind === active.kind && (device.kind === "local" || active.kind === "remote" && device.deviceId === active.deviceId)) return api.writeSessionDocument(path, content);
+  if (!device || sameDeviceContext(device, active)) return api.writeSessionDocument(path, content);
   return device.kind === "local" ? localApi.writeSessionDocument(path, content) : remoteBackendFor(device.deviceId).writeSessionDocument(path, content);
 }
 
 /** Pin asynchronous document reads to the tab origin rather than a later switch. */
 export function readDocumentForDevice(path: string, device?: DeviceContext): Promise<SessionDocument> {
   const active = activeDeviceContext();
-  if (!device || device.kind === active.kind && (device.kind === "local" || active.kind === "remote" && device.deviceId === active.deviceId)) return api.readSessionDocument(path);
+  if (!device || sameDeviceContext(device, active)) return api.readSessionDocument(path);
   return device.kind === "local" ? localApi.readSessionDocument(path) : remoteBackendFor(device.deviceId).readSessionDocument(path);
+}
+
+/**
+ * Run one document-tree call against the device that owns the tree, not the
+ * device that happens to be active when the reply is assembled. A tree can
+ * outlive a switch (open context menus, in-flight confirms), so unpinned calls
+ * would silently hit the wrong machine — including destructive ones.
+ */
+function documentCallForDevice<T>(
+  device: DeviceContext | undefined,
+  viaActive: () => Promise<T>,
+  viaLocal: () => Promise<T>,
+  viaRemote: (backend: ReturnType<typeof remoteBackendFor>) => Promise<T>,
+): Promise<T> {
+  if (!device || sameDeviceContext(device, activeDeviceContext())) return viaActive();
+  return device.kind === "local" ? viaLocal() : viaRemote(remoteBackendFor(device.deviceId));
+}
+
+export function listDocumentDirectoryForDevice(path: string, device?: DeviceContext): Promise<DocumentDirListing> {
+  return documentCallForDevice(
+    device,
+    () => api.listDocumentDirectory(path),
+    () => localApi.listDocumentDirectory(path),
+    (backend) => backend.listDocumentDirectory(path),
+  );
+}
+
+export function searchDocumentFilesForDevice(path: string, query: string, device?: DeviceContext): Promise<DocumentFileSearchResult> {
+  return documentCallForDevice(
+    device,
+    () => api.searchDocumentFiles(path, query),
+    () => localApi.searchDocumentFiles(path, query),
+    (backend) => backend.searchDocumentFiles(path, query),
+  );
+}
+
+export function createDocumentEntryForDevice(path: string, kind: "file" | "dir", device?: DeviceContext): Promise<{ path: string }> {
+  return documentCallForDevice(
+    device,
+    () => api.createDocumentEntry(path, kind),
+    () => localApi.createDocumentEntry(path, kind),
+    (backend) => backend.createDocumentEntry(path, kind),
+  );
+}
+
+export function renameDocumentEntryForDevice(oldPath: string, newPath: string, device?: DeviceContext): Promise<{ path: string }> {
+  return documentCallForDevice(
+    device,
+    () => api.renameDocumentEntry(oldPath, newPath),
+    () => localApi.renameDocumentEntry(oldPath, newPath),
+    (backend) => backend.renameDocumentEntry(oldPath, newPath),
+  );
+}
+
+export function duplicateDocumentEntryForDevice(path: string, device?: DeviceContext): Promise<{ path: string }> {
+  return documentCallForDevice(
+    device,
+    () => api.duplicateDocumentEntry(path),
+    () => localApi.duplicateDocumentEntry(path),
+    (backend) => backend.duplicateDocumentEntry(path),
+  );
+}
+
+export function deleteDocumentEntryForDevice(path: string, device?: DeviceContext): Promise<void> {
+  return documentCallForDevice(
+    device,
+    () => api.deleteDocumentEntry(path),
+    () => localApi.deleteDocumentEntry(path),
+    (backend) => backend.deleteDocumentEntry(path),
+  );
 }
 
 // ---------------------------------------------------------------------------

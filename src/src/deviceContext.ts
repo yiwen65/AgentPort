@@ -30,6 +30,14 @@ export function isRemote(context: DeviceContext): boolean {
   return context.kind === "remote";
 }
 
+/** Same device identity: local is one target, remotes compare their id. */
+export function sameDeviceContext(a: DeviceContext, b: DeviceContext): boolean {
+  if (a.kind === "local" || b.kind === "local") {
+    return a.kind === "local" && b.kind === "local";
+  }
+  return a.deviceId === b.deviceId;
+}
+
 /** deviceKey under an explicit context (pure; preferred for tests). */
 export function deviceKey(context: DeviceContext, baseKey: string): string {
   return context.kind === "local"

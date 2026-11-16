@@ -1494,15 +1494,15 @@ export class RemoteBackend {
     return this.request("document.create", { path, kind });
   }
 
-  renameDocumentEntry(): Promise<never> {
+  renameDocumentEntry(_oldPath: string, _newPath: string): Promise<never> {
     return Promise.reject(new RemoteUnavailableError("document.rename"));
   }
 
-  duplicateDocumentEntry(): Promise<never> {
+  duplicateDocumentEntry(_path: string): Promise<never> {
     return Promise.reject(new RemoteUnavailableError("document.duplicate"));
   }
 
-  deleteDocumentEntry(): Promise<never> {
+  deleteDocumentEntry(_path: string): Promise<never> {
     return Promise.reject(new RemoteUnavailableError("document.delete"));
   }
 

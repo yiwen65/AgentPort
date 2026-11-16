@@ -70,6 +70,7 @@ import {
   type MenuItem,
 } from "../store";
 import type { DocumentGroup, DocumentTab } from "../store";
+import type { DeviceContext } from "../deviceContext";
 import type { SessionView } from "../types";
 import type { CodeEditorHandle, CodeSelection } from "../codeEditor/CodeEditor";
 import { detectLanguage } from "../codeEditor/languages";
@@ -208,13 +209,18 @@ function UnsupportedFileNotice({
   code,
   detail,
   path,
+  device,
 }: {
   code: string | null;
   detail: string;
   path: string;
+  device?: DeviceContext;
 }) {
   const { t } = useTranslation("shell");
-  const osIntegration = useStore(canUseLocalOsIntegration);
+  const activeOsIntegration = useStore(canUseLocalOsIntegration);
+  // The notice belongs to the document, so its device decides whether a path
+  // can be revealed here — not whichever device is active now.
+  const osIntegration = device ? device.kind === "local" : activeOsIntegration;
   const binary = code === "document_binary";
   const title = binary
     ? t("ui.document.unsupported.binaryTitle")
@@ -352,8 +358,13 @@ function DocToolbar({
   activeSession: SessionView | null;
 }) {
   const { t } = useTranslation("shell");
-  const osIntegration = useStore(canUseLocalOsIntegration);
   const tabId = tab?.id ?? null;
+  const activeOsIntegration = useStore(canUseLocalOsIntegration);
+  // A document keeps the origin it was opened from; revealing/opening it
+  // natively is only meaningful when that origin is this computer.
+  const osIntegration = tab?.imageContext
+    ? tab.imageContext.device.kind === "local"
+    : activeOsIntegration;
   const mode = useSyncExternalStore(subscribeDocumentRuntime, () =>
     tabId ? (getDocumentTabRuntime(tabId)?.mode ?? "raw") : "raw",
   );
@@ -1660,6 +1671,7 @@ function DocTabEditor({ tab, visible }: { tab: DocumentTab; visible: boolean }) 
             code={runtime.errorCode}
             detail={runtime.error}
             path={effectivePath}
+            device={runtime.imageContext?.device}
           />
         ) : runtime.doc ? (
           runtime.mode === "preview" ? (

@@ -1440,6 +1440,30 @@ describe("terminal renderer", () => {
     setState({ docGroups: [] });
   });
 
+  it("routes file links from a background pane to that pane's device", () => {
+    getOrCreateHandle("dev_1:renderer-test");
+    const terminal =
+      rendererMocks.terminals[rendererMocks.terminals.length - 1];
+    const linkHandler = terminal.options.linkHandler as {
+      activate: (event: MouseEvent, url: string) => void;
+    };
+
+    linkHandler.activate(
+      new MouseEvent("click"),
+      "file:///home/w/project/README.md",
+    );
+
+    const group = getState().docGroups[0];
+    const tab = group?.tabs.find((candidate) => candidate.id === group.activeTabId);
+    expect(tab?.id).toBe("remote:dev_1:/home/w/project/README.md");
+    expect(tab?.imageContext?.device).toMatchObject({
+      kind: "remote",
+      deviceId: "dev_1",
+    });
+    disposeHandle("dev_1:renderer-test");
+    setState({ docGroups: [] });
+  });
+
   it("links plain-text absolute paths and skips URL path segments", () => {
     mountTerminal("renderer-test", document.createElement("div"));
     const terminal =

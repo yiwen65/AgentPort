@@ -3,7 +3,7 @@ import { ensureDocumentTabRuntime, getDocumentTabRuntime, openDocumentTarget, re
 import { getActiveDocumentTab as activeTab, getState, setState } from "./store";
 const getActiveDocumentTab = () => activeTab(getState());
 import { setDeviceContext } from "./deviceContext";
-import { readDocumentForDevice, writeDocumentForDevice } from "./api";
+import { readDocumentForDevice, writeDocumentForDevice, listDocumentDirectoryForDevice, deleteDocumentEntryForDevice } from "./api";
 import { invoke } from "@tauri-apps/api/core";
 import { setRemoteBackendFactoryForTests, resetRemoteBackendsForTests } from "./remote/runtime";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), Channel: class {} }));
@@ -34,4 +34,22 @@ it("explicit read/write contexts cannot be retargeted by active-device switches"
   await readDocumentForDevice("/p/read.md", origin); await writeDocumentForDevice("/p/read.md", "draft", origin);
   expect(factory).toHaveBeenCalledWith("one"); expect(backend.readSessionDocument).toHaveBeenCalledWith("/p/read.md"); expect(backend.writeSessionDocument).toHaveBeenCalledWith("/p/read.md", "draft");
   await readDocumentForDevice("/local/read.md", { kind: "local" }); expect(invoke).toHaveBeenCalledWith("read_session_document", { path: "/local/read.md" });
+});
+it("pins tree listings and mutations to the tree device across switches", async () => {
+  const backend = {
+    listDocumentDirectory: vi.fn(async () => ({ path: "/p", entries: [], truncated: false })),
+    deleteDocumentEntry: vi.fn(async () => undefined),
+  };
+  const factory = vi.fn(() => backend as never); setRemoteBackendFactoryForTests(factory);
+  const origin = { kind: "remote" as const, deviceId: "one", deviceName: "One", capabilities: [] };
+  setDeviceContext({ kind: "local" });
+  await listDocumentDirectoryForDevice("/p", origin);
+  await deleteDocumentEntryForDevice("/p/a.md", origin);
+  expect(factory).toHaveBeenCalledWith("one");
+  expect(backend.listDocumentDirectory).toHaveBeenCalledWith("/p");
+  expect(backend.deleteDocumentEntry).toHaveBeenCalledWith("/p/a.md");
+
+  setDeviceContext({ kind: "remote", deviceId: "two", deviceName: "Two", capabilities: [] });
+  await listDocumentDirectoryForDevice("/local", { kind: "local" });
+  expect(invoke).toHaveBeenCalledWith("list_document_directory", { path: "/local" });
 });

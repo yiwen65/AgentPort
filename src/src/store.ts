@@ -465,7 +465,8 @@ export interface AppState {
 export interface DocumentTab {
   /** Reading context captured when opened, never derived from a later tree/device. */
   imageContext?: import("./markdownImages").MarkdownImageContext;
-  /** Stable identity; the canonical absolute path (tabs dedupe by path). */
+  /** Stable identity: the path for local documents, device-namespaced for
+   * remote ones, so equal paths on two devices stay independent tabs. */
   id: string;
   path: string;
   /** false = VSCode-style preview tab (italic, replaced by the next preview
@@ -1253,6 +1254,11 @@ export function applyProjectsSnapshot(
         nextProjects.some((p) => p.id === s.sidebarWorktreeProjectId)
           ? s.sidebarWorktreeProjectId
           : null,
+      // The file tree belongs to the device whose projects just landed. Clear
+      // the previous device's root before paint so a stale local path is never
+      // listed against a remote host (or vice versa); selectSession re-roots
+      // to the target Session's cwd immediately after.
+      ...(switchedDevice ? { explorerRoot: null } : {}),
       expandedProjects: switchedDevice
         ? readPersistedProjectExpansion()
         : s.expandedProjects,

@@ -878,9 +878,9 @@ describe("search/history/timeline/documents/secrets/backup/export/diagnostics", 
 
 describe("REMOTE_UNAVAILABLE surface", () => {
   const cases: [string, (backend: RemoteBackend) => Promise<unknown>, string][] = [
-    ["renameDocumentEntry", (b) => b.renameDocumentEntry(), "document.rename"],
-    ["duplicateDocumentEntry", (b) => b.duplicateDocumentEntry(), "document.duplicate"],
-    ["deleteDocumentEntry", (b) => b.deleteDocumentEntry(), "document.delete"],
+    ["renameDocumentEntry", (b) => b.renameDocumentEntry("/p/a", "/p/b"), "document.rename"],
+    ["duplicateDocumentEntry", (b) => b.duplicateDocumentEntry("/p/a"), "document.duplicate"],
+    ["deleteDocumentEntry", (b) => b.deleteDocumentEntry("/p/a"), "document.delete"],
     ["backupRestore", (b) => b.backupRestore(), "backup.restore"],
     ["revealInFileManager", (b) => b.revealInFileManager(), "os.revealInFileManager"],
     ["openInSystemTerminal", (b) => b.openInSystemTerminal(), "os.openInSystemTerminal"],

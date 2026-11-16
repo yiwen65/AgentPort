@@ -23,7 +23,14 @@ import {
   updateDocumentTabPath,
   updateDocumentTabRuntime,
 } from "./documents";
-import { getActiveDocumentTab, getState, resolveConfirm, setState } from "./store";
+import { getActiveDocumentTab, getState, resolveConfirm, setActiveDevice, setState } from "./store";
+
+const REMOTE = {
+  kind: "remote" as const,
+  deviceId: "dev_1",
+  deviceName: "Remote One",
+  capabilities: [],
+};
 
 describe("parseDocumentLinkTarget", () => {
   it("parses file:// URIs with percent-decoding and line suffixes", () => {
@@ -158,6 +165,7 @@ describe("document tab groups", () => {
 
   afterEach(() => {
     setState({ docGroups: [], activeDocGroupIndex: 0, confirm: null });
+    setActiveDevice({ kind: "local" });
     resetDocumentTabRuntimes();
   });
 
@@ -368,5 +376,36 @@ describe("document tab groups", () => {
       },
     );
     expect(getActiveDocumentTab(getState())?.imageContext?.rootPath).toBe("/root");
+  });
+
+  it("keeps equal paths from different devices as independent tabs", () => {
+    openDocumentTarget({ path: "/same.md", line: null }, { pinned: true });
+    setActiveDevice(REMOTE);
+    openDocumentTarget({ path: "/same.md", line: null }, { pinned: true });
+
+    expect(tabIds()).toEqual(["/same.md", "remote:dev_1:/same.md"]);
+    expect(getState().docGroups[0]?.tabs[1]?.imageContext?.device).toEqual(REMOTE);
+
+    // Reopening on the original device activates its own tab instead of
+    // inheriting the other device's load state/origin.
+    setActiveDevice({ kind: "local" });
+    openDocumentTarget({ path: "/same.md", line: 3 });
+    expect(activeTabId()).toBe("/same.md");
+    expect(getActiveDocumentTab(getState())?.pendingLine).toBe(3);
+  });
+
+  it("closes and renames only tabs belonging to the given device", () => {
+    openDocumentTarget({ path: "/dir/a.md", line: null }, { pinned: true });
+    setActiveDevice(REMOTE);
+    openDocumentTarget({ path: "/dir/a.md", line: null }, { pinned: true });
+
+    closeDocumentTabsUnder("/dir", REMOTE);
+    expect(tabIds()).toEqual(["/dir/a.md"]);
+
+    openDocumentTarget({ path: "/old.md", line: null }, { pinned: true });
+    seedRuntime("remote:dev_1:/old.md");
+    updateDocumentTabPath("/old.md", "/new.md", REMOTE);
+    expect(tabIds()).toEqual(["/dir/a.md", "remote:dev_1:/new.md"]);
+    expect(getDocumentTabRuntime("remote:dev_1:/new.md")).not.toBeNull();
   });
 });

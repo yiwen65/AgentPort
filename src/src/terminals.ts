@@ -35,6 +35,7 @@ import { isRemoteRequestError } from "./remote/errors";
 import {
   activeSessionKey,
   deviceKeyForContext,
+  LOCAL_DEVICE_KEY,
   parseSessionKey,
   sessionKeyFor,
 } from "./sessionIdentity";
@@ -63,7 +64,8 @@ import {
 } from "./store";
 import { stateLabel } from "./format";
 import { i18n } from "./i18n";
-import { openDocumentTarget, parseDocumentLinkTarget } from "./documents";
+import { openDocumentTarget, parseDocumentLinkTarget, captureDocumentImageContext } from "./documents";
+import type { DeviceContext } from "./deviceContext";
 import { runtimeMessageEnvelope, runtimeMessageText } from "./runtimeMessages";
 import { getTerminalPalette } from "./terminalThemes";
 import { shouldPublishAutomaticDesktopResize } from "./terminalGeometryPrompt";
@@ -1181,18 +1183,42 @@ function restoreHostScreenSnapshot(handle: TermHandle, value: unknown) {
   queueReplayParsed(handle);
 }
 
+/** Device context for a stable Session key, preferring the live active
+ * context so negotiated capabilities survive. */
+function deviceForSessionKey(sessionKey: string): DeviceContext {
+  const key = parseSessionKey(sessionKey).deviceKey;
+  const active = getState().activeDevice;
+  if (deviceKeyForContext(active) === key) return active;
+  return key === LOCAL_DEVICE_KEY
+    ? { kind: "local" }
+    : { kind: "remote", deviceId: key, deviceName: key, capabilities: [] };
+}
+
 /**
  * Routes a clicked terminal link. Local documents (file:// OSC 8 links and
- * plain absolute or session-relative paths) open in the in-app viewer; only
- * absolute http(s) URLs are handed to the OS, through the native validation
- * command. Every
- * other scheme stays inside the app and is simply rejected — terminal output
- * is untrusted, so schemes like `vscode:` or `smb:` never reach the OS.
+ * plain absolute or session-relative paths) open in the in-app viewer on the
+ * device that owns the pane — a background remote pane must not read the
+ * active local filesystem, or vice versa. Only absolute http(s) URLs are
+ * handed to the OS, through the native validation command. Every other scheme
+ * stays inside the app and is simply rejected — terminal output is untrusted,
+ * so schemes like `vscode:` or `smb:` never reach the OS.
  */
-function openTerminalLink(url: string, sessionCwd?: string) {
+function openTerminalLink(url: string, sessionKey?: string) {
+  const located = sessionKey ? findSessionByKey(sessionKey) : null;
+  const sessionCwd = located?.session.cwd;
   const documentTarget = parseDocumentLinkTarget(url, sessionCwd);
   if (documentTarget) {
-    openDocumentTarget(documentTarget);
+    openDocumentTarget(
+      documentTarget,
+      sessionKey
+        ? {
+            imageContext: captureDocumentImageContext(documentTarget.path, {
+              device: deviceForSessionKey(sessionKey),
+              cwd: sessionCwd,
+            }),
+          }
+        : undefined,
+    );
     return;
   }
   if (/^https?:\/\//i.test(url)) {
@@ -1226,7 +1252,7 @@ const LOCAL_PATH_CANDIDATE =
  * `https://|path` and `https:|//path` match alignments. */
 const URL_SCHEME_BEFORE_PATH = /[a-zA-Z][a-zA-Z0-9+.-]*:\/?\/?$/;
 
-function localFileLinkProvider(term: Terminal, sessionId: string): ILinkProvider {
+function localFileLinkProvider(term: Terminal, sessionKey: string): ILinkProvider {
   return {
     provideLinks(bufferLineNumber, callback) {
       const line = term.buffer.active
@@ -1253,8 +1279,7 @@ function localFileLinkProvider(term: Terminal, sessionId: string): ILinkProvider
           range,
           text,
           activate: (_event, linkText) => {
-            const cwd = findSessionByKey(sessionId)?.session?.cwd;
-            openTerminalLink(linkText, cwd);
+            openTerminalLink(linkText, sessionKey);
           },
         });
       }
@@ -1455,7 +1480,7 @@ export function getOrCreateHandle(key: string): TermHandle {
     // in openTerminalLink is the security boundary — only validated http(s)
     // URLs ever leave the app for the OS.
     linkHandler: {
-      activate: (_event, url) => openTerminalLink(url),
+      activate: (_event, url) => openTerminalLink(url, key),
       allowNonHttpProtocols: true,
     },
     macOptionIsMeta: true,
@@ -1475,7 +1500,7 @@ export function getOrCreateHandle(key: string): TermHandle {
   term.loadAddon(serialize);
   // Detect plain http(s) URLs. OSC 8 links use the handler above, so both
   // forms share the same native URL validation and browser-opening path.
-  term.loadAddon(new WebLinksAddon((_event, url) => openTerminalLink(url)));
+  term.loadAddon(new WebLinksAddon((_event, url) => openTerminalLink(url, key)));
   // Detect plain-text absolute and relative paths so agent-printed document
   // paths (which are not always wrapped in OSC 8 sequences) are clickable.
   term.registerLinkProvider(localFileLinkProvider(term, key));

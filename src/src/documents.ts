@@ -8,6 +8,8 @@ import type { SessionDocument } from "./types";
 import { i18n } from "./i18n";
 import { MarkdownImageSession, type MarkdownImageContext } from "./markdownImages";
 import type { OutlineItem } from "./markdownReader/types";
+import { sameDeviceContext, type DeviceContext } from "./deviceContext";
+import { deviceKeyForContext, LOCAL_DEVICE_KEY } from "./sessionIdentity";
 
 export interface DocumentLinkTarget {
   path: string;
@@ -155,13 +157,31 @@ export function subscribeDocumentRuntime(listener: () => void): () => void {
   };
 }
 
-export function captureDocumentImageContext(path: string): MarkdownImageContext {
+export function captureDocumentImageContext(
+  path: string,
+  options: { device?: DeviceContext; cwd?: string | null } = {},
+): MarkdownImageContext {
   const state = getState();
+  const device = options.device ?? state.activeDevice;
   const parent = path.slice(0, path.lastIndexOf("/")) || "/";
   const contains = (root: string | null | undefined) => !!root && (root === "/" || path.startsWith(`${root.replace(/\/$/, "")}/`));
-  const sessionRoot = findSession(state.projects, state.activeSessionId)?.cwd;
-  const rootPath = contains(state.explorerRoot) ? state.explorerRoot! : contains(sessionRoot) ? sessionRoot! : parent;
-  return { path, rootPath, device: state.activeDevice };
+  // The explorer root belongs to the active device; a document opened from a
+  // background pane must not inherit the other device's browsing root.
+  const explorerRoot = sameDeviceContext(device, state.activeDevice)
+    ? state.explorerRoot
+    : null;
+  const sessionRoot =
+    options.cwd ?? findSession(state.projects, state.activeSessionId)?.cwd;
+  const rootPath = contains(explorerRoot) ? explorerRoot! : contains(sessionRoot) ? sessionRoot! : parent;
+  return { path, rootPath, device };
+}
+
+/** Device-scoped tab identity: local tabs keep the historical plain path,
+ * remote tabs are namespaced so the same path on two devices stays two
+ * independent documents instead of reusing the other device's load/draft. */
+export function documentTabId(path: string, device: DeviceContext): string {
+  const key = deviceKeyForContext(device);
+  return key === LOCAL_DEVICE_KEY ? path : `remote:${key}:${path}`;
 }
 
 function defaultRuntime(tab: DocumentTab): DocumentTabRuntime {
@@ -301,9 +321,14 @@ export function openDocumentTarget(
 ): void {
   const state = getState();
   const groups = cloneGroups(state.docGroups);
+  const imageContext =
+    options?.imageContext ?? captureDocumentImageContext(target.path);
+  const tabId = documentTabId(target.path, imageContext.device);
 
-  // Same path already open anywhere: activate it (a line/anchor target re-reveals).
-  const existing = locateTab(groups, target.path);
+  // Same path on the same device already open anywhere: activate it (a
+  // line/anchor target re-reveals). The same path on another device is a
+  // different document and must not reuse this tab's origin.
+  const existing = locateTab(groups, tabId);
   if (existing) {
     const tab = { ...existing.tab };
     if (target.line != null) tab.pendingLine = target.line;
@@ -317,13 +342,13 @@ export function openDocumentTarget(
   }
 
   const tab: DocumentTab = {
-    id: target.path,
+    id: tabId,
     path: target.path,
     pinned: options?.pinned ?? false,
     pendingLine: target.line,
     pendingAnchor: target.anchor ?? null,
     // Links inside a remote document must keep that document's device/root.
-    imageContext: options?.imageContext ?? captureDocumentImageContext(target.path),
+    imageContext,
   };
   let group = groups[state.activeDocGroupIndex] ?? groups[groups.length - 1];
   if (!group) {
@@ -347,12 +372,18 @@ export function openDocumentTarget(
 }
 
 /** Explicit "open to the side" (tree context menu): pinned in the other
- * group, creating the second split when needed. An already-open path is
- * moved/activated there instead of duplicated — tab identity is the path,
- * so one file can only live in one group at a time. */
-export function openDocumentTargetToSide(target: DocumentLinkTarget): void {
+ * group, creating the second split when needed. An already-open device-scoped
+ * path is moved/activated there instead of duplicated — tab identity is
+ * (device, path), so one document can only live in one group at a time. */
+export function openDocumentTargetToSide(
+  target: DocumentLinkTarget,
+  options?: { imageContext?: MarkdownImageContext },
+): void {
   const state = getState();
-  const existing = locateTab(state.docGroups, target.path);
+  const imageContext =
+    options?.imageContext ?? captureDocumentImageContext(target.path);
+  const tabId = documentTabId(target.path, imageContext.device);
+  const existing = locateTab(state.docGroups, tabId);
   if (existing) {
     if (target.line != null || target.anchor) {
       const groups = cloneGroups(state.docGroups);
@@ -385,12 +416,12 @@ export function openDocumentTargetToSide(target: DocumentLinkTarget): void {
     groups.push(group);
   }
   const tab: DocumentTab = {
-    id: target.path,
+    id: tabId,
     path: target.path,
     pinned: true,
     pendingLine: target.line,
     pendingAnchor: target.anchor ?? null,
-    imageContext: captureDocumentImageContext(target.path),
+    imageContext,
   };
   group.tabs.push(tab);
   group.activeTabId = tab.id;
@@ -486,26 +517,37 @@ export function closeDocumentTab(tabId: string): void {
   closeDocumentTabNow(tabId);
 }
 
-/** Silently closes every tab at `path` or inside it (tree delete flow —
- * the save target is gone either way, matching the old viewer behavior). */
-export function closeDocumentTabsUnder(path: string): void {
+/** Silently closes every tab for `path` or inside it on one device (tree
+ * delete flow — the save target is gone either way, matching the old viewer
+ * behavior). Tabs for the same path on another device stay open. */
+export function closeDocumentTabsUnder(
+  path: string,
+  device: DeviceContext = getState().activeDevice,
+): void {
   const state = getState();
+  const base = documentTabId(path, device);
   const doomed = state.docGroups
     .flatMap((group) => group.tabs)
-    .filter((tab) => tab.path === path || tab.path.startsWith(`${path}/`))
+    .filter((tab) => tab.id === base || tab.id.startsWith(`${base}/`))
     .map((tab) => tab.id);
   for (const tabId of doomed) closeDocumentTabNow(tabId);
 }
 
 /** Rekeys an open tab after the tree renamed its file. */
-export function updateDocumentTabPath(oldPath: string, newPath: string): void {
+export function updateDocumentTabPath(
+  oldPath: string,
+  newPath: string,
+  device: DeviceContext = getState().activeDevice,
+): void {
   const state = getState();
-  const located = locateTab(state.docGroups, oldPath);
-  const runtime = tabRuntime.get(oldPath);
+  const oldId = documentTabId(oldPath, device);
+  const newId = documentTabId(newPath, device);
+  const located = locateTab(state.docGroups, oldId);
+  const runtime = tabRuntime.get(oldId);
   if (runtime) {
     runtime.imageSession?.dispose();
-    tabRuntime.delete(oldPath);
-    tabRuntime.set(newPath, {
+    tabRuntime.delete(oldId);
+    tabRuntime.set(newId, {
       ...runtime,
       doc: runtime.doc ? { ...runtime.doc, path: newPath } : null,
       imageContext: runtime.imageContext ? { ...runtime.imageContext, path: newPath } : undefined,
@@ -516,10 +558,10 @@ export function updateDocumentTabPath(oldPath: string, newPath: string): void {
   const groups = cloneGroups(state.docGroups);
   const group = groups[located.groupIndex];
   group.tabs[located.tabIndex] = {
-    ...located.tab, id: newPath, path: newPath,
+    ...located.tab, id: newId, path: newPath,
     imageContext: located.tab.imageContext ? { ...located.tab.imageContext, path: newPath } : undefined,
   };
-  if (group.activeTabId === oldPath) group.activeTabId = newPath;
+  if (group.activeTabId === oldId) group.activeTabId = newId;
   commitGroups(groups, group);
 }
 

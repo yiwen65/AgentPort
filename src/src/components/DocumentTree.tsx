@@ -5,17 +5,31 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { api, copyText, errorText } from "../api";
+import {
+  api,
+  copyText,
+  createDocumentEntryForDevice,
+  deleteDocumentEntryForDevice,
+  duplicateDocumentEntryForDevice,
+  errorText,
+  listDocumentDirectoryForDevice,
+  renameDocumentEntryForDevice,
+  searchDocumentFilesForDevice,
+} from "../api";
 import { isMac } from "../actions";
 import {
   closeDocumentTabsUnder,
   consumeDocumentTreeSearchRequest,
+  documentTabId,
   getDocumentTreeSearchVersion,
   openDocumentTarget,
   openDocumentTargetToSide,
   subscribeDocumentTreeSearch,
   updateDocumentTabPath,
 } from "../documents";
+import { deviceKeyForContext } from "../sessionIdentity";
+import type { DeviceContext } from "../deviceContext";
+import type { MarkdownImageContext } from "../markdownImages";
 import {
   buildDocGitIndex,
   decorateDocPath,
@@ -29,11 +43,8 @@ import { DocFileIcon } from "./docTreeIcons";
 import { writeDragPayload } from "../terminalDrop";
 import { beginNativeTreeDrag } from "../nativeDrag";
 import {
-  canMutateDocumentEntries,
-  canUseLocalOsIntegration,
   confirmDialog,
   getActiveDocumentTab,
-  getState,
   openContextMenu,
   toast,
   useStore,
@@ -168,12 +179,14 @@ function IconNewFolder() {
 export default function DocumentTree() {
   const { t } = useTranslation("shell");
   const root = useStore((state) => state.explorerRoot);
-  const activeDeviceKey = useStore((state) =>
-    state.activeDevice.kind === "remote"
-      ? `remote:${state.activeDevice.deviceId}`
-      : "local",
-  );
-  const openPath = useStore((state) => getActiveDocumentTab(state)?.path ?? null);
+  const activeDevice = useStore((state) => state.activeDevice);
+  const deviceKey = deviceKeyForContext(activeDevice);
+  const openTabKey = useStore((state) => {
+    const tab = getActiveDocumentTab(state);
+    return tab
+      ? documentTabId(tab.path, tab.imageContext?.device ?? state.activeDevice)
+      : null;
+  });
   const treeGit = useSyncExternalStore(subscribeTreeGit, () =>
     getTreeGitState(root ?? ""),
   );
@@ -204,6 +217,11 @@ export default function DocumentTree() {
   // routing the whole map through an effect (which would loop on `dirs`).
   const dirsRef = useRef(dirs);
   dirsRef.current = dirs;
+  const activeDeviceRef = useRef(activeDevice);
+  activeDeviceRef.current = activeDevice;
+  // Bumped whenever the tree is re-rooted or the active device changes, so a
+  // listing that settles afterwards can never paint the new tree.
+  const treeEpoch = useRef(0);
   const [activeDir, setActiveDir] = useState<string | null>(null);
   const [creating, setCreating] = useState<"file" | "dir" | null>(null);
   const [nameDraft, setNameDraft] = useState("");
@@ -228,50 +246,81 @@ export default function DocumentTree() {
 
   const createBaseDir = activeDir ?? root;
 
-  const loadDir = useCallback((path: string, expand: boolean) => {
-    setDirs((current) => {
-      const next = new Map(current);
-      const prev = next.get(path);
-      next.set(path, {
-        entries: prev?.entries ?? null,
-        error: null,
-        expanded: expand,
-      });
-      return next;
-    });
-    void api
-      .listDocumentDirectory(path)
-      .then((listing) => {
-        setDirs((current) => {
-          const next = new Map(current);
-          next.set(path, { entries: listing.entries, error: null, expanded: expand });
-          return next;
-        });
-      })
-      .catch((e) => {
-        setDirs((current) => {
-          const next = new Map(current);
-          next.set(path, { entries: null, error: errorText(e), expanded: expand });
-          return next;
-        });
-      });
-  }, []);
+  /** Origin captured for a tree action: the tree's device and root, never a
+   * later active-device switch. */
+  const treeImageContext = (
+    path: string,
+    device: DeviceContext = activeDeviceRef.current,
+    rootPath: string | null = root,
+  ): MarkdownImageContext => ({
+    path,
+    rootPath: rootPath ?? parentDir(path),
+    device,
+  });
 
-  // Load (or reload) the root directory and its git decorations.
+  const loadDir = useCallback(
+    (
+      path: string,
+      expand: boolean,
+      device: DeviceContext = activeDeviceRef.current,
+      epoch: number = treeEpoch.current,
+    ) => {
+      setDirs((current) => {
+        const next = new Map(current);
+        const prev = next.get(path);
+        next.set(path, {
+          entries: prev?.entries ?? null,
+          error: null,
+          expanded: expand,
+        });
+        return next;
+      });
+      void listDocumentDirectoryForDevice(path, device)
+        .then((listing) => {
+          if (epoch !== treeEpoch.current) return;
+          setDirs((current) => {
+            const next = new Map(current);
+            next.set(path, { entries: listing.entries, error: null, expanded: expand });
+            return next;
+          });
+        })
+        .catch((e) => {
+          if (epoch !== treeEpoch.current) return;
+          setDirs((current) => {
+            const next = new Map(current);
+            next.set(path, { entries: null, error: errorText(e), expanded: expand });
+            return next;
+          });
+        });
+    },
+    [],
+  );
+
+  // Load (or reload) the root directory and its git decorations. The device
+  // key is part of the trigger: local and remote devices can share the same
+  // cwd path, and reusing either's cached entries would open the wrong files.
   useEffect(() => {
+    treeEpoch.current += 1;
+    const epoch = treeEpoch.current;
     setSearchQuery("");
     setSearchListing(null);
     setSearchError(null);
     setSearchBusy(false);
     setSearchActive(0);
+    setCreating(null);
+    setCreateError(null);
+    setRenaming(null);
+    setRenameError(null);
+    setActiveDir(null);
     if (!root) {
       setSearchOpen(false);
+      setDirs(new Map());
       return;
     }
     setDirs(new Map());
-    loadDir(root, true);
+    loadDir(root, true, activeDeviceRef.current, epoch);
     void refreshTreeGit(root);
-  }, [root, loadDir]);
+  }, [root, deviceKey, loadDir]);
 
   const closeSearch = () => {
     setSearchOpen(false);
@@ -319,9 +368,9 @@ export default function DocumentTree() {
     let cancelled = false;
     setSearchBusy(true);
     setSearchError(null);
+    const device = activeDeviceRef.current;
     const timer = window.setTimeout(() => {
-      void api
-        .searchDocumentFiles(root, query)
+      void searchDocumentFilesForDevice(root, query, device)
         .then((listing) => {
           if (cancelled) return;
           setSearchListing(listing);
@@ -345,7 +394,7 @@ export default function DocumentTree() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [root, activeDeviceKey, searchOpen, searchQuery]);
+  }, [root, deviceKey, searchOpen, searchQuery]);
 
   // Keep the keyboard-selected result visible while arrowing through a long
   // flat list.
@@ -417,7 +466,18 @@ export default function DocumentTree() {
 
   const openSearchResult = (entry: DocumentDirEntry) => {
     setActiveDir(parentDir(entry.path));
-    openDocumentTarget({ path: entry.path, line: null }, { pinned: true });
+    const device = activeDeviceRef.current;
+    openDocumentTarget(
+      { path: entry.path, line: null },
+      {
+        pinned: true,
+        imageContext: treeImageContext(
+          entry.path,
+          device,
+          searchListing?.path ?? root,
+        ),
+      },
+    );
   };
 
   const onSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -480,19 +540,21 @@ export default function DocumentTree() {
     }
     const parent = parentDir(renaming);
     const newPath = `${parent === "/" ? "" : parent}/${name}`;
+    const device = activeDeviceRef.current;
+    const epoch = treeEpoch.current;
     try {
-      const result = await api.renameDocumentEntry(renaming, newPath);
+      const result = await renameDocumentEntryForDevice(renaming, newPath, device);
       const oldPath = renaming;
       setRenaming(null);
-      loadDir(parent, true);
+      if (epoch === treeEpoch.current) loadDir(parent, true, device, epoch);
       // Keep an open tab pointed at the renamed file.
-      updateDocumentTabPath(oldPath, result.path);
+      updateDocumentTabPath(oldPath, result.path, device);
     } catch (e) {
       setRenameError(errorText(e));
     }
   };
 
-  const confirmDelete = async (entry: DocumentDirEntry) => {
+  const confirmDelete = async (entry: DocumentDirEntry, device: DeviceContext) => {
     const ok = await confirmDialog({
       title: t(entry.isDir ? "ui.document.deleteDirTitle" : "ui.document.deleteFileTitle"),
       body: t(entry.isDir ? "ui.document.deleteDirBody" : "ui.document.deleteFileBody", {
@@ -503,11 +565,14 @@ export default function DocumentTree() {
     });
     if (!ok) return;
     await runAction(async () => {
-      await api.deleteDocumentEntry(entry.path);
-      loadDir(parentDir(entry.path), true);
+      const epoch = treeEpoch.current;
+      await deleteDocumentEntryForDevice(entry.path, device);
+      if (epoch === treeEpoch.current) {
+        loadDir(parentDir(entry.path), true, device, epoch);
+      }
       // The viewer must not keep a deleted file (or one inside a deleted
       // directory) on screen.
-      closeDocumentTabsUnder(entry.path);
+      closeDocumentTabsUnder(entry.path, device);
     });
   };
 
@@ -516,10 +581,11 @@ export default function DocumentTree() {
     event.preventDefault();
     const parent = entry.isDir ? entry.path : parentDir(entry.path);
     setActiveDir(parent);
-    // OS-integration and mutating entry actions are gated off while a remote
-    // device is active (protocol has no equivalent for them).
-    const osIntegration = canUseLocalOsIntegration(getState());
-    const entryMutation = canMutateDocumentEntries(getState());
+    // The menu belongs to the tree that listed the entry, not to whatever
+    // device happens to be active when an item is clicked later.
+    const device = activeDeviceRef.current;
+    const osIntegration = device.kind === "local";
+    const entryMutation = device.kind === "local";
     const relative =
       root && entry.path.startsWith(`${root}/`)
         ? entry.path.slice(root.length + 1)
@@ -533,14 +599,24 @@ export default function DocumentTree() {
         : [
             {
               label: t("ui.document.openToSide"),
-              action: () => openDocumentTargetToSide({ path: entry.path, line: null }),
+              action: () =>
+                openDocumentTargetToSide(
+                  { path: entry.path, line: null },
+                  { imageContext: treeImageContext(entry.path, device) },
+                ),
             },
           ]),
       {
         label: t("ui.document.openInVsCode"),
         disabled: !osIntegration,
         tip: osIntegration ? undefined : t("ui.document.remoteOsIntegration"),
-        action: () => void runAction(() => api.openInVsCode(entry.path)),
+        action: () => {
+          if (device.kind !== "local") {
+            toast(t("ui.document.remoteActionUnavailable"), "info");
+            return;
+          }
+          void runAction(() => api.openInVsCode(entry.path));
+        },
       },
       { label: "", separator: true },
       { label: t("ui.document.copyPath"), action: () => void copyText(entry.path) },
@@ -549,7 +625,13 @@ export default function DocumentTree() {
         label: t("ui.document.reveal"),
         disabled: !osIntegration,
         tip: osIntegration ? undefined : t("ui.document.remoteOsIntegration"),
-        action: () => void runAction(() => api.revealInFileManager(entry.path)),
+        action: () => {
+          if (device.kind !== "local") {
+            toast(t("ui.document.remoteActionUnavailable"), "info");
+            return;
+          }
+          void runAction(() => api.revealInFileManager(entry.path));
+        },
       },
       { label: "", separator: true },
       {
@@ -564,8 +646,9 @@ export default function DocumentTree() {
         tip: entryMutation ? undefined : t("ui.document.remoteMutationUnavailable"),
         action: () =>
           void runAction(async () => {
-            await api.duplicateDocumentEntry(entry.path);
-            loadDir(parent, true);
+            const epoch = treeEpoch.current;
+            await duplicateDocumentEntryForDevice(entry.path, device);
+            if (epoch === treeEpoch.current) loadDir(parent, true, device, epoch);
           }),
       },
       { label: "", separator: true },
@@ -574,7 +657,7 @@ export default function DocumentTree() {
         disabled: !entryMutation,
         tip: entryMutation ? undefined : t("ui.document.remoteMutationUnavailable"),
         danger: true,
-        action: () => void confirmDelete(entry),
+        action: () => void confirmDelete(entry, device),
       },
     ]);
   };
@@ -591,19 +674,31 @@ export default function DocumentTree() {
       return;
     }
     const fullPath = `${createBaseDir.replace(/\/+$/, "")}/${name}`;
+    const device = activeDeviceRef.current;
+    const epoch = treeEpoch.current;
     setCreateBusy(true);
     try {
-      const result = await api.createDocumentEntry(fullPath, creating);
+      const result = await createDocumentEntryForDevice(fullPath, creating, device);
       const kind = creating;
       setCreating(null);
       setNameDraft("");
       setCreateError(null);
       // Refresh the parent so the new entry shows up, then select/open it.
-      loadDir(createBaseDir, true);
+      if (epoch === treeEpoch.current) loadDir(createBaseDir, true, device, epoch);
       if (kind === "dir") {
         setActiveDir(result.path);
       } else {
-        openDocumentTarget({ path: result.path, line: null }, { pinned: true });
+        const rootPath =
+          root && (result.path === root || result.path.startsWith(`${root}/`))
+            ? root
+            : parentDir(result.path);
+        openDocumentTarget(
+          { path: result.path, line: null },
+          {
+            pinned: true,
+            imageContext: treeImageContext(result.path, device, rootPath),
+          },
+        );
       }
     } catch (e) {
       setCreateError(errorText(e));
@@ -616,7 +711,9 @@ export default function DocumentTree() {
     entries.map((entry) => {
       const child = dirs.get(entry.path);
       const expanded = child?.expanded ?? false;
-      const selected = !entry.isDir && openPath === entry.path;
+      const selected =
+        !entry.isDir &&
+        openTabKey === documentTabId(entry.path, activeDevice);
       const deco: DocGitDecoration | null = gitIndex
         ? decorateDocPath(gitIndex, entry.path, entry.isDir)
         : null;
@@ -686,7 +783,16 @@ export default function DocumentTree() {
                 setActiveDir(parentDir(entry.path));
                 // Pinned, so clicking another file opens a new tab instead of
                 // replacing the previous one (no preview slot in the tree).
-                openDocumentTarget({ path: entry.path, line: null }, { pinned: true });
+                openDocumentTarget(
+                  { path: entry.path, line: null },
+                  {
+                    pinned: true,
+                    imageContext: treeImageContext(
+                      entry.path,
+                      activeDeviceRef.current,
+                    ),
+                  },
+                );
               }
             }}
           >
@@ -908,7 +1014,9 @@ export default function DocumentTree() {
                       aria-label={relative}
                       ref={index === searchActive ? activeSearchRowRef : undefined}
                       className={`doc-tree-row file doc-tree-search-row${
-                        openPath === entry.path ? " selected" : ""
+                        openTabKey === documentTabId(entry.path, activeDevice)
+                          ? " selected"
+                          : ""
                       }${index === searchActive ? " active" : ""}`}
                       onMouseDown={(event) => event.preventDefault()}
                       onMouseEnter={() => setSearchActive(index)}

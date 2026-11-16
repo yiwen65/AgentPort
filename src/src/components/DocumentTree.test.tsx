@@ -28,6 +28,15 @@ vi.mock("../api", () => ({
     revealInFileManager: revealMock,
     getGitChanges: gitMock,
   },
+  listDocumentDirectoryForDevice: (path: string) => listMock(path),
+  searchDocumentFilesForDevice: (path: string, query: string) =>
+    searchMock(path, query),
+  createDocumentEntryForDevice: (path: string, kind: "file" | "dir") =>
+    createMock(path, kind),
+  renameDocumentEntryForDevice: (oldPath: string, newPath: string) =>
+    renameMock(oldPath, newPath),
+  duplicateDocumentEntryForDevice: (path: string) => duplicateMock(path),
+  deleteDocumentEntryForDevice: (path: string) => deleteMock(path),
   copyText: copyMock,
   errorText: (error: unknown) => String(error),
 }));
@@ -285,6 +294,62 @@ describe("DocumentTree", () => {
     fireEvent.click(screen.getByText("docs"));
     await screen.findByText("报告.md");
     expect(listMock).toHaveBeenCalledWith(`${ROOT}/docs`);
+  });
+
+  it("reloads and rebinds the tree when the active device changes, even at the same root path", async () => {
+    render(<DocumentTree />);
+    await screen.findByText("README.md");
+    const rootReads = () =>
+      listMock.mock.calls.filter(([path]) => path === ROOT).length;
+    const before = rootReads();
+
+    act(() =>
+      setActiveDevice({
+        kind: "remote",
+        deviceId: "dev_1",
+        deviceName: "Linux box",
+        capabilities: [],
+      }),
+    );
+    await waitFor(() => expect(rootReads()).toBeGreaterThan(before));
+
+    fireEvent.click(await screen.findByText("README.md"));
+    const tab = getActiveDocumentTab(getState())!;
+    expect(tab.imageContext?.device).toEqual({
+      kind: "remote",
+      deviceId: "dev_1",
+      deviceName: "Linux box",
+      capabilities: [],
+    });
+    expect(tab.id).toBe(`remote:dev_1:${ROOT}/README.md`);
+  });
+
+  it("ignores a directory listing that resolves after a device switch", async () => {
+    let resolveLocal!: (value: unknown) => void;
+    listMock.mockImplementationOnce(
+      () => new Promise<unknown>((resolve) => { resolveLocal = resolve; }),
+    );
+    render(<DocumentTree />);
+    expect(listMock).toHaveBeenCalledWith(ROOT);
+
+    act(() =>
+      setActiveDevice({
+        kind: "remote",
+        deviceId: "dev_1",
+        deviceName: "Linux box",
+        capabilities: [],
+      }),
+    );
+    // The new device's listing paints the tree.
+    await screen.findByText("README.md");
+
+    // The old device's response carries a path that exists only there and
+    // must not leak into the new device's tree.
+    await act(async () => {
+      resolveLocal(listing(ROOT, [["local-only.md", false]]));
+    });
+    expect(screen.queryByText("local-only.md")).toBeNull();
+    expect(screen.getByText("README.md")).toBeTruthy();
   });
 
   it("opens files into the document viewer", async () => {

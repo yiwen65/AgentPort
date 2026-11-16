@@ -34,8 +34,19 @@ vi.mock("../api", () => ({
     openExternalUrl: openUrlMock,
     openWithDefaultApp: openDefaultMock,
     listDocumentDirectory: listMock,
+    searchDocumentFiles: vi.fn().mockResolvedValue({ path: "/tmp/demo", truncated: false, entries: [] }),
     createDocumentEntry: createMock,
+    renameDocumentEntry: vi.fn(),
+    duplicateDocumentEntry: vi.fn(),
+    deleteDocumentEntry: vi.fn(),
   },
+  listDocumentDirectoryForDevice: (path: string) => listMock(path),
+  searchDocumentFilesForDevice: () =>
+    Promise.resolve({ path: "/tmp/demo", truncated: false, entries: [] }),
+  createDocumentEntryForDevice: (path: string) => createMock(path),
+  renameDocumentEntryForDevice: vi.fn(),
+  duplicateDocumentEntryForDevice: vi.fn(),
+  deleteDocumentEntryForDevice: vi.fn(),
   copyText: (text: string) => copyMock(text),
   errorText: (error: unknown) =>
     typeof error === "object" && error !== null && "message" in error

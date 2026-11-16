@@ -622,6 +622,9 @@ export function selectSession(
     attachedIds,
     revealedProjects,
     revealedWorktrees,
+    // The open file tree follows the active Session's cwd, including a
+    // Session focused after a device switch.
+    ...(s.explorerOpen && ses?.cwd ? { explorerRoot: ses.cwd } : {}),
   });
   persistPaneGroups(terminalLayoutGroups, terminalLayout);
   releaseIdsOutside(s.attachedIds, attachedIds);
