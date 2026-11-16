@@ -453,6 +453,8 @@ fn is_excluded_from_backup(paths: &AppPaths, abs: &Path) -> bool {
             || f == "diagnostics"
             || f == "backups"
             || f == "logs"
+            || f == "secrets"
+            || f == "relay-connectors"
     ) || abs == paths.db_path()
         || abs == paths.db_path().with_extension("db-wal")
         || abs == paths.db_path().with_extension("db-shm")
@@ -1919,21 +1921,29 @@ mod tests {
     }
 
     #[test]
-    fn worktrees_and_exports_are_excluded() {
+    fn worktrees_exports_and_credentials_are_excluded() {
         let fx = fx();
         std::fs::create_dir_all(fx.paths.worktrees_root().join("demo/task")).unwrap();
         std::fs::write(fx.paths.worktrees_root().join("demo/task/code.py"), b"x=1").unwrap();
         std::fs::write(fx.paths.exports_dir().join("old.zip"), b"zip").unwrap();
+        std::fs::create_dir_all(fx.paths.root().join("secrets")).unwrap();
+        std::fs::write(fx.paths.root().join("secrets/account"), b"secret").unwrap();
+        std::fs::create_dir_all(fx.paths.root().join("relay-connectors/ns/secrets")).unwrap();
+        std::fs::write(
+            fx.paths
+                .root()
+                .join("relay-connectors/ns/secrets/account"),
+            b"secret",
+        )
+        .unwrap();
         let archive = fx.dir.path().join("backup.zip");
         create(&fx.paths, &fx.db, &archive).unwrap();
         let manifest = verify(&archive).unwrap();
-        assert!(!manifest
-            .files
-            .iter()
-            .any(|f| f.path.starts_with("worktrees/")));
-        assert!(!manifest
-            .files
-            .iter()
-            .any(|f| f.path.starts_with("exports/")));
+        for excluded in ["worktrees/", "exports/", "secrets/", "relay-connectors/"] {
+            assert!(
+                !manifest.files.iter().any(|f| f.path.starts_with(excluded)),
+                "{excluded} must never enter a full-data backup"
+            );
+        }
     }
 }

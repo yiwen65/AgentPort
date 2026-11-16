@@ -408,6 +408,7 @@ pub struct Preset {
 pub enum SecretBackend {
     MacosKeychain,
     LinuxSecretService,
+    LocalFile,
 }
 
 impl SecretBackend {
@@ -415,6 +416,7 @@ impl SecretBackend {
         match self {
             SecretBackend::MacosKeychain => "macos_keychain",
             SecretBackend::LinuxSecretService => "linux_secret_service",
+            SecretBackend::LocalFile => "local_file",
         }
     }
 }

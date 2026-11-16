@@ -604,7 +604,7 @@ fn launch_session(
     // Secrets: broker -> spawn env only. Unavailable backend aborts launch.
     let mut secrets = vec![];
     if !preset.secret_ref_ids.is_empty() {
-        let broker = CredentialBroker::detect()?;
+        let broker = CredentialBroker::detect_at(ctx.paths.root())?;
         let refs: Vec<SecretRef> = preset
             .secret_ref_ids
             .iter()
@@ -1311,7 +1311,7 @@ use agentport_core::timeline::Timeline;
 /// redacted at rest by the host; this is the second pass). Values never
 /// leave this function except as fingerprints inside the exporter.
 fn load_all_secret_values(ctx: &Ctx) -> Vec<Vec<u8>> {
-    let Ok(broker) = CredentialBroker::detect() else {
+    let Ok(broker) = CredentialBroker::detect_at(ctx.paths.root()) else {
         return vec![];
     };
     let mut out = vec![];
@@ -1539,7 +1539,7 @@ fn cmd_diag(ctx: &Ctx, args: &[String]) -> Result<()> {
 fn cmd_secret(ctx: &Ctx, args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("status") => {
-            let st = CredentialBroker::backend_status();
+            let st = CredentialBroker::backend_status_at(ctx.paths.root());
             ctx.out(json!({"backendStatus": format!("{st:?}")}));
             Ok(())
         }
@@ -1551,7 +1551,7 @@ fn cmd_secret(ctx: &Ctx, args: &[String]) -> Result<()> {
             // Value comes from stdin only — NEVER from argv (ps-visible).
             eprint!("secret value for {env_name} (input hidden): ");
             let value = read_hidden_line()?;
-            let broker = CredentialBroker::detect()?;
+            let broker = CredentialBroker::detect_at(ctx.paths.root())?;
             let secret_ref = broker.store(&env_name, &preset_id, value.expose())?;
             ctx.db.upsert_secret_ref(&secret_ref)?;
             // Link into the preset.
@@ -1586,7 +1586,7 @@ fn cmd_secret(ctx: &Ctx, args: &[String]) -> Result<()> {
                 .or_else(|| positional(args, 1).ok().cloned())
                 .ok_or_else(|| CoreError::Validation("secret id required".into()))?;
             let secret_ref = ctx.db.get_secret_ref(&id)?;
-            if let Ok(broker) = CredentialBroker::detect() {
+            if let Ok(broker) = CredentialBroker::detect_at(ctx.paths.root()) {
                 let _ = broker.delete(&secret_ref); // idempotent
             }
             ctx.db.delete_secret_ref(&id)?;

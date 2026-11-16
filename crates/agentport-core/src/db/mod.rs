@@ -588,6 +588,7 @@ fn secret_backend(s: &str) -> Result<SecretBackend> {
     Ok(match s {
         "macos_keychain" => SecretBackend::MacosKeychain,
         "linux_secret_service" => SecretBackend::LinuxSecretService,
+        "local_file" => SecretBackend::LocalFile,
         other => return Err(CoreError::Internal(format!("bad secret backend {other}"))),
     })
 }

@@ -138,7 +138,7 @@ rm -rf /Applications/AgentPort.app
 rm -rf ~/Library/Application\ Support/AgentPort
 ```
 
-Keychain 中 `service=agentport` 的条目需手动删除：打开"钥匙串访问"搜索 `agentport` 删除，或使用命令：
+旧版本可能仍在 Keychain 中留下 `service=agentport` 的条目（当前版本不再使用钥匙串），需手动删除：打开"钥匙串访问"搜索 `agentport` 删除，或使用命令：
 
 ```bash
 security delete-generic-password -s agentport

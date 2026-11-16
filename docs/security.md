@@ -39,10 +39,10 @@
 
 敏感环境变量（如 API Key）的存储与使用遵守以下硬边界：
 
-- **只存系统安全存储**：macOS Keychain 或 Linux Secret Service（service 名称为 `agentport`）。SQLite 中只保存引用（变量名、后端、账户键），不保存原值。
+- **macOS 私有文件 / Linux Secret Service**：macOS 上 Secret 原值存放在应用私有目录 `secrets/`（目录 0700、文件 0600，文件名是账户键的 SHA-256），不再使用 Keychain，避免升级替换 App 后反复弹出系统授权框；Linux 继续使用 Secret Service（service 名称为 `agentport`）。SQLite 中只保存引用（变量名、后端、账户键），不保存原值。该 macOS 文件对同一登录用户下的其他进程可读，隔离边界弱于钥匙串，但不进入全量备份。
 - **连接器自身凭据**：`agentport-connector` 的 Relay 身份密钥、注册令牌与 APNs 密钥不是用户 Secret；macOS 上存放在该连接器私有状态目录（0700）下的 0600 文件中，首次启动把旧的 `com.agentport.relay.connector.v1` Keychain 账户一次性迁入后不再访问 Keychain，Linux 继续使用 Secret Service。原因是 Keychain ACL 绑定创建条目的二进制，App 升级替换 sidecar 后会反复要求登录钥匙串密码。该存储对同一登录用户下的其他进程可读，隔离边界与上面的用户 Secret 不同。
-- **AgentPort 内的流动路径**：系统安全存储 → 启动瞬间经 Credential Broker 读入受限内存 → 作为环境变量注入目标 Agent 子进程 → 立即清除临时缓冲。原值不进入 AgentPort 前端状态、SQLite、进程参数、正文索引或诊断包。目标 Agent 自己的原生日志属于其安全边界。
-- **无明文回退**：后端不可用（如 Linux 未运行 Secret Service）时，保存 Secret 的功能直接禁用，绝不退化为明文配置文件；此时仍可使用 Shell 环境中已有的变量。
+- **AgentPort 内的流动路径**：macOS 私有文件 / Linux Secret Service → 启动瞬间经 Credential Broker 读入受限内存 → 作为环境变量注入目标 Agent 子进程 → 立即清除临时缓冲。原值不进入 AgentPort 前端状态、SQLite、进程参数、正文索引或诊断包。目标 Agent 自己的原生日志属于其安全边界。
+- **不可用即禁用**：macOS 私有目录权限不安全（非 0700/0600 或属主不符），或 Linux 未运行 Secret Service 时，保存 Secret 的功能直接禁用；不会退化为额外的明文位置，此时仍可使用 Shell 环境中已有的变量。
 - **实时输出脱敏**：PTY 输出一旦命中已登记 Secret 的字节序列，进入 AgentPort 实时内存尾部和前端前即替换为固定掩码 `[redacted]`，并只记录命中计数。AgentPort 不改写 Agent 原生日志。
 - 会话正文搜索按需读取 Agent 原生日志，不建立正文索引；原生日志是否含敏感信息由对应 Agent 的策略决定。
 
@@ -72,7 +72,7 @@ Agent 状态 Hook 的集成遵循"按调用注入、可撤销、绝不静默改�
 
 - v2 备份包含 SQLite 快照、AgentPort 管理的 Session 元数据，以及能够通过原生 Session ID（必要时同时校验 CWD）唯一定位的 Provider 原生文件。它不打包旧 `output.log`、Worktree、导出物、诊断物或整个 Provider home。
 - 原生文件可能包含**完整对话、工具调用与工具输出**，也可能包含提示词、源码、路径或 Provider 自己写入的其他敏感正文。备份 ZIP **不加密**，应按敏感明文文件存储和传输。
-- AgentPort 不会为备份主动读取 macOS Keychain / Linux Secret Service 的凭据原值；SQLite 中的 Secret 引用元数据会随数据库快照保留。若 Secret 已被 Agent 或工具输出到原生对话中，它仍可能随原生 Session 正文进入备份。
+- AgentPort 不会为备份主动读取 macOS 私有 Secret 文件 / Linux Secret Service 的凭据原值，`secrets/` 与 `relay-connectors/` 目录也被排除在全量备份之外；SQLite 中的 Secret 引用元数据会随数据库快照保留。若 Secret 已被 Agent 或工具输出到原生对话中，它仍可能随原生 Session 正文进入备份。
 - 每个 v2 Manifest 记录 `nativeCoverage`。`missing` 或 `ambiguous` 非零表示正文覆盖不完整；`unsupported`（例如 Generic Shell）表示该 Provider 没有可归档的原生 Session。v1 旧版备份没有原生正文合同。
 - 恢复会将原生 Session 安装到**恢复时当前配置的 Provider home**。目标文件不存在或字节完全相同时才允许继续；同路径不同内容会使恢复以冲突失败，绝不覆盖已有 Provider 文件。
 

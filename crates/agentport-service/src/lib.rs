@@ -1930,11 +1930,11 @@ impl RemoteService for CoreService {
             }
             "commit_ai.config.get" => {
                 let _: EmptyExtendedParams = parse_extended(params)?;
-                serialize_extended(commit_ai::config(&self.db)?)?
+                serialize_extended(commit_ai::config(&self.paths, &self.db)?)?
             }
             "commit_ai.key.clear" => {
                 let _: EmptyExtendedParams = parse_extended(params)?;
-                serialize_extended(commit_ai::clear_key(&self.db)?)?
+                serialize_extended(commit_ai::clear_key(&self.paths, &self.db)?)?
             }
             "commit_ai.generate" => {
                 let params: commit_ai::GenerateParams = parse_extended(params)?;
@@ -2081,7 +2081,7 @@ impl RemoteService for CoreService {
                     .export_diagnostics_zip(
                         &[params.session_id],
                         destination,
-                        &load_all_secret_values(&self.db),
+                        &load_all_secret_values(&self.paths, &self.db),
                     )?,
                     _ => return Err(ServiceError::InvalidRequest),
                 };
@@ -2197,7 +2197,7 @@ impl RemoteService for CoreService {
     }
 
     fn save_commit_ai_config(&self, params: CommitAiConfigSaveParams) -> Result<serde_json::Value> {
-        serialize_extended(commit_ai::save(&self.db, params)?)
+        serialize_extended(commit_ai::save(&self.paths, &self.db, params)?)
     }
 
     fn write_document(&self, params: DocumentWriteParams) -> Result<serde_json::Value> {
@@ -2205,7 +2205,7 @@ impl RemoteService for CoreService {
     }
 
     fn secret_backend_status(&self) -> Result<SecretBackendStatus> {
-        let (state, backend, reason) = match CredentialBroker::backend_status() {
+        let (state, backend, reason) = match CredentialBroker::backend_status_at(self.paths.root()) {
             BackendStatus::Available(backend) => ("available", Some(backend.as_str().into()), None),
             BackendStatus::Locked(backend) => ("locked", Some(backend.as_str().into()), None),
             BackendStatus::Unavailable(reason) => ("unavailable", None, Some(reason)),
@@ -2233,7 +2233,7 @@ impl RemoteService for CoreService {
 
     fn delete_secret(&self, params: SecretDeleteParams) -> Result<()> {
         let secret = self.db.get_secret_ref(&params.id)?;
-        let broker = CredentialBroker::detect()?;
+        let broker = CredentialBroker::detect_at(self.paths.root())?;
         broker.delete(&secret)?;
         self.db.delete_secret_ref_everywhere(&params.id)?;
         Ok(())
@@ -3019,7 +3019,7 @@ impl RemoteService for CoreService {
     }
 
     fn add_secret(&self, params: SecretAddParams) -> Result<SecretAddResult> {
-        let broker = CredentialBroker::detect()?;
+        let broker = CredentialBroker::detect_at(self.paths.root())?;
         let secret =
             broker.store_staged(&params.env_name, &params.preset_id, params.expose_value())?;
         if let Err(error) = self.db.add_secret_ref_to_preset(&params.preset_id, &secret) {
@@ -3139,7 +3139,7 @@ fn materialize_launch_environment(
     let secrets = if refs.is_empty() {
         Vec::new()
     } else {
-        load_preset_secrets(&CredentialBroker::detect()?, &refs)?
+        load_preset_secrets(&CredentialBroker::detect_at(service.paths.root())?, &refs)?
     };
     Ok((env, secrets))
 }
@@ -3724,8 +3724,8 @@ fn create_document_entry(path: &str, kind: &str) -> Result<serde_json::Value> {
     Ok(serde_json::json!({"path": canonical.to_string_lossy()}))
 }
 
-fn load_all_secret_values(db: &Db) -> Vec<Vec<u8>> {
-    let Ok(broker) = CredentialBroker::detect() else {
+fn load_all_secret_values(paths: &AppPaths, db: &Db) -> Vec<Vec<u8>> {
+    let Ok(broker) = CredentialBroker::detect_at(paths.root()) else {
         return Vec::new();
     };
     db.list_secret_refs()

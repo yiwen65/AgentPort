@@ -26,4 +26,4 @@
 14. **GUI 交互自动化缺失**：GUI 烟测覆盖启动/窗口渲染/数据初始化；完整 GUI 操作流（点击、IME 输入、拖拽）无自动化回放，依赖 CLI 层等价验证 + 人工抽检。
 15. **性能基线**：PRD 基线为 M1/8GiB 与 Ubuntu 22.04/4核/8GiB；本机为 Apple Silicon 更新机型、Docker 模拟 x86_64（Rosetta），数字仅作参考，报告注明实测环境。
 16. **长稳指标**：10 分钟空闲内存/5 分钟 CPU 采样以较短窗口近似（报告中注明实际窗口）。
-17. **secret 锁定场景**（Keychain 锁定/Secret Service 锁定）未自动化：macOS 无法脚本锁定登录钥匙串而不影响用户环境；对应代码路径（`backend_status` Locked 映射、启动阻止）已实现并有单元测试，端到端人工验证未做。
+17. **Secret 存储异常场景**未全自动化：macOS 私有目录权限异常（0700/0600 校验）已有单元测试；Linux Secret Service 锁定/不可用路径（`backend_status` Locked 映射、启动阻止）已实现并有单元测试，端到端人工验证未做。

@@ -73,15 +73,15 @@
 - **原因**：升级不会自动删除历史文件，避免在 Agent 原生日志不可用时造成不可恢复的数据丢失。旧正文 FTS 缓存会自动清空。
 - **处理**：打开“设置 → 历史与存储”，查看每项大小、是否属于活动 Session、原生日志覆盖状态；只选择确认不再需要的项并执行二次确认清理。符号链接和活动 Session 日志不会被删除。
 
-## Secret Service / Keychain 不可用
+## Secret 存储不可用
 
-- **现象**："系统安全存储不可用，AgentPort 不会改用明文保存。"或 Secret 状态显示"已锁定/后端不可用"。
-- **原因**：macOS Keychain 被锁定；Linux 上未运行 Secret Service（部分最小化或 headless 桌面）、D-Bus 不可达，或你取消了系统凭据授权。
+- **现象**："系统安全存储不可用"或 Secret 状态显示"后端不可用"。
+- **原因**：macOS 上应用私有目录 `secrets/` 的权限不是 0700/0600、属主不符或不可写；Linux 上未运行 Secret Service（部分最小化或 headless 桌面）、D-Bus 不可达。macOS 已不再使用 Keychain。
 - **处理**：
-  1. 解锁系统凭据存储后重试；
+  1. 修正数据目录 `secrets/` 的权限后重试；Linux 上恢复 Secret Service；
   2. 无法恢复后端时，可在启动 AgentPort 前通过 Shell 环境注入变量（预设中列出变量名即可继承）；
   3. 或在预设中移除该 Secret 引用。
-  4. 注意：AgentPort 没有明文文件回退，这是硬约束而非故障；依赖不可用 Secret 的 Session 会被阻止启动。
+  4. 依赖不可用 Secret 的 Session 会被阻止启动。
 
 ## 系统通知不弹出
 

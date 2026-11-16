@@ -197,7 +197,7 @@ Pi 与 Generic Shell 不使用 Agent 权限模式。启动 Pi 时不会添加权
 
 - 新备份是按 Agent 筛选的 v2 ZIP，文件名包含类型；仅包含 AgentPort 管理的该类型会话、必要的项目/Worktree 元数据，以及可定位的原生历史。其他 Agent、全局设置、预设、Secret 引用、旧 `output.log`、Worktree 文件、导出物和诊断物不入包。应用外创建的会话不在范围内。
 - 被捕获的原生 Session 包含**完整对话和工具输出**，可能含提示词、代码、路径或其他敏感信息。备份 ZIP **不加密**，请按敏感明文文件保管。
-- macOS Keychain / Linux Secret Service 的系统凭据和 Secret 原值不入包；恢复后如需这些凭据，需由目标系统安全存储另行提供。
+- macOS 私有 Secret 文件、Linux Secret Service 中的凭据和 Secret 原值不入包；恢复后如需这些凭据，需另行提供。
 - 创建和校验结果会显示原生覆盖：v2 的“完整”表示 `missing=0` 且 `ambiguous=0`；若缺失或来源歧义则显示“不完整”及计数。Generic Shell 等没有原生会话来源的项目记为“不支持”。v1 显示为“旧版”，不声称含原生正文。
 - 合并恢复先校验整个 ZIP，只向当前数据目录导入选中 Agent 的缺失会话。已有会话不覆盖，并在结果中列出跳过的 ID；其他 Agent 和现有项目配置不变。无需退出应用或手工替换目录，恢复也不会启动会话或重建 Git Worktree。
 - 兼容旧 v1/v2 整库备份，但只导入选中类型；选择其他类型的新版备份会报错。项目路径可复用，项目 ID、Worktree 或原生会话归属冲突会阻止导入。
@@ -211,9 +211,10 @@ Pi 与 Generic Shell 不使用 Agent 权限模式。启动 Pi 时不会添加权
 
 ## 敏感环境变量（Secret）
 
-- API Key 等敏感值只保存在 **macOS Keychain 或 Linux Secret Service** 中；AgentPort 的 SQLite 只保存引用（变量名、后端、账户键），绝不保存原值。
+- API Key 等敏感值在 macOS 上保存在**应用私有目录**（`secrets/`，目录 0700、文件 0600），Linux 上保存在 Secret Service；AgentPort 的 SQLite 只保存引用（变量名、后端、账户键），绝不保存原值。
+- macOS 不再访问钥匙串，因此升级替换 App 后不会再弹出钥匙串授权框；私有文件对同一登录用户下的其他进程可读，且不会进入全量备份。旧版留在钥匙串中的 Key 不会自动迁移，需要重新输入。
 - 原值只在启动瞬间经环境变量注入目标 Agent 子进程；不进入 AgentPort 的进程参数、SQLite、前端状态、正文索引或诊断包。Agent 自己是否把内容写入原生日志，遵循该 Agent 的日志与脱敏策略。
-- 系统安全存储不可用（如未运行 Secret Service 的 Linux 桌面）时，保存 Secret 的功能被禁用，**不会回退到明文文件**；你仍可在启动 AgentPort 前通过 Shell 环境注入变量。
+- 后端不可用（macOS 私有目录权限异常，或 Linux 未运行 Secret Service）时，保存 Secret 的功能被禁用；你仍可在启动 AgentPort 前通过 Shell 环境注入变量。
 - Agent 输出中一旦出现与 Secret 相同的内容，AgentPort 的实时 PTY 展示会替换为 `[redacted]` 并在诊断中心计数（不展示原值）；AgentPort 不改写 Agent 原生日志。
 
 ## 诊断中心

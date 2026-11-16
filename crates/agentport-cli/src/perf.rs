@@ -707,7 +707,7 @@ pub fn search_perf(ctx: &PerfCtx) -> Result<()> {
 
 /// PRD: Secret 读取与注入 P95 ≤ 300ms; 泄漏 0.
 pub fn secret_perf(ctx: &PerfCtx) -> Result<()> {
-    let broker = CredentialBroker::detect()?;
+    let broker = CredentialBroker::detect_at(ctx.paths.root())?;
     let probe_ref = broker.store("PERF_PROBE", "pre_shell_safe", b"perf-probe-value-123")?;
     let mut samples = vec![];
     for _ in 0..30 {

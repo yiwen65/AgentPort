@@ -887,7 +887,7 @@ async fn boot(state: State<'_, AppState>, app: AppHandle) -> std::result::Result
     }
 
     let secret_probe_started = std::time::Instant::now();
-    let secret_backend = format!("{:?}", CredentialBroker::backend_status());
+    let secret_backend = format!("{:?}", CredentialBroker::backend_status_at(state.paths.root()));
     tracing::info!(
         elapsed_ms = secret_probe_started.elapsed().as_millis(),
         "startup secret backend probe complete"
@@ -3306,7 +3306,7 @@ async fn worktree_status_text(
 // ---------------------------------------------------------------------------
 
 fn load_all_secret_values(state: &AppState) -> Vec<Vec<u8>> {
-    let Ok(broker) = CredentialBroker::detect() else {
+    let Ok(broker) = CredentialBroker::detect_at(state.paths.root()) else {
         return vec![];
     };
     let mut out = vec![];
@@ -3668,8 +3668,11 @@ async fn diag_capabilities(state: State<'_, AppState>) -> std::result::Result<St
 // shared service owns the typed metadata-only facade and the staged,
 // compensating secret publication path; both delegate storage to Core.
 #[tauri::command]
-async fn secret_status() -> String {
-    format!("{:?}", CredentialBroker::backend_status())
+fn secret_status(state: State<'_, AppState>) -> String {
+    format!(
+        "{:?}",
+        CredentialBroker::backend_status_at(state.paths.root())
+    )
 }
 
 #[tauri::command]
@@ -3679,7 +3682,7 @@ async fn secret_add(
     env_name: String,
     value: String,
 ) -> std::result::Result<Value, String> {
-    let broker = map_err!(CredentialBroker::detect())?;
+    let broker = map_err!(CredentialBroker::detect_at(state.paths.root()))?;
     let r = map_err!(broker.store(&env_name, &preset_id, value.as_bytes()))?;
     map_err!(state.db.upsert_secret_ref(&r))?;
     let mut preset = map_err!(state.db.get_preset(&preset_id))?;
@@ -3705,7 +3708,7 @@ async fn secret_list(state: State<'_, AppState>) -> std::result::Result<Vec<Valu
 #[tauri::command]
 async fn secret_delete(state: State<'_, AppState>, id: String) -> std::result::Result<(), String> {
     let r = map_err!(state.db.get_secret_ref(&id))?;
-    if let Ok(broker) = CredentialBroker::detect() {
+    if let Ok(broker) = CredentialBroker::detect_at(state.paths.root()) {
         let _ = broker.delete(&r);
     }
     let mut commit_ai = map_err!(state.db.load_commit_ai_settings())?;

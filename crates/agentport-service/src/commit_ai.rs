@@ -58,12 +58,21 @@ fn failure(message: impl Into<String>) -> ServiceError {
     ServiceError::CommitAi(message.into())
 }
 
-pub(crate) fn config(db: &Db) -> Result<ConfigView> {
+pub(crate) fn config(paths: &AppPaths, db: &Db) -> Result<ConfigView> {
     let settings = db.load_commit_ai_settings()?;
+    // A ref can exist from an older backend while its value is gone (for
+    // example the pre-file macOS Keychain). Only report a configured key when
+    // the current private store can actually load it.
     let has_api_key = settings
         .api_key_secret_ref_id
         .as_deref()
-        .is_some_and(|id| db.get_secret_ref(id).is_ok());
+        .and_then(|id| db.get_secret_ref(id).ok())
+        .is_some_and(|secret| {
+            CredentialBroker::open_at(paths.root())
+                .ok()
+                .and_then(|broker| broker.load(&secret).ok())
+                .is_some()
+        });
     Ok(ConfigView {
         provider: settings.provider,
         base_url: settings.base_url,
@@ -73,7 +82,7 @@ pub(crate) fn config(db: &Db) -> Result<ConfigView> {
     })
 }
 
-pub(crate) fn save(db: &Db, params: CommitAiConfigSaveParams) -> Result<ConfigView> {
+pub(crate) fn save(paths: &AppPaths, db: &Db, params: CommitAiConfigSaveParams) -> Result<ConfigView> {
     let provider = parse_provider(&params.provider)?;
     let language = parse_language(&params.language)?;
     let mut settings = db.load_commit_ai_settings()?;
@@ -91,16 +100,16 @@ pub(crate) fn save(db: &Db, params: CommitAiConfigSaveParams) -> Result<ConfigVi
 
     let Some(api_key) = params.expose_api_key() else {
         db.publish_commit_ai_settings(&settings, None, None)?;
-        return config(db);
+        return config(paths, db);
     };
     if api_key.is_empty() {
         db.publish_commit_ai_settings(&settings, None, None)?;
-        return config(db);
+        return config(paths, db);
     }
     if api_key.trim().len() != api_key.len() {
         return Err(failure("API key must not start or end with whitespace"));
     }
-    let broker = CredentialBroker::detect()?;
+    let broker = CredentialBroker::detect_at(paths.root())?;
     let staged = broker.store_staged(SECRET_ENV, SECRET_OWNER, api_key.as_bytes())?;
     settings.api_key_secret_ref_id = Some(staged.id.clone());
     if let Err(error) =
@@ -112,10 +121,10 @@ pub(crate) fn save(db: &Db, params: CommitAiConfigSaveParams) -> Result<ConfigVi
     if let Some(previous) = previous_secret {
         let _ = broker.delete(&previous);
     }
-    config(db)
+    config(paths, db)
 }
 
-pub(crate) fn clear_key(db: &Db) -> Result<ConfigView> {
+pub(crate) fn clear_key(paths: &AppPaths, db: &Db) -> Result<ConfigView> {
     let mut settings = db.load_commit_ai_settings()?;
     let previous = settings
         .api_key_secret_ref_id
@@ -124,11 +133,11 @@ pub(crate) fn clear_key(db: &Db) -> Result<ConfigView> {
     let previous_id = settings.api_key_secret_ref_id.take();
     db.publish_commit_ai_settings(&settings, None, previous_id.as_deref())?;
     if let Some(previous) = previous {
-        if let Ok(broker) = CredentialBroker::detect() {
+        if let Ok(broker) = CredentialBroker::detect_at(paths.root()) {
             let _ = broker.delete(&previous);
         }
     }
-    config(db)
+    config(paths, db)
 }
 
 pub(crate) fn generate(paths: &AppPaths, db: &Db, params: GenerateParams) -> Result<Suggestion> {
@@ -139,7 +148,7 @@ pub(crate) fn generate(paths: &AppPaths, db: &Db, params: GenerateParams) -> Res
         .as_deref()
         .ok_or_else(|| failure("Configure an API key before generating a commit message"))?;
     let secret = db.get_secret_ref(secret_id)?;
-    let api_key = CredentialBroker::detect()?.load(&secret)?;
+    let api_key = CredentialBroker::detect_at(paths.root())?.load(&secret)?;
     let manager = GitWorkspaceManager::new_with_paths(db, paths);
     let context = manager.commit_ai_context(
         &params.locator,
