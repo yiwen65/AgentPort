@@ -64,25 +64,25 @@ describe("image stream and lifetime", () => {
     vi.mocked(t.chunk).mockResolvedValueOnce({ offset: 1, contentBase64: btoa("png"), eof: true });
     await expect(readLocalMarkdownImage(t, "/project", "a")).rejects.toThrow("chunk"); expect(t.close).toHaveBeenCalledTimes(2);
   });
-  it("makes zero remote requests until consent; reuses URLs, releases on disposal; consent is not shared", async () => {
+  it("loads remote images by default; reuses URLs and releases them on disposal", async () => {
     const t = transport(); const s = new MarkdownImageSession(context, t); const source = "https://example.com/a";
-    await s.load(source); expect(s.snapshot(source).status).toBe("blocked"); expect(t.fetch).not.toHaveBeenCalled();
-    s.allowRemote(); await s.load(source); await s.load(source); expect(t.fetch).toHaveBeenCalledTimes(1);
+    await s.load(source); await s.load(source); expect(t.fetch).toHaveBeenCalledTimes(1);
+    expect(s.snapshot(source).status).toBe("ready");
     s.dispose(); expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:test");
-    const next = new MarkdownImageSession(context, t); await next.load(source); expect(next.consent).toBe(false); expect(t.fetch).toHaveBeenCalledTimes(1); next.dispose();
+    const next = new MarkdownImageSession(context, t); await next.load(source); expect(t.fetch).toHaveBeenCalledTimes(2); next.dispose();
   });
   it("does not create blobs after disposal or after pixel cap failure", async () => {
     const t = transport(); let finish!: (value: ValidatedMarkdownImage) => void;
     vi.mocked(t.fetch).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
-    const s = new MarkdownImageSession(context, t); s.allowRemote(); const loading = s.load("https://example.com/a"); await Promise.resolve(); s.dispose(); finish(png); await loading; expect(URL.createObjectURL).not.toHaveBeenCalled();
-    const next = new MarkdownImageSession(context, t); next.allowRemote(); vi.mocked(t.fetch).mockResolvedValueOnce({ ...png, width: 20_000_001, height: 1 }); await next.load("https://example.com/a"); expect(next.snapshot("https://example.com/a").status).toBe("error"); expect(URL.createObjectURL).not.toHaveBeenCalled(); next.dispose();
+    const s = new MarkdownImageSession(context, t); const loading = s.load("https://example.com/a"); await Promise.resolve(); s.dispose(); finish(png); await loading; expect(URL.createObjectURL).not.toHaveBeenCalled();
+    const next = new MarkdownImageSession(context, t); vi.mocked(t.fetch).mockResolvedValueOnce({ ...png, width: 20_000_001, height: 1 }); await next.load("https://example.com/a"); expect(next.snapshot("https://example.com/a").status).toBe("error"); expect(URL.createObjectURL).not.toHaveBeenCalled(); next.dispose();
   });
   it("bounds concurrent reads and cancels queued requests on document disposal", async () => {
     const t = transport();
     let release!: (value: ValidatedMarkdownImage) => void;
     const pending = new Promise<ValidatedMarkdownImage>((resolve) => { release = resolve; });
     vi.mocked(t.fetch).mockReturnValue(pending);
-    const s = new MarkdownImageSession(context, t); s.allowRemote();
+    const s = new MarkdownImageSession(context, t);
     const jobs = ["a", "b", "c"].map((name) => s.load(`https://example.com/${name}`));
     await Promise.resolve(); expect(t.fetch).toHaveBeenCalledTimes(2);
     s.dispose(); release(png); await Promise.all(jobs); expect(t.fetch).toHaveBeenCalledTimes(2); expect(URL.createObjectURL).not.toHaveBeenCalled();
@@ -90,7 +90,7 @@ describe("image stream and lifetime", () => {
   it("caps retained compressed blobs at 64 MiB without evicting visible assets", async () => {
     const t = transport(); const large = { ...png, contentBase64: btoa("x".repeat(17 * 1024 * 1024)) };
     vi.mocked(t.fetch).mockResolvedValue(large);
-    const s = new MarkdownImageSession(context, t); s.allowRemote();
+    const s = new MarkdownImageSession(context, t);
     for (const name of ["a", "b", "c"]) { const source = `https://example.com/${name}`; s.retain(source); await s.load(source); }
     await s.load("https://example.com/d"); expect(s.snapshot("https://example.com/d").status).toBe("error"); expect(URL.revokeObjectURL).not.toHaveBeenCalled();
     s.release("https://example.com/a"); await s.load("https://example.com/d", true);

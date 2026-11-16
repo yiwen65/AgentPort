@@ -49,6 +49,5 @@ export interface ParsedMarkdown {
   tree: HastRoot | null;
   outline: OutlineItem[];
   images: MarkdownImageInfo[];
-  hasRemoteImages: boolean;
   sourceLines: string[];
 }

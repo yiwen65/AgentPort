@@ -123,7 +123,7 @@ export async function readLocalMarkdownImage(transport: ImageTransport, rootPath
   } finally { await transport.close(opened.downloadId).catch(() => {}); }
 }
 
-export type ImageState = { status: "idle" | "loading" | "blocked" | "error"; error?: string } | { status: "ready"; url: string; width: number; height: number };
+export type ImageState = { status: "idle" | "loading" | "error"; error?: string } | { status: "ready"; url: string; width: number; height: number };
 const IDLE: ImageState = { status: "idle" };
 export class MarkdownImageSession {
   private entries = new Map<string, ImageState>();
@@ -154,19 +154,16 @@ export class MarkdownImageSession {
     }
     if (retained + size > 64 * 1024 * 1024) throw new Error("Document image cache limit reached; retry after other images leave view");
   }
-  consent = false;
   constructor(readonly context: MarkdownImageContext, private transport: ImageTransport = imageTransport(context.device)) {}
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   snapshot = (source: string): ImageState => this.entries.get(source) ?? IDLE;
   private emit() { for (const listener of this.listeners) listener(); }
-  allowRemote() { if (this.disposed) return; this.consent = true; for (const [source, state] of this.entries) if (state.status === "blocked") this.entries.delete(source); this.emit(); }
   async load(source: string, retry = false): Promise<void> {
     if (this.disposed) return;
     const current = this.snapshot(source);
     if (current.status === "loading" || current.status === "ready" || current.status === "error" && !retry) return;
     let resolved: ReturnType<typeof resolveMarkdownImage>;
     try { resolved = resolveMarkdownImage(source, this.context); } catch (error) { this.entries.set(source, { status: "error", error: describeImageError(error) }); this.emit(); return; }
-    if (resolved.kind === "remote" && !this.consent) { this.entries.set(source, { status: "blocked" }); this.emit(); return; }
     this.entries.set(source, { status: "loading" }); this.emit();
     if (!await this.acquire()) return;
     try {

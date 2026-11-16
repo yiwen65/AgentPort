@@ -170,14 +170,8 @@ export function parseMarkdown(source: string, options: ParseMarkdownOptions): Pa
     const tree = processor.runSync(
       processor.parse(normalizeImageDestinations(normalized)) as MdastRoot,
     ) as HastRoot;
-    return {
-      tree,
-      outline,
-      images,
-      hasRemoteImages: images.some((image) => /^https:\/\//i.test(image.source)),
-      sourceLines,
-    };
+    return { tree, outline, images, sourceLines };
   } catch {
-    return { tree: null, outline, images, hasRemoteImages: false, sourceLines };
+    return { tree: null, outline, images, sourceLines };
   }
 }

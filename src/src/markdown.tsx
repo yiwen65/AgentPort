@@ -7,7 +7,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "./store";
-import { MarkdownImageConsent } from "./components/MarkdownImage";
 import { MarkdownReaderContext, type MarkdownReaderContextValue, type MarkdownReaderLabels } from "./markdownReader/context";
 import { ImageViewerProvider } from "./markdownReader/imageViewer";
 import { scrollToAnchor } from "./markdownReader/links";
@@ -140,9 +139,6 @@ export function MarkdownView({
           }
         }}
       >
-        {parsed.hasRemoteImages && imageSession ? (
-          <MarkdownImageConsent session={imageSession} />
-        ) : null}
         {content}
       </div>
       </ImageViewerProvider>

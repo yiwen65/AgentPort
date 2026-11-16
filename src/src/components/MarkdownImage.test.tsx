@@ -11,15 +11,14 @@ function session() {
 }
 beforeEach(async () => { await applyUiLanguage("en-US"); URL.createObjectURL = vi.fn(() => "blob:image"); URL.revokeObjectURL = vi.fn(); });
 afterEach(cleanup);
-it("uses one document consent action; no remote request on mount; consent loads all images", async () => {
+it("loads remote images by default without a consent step", async () => {
   const { images, transport } = session();
   const view = render(<MarkdownView source="![one](https://example.com/one) ![two](https://example.com/two)" imageSession={images} />);
-  await screen.findAllByText(/External image blocked/);
-  expect(transport.fetch).not.toHaveBeenCalled();
-  expect(screen.getAllByRole("button", { name: "Load external images for this document" })).toHaveLength(1);
-  fireEvent.click(screen.getByRole("button", { name: "Load external images for this document" }));
   await waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2));
   await screen.findByRole("img", { name: "one" });
+  await screen.findByRole("img", { name: "two" });
+  expect(screen.queryByRole("button", { name: "Load external images for this document" })).toBeNull();
+  expect(screen.queryByText(/External image blocked/)).toBeNull();
   view.unmount(); images.dispose();
 });
 it("image-wrapped links open zoom viewer, Escape closes and restores reading focus without navigation", async () => {

@@ -16,14 +16,14 @@ it("captures the explorer root and document/device identity at tab opening, not 
   const tab = getActiveDocumentTab()!; const runtime = ensureDocumentTabRuntime(tab);
   expect(runtime.imageContext).toEqual({ path: tab.path, rootPath: "/project", device });
 });
-it("standalone documents use parent as root; split/remount keeps consent until close or content replacement", () => {
+it("standalone documents use parent as root; split/remount keeps the image session until close or content replacement", () => {
   openDocumentTarget({ path: "/standalone/read.md", line: null }, { pinned: true }); const tab = getActiveDocumentTab()!;
   expect(ensureDocumentTabRuntime(tab).imageContext?.rootPath).toBe("/standalone");
   const doc = { path: tab.path, content: "![a](a.png)", sizeBytes: 12, truncated: false };
-  updateDocumentTabRuntime(tab.id, { doc }); const images = getDocumentTabRuntime(tab.id)!.imageSession!; images.allowRemote();
-  moveDocumentTab(tab.id, 1); expect(ensureDocumentTabRuntime(getActiveDocumentTab()!).imageSession).toBe(images); expect(images.consent).toBe(true);
+  updateDocumentTabRuntime(tab.id, { doc }); const images = getDocumentTabRuntime(tab.id)!.imageSession!;
+  moveDocumentTab(tab.id, 1); expect(ensureDocumentTabRuntime(getActiveDocumentTab()!).imageSession).toBe(images);
   updateDocumentTabRuntime(tab.id, { mode: "raw" }); updateDocumentTabRuntime(tab.id, { mode: "preview" }); expect(getDocumentTabRuntime(tab.id)!.imageSession).toBe(images);
-  const dispose = vi.spyOn(images, "dispose"); updateDocumentTabRuntime(tab.id, { doc: { ...doc, content: "different" }, draft: "different" }); expect(dispose).toHaveBeenCalledOnce(); expect(getDocumentTabRuntime(tab.id)!.imageSession?.consent).toBe(false);
+  const dispose = vi.spyOn(images, "dispose"); updateDocumentTabRuntime(tab.id, { doc: { ...doc, content: "different" }, draft: "different" }); expect(dispose).toHaveBeenCalledOnce(); expect(getDocumentTabRuntime(tab.id)!.imageSession).not.toBe(images);
   const current = getDocumentTabRuntime(tab.id)!.imageSession!; const closed = vi.spyOn(current, "dispose"); closeDocumentTab(tab.id); expect(closed).toHaveBeenCalledOnce(); expect(getDocumentTabRuntime(tab.id)).toBeNull();
 });
 it("explicit read/write contexts cannot be retargeted by active-device switches", async () => {
