@@ -184,6 +184,8 @@ export async function refreshDeviceSnapshot(
       !previous.loading &&
       previous.error === null &&
       previous.deviceId === deviceId &&
+      previous.deviceName === snapshot.deviceName &&
+      previous.transport === snapshot.transport &&
       JSON.stringify(previous.projects) === JSON.stringify(merged)
     ) {
       return true;

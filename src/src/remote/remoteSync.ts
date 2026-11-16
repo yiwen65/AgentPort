@@ -231,9 +231,16 @@ export function startRemoteSync(deviceId: string): void {
     refreshProjectsSoon: () => refreshProjectsSoon(),
     notifyAttention: (event) => {
       const state = getState();
+      // Resolve the display name per notification: renaming the active device
+      // updates the active context without restarting this sync engine.
+      const current = activeDeviceContext();
+      const currentName =
+        current.kind === "remote" && current.deviceId === deviceId
+          ? current.deviceName
+          : deviceId;
       return api.remoteAttentionNotify({
         deviceId,
-        deviceName,
+        deviceName: currentName,
         sessionId: event.sessionId,
         sessionTitle: sessionTitleFor(event.sessionId) ?? event.sessionId,
         runId: event.runId,

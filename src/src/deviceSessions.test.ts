@@ -7,6 +7,7 @@ const {
   remoteListProjectSessionsMock,
   isDeviceConnectedMock,
   connectionsState,
+  devicesState,
   disconnectEvents,
 } = vi.hoisted(() => ({
   localListProjectsMock: vi.fn(),
@@ -16,6 +17,12 @@ const {
   connectionsState: {
     explicitDeviceIds: [] as string[],
     connections: {} as Record<string, { phase: string }>,
+  },
+  devicesState: {
+    devices: [
+      { id: "dev_a", name: "Alpha", transport: "ssh" },
+      { id: "dev_b", name: "Beta", transport: "relay" },
+    ] as Array<{ id: string; name: string; transport: string }>,
   },
   disconnectEvents: [] as string[],
 }));
@@ -41,12 +48,7 @@ vi.mock("./deviceConnections", () => ({
 }));
 
 vi.mock("./devicesStore", () => ({
-  getDevicesState: () => ({
-    devices: [
-      { id: "dev_a", name: "Alpha", transport: "ssh" },
-      { id: "dev_b", name: "Beta", transport: "relay" },
-    ],
-  }),
+  getDevicesState: () => devicesState,
 }));
 
 import {
@@ -107,6 +109,10 @@ describe("deviceSessions", () => {
     resetDeviceSessionsForTests();
     localStorage.clear();
     connectionsState.explicitDeviceIds.length = 0;
+    devicesState.devices = [
+      { id: "dev_a", name: "Alpha", transport: "ssh" },
+      { id: "dev_b", name: "Beta", transport: "relay" },
+    ];
     disconnectEvents.length = 0;
     isDeviceConnectedMock.mockReturnValue(true);
     setState({
@@ -207,6 +213,24 @@ describe("deviceSessions", () => {
     await refreshDeviceSnapshot("dev_b");
     expect(remoteListProjectSessionsMock).toHaveBeenCalledWith(null);
     expect(remoteListProjectsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes a background snapshot's device name even when projects are unchanged", async () => {
+    setState({ activeDevice: { kind: "local" }, projects: [] });
+    connectionsState.explicitDeviceIds.push("dev_b");
+    remoteListProjectsMock.mockResolvedValue([project("prj_b", "ses_b")]);
+    await refreshConnectedDeviceSnapshots();
+    expect(getDeviceSessionsState().snapshots.dev_b.deviceName).toBe("Beta");
+
+    devicesState.devices = devicesState.devices.map((device) =>
+      device.id === "dev_b" ? { ...device, name: "Beta renamed" } : device,
+    );
+    remoteListProjectSessionsMock.mockResolvedValue([project("prj_b", "ses_b")]);
+    await refreshDeviceSnapshot("dev_b");
+
+    expect(getDeviceSessionsState().snapshots.dev_b.deviceName).toBe(
+      "Beta renamed",
+    );
   });
 
   it("resolves active and background keys without cross-device collision", async () => {

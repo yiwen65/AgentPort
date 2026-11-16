@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -104,6 +104,7 @@ import {
 } from "./deviceSessions";
 import {
   refreshDevices,
+  renameDevice,
   resetDevicesStoreForTests,
   setDevicesInvokerForTests,
 } from "./devicesStore";
@@ -218,6 +219,16 @@ describe("cross-device active sidebar", () => {
     expect(accents.filter(Boolean)).toHaveLength(1);
     // Every row exposes its owning agent in the bottom-right corner.
     expect(document.querySelectorAll(".session-agent-badge")).toHaveLength(2);
+  });
+
+  it("relabels a background device immediately after a rename, without switching", async () => {
+    render(<Sidebar collapsed={false} width={296} />);
+    await screen.findByText("Beta");
+    await act(async () => {
+      await renameDevice("dev_b", "Beta renamed");
+    });
+    await screen.findByText("Beta renamed");
+    expect(screen.queryByText("Beta")).toBeNull();
   });
 
   it("routes a background row click through the device-aware focus helper", async () => {

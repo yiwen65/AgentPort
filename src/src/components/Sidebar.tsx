@@ -1424,8 +1424,10 @@ function activeDeviceLabel(
   if (deviceId === activeDeviceId) return activeDeviceName;
   if (deviceId === "local") return localLabel;
   return (
-    snapshots[deviceId]?.deviceName ??
+    // The registry list is the live source: snapshot names are captured when
+    // a device is seeded/refreshed, so a rename would otherwise stay stale.
     devices?.find((device) => device.id === deviceId)?.name ??
+    snapshots[deviceId]?.deviceName ??
     deviceId
   );
 }
