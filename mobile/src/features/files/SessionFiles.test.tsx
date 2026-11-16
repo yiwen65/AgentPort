@@ -3,25 +3,38 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { i18n } from "../../i18n";
 import type { HostProfileSummary, RemoteClient, RemoteConnectionStateEvent } from "../../protocol/remoteClient";
 import type { OpenSession } from "../sessions/types";
+import type { GitChangeEntry, GitChangeKind, GitChangesSnapshot } from "../git/types";
 import { FileContent, localFileLink } from "./FileContent";
-import { SessionFiles, type FileListing } from "./SessionFiles";
+import { SessionFiles, type FileEntry, type FileListing } from "./SessionFiles";
 import { FileDownloadProvider } from "./FileDownloads";
 import type { FileDownloadClient } from "../../protocol/fileDownloadClient";
 
 const open = { hostProfileId: "host", hostName: "Host", session: { id: "session", title: "Task", cwd: "/project" } } as OpenSession;
-const listing = (path = "."): FileListing => ({ rootPath: "/project", path, truncated: false, entries: path === "." ? [
-  { name: "README.md", path: "README.md", isDir: false }, { name: "src", path: "src", isDir: true }, { name: ".git", path: ".git", isDir: true },
+const listing = (path = ".", extraEntries: FileEntry[] = []): FileListing => ({ rootPath: "/project", path, truncated: false, entries: path === "." ? [
+  { name: "README.md", path: "README.md", isDir: false }, { name: "src", path: "src", isDir: true }, { name: ".git", path: ".git", isDir: true }, ...extraEntries,
 ] : [{ name: "main.ts", path: "src/main.ts", isDir: false }] });
+function gitChange(displayPath: string, kind: GitChangeKind): GitChangeEntry {
+  return { entryToken: `t-${displayPath}`, pathToken: `p-${displayPath}`, displayPath, oldPathToken: null, displayOldPath: null, indexStatus: null, worktreeStatus: null, conflictCode: null, kind, submoduleState: null, staged: false, unstaged: false, untracked: kind === "untracked", ignored: kind === "ignored", conflicted: kind === "conflict" };
+}
+function gitChanges(entries: GitChangeEntry[] = []): GitChangesSnapshot {
+  return { context: { checkoutRoot: "/project" } as GitChangesSnapshot["context"], statusToken: "tok", complete: true, partialReason: null, counts: { staged: 0, unstaged: 0, untracked: 0, ignored: 0, conflict: 0, renamed: 0, submodule: 0 }, entries, observedAt: "2026-11-17T00:00:00Z" };
+}
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; }
-function remote() {
+function remote(changes: GitChangeEntry[] = [], extraEntries: FileEntry[] = [], gitFailure = false) {
   let connection: (event: RemoteConnectionStateEvent) => void = () => {};
   const unsubscribe = vi.fn(async () => {});
   const client: RemoteClient = {
     listHostProfiles: vi.fn().mockResolvedValue([{ id: "host", connectionState: "connected" } as HostProfileSummary]),
     connect: vi.fn(), disconnect: vi.fn(), subscribe: vi.fn(),
     onConnectionState: vi.fn(async listener => { connection = listener; return unsubscribe; }),
-    request: vi.fn().mockImplementation(async (_host, method, params) => method === "session.files.list" ? listing(params.path)
-      : { rootPath: "/project", path: params.path, content: params.path.endsWith(".md") ? "# Read me\n\nOrdinary reading text.\n\n[Source](src/main.ts)" : "const answer = 42;", sizeBytes: 30, truncated: false }),
+    request: vi.fn().mockImplementation(async (_host, method, params) => {
+      if (method === "git.changes") {
+        if (gitFailure) throw { code: "not_a_repository" };
+        return gitChanges(changes);
+      }
+      if (method === "session.files.list") return listing(params.path, extraEntries);
+      return { rootPath: "/project", path: params.path, content: params.path.endsWith(".md") ? "# Read me\n\nOrdinary reading text.\n\n[Source](src/main.ts)" : "const answer = 42;", sizeBytes: 30, truncated: false };
+    }),
   };
   return { client, unsubscribe, emit: (state: RemoteConnectionStateEvent["state"], profileId = "host") => connection({ profileId, state }) };
 }
@@ -171,7 +184,7 @@ describe("SessionFiles", () => {
     expect(screen.queryByRole("button", { name: "main.ts File" })).toBeNull();
   });
   it("keeps download in the binary preview menu and explains browser unavailability", async () => {
-    const { client } = remote(); vi.mocked(client.request).mockResolvedValueOnce({ ...listing(), entries: [{ name: "archive.zip", path: "archive.zip", isDir: false }] }).mockRejectedValueOnce({ code: "unsupported_file" });
+    const { client } = remote(); vi.mocked(client.request).mockResolvedValueOnce({ ...listing(), entries: [{ name: "archive.zip", path: "archive.zip", isDir: false }] }).mockResolvedValueOnce(gitChanges()).mockRejectedValueOnce({ code: "unsupported_file" });
     const download = downloads(); const view = render(<FileDownloadProvider client={download}><SessionFiles open={open} client={client} active onBack={() => {}} /></FileDownloadProvider>);
     fireEvent.click(await screen.findByRole("button", { name: "archive.zip File" })); await screen.findByRole("alert");
     const menu = more(); expect(within(menu).getByRole("button", { name: "Download file" })).toBeEnabled(); fireEvent.click(within(menu).getByRole("button", { name: "Download file" }));
@@ -196,10 +209,37 @@ describe("SessionFiles", () => {
     fireEvent.click(row("main.ts")); await screen.findByText("answer", { exact: false }); expect(view.container.querySelector(".hljs-keyword")).toHaveTextContent("const");
     expect(view.container.querySelector(".files-preview-page")).toHaveAttribute("data-no-page-swipe", "true"); expect(view.container.querySelector("pre")).toHaveAttribute("data-horizontal-scroll", "true");
     fireEvent.click(fileControl("File tree")); expect(view.container.querySelector(".files-tree-scroll")).toBe(scroll); expect(scroll.scrollTop).toBe(180); expect(row("src")).toHaveAttribute("aria-expanded", "true");
-    fireEvent.click(fileControl("Terminal")); expect(view.props.onBack).toHaveBeenCalledOnce(); expect(vi.mocked(client.request).mock.calls.every(([, method]) => method.startsWith("session.files."))).toBe(true);
+    fireEvent.click(fileControl("Terminal")); expect(view.props.onBack).toHaveBeenCalledOnce(); expect(vi.mocked(client.request).mock.calls.every(([, method]) => method.startsWith("session.files.") || method === "git.changes")).toBe(true);
+  });
+  it("decorates modified, untracked and gitignored rows like the desktop explorer", async () => {
+    const { client } = remote([gitChange("README.md", "modified"), gitChange("src/main.ts", "untracked"), gitChange("vendor/", "ignored")], [{ name: "vendor", path: "vendor", isDir: true }]);
+    mount(client);
+    const readme = await screen.findByRole("button", { name: "README.md File, Modified" });
+    expect(readme).toHaveClass("git-modified");
+    expect(readme.querySelector(".files-git-badge")).toHaveTextContent("M");
+    const src = row("src");
+    expect(src).not.toHaveClass("git-untracked");
+    expect(src.querySelector(".files-git-badge")).toBeNull();
+    expect(src.querySelector(".files-git-dot")).toHaveClass("git-untracked");
+    fireEvent.click(src);
+    const main = await screen.findByRole("button", { name: "main.ts File, Untracked" });
+    expect(main).toHaveClass("git-untracked");
+    expect(main.querySelector(".files-git-badge")).toHaveTextContent("U");
+    const vendor = row("vendor");
+    expect(vendor).toHaveClass("git-dimmed");
+    expect(vendor.querySelector(".files-git-dot, .files-git-badge")).toBeNull();
+    const gitCall = vi.mocked(client.request).mock.calls.find(([, method]) => method === "git.changes");
+    expect(gitCall?.[2]).toEqual({ locator: { kind: "session", sessionId: "session" }, includeIgnored: true });
+  });
+  it("keeps an undecorated tree when Git status is unavailable", async () => {
+    const { client } = remote([], [], true);
+    mount(client);
+    const readme = await screen.findByRole("button", { name: "README.md File" });
+    expect(readme).not.toHaveClass("git-modified");
+    expect(readme.querySelector(".files-git-badge, .files-git-dot")).toBeNull();
   });
   it.each(["__proto__", "constructor", "toString"])("loads directory %s without confusing inherited keys with cache", async name => {
-    const { client } = remote(); vi.mocked(client.request).mockResolvedValueOnce({ ...listing(), entries: [{ name, path: name, isDir: true }] }).mockResolvedValueOnce({ ...listing(name), entries: [] });
+    const { client } = remote(); vi.mocked(client.request).mockResolvedValueOnce({ ...listing(), entries: [{ name, path: name, isDir: true }] }).mockResolvedValueOnce(gitChanges()).mockResolvedValueOnce({ ...listing(name), entries: [] });
     mount(client); fireEvent.click(await screen.findByRole("button", { name: `${name} Directory` })); await screen.findByText("This directory is empty."); expect(calls(client, "list")[1][2]).toEqual({ sessionId: "session", path: name });
   });
   it("refreshes loaded directories on reopen retaining expansion and discarding old responses", async () => {
@@ -250,7 +290,7 @@ describe("SessionFiles", () => {
   });
   it("explains old servers without fallback, permits retry and presents empty/truncated directories", async () => {
     const { client } = remote(); vi.mocked(client.request).mockRejectedValueOnce({ code: "unknown_method" }); mount(client); expect(await screen.findByRole("alert")).toHaveTextContent("Upgrade AgentPort");
-    vi.mocked(client.request).mockResolvedValueOnce({ ...listing(), entries: [], truncated: true }); fireEvent.click(screen.getByRole("button", { name: "Retry" })); await screen.findByText("This directory is empty."); expect(screen.getByText(/up to 2000/)).toBeVisible(); expect(vi.mocked(client.request).mock.calls.every(([, method]) => method === "session.files.list")).toBe(true);
+    vi.mocked(client.request).mockResolvedValueOnce({ ...listing(), entries: [], truncated: true }); fireEvent.click(screen.getByRole("button", { name: "Retry" })); await screen.findByText("This directory is empty."); expect(screen.getByText(/up to 2000/)).toBeVisible(); expect(vi.mocked(client.request).mock.calls.filter(([, method]) => method !== "git.changes").every(([, method]) => method === "session.files.list")).toBe(true);
   });
   it.each([["permission_denied", "cannot read this path"], ["path_not_found", "Path not found"], ["outside_root", "outside the Session"], ["unsupported_file", "Only regular UTF-8"], ["unsupported_platform", "not yet supported on this computer"]])("shows %s errors and retries", async (code, text) => {
     const { client } = remote(); mount(client); await screen.findByRole("button", { name: "README.md File" }); vi.mocked(client.request).mockRejectedValueOnce({ code }); fireEvent.click(row("README"));

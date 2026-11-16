@@ -28,6 +28,24 @@
 .files-entry-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 18px; color: var(--muted); }
 .files-entry-icon svg { display: block; width: 18px; height: 18px; }
 .files-row[aria-expanded="true"] .files-entry-icon { color: var(--text); }
+/* Git decorations, matching the desktop explorer: colored file names, a
+   letter badge at the row end, dots for changed directories and dimmed
+   gitignored entries. */
+.session-files .files-row.git-modified,
+.session-files .files-row.git-renamed { color: var(--warning); }
+.session-files .files-row.git-added,
+.session-files .files-row.git-untracked { color: var(--success); }
+.session-files .files-row.git-conflict,
+.session-files .files-row.git-deleted { color: var(--danger); }
+.session-files .files-row.git-dimmed { opacity: .55; }
+.files-git-badge { margin-inline-start: auto; flex: 0 0 auto; padding-inline-start: 8px; font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.files-git-badge.git-modified, .files-git-badge.git-renamed { color: var(--warning); }
+.files-git-badge.git-added, .files-git-badge.git-untracked { color: var(--success); }
+.files-git-badge.git-conflict, .files-git-badge.git-deleted { color: var(--danger); }
+.files-git-dot { margin-inline-start: auto; flex: 0 0 auto; width: 6px; height: 6px; margin-inline-end: 2px; border-radius: 50%; }
+.files-git-dot.git-modified, .files-git-dot.git-renamed { background: var(--warning); }
+.files-git-dot.git-added, .files-git-dot.git-untracked { background: var(--success); }
+.files-git-dot.git-conflict, .files-git-dot.git-deleted { background: var(--danger); }
 .files-note, .files-error { padding: 10px 12px; margin: 6px 0; color: var(--muted); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
 .files-error { color: var(--danger); }
 .files-error p { margin: 0 0 8px; }

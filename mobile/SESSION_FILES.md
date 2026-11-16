@@ -6,6 +6,7 @@
 
 - 与桌面端一致的单行树结构：目录使用展开箭头，文件按类型使用彩色图标；同层文件名对齐，每层缩进16 CSS px。不再显示第二行 `Directory/File`，读屏仍可识别类型和目录展开状态。
 - 文件名过长单行省略，打开预览或文件操作菜单可查看完整名称/路径；文件行及右侧操作按钮保留至少44 CSS px触控高度。去掉逐行分隔线，突出层级而不是表格边界。
+- Git 标记与桌面端文件树一致：修改/重命名的文件名着色并在行尾显示 `M`/`R`，新增/未跟踪显示 `A`/`U`（绿色），删除/冲突显示 `D`/`!`（红色）；含变更的目录显示彩色圆点（目录名不着色）；被 `.gitignore` 忽略的文件/目录整体置灰。读取 `git.changes` 失败（如 Session `cwd` 不在 Git 仓库内）时静默降级为无标记，不影响文件浏览，也不占用目录加载的错误/重试状态。
 - 文件与目录行右侧「⋯」都可打开各自的操作菜单并「复制相对路径」，不需要打开预览；目录菜单不提供下载，复制也不依赖电脑连接。
 
 ## 沉浸阅读
@@ -20,7 +21,7 @@
 - 根目录是电脑端记录的 Session `cwd`，不跟随终端临时 `cd`，也不会替换成项目主 checkout。
 - 文件夹按需加载；每次进入、重新连接或手动刷新会重新读取已加载目录。展开状态和树的滚动位置在页面往返时保留，不停止 Session。
 - 文本/代码只读，支持常见代码语言高亮；Markdown 支持渲染/源码切换及 GitHub 风格管道表格（表头、列对齐、单元格内代码/安全链接）。宽表格在独立区域横向滚动，不撑宽整个页面或触发返回，源码模式仍保留原文。可从文件树操作菜单或预览菜单复制项目相对路径，预览中还可复制文件内容。大型文本跳过语法高亮，仍可阅读和复制。
-- 不包含编辑/新建/删除/重命名、Git 标记、搜索或文件系统实时监听。
+- 不包含编辑/新建/删除/重命名、搜索或文件系统实时监听。Git 标记只用现有 `git.changes` 快照（session locator，`includeIgnored=true`），进入/重新连接/手动刷新时重新读取；不订阅实时变更，也不改变文件内容。
 
 ## 文件树图片查看（iOS / Android）
 
@@ -57,7 +58,7 @@ Markdown渲染模式会把标记为 `mermaid` 的代码围栏转成图表，支�
 
 ## 主机与安全边界
 
-手机与电脑均需包含本功能版本。电脑端新增 `session.files.list` / `session.files.read`，参数为 `{ sessionId, path }`，`path` 为根目录相对路径，目录根为 `.`。服务端由 Session ID 查询 cwd，客户端不能提交另一个 rootPath。
+手机与电脑均需包含本功能版本。电脑端新增 `session.files.list` / `session.files.read`，参数为 `{ sessionId, path }`，`path` 为根目录相对路径，目录根为 `.`。服务端由 Session ID 查询 cwd，客户端不能提交另一个 rootPath。文件树 Git 标记复用现有 `git.changes`，由 Session ID 解析 checkout，按 checkout 相对路径匹配；`session.files.list` 的返回字段不变。
 
 目录及文件通过真实路径包含检查、固定目录句柄和禁止跟随替换后的符号链接来读取，不回退到旧的无根限定 `document.*` 接口。指向根外、失效或特殊文件的符号链接不列出；直接请求越界路径仍返回明确错误。文本接口不预览二进制、非 UTF-8 及非普通文件；独立图片经下述安全分块链路读取并校验，不放宽文本接口。
 
@@ -69,7 +70,7 @@ Markdown渲染模式会把标记为 `mermaid` 的代码围栏转成图表，支�
 
 ```bash
 cd mobile
-npm test -- src/features/files/MermaidDiagram.test.tsx src/features/files/mermaidRenderer.test.ts src/features/files/FileContent.test.tsx src/features/files/FileTreeIcon.test.tsx src/features/files/SessionFiles.test.tsx src/features/files/useFilePageSwipe.test.tsx src/features/files/FileDownloads.test.tsx src/platform/tauriFileDownloadClient.test.ts src/app/App.test.tsx src/features/sessions/SessionWorkspace.test.tsx src/terminal/MobileTerminal.test.tsx
+npm test -- src/features/files/MermaidDiagram.test.tsx src/features/files/mermaidRenderer.test.ts src/features/files/FileContent.test.tsx src/features/files/FileTreeIcon.test.tsx src/features/files/fileTreeGit.test.ts src/features/files/SessionFiles.test.tsx src/features/files/useFilePageSwipe.test.tsx src/features/files/FileDownloads.test.tsx src/platform/tauriFileDownloadClient.test.ts src/app/App.test.tsx src/features/sessions/SessionWorkspace.test.tsx src/terminal/MobileTerminal.test.tsx
 npm run build
 cd ..
 cargo test -p agentport-service session_file --lib

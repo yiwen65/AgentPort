@@ -49,6 +49,10 @@ try {
             return {rootPath:session.cwd,path:params.path,entries,truncated:false};
           }
           if(method==='session.files.read') return {rootPath:session.cwd,path:params.path,content:params.path.endsWith('.md')?'# Project overview\\n\\nRead-only Markdown with a [source link](src/main.ts).\\n\\n'+String.fromCharCode(96).repeat(3)+'ts\\nconst wide = "'+'long code '.repeat(40)+'";\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n![local SVG](images/local.svg)\\n\\n![reference PNG][pixel]\\n\\n[pixel]: images/pixel.png\\n\\n[![wrapped SVG](images/local.svg)](https://example.com/link)\\n\\n![retry SVG](images/retry.svg)\\n\\n![remote SVG](https://example.com/image.svg)'+Array.from({length:40},(_,i)=>'\\n\\nReading paragraph '+i+': content stays in place when switching pages.').join('')+'\\n\\n| Path | Origin | Purpose | Details | State |\\n| :--- | :---: | ---: | --- | --- |\\n| codex/ | openai/codex | Reference: agent implementation | Long mobile table content | Read-only |\\n| docs/ | Local | Handoff / task documents | Safe project files | Ready |\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nflowchart LR\\n A([人类意图]) --> B[第一性原理<br/>AI 是镜子]\\n B --> C[意图心法<br/>翻译为可执行]\\n C --> D[上下文心法<br/>喂足背景]\\n D --> E[迭代心法<br/>分轮逼近]\\n E --> F[验证心法<br/>信任但核实]\\n F --> G{输出可信?}\\n G -- 否 --> E\\n G -- 是 --> H[边界心法<br/>判断归属]\\n H --> I[心态心法<br/>共生而非对抗]\\n I --> J[元心法<br/>修炼自己]\\n J --> K([放大后的智慧])\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nsequenceDiagram\\n Alice->>Bob: hello\\n Bob-->>Alice: reply\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nflowchart LR\\n A -->\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nflowchart LR\\n A@{ "img": "/mermaid-secret.png" }\\n'+String.fromCharCode(96).repeat(3)+'\\n\\n'+String.fromCharCode(96).repeat(3)+'mermaid\\nflowchart LR\\n A-->B; classDef A fill:u'+String.fromCharCode(92)+'72l(/mermaid-paint.svg)\\n'+String.fromCharCode(96).repeat(3):'const greeting = "'+ 'long line '.repeat(30) +'";\\nexport { greeting };',sizeBytes:400,truncated:false};
+          if(method==='git.changes') return {context:{checkoutRoot:session.cwd},statusToken:'fixture-status',complete:true,partialReason:null,counts:{staged:0,unstaged:1,untracked:1,ignored:0,conflict:0,renamed:0,submodule:0},entries:[
+            {entryToken:'e-readme',pathToken:'p-readme',displayPath:'README.md',oldPathToken:null,displayOldPath:null,indexStatus:null,worktreeStatus:'M',conflictCode:null,kind:'modified',submoduleState:null,staged:false,unstaged:true,untracked:false,ignored:false,conflicted:false},
+            {entryToken:'e-main',pathToken:'p-main',displayPath:'src/main.ts',oldPathToken:null,displayOldPath:null,indexStatus:null,worktreeStatus:'?',conflictCode:null,kind:'untracked',submoduleState:null,staged:false,unstaged:false,untracked:true,ignored:false,conflicted:false},
+          ],observedAt:'2026-11-17T00:00:00Z'};
           return {};
         }
       };
@@ -124,13 +128,21 @@ try {
   await click('[data-session-id="fixture-session"]');await until(`Boolean(window.term?.element) && document.querySelector('.session-workspace')?.dataset.connectionState==='live'`);await wait(300);
   await evaluate(`window.originalTerminal=term;window.originalNode=term.element;term.scrollLines(-15);window.readingY=term.buffer.active.viewportY; true`);
   await swipe(290,300,90,302);await until(`document.querySelector('.app-shell').dataset.page==='files' && document.querySelector('.files-row')`);
+  await until(`Boolean(document.querySelector('.files-row.git-modified .files-git-badge'))`);
   await screenshot('mobile-file-tree-dark');
+  const initialGitTree=await evaluate(`(()=>{const rows=Array.from(document.querySelectorAll('.files-row'));const src=rows.find(e=>e.textContent.includes('src'));const readme=rows.find(e=>e.textContent.includes('README.md'));return {srcClass:src?.className,srcDot:src?.querySelector('.files-git-dot')?.className,srcBadge:!!src?.querySelector('.files-git-badge'),readmeClass:readme?.className,readmeBadge:readme?.querySelector('.files-git-badge')?.textContent}})()`);
+  assert.equal(initialGitTree.srcClass,'files-row');
+  assert.equal(initialGitTree.srcDot,'files-git-dot git-untracked');
+  assert.equal(initialGitTree.srcBadge,false);
+  assert.equal(initialGitTree.readmeClass,'files-row git-modified');
+  assert.equal(initialGitTree.readmeBadge,'M');
   assert.equal(await evaluate(`document.querySelector('.session-stage').hasAttribute('inert')`),true);
   await click('.files-row');await until(`Array.from(document.querySelectorAll('.files-row')).some(e=>e.textContent.includes('main.ts'))`);
   const treeRows=await evaluate(`Array.from(document.querySelectorAll('.files-row')).slice(0,3).map(e=>({name:e.querySelector('.files-entry-name').textContent,height:e.getBoundingClientRect().height,indent:getComputedStyle(e).paddingInlineStart,small:!!e.querySelector('small'),icon:!!e.querySelector('svg'),border:getComputedStyle(e).borderBottomWidth,whiteSpace:getComputedStyle(e.querySelector('.files-entry-name')).whiteSpace}))`);
   assert.deepEqual(treeRows.map(r=>r.name),['src','main.ts','document-00.txt']);
   assert.ok(treeRows.every(r=>r.height===44 && !r.small && r.icon && r.border==='0px' && r.whiteSpace==='nowrap'),JSON.stringify(treeRows));
   assert.equal(parseFloat(treeRows[1].indent)-parseFloat(treeRows[0].indent),16);
+  assert.equal(await evaluate(`Array.from(document.querySelectorAll('.files-row')).find(e=>e.textContent.includes('main.ts'))?.querySelector('.files-git-badge')?.textContent`),'U');
   await screenshot('compact-file-tree');
   await click('.files-list .files-list .files-row');await until(`Boolean(document.querySelector('.files-source'))`);await wait(250);
   await screenshot('mobile-code-preview');

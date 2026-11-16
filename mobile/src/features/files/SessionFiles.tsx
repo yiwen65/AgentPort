@@ -11,6 +11,8 @@ import { FileTreeIcon } from "./FileTreeIcon";
 import { SessionImage, isImageFile, type ImageBackground } from "./SessionImage";
 import { createMarkdownImageClient } from "../../platform/tauriMarkdownImageClient";
 import type { MarkdownImageClient } from "../../protocol/markdownImageClient";
+import type { GitChangesSnapshot } from "../git/types";
+import { buildFileTreeGitIndex, decorateFileTreePath, type FileTreeGitIndex } from "./fileTreeGit";
 import "./session-files.css";
 
 export interface FileEntry { name: string; path: string; isDir: boolean }
@@ -36,6 +38,7 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
   const previewReveal = useRef<HTMLButtonElement>(null);
   const [directories, setDirectories] = useState<Record<string, Resource<FileListing>>>({});
   const directoriesRef = useRef(directories);
+  const [gitIndex, setGitIndex] = useState<FileTreeGitIndex | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // Selection and visibility are separate: going back never destroys reading state.
   const [preview, setPreview] = useState<string>();
@@ -90,11 +93,27 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
       else setFile(old => ({ ...old, loading: false, stale: true, error }));
     } finally { if (requests.current.get(key) === controller) requests.current.delete(key); }
   }, [client, open.hostProfileId, open.session.id, updateDirectories]);
+  // Git decorations are best-effort: a Session outside a repository (or any
+  // status failure) simply means an undecorated tree, never an error state.
+  const loadGit = useCallback(async () => {
+    if (!onlineRef.current || !activeRef.current || !mounted.current) return;
+    const key = "git";
+    requests.current.get(key)?.abort();
+    const controller = new AbortController(); requests.current.set(key, controller);
+    const valid = () => mounted.current && !controller.signal.aborted && requests.current.get(key) === controller;
+    try {
+      const snapshot = await client.request<GitChangesSnapshot>(open.hostProfileId, "git.changes", { locator: { kind: "session", sessionId: open.session.id }, includeIgnored: true }, { signal: controller.signal });
+      if (valid()) setGitIndex(buildFileTreeGitIndex(snapshot));
+    } catch {
+      if (valid()) setGitIndex(null);
+    } finally { if (requests.current.get(key) === controller) requests.current.delete(key); }
+  }, [client, open.hostProfileId, open.session.id]);
   const refresh = useCallback(() => {
     invalidate();
     for (const path of new Set([".", ...Object.keys(directoriesRef.current)])) void load(path, "list");
     if (previewRef.current && !isImageFile(previewRef.current)) void load(previewRef.current, "read");
-  }, [invalidate, load]);
+    void loadGit();
+  }, [invalidate, load, loadGit]);
 
   useEffect(() => {
     mounted.current = true;
@@ -181,8 +200,13 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
     return <div className="files-directory">
       {resourceStatus(resource, () => void load(path, "list"), path === ".")}
       {resource?.data && entries.length === 0 && !resource.loading ? <p className="files-note">{t("files.empty")}</p> : null}
-      <ul className="files-list">{entries.map(entry => <li key={entry.path}>
-        <div className="files-entry-row"><button type="button" className="files-row" data-page-swipe="true" aria-label={`${entry.name} ${t(entry.isDir ? "files.directory" : "files.file")}`} title={entry.name} aria-expanded={entry.isDir ? expanded.has(entry.path) : undefined}
+      <ul className="files-list">{entries.map(entry => {
+        const deco = gitIndex ? decorateFileTreePath(gitIndex, root, entry.path, entry.isDir) : null;
+        const gitStatus = deco?.status ?? deco?.dirStatus;
+        const gitLabel = gitStatus ? t(`files.gitStatus.${gitStatus}`) : deco?.dimmed ? t("files.gitStatus.ignored") : undefined;
+        const gitClass = `${deco?.dimmed ? " git-dimmed" : ""}${deco?.status ? ` git-${deco.status}` : ""}`;
+        return <li key={entry.path}>
+        <div className="files-entry-row"><button type="button" className={`files-row${gitClass}`} data-page-swipe="true" aria-label={`${entry.name} ${t(entry.isDir ? "files.directory" : "files.file")}${gitLabel ? `, ${gitLabel}` : ""}`} title={entry.name} aria-expanded={entry.isDir ? expanded.has(entry.path) : undefined}
           ref={node => { if (node) rows.current.set(entry.path, node); else rows.current.delete(entry.path); }}
           style={{ paddingInlineStart: `${12 + Math.min(depth, 8) * 16}px` }}
           onClick={() => {
@@ -192,10 +216,13 @@ export function SessionFiles({ open, client, active, onBack, imageClient }: Sess
           }}>
           <span className="files-entry-icon" aria-hidden="true"><FileTreeIcon name={entry.name} directory={entry.isDir} expanded={expanded.has(entry.path)} /></span>
           <span className="files-entry-name">{entry.name}</span>
+          {deco?.status && deco.badge ? <span className={`files-git-badge git-${deco.status}`} aria-hidden="true">{deco.badge}</span> : null}
+          {deco?.dirStatus && deco.dirChanged ? <span className={`files-git-dot git-${deco.dirStatus}`} aria-hidden="true" /> : null}
         </button>
         <button type="button" className="files-entry-actions" aria-label={t(entry.isDir ? "files.directoryActions" : "downloads.fileActions", { name: entry.name })} aria-haspopup="dialog" onClick={() => setOperations({ path: entry.path, isDir: entry.isDir })}>⋯</button></div>
         {entry.isDir && expanded.has(entry.path) ? tree(entry.path, depth + 1) : null}
-      </li>)}</ul>
+      </li>;
+      })}</ul>
       {resource?.data?.truncated ? <p className="files-state-strip" role="status">{t("files.directoryTruncated")}</p> : null}
     </div>;
   };
