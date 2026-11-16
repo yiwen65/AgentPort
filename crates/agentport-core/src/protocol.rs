@@ -419,9 +419,9 @@ pub fn write_frame<T: Serialize>(w: &mut impl std::io::Write, frame: &T) -> std:
 
 /// Read one NDJSON frame. Returns Ok(None) on clean EOF.
 /// Hard ceiling for every Host NDJSON frame, enforced while reading rather
-/// than after JSON/base64 allocation. Normal output chunks are 16 KiB and
-/// terminal batches are 256 KiB, so 1 MiB leaves encoding headroom without
-/// letting an authenticated peer grow Host memory without bound.
+/// than after JSON/base64 allocation. Host output reads are up to 256 KiB, so
+/// 1 MiB leaves encoding headroom without letting an authenticated peer grow
+/// Host memory without bound.
 pub const MAX_NDJSON_FRAME_BYTES: usize = 1024 * 1024;
 
 pub fn read_frame<T: for<'de> Deserialize<'de>>(

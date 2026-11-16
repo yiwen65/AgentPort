@@ -2843,6 +2843,53 @@ fn reconnect_replay() {
 }
 
 #[test]
+fn large_pty_burst_is_delivered_intact() {
+    let ready = "BURST_DONE";
+    let ctx = make_ctx(
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            format!(
+                "read _; head -c 1048576 /dev/zero | tr '\\0' 'x'; printf '{ready}'; sleep 5"
+            ),
+        ],
+        2 * 1024 * 1024,
+        vec![],
+    );
+    let _guard = spawn_host(&ctx, &[]);
+    wait_socket(&ctx);
+    let mut client = connect(&ctx, &ctx.session_id, TOKEN, 0);
+    client.expect_hello_ok();
+    client.send(&ClientFrame::Input {
+        session_id: ctx.session_id.clone(),
+        data: b"start\n".to_vec(),
+    });
+    // Read as fast as the socket allows. `collect_until` rescans all accumulated
+    // bytes after every frame, which is itself slow enough to trip the Host's
+    // bounded lag policy for a 1 MiB burst.
+    let mut bytes = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline && !bytes.ends_with(ready.as_bytes()) {
+        match client.read1(Duration::from_secs(5)) {
+            Read1::Frame(HostFrame::Output { data, .. })
+            | Read1::Frame(HostFrame::TransientOutput { data, .. }) => {
+                bytes.extend_from_slice(&data);
+            }
+            Read1::Frame(_) => {}
+            Read1::Closed => panic!("host closed before the burst completed"),
+            Read1::Timeout => {}
+        }
+    }
+    assert_eq!(
+        bytes.iter().filter(|byte| **byte == b'x').count(),
+        1_048_576,
+        "large PTY reads must not truncate or duplicate output; host={:?}",
+        std::fs::read_to_string(&ctx.host_log).unwrap_or_default()
+    );
+    assert!(bytes.ends_with(ready.as_bytes()));
+}
+
+#[test]
 fn recovery_target_replays_bounded_context_outside_default_tail_window() {
     let ready = "AGENTPORT_REPLAY_READY";
     let ctx = make_ctx(

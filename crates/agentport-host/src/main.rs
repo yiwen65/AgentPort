@@ -2388,7 +2388,9 @@ fn spawn_pty_reader(
             .then(|| shared.cfg.agent_session_id_hint.clone())
             .flatten()
             .map(PiPtyStartupNoticeFilter::new);
-        let mut buf = [0u8; 16 * 1024];
+        // Match the protocol's 256 KiB output batch ceiling: fewer JSON/base64
+        // frames and less per-frame tail latency for sustained PTY output.
+        let mut buf = [0u8; 256 * 1024];
         let mut pty_fault = None;
         loop {
             match reader.read(&mut buf) {
