@@ -157,6 +157,7 @@ textarea { resize: vertical; overflow-wrap: anywhere; }
 .session-row-device { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0; color: var(--session-device-color, var(--muted)); font-size: 11px; font-weight: 650; letter-spacing: .02em; line-height: 1.3; }
 .session-device-dot { flex: none; width: 5px; height: 5px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 2.5px color-mix(in srgb, currentColor 16%, transparent); }
 .session-device-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-row-source { max-width: 100%; overflow: hidden; color: var(--muted); font-size: 11px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
 .session-row-tail { display: flex; flex: none; flex-direction: column; align-items: flex-end; align-self: stretch; justify-content: space-between; gap: 2px; }
 .session-row-tail-meta { display: inline-flex; align-items: center; gap: 5px; min-height: 13px; }
 .v2-session-row time { flex: 0 0 auto; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }

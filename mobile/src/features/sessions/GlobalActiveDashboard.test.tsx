@@ -23,6 +23,8 @@ function setup(profiles = hosts) {
     request: vi.fn(async (id, method) => {
       if (method === "session.list") return [session(id === "host-1" ? "Studio shell" : "Laptop task", { unreadAttention: id === "host-2" })];
       if (method === "project.list") return [{ id: "project", name: `${id} project`, rootPath: "/repo", pinned: false, sortOrder: 0 }];
+      if (method === "worktree.list") return [];
+      if (method === "git.context.resolve") return { actualBranch: "main" };
       if (method === "agent.supported") return [];
       if (method === "agent.preferences") return { revision: 1, agentOrder: [], agentHidden: [] };
       if (method === "attention.poll") return { events: [] };
@@ -121,6 +123,8 @@ describe("Global mobile Active Sessions", () => {
     expect(laptopRow.getAttribute("data-device-tone")).not.toBe(studioRow.getAttribute("data-device-tone"));
     expect(laptopRow.querySelector(".session-device-dot")).not.toBeNull();
     expect(laptopRow.querySelector(".session-agent-badge .session-agent-glyph")).not.toBeNull();
+    await waitFor(() => expect(laptopRow.querySelector(".session-row-source")).toHaveTextContent("host-2 project · main"));
+    expect(studioRow.querySelector(".session-row-source")).toHaveTextContent("host-1 project · main");
     expect([...container.querySelectorAll(".active-agent-list [data-host-id]")].map(row => row.getAttribute("data-host-id"))).toEqual(["host-2", "host-1"]);
     fireEvent.click(laptop);
     expect(open).toHaveBeenLastCalledWith(expect.objectContaining({ hostProfileId: "host-2", session: expect.objectContaining({ id: "same-id" }) }));
@@ -130,6 +134,20 @@ describe("Global mobile Active Sessions", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(lists(remote).some(([id]) => id === "host-3")).toBe(false);
     expect(remote.connect).not.toHaveBeenCalled(); expect(remote.disconnect).not.toHaveBeenCalled();
+  });
+
+  it("labels worktree Sessions with the worktree branch", async () => {
+    const { remote } = setup();
+    const original = vi.mocked(remote.request).getMockImplementation()!;
+    vi.mocked(remote.request).mockImplementation((...args) => {
+      if (args[1] === "session.list") return Promise.resolve(args[0] === "host-1" ? [session("Worktree task", { worktreeId: "wt-1" })] : []);
+      if (args[1] === "worktree.list") return Promise.resolve([{ id: "wt-1", projectId: "project", branch: "feature/ui", baseCommit: "abc", path: "/wt", health: "healthy", createdAt: "2026-09-02T00:00:00Z" }]);
+      return original(...args);
+    });
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await showActive();
+    const row = await screen.findByRole("button", { name: "Worktree task" });
+    await waitFor(() => expect(row.closest("li")!.querySelector(".session-row-source")).toHaveTextContent("host-1 project · feature/ui"));
   });
 
   it("restores the Projects device after opening another device's active session and returning", async () => {

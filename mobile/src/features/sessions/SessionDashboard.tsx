@@ -11,6 +11,7 @@ import { SessionStatusDot } from "./SessionStatusDot";
 import { SessionAgentBadge } from "./SessionAgentBadge";
 import { AgentIcon, hasAgentIcon } from "../../components/AgentIcons";
 import { useAppAppearance } from "../../app/appAppearance";
+import { useActiveGitProjects } from "../git/useActiveGitProjects";
 import { Modal } from "../../components/Modal";
 import "./dashboard.css";
 import { useTranslation } from "react-i18next";
@@ -142,7 +143,7 @@ function AgentGlyph({ agent }: { agent: string }) {
   </svg>;
 }
 
-function SessionRow({ session, unread, host, stale, showHost, unavailable, deviceTone, agentMono, onOpen, onActions }: {
+function SessionRow({ session, unread, host, stale, showHost, unavailable, deviceTone, agentMono, sourceLabel, onOpen, onActions }: {
   session: SessionSummary;
   unread: boolean;
   host: HostProfileSummary;
@@ -151,6 +152,7 @@ function SessionRow({ session, unread, host, stale, showHost, unavailable, devic
   unavailable?: boolean;
   deviceTone?: number;
   agentMono?: boolean;
+  sourceLabel?: string;
   onOpen: () => void;
   onActions: () => void;
 }) {
@@ -178,6 +180,7 @@ function SessionRow({ session, unread, host, stale, showHost, unavailable, devic
         <span className="session-row-copy">
           {showHost ? <span id={`${id}-device`} className="session-row-device"><span className="session-device-dot" aria-hidden="true" /><span className="session-device-name">{host.name}</span></span> : null}
           <strong id={`${id}-title`}>{session.title}</strong>
+          {sourceLabel ? <span className="session-row-source">{sourceLabel}</span> : null}
         </span>
         <span className="session-row-tail">
           <span className="session-row-tail-meta">
@@ -279,6 +282,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
 
   const globalActivity = workspace.layout === "active";
   const activity = useActiveSessionSnapshots(client, hosts, visible && globalActivity);
+  const gitProjects = useActiveGitProjects(client, hosts, visible && globalActivity);
   const connectedHosts = hosts.filter(host => host.connectionState === "connected");
   const deviceTones = deviceToneAssignments(connectedHosts.map(host => host.id));
   // A pending refresh must not turn known data (including an empty/error result)
@@ -605,6 +609,13 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
       session });
   };
 
+  const sourceLabel = (host: HostProfileSummary, session: SessionSummary) => {
+    const project = gitProjects.get(host.id)?.get(session.projectId);
+    if (!project) return undefined;
+    const branch = session.worktreeId ? project.worktrees.get(session.worktreeId) : project.branch;
+    return [project.name, branch].filter(Boolean).join(" · ");
+  };
+
   // Dismiss actions when their source becomes unavailable, before another mutation.
   const actionsAvailable = rowActions && hosts.some(host => host.id === rowActions.hostId && host.connectionState === "connected")
     && (!globalActivity || !activity.snapshots.get(rowActions.hostId)?.error);
@@ -797,7 +808,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         </p> : null)}
         <ul className="v2-session-list active-agent-list">{active.map(({ host, session, stale }) => <SessionRow
           key={JSON.stringify([host.id, session.id])} session={session} host={host} showHost stale={stale} unavailable={stale}
-          deviceTone={deviceTones.get(host.id)} agentMono={agentMono}
+          deviceTone={deviceTones.get(host.id)} agentMono={agentMono} sourceLabel={sourceLabel(host, session)}
           unread={recent.some(entry => entry.hostId === host.id && entry.sessionId === session.id)}
           onOpen={() => openActivity(host, session)} onActions={() => {
             if (activity.snapshots.get(host.id)?.error) return;
