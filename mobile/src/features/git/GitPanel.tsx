@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { Modal } from "../../components/Modal";
 import { remoteErrorMessage } from "../../protocol/remoteError";
 import type { RemoteClient } from "../../protocol/remoteClient";
+import { parseDiffLines } from "./diffLines";
 import {
   branchNameOf, cleanupAutoStash, createAndSwitchGitBranch, executeGitCommit, listAutoStashes,
   listGitBranches, mutateGitPaths, prepareGitCommit, readGitChanges, readGitDiff,
@@ -26,20 +27,29 @@ const warningKeys: Record<string, string> = {
   subject_over_72: "longSubject",
 };
 
-function DiffText({ diff }: { diff: GitFileDiff }) {
+export function DiffText({ diff }: { diff: GitFileDiff }) {
   const { t } = useTranslation();
   if (diff.format !== "text" || !diff.patch) {
     return <p className="git-empty">{diff.reason ?? t("git.diffUnavailable")}</p>;
   }
+  const lines = parseDiffLines(diff.patch);
+  const digits = Math.max(3, String(lines.reduce(
+    (max, line) => Math.max(max, line.oldNumber ?? 0, line.newNumber ?? 0), 0,
+  )).length);
   return <>
     {diff.truncated ? <p className="git-warning">{t("git.diffTruncated")}</p> : null}
-    <pre className="git-diff-patch">{diff.patch.split("\n").map((line, index) => {
-      const className = line.startsWith("@@") ? "is-hunk"
-        : line.startsWith("+") && !line.startsWith("+++") ? "is-add"
-          : line.startsWith("-") && !line.startsWith("---") ? "is-remove"
-            : undefined;
-      return <span key={index} className={className}>{line}{"\n"}</span>;
-    })}</pre>
+    <div className="git-diff-body">
+      <div className="git-diff-code" tabIndex={0} role="region" aria-label={t("git.diffContent")}
+        style={{ "--diff-digits": digits } as CSSProperties}>
+        {lines.map((line, index) => (
+          <div key={index} className={`git-diff-line${line.kind ? ` is-${line.kind}` : ""}`}>
+            <span className="git-diff-line-no" aria-hidden="true">{line.oldNumber ?? ""}</span>
+            <span className="git-diff-line-no" aria-hidden="true">{line.newNumber ?? ""}</span>
+            <span className="git-diff-line-text">{line.text}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   </>;
 }
 
@@ -267,7 +277,7 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
             : !changes?.counts.staged ? t("git.commit.noStaged") : "";
   const canCommit = Boolean(changes && !commitBlocked && commitMessage.trim() && !commitBusy);
 
-  return <Modal title={sessionTitle} onClose={onClose} className="git-panel">
+  return <Modal title={sessionTitle} onClose={onClose} className={`git-panel${diffRequest ? " git-panel-fullscreen" : ""}`}>
     <div className="git-context">
       <span className="git-context-project">{context?.projectName ?? sessionTitle}</span>
       <span className="git-context-branch">{context?.detached ? t("git.branch.detached") : currentBranch ?? t("git.branch.loading")}</span>
@@ -286,7 +296,7 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
     {contextError ? <div className="git-error" role="alert"><p>{t("git.unavailable")}</p><small>{contextError}</small></div> : null}
 
     {context ? <>
-      <div className="git-toolbar">
+      {!diffRequest ? <div className="git-toolbar">
         <div className="git-tabs" role="tablist" aria-label={t("git.title")}>
           <button type="button" role="tab" aria-selected={tab === "changes"} onClick={() => setTab("changes")}>
             {t("git.changes")}{totalChanges ? <span className="git-tab-count">{totalChanges}</span> : null}
@@ -294,7 +304,7 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
           <button type="button" role="tab" aria-selected={tab === "branches"} onClick={() => setTab("branches")}>{t("git.branches")}</button>
         </div>
         <button type="button" className="git-refresh" disabled={changesBusy || branchesBusy} onClick={() => void (tab === "changes" ? loadChanges() : loadBranches())}>{t("git.refresh")}</button>
-      </div>
+      </div> : null}
 
       {diffRequest ? <section className="git-diff-view" aria-label={diffRequest.entry.displayPath}>
         <header className="git-subheader">

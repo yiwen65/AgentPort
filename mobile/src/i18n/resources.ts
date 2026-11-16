@@ -216,7 +216,7 @@ export const resources = {
         conflict: "冲突", staged: "已暂存", unstaged: "未暂存", untracked: "未跟踪",
         stage: "暂存", unstage: "取消暂存", stageAll: "全部暂存", unstageAll: "全部取消暂存",
         discard: "丢弃更改", discardConfirm: "丢弃对 {{path}} 的更改？此操作不可撤销。",
-        diffUnavailable: "此文件没有可显示的文本 Diff。", diffTruncated: "Diff 较大，仅显示部分内容。", binary: "二进制",
+        diffUnavailable: "此文件没有可显示的文本 Diff。", diffTruncated: "Diff 较大，仅显示部分内容。", diffContent: "Diff 内容", binary: "二进制",
         commit: {
           title: "提交", placeholder: "提交说明", review: "审查提交", reviewAction: "审查提交", preparing: "正在准备…", committing: "正在提交…", confirm: "提交",
           noStaged: "先暂存要提交的文件。", detached: "分离 HEAD 状态无法提交。", unborn: "仓库还没有首个提交。",
@@ -462,7 +462,7 @@ export const resources = {
         conflict: "Conflicts", staged: "Staged", unstaged: "Unstaged", untracked: "Untracked",
         stage: "Stage", unstage: "Unstage", stageAll: "Stage all", unstageAll: "Unstage all",
         discard: "Discard", discardConfirm: "Discard changes to {{path}}? This cannot be undone.",
-        diffUnavailable: "No text diff is available for this file.", diffTruncated: "The diff is large; only part of it is shown.", binary: "Binary",
+        diffUnavailable: "No text diff is available for this file.", diffTruncated: "The diff is large; only part of it is shown.", diffContent: "Diff content", binary: "Binary",
         commit: {
           title: "Commit", placeholder: "Commit message", review: "Review commit", reviewAction: "Review commit", preparing: "Preparing…", committing: "Committing…", confirm: "Commit",
           noStaged: "Stage the files you want to commit first.", detached: "Commit is unavailable in detached HEAD state.", unborn: "This repository has no first commit yet.",

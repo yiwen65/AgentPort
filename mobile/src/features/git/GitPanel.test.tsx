@@ -115,6 +115,11 @@ describe("mobile Git Center", () => {
     renderPanel(client);
     fireEvent.click(await screen.findByRole("button", { name: /src\/App\.tsx/ }));
     expect(await screen.findByText(/\+new line/)).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toHaveClass("git-panel-fullscreen");
+    expect(screen.queryByRole("tab", { name: "Branches" })).not.toBeInTheDocument();
+    const region = screen.getByRole("region", { name: "Diff content" });
+    expect([...region.querySelectorAll(".git-diff-line-no")].map((node) => node.textContent))
+      .toEqual(["", "", "1", "", "", "1"]);
     expect(request).toHaveBeenCalledWith("host-1", "git.diff", expect.objectContaining({ expectedStatusToken: "status-1", side: "unstaged", pathToken: "p1", includeIgnored: false }));
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     const confirm = within(screen.getByRole("alertdialog"));
