@@ -7,8 +7,10 @@ import { remoteErrorMessage } from "../../protocol/remoteError";
 import { useAttentionInbox } from "./useAttentionInbox";
 import { RecentNotifications } from "./RecentNotifications";
 import type { InboxEntry } from "./attentionInbox";
-import { SessionStateBadge } from "./SessionStateBadge";
+import { SessionStatusDot } from "./SessionStatusDot";
+import { SessionAgentBadge } from "./SessionAgentBadge";
 import { AgentIcon, hasAgentIcon } from "../../components/AgentIcons";
+import { useAppAppearance } from "../../app/appAppearance";
 import { Modal } from "../../components/Modal";
 import "./dashboard.css";
 import { useTranslation } from "react-i18next";
@@ -106,8 +108,29 @@ function Icon({ name }: { name: "computer" | "bell" | "refresh" | "clock" | "fol
   return <svg className={`ui-icon ui-icon-${name}`} aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
-function projectTone(id: string): number {
+function stableTone(id: string): number {
   return [...id].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 6;
+}
+
+/** Desktop parity: one stable tint per device, collisions probe to a free slot. */
+function deviceToneAssignments(deviceIds: readonly string[]): Map<string, number> {
+  const palette = [4, 5, 3, 2, 0, 1];
+  const used = new Set<number>();
+  const assignment = new Map<string, number>();
+  for (const id of [...new Set(deviceIds)].sort()) {
+    let hash = 5381;
+    for (let index = 0; index < id.length; index += 1) {
+      hash = ((hash * 33) + id.charCodeAt(index)) >>> 0;
+    }
+    let slot = hash % palette.length;
+    for (let attempts = 0; attempts < palette.length; attempts += 1) {
+      if (!used.has(palette[slot])) break;
+      slot = (slot + 1) % palette.length;
+    }
+    used.add(palette[slot]);
+    assignment.set(id, palette[slot]);
+  }
+  return assignment;
 }
 
 function AgentGlyph({ agent }: { agent: string }) {
@@ -119,13 +142,15 @@ function AgentGlyph({ agent }: { agent: string }) {
   </svg>;
 }
 
-function SessionRow({ session, unread, host, stale, showHost, unavailable, onOpen, onActions }: {
+function SessionRow({ session, unread, host, stale, showHost, unavailable, deviceTone, agentMono, onOpen, onActions }: {
   session: SessionSummary;
   unread: boolean;
   host: HostProfileSummary;
   stale?: boolean;
   showHost?: boolean;
   unavailable?: boolean;
+  deviceTone?: number;
+  agentMono?: boolean;
   onOpen: () => void;
   onActions: () => void;
 }) {
@@ -137,7 +162,7 @@ function SessionRow({ session, unread, host, stale, showHost, unavailable, onOpe
   useEffect(() => cancelPress, []);
   const disabled = Boolean(session.archivedAt) || host.connectionState !== "connected" || Boolean(unavailable);
   return (
-    <li className={`v2-session-row${unread ? " has-unread" : ""}`}>
+    <li className="v2-session-row" data-device-tone={showHost ? deviceTone : undefined}>
       <button type="button" data-session-id={session.id} data-host-id={host.id} disabled={disabled}
         onPointerDown={event => {
           cancelPress(); consumed.current = false;
@@ -149,12 +174,18 @@ function SessionRow({ session, unread, host, stale, showHost, unavailable, onOpe
         onContextMenu={event => { event.preventDefault(); cancelPress(); if (!disabled) { consumed.current = true; onActions(); } }}
         onKeyDown={event => { if (!disabled && (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) { event.preventDefault(); cancelPress(); onActions(); } }}
         onClick={() => { if (consumed.current) { consumed.current = false; return; } if (!disabled) onOpen(); }} aria-labelledby={`${id}-title`} aria-describedby={`${id}-status${showHost ? ` ${id}-device` : ""}`}>
+        <span id={`${id}-status`} className="session-row-status"><SessionStatusDot session={session} stale={stale || host.connectionState !== "connected"} /></span>
         <span className="session-row-copy">
-          <span id={`${id}-status`} className="session-row-status"><SessionStateBadge session={session} stale={stale || host.connectionState !== "connected"} /></span>
-          {showHost ? <span className="session-row-title"><strong id={`${id}-title`}>{session.title}</strong><span id={`${id}-device`} className="session-row-device">{host.name}</span></span> : <strong id={`${id}-title`}>{session.title}</strong>}
-          {unread ? <span className="session-unread" role="img" aria-label={t("dashboard.unread")}><span aria-hidden="true" /></span> : null}
+          {showHost ? <span id={`${id}-device`} className="session-row-device"><span className="session-device-dot" aria-hidden="true" /><span className="session-device-name">{host.name}</span></span> : null}
+          <strong id={`${id}-title`}>{session.title}</strong>
         </span>
-        <time dateTime={session.updatedAt}>{relativeTime(session.updatedAt)}</time>
+        <span className="session-row-tail">
+          <span className="session-row-tail-meta">
+            <time dateTime={session.updatedAt}>{relativeTime(session.updatedAt)}</time>
+            {unread ? <span className="session-unread" role="img" aria-label={t("dashboard.unread")}><span aria-hidden="true" /></span> : null}
+          </span>
+          <SessionAgentBadge agent={session.adapterType} mono={agentMono} />
+        </span>
       </button>
     </li>
   );
@@ -165,15 +196,16 @@ const EMPTY_SESSIONS: SessionSummary[] = [];
 // Project disclosure and toolbar changes do not change the Session rows.
 // Keep their event handlers and list identity stable instead of rendering every
 // row in every project for those local UI-only updates.
-const SessionRows = memo(function SessionRows({ sessions, unreadSessionIds, host, stale, onOpen, onActions }: {
+const SessionRows = memo(function SessionRows({ sessions, unreadSessionIds, host, stale, agentMono, onOpen, onActions }: {
   sessions: SessionSummary[];
   unreadSessionIds: ReadonlySet<string>;
   host: HostProfileSummary;
   stale?: boolean;
+  agentMono?: boolean;
   onOpen: (session: SessionSummary) => void;
   onActions: (session: SessionSummary) => void;
 }) {
-  return <>{sessions.map(session => <SessionRow key={session.id} session={session} unread={unreadSessionIds.has(session.id)} host={host} stale={stale}
+  return <>{sessions.map(session => <SessionRow key={session.id} session={session} unread={unreadSessionIds.has(session.id)} host={host} stale={stale} agentMono={agentMono}
     onOpen={() => onOpen(session)} onActions={() => onActions(session)} />)}</>;
 });
 
@@ -188,6 +220,8 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   openedSession?: { open: OpenSession; token: number };
 }) {
   const { t } = useTranslation();
+  const [, , appearance] = useAppAppearance();
+  const agentMono = appearance === "light";
   const [openingRecent, setOpeningRecent] = useState<string>();
   const recentOpening = useRef(false);
   const [rowActions, setRowActions] = useState<{ hostId: string; session: SessionSummary }>();
@@ -246,6 +280,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   const globalActivity = workspace.layout === "active";
   const activity = useActiveSessionSnapshots(client, hosts, visible && globalActivity);
   const connectedHosts = hosts.filter(host => host.connectionState === "connected");
+  const deviceTones = deviceToneAssignments(connectedHosts.map(host => host.id));
   // A pending refresh must not turn known data (including an empty/error result)
   // back into an initial-loading screen or move the rows every five seconds.
   const activityLoading = activity.initialLoading || connectedHosts.some(host => !activity.snapshots.has(host.id));
@@ -739,7 +774,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
           const expanded = workspace.projectExpansionInitialized
             ? workspace.expandedProjects.includes(project.id)
             : true;
-          return <section className="project-group" data-project-id={project.id} data-project-tone={projectTone(project.id)} key={project.id}>
+          return <section className="project-group" data-project-id={project.id} data-project-tone={stableTone(project.id)} key={project.id}>
             <header>
               <button type="button" className="project-toggle" aria-expanded={expanded} onClick={() => toggleProject(project.id)}><Icon name="folder" /><strong>{project.name}</strong></button>
               <button type="button" className="project-launch-button" aria-haspopup="dialog" aria-label={t("dashboard.launchIn", { defaultValue: "Start agent in {{project}}", project: project.name })} onClick={() => {
@@ -750,7 +785,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
                 setCreatedSessionId(undefined);
               }}><AgentPortMark /></button>
             </header>
-            <div className={`project-content${expanded ? " is-expanded" : ""}`} aria-hidden={!expanded} {...(expanded ? {} : { inert: "" })}><div><ul className="v2-session-list"><SessionRows sessions={projectSessions} unreadSessionIds={unreadSessionIds} host={selectedHost!} stale={snapshot?.cached} onOpen={open} onActions={showSessionActions} /></ul></div></div>
+            <div className={`project-content${expanded ? " is-expanded" : ""}`} aria-hidden={!expanded} {...(expanded ? {} : { inert: "" })}><div><ul className="v2-session-list"><SessionRows sessions={projectSessions} unreadSessionIds={unreadSessionIds} host={selectedHost!} stale={snapshot?.cached} agentMono={agentMono} onOpen={open} onActions={showSessionActions} /></ul></div></div>
           </section>;
         })}
       </div> : <div className="activity-session-view">
@@ -762,6 +797,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         </p> : null)}
         <ul className="v2-session-list active-agent-list">{active.map(({ host, session, stale }) => <SessionRow
           key={JSON.stringify([host.id, session.id])} session={session} host={host} showHost stale={stale} unavailable={stale}
+          deviceTone={deviceTones.get(host.id)} agentMono={agentMono}
           unread={recent.some(entry => entry.hostId === host.id && entry.sessionId === session.id)}
           onOpen={() => openActivity(host, session)} onActions={() => {
             if (activity.snapshots.get(host.id)?.error) return;

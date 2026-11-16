@@ -98,8 +98,29 @@ describe("mobile semantic design system", () => {
 
   it("allows global Active rows to shrink inside the mobile scroller with long source names", () => {
     expect(dashboardStyles).toMatch(/\.session-dashboard \.active-agent-list\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
-    expect(dashboardStyles).toMatch(/\.active-agent-list \.session-row-title\s*\{[^}]*min-width:\s*0;/s);
-    expect(dashboardStyles).toMatch(/\.active-agent-list \.session-row-device\s*\{[^}]*overflow-wrap:\s*anywhere;/s);
+    expect(styles).toMatch(/\.session-row-device \{[^}]*min-width:\s*0;/s);
+    expect(styles).toMatch(/\.session-device-name \{[^}]*text-overflow:\s*ellipsis;/s);
+    for (let tone = 0; tone < 6; tone++) {
+      expect(dashboardStyles).toMatch(new RegExp(`\\[data-device-tone="${tone}"\\] \\{ --session-device-color: rgb\\(`));
+    }
+  });
+
+  it("keeps device source tints readable on light cards", () => {
+    const panel = getAppThemeVariables("light")["--panel"];
+    const tones = [...dashboardStyles.matchAll(/:root\[data-app-theme="light"\] \.session-dashboard \.v2-session-row\[data-device-tone="\d"\] \{ --session-device-color: rgb\((\d+), (\d+), (\d+)\); \}/g)];
+    expect(tones).toHaveLength(6);
+    for (const [, r, g, b] of tones) {
+      const hex = `#${[r, g, b].map(value => Number(value).toString(16).padStart(2, "0")).join("")}`;
+      expect(contrast(hex, panel), `device tone ${hex} on ${panel}`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it("matches the desktop session row anatomy and dot language", () => {
+    expect(styles).toMatch(/\.v2-session-row \.session-status-dot:not\(\.working\) \{ visibility: hidden; \}/);
+    expect(styles).toMatch(/\.session-agent-badge \{[^}]*width: 20px;[^}]*height: 20px;/s);
+    expect(styles).toMatch(/\.session-agent-glyph \{ display: block; width: 13px !important; height: 13px !important; \}/);
+    expect(readFileSync("src/features/sessions/session-status-dot.css", "utf8")).toMatch(/\.session-status-dot\.working::before \{[^}]*animation: session-dot-spin/s);
+    expect(styles).toMatch(/\.session-row-tail \{[^}]*align-self: stretch;[^}]*justify-content: space-between;/s);
   });
 
   it("places immersive chrome out of flow and keeps logs just below the cutout", () => {

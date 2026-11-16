@@ -114,6 +114,13 @@ describe("Global mobile Active Sessions", () => {
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(screen.getByText("All connected devices · 2")).toBeInTheDocument();
     expect(laptop).toHaveAccessibleDescription(/Laptop/); expect(studio).toHaveAccessibleDescription(/Studio/);
+    const laptopRow = laptop.closest("li")!, studioRow = studio.closest("li")!;
+    expect(laptopRow.querySelector(".session-row-device .session-device-name")).toHaveTextContent("Laptop");
+    expect(studioRow.querySelector(".session-row-device .session-device-name")).toHaveTextContent("Studio");
+    expect(laptopRow).toHaveAttribute("data-device-tone");
+    expect(laptopRow.getAttribute("data-device-tone")).not.toBe(studioRow.getAttribute("data-device-tone"));
+    expect(laptopRow.querySelector(".session-device-dot")).not.toBeNull();
+    expect(laptopRow.querySelector(".session-agent-badge .session-agent-glyph")).not.toBeNull();
     expect([...container.querySelectorAll(".active-agent-list [data-host-id]")].map(row => row.getAttribute("data-host-id"))).toEqual(["host-2", "host-1"]);
     fireEvent.click(laptop);
     expect(open).toHaveBeenLastCalledWith(expect.objectContaining({ hostProfileId: "host-2", session: expect.objectContaining({ id: "same-id" }) }));

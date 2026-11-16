@@ -11,8 +11,19 @@
 .session-dashboard .global-device-scope { flex: 1 1 130px; min-width: 0; padding: 8px 4px; color: var(--text); font-size: 13px; overflow-wrap: anywhere; }
 /* Long row titles must not widen the grid beyond the clipped mobile scroller. */
 .session-dashboard .active-agent-list { grid-template-columns: minmax(0, 1fr); }
-.active-agent-list .session-row-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.active-agent-list .session-row-device { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+/* One stable tint per device, same family as the project card tones. */
+.session-dashboard .v2-session-row[data-device-tone="0"] { --session-device-color: rgb(200, 241, 109); }
+.session-dashboard .v2-session-row[data-device-tone="1"] { --session-device-color: rgb(131, 216, 174); }
+.session-dashboard .v2-session-row[data-device-tone="2"] { --session-device-color: rgb(247, 198, 106); }
+.session-dashboard .v2-session-row[data-device-tone="3"] { --session-device-color: rgb(126, 214, 223); }
+.session-dashboard .v2-session-row[data-device-tone="4"] { --session-device-color: rgb(168, 184, 255); }
+.session-dashboard .v2-session-row[data-device-tone="5"] { --session-device-color: rgb(215, 160, 232); }
+:root[data-app-theme="light"] .session-dashboard .v2-session-row[data-device-tone="0"] { --session-device-color: rgb(99, 114, 13); }
+:root[data-app-theme="light"] .session-dashboard .v2-session-row[data-device-tone="1"] { --session-device-color: rgb(23, 107, 66); }
+:root[data-app-theme="light"] .session-dashboard .v2-session-row[data-device-tone="2"] { --session-device-color: rgb(147, 96, 0); }
+:root[data-app-theme="light"] .session-dashboard .v2-session-row[data-device-tone="3"] { --session-device-color: rgb(32, 119, 110); }
+:root[data-app-theme="light"] .session-dashboard .v2-session-row[data-device-tone="4"] { --session-device-color: rgb(88, 103, 178); }
+:root[data-app-theme="light"] .session-dashboard .v2-session-row[data-device-tone="5"] { --session-device-color: rgb(122, 63, 143); }
 .active-agent-list .v2-session-row > button:disabled { opacity: 1; }
 .activity-device-error { display: flex; align-items: center; gap: 12px; margin: 12px 14px; color: var(--muted); font-size: 13px; }
 .activity-device-error > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }

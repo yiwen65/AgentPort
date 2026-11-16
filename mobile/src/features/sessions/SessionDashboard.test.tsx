@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 import { i18n } from "../../i18n";
 import type { RemoteClient } from "../../protocol/remoteClient";
-import * as badges from "./SessionStateBadge";
+import * as statusDots from "./SessionStatusDot";
 import { SessionDashboard } from "./SessionDashboard";
 import { AttentionInbox } from "./attentionInbox";
 
@@ -422,18 +422,18 @@ describe("V2 Session workspace", () => {
   });
 
   it("does not rerender unchanged Session rows when a project is folded", async () => {
-    const badge = vi.spyOn(badges, "SessionStateBadge");
+    const dot = vi.spyOn(statusDots, "SessionStatusDot");
     const remote = client();
     render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
     await screen.findByRole("button", { name: "Approval task" });
-    const renders = badge.mock.calls.length;
+    const renders = dot.mock.calls.length;
     expect(renders).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "AgentPort" }));
     expect(screen.getByRole("button", { name: "AgentPort" })).toHaveAttribute("aria-expanded", "false");
-    expect(badge.mock.calls).toHaveLength(renders);
+    expect(dot.mock.calls).toHaveLength(renders);
     fireEvent.click(screen.getByRole("button", { name: "AgentPort" }));
     expect(screen.getByRole("button", { name: "Approval task" })).toBeVisible();
-    expect(badge.mock.calls).toHaveLength(renders);
+    expect(dot.mock.calls).toHaveLength(renders);
   });
 
   it("reloads device profiles after host management closes without remounting the dashboard", async () => {
@@ -667,14 +667,19 @@ describe("V2 Session workspace", () => {
       projectExpansionInitialized: true,
     });
   });
-  it("renders only a status glyph, title and time in each row while preserving the accessible status", async () => {
+  it("renders the desktop row anatomy: status dot, title, time and agent badge", async () => {
     const { container } = render(<SessionDashboard client={client()} onOpenSession={vi.fn()} />);
     const button = await screen.findByRole("button", { name: /Approval task/ });
     expect(button.querySelector("small")).toBeNull();
     expect(button.querySelector(".session-row-meta")).toBeNull();
-    expect(button.querySelector(".session-row-copy")?.firstElementChild).toHaveClass("session-row-status");
-    expect(button.querySelector(".session-state .visually-hidden")).not.toBeNull();
+    expect(button.querySelector(".session-row-copy")?.previousElementSibling).toHaveClass("session-row-status");
+    expect(button.querySelector(".session-row-status .session-status-dot.unknown")).not.toBeNull();
+    expect(button.querySelector(".session-row-status .visually-hidden")).toHaveTextContent("Unknown");
+    expect(button.querySelector(".session-row-copy strong")).toHaveTextContent("Approval task");
+    expect(button.querySelector(".session-row-tail time")).not.toBeNull();
+    expect(button.querySelector(".session-row-tail .session-agent-badge .session-agent-glyph.claude")).not.toBeNull();
     expect(button).toHaveAccessibleDescription(/Unknown/);
+    expect(container.querySelector(".session-row-device")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Show active sessions" }));
     await screen.findByRole("button", { name: "Shell" });
     expect(container.querySelector(".active-agent-list")?.children.length).toBeGreaterThan(0);

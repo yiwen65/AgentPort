@@ -56,6 +56,7 @@ export function getAppThemeVariables(mode: "light" | "dark"): Record<string, str
     "--warning": dark ? "#ffd166" : "#6f4b00",
     "--danger": dark ? "#ff9a96" : "#b4232f",
     "--danger-fill": "#b4232f",
+    "--unread": dark ? "#60a5fa" : "#34c759",
     "--nav-glass": dark ? "#12151ef5" : "#fffffff0",
     "--content-active": dark ? "#263040" : "#dce3d6",
     "--content-active-ring": dark ? "#71e6d1" : "#20776e",

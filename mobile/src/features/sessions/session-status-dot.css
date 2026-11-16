@@ -1,0 +1,20 @@
+/* Desktop sidebar dot language: 14px slot, 8px glyph. Non-working states stay
+   in the column but are hidden by the row rule so every title aligns. */
+.session-status-dot { flex: none; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; position: relative; }
+.session-status-dot::before { content: ""; width: 8px; height: 8px; border-radius: 50%; }
+.session-status-dot.working::before { background: transparent; border: 2px solid var(--accent); border-top-color: transparent; animation: session-dot-spin .9s linear infinite; }
+.session-status-dot.creating::before { background: var(--accent); animation: session-dot-pulse 1.2s ease-in-out infinite; }
+.session-status-dot.needs_input { background: var(--warning); }
+.session-status-dot.needs_input::before { content: "!"; width: auto; height: auto; color: var(--bg); background: none; border-radius: 0; font-size: 9px; font-weight: 800; line-height: 1; }
+.session-status-dot.idle::before { background: transparent; border: 1.5px solid var(--tertiary-text); }
+.session-status-dot.exited::before, .session-status-dot.stopped::before { background: var(--tertiary-text); }
+.session-status-dot.interrupted { background: var(--tertiary-text); }
+.session-status-dot.interrupted::before { content: "!"; width: auto; height: auto; color: var(--bg); background: none; border-radius: 0; font-size: 9px; font-weight: 800; line-height: 1; }
+.session-status-dot.unknown { background: transparent; border: 1px dashed var(--tertiary-text); }
+.session-status-dot.unknown::before { content: "?"; width: auto; height: auto; color: var(--tertiary-text); background: none; border-radius: 0; font-size: 9px; font-weight: 800; line-height: 1; }
+.session-status-dot.is-cached { opacity: .5; }
+.session-status-dot.is-cached::before { animation: none !important; }
+.project-content[aria-hidden="true"] .session-status-dot::before, main[aria-hidden="true"] .session-status-dot::before, [inert] .session-status-dot::before { animation-play-state: paused; }
+@keyframes session-dot-spin { to { transform: rotate(360deg); } }
+@keyframes session-dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .session-status-dot::before { animation: none !important; } }
