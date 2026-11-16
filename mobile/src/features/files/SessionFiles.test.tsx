@@ -96,7 +96,7 @@ describe("SessionFiles", () => {
     expect(within(menu).getByRole("button", { name: "Copy content" })).toBeEnabled();
     fireEvent.click(within(menu).getByRole("button", { name: "File information and safety" }));
     expect(screen.getByRole("dialog")).toHaveTextContent("/project/README.md");
-    expect(screen.getByRole("dialog")).toHaveTextContent("HTML is not executed");
+    expect(screen.getByRole("dialog")).toHaveTextContent("Only allowlisted HTML tags are rendered");
   });
   it("keeps the same preview DOM, scroll and source mode across back/resume without another read", async () => {
     const { client } = remote(); const view = mount(client);

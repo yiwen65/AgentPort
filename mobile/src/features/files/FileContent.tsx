@@ -15,11 +15,13 @@ import yaml from "highlight.js/lib/languages/yaml";
 import markdown from "highlight.js/lib/languages/markdown";
 import { MermaidDiagram } from "./MermaidDiagram";
 import { MarkdownImage, MarkdownImageProvider } from "./MarkdownImages";
+import { rehypeSafeHtml } from "./markdownHtml";
 import type { MarkdownImageClient } from "../../protocol/markdownImageClient";
 
 for (const [name, language] of Object.entries({ javascript, typescript, json, rust, python, bash, css, xml, yaml, markdown })) hljs.registerLanguage(name, language);
 const extensions: Record<string, string> = { js: "javascript", jsx: "javascript", mjs: "javascript", ts: "typescript", tsx: "typescript", json: "json", rs: "rust", py: "python", sh: "bash", bash: "bash", css: "css", html: "xml", xml: "xml", svg: "xml", yml: "yaml", yaml: "yaml", md: "markdown", markdown: "markdown" };
 export const isMarkdown = (path: string) => /\.(md|markdown)$/i.test(path);
+const rehypePlugins = [rehypeSafeHtml];
 
 /** Resolve only relative text-document links; the service remains the realpath security boundary. */
 export function localFileLink(source: string, href: string): string | null {
@@ -65,6 +67,6 @@ export const FileContent = memo(function FileContent({ path, content, rendered, 
   }), [onOpen, path, t, imageClient]);
   const source = <pre className="files-source" data-horizontal-scroll="true" tabIndex={0}><HighlightedCode content={content} language={extensions[path.split(".").pop()?.toLowerCase() ?? ""]} /></pre>;
   if (!isMarkdown(path)) return source;
-  const view = rendered ? <article className="files-markdown"><ReactMarkdown skipHtml remarkPlugins={[remarkGfm]} components={components}>{content}</ReactMarkdown></article> : source;
+  const view = rendered ? <article className="files-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={rehypePlugins} components={components}>{content}</ReactMarkdown></article> : source;
   return imageClient ? <MarkdownImageProvider key={`${imageClient.scope ?? ""}:${path}:${content}`} path={path} client={imageClient}>{view}</MarkdownImageProvider> : view;
 });

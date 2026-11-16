@@ -27,29 +27,28 @@ describe("Markdown images", () => {
     await screen.findByRole("img", { name: "Referenced" });
     expect(images.local).toHaveBeenCalledWith("pictures/one.png"); expect(images.local).toHaveBeenCalledWith("pictures/图 one.png"); expect(images.remote).not.toHaveBeenCalled();
   });
-  it("requires one document consent and retains loaded local DOM while granting it", async () => {
+  it("loads local and remote images together without a consent step", async () => {
     const images = client(); const { container } = render(view('![Local](./local.png)\n\n![Remote](https://example.com/photo.png)\n\n![Other](https://example.com/other.png)', images));
     const local = await screen.findByRole("img", { name: "Local" });
-    expect(images.remote).not.toHaveBeenCalled(); expect(container.querySelectorAll("img")).toHaveLength(1);
-    fireEvent.click(screen.getAllByRole("button", { name: "Load external images in this document" })[0]);
     await screen.findByRole("img", { name: "Remote" }); await screen.findByRole("img", { name: "Other" });
-    expect(screen.getByRole("img", { name: "Local" })).toBe(local); expect(images.local).toHaveBeenCalledTimes(1); expect(images.remote).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("img", { name: "Local" })).toBe(local);
+    expect(container.querySelectorAll("img")).toHaveLength(3);
+    expect(images.local).toHaveBeenCalledTimes(1); expect(images.remote).toHaveBeenCalledTimes(2);
   });
-  it("preserves consent and cached images through source/rendered switching", async () => {
+  it("preserves cached images through source/rendered switching", async () => {
     const images = client(); const content = '![Remote](https://example.com/photo.png)';
     const { rerender } = render(view(content, images));
-    fireEvent.click(screen.getByRole("button", { name: "Load external images in this document" }));
     const image = await screen.findByRole("img"); const url = image.getAttribute("src");
     rerender(<FileContent path="docs/readme.md" content={content} rendered={false} imageClient={images} onOpen={() => {}} />);
     expect(revoke).not.toHaveBeenCalled(); expect(screen.queryByRole("img")).toBeNull();
     rerender(view(content, images)); expect(await screen.findByRole("img")).toHaveAttribute("src", url); expect(images.remote).toHaveBeenCalledTimes(1);
   });
-  it("resets consent/cache on a new file and revokes resources on unmount", async () => {
+  it("resets cache on a new file and revokes resources on unmount", async () => {
     const images = client(); const { rerender, unmount } = render(view('![Remote](https://example.com/photo.png)', images));
-    fireEvent.click(screen.getByRole("button", { name: "Load external images in this document" })); await screen.findByRole("img");
+    await screen.findByRole("img");
     rerender(<FileContent path="docs/new.md" content="![Remote](https://example.com/photo.png)" rendered imageClient={images} onOpen={() => {}} />);
-    expect(screen.queryByRole("img")).toBeNull(); expect(revoke).toHaveBeenCalledWith("blob:fixture-1"); expect(images.remote).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole("button", { name: "Load external images in this document" })); await screen.findByRole("img"); unmount(); expect(revoke).toHaveBeenCalledWith("blob:fixture-2");
+    await screen.findByRole("img"); expect(revoke).toHaveBeenCalledWith("blob:fixture-1"); expect(images.remote).toHaveBeenCalledTimes(2);
+    unmount(); expect(revoke).toHaveBeenCalledWith("blob:fixture-2");
   });
   it("retries failures and gives the wrapped-image click to the viewer", async () => {
     const images = client(); vi.mocked(images.local).mockRejectedValueOnce({ code: "network" });

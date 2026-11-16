@@ -74,43 +74,6 @@ fn checked_url(raw: &str) -> Result<Url> {
     Ok(url)
 }
 
-// Fail closed for special-purpose space, including mapped, translation, tunnel and documentation IPs.
-fn public_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            let [a, b, c, _] = ip.octets();
-            !(a == 0
-                || a == 10
-                || a == 127
-                || a >= 224
-                || (a == 100 && (64..=127).contains(&b))
-                || (a == 169 && b == 254)
-                || (a == 172 && (16..=31).contains(&b))
-                || (a == 192
-                    && (b == 168 || (b == 0 && (c == 0 || c == 2)) || (b == 88 && c == 99)))
-                || (a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100)))
-                || (a == 203 && b == 0 && c == 113))
-        }
-        IpAddr::V6(ip) => {
-            let s = ip.segments();
-            (s[0] & 0xe000) == 0x2000
-                && !(s[0] == 0x2001 && (s[1] < 0x0200 || s[1] == 0x0db8))
-                && s[0] != 0x2002
-                && !(s[0] == 0x3fff && s[1] < 0x1000)
-        }
-    }
-}
-
-fn checked_addresses(addresses: Vec<SocketAddr>) -> Result<Vec<SocketAddr>> {
-    if addresses.is_empty() || addresses.iter().any(|addr| !public_ip(addr.ip())) {
-        return Err(error(
-            "blocked_address",
-            "Image host must resolve only to public addresses",
-        ));
-    }
-    Ok(addresses)
-}
-
 async fn resolve(url: &Url) -> Result<(String, Vec<SocketAddr>)> {
     let host = url
         .host_str()
@@ -131,7 +94,12 @@ async fn resolve(url: &Url) -> Result<(String, Vec<SocketAddr>)> {
         .map_err(|_| error("network", "Image DNS lookup failed"))?
         .collect()
     };
-    Ok((host, checked_addresses(addresses)?))
+    if addresses.is_empty() {
+        return Err(error("blocked_address", "Image host did not resolve"));
+    }
+    // System DNS may map public hosts to proxy fake-IP ranges (for example
+    // 198.18.0.0/15); connect to the resolved addresses as-is.
+    Ok((host, addresses))
 }
 
 fn redirect_url(current: &Url, location: &str, followed: usize) -> Result<Url> {
@@ -866,42 +834,12 @@ mod tests {
         assert!(redirect_url(&url, "https://@example.com/a", 0).is_err());
         assert!(redirect_url(&url, "https://example.com/a", 5).is_err());
     }
-    #[test]
-    fn addresses_reject_special_and_mixed_dns() {
-        for ip in [
-            "0.0.0.0",
-            "10.0.0.1",
-            "127.0.0.1",
-            "100.64.0.1",
-            "169.254.1.1",
-            "172.16.0.1",
-            "192.168.0.1",
-            "192.0.2.1",
-            "198.18.0.1",
-            "198.51.100.1",
-            "203.0.113.1",
-            "224.0.0.1",
-            "::",
-            "::1",
-            "::ffff:8.8.8.8",
-            "64:ff9b::808:808",
-            "fc00::1",
-            "fe80::1",
-            "2001:db8::1",
-            "2002:808:808::1",
-            "3fff::1",
-        ] {
-            assert!(!public_ip(ip.parse().unwrap()), "{ip}");
-        }
-        for ip in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
-            assert!(public_ip(ip.parse().unwrap()));
-        }
-        assert!(checked_addresses(vec![]).is_err());
-        assert!(checked_addresses(vec![
-            "8.8.8.8:443".parse().unwrap(),
-            "127.0.0.1:443".parse().unwrap()
-        ])
-        .is_err());
+    #[tokio::test]
+    async fn addresses_use_system_dns_results_including_proxy_fake_ips() {
+        let url = checked_url("https://198.18.0.57/image.png").unwrap();
+        let (host, addresses) = resolve(&url).await.unwrap();
+        assert_eq!(host, "198.18.0.57");
+        assert_eq!(addresses, vec!["198.18.0.57:443".parse().unwrap()]);
     }
     #[test]
     fn svg_requires_valid_xml_and_bounded_dimensions() {

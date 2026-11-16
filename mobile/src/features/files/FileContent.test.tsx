@@ -6,6 +6,40 @@ import { FileContent } from "./FileContent";
 const table = "| Path | Origin | Purpose |\n| :--- | :---: | ---: |\n| `codex/` | openai/codex | Reference: agent implementation |\n| docs/ | Local | Handoff / task documents |";
 beforeEach(async () => { await i18n.changeLanguage("en-US"); });
 afterEach(cleanup);
+describe("Markdown safe HTML", () => {
+  it("renders allowlisted inline HTML such as sub, kbd and br", () => {
+    const { container } = render(<FileContent path="docs/readme.md" content={'<sub>图注 H<sub>2</sub>O</sub>\n\n按 <kbd title="Control">Ctrl</kbd> + C<br>换行'} rendered onOpen={() => {}} />);
+    const sub = container.querySelector("sub");
+    expect(sub?.textContent).toBe("图注 H2O");
+    expect(sub?.querySelector("sub")?.textContent).toBe("2");
+    const kbd = container.querySelector("kbd");
+    expect(kbd?.textContent).toBe("Ctrl");
+    expect(kbd).toHaveAttribute("title", "Control");
+    expect(container.querySelectorAll("br")).toHaveLength(1);
+  });
+  it("renders safe block HTML such as details/summary around Markdown", () => {
+    const { container } = render(<FileContent path="docs/readme.md" content={"<details open>\n<summary>开发与源码</summary>\n\n正文 **加粗**\n\n</details>\n\n<div>外框 <b>重点</b></div>"} rendered onOpen={() => {}} />);
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details).toHaveAttribute("open");
+    expect(details?.querySelector("summary")?.textContent).toBe("开发与源码");
+    expect(details?.querySelector("strong")?.textContent).toBe("加粗");
+    expect(container.querySelector("div")?.textContent).toContain("外框 重点");
+    expect(container.textContent).not.toContain("<details>");
+    expect(container.textContent).not.toContain("</details>");
+    expect(container.textContent).not.toContain("<summary>");
+  });
+  it("keeps unsupported or unclosed HTML as escaped text", () => {
+    const { container } = render(<FileContent path="docs/readme.md" content={'<a href="javascript:alert(1)">链接</a> <img src="x">\n\n<div>\n<img src="x" onerror="alert(1)">\n</div>\n\n<sub>未闭合'} rendered onOpen={() => {}} />);
+    expect(container.querySelector("a, img")).toBeNull();
+    expect(container.textContent).toContain('<a href="javascript:alert(1)">链接</a>');
+    expect(container.textContent).toContain('<img src="x" onerror="alert(1)">');
+    expect(container.querySelector("sub")).toBeNull();
+    expect(container.textContent).toContain("<sub>未闭合");
+    expect(container.querySelector("script")).toBeNull();
+  });
+});
+
 describe("Markdown tables", () => {
   it("parses pipe tables into semantic rows and cells with alignment", () => {
     render(<FileContent path="AGENTS.md" content={table} rendered onOpen={() => {}} />);

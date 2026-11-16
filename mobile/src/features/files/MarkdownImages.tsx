@@ -7,7 +7,6 @@ import "./markdown-images.css";
 
 interface Entry { users: number; asset?: ImageAsset; promise: Promise<ImageAsset> }
 interface Images {
-  allowed: boolean; grant: () => void;
   acquire: (source: ImageSource) => { promise: Promise<ImageAsset>; release: () => void };
   retry: (source: ImageSource) => void;
   path: string;
@@ -17,7 +16,6 @@ const CACHE_BYTES = 64 * 1024 * 1024;
 const sourceKey = (source: ImageSource) => source.kind === "local" ? `local:${source.path}` : source.url;
 
 export function MarkdownImageProvider({ path, client, children }: { path: string; client: MarkdownImageClient; children: ReactNode }) {
-  const [allowed, setAllowed] = useState(false);
   const cache = useRef(new Map<string, Entry>());
   const alive = useRef(true);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
@@ -25,7 +23,7 @@ export function MarkdownImageProvider({ path, client, children }: { path: string
     alive.current = true;
     return () => { alive.current = false; for (const entry of cache.current.values()) if (entry.asset) URL.revokeObjectURL(entry.asset.url); cache.current.clear(); };
   }, []);
-  const manager = useMemo<Omit<Images, "allowed" | "grant">>(() => ({ path,
+  const manager = useMemo<Images>(() => ({ path,
     retry: source => { const key = sourceKey(source); const entry = cache.current.get(key); if (entry?.asset) URL.revokeObjectURL(entry.asset.url); cache.current.delete(key); },
     acquire: source => {
       const key = sourceKey(source);
@@ -52,7 +50,7 @@ export function MarkdownImageProvider({ path, client, children }: { path: string
       return { promise: entry.promise, release: () => { if (!released) { released = true; entry!.users--; } } };
     },
   }), [client, path]);
-  return <Context.Provider value={{ ...manager, allowed, grant: () => setAllowed(true) }}>{children}</Context.Provider>;
+  return <Context.Provider value={manager}>{children}</Context.Provider>;
 }
 
 const errorCode = (error: unknown) => error && typeof error === "object" && "code" in error ? String(error.code) : "image_failed";
@@ -65,7 +63,6 @@ export function MarkdownImage({ source, alt = "" }: { source: string; alt?: stri
   const [shape, setShape] = useState<{ width: number; height: number }>();
   const [error, setError] = useState(""); const [attempt, setAttempt] = useState(0); const [viewer, setViewer] = useState(false);
   const resolved = useMemo(() => context ? resolveImageSource(context.path, source) : null, [context?.path, source]);
-  const ready = resolved && (resolved.kind === "local" || context?.allowed);
   const wanted = visible || viewer;
   useEffect(() => {
     if (!host.current || !globalThis.IntersectionObserver) return;
@@ -74,12 +71,12 @@ export function MarkdownImage({ source, alt = "" }: { source: string; alt?: stri
   }, []);
   useEffect(() => {
     setAsset(undefined); setError("");
-    if (!context || !resolved || !ready || !wanted) return;
+    if (!context || !resolved || !wanted) return;
     let current = true;
     const lease = context.acquire(resolved);
     void lease.promise.then(value => { if (current) { setAsset(value); setShape(value); } }).catch(value => { if (current) setError(errorCode(value)); });
     return () => { current = false; lease.release(); };
-  }, [context?.acquire, resolved, ready, wanted, attempt]);
+  }, [context?.acquire, resolved, wanted, attempt]);
   const retry = () => { if (context && resolved) context.retry(resolved); setAttempt(value => value + 1); };
   const label = alt || t("images.label");
   return <span ref={host} className="markdown-image" data-no-page-swipe="true">
@@ -87,7 +84,6 @@ export function MarkdownImage({ source, alt = "" }: { source: string; alt?: stri
       : <span className="markdown-image-placeholder" style={shape ? { width: `min(100%, max(44px, ${shape.width}px))`, aspectRatio: `${shape.width}/${shape.height}`, minHeight: 44, padding: 0 } : undefined}>
         <span>{label}</span>
         {!resolved ? <span role="status">{t("images.blocked")}</span>
-          : !ready ? <button type="button" onClick={context?.grant}>{t("images.allowRemote")}</button>
           : error ? <><span role="status">{t(["image_too_large", "image_dimensions", "file_too_large", "byte_limit", "pixel_limit"].includes(error) ? "images.tooLarge" : error === "image_cache_full" ? "images.cacheFull" : ["image_url_blocked", "blocked_url", "blocked_address", "invalid_url"].includes(error) ? "images.urlBlocked" : ["invalid_image", "unsupported_image", "unsupported_format", "unsafe_svg", "mime_mismatch"].includes(error) ? "images.unsupported" : "images.failed")}</span><button type="button" onClick={retry}>{t("images.retry")}</button></>
           : <span role="status">{t(visible ? "images.loading" : "images.waiting")}</span>}
       </span>}
