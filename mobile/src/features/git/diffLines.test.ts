@@ -56,6 +56,26 @@ describe("diff line numbers", () => {
     ]);
   });
 
+  it("keeps added content that looks like a file header inside an implicit patch", () => {
+    const patch = [
+      "diff --git a/notes.txt b/notes.txt",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/notes.txt",
+      "+++ x",
+      "+last",
+    ].join("\n");
+
+    expect(rows(patch)).toEqual([
+      ["meta", null, null],
+      ["meta", null, null],
+      ["meta", null, null],
+      ["meta", null, null],
+      ["add", null, 1],
+      ["add", null, 2],
+    ]);
+  });
+
   it("keeps old and new counters independent across files", () => {
     const patch = [
       "@@ -1,1 +1,1 @@",

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { i18n } from "../../i18n";
 import type { RemoteClient } from "../../protocol/remoteClient";
@@ -86,6 +86,12 @@ function renderPanel(client: RemoteClient, overrides: Partial<Parameters<typeof 
   return render(<GitPanel client={client} hostId="host-1" sessionId="ses-1" sessionTitle="Agent task" onClose={vi.fn()} {...overrides} />);
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(yes => { resolve = yes; });
+  return { promise, resolve };
+}
+
 beforeEach(async () => { await i18n.changeLanguage("en-US"); });
 afterEach(cleanup);
 
@@ -130,6 +136,31 @@ describe("mobile Git Center", () => {
     })));
     await waitFor(() => expect(screen.queryByText("src/App.tsx")).not.toBeInTheDocument());
     expect(screen.getByText("README.md")).toBeInTheDocument();
+  });
+
+  it("ignores a stale diff response after backing out and opening another file", async () => {
+    const { client, request } = setup();
+    const first = deferred<unknown>();
+    const second = deferred<unknown>();
+    const diffOf = (pathToken: string, displayPath: string) => ({
+      context, statusToken: "status-1", side: "unstaged", pathToken, displayPath,
+      format: "text", patch: `@@ -1 +1 @@\n-old line\n+${pathToken} line`, additions: 1, deletions: 1,
+      fileSize: 24, truncated: false, reason: null, conflictCode: null,
+    });
+    const originalRequest = request.getMockImplementation()!;
+    vi.mocked(client.request).mockImplementation(async (hostId: string, method: string, params: any) => {
+      if (method === "git.diff") return params.pathToken === "p1" ? first.promise : second.promise;
+      return originalRequest(hostId, method, params);
+    });
+    renderPanel(client);
+    fireEvent.click(await screen.findByRole("button", { name: /src\/App\.tsx/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Changes/ }));
+    fireEvent.click(screen.getByRole("button", { name: /README\.md/ }));
+    await act(async () => { second.resolve(diffOf("p2", "README.md")); });
+    expect(await screen.findByText("+p2 line")).toBeInTheDocument();
+    await act(async () => { first.resolve(diffOf("p1", "src/App.tsx")); });
+    expect(screen.queryByText("+p1 line")).not.toBeInTheDocument();
+    expect(screen.getByText("+p2 line")).toBeInTheDocument();
   });
 
   it("reviews and commits staged files", async () => {

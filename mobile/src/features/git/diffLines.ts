@@ -38,11 +38,9 @@ export function parseDiffLines(patch: string): DiffLine[] {
         lines.push({ text, kind: "hunk", oldNumber: null, newNumber: null });
         continue;
       }
-      if (text.startsWith("+++ ")) {
-        implicitNewNumber = 1;
-        lines.push({ text, kind: "meta", oldNumber: null, newNumber: null });
-        continue;
-      }
+      // In an implicit (header-less) untracked patch every row is prefixed
+      // with "+", so content such as "++ x" becomes "+++ x" and must stay an
+      // added line, not be mistaken for the next file header.
       if (implicitNewNumber !== null && text.startsWith("+")) {
         lines.push({
           text,
@@ -51,6 +49,11 @@ export function parseDiffLines(patch: string): DiffLine[] {
           newNumber: implicitNewNumber,
         });
         implicitNewNumber += 1;
+        continue;
+      }
+      if (text.startsWith("+++ ")) {
+        implicitNewNumber = 1;
+        lines.push({ text, kind: "meta", oldNumber: null, newNumber: null });
         continue;
       }
       if (!text.startsWith("\\")) implicitNewNumber = null;

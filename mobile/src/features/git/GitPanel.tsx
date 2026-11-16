@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { Modal } from "../../components/Modal";
 import { remoteErrorMessage } from "../../protocol/remoteError";
@@ -77,6 +77,7 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
   const [actionError, setActionError] = useState("");
   const [mutation, setMutation] = useState("");
   const [diffRequest, setDiffRequest] = useState<{ entry: GitChangeEntry; side: GitDiffSide }>();
+  const diffSequence = useRef(0);
   const [diff, setDiff] = useState<GitFileDiff>();
   const [diffBusy, setDiffBusy] = useState(false);
   const [diffError, setDiffError] = useState("");
@@ -146,6 +147,7 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
       const result = await mutateGitPaths(client, hostId, method, changes, entries);
       setChanges(result.changes);
       setContext(result.changes.context);
+      diffSequence.current += 1;
       setDiffRequest(undefined);
       setDiff(undefined);
     } catch (error) {
@@ -158,17 +160,27 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
 
   const openDiff = async (entry: GitChangeEntry, side: GitDiffSide) => {
     if (!changes) return;
+    const sequence = ++diffSequence.current;
     setDiffRequest({ entry, side });
     setDiff(undefined);
     setDiffError("");
     setDiffBusy(true);
     try {
-      setDiff(await readGitDiff(client, hostId, locator, changes, entry, side));
+      const next = await readGitDiff(client, hostId, locator, changes, entry, side);
+      if (sequence === diffSequence.current) setDiff(next);
     } catch (error) {
-      setDiffError(remoteErrorMessage(error));
+      if (sequence === diffSequence.current) setDiffError(remoteErrorMessage(error));
     } finally {
-      setDiffBusy(false);
+      if (sequence === diffSequence.current) setDiffBusy(false);
     }
+  };
+
+  const closeDiff = () => {
+    diffSequence.current += 1;
+    setDiffRequest(undefined);
+    setDiff(undefined);
+    setDiffError("");
+    setDiffBusy(false);
   };
 
   const finishSwitch = async (outcome: SwitchOutcome) => {
@@ -308,7 +320,7 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
 
       {diffRequest ? <section className="git-diff-view" aria-label={diffRequest.entry.displayPath}>
         <header className="git-subheader">
-          <button type="button" className="git-back" onClick={() => { setDiffRequest(undefined); setDiff(undefined); setDiffError(""); }}>← {t("git.changes")}</button>
+          <button type="button" className="git-back" onClick={closeDiff}>← {t("git.changes")}</button>
           <strong>{diffRequest.entry.displayPath}</strong>
         </header>
         {diffRequest.entry.staged && diffRequest.entry.unstaged ? <div className="git-segmented">
