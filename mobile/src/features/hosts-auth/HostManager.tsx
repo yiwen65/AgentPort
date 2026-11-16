@@ -311,8 +311,8 @@ export function HostManager({ remoteClient, authClient, onPairedConnected, onOpe
               <option value="">{t("hosts.form.noJumpHost")}</option>
               {state.kind === "ready" ? state.hosts.filter(host => host.id !== editing.id && host.preferredTransport !== "relay").map(host => <option key={host.id} value={host.id}>{host.name}</option>) : null}
             </select></label>
-            <label>{t("hosts.form.moshPortStart")}<input type="number" min="1" max="65535" required={editing.moshUdpPortEnd !== undefined} value={editing.moshUdpPortStart ?? ""} onChange={(event) => patch("moshUdpPortStart", event.target.value ? Number(event.target.value) : undefined)} /></label>
-            <label>{t("hosts.form.moshPortEnd")}<input type="number" min={editing.moshUdpPortStart ?? 1} max="65535" required={editing.moshUdpPortStart !== undefined} value={editing.moshUdpPortEnd ?? ""} onChange={(event) => patch("moshUdpPortEnd", event.target.value ? Number(event.target.value) : undefined)} /></label>
+            <label>{t("hosts.form.moshPortStart")}<input type="number" min="1" max="65535" required={editing.moshUdpPortEnd != null} value={editing.moshUdpPortStart ?? ""} onChange={(event) => patch("moshUdpPortStart", event.target.value ? Number(event.target.value) : undefined)} /></label>
+            <label>{t("hosts.form.moshPortEnd")}<input type="number" min={editing.moshUdpPortStart ?? 1} max="65535" required={editing.moshUdpPortStart != null} value={editing.moshUdpPortEnd ?? ""} onChange={(event) => patch("moshUdpPortEnd", event.target.value ? Number(event.target.value) : undefined)} /></label>
             <p>{t("genericTerminal.udpDirect")}</p>
             </>}
           </div>
@@ -321,8 +321,8 @@ export function HostManager({ remoteClient, authClient, onPairedConnected, onOpe
           </div> : <fieldset className="credential-panel"><legend>{t("hosts.form.credential")}</legend>
             {editing.credentialId ? <p className="credential-ready">{t("hosts.form.credentialReady")}</p> : null}
             {editing.authentication === "password" ? <label>{t("hosts.form.password")}<input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} /><button type="button" disabled={busy || !password} onClick={() => void createCredential("password")}>{t("hosts.form.storePassword")}</button></label> : <>
-              <label>{t("hosts.form.privateKey")}<textarea rows={5} value={privateKey} onChange={(event) => setPrivateKey(event.target.value)} /></label>
-              <label>{t("hosts.form.passphrase")}<input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} /></label>
+              <label>{t("hosts.form.privateKey")}<textarea rows={5} value={privateKey} autoCapitalize="off" autoCorrect="off" spellCheck={false} onChange={(event) => setPrivateKey(event.target.value)} /></label>
+              <label>{t("hosts.form.passphrase")}<input type="password" value={passphrase} autoCapitalize="off" autoCorrect="off" spellCheck={false} onChange={(event) => setPassphrase(event.target.value)} /></label>
               <div className="button-row"><button type="button" disabled={busy || !privateKey} onClick={() => void createCredential("import")}>{t("hosts.form.importKey")}</button></div>
             </>}
           </fieldset>}

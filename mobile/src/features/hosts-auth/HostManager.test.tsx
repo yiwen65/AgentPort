@@ -71,6 +71,18 @@ describe("host authentication manager", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(auth.saveProfile).toHaveBeenCalledWith(expect.objectContaining({ jump: { hostProfileId: "jump_1" }, moshUdpPortStart: 60010, moshUdpPortEnd: 60020 })));
   });
+  it("does not require empty Mosh ports persisted as null", async () => {
+    const { remote, auth } = clients();
+    const saved = { ...profile, moshUdpPortStart: null, moshUdpPortEnd: null } as unknown as HostProfileDetails;
+    vi.mocked(remote.listHostProfiles).mockResolvedValue([{ ...saved, connectionState: "disconnected", lastConnectedAt: null, lastError: null }]);
+    vi.mocked(auth.getProfile).mockResolvedValue(saved);
+    render(<HostManager remoteClient={remote} authClient={auth} />);
+    fireEvent.click(await screen.findByText("Studio"));
+    expect(await screen.findByLabelText("Mosh UDP start port")).not.toBeRequired();
+    expect(screen.getByLabelText("Mosh UDP end port")).not.toBeRequired();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(auth.saveProfile).toHaveBeenCalled());
+  });
   it("connects the exact approved profile after scanning without a Connect tap", async () => {
     const { remote, auth } = clients();
     const connected = vi.fn();
