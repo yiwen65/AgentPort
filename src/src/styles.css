@@ -4929,6 +4929,28 @@ body.is-resizing-pane {
   margin: 1.8em 0;
 }
 
+.md-preview details {
+  margin: 1em 0;
+  padding: 0.55em 0.9em;
+  border: 1px solid var(--term-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--term-text) 2%, transparent);
+}
+
+.md-preview summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--term-heading);
+}
+
+.md-preview summary:hover {
+  color: var(--term-accent);
+}
+
+.md-preview details[open] > summary {
+  margin-bottom: 0.5em;
+}
+
 /* Reader blocks introduced by the unified/remark renderer. */
 .md-code {
   margin: 0.9em 0;

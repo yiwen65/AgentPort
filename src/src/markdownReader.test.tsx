@@ -147,6 +147,35 @@ describe("MarkdownView advanced syntax", () => {
     expect(sub?.querySelector("[data-source-line='1']")).not.toBeNull();
   });
 
+  it("renders safe block HTML such as details/summary", () => {
+    const { container } = render(
+      <MarkdownView
+        source={
+          "<details open>\n<summary>开发与源码</summary>\n\n正文 **加粗**\n\n</details>\n\n" +
+          "<div>外框 <b>重点</b></div>"
+        }
+        sourceLocations
+      />,
+    );
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details?.hasAttribute("open")).toBe(true);
+    expect(details?.querySelector("summary")?.textContent).toBe("开发与源码");
+    expect(details?.querySelector("strong")?.textContent).toBe("加粗");
+    expect(container.querySelector("div")?.textContent).toContain("外框 重点");
+    expect(container.textContent).not.toContain("<details>");
+    expect(container.textContent).not.toContain("</details>");
+    expect(container.textContent).not.toContain("<summary>");
+  });
+
+  it("keeps block HTML containing unsafe tags escaped", () => {
+    const { container } = render(
+      <MarkdownView source={'<div>\n<img src="x" onerror="alert(1)">\n</div>'} />,
+    );
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.textContent).toContain('<img src="x" onerror="alert(1)">');
+  });
+
   it("leaves unclosed inline HTML as escaped text", () => {
     const { container } = render(<MarkdownView source={"<sub>未闭合"} />);
     expect(container.querySelector("sub")).toBeNull();

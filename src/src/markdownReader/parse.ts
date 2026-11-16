@@ -1,5 +1,5 @@
 // Synchronous Markdown parsing for the document reader. The pipeline emits
-// hast (never an HTML string). A small inline-HTML allowlist becomes real
+// hast (never an HTML string). A small safe-HTML allowlist becomes real
 // elements; all other raw HTML stays raw so the React renderer can show it as
 // escaped text, preserving the viewer's safety model.
 
@@ -13,7 +13,7 @@ import type { Root as HastRoot } from "hast";
 import type { Root as MdastRoot } from "mdast";
 import {
   rehypeImageIndex,
-  rehypeSafeInlineHtml,
+  rehypeSafeHtml,
   remarkGithubAlerts,
   remarkHeadingIds,
   remarkReaderNodes,
@@ -165,7 +165,7 @@ export function parseMarkdown(source: string, options: ParseMarkdownOptions): Pa
         footnoteLabel: options.footnoteLabel,
         footnoteBackLabel: options.footnoteBackLabel,
       })
-      .use(rehypeSafeInlineHtml)
+      .use(rehypeSafeHtml)
       .use(rehypeImageIndex, { images });
     const tree = processor.runSync(
       processor.parse(normalizeImageDestinations(normalized)) as MdastRoot,

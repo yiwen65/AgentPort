@@ -16,6 +16,7 @@ import type { AlertType } from "./types";
 import type { MarkdownReaderContextValue } from "./context";
 
 const HEADING_TAGS = new Set(["h1", "h2", "h3", "h4", "h5", "h6"]);
+const VOID_TAGS = new Set(["br", "wbr", "hr"]);
 
 function propertiesOf(node: Element): Properties {
   return node.properties ?? {};
@@ -58,6 +59,8 @@ function elementProps(node: Element): Record<string, unknown> {
   if (title) props.title = title;
   const start = propertiesOf(node).start;
   if (typeof start === "number") props.start = start;
+  const open = propertiesOf(node).open;
+  if (typeof open === "boolean") props.open = open;
   for (const [name, value] of Object.entries(propertiesOf(node))) {
     if (name.startsWith("data-") || name.startsWith("aria-")) props[name] = value;
   }
@@ -177,7 +180,7 @@ function renderElement(
     return createElement(tag, { key, ...elementProps(node), style }, children);
   }
   if (tag === "input") return renderInput(node, key);
-  if (tag === "br" || tag === "wbr") {
+  if (VOID_TAGS.has(tag)) {
     return createElement(tag, { key, ...elementProps(node) });
   }
   if (classNames.includes("md-math-inline") || classNames.includes("md-math-display")) {
