@@ -457,13 +457,15 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   useEffect(() => {
     if (!selectedDeviceId) {
       setSnapshot(undefined);
-      setWorkspace({ ...emptyWorkspace(), layout: workspaceRef.current.layout });
+      setWorkspace(current => ({ ...emptyWorkspace(), layout: current.layout }));
       return;
     }
     try { localStorage.setItem(DEVICE_KEY, selectedDeviceId); } catch { /* selection persistence is best effort */ }
     const restored = readWorkspace(selectedDeviceId);
-    // View scope is global; device changes only restore that device's Projects state.
-    setWorkspace({ ...restored, layout: workspaceRef.current.layout });
+    // View scope is global; device changes only restore that device's Projects
+    // state. Read the latest layout inside the update: a toggle can land after
+    // this effect was scheduled, and a stale ref would overwrite it.
+    setWorkspace(current => ({ ...restored, layout: current.layout }));
     pendingScroll.current = { deviceId: selectedDeviceId, top: restored.scrollTop };
     const scroller = dashboardRef.current?.closest<HTMLElement>(".main-content");
     if (scroller) scroller.scrollTop = 0;
