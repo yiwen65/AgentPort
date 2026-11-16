@@ -167,10 +167,9 @@ try {
   assert.equal(await evaluate(`document.querySelector('.files-markdown h1').textContent`),'Project overview');
   assert.equal(await evaluate(`document.querySelectorAll('.files-markdown iframe, .files-markdown script').length`),0);
   await until(`document.querySelector('.markdown-image-open img')?.naturalWidth>0`);
-  assert.equal(await evaluate(`imageCalls.filter(c=>c.kind==='remote').length`),0,'No HTTPS image adapter calls before consent');
   await evaluate(`Array.from(document.querySelectorAll('.markdown-image')).find(e=>e.textContent.includes('remote SVG')).scrollIntoView({block:'center'});true`);await wait(120);
-  await clickText('.markdown-image button','Load external images in this document');
   await until(`imageCalls.some(c=>c.kind==='remote') && document.querySelector('img[alt="remote SVG"]')?.naturalWidth>0`);
+  assert.equal(await evaluate(`imageCalls.filter(c=>c.kind==='remote').length`),1,'Visible remote images load without a consent step');
   await evaluate(`Array.from(document.querySelectorAll('.markdown-image')).find(e=>e.textContent.includes('retry SVG')).scrollIntoView({block:'center'});true`);await wait(100);
   await clickText('.markdown-image button','Retry image');await until(`document.querySelector('img[alt="retry SVG"]')?.naturalWidth>0`);
   await evaluate(`document.querySelector('img[alt="wrapped SVG"]').scrollIntoView({block:'center'});true`);await wait(150);
@@ -196,7 +195,7 @@ try {
   const mobileImageGeometry=await evaluate(`Array.from(document.querySelectorAll('.markdown-image-open img')).map(e=>({alt:e.alt,src:e.src,nw:e.naturalWidth,nh:e.naturalHeight,w:e.getBoundingClientRect().width,h:e.getBoundingClientRect().height}))`);
   assert.ok(mobileImageGeometry.some(g=>g.alt==='reference PNG'&&g.nw===1),'Reference PNG decodes in Chrome');
   assert.ok(mobileImageGeometry.every(g=>g.src.startsWith('blob:')&&g.nw>0&&Math.abs(g.w/g.h-g.nw/g.nh)<0.01),JSON.stringify(mobileImageGeometry));
-  assert.equal(await evaluate(`imageCalls.filter(c=>c.kind==='remote').length`),1,'One grant loads current document');
+  assert.equal(await evaluate(`imageCalls.filter(c=>c.kind==='remote').length`),1,'Remote image loads once per document');
   assert.equal(await evaluate(`imageCalls.filter(c=>c.kind==='local'&&c.path.endsWith('local.svg')).length`),1,'Inline/wrapped same source shares current document cache');
   await screenshot('mobile-images-dark');
   await wait(250);await screenshot('mobile-markdown-preview');
@@ -304,8 +303,11 @@ try {
   await until(`document.querySelectorAll('.files-diagram-scroll svg').length===2`);
   await evaluate(`document.querySelector('.files-preview-scroll').scrollTop=0;true`);await wait(200);
   await until(`document.querySelector('img[alt="local SVG"]')?.naturalWidth>0`);
-  assert.equal(await evaluate(`imageCalls.filter(c=>c.kind==='remote').length`),1,'New document must not inherit remote consent');
+  assert.equal(await evaluate(`imageCalls.filter(c=>c.kind==='local'&&c.path.endsWith('local.svg')).length`),2,'New document reloads local images instead of reusing the previous cache');
   assert.ok(await evaluate(`revokedImages.length`)>0,'Old document blobs are disposed');
+  await evaluate(`Array.from(document.querySelectorAll('.markdown-image')).find(e=>e.textContent.includes('remote SVG')).scrollIntoView({block:'center'});true`);await wait(120);
+  await until(`imageCalls.filter(c=>c.kind==='remote').length===2 && document.querySelector('img[alt="remote SVG"]')?.naturalWidth>0`);
+  assert.equal(await evaluate(`imageCalls.filter(c=>c.kind==='remote').length`),2,'Remote images load automatically in the new document');
   assert.equal(await evaluate(`document.documentElement.scrollWidth>innerWidth`),false);
   await screenshot('mobile-images-light-narrow');
   await evaluate(`document.querySelector('.files-diagram-scroll').scrollIntoView({block:'center'});true`);await wait(100);await screenshot('mobile-mermaid-light-narrow');
@@ -341,7 +343,7 @@ try {
   await until(`document.querySelector('.file-download-banner').textContent.includes('Saved to the selected location')`);
   assert.equal(await evaluate(`downloadCalls.filter(c=>c.method==='start').length`),1);
   assert.equal(await evaluate(`calls.filter(c=>c.method==='session.detach').length`),0);
-  console.log('PASS: real App/xterm touch navigation, native code pan, tree scroll/expansion, Markdown safety, retained terminal, download actions/progress across pages and light/narrow/landscape renders. Production image blob decoding, SVG scrub, inline/reference/wrapped images, per-document consent/cache/disposal, retry, aspect-fit, viewer zoom/two-finger pan and close scroll/focus also passed. Native imageData adapter/transport/exporter mocked; NOT native image DNS/TLS, save or device proof.');
+  console.log('PASS: real App/xterm touch navigation, native code pan, tree scroll/expansion, Markdown safety, retained terminal, download actions/progress across pages and light/narrow/landscape renders. Production image blob decoding, SVG scrub, inline/reference/wrapped images, consent-free remote loading/cache isolation/disposal, retry, aspect-fit, viewer zoom/two-finger pan and close scroll/focus also passed. Native imageData adapter/transport/exporter mocked; NOT native image DNS/TLS, save or device proof.');
 } finally {
   ws?.close(); if(chrome && chrome.exitCode===null){chrome.kill('SIGTERM');await new Promise(r=>chrome.once('exit',r))}
   if(server)await new Promise(r=>server.close(r));await rm(dir,{recursive:true,force:true});
