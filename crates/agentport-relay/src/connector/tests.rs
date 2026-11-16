@@ -205,8 +205,13 @@ async fn push_registration_requires_approved_identity_valid_token_and_durable_st
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0].registration.token, valid);
     let first_registration = targets[0].registered_at_ms.expect("registration baseline");
-    register_push_token(&phone, &peer, valid.clone(), PushEnvironment::Sandbox).await.unwrap();
-    assert_eq!(fixture.runtime.push_targets().await[0].registered_at_ms, Some(first_registration));
+    register_push_token(&phone, &peer, valid.clone(), PushEnvironment::Sandbox)
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture.runtime.push_targets().await[0].registered_at_ms,
+        Some(first_registration)
+    );
     assert_eq!(
         targets[0].registration.environment,
         PushEnvironment::Sandbox
@@ -232,7 +237,9 @@ async fn push_registration_requires_approved_identity_valid_token_and_durable_st
         fixture.runtime.push_targets().await[0].registration.token,
         replacement
     );
-    assert!(fixture.runtime.push_targets().await[0].registered_at_ms.is_some());
+    assert!(fixture.runtime.push_targets().await[0]
+        .registered_at_ms
+        .is_some());
     assert_eq!(fixture.spawns(), 0); // No Bridge opened by registration.
     fixture.runtime.revoke(&phone.public_key()).await.unwrap();
     assert!(fixture.runtime.push_targets().await.is_empty());
@@ -669,7 +676,7 @@ async fn explicit_reset_recovers_from_credential_loss_with_a_fresh_identity() {
         .configure(
             fixture.url.clone(),
             "Same".into(),
-            Zeroizing::new(TOKEN.into())
+            Zeroizing::new(TOKEN.into()),
         )
         .await
         .unwrap();
