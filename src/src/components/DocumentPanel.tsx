@@ -13,6 +13,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -20,6 +21,7 @@ import {
   type CSSProperties,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { createPortal } from "react-dom";
 import { api, copyText, errorText, readDocumentForDevice, writeDocumentForDevice } from "../api";
 import {
   clearDocumentPendingAnchor,
@@ -120,9 +122,7 @@ const MAX_DOC_TREE_WIDTH = 420;
 const MIN_DOC_EDITOR_WIDTH = 280;
 const DOC_TREE_SASH_WIDTH = 5;
 
-/** dataTransfer type for tab drags (reorder, cross-group move, split). */
-const TAB_DND_TYPE = "application/x-agentport-doc-tab";
-/* Rightmost share of a single group that turns a tab drop into a split;
+/* Rightmost share of a single group body that turns a tab drop into a split;
    mirrors the .doc-split-hint width. */
 const SPLIT_DROP_RATIO = 0.42;
 
@@ -757,19 +757,13 @@ function DocTab({
   groupIndex,
   active,
   dropBefore,
-  dragActive,
-  setDragTabId,
-  setDropTarget,
+  onDragPointerDown,
 }: {
   tab: DocumentTab;
   groupIndex: number;
   active: boolean;
   dropBefore: boolean;
-  dragActive: boolean;
-  setDragTabId: (tabId: string | null) => void;
-  setDropTarget: (
-    target: { groupIndex: number; beforeTabId: string | null } | null,
-  ) => void;
+  onDragPointerDown: (tab: DocumentTab, event: React.PointerEvent<HTMLElement>) => void;
 }) {
   const { t } = useTranslation("shell");
   const dirty = useSyncExternalStore(subscribeDocumentRuntime, () =>
@@ -808,7 +802,8 @@ function DocTab({
         dropBefore ? " drop-before" : ""
       }`}
       data-tip={tab.path}
-      draggable
+      data-doc-tab-id={tab.id}
+      onPointerDown={(event) => onDragPointerDown(tab, event)}
       onClick={() => setActiveDocumentTab(tab.id)}
       onDoubleClick={() => pinDocumentTab(tab.id)}
       onAuxClick={(event) => {
@@ -822,27 +817,6 @@ function DocTab({
           event.preventDefault();
           setActiveDocumentTab(tab.id);
         }
-      }}
-      onDragStart={(event) => {
-        event.dataTransfer.setData(TAB_DND_TYPE, tab.id);
-        event.dataTransfer.effectAllowed = "move";
-        setDragTabId(tab.id);
-      }}
-      onDragEnd={() => {
-        setDragTabId(null);
-        setDropTarget(null);
-      }}
-      onDragOver={(event) => {
-        // `dragTabId` is our own drag source; WKWebView's DataTransfer.types
-        // hides custom MIME types (and lacks `.includes` on some builds).
-        if (!dragActive) return;
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "move";
-        const rect = event.currentTarget.getBoundingClientRect();
-        // Left half inserts before this tab; right half appends after it
-        // (the strip maps null to the end position).
-        const beforeTabId = event.clientX < rect.left + rect.width / 2 ? tab.id : null;
-        setDropTarget({ groupIndex, beforeTabId });
       }}
       onContextMenu={openTabMenu}
     >
@@ -867,26 +841,20 @@ function DocTab({
   );
 }
 
-/** A group's tab strip: also the drop target for reordering and for moves
- * arriving from the other group. */
+/** A group's tab strip. Drops are resolved by the panel's pointer-driven tab
+ * drag (see beginTabDrag); the strip only renders the insertion marker. */
 const MemoDocTab = memo(DocTab);
 
 function DocTabStrip({
   group,
   groupIndex,
-  dragTabId,
-  setDragTabId,
   dropTarget,
-  setDropTarget,
+  onDragPointerDown,
 }: {
   group: DocumentGroup;
   groupIndex: number;
-  dragTabId: string | null;
-  setDragTabId: (tabId: string | null) => void;
   dropTarget: { groupIndex: number; beforeTabId: string | null } | null;
-  setDropTarget: (
-    target: { groupIndex: number; beforeTabId: string | null } | null,
-  ) => void;
+  onDragPointerDown: (tab: DocumentTab, event: React.PointerEvent<HTMLElement>) => void;
 }) {
   const { t } = useTranslation("shell");
   return (
@@ -894,20 +862,7 @@ function DocTabStrip({
       className="doc-tabs"
       role="tablist"
       aria-label={t("ui.document.tabs")}
-      onDragOver={(event) => {
-        if (dragTabId) {
-          event.preventDefault();
-          event.dataTransfer.dropEffect = "move";
-        }
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        const tabId = event.dataTransfer.getData(TAB_DND_TYPE) || dragTabId;
-        const target = dropTarget?.groupIndex === groupIndex ? dropTarget : null;
-        setDragTabId(null);
-        setDropTarget(null);
-        if (tabId) moveDocumentTab(tabId, groupIndex, target?.beforeTabId ?? null);
-      }}
+      data-doc-group-index={groupIndex}
     >
       {group.tabs.map((tab) => (
         <MemoDocTab
@@ -916,9 +871,7 @@ function DocTabStrip({
           groupIndex={groupIndex}
           active={tab.id === group.activeTabId}
           dropBefore={dropTarget?.groupIndex === groupIndex && dropTarget.beforeTabId === tab.id}
-          dragActive={dragTabId !== null}
-          setDragTabId={setDragTabId}
-          setDropTarget={setDropTarget}
+          onDragPointerDown={onDragPointerDown}
         />
       ))}
     </div>
@@ -1952,34 +1905,19 @@ function DocGroupView({
   isActive,
   single,
   dragTabId,
-  setDragTabId,
   dropTarget,
-  setDropTarget,
   splitHot,
-  setSplitHot,
+  onDragPointerDown,
 }: {
   group: DocumentGroup;
   groupIndex: number;
   isActive: boolean;
   single: boolean;
   dragTabId: string | null;
-  setDragTabId: (tabId: string | null) => void;
   dropTarget: { groupIndex: number; beforeTabId: string | null } | null;
-  setDropTarget: (
-    target: { groupIndex: number; beforeTabId: string | null } | null,
-  ) => void;
   splitHot: boolean;
-  setSplitHot: (hot: boolean) => void;
+  onDragPointerDown: (tab: DocumentTab, event: React.PointerEvent<HTMLElement>) => void;
 }) {
-  // The split hint is a passive overlay: mounting a fresh drop target under
-  // the pointer mid-drag makes WebKit keep delivering drag events to the old
-  // element, so the stable group body owns the drop and only a pointer inside
-  // the hint's right-hand band splits.
-  const inSplitZone = (event: React.DragEvent<HTMLElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    return event.clientX >= rect.left + rect.width * (1 - SPLIT_DROP_RATIO);
-  };
-
   return (
     <section
       className={`doc-group${isActive ? " active" : ""}`}
@@ -1988,39 +1926,10 @@ function DocGroupView({
       <DocTabStrip
         group={group}
         groupIndex={groupIndex}
-        dragTabId={dragTabId}
-        setDragTabId={setDragTabId}
         dropTarget={dropTarget}
-        setDropTarget={setDropTarget}
+        onDragPointerDown={onDragPointerDown}
       />
-      <div
-        className="doc-group-body"
-        onDragOver={(event) => {
-          if (!single || !dragTabId) return;
-          if (!inSplitZone(event)) {
-            if (splitHot) setSplitHot(false);
-            return;
-          }
-          event.preventDefault();
-          event.dataTransfer.dropEffect = "move";
-          if (!splitHot) setSplitHot(true);
-        }}
-        onDragLeave={(event) => {
-          if (!splitHot) return;
-          const next = event.relatedTarget as Node | null;
-          if (next && event.currentTarget.contains(next)) return;
-          setSplitHot(false);
-        }}
-        onDrop={(event) => {
-          if (!single || !dragTabId || !inSplitZone(event)) return;
-          event.preventDefault();
-          const tabId = event.dataTransfer.getData(TAB_DND_TYPE) || dragTabId;
-          setSplitHot(false);
-          setDragTabId(null);
-          setDropTarget(null);
-          if (tabId) moveDocumentTab(tabId, 1);
-        }}
-      >
+      <div className="doc-group-body">
         {group.tabs.map((tab) => (
           <MemoDocTabEditor key={tab.id} tab={tab} visible={tab.id === group.activeTabId} />
         ))}
@@ -2065,7 +1974,15 @@ export default function DocumentPanel() {
   const activeSession = useStore((state) =>
     findSession(state.projects, state.activeSessionId),
   );
-  const [dragTabId, setDragTabId] = useState<string | null>(null);
+  // Pointer-driven tab drag: WKWebView's HTML5 drag/drop never delivered
+  // usable dragover/drop events for tabs, so the gesture is handled with
+  // pointer capture-free window listeners and elementFromPoint hit testing.
+  const [dragTab, setDragTab] = useState<{ id: string; path: string } | null>(null);
+  const dragTabId = dragTab?.id ?? null;
+  const dragGhostRef = useRef<HTMLDivElement | null>(null);
+  // The ghost position lives outside React state: hover updates re-render
+  // during a drag and must not snap the ghost back to its start point.
+  const dragPointRef = useRef({ x: 0, y: 0 });
   const [dropTarget, setDropTarget] = useState<{
     groupIndex: number;
     beforeTabId: string | null;
@@ -2142,6 +2059,141 @@ export default function DocumentPanel() {
       window.removeEventListener("pointercancel", onEnd);
     };
   }, []);
+
+  useLayoutEffect(() => {
+    if (!dragTab) return;
+    const ghost = dragGhostRef.current;
+    if (!ghost) return;
+    ghost.style.left = `${dragPointRef.current.x + 12}px`;
+    ghost.style.top = `${dragPointRef.current.y + 14}px`;
+  }, [dragTab]);
+
+  const beginTabDrag = useCallback(
+    (tab: DocumentTab, event: React.PointerEvent<HTMLElement>) => {
+      if (event.button !== 0) return;
+      if ((event.target as Element | null)?.closest(".doc-tab-close")) return;
+      const pointerId = event.pointerId;
+      const startX = event.clientX;
+      const startY = event.clientY;
+      let active = false;
+      let hover: {
+        dropTarget: { groupIndex: number; beforeTabId: string | null } | null;
+        splitHot: boolean;
+      } = { dropTarget: null, splitHot: false };
+
+      const setHover = (next: typeof hover) => {
+        if (
+          hover.splitHot === next.splitHot &&
+          hover.dropTarget?.groupIndex === next.dropTarget?.groupIndex &&
+          hover.dropTarget?.beforeTabId === next.dropTarget?.beforeTabId
+        ) {
+          return;
+        }
+        hover = next;
+        setDropTarget(next.dropTarget);
+        setSplitHot(next.splitHot);
+      };
+
+      const updateHover = (x: number, y: number) => {
+        const element = document.elementFromPoint(x, y);
+        const tabElement = element?.closest<HTMLElement>(".doc-tab");
+        if (tabElement?.dataset.docTabId) {
+          const strip = tabElement.closest<HTMLElement>(".doc-tabs");
+          const targetGroup = Number(strip?.dataset.docGroupIndex);
+          if (Number.isInteger(targetGroup)) {
+            const rect = tabElement.getBoundingClientRect();
+            setHover({
+              dropTarget: {
+                groupIndex: targetGroup,
+                beforeTabId:
+                  x < rect.left + rect.width / 2 ? tabElement.dataset.docTabId : null,
+              },
+              splitHot: false,
+            });
+            return;
+          }
+        }
+        const strip = element?.closest<HTMLElement>(".doc-tabs");
+        if (strip) {
+          const targetGroup = Number(strip.dataset.docGroupIndex);
+          if (Number.isInteger(targetGroup)) {
+            setHover({
+              dropTarget: { groupIndex: targetGroup, beforeTabId: null },
+              splitHot: false,
+            });
+            return;
+          }
+        }
+        const body = element?.closest<HTMLElement>(".doc-group-body");
+        if (body && getState().docGroups.length === 1) {
+          const rect = body.getBoundingClientRect();
+          setHover({
+            dropTarget: null,
+            splitHot: x >= rect.left + rect.width * (1 - SPLIT_DROP_RATIO),
+          });
+          return;
+        }
+        setHover({ dropTarget: null, splitHot: false });
+      };
+
+      const cleanup = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onCancel);
+        window.removeEventListener("blur", onCancel);
+        document.body.classList.remove("is-dragging-doc-tab");
+        setDragTab(null);
+        setDropTarget(null);
+        setSplitHot(false);
+      };
+
+      const onMove = (moveEvent: PointerEvent) => {
+        if (moveEvent.pointerId !== pointerId) return;
+        if (!active) {
+          if (
+            Math.abs(moveEvent.clientX - startX) < 4 &&
+            Math.abs(moveEvent.clientY - startY) < 4
+          ) {
+            return;
+          }
+          active = true;
+          document.body.classList.add("is-dragging-doc-tab");
+          setDragTab({ id: tab.id, path: tab.path });
+        }
+        dragPointRef.current = { x: moveEvent.clientX, y: moveEvent.clientY };
+        if (dragGhostRef.current) {
+          dragGhostRef.current.style.left = `${moveEvent.clientX + 12}px`;
+          dragGhostRef.current.style.top = `${moveEvent.clientY + 14}px`;
+        }
+        updateHover(moveEvent.clientX, moveEvent.clientY);
+      };
+
+      const onUp = (upEvent: PointerEvent) => {
+        if (upEvent.pointerId !== pointerId) return;
+        const target = hover;
+        cleanup();
+        if (!active) return;
+        if (target.splitHot) {
+          moveDocumentTab(tab.id, 1);
+        } else if (target.dropTarget) {
+          moveDocumentTab(tab.id, target.dropTarget.groupIndex, target.dropTarget.beforeTabId);
+        }
+      };
+
+      const onCancel = (cancelEvent: Event) => {
+        if ("pointerId" in cancelEvent && cancelEvent.pointerId !== pointerId) return;
+        cleanup();
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onCancel);
+      // Losing window focus can swallow pointerup; drop the ghost instead of
+      // leaving it stuck mid-drag.
+      window.addEventListener("blur", onCancel);
+    },
+    [],
+  );
 
   // Document-context shortcuts: ⌘F find, ⌥⌘F (Ctrl+H elsewhere) replace,
   // ⌘G go to line. The terminal keeps Ctrl+F for the PTY; only document
@@ -2279,11 +2331,9 @@ export default function DocumentPanel() {
                 isActive={index === activeGroupIndex}
                 single={groups.length === 1}
                 dragTabId={dragTabId}
-                setDragTabId={setDragTabId}
                 dropTarget={dropTarget}
-                setDropTarget={setDropTarget}
                 splitHot={splitHot}
-                setSplitHot={setSplitHot}
+                onDragPointerDown={beginTabDrag}
               />
             ))}
           </div>
@@ -2306,6 +2356,14 @@ export default function DocumentPanel() {
         />
       ) : null}
       {explorerOpen ? <DocumentTree /> : null}
+      {dragTab
+        ? createPortal(
+            <div ref={dragGhostRef} className="doc-tab-drag-ghost" aria-hidden="true">
+              {fileName(dragTab.path)}
+            </div>,
+            document.body,
+          )
+        : null}
     </aside>
   );
 }

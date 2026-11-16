@@ -11,18 +11,20 @@ async function movePointer(clientX: number) {
   });
 }
 
-/** jsdom has no DragEvent; a plain Event drops clientX, which the split-zone
- * hit test reads. Build the MouseEvent and attach the transfer explicitly. */
-function docDragEvent(
-  type: "dragstart" | "dragover" | "drop",
-  init: { dataTransfer: DataTransfer; clientX?: number },
+/** jsdom has no PointerEvent (and a plain Event drops clientX), so build the
+ * MouseEvent and attach the pointer id explicitly for the tab-drag handlers. */
+function docPointerEvent(
+  type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel",
+  init: { pointerId: number; clientX?: number; clientY?: number; button?: number },
 ): Event {
   const event = new MouseEvent(type, {
     bubbles: true,
     cancelable: true,
     clientX: init.clientX ?? 0,
+    clientY: init.clientY ?? 0,
+    button: init.button ?? 0,
   });
-  Object.defineProperty(event, "dataTransfer", { value: init.dataTransfer });
+  Object.defineProperty(event, "pointerId", { value: init.pointerId });
   return event;
 }
 
@@ -756,17 +758,6 @@ describe("DocumentPanel", () => {
     });
     const { container } = render(<DocumentPanel />);
     const tab = await screen.findByRole("tab", { name: "第二.md" });
-    const data = new Map<string, string>();
-    // WKWebView may hide the custom MIME from `types`, so tab drags must be
-    // driven by the app's own drag state, not the DataTransfer type list.
-    const dataTransfer = {
-      effectAllowed: "move",
-      dropEffect: "none",
-      setData: (type: string, value: string) => data.set(type, value),
-      getData: (type: string) => data.get(type) ?? "",
-    } as unknown as DataTransfer;
-    fireEvent(tab, docDragEvent("dragstart", { dataTransfer }));
-
     const body = container.querySelector(".doc-group-body") as HTMLElement;
     body.getBoundingClientRect = () =>
       ({
@@ -781,13 +772,26 @@ describe("DocumentPanel", () => {
         toJSON: () => ({}),
       }) as DOMRect;
 
-    // The left side is not a split target: dropping there stays put.
-    fireEvent(body, docDragEvent("dragover", { dataTransfer, clientX: 120 }));
-    fireEvent(body, docDragEvent("drop", { dataTransfer, clientX: 120 }));
-    expect(getState().docGroups).toHaveLength(1);
+    const originalElementFromPoint = document.elementFromPoint;
+    document.elementFromPoint = () => body;
+    try {
+      // The left side is not a split target: dropping there stays put.
+      fireEvent(tab, docPointerEvent("pointerdown", { pointerId: 1, clientX: 40, clientY: 20 }));
+      fireEvent(window, docPointerEvent("pointermove", { pointerId: 1, clientX: 120, clientY: 120 }));
+      expect(container.querySelector(".doc-split-hint.hot")).toBeNull();
+      fireEvent(window, docPointerEvent("pointerup", { pointerId: 1, clientX: 120, clientY: 120 }));
+      expect(getState().docGroups).toHaveLength(1);
 
-    fireEvent(body, docDragEvent("dragover", { dataTransfer, clientX: 560 }));
-    fireEvent(body, docDragEvent("drop", { dataTransfer, clientX: 560 }));
+      fireEvent(tab, docPointerEvent("pointerdown", { pointerId: 2, clientX: 40, clientY: 20 }));
+      fireEvent(window, docPointerEvent("pointermove", { pointerId: 2, clientX: 560, clientY: 120 }));
+      await waitFor(() =>
+        expect(container.querySelector(".doc-split-hint.hot")).not.toBeNull(),
+      );
+      fireEvent(window, docPointerEvent("pointerup", { pointerId: 2, clientX: 560, clientY: 120 }));
+    } finally {
+      document.elementFromPoint = originalElementFromPoint;
+    }
+
     await waitFor(() => expect(getState().docGroups).toHaveLength(2));
     expect(getState().docGroups[1]?.tabs.map((item) => item.path)).toEqual([
       "/tmp/demo/第二.md",
@@ -801,15 +805,6 @@ describe("DocumentPanel", () => {
     });
     const { container } = render(<DocumentPanel />);
     const dragged = await screen.findByRole("tab", { name: "第二.md" });
-    const data = new Map<string, string>();
-    const dataTransfer = {
-      effectAllowed: "move",
-      dropEffect: "none",
-      setData: (type: string, value: string) => data.set(type, value),
-      getData: (type: string) => data.get(type) ?? "",
-    } as unknown as DataTransfer;
-    fireEvent(dragged, docDragEvent("dragstart", { dataTransfer }));
-
     const first = container.querySelector(".doc-tab") as HTMLElement;
     first.getBoundingClientRect = () =>
       ({
@@ -823,8 +818,17 @@ describe("DocumentPanel", () => {
         y: 0,
         toJSON: () => ({}),
       }) as DOMRect;
-    fireEvent(first, docDragEvent("dragover", { dataTransfer, clientX: 20 }));
-    fireEvent(first, docDragEvent("drop", { dataTransfer, clientX: 20 }));
+
+    const originalElementFromPoint = document.elementFromPoint;
+    document.elementFromPoint = () => first;
+    try {
+      fireEvent(dragged, docPointerEvent("pointerdown", { pointerId: 3, clientX: 500, clientY: 20 }));
+      fireEvent(window, docPointerEvent("pointermove", { pointerId: 3, clientX: 20, clientY: 20 }));
+      await waitFor(() => expect(first.className).toContain("drop-before"));
+      fireEvent(window, docPointerEvent("pointerup", { pointerId: 3, clientX: 20, clientY: 20 }));
+    } finally {
+      document.elementFromPoint = originalElementFromPoint;
+    }
 
     await waitFor(() =>
       expect(getState().docGroups[0]?.tabs.map((item) => item.path)).toEqual([

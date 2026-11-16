@@ -367,6 +367,12 @@ body.is-resizing-split * {
   user-select: none !important;
 }
 
+body.is-dragging-doc-tab,
+body.is-dragging-doc-tab * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+
 button,
 input,
 select,
@@ -4464,9 +4470,31 @@ body.is-resizing-pane {
   display: none;
 }
 
+/* Pointer-driven tab drag ghost: HTML5 drag/drop never delivered usable
+   tab drops in the WebView, so the tab follows the pointer as a DOM node
+   that must stay out of hit testing. */
+.doc-tab-drag-ghost {
+  position: fixed;
+  z-index: 1200;
+  max-width: 220px;
+  padding: 5px 10px;
+  border: 1px solid var(--overlay-border-strong);
+  border-radius: 6px;
+  background: var(--overlay-bg);
+  box-shadow: var(--overlay-shadow-sm);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.95;
+  pointer-events: none;
+}
+
 /* Split drop hint: overlays the right side of a single group while a tab is
    dragged; dropping there creates the second split. */
-/* Purely visual: the stable group body owns the split drop (see DocGroupView). */
+/* Purely visual: DocumentPanel resolves the pointer-driven tab drop. */
 .doc-split-hint {
   position: absolute;
   top: 0;
