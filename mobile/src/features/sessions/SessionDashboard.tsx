@@ -565,11 +565,16 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   const agents = useMemo(() => orderedVisibleAgents(snapshot?.agents ?? [], snapshot?.preferences), [snapshot?.agents, snapshot?.preferences]);
   const projects = useMemo(() => {
     const known = new Map((snapshot?.projects ?? []).map((project) => [project.id, project]));
-    for (const session of sessions) {
-      if (!known.has(session.projectId)) known.set(session.projectId, { id: session.projectId, name: session.projectId, rootPath: session.cwd, pinned: false, sortOrder: Number.MAX_SAFE_INTEGER });
+    // Refreshed Sessions stay visible while project metadata is in flight, but
+    // once the authoritative list lands it decides the tree: a removed Project
+    // must not resurface as a row named after its projectId.
+    if (!snapshot?.projectsLoaded) {
+      for (const session of sessions) {
+        if (!known.has(session.projectId)) known.set(session.projectId, { id: session.projectId, name: session.projectId, rootPath: session.cwd, pinned: false, sortOrder: Number.MAX_SAFE_INTEGER });
+      }
     }
     return [...known.values()].sort((a, b) => Number(b.pinned) - Number(a.pinned) || a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
-  }, [sessions, snapshot?.projects]);
+  }, [sessions, snapshot?.projects, snapshot?.projectsLoaded]);
 
   const open = useCallback((session: SessionSummary) => {
     if (!selectedHost) return;

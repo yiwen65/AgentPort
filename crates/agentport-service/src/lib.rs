@@ -2280,7 +2280,24 @@ impl RemoteService for CoreService {
             paths: &self.paths,
             db: &self.db,
         };
-        let projections = self.db.list_session_projections(include_archived)?;
+        // Removing a Project only hides its list entry and keeps its Sessions
+        // for restore. They must not resurface in active lists before the same
+        // path is added again; archived history stays reachable remotely.
+        let visible_projects: HashSet<String> = self
+            .db
+            .list_projects()?
+            .into_iter()
+            .map(|project| project.id)
+            .collect();
+        let projections = self
+            .db
+            .list_session_projections(include_archived)?
+            .into_iter()
+            .filter(|projection| {
+                projection.session.archived_at.is_some()
+                    || visible_projects.contains(&projection.session.project_id)
+            })
+            .collect::<Vec<_>>();
         let listed: HashSet<String> = projections
             .iter()
             .map(|projection| projection.session.id.clone())

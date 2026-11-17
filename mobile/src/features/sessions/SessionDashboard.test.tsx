@@ -75,6 +75,26 @@ describe("V2 Session workspace", () => {
     expect(screen.queryByText("Update failed. Tap to retry")).not.toBeInTheDocument();
   });
 
+  it("does not synthesize a Project row for a Session whose Project entry was removed", async () => {
+    const remote = client();
+    const request = vi.mocked(remote.request), original = request.getMockImplementation()!;
+    const orphan = {
+      id: "orphan", projectId: "prj_removed", presetId: "p", title: "Removed project session", cwd: "/gone",
+      lifecycle: "exited", resumePrecision: "unavailable", adapterType: "claude", transport: "pty",
+      permissionMode: "native", hostAlive: false, createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:00:00Z",
+    };
+    request.mockImplementation((...args) => {
+      const value = original(...args);
+      return args[0] === "host-1" && args[1] === "session.list"
+        ? (value as Promise<unknown[]>).then(sessions => [...sessions, orphan])
+        : value;
+    });
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await screen.findByRole("button", { name: "Approval task" });
+    expect(screen.queryByText("prj_removed")).not.toBeInTheDocument();
+    expect(screen.queryByText(orphan.title)).not.toBeInTheDocument();
+  });
+
   it.each([false, true])("releases a retained native foreground join on activation (another visibility cycle: %s)", async cycled => {
     const remote = client();
     const connection = connectionEvents(remote);

@@ -244,3 +244,76 @@ fn concurrent_adds_across_shared_database_connections_focus_one_winner() {
     assert!(shared.list_sessions(false).unwrap().is_empty());
     assert!(std::fs::read_dir(path).unwrap().next().is_none());
 }
+
+#[test]
+fn removed_project_sessions_are_hidden_from_active_lists_until_restored() {
+    let service = CoreService::memory().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("hidden-project");
+    std::fs::create_dir(&directory).unwrap();
+    let added = service
+        .add_project(ProjectAddParams {
+            path: directory.to_string_lossy().into_owned(),
+            name: None,
+        })
+        .unwrap();
+    let session = |id: &str, archived: bool| Session {
+        id: id.into(),
+        project_id: added.project.id.clone(),
+        worktree_id: None,
+        preset_id: "pre_shell_safe".into(),
+        title: "kept across removal".into(),
+        cwd: directory.to_string_lossy().into_owned(),
+        host_pid: None,
+        host_socket: None,
+        host_token: "fixture-only-token".into(),
+        lifecycle: Lifecycle::Exited,
+        agent_session_id: None,
+        resume_precision: ResumePrecision::Unavailable,
+        adapter_type: AgentType::Shell,
+        transport: AgentTransport::Pty,
+        command: Vec::new(),
+        permission_mode: PermissionMode::Native,
+        pinned_at: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        archived_at: archived.then(chrono::Utc::now),
+    };
+    service
+        .db
+        .insert_session(&session("ses_hidden_active", false))
+        .unwrap();
+    service
+        .db
+        .insert_session(&session("ses_hidden_archived", true))
+        .unwrap();
+    assert_eq!(service.list_sessions(false).unwrap().len(), 1);
+    assert_eq!(service.list_sessions(true).unwrap().len(), 2);
+
+    let preflight = service
+        .project_remove_preflight(ProjectIdParams {
+            project_id: added.project.id.clone(),
+        })
+        .unwrap();
+    service
+        .remove_project(ProjectRemoveParams {
+            project_id: preflight.project_id.clone(),
+            revision: preflight.revision.clone(),
+            sessions: preflight.sessions.clone(),
+            worktree_ids: preflight.worktree_ids.clone(),
+            recoverable_operation_ids: preflight.recoverable_operation_ids.clone(),
+            pending_commit_operation_ids: preflight.pending_commit_operation_ids.clone(),
+        })
+        .unwrap();
+    assert!(service.list_sessions(false).unwrap().is_empty());
+    assert_eq!(service.list_archived_sessions().unwrap().len(), 1);
+
+    service
+        .add_project(ProjectAddParams {
+            path: directory.to_string_lossy().into_owned(),
+            name: None,
+        })
+        .unwrap();
+    assert_eq!(service.list_sessions(false).unwrap().len(), 1);
+    assert_eq!(service.list_sessions(true).unwrap().len(), 2);
+}
