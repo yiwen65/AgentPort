@@ -225,8 +225,7 @@
   outline-offset: -3px !important;
 }
 .session-workspace-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 40% minmax(0, 1fr);
+  display: flex;
   align-items: center;
   padding-inline: max(16px, env(safe-area-inset-left)) max(16px, env(safe-area-inset-right));
   pointer-events: none;
@@ -255,6 +254,8 @@
 .session-actions-fab:active { opacity: 1; transform: scale(.95); }
 @media (prefers-reduced-motion: reduce) { .session-actions-fab { transition: none; } }
 .session-workspace-header h1 {
+  flex: 1;
+  min-width: 0;
   margin: 0;
   overflow: hidden;
   color: var(--text);
@@ -262,26 +263,6 @@
   white-space: nowrap;
   font-size: 13px;
   font-weight: 600;
-}
-.terminal-more-button {
-  grid-column: 3;
-  justify-self: end;
-  width: 44px;
-  height: 44px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: var(--terminal-bg);
-  color: var(--text);
-  font-size: 16px;
-  letter-spacing: -2px;
-  pointer-events: auto;
-  transition: transform 140ms ease;
-  -webkit-tap-highlight-color: transparent;
-}
-.terminal-more-button:active { transform: scale(.95); }
-@media (prefers-reduced-motion: reduce) {
-  .terminal-more-button { transition: none; }
 }
 .session-workspace .terminal-status-stack { flex: 0 0 auto; }
 /* Loading is an overlay, not a row that changes the fitted PTY height. */

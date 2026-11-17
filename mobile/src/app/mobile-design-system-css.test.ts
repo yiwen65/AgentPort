@@ -126,7 +126,7 @@ describe("mobile semantic design system", () => {
   it("places immersive chrome out of flow and keeps logs just below the cutout", () => {
     expect(terminalStyles).toMatch(/\.terminal-chrome-reveal,\s*\.session-workspace-header \{[^}]*position: absolute;[^}]*top: env\(safe-area-inset-top\);[^}]*height: 44px;/s);
     expect(terminalStyles).toMatch(/\.session-actions-fab \{[^}]*position: absolute;[^}]*top: calc\(env\(safe-area-inset-top\) \+ 8px\);/s);
-    expect(terminalStyles).toContain("grid-template-columns: minmax(0, 1fr) 40% minmax(0, 1fr)");
+    expect(terminalStyles).toMatch(/\.session-workspace-header \{\s*display: flex;/);
     expect(terminalStyles).toContain(".session-workspace-header[hidden] { display: none; }");
     expect(terminalStyles).toMatch(/\.session-workspace \.mobile-terminal-surface \{[^}]*padding:\s*2px/s);
     expect(terminalStyles).toContain("prefers-reduced-motion: reduce");
@@ -148,7 +148,6 @@ describe("mobile semantic design system", () => {
     expect(styles).toMatch(/@media \(prefers-contrast: more\)/);
     expect(styles).toMatch(/\.session-stage \{[^}]*background: var\(--terminal-bg\);/s);
     expect(styles).toMatch(/\.terminal-status-stack \{ border-bottom: 0; background: var\(--terminal-bg\); \}/);
-    expect(terminalStyles).toMatch(/\.terminal-more-button \{[^}]*width: 44px;\s*height: 44px;/s);
     expect(styles).toMatch(/\.terminal-mode-options label > span \{ min-height: 44px;/);
     expect(styles).toMatch(/\.mobile-terminal-theme-choice-body \{ min-height: 78px;/);
     expect(styles).toContain("outline: 3px solid var(--terminal-accent)");

@@ -54,13 +54,12 @@ function errorText(error: unknown): string {
   return String(error);
 }
 
-export function SessionWorkspace({ open, client, active = true, onClose, onOpenFiles, onSessionChanged, onOpened }: {
+export function SessionWorkspace({ open, client, active = true, onClose, onSessionChanged, onOpened }: {
   open: OpenSession;
   active?: boolean;
   onOpened?: (session: OpenSession) => void;
   client: RemoteClient;
   onClose: () => void;
-  onOpenFiles?: () => void;
   onSessionChanged: (next?: OpenSession) => void;
 }) {
   const { t } = useTranslation();
@@ -118,6 +117,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
   const [busyAction, setBusyAction] = useState("");
   const [terminalGeometry, setTerminalGeometry] = useState<TerminalGeometry>();
   const actionsTrigger = useRef<HTMLButtonElement>(null);
+  const titleButton = useRef<HTMLButtonElement>(null);
   const terminal = useRef<MobileTerminalHandle>(null);
   const screenKey = checkpointKey(open.hostProfileId, open.session.id);
   const restoreAttempted = useRef(false);
@@ -934,19 +934,15 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
         onClick={(event) => {
           setChromeVisible(true);
           // Touch only reveals an overlay: retain terminal input and keyboard.
-          // Keyboard/assistive activation moves focus to the newly shown action.
-          if (event.detail === 0) window.requestAnimationFrame(() => actionsTrigger.current?.focus({ preventScroll: true }));
+          // Keyboard/assistive activation moves focus to the newly shown title control.
+          if (event.detail === 0) window.requestAnimationFrame(() => titleButton.current?.focus({ preventScroll: true }));
         }}
       />
-      {!chromeVisible ? <button className="session-actions-fab" type="button" aria-label={t("session.menu")}
-        onClick={() => { setChromeVisible(true); setActionsOpen(true); }}>•••</button> : null}
+      {!chromeVisible ? <button ref={actionsTrigger} className="session-actions-fab" type="button" aria-label={t("session.menu")} aria-haspopup="dialog"
+        onClick={() => setActionsOpen(true)}>•••</button> : null}
       <header id="session-chrome" className="session-workspace-header" hidden={!chromeVisible}
         onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); hideChrome(); } }}>
-        <h1 id="session-title" title={open.session.title}><button className="terminal-title-back" type="button" aria-label={t("session.back")} onClick={onClose}>{open.session.title}</button></h1>
-        {onOpenFiles ? <button className="terminal-more-button" type="button" aria-label={t("files.open")} onClick={onOpenFiles}>
-          <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z" /></svg>
-        </button> : null}
-        <button ref={actionsTrigger} className="terminal-more-button" type="button" aria-label={t("session.actions")} aria-haspopup="dialog" onClick={() => setActionsOpen(true)}>•••</button>
+        <h1 id="session-title" title={open.session.title}><button ref={titleButton} className="terminal-title-back" type="button" aria-label={t("session.back")} onClick={onClose}>{open.session.title}</button></h1>
       </header>
       {otherClientInput || notice || error ? <div className="terminal-status-stack">
         {otherClientInput ? <div className="terminal-status-line ephemeral-notice" role="status">{t("session.otherClientTyping")}</div> : null}

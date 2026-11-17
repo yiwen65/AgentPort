@@ -98,7 +98,6 @@ describe("AgentPort Mobile V2 shell", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open generic terminals on SSH only" }));
     expect(await screen.findByText(/No terminals yet/)).toBeInTheDocument();
     expect(terminalClient.list).toHaveBeenCalledWith("ssh-host"); expect(remote.connect).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "Project files" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Back to hosts" }));
     expect(await screen.findByRole("dialog", { name: "Computers" })).toBeInTheDocument();
   });
@@ -279,7 +278,7 @@ describe("AgentPort Mobile V2 shell", () => {
     expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.detach")).toHaveLength(0);
   });
 
-  it("opens Session files by swipe and button without replacing or detaching the terminal", async () => {
+  it("opens Session files by swipe without replacing or detaching the terminal", async () => {
     await i18n.changeLanguage("en-US");
     const { remote } = focusTestClient();
     const { container } = render(<App client={remote} hostAuthClient={hostAuthClient} />);
@@ -306,9 +305,7 @@ describe("AgentPort Mobile V2 shell", () => {
     expect(shell).toHaveAttribute("data-page", "terminal");
     expect(container.querySelector(".session-workspace")).toBe(renderer);
     expect(input).not.toHaveFocus();
-    fireEvent.click(container.querySelector(".terminal-chrome-reveal")!);
-    fireEvent.click(screen.getByRole("button", { name: "Project files" }));
-    expect(shell).toHaveAttribute("data-page", "files");
+    expect(screen.queryByRole("button", { name: "Project files" })).not.toBeInTheDocument();
     expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(1);
     expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.detach")).toHaveLength(0);
   });

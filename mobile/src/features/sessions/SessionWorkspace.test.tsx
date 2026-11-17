@@ -416,8 +416,7 @@ describe("SessionWorkspace", () => {
     render(<SessionWorkspace open={{ ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false } }} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "Restart" }));
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
-    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
-    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     await screen.findByRole("button", { name: "Restart" });
     expect(screen.queryByRole("region", { name: "Raw terminal" })).not.toBeInTheDocument();
@@ -443,8 +442,7 @@ describe("SessionWorkspace", () => {
     request.mockImplementation((...args) => args[1] === "session.stop" ? new Promise((_resolve, reject) => { fail = reject; }) : original(...args));
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
-    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
-    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     const dialog = screen.getByRole("dialog");
     const stop = within(dialog).getByRole("button", { name: "Stop" });
     fireEvent.click(stop);
@@ -468,8 +466,7 @@ describe("SessionWorkspace", () => {
     request.mockImplementation((...args) => args[1] === "session.stop" ? new Promise(resolve => { finish = resolve; }) : original(...args));
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
-    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
-    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     await act(async () => {
       emit({ subscriptionId: "att-1", eventType: "output", cursor: null, payload: { session_id: "ses-1", dataBase64: btoa("Resume this session with: claude --resume fixture") } });
@@ -498,8 +495,7 @@ describe("SessionWorkspace", () => {
     });
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
-    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
-    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     const restart = screen.getByRole("button", { name: "Restart" });
     fireEvent.click(restart);
     fireEvent.click(restart);
@@ -520,8 +516,7 @@ describe("SessionWorkspace", () => {
     request.mockImplementation((...args) => args[1] === "session.stop" ? Promise.reject(new Error(message)) : original(...args));
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
-    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
-    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     fireEvent.click(screen.getByRole("button", { name: "Restart" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(message);
     expect(request.mock.calls.filter(([, m]) => m === "session.stop")).toHaveLength(1);
@@ -535,8 +530,7 @@ describe("SessionWorkspace", () => {
     request.mockImplementation((...args) => args[1] === "session.restart" ? Promise.reject(new Error("Restart outcome unknown")) : original(...args));
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={changed} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
-    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
-    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     fireEvent.click(screen.getByRole("button", { name: "Restart" }));
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "ended"));
     expect(screen.getByRole("alert")).toHaveTextContent("Restart outcome unknown");
@@ -551,8 +545,7 @@ describe("SessionWorkspace", () => {
     const prompt = vi.spyOn(window, "prompt").mockReturnValue(null);
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={changed} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
-    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
-    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     const dialog = screen.getByRole("dialog");
     expect(dialog.parentElement).toHaveClass("modal-backdrop-no-blur");
     fireEvent.click(within(dialog).getByRole("button", { name: "Rename" }));
@@ -576,11 +569,9 @@ describe("SessionWorkspace", () => {
     const title = "A long Session name with 中文 and several words";
     render(<SessionWorkspace open={{ ...open, session: { ...open.session, title } }} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
-    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
-    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     const dialog = screen.getByRole("dialog", { name: title });
     expect(within(dialog).getByRole("heading", { name: title, level: 2 })).toBeInTheDocument();
-    expect(within(dialog).queryByText("Session actions")).not.toBeInTheDocument();
     expect(dialog.querySelector(".terminal-session-context")).toHaveTextContent(branch ? `AgentSessions · ${branch}` : "AgentSessions");
     expect(dialog.querySelector(".terminal-session-context")?.textContent).toBe(branch ? `AgentSessions · ${branch}` : "AgentSessions");
     expect(within(dialog).getByRole("button", { name: "Rename" })).toBeEnabled();
@@ -1037,8 +1028,7 @@ describe("SessionWorkspace", () => {
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
 
-    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
-    const trigger = screen.getByRole("button", { name: "Session actions" });
+    const trigger = screen.getByRole("button", { name: "Session menu" });
     fireEvent.click(trigger);
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).queryByRole("radiogroup")).not.toBeInTheDocument();
@@ -1059,8 +1049,7 @@ describe("SessionWorkspace", () => {
   it("opens the Git Center from the Session actions sheet", async () => {
     const { client, request } = setupClient();
     render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Show session title and actions" }));
-    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Session menu" }));
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Git" }));
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByRole("tab", { name: "Changes" })).toBeInTheDocument();
@@ -1076,33 +1065,32 @@ describe("SessionWorkspace", () => {
     expect(within(dialog).getByRole("button", { name: "Git" })).toBeInTheDocument();
   });
 
-  it("starts immersive, reveals only title/actions, and returns to the list without detaching", async () => {
+  it("starts immersive, reveals only the title, and returns to the list without detaching", async () => {
     const { client, request } = setupClient();
     const onClose = vi.fn();
     const props = { open, client, onClose, onSessionChanged: vi.fn() };
     const { rerender } = render(<SessionWorkspace {...props} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     expect(screen.queryByRole("heading", { name: "Agent task" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Session actions" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Session menu" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back to sessions" })).not.toBeInTheDocument();
     expect(screen.queryByTestId("session-project-branch")).not.toBeInTheDocument();
     expect(request.mock.calls.some(([, method]) => method === "git.context.resolve")).toBe(true);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show session title" }));
     expect(screen.getByRole("heading", { name: "Agent task" })).toBeInTheDocument();
     fireEvent.pointerDown(screen.getByRole("region", { name: "Raw terminal" }));
     expect(screen.queryByRole("heading", { name: "Agent task" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
-    fireEvent.keyDown(screen.getByRole("button", { name: "Session actions" }), { key: "Escape" });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Show session title and actions" })).toHaveFocus());
-    fireEvent.click(screen.getByRole("button", { name: "Show session title and actions" }));
-    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show session title" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: "Back to sessions" }), { key: "Escape" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show session title" })).toHaveFocus());
+    fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     const menu = screen.getByRole("dialog");
     expect([...menu.querySelectorAll(".terminal-action-grid button")].map(button => button.textContent)).toEqual(["Rename", "Pin", "Restart", "Stop", "Git", "A−", "A+"]);
     expect(menu).toHaveTextContent("AgentSessions · main");
     expect(menu).not.toHaveTextContent("running · native");
     fireEvent.click(within(menu).getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show session title" }));
     fireEvent.click(screen.getByRole("button", { name: "Back to sessions" }));
     expect(onClose).toHaveBeenCalledOnce();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
