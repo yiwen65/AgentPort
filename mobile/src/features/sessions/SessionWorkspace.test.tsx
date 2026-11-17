@@ -97,6 +97,7 @@ function setupClient({ rejectResize = false, autoReplay = true, probeHealthy = t
     if (method === "session.list") return Promise.resolve([]);
     if (method === "session.stop") return Promise.resolve({ groupCleaned: true });
     if (method === "session.input") return Promise.resolve({ batchId: "batch", serverSequence: 1, phase: "completed" });
+    if (method === "session.auto_title") return Promise.resolve(false);
     if (method === "session.control" && params.control === "resize") {
       if (rejectResize) return Promise.reject(new Error("request failed on the remote host"));
       return Promise.resolve({ accepted: true, terminalGeometry: { runId: "run", runOrdinal: 1, cols: params.cols, rows: params.rows, sourceKind: "mobile", sourceDeviceId: params.sourceDeviceId, attachmentId: "att-1", orientation: params.orientation, revision: 1, updatedAt: "2026-09-02T00:00:00Z" } });
@@ -720,6 +721,35 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByRole("button", { name: "Conversation" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Send text")).not.toBeInTheDocument();
     expect(localStorage.getItem("agentport-mobile-session-cursor-v1:host-1:ses-1")).toBeNull();
+  });
+
+  it("auto-titles the Session from the first submitted input", async () => {
+    const { client, request } = setupClient();
+    const renamed = { ...open.session, title: "你好" };
+    const base = request.getMockImplementation()!;
+    request.mockImplementation((...args) => {
+      if (args[1] === "session.auto_title") return Promise.resolve(true);
+      if (args[1] === "session.list") return Promise.resolve([renamed]);
+      return base(...args);
+    });
+    const onSessionChanged = vi.fn();
+    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={onSessionChanged} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith(
+      "host-1",
+      "session.auto_title",
+      { sessionId: "ses-1", input: "你好" },
+    ));
+    await waitFor(() => expect(onSessionChanged).toHaveBeenCalledWith(expect.objectContaining({
+      hostProfileId: "host-1",
+      session: expect.objectContaining({ id: "ses-1", title: "你好" }),
+    })));
+
+    fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
+    await waitFor(() => expect(request.mock.calls.filter(([, method]) => method === "session.input")).toHaveLength(2));
+    expect(request.mock.calls.filter(([, method]) => method === "session.auto_title")).toHaveLength(1);
   });
 
   it("dispatches ordered input batches without waiting for earlier remote results", async () => {

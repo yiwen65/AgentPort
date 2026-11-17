@@ -15,6 +15,7 @@ import {
 } from "../../terminal/terminalThemes";
 import { useMobileTerminalAppearance } from "../../terminal/terminalAppearance";
 import { decodeBase64Bytes, encodeBase64Utf8, outputBase64Of, sessionBatchId, sessionIdOf } from "./sessionProtocol";
+import { captureFirstSubmittedInput, createFirstInputCapture } from "./firstInput";
 import { diag } from "../../platform/diag";
 import { createScrollDiagnostics, SCROLL_DIAGNOSTICS_ENABLED, type ScrollDiagnostics } from "../../terminal/scrollDiagnostics";
 import type { OpenSession, RunCursor, SessionAttachResult, SessionEventPayload, SessionStatus, TerminalGeometry } from "./types";
@@ -123,6 +124,7 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
   const checkpointReady = useRef(false);
   const cursor = useRef<RunCursor>();
   const ownBatches = useRef(new Set<string>());
+  const firstInput = useRef(createFirstInputCapture());
   const attachmentRef = useRef<string>();
   const attachedRun = useRef<{ runId: string; runOrdinal: number }>();
   const latestStatus = useRef(open.session.latestStatus);
@@ -696,8 +698,28 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
     return () => { cancelled = true; clearTimeout(timer); };
   }, [active, busyAction, client, connectionLabel, onSessionChanged, open, resetRunOutput]);
 
+  // The server keeps a generated Session title pending until the first input.
+  // A failed metadata update is retried on the next submitted line; later
+  // calls for an already-titled Session are harmless no-ops.
+  const autoTitleFromFirstInput = useCallback((input: string) => {
+    void client.request<boolean>(open.hostProfileId, "session.auto_title", {
+      sessionId: open.session.id,
+      input,
+    }).then(async (renamed) => {
+      if (!renamed) return;
+      const sessions = await client.request<OpenSession["session"][]>(
+        open.hostProfileId, "session.list", { includeArchived: false },
+      ).catch(() => undefined);
+      const updated = sessions?.find(session => session.id === open.session.id);
+      if (updated) changedRef.current({ ...openRef.current, session: updated });
+    }).catch(() => {
+      firstInput.current.submitted = false;
+    });
+  }, [client, open.hostProfileId, open.session.id]);
+
   const sendInput = useCallback((data: string) => {
     if (busyAction === "stop" || !attachmentId || attachmentRef.current !== attachmentId || connectionLabel !== "live") return;
+    const firstSubmittedInput = captureFirstSubmittedInput(firstInput.current, data);
     const diagnosticSequence = activeRef.current && diagnosticsRef.current?.running ? ++diagnosticInputSequence.current : 0;
     if (diagnosticSequence) diagnosticsRef.current?.mark("inputCorrelation", diagnosticSequence);
     if (activeRef.current) diagnosticsRef.current?.mark("input", data.length);
@@ -707,7 +729,12 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
     // Bridge frames therefore retain input order without adding network RTT to
     // every later keystroke.
     inputDispatchQueue.current = inputDispatchQueue.current.then(() => new Promise<void>((submitted) => {
-      if (attachmentRef.current !== attachmentId) { ownBatches.current.delete(batchId); submitted(); return; }
+      if (attachmentRef.current !== attachmentId) {
+        ownBatches.current.delete(batchId);
+        if (firstSubmittedInput) firstInput.current.submitted = false;
+        submitted();
+        return;
+      }
       let submissionReleased = false;
       const releaseSubmission = () => {
         if (submissionReleased) return;
@@ -723,13 +750,15 @@ export function SessionWorkspace({ open, client, active = true, onClose, onOpenF
         if (activeRef.current && diagnosticSequence) diagnosticsRef.current?.mark(result?.phase === "completed" ? "inputAck" : "inputFailed", diagnosticSequence);
         ownBatches.current.delete(batchId);
         if (result.phase === "unknown") setError(t("session.inputUnknown"));
+        if (firstSubmittedInput) autoTitleFromFirstInput(firstSubmittedInput);
       }).catch((requestError) => {
         if (activeRef.current && diagnosticSequence) diagnosticsRef.current?.mark("inputFailed", diagnosticSequence);
         ownBatches.current.delete(batchId);
+        if (firstSubmittedInput) firstInput.current.submitted = false;
         setError(errorText(requestError));
       }).finally(releaseSubmission);
     }));
-  }, [attachmentId, client, open.hostProfileId, t, connectionLabel, busyAction]);
+  }, [attachmentId, autoTitleFromFirstInput, client, open.hostProfileId, t, connectionLabel, busyAction]);
 
   // This is the single mobile -> Bridge resize seam. Host-side CAS ownership
   // keeps xterm/viewport observation separate from cross-client authority.
