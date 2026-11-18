@@ -124,7 +124,7 @@ function connectionEvents(client: RemoteClient) {
 describe("SessionWorkspace", () => {
   it("enables the keyboard entry only for the active live terminal", async () => {
     const { client, emit } = setupClient({ autoReplay: false });
-    const props = { open, client, onClose: vi.fn(), onSessionChanged: vi.fn() };
+    const props = { open, client, onSessionChanged: vi.fn() };
     const view = render(<SessionWorkspace {...props} />);
     await waitFor(() => expect(terminalHarness.props).toBeDefined());
     expect(terminalHarness.props?.keyboardEnabled).toBe(false);
@@ -149,7 +149,7 @@ describe("SessionWorkspace", () => {
       return Promise.resolve({ attachmentId: "att-1", sessionId: "ses-1", childAlive: true, runId: "run", runOrdinal: 1,
         cursor, features: ["terminal_snapshot_v1"], screenSnapshot: { content: "FULL_SCREEN", cols: 47, rows: 53, pending: [], state } });
     });
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.attach", expect.objectContaining({ screenSnapshot: true })));
     expect(terminalHarness.writes).toEqual([]);
     expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "attaching");
@@ -163,7 +163,7 @@ describe("SessionWorkspace", () => {
     const base = request.getMockImplementation()!;
     request.mockImplementation((...args) => args[1] === "session.attach" && args[2].screenSnapshot
       ? Promise.reject({ code: "request_not_executed", status, message: "old Bridge" }) : base(...args));
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", status === "not_executed" ? "live" : "failed"));
     const calls = request.mock.calls.filter(call => call[1] === "session.attach");
     expect(calls).toHaveLength(status === "not_executed" ? 2 : 1);
@@ -172,12 +172,12 @@ describe("SessionWorkspace", () => {
 
   it("explicitly warns when a cold attach has no complete snapshot", async () => {
     const { client } = setupClient();
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     expect(await screen.findByText(/This Host has no complete screen snapshot/)).toBeInTheDocument();
   });
   it("restores a replaced terminal screen and resumes strictly after its captured cursor", async () => {
     const first = setupClient();
-    const props = { open, onClose: vi.fn(), onSessionChanged: vi.fn() };
+    const props = { open, onSessionChanged: vi.fn() };
     const view = render(<SessionWorkspace {...props} client={first.client} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     const consumed = { runId: "run", runOrdinal: 1, generation: 0, offset: 123, statusSequence: 0 };
@@ -197,7 +197,7 @@ describe("SessionWorkspace", () => {
     let resolve!: (screen: import("../../terminal/terminalCheckpoint").TerminalCheckpoint) => void;
     saveCheckpoint(checkpointKey("host-1", "ses-1"), new Promise(done => { resolve = done; }));
     const { client, request } = setupClient();
-    const view = render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    const view = render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await act(async () => undefined);
     expect(request.mock.calls.filter(call => call[1] === "session.attach")).toHaveLength(0);
     view.unmount();
@@ -210,7 +210,7 @@ describe("SessionWorkspace", () => {
     const saved = { content: "OLD_RUN", cols: 47, rows: 53, pending: [], cursor: { runId: "old", runOrdinal: 0, generation: 0, offset: 123, statusSequence: 0 } };
     saveCheckpoint(checkpointKey("host-1", "ses-1"), Promise.resolve(saved));
     const { client, request } = setupClient();
-    render(<SessionWorkspace open={{ ...open, session: { ...open.session, latestStatus: { runId: "run", runOrdinal: 1, sequence: 1, state: "idle", source: "process", confidence: "low", occurredAt: "" } } }} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={{ ...open, session: { ...open.session, latestStatus: { runId: "run", runOrdinal: 1, sequence: 1, state: "idle", source: "process", confidence: "low", occurredAt: "" } } }} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.attach", expect.objectContaining({ resumeFrom: undefined })));
     expect(terminalHarness.writes).not.toContain("OLD_RUN");
   });
@@ -239,7 +239,7 @@ describe("SessionWorkspace", () => {
     request.mockImplementation((...args) => args[1] === "session.list"
       ? Promise.resolve([{ ...open.session, lifecycle: "running", hostAlive: true }]) : base(...args));
     const changed = vi.fn();
-    render(<SessionWorkspace open={{ ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false } }} client={client} onClose={vi.fn()} onSessionChanged={changed} />);
+    render(<SessionWorkspace open={{ ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false } }} client={client} onSessionChanged={changed} />);
     await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
     expect(request.mock.calls.filter(([, method]) => method === "session.attach")).toHaveLength(1);
     expect(request.mock.calls.some(([, method]) => ["session.restart", "session.stop", "session.input"].includes(method))).toBe(false);
@@ -256,7 +256,7 @@ describe("SessionWorkspace", () => {
     let resolveList!: (value: unknown) => void;
     request.mockImplementation((...args) => args[1] === "session.list"
       ? new Promise(resolve => { resolveList = resolve; }) : base(...args));
-    const props = { open: { ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false } }, client, onClose: vi.fn(), onSessionChanged: vi.fn() };
+    const props = { open: { ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false } }, client, onSessionChanged: vi.fn() };
     const view = render(<SessionWorkspace {...props} active />);
     await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
     expect(request.mock.calls.filter(([, method]) => method === "session.list")).toHaveLength(1);
@@ -270,7 +270,7 @@ describe("SessionWorkspace", () => {
     const base = request.getMockImplementation()!;
     let finish!: (value: unknown) => void;
     request.mockImplementation((...args) => args[1] === "session.attach" ? new Promise(resolve => { finish = resolve; }) : base(...args));
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(finish).toBeTypeOf("function"));
     await act(async () => {
       emit({ subscriptionId: "att-1", eventType: "exit", cursor: null, payload: { session_id: "ses-1", run_id: "run", run_ordinal: 1, group_cleaned: true } });
@@ -286,7 +286,7 @@ describe("SessionWorkspace", () => {
     const base = request.getMockImplementation()!;
     let finish!: (value: unknown) => void;
     request.mockImplementation((...args) => args[1] === "session.control" ? new Promise(resolve => { finish = resolve; }) : base(...args));
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     act(() => terminalHarness.props?.onResize?.(52, 32));
     await waitFor(() => expect(finish).toBeTypeOf("function"));
@@ -300,7 +300,7 @@ describe("SessionWorkspace", () => {
 
   it("ignores another attachment's late exit and output for the same Session", async () => {
     const { client, emit } = setupClient();
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     await act(async () => {
       emit({ subscriptionId: "old-attachment", eventType: "output", cursor: null, payload: { session_id: "ses-1", dataBase64: btoa("old-run") } });
@@ -314,7 +314,7 @@ describe("SessionWorkspace", () => {
   it("reattaches on a newer run snapshot even if both snapshots say running", async () => {
     const { client, request } = setupClient();
     const status = { runId: "run", runOrdinal: 1, sequence: 1, state: "idle", source: "process", confidence: "high", occurredAt: "2026-09-08T00:00:00Z" };
-    const props = { client, onClose: vi.fn(), onSessionChanged: vi.fn() };
+    const props = { client, onSessionChanged: vi.fn() };
     const view = render(<SessionWorkspace {...props} open={{ ...open, session: { ...open.session, hostAlive: true, latestStatus: status } }} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     const base = request.getMockImplementation()!;
@@ -329,7 +329,7 @@ describe("SessionWorkspace", () => {
   it("publishes current state and exit while rejecting stale run and sequence events", async () => {
     const { client, emit } = setupClient();
     const changed = vi.fn();
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={changed} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={changed} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     const state = { session_id: "ses-1", run_id: "run", run_ordinal: 1, sequence: 3, state: "needs_input", source: "hook", confidence: "high", occurred_at: "2026-09-08T00:00:00Z" };
     act(() => emit({ subscriptionId: "att-1", eventType: "state", cursor: null, payload: state }));
@@ -346,7 +346,7 @@ describe("SessionWorkspace", () => {
 
   it("ignores stale geometry revisions instead of changing ownership back", async () => {
     const { client, emit } = setupClient();
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     const geometry = { runId: "run", runOrdinal: 1, cols: 100, rows: 30, sourceKind: "desktop" as const, revision: 3, updatedAt: "2026-09-08T00:00:00Z" };
     act(() => {
@@ -358,7 +358,7 @@ describe("SessionWorkspace", () => {
 
   it("accepts a current-run stopped snapshot after local Restart when Exit delivery was lost", async () => {
     const { client } = setupClient();
-    const props = { client, onClose: vi.fn(), onSessionChanged: vi.fn() };
+    const props = { client, onSessionChanged: vi.fn() };
     const view = render(<SessionWorkspace {...props} open={{ ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false } }} />);
     fireEvent.click(await screen.findByRole("button", { name: "Restart" }));
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
@@ -377,7 +377,7 @@ describe("SessionWorkspace", () => {
       if (args[1] === "session.attach" && !finish) return new Promise(resolve => { finish = resolve; });
       return base(...args);
     });
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(finish).toBeTypeOf("function"));
     await act(async () => {
       emit({ subscriptionId: "att-1", eventType: "resync_required", cursor: null, payload: { reason: "host_stream_closed" } });
@@ -389,7 +389,7 @@ describe("SessionWorkspace", () => {
 
   it("offers Restart for an ended host instead of attempting an impossible attachment", async () => {
     const { client, request } = setupClient();
-    render(<SessionWorkspace open={{ ...open, session: { ...open.session, lifecycle: "exited", hostAlive: false } }} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={{ ...open, session: { ...open.session, lifecycle: "exited", hostAlive: false } }} client={client} onSessionChanged={vi.fn()} />);
     expect(await screen.findByRole("button", { name: "Restart" })).toBeInTheDocument();
     expect(request.mock.calls.some(([, method]) => method === "session.attach")).toBe(false);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -402,7 +402,7 @@ describe("SessionWorkspace", () => {
   it("keeps the restart identity and disables the button while the explicit request is pending", async () => {
     const { client, request } = setupClient();
     request.mockImplementation(() => new Promise(() => {}));
-    render(<SessionWorkspace open={{ ...open, projectName: undefined, session: { ...open.session, lifecycle: "stopped" } }} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={{ ...open, projectName: undefined, session: { ...open.session, lifecycle: "stopped" } }} client={client} onSessionChanged={vi.fn()} />);
     const restart = await screen.findByRole("button", { name: "Restart" });
     expect(screen.getByText("prj-1")).toBeVisible();
     fireEvent.click(restart);
@@ -413,7 +413,7 @@ describe("SessionWorkspace", () => {
 
   it("returns to the centered restart page after restarting then stopping without stale parent props", async () => {
     const { client, request } = setupClient();
-    render(<SessionWorkspace open={{ ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false } }} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={{ ...open, session: { ...open.session, lifecycle: "stopped", hostAlive: false } }} client={client} onSessionChanged={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "Restart" }));
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
@@ -428,7 +428,7 @@ describe("SessionWorkspace", () => {
 
   it("restarts a bypass session directly without a second permission dialog", async () => {
     const { client, request } = setupClient();
-    render(<SessionWorkspace open={{ ...open, session: { ...open.session, lifecycle: "stopped", permissionMode: "bypass" } }} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={{ ...open, session: { ...open.session, lifecycle: "stopped", permissionMode: "bypass" } }} client={client} onSessionChanged={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "Restart" }));
     await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.restart", { sessionId: "ses-1", riskAck: true }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -440,7 +440,7 @@ describe("SessionWorkspace", () => {
     const original = request.getMockImplementation()!;
     let fail!: (reason: unknown) => void;
     request.mockImplementation((...args) => args[1] === "session.stop" ? new Promise((_resolve, reject) => { fail = reject; }) : original(...args));
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     const dialog = screen.getByRole("dialog");
@@ -464,7 +464,7 @@ describe("SessionWorkspace", () => {
     const original = request.getMockImplementation()!;
     let finish!: (value: unknown) => void;
     request.mockImplementation((...args) => args[1] === "session.stop" ? new Promise(resolve => { finish = resolve; }) : original(...args));
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
@@ -493,7 +493,7 @@ describe("SessionWorkspace", () => {
       if (args[1] === "session.restart" && running) return Promise.reject(new Error("request failed on the remote host"));
       return original(...args);
     });
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     const restart = screen.getByRole("button", { name: "Restart" });
@@ -514,7 +514,7 @@ describe("SessionWorkspace", () => {
     const { client, request } = setupClient();
     const original = request.getMockImplementation()!;
     request.mockImplementation((...args) => args[1] === "session.stop" ? Promise.reject(new Error(message)) : original(...args));
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     fireEvent.click(screen.getByRole("button", { name: "Restart" }));
@@ -528,7 +528,7 @@ describe("SessionWorkspace", () => {
     const original = request.getMockImplementation()!;
     const changed = vi.fn();
     request.mockImplementation((...args) => args[1] === "session.restart" ? Promise.reject(new Error("Restart outcome unknown")) : original(...args));
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={changed} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={changed} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     fireEvent.click(screen.getByRole("button", { name: "Restart" }));
@@ -543,7 +543,7 @@ describe("SessionWorkspace", () => {
     const { client, request } = setupClient();
     const changed = vi.fn();
     const prompt = vi.spyOn(window, "prompt").mockReturnValue(null);
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={changed} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={changed} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     const dialog = screen.getByRole("dialog");
@@ -567,7 +567,7 @@ describe("SessionWorkspace", () => {
     request.mockImplementation((...args) => args[1] === "git.context.resolve"
       ? Promise.resolve({ actualBranch: branch }) : base(...args));
     const title = "A long Session name with 中文 and several words";
-    render(<SessionWorkspace open={{ ...open, session: { ...open.session, title } }} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={{ ...open, session: { ...open.session, title } }} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     const dialog = screen.getByRole("dialog", { name: title });
@@ -579,7 +579,7 @@ describe("SessionWorkspace", () => {
 
   it("keeps a healthy foreground connection, attachment and terminal immediately usable", async () => {
     const { client, request } = setupClient();
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     const visibility = vi.spyOn(document, "visibilityState", "get");
     visibility.mockReturnValue("hidden"); fireEvent(document, new Event("visibilitychange"));
@@ -600,7 +600,7 @@ describe("SessionWorkspace", () => {
     let failProbe!: (error: unknown) => void;
     request.mockImplementation((...args) => args[1] === "agent.preferences" && args[3]?.signal
       ? new Promise((_, reject) => { failProbe = reject; }) : original(...args));
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     const visibility = vi.spyOn(document, "visibilityState", "get");
     visibility.mockReturnValue("hidden"); fireEvent(document, new Event("visibilitychange"));
@@ -619,7 +619,7 @@ describe("SessionWorkspace", () => {
 
   it("covers foreground replay until the matching parsed frame has rendered", async () => {
     const { client, request } = setupClient({ probeHealthy: false });
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     terminalHarness.deferPaint = true;
     const visibility = vi.spyOn(document, "visibilityState", "get");
@@ -649,7 +649,7 @@ describe("SessionWorkspace", () => {
         return {} as Awaited<ReturnType<RemoteClient["connect"]>>;
       });
     }
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     const consumed = { runId: "run", runOrdinal: 1, generation: 0, offset: 5 };
     await act(async () => {
@@ -671,7 +671,7 @@ describe("SessionWorkspace", () => {
   it("recovers the retained terminal with a resume cursor and disables input while disconnected", async () => {
     const { client, request, emit } = setupClient();
     const connection = connectionEvents(client);
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     const resume = { runId: "run", runOrdinal: 1, generation: 0, offset: 5, statusSequence: 0 };
     await act(async () => {
@@ -691,7 +691,7 @@ describe("SessionWorkspace", () => {
 
   it("attaches with cursor semantics and keeps interaction on the raw terminal path", async () => {
     const { client, request, emit } = setupClient();
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     expect(screen.queryByText("AgentSessions")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
@@ -724,7 +724,7 @@ describe("SessionWorkspace", () => {
       return base(...args);
     });
     const onSessionChanged = vi.fn();
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={onSessionChanged} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={onSessionChanged} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
 
     fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
@@ -745,7 +745,7 @@ describe("SessionWorkspace", () => {
 
   it("dispatches ordered input batches without waiting for earlier remote results", async () => {
     const { client, request } = setupClient();
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
 
     let resolveInputs!: (value: { phase: string }) => void;
@@ -772,7 +772,7 @@ describe("SessionWorkspace", () => {
 
   it("streams output without retaining chunks or rerendering the workspace", async () => {
     const { client, emit } = setupClient();
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     const settledRenders = terminalHarness.renders;
     const persist = vi.spyOn(Storage.prototype, "setItem");
@@ -799,7 +799,7 @@ describe("SessionWorkspace", () => {
   it("shows the small replay immediately and allows input before replay completes", async () => {
     const { client, request, emit } = setupClient({ autoReplay: false });
     terminalHarness.queued = true;
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     expect(terminalHarness.props?.obscured).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Type terminal input" }));
@@ -829,7 +829,7 @@ describe("SessionWorkspace", () => {
   it("does not let an old parse completion release resize before the replacement replay", async () => {
     const { client, request, emit } = setupClient({ autoReplay: false });
     terminalHarness.queued = true;
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     act(() => terminalHarness.props?.onResize?.(52, 32));
     act(() => {
@@ -848,7 +848,7 @@ describe("SessionWorkspace", () => {
 
   it("fences queued events immediately when resync resets the renderer", async () => {
     const { client, request, emit } = setupClient({ autoReplay: false });
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     const stale = { runId: "old", runOrdinal: 1, generation: 0, offset: 999, statusSequence: 1 };
     act(() => {
@@ -866,7 +866,7 @@ describe("SessionWorkspace", () => {
 
   it("consumes the Host terminal_geometry_changed event contract", async () => {
     const { client, request, emit } = setupClient();
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     fireEvent.click(screen.getByRole("button", { name: "Resize terminal" }));
     await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "session.control", expect.objectContaining({ control: "resize", expectedRevision: 0 })));
@@ -904,7 +904,7 @@ describe("SessionWorkspace", () => {
 
   it("ignores structured envelopes and coalesces resize signals onto session.control", async () => {
     const { client, request, emit } = setupClient();
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     await act(async () => emit({ subscriptionId: "att-1", eventType: "structured", cursor: {}, payload: { sessionId: "ses-1", event: { type: "tui", text: "Approve? [y/N]" } } }));
     expect(screen.queryByText("Approval requested")).not.toBeInTheDocument();
@@ -926,7 +926,7 @@ describe("SessionWorkspace", () => {
 
   it("does not resize the host while files cover the terminal, and applies the latest size on return", async () => {
     const { client, request } = setupClient();
-    const callbacks = { onClose: vi.fn(), onSessionChanged: vi.fn() };
+    const callbacks = { onSessionChanged: vi.fn() };
     const view = render(<SessionWorkspace open={open} client={client} {...callbacks} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     expect(terminalHarness.props!.active).toBe(true);
@@ -951,7 +951,7 @@ describe("SessionWorkspace", () => {
       if (args[1] === "session.control") return new Promise(resolve => { finish = resolve; });
       return original(...args);
     });
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     act(() => terminalHarness.props!.onResize!(52, 40));
     await waitFor(() => expect(request.mock.calls.filter(([, m]) => m === "session.control")).toHaveLength(1));
@@ -965,7 +965,7 @@ describe("SessionWorkspace", () => {
 
   it("keeps the live terminal clean and interactive when phone resize fails", async () => {
     const { client, request } = setupClient({ rejectResize: true });
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
 
     fireEvent.click(screen.getByRole("button", { name: "Resize terminal" }));
@@ -987,7 +987,7 @@ describe("SessionWorkspace", () => {
       runId: "run", runOrdinal: 1, generation: 0, offset: 4096, statusSequence: 3,
     }));
     const { client, request } = setupClient();
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     expect(request).toHaveBeenCalledWith("host-1", "session.attach", expect.objectContaining({
       replayTailBytes: 64 * 1024,
@@ -1004,7 +1004,7 @@ describe("SessionWorkspace", () => {
     }
     const { client, request } = setupClient();
     const { container } = render(<>
-      <div hidden><SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} /></div>
+      <div hidden><SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} /></div>
       <AppearanceControl />
     </>);
     const workspace = container.querySelector("article")!;
@@ -1025,7 +1025,7 @@ describe("SessionWorkspace", () => {
 
   it("moves keyboard focus into the actions sheet, traps Tab, and restores the trigger on Escape", async () => {
     const { client } = setupClient();
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
 
     const trigger = screen.getByRole("button", { name: "Session menu" });
@@ -1048,7 +1048,7 @@ describe("SessionWorkspace", () => {
 
   it("opens the Git Center from the Session actions sheet", async () => {
     const { client, request } = setupClient();
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "Session menu" }));
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Git" }));
     const dialog = await screen.findByRole("dialog");
@@ -1059,40 +1059,32 @@ describe("SessionWorkspace", () => {
 
   it("opens the actions sheet from the floating menu while chrome is hidden", async () => {
     const { client } = setupClient();
-    render(<SessionWorkspace open={open} client={client} onClose={vi.fn()} onSessionChanged={vi.fn()} />);
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "Session menu" }));
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByRole("button", { name: "Git" })).toBeInTheDocument();
   });
 
-  it("starts immersive, reveals only the title, and returns to the list without detaching", async () => {
+  it("starts immersive without a title overlay and keeps the terminal mounted", async () => {
     const { client, request } = setupClient();
-    const onClose = vi.fn();
-    const props = { open, client, onClose, onSessionChanged: vi.fn() };
+    const props = { open, client, onSessionChanged: vi.fn() };
     const { rerender } = render(<SessionWorkspace {...props} />);
     await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
     expect(screen.queryByRole("heading", { name: "Agent task" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Session menu" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show session title" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back to sessions" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Session menu" })).toBeInTheDocument();
     expect(screen.queryByTestId("session-project-branch")).not.toBeInTheDocument();
     expect(request.mock.calls.some(([, method]) => method === "git.context.resolve")).toBe(true);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show session title" }));
-    expect(screen.getByRole("heading", { name: "Agent task" })).toBeInTheDocument();
-    fireEvent.pointerDown(screen.getByRole("region", { name: "Raw terminal" }));
+    fireEvent.pointerDown(screen.getByRole("article"));
     expect(screen.queryByRole("heading", { name: "Agent task" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Show session title" }));
-    fireEvent.keyDown(screen.getByRole("button", { name: "Back to sessions" }), { key: "Escape" });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Show session title" })).toHaveFocus());
     fireEvent.click(screen.getByRole("button", { name: "Session menu" }));
     const menu = screen.getByRole("dialog");
     expect([...menu.querySelectorAll(".terminal-action-grid button")].map(button => button.textContent)).toEqual(["Rename", "Pin", "Restart", "Stop", "Git", "A−", "A+"]);
     expect(menu).toHaveTextContent("AgentSessions · main");
     expect(menu).not.toHaveTextContent("running · native");
     fireEvent.click(within(menu).getByRole("button", { name: "Close" }));
-    fireEvent.click(screen.getByRole("button", { name: "Show session title" }));
-    fireEvent.click(screen.getByRole("button", { name: "Back to sessions" }));
-    expect(onClose).toHaveBeenCalledOnce();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     rerender(<SessionWorkspace {...props} active={false} />);
     rerender(<SessionWorkspace {...props} active />);

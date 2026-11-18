@@ -202,37 +202,8 @@
   color: var(--text);
 }
 
-/* Overlay chrome sits below the status bar so touches reach it on notched
-   devices; showing it never changes terminal geometry. */
-.terminal-chrome-reveal,
-.session-workspace-header {
-  position: absolute;
-  z-index: 6;
-  top: env(safe-area-inset-top);
-  left: 0;
-  right: 0;
-  height: 44px;
-}
-.terminal-chrome-reveal {
-  width: 100%;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  -webkit-tap-highlight-color: transparent;
-}
-.terminal-chrome-reveal:focus-visible {
-  outline-offset: -3px !important;
-}
-.session-workspace-header {
-  display: flex;
-  align-items: center;
-  padding-inline: max(16px, env(safe-area-inset-left)) max(16px, env(safe-area-inset-right));
-  pointer-events: none;
-}
-.terminal-chrome-reveal[hidden],
-.session-workspace-header[hidden] { display: none; }
-/* Reliable touch entry point while the immersive chrome is hidden. */
+/* The only Session control over the terminal; the rest of the top area
+   stays terminal input and never reveals a title overlay. */
 .session-actions-fab {
   position: absolute;
   z-index: 7;
@@ -253,17 +224,6 @@
 }
 .session-actions-fab:active { opacity: 1; transform: scale(.95); }
 @media (prefers-reduced-motion: reduce) { .session-actions-fab { transition: none; } }
-.session-workspace-header h1 {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  overflow: hidden;
-  color: var(--text);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-  font-weight: 600;
-}
 .session-workspace .terminal-status-stack { flex: 0 0 auto; }
 /* Loading is an overlay, not a row that changes the fitted PTY height. */
 .terminal-replay-status {

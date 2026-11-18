@@ -776,21 +776,6 @@ describe("MobileTerminal input accessory", () => {
     expect(toolbar).toBeVisible();
   });
 
-  it("does not dismiss terminal input or refit when the immersive chrome reveal is tapped", async () => {
-    render(<><MobileTerminal showHeading={false} /><button className="terminal-chrome-reveal">Reveal controls</button></>);
-    terminalHarness.helper!.focus();
-    await waitFor(() => expect(screen.getByLabelText("Terminal special keys")).toBeVisible());
-    await new Promise(resolve => requestAnimationFrame(resolve));
-    const fits = terminalHarness.fitCalls;
-    const reveal = screen.getByRole("button", { name: "Reveal controls" });
-    fireEvent.pointerDown(reveal);
-    fireEvent.click(reveal, { detail: 1 });
-    await new Promise(resolve => requestAnimationFrame(resolve));
-    expect(document.activeElement).toBe(terminalHarness.helper);
-    expect(screen.getByLabelText("Terminal special keys")).toBeVisible();
-    expect(terminalHarness.fitCalls).toBe(fits);
-  });
-
   it("blocks xterm compatibility mousedown before it can focus output, but permits an input tap", () => {
     render(<MobileTerminal showHeading={false} />);
     const focus = vi.fn(() => terminalHarness.helper!.focus());

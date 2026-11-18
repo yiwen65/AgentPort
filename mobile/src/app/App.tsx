@@ -271,7 +271,6 @@ function AppContents({ client, hostAuthClient, terminalClient = genericTerminalC
                 open={stage}
                 client={client}
                 onOpened={isCurrent ? handleSessionOpened : undefined}
-                onClose={() => setPage("list")}
                 onSessionChanged={sessionChangedFor(key)}
               />
             </Suspense>

@@ -179,9 +179,9 @@ export const resources = {
         lifecycleSource: "生命周期记录", recordedConfidence: "已记录", cached: "缓存", unread: "未读",
       },
       session: {
-        back: "返回 Session 列表", facts: "Session 状态详情", openSessions: "已打开的 Session", closeTab: "关闭 {{title}} 标签",
+        facts: "Session 状态详情", openSessions: "已打开的 Session", closeTab: "关闭 {{title}} 标签",
         showKeyboard: "显示键盘", scrollToBottom: "滚动到底部",
-        uploadImage: "上传图片", menu: "Session 菜单", showControls: "显示 Session 标题",
+        uploadImage: "上传图片", menu: "Session 菜单",
         view: "Session 视图", conversation: "对话", terminal: "终端", fullTerminal: "完整终端", terminalDescription: "实时 PTY；触摸选择、粘贴或使用特殊键栏。",
         search: "在当前输出中搜索", history: "原生历史", moreHistory: "加载更多历史", waitingForOutput: "正在等待输出…", message: "发送文本", send: "发送",
         openTerminal: "在完整终端中处理", terminalFallback: "该原生 TUI 无法可靠识别；请切换完整终端，未生成任何猜测选项。", resynced: "保留游标已失效；正在重新恢复画面。",
@@ -451,9 +451,9 @@ export const resources = {
         lifecycleSource: "lifecycle record", recordedConfidence: "recorded", cached: "Cached", unread: "Unread",
       },
       session: {
-        back: "Back to sessions", facts: "Session status details", openSessions: "Open sessions", closeTab: "Close {{title}} tab",
+        facts: "Session status details", openSessions: "Open sessions", closeTab: "Close {{title}} tab",
         showKeyboard: "Show keyboard", scrollToBottom: "Scroll to bottom",
-        uploadImage: "Upload image", menu: "Session menu", showControls: "Show session title",
+        uploadImage: "Upload image", menu: "Session menu",
         view: "Session view", conversation: "Conversation", terminal: "Terminal", fullTerminal: "Full terminal", terminalDescription: "Live PTY; touch-select, paste, or use the special-key row.",
         search: "Search current output", history: "Native history", moreHistory: "Load more history", waitingForOutput: "Waiting for output…", message: "Send text", send: "Send",
         openTerminal: "Handle in full terminal", terminalFallback: "This native TUI was not recognized reliably. Open the full terminal; no options were guessed.", resynced: "The retained cursor expired. Restoring the screen again.",
