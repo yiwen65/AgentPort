@@ -29,6 +29,17 @@
 .git-tab-count { min-width: 20px; padding: 1px 6px; border-radius: 999px; background: var(--panel-strong); color: var(--text); font-size: 11px; }
 .git-refresh { flex: none; min-height: 44px; padding: 0 13px; border: 1px solid var(--line-soft); border-radius: 14px; background: var(--fill); color: var(--text); }
 .git-refresh:disabled { opacity: .55; }
+.git-remote { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-bottom: 14px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 14px; background: var(--fill); }
+.git-remote-target { flex: 1 1 140px; min-width: 0; display: flex; align-items: center; gap: 8px; }
+.git-remote-upstream { min-width: 0; overflow: hidden; color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.git-remote-badges { flex: none; display: inline-flex; gap: 5px; }
+.git-remote-badge { padding: 2px 7px; border-radius: 999px; background: var(--panel-strong); font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.git-remote-badge.is-ahead { color: var(--success); }
+.git-remote-badge.is-behind { color: var(--accent-strong); }
+.git-remote-actions { flex: none; display: flex; gap: 8px; margin-left: auto; }
+.git-remote-actions > button { min-height: 44px; padding: 0 14px; border: 1px solid var(--line-soft); border-radius: 11px; background: var(--panel-strong); color: var(--text); font-size: 13px; font-weight: 650; }
+.git-remote-actions > button:disabled { opacity: .5; }
+.git-remote-hint { flex: 1 1 100%; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .git-empty { margin: 18px 0; color: var(--muted); text-align: center; line-height: 1.5; }
 .git-error { margin: 12px 0; padding: 12px; border: 1px solid var(--danger); border-radius: 14px; background: var(--fill); color: var(--danger); }
 .git-error p { margin: 0; }
@@ -139,5 +150,6 @@
   .git-toolbar { flex-wrap: wrap; }
   .git-tabs { flex: 1 1 100%; }
   .git-refresh { flex: 1 1 100%; }
+  .git-remote-actions { flex: 1 1 100%; justify-content: flex-end; }
   .git-new-branch { grid-template-columns: 1fr; }
 }

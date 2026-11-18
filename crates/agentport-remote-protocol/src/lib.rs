@@ -167,7 +167,8 @@ pub const MOBILE_V2_METHOD_ALLOWLIST: &[&str] = &[
     "project.add",
     // Read-only directory compatibility for Bridges predating project.directory.*.
     "document.list",
-    // Mobile Git Center: context, changes, review mutations and local branches.
+    // Mobile Git Center: context, changes, review mutations, remote sync and
+    // local branches.
     "worktree.list",
     "git.context.resolve",
     "git.changes",
@@ -175,6 +176,7 @@ pub const MOBILE_V2_METHOD_ALLOWLIST: &[&str] = &[
     "git.stage",
     "git.unstage",
     "git.discard",
+    "git.remote.sync",
     "git.commit.prepare",
     "git.commit.execute",
     "branch.list",
@@ -1323,6 +1325,7 @@ mod tests {
             "git.stage",
             "git.unstage",
             "git.discard",
+            "git.remote.sync",
             "git.commit.prepare",
             "git.commit.execute",
             "branch.list",
@@ -1336,6 +1339,11 @@ mod tests {
             assert!(METHOD_REGISTRY.contains(&method), "{method}");
             assert!(MOBILE_V2_METHOD_ALLOWLIST.contains(&method), "{method}");
         }
+        assert_eq!(
+            classify_method("git.remote.sync"),
+            RetryClass::NonIdempotentWrite
+        );
+        assert!(!classify_method("git.remote.sync").allows_automatic_retry());
     }
 
     #[test]

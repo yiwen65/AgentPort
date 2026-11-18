@@ -7,11 +7,11 @@ import { parseDiffLines } from "./diffLines";
 import {
   branchNameOf, cleanupAutoStash, createAndSwitchGitBranch, executeGitCommit, listAutoStashes,
   listGitBranches, mutateGitPaths, prepareGitCommit, readGitChanges, readGitDiff,
-  resolveGitContext, restoreAutoStash, sessionLocator, switchGitBranch,
+  resolveGitContext, restoreAutoStash, sessionLocator, switchGitBranch, syncGitRemote,
 } from "./gitApi";
 import type {
   BranchSnapshot, GitChangeEntry, GitChangeKind, GitChangesSnapshot, GitCheckoutDescriptor,
-  GitCommitReview, GitDiffSide, GitFileDiff, SwitchOutcome,
+  GitCommitReview, GitDiffSide, GitFileDiff, GitRemoteAction, SwitchOutcome,
 } from "./types";
 import "./gitPanel.css";
 
@@ -26,6 +26,20 @@ const warningKeys: Record<string, string> = {
   outside_project_scope: "outsideProject",
   subject_over_72: "longSubject",
 };
+
+interface RemotePlan {
+  action: "pull" | "push";
+  effective: GitRemoteAction;
+  checkoutId: string;
+  statusToken: string;
+  branch: string;
+  remote: string;
+  upstream: string | null;
+  destination: string;
+  behind: number;
+  dirty: boolean;
+  liveSessionCount: number;
+}
 
 export function DiffText({ diff }: { diff: GitFileDiff }) {
   const { t } = useTranslation();
@@ -88,6 +102,8 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
   const [commitReview, setCommitReview] = useState<GitCommitReview>();
   const [commitBusy, setCommitBusy] = useState(false);
   const [commitError, setCommitError] = useState("");
+  const [remotePlan, setRemotePlan] = useState<RemotePlan>();
+  const [remoteBusy, setRemoteBusy] = useState<"" | "pull" | "push">("");
 
   useEffect(() => {
     let cancelled = false;
@@ -139,8 +155,9 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
   }, [client, hostId, sessionId]);
 
   const mutate = async (method: "git.stage" | "git.unstage" | "git.discard", entries: readonly GitChangeEntry[]) => {
-    if (!changes || !entries.length || mutation) return;
+    if (!changes || !entries.length || mutation || remoteBusy) return;
     setMutation(entries.length === 1 ? entries[0].entryToken : "all");
+    setRemotePlan(undefined);
     setActionError("");
     setNotice("");
     try {
@@ -161,6 +178,7 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
   const openDiff = async (entry: GitChangeEntry, side: GitDiffSide) => {
     if (!changes) return;
     const sequence = ++diffSequence.current;
+    setRemotePlan(undefined);
     setDiffRequest({ entry, side });
     setDiff(undefined);
     setDiffError("");
@@ -218,8 +236,9 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
   };
 
   const runBranch = async (action: () => Promise<SwitchOutcome>) => {
-    if (mutation) return;
+    if (mutation || remoteBusy) return;
     setMutation("branch");
+    setRemotePlan(undefined);
     setActionError("");
     setNotice("");
     try {
@@ -232,8 +251,9 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
   };
 
   const prepareCommit = async () => {
-    if (!changes || !commitMessage.trim() || commitBusy) return;
+    if (!changes || !commitMessage.trim() || commitBusy || remoteBusy) return;
     setCommitBusy(true);
+    setRemotePlan(undefined);
     setCommitError("");
     setNotice("");
     try {
@@ -287,7 +307,102 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
         : changes?.counts.conflict ? t("git.commit.conflicts")
           : context && !context.writable ? t("git.commit.blocked", { reason: context.blockers.join(", ") })
             : !changes?.counts.staged ? t("git.commit.noStaged") : "";
-  const canCommit = Boolean(changes && !commitBlocked && commitMessage.trim() && !commitBusy);
+  const canCommit = Boolean(changes && !commitBlocked && commitMessage.trim() && !commitBusy && !remoteBusy);
+  const liveContext = changes?.context ?? context;
+  const ahead = liveContext?.ahead ?? 0;
+  const behind = liveContext?.behind ?? 0;
+  const remoteHardBlocked = (snapshot: GitChangesSnapshot) => {
+    if (!snapshot.complete) return t("git.remote.blocked.partial");
+    if (!snapshot.context.writable) return t("git.remote.blocked.readOnly");
+    if (snapshot.context.ongoingOperation) {
+      return t("git.remote.blocked.operation", { operation: snapshot.context.ongoingOperation });
+    }
+    if (snapshot.context.detached || snapshot.context.unborn || !snapshot.context.actualBranch) {
+      return t("git.remote.blocked.branch");
+    }
+    return "";
+  };
+  const remoteBlocked = (snapshot: GitChangesSnapshot, action: "pull" | "push") => {
+    const hard = remoteHardBlocked(snapshot);
+    if (hard) return hard;
+    if (!snapshot.context.hasRemote) return t("git.remote.blocked.noRemote");
+    if (action === "pull" && !snapshot.context.upstream) return t("git.remote.blocked.noUpstream");
+    if (action === "pull" && snapshot.counts.conflict > 0) return t("git.remote.blocked.conflicts");
+    return "";
+  };
+  const remoteHint = !changes ? "" : remoteHardBlocked(changes)
+    || (changes.counts.conflict > 0 ? t("git.remote.blocked.conflicts") : "");
+  const remoteDisabled = !changes || Boolean(mutation) || Boolean(remoteBusy) || changesBusy;
+  const pullDisabled = remoteDisabled || Boolean(changes && remoteBlocked(changes, "pull"));
+  const pushDisabled = remoteDisabled || Boolean(changes && remoteBlocked(changes, "push"));
+  const actionBusy = Boolean(mutation) || Boolean(remoteBusy);
+
+  const prepareRemote = async (action: "pull" | "push") => {
+    if (!changes || changesBusy || mutation || remoteBusy) return;
+    setRemotePlan(undefined);
+    setDiscardTarget(undefined);
+    setSwitchTarget(undefined);
+    setRemoteBusy(action);
+    setActionError("");
+    setNotice("");
+    try {
+      // git.remote.sync pins its token to an include-ignored status read; the
+      // panel snapshot excludes ignored files, so both tokens differ.
+      const authoritative = await readGitChanges(client, hostId, locator, true);
+      const blocked = remoteBlocked(authoritative, action);
+      if (blocked) {
+        setActionError(blocked);
+        return;
+      }
+      const dirty = authoritative.entries.some(entry => !entry.ignored);
+      setRemotePlan({
+        action,
+        effective: action === "pull" && dirty ? "pull_autostash" : action,
+        checkoutId: authoritative.context.checkoutId,
+        statusToken: authoritative.statusToken,
+        branch: authoritative.context.actualBranch ?? "",
+        remote: authoritative.context.remote ?? "origin",
+        upstream: authoritative.context.upstream,
+        destination: authoritative.context.upstream
+          ?? `${authoritative.context.remote ?? "origin"}/${authoritative.context.actualBranch ?? ""}`,
+        behind: authoritative.context.behind,
+        dirty,
+        liveSessionCount: authoritative.context.liveSessionIds.length,
+      });
+    } catch (error) {
+      setActionError(remoteErrorMessage(error));
+    } finally {
+      setRemoteBusy("");
+    }
+  };
+
+  const runRemote = async () => {
+    if (!remotePlan || remoteBusy) return;
+    const plan = remotePlan;
+    setRemotePlan(undefined);
+    setRemoteBusy(plan.action);
+    setActionError("");
+    setNotice("");
+    try {
+      const result = await syncGitRemote(client, hostId, locator, plan.checkoutId, plan.statusToken, plan.effective);
+      const destination = result.changes.context.upstream ?? plan.upstream ?? plan.destination;
+      setNotice(plan.action === "pull"
+        ? t(plan.effective === "pull_autostash" ? "git.remote.pulledAutostash" : "git.remote.pulled", { upstream: destination })
+        : t("git.remote.pushed", { upstream: destination }));
+      onChanged?.();
+      // The sync result lives in the include-ignored token space; reload the
+      // panel's own space instead of adopting it for later mutations.
+      await loadChanges();
+    } catch (error) {
+      const unknownOutcome = error && typeof error === "object"
+        && "code" in error && (error as { code?: unknown }).code === "request_timeout"
+        && "status" in error && (error as { status?: unknown }).status === "unknown";
+      setActionError(unknownOutcome ? t("git.remote.unknownOutcome") : remoteErrorMessage(error));
+      await loadChanges();
+    } finally {
+      setRemoteBusy("");
+    }
+  };
 
   return <Modal title={sessionTitle} onClose={onClose} className={`git-panel${diffRequest ? " git-panel-fullscreen" : ""}`}>
     <div className="git-context">
@@ -303,11 +418,58 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
         <button type="button" className="danger-button" onClick={() => { const entry = discardTarget; setDiscardTarget(undefined); void mutate("git.discard", [entry]); }}>{t("git.discard")}</button>
       </div>
     </div> : null}
+    {remotePlan ? <div className="git-confirm" role="alertdialog"
+      aria-label={remotePlan.action === "pull" ? t("git.remote.pull") : t("git.remote.push")}>
+      <p>{remotePlan.action === "pull"
+        ? t("git.remote.pullTitle", { upstream: remotePlan.upstream ?? remotePlan.destination })
+        : t("git.remote.pushTitle", { upstream: remotePlan.upstream ?? remotePlan.destination })}</p>
+      <p className="git-commit-hint">{remotePlan.action === "pull"
+        ? remotePlan.dirty
+          ? t("git.remote.dirtyBody")
+          : t("git.remote.pullBody", { upstream: remotePlan.upstream ?? remotePlan.destination, branch: remotePlan.branch })
+        : t("git.remote.pushBody", { branch: remotePlan.branch, upstream: remotePlan.upstream ?? remotePlan.destination })}</p>
+      {remotePlan.action === "pull" && !remotePlan.dirty && remotePlan.behind === 0
+        ? <p className="git-commit-hint">{t("git.remote.noIncoming")}</p> : null}
+      {remotePlan.action === "push" && !remotePlan.upstream
+        ? <p className="git-commit-hint">{t("git.remote.pushCreateUpstream", { branch: remotePlan.branch, remote: remotePlan.remote })}</p> : null}
+      {remotePlan.action === "pull" && remotePlan.liveSessionCount > 0
+        ? <p className="git-warning">{t("git.remote.sessionWarning", { count: remotePlan.liveSessionCount })}</p> : null}
+      <div className="git-row-actions">
+        <button type="button" onClick={() => setRemotePlan(undefined)}>{t("common.cancel")}</button>
+        <button type="button" className="primary-button" disabled={Boolean(remoteBusy)} onClick={() => void runRemote()}>
+          {remotePlan.action === "pull"
+            ? remotePlan.dirty ? t("git.remote.dirtyConfirm") : t("git.remote.pull")
+            : t("git.remote.push")}
+        </button>
+      </div>
+    </div> : null}
 
     {!context && !contextError ? <p className="git-empty" role="status">{t("git.loading")}</p> : null}
     {contextError ? <div className="git-error" role="alert"><p>{t("git.unavailable")}</p><small>{contextError}</small></div> : null}
 
     {context ? <>
+      {!diffRequest && !commitReview ? <section className="git-remote" aria-label={t("git.remote.title")}>
+        <div className="git-remote-target">
+          <span className="git-remote-upstream">{liveContext?.upstream
+            ?? (liveContext?.hasRemote ? t("git.remote.noUpstream") : t("git.remote.noRemote"))}</span>
+          <span className="git-remote-badges">
+            {ahead > 0 ? <span className="git-remote-badge is-ahead"
+              aria-label={t("git.remote.ahead", { count: ahead })}>↑{ahead}</span> : null}
+            {behind > 0 ? <span className="git-remote-badge is-behind"
+              aria-label={t("git.remote.behind", { count: behind })}>↓{behind}</span> : null}
+          </span>
+        </div>
+        <div className="git-remote-actions">
+          <button type="button" disabled={pullDisabled} onClick={() => void prepareRemote("pull")}>
+            {remoteBusy === "pull" ? t("git.remote.pulling") : t("git.remote.pull")}
+          </button>
+          <button type="button" disabled={pushDisabled} onClick={() => void prepareRemote("push")}>
+            {remoteBusy === "push" ? t("git.remote.pushing") : t("git.remote.push")}
+          </button>
+        </div>
+        {remoteHint ? <p className="git-remote-hint">{remoteHint}</p> : null}
+      </section> : null}
+
       {!diffRequest ? <div className="git-toolbar">
         <div className="git-tabs" role="tablist" aria-label={t("git.title")}>
           <button type="button" role="tab" aria-selected={tab === "changes"} onClick={() => setTab("changes")}>
@@ -315,7 +477,7 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
           </button>
           <button type="button" role="tab" aria-selected={tab === "branches"} onClick={() => setTab("branches")}>{t("git.branches")}</button>
         </div>
-        <button type="button" className="git-refresh" disabled={changesBusy || branchesBusy} onClick={() => void (tab === "changes" ? loadChanges() : loadBranches())}>{t("git.refresh")}</button>
+        <button type="button" className="git-refresh" disabled={changesBusy || branchesBusy || Boolean(remoteBusy)} onClick={() => void (tab === "changes" ? loadChanges() : loadBranches())}>{t("git.refresh")}</button>
       </div> : null}
 
       {diffRequest ? <section className="git-diff-view" aria-label={diffRequest.entry.displayPath}>
@@ -331,10 +493,10 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
         {diffError ? <p className="inline-error" role="alert">{diffError}</p> : null}
         {diff ? <DiffText diff={diff} /> : null}
         <div className="git-row-actions">
-          <button type="button" disabled={Boolean(mutation)} onClick={() => void mutate(diffRequest.entry.staged && !diffRequest.entry.unstaged ? "git.unstage" : "git.stage", [diffRequest.entry])}>
+          <button type="button" disabled={actionBusy} onClick={() => void mutate(diffRequest.entry.staged && !diffRequest.entry.unstaged ? "git.unstage" : "git.stage", [diffRequest.entry])}>
             {diffRequest.entry.staged && !diffRequest.entry.unstaged ? t("git.unstage") : t("git.stage")}
           </button>
-          {diffRequest.entry.unstaged && !diffRequest.entry.untracked && !diffRequest.entry.conflicted ? <button type="button" className="danger-text" disabled={Boolean(mutation)} onClick={() => setDiscardTarget(diffRequest.entry)}>{t("git.discard")}</button> : null}
+          {diffRequest.entry.unstaged && !diffRequest.entry.untracked && !diffRequest.entry.conflicted ? <button type="button" className="danger-text" disabled={actionBusy} onClick={() => setDiscardTarget(diffRequest.entry)}>{t("git.discard")}</button> : null}
         </div>
       </section> : commitReview ? <section className="git-commit-review" aria-label={t("git.commit.review")}>
         <header className="git-subheader">
@@ -360,8 +522,8 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
           {changes.partialReason ? <p className="git-warning">{t("git.partial", { reason: changes.partialReason })}</p> : null}
           {totalChanges === 0 ? <p className="git-empty" role="status">{t("git.clean")}</p> : null}
           {totalChanges > 0 ? <div className="git-list-toolbar">
-            {stageable.length ? <button type="button" disabled={Boolean(mutation)} onClick={() => void mutate("git.stage", stageable)}>{t("git.stageAll")}</button> : null}
-            {unstageable.length ? <button type="button" disabled={Boolean(mutation)} onClick={() => void mutate("git.unstage", unstageable)}>{t("git.unstageAll")}</button> : null}
+            {stageable.length ? <button type="button" disabled={actionBusy} onClick={() => void mutate("git.stage", stageable)}>{t("git.stageAll")}</button> : null}
+            {unstageable.length ? <button type="button" disabled={actionBusy} onClick={() => void mutate("git.unstage", unstageable)}>{t("git.unstageAll")}</button> : null}
           </div> : null}
           {groups.map(group => <div className="git-group" key={group.id}>
             <h3 className="git-group-title">{t(`git.${group.id}`)}<span>{group.entries.length}</span></h3>
@@ -370,7 +532,7 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
                 <span className={`git-status-mark is-${entry.kind}`}>{statusMark[entry.kind]}</span>
                 <span className="git-change-path">{entry.displayPath}{entry.displayOldPath ? <small> ← {entry.displayOldPath}</small> : null}</span>
               </button>
-              {!entry.conflicted ? <button type="button" className="git-change-mutate" disabled={Boolean(mutation)} onClick={() => void mutate(entry.staged && !entry.unstaged ? "git.unstage" : "git.stage", [entry])}>
+              {!entry.conflicted ? <button type="button" className="git-change-mutate" disabled={actionBusy} onClick={() => void mutate(entry.staged && !entry.unstaged ? "git.unstage" : "git.stage", [entry])}>
                 {entry.staged && !entry.unstaged ? t("git.unstage") : t("git.stage")}
               </button> : null}
             </li>)}</ul>
@@ -394,7 +556,7 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
             <p>{t("git.branch.switchBody", { branch: switchTarget })}</p>
             <div className="git-row-actions">
               <button type="button" onClick={() => setSwitchTarget(undefined)}>{t("common.cancel")}</button>
-              <button type="button" className="primary-button" disabled={mutation === "branch"} onClick={() => void runBranch(() => switchGitBranch(client, hostId, context.target.projectId, switchTarget))}>{t("git.branch.switchAction")}</button>
+              <button type="button" className="primary-button" disabled={mutation === "branch" || Boolean(remoteBusy)} onClick={() => void runBranch(() => switchGitBranch(client, hostId, context.target.projectId, switchTarget))}>{t("git.branch.switchAction")}</button>
             </div>
           </div> : null}
           {!branches.branches.length ? <p className="git-empty" role="status">{t("git.branch.empty")}</p> : null}
@@ -402,7 +564,7 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
             const current = branch.current || branch.name === currentBranch;
             const occupied = Boolean(branch.occupiedWorktree) && !current;
             return <li key={branch.name}>
-              <button type="button" className={`git-branch-row${current ? " is-current" : ""}`} disabled={current || occupied || worktreeContext || Boolean(mutation)} onClick={() => setSwitchTarget(branch.name)}>
+              <button type="button" className={`git-branch-row${current ? " is-current" : ""}`} disabled={current || occupied || worktreeContext || actionBusy} onClick={() => setSwitchTarget(branch.name)}>
                 <span className="git-branch-name">{branch.name}</span>
                 {current ? <span className="git-branch-tag">{t("git.branch.current")}</span> : occupied ? <span className="git-branch-tag">{t("git.branch.occupied")}</span> : null}
               </button>
@@ -410,7 +572,7 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
           })}</ul>
           {!worktreeContext ? <div className="git-new-branch">
             <input value={newBranch} maxLength={255} autoCapitalize="off" autoCorrect="off" spellCheck={false} placeholder={t("git.branch.newBranchPlaceholder")} aria-label={t("git.branch.newBranch")} onChange={event => setNewBranch(event.target.value)} />
-            <button type="button" disabled={!newBranch.trim() || Boolean(mutation)} onClick={() => void runBranch(() => createAndSwitchGitBranch(client, hostId, context.target.projectId, newBranch.trim()))}>{t("git.branch.createAndSwitch")}</button>
+            <button type="button" disabled={!newBranch.trim() || actionBusy} onClick={() => void runBranch(() => createAndSwitchGitBranch(client, hostId, context.target.projectId, newBranch.trim()))}>{t("git.branch.createAndSwitch")}</button>
           </div> : null}
         </> : null}
       </section>}

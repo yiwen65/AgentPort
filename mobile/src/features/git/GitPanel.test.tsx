@@ -13,9 +13,9 @@ const context: GitCheckoutDescriptor = {
   ahead: 1, behind: 0, worktreeHealth: null, liveSessionIds: [], writable: true, blockers: [], warnings: [],
 };
 
-function snapshot(entries: GitChangesSnapshot["entries"], token = "status-1"): GitChangesSnapshot {
+function snapshot(entries: GitChangesSnapshot["entries"], token = "status-1", ctx: GitCheckoutDescriptor = context): GitChangesSnapshot {
   return {
-    context, statusToken: token, complete: true, partialReason: null,
+    context: ctx, statusToken: token, complete: true, partialReason: null,
     counts: {
       staged: entries.filter(entry => entry.staged).length,
       unstaged: entries.filter(entry => entry.unstaged && !entry.untracked).length,
@@ -42,7 +42,11 @@ const branches: BranchSnapshot = {
   ],
 };
 
-function setup(initial = snapshot([entry({}), entry({ entryToken: "e2", pathToken: "p2", displayPath: "README.md", kind: "untracked", worktreeStatus: null, unstaged: false, untracked: true })]), options: { pendingRestore?: boolean } = {}) {
+function setup(initial = snapshot([entry({}), entry({ entryToken: "e2", pathToken: "p2", displayPath: "README.md", kind: "untracked", worktreeStatus: null, unstaged: false, untracked: true })]), options: {
+  pendingRestore?: boolean;
+  context?: GitCheckoutDescriptor;
+  syncChanges?: (params: any) => GitChangesSnapshot;
+} = {}) {
   let changes = initial;
   const review: GitCommitReview = {
     context, commitToken: "commit-token", message: "Test commit", messageHash: "hash",
@@ -51,8 +55,13 @@ function setup(initial = snapshot([entry({}), entry({ entryToken: "e2", pathToke
     outsideProjectPaths: [], subjectOver72: false, warnings: [],
   };
   const request = vi.fn(async (_hostId: string, method: string, params: any) => {
-    if (method === "git.context.resolve") return context;
-    if (method === "git.changes") return changes;
+    if (method === "git.context.resolve") return options.context ?? context;
+    if (method === "git.changes") {
+      // The host's remote sync pins its token to an include-ignored read.
+      return params?.includeIgnored
+        ? { ...changes, statusToken: `all-${changes.statusToken}` }
+        : changes;
+    }
     if (method === "git.diff") return {
       context, statusToken: changes.statusToken, side: params.side, pathToken: params.pathToken, displayPath: "src/App.tsx",
       format: "text", patch: "@@ -1 +1 @@\n-old line\n+new line", additions: 1, deletions: 1, fileSize: 24, truncated: false, reason: null, conflictCode: null,
@@ -75,6 +84,14 @@ function setup(initial = snapshot([entry({}), entry({ entryToken: "e2", pathToke
     if (method === "branch.autostash.list") return [{ operationId: "switch", phase: "switched", selector: "stash@{0}", oid: "stash-oid", marker: "marker", sourceBranch: "main", sourceCommit: "head-1", targetBranch: "feature/ui", createdAt: "2026-11-16T12:00:00Z" }];
     if (method === "branch.autostash.restore") return { id: "switch", projectId: "prj-1", phase: "restored_verified", sourceBranch: "main", targetBranch: "feature/ui" };
     if (method === "branch.autostash.cleanup") return { id: "switch", projectId: "prj-1", phase: "completed", sourceBranch: "main", targetBranch: "feature/ui" };
+    if (method === "git.remote.sync") {
+      changes = options.syncChanges?.(params) ?? {
+        ...changes,
+        context: { ...changes.context, ahead: 0, behind: 0 },
+      };
+      // Mirror the host: the sync result is in the include-ignored token space.
+      return { operationId: "sync", changes: { ...changes, statusToken: `all-${changes.statusToken}` } };
+    }
     if (method === "git.commit.prepare") return { ...review, message: params.message };
     if (method === "git.commit.execute") return { operationId: "commit", outcome: "succeeded", beforeHead: "head-1", afterHead: "head-2", expectedTreeOid: "tree", actualTreeOid: "tree", changes: snapshot([], "clean"), error: null };
     throw new Error(`unexpected ${method}`);
@@ -123,6 +140,8 @@ describe("mobile Git Center", () => {
     expect(await screen.findByText(/\+new line/)).toBeInTheDocument();
     expect(screen.getByRole("dialog")).toHaveClass("git-panel-fullscreen");
     expect(screen.queryByRole("tab", { name: "Branches" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pull" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Push" })).not.toBeInTheDocument();
     const region = screen.getByRole("region", { name: "Diff content" });
     expect([...region.querySelectorAll(".git-diff-line-no")].map((node) => node.textContent))
       .toEqual(["", "", "1", "", "", "1"]);
@@ -222,5 +241,96 @@ describe("mobile Git Center", () => {
     expect(await screen.findByText(/Branch switching applies to the main checkout/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /feature\/ui/ })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Create & switch" })).not.toBeInTheDocument();
+  });
+
+  it("shows the upstream and ahead/behind counts", async () => {
+    const { client } = setup();
+    renderPanel(client);
+    expect(await screen.findByText("origin/main")).toBeInTheDocument();
+    expect(screen.getByText("↑1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pull" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Push" })).toBeEnabled();
+  });
+
+  it("pulls with autostash using the include-ignored status token", async () => {
+    const { client, request } = setup();
+    renderPanel(client);
+    fireEvent.click(await screen.findByRole("button", { name: "Pull" }));
+    const confirm = within(await screen.findByRole("alertdialog"));
+    expect(confirm.getByText(/stashed automatically/)).toBeInTheDocument();
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "git.changes", expect.objectContaining({ includeIgnored: true })));
+    fireEvent.click(confirm.getByRole("button", { name: "Auto-stash and Pull" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "git.remote.sync", {
+      locator: { kind: "session", sessionId: "ses-1" },
+      expectedCheckoutId: "co-1",
+      expectedStatusToken: "all-status-1",
+      action: "pull_autostash",
+    }));
+    expect(await screen.findByText("Pulled origin/main; local changes were restored.")).toBeInTheDocument();
+  });
+
+  it("pushes a branch without an upstream and keeps the panel token space", async () => {
+    const noUpstream = { ...context, upstream: null, ahead: 0, behind: 0 };
+    const initial = snapshot([entry({})], "status-1", noUpstream);
+    const { client, request } = setup(initial, {
+      context: noUpstream,
+      syncChanges: () => snapshot([entry({})], "status-2", { ...noUpstream, upstream: "origin/main" }),
+    });
+    renderPanel(client);
+    expect(await screen.findByText("No upstream")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pull" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Push" }));
+    const confirm = within(await screen.findByRole("alertdialog"));
+    expect(confirm.getByText(/publishes main to origin/)).toBeInTheDocument();
+    fireEvent.click(confirm.getByRole("button", { name: "Push" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "git.remote.sync", {
+      locator: { kind: "session", sessionId: "ses-1" },
+      expectedCheckoutId: "co-1",
+      expectedStatusToken: "all-status-1",
+      action: "push",
+    }));
+    expect(await screen.findByText("Pushed to origin/main.")).toBeInTheDocument();
+    fireEvent.click(within(screen.getByText("src/App.tsx").closest("li")!).getByRole("button", { name: "Stage" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith("host-1", "git.stage", expect.objectContaining({
+      expectedStatusToken: "status-2",
+    })));
+  });
+
+  it("disables Pull on conflicts while leaving Push available", async () => {
+    const conflicted = entry({
+      entryToken: "c1", kind: "conflict", conflictCode: "UU", indexStatus: "U",
+      worktreeStatus: "U", staged: true, unstaged: true, conflicted: true,
+    });
+    const { client } = setup(snapshot([conflicted]));
+    renderPanel(client);
+    expect(await screen.findByText("Resolve conflicts before pulling.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pull" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Push" })).toBeEnabled();
+  });
+
+  it("disables both remote actions for a partial status", async () => {
+    const partial = { ...snapshot([entry({})]), complete: false, partialReason: "entry_limit" };
+    const { client } = setup(partial);
+    renderPanel(client);
+    expect(await screen.findByText("Git status is partial; remote sync is unavailable.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pull" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Push" })).toBeDisabled();
+  });
+
+  it("reports an unknown outcome after a sync timeout without retrying", async () => {
+    const { client, request } = setup();
+    const originalRequest = request.getMockImplementation()!;
+    vi.mocked(client.request).mockImplementation(async (hostId: string, method: string, params: any) => {
+      if (method === "git.remote.sync") {
+        throw { code: "request_timeout", status: "unknown", message: "The request timed out." };
+      }
+      return originalRequest(hostId, method, params);
+    });
+    renderPanel(client);
+    fireEvent.click(await screen.findByRole("button", { name: "Pull" }));
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Auto-stash and Pull" }));
+    expect(await screen.findByText("The request timed out; the Push/Pull outcome is unknown. Refresh before acting again.")).toBeInTheDocument();
+    expect(request.mock.calls.filter(call => call[1] === "git.remote.sync")).toHaveLength(1);
+    await waitFor(() => expect(request.mock.calls.filter(call => call[1] === "git.changes")).toHaveLength(3));
   });
 });

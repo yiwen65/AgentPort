@@ -130,6 +130,7 @@ export interface GitChangesSnapshot {
 
 export type GitDiffSide = "staged" | "unstaged";
 export type GitDiffFormat = "text" | "binary" | "summary" | "conflict";
+export type GitRemoteAction = "pull" | "pull_autostash" | "push";
 
 export interface GitFileDiff {
   context: GitCheckoutDescriptor;

@@ -2,7 +2,8 @@ import type { RemoteClient } from "../../protocol/remoteClient";
 import type {
   AutoStash, BranchOperation, BranchSnapshot, GitChangeEntry, GitChangesSnapshot,
   GitCheckoutDescriptor, GitCommitResult, GitCommitReview, GitContextLocator, GitDiffSide,
-  GitFileDiff, GitMutationResult, GitPathSelection, RepoStatus, RestoreStrategy, SwitchOutcome,
+  GitFileDiff, GitMutationResult, GitPathSelection, GitRemoteAction, RepoStatus, RestoreStrategy,
+  SwitchOutcome,
 } from "./types";
 
 export function sessionLocator(sessionId: string): GitContextLocator {
@@ -111,6 +112,22 @@ export function executeGitCommit(
     expectedCommitToken: review.commitToken,
     message: review.message,
     includeIgnored: false,
+  });
+}
+
+export function syncGitRemote(
+  client: RemoteClient,
+  hostId: string,
+  locator: GitContextLocator,
+  expectedCheckoutId: string,
+  expectedStatusToken: string,
+  action: GitRemoteAction,
+) {
+  return client.request<GitMutationResult>(hostId, "git.remote.sync", {
+    locator,
+    expectedCheckoutId,
+    expectedStatusToken,
+    action,
   });
 }
 
