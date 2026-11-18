@@ -3575,8 +3575,12 @@ body.is-project-dragging .tree-row.project {
   overflow: hidden;
   padding: 1px 5px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--term-muted) 14%, transparent);
-  color: var(--term-muted);
+  background: color-mix(
+    in srgb,
+    var(--pane-device-color, var(--term-muted)) 14%,
+    transparent
+  );
+  color: var(--pane-device-color, var(--term-muted));
   font-size: 9px;
   line-height: 14px;
   text-overflow: ellipsis;

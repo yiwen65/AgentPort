@@ -6,6 +6,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -88,6 +89,7 @@ import {
   clampPaneSplitRatio,
   layoutContains,
   orderedLayoutSessionIds,
+  paneGroupDeviceAccents,
   visiblePaneLayout,
   type PaneLayoutNode,
   type PaneSplit,
@@ -807,6 +809,7 @@ function PaneHeader({
   const { deviceKey } = parseSessionKey(sessionKey);
   const activeDevice = useStore((state) => state.activeDevice);
   const profiles = useDevicesStore((state) => state.devices);
+  const layoutGroups = useStore((state) => state.terminalLayoutGroups);
   const deviceName =
     deviceKey === "local"
       ? null
@@ -814,6 +817,10 @@ function PaneHeader({
         ? activeDevice.deviceName
         : (profiles?.find((device) => device.id === deviceKey)?.name ??
           deviceKey);
+  const deviceAccent = useMemo(
+    () => paneGroupDeviceAccents(layoutGroups).get(deviceKey) ?? null,
+    [deviceKey, layoutGroups],
+  );
   return (
     <header
       className="pane-header"
@@ -822,7 +829,18 @@ function PaneHeader({
       <PaneAgentIcon ses={ses} />
       <StatusDot session={ses} />
       {deviceName ? (
-        <span className="pane-device-badge" title={deviceName}>
+        <span
+          className="pane-device-badge"
+          title={deviceName}
+          data-device-accent={deviceAccent ?? undefined}
+          style={
+            deviceAccent
+              ? ({
+                  "--pane-device-color": `var(--pane-group-${deviceAccent})`,
+                } as CSSProperties)
+              : undefined
+          }
+        >
           {deviceName}
         </span>
       ) : null}

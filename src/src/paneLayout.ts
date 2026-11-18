@@ -1,7 +1,9 @@
 import { activeDeviceContext, scopedStorageKey } from "./deviceContext";
 import {
+  LOCAL_DEVICE_KEY,
   deviceKeyForContext,
   namespaceSessionKeys,
+  parseSessionKey,
 } from "./sessionIdentity";
 
 export const MIN_PANE_WIDTH = 320;
@@ -858,6 +860,44 @@ export function normalizePaneGroupAccents(
     return { ...group, accent };
   });
   return { groups: changed ? next : groups.slice(), changed };
+}
+
+/** Stable tint per device; collisions probe to the next free palette slot. */
+export function deviceAccentAssignments(
+  deviceIds: readonly string[],
+): Map<string, PaneGroupAccent> {
+  const used = new Set<PaneGroupAccent>();
+  const assignment = new Map<string, PaneGroupAccent>();
+  for (const deviceId of [...new Set(deviceIds)].sort()) {
+    let hash = 5381;
+    for (let index = 0; index < deviceId.length; index += 1) {
+      hash = ((hash << 5) + hash + deviceId.charCodeAt(index)) >>> 0;
+    }
+    let slot = hash % PANE_GROUP_ACCENTS.length;
+    for (let attempts = 0; attempts < PANE_GROUP_ACCENTS.length; attempts += 1) {
+      if (!used.has(PANE_GROUP_ACCENTS[slot])) break;
+      slot = (slot + 1) % PANE_GROUP_ACCENTS.length;
+    }
+    const accent = PANE_GROUP_ACCENTS[slot];
+    used.add(accent);
+    assignment.set(deviceId, accent);
+  }
+  return assignment;
+}
+
+/** Device tints for exactly the devices present in these pane groups. */
+export function paneGroupDeviceAccents(
+  groups: readonly PaneLayout[],
+): Map<string, PaneGroupAccent> {
+  return deviceAccentAssignments(
+    groups
+      .flatMap((group) =>
+        orderedLayoutSessionIds(group).map(
+          (key) => parseSessionKey(key).deviceKey,
+        ),
+      )
+      .filter((deviceKey) => deviceKey !== LOCAL_DEVICE_KEY),
+  );
 }
 
 export function samePaneLayouts(

@@ -30,7 +30,6 @@ import { orderAgentIds, visibleAgentIds } from "../agentOrder";
 import {
   activeSessionKey,
   deviceKeyForContext,
-  parseSessionKey,
   sessionKeyFor,
   LOCAL_DEVICE_KEY,
 } from "../sessionIdentity";
@@ -81,10 +80,11 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { openGitCenter } from "../gitCenter";
 import {
-  PANE_GROUP_ACCENTS,
+  deviceAccentAssignments,
   normalizePaneGroupAccents,
   orderedLayoutSessionIds,
   layoutContains,
+  paneGroupDeviceAccents,
   persistTerminalLayouts,
   type PaneGroupAccent,
   type PaneLayout,
@@ -1308,29 +1308,6 @@ interface ActiveAgentSessionEntry {
   project: ProjectView;
 }
 
-/** Stable tint per device; collisions probe to the next free palette slot. */
-function deviceAccentAssignments(
-  deviceIds: readonly string[],
-): Map<string, PaneGroupAccent> {
-  const used = new Set<PaneGroupAccent>();
-  const assignment = new Map<string, PaneGroupAccent>();
-  for (const deviceId of [...new Set(deviceIds)].sort()) {
-    let hash = 5381;
-    for (let index = 0; index < deviceId.length; index += 1) {
-      hash = ((hash << 5) + hash + deviceId.charCodeAt(index)) >>> 0;
-    }
-    let slot = hash % PANE_GROUP_ACCENTS.length;
-    for (let attempts = 0; attempts < PANE_GROUP_ACCENTS.length; attempts += 1) {
-      if (!used.has(PANE_GROUP_ACCENTS[slot])) break;
-      slot = (slot + 1) % PANE_GROUP_ACCENTS.length;
-    }
-    const accent = PANE_GROUP_ACCENTS[slot];
-    used.add(accent);
-    assignment.set(deviceId, accent);
-  }
-  return assignment;
-}
-
 /** Project (· branch) context shared by the active list and split groups. */
 function sessionSourceLabel(
   project: ProjectView,
@@ -2400,15 +2377,7 @@ export default function Sidebar({
   const groupDeviceAccents = useMemo(
     () =>
       groupsPage && !activeAgentsView
-        ? deviceAccentAssignments(
-            groups
-              .flatMap((group) =>
-                orderedLayoutSessionIds(group).map(
-                  (key) => parseSessionKey(key).deviceKey,
-                ),
-              )
-              .filter((deviceKey) => deviceKey !== LOCAL_DEVICE_KEY),
-          )
+        ? paneGroupDeviceAccents(groups)
         : new Map<string, PaneGroupAccent>(),
     [activeAgentsView, groups, groupsPage],
   );

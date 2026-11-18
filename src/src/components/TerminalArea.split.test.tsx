@@ -105,7 +105,12 @@ import {
   SESSION_PANE_DND_MIME,
   writeSessionPaneDragPayload,
 } from "../paneSessionDrag";
-import { singletonPaneLayout, splitPane } from "../paneLayout";
+import {
+  paneGroupDeviceAccents,
+  singletonPaneLayout,
+  splitPane,
+} from "../paneLayout";
+import { getDeviceSessionsState } from "../deviceSessions";
 import { getState, patchSession, setState } from "../store";
 import { i18n } from "../i18n";
 import { beginNativeTreeDrag, forwardNativeDrag } from "../nativeDrag";
@@ -388,6 +393,57 @@ describe("TerminalArea recursive panes", () => {
     expect(view.getByTestId(`pi-${rpc.id}`)).toBeTruthy();
     expect(view.container.querySelectorAll(".session-pane-leaf.max-hidden")).toHaveLength(2);
     expect(view.container.querySelectorAll(".pane-split.maximized-path")).toHaveLength(2);
+  });
+
+  it("tints a remote pane's device badge with its split-group device accent", () => {
+    const remoteKey = "dev_b:rpc-remote";
+    const remoteSession: SessionView = {
+      ...rpc,
+      id: "rpc-remote",
+      title: "Remote",
+    };
+    getDeviceSessionsState().snapshots.dev_b = {
+      deviceId: "dev_b",
+      deviceName: "Beta",
+      transport: "ssh",
+      projects: [{
+        id: "project",
+        name: "Remote Project",
+        rootPath: "/tmp/remote",
+        gitRootPath: null,
+        pinned: false,
+        sessions: [remoteSession],
+        worktrees: [],
+      }],
+      fetchedAt: 1,
+      metadataFetchedAt: 1,
+      loading: false,
+      error: null,
+    };
+    const terminalLayout = splitPane(
+      singletonPaneLayout(ptyA.id),
+      ptyA.id,
+      remoteKey,
+      "right",
+      "outer",
+    );
+    setState({
+      terminalLayout,
+      terminalLayoutGroups: [terminalLayout],
+      activeSessionId: ptyA.id,
+      attachedIds: [ptyA.id],
+    });
+
+    const { container } = render(<TerminalArea />);
+    const badge = container.querySelector<HTMLElement>(
+      `[data-pane-session-id="${remoteKey}"] .pane-device-badge`,
+    );
+    const accent = paneGroupDeviceAccents([terminalLayout]).get("dev_b");
+    expect(accent).toBeTruthy();
+    expect(badge?.getAttribute("data-device-accent")).toBe(accent);
+    expect(badge?.style.getPropertyValue("--pane-device-color")).toBe(
+      `var(--pane-group-${accent})`,
+    );
   });
 
   it("keeps clipboard, split, rename, restart, stop, and remove actions in the PTY context menu", () => {
