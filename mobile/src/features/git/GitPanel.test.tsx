@@ -317,6 +317,31 @@ describe("mobile Git Center", () => {
     expect(screen.getByRole("button", { name: "Push" })).toBeDisabled();
   });
 
+  it("shows a friendly state for a non-git project and retries", async () => {
+    const { client, request } = setup();
+    const originalRequest = request.getMockImplementation()!;
+    let rejected = false;
+    vi.mocked(client.request).mockImplementation(async (hostId: string, method: string, params: any) => {
+      if (method === "git.context.resolve" && !rejected) {
+        rejected = true;
+        throw {
+          code: "request_not_executed",
+          status: "not_executed",
+          message: "not found: not a git repository: /repo (git rev-parse failed)",
+        };
+      }
+      return originalRequest(hostId, method, params);
+    });
+    renderPanel(client);
+    expect(await screen.findByText("This project isn't a Git repository")).toBeInTheDocument();
+    expect(screen.getByText(/git init/)).toBeInTheDocument();
+    expect(screen.queryByText(/not a git repository:/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Reading branches…")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("src/App.tsx")).toBeInTheDocument();
+  });
+
   it("reports an unknown outcome after a sync timeout without retrying", async () => {
     const { client, request } = setup();
     const originalRequest = request.getMockImplementation()!;

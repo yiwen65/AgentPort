@@ -254,6 +254,11 @@ export const resources = {
             conflicts: "存在冲突，解决后再拉取。",
           },
         },
+        notRepository: {
+          title: "此项目不是 Git 仓库",
+          body: "项目目录尚未初始化 Git，因此无法查看更改、提交或远端状态。",
+          hint: "在项目目录中执行 git init 后，点“重试”即可使用 Git 面板。",
+        },
       },
       status: {
         disconnected: "未连接",
@@ -524,6 +529,11 @@ export const resources = {
             noUpstream: "Pull requires an upstream branch; Push once to create it.",
             conflicts: "Resolve conflicts before pulling.",
           },
+        },
+        notRepository: {
+          title: "This project isn't a Git repository",
+          body: "The project directory has not been initialized with Git, so changes, commits and remote status are unavailable.",
+          hint: "Run git init in the project directory, then tap Retry.",
         },
       },
       status: {

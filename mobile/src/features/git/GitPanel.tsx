@@ -105,17 +105,23 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
   const [remotePlan, setRemotePlan] = useState<RemotePlan>();
   const [remoteBusy, setRemoteBusy] = useState<"" | "pull" | "push">("");
 
-  useEffect(() => {
-    let cancelled = false;
+  const contextSequence = useRef(0);
+  const loadContext = useCallback(async () => {
+    const sequence = ++contextSequence.current;
     setContext(undefined);
     setContextError("");
-    resolveGitContext(client, hostId, sessionId).then(value => {
-      if (!cancelled) setContext(value);
-    }).catch(error => {
-      if (!cancelled) setContextError(remoteErrorMessage(error));
-    });
-    return () => { cancelled = true; };
+    try {
+      const value = await resolveGitContext(client, hostId, sessionId);
+      if (sequence === contextSequence.current) setContext(value);
+    } catch (error) {
+      if (sequence === contextSequence.current) setContextError(remoteErrorMessage(error));
+    }
   }, [client, hostId, sessionId]);
+
+  useEffect(() => {
+    void loadContext();
+    return () => { contextSequence.current += 1; };
+  }, [loadContext]);
 
   const loadChanges = useCallback(async () => {
     setChangesBusy(true);
@@ -308,6 +314,7 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
           : context && !context.writable ? t("git.commit.blocked", { reason: context.blockers.join(", ") })
             : !changes?.counts.staged ? t("git.commit.noStaged") : "";
   const canCommit = Boolean(changes && !commitBlocked && commitMessage.trim() && !commitBusy && !remoteBusy);
+  const contextNotRepository = contextError.toLowerCase().includes("not a git repository");
   const liveContext = changes?.context ?? context;
   const ahead = liveContext?.ahead ?? 0;
   const behind = liveContext?.behind ?? 0;
@@ -407,7 +414,7 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
   return <Modal title={sessionTitle} onClose={onClose} className={`git-panel${diffRequest ? " git-panel-fullscreen" : ""}`}>
     <div className="git-context">
       <span className="git-context-project">{context?.projectName ?? sessionTitle}</span>
-      <span className="git-context-branch">{context?.detached ? t("git.branch.detached") : currentBranch ?? t("git.branch.loading")}</span>
+      {context ? <span className="git-context-branch">{context.detached ? t("git.branch.detached") : currentBranch ?? t("git.branch.loading")}</span> : null}
     </div>
     {notice ? <p className="git-notice" role="status">{notice}</p> : null}
     {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
@@ -445,7 +452,16 @@ export function GitPanel({ client, hostId, sessionId, sessionTitle, onClose, onC
     </div> : null}
 
     {!context && !contextError ? <p className="git-empty" role="status">{t("git.loading")}</p> : null}
-    {contextError ? <div className="git-error" role="alert"><p>{t("git.unavailable")}</p><small>{contextError}</small></div> : null}
+    {contextError && contextNotRepository ? <div className="git-not-repo" role="status">
+      <strong>{t("git.notRepository.title")}</strong>
+      <p>{t("git.notRepository.body")}</p>
+      <p>{t("git.notRepository.hint")}</p>
+      <button type="button" onClick={() => void loadContext()}>{t("common.retry")}</button>
+    </div> : null}
+    {contextError && !contextNotRepository ? <div className="git-error" role="alert">
+      <p>{t("git.unavailable")}</p><small>{contextError}</small>
+      <button type="button" onClick={() => void loadContext()}>{t("common.retry")}</button>
+    </div> : null}
 
     {context ? <>
       {!diffRequest && !commitReview ? <section className="git-remote" aria-label={t("git.remote.title")}>

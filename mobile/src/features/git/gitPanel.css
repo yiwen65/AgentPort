@@ -41,6 +41,10 @@
 .git-remote-actions > button:disabled { opacity: .5; }
 .git-remote-hint { flex: 1 1 100%; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .git-empty { margin: 18px 0; color: var(--muted); text-align: center; line-height: 1.5; }
+.git-not-repo { margin: 18px 0; padding: 20px 14px; border: 1px solid var(--line-soft); border-radius: 14px; background: var(--fill); text-align: center; }
+.git-not-repo strong { display: block; color: var(--text); font-size: 15px; }
+.git-not-repo p { margin: 8px auto 0; max-width: 42ch; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.git-not-repo button { min-height: 44px; margin-top: 14px; padding: 0 14px; border: 1px solid var(--line-soft); border-radius: 11px; background: var(--panel-strong); color: var(--text); font-weight: 650; }
 .git-error { margin: 12px 0; padding: 12px; border: 1px solid var(--danger); border-radius: 14px; background: var(--fill); color: var(--danger); }
 .git-error p { margin: 0; }
 .git-error small { display: block; margin-top: 6px; overflow-wrap: anywhere; font-size: 12px; }

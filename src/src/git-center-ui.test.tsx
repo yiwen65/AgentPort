@@ -188,6 +188,26 @@ describe("Git Center states", () => {
   });
   afterEach(cleanup);
 
+  it("renders a friendly non-repository state instead of the raw Git failure", () => {
+    setState({
+      gitCenter: {
+        ...emptyGitCenterState(),
+        open: true,
+        locator: { kind: "projectMain", projectId: "project-1" },
+        resolvePhase: "error",
+        resolveError:
+          "not found: not a git repository: /mock/project (git rev-parse failed)",
+        resolveNotRepository: true,
+      },
+    });
+    render(<GitCenter />);
+
+    expect(screen.getByText("此 Project 不是 Git 仓库")).toBeTruthy();
+    expect(screen.getByText(/git init/)).toBeTruthy();
+    expect(screen.queryByText(/not found: not a git repository/)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("renders the same MM file independently in staged and unstaged groups", () => {
     show(cache());
     render(<GitCenter />);

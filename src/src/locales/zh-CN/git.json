@@ -50,6 +50,9 @@
     "missing": "目标 Worktree 不存在或不再属于该 Project。",
     "readOnly": "此 Checkout 当前为只读：{{reason}}",
     "conflicts": "存在 {{count}} 个冲突；解决后请明确选择“标记为已解决并暂存”。",
+    "notRepository": "此 Project 不是 Git 仓库",
+    "notRepositoryBody": "项目目录尚未初始化 Git，因此无法查看更改、提交或远端状态。",
+    "notRepositoryHint": "在项目目录中执行 git init 后重试。",
     "unknown": "未知状态"
   },
   "groups": {

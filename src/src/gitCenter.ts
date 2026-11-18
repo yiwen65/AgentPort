@@ -240,6 +240,7 @@ export async function openGitCenter(locator: GitContextLocator): Promise<void> {
       activeCheckoutId: null,
       resolvePhase: "loading",
       resolveError: null,
+      resolveNotRepository: false,
       pendingSessionLocator: null,
     },
   }));
@@ -261,6 +262,7 @@ export async function openGitCenter(locator: GitContextLocator): Promise<void> {
           activeCheckoutId: context.checkoutId,
           resolvePhase: "ready",
           resolveError: null,
+          resolveNotRepository: false,
           caches: {
             ...state.gitCenter.caches,
             [context.checkoutId]: existing
@@ -280,11 +282,13 @@ export async function openGitCenter(locator: GitContextLocator): Promise<void> {
     ]);
   } catch (error) {
     if (sequence !== resolveSequence) return;
+    const detail = errorText(error);
     update((state) => ({
       gitCenter: {
         ...state.gitCenter,
         resolvePhase: "error",
-        resolveError: errorText(error),
+        resolveError: detail,
+        resolveNotRepository: detail.toLowerCase().includes("not a git repository"),
       },
     }));
   }

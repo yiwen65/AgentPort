@@ -211,6 +211,7 @@ export interface GitCenterState {
   activeCheckoutId: string | null;
   resolvePhase: GitCenterPhase;
   resolveError: string | null;
+  resolveNotRepository: boolean;
   pendingSessionLocator: GitContextLocator | null;
   caches: Record<string, GitCheckoutUiState>;
 }
@@ -224,6 +225,7 @@ export function emptyGitCenterState(): GitCenterState {
     activeCheckoutId: null,
     resolvePhase: "idle",
     resolveError: null,
+    resolveNotRepository: false,
     pendingSessionLocator: null,
     caches: {},
   };

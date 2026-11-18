@@ -50,6 +50,9 @@
     "missing": "The Worktree is missing or no longer belongs to this Project.",
     "readOnly": "This checkout is read-only: {{reason}}",
     "conflicts": "{{count}} conflicts remain. Resolve them, then explicitly mark them resolved and stage.",
+    "notRepository": "This Project is not a Git repository",
+    "notRepositoryBody": "The project directory has not been initialized with Git, so changes, commits and remote status are unavailable.",
+    "notRepositoryHint": "Run git init in the project directory, then retry.",
     "unknown": "Unknown state"
   },
   "groups": {

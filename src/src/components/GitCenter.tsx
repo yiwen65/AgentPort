@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  openGitCenter,
   refreshGitChanges,
   setGitCenterView,
 } from "../gitCenter";
@@ -31,6 +32,7 @@ export default function GitCenter() {
   const cache = center.activeCheckoutId
     ? center.caches[center.activeCheckoutId]
     : null;
+  const locator = center.locator;
   return (
     <section
       className="workspace git-center"
@@ -44,10 +46,36 @@ export default function GitCenter() {
           {t("states.loading")}
         </div>
       ) : center.resolvePhase === "error" ? (
-        <div className="git-panel-state error" role="alert">
-          <strong>{t("states.error")}</strong>
-          <span>{center.resolveError}</span>
-        </div>
+        center.resolveNotRepository ? (
+          <div className="git-panel-state not-repository" role="status">
+            <strong>{t("states.notRepository")}</strong>
+            <span>{t("states.notRepositoryBody")}</span>
+            <span className="git-panel-state-hint">
+              {t("states.notRepositoryHint")}
+            </span>
+            {locator ? (
+              <button
+                className="btn small"
+                onClick={() => void openGitCenter(locator)}
+              >
+                {t("retry")}
+              </button>
+            ) : null}
+          </div>
+        ) : (
+          <div className="git-panel-state error" role="alert">
+            <strong>{t("states.error")}</strong>
+            <span>{center.resolveError}</span>
+            {locator ? (
+              <button
+                className="btn small"
+                onClick={() => void openGitCenter(locator)}
+              >
+                {t("retry")}
+              </button>
+            ) : null}
+          </div>
+        )
       ) : cache ? (
         <>
           <nav className="git-center-tabs" aria-label={t("title")}>

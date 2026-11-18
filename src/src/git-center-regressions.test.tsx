@@ -209,6 +209,23 @@ describe("Git Center review regressions", () => {
     resetGitCenterStateForTests();
   });
 
+  it("marks a non-git resolve failure as a friendly state", async () => {
+    apiMock.resolveGitContext.mockRejectedValue({
+      code: "notFound",
+      message: "not found: not a git repository: /mock/a (git rev-parse failed)",
+      recoverable: true,
+      currentChanges: null,
+    });
+
+    await act(async () => {
+      await openGitCenter(locator("a"));
+    });
+
+    expect(getState().gitCenter.resolvePhase).toBe("error");
+    expect(getState().gitCenter.resolveNotRepository).toBe(true);
+    expect(getState().gitCenter.resolveError).toContain("not a git repository");
+  });
+
   it("keeps conflicted entries out of the Stage all batch", async () => {
     const target = context("checkout-a", "a");
     apiMock.resolveGitContext.mockResolvedValue(target);
