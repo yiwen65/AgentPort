@@ -5090,6 +5090,7 @@ fn main() {
             remote::commands::remote_disconnect,
             remote::commands::remote_request,
             remote::commands::remote_send_input,
+            remote::commands::remote_paste_image,
             remote::commands::remote_subscribe,
             remote::commands::device_pair_redeem,
             remote::commands::device_pairing_link,

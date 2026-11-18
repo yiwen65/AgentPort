@@ -245,3 +245,54 @@ pub async fn remote_attention_notify(
         .map_err(|error| RemoteCommandError::new("notification_failed", error.to_string()))?;
     Ok(true)
 }
+
+/// Pastes this machine's clipboard image into a remote device. The remote
+/// TUI cannot read this computer's pasteboard, so the local image is encoded
+/// as PNG, uploaded over the existing remote connection, and the absolute
+/// path on the remote host is returned for the renderer to insert.
+#[tauri::command]
+pub async fn remote_paste_image(
+    app: tauri::AppHandle,
+    manager: tauri::State<'_, Arc<RemoteConnectionManager>>,
+    device_id: String,
+) -> Result<String, RemoteCommandError> {
+    use agentport_remote_protocol::image::MAX_IMAGE_BYTES;
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+
+    /// Matches the Markdown image pixel bound; larger frames are not pastes.
+    const MAX_PIXELS: u64 = 20_000_000;
+
+    let manager = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let image = app.clipboard().read_image().map_err(|error| {
+            RemoteCommandError::new("clipboard_image_unavailable", error.to_string())
+        })?;
+        let (width, height) = (image.width(), image.height());
+        if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_PIXELS {
+            return Err(RemoteCommandError::new(
+                "image_invalid",
+                "The clipboard image is empty or too large to paste remotely.",
+            ));
+        }
+        let rgba =
+            image::RgbaImage::from_raw(width, height, image.rgba().to_vec()).ok_or_else(|| {
+                RemoteCommandError::new(
+                    "image_invalid",
+                    "The clipboard image could not be decoded.",
+                )
+            })?;
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(rgba)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .map_err(|error| RemoteCommandError::new("image_encode_failed", error.to_string()))?;
+        if png.len() as u64 > MAX_IMAGE_BYTES {
+            return Err(RemoteCommandError::new(
+                "image_invalid",
+                "The clipboard image exceeds the 20 MiB remote paste limit.",
+            ));
+        }
+        manager.upload_image(&device_id, &png)
+    })
+    .await
+    .map_err(|error| RemoteCommandError::new("join_failed", error.to_string()))?
+}

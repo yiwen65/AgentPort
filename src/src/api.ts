@@ -927,3 +927,11 @@ export async function clipboardHasImage(): Promise<boolean> {
     return false;
   }
 }
+
+/** Upload this machine's clipboard image to a remote device and resolve to
+ * the absolute path on that device. Never presses Enter. */
+export async function pasteImageToRemoteDevice(
+  deviceId: string,
+): Promise<string> {
+  return invoke<string>("remote_paste_image", { deviceId });
+}

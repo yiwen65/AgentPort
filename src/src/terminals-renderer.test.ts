@@ -22,6 +22,9 @@ const rendererMocks = vi.hoisted(() => {
     autoRenameSessionFromFirstInput: vi.fn().mockResolvedValue(true),
     clipboardHasImage: vi.fn().mockResolvedValue(false),
     copyText: vi.fn().mockResolvedValue(true),
+    pasteImageToRemoteDevice: vi
+      .fn()
+      .mockResolvedValue("/home/u/.cache/agentport/image-1.png"),
     getNativeHistory: vi.fn(),
     openExternalUrl: vi.fn().mockResolvedValue(undefined),
     resizePty: vi.fn().mockResolvedValue(undefined),
@@ -269,6 +272,7 @@ vi.mock("./api", () => ({
   bytesToB64: vi.fn(() => "encoded-input"),
   clipboardHasImage: rendererMocks.apiMock.clipboardHasImage,
   copyText: rendererMocks.apiMock.copyText,
+  pasteImageToRemoteDevice: rendererMocks.apiMock.pasteImageToRemoteDevice,
   errorText: (error: unknown) => String(error),
 }));
 
@@ -355,6 +359,9 @@ describe("terminal renderer", () => {
     rendererMocks.apiMock.listProjects.mockReset();
     vi.mocked(bytesToB64).mockReturnValue("encoded-input");
     rendererMocks.apiMock.clipboardHasImage.mockResolvedValue(false);
+    rendererMocks.apiMock.pasteImageToRemoteDevice
+      .mockReset()
+      .mockResolvedValue("/home/u/.cache/agentport/image-1.png");
     setState({
       activeSessionId: "renderer-test",
       activeDevice: LOCAL_DEVICE_CONTEXT,
@@ -1829,6 +1836,132 @@ describe("terminal renderer", () => {
       expect(rendererMocks.apiMock.clipboardHasImage).toHaveBeenCalledOnce();
       expect(terminal.input).toHaveBeenCalledWith("\x16");
     });
+  });
+
+  function mountRemoteTerminal(deviceId: string, plainSessionId: string) {
+    resetRemoteBackendsForTests();
+    setRemoteBackendFactoryForTests(
+      () =>
+        ({
+          attachSession: vi.fn().mockResolvedValue({
+            remote: true,
+            attachmentId: "att-remote",
+            sessionId: plainSessionId,
+            hostPid: null,
+            protocol: null,
+            childAlive: true,
+            logBytes: null,
+            status: null,
+            agentSessionId: null,
+            runId: "run-remote",
+            runOrdinal: 1,
+            logCursor: null,
+            terminalGeometry: null,
+          }),
+          detachSession: vi.fn().mockResolvedValue(undefined),
+          sendInput: vi.fn().mockResolvedValue(undefined),
+          resizePty: vi.fn().mockResolvedValue(undefined),
+          listProjects: vi.fn().mockResolvedValue(getState().projects),
+        }) as never,
+    );
+    mountTerminal(`${deviceId}:${plainSessionId}`, document.createElement("div"));
+    return rendererMocks.terminals[rendererMocks.terminals.length - 1];
+  }
+
+  function imagePasteEvent(clipboard: {
+    items?: Array<{ kind: string; type: string }>;
+    files?: Array<{ type: string }>;
+    types?: string[];
+    getData?: (type: string) => string;
+  }) {
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        items: [],
+        files: [],
+        types: [],
+        getData: () => "",
+        ...clipboard,
+      },
+    });
+    return paste;
+  }
+
+  it("uploads an image paste to a remote session and inserts the remote path", async () => {
+    try {
+      const terminal = mountRemoteTerminal("dev_b", "ses_paste");
+      const paste = imagePasteEvent({
+        items: [{ kind: "file", type: "image/png" }],
+        types: ["Files"],
+      });
+
+      terminal.textarea?.dispatchEvent(paste);
+
+      expect(paste.defaultPrevented).toBe(true);
+      expect(
+        rendererMocks.apiMock.pasteImageToRemoteDevice,
+      ).toHaveBeenCalledWith("dev_b");
+      await vi.waitFor(() =>
+        expect(terminal.paste).toHaveBeenCalledWith(
+          "/home/u/.cache/agentport/image-1.png",
+        ),
+      );
+      expect(terminal.input).not.toHaveBeenCalled();
+    } finally {
+      resetRemoteBackendsForTests();
+    }
+  });
+
+  it("probes the native clipboard for an opaque remote paste and uploads it", async () => {
+    rendererMocks.apiMock.clipboardHasImage.mockResolvedValue(true);
+    try {
+      const terminal = mountRemoteTerminal("dev_b", "ses_opaque");
+      const paste = imagePasteEvent({});
+
+      terminal.textarea?.dispatchEvent(paste);
+
+      await vi.waitFor(() =>
+        expect(rendererMocks.apiMock.clipboardHasImage).toHaveBeenCalledOnce(),
+      );
+      await vi.waitFor(() =>
+        expect(terminal.paste).toHaveBeenCalledWith(
+          "/home/u/.cache/agentport/image-1.png",
+        ),
+      );
+      expect(
+        rendererMocks.apiMock.pasteImageToRemoteDevice,
+      ).toHaveBeenCalledWith("dev_b");
+      expect(terminal.input).not.toHaveBeenCalled();
+    } finally {
+      resetRemoteBackendsForTests();
+    }
+  });
+
+  it("shows the upload error and inserts nothing when a remote image cannot be uploaded", async () => {
+    rendererMocks.apiMock.pasteImageToRemoteDevice.mockRejectedValueOnce(
+      "The remote device does not support image paste; update AgentPort there.",
+    );
+    try {
+      const terminal = mountRemoteTerminal("dev_b", "ses_failed");
+      const paste = imagePasteEvent({
+        items: [{ kind: "file", type: "image/png" }],
+        types: ["Files"],
+      });
+
+      terminal.textarea?.dispatchEvent(paste);
+
+      await vi.waitFor(() =>
+        expect(
+          getState().toasts.some((toast) =>
+            toast.text.includes("does not support image paste"),
+          ),
+        ).toBe(true),
+      );
+      expect(terminal.paste).not.toHaveBeenCalled();
+      expect(terminal.input).not.toHaveBeenCalled();
+    } finally {
+      resetRemoteBackendsForTests();
+    }
   });
 
   it("leaves plain-text paste on xterm's native path", async () => {

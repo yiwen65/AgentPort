@@ -7,12 +7,13 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agentport_core::paths::AppPaths;
 use agentport_relay::crypto::Identity;
 use agentport_relay::protocol::Peer;
 use agentport_remote_protocol::ClientIdentity;
+use sha2::{Digest, Sha256};
 
 use crate::remote::connection::RemoteConnection;
 use crate::remote::identity::ClientIdentityStore;
@@ -24,6 +25,10 @@ use crate::remote::{relay, RemoteCommandError, RemoteHello};
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// One image upload request may cross a WAN; every frame gets this bound.
+const IMAGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Whole-transfer budget for one image paste (all chunks + finish).
+const IMAGE_UPLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 /// Bound on queued-but-unsent terminal input frames per device. Each frame is
 /// at most one xterm input event (keystroke/wheel report), so this only fills
 /// while the link is far behind a paste or a fast scroll.
@@ -355,6 +360,70 @@ impl RemoteConnectionManager {
         connection.request(method, params, DEFAULT_REQUEST_TIMEOUT)
     }
 
+    /// Uploads one PNG/JPEG image to the remote device and returns its
+    /// absolute path there. A remote TUI cannot read this machine's
+    /// clipboard, so the renderer inserts the returned path instead of
+    /// forwarding Ctrl+V. Failures abort the in-progress upload.
+    pub fn upload_image(
+        &self,
+        device_id: &str,
+        bytes: &[u8],
+    ) -> Result<String, RemoteCommandError> {
+        use agentport_remote_protocol::image::MAX_IMAGE_BYTES;
+
+        let size = bytes.len() as u64;
+        if size == 0 || size > MAX_IMAGE_BYTES {
+            return Err(RemoteCommandError::new(
+                "image_invalid",
+                "Images must be between 1 byte and 20 MiB.",
+            ));
+        }
+        let extension = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            "png"
+        } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            "jpg"
+        } else {
+            return Err(RemoteCommandError::new(
+                "image_invalid",
+                "Only PNG and JPEG images can be pasted into a remote session.",
+            ));
+        };
+        let connection = self.connection_for(device_id)?;
+        let capable = connection.hello().capabilities.iter().any(|capability| {
+            capability.name == agentport_remote_protocol::image::CAPABILITY && capability.enabled
+        });
+        if !capable {
+            return Err(RemoteCommandError::new(
+                "image_upload_unavailable",
+                "The remote device does not support image paste; update AgentPort there.",
+            ));
+        }
+
+        let begin = connection.request(
+            "image.begin",
+            serde_json::json!({"size": size, "extension": extension}),
+            IMAGE_REQUEST_TIMEOUT,
+        )?;
+        let upload_id = begin["uploadId"]
+            .as_str()
+            .ok_or_else(|| {
+                RemoteCommandError::new(
+                    "image_upload_failed",
+                    "The remote device did not return an image upload identifier.",
+                )
+            })?
+            .to_string();
+        let result = stream_image(&connection, &upload_id, bytes);
+        if result.is_err() {
+            let _ = connection.request(
+                "image.abort",
+                serde_json::json!({"uploadId": upload_id}),
+                Duration::from_secs(5),
+            );
+        }
+        result
+    }
+
     /// Enqueues one terminal-input frame for ordered, ack-independent
     /// delivery. Returns as soon as the frame is queued; a per-device worker
     /// writes frames in call order, so a wheel/keystroke burst is not
@@ -512,6 +581,64 @@ impl RemoteConnectionManager {
     }
 }
 
+/// Streams the image body in bounded binary chunks and finishes the upload
+/// with a SHA-256 digest. Each chunk is acknowledged before the next frame so
+/// a slow link keeps terminal requests interleaved instead of queuing the
+/// whole image ahead of them.
+fn stream_image(
+    connection: &RemoteConnection,
+    upload_id: &str,
+    bytes: &[u8],
+) -> Result<String, RemoteCommandError> {
+    use agentport_remote_protocol::image::MAX_CHUNK_BYTES;
+
+    let started = Instant::now();
+    let mut offset = 0usize;
+    let mut digest = Sha256::new();
+    while offset < bytes.len() {
+        if started.elapsed() > IMAGE_UPLOAD_TIMEOUT {
+            return Err(RemoteCommandError::new(
+                "image_upload_timeout",
+                "The image upload timed out. Please try again.",
+            ));
+        }
+        let end = (offset + MAX_CHUNK_BYTES).min(bytes.len());
+        let chunk = &bytes[offset..end];
+        let ack = connection.request_binary(
+            "image.chunk",
+            serde_json::json!({"uploadId": upload_id, "offset": offset}),
+            chunk,
+            IMAGE_REQUEST_TIMEOUT,
+        )?;
+        if ack["offset"].as_u64() != Some(end as u64) {
+            return Err(RemoteCommandError::new(
+                "image_upload_failed",
+                "The remote device did not acknowledge the image bytes.",
+            ));
+        }
+        digest.update(chunk);
+        offset = end;
+    }
+    let finish = connection.request(
+        "image.finish",
+        serde_json::json!({
+            "uploadId": upload_id,
+            "sha256": format!("{:x}", digest.finalize()),
+        }),
+        IMAGE_REQUEST_TIMEOUT,
+    )?;
+    finish["path"]
+        .as_str()
+        .filter(|path| path.starts_with('/'))
+        .map(str::to_string)
+        .ok_or_else(|| {
+            RemoteCommandError::new(
+                "image_upload_failed",
+                "The remote device returned an invalid image path.",
+            )
+        })
+}
+
 impl Drop for RemoteConnectionManager {
     fn drop(&mut self) {
         self.disconnect_all();
@@ -611,5 +738,211 @@ mod tests {
         drop(manager);
         let close = bridge.join().unwrap().unwrap();
         assert_eq!(close, agentport_remote_bridge::CloseReason::EndOfInput);
+    }
+
+    fn fake_hello(
+        capabilities: Vec<agentport_remote_protocol::Capability>,
+    ) -> agentport_remote_protocol::HelloResult {
+        agentport_remote_protocol::HelloResult {
+            protocol: agentport_remote_protocol::ProtocolVersion::V1,
+            server: agentport_remote_protocol::ServerIdentity {
+                agentport_version: "0.0.0-test".to_string(),
+                platform: "test".to_string(),
+            },
+            capabilities,
+            limits: agentport_remote_protocol::Limits {
+                max_frame_bytes: agentport_remote_protocol::MAX_FRAME_BYTES,
+                max_subscriptions: 8,
+                max_host_clients: 8,
+            },
+        }
+    }
+
+    fn write_envelope(
+        stream: &mut std::os::unix::net::UnixStream,
+        envelope: &agentport_remote_protocol::ServerEnvelope,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use std::io::Write;
+        let payload = serde_json::to_vec(envelope)?;
+        let frame = crate::remote::transport::encode_frame(&payload)?;
+        stream.write_all(&frame)?;
+        stream.flush()?;
+        Ok(())
+    }
+
+    fn read_frame_bytes(
+        stream: &mut std::os::unix::net::UnixStream,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(agentport_remote_protocol::read_frame(
+            stream,
+            agentport_remote_protocol::MAX_FRAME_BYTES,
+        )?
+        .expect("frame")
+        .as_bytes()
+        .to_vec())
+    }
+
+    fn reply_succeeded(
+        stream: &mut std::os::unix::net::UnixStream,
+        request_id: &str,
+        value: serde_json::Value,
+        retry_class: agentport_remote_protocol::RetryClass,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        write_envelope(
+            stream,
+            &agentport_remote_protocol::ServerEnvelope::Result {
+                request_id: request_id.to_string(),
+                operation_id: None,
+                status: agentport_remote_protocol::ResultStatus::Succeeded,
+                retry_class,
+                value: Some(value),
+                error: None,
+            },
+        )
+    }
+
+    #[test]
+    fn upload_image_streams_chunks_and_returns_the_remote_path() {
+        use crate::remote::transport::{SocketFrameReader, UnixStreamFrameWriter};
+        use agentport_remote_protocol::image::{CAPABILITY, MAX_CHUNK_BYTES};
+        use agentport_remote_protocol::RetryClass;
+
+        let dir = tempfile::tempdir().unwrap();
+        let manager =
+            RemoteConnectionManager::new(&AppPaths::new(dir.path().to_path_buf())).unwrap();
+        let (client, mut server) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut image = vec![0_u8; MAX_CHUNK_BYTES + 10];
+        image[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        let expected = image.clone();
+        let bridge = std::thread::spawn(move || {
+            let _hello = read_frame_bytes(&mut server).unwrap();
+            write_envelope(
+                &mut server,
+                &agentport_remote_protocol::ServerEnvelope::Hello(fake_hello(vec![
+                    agentport_remote_protocol::Capability {
+                        name: CAPABILITY.into(),
+                        enabled: true,
+                        disabled_reason: None,
+                    },
+                ])),
+            )
+            .unwrap();
+
+            let begin: agentport_remote_protocol::Request =
+                serde_json::from_slice(&read_frame_bytes(&mut server).unwrap()).unwrap();
+            assert_eq!(begin.method, "image.begin");
+            assert_eq!(begin.params["size"], expected.len());
+            assert_eq!(begin.params["extension"], "png");
+            reply_succeeded(
+                &mut server,
+                &begin.request_id,
+                serde_json::json!({"uploadId": "upload-1"}),
+                RetryClass::NonIdempotentWrite,
+            )
+            .unwrap();
+
+            let mut received = Vec::new();
+            for expected_offset in [0_usize, MAX_CHUNK_BYTES] {
+                let frame = read_frame_bytes(&mut server).unwrap();
+                let (header, bytes) =
+                    agentport_remote_protocol::image::decode_chunk(&frame).unwrap();
+                let chunk: agentport_remote_protocol::Request =
+                    serde_json::from_slice(header).unwrap();
+                assert_eq!(chunk.method, "image.chunk");
+                assert_eq!(chunk.params["uploadId"], "upload-1");
+                assert_eq!(chunk.params["offset"], expected_offset);
+                received.extend_from_slice(bytes);
+                reply_succeeded(
+                    &mut server,
+                    &chunk.request_id,
+                    serde_json::json!({"offset": received.len()}),
+                    RetryClass::NonIdempotentWrite,
+                )
+                .unwrap();
+            }
+            assert_eq!(received, expected);
+
+            let finish: agentport_remote_protocol::Request =
+                serde_json::from_slice(&read_frame_bytes(&mut server).unwrap()).unwrap();
+            assert_eq!(finish.method, "image.finish");
+            assert_eq!(
+                finish.params["sha256"],
+                format!("{:x}", Sha256::digest(&expected))
+            );
+            reply_succeeded(
+                &mut server,
+                &finish.request_id,
+                serde_json::json!({"path": "/home/u/.cache/agentport/image-1.png"}),
+                RetryClass::NonIdempotentWrite,
+            )
+            .unwrap();
+            // Keep the connection readable until the manager disconnects.
+            while let Ok(Some(_)) = agentport_remote_protocol::read_frame(
+                &mut server,
+                agentport_remote_protocol::MAX_FRAME_BYTES,
+            ) {}
+        });
+
+        manager
+            .connect_with_transport(
+                "dev_img",
+                None,
+                Box::new(SocketFrameReader::new(client.try_clone().unwrap())),
+                Box::new(UnixStreamFrameWriter::new(client)),
+            )
+            .unwrap();
+        let path = manager.upload_image("dev_img", &image).unwrap();
+        assert_eq!(path, "/home/u/.cache/agentport/image-1.png");
+        manager.disconnect("dev_img");
+        drop(manager);
+        bridge.join().unwrap();
+    }
+
+    #[test]
+    fn upload_image_requires_the_negotiated_capability() {
+        use crate::remote::transport::{SocketFrameReader, UnixStreamFrameWriter};
+
+        let dir = tempfile::tempdir().unwrap();
+        let manager =
+            RemoteConnectionManager::new(&AppPaths::new(dir.path().to_path_buf())).unwrap();
+        let (client, mut server) = std::os::unix::net::UnixStream::pair().unwrap();
+        let bridge = std::thread::spawn(move || {
+            let _hello = read_frame_bytes(&mut server).unwrap();
+            write_envelope(
+                &mut server,
+                &agentport_remote_protocol::ServerEnvelope::Hello(fake_hello(vec![])),
+            )
+            .unwrap();
+            while let Ok(Some(_)) = agentport_remote_protocol::read_frame(
+                &mut server,
+                agentport_remote_protocol::MAX_FRAME_BYTES,
+            ) {}
+        });
+        manager
+            .connect_with_transport(
+                "dev_old",
+                None,
+                Box::new(SocketFrameReader::new(client.try_clone().unwrap())),
+                Box::new(UnixStreamFrameWriter::new(client)),
+            )
+            .unwrap();
+        let error = manager
+            .upload_image("dev_old", b"\x89PNG\r\n\x1a\nbody")
+            .unwrap_err();
+        assert_eq!(error.code, "image_upload_unavailable");
+        manager.disconnect("dev_old");
+        drop(manager);
+        bridge.join().unwrap();
+    }
+
+    #[test]
+    fn upload_image_rejects_bytes_that_are_not_png_or_jpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager =
+            RemoteConnectionManager::new(&AppPaths::new(dir.path().to_path_buf())).unwrap();
+        let error = manager
+            .upload_image("dev_img", b"GIF89a not an accepted paste")
+            .unwrap_err();
+        assert_eq!(error.code, "image_invalid");
     }
 }

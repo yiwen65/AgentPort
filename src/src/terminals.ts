@@ -22,9 +22,10 @@ import {
   clipboardHasImage,
   copyText,
   errorText,
+  pasteImageToRemoteDevice,
   readClipboardText,
 } from "./api";
-import { deviceTerminalApiFor, type DeviceTerminalApi } from "./deviceApi";
+import { deviceTerminalApiFor, isLocalDeviceId, type DeviceTerminalApi } from "./deviceApi";
 import { isDeviceConnected, markDeviceDisconnected } from "./deviceConnections";
 import {
   findSessionByKey,
@@ -2557,6 +2558,10 @@ export interface ClipboardCompatibilityOptions {
   /** Whether plain drags become local xterm selections. TUIs that implement
    * their own selection (Pi fullscreen) keep owning the drag instead. */
   enabled?: () => boolean;
+  /** Remote Sessions: upload this machine's clipboard image and resolve to
+   * its absolute path on the remote device. A TUI running locally reads the
+   * pasteboard itself, so local Sessions leave this undefined. */
+  uploadImage?: () => Promise<string>;
 }
 
 export function installClipboardCompatibility(
@@ -2612,6 +2617,20 @@ export function installClipboardCompatibility(
     term.input("\x16");
     term.focus();
   };
+  const uploadRemoteImage = () => {
+    // The TUI runs on the remote device and cannot read this pasteboard.
+    // Upload the local image and deliver its absolute remote path instead.
+    void options
+      .uploadImage!()
+      .then((path) => {
+        if (disposed) return;
+        term.paste(path);
+        term.focus();
+      })
+      .catch((error) => {
+        if (!disposed) toast(errorText(error), "error");
+      });
+  };
   const onPaste = (event: ClipboardEvent) => {
     const clipboard = event.clipboardData;
     if (!clipboard) return;
@@ -2622,6 +2641,27 @@ export function installClipboardCompatibility(
       Array.from(clipboard.files).some((file) =>
         file.type.startsWith("image/"),
       );
+    const hasText = () =>
+      Array.from(clipboard.types).some((type) =>
+        type.toLowerCase().startsWith("text/plain"),
+      ) || clipboard.getData("text/plain").length > 0;
+    if (options.uploadImage) {
+      if (hasImage) {
+        // xterm only reads text/plain from ClipboardEvent; forwarding the
+        // local pasteboard would reach the wrong machine's clipboard.
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        uploadRemoteImage();
+        return;
+      }
+      if (hasText()) return;
+      // WKWebView can expose a pure image paste with empty items/files/types;
+      // probe the native pasteboard before assuming this was not an image.
+      void clipboardHasImage().then((nativeHasImage) => {
+        if (nativeHasImage && !disposed) uploadRemoteImage();
+      });
+      return;
+    }
     if (hasImage) {
       // xterm only reads text/plain from ClipboardEvent, so an image paste
       // would otherwise send an empty string.
@@ -2630,13 +2670,7 @@ export function installClipboardCompatibility(
       event.stopImmediatePropagation();
       return;
     }
-
-    const hasText =
-      Array.from(clipboard.types).some((type) =>
-        type.toLowerCase().startsWith("text/plain"),
-      ) || clipboard.getData("text/plain").length > 0;
-    if (hasText) return;
-
+    if (hasText()) return;
     // WKWebView can expose a pure image paste with empty items/files/types.
     // Probe the native pasteboard only for that opaque event so normal text
     // paste remains on xterm's synchronous path.
@@ -2834,6 +2868,9 @@ function bindTerminalContainer(handle: TermHandle, container: HTMLDivElement) {
       enabled: () =>
         plainDragSelectsText() &&
         !sessionHandlesTextSelection(handle.sessionId),
+      uploadImage: isLocalDeviceId(handle.deviceId)
+        ? undefined
+        : () => pasteImageToRemoteDevice(handle.deviceId),
     }),
   );
   viewportIntentDisposers.get(handle.sessionId)?.();

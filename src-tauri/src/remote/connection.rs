@@ -25,6 +25,7 @@ pub const REQUESTED_CAPABILITIES: &[&str] = &[
     agentport_remote_protocol::CAPABILITY_SESSION_EVENT_PUSH,
     agentport_remote_protocol::CAPABILITY_TERMINAL_GEOMETRY,
     agentport_remote_protocol::binary_output::CAPABILITY,
+    agentport_remote_protocol::image::CAPABILITY,
 ];
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -277,6 +278,44 @@ impl RemoteConnection {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, RemoteCommandError> {
+        let (request_id, rx) = self.begin_request()?;
+        let payload = self.encode_request(&request_id, method, params)?;
+        self.write_request(&request_id, &payload)?;
+        self.await_result(method, &request_id, rx, timeout)
+    }
+
+    /// Sends one request whose payload carries raw bytes after the JSON
+    /// header (`NUL | header length | request JSON | bytes`). The bridge only
+    /// accepts binary framing for `image.chunk`.
+    pub fn request_binary(
+        &self,
+        method: &str,
+        params: Value,
+        bytes: &[u8],
+        timeout: Duration,
+    ) -> Result<Value, RemoteCommandError> {
+        let (request_id, rx) = self.begin_request()?;
+        let request = Request {
+            message_type: RequestType::Request,
+            request_id: request_id.clone(),
+            method: method.to_string(),
+            params,
+            precondition: None,
+        };
+        let header = serde_json::to_vec(&request).map_err(|error| {
+            self.shared.pending.lock().unwrap().remove(&request_id);
+            RemoteCommandError::new("request_encode_failed", error.to_string())
+        })?;
+        let payload =
+            agentport_remote_protocol::image::encode_chunk(&header, bytes).map_err(|message| {
+                self.shared.pending.lock().unwrap().remove(&request_id);
+                RemoteCommandError::new("image_chunk_invalid", message)
+            })?;
+        self.write_request(&request_id, &payload)?;
+        self.await_result(method, &request_id, rx, timeout)
+    }
+
+    fn begin_request(&self) -> Result<(String, mpsc::Receiver<PendingReply>), RemoteCommandError> {
         if self.is_closed() {
             return Err(self.closed_error());
         }
@@ -287,28 +326,49 @@ impl RemoteConnection {
             .lock()
             .unwrap()
             .insert(request_id.clone(), tx);
+        Ok((request_id, rx))
+    }
+
+    fn encode_request(
+        &self,
+        request_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Vec<u8>, RemoteCommandError> {
         let request = Request {
             message_type: RequestType::Request,
-            request_id: request_id.clone(),
+            request_id: request_id.to_string(),
             method: method.to_string(),
             params,
             precondition: None,
         };
-        let payload = serde_json::to_vec(&request).map_err(|error| {
-            self.shared.pending.lock().unwrap().remove(&request_id);
+        serde_json::to_vec(&request).map_err(|error| {
+            self.shared.pending.lock().unwrap().remove(request_id);
             RemoteCommandError::new("request_encode_failed", error.to_string())
-        })?;
-        if let Err(error) = self.writer.lock().unwrap().write_frame(&payload) {
-            self.shared.pending.lock().unwrap().remove(&request_id);
+        })
+    }
+
+    fn write_request(&self, request_id: &str, payload: &[u8]) -> Result<(), RemoteCommandError> {
+        if let Err(error) = self.writer.lock().unwrap().write_frame(payload) {
+            self.shared.pending.lock().unwrap().remove(request_id);
             self.close(&error.to_string());
             return Err(RemoteCommandError::new(error.code(), error.to_string()));
         }
+        Ok(())
+    }
 
+    fn await_result(
+        &self,
+        method: &str,
+        request_id: &str,
+        rx: mpsc::Receiver<PendingReply>,
+        timeout: Duration,
+    ) -> Result<Value, RemoteCommandError> {
         let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                self.shared.pending.lock().unwrap().remove(&request_id);
+                self.shared.pending.lock().unwrap().remove(request_id);
                 return Err(RemoteCommandError::new(
                     "request_timeout",
                     format!("{method} did not complete within {}s", timeout.as_secs()),
@@ -339,10 +399,26 @@ impl RemoteConnection {
                                     .map(|e| e.message)
                                     .unwrap_or_else(|| format!("{method} was not executed")),
                             )),
-                            ResultStatus::Unknown => Err(RemoteCommandError::new(
-                                "unknown_outcome",
-                                format!("{method} outcome could not be observed; do not retry blindly"),
-                            )),
+                            ResultStatus::Unknown => {
+                                // The host may still explain why the outcome
+                                // is unknown (conflict, Git failure, lock
+                                // timeout). Keep the warning but stop hiding
+                                // that explanation from the user.
+                                let detail = error
+                                    .map(|error| error.message)
+                                    .filter(|message| !message.trim().is_empty());
+                                Err(RemoteCommandError::new(
+                                    "unknown_outcome",
+                                    match detail {
+                                        Some(detail) => format!(
+                                            "{method} outcome could not be confirmed ({detail}); check the result before retrying"
+                                        ),
+                                        None => format!(
+                                            "{method} outcome could not be observed; do not retry blindly"
+                                        ),
+                                    },
+                                ))
+                            }
                         };
                         }
                         _ => {
@@ -357,7 +433,7 @@ impl RemoteConnection {
                     return Err(RemoteCommandError::new("transport_closed", reason));
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.shared.pending.lock().unwrap().remove(&request_id);
+                    self.shared.pending.lock().unwrap().remove(request_id);
                     return Err(RemoteCommandError::new(
                         "request_timeout",
                         format!("{method} did not complete within {}s", timeout.as_secs()),
@@ -558,6 +634,55 @@ mod tests {
     }
 
     #[test]
+    fn binary_request_frames_json_header_and_raw_bytes() {
+        let (client, _server_thread) = spawn_fake_bridge(|mut server| {
+            let _hello: serde_json::Value = serde_json::from_slice(
+                agentport_remote_protocol::read_frame(
+                    &mut server,
+                    agentport_remote_protocol::MAX_FRAME_BYTES,
+                )?
+                .expect("hello frame")
+                .as_bytes(),
+            )?;
+            write_envelope(&mut server, &ServerEnvelope::Hello(hello_result()))?;
+            let frame = agentport_remote_protocol::read_frame(
+                &mut server,
+                agentport_remote_protocol::MAX_FRAME_BYTES,
+            )?
+            .expect("chunk frame");
+            let (header, bytes) = agentport_remote_protocol::image::decode_chunk(frame.as_bytes())?;
+            let request: Request = serde_json::from_slice(header)?;
+            assert_eq!(request.method, "image.chunk");
+            assert_eq!(request.params["uploadId"], "upload-1");
+            assert_eq!(request.params["offset"], 0);
+            assert_eq!(bytes, b"\x89PNG\r\n\x1a\nraw-body");
+            write_envelope(
+                &mut server,
+                &ServerEnvelope::Result {
+                    request_id: request.request_id,
+                    operation_id: None,
+                    status: ResultStatus::Succeeded,
+                    retry_class: agentport_remote_protocol::RetryClass::NonIdempotentWrite,
+                    value: Some(serde_json::json!({"offset": 16})),
+                    error: None,
+                },
+            )?;
+            Ok(())
+        });
+        let connection = establish_over(client).unwrap();
+        let value = connection
+            .request_binary(
+                "image.chunk",
+                serde_json::json!({"uploadId": "upload-1", "offset": 0}),
+                b"\x89PNG\r\n\x1a\nraw-body",
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(value, serde_json::json!({"offset": 16}));
+        connection.shutdown();
+    }
+
+    #[test]
     fn failed_result_maps_remote_error_code() {
         let (client, _server_thread) = spawn_fake_bridge(|mut server| {
             agentport_remote_protocol::read_frame(
@@ -591,6 +716,53 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(error.code, "session_not_found");
+        connection.shutdown();
+    }
+
+    #[test]
+    fn unknown_result_keeps_the_host_explanation() {
+        let (client, _server_thread) = spawn_fake_bridge(|mut server| {
+            agentport_remote_protocol::read_frame(
+                &mut server,
+                agentport_remote_protocol::MAX_FRAME_BYTES,
+            )?;
+            write_envelope(&mut server, &ServerEnvelope::Hello(hello_result()))?;
+            let request = read_request(&mut server)?;
+            write_envelope(
+                &mut server,
+                &ServerEnvelope::Result {
+                    request_id: request.request_id,
+                    operation_id: None,
+                    status: ResultStatus::Unknown,
+                    retry_class: agentport_remote_protocol::RetryClass::NonIdempotentWrite,
+                    value: None,
+                    error: Some(agentport_remote_protocol::RemoteError {
+                        code: "result_unknown".to_string(),
+                        message: "git: unknown option: --no-lazy-fetch".to_string(),
+                    }),
+                },
+            )?;
+            Ok(())
+        });
+        let connection = establish_over(client).unwrap();
+        let error = connection
+            .request(
+                "branch.create_switch",
+                serde_json::json!({"projectId": "p", "name": "image", "startPoint": "main"}),
+                Duration::from_secs(5),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "unknown_outcome");
+        assert!(
+            error.message.contains("unknown option: --no-lazy-fetch"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("branch.create_switch"),
+            "{}",
+            error.message
+        );
         connection.shutdown();
     }
 
