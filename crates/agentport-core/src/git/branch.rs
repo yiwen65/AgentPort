@@ -245,27 +245,30 @@ impl<'a> BranchManager<'a> {
             // everything else as one argument to a commit, never as options or
             // a shell command. Disable every transport, including lazy fetch
             // in partial clones: creation must use objects already local.
+            // `protocol.allow=never` also covers Git older than 2.45, which
+            // rejects the newer `--no-lazy-fetch` option outright.
             let revision = before
                 .iter()
                 .find(|branch| branch.name == start)
                 .map(|branch| branch.oid.as_str())
                 .unwrap_or(start);
             let peeled = format!("{revision}^{{commit}}");
-            self.run_success(
-                &identity,
-                [
-                    "--no-lazy-fetch",
-                    "-c",
-                    "protocol.allow=never",
-                    "rev-parse",
-                    "--verify",
-                    "--end-of-options",
-                    &peeled,
-                ],
-            )?
-            .stdout_lossy()
-            .trim()
-            .to_owned()
+            let mut args = Vec::new();
+            if self.runner.supports_no_lazy_fetch() {
+                args.push(OsString::from("--no-lazy-fetch"));
+            }
+            args.extend([
+                OsString::from("-c"),
+                OsString::from("protocol.allow=never"),
+                OsString::from("rev-parse"),
+                OsString::from("--verify"),
+                OsString::from("--end-of-options"),
+                OsString::from(peeled),
+            ]);
+            self.run_success_os(&identity, args)?
+                .stdout_lossy()
+                .trim()
+                .to_owned()
         } else {
             self.run_success(&identity, ["rev-parse", "HEAD"])?
                 .stdout_lossy()
@@ -4938,6 +4941,32 @@ mod tests {
                 .is_err());
         }
         assert!(!fixture.root.join("injected").exists());
+    }
+
+    #[test]
+    fn create_from_start_point_works_when_git_lacks_no_lazy_fetch() {
+        let fixture = fixture();
+        make_branch(&fixture.root, "old-git-base");
+        let (runner, recorded) = GitRunner::recording_without_no_lazy_fetch();
+        let manager = BranchManager {
+            db: &fixture.db,
+            runner,
+        };
+        let created = manager
+            .create(&fixture.project_id, "feature/old-git", Some("old-git-base"))
+            .unwrap();
+        assert_eq!(
+            created.branch.oid,
+            git(&fixture.root, &["rev-parse", "refs/heads/old-git-base"]).trim()
+        );
+        assert!(
+            recorded
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|argv| argv.iter().all(|arg| arg != "--no-lazy-fetch")),
+            "Git older than 2.45 rejects --no-lazy-fetch"
+        );
     }
 
     #[test]

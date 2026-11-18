@@ -10,6 +10,7 @@ use std::process::{Command, ExitStatus, Stdio};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::OnceLock;
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -117,6 +118,8 @@ impl GitOutput {
 pub struct GitRunner {
     timeout: Duration,
     #[cfg(test)]
+    no_lazy_fetch_support: Option<bool>,
+    #[cfg(test)]
     fail_once: Option<Arc<TestFailure>>,
     #[cfg(test)]
     ref_move_once: Option<Arc<TestRefMove>>,
@@ -163,6 +166,8 @@ impl GitRunner {
         Self {
             timeout,
             #[cfg(test)]
+            no_lazy_fetch_support: None,
+            #[cfg(test)]
             fail_once: None,
             #[cfg(test)]
             ref_move_once: None,
@@ -177,6 +182,7 @@ impl GitRunner {
     pub(crate) fn failing_once(command: &str) -> Self {
         Self {
             timeout: Duration::from_secs(15),
+            no_lazy_fetch_support: None,
             fail_once: Some(Arc::new(TestFailure {
                 command: command.into(),
                 trigger_on: 1,
@@ -193,6 +199,7 @@ impl GitRunner {
         assert!(trigger_on > 0);
         Self {
             timeout: Duration::from_secs(15),
+            no_lazy_fetch_support: None,
             fail_once: Some(Arc::new(TestFailure {
                 command: command.into(),
                 trigger_on,
@@ -208,6 +215,7 @@ impl GitRunner {
     pub(crate) fn moving_ref_before_update(refname: &str, new_oid: &str) -> Self {
         Self {
             timeout: Duration::from_secs(15),
+            no_lazy_fetch_support: None,
             fail_once: None,
             ref_move_once: Some(Arc::new(TestRefMove {
                 command: "update-ref".into(),
@@ -225,6 +233,7 @@ impl GitRunner {
     pub(crate) fn creating_external_ref_before_update(refname: &str, new_oid: &str) -> Self {
         Self {
             timeout: Duration::from_secs(15),
+            no_lazy_fetch_support: None,
             fail_once: None,
             ref_move_once: Some(Arc::new(TestRefMove {
                 command: "update-ref".into(),
@@ -242,6 +251,7 @@ impl GitRunner {
     pub(crate) fn occupying_branch_before_delete(branch: &str, path: &Path) -> Self {
         Self {
             timeout: Duration::from_secs(15),
+            no_lazy_fetch_support: None,
             fail_once: None,
             ref_move_once: None,
             worktree_occupy_once: Some(Arc::new(TestWorktreeOccupy {
@@ -257,6 +267,7 @@ impl GitRunner {
     pub(crate) fn moving_ref_before_worktree_add(refname: &str, new_oid: &str) -> Self {
         Self {
             timeout: Duration::from_secs(15),
+            no_lazy_fetch_support: None,
             fail_once: None,
             ref_move_once: Some(Arc::new(TestRefMove {
                 command: "worktree".into(),
@@ -276,6 +287,37 @@ impl GitRunner {
         (
             Self {
                 timeout: Duration::from_secs(15),
+                no_lazy_fetch_support: None,
+                fail_once: None,
+                ref_move_once: None,
+                worktree_occupy_once: None,
+                recorded: Some(recorded.clone()),
+            },
+            recorded,
+        )
+    }
+
+    /// `--no-lazy-fetch` arrived in Git 2.45; older Git exits with a usage
+    /// error instead of ignoring it, so callers must gate on this probe.
+    pub fn supports_no_lazy_fetch(&self) -> bool {
+        #[cfg(test)]
+        if let Some(supported) = self.no_lazy_fetch_support {
+            return supported;
+        }
+        static SUPPORTED: OnceLock<bool> = OnceLock::new();
+        *SUPPORTED.get_or_init(|| {
+            self.run(None, ["--no-lazy-fetch", "--version"])
+                .is_ok_and(|output| output.success())
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recording_without_no_lazy_fetch() -> (Self, Arc<Mutex<Vec<Vec<OsString>>>>) {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                timeout: Duration::from_secs(15),
+                no_lazy_fetch_support: Some(false),
                 fail_once: None,
                 ref_move_once: None,
                 worktree_occupy_once: None,
