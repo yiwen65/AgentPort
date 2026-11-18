@@ -301,6 +301,7 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
   const [restoreHint, setRestoreHint] = useState<{ stash: AutoStashRecord; remaining: number } | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
   const confirmDeleteRef = useRef<HTMLButtonElement | null>(null);
   const deleteButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const restoreDeleteFocusRef = useRef<string | null>(null);
@@ -425,8 +426,6 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
       ),
     [data, query],
   );
-
-  useEffect(() => setSelectedIndex(0), [query, data?.status.snapshotToken]);
 
   useEffect(() => {
     if (selectedIndexRef.current === selectedIndex) return;
@@ -736,6 +735,25 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
     setConfirmingDelete(null);
   }, [confirmingDelete, data?.branches, status?.head?.branch, status?.head?.kind]);
 
+  // The first row is not a useful default: pressing Enter on the current
+  // checkout is a no-op. Start on the branch that is actually checked out.
+  const currentBranchIndex = useMemo(() => {
+    const currentName = status?.head?.kind === "branch" ? status.head.branch : null;
+    const index = currentName
+      ? branches.findIndex((branch) => branch.name === currentName)
+      : branches.findIndex((branch) => branch.current);
+    return Math.max(index, 0);
+  }, [branches, status?.head]);
+
+  useEffect(() => {
+    setSelectedIndex(currentBranchIndex);
+  }, [query, data?.status.snapshotToken, currentBranchIndex]);
+
+  useEffect(() => {
+    const rows = listRef.current?.querySelectorAll('[role="listitem"]');
+    rows?.[selectedIndex]?.scrollIntoView?.({ block: "nearest" });
+  }, [selectedIndex, branches.length]);
+
   return (
     <Modal
       title={t("worktree:ui.branchPicker.title", {
@@ -921,6 +939,7 @@ export default function BranchPickerDialog({ projectId }: { projectId: string })
       </span>
       <div
         id="local-branch-list"
+        ref={listRef}
         className="branch-picker-list"
         role="list"
         aria-label={t("worktree:ui.branchPicker.localBranchesAria")}

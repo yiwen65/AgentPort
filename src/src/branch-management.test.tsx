@@ -500,6 +500,24 @@ describe("local branch management", () => {
     expect(screen.getAllByRole("listitem")).toHaveLength(3);
   });
 
+  it("defaults the highlight to the current checkout branch", async () => {
+    apiMock.listLocalBranches.mockResolvedValue({
+      status: {
+        ...status,
+        head: { kind: "branch", branch: "feature/ui", oid: "b".repeat(40), shortOid: "bbbbbbbbbbbb" },
+      },
+      branches: branches.map((branch) => ({ ...branch, current: branch.name === "feature/ui" })),
+      autoStashes: [],
+    });
+    render(<BranchPickerDialog projectId="p1" />);
+    await screen.findAllByText("feature/ui");
+    await waitFor(() => {
+      const rows = screen.getAllByRole("listitem");
+      expect(rows[1].classList.contains("selected")).toBe(true);
+      expect(rows[0].classList.contains("selected")).toBe(false);
+    });
+  });
+
   it("confirms deletion inline, keeps current and occupied branches protected, and restores focus on cancel", async () => {
     const user = userEvent.setup();
     useSafeDeleteResponse();
