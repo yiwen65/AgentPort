@@ -470,6 +470,57 @@ describe("selectSession", () => {
     expect(releaseTerminalMock).not.toHaveBeenCalled();
   });
 
+  it("moves the maximized pane to a Session selected within the same split", () => {
+    const terminalLayout = splitPane(
+      singletonPaneLayout(oldSession.id),
+      oldSession.id,
+      newSession.id,
+      "right",
+      "outer",
+    );
+    setState({
+      projects: projectWith(oldSession, newSession),
+      terminalLayout,
+      terminalLayoutGroups: [],
+      activeSessionId: oldSession.id,
+      attachedIds: [oldSession.id, newSession.id],
+      maximizedSessionId: oldSession.id,
+    });
+
+    selectSession(newSession.id);
+
+    expect(getState().maximizedSessionId).toBe(newSession.id);
+    expect(getState().activeSessionId).toBe(newSession.id);
+    expect(getState().terminalLayout.focusedSessionId).toBe(newSession.id);
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
+      oldSession.id,
+      newSession.id,
+    ]);
+  });
+
+  it("clears maximize when selecting a Session outside the maximized split", () => {
+    const terminalLayout = splitPane(
+      singletonPaneLayout(oldSession.id),
+      oldSession.id,
+      newSession.id,
+      "right",
+      "outer",
+    );
+    setState({
+      projects: projectWith(oldSession, newSession, fourthSession),
+      terminalLayout,
+      terminalLayoutGroups: [],
+      activeSessionId: oldSession.id,
+      attachedIds: [oldSession.id, newSession.id],
+      maximizedSessionId: oldSession.id,
+    });
+
+    selectSession(fourthSession.id);
+
+    expect(getState().maximizedSessionId).toBeNull();
+    expect(getState().activeSessionId).toBe(fourthSession.id);
+  });
+
   it("shows an out-of-layout Session temporarily and restores the remembered split", async () => {
     const terminalLayout = splitPane(
       singletonPaneLayout(oldSession.id),

@@ -596,9 +596,11 @@ export function selectSession(
       ]
     : currentGroups;
   const attachedIds = attachedPtyIdsForLayout(terminalLayout);
+  // Selecting another pane of the maximized split keeps the workspace in
+  // maximize mode, but the new Session must become the maximized pane.
   const maximizedSessionId =
     layoutContains(s.terminalLayout, key) && s.maximizedSessionId
-      ? s.maximizedSessionId
+      ? key
       : null;
   const revealInSidebar = options.revealInSidebar !== false;
   const proj = findProjectOf(s.projects, id);
