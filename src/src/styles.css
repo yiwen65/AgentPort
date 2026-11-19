@@ -527,6 +527,32 @@ button {
   margin-top: 4px;
 }
 
+/* The device switcher belongs to the sidebar header: pinned to the column's
+   right edge on the same row as the leading window controls. It moves back
+   into the trailing group while the sidebar is collapsed (width 0). */
+.topbar > .topbar-sidebar-device {
+  position: absolute;
+  top: 4px;
+  left: calc(var(--sidebar-width, 296px) - 10px);
+  transform: translateX(-100%);
+  display: flex;
+  align-items: center;
+  height: 28px;
+}
+
+/* Keep clear of the leading controls (78px traffic-light inset plus three
+   28px buttons and gaps): long device names ellipsize instead of colliding
+   with the bell. */
+.topbar-sidebar-device .device-picker,
+.topbar-sidebar-device .device-picker-trigger {
+  min-width: 0;
+  max-width: calc(var(--sidebar-width, 296px) - 184px);
+}
+
+.topbar-sidebar-device .device-picker-trigger {
+  overflow: hidden;
+}
+
 /* Right-side controls: the file-area toggle lives here next to the panel it
    controls, one icon for the whole open/close operation. */
 .topbar-trailing {

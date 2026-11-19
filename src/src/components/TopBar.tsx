@@ -301,6 +301,11 @@ export default function TopBar() {
           <IconBell />
         </button>
       </div>
+      {sidebarCollapsed ? null : (
+        <div className="topbar-sidebar-device" data-tauri-drag-region="false">
+          <DevicePicker />
+        </div>
+      )}
       <div className="window-title">
         <span>{projectName ?? "AgentPort"}</span>
         {projectBranch ? (
@@ -311,7 +316,7 @@ export default function TopBar() {
         ) : null}
       </div>
       <div className="topbar-trailing" data-tauri-drag-region="false">
-        <DevicePicker />
+        {sidebarCollapsed ? <DevicePicker /> : null}
         <ExplorerToggleButton />
         <button
           className="window-control sidebar-toggle"

@@ -197,4 +197,19 @@ describe("topbar project branch", () => {
     expect(pressedButton.getAttribute("aria-pressed")).toBe("true");
     expect(pressedButton.getAttribute("data-tip")).toBe("返回项目与 Session");
   });
+
+  it("pins the device switcher to the sidebar header and falls back to the trailing group", () => {
+    setState({ projects: [project(session(null))], sidebarCollapsed: false });
+    const view = render(<TopBar />);
+    const trigger = view.container.querySelector(".device-picker-trigger");
+    expect(trigger?.closest(".topbar-sidebar-device")).not.toBeNull();
+    expect(trigger?.closest(".topbar-trailing")).toBeNull();
+    view.unmount();
+
+    setState({ sidebarCollapsed: true });
+    const collapsed = render(<TopBar />);
+    const fallback = collapsed.container.querySelector(".device-picker-trigger");
+    expect(fallback?.closest(".topbar-trailing")).not.toBeNull();
+    expect(fallback?.closest(".topbar-sidebar-device")).toBeNull();
+  });
 });
