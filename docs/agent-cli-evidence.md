@@ -19,7 +19,7 @@
 | Gemini CLI / `gemini` | https://geminicli.com/docs/cli/cli-reference/ 、 https://github.com/google-gemini/gemini-cli/blob/main/packages/cli/src/utils/sessionUtils.ts | `--resume UUID` 精确；`--resume latest` 最近；数字索引与 latest 不可当作稳定原生 ID | Auto：`--approval-mode auto_edit`；Bypass：`--approval-mode yolo`；Native 不传参数 |
 | Cline CLI / `cline` | https://docs.cline.bot/cli/cli-reference.md 、 https://docs.cline.bot/usage/cli-overview | 当前默认命令交互；有 `--tui` 时显式选择 TUI；`--id SESSION_ID` 仅恢复已有会话，不能当新会话 ID 分配参数 | 官方 `--auto-approve <boolean>` 默认 **true**（ACP 默认 false）；Native 不改变上游默认并显式警示；Auto/Bypass 均为 `--auto-approve true`，没有承诺绕过企业规则 |
 | Kiro CLI / `kiro-cli` | https://kiro.dev/docs/reference/cli-commands.md 、 https://kiro.dev/docs/cli/chat/session-management.md 、 https://kiro.dev/docs/cli/v3/permissions.md | 启动 `kiro-cli chat`；`chat --resume-id ID` 精确；`chat --resume` 为布尔最近恢复，不是 ID 参数；退出提示含 `kiro-cli chat --resume-id ID` | Auto/Bypass 使用当前仍支持的 session-scope `--trust-all-tools`；Native 不传参数；不写 permissions.yaml |
-| Cursor CLI / `cursor-agent`，新版 `agent` | https://cursor.com/docs/cli/reference/parameters | 默认交互；`--resume chatId` 精确；`--continue` 等于 `--resume=-1`（最近）；禁止将 -1 存成精确 ID | Auto/Bypass：`--force`，仍保留明确 deny；Native 不传参数；不额外加 `--trust`、`--approve-mcps` 或关闭 sandbox |
+| Cursor CLI / `cursor-agent`，新版 `agent` | https://cursor.com/docs/cli/reference/parameters | 默认交互；`--resume chatId` 精确；`--continue` 等于 `--resume=-1`（最近）；禁止将 -1 存成精确 ID。AgentPort 新建时生成 UUIDv4 并以 `--resume <uuid>` 启动（本机 2026.11.13-eacd1 验证：CLI 会以该 ID 建立 chat 目录），恢复时传记录的 ID | Auto/Bypass：`--force`，仍保留明确 deny；Native 不传参数；不额外加 `--trust`、`--approve-mcps` 或关闭 sandbox |
 | Grok Build / `grok` | https://x.ai/cli 、 https://docs.x.ai/build/overview ，本机真实 `--help` | `--session-id UUID` 为**新建**且要求不存在；已存在会话用 `--resume UUID`；`--continue` 为当前目录最近；禁止 `--fork-session`、`--restore-code` 覆盖语义 | Auto：`--permission-mode acceptEdits`；Bypass：`--permission-mode bypassPermissions`；Native 不传参数；deny、hooks、管理限制仍由原生工具执行 |
 
 权限选项只有当前 help 确认对应 flag 时才可使用。Auto/Bypass 是 AgentPort 的跨工具 UI 模式，并不保证各工具权限行为完全相同；只有单一自动审批开关的工具两者可能映射到同一 flag。OpenCode 不存在已证实 Bypass，Amp 没有已证实内置审批模式，明确拒绝而不冒充。
@@ -36,8 +36,9 @@
 ## 精确恢复的证据门槛
 
 - Grok 在 `session-id` 与 `resume` 均存在时由 AgentPort 生成 UUID、以 `--session-id` 分配新对话并持久化身份，因此新建后具有 exact 恢复路径。
+- Cursor 在 `resume` 存在时由 AgentPort 生成 UUIDv4、以 `--resume <uuid>` 启动。2026.11.13-eacd1 实测：命令行会在当前工作目录对应的 `~/.cursor/chats/<cwd-md5>/` 下建立同名 chat 目录并进入该空对话，因此新建后具有 exact 恢复路径；不接受 `-1` 或 `--continue` 作为精确 ID。
 - Kiro 仅从独占一行的明确命令 `kiro-cli chat --resume-id ID` 提取 ID；不从普通 UUID、模型回复中的任意标题或链接猜测身份。
-- 其他五种没有在本轮中证实可安全为新交互会话预分配 ID，也没有把猜测的 TUI 文本视作真实身份。已记录并验证格式的 ID 可使用原生精确参数；没有 ID 时 OpenCode/Gemini/Cursor 使用明确 **Latest** 降级，Amp/Cline 明确阻止自动恢复，不新建空会话冒充成功。
+- 其他四种没有在本轮中证实可安全为新交互会话预分配 ID，也没有把猜测的 TUI 文本视作真实身份。已记录并验证格式的 ID 可使用原生精确参数；没有 ID 时 OpenCode/Gemini 使用明确 **Latest** 降级，Amp/Cline 明确阻止自动恢复，不新建空会话冒充成功。
 - Amp 需要探测 `threads continue --help`，其成功输出的 usage 必须证明 `amp threads continue`。以 `agentport:amp-threads-continue` 内部快照标记保存子命令能力，该标记不是会传入 CLI 的参数。
 - Kiro 需要探测 `chat --help`，不能仅凭 root help 推断子命令选项。
 - Grok 同名工具和通用 `agent` 命令具有产品混淆风险：Grok help 必须标识 `Grok Build`，Cursor help 必须标识 `Cursor`；不因 PATH 中有可执行文件就将其标为正确产品。

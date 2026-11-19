@@ -467,6 +467,15 @@ impl AgentAdapter for ExtendedAdapter {
             result.argv.extend(["--session-id".into(), id.clone()]);
             result.assigned_agent_session_id = Some(id);
             result.resume_precision = ResumePrecision::Exact;
+        } else if self.0 == AgentType::CursorAgent && has(&ctx.install, "resume") {
+            // Cursor's --resume <chatId> also adopts a caller-provided UUID for
+            // a new chat (verified on 2026.11.13: the chat directory is created
+            // under that ID), so the conversation identity is known from the
+            // start instead of relying on --continue's "latest chat" fallback.
+            let id = uuid::Uuid::new_v4().to_string();
+            result.argv.extend(["--resume".into(), id.clone()]);
+            result.assigned_agent_session_id = Some(id);
+            result.resume_precision = ResumePrecision::Exact;
         } else if latest_args(self.0, &ctx.install).is_some() {
             result.resume_precision = ResumePrecision::Latest;
         }
@@ -754,6 +763,25 @@ mod tests {
         assert_eq!(result.resume_precision, ResumePrecision::Exact);
         assert!(result.argv.contains(&id));
         ctx.install.flags.retain(|f| f != "session-id");
+        let result = adapter.build_launch(&ctx).unwrap();
+        assert!(result.assigned_agent_session_id.is_none());
+        assert_eq!(result.resume_precision, ResumePrecision::Latest);
+    }
+
+    #[test]
+    fn cursor_assigns_a_new_uuid_only_when_resume_is_known() {
+        let adapter = ExtendedAdapter(AgentType::CursorAgent);
+        let mut ctx = launch(AgentType::CursorAgent);
+        let result = adapter.build_launch(&ctx).unwrap();
+        let id = result.assigned_agent_session_id.clone().unwrap();
+        assert_eq!(uuid::Uuid::parse_str(&id).unwrap().get_version_num(), 4);
+        assert_eq!(result.resume_precision, ResumePrecision::Exact);
+        assert!(result
+            .argv
+            .windows(2)
+            .any(|pair| pair[0] == "--resume" && pair[1] == id));
+        assert!(!result.argv.iter().any(|arg| arg == "--continue"));
+        ctx.install.flags.retain(|f| f != "resume");
         let result = adapter.build_launch(&ctx).unwrap();
         assert!(result.assigned_agent_session_id.is_none());
         assert_eq!(result.resume_precision, ResumePrecision::Latest);
