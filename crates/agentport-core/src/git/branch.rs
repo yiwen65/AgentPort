@@ -2402,10 +2402,7 @@ impl<'a> BranchManager<'a> {
         target: &str,
     ) -> Result<()> {
         let target_treeish = format!("refs/heads/{target}^{{tree}}");
-        let target_tree = self.run_listing(
-            identity,
-            ["ls-tree", "-r", "-z", "--name-only", &target_treeish],
-        )?;
+        let target_tree = self.run_listing(identity, ["ls-tree", "-r", "-z", &target_treeish])?;
         let current_index = self.run_listing(identity, ["ls-files", "-z"])?;
         let current_paths = current_index
             .stdout
@@ -2442,31 +2439,46 @@ impl<'a> BranchManager<'a> {
         // ignored path, which is seconds of CPU on a large checkout and grows
         // multiplicatively in monorepos.
         let mut collisions = std::collections::BTreeSet::new();
-        for raw_path in target_tree
+        for raw_entry in target_tree
             .stdout
             .split(|byte| *byte == 0)
-            .filter(|path| !path.is_empty())
+            .filter(|entry| !entry.is_empty())
         {
-            let target_path = PathBuf::from(bytes_to_string(raw_path)?);
+            // Entries are `<mode> <type> <oid>\t<path>`; the path is raw
+            // because `-z` disables quoting.
+            let entry = bytes_to_string(raw_entry)?;
+            let (metadata, raw_path) = entry
+                .split_once('\t')
+                .ok_or_else(|| CoreError::Internal(format!("unexpected ls-tree entry: {entry}")))?;
+            // A target gitlink (submodule) never rewrites the working tree:
+            // Git records the index entry and leaves an existing directory,
+            // ignored contents included, exactly as it is.
+            if metadata.starts_with("160000 ") {
+                continue;
+            }
+            let target_path = PathBuf::from(raw_path);
             if current_paths.contains(&target_path) {
                 continue;
             }
             // Target entry itself: an ignored file occupies the path Git wants
-            // to write.
+            // to write, and a collapsed ignored directory would be replaced.
             let mut colliding = ignored_paths
                 .contains(&target_path)
                 .then(|| target_path.clone());
-            // Ignored parent: Git would replace the directory with a file.
-            if colliding.is_none() {
-                for ancestor in target_path.ancestors().skip(1) {
-                    if ancestor.as_os_str().is_empty() {
-                        break;
-                    }
-                    if ignored_paths.contains(ancestor) {
-                        colliding = Some(ancestor.to_path_buf());
-                        break;
-                    }
-                }
+            // Ignored parent directory: Git creates the new file inside it and
+            // only ever replaces what already sits at the exact target path.
+            // `--directory` collapses the parent, so its contents are not in
+            // the listing and the filesystem is the source of truth.
+            if colliding.is_none()
+                && !ignored_paths.is_empty()
+                && target_path
+                    .ancestors()
+                    .skip(1)
+                    .take_while(|ancestor| !ancestor.as_os_str().is_empty())
+                    .any(|ancestor| ignored_paths.contains(ancestor))
+                && path_blocks_file_write(&identity.root.join(&target_path))
+            {
+                colliding = Some(target_path.clone());
             }
             // Ignored descendant: Git would recursively delete the directory.
             if colliding.is_none() {
@@ -3800,6 +3812,30 @@ fn canonical_or_original(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// Whether writing a file at `path` would destroy existing local data.
+///
+/// Git silently removes an empty directory tree, so only an existing
+/// file/symlink or a non-empty directory blocks the write. Unknown stat
+/// failures fail closed.
+fn path_blocks_file_write(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => !directory_tree_is_empty(path),
+        Ok(_) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+fn directory_tree_is_empty(path: &Path) -> bool {
+    std::fs::read_dir(path).is_ok_and(|mut entries| {
+        entries.all(|entry| {
+            entry.is_ok_and(|entry| {
+                entry.file_type().is_ok_and(|file_type| file_type.is_dir())
+                    && directory_tree_is_empty(&entry.path())
+            })
+        })
+    })
+}
+
 fn bytes_to_string(bytes: &[u8]) -> Result<String> {
     String::from_utf8(bytes.to_vec()).map_err(|_| {
         CoreError::Validation(
@@ -4345,6 +4381,148 @@ mod tests {
             std::fs::read_to_string(fixture.root.join("scratch/local")).unwrap(),
             "keep\n"
         );
+    }
+
+    #[test]
+    fn target_files_created_inside_an_ignored_directory_allow_switch() {
+        let fixture = fixture();
+        commit(
+            &fixture.root,
+            ".gitignore",
+            "modules/perception/bevfusion/\n",
+            "ignore local bevfusion checkout",
+        );
+        git(&fixture.root, &["switch", "-c", "target"]);
+        let target_file = fixture
+            .root
+            .join("modules/perception/bevfusion/tools/tests/new_config.yaml");
+        std::fs::create_dir_all(target_file.parent().unwrap()).unwrap();
+        std::fs::write(&target_file, "tracked target\n").unwrap();
+        git(
+            &fixture.root,
+            &[
+                "add",
+                "-f",
+                "--",
+                "modules/perception/bevfusion/tools/tests/new_config.yaml",
+            ],
+        );
+        git(
+            &fixture.root,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "target file inside ignored directory",
+            ],
+        );
+        git(&fixture.root, &["switch", "main"]);
+        let local = fixture
+            .root
+            .join("modules/perception/bevfusion/tools/tests/local_state.bin");
+        std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+        std::fs::write(&local, "local ignored\n").unwrap();
+
+        let outcome = manager(&fixture)
+            .switch(&fixture.project_id, "target")
+            .expect("adding tracked files below an ignored directory must not block");
+        assert!(!outcome.stashed);
+        assert_eq!(std::fs::read_to_string(&local).unwrap(), "local ignored\n");
+        assert_eq!(
+            std::fs::read_to_string(
+                fixture
+                    .root
+                    .join("modules/perception/bevfusion/tools/tests/new_config.yaml")
+            )
+            .unwrap(),
+            "tracked target\n"
+        );
+    }
+
+    #[test]
+    fn occupied_target_path_inside_an_ignored_directory_still_blocks() {
+        let fixture = fixture();
+        commit(
+            &fixture.root,
+            ".gitignore",
+            "generated/\n",
+            "ignore generated directory",
+        );
+        git(&fixture.root, &["switch", "-c", "target"]);
+        std::fs::create_dir_all(fixture.root.join("generated")).unwrap();
+        std::fs::write(fixture.root.join("generated/cache.bin"), "tracked target\n").unwrap();
+        git(&fixture.root, &["add", "-f", "--", "generated/cache.bin"]);
+        git(
+            &fixture.root,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "target overwrites an ignored file",
+            ],
+        );
+        git(&fixture.root, &["switch", "main"]);
+        std::fs::create_dir_all(fixture.root.join("generated")).unwrap();
+        std::fs::write(fixture.root.join("generated/cache.bin"), "local ignored\n").unwrap();
+        let before = hash_path(&fixture.root.join("generated/cache.bin")).unwrap();
+
+        let error = manager(&fixture)
+            .switch(&fixture.project_id, "target")
+            .unwrap_err();
+        assert!(matches!(error, CoreError::Blocked(_)), "{error}");
+        assert_eq!(
+            hash_path(&fixture.root.join("generated/cache.bin")).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn target_gitlink_over_an_ignored_directory_allows_switch() {
+        let fixture = fixture();
+        commit(
+            &fixture.root,
+            ".gitignore",
+            "modules/\n",
+            "ignore local modules directory",
+        );
+        git(&fixture.root, &["switch", "-c", "target"]);
+        git(
+            &fixture.root,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "160000,1111111111111111111111111111111111111111,modules/perception/bevfusion",
+            ],
+        );
+        git(
+            &fixture.root,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "record submodule",
+            ],
+        );
+        git(&fixture.root, &["switch", "main"]);
+        let local = fixture
+            .root
+            .join("modules/perception/bevfusion/tools/local.txt");
+        std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+        std::fs::write(&local, "local ignored\n").unwrap();
+
+        let outcome = manager(&fixture)
+            .switch(&fixture.project_id, "target")
+            .expect("a gitlink target must not touch an ignored local directory");
+        assert!(!outcome.stashed);
+        assert_eq!(std::fs::read_to_string(&local).unwrap(), "local ignored\n");
+        assert!(matches!(
+            manager(&fixture).list(&fixture.project_id).unwrap().status.checkout,
+            CheckoutState::Branch(ref branch) if branch == "target"
+        ));
     }
 
     #[test]
