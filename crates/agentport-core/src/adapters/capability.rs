@@ -72,6 +72,29 @@ fn spawn_capture_with_path(
     max_bytes: usize,
     path_env: Option<&OsStr>,
 ) -> Result<String> {
+    spawn_capture_impl(exe, args, timeout, max_bytes, path_env, true)
+}
+
+/// Run a bounded read-only command and return stdout only. Used for
+/// machine-readable subcommands where stderr is diagnostic noise.
+pub(crate) fn run_capture_stdout(
+    exe: &Path,
+    args: &[&str],
+    timeout: Duration,
+    max_bytes: usize,
+) -> Result<String> {
+    let path_env = effective_path_env();
+    spawn_capture_impl(exe, args, timeout, max_bytes, Some(&path_env), false)
+}
+
+fn spawn_capture_impl(
+    exe: &Path,
+    args: &[&str],
+    timeout: Duration,
+    max_bytes: usize,
+    path_env: Option<&OsStr>,
+    merge_stderr: bool,
+) -> Result<String> {
     let mut command = Command::new(exe);
     command
         .args(args)
@@ -113,9 +136,9 @@ fn spawn_capture_with_path(
                 if let Some(t) = stderr_thread {
                     err_buf = t.join().unwrap_or_default();
                 }
-                out_buf.extend_from_slice(&err_buf);
-                out_buf.truncate(max_bytes);
                 if !status.success() {
+                    out_buf.extend_from_slice(&err_buf);
+                    out_buf.truncate(max_bytes);
                     return Err(CoreError::Adapter(format!(
                         "{} {} exited with {status}: {}",
                         exe.display(),
@@ -126,6 +149,10 @@ fn spawn_capture_with_path(
                             .collect::<String>()
                     )));
                 }
+                if merge_stderr {
+                    out_buf.extend_from_slice(&err_buf);
+                }
+                out_buf.truncate(max_bytes);
                 return Ok(String::from_utf8_lossy(&out_buf).into_owned());
             }
             Ok(None) => {

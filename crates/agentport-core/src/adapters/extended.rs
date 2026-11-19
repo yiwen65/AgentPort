@@ -14,6 +14,9 @@ pub struct ExtendedAdapter(pub AgentType);
 /// A subcommand is not a long flag. Preserve its verified presence separately
 /// inside the existing capability snapshot instead of pretending --resume exists.
 pub const AMP_CONTINUE_CAPABILITY: &str = "agentport:amp-threads-continue";
+/// Cline's session history subcommand is the only way to discover a native
+/// session ID when none was captured; a subcommand is not a long flag.
+pub const CLINE_HISTORY_CAPABILITY: &str = "agentport:cline-history";
 
 fn has(install: &AdapterInstall, flag: &str) -> bool {
     super::has_flag(install, flag)
@@ -36,6 +39,11 @@ fn latest_args(agent: AgentType, install: &AdapterInstall) -> Option<Vec<String>
             if has(install, "continue") =>
         {
             &["--continue"]
+        }
+        // Amp's picker is the default, but --last is the non-interactive
+        // "most recent thread in this checkout" fallback.
+        AgentType::Amp if has(install, AMP_CONTINUE_CAPABILITY) && has(install, "last") => {
+            &["threads", "continue", "--last"]
         }
         AgentType::Gemini if has(install, "resume") => &["--resume", "latest"],
         // Kiro's --resume is a boolean, NOT an ID argument.
@@ -320,6 +328,63 @@ fn base_argv(agent: AgentType, install: &AdapterInstall) -> Vec<String> {
     argv
 }
 
+const CLINE_HISTORY_LIMIT: usize = 200;
+const CLINE_HISTORY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const CLINE_HISTORY_MAX_BYTES: usize = 1024 * 1024;
+
+/// Pick the newest non-subagent Cline session recorded for this working
+/// directory from `cline history --json` (newest first, camelCase fields).
+fn latest_cline_session_id(json: &str, cwd: &str) -> Option<String> {
+    let entries = serde_json::from_str::<Vec<serde_json::Value>>(json).ok()?;
+    let mut best: Option<(String, String)> = None;
+    for entry in entries {
+        if entry.get("isSubagent").and_then(serde_json::Value::as_bool) == Some(true) {
+            continue;
+        }
+        let matches_cwd = ["cwd", "workspaceRoot"]
+            .iter()
+            .any(|key| entry.get(*key).and_then(serde_json::Value::as_str) == Some(cwd));
+        if !matches_cwd {
+            continue;
+        }
+        let Some(id) = entry.get("sessionId").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if validate_id(AgentType::Cline, id).is_err() {
+            continue;
+        }
+        let updated = ["updatedAt", "startedAt"]
+            .into_iter()
+            .find_map(|key| entry.get(key).and_then(serde_json::Value::as_str))
+            .unwrap_or("");
+        if best
+            .as_ref()
+            .is_none_or(|(best_updated, _)| updated >= best_updated.as_str())
+        {
+            best = Some((updated.to_string(), id.to_string()));
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
+/// Cline has no --continue flag. Its documented history command exposes the
+/// recorded sessions; bind the newest one for this cwd and resume it with the
+/// verified `--id` flag.
+fn resolve_cline_latest_session(install: &AdapterInstall, cwd: &str) -> Option<String> {
+    if !has(install, "id") || !has(install, CLINE_HISTORY_CAPABILITY) {
+        return None;
+    }
+    let limit = CLINE_HISTORY_LIMIT.to_string();
+    let output = super::capability::run_capture_stdout(
+        Path::new(&install.executable_path),
+        &["--cwd", cwd, "history", "--json", "--limit", limit.as_str()],
+        CLINE_HISTORY_TIMEOUT,
+        CLINE_HISTORY_MAX_BYTES,
+    )
+    .ok()?;
+    latest_cline_session_id(&output, cwd)
+}
+
 fn notices(agent: AgentType, mode: PermissionMode) -> Vec<LaunchNotice> {
     let mut result = vec![LaunchNotice::new(
         "extended_hooks_degraded",
@@ -439,6 +504,18 @@ impl AgentAdapter for ExtendedAdapter {
             flags.sort();
             flags.dedup();
         }
+        if self.0 == AgentType::Cline
+            && help_out.lines().any(|line| {
+                matches!(
+                    line.trim_start().split_whitespace().next(),
+                    Some("history" | "history|h")
+                )
+            })
+        {
+            flags.push(CLINE_HISTORY_CAPABILITY.into());
+            flags.sort();
+            flags.dedup();
+        }
         let exact_resume = exact_flag(self.0).is_some_and(|flag| flags.iter().any(|f| f == flag));
         Ok(AdapterInstall {
             agent_type: self.0,
@@ -476,6 +553,10 @@ impl AgentAdapter for ExtendedAdapter {
             result.argv.extend(["--resume".into(), id.clone()]);
             result.assigned_agent_session_id = Some(id);
             result.resume_precision = ResumePrecision::Exact;
+        } else if self.0 == AgentType::Cline && has(&ctx.install, CLINE_HISTORY_CAPABILITY) {
+            // No ID is preassigned, but a later resume can still recover the
+            // newest session for this cwd through `cline history --json`.
+            result.resume_precision = ResumePrecision::Latest;
         } else if latest_args(self.0, &ctx.install).is_some() {
             result.resume_precision = ResumePrecision::Latest;
         }
@@ -534,6 +615,26 @@ impl AgentAdapter for ExtendedAdapter {
             .argv
             .extend(permission_args(self.0, ctx.permission_mode, &ctx.install)?);
         Ok(result)
+    }
+
+    fn build_resume_checked(&self, ctx: &ResumeContext) -> Result<LaunchPlan> {
+        if self.0 == AgentType::Cline && ctx.agent_session_id.is_none() {
+            if let Some(id) = resolve_cline_latest_session(&ctx.install, &ctx.cwd) {
+                let mut resolved = ctx.clone();
+                resolved.agent_session_id = Some(id);
+                let mut plan = self.build_resume(&resolved)?;
+                // The bound ID names one real conversation, but history only
+                // proves it is the newest one for this cwd, not necessarily
+                // the original AgentPort conversation.
+                plan.resume_precision = ResumePrecision::Latest;
+                plan.notices.push(LaunchNotice::new(
+                    "resume_latest_only",
+                    "No native session ID was captured. Cline resumes the most recent session for this working directory; this may not be the original AgentPort conversation.",
+                ));
+                return Ok(plan);
+            }
+        }
+        self.build_resume(ctx)
     }
 
     fn extract_session_id(&self, tail: &str) -> Option<String> {
@@ -657,7 +758,7 @@ mod tests {
     fn missing_id_is_latest_only_or_blocked_never_an_empty_new_chat() {
         for &agent in AGENTS {
             let result = ExtendedAdapter(agent).build_resume(&resume(agent, None));
-            if matches!(agent, AgentType::Amp | AgentType::Cline) {
+            if agent == AgentType::Cline {
                 assert!(matches!(result, Err(CoreError::Blocked(_))));
             } else {
                 let plan = result.unwrap();
@@ -672,8 +773,89 @@ mod tests {
                 if agent == AgentType::KiroCli {
                     assert_eq!(&plan.argv[1..], &["chat", "--resume"]);
                 }
+                if agent == AgentType::Amp {
+                    assert_eq!(&plan.argv[1..], &["threads", "continue", "--last"]);
+                }
             }
         }
+    }
+
+    #[test]
+    fn amp_without_the_last_flag_still_blocks_instead_of_guessing() {
+        let mut ctx = resume(AgentType::Amp, None);
+        ctx.install.flags.retain(|flag| flag != "last");
+        assert!(matches!(
+            ExtendedAdapter(AgentType::Amp).build_resume(&ctx),
+            Err(CoreError::Blocked(_))
+        ));
+    }
+
+    #[test]
+    fn cline_launch_reports_latest_when_history_is_probed() {
+        let ctx = launch(AgentType::Cline);
+        assert!(has(&ctx.install, CLINE_HISTORY_CAPABILITY));
+        let plan = ExtendedAdapter(AgentType::Cline)
+            .build_launch(&ctx)
+            .unwrap();
+        assert_eq!(plan.resume_precision, ResumePrecision::Latest);
+        assert!(!plan
+            .notices
+            .iter()
+            .any(|notice| notice.code == "extended_resume_unavailable"));
+    }
+
+    #[test]
+    fn cline_latest_history_binds_only_a_matching_cwd_and_skips_subagents() {
+        let json = r#"[
+            {"sessionId":"newer-other","cwd":"/tmp/other","updatedAt":"2026-11-19T03:00:00Z"},
+            {"sessionId":"sub","cwd":"/tmp/work","updatedAt":"2026-11-19T04:00:00Z","isSubagent":true},
+            {"sessionId":"older","workspaceRoot":"/tmp/work","updatedAt":"2026-11-19T01:00:00Z"},
+            {"sessionId":"newer","cwd":"/tmp/work","updatedAt":"2026-11-19T02:00:00Z"},
+            {"sessionId":"bad id","cwd":"/tmp/work","updatedAt":"2026-11-19T05:00:00Z"}
+        ]"#;
+        assert_eq!(
+            latest_cline_session_id(json, "/tmp/work").as_deref(),
+            Some("newer")
+        );
+        assert_eq!(latest_cline_session_id(json, "/tmp/none"), None);
+        assert_eq!(latest_cline_session_id("not json", "/tmp/work"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cline_checked_resume_binds_the_newest_session_with_a_latest_warning() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let exe = temp.path().join("cline");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\nprintf '%s' '[{\"sessionId\":\"sess_newest\",\"cwd\":\"/tmp/work\",\"updatedAt\":\"2026-11-19T02:00:00Z\"}]'\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&exe).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&exe, permissions).unwrap();
+
+        let mut ctx = resume(AgentType::Cline, None);
+        ctx.install.executable_path = exe.to_string_lossy().into_owned();
+        ctx.install.flags = vec!["id".into(), "tui".into(), CLINE_HISTORY_CAPABILITY.into()];
+        ctx.install.exact_resume = true;
+        let plan = ExtendedAdapter(AgentType::Cline)
+            .build_resume_checked(&ctx)
+            .unwrap();
+        assert_eq!(plan.resume_precision, ResumePrecision::Latest);
+        assert!(plan
+            .notices
+            .iter()
+            .any(|notice| notice.code == "resume_latest_only"));
+        assert!(plan
+            .argv
+            .windows(2)
+            .any(|pair| pair[0] == "--id" && pair[1] == "sess_newest"));
+        assert_eq!(
+            plan.assigned_agent_session_id.as_deref(),
+            Some("sess_newest")
+        );
     }
 
     #[test]

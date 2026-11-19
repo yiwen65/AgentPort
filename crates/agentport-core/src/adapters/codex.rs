@@ -1,8 +1,9 @@
 //! Codex adapter. Verified on this machine against codex-cli 0.144.5 and 0.145.0
 //! (fixtures in tests/fixtures/cli/):
 //! - `codex resume [SESSION_ID]` : exact resume by UUID (or name).
-//! - Without a verified native ID, start fresh; `resume --last` can select a
-//!   different AgentPort Session's conversation and must never be inferred.
+//! - Without a verified native ID, `resume --last` is used as an explicit
+//!   Latest fallback (the UI warns it may not be the original conversation);
+//!   it is never presented as exact identity.
 //! - `-c key=value`              : per-invocation config override (confirmed in --help).
 //!   Builds exposing `--dangerously-bypass-hook-trust` have Codex's documented
 //!   current notification surface. AgentPort configures the external notifier
@@ -177,11 +178,20 @@ impl AgentAdapter for CodexAdapter {
                 ResumePrecision::Exact
             }
             None => {
-                notices.push(LaunchNotice::new(
-                    "codex_resume_id_unavailable",
-                    "没有可验证的 Codex Session ID，已启动新会话，未恢复其他历史会话",
-                ));
-                ResumePrecision::Unavailable
+                if super::has_flag(install, "last") {
+                    argv.extend(["resume".into(), "--last".into()]);
+                    notices.push(LaunchNotice::new(
+                        "resume_latest_only",
+                        "No native session ID was captured. Codex resumes the most recent session for this working directory; this may not be the original AgentPort conversation.",
+                    ));
+                    ResumePrecision::Latest
+                } else {
+                    notices.push(LaunchNotice::new(
+                        "codex_resume_id_unavailable",
+                        "没有可验证的 Codex Session ID，已启动新会话，未恢复其他历史会话",
+                    ));
+                    ResumePrecision::Unavailable
+                }
             }
         };
         argv.extend(ctx.preset.args.clone());
@@ -409,22 +419,56 @@ mod tests {
     }
 
     #[test]
-    fn restart_without_native_id_starts_fresh_instead_of_another_sessions_history() {
+    fn restart_without_native_id_uses_last_as_an_explicit_latest_fallback() {
         for native_id in [None, Some(""), Some("  ")] {
-            let mut ctx = fx::resume_ctx(AgentType::Codex, &[], native_id);
+            let mut ctx = fx::resume_ctx(AgentType::Codex, &["last"], native_id);
             ctx.install.hook_status = HookStatus::Supported;
             ctx.preset.args = vec!["--model".into(), "fixture-model".into()];
             let plan = CodexAdapter.build_resume_checked(&ctx).unwrap();
+            let resume_index = plan.argv.iter().position(|arg| arg == "resume").unwrap();
+            assert_eq!(
+                &plan.argv[resume_index..resume_index + 2],
+                ["resume", "--last"]
+            );
+            assert_eq!(plan.resume_precision, ResumePrecision::Latest);
+            assert!(plan
+                .notices
+                .iter()
+                .any(|notice| notice.code == "resume_latest_only"));
+            assert!(!plan
+                .notices
+                .iter()
+                .any(|notice| notice.code == "codex_resume_id_unavailable"));
+            assert!(plan
+                .argv
+                .windows(2)
+                .any(|args| args == ["--model", "fixture-model"]));
+        }
+    }
+
+    #[test]
+    fn restart_without_last_support_starts_fresh_instead_of_guessing() {
+        for native_id in [None, Some(""), Some("  ")] {
+            let mut ctx = fx::resume_ctx(AgentType::Codex, &[], native_id);
+            ctx.install.hook_status = HookStatus::Supported;
+            let plan = CodexAdapter.build_resume_checked(&ctx).unwrap();
             assert!(
-                !plan.argv.iter().any(|arg| arg == "resume" || arg == "--last"),
-                "must not guess another native session: {:?}",
+                !plan
+                    .argv
+                    .iter()
+                    .any(|arg| arg == "resume" || arg == "--last"),
+                "unsupported fallback must not guess: {:?}",
                 plan.argv
             );
             assert_eq!(plan.resume_precision, ResumePrecision::Unavailable);
-            assert_eq!(plan.helper_files.len(), 1);
-            assert!(plan.argv.windows(2).any(|args| args == ["--model", "fixture-model"]));
-            assert!(plan.notices.iter().any(|notice| notice.code == "codex_resume_id_unavailable"));
-            assert!(!plan.notices.iter().any(|notice| notice.code == "resume_latest_only"));
+            assert!(plan
+                .notices
+                .iter()
+                .any(|notice| notice.code == "codex_resume_id_unavailable"));
+            assert!(!plan
+                .notices
+                .iter()
+                .any(|notice| notice.code == "resume_latest_only"));
         }
     }
 }

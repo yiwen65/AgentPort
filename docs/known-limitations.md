@@ -13,7 +13,7 @@
 
 5. **原生日志兼容性按 Provider 版本变化**：历史读取器只接受经过 Session ID、CWD 与 Provider 根目录校验的 Claude、Codex、Pi、Kimi、Qoder JSONL。上游格式发生未知变化时会跳过无法解析的行或明示不可用，不会回退为保存 PTY 副本。
 6. **Kimi/Codex 的 Hook 状态为降级**：Kimi 0.27.0 无会话级 hook 注入机制（只有全局 `~/.kimi-code/config.toml`，AgentPort 按约束不修改）；Codex 0.144.5 的 `notify` 语义无法从 CLI 输出确认，未注入。两者状态显示为 PTY 启发式（中置信度）+ 进程事实，UI 标记"状态可能不精确"。Claude 2.1.214 经按调用 `--settings` 注入 hook（高置信度）。
-7. **原生 Session ID 捕获**：Claude 启动时经 `--session-id` 指定（精确）。Kimi/Codex 交互式 TUI 输出中未稳定暴露 ID（`kimi -p`/`codex exec --json` 可捕获，TUI 未证实）——首次启动 `resumePrecision=latest`（明示）；若运行中经 hook/输出捕获到 ID 则升级为 exact。
+7. **原生 Session ID 捕获**：Claude 启动时经 `--session-id` 指定（精确）。Kimi/Codex 交互式 TUI 输出中未稳定暴露 ID（`kimi -p`/`codex exec --json` 可捕获，TUI 未证实）——首次启动 `resumePrecision=latest`（明示）；若运行中经 hook/输出捕获到 ID 则升级为 exact。未捕获到 ID 时仍会使用各 CLI 自带的最近会话恢复：Codex `resume --last`、Kimi/OpenCode `--continue`、Gemini `--resume latest`、Kiro `--resume`、Amp `threads continue --last`、Cline `history --json` + `--id`；均标记为 latest 并提示可能不是原会话。
 8. **Generic Shell 无恢复**：重启 shell session 总是新进程并明示"不可恢复"，绝不伪装。
 9. **job control 之外的更深逃逸**（子进程自己 `setsid` 守护化）不在进程组清理范围内；清理按 session leader + ppid 树快照实现（macOS `ps` 的 sess 列恒 0，无法按 session id 归组）。
 10. **Generic Shell 结束后无历史**：Shell 没有可验证的 Agent 原生日志；AgentPort 只提供运行期 4 MiB 内存尾部，不另行保存终端正文。

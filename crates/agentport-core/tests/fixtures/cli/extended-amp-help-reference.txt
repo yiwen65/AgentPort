@@ -1,5 +1,7 @@
 Amp documentation excerpts, NOT a captured executable help fixture.
 Sources: https://ampcode.com/docs/markdown/cli and https://ampcode.com/docs/markdown/threads (retrieved 2026-09-10)
+The `threads continue` options below are from @ampcode/cli 0.0.1795075234-g7a71f0
+`amp threads continue --help` (retrieved 2026-11-19).
 
 Run amp to start the Amp CLI. Without any arguments, it runs in interactive mode.
 To see more of what the CLI can do, run amp --help.
@@ -9,6 +11,15 @@ amp --executor runner:grandmas-garage-server
 
 Run amp threads continue T-… to attach the CLI to a thread.
 amp threads continue T-…
+
+Usage: amp threads continue [options] [threads...]
+
+Continue an existing thread by resuming the conversation. Each thread can be a thread URL or ID. By default, interactive mode shows a picker. Use --last to continue the last thread for this terminal and mode in this checkout, falling back to the last thread in this checkout.
+
+  --last
+      Continue the last thread in this checkout for the current mode, preferring this terminal
+  --pick
+      Pick a thread interactively from a list (DEPRECATED: picker is now the default)
 
 Source: https://ampcode.com/docs/markdown/tools
 Amp does not ask for approval before running tools.
