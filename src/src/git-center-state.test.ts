@@ -35,6 +35,7 @@ import {
   resetGitCenterStateForTests,
   generateGitCommitMessage,
   runGitRemoteAction,
+  selectGitDiff,
   setGitCommitDraft,
   setGitSelection,
 } from "./gitCenter";
@@ -45,6 +46,7 @@ import type {
   GitCheckoutDescriptor,
   GitCommitReview,
   GitContextLocator,
+  GitFileDiff,
   GitHistoryPage,
 } from "./types";
 
@@ -141,6 +143,29 @@ function history(target: GitCheckoutDescriptor): GitHistoryPage {
 
 function locator(projectId: string): GitContextLocator {
   return { kind: "projectMain", projectId };
+}
+
+function fileDiff(
+  target: GitCheckoutDescriptor,
+  statusToken: string,
+  item: GitChangeEntry,
+  patch = "+changed",
+): GitFileDiff {
+  return {
+    context: target,
+    statusToken,
+    side: "unstaged",
+    pathToken: item.pathToken,
+    displayPath: item.displayPath,
+    format: "text",
+    patch,
+    additions: 1,
+    deletions: 0,
+    fileSize: patch.length,
+    truncated: false,
+    reason: null,
+    conflictCode: null,
+  };
 }
 
 describe("Git Center checkout authority", () => {
@@ -480,5 +505,190 @@ describe("Git Center checkout authority", () => {
     expect(cache.commitDraft).toBe("edited while reviewing");
     expect(cache.commitReview).toBeNull();
     expect(cache.commitReviewOpen).toBe(false);
+  });
+
+  it("keeps the selected Diff across a refresh that rewrites every entry token", async () => {
+    const target = context("checkout-a", "a");
+    const rewritten: GitChangeEntry = { ...entry, entryToken: "entry-2" };
+    apiMock.resolveGitContext.mockResolvedValue(target);
+    apiMock.getGitChanges
+      .mockResolvedValueOnce(changes(target, "status-old", [entry]))
+      .mockResolvedValueOnce(changes(target, "status-new", [rewritten]));
+    apiMock.getGitHistory.mockResolvedValue(history(target));
+    apiMock.getGitDiff.mockResolvedValue(fileDiff(target, "status-old", entry));
+    await act(async () => {
+      await openGitCenter(locator("a"));
+    });
+    await act(async () => {
+      await selectGitDiff({
+        entryToken: "entry-1",
+        pathToken: "path-1",
+        side: "unstaged",
+      });
+    });
+    expect(getState().gitCenter.caches["checkout-a"].diffPhase).toBe("ready");
+
+    apiMock.getGitDiff.mockResolvedValue(
+      fileDiff(target, "status-new", rewritten, "+newer"),
+    );
+    await act(async () => {
+      await refreshGitChanges();
+    });
+    await waitFor(() =>
+      expect(getState().gitCenter.caches["checkout-a"].diffPhase).toBe("ready")
+    );
+
+    const cache = getState().gitCenter.caches["checkout-a"];
+    expect(cache.changes?.statusToken).toBe("status-new");
+    expect(cache.diffSelection).toEqual({
+      entryToken: "entry-2",
+      pathToken: "path-1",
+      side: "unstaged",
+    });
+    expect(cache.diff?.patch).toBe("+newer");
+    expect(apiMock.getGitDiff).toHaveBeenLastCalledWith(
+      locator("a"),
+      "status-new",
+      "unstaged",
+      "path-1",
+    );
+  });
+
+  it("drops the selected Diff once its path leaves Git Changes", async () => {
+    const target = context("checkout-a", "a");
+    apiMock.resolveGitContext.mockResolvedValue(target);
+    apiMock.getGitChanges
+      .mockResolvedValueOnce(changes(target, "status-old", [entry]))
+      .mockResolvedValueOnce(changes(target, "status-new", []));
+    apiMock.getGitHistory.mockResolvedValue(history(target));
+    apiMock.getGitDiff.mockResolvedValue(fileDiff(target, "status-old", entry));
+    await act(async () => {
+      await openGitCenter(locator("a"));
+    });
+    await act(async () => {
+      await selectGitDiff({
+        entryToken: "entry-1",
+        pathToken: "path-1",
+        side: "unstaged",
+      });
+    });
+
+    await act(async () => {
+      await refreshGitChanges();
+    });
+
+    const cache = getState().gitCenter.caches["checkout-a"];
+    expect(cache.diffSelection).toBeNull();
+    expect(cache.diff).toBeNull();
+    expect(cache.diffPhase).toBe("idle");
+    expect(apiMock.getGitDiff).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the selected Diff once its side disappears", async () => {
+    const target = context("checkout-a", "a");
+    const stagedOnly: GitChangeEntry = {
+      ...entry,
+      entryToken: "entry-2",
+      indexStatus: "M",
+      worktreeStatus: null,
+      staged: true,
+      unstaged: false,
+    };
+    apiMock.resolveGitContext.mockResolvedValue(target);
+    apiMock.getGitChanges
+      .mockResolvedValueOnce(changes(target, "status-old", [entry]))
+      .mockResolvedValueOnce(changes(target, "status-new", [stagedOnly]));
+    apiMock.getGitHistory.mockResolvedValue(history(target));
+    apiMock.getGitDiff.mockResolvedValue(fileDiff(target, "status-old", entry));
+    await act(async () => {
+      await openGitCenter(locator("a"));
+    });
+    await act(async () => {
+      await selectGitDiff({
+        entryToken: "entry-1",
+        pathToken: "path-1",
+        side: "unstaged",
+      });
+    });
+
+    await act(async () => {
+      await refreshGitChanges();
+    });
+
+    const cache = getState().gitCenter.caches["checkout-a"];
+    expect(cache.diffSelection).toBeNull();
+    expect(cache.diff).toBeNull();
+    expect(cache.diffPhase).toBe("idle");
+  });
+
+  it("keeps the rendered patch while a changed snapshot reloads it", async () => {
+    const target = context("checkout-a", "a");
+    const rewritten: GitChangeEntry = { ...entry, entryToken: "entry-2" };
+    const lateDiff = deferred<GitFileDiff>();
+    apiMock.resolveGitContext.mockResolvedValue(target);
+    apiMock.getGitChanges
+      .mockResolvedValueOnce(changes(target, "status-old", [entry]))
+      .mockResolvedValueOnce(changes(target, "status-new", [rewritten]));
+    apiMock.getGitHistory.mockResolvedValue(history(target));
+    apiMock.getGitDiff
+      .mockResolvedValueOnce(fileDiff(target, "status-old", entry))
+      .mockReturnValueOnce(lateDiff.promise);
+    await act(async () => {
+      await openGitCenter(locator("a"));
+    });
+    await act(async () => {
+      await selectGitDiff({
+        entryToken: "entry-1",
+        pathToken: "path-1",
+        side: "unstaged",
+      });
+    });
+
+    await act(async () => {
+      await refreshGitChanges();
+    });
+
+    const reloading = getState().gitCenter.caches["checkout-a"];
+    expect(reloading.diffSelection?.entryToken).toBe("entry-2");
+    expect(reloading.diff?.patch).toBe("+changed");
+    expect(reloading.diffPhase).toBe("refreshing");
+
+    await act(async () => {
+      lateDiff.resolve(fileDiff(target, "status-new", rewritten, "+newer"));
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(getState().gitCenter.caches["checkout-a"].diffPhase).toBe("ready")
+    );
+    expect(getState().gitCenter.caches["checkout-a"].diff?.patch).toBe("+newer");
+  });
+
+  it("does not reload an unchanged Diff on a periodic refresh", async () => {
+    const target = context("checkout-a", "a");
+    const snapshot = changes(target, "status-old", [entry]);
+    apiMock.resolveGitContext.mockResolvedValue(target);
+    apiMock.getGitChanges.mockResolvedValue(snapshot);
+    apiMock.getGitHistory.mockResolvedValue(history(target));
+    apiMock.getGitDiff.mockResolvedValue(fileDiff(target, "status-old", entry));
+    await act(async () => {
+      await openGitCenter(locator("a"));
+    });
+    await act(async () => {
+      await selectGitDiff({
+        entryToken: "entry-1",
+        pathToken: "path-1",
+        side: "unstaged",
+      });
+    });
+    expect(apiMock.getGitDiff).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await refreshGitChanges();
+    });
+
+    const cache = getState().gitCenter.caches["checkout-a"];
+    expect(apiMock.getGitDiff).toHaveBeenCalledTimes(1);
+    expect(cache.diff?.patch).toBe("+changed");
+    expect(cache.diffPhase).toBe("ready");
   });
 });

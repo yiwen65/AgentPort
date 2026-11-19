@@ -402,12 +402,25 @@ function pathSelection(entry: GitChangeEntry): GitPathSelection {
   };
 }
 
+/**
+ * Entry tokens embed the snapshot token, so they are rewritten whenever any
+ * file in the checkout changes. A Diff selection must follow the same file
+ * and side instead of being tied to a single token value.
+ */
+function diffSideAvailable(entry: GitChangeEntry, side: GitDiffSide): boolean {
+  if (entry.ignored) return false;
+  return side === "staged"
+    ? entry.staged
+    : entry.unstaged || entry.untracked || entry.conflicted;
+}
+
 function applyAuthoritativeChanges(
   checkoutId: string,
   changes: GitChangesSnapshot,
   options: { clearSelection?: boolean } = {},
 ) {
   if (changes.context.checkoutId !== checkoutId) return;
+  let diffToReload: GitDiffSelection | null = null;
   updateCheckout(checkoutId, (cache) => {
     const reviewStillCurrent = Boolean(
       cache.commitReview &&
@@ -424,8 +437,26 @@ function applyAuthoritativeChanges(
           return alive.has(entryToken);
         }),
       );
-    const selectedAlive = cache.diffSelection &&
-      changes.entries.some((entry) => entry.entryToken === cache.diffSelection?.entryToken);
+    const previousSelection = cache.diffSelection;
+    const liveEntry = previousSelection
+      ? changes.entries.find(
+        (entry) =>
+          entry.pathToken === previousSelection.pathToken &&
+          diffSideAvailable(entry, previousSelection.side),
+      )
+      : undefined;
+    const diffSelection = previousSelection && liveEntry
+      ? { ...previousSelection, entryToken: liveEntry.entryToken }
+      : null;
+    const retainedDiff = diffSelection &&
+      cache.diff?.pathToken === diffSelection.pathToken &&
+      cache.diff.side === diffSelection.side
+      ? cache.diff
+      : null;
+    const diffIsCurrent = Boolean(
+      retainedDiff && retainedDiff.statusToken === changes.statusToken,
+    );
+    if (diffSelection && !diffIsCurrent) diffToReload = diffSelection;
     const history = cache.history &&
       cache.history.anchorOid !== changes.context.headOid
       ? { ...cache.history, headChanged: true }
@@ -437,18 +468,22 @@ function applyAuthoritativeChanges(
       changesPhase: "ready",
       changesError: null,
       selectedEntries,
-      diffSelection: selectedAlive ? cache.diffSelection : null,
-      diff: selectedAlive && cache.diff?.statusToken === changes.statusToken
-        ? cache.diff
-        : null,
-      diffPhase: selectedAlive && cache.diff?.statusToken === changes.statusToken
+      diffSelection,
+      diff: retainedDiff,
+      diffPhase: diffIsCurrent
         ? cache.diffPhase
-        : "idle",
+        : retainedDiff
+          ? "refreshing"
+          : diffSelection
+            ? "loading"
+            : "idle",
+      diffError: diffIsCurrent ? cache.diffError : null,
       history,
       commitReview: reviewStillCurrent ? cache.commitReview : null,
       commitReviewOpen: reviewStillCurrent && cache.commitReviewOpen,
     };
   });
+  if (diffToReload) void selectGitDiff(diffToReload, { background: true });
 }
 
 function applyWriteError(checkoutId: string, error: unknown) {
@@ -498,12 +533,6 @@ export async function refreshGitChanges(
       return;
     }
     applyAuthoritativeChanges(checkoutId, changes);
-    if (
-      cache.diffSelection &&
-      changes.entries.some((entry) => entry.entryToken === cache.diffSelection?.entryToken)
-    ) {
-      void selectGitDiff(cache.diffSelection);
-    }
   } catch (error) {
     if (!requestIsCurrent(checkoutId, "changes", request)) {
       releaseChangesPhase(checkoutId, phaseToken);
@@ -517,19 +546,30 @@ export async function refreshGitChanges(
   }
 }
 
-export async function selectGitDiff(selection: GitDiffSelection): Promise<void> {
+export async function selectGitDiff(
+  selection: GitDiffSelection,
+  options: { background?: boolean } = {},
+): Promise<void> {
   const target = activeTarget();
   if (!target?.cache.changes) return;
   const { checkoutId, locator } = target;
   const statusToken = target.cache.changes.statusToken;
   const request = nextRequest(checkoutId, "diff");
-  updateCheckout(checkoutId, (current) => ({
-    ...current,
-    diffSelection: selection,
-    diff: null,
-    diffPhase: "loading",
-    diffError: null,
-  }));
+  updateCheckout(checkoutId, (current) => {
+    // An automatic reload keeps the current patch on screen; only a freshly
+    // picked file swaps it for a loading state.
+    const keepDiff = options.background === true &&
+      current.diff !== null &&
+      current.diff.pathToken === selection.pathToken &&
+      current.diff.side === selection.side;
+    return {
+      ...current,
+      diffSelection: selection,
+      diff: keepDiff ? current.diff : null,
+      diffPhase: keepDiff ? "refreshing" : "loading",
+      diffError: null,
+    };
+  });
   try {
     const diff = await api.getGitDiff(
       locator,
