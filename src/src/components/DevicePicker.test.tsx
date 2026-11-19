@@ -149,13 +149,13 @@ it("shows the empty state when no devices are paired", async () => {
 it("opens the add-device dialog at the app layer and the settings dialog from footer actions", async () => {
   render(<DevicePicker />);
   await openMenu();
-  fireEvent.click(screen.getByText("Add device…"));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Add device…" }));
   // The PairDevice modal mounts through the app dialog router (never inside
   // the topbar's stacking trap), so the picker only records dialog state.
   expect(getState().dialog).toEqual({ kind: "pairDevice" });
   act(() => setActiveDevice({ kind: "local" }));
   fireEvent.click(screen.getByRole("button", { name: "Device switcher" }));
-  fireEvent.click(await screen.findByText("Manage devices…"));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Manage devices…" }));
   expect(getState().dialog).toEqual({ kind: "settings", section: "devices" });
   act(() => setActiveDevice({ kind: "local" }));
 });

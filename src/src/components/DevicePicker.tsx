@@ -78,6 +78,33 @@ function IconChevronSmall() {
   );
 }
 
+function IconPlusSmall() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <path
+        d="M10 4.5v11M4.5 10h11"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconGear() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <circle cx="10" cy="10" r="2.6" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        d="M10 2.8v2.2M10 15v2.2M2.8 10h2.2M15 10h2.2M4.9 4.9l1.6 1.6M13.5 13.5l1.6 1.6M15.1 4.9l-1.6 1.6M6.5 13.5l-1.6 1.6"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function contextForDevice(device: DeviceProfile): DeviceContext {
   return {
     kind: "remote",
@@ -351,24 +378,28 @@ export default function DevicePicker(props: {
           <div className="device-picker-separator" />
           <div className="device-picker-footer">
             <button
-              className="device-picker-row"
+              className="device-picker-footer-action"
               role="menuitem"
+              aria-label={t("shell:ui.topBar.devices.add")}
+              data-tip={t("shell:ui.topBar.devices.add")}
               onClick={() => {
                 setOpen(false);
                 openDialog({ kind: "pairDevice" });
               }}
             >
-              {t("shell:ui.topBar.devices.add")}
+              <IconPlusSmall />
             </button>
             <button
-              className="device-picker-row"
+              className="device-picker-footer-action"
               role="menuitem"
+              aria-label={t("shell:ui.topBar.devices.manage")}
+              data-tip={t("shell:ui.topBar.devices.manage")}
               onClick={() => {
                 setOpen(false);
                 openDialog({ kind: "settings", section: "devices" });
               }}
             >
-              {t("shell:ui.topBar.devices.manage")}
+              <IconGear />
             </button>
           </div>
           {switchError ? (

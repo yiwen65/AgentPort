@@ -197,17 +197,33 @@
 
 .device-picker-footer {
   display: flex;
+  justify-content: flex-end;
   gap: 4px;
   padding: 2px;
 }
 
-.device-picker-footer .device-picker-row {
-  flex: 1;
+.device-picker-footer-action {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
   color: var(--text-dim);
+  transition:
+    background-color 0.1s ease,
+    color 0.1s ease;
 }
 
-.device-picker-footer .device-picker-row:hover {
+.device-picker-footer-action:hover {
+  background: var(--overlay-hover);
   color: var(--text);
+}
+
+.device-picker-footer-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .device-picker-error {
