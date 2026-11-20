@@ -1021,19 +1021,29 @@ function paneDropDirection(
  * pointer left. The split is now decided by the pane leaf that owns the stable
  * drop surface, and this only shows where the Session will land.
  */
-function PaneDropOverlay({ ses }: { ses: SessionView }) {
+function PaneDropOverlay({
+  sessionKey,
+  activeDirection,
+}: {
+  sessionKey: string;
+  activeDirection: PaneSplitDirection | null;
+}) {
   const { t } = useTranslation("shell");
+  const copyKey = {
+    left: "pane.dropLeft",
+    right: "pane.dropRight",
+    up: "pane.dropUp",
+    down: "pane.dropDown",
+  } as const;
+  const activeAllowed = activeDirection
+    ? canSplitSessionPane(sessionKey, activeDirection)
+    : false;
   const zone = (direction: PaneSplitDirection) => {
-    const allowed = canSplitSessionPane(ses.id, direction);
-    const copyKey = {
-      left: "pane.dropLeft",
-      right: "pane.dropRight",
-      up: "pane.dropUp",
-      down: "pane.dropDown",
-    } as const;
+    const allowed = canSplitSessionPane(sessionKey, direction);
+    const active = allowed && direction === activeDirection;
     return (
       <div
-        className={`pane-drop-zone ${direction}${allowed ? "" : " disabled"}`}
+        className={`pane-drop-zone ${direction}${active ? " active" : ""}${allowed ? "" : " disabled"}`}
         aria-disabled={!allowed}
       >
         <span>{t(copyKey[direction])}</span>
@@ -1041,7 +1051,16 @@ function PaneDropOverlay({ ses }: { ses: SessionView }) {
     );
   };
   return (
-    <div className="pane-drop-overlay" role="presentation">
+    <div
+      className={`pane-drop-overlay${activeAllowed ? " has-active" : ""}`}
+      role="presentation"
+    >
+      {activeAllowed ? (
+        <div
+          className={`pane-drop-preview ${activeDirection}`}
+          aria-hidden="true"
+        />
+      ) : null}
       {zone("up")}
       {zone("down")}
       {zone("left")}
@@ -1072,6 +1091,8 @@ function SessionPaneLeaf({
     useStore((state) => findSessionByKeyForState(state, sessionKey)?.session) ??
     initialSession;
   const [sessionDragActive, setSessionDragActive] = useState(false);
+  const [sessionDragDirection, setSessionDragDirection] =
+    useState<PaneSplitDirection | null>(null);
   const leafRef = useRef<HTMLDivElement | null>(null);
   const ended = ["stopped", "exited", "interrupted"].includes(ses.lifecycle);
   useEffect(() => {
@@ -1084,12 +1105,16 @@ function SessionPaneLeaf({
   // this pane.
   useEffect(() => {
     if (!sessionDragActive) return;
-    const clear = () => setSessionDragActive(false);
+    const clear = () => {
+      setSessionDragActive(false);
+      setSessionDragDirection(null);
+    };
     const onEnter = (event: DragEvent) => {
       const target = event.target as Node | null;
       const leaf = leafRef.current;
       if (!leaf || !target || leaf.contains(target)) return;
       setSessionDragActive(false);
+      setSessionDragDirection(null);
     };
     window.addEventListener("dragend", clear, { once: true });
     window.addEventListener("drop", clear, { once: true });
@@ -1131,12 +1156,38 @@ function SessionPaneLeaf({
         if (!hasSessionPaneDragPayload(event.dataTransfer)) return;
         event.preventDefault();
         setSessionDragActive(true);
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (
+          Number.isFinite(event.clientX) &&
+          Number.isFinite(event.clientY) &&
+          event.clientX >= rect.left &&
+          event.clientX <= rect.right &&
+          event.clientY >= rect.top &&
+          event.clientY <= rect.bottom
+        ) {
+          setSessionDragDirection(
+            paneDropDirection(rect, event.clientX, event.clientY),
+          );
+        }
       }}
       onDragOver={(event) => {
         if (!hasSessionPaneDragPayload(event.dataTransfer)) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = "move";
         setSessionDragActive(true);
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (
+          Number.isFinite(event.clientX) &&
+          Number.isFinite(event.clientY) &&
+          event.clientX >= rect.left &&
+          event.clientX <= rect.right &&
+          event.clientY >= rect.top &&
+          event.clientY <= rect.bottom
+        ) {
+          setSessionDragDirection(
+            paneDropDirection(rect, event.clientX, event.clientY),
+          );
+        }
       }}
       onDragLeave={(event) => {
         const next = event.relatedTarget as Node | null;
@@ -1152,12 +1203,16 @@ function SessionPaneLeaf({
           event.clientX < rect.right &&
           event.clientY >= rect.top &&
           event.clientY < rect.bottom;
-        if (!inside) setSessionDragActive(false);
+        if (!inside) {
+          setSessionDragActive(false);
+          setSessionDragDirection(null);
+        }
       }}
       onDrop={(event) => {
         if (!hasSessionPaneDragPayload(event.dataTransfer)) return;
         event.preventDefault();
         setSessionDragActive(false);
+        setSessionDragDirection(null);
         const payload = readSessionPaneDragPayload(event.dataTransfer);
         if (!payload) return;
         const direction = paneDropDirection(
@@ -1197,7 +1252,10 @@ function SessionPaneLeaf({
         )}
       </div>
       {sessionDragActive && visible ? (
-        <PaneDropOverlay ses={ses} />
+        <PaneDropOverlay
+          sessionKey={sessionKey}
+          activeDirection={sessionDragDirection}
+        />
       ) : null}
     </div>
   );

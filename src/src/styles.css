@@ -3778,6 +3778,8 @@ body.is-resizing-pane {
   grid-template-rows: 1fr 1.4fr 1fr;
   gap: 8px;
   padding: 12px;
+  isolation: isolate;
+  overflow: hidden;
   /* Pure indicator: the pane leaf owns the drop, so mounting this must not
      change the element under the cursor or WebKit drops the drag target. */
   pointer-events: none;
@@ -3786,19 +3788,168 @@ body.is-resizing-pane {
   -webkit-backdrop-filter: blur(5px);
 }
 
+.pane-drop-preview {
+  position: absolute;
+  z-index: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 76%, transparent);
+  border-radius: 14px;
+  background:
+    radial-gradient(
+      circle at 50% 0%,
+      color-mix(in srgb, var(--accent) 24%, transparent),
+      transparent 68%
+    ),
+    color-mix(in srgb, var(--accent) 13%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent),
+    0 14px 38px color-mix(in srgb, var(--accent) 16%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    top 160ms ease,
+    right 160ms ease,
+    bottom 160ms ease,
+    left 160ms ease,
+    width 160ms ease,
+    height 160ms ease;
+  animation: pane-drop-preview-enter 160ms ease-out forwards;
+}
+
+.pane-drop-preview::before {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, white 9%, transparent),
+    transparent 42%
+  );
+  content: "";
+}
+
+.pane-drop-preview::after {
+  position: absolute;
+  background: var(--accent);
+  border-radius: 999px;
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 72%, transparent);
+  content: "";
+}
+
+.pane-drop-preview.up {
+  top: 12px;
+  right: 12px;
+  left: 12px;
+  height: calc(50% - 16px);
+}
+
+.pane-drop-preview.up::after,
+.pane-drop-preview.down::after {
+  right: 18%;
+  bottom: -3px;
+  left: 18%;
+  height: 2px;
+}
+
+.pane-drop-preview.down {
+  right: 12px;
+  bottom: 12px;
+  left: 12px;
+  height: calc(50% - 16px);
+}
+
+.pane-drop-preview.down::after {
+  top: -3px;
+  bottom: auto;
+}
+
+.pane-drop-preview.left {
+  top: 12px;
+  bottom: 12px;
+  left: 12px;
+  width: calc(50% - 16px);
+}
+
+.pane-drop-preview.left::after,
+.pane-drop-preview.right::after {
+  top: 18%;
+  right: -3px;
+  bottom: 18%;
+  width: 2px;
+}
+
+.pane-drop-preview.right {
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  width: calc(50% - 16px);
+}
+
+.pane-drop-preview.right::after {
+  right: auto;
+  left: -3px;
+}
+
+@keyframes pane-drop-preview-enter {
+  from { opacity: 0; transform: scale(0.985); }
+  to { opacity: 1; transform: scale(1); }
+}
+
 .session-pane-leaf:not(:has(> .pane-header)) > .pane-drop-overlay {
   top: 0;
 }
 
 .pane-drop-zone {
+  position: relative;
+  z-index: 1;
   display: grid;
   place-items: center;
   border: 1px dashed color-mix(in srgb, var(--accent) 70%, transparent);
   border-radius: 9px;
-  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
   color: var(--accent-text);
   font-size: 12px;
   font-weight: 650;
+  opacity: 0.76;
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease,
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.pane-drop-zone span {
+  padding: 7px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--term-surface-raised) 62%, transparent);
+  box-shadow: 0 4px 14px color-mix(in srgb, black 14%, transparent);
+  text-shadow: 0 1px 12px color-mix(in srgb, var(--accent) 38%, transparent);
+  white-space: nowrap;
+}
+
+.pane-drop-overlay.has-active .pane-drop-zone:not(.active) {
+  opacity: 0.28;
+  transform: scale(0.97);
+}
+
+.pane-drop-zone.active {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent) 94%, transparent);
+  background: color-mix(in srgb, var(--accent) 23%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent),
+    0 10px 26px color-mix(in srgb, var(--accent) 18%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 16%, transparent);
+  opacity: 1;
+  transform: scale(1.015);
+}
+
+.pane-drop-zone.active span {
+  border-color: color-mix(in srgb, var(--accent) 52%, transparent);
+  background: color-mix(in srgb, var(--accent) 26%, var(--term-surface-raised));
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .pane-drop-zone.up {

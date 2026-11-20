@@ -254,7 +254,7 @@ function stubPaneRect(
  * logic reads (clientX/clientY). Build the MouseEvent explicitly.
  */
 function paneDragEvent(
-  type: "dragenter" | "dragleave" | "drop",
+  type: "dragenter" | "dragover" | "dragleave" | "drop",
   init: {
     dataTransfer: DataTransfer;
     clientX?: number;
@@ -692,6 +692,28 @@ describe("TerminalArea recursive panes", () => {
       );
     });
     expect(pane.querySelector(".pane-drop-overlay")).toBeNull();
+  });
+
+  it("previews the partition under the pointer", () => {
+    const { container } = render(<TerminalArea />);
+    const pane = paneLeaf(container, ptyB.id);
+    stubPaneRect(pane, 900, 600);
+
+    fireEvent(pane, paneDragEvent("dragenter", {
+      dataTransfer: transfer(rpc.id),
+      clientX: 450,
+      clientY: 50,
+    }));
+    expect(pane.querySelector(".pane-drop-preview.up")).not.toBeNull();
+    expect(pane.querySelector(".pane-drop-zone.up.active")).not.toBeNull();
+
+    fireEvent(pane, paneDragEvent("dragover", {
+      dataTransfer: transfer(rpc.id),
+      clientX: 50,
+      clientY: 300,
+    }));
+    expect(pane.querySelector(".pane-drop-preview.left")).not.toBeNull();
+    expect(pane.querySelector(".pane-drop-zone.left.active")).not.toBeNull();
   });
 
   it("renders all four Session drop directions as an inert overlay", () => {
