@@ -636,6 +636,32 @@ describe("TerminalArea recursive panes", () => {
     }
   });
 
+  it("starts a Session drag from an existing pane header and moves it to another pane", () => {
+    const { container } = render(<TerminalArea />);
+    const sourcePane = paneLeaf(container, ptyA.id);
+    const targetPane = paneLeaf(container, ptyB.id);
+    const header = sourcePane.querySelector<HTMLElement>(".pane-header");
+    if (!header) throw new Error("source pane header missing");
+    stubPaneRect(targetPane, 900, 600);
+
+    const dataTransfer = transfer(ptyA.id);
+    fireEvent.dragStart(header, { dataTransfer });
+    expect(header.getAttribute("draggable")).toBe("true");
+    expect(dataTransfer.types).toContain(SESSION_PANE_DND_MIME);
+
+    fireEvent(targetPane, paneDragEvent("drop", {
+      dataTransfer,
+      clientX: 50,
+      clientY: 300,
+    }));
+    expect(splitSessionIntoPaneMock).toHaveBeenLastCalledWith(
+      ptyB.id,
+      ptyA.id,
+      "left",
+    );
+    fireEvent.dragEnd(header, { dataTransfer });
+  });
+
   it("clears the indicator when the drag gesture ends without a drop", () => {
     const { container } = render(<TerminalArea />);
     const pane = paneLeaf(container, ptyB.id);

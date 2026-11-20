@@ -3595,6 +3595,14 @@ body.is-project-dragging .tree-row.project {
   user-select: none;
 }
 
+.pane-header[draggable="true"] {
+  cursor: grab;
+}
+
+.pane-header[draggable="true"]:active {
+  cursor: grabbing;
+}
+
 .session-pane-leaf.focused > .pane-header {
   color: var(--term-text);
   background: color-mix(in srgb, var(--term-accent) 7%, var(--term-surface-raised));

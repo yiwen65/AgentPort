@@ -99,7 +99,10 @@ import {
 import {
   hasSessionPaneDragPayload,
   readSessionPaneDragPayload,
+  suppressOversizedDragImage,
+  writeSessionPaneDragPayload,
 } from "../paneSessionDrag";
+import { beginNativeSessionDrag } from "../nativeDrag";
 import { agentDisplay, precisionLabel } from "../format";
 import type { SessionView } from "../types";
 import { AgentIcon } from "./AgentIcons";
@@ -826,6 +829,17 @@ function PaneHeader({
     <header
       className="pane-header"
       aria-label={t("pane.headerLabel", { title: ses.title })}
+      data-pane-drag-label={t("pane.dragLabel", { title: ses.title })}
+      draggable
+      onDragStart={(event) => {
+        if (event.target instanceof Element && event.target.closest("button")) {
+          event.preventDefault();
+          return;
+        }
+        writeSessionPaneDragPayload(event.dataTransfer, sessionKey);
+        suppressOversizedDragImage(event.dataTransfer);
+        beginNativeSessionDrag(sessionKey);
+      }}
     >
       <PaneAgentIcon ses={ses} />
       <StatusDot session={ses} />
