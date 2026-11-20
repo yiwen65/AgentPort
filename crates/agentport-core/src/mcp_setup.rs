@@ -376,12 +376,50 @@ pub fn set(
             let program = argv.first().cloned().unwrap_or_default();
             let outcome = run(&program, &argv[1..], CLI_TIMEOUT)?;
             if !outcome.success {
+                let message = first_line(&outcome.stderr)
+                    .or_else(|| first_line(&outcome.stdout))
+                    .unwrap_or_else(|| "no output".into());
+                // The end state is what matters: several CLIs refuse to add a
+                // server that is already configured (and to remove one that is
+                // not). Verify before treating that as a failure — a toggle the
+                // user has already asked for must not surface as an error.
+                let already = if enable {
+                    message.to_ascii_lowercase().contains("already exists")
+                } else {
+                    let lower = message.to_ascii_lowercase();
+                    // "No MCP server found with name …", "not found", "no such
+                    // server": every client words the absence differently.
+                    lower.contains("not found")
+                        || lower.contains("does not exist")
+                        || lower.contains("no mcp server")
+                        || lower.contains("no such")
+                };
+                if already {
+                    let report = status(agent, install, mcp_bin);
+                    let expected = if enable {
+                        RegistrationState::Registered
+                    } else {
+                        RegistrationState::Missing
+                    };
+                    if report.state == expected {
+                        // "Already exists" only means our name is taken. If the
+                        // existing entry points at another build, enabling must
+                        // say so instead of reporting a registration that will
+                        // launch something else.
+                        if !enable || registered_command_matches(agent, install, mcp_bin) {
+                            return Ok(report);
+                        }
+                        return Err(CoreError::Conflict(format!(
+                            "an \"{SERVER_NAME}\" MCP server is already registered for {} and \
+                             points at a different build; remove it with the client's own \
+                             `mcp remove` and enable this switch again",
+                            agent.display_name()
+                        )));
+                    }
+                }
                 return Err(CoreError::Validation(format!(
-                    "`{program} mcp {}` failed: {}",
-                    if enable { "add" } else { "remove" },
-                    first_line(&outcome.stderr)
-                        .or_else(|| first_line(&outcome.stdout))
-                        .unwrap_or_else(|| "no output".into())
+                    "`{program} mcp {}` failed: {message}",
+                    if enable { "add" } else { "remove" }
                 )));
             }
             let report = status(agent, install, mcp_bin);
@@ -457,6 +495,31 @@ fn run(program: &str, args: &[String], timeout: Duration) -> Result<Outcome> {
     })
 }
 
+/// Does the listed entry for our name launch the binary we would register?
+fn registered_command_matches(
+    agent: AgentType,
+    install: &AdapterInstall,
+    mcp_bin: &Path,
+) -> bool {
+    let Mechanism::Cli { list, .. } = mechanism(agent, install, mcp_bin) else {
+        return true;
+    };
+    let program = list.first().cloned().unwrap_or_default();
+    let Ok(outcome) = run(&program, &list[1..], CLI_TIMEOUT) else {
+        return true;
+    };
+    let bin = mcp_bin.to_string_lossy();
+    outcome.stdout.lines().any(|line| {
+        line.contains(SERVER_NAME)
+            && line
+                .split_once(':')
+                .map(|(name, rest)| {
+                    name.contains(SERVER_NAME) && rest.contains(bin.as_ref())
+                })
+                .unwrap_or_else(|| line.contains(bin.as_ref()))
+    })
+}
+
 fn first_line(text: &str) -> Option<String> {
     text.lines()
         .map(str::trim)
@@ -474,9 +537,15 @@ fn parse_names(stdout: &str, format: ListFormat) -> Option<Vec<String>> {
                 let Some((name, _)) = line.split_once(':') else {
                     continue;
                 };
-                let name = name.trim();
+                // Qoder prefixes the row with a status glyph ("✓ agentport: …"),
+                // so strip leading decoration before deciding a line is a name.
+                let name: String = name
+                    .trim()
+                    .trim_start_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+                    .trim()
+                    .to_string();
                 if !name.is_empty() && !name.contains(char::is_whitespace) {
-                    names.push(name.to_string());
+                    names.push(name);
                 }
             }
             // Text listings that say nothing about servers still mean "none".
@@ -774,6 +843,14 @@ mod tests {
             vec!["RepoPrompt".to_string(), "agentport".to_string()]
         );
         assert_eq!(parse_names("No MCP servers configured.", ListFormat::ColonLines).unwrap(), Vec::<String>::new());
+        // Qoder prefixes each row with a status glyph and a banner line above.
+        let qoder = "Configured MCP servers:\n\n✓ agentport: /app/agentport-mcp serve --stdio (stdio) - Connected · Direct MCP Server\n";
+        assert_eq!(
+            parse_names(qoder, ListFormat::ColonLines).unwrap(),
+            vec!["agentport".to_string()]
+        );
+        // A banner ("Configured MCP servers:") is not a server name.
+        assert_eq!(parse_names(qoder, ListFormat::ColonLines).unwrap().len(), 1);
     }
 
     #[test]
